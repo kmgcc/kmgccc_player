@@ -1,0 +1,37 @@
+{
+  "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/DerivedSources/GeneratedAssetSymbols.swift" : {
+    "const-values" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/GeneratedAssetSymbols.swiftconstvalues",
+    "dependencies" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/GeneratedAssetSymbols.d",
+    "diagnostics" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/GeneratedAssetSymbols.dia",
+    "object" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/GeneratedAssetSymbols.o",
+    "swift-dependencies" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/GeneratedAssetSymbols.swiftdeps"
+  },
+  "/Users/kmg/Documents/vscode/player/myPlayer2/myPlayer2/AppRootView.swift" : {
+    "const-values" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/AppRootView.swiftconstvalues",
+    "dependencies" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/AppRootView.d",
+    "diagnostics" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/AppRootView.dia",
+    "object" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/AppRootView.o",
+    "swift-dependencies" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/AppRootView.swiftdeps"
+  },
+  "/Users/kmg/Documents/vscode/player/myPlayer2/myPlayer2/ContentView.swift" : {
+    "const-values" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/ContentView.swiftconstvalues",
+    "dependencies" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/ContentView.d",
+    "diagnostics" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/ContentView.dia",
+    "object" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/ContentView.o",
+    "swift-dependencies" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/ContentView.swiftdeps"
+  },
+  "/Users/kmg/Documents/vscode/player/myPlayer2/myPlayer2/Views/Sidebar/SidebarView.swift" : {
+    "const-values" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/SidebarView.swiftconstvalues",
+    "dependencies" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/SidebarView.d",
+    "diagnostics" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/SidebarView.dia",
+    "object" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/SidebarView.o",
+    "swift-dependencies" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/SidebarView.swiftdeps"
+  },
+  "/Users/kmg/Documents/vscode/player/myPlayer2/myPlayer2/myPlayer2App.swift" : {
+    "const-values" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/myPlayer2App.swiftconstvalues",
+    "dependencies" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/myPlayer2App.d",
+    "diagnostics" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/myPlayer2App.dia",
+    "object" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/myPlayer2App.o",
+    "swift-dependencies" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/myPlayer2App.swiftdeps"
+  }
+}

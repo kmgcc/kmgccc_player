@@ -1,0 +1,37 @@
+{
+  "/Users/kmg/Documents/vscode/player/myPlayer2/myPlayer2/Views/Lyrics/LyricsPanelView.swift" : {
+    "const-values" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/LyricsPanelView.swiftconstvalues",
+    "dependencies" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/LyricsPanelView.d",
+    "diagnostics" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/LyricsPanelView.dia",
+    "object" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/LyricsPanelView.o",
+    "swift-dependencies" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/LyricsPanelView.swiftdeps"
+  },
+  "/Users/kmg/Documents/vscode/player/myPlayer2/myPlayer2/Views/MiniPlayer/MiniPlayerView.swift" : {
+    "const-values" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/MiniPlayerView.swiftconstvalues",
+    "dependencies" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/MiniPlayerView.d",
+    "diagnostics" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/MiniPlayerView.dia",
+    "object" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/MiniPlayerView.o",
+    "swift-dependencies" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/MiniPlayerView.swiftdeps"
+  },
+  "/Users/kmg/Documents/vscode/player/myPlayer2/myPlayer2/Views/NowPlaying/LedMeterView.swift" : {
+    "const-values" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/LedMeterView.swiftconstvalues",
+    "dependencies" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/LedMeterView.d",
+    "diagnostics" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/LedMeterView.dia",
+    "object" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/LedMeterView.o",
+    "swift-dependencies" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/LedMeterView.swiftdeps"
+  },
+  "/Users/kmg/Documents/vscode/player/myPlayer2/myPlayer2/Views/NowPlaying/NowPlayingView.swift" : {
+    "const-values" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/NowPlayingView.swiftconstvalues",
+    "dependencies" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/NowPlayingView.d",
+    "diagnostics" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/NowPlayingView.dia",
+    "object" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/NowPlayingView.o",
+    "swift-dependencies" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/NowPlayingView.swiftdeps"
+  },
+  "/Users/kmg/Documents/vscode/player/myPlayer2/myPlayer2/Views/Settings/SettingsView.swift" : {
+    "const-values" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/SettingsView.swiftconstvalues",
+    "dependencies" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/SettingsView.d",
+    "diagnostics" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/SettingsView.dia",
+    "object" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/SettingsView.o",
+    "swift-dependencies" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/SettingsView.swiftdeps"
+  }
+}

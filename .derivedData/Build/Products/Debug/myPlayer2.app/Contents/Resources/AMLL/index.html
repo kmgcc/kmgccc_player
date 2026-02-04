@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AMLL Lyrics</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: transparent;
+        }
+        #player {
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body>
+    <div id="player"></div>
+    <script type="module">
+        import { LyricPlayer, parseTTML } from "./amll-core.js";
+
+        // Initialize Player
+        const playerContainer = document.getElementById('player');
+        const lyricPlayer = new LyricPlayer();
+        playerContainer.appendChild(lyricPlayer.getElement());
+        
+        // Initial config defaults
+        lyricPlayer.setEnableSpring(true);
+        lyricPlayer.setEnableBlur(true);
+        
+        // Helper to map TTML lines to AMLL LyricLine format
+        const mapTTMLLyric = (line) => ({
+            ...line,
+            words: line.words.map((word) => ({ obscene: false, romanWord: "", ...word })),
+            romanLyric: "",
+        });
+
+        // Define the Renderer Implementation for Bridge
+        window.LyricsRenderer = {
+            setLyrics: (ttml) => {
+                if (!ttml) {
+                    lyricPlayer.setLyricLines([]);
+                    console.log("[LyricsRenderer] Cleared lyrics");
+                    return;
+                }
+                try {
+                    const result = parseTTML(ttml);
+                    const lines = result.lines.map(mapTTMLLyric);
+                    lyricPlayer.setLyricLines(lines);
+                    console.log("[LyricsRenderer] Loaded lines:", lines.length);
+                } catch (e) {
+                    console.error("[LyricsRenderer] TTML Parse Error:", e);
+                    // Optionally fallback to plain text parsing if you had that logic
+                }
+            },
+            
+            setCurrentTime: (seconds) => {
+                const timeInMs = seconds * 1000;
+                lyricPlayer.setCurrentTime(timeInMs);
+            },
+            
+            setPlaying: (isPlaying) => {
+                // lyricPlayer.setIsPlaying(isPlaying); // If supported by core
+            },
+            
+            setConfig: (config) => {
+                try {
+                    // Apply config to lyricPlayer
+                    if (config.fontSize) {
+                         // lyricPlayer.setFontSize(config.fontSize) 
+                    }
+                    console.log("[LyricsRenderer] Config updated:", config);
+                } catch (e) {
+                    console.error("[LyricsRenderer] Config Error:", e);
+                }
+            }
+        };
+
+        // Animation Loop
+        let lastTime = performance.now();
+        function animate(time) {
+            const delta = time - lastTime;
+            lastTime = time;
+            lyricPlayer.update(delta);
+            requestAnimationFrame(animate);
+        }
+        requestAnimationFrame(animate);
+
+    </script>
+    
+    <!-- Load Bridge last, it will check for window.LyricsRenderer -->
+    <script src="bridge.js"></script>
+</body>
+</html>

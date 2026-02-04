@@ -1,0 +1,14 @@
+{
+	"extends": "../../tsconfig.base.json",
+	"compilerOptions": {
+		"useDefineForClassFields": true,
+		"isolatedModules": true,
+		"composite": true
+	},
+	"include": ["src", "hooks"],
+	"references": [
+		{ "path": "../core" },
+		{ "path": "../react" },
+		{ "path": "../react-full" }
+	]
+}

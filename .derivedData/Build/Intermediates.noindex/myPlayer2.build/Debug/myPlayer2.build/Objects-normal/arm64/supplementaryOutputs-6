@@ -1,0 +1,37 @@
+{
+  "/Users/kmg/Documents/vscode/player/myPlayer2/myPlayer2/Views/Library/PlaylistDetailView.swift" : {
+    "const-values" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/PlaylistDetailView.swiftconstvalues",
+    "dependencies" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/PlaylistDetailView.d",
+    "diagnostics" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/PlaylistDetailView.dia",
+    "object" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/PlaylistDetailView.o",
+    "swift-dependencies" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/PlaylistDetailView.swiftdeps"
+  },
+  "/Users/kmg/Documents/vscode/player/myPlayer2/myPlayer2/Views/Library/PlaylistEditSheet.swift" : {
+    "const-values" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/PlaylistEditSheet.swiftconstvalues",
+    "dependencies" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/PlaylistEditSheet.d",
+    "diagnostics" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/PlaylistEditSheet.dia",
+    "object" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/PlaylistEditSheet.o",
+    "swift-dependencies" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/PlaylistEditSheet.swiftdeps"
+  },
+  "/Users/kmg/Documents/vscode/player/myPlayer2/myPlayer2/Views/Library/TrackEditSheet.swift" : {
+    "const-values" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/TrackEditSheet.swiftconstvalues",
+    "dependencies" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/TrackEditSheet.d",
+    "diagnostics" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/TrackEditSheet.dia",
+    "object" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/TrackEditSheet.o",
+    "swift-dependencies" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/TrackEditSheet.swiftdeps"
+  },
+  "/Users/kmg/Documents/vscode/player/myPlayer2/myPlayer2/Views/Library/TrackRowView.swift" : {
+    "const-values" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/TrackRowView.swiftconstvalues",
+    "dependencies" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/TrackRowView.d",
+    "diagnostics" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/TrackRowView.dia",
+    "object" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/TrackRowView.o",
+    "swift-dependencies" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/TrackRowView.swiftdeps"
+  },
+  "/Users/kmg/Documents/vscode/player/myPlayer2/myPlayer2/Views/Lyrics/AMLLWebView.swift" : {
+    "const-values" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/AMLLWebView.swiftconstvalues",
+    "dependencies" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/AMLLWebView.d",
+    "diagnostics" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/AMLLWebView.dia",
+    "object" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/AMLLWebView.o",
+    "swift-dependencies" : "/Users/kmg/Documents/vscode/player/myPlayer2/.derivedData/Build/Intermediates.noindex/myPlayer2.build/Debug/myPlayer2.build/Objects-normal/arm64/AMLLWebView.swiftdeps"
+  }
+}

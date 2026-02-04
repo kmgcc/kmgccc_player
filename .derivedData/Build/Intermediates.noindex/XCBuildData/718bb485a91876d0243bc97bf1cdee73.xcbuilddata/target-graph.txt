@@ -1,0 +1,2 @@
+Target dependency graph (1 target)
+Target 'myPlayer2' in project 'myPlayer2' (no dependencies)

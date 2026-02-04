@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AMLL Lyrics</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: transparent;
+        }
+        #player {
+            width: 100%;
+            height: 100%;
+            background: transparent;
+        }
+    </style>
+</head>
+<body>
+    <div id="player"></div>
+
+    <!-- Load Bridge first so logs & AMLL namespace are available -->
+    <script src="bridge.js"></script>
+
+    <script type="module">
+        import { LyricPlayer, parseTTML } from "./amll-core.js";
+
+        console.log("[LyricsRenderer] Module script loaded");
+
+        // Initialize Player
+        const playerContainer = document.getElementById('player');
+        const lyricPlayer = new LyricPlayer();
+        playerContainer.appendChild(lyricPlayer.getElement());
+        
+        // Initial config defaults
+        lyricPlayer.setEnableSpring(true);
+        lyricPlayer.setEnableBlur(true);
+        // Align active line toward top (instead of center)
+        lyricPlayer.setAlignAnchor("top");
+        lyricPlayer.setAlignPosition(0.2);
+        
+        // Helper to map TTML lines to AMLL LyricLine format
+        const mapTTMLLyric = (line) => ({
+            ...line,
+            words: line.words.map((word) => ({ obscene: false, romanWord: "", ...word })),
+            romanLyric: "",
+        });
+
+        // Seek on line click (notify native)
+        lyricPlayer.addEventListener("line-click", (e) => {
+            const line = e?.line;
+            if (!line || typeof line.startTime !== "number") return;
+            if (window.AMLL && typeof window.AMLL._onUserSeek === "function") {
+                window.AMLL._onUserSeek(line.startTime / 1000);
+            }
+        });
+
+        // Ensure time is integer ms; preserve force flag for internal calls.
+        const originalSetCurrentTime = lyricPlayer.setCurrentTime.bind(lyricPlayer);
+        lyricPlayer.setCurrentTime = (ms, force = false) => {
+            const timeMs = Math.max(0, Math.floor(ms));
+            originalSetCurrentTime(timeMs, force);
+        };
+
+        const restoreOriginalLineTimes = (originalTimes) => {
+            const apply = (lines) => {
+                if (!Array.isArray(lines) || lines.length !== originalTimes.length) return false;
+                lines.forEach((line, idx) => {
+                    const orig = originalTimes[idx];
+                    if (!orig) return;
+                    if (Number.isFinite(orig.startTime)) line.startTime = orig.startTime;
+                    if (Number.isFinite(orig.endTime)) line.endTime = orig.endTime;
+                });
+                return true;
+            };
+            const didProcessed = apply(lyricPlayer.processedLines);
+            const didCurrent = apply(lyricPlayer.currentLyricLines);
+            return didProcessed || didCurrent;
+        };
+
+        // Define the Renderer Implementation for Bridge
+        window.LyricsRenderer = {
+            setLyrics: (ttml) => {
+                if (!ttml) {
+                    lyricPlayer.setLyricLines([]);
+                    console.log("[LyricsRenderer] Cleared lyrics");
+                    return;
+                }
+                try {
+                    const result = parseTTML(ttml);
+                    const lines = result.lines.map(mapTTMLLyric);
+                    const originalTimes = lines.map((line) => ({
+                        startTime: line.startTime,
+                        endTime: line.endTime
+                    }));
+                    // Preserve TTML intent (no mutation of duet/bg/ordering).
+                    lyricPlayer.setLyricLines(lines);
+                    // Undo core's non-overlap timing clamp so overlaps can highlight in parallel.
+                    if (restoreOriginalLineTimes(originalTimes)) {
+                        const currentMs = lyricPlayer.getCurrentTime ? lyricPlayer.getCurrentTime() : 0;
+                        originalSetCurrentTime(currentMs, true);
+                    }
+                    console.log("[LyricsRenderer] Loaded lines:", lines.length);
+                } catch (e) {
+                    console.error("[LyricsRenderer] TTML Parse Error:", e);
+                    // Optionally fallback to plain text parsing if you had that logic
+                }
+            },
+            
+            setCurrentTime: (seconds) => {
+                const timeInMs = seconds * 1000;
+                lyricPlayer.setCurrentTime(timeInMs);
+            },
+            
+            setPlaying: (isPlaying) => {
+                // lyricPlayer.setIsPlaying(isPlaying); // If supported by core
+            },
+            
+            setConfig: (config) => {
+                try {
+                    // Apply config to lyricPlayer
+                    if (config.fontSize) {
+                         // lyricPlayer.setFontSize(config.fontSize) 
+                    }
+                    if (config.textColor) {
+                        lyricPlayer.getElement().style.setProperty("--amll-lp-color", config.textColor);
+                    }
+                    if (config.shadowColor) {
+                        lyricPlayer.getElement().style.textShadow = `0 1px 2px ${config.shadowColor}`;
+                    }
+                    console.log("[LyricsRenderer] Config updated:", config);
+                } catch (e) {
+                    console.error("[LyricsRenderer] Config Error:", e);
+                }
+            }
+        };
+
+        // Animation Loop
+        let lastTime = performance.now();
+        function animate(time) {
+            const delta = time - lastTime;
+            lastTime = time;
+            lyricPlayer.update(delta);
+            requestAnimationFrame(animate);
+        }
+        requestAnimationFrame(animate);
+
+        // Notify bridge that renderer is ready (after LyricsRenderer defined)
+        if (window.AMLL && typeof window.AMLL._onRendererReady === "function") {
+            window.AMLL._onRendererReady();
+        } else {
+            console.warn("[LyricsRenderer] AMLL bridge not ready");
+        }
+
+    </script>
+</body>
+</html>

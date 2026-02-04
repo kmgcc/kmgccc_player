@@ -1,0 +1,62 @@
+/*
+    给不需要重命名的全局类名的样式
+*/
+
+/* 给歌词视图元素应用的样式 */
+.amll-lyric-player {
+	width: 100%;
+	height: 100%;
+	overflow: hidden;
+	max-width: 100%;
+	color: var(--amll-lp-color, white);
+	contain: strict;
+	mix-blend-mode: plus-lighter;
+	font-size: var(--amll-lp-font-size, max(max(5vh, 2.5vw), 12px));
+
+	@media screen and (max-width: 768px) {
+		font-size: var(--amll-lp-font-size, max(8vw, 12px));
+	}
+
+	&.dom {
+		--amll-lp-line-width-aspect: 0.8;
+		--amll-lp-line-padding-x: 1em;
+		--amll-lp-bg-line-scale: 0.7;
+		user-select: none;
+		box-sizing: content-box;
+		z-index: 1;
+		line-height: 1.2em;
+	}
+
+	&.dom-slim {
+		--amll-lp-line-width-aspect: 0.8;
+		--amll-lp-line-padding-x: 1em;
+		--amll-lp-bg-line-scale: 0.7;
+		overflow: hidden scroll;
+		user-select: none;
+		box-sizing: content-box;
+		z-index: 1;
+		line-height: 1.2em;
+		min-height: 0;
+		min-width: 0;
+
+		&::-webkit-scrollbar {
+			opacity: 0;
+		}
+
+		&:hover::-webkit-scrollbar {
+			opacity: 1;
+		}
+
+		> * {
+			content-visibility: auto;
+			contain-intrinsic-size: 100% 2em;
+		}
+	}
+}
+
+@media screen and (max-width: 768px) {
+	.amll-lyric-player {
+		--amll-lp-line-width-aspect: 1;
+		--amll-lp-line-padding-x: 0;
+	}
+}
