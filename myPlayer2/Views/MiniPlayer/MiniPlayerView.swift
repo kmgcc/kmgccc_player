@@ -8,12 +8,22 @@
 
 import SwiftUI
 
+fileprivate enum PlaybackMode {
+    case sequence
+    case shuffle
+    case repeatOne
+}
+
 /// Mini player bar with true Liquid Glass capsule effect.
 /// Layout: Controls | Cover | Title+Progress | Volume
 struct MiniPlayerView: View {
 
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(UIStateViewModel.self) private var uiState
+    @Environment(\.colorScheme) private var colorScheme
+
+    @AppStorage("shuffleEnabled") private var shuffleEnabled: Bool = false
+    @AppStorage("repeatMode") private var repeatMode: String = "off"
 
     /// For drag-to-seek
     @State private var isDragging = false
@@ -23,6 +33,8 @@ struct MiniPlayerView: View {
         HStack(spacing: 16) {
             // MARK: - Left: Playback Controls
             controlsView
+
+            playbackModeView
 
             // MARK: - Cover Art (tappable)
             Button {
@@ -108,6 +120,33 @@ struct MiniPlayerView: View {
         }
     }
 
+    private var currentPlaybackMode: PlaybackMode {
+        if repeatMode == "one" { return .repeatOne }
+        if shuffleEnabled { return .shuffle }
+        return .sequence
+    }
+
+    private var playbackModeView: some View {
+        PlaybackModeSlider(
+            mode: currentPlaybackMode,
+            isEnabled: playerVM.currentTrack != nil,
+            onSelect: { mode in
+                switch mode {
+                case .sequence:
+                    shuffleEnabled = false
+                    repeatMode = "off"
+                case .shuffle:
+                    shuffleEnabled = true
+                    repeatMode = "off"
+                case .repeatOne:
+                    shuffleEnabled = false
+                    repeatMode = "one"
+                }
+            }
+        )
+        .frame(width: 132, height: 28)
+    }
+
     @ViewBuilder
     private var artworkView: some View {
         if let artworkData = playerVM.currentTrack?.artworkData,
@@ -138,22 +177,26 @@ struct MiniPlayerView: View {
 
     private var progressBar: some View {
         GeometryReader { geometry in
-            ZStack(alignment: .leading) {
-                // Track background
-                Capsule()
-                    .fill(Color.primary.opacity(0.15))
-                    .frame(height: 6)
+            let barHeight: CGFloat = 6
+            let fill = progressFillColor
+            let track = progressTrackColor
 
-                // Progress fill
-                Capsule()
-                    .fill(Color.accentColor.opacity(0.8))
-                    .frame(width: progressWidth(in: geometry.size.width), height: 6)
+            ZStack {
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(track)
+                        .frame(height: barHeight)
 
-                // Drag handle (invisible but interactive)
-                Circle()
-                    .fill(Color.clear)
-                    .frame(width: 16, height: 16)
-                    .offset(x: progressWidth(in: geometry.size.width) - 8)
+                    Capsule()
+                        .fill(fill)
+                        .frame(width: progressWidth(in: geometry.size.width), height: barHeight)
+
+                    Circle()
+                        .fill(Color.clear)
+                        .frame(width: 16, height: 16)
+                        .offset(x: progressWidth(in: geometry.size.width) - 8)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             }
             .contentShape(Rectangle())
             .gesture(
@@ -171,7 +214,15 @@ struct MiniPlayerView: View {
                     }
             )
         }
-        .frame(height: 6)
+        .frame(height: 20)
+    }
+
+    private var progressFillColor: Color {
+        colorScheme == .dark ? Color.white.opacity(0.9) : Color.gray.opacity(0.8)
+    }
+
+    private var progressTrackColor: Color {
+        colorScheme == .dark ? Color.white.opacity(0.18) : Color.gray.opacity(0.22)
     }
 
     private func progressWidth(in totalWidth: CGFloat) -> CGFloat {
@@ -210,6 +261,138 @@ struct MiniPlayerView: View {
         } else {
             return "speaker.wave.3.fill"
         }
+    }
+}
+
+private struct PlaybackModeSlider: View {
+    let mode: PlaybackMode
+    let isEnabled: Bool
+    let onSelect: (PlaybackMode) -> Void
+
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var dragTranslation: CGFloat = 0
+    @State private var isDragging: Bool = false
+
+    private var modeIndex: Int {
+        switch mode {
+        case .shuffle: return 0
+        case .sequence: return 1
+        case .repeatOne: return 2
+        }
+    }
+
+    private func modeForIndex(_ index: Int) -> PlaybackMode {
+        switch index {
+        case 0: return .shuffle
+        case 1: return .sequence
+        default: return .repeatOne
+        }
+    }
+
+    var body: some View {
+        GeometryReader { geometry in
+            let inset: CGFloat = 2
+            let totalWidth = geometry.size.width - inset * 2
+            let segmentWidth = max(1, totalWidth / 3)
+            let baseOffset = CGFloat(modeIndex) * segmentWidth
+            let effectiveDrag = isDragging ? dragTranslation : 0
+            let knobOffset = clampOffset(baseOffset + effectiveDrag, maxValue: totalWidth - segmentWidth)
+            let snap = Animation.spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08)
+
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(trackFill)
+                    .overlay(Capsule().stroke(trackBorder, lineWidth: 1))
+
+                Capsule()
+                    .fill(knobFill)
+                    .overlay(Capsule().stroke(knobBorder, lineWidth: 1))
+                    .frame(width: segmentWidth, height: geometry.size.height - inset * 2)
+                    .offset(x: knobOffset + inset)
+                    .animation((reduceMotion || isDragging) ? .none : snap, value: modeIndex)
+
+                HStack(spacing: 0) {
+                    segmentButton(systemImage: "shuffle", isSelected: modeIndex == 0, width: segmentWidth) {
+                        selectMode(.shuffle, snap: snap)
+                    }
+                    segmentButton(systemImage: "list.bullet", isSelected: modeIndex == 1, width: segmentWidth) {
+                        selectMode(.sequence, snap: snap)
+                    }
+                    segmentButton(systemImage: "repeat.1", isSelected: modeIndex == 2, width: segmentWidth) {
+                        selectMode(.repeatOne, snap: snap)
+                    }
+                }
+                .padding(.horizontal, inset)
+            }
+            .contentShape(Capsule())
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        isDragging = true
+                        dragTranslation = value.translation.width
+                    }
+                    .onEnded { value in
+                        let raw = baseOffset + value.translation.width
+                        let index = Int(round(raw / segmentWidth))
+                        dragTranslation = 0
+                        isDragging = false
+                        let clampedIndex = max(0, min(2, index))
+                        selectMode(modeForIndex(clampedIndex), snap: snap)
+                    }
+            )
+        }
+        .opacity(isEnabled ? 1 : 0.4)
+        .disabled(!isEnabled)
+    }
+
+    private func selectMode(_ newMode: PlaybackMode, snap: Animation) {
+        if reduceMotion {
+            var tx = Transaction()
+            tx.disablesAnimations = true
+            withTransaction(tx) {
+                onSelect(newMode)
+            }
+        } else {
+            withAnimation(snap) {
+                onSelect(newMode)
+            }
+        }
+    }
+
+    private func segmentButton(
+        systemImage: String,
+        isSelected: Bool,
+        width: CGFloat,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(isSelected ? .primary : .secondary)
+                .frame(width: width, height: 28)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var trackFill: Color {
+        colorScheme == .dark ? Color.white.opacity(0.10) : Color.black.opacity(0.08)
+    }
+
+    private var trackBorder: Color {
+        colorScheme == .dark ? Color.white.opacity(0.18) : Color.black.opacity(0.14)
+    }
+
+    private var knobFill: Color {
+        colorScheme == .dark ? Color.white.opacity(0.22) : Color.black.opacity(0.12)
+    }
+
+    private var knobBorder: Color {
+        colorScheme == .dark ? Color.white.opacity(0.28) : Color.black.opacity(0.22)
+    }
+
+    private func clampOffset(_ value: CGFloat, maxValue: CGFloat) -> CGFloat {
+        min(max(0, value), maxValue)
     }
 }
 

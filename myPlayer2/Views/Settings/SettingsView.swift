@@ -6,18 +6,32 @@
 //  Provides user-configurable settings including LED meter, Appearance, and AMLL.
 //
 
+import AppKit
 import SwiftUI
 
-/// Settings view with tabs for different categories.
+/// Settings view with sidebar categories.
 struct SettingsView: View {
 
     @Environment(\.dismiss) private var dismiss
+
+    // MARK: - Navigation
+
+    @State private var selection: SettingsCategory = .appearance
 
     // MARK: - App Settings
 
     @State private var appearance: String = AppSettings.shared.appearance
     @State private var liquidGlassIntensity: Double = AppSettings.shared.liquidGlassIntensity
+
+    // MARK: - AMLL Settings
+
+    @State private var lyricsLeadInMs: Double = AppSettings.shared.lyricsLeadInMs
+    @State private var lyricsFontNameZh: String = AppSettings.shared.lyricsFontNameZh
+    @State private var lyricsFontNameEn: String = AppSettings.shared.lyricsFontNameEn
+    @State private var lyricsTranslationFontName: String = AppSettings.shared.lyricsTranslationFontName
+    @State private var lyricsFontWeight: Int = AppSettings.shared.lyricsFontWeight
     @State private var lyricsFontSize: Double = AppSettings.shared.lyricsFontSize
+    @State private var nowPlayingSkin: String = AppSettings.shared.nowPlayingSkin
 
     // MARK: - LED Settings State
 
@@ -31,45 +45,57 @@ struct SettingsView: View {
     // MARK: - Preview Level (LED)
     @State private var previewLevel: Double = 0.5
 
+    private var fontFamilies: [String] {
+        NSFontManager.shared.availableFontFamilies.sorted()
+    }
+
+    private let fontWeights: [(label: String, value: Int)] = [
+        ("Thin", 100),
+        ("Light", 300),
+        ("Regular", 400),
+        ("Medium", 500),
+        ("Semibold", 600),
+        ("Bold", 700)
+    ]
+
     var body: some View {
-        VStack(spacing: 0) {
-            // Header
-            headerView
-
-            Divider()
-
-            // Content
-            ScrollView {
-                VStack(alignment: .leading, spacing: 32) {
-
-                    // Appearance Section
-                    appearanceSection
-
-                    Divider()
-
-                    // AMLL Lyrics Section
-                    amllSection
-
-                    Divider()
-
-                    // LED Meter Section (Visual + Audio)
-                    ledSettingsSection
-
-                    Divider()
-
-                    // About Section
-                    aboutSection
+        NavigationSplitView {
+            List(SettingsCategory.allCases, selection: $selection) { category in
+                Label(category.title, systemImage: category.systemImage)
+                    .tag(category)
+            }
+            .listStyle(.sidebar)
+            .frame(minWidth: 200)
+            .navigationTitle("Settings")
+        } detail: {
+            detailView
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .navigationTitle(selection.title)
+        }
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
                 }
-                .padding(24)
             }
         }
-        .frame(minWidth: 500, minHeight: 700)
+        .frame(minWidth: 760, minHeight: 680)
         // Sync State -> AppSettings
         .onChange(of: appearance) { _, val in AppSettings.shared.appearance = val }
         .onChange(of: liquidGlassIntensity) { _, val in
             AppSettings.shared.liquidGlassIntensity = val
         }
+        .onChange(of: lyricsLeadInMs) { _, val in AppSettings.shared.lyricsLeadInMs = val }
+        .onChange(of: lyricsFontNameZh) { _, val in AppSettings.shared.lyricsFontNameZh = val }
+        .onChange(of: lyricsFontNameEn) { _, val in AppSettings.shared.lyricsFontNameEn = val }
+        .onChange(of: lyricsTranslationFontName) { _, val in
+            AppSettings.shared.lyricsTranslationFontName = val
+        }
+        .onChange(of: lyricsFontWeight) { _, val in AppSettings.shared.lyricsFontWeight = val }
         .onChange(of: lyricsFontSize) { _, val in AppSettings.shared.lyricsFontSize = val }
+        .onChange(of: nowPlayingSkin) { _, val in AppSettings.shared.nowPlayingSkin = val }
         .onChange(of: sensitivity) { _, val in AppSettings.shared.ledSensitivity = val }
         .onChange(of: lowFrequencyWeight) { _, val in AppSettings.shared.ledLowFrequencyWeight = val
         }
@@ -81,26 +107,26 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - Header
+    // MARK: - Appearance Section
 
-    private var headerView: some View {
-        HStack {
-            Text("Settings")
-                .font(.title2)
-                .fontWeight(.bold)
-
-            Spacer()
-
-            Button {
-                dismiss()
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.title2)
-                    .foregroundStyle(.secondary)
+    private var detailView: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                switch selection {
+                case .appearance:
+                    appearanceSection
+                case .nowPlaying:
+                    nowPlayingSection
+                case .lyrics:
+                    amllSection
+                case .led:
+                    ledSettingsSection
+                case .about:
+                    aboutSection
+                }
             }
-            .buttonStyle(.plain)
+            .padding(24)
         }
-        .padding()
     }
 
     // MARK: - Appearance Section
@@ -144,6 +170,31 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - Now Playing Section
+
+    private var nowPlayingSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Label("Now Playing", systemImage: "sparkles")
+                .font(.headline)
+
+            GroupBox("Skin") {
+                VStack(alignment: .leading, spacing: 12) {
+                    Picker("Skin", selection: $nowPlayingSkin) {
+                        ForEach(NowPlayingSkin.allCases) { skin in
+                            Label(skin.title, systemImage: skin.systemImage)
+                                .tag(skin.rawValue)
+                        }
+                    }
+                    .pickerStyle(.radioGroup)
+
+                    Text("Choose the visual style of the Now Playing page.")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+    }
+
     // MARK: - AMLL Section
 
     private var amllSection: some View {
@@ -151,22 +202,108 @@ struct SettingsView: View {
             Label("Lyrics (AMLL)", systemImage: "text.quote")
                 .font(.headline)
 
-            // Font Size
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("Font Size")
-                    Spacer()
-                    Text("\(Int(lyricsFontSize)) px")
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
+            GroupBox("Timing") {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Text("Lead-in (ms)")
+                        Spacer()
+                        Text("\(Int(lyricsLeadInMs)) ms")
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                    Slider(value: $lyricsLeadInMs, in: 0...800, step: 20)
+                    Text("Advance the next line’s first word and the previous line’s last word.")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
                 }
-                .font(.subheadline)
+            }
 
-                Slider(value: $lyricsFontSize, in: 16...48, step: 2)
+            GroupBox("Fonts") {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Text("Font Size")
+                        Spacer()
+                        Text("\(Int(lyricsFontSize)) px")
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                    Slider(value: $lyricsFontSize, in: 16...48, step: 1)
 
-                Text("Size of the active lyric line.")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+                    HStack {
+                        Text("Font Weight")
+                        Spacer()
+                        Picker("", selection: $lyricsFontWeight) {
+                            ForEach(fontWeights, id: \.value) { weight in
+                                Text(weight.label).tag(weight.value)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 140)
+                    }
+
+                    Divider()
+
+                    HStack {
+                        Text("Chinese Font")
+                        Spacer()
+                        Picker("", selection: $lyricsFontNameZh) {
+                            ForEach(fontFamilies, id: \.self) { family in
+                                Text(family)
+                                    .font(.custom(family, size: 12))
+                                    .tag(family)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .frame(width: 220)
+                    }
+
+                    HStack {
+                        Text("English Font")
+                        Spacer()
+                        Picker("", selection: $lyricsFontNameEn) {
+                            ForEach(fontFamilies, id: \.self) { family in
+                                Text(family)
+                                    .font(.custom(family, size: 12))
+                                    .tag(family)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .frame(width: 220)
+                    }
+
+                    HStack {
+                        Text("Translation Font")
+                        Spacer()
+                        Picker("", selection: $lyricsTranslationFontName) {
+                            ForEach(fontFamilies, id: \.self) { family in
+                                Text(family)
+                                    .font(.custom(family, size: 12))
+                                    .tag(family)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .frame(width: 220)
+                    }
+                }
+            }
+
+            GroupBox("Preview") {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 12) {
+                        Text("春夏秋冬")
+                            .font(.custom(lyricsFontNameZh, size: CGFloat(lyricsFontSize)))
+                            .fontWeight(fontWeight(lyricsFontWeight))
+                        Text("Live in Kunming")
+                            .font(.custom(lyricsFontNameEn, size: CGFloat(lyricsFontSize)))
+                            .fontWeight(fontWeight(lyricsFontWeight))
+                    }
+                    Text("Translation: The wind is whispering tonight")
+                        .font(.custom(lyricsTranslationFontName, size: CGFloat(max(12, lyricsFontSize * 0.7))))
+                        .foregroundStyle(.secondary)
+                }
             }
         }
     }
@@ -279,6 +416,51 @@ struct SettingsView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func fontWeight(_ weight: Int) -> Font.Weight {
+        switch weight {
+        case 100: return .ultraLight
+        case 200: return .thin
+        case 300: return .light
+        case 400: return .regular
+        case 500: return .medium
+        case 600: return .semibold
+        case 700: return .bold
+        case 800: return .heavy
+        case 900: return .black
+        default: return .regular
+        }
+    }
+}
+
+private enum SettingsCategory: String, CaseIterable, Identifiable {
+    case appearance
+    case nowPlaying
+    case lyrics
+    case led
+    case about
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .appearance: return "Appearance"
+        case .nowPlaying: return "Now Playing"
+        case .lyrics: return "Lyrics"
+        case .led: return "LED Meter"
+        case .about: return "About"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .appearance: return "paintbrush"
+        case .nowPlaying: return "sparkles"
+        case .lyrics: return "text.quote"
+        case .led: return "waveform.path.ecg"
+        case .about: return "info.circle"
         }
     }
 }

@@ -87,7 +87,8 @@ final class LibraryViewModel {
     // MARK: - Import (Per-Playlist)
 
     /// Import music files to the currently selected playlist.
-    /// If no playlist is selected, creates a new one first.
+    /// If no playlist is selected, imports to the most recently selected playlist (if any),
+    /// otherwise the first available playlist. Only creates a playlist if none exist.
     func importToCurrentPlaylist() async {
         print("📥 importToCurrentPlaylist() called")
         print("   ↳ selectedPlaylistId = \(selectedPlaylistId?.uuidString ?? "nil")")
@@ -98,18 +99,31 @@ final class LibraryViewModel {
             return
         }
 
-        // If no playlist selected, create a default one
+        // Resolve target playlist
         let targetPlaylist: Playlist
         if let selected = selectedPlaylist {
             print("   ↳ Using existing playlist: '\(selected.name)'")
             targetPlaylist = selected
         } else {
-            // Create a new playlist for import
-            print("   ↳ No playlist selected, creating new one...")
-            targetPlaylist = await repository.createPlaylist(name: "Imported \(formattedDate)")
-            playlists = await repository.fetchPlaylists()
-            selectedPlaylistId = targetPlaylist.id
-            print("   ↳ Created playlist: '\(targetPlaylist.name)' (id=\(targetPlaylist.id))")
+            if playlists.isEmpty {
+                print("   ↳ No playlists exist, creating one for import...")
+                targetPlaylist = await repository.createPlaylist(name: "Imported \(formattedDate)")
+                playlists = await repository.fetchPlaylists()
+                selectedPlaylistId = targetPlaylist.id
+                print("   ↳ Created playlist: '\(targetPlaylist.name)' (id=\(targetPlaylist.id))")
+            } else if let lastId = UserDefaults.standard.string(forKey: "lastSelectedPlaylistId"),
+                let uuid = UUID(uuidString: lastId),
+                let last = playlists.first(where: { $0.id == uuid })
+            {
+                print("   ↳ No playlist selected, using last selected: '\(last.name)'")
+                targetPlaylist = last
+                selectedPlaylistId = last.id
+            } else {
+                let fallback = playlists[0]
+                print("   ↳ No playlist selected, using first playlist: '\(fallback.name)'")
+                targetPlaylist = fallback
+                selectedPlaylistId = fallback.id
+            }
         }
 
         // Perform import
@@ -155,6 +169,9 @@ final class LibraryViewModel {
     /// Select a playlist by ID.
     func selectPlaylist(_ playlist: Playlist?) {
         selectedPlaylistId = playlist?.id
+        if let id = playlist?.id {
+            UserDefaults.standard.set(id.uuidString, forKey: "lastSelectedPlaylistId")
+        }
         print("📚 Selected playlist: \(playlist?.name ?? "All Songs")")
     }
 

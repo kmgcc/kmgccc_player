@@ -39,6 +39,10 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     private var sampleRate: Double = 44100
     private var startingFramePosition: AVAudioFramePosition = 0
+    private var queue: [Track] = []
+    private var queueIndex: Int = 0
+    private var shuffleHistory: [Int] = []
+    private var activeScheduleToken = UUID()
 
     // MARK: - Timer
 
@@ -85,13 +89,55 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         playerNode.volume = Float(volume)
     }
 
+    // MARK: - Scheduling Helpers
+
+    private func invalidateScheduleToken() {
+        activeScheduleToken = UUID()
+    }
+
+    private func scheduleFile(_ file: AVAudioFile) {
+        let token = UUID()
+        activeScheduleToken = token
+        playerNode.scheduleFile(file, at: nil) { [weak self] in
+            Task { @MainActor in
+                self?.handlePlaybackCompletion(token: token)
+            }
+        }
+    }
+
+    private func scheduleSegment(
+        _ file: AVAudioFile,
+        startingFrame: AVAudioFramePosition,
+        frameCount: AVAudioFrameCount
+    ) {
+        let token = UUID()
+        activeScheduleToken = token
+        playerNode.scheduleSegment(
+            file,
+            startingFrame: startingFrame,
+            frameCount: frameCount,
+            at: nil
+        ) { [weak self] in
+            Task { @MainActor in
+                self?.handlePlaybackCompletion(token: token)
+            }
+        }
+    }
+
     // MARK: - Playback Control
 
     func play(track: Track) {
         print("🎵 play(track:) called for: \(track.title)")
+        // Single-track play resets queue to just this track.
+        queue = [track]
+        queueIndex = 0
+        shuffleHistory.removeAll()
+        playInternal(track: track)
+    }
 
-        // Stop any current playback
-        stop()
+    private func playInternal(track: Track) {
+        // Stop current playback but keep queue state.
+        stopPlayback(clearQueue: false)
 
         // Resolve bookmark to get file URL
         let result = track.resolveFileURL()
@@ -135,11 +181,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             }
 
             // Schedule entire file
-            playerNode.scheduleFile(audioFile, at: nil) { [weak self] in
-                Task { @MainActor in
-                    self?.handlePlaybackCompletion()
-                }
-            }
+            scheduleFile(audioFile)
 
             // Start playback
             playerNode.play()
@@ -179,19 +221,30 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     }
 
     func stop() {
+        stopPlayback(clearQueue: true)
+    }
+
+    private func stopPlayback(clearQueue: Bool) {
         print("⏹️ stop() called")
 
+        invalidateScheduleToken()
         playerNode.stop()
         stopProgressTimer()
         stopAccessingCurrentFile()
 
-        // Reset all state
+        // Reset playback state
         isPlaying = false
         currentTime = 0
         duration = 0
         currentTrack = nil
         audioFile = nil
         startingFramePosition = 0
+
+        if clearQueue {
+            queue.removeAll()
+            queueIndex = 0
+            shuffleHistory.removeAll()
+        }
     }
 
     func seek(to seconds: Double) {
@@ -200,6 +253,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         let wasPlaying = isPlaying
 
         // Stop current playback
+        invalidateScheduleToken()
         playerNode.stop()
         isPlaying = false
 
@@ -218,16 +272,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         startingFramePosition = targetFrame
         currentTime = seconds
 
-        playerNode.scheduleSegment(
-            audioFile,
-            startingFrame: targetFrame,
-            frameCount: frameCount,
-            at: nil
-        ) { [weak self] in
-            Task { @MainActor in
-                self?.handlePlaybackCompletion()
-            }
-        }
+        scheduleSegment(audioFile, startingFrame: targetFrame, frameCount: frameCount)
 
         if wasPlaying {
             playerNode.play()
@@ -242,23 +287,80 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     func playTracks(_ tracks: [Track], startingAt index: Int) {
         guard index >= 0, index < tracks.count else { return }
-        play(track: tracks[index])
-        // TODO: Store queue for next/previous
+        queue = tracks
+        queueIndex = index
+        shuffleHistory.removeAll()
+        playInternal(track: tracks[index])
     }
 
     func next() {
-        // TODO: Implement queue-based next
-        stop()
+        guard !queue.isEmpty else { return }
+        let nextIndex = computeNextIndex(autoAdvance: false)
+        queueIndex = nextIndex
+        playInternal(track: queue[nextIndex])
     }
 
     func previous() {
-        // TODO: Implement queue-based previous
-        // For now, restart current track
+        guard !queue.isEmpty else { return }
+
+        // Standard behavior: if you're a few seconds in, restart.
         if currentTime > 3 {
             seek(to: 0)
-        } else {
-            seek(to: 0)
+            return
         }
+
+        let prevIndex = computePreviousIndex()
+        queueIndex = prevIndex
+        playInternal(track: queue[prevIndex])
+    }
+
+    private enum RepeatMode: String {
+        case off
+        case all
+        case one
+    }
+
+    private var repeatMode: RepeatMode {
+        RepeatMode(rawValue: AppSettings.shared.repeatMode) ?? .off
+    }
+
+    private var shuffleEnabled: Bool {
+        AppSettings.shared.shuffleEnabled
+    }
+
+    private func computeNextIndex(autoAdvance: Bool) -> Int {
+        if autoAdvance, repeatMode == .one {
+            return queueIndex
+        }
+
+        if shuffleEnabled, queue.count > 1 {
+            // Pick a random next different from current; store history for previous().
+            shuffleHistory.append(queueIndex)
+            var candidate = queueIndex
+            var tries = 0
+            while candidate == queueIndex && tries < 8 {
+                candidate = Int.random(in: 0..<queue.count)
+                tries += 1
+            }
+            return candidate == queueIndex ? (queueIndex + 1) % queue.count : candidate
+        }
+
+        let next = queueIndex + 1
+        if next < queue.count {
+            return next
+        }
+        return repeatMode == .all ? 0 : queueIndex
+    }
+
+    private func computePreviousIndex() -> Int {
+        if shuffleEnabled, let last = shuffleHistory.popLast() {
+            return last
+        }
+        let prev = queueIndex - 1
+        if prev >= 0 {
+            return prev
+        }
+        return repeatMode == .all ? max(0, queue.count - 1) : queueIndex
     }
 
     // MARK: - Progress Timer
@@ -309,20 +411,36 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     // MARK: - Playback Completion
 
-    private func handlePlaybackCompletion() {
+    private func handlePlaybackCompletion(token: UUID) {
+        guard token == activeScheduleToken else { return }
         // Only handle if we think we're still playing
         guard isPlaying else { return }
 
-        // Check if playerNode actually stopped
-        guard !playerNode.isPlaying else { return }
-
-        isPlaying = false
-        currentTime = duration
         stopProgressTimer()
 
         print("✅ Playback completed: \(currentTrack?.title ?? "unknown")")
 
-        // TODO: Auto-play next track in queue
+        guard !queue.isEmpty else {
+            isPlaying = false
+            currentTime = duration
+            return
+        }
+
+        if repeatMode == .one {
+            playInternal(track: queue[queueIndex])
+            return
+        }
+
+        let nextIndex = computeNextIndex(autoAdvance: true)
+        if nextIndex == queueIndex, repeatMode == .off, !shuffleEnabled {
+            // End of queue and no repeat.
+            isPlaying = false
+            currentTime = duration
+            return
+        }
+
+        queueIndex = nextIndex
+        playInternal(track: queue[nextIndex])
     }
 
     // MARK: - File Access
