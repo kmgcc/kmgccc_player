@@ -1,0 +1,407 @@
+{
+	"amll": {
+		"contextMenu": {
+			"rewindSong": "Previous Song",
+			"pauseOrResume": "Pause / Resume",
+			"forwardSong": "Next Song",
+			"toggleFullscreen": "Enter / Exit full screen",
+			"toggleLyrics": "Lyrics",
+			"editMusicOverrideMessage": "Edit Track Override Data",
+			"exitLyricPage": "Exit Lyrics Page"
+		},
+		"audioQuality": {
+			"title": "Audio Quality Details",
+			"codec": "Audio codec",
+			"sampleRate": "Sample rate",
+			"sampleFormat": "Sample format"
+		},
+		"qualityTag": {
+			"lossless": "Lossless",
+			"hires": "Hi-Res Lossless"
+		},
+		"openMenuViaRightClick": "Please right-click anywhere to open menu",
+		"buttonForDisplayOnly": "This function is currently for display only, no actual feature included.",
+		"loadAudioError": "The player backend encountered an error when loading the audio file:\n{error}",
+		"ttmlImportDialog": {
+			"openButtonLabel": "Search / Import lyrics from AMLL TTML DB",
+			"title": "Search / Import lyrics from AMLL TTML DB",
+			"searchInput": {
+				"placeholder": "Search for songs, lyrics, artists......"
+			},
+			"tip": "Type your search keywords above, and click on a suggestion to import the lyrics into the database directly.",
+			"supportText": "AMLL TTML DB is a free and open-source lyrics' database built by the AMLL community. Want to contribute your lyrics to AMLL TTML DB? Head over to the <1>GitHub repository</1> to learn more on how to submit!",
+			"noResults": "No results."
+		},
+		"systemListener": {
+			"sessionVanished": "The listened SMTC session has vanished.",
+			"error": "An error occurred in the system listener: {{error}}"
+		}
+	},
+	"common": {
+		"dialog": {
+			"close": "Close",
+			"cancel": "Cancel",
+			"confirm": "Confirm",
+			"filter": {
+				"js": "JavaScript files (*.js)",
+				"all": "All files (*.*)"
+			},
+			"save": "Save"
+		},
+		"page": {
+			"back": "Back"
+		}
+	},
+	"extension": {
+		"inject": {
+			"error": {
+				"calloutText": "Extension {id} encountered an error while injecting components/functions into the {injectPointName} element:",
+				"toastText": "Extension {id} encountered an error while injecting components/functions into the {injectPointName} element:\n{error}"
+			}
+		},
+		"error": {
+			"invaildPluginFile": "Invalid Plugin File",
+			"missingDependency": "Missing dependencies",
+			"missingMetadata": "Missing required metadata",
+			"pluginIdConflict": "Plugin ID conflict"
+		}
+	},
+	"newPlaylist": {
+		"buttonLabel": "New Playlist",
+		"dialog": {
+			"title": "New Playlist",
+			"namePlaceholder": "Playlist Title"
+		}
+	},
+	"playbar": {
+		"playlist": {
+			"title": "Current Playlist"
+		}
+	},
+	"page": {
+		"main": {
+			"playlistCard": {
+				"songCount": "{songAmount} Songs",
+				"createTime": "Created at {createTime}"
+			},
+			"playlistMenu": {
+				"delete": "Delete"
+			},
+			"updateAvailableTag": "Update available",
+			"menu": {
+				"systemListenerActive": "SMTC Listener Mode",
+				"enterSystemListenerMode": "Enter SMTC Listener Mode",
+				"exitSystemListenerMode": "Exit SMTC Listener Mode",
+				"enterWSProtocolMode": "Start WS Protocol mode",
+				"asWSProtocolReceiver": "As WS Protocol Receiver",
+				"asWSProtocolSenderWIP": "As WS Protocol Sender (On development)",
+				"settings": "Settings"
+			},
+			"noPlaylistTip": "Nothing is here, try to create something?",
+			"loadingPlaylist": "Loading playlist"
+		},
+		"playlist": {
+			"music": {
+				"unknownSongName": "Unknown Music ID {id}",
+				"dropdown": {
+					"playMusic": "Play",
+					"editMusicOverrideData": "Edit Track Override Data",
+					"removeFromPlaylist": "Delete from Playlist"
+				}
+			},
+			"addLocalMusic": {
+				"filterName": "Audio File",
+				"allFiles": "All Files",
+				"toast": {
+					"parsingMusicMetadata": "Parsing metadata to add your track into playlist ({current, plural, other {#}} / {total, plural, other {#}})",
+					"partiallyFailed": "{succeed, plural, =0 {No song is} one {A song is} other {# songs}} added, but {errored, plural, =0 {no song is} one {a song is} other {# songs are}} failed to be added",
+					"allFailed": "{errored, plural, other {#}} songs failed to be added",
+					"success": "{count, plural, other {#}} song(s) added"
+				},
+				"label": "Add Music From Disk"
+			},
+			"cover": {
+				"changeCoverToAuto": "Use automatic cover",
+				"uploadCoverImage": "Upload your own cover art"
+			},
+			"totalMusicLabel": "{count, plural, other {#}} song(s)",
+			"playAll": "Play All",
+			"shufflePlayAll": "Shuffle"
+		},
+		"amll-dev": {
+			"title": "Apple Music Like Lyrics Developer Page",
+			"warning": "This page is for develop usage only, use it at your own risk! (Chinese only)"
+		},
+		"search": {
+			"filter": {
+				"placeholder": "Search for playlists, song titles, artists, and more……",
+				"songName": "Song name: {keyword}",
+				"artistName": "Artist name: {keyword}",
+				"albumName": "Album name: {keyword}",
+				"playlistName": "Playlist name: {keyword}",
+				"lyricContent": "Lyrics: {keyword}",
+				"candidate": {
+					"songName": "The song name contains {keyword}",
+					"artistName": "The artist name contains {keyword}",
+					"albumName": "The album name contains {keyword}",
+					"playlistName": "The playlist name contains {keyword}",
+					"lyricContent": "The lyrics contain {keyword}"
+				}
+			},
+			"placeholder": "Search for a song, artist, album, lyrics, playlists, or more",
+			"searchSongResultAmount": "Found {amount} songs",
+			"noSongResult": "No songs found!",
+			"noPlaylistResult": "No playlists found!"
+		},
+		"settings": {
+			"others": {
+				"restartProgram": "Restart player",
+				"subtitle": "Others",
+				"showStatJSFrame": {
+					"label": "Show performance statics",
+					"description": "Show fps, frame time, memory [Chromium only]. Less impact of performance."
+				},
+				"enterAmllDevPage": "Development tools"
+			},
+			"lyricFont": {
+				"fontPreview": {
+					"defaultText": "Font Preview",
+					"label": "Font Preview"
+				},
+				"subtitle": "Lyrics Font Settings",
+				"tip": "This option only affect LYRIC's font but other parts.",
+				"fontFamily": {
+					"label": "Font Family",
+					"description": "Font name separated by comma, equals to font-family property in CSS. Leave blank to use default settings."
+				},
+				"fontWeight": {
+					"label": "Font Weight",
+					"description": "Equals to the font-weight property in CSS, set to 0 to use default value."
+				},
+				"letterSpacing": {
+					"label": "Letter Spacing",
+					"description": "Equals to the letter-spacing in CSS, leave blank to use the default value."
+				}
+			},
+			"general": {
+				"displayLanguage": {
+					"cimode": "Localization ID",
+					"label": "Display Language"
+				},
+				"subtitle": "General"
+			},
+			"musicInfoAppearance": {
+				"playerControlsType": {
+					"menu": {
+						"controls": "Playback Controls",
+						"fft": "Line-shaped Audio Visualizer",
+						"none": "None"
+					},
+					"label": "Playback Controls Type",
+					"description": "Components under the track information."
+				},
+				"verticalCoverLayout": {
+					"menu": {
+						"auto": "Automatic",
+						"forceNormal": "Force Normal Layout",
+						"forceImmersive": "Force Immersive Layout"
+					},
+					"label": "Vertical Cover Layout Mode",
+					"description": "Layout mode when hiding lyric component:\n- Automatic: use immersive cover layout when track cover is a video\n- Default: force default cover layout\n- Immersive: force immersive cover layout"
+				},
+				"subtitle": "Music information appearance",
+				"showMusicName": {
+					"label": "Show Song Title"
+				},
+				"showMusicArtists": {
+					"label": "Show Artists"
+				},
+				"showMusicAlbum": {
+					"label": "Show Album Title",
+					"description": "Enabling all three options simultaneously may not be aesthetically pleasing."
+				},
+				"showVolumeControl": {
+					"label": "Show Volume Control"
+				},
+				"showBottomControl": {
+					"label": "Show Buttons at the Bottom",
+					"description": "This is the buttons at bottom in horizontal view, or buttons under playback buttons in vertical view."
+				},
+				"fftDataRange": {
+					"label": "Audio visualization frequency range",
+					"description": "The unit is Hertz, which will affect the display effect of audio visualization and background jumping rhythm effect."
+				}
+			},
+			"lyricAppearance": {
+				"lyricPlayerImplementation": {
+					"menu": {
+						"dom": "DOM",
+						"dom-slim": "DOM (Stripped)",
+						"canvas": "Canvas"
+					},
+					"label": "Implementation of the Lyrics Player",
+					"description": "Currently, there are two lyrics rendering implementations:\n- DOM: Implemented using DOM elements, currently the most comprehensive, but with high performance overhead\n- Canvas: Implemented using Canvas, still under development, with excellent performance, but some details still need to be improved"
+				},
+				"subtitle": "Lyrics Appearance",
+				"enableLyricLineBlurEffect": {
+					"label": "Enable Text Blur Effect",
+					"description": "Significantly impacts performance. If you encounter performance issues, try to disable this option. Enabled by default."
+				},
+				"enableLyricLineScaleEffect": {
+					"label": "Enable Text Zooming Effect",
+					"description": "Does not impact performance. Non-playing lyrics lines will be slightly reduced in size. Enabled by default"
+				},
+				"enableLyricLineSpringAnimation": {
+					"label": "Enable Text Spring Animation Effect",
+					"description": "Significantly impacts performance. If you encounter any performance issues, try to disable this option. Enabled by default."
+				},
+				"advanceLyricDynamicLyricTime": {
+					"label": "Advance Lyric Timing",
+					"description": "Advance the initial time sequence of the original lyrics line, so that the lyrics effect starts playing (word by word) just after the lyrics scroll ends. This behavior is closer to the effect of Apple Music, but in most cases, it will cause the lyrics at the end of the line to be switched to the next line before they have been played completely."
+				},
+				"lyricWordFadeWidth": {
+					"label": "Gradient Transition Width of Each Word",
+					"description": "Adjust the gradient transition width of each word in lyrics, measured in the width of a full width character, with a default value of 0.5.\nIf you want to simulate the effect of Apple Music for Android, you can set it to 1.\nIf you want to simulate the effect of Apple Music for iPad, you can set it to 0.5.\nTo turn off the gradient transition effect of each word in lyrics, you can set it to 0."
+				}
+			},
+			"lyricBackground": {
+				"menu": {
+					"meshGradientRenderer": "Mesh Gradient Renderer",
+					"pixiRenderer": "PixiJS Renderer"
+				},
+				"subtitle": "Lyrics Page Background Type",
+				"backgroundRenderer": {
+					"label": "PixiJS Renderer"
+				},
+				"lyricBackgroundFPS": {
+					"label": "Maximum FPS for Background Renderer",
+					"description": "High impact on performance, but the actual cost is not significant. If you encounter performance issues, try to reduce this value. The default value is 60."
+				},
+				"lyricBackgroundRenderScale": {
+					"label": "Background Resolution",
+					"description": "High impact on performance, but the actual cost is not significant. If you encounter performance issues, try to reduce this value. The default value is 1 which means rendering pixel by pixel."
+				},
+				"lyricBackgroundStaticMode": {
+					"label": "Static Mode",
+					"description": "Keep the background static except when switching song. If you encounter performance issues, consider enabling this option.\nNote: Enabling this option will disable the background bouncing effect."
+				}
+			},
+			"lyricContent": {
+				"subtitle": "Lyrics",
+				"enableLyricTranslationLine": "Show Translation",
+				"enableLyricRomanLine": {
+					"label": "Show Romanized Translation"
+				},
+				"enableLyricSwapTransRomanLine": {
+					"label": "Swap Translation and Romanized Translation",
+					"description": "Only valid when the above two are enabled."
+				}
+			},
+			"smtc": {
+				"subtitle": "SMTC Listener Settings",
+				"session": {
+					"label": "Select Media Session",
+					"description": "Select the application to listen to and control.",
+					"auto": "Automatic selection",
+					"changeFailed": "Failed to switch media session: {{error}}"
+				},
+				"textConversion": {
+					"label": "Lyrics Info Text Conversion",
+					"description": "Automatically convert track metadata obtained from other players.",
+					"off": "Off",
+					"t2s": "Traditional to Simplified",
+					"s2t": "Simplified to Traditional",
+					"s2tw": "Simplified to Taiwan Traditional",
+					"tw2s": "Taiwan Traditional to Simplified",
+					"s2hk": "Simplified to Hong Kong Traditional",
+					"hk2s": "Hong Kong Traditional to Simplified",
+					"changeFailed": "Failed to set text conversion mode: {{error}}"
+				}
+			}
+		},
+		"about": {
+			"subtitle": "About",
+			"credits": "Made by SteveXMH and all Contributors from GitHub",
+			"newVersion": "Available update from {currentVersion} to {nextVersion}",
+			"updating": "Player will restart after update, hold on a second....",
+			"downloading": "Downloading updates…… {progressText}",
+			"installing": "Installing update, player will restart, wait a minute...",
+			"installUpdate": "Install this update"
+		},
+		"song": {
+			"basic": {
+				"musicId": "Music ID",
+				"musicFilePath": "File Path",
+				"musicDuration": "Duration",
+				"tabs": {
+					"basic": "Basics",
+					"metadata": "Metadata",
+					"lyric": "Lyrics"
+				}
+			},
+			"lyric": {
+				"lyricFormatLabel": "Lyric format",
+				"lyricFormat": {
+					"none": "No Lyrics",
+					"lrc": "LyRiC format (LRC)",
+					"eslrc": "LyRiC format used by ESLyric (LRC)",
+					"yrc": "YRC Lyrics",
+					"qrc": "QRC lyrics",
+					"lys": "Lyricify Syllable lyrics",
+					"ttml": "TTML lyrics"
+				},
+				"lyricData": "Lyrics Data",
+				"ttmlLyricTip": "TTML lyric could contain translation and Romanized translation in a single file.",
+				"translationLyricData": "Translated Lyrics",
+				"translationLyricDataTip": "Paste LyRiC type of lyric content here, we will pair as translation by timestamp if they are the same or similar.",
+				"romanLyricDataTip": "Paste LyRiC type of lyric content here, we will pair as Romanized by timestamp if they are the same or similar."
+			},
+			"metadata": {
+				"overrideSafeTip": "Properties in this page will not override into source file.",
+				"songName": "Title",
+				"songArtists": "Artists",
+				"songAlbum": "Album",
+				"changeCoverToImageOrVideo": "Change cover image as image / video",
+				"reloadMetadataFromFile": "Reload Metadata from Audio File"
+			}
+		},
+		"ws": {
+			"recv": {
+				"openNetworkAddress": "Open network address",
+				"tip": "When connect to client, you may switch track once to synchronous data. If you want to open to external network, please set host to \"0.0.0.0\".",
+				"connectedClients": "Connected client(s)",
+				"noClients": "No clients connected"
+			}
+		}
+	},
+	"ws-protocol": {
+		"toast": {
+			"switchSongNotSupported": "Unable to switch tracks under WS Protocol mode.",
+			"pauseOrPlaySongNotSupported": "Unable to pause / resume in WS Protocol mode.",
+			"seekNotSupported": "Unable to modify playing progress under WS Protocol mode.",
+			"changeVolumeNotSupported": "Unable to modify volume under WS Protocol mode."
+		}
+	},
+	"error": {
+		"title": "An error occurred",
+		"desc0": "An error occurred during execution. Please try refreshing the page. If the issue persists, please contact the developer.",
+		"desc1": "If you know how to debug, you can see more precise error messages in the developer console.",
+		"reloadPage": "Reload Page",
+		"errorDetail": "Error"
+	},
+	"settings": {
+		"extension": {
+			"safetyWarning": "Any plugin will be able to access and modify all of your data, including your playlists, song metadata, etc. Please make sure that the plugin source is safe and only install plugins you trust. We are not responsible for any damage(s) caused by using of using any plugins!",
+			"wipWarning": "The plug-in interface function is still under development, so please be aware that the plug-in interface may change at any time!",
+			"install": {
+				"title": "Please select the JavaScript plugin file to load"
+			},
+			"installPlugins": "Install Plugin(s)",
+			"openPluginDirectory": "Open plugin directory",
+			"tab": "Manage Extensions"
+		},
+		"player": {
+			"tab": "AMLL Player Settings"
+		}
+	}
+}

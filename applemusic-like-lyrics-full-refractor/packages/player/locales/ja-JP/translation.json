@@ -1,0 +1,65 @@
+{
+	"amll": {
+		"contextMenu": {
+			"rewindSong": "前の曲",
+			"forwardSong": "次の曲",
+			"toggleLyrics": "歌詞を表示",
+			"editMusicOverrideMessage": "曲のカバレッジ情報を編集する",
+			"exitLyricPage": "歌詞ページを出る"
+		},
+		"openMenuViaRightClick": "歌詞ページの任意の場所を右クリックしてメニューを開きます。",
+		"buttonForDisplayOnly": "このボタンは表示のみを目的としており、現時点では実際の機能はありません。"
+	},
+	"common": {
+		"dialog": {
+			"cancel": "キャンセル",
+			"confirm": "確認",
+			"save": "セーブ"
+		},
+		"page": {
+			"back": "戻る"
+		}
+	},
+	"newPlaylist": {
+		"buttonLabel": "新プレイリストを作成する",
+		"dialog": {
+			"title": "新プレイリストを作成する",
+			"namePlaceholder": "プレイリスト名"
+		}
+	},
+	"page": {
+		"main": {
+			"playlistMenu": {
+				"delete": "削除"
+			},
+			"updateAvailableTag": "アップデートが可能",
+			"menu": {
+				"enterWSProtocolMode": "WS プロトコル・モードに入る",
+				"asWSProtocolReceiver": "ステータス受信機として",
+				"asWSProtocolSenderWIP": "ステータス送信者として（準備中）",
+				"settings": "設定"
+			},
+			"noPlaylistTip": "プレイリストがない！",
+			"loadingPlaylist": "プレイリストを読み込んでいます"
+		},
+		"playlist": {
+			"music": {
+				"dropdown": {
+					"playMusic": "曲を再生する",
+					"editMusicOverrideData": "曲のカバレッジ情報を編集する",
+					"removeFromPlaylist": "プレイリストから削除"
+				}
+			}
+		},
+		"amll-dev": {
+			"title": "Apple Music Like Lyrics 開発者ページ"
+		}
+	},
+	"ws-protocol": {
+		"toast": {
+			"switchSongNotSupported": "WS プロトコル・モードで曲の切り替えができない",
+			"seekNotSupported": "WS プロトコル・モードでは、再生の進行状況を変更することはできません。",
+			"changeVolumeNotSupported": "WS プロトコル・モードでは音量を変更できない"
+		}
+	}
+}

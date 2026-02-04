@@ -1,0 +1,4 @@
+interface:
+  display_name: "Liquid Glass Bars (macOS SwiftUI)"
+  short_description: "macOS SwiftUI Liquid Glass bar rules"
+  default_prompt: "Use $macos-swiftui-liquid-glass-bars to refactor my SwiftUI toolbar/sidebar into a Liquid Glass navigation layer with strict layering, no glass-on-glass, and grouped toolbar items."
