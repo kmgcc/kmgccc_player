@@ -88,9 +88,33 @@ final class AppSettings {
     @ObservationIgnored
     @AppStorage("lyricsFontName") var lyricsFontName: String = "SF Pro"
 
+    /// Lyrics font name (Chinese/CJK)
+    @ObservationIgnored
+    @AppStorage("lyricsFontNameZh") var lyricsFontNameZh: String = "PingFang SC"
+
+    /// Lyrics font name (Latin/English)
+    @ObservationIgnored
+    @AppStorage("lyricsFontNameEn") var lyricsFontNameEn: String = "SF Pro Text"
+
+    /// Translation font name
+    @ObservationIgnored
+    @AppStorage("lyricsTranslationFontName") var lyricsTranslationFontName: String = "SF Pro Text"
+
+    /// Lyrics font weight (100~900)
+    @ObservationIgnored
+    @AppStorage("lyricsFontWeight") var lyricsFontWeight: Int = 600
+
     /// Lyrics font size
     @ObservationIgnored
     @AppStorage("lyricsFontSize") var lyricsFontSize: Double = 24.0
+
+    /// Lead-in milliseconds for next line start/word timing
+    @ObservationIgnored
+    @AppStorage("lyricsLeadInMs") var lyricsLeadInMs: Double = 300
+
+    /// Now Playing skin identifier
+    @ObservationIgnored
+    @AppStorage("nowPlayingSkin") var nowPlayingSkin: String = "coverLed"
 
     // MARK: - Playback Settings
 

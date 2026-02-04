@@ -21,6 +21,7 @@ struct SidebarView: View {
 
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(UIStateViewModel.self) private var uiState
+    @Environment(\.colorScheme) private var colorScheme
 
     @State private var showSettings = false
     @State private var showingPlaylistSheet = false
@@ -117,13 +118,26 @@ struct SidebarView: View {
                 Text("Settings")
             }
             .font(.subheadline)
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .buttonStyle(.plain)
-        .contentShape(Rectangle())
+        .contentShape(Capsule())
+        .background(
+            Capsule()
+                .fill(settingsButtonFill)
+        )
+        .pillHairlineBorder()
+        .glassHighlight()
+        .clipShape(Capsule())
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+
+    private var settingsButtonFill: Color {
+        colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.06)
     }
 
     private func handleSelection(_ item: SidebarSelection) {

@@ -135,8 +135,23 @@ final class LyricsViewModel {
     func refreshConfigFromSettings() {
         let isDarkMode = resolveIsDarkMode()
         let colors = resolveDynamicColors(isDarkMode: isDarkMode)
+        let mainFontFamily = cssFontFamily([
+            settings.lyricsFontNameZh,
+            settings.lyricsFontNameEn,
+        ])
+        let translationFontFamily = cssFontFamily([
+            settings.lyricsTranslationFontName
+        ])
+        let clampedWeight = max(100, min(900, settings.lyricsFontWeight))
+        let leadInMs = max(0, settings.lyricsLeadInMs)
+
         let config: [String: Any] = [
             "fontSize": settings.lyricsFontSize,
+            "fontWeight": clampedWeight,
+            "fontFamilyMain": mainFontFamily,
+            "fontFamilyTranslation": translationFontFamily,
+            "translationFontWeight": 400,
+            "leadInMs": leadInMs,
             "theme": settings.appearance,
             "lineHeight": 1.5,
             "activeScale": 1.1,
@@ -149,6 +164,17 @@ final class LyricsViewModel {
         {
             bridge.setConfigJSON(json)
         }
+    }
+
+    private func cssFontFamily(_ names: [String]) -> String {
+        let sanitized = names
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .map { name in
+                "\"\(name.replacingOccurrences(of: "\"", with: "\\\""))\""
+            }
+        let fallbacks = ["-apple-system", "\"Helvetica Neue\"", "sans-serif"]
+        return (sanitized + fallbacks).joined(separator: ", ")
     }
 
     // MARK: - Dynamic Color
