@@ -18,6 +18,11 @@ struct LyricsPanelView: View {
     // Watch settings to trigger AMLL updates (live)
     @AppStorage("appearance") private var appearance: String = "system"
     @AppStorage("lyricsFontSize") private var lyricsFontSize: Double = 24.0
+    @AppStorage("lyricsFontNameZh") private var lyricsFontNameZh: String = "PingFang SC"
+    @AppStorage("lyricsFontNameEn") private var lyricsFontNameEn: String = "SF Pro Text"
+    @AppStorage("lyricsTranslationFontName") private var lyricsTranslationFontName: String = "SF Pro Text"
+    @AppStorage("lyricsFontWeight") private var lyricsFontWeight: Int = 600
+    @AppStorage("lyricsLeadInMs") private var lyricsLeadInMs: Double = 300
 
     var body: some View {
         VStack(spacing: 0) {
@@ -46,6 +51,21 @@ struct LyricsPanelView: View {
         }
         // Config Updates
         .onChange(of: lyricsFontSize) { _, _ in
+            lyricsVM.refreshConfigFromSettings()
+        }
+        .onChange(of: lyricsFontNameZh) { _, _ in
+            lyricsVM.refreshConfigFromSettings()
+        }
+        .onChange(of: lyricsFontNameEn) { _, _ in
+            lyricsVM.refreshConfigFromSettings()
+        }
+        .onChange(of: lyricsTranslationFontName) { _, _ in
+            lyricsVM.refreshConfigFromSettings()
+        }
+        .onChange(of: lyricsFontWeight) { _, _ in
+            lyricsVM.refreshConfigFromSettings()
+        }
+        .onChange(of: lyricsLeadInMs) { _, _ in
             lyricsVM.refreshConfigFromSettings()
         }
         .onChange(of: appearance) { _, _ in
