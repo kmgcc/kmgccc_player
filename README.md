@@ -23,14 +23,10 @@
 
 ## 界面展示 (Screenshots)
 
-<p align="center">
-  <img src="screenshots/main.png" width="45%" />
-  <img src="screenshots/tape.png" width="45%" />
-</p>
-<p align="center">
-  <img src="screenshots/color.png" width="45%" />
-  <img src="screenshots/glass.png" width="45%" />
-</p>
+![Main UI](screenshots/main.png)
+![Cassette Player](screenshots/tape.png)
+![Color](screenshots/color.png)
+![Mini Player](screenshots/glass.png)
 
 ## 构建与运行 (Build)
 
