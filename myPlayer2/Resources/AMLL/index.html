@@ -43,20 +43,30 @@
         ._lyricSubLine_1jop6_90 {
             font-family: var(--amll-lp-translation-font-family, -apple-system, "Helvetica Neue", sans-serif);
             font-weight: var(--amll-lp-translation-font-weight, 400);
+            font-size: var(--amll-lp-translation-font-size, 0.75em);
         }
 
-        /* Ensure background (small) lyrics are fully hidden until active */
-        ._lyricBgLine_m23bz_50,
-        ._lyricBgLine_1jop6_36 {
+        /* Background (small) lyric lines:
+           hidden by default, fade in only when active, fade out after active ends. */
+        .amll-lyric-player [class*="_lyricBgLine_"] {
             opacity: 0 !important;
+            padding-top: 0.2em !important;
+            padding-bottom: 0.2em !important;
+            scale: 1 !important;
+            transition: opacity .32s ease !important;
         }
-        ._lyricBgLine_m23bz_50._active_m23bz_63,
-        ._lyricBgLine_1jop6_36._active_1jop6_49 {
+        .amll-lyric-player [class*="_lyricBgLine_"][class*="_active_"] {
             opacity: 0.4 !important;
+            scale: 1 !important;
         }
-        .amll-lyric-player:not(.playing) > ._lyricBgLine_m23bz_50,
-        .amll-lyric-player:not(.playing) > ._lyricBgLine_1jop6_36 {
-            opacity: 0 !important;
+
+        /* Animate text inside bg-line so we don't override AMLL line positioning transform. */
+        .amll-lyric-player [class*="_lyricBgLine_"] > * {
+            transform: translateY(10px);
+            transition: transform .42s ease, opacity .32s ease;
+        }
+        .amll-lyric-player [class*="_lyricBgLine_"][class*="_active_"] > * {
+            transform: translateY(0);
         }
     </style>
 </head>
@@ -145,6 +155,7 @@
             const timeMs = Math.max(0, Math.floor(ms));
             originalSetCurrentTime(timeMs, force);
         };
+        let lastKnownTimeMs = 0;
 
         const restoreOriginalLineTimes = (originalTimes) => {
             const apply = (lines) => {
@@ -162,6 +173,7 @@
             return didProcessed || didCurrent;
         };
         let leadInMs = 300;
+        let timeOffsetMs = 0;
         let lastTTML = "";
         const applyLeadIn = (line) => {
             if (!line || line.isBG) return;
@@ -188,6 +200,35 @@
                 lastWord.endTime = Math.max(newEnd, lastWordEnd - shift);
             }
         };
+        const applyTimeOffset = (line) => {
+            if (!line) return;
+            const offset = Number.isFinite(timeOffsetMs) ? timeOffsetMs : 0;
+            if (!offset) return;
+            const adjust = (value) => Math.max(0, value + offset);
+
+            if (Number.isFinite(line.startTime)) {
+                line.startTime = adjust(line.startTime);
+            }
+            if (Number.isFinite(line.endTime)) {
+                line.endTime = Math.max(
+                    Number.isFinite(line.startTime) ? line.startTime : 0,
+                    adjust(line.endTime)
+                );
+            }
+            if (Array.isArray(line.words)) {
+                line.words.forEach((word) => {
+                    if (Number.isFinite(word.startTime)) {
+                        word.startTime = adjust(word.startTime);
+                    }
+                    if (Number.isFinite(word.endTime)) {
+                        word.endTime = Math.max(
+                            Number.isFinite(word.startTime) ? word.startTime : 0,
+                            adjust(word.endTime)
+                        );
+                    }
+                });
+            }
+        };
 
         // Define the Renderer Implementation for Bridge
         window.LyricsRenderer = {
@@ -203,17 +244,20 @@
                     const result = parseTTML(ttml);
                     const lines = result.lines.map(mapTTMLLyric);
                     lines.forEach(applyLeadIn);
+                    lines.forEach(applyTimeOffset);
                     const originalTimes = lines.map((line) => ({
                         startTime: line.startTime,
                         endTime: line.endTime
                     }));
                     // Preserve TTML intent (no mutation of duet/bg/ordering).
                     lyricPlayer.setLyricLines(lines);
+                    const currentMs = Number.isFinite(lastKnownTimeMs)
+                        ? lastKnownTimeMs
+                        : (lyricPlayer.getCurrentTime ? lyricPlayer.getCurrentTime() : 0);
                     // Undo core's non-overlap timing clamp so overlaps can highlight in parallel.
-                    if (restoreOriginalLineTimes(originalTimes)) {
-                        const currentMs = lyricPlayer.getCurrentTime ? lyricPlayer.getCurrentTime() : 0;
-                        originalSetCurrentTime(currentMs, true);
-                    }
+                    restoreOriginalLineTimes(originalTimes);
+                    // Re-align playback position after (re)loading lyrics.
+                    originalSetCurrentTime(currentMs, true);
                     console.log("[LyricsRenderer] Loaded lines:", lines.length);
                 } catch (e) {
                     console.error("[LyricsRenderer] TTML Parse Error:", e);
@@ -222,8 +266,11 @@
             },
             
             setCurrentTime: (seconds) => {
-                const timeInMs = seconds * 1000;
-                lyricPlayer.setCurrentTime(timeInMs);
+                const timeInMs = Math.max(0, Math.floor(seconds * 1000));
+                lastKnownTimeMs = timeInMs;
+                // If AMLL hasn't finished its first layout yet, non-forced setCurrentTime is ignored.
+                const needsForce = lyricPlayer.initialLayoutFinished === false;
+                originalSetCurrentTime(timeInMs, needsForce);
             },
             
             setPlaying: (isPlaying) => {
@@ -245,6 +292,12 @@
                             `${config.translationFontWeight}`
                         );
                     }
+                    if (config.translationFontSize) {
+                        lyricPlayer.getElement().style.setProperty(
+                            "--amll-lp-translation-font-size",
+                            `${config.translationFontSize}px`
+                        );
+                    }
                     if (config.fontFamilyMain) {
                         lyricPlayer.getElement().style.setProperty("--amll-lp-main-font-family", config.fontFamilyMain);
                     }
@@ -262,6 +315,12 @@
                     }
                     if (typeof config.leadInMs === "number" && !Number.isNaN(config.leadInMs)) {
                         leadInMs = Math.max(0, Math.min(1200, config.leadInMs));
+                        if (lastTTML) {
+                            window.LyricsRenderer.setLyrics(lastTTML);
+                        }
+                    }
+                    if (typeof config.timeOffsetMs === "number" && !Number.isNaN(config.timeOffsetMs)) {
+                        timeOffsetMs = Math.max(-15000, Math.min(15000, config.timeOffsetMs));
                         if (lastTTML) {
                             window.LyricsRenderer.setLyrics(lastTTML);
                         }

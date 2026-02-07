@@ -14,11 +14,13 @@ import SwiftUI
 
 /// View displaying tracks in the selected playlist or all songs.
 /// Uses @Query for automatic data refresh when tracks are added.
-struct PlaylistDetailView: View {
+struct PlaylistDetailView<HeaderAccessory: View>: View {
 
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(PlayerViewModel.self) private var playerVM
-    @Environment(\.modelContext) private var modelContext
+    @Environment(\.colorScheme) private var colorScheme
+
+    private let headerAccessory: HeaderAccessory
 
     /// Query all tracks (sorted by addedAt, newest first).
     /// This automatically updates when SwiftData changes.
@@ -27,22 +29,32 @@ struct PlaylistDetailView: View {
     // MARK: - State
 
     @State private var trackToEdit: Track?
-    @State private var showingTrackEditSheet = false
+    @State private var searchText: String = ""
+    @FocusState private var isSearchFocused: Bool
+
+    // MARK: - Init
+
+    init(
+        @ViewBuilder headerAccessory: () -> HeaderAccessory = { EmptyView() }
+    ) {
+        self.headerAccessory = headerAccessory()
+    }
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Header
-            headerView
-
-            Divider()
-
-            // Track list
+        Group {
             if displayedTracks.isEmpty {
                 emptyStateView
+            } else if filteredTracks.isEmpty {
+                noResultsView
             } else {
                 trackListView
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            headerView
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .frame(minWidth: 400)
         .sheet(item: $trackToEdit) { track in
             TrackEditSheet(track: track)
@@ -55,147 +67,145 @@ struct PlaylistDetailView: View {
     private var displayedTracks: [Track] {
         if let playlist = libraryVM.selectedPlaylist {
             // Show only tracks in this playlist
-            return playlist.tracks
+            return playlist.tracks.filter { $0.availability != .missing }
         } else {
             // Show all tracks
-            return allTracks
+            return allTracks.filter { $0.availability != .missing }
         }
+    }
+
+    private var filteredTracks: [Track] {
+        let term = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !term.isEmpty else { return displayedTracks }
+        return displayedTracks.filter { $0.title.localizedCaseInsensitiveContains(term) }
+    }
+
+    private var sortedTracks: [Track] {
+        libraryVM.sortedTracks(filteredTracks)
+    }
+
+    private var isFiltering: Bool {
+        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     // MARK: - Subviews
 
     private var headerView: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
+        HStack(alignment: .center) {
+            VStack(alignment: .leading, spacing: 6) {
                 Text(libraryVM.currentTitle)
-                    .font(.title2)
-                    .fontWeight(.bold)
+                    .font(.headline)
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
 
-                Text("\(displayedTracks.count) songs")
-                    .font(.subheadline)
+                Text(songCountText)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
 
             Spacer()
 
-            // Import button (per-playlist import)
-            Button {
-                print("🔘 Import button tapped")
-                Task {
-                    await libraryVM.importToCurrentPlaylist()
-                }
-            } label: {
-                Label("Import", systemImage: "plus")
-            }
-            .buttonStyle(.bordered)
-            .help("Import music to this playlist")
+            HStack(spacing: GlassStyleTokens.headerControlSpacing) {
+                sortMenu
 
-            // Play all button
-            if !displayedTracks.isEmpty {
-                Button {
-                    playerVM.playTracks(displayedTracks)
-                } label: {
-                    Label("Play All", systemImage: "play.fill")
+                // Skills: $macos-appkit-liquid-glass-toolbar + $macos-appkit-liquid-glass-controls
+                // Group Play + Import into one pill while preserving separate hit targets.
+                GlassToolbarPlayImportPill(
+                    canPlay: !sortedTracks.isEmpty,
+                    onPlay: {
+                        guard !sortedTracks.isEmpty else { return }
+                        playerVM.playTracks(sortedTracks)
+                    },
+                    onImport: {
+                        print("🔘 Import button tapped")
+                        Task {
+                            await libraryVM.importToCurrentPlaylist()
+                        }
+                    }
+                )
+
+                GlassToolbarSearchField(
+                    placeholder: "library.search_placeholder",
+                    text: $searchText,
+                    focused: $isSearchFocused
+                ) {
+                    searchText = ""
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
+
+                headerAccessory
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+        .cornerAvoidingHorizontalPadding(GlassStyleTokens.headerHorizontalPadding)
+        .frame(height: GlassStyleTokens.headerBarHeight)
+        .background(headerBackground)
+        .clipped()
+    }
+
+    private var sortMenu: some View {
+        GlassToolbarMenuButton(
+            systemImage: "arrow.up.arrow.down",
+            help: "sort.help",
+            style: .standard
+        ) {
+            Section("sort.by") {
+                ForEach(TrackSortKey.allCases) { key in
+                    Button {
+                        libraryVM.trackSortKey = key
+                    } label: {
+                        if libraryVM.trackSortKey == key {
+                            Label(key.title, systemImage: "checkmark")
+                        } else {
+                            Text(key.title)
+                        }
+                    }
+                }
+            }
+
+            Section("sort.order") {
+                ForEach(TrackSortOrder.allCases) { order in
+                    Button {
+                        libraryVM.trackSortOrder = order
+                    } label: {
+                        if libraryVM.trackSortOrder == order {
+                            Label(order.title, systemImage: "checkmark")
+                        } else {
+                            Text(order.title)
+                        }
+                    }
+                }
             }
         }
-        .padding()
     }
 
     private var trackListView: some View {
         ScrollView {
             LazyVStack(spacing: 0) {
-                ForEach(Array(displayedTracks.enumerated()), id: \.element.id) { index, track in
+                ForEach(Array(sortedTracks.enumerated()), id: \.element.id) { index, track in
                     TrackRowView(
                         track: track,
                         isPlaying: playerVM.currentTrack?.id == track.id,
                         onTap: {
-                            playerVM.playTracks(displayedTracks, startingAt: index)
+                            playerVM.playTracks(sortedTracks, startingAt: index)
                         }
-                    )
+                    ) {
+                        trackMenu(track: track, index: index)
+                    }
                     .contextMenu {
-                        // Play
-                        Button {
-                            playerVM.playTracks(displayedTracks, startingAt: index)
-                        } label: {
-                            Label("Play", systemImage: "play")
-                        }
-
-                        Divider()
-
-                        // Add to Playlist
-                        Menu {
-                            ForEach(libraryVM.playlists) { playlist in
-                                // Don't show current playlist if we are in it
-                                if libraryVM.selectedPlaylist?.id != playlist.id {
-                                    Button {
-                                        Task {
-                                            await libraryVM.addTracksToPlaylist(
-                                                [track], playlist: playlist)
-                                        }
-                                    } label: {
-                                        Label(playlist.name, systemImage: "music.note.list")
-                                    }
-                                }
-                            }
-
-                            Divider()
-
-                            Button {
-                                Task {
-                                    let playlist = await libraryVM.createNewPlaylist()
-                                    await libraryVM.addTracksToPlaylist([track], playlist: playlist)
-                                }
-                            } label: {
-                                Label("New Playlist", systemImage: "plus")
-                            }
-                        } label: {
-                            Label("Add to Playlist", systemImage: "plus.circle")
-                        }
-
-                        // Remove from Playlist (if in one)
-                        if let currentPlaylist = libraryVM.selectedPlaylist {
-                            Button {
-                                Task {
-                                    await libraryVM.removeTracksFromPlaylist(
-                                        [track], playlist: currentPlaylist)
-                                }
-                            } label: {
-                                Label("Remove from Playlist", systemImage: "minus.circle")
-                            }
-                        }
-
-                        Divider()
-
-                        // Edit Metadata
-                        Button {
-                            trackToEdit = track
-                        } label: {
-                            Label("Get Info", systemImage: "info.circle")
-                        }
-
-                        Divider()
-
-                        // Delete from Library
-                        Button(role: .destructive) {
-                            Task {
-                                await libraryVM.deleteTrack(track)
-                            }
-                        } label: {
-                            Label("Delete from Library", systemImage: "trash")
-                        }
+                        trackMenu(track: track, index: index)
                     }
 
-                    if index < displayedTracks.count - 1 {
-                        Divider()
-                            .padding(.leading, Constants.Layout.artworkSmallSize + 20)
-                    }
                 }
+
+                // Bottom placeholder for MiniPlayer/Controls
+                Color.clear.frame(height: 160)
             }
+            .padding(.top, listTopPadding)
+            .padding(.bottom, listBottomPadding)
             .padding(.horizontal)
         }
+        .onTapGesture { clearSearchFocus() }
     }
 
     private var emptyStateView: some View {
@@ -206,11 +216,11 @@ struct PlaylistDetailView: View {
                 .font(.system(size: 48))
                 .foregroundStyle(.tertiary)
 
-            Text("No Songs")
+            Text("library.no_songs")
                 .font(.title3)
                 .foregroundStyle(.secondary)
 
-            Text("Click \"Import\" to add music to this playlist")
+            Text("library.import_desc")
                 .font(.subheadline)
                 .foregroundStyle(.tertiary)
 
@@ -221,7 +231,9 @@ struct PlaylistDetailView: View {
                     await libraryVM.importToCurrentPlaylist()
                 }
             } label: {
-                Label("Import Music", systemImage: "plus.circle.fill")
+                Label(
+                    "library.import_btn",
+                    systemImage: "plus.circle.fill")
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
@@ -229,6 +241,161 @@ struct PlaylistDetailView: View {
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onTapGesture { clearSearchFocus() }
+    }
+
+    private var noResultsView: some View {
+        VStack(spacing: 12) {
+            Spacer()
+
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 36))
+                .foregroundStyle(.tertiary)
+
+            Text("library.no_results")
+                .font(.title3)
+                .foregroundStyle(.secondary)
+
+            Text(String(format: NSLocalizedString("library.no_matches", comment: ""), searchText))
+                .font(.subheadline)
+                .foregroundStyle(.tertiary)
+
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onTapGesture { clearSearchFocus() }
+    }
+
+    private var songCountText: String {
+        if isFiltering {
+            return String(
+                format: NSLocalizedString("library.song_count_filtered", comment: ""),
+                filteredTracks.count, displayedTracks.count)
+        }
+        let format =
+            displayedTracks.count == 1
+            ? NSLocalizedString("library.song_count_one", comment: "")
+            : NSLocalizedString("library.song_count", comment: "")
+        return String(format: format, displayedTracks.count)
+    }
+
+    @ViewBuilder
+    private func trackMenu(track: Track, index: Int) -> some View {
+        // Play
+        Button {
+            playerVM.playTracks(filteredTracks, startingAt: index)
+        } label: {
+            Label("context.play", systemImage: "play")
+        }
+
+        Divider()
+
+        // Add to Playlist
+        Menu {
+            ForEach(libraryVM.playlists) { playlist in
+                // Don't show current playlist if we are in it
+                if libraryVM.selectedPlaylist?.id != playlist.id {
+                    Button {
+                        Task {
+                            await libraryVM.addTracksToPlaylist(
+                                [track], playlist: playlist)
+                        }
+                    } label: {
+                        Label(playlist.name, systemImage: "music.note.list")
+                    }
+                }
+            }
+
+            Divider()
+
+            Button {
+                Task {
+                    let playlist = await libraryVM.createNewPlaylist()
+                    await libraryVM.addTracksToPlaylist([track], playlist: playlist)
+                }
+            } label: {
+                Label("context.new_playlist", systemImage: "plus")
+            }
+        } label: {
+            Label(
+                "context.add_to_playlist",
+                systemImage: "plus.circle")
+        }
+
+        // Remove from Playlist (if in one)
+        if let currentPlaylist = libraryVM.selectedPlaylist {
+            Button {
+                Task {
+                    await libraryVM.removeTracksFromPlaylist(
+                        [track], playlist: currentPlaylist)
+                }
+            } label: {
+                Label(
+                    "context.remove_from_playlist",
+                    systemImage: "minus.circle")
+            }
+        }
+
+        Divider()
+
+        // Edit Metadata
+        Button {
+            trackToEdit = track
+        } label: {
+            Label("context.get_info", systemImage: "info.circle")
+        }
+
+        Divider()
+
+        // Delete from Library
+        Button(role: .destructive) {
+            Task {
+                await libraryVM.deleteTrack(track)
+            }
+        } label: {
+            Label(
+                "context.delete_from_library", systemImage: "trash")
+        }
+    }
+
+    private var listTopPadding: CGFloat { 12 }
+
+    private var listBottomPadding: CGFloat { 16 }
+
+    private var headerBackground: some View {
+        ZStack {
+            LinearGradient(
+                colors: [
+                    Color(nsColor: .windowBackgroundColor)
+                        .opacity(colorScheme == .dark ? 0.7 : 0.85),
+                    Color(nsColor: .windowBackgroundColor).opacity(0.0),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+
+            Rectangle()
+                .fill(.regularMaterial)
+                .mask(
+                    LinearGradient(
+                        colors: [
+                            Color.white,
+                            Color.white.opacity(0.25),
+                            Color.clear,
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                .opacity(colorScheme == .dark ? 0.32 : 0.22)
+        }
+        .allowsHitTesting(false)
+    }
+
+    private func clearSearchFocus() {
+        if isSearchFocused {
+            isSearchFocused = false
+        }
     }
 }
 
@@ -246,6 +413,7 @@ struct PlaylistDetailView: View {
     PlaylistDetailView()
         .environment(libraryVM)
         .environment(playerVM)
+        .environmentObject(ThemeStore.shared)
         .modelContainer(container)
         .frame(width: 500, height: 400)
         .task {

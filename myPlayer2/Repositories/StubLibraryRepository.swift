@@ -41,6 +41,10 @@ final class StubLibraryRepository: LibraryRepositoryProtocol {
         allTracks.append(contentsOf: tracks)
     }
 
+    func addPlaylist(_ playlist: Playlist) async {
+        playlists.append(playlist)
+    }
+
     func deleteTrack(_ track: Track) async {
         allTracks.removeAll { $0.id == track.id }
     }

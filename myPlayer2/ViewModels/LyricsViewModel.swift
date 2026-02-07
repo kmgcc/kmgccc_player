@@ -3,32 +3,28 @@
 //  myPlayer2
 //
 //  TrueMusic - Lyrics ViewModel
-//  Manages lyrics display and sync.
+//  Manages lyrics display and sync via LyricsWebViewStore.
 //
 
-import AppKit
 import Foundation
+import SwiftUI
 
 /// Observable ViewModel for lyrics display.
-/// Bridges track lyrics data with AMLL bridge service.
+/// Now delegates all WebView communication to LyricsWebViewStore.
 @Observable
 @MainActor
 final class LyricsViewModel {
 
     // MARK: - Dependencies
 
-    /// The real lyrics bridge (exposed for view binding).
-    let bridge: LyricsBridge
-
+    private let store: LyricsWebViewStore
     private let settings: AppSettings
 
     // MARK: - State
 
     /// Current track (source of lyrics).
     private(set) var currentTrack: Track?
-    private var cachedColorTrackId: UUID?
-    private var cachedTextColor: String?
-    private var cachedShadowColor: String?
+    private var lastAppliedTrackId: UUID?
 
     /// Whether lyrics are available.
     var hasLyrics: Bool {
@@ -39,22 +35,23 @@ final class LyricsViewModel {
         return false
     }
 
+    /// Whether the WebView is ready.
+    var isReady: Bool {
+        store.isReady
+    }
+
     /// Callback for when user seeks via lyrics UI.
-    var onSeekRequest: ((TimeInterval) -> Void)?
+    var onSeekRequest: ((TimeInterval) -> Void)? {
+        didSet {
+            store.onUserSeek = onSeekRequest
+        }
+    }
 
     // MARK: - Initialization
 
-    init(
-        bridgeService: LyricsBridgeServiceProtocol? = nil,
-        settings: AppSettings = .shared
-    ) {
-        self.bridge = LyricsBridge()
-        self.settings = settings
-
-        // Set up seek callback
-        bridge.onUserSeek = { [weak self] time in
-            self?.onSeekRequest?(time)
-        }
+    init(settings: AppSettings? = nil) {
+        self.store = LyricsWebViewStore.shared
+        self.settings = settings ?? AppSettings.shared
 
         // Apply initial config
         refreshConfigFromSettings()
@@ -62,15 +59,60 @@ final class LyricsViewModel {
 
     // MARK: - Track Management
 
-    /// Apply a new track (loads its lyrics).
-    func applyTrack(_ track: Track?) {
+    /// Apply a new track with correct sequence (Task F).
+    func applyTrack(_ track: Track?, currentTime: TimeInterval = 0, isPlaying: Bool = false) {
         currentTrack = track
+        lastAppliedTrackId = track?.id
 
         let lyricsText = getContentForTrack(track)
 
-        print("[LyricsVM] applyTrack: \(track?.title ?? "nil"), lyricsLen: \(lyricsText.count)")
-        bridge.setLyricsTTML(lyricsText)
+        print(
+            "[LyricsVM] applyTrack: \(track?.title ?? "nil"), lyricsLen: \(lyricsText.count), webViewObjectID=\(store.webViewObjectID)"
+        )
+
+        // Update config
         refreshConfigFromSettings()
+
+        // Use store's sequenced apply
+        store.applyTrack(
+            ttml: lyricsText.isEmpty ? nil : lyricsText, currentTime: currentTime,
+            isPlaying: isPlaying)
+    }
+
+    /// Unified AMLL state sync entrypoint.
+    func ensureAMLLLoaded(
+        track: Track?,
+        currentTime: TimeInterval,
+        isPlaying: Bool,
+        reason: String,
+        forceWebReload: Bool = false,
+        forceLyricsReload: Bool = false
+    ) {
+        print(
+            "[LyricsVM] ensureAMLLLoaded: reason=\(reason), trackId=\(track?.id.uuidString.prefix(8) ?? "nil"), isReady=\(store.isReady), webViewObjectID=\(store.webViewObjectID)"
+        )
+
+        if forceWebReload {
+            store.forceReload()
+        }
+
+        if shouldApplyTrack(track, forceLyricsReload: forceLyricsReload) {
+            applyTrack(track, currentTime: currentTime, isPlaying: isPlaying)
+        } else {
+            // Re-sync theme even if track hasn't changed (ensure latest palette)
+            if let palette = ThemeStore.shared.palette {
+                store.applyTheme(palette)
+            }
+
+            // Just sync state
+            store.setPlaying(isPlaying)
+            store.setCurrentTime(currentTime)
+        }
+    }
+
+    private func shouldApplyTrack(_ track: Track?, forceLyricsReload: Bool) -> Bool {
+        if forceLyricsReload { return true }
+        return lastAppliedTrackId != track?.id
     }
 
     private func getContentForTrack(_ track: Track?) -> String {
@@ -92,7 +134,8 @@ final class LyricsViewModel {
     /// Clear current lyrics.
     func clearLyrics() {
         currentTrack = nil
-        bridge.setLyricsTTML("")
+        lastAppliedTrackId = nil
+        store.setLyricsTTML("")
     }
 
     /// Retrieve current TTML (debug helper)
@@ -101,14 +144,13 @@ final class LyricsViewModel {
     }
 
     func loadSampleLyrics() {
-        // Load sample.ttml from bundle
         if let url = Bundle.main.url(
-            forResource: "sample", withExtension: "ttml", subdirectory: "AMLL")
-        {
+            forResource: "sample", withExtension: "ttml", subdirectory: "AMLL"
+        ) {
             do {
-                let text = try String(contentsOf: url)
+                let text = try String(contentsOf: url, encoding: .utf8)
                 print("[LyricsVM] Loaded sample.ttml: \(text.count) bytes")
-                bridge.setLyricsTTML(text)
+                store.setLyricsTTML(text)
             } catch {
                 print("[LyricsVM] Failed to load sample.ttml: \(error)")
             }
@@ -121,20 +163,26 @@ final class LyricsViewModel {
 
     /// Sync current playback time to lyrics.
     func syncTime(_ seconds: TimeInterval) {
-        bridge.setCurrentTime(seconds)
+        store.setCurrentTime(seconds)
     }
 
     /// Set playback state.
     func setPlaying(_ isPlaying: Bool) {
-        bridge.setPlaying(isPlaying)
+        store.setPlaying(isPlaying)
     }
 
     // MARK: - Configuration
 
     /// Update AMLL configuration based on AppSettings.
     func refreshConfigFromSettings() {
-        let isDarkMode = resolveIsDarkMode()
-        let colors = resolveDynamicColors(isDarkMode: isDarkMode)
+        let resolvedScheme = ThemeStore.shared.colorScheme
+        let resolvedTheme = resolvedScheme == .dark ? "dark" : "light"
+        let isDarkMode = resolvedScheme == .dark
+
+        let palette = ThemeStore.shared.palette
+        let paletteMatchesScheme = palette?.scheme == resolvedScheme
+
+        let offsetMs = max(-15000, min(15000, currentTrack?.lyricsTimeOffsetMs ?? 0))
         let mainFontFamily = cssFontFamily([
             settings.lyricsFontNameZh,
             settings.lyricsFontNameEn,
@@ -150,24 +198,29 @@ final class LyricsViewModel {
             "fontWeight": clampedWeight,
             "fontFamilyMain": mainFontFamily,
             "fontFamilyTranslation": translationFontFamily,
-            "translationFontWeight": 400,
+            "translationFontSize": settings.lyricsTranslationFontSize,
+            "translationFontWeight": settings.lyricsTranslationFontWeight,
             "leadInMs": leadInMs,
-            "theme": settings.appearance,
+            "timeOffsetMs": offsetMs,
+            "theme": resolvedTheme,
             "lineHeight": 1.5,
             "activeScale": 1.1,
-            "textColor": colors?.text ?? (isDarkMode ? "rgba(255,255,255,0.98)" : "rgba(0,0,0,0.9)"),
-            "shadowColor": colors?.shadow ?? (isDarkMode ? "rgba(0,0,0,0.2)" : "rgba(0,0,0,0.05)"),
+            "textColor": (paletteMatchesScheme ? palette?.text : nil)
+                ?? (isDarkMode ? "rgba(255,255,255,0.98)" : "rgba(0,0,0,0.9)"),
+            "shadowColor": (paletteMatchesScheme ? palette?.shadow : nil)
+                ?? (isDarkMode ? "rgba(0,0,0,0.2)" : "rgba(0,0,0,0.05)"),
         ]
 
         if let data = try? JSONSerialization.data(withJSONObject: config),
             let json = String(data: data, encoding: .utf8)
         {
-            bridge.setConfigJSON(json)
+            store.setConfigJSON(json)
         }
     }
 
     private func cssFontFamily(_ names: [String]) -> String {
-        let sanitized = names
+        let sanitized =
+            names
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
             .map { name in
@@ -177,51 +230,5 @@ final class LyricsViewModel {
         return (sanitized + fallbacks).joined(separator: ", ")
     }
 
-    // MARK: - Dynamic Color
-
-    private func resolveIsDarkMode() -> Bool {
-        switch settings.appearance {
-        case "dark":
-            return true
-        case "light":
-            return false
-        default:
-            if let match = NSApp?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) {
-                return match == .darkAqua
-            }
-            return false
-        }
-    }
-
-    private func resolveDynamicColors(isDarkMode: Bool) -> (
-        text: String, shadow: String
-    )? {
-        guard let track = currentTrack, let artwork = track.artworkData else {
-            cachedColorTrackId = nil
-            cachedTextColor = nil
-            cachedShadowColor = nil
-            return nil
-        }
-
-        if cachedColorTrackId == track.id,
-            let cachedTextColor,
-            let cachedShadowColor
-        {
-            return (cachedTextColor, cachedShadowColor)
-        }
-
-        guard let baseColor = ArtworkColorExtractor.averageColor(from: artwork) else {
-            return nil
-        }
-
-        let adjusted = ArtworkColorExtractor.adjustedAccent(from: baseColor, isDarkMode: isDarkMode)
-        let textColor = ArtworkColorExtractor.cssRGBA(adjusted, alpha: isDarkMode ? 0.98 : 0.9)
-        let shadow = isDarkMode ? "rgba(0,0,0,0.2)" : "rgba(0,0,0,0.05)"
-
-        cachedColorTrackId = track.id
-        cachedTextColor = textColor
-        cachedShadowColor = shadow
-
-        return (textColor, shadow)
-    }
+    // MARK: - Dynamic Color (Moved to ThemeStore)
 }

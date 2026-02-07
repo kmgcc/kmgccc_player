@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import MediaPlayer
 
 /// Observable ViewModel for playback control.
 /// Bridges UI with audio playback and level meter services.
@@ -19,6 +20,7 @@ final class PlayerViewModel {
     private let playbackService: AudioPlaybackServiceProtocol
     private let levelMeter: AudioLevelMeterProtocol
     private let settings: AppSettings
+    private let nowPlayingService: NowPlayingService
 
     // MARK: - Computed Properties (from playbackService)
 
@@ -56,11 +58,15 @@ final class PlayerViewModel {
     init(
         playbackService: AudioPlaybackServiceProtocol,
         levelMeter: AudioLevelMeterProtocol,
-        settings: AppSettings = .shared
+        settings: AppSettings? = nil,
+        nowPlayingService: NowPlayingService? = nil
     ) {
         self.playbackService = playbackService
         self.levelMeter = levelMeter
-        self.settings = settings
+        self.settings = settings ?? AppSettings.shared
+        self.nowPlayingService = nowPlayingService ?? .shared
+        self.nowPlayingService.register(player: self)
+        self.nowPlayingService.updateNowPlaying(force: true)
     }
 
     // MARK: - Queue Management
@@ -69,6 +75,7 @@ final class PlayerViewModel {
     func playTracks(_ tracks: [Track], startingAt index: Int = 0) {
         playbackService.playTracks(tracks, startingAt: index)
         levelMeter.start()
+        nowPlayingService.updateNowPlaying(force: true)
     }
 
     // MARK: - Playback Control
@@ -76,16 +83,19 @@ final class PlayerViewModel {
     func play(track: Track) {
         playbackService.play(track: track)
         levelMeter.start()
+        nowPlayingService.updateNowPlaying(force: true)
     }
 
     func pause() {
         playbackService.pause()
         // Keep level meter running but it will show low levels
+        nowPlayingService.updateNowPlaying(force: true)
     }
 
     func resume() {
         playbackService.resume()
         levelMeter.start()
+        nowPlayingService.updateNowPlaying(force: true)
     }
 
     func togglePlayPause() {
@@ -94,23 +104,28 @@ final class PlayerViewModel {
         } else {
             resume()
         }
+        nowPlayingService.updateNowPlaying(force: true)
     }
 
     func stop() {
         playbackService.stop()
         levelMeter.stop()
+        nowPlayingService.updateNowPlaying(force: true)
     }
 
     func next() {
         playbackService.next()
+        nowPlayingService.updateNowPlaying(force: true)
     }
 
     func previous() {
         playbackService.previous()
+        nowPlayingService.updateNowPlaying(force: true)
     }
 
     func seek(to seconds: Double) {
         playbackService.seek(to: seconds)
+        nowPlayingService.updateNowPlaying(force: true)
     }
 
     func setVolume(_ newVolume: Double) {

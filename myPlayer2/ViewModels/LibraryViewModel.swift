@@ -12,6 +12,47 @@
 import Foundation
 import SwiftUI
 
+enum TrackSortKey: String, CaseIterable, Identifiable {
+    case importedAt
+    case addedAt
+    case title
+    case artist
+    case duration
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .importedAt:
+            return NSLocalizedString("sort.imported_time", comment: "")
+        case .addedAt:
+            return NSLocalizedString("sort.added_time", comment: "")
+        case .title:
+            return NSLocalizedString("sort.title", comment: "")
+        case .artist:
+            return NSLocalizedString("sort.artist", comment: "")
+        case .duration:
+            return NSLocalizedString("sort.duration", comment: "")
+        }
+    }
+}
+
+enum TrackSortOrder: String, CaseIterable, Identifiable {
+    case ascending
+    case descending
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .ascending:
+            return NSLocalizedString("sort.ascending", comment: "")
+        case .descending:
+            return NSLocalizedString("sort.descending", comment: "")
+        }
+    }
+}
+
 /// Observable ViewModel for library content.
 /// Manages playlists and selected playlist state.
 /// Tracks are displayed via @Query in PlaylistDetailView (方案 A).
@@ -37,15 +78,49 @@ final class LibraryViewModel {
     /// Trigger for UI refresh (increment to force @Query update).
     private(set) var refreshTrigger: Int = 0
 
+    /// Track sorting preference for playlist views.
+    var trackSortKey: TrackSortKey {
+        didSet {
+            UserDefaults.standard.set(
+                trackSortKey.rawValue,
+                forKey: DefaultsKey.trackSortKey
+            )
+        }
+    }
+
+    /// Track sorting order.
+    var trackSortOrder: TrackSortOrder {
+        didSet {
+            UserDefaults.standard.set(
+                trackSortOrder.rawValue,
+                forKey: DefaultsKey.trackSortOrder
+            )
+        }
+    }
+
     // MARK: - Dependencies
 
     private let repository: LibraryRepositoryProtocol
     private var importService: FileImportServiceProtocol?
+    private let libraryService: LocalLibraryService
 
     // MARK: - Initialization
 
-    init(repository: LibraryRepositoryProtocol) {
+    init(repository: LibraryRepositoryProtocol, libraryService: LocalLibraryService? = nil) {
         self.repository = repository
+        self.libraryService = libraryService ?? LocalLibraryService.shared
+        self.trackSortKey =
+            TrackSortKey(
+                rawValue: UserDefaults.standard.string(
+                    forKey: DefaultsKey.trackSortKey
+                ) ?? ""
+            ) ?? .importedAt
+        self.trackSortOrder =
+            TrackSortOrder(
+                rawValue: UserDefaults.standard.string(
+                    forKey: DefaultsKey.trackSortOrder
+                ) ?? ""
+            ) ?? .descending
         print("📚 LibraryViewModel initialized")
     }
 
@@ -63,6 +138,11 @@ final class LibraryViewModel {
         return playlists.first { $0.id == id }
     }
 
+    /// Sort tracks for playlist display.
+    func sortedTracks(_ tracks: [Track]) -> [Track] {
+        tracks.sorted { sortTrack($0, $1) }
+    }
+
     // MARK: - Loading
 
     /// Load all library data.
@@ -71,6 +151,7 @@ final class LibraryViewModel {
         isLoading = true
         defer { isLoading = false }
 
+        await libraryService.bootstrapIfNeeded(repository: repository)
         playlists = await repository.fetchPlaylists()
         totalTrackCount = await repository.totalTrackCount()
 
@@ -107,7 +188,10 @@ final class LibraryViewModel {
         } else {
             if playlists.isEmpty {
                 print("   ↳ No playlists exist, creating one for import...")
-                targetPlaylist = await repository.createPlaylist(name: "Imported \(formattedDate)")
+                targetPlaylist = await repository.createPlaylist(
+                    name: String(
+                        format: NSLocalizedString("library.imported_playlist_name", comment: ""),
+                        formattedDate))
                 playlists = await repository.fetchPlaylists()
                 selectedPlaylistId = targetPlaylist.id
                 print("   ↳ Created playlist: '\(targetPlaylist.name)' (id=\(targetPlaylist.id))")
@@ -162,7 +246,9 @@ final class LibraryViewModel {
 
     /// Create a new playlist with default name.
     func createNewPlaylist() async -> Playlist {
-        let name = "New Playlist \(playlists.count + 1)"
+        let name = String(
+            format: NSLocalizedString("library.new_playlist_name", comment: ""), playlists.count + 1
+        )
         return await createPlaylist(name: name)
     }
 
@@ -221,13 +307,17 @@ final class LibraryViewModel {
 
     /// Title for the current view.
     var currentTitle: String {
-        selectedPlaylist?.name ?? "All Songs"
+        selectedPlaylist?.name ?? NSLocalizedString("library.all_songs", comment: "")
     }
 
     /// Subtitle for the current view.
     var currentSubtitle: String {
         let count = selectedPlaylist?.trackCount ?? totalTrackCount
-        return "\(count) song\(count == 1 ? "" : "s")"
+        let format =
+            count == 1
+            ? NSLocalizedString("library.song_count_one", comment: "")
+            : NSLocalizedString("library.song_count", comment: "")
+        return String(format: format, count)
     }
 
     /// Whether import is available.
@@ -241,5 +331,59 @@ final class LibraryViewModel {
         let formatter = DateFormatter()
         formatter.dateFormat = "MMM d"
         return formatter.string(from: Date())
+    }
+
+    // MARK: - Sorting Helpers
+
+    private enum DefaultsKey {
+        static let trackSortKey = "trackSortKey"
+        static let trackSortOrder = "trackSortOrder"
+    }
+
+    private func sortTrack(_ lhs: Track, _ rhs: Track) -> Bool {
+        let result: ComparisonResult
+
+        switch trackSortKey {
+        case .importedAt:
+            result = compareDates(
+                lhs.importedAt ?? lhs.addedAt,
+                rhs.importedAt ?? rhs.addedAt
+            )
+        case .addedAt:
+            result = compareDates(lhs.addedAt, rhs.addedAt)
+        case .title:
+            result = lhs.title.localizedCaseInsensitiveCompare(rhs.title)
+        case .artist:
+            result = lhs.artist.localizedCaseInsensitiveCompare(rhs.artist)
+        case .duration:
+            result = compareDoubles(lhs.duration, rhs.duration)
+        }
+
+        if result == .orderedSame {
+            let titleResult = lhs.title.localizedCaseInsensitiveCompare(rhs.title)
+            if titleResult != .orderedSame {
+                return titleResult == .orderedAscending
+            }
+            return lhs.id.uuidString < rhs.id.uuidString
+        }
+
+        return trackSortOrder == .ascending
+            ? result == .orderedAscending
+            : result == .orderedDescending
+    }
+
+    private func compareDates(_ lhs: Date, _ rhs: Date) -> ComparisonResult {
+        if lhs == rhs { return .orderedSame }
+        return lhs < rhs ? .orderedAscending : .orderedDescending
+    }
+
+    private func compareInts(_ lhs: Int, _ rhs: Int) -> ComparisonResult {
+        if lhs == rhs { return .orderedSame }
+        return lhs < rhs ? .orderedAscending : .orderedDescending
+    }
+
+    private func compareDoubles(_ lhs: Double, _ rhs: Double) -> ComparisonResult {
+        if lhs == rhs { return .orderedSame }
+        return lhs < rhs ? .orderedAscending : .orderedDescending
     }
 }

@@ -8,19 +8,20 @@
 
 import SwiftUI
 
-fileprivate enum PlaybackMode {
+private enum PlaybackMode {
     case sequence
     case shuffle
     case repeatOne
 }
 
 /// Mini player bar with true Liquid Glass capsule effect.
-/// Layout: Controls | Cover | Title+Progress | Volume
+/// Layout: Cover+Title | Controls | Playback Mode | Progress
 struct MiniPlayerView: View {
 
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(UIStateViewModel.self) private var uiState
     @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var themeStore: ThemeStore
 
     @AppStorage("shuffleEnabled") private var shuffleEnabled: Bool = false
     @AppStorage("repeatMode") private var repeatMode: String = "off"
@@ -28,95 +29,152 @@ struct MiniPlayerView: View {
     /// For drag-to-seek
     @State private var isDragging = false
     @State private var dragProgress: Double = 0
+    @State private var trackToEdit: Track?
 
     var body: some View {
-        HStack(spacing: 16) {
-            // MARK: - Left: Playback Controls
+        return HStack(spacing: 12) {
+            // MARK: - Left: Cover + Title/Artist (tappable)
+            Button {
+                uiState.showNowPlaying()
+            } label: {
+                HStack(spacing: 10) {
+                    artworkView
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        if let track = playerVM.currentTrack {
+                            Text(track.title)
+                                .font(.subheadline)
+                                .fontWeight(.medium)
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+
+                            Text(track.artist)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        } else {
+                            Text("mini.not_playing")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: 110, alignment: .leading)
+
+                }
+                .contentShape(Rectangle())
+                .offset(x: 4, y: 0)
+            }
+            .buttonStyle(.plain)
+            .contextMenu {
+                nowPlayingInfoContextMenu
+            }
+
+            // MARK: - Controls
             controlsView
 
+            // MARK: - Playback Mode
             playbackModeView
-
-            // MARK: - Cover Art (tappable)
-            Button {
-                uiState.showNowPlaying()
-            } label: {
-                artworkView
-            }
-            .buttonStyle(.plain)
-
-            // MARK: - Center: Title + Progress (tappable)
-            Button {
-                uiState.showNowPlaying()
-            } label: {
-                VStack(alignment: .leading, spacing: 4) {
-                    // Track info
-                    if let track = playerVM.currentTrack {
-                        Text(track.title)
-                            .font(.subheadline)
-                            .fontWeight(.medium)
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
-
-                        Text(track.artist)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    } else {
-                        Text("Not Playing")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .buttonStyle(.plain)
-            .frame(maxWidth: 200, alignment: .leading)
 
             // MARK: - Progress bar (draggable)
             progressBar
-                .frame(maxWidth: .infinity)
+                .frame(minWidth: 200, maxWidth: .infinity)
 
             // MARK: - Right: Volume Slider
             volumeView
         }
         .padding(.horizontal, 20)
-        .padding(.vertical, 12)
-        .frame(height: 68)
-        .glassPill()  // macOS 26 native Liquid Glass capsule
+        .padding(.vertical, 8)
+        .frame(height: Constants.Layout.miniPlayerHeight)
+        .glassEffect(.clear, in: .capsule)
+        .shadow(
+            color: colorScheme == .light ? Color.black.opacity(0.08) : Color.clear,
+            radius: 6,
+            x: 0,
+            y: 2
+        )
+        .contentShape(Capsule())
+        .onTapGesture {}
+        .sheet(item: $trackToEdit) { track in
+            TrackEditSheet(track: track)
+                .environmentObject(themeStore)
+        }
     }
 
     // MARK: - Subviews
 
     private var controlsView: some View {
-        HStack(spacing: 14) {
+        let isEnabled = playerVM.currentTrack != nil
+        return HStack(spacing: 14) {
             // Previous
             Button {
                 playerVM.previous()
             } label: {
-                Image(systemName: "backward.fill")
-                    .font(.body)
+                ZStack {
+                    Rectangle()
+                        .fill(Color.clear)
+                    Image(systemName: "backward.fill")
+                        .font(.body)
+                        .foregroundStyle(isEnabled ? controlPrimaryColor : controlDisabledColor)
+                }
+                .frame(width: controlHitSize, height: controlHitSize)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .frame(width: controlHitSize, height: controlHitSize)
+            .contentShape(Rectangle())
             .disabled(playerVM.currentTrack == nil)
 
             // Play/Pause
             Button {
                 playerVM.togglePlayPause()
             } label: {
-                Image(systemName: playerVM.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.title3)
+                ZStack {
+                    Rectangle()
+                        .fill(Color.clear)
+                    Image(systemName: playerVM.isPlaying ? "pause.fill" : "play.fill")
+                        .font(.title3)
+                        .foregroundStyle(isEnabled ? controlPrimaryColor : controlDisabledColor)
+                }
+                .frame(width: controlHitSize, height: controlHitSize)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .frame(width: controlHitSize, height: controlHitSize)
+            .contentShape(Rectangle())
             .disabled(playerVM.currentTrack == nil)
 
             // Next
             Button {
                 playerVM.next()
             } label: {
-                Image(systemName: "forward.fill")
-                    .font(.body)
+                ZStack {
+                    Rectangle()
+                        .fill(Color.clear)
+                    Image(systemName: "forward.fill")
+                        .font(.body)
+                        .foregroundStyle(isEnabled ? controlPrimaryColor : controlDisabledColor)
+                }
+                .frame(width: controlHitSize, height: controlHitSize)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .frame(width: controlHitSize, height: controlHitSize)
+            .contentShape(Rectangle())
             .disabled(playerVM.currentTrack == nil)
+        }
+    }
+
+    private var controlHitSize: CGFloat { 26 }
+
+    @ViewBuilder
+    private var nowPlayingInfoContextMenu: some View {
+        if let track = playerVM.currentTrack {
+            Button {
+                trackToEdit = track
+            } label: {
+                Label(
+                    "context.get_info", systemImage: "info.circle")
+            }
         }
     }
 
@@ -144,7 +202,7 @@ struct MiniPlayerView: View {
                 }
             }
         )
-        .frame(width: 132, height: 28)
+        .frame(width: 128, height: 26)
     }
 
     @ViewBuilder
@@ -155,10 +213,10 @@ struct MiniPlayerView: View {
             Image(nsImage: nsImage)
                 .resizable()
                 .aspectRatio(contentMode: .fill)
-                .frame(width: 40, height: 40)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .frame(width: 36, height: 36)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
         } else {
-            RoundedRectangle(cornerRadius: 6)
+            RoundedRectangle(cornerRadius: 8)
                 .fill(
                     LinearGradient(
                         colors: [.purple.opacity(0.4), .blue.opacity(0.4)],
@@ -166,7 +224,7 @@ struct MiniPlayerView: View {
                         endPoint: .bottomTrailing
                     )
                 )
-                .frame(width: 40, height: 40)
+                .frame(width: 36, height: 36)
                 .overlay {
                     Image(systemName: "music.note")
                         .font(.system(size: 14))
@@ -177,7 +235,7 @@ struct MiniPlayerView: View {
 
     private var progressBar: some View {
         GeometryReader { geometry in
-            let barHeight: CGFloat = 6
+            let barHeight: CGFloat = 5
             let fill = progressFillColor
             let track = progressTrackColor
 
@@ -193,8 +251,8 @@ struct MiniPlayerView: View {
 
                     Circle()
                         .fill(Color.clear)
-                        .frame(width: 16, height: 16)
-                        .offset(x: progressWidth(in: geometry.size.width) - 8)
+                        .frame(width: 14, height: 14)
+                        .offset(x: progressWidth(in: geometry.size.width) - 7)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             }
@@ -214,15 +272,15 @@ struct MiniPlayerView: View {
                     }
             )
         }
-        .frame(height: 20)
+        .frame(height: 18)
     }
 
     private var progressFillColor: Color {
-        colorScheme == .dark ? Color.white.opacity(0.9) : Color.gray.opacity(0.8)
+        Color.primary.opacity(0.8)
     }
 
     private var progressTrackColor: Color {
-        colorScheme == .dark ? Color.white.opacity(0.18) : Color.gray.opacity(0.22)
+        Color.secondary.opacity(0.25)
     }
 
     private func progressWidth(in totalWidth: CGFloat) -> CGFloat {
@@ -236,7 +294,7 @@ struct MiniPlayerView: View {
         HStack(spacing: 6) {
             Image(systemName: volumeIcon)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.secondary)
                 .frame(width: 14)
 
             Slider(
@@ -248,6 +306,7 @@ struct MiniPlayerView: View {
             )
             .frame(width: 80)
             .controlSize(.small)
+            .tint(themeStore.accentColor)
         }
     }
 
@@ -261,6 +320,14 @@ struct MiniPlayerView: View {
         } else {
             return "speaker.wave.3.fill"
         }
+    }
+
+    private var controlPrimaryColor: Color {
+        Color.primary.opacity(0.9)
+    }
+
+    private var controlDisabledColor: Color {
+        Color.secondary.opacity(0.5)
     }
 }
 
@@ -297,29 +364,38 @@ private struct PlaybackModeSlider: View {
             let segmentWidth = max(1, totalWidth / 3)
             let baseOffset = CGFloat(modeIndex) * segmentWidth
             let effectiveDrag = isDragging ? dragTranslation : 0
-            let knobOffset = clampOffset(baseOffset + effectiveDrag, maxValue: totalWidth - segmentWidth)
+            let knobOffset = clampOffset(
+                baseOffset + effectiveDrag, maxValue: totalWidth - segmentWidth)
             let snap = Animation.spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08)
 
             ZStack(alignment: .leading) {
                 Capsule()
                     .fill(trackFill)
                     .overlay(Capsule().stroke(trackBorder, lineWidth: 1))
+                    .allowsHitTesting(false)
 
                 Capsule()
                     .fill(knobFill)
                     .overlay(Capsule().stroke(knobBorder, lineWidth: 1))
                     .frame(width: segmentWidth, height: geometry.size.height - inset * 2)
                     .offset(x: knobOffset + inset)
+                    .allowsHitTesting(false)
                     .animation((reduceMotion || isDragging) ? .none : snap, value: modeIndex)
 
                 HStack(spacing: 0) {
-                    segmentButton(systemImage: "shuffle", isSelected: modeIndex == 0, width: segmentWidth) {
+                    segmentButton(
+                        systemImage: "shuffle", isSelected: modeIndex == 0, width: segmentWidth
+                    ) {
                         selectMode(.shuffle, snap: snap)
                     }
-                    segmentButton(systemImage: "list.bullet", isSelected: modeIndex == 1, width: segmentWidth) {
+                    segmentButton(
+                        systemImage: "list.bullet", isSelected: modeIndex == 1, width: segmentWidth
+                    ) {
                         selectMode(.sequence, snap: snap)
                     }
-                    segmentButton(systemImage: "repeat.1", isSelected: modeIndex == 2, width: segmentWidth) {
+                    segmentButton(
+                        systemImage: "repeat.1", isSelected: modeIndex == 2, width: segmentWidth
+                    ) {
                         selectMode(.repeatOne, snap: snap)
                     }
                 }
@@ -367,28 +443,35 @@ private struct PlaybackModeSlider: View {
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(isSelected ? .primary : .secondary)
-                .frame(width: width, height: 28)
+            ZStack {
+                Rectangle()
+                    .fill(Color.clear)
+                Image(systemName: systemImage)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(isSelected ? .primary : .secondary)
+            }
+            .frame(width: width, height: 28)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .frame(width: width, height: 28)
+        .contentShape(Rectangle())
     }
 
     private var trackFill: Color {
-        colorScheme == .dark ? Color.white.opacity(0.10) : Color.black.opacity(0.08)
+        Color.secondary.opacity(0.2)
     }
 
     private var trackBorder: Color {
-        colorScheme == .dark ? Color.white.opacity(0.18) : Color.black.opacity(0.14)
+        Color.primary.opacity(0.16)
     }
 
     private var knobFill: Color {
-        colorScheme == .dark ? Color.white.opacity(0.22) : Color.black.opacity(0.12)
+        Color.primary.opacity(0.2)
     }
 
     private var knobBorder: Color {
-        colorScheme == .dark ? Color.white.opacity(0.28) : Color.black.opacity(0.22)
+        Color.primary.opacity(0.24)
     }
 
     private func clampOffset(_ value: CGFloat, maxValue: CGFloat) -> CGFloat {
@@ -413,6 +496,7 @@ private struct PlaybackModeSlider: View {
         MiniPlayerView()
             .environment(playerVM)
             .environment(uiState)
+            .environmentObject(ThemeStore.shared)
             .padding()
     }
     .frame(width: 800, height: 200)

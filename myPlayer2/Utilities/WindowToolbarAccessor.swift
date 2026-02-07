@@ -23,15 +23,24 @@ struct WindowToolbarAccessor: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
-        guard let window = nsView.window else { return }
-
-        // Avoid running repeatedly; SwiftUI updates frequently.
-        if context.coordinator.lastConfiguredWindow !== window {
-            context.coordinator.lastConfiguredWindow = window
+        if Thread.isMainThread {
+            configureIfNeeded(for: nsView, coordinator: context.coordinator)
+        } else {
             DispatchQueue.main.async {
-                configure(window)
+                configureIfNeeded(for: nsView, coordinator: context.coordinator)
             }
         }
+    }
+
+    private func configureIfNeeded(for nsView: NSView, coordinator: Coordinator) {
+        guard let window = nsView.window else { return }
+
+        // Only configure once per window instance to avoid repeated AppKit churn.
+        let needsConfigure = coordinator.lastConfiguredWindow !== window
+
+        guard needsConfigure else { return }
+        coordinator.lastConfiguredWindow = window
+        configure(window)
     }
 
     final class Coordinator {

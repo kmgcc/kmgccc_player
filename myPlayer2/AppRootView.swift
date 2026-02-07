@@ -15,10 +15,11 @@ struct AppRootView: View {
 
     @Environment(\.modelContext) private var modelContext
 
-    // MARK: - App Globals (live updates)
-
-    @AppStorage("appearance") private var appearance: String = "system"
-    @AppStorage("accentColorHex") private var accentColorHex: String = "#007AFF"
+    // MARK: - App Globals (live updates via AppSettings)
+    @State private var settings = AppSettings.shared
+    @Environment(\.colorScheme) private var swiftUIColorScheme
+    @StateObject private var themeStore = ThemeStore.shared
+    @State private var themeRevision = 0
 
     // MARK: - State Objects
 
@@ -26,18 +27,33 @@ struct AppRootView: View {
     @State private var libraryVM: LibraryViewModel?
     @State private var playerVM: PlayerViewModel?
     @State private var lyricsVM: LyricsViewModel?
+    @State private var ledMeter: LEDMeterService?
+    @State private var skinManager: SkinManager?
 
     var body: some View {
         Group {
-            if let libraryVM, let playerVM, let lyricsVM {
-                MainLayoutView()
-                    .environment(uiState)
-                    .environment(libraryVM)
-                    .environment(playerVM)
-                    .environment(lyricsVM)
+            if let libraryVM, let playerVM, let lyricsVM, let ledMeter, let skinManager {
+                ZStack {
+                    MainLayoutView()
+                        .id(themeRevision)
+                        .id("root-\(settings.language.rawValue)")  // Force full UI rebuild on language change
+                        .environment(\.locale, settings.language.locale)
+
+                    ThemeTrackObserver()
+                        .allowsHitTesting(false)
+                }
+                .environment(settings)
+                .environment(uiState)
+                .environment(libraryVM)
+                .environment(playerVM)
+                .environment(lyricsVM)
+                .environment(ledMeter)
+                .environment(skinManager)
+                .environmentObject(themeStore)
             } else {
-                ProgressView("Loading...")
+                ProgressView(NSLocalizedString("alert.loading", comment: ""))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .environment(\.locale, settings.language.locale)
             }
         }
         .onAppear {
@@ -45,7 +61,24 @@ struct AppRootView: View {
         }
         // Appearance
         .preferredColorScheme(currentColorScheme)
-        .tint(currentAccentColor)
+        .tint(themeStore.accentColor)
+        .accentColor(themeStore.accentColor)
+        // Global Sync for Appearance Changes
+        .onChange(of: settings.appearanceMode) { _, _ in
+            applyAppearanceToWindows()
+        }
+        // Theme Update Strategy: Follow effective SwiftUI ColorScheme
+        .onChange(of: swiftUIColorScheme) { _, newScheme in
+            syncThemeStoreWithSwiftUIColorScheme(newScheme)
+        }
+        .onReceive(themeStore.$palette) { palette in
+            guard palette != nil else { return }
+            themeRevision &+= 1
+        }
+        .onAppear {
+            applyAppearanceToWindows()
+            syncThemeStoreWithSwiftUIColorScheme(swiftUIColorScheme)
+        }
         // Command Handling
         .onReceive(NotificationCenter.default.publisher(for: .togglePlayPause)) { _ in
             playerVM?.togglePlayPause()
@@ -64,40 +97,98 @@ struct AppRootView: View {
     // MARK: - Setup
 
     private func setupDependencies() {
+        let libraryService = LocalLibraryService.shared
+        libraryService.ensureLibraryFolders()
+
         // Create repository with SwiftData
-        let repository = SwiftDataLibraryRepository(modelContext: modelContext)
+        let repository = SwiftDataLibraryRepository(
+            modelContext: modelContext,
+            libraryService: libraryService
+        )
 
         // Create real playback service (AVAudioEngine)
         let playbackService = AVAudioPlaybackService()
 
-        // Create real level meter and attach to playback engine
-        let levelMeter = AudioLevelMeterService()
-        levelMeter.attachToMixer(playbackService.mainMixerNode)
+        // Create LED meter and attach to playback engine
+        let ledMeter = LEDMeterService(
+            config: LEDMeterConfig(
+                ledCount: AppSettings.shared.ledCount,
+                levels: AppSettings.shared.ledBrightnessLevels,
+                cutoffHz: Float(AppSettings.shared.ledCutoffHz),
+                preGain: Float(AppSettings.shared.ledPreGain),
+                sensitivity: AppSettings.shared.ledSensitivity,
+                speed: Float(AppSettings.shared.ledSpeed),
+                targetHz: AppSettings.shared.ledTargetHz,
+                transientThreshold: Float(AppSettings.shared.ledTransientThreshold)
+            ))
+        ledMeter.attachToMixer(playbackService.mainMixerNode)
 
         // Create file import service
-        let fileImportService = FileImportService(repository: repository)
+        let fileImportService = FileImportService(
+            repository: repository,
+            libraryService: libraryService
+        )
 
         // Create ViewModels
-        let libVM = LibraryViewModel(repository: repository)
+        let libVM = LibraryViewModel(
+            repository: repository,
+            libraryService: libraryService
+        )
         libVM.setImportService(fileImportService)
 
         libraryVM = libVM
-        playerVM = PlayerViewModel(playbackService: playbackService, levelMeter: levelMeter)
+        playerVM = PlayerViewModel(playbackService: playbackService, levelMeter: ledMeter)
         lyricsVM = LyricsViewModel()
+        self.ledMeter = ledMeter
+        skinManager = SkinManager()
+
+        libraryService.startMonitoring(repository: repository)
     }
 
     // MARK: - Appearance Helpers
 
     private var currentColorScheme: ColorScheme? {
-        switch appearance {
-        case "light": return .light
-        case "dark": return .dark
-        default: return nil
+        settings.colorScheme
+    }
+
+    private func applyAppearanceToWindows() {
+        let mode = settings.appearanceMode
+
+        print("[Appearance] Apply mode: \(mode.rawValue)")
+
+        if mode == .system {
+            NSApp.appearance = nil
+            for window in NSApp.windows {
+                window.appearance = nil
+            }
+        } else {
+            let appearanceName: NSAppearance.Name = mode == .dark ? .darkAqua : .aqua
+            let appearance = NSAppearance(named: appearanceName)
+            NSApp.appearance = appearance
+            for window in NSApp.windows {
+                window.appearance = appearance
+            }
         }
     }
 
-    private var currentAccentColor: Color {
-        Color(hex: accentColorHex) ?? .accentColor
+    private func syncThemeStoreWithSwiftUIColorScheme(_ newScheme: ColorScheme) {
+        print("[AppRoot] swiftUIColorScheme changed to \(newScheme)")
+        themeStore.colorScheme = newScheme
+        Task { @MainActor in
+            await themeStore.refreshPalette(reason: "swiftui_colorScheme_changed")
+        }
+    }
+}
+
+private struct ThemeTrackObserver: View {
+    @Environment(PlayerViewModel.self) private var playerVM
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    var body: some View {
+        Color.clear
+            .task(id: playerVM.currentTrack?.id) {
+                await themeStore.updateTheme(for: playerVM.currentTrack)
+            }
     }
 }
 

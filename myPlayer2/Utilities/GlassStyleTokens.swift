@@ -61,13 +61,46 @@ enum GlassStyleTokens {
     // MARK: - Mini Player (Pill)
 
     /// Mini player height
-    static let miniPlayerHeight: CGFloat = 68
+    static let miniPlayerHeight: CGFloat = 60
 
     /// Mini player horizontal margin
     static let miniPlayerHorizontalPadding: CGFloat = 16
 
     /// Mini player bottom margin
     static let miniPlayerBottomPadding: CGFloat = 12
+
+    // MARK: - Header Controls (Top Bar)
+
+    /// Fixed header bar height.
+    static let headerBarHeight: CGFloat = 60
+
+    /// Base control height for header buttons/search.
+    static let headerControlHeight: CGFloat = 36
+
+    /// Primary action size in the header (same radius as standard).
+    static let headerPrimaryControlHeight: CGFloat = 36
+
+    /// Icon sizes used by header toolbar controls.
+    static let headerStandardIconSize: CGFloat = 12
+    static let headerPrimaryIconSize: CGFloat = 14
+
+    /// Spacing between header controls.
+    static let headerControlSpacing: CGFloat = 8
+
+    /// Spacing between header control groups.
+    static let headerGroupSpacing: CGFloat = 14
+
+    /// Horizontal padding for the header bar.
+    static let headerHorizontalPadding: CGFloat = 16
+
+    /// Search field width range in the header.
+    static let headerSearchMinWidth: CGFloat = 180
+    static let headerSearchMaxWidth: CGFloat = 300
+
+    /// Shared corner radius for header controls and search field.
+    static var headerControlCornerRadius: CGFloat {
+        headerControlHeight / 2
+    }
 
     // MARK: - Colors
 
@@ -129,4 +162,5 @@ extension View {
             y: 2
         )
     }
+
 }
