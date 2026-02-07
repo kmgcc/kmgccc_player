@@ -23,13 +23,14 @@
 
 ## 界面展示 (Screenshots)
 
-| 主界面（Liquid Glass） | 磁带播放界面 |
-| :---: | :---: |
-| ![Main UI](screenshots/main.png) | ![Cassette Player](screenshots/tape.png) |
-
-| 动态取色 | 液态玻璃底栏 |
-| :---: | :---: |
-| ![Color](screenshots/color.png) | ![Mini Player](screenshots/glass.png) |
+<p align="center">
+  <img src="screenshots/main.png" width="45%" />
+  <img src="screenshots/tape.png" width="45%" />
+</p>
+<p align="center">
+  <img src="screenshots/color.png" width="45%" />
+  <img src="screenshots/glass.png" width="45%" />
+</p>
 
 ## 构建与运行 (Build)
 
