@@ -27,6 +27,7 @@ build/
 *.xccheckout
 *.moved-aside
 DerivedData
+.derivedData
 *.hmap
 *.ipa
 *.xg
