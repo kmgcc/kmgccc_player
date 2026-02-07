@@ -17,11 +17,13 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     // MARK: - Properties
 
     private let modelContext: ModelContext
+    private let libraryService: LocalLibraryService
 
     // MARK: - Initialization
 
-    init(modelContext: ModelContext) {
+    init(modelContext: ModelContext, libraryService: LocalLibraryService? = nil) {
         self.modelContext = modelContext
+        self.libraryService = libraryService ?? LocalLibraryService.shared
         print("🗄️ SwiftDataLibraryRepository initialized with context: \(modelContext)")
     }
 
@@ -53,6 +55,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         modelContext.insert(track)
         print("   ↳ inserted into context")
         saveContext()
+        libraryService.writeSidecar(for: track)
     }
 
     func addTracks(_ tracks: [Track]) async {
@@ -62,16 +65,32 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         }
         print("   ↳ all inserted into context")
         saveContext()
+        for track in tracks {
+            libraryService.writeSidecar(for: track)
+        }
+    }
+
+    func addPlaylist(_ playlist: Playlist) async {
+        modelContext.insert(playlist)
+        saveContext()
+        libraryService.writePlaylist(playlist)
     }
 
     func deleteTrack(_ track: Track) async {
+        let playlists = await fetchPlaylists()
+        for playlist in playlists {
+            playlist.tracks.removeAll { $0.id == track.id }
+        }
         modelContext.delete(track)
         saveContext()
+        libraryService.deleteTrackFiles(track)
+        libraryService.writeAllPlaylists(playlists)
     }
 
     func updateTrack(_ track: Track) async {
         // SwiftData automatically tracks changes, just save
         saveContext()
+        libraryService.writeSidecar(for: track)
     }
 
     func trackExists(filePath: String) async -> Bool {
@@ -111,6 +130,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         let playlist = Playlist(name: name)
         modelContext.insert(playlist)
         saveContext()
+        libraryService.writePlaylist(playlist)
         print("   ↳ playlist created with id=\(playlist.id)")
         return playlist
     }
@@ -118,11 +138,13 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     func renamePlaylist(_ playlist: Playlist, name: String) async {
         playlist.name = name
         saveContext()
+        libraryService.writePlaylist(playlist)
     }
 
     func deletePlaylist(_ playlist: Playlist) async {
         modelContext.delete(playlist)
         saveContext()
+        libraryService.deletePlaylist(playlist)
     }
 
     func addTracks(_ tracks: [Track], to playlist: Playlist) async {
@@ -135,6 +157,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         }
         print("   ↳ playlist.tracks.count = \(playlist.tracks.count)")
         saveContext()
+        libraryService.writePlaylist(playlist)
     }
 
     func removeTracks(_ tracks: [Track], from playlist: Playlist) async {
@@ -142,6 +165,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             tracks.contains { $0.id == track.id }
         }
         saveContext()
+        libraryService.writePlaylist(playlist)
     }
 
     // MARK: - Statistics

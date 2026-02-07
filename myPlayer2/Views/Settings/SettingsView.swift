@@ -13,97 +13,214 @@ import SwiftUI
 struct SettingsView: View {
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(LEDMeterService.self) private var ledMeter
+    @Environment(AppSettings.self) private var settings
+    @EnvironmentObject private var themeStore: ThemeStore
 
     // MARK: - Navigation
 
-    @State private var selection: SettingsCategory = .appearance
+    @State private var selection: SettingsCategory = .nowPlaying
+    @State private var columnVisibility = NavigationSplitViewVisibility.all
 
     // MARK: - App Settings
-
-    @State private var appearance: String = AppSettings.shared.appearance
-    @State private var liquidGlassIntensity: Double = AppSettings.shared.liquidGlassIntensity
 
     // MARK: - AMLL Settings
 
     @State private var lyricsLeadInMs: Double = AppSettings.shared.lyricsLeadInMs
     @State private var lyricsFontNameZh: String = AppSettings.shared.lyricsFontNameZh
     @State private var lyricsFontNameEn: String = AppSettings.shared.lyricsFontNameEn
-    @State private var lyricsTranslationFontName: String = AppSettings.shared.lyricsTranslationFontName
+    @State private var lyricsTranslationFontName: String = AppSettings.shared
+        .lyricsTranslationFontName
     @State private var lyricsFontWeight: Int = AppSettings.shared.lyricsFontWeight
     @State private var lyricsFontSize: Double = AppSettings.shared.lyricsFontSize
-    @State private var nowPlayingSkin: String = AppSettings.shared.nowPlayingSkin
+    @State private var lyricsTranslationFontSize: Double = AppSettings.shared
+        .lyricsTranslationFontSize
+    @State private var lyricsTranslationFontWeight: Int = AppSettings.shared
+        .lyricsTranslationFontWeight
+    @State private var nowPlayingSkin: String = AppSettings.shared.selectedNowPlayingSkinID
 
     // MARK: - LED Settings State
 
     @State private var sensitivity: Float = AppSettings.shared.ledSensitivity
-    @State private var lowFrequencyWeight: Float = AppSettings.shared.ledLowFrequencyWeight
-    @State private var responseSpeed: Float = AppSettings.shared.ledResponseSpeed
+    @State private var cutoffHz: Double = AppSettings.shared.ledCutoffHz
+    @State private var preGain: Double = AppSettings.shared.ledPreGain
+    @State private var speed: Double = AppSettings.shared.ledSpeed
+    @State private var targetHz: Int = AppSettings.shared.ledTargetHz
     @State private var ledCount: Int = AppSettings.shared.ledCount
     @State private var brightnessLevels: Int = AppSettings.shared.ledBrightnessLevels
-    @State private var glassOutlineIntensity: Double = AppSettings.shared.ledGlassOutlineIntensity
-
-    // MARK: - Preview Level (LED)
-    @State private var previewLevel: Double = 0.5
+    @State private var lookaheadMs: Double = AppSettings.shared.lookaheadMs
 
     private var fontFamilies: [String] {
         NSFontManager.shared.availableFontFamilies.sorted()
     }
 
-    private let fontWeights: [(label: String, value: Int)] = [
-        ("Thin", 100),
-        ("Light", 300),
-        ("Regular", 400),
-        ("Medium", 500),
-        ("Semibold", 600),
-        ("Bold", 700)
+    private let fontWeights: [(label: LocalizedStringKey, value: Int)] = [
+        ("settings.lyrics.weight_thin", 100),
+        ("settings.lyrics.weight_light", 300),
+        ("settings.lyrics.weight_regular", 400),
+        ("settings.lyrics.weight_medium", 500),
+        ("settings.lyrics.weight_semibold", 600),
+        ("settings.lyrics.weight_bold", 700),
     ]
 
     var body: some View {
-        NavigationSplitView {
-            List(SettingsCategory.allCases, selection: $selection) { category in
-                Label(category.title, systemImage: category.systemImage)
-                    .tag(category)
+        NavigationSplitView(columnVisibility: $columnVisibility) {
+            List(SettingsCategory.allCases) { category in
+                Button {
+                    selection = category
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: category.systemImage)
+                            .font(.system(size: 15, weight: .medium))
+                            .frame(width: 24)
+                            .foregroundStyle(selection == category ? .primary : .secondary)
+
+                        Text(category.title)
+                            .font(.body)
+
+                        Spacer()
+                    }
+                    .padding(.vertical, 8)
+                    .padding(.horizontal, 6)  // Reduced from 12 to bring content closer to pill edge
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .listRowInsets(EdgeInsets(top: 1, leading: 4, bottom: 1, trailing: 4))  // Much tighter to sidebar edges
+                .listRowBackground(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(selection == category ? themeStore.selectionFill : Color.clear)
+                        .padding(.horizontal, 14)  // Narrower, centered pill look
+                )
             }
             .listStyle(.sidebar)
-            .frame(minWidth: 200)
-            .navigationTitle("Settings")
+            .padding(.top, 16)  // Add top breathing room
+            .navigationSplitViewColumnWidth(min: 220, ideal: 240, max: 300)
         } detail: {
             detailView
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .navigationTitle(selection.title)
         }
-        .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                Button {
-                    dismiss()
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                }
+        .navigationSplitViewStyle(.prominentDetail)
+        .tint(themeStore.accentColor)
+        .accentColor(themeStore.accentColor)
+        .overlay(alignment: .topTrailing) {
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 36, height: 36)
+                    .contentShape(Circle())
             }
+            .buttonStyle(.plain)
+            .background(.ultraThinMaterial)
+            .clipShape(RoundedRectangle(cornerRadius: 36, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 36, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.15), lineWidth: 0.5)
+            )
+            .overlay(
+                GlassStyleTokens.highlightGradient
+                    .mask(RoundedRectangle(cornerRadius: 36, style: .continuous))
+                    .allowsHitTesting(false)
+            )
+            .shadow(color: Color.black.opacity(0.12), radius: 4, x: 0, y: 2)
+            .padding(16)
         }
         .frame(minWidth: 760, minHeight: 680)
-        // Sync State -> AppSettings
-        .onChange(of: appearance) { _, val in AppSettings.shared.appearance = val }
-        .onChange(of: liquidGlassIntensity) { _, val in
-            AppSettings.shared.liquidGlassIntensity = val
+        .onAppear {
+            nowPlayingSkin = settings.selectedNowPlayingSkinID
+            if SkinRegistry.options.contains(where: { $0.id == nowPlayingSkin }) == false {
+                nowPlayingSkin = SkinRegistry.defaultSkinID
+            }
         }
-        .onChange(of: lyricsLeadInMs) { _, val in AppSettings.shared.lyricsLeadInMs = val }
-        .onChange(of: lyricsFontNameZh) { _, val in AppSettings.shared.lyricsFontNameZh = val }
-        .onChange(of: lyricsFontNameEn) { _, val in AppSettings.shared.lyricsFontNameEn = val }
-        .onChange(of: lyricsTranslationFontName) { _, val in
-            AppSettings.shared.lyricsTranslationFontName = val
+        .background(settingsSyncLogic)  // Apply sync logic here
+        .background(
+            WindowToolbarAccessor { window in
+                // Fixes sidebar top-corner clipping/radius issues by ensuring "Liquid Glass"
+                // extends to the window edge (Full Size Content view behavior).
+                window.titlebarAppearsTransparent = true
+            }
+        )
+    }
+
+    // Extracted Sync Logic to reduce body complexity
+    private var settingsSyncLogic: some View {
+        Group {
+            skinSyncLogic
+            lyricsSyncLogic
+            ledSyncLogic
         }
-        .onChange(of: lyricsFontWeight) { _, val in AppSettings.shared.lyricsFontWeight = val }
-        .onChange(of: lyricsFontSize) { _, val in AppSettings.shared.lyricsFontSize = val }
-        .onChange(of: nowPlayingSkin) { _, val in AppSettings.shared.nowPlayingSkin = val }
-        .onChange(of: sensitivity) { _, val in AppSettings.shared.ledSensitivity = val }
-        .onChange(of: lowFrequencyWeight) { _, val in AppSettings.shared.ledLowFrequencyWeight = val
-        }
-        .onChange(of: responseSpeed) { _, val in AppSettings.shared.ledResponseSpeed = val }
-        .onChange(of: ledCount) { _, val in AppSettings.shared.ledCount = val }
-        .onChange(of: brightnessLevels) { _, val in AppSettings.shared.ledBrightnessLevels = val }
-        .onChange(of: glassOutlineIntensity) { _, val in
-            AppSettings.shared.ledGlassOutlineIntensity = val
+    }
+
+    private var skinSyncLogic: some View {
+        Color.clear
+            .onChange(of: nowPlayingSkin) { _, val in settings.selectedNowPlayingSkinID = val }
+    }
+
+    private var lyricsSyncLogic: some View {
+        Color.clear
+            .onChange(of: lyricsLeadInMs) { _, val in AppSettings.shared.lyricsLeadInMs = val }
+            .onChange(of: lyricsFontNameZh) { _, val in AppSettings.shared.lyricsFontNameZh = val }
+            .onChange(of: lyricsFontNameEn) { _, val in AppSettings.shared.lyricsFontNameEn = val }
+            .onChange(of: lyricsTranslationFontName) { _, val in
+                AppSettings.shared.lyricsTranslationFontName = val
+            }
+            .onChange(of: lyricsFontWeight) { _, val in AppSettings.shared.lyricsFontWeight = val }
+            .onChange(of: lyricsFontSize) { _, val in AppSettings.shared.lyricsFontSize = val }
+            .onChange(of: lyricsTranslationFontSize) { _, val in
+                AppSettings.shared.lyricsTranslationFontSize = val
+            }
+            .onChange(of: lyricsTranslationFontWeight) { _, val in
+                AppSettings.shared.lyricsTranslationFontWeight = val
+            }
+    }
+
+    private var ledSyncLogic: some View {
+        Group {
+            Color.clear
+                .onChange(of: sensitivity) { _, val in
+                    AppSettings.shared.ledSensitivity = val
+                    applyLedConfig()
+                }
+                .onChange(of: cutoffHz) { _, val in
+                    AppSettings.shared.ledCutoffHz = val
+                    applyLedConfig()
+                }
+                .onChange(of: preGain) { _, val in
+                    AppSettings.shared.ledPreGain = val
+                    applyLedConfig()
+                }
+                .onChange(of: speed) { _, val in
+                    AppSettings.shared.ledSpeed = val
+                    applyLedConfig()
+                }
+
+            Color.clear
+                .onChange(of: targetHz) { _, val in
+                    AppSettings.shared.ledTargetHz = val
+                    applyLedConfig()
+                }
+                .onChange(of: ledCount) { _, val in
+                    AppSettings.shared.ledCount = val
+                    applyLedConfig()
+                }
+                .onChange(of: brightnessLevels) { _, val in
+                    AppSettings.shared.ledBrightnessLevels = val
+                    applyLedConfig()
+                }
+                .onChange(of: lookaheadMs) { _, val in
+                    AppSettings.shared.lookaheadMs = val
+                }
+
+            Color.clear
+                .onChange(of: transientThreshold) { _, _ in
+                    applyLedConfig()
+                }
+                .onChange(of: transientIntensity) { _, _ in
+                    applyLedConfig()
+                }
         }
     }
 
@@ -113,83 +230,80 @@ struct SettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 switch selection {
-                case .appearance:
-                    appearanceSection
                 case .nowPlaying:
                     nowPlayingSection
                 case .lyrics:
                     amllSection
                 case .led:
                     ledSettingsSection
+                case .language:
+                    languageSection
                 case .about:
                     aboutSection
                 }
             }
-            .padding(24)
-        }
-    }
-
-    // MARK: - Appearance Section
-
-    private var appearanceSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Label("Appearance & Visuals", systemImage: "paintbrush")
-                .font(.headline)
-
-            // Theme Picker
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Theme")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-
-                Picker("", selection: $appearance) {
-                    Text("System").tag("system")
-                    Text("Light").tag("light")
-                    Text("Dark").tag("dark")
-                }
-                .pickerStyle(.segmented)
-            }
-
-            // Liquid Glass Intensity
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("Liquid Glass Blur")
-                    Spacer()
-                    Text(String(format: "%.0f%%", liquidGlassIntensity * 100))
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
-                }
-                .font(.subheadline)
-
-                Slider(value: $liquidGlassIntensity, in: 0...1, step: 0.1)
-
-                Text("Adjusts the blur strength of the sidebar and UI elements.")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-            }
+            .padding(.horizontal, 32)
+            .padding(.vertical, 24)
+            .frame(maxWidth: 800, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
     // MARK: - Now Playing Section
 
     private var nowPlayingSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Label("Now Playing", systemImage: "sparkles")
-                .font(.headline)
+        VStack(alignment: .leading, spacing: 20) {
+            headerLabel(
+                "settings.section.now_playing",
+                systemImage: "sparkles")
 
-            GroupBox("Skin") {
-                VStack(alignment: .leading, spacing: 12) {
-                    Picker("Skin", selection: $nowPlayingSkin) {
-                        ForEach(NowPlayingSkin.allCases) { skin in
-                            Label(skin.title, systemImage: skin.systemImage)
-                                .tag(skin.rawValue)
+            VStack(alignment: .leading, spacing: 12) {
+                Text("settings.now_playing.select_skin")
+                    .font(.subheadline.bold())
+                    .foregroundStyle(.secondary)
+
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 20) {
+                        Picker("", selection: $nowPlayingSkin) {
+                            ForEach(SkinRegistry.options) { skin in
+                                Label(skin.name, systemImage: skin.systemImage)
+                                    .tag(skin.id)
+                            }
+                        }
+                        .pickerStyle(.radioGroup)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                        if let selected = SkinRegistry.options.first(where: {
+                            $0.id == nowPlayingSkin
+                        }) {
+                            Text(LocalizedStringKey(selected.detail))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .padding(.leading, 24)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }
-                    .pickerStyle(.radioGroup)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
 
-                    Text("Choose the visual style of the Now Playing page.")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
+            if let selected = SkinRegistry.options.first(where: { $0.id == nowPlayingSkin }),
+                let optionsView = SkinRegistry.skin(for: nowPlayingSkin).settingsView
+            {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(
+                        String(
+                            format: NSLocalizedString(
+                                "settings.now_playing.skin_options", comment: ""), selected.name)
+                    )
+                    .font(.subheadline.bold())
+                    .foregroundStyle(.secondary)
+
+                    GroupBox {
+                        optionsView
+                            .padding(12)
+                    }
                 }
             }
         }
@@ -198,111 +312,203 @@ struct SettingsView: View {
     // MARK: - AMLL Section
 
     private var amllSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Label("Lyrics (AMLL)", systemImage: "text.quote")
-                .font(.headline)
+        VStack(alignment: .leading, spacing: 20) {  // Reduced from 32
+            headerLabel(
+                "settings.section.lyrics", systemImage: "text.quote"
+            )
 
-            GroupBox("Timing") {
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Text("Lead-in (ms)")
-                        Spacer()
-                        Text("\(Int(lyricsLeadInMs)) ms")
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
+            amllTimingConfig
+            amllFontsConfig
+            amllPreviewConfig
+        }
+    }
+
+    private var amllTimingConfig: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("settings.lyrics.timing")
+                .font(.subheadline.bold())
+                .foregroundStyle(.secondary)
+
+            GroupBox {
+                VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("settings.lyrics.leadin")
+                            Spacer()
+                            Text("\(Int(lyricsLeadInMs)) ms")
+                                .foregroundStyle(themeStore.accentColor)
+                                .font(.system(.subheadline, design: .monospaced))
+                        }
+                        Slider(value: $lyricsLeadInMs, in: 0...800, step: 20)
                     }
-                    Slider(value: $lyricsLeadInMs, in: 0...800, step: 20)
-                    Text("Advance the next line’s first word and the previous line’s last word.")
+
+                    Text("settings.lyrics.leadin_desc")
                         .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-            }
-
-            GroupBox("Fonts") {
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Text("Font Size")
-                        Spacer()
-                        Text("\(Int(lyricsFontSize)) px")
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                    }
-                    Slider(value: $lyricsFontSize, in: 16...48, step: 1)
-
-                    HStack {
-                        Text("Font Weight")
-                        Spacer()
-                        Picker("", selection: $lyricsFontWeight) {
-                            ForEach(fontWeights, id: \.value) { weight in
-                                Text(weight.label).tag(weight.value)
-                            }
-                        }
-                        .labelsHidden()
-                        .frame(width: 140)
-                    }
-
-                    Divider()
-
-                    HStack {
-                        Text("Chinese Font")
-                        Spacer()
-                        Picker("", selection: $lyricsFontNameZh) {
-                            ForEach(fontFamilies, id: \.self) { family in
-                                Text(family)
-                                    .font(.custom(family, size: 12))
-                                    .tag(family)
-                            }
-                        }
-                        .labelsHidden()
-                        .pickerStyle(.menu)
-                        .frame(width: 220)
-                    }
-
-                    HStack {
-                        Text("English Font")
-                        Spacer()
-                        Picker("", selection: $lyricsFontNameEn) {
-                            ForEach(fontFamilies, id: \.self) { family in
-                                Text(family)
-                                    .font(.custom(family, size: 12))
-                                    .tag(family)
-                            }
-                        }
-                        .labelsHidden()
-                        .pickerStyle(.menu)
-                        .frame(width: 220)
-                    }
-
-                    HStack {
-                        Text("Translation Font")
-                        Spacer()
-                        Picker("", selection: $lyricsTranslationFontName) {
-                            ForEach(fontFamilies, id: \.self) { family in
-                                Text(family)
-                                    .font(.custom(family, size: 12))
-                                    .tag(family)
-                            }
-                        }
-                        .labelsHidden()
-                        .pickerStyle(.menu)
-                        .frame(width: 220)
-                    }
-                }
-            }
-
-            GroupBox("Preview") {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 12) {
-                        Text("春夏秋冬")
-                            .font(.custom(lyricsFontNameZh, size: CGFloat(lyricsFontSize)))
-                            .fontWeight(fontWeight(lyricsFontWeight))
-                        Text("Live in Kunming")
-                            .font(.custom(lyricsFontNameEn, size: CGFloat(lyricsFontSize)))
-                            .fontWeight(fontWeight(lyricsFontWeight))
-                    }
-                    Text("Translation: The wind is whispering tonight")
-                        .font(.custom(lyricsTranslationFontName, size: CGFloat(max(12, lyricsFontSize * 0.7))))
                         .foregroundStyle(.secondary)
+                }
+                .padding(12)
+            }
+        }
+    }
+
+    private var amllFontsConfig: some View {
+        GroupBox(LocalizedStringKey("settings.lyrics.fonts")) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("settings.lyrics.font_size")
+                    Spacer()
+                    Text("\(Int(lyricsFontSize)) px")
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                Slider(value: $lyricsFontSize, in: 16...48, step: 1)
+
+                HStack {
+                    Text("settings.lyrics.font_weight")
+                    Spacer()
+                    Picker("", selection: $lyricsFontWeight) {
+                        ForEach(fontWeights, id: \.value) { weight in
+                            Text(weight.label).tag(weight.value)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 140)
+                }
+
+                Divider()
+
+                HStack {
+                    Text("settings.lyrics.translation_size")
+                    Spacer()
+                    Text("\(Int(lyricsTranslationFontSize)) px")
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                Slider(value: $lyricsTranslationFontSize, in: 12...36, step: 1)
+
+                HStack {
+                    Text("settings.lyrics.translation_weight")
+                    Spacer()
+                    Picker("", selection: $lyricsTranslationFontWeight) {
+                        ForEach(fontWeights, id: \.value) { weight in
+                            Text(weight.label).tag(weight.value)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 140)
+                }
+
+                Divider()
+
+                HStack {
+                    Text("settings.lyrics.chinese_font")
+                    Spacer()
+                    Picker("", selection: $lyricsFontNameZh) {
+                        ForEach(fontFamilies, id: \.self) { family in
+                            Text(family)
+                                .font(.custom(family, size: 12))
+                                .tag(family)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 220)
+                }
+
+                HStack {
+                    Text("settings.lyrics.english_font")
+                    Spacer()
+                    Picker("", selection: $lyricsFontNameEn) {
+                        ForEach(fontFamilies, id: \.self) { family in
+                            Text(family)
+                                .font(.custom(family, size: 12))
+                                .tag(family)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 220)
+                }
+
+                HStack {
+                    Text("settings.lyrics.translation_font")
+                    Spacer()
+                    Picker("", selection: $lyricsTranslationFontName) {
+                        ForEach(fontFamilies, id: \.self) { family in
+                            Text(family)
+                                .font(.custom(family, size: 12))
+                                .tag(family)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 220)
+                }
+            }
+            .padding(.horizontal, 10)
+        }
+    }
+
+    private var amllPreviewConfig: some View {
+        GroupBox(LocalizedStringKey("settings.lyrics.preview")) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 12) {
+                    Text("settings.lyrics.preview_zh")
+                        .font(.custom(lyricsFontNameZh, size: CGFloat(lyricsFontSize)))
+                        .fontWeight(fontWeight(lyricsFontWeight))
+                    Text("settings.lyrics.preview_en")
+                        .font(.custom(lyricsFontNameEn, size: CGFloat(lyricsFontSize)))
+                        .fontWeight(fontWeight(lyricsFontWeight))
+                }
+                Text("settings.lyrics.preview_translation")
+                    .font(
+                        .custom(
+                            lyricsTranslationFontName,
+                            size: CGFloat(lyricsTranslationFontSize))
+                    )
+                    .fontWeight(fontWeight(lyricsTranslationFontWeight))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    // MARK: - Language Section
+
+    private var languageSection: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            headerLabel(
+                "settings.language.title",
+                systemImage: "character.bubble")
+
+            VStack(alignment: .leading, spacing: 12) {
+                Text("settings.language.title")
+                    .font(.subheadline.bold())
+                    .foregroundStyle(.secondary)
+
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Picker("", selection: Bindable(AppSettings.shared).language) {
+                            ForEach(AppSettings.Language.allCases, id: \.self) { lang in
+                                Text(
+                                    LocalizedStringKey(
+                                        "settings.language.\(lang == .zhHans ? "zh" : lang.rawValue)"
+                                    )
+                                )
+                                .tag(lang)
+                            }
+                        }
+                        .pickerStyle(.radioGroup)
+                        .labelsHidden()
+
+                        Divider()
+                            .padding(.vertical, 8)
+
+                        Text("settings.language.restart_notice")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         }
@@ -310,113 +516,295 @@ struct SettingsView: View {
 
     // MARK: - LED Settings Section
 
+    @AppStorage("ledTransientThreshold") private var transientThreshold: Double = 3.0
+    @AppStorage("ledTransientIntensity") private var transientIntensity: Double = 1.5
     private var ledSettingsSection: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            Label("LED Meter", systemImage: "waveform.path.ecg")
-                .font(.headline)
+        VStack(alignment: .leading, spacing: 20) {  // Reduced from 32
+            headerLabel(
+                "settings.section.led",
+                systemImage: "waveform.path.ecg")
 
-            // Preview
-            VStack(spacing: 8) {
-                LedMeterView(level: previewLevel, dotSize: 14, spacing: 8)
+            // Live Preview
+            VStack(alignment: .leading, spacing: 12) {
+                Text("settings.led.live_preview")
+                    .font(.subheadline.bold())
+                    .foregroundStyle(.secondary)
+
+                VStack(spacing: 8) {
+                    LedMeterView(
+                        level: Double(ledMeter.normalizedLevel),
+                        ledValues: ledMeter.metrics.leds,
+                        dotSize: 14,
+                        spacing: 7
+                    )
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-
-                Slider(value: $previewLevel, in: 0...1) {
-                    Text("Preview Level")
+                    .padding(.vertical, 40)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16)
+                            .strokeBorder(Color.primary.opacity(0.05))
+                    )
                 }
             }
 
             // Visual Config
-            Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 12) {
-                GridRow {
-                    Text("LED Count")
-                    Picker("", selection: $ledCount) {
-                        Text("9").tag(9)
-                        Text("11").tag(11)
-                        Text("13").tag(13)
-                        Text("15").tag(15)
+            VStack(alignment: .leading, spacing: 12) {
+                Text("settings.led.config")
+                    .font(.subheadline.bold())
+                    .foregroundStyle(.secondary)
+
+                GroupBox {
+                    VStack(spacing: 16) {
+                        Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 16) {
+                            GridRow {
+                                Text("settings.led.count")
+                                    .foregroundStyle(.secondary)
+                                Picker("", selection: $ledCount) {
+                                    Text("9").tag(9)
+                                    Text("11").tag(11)
+                                    Text("13").tag(13)
+                                    Text("15").tag(15)
+                                }
+                                .labelsHidden()
+                            }
+                            GridRow {
+                                Text("settings.led.brightness")
+                                    .foregroundStyle(.secondary)
+                                Picker("", selection: $brightnessLevels) {
+                                    Text("3").tag(3)
+                                    Text("5").tag(5)
+                                    Text("7").tag(7)
+                                }
+                                .labelsHidden()
+                            }
+                        }
+
+                        Divider()
+
+                        ledSensitivitySlider
+
+                        Divider()
+
+                        ledTuningSliders
                     }
-                    .labelsHidden()
-                }
-                GridRow {
-                    Text("Brightness Levels")
-                    Picker("", selection: $brightnessLevels) {
-                        Text("3").tag(3)
-                        Text("5").tag(5)
-                        Text("7").tag(7)
-                    }
-                    .labelsHidden()
+                    .padding(16)
                 }
             }
-
-            // Sliders for Fine Tuning
-            Group {
-                // Glass Outline
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text("Outline Intensity")
-                        Spacer()
-                        Text(String(format: "%.0f%%", glassOutlineIntensity * 100)).foregroundStyle(
-                            .secondary)
-                    }
-                    Slider(value: $glassOutlineIntensity, in: 0...1)
-                }
-
-                // Sensitivity
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text("Audio Sensitivity")
-                        Spacer()
-                        Text(String(format: "%.1fx", sensitivity)).foregroundStyle(.secondary)
-                    }
-                    Slider(value: $sensitivity, in: 0.5...2.0)
-                }
-
-                // Bass Weight
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text("Bass Weight")
-                        Spacer()
-                        Text(String(format: "%.0f%%", lowFrequencyWeight * 100)).foregroundStyle(
-                            .secondary)
-                    }
-                    Slider(value: $lowFrequencyWeight, in: 0...1)
-                }
-
-                // Speed
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text("Response Speed")
-                        Spacer()
-                        Text(
-                            responseSpeed < 0.3 ? "Slow" : (responseSpeed < 0.7 ? "Normal" : "Fast")
-                        ).foregroundStyle(.secondary)
-                    }
-                    Slider(value: $responseSpeed, in: 0...1)
-                }
-            }
-            .font(.subheadline)
         }
+    }
+
+    private var ledSensitivitySlider: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text("settings.led.sensitivity")
+                Spacer()
+                Text(String(format: "%.1fx", sensitivity))
+                    .foregroundStyle(.secondary)
+            }
+            Slider(value: $sensitivity, in: 0.5...3.0)
+            Text("settings.led.sensitivity_desc")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+        }
+        .font(.subheadline)
+        .padding(.horizontal, 10)
+    }
+
+    private var ledTuningSliders: some View {
+        Group {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("settings.led.frequency")
+                    Spacer()
+                    Text(String(format: "%.0f Hz", cutoffHz))
+                        .foregroundStyle(.secondary)
+                }
+                Slider(value: $cutoffHz, in: 200...6000, step: 100)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("settings.led.pregain")
+                    Spacer()
+                    Text(String(format: "%.2fx", preGain))
+                        .foregroundStyle(.secondary)
+                }
+                Slider(value: $preGain, in: 0.0...2.0, step: 0.05)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("settings.led.transient_threshold")
+                    Spacer()
+                    Text(String(format: "%.1f dB", transientThreshold))
+                        .foregroundStyle(.secondary)
+                }
+                Slider(value: $transientThreshold, in: 1.0...12.0, step: 0.5)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("settings.led.transient_intensity")
+                    Spacer()
+                    Text(String(format: "%.1fx", transientIntensity))
+                        .foregroundStyle(.secondary)
+                }
+                Slider(value: $transientIntensity, in: 0.0...4.0, step: 0.1)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("settings.led.speed")
+                    Spacer()
+                    Text(String(format: "%.2fx", speed))
+                        .foregroundStyle(.secondary)
+                }
+                Slider(value: $speed, in: 0.5...2.0, step: 0.05)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("settings.led.publish_rate")
+                    Spacer()
+                    Text("\(targetHz) Hz")
+                        .foregroundStyle(.secondary)
+                }
+                Picker("", selection: $targetHz) {
+                    Text("30 Hz").tag(30)
+                    Text("60 Hz").tag(60)
+                }
+                .pickerStyle(.segmented)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("settings.led.lookahead")
+                    Spacer()
+                    Text(String(format: "%.0f ms", lookaheadMs))
+                        .foregroundStyle(.secondary)
+                }
+                Slider(value: $lookaheadMs, in: 0...500, step: 10)
+                Text("settings.led.lookahead_desc")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .font(.subheadline)
+        .padding(.horizontal, 10)
     }
 
     // MARK: - About
 
     private var aboutSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("About", systemImage: "info.circle")
-                .font(.headline)
+        VStack(alignment: .center, spacing: 20) {
+            Spacer(minLength: 40)
 
-            Text("TrueMusic v1.0")
-                .font(.subheadline.bold())
+            Image("EmptyLyric")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 180, height: 180)
+                .clipShape(RoundedRectangle(cornerRadius: 24))
+                .shadow(color: Color.black.opacity(0.1), radius: 10, y: 5)
 
-            Text(
-                "A native macOS music player featuring AMLL lyrics engine and Liquid Glass aesthetics."
-            )
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
+            VStack(spacing: 8) {
+                Text(Constants.appName)
+                    .font(.title.bold())
+                Text(
+                    String(
+                        format: NSLocalizedString("settings.about.version", comment: ""),
+                        Constants.appVersion)
+                )
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            }
+
+            Text(NSLocalizedString("settings.about.quote", comment: ""))
+                .font(.body)
+                .fontWeight(.ultraLight)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: 320)
+                .padding(.top, 12)
+
+            Spacer()
+
+            Divider()
+                .padding(.vertical, 32)
+
+            VStack(alignment: .leading, spacing: 20) {
+                Text(NSLocalizedString("settings.about.compliance", comment: ""))
+                    .font(.headline)
+
+                Text("settings.about.compliance_desc")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+
+                VStack(alignment: .leading, spacing: 16) {
+                    complianceItem(
+                        name: "applemusic-like-lyrics",
+                        url: "https://github.com/amll-dev/applemusic-like-lyrics"
+                    )
+                    complianceItem(
+                        name: "apple-audio-visualization",
+                        url: "https://github.com/taterboom/apple-audio-visualization"
+                    )
+                    complianceItem(
+                        name: "LDDC",
+                        url: "https://github.com/chenmozhijin/LDDC"
+                    )
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("settings.about.source_code")
+                        .font(.subheadline.bold())
+                    Text("settings.about.source_code_desc")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Link(
+                        "https://github.com/kmgccc/TrueMusic",
+                        destination: URL(string: "https://github.com/kmgccc/TrueMusic")!
+                    )
+                    .font(.caption)
+                }
+                .padding(.top, 10)
+
+                Text("settings.about.license")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+
+                Spacer()
+
+                Text("settings.about.copyright")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func complianceItem(name: String, url: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(name)
+                .font(.subheadline.bold())
+            Link(url, destination: URL(string: url)!)
+                .font(.caption)
+            //            Text("Modified source code is used in this application.")
+            //                .font(.caption2)
+            //                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func headerLabel(_ title: String, systemImage: String) -> some View {
+        HStack(spacing: 8) {  // Reduced spacing
+            Image(systemName: systemImage)
+                .foregroundStyle(themeStore.accentColor)
+                .font(.title3.bold())
+            Text(LocalizedStringKey(title))
+                .font(.title2.bold())
+        }
+        .padding(.bottom, 4)  // Reduced padding (let VStack spacing handle the gap)
     }
 
     private func fontWeight(_ weight: Int) -> Font.Weight {
@@ -433,33 +821,50 @@ struct SettingsView: View {
         default: return .regular
         }
     }
+
+    private func applyLedConfig() {
+        ledMeter.updateConfig(
+            LEDMeterConfig(
+                ledCount: ledCount,
+                levels: brightnessLevels,
+                cutoffHz: Float(cutoffHz),
+                preGain: Float(preGain),
+                sensitivity: sensitivity,
+                speed: Float(speed),
+                targetHz: targetHz,
+                transientThreshold: Float(transientThreshold),
+                transientIntensity: Float(transientIntensity)
+            )
+        )
+    }
+
 }
 
 private enum SettingsCategory: String, CaseIterable, Identifiable {
-    case appearance
     case nowPlaying
     case lyrics
     case led
+    case language
     case about
 
     var id: String { rawValue }
 
-    var title: String {
+    var title: LocalizedStringKey {
         switch self {
-        case .appearance: return "Appearance"
-        case .nowPlaying: return "Now Playing"
-        case .lyrics: return "Lyrics"
-        case .led: return "LED Meter"
-        case .about: return "About"
+        case .nowPlaying: return "settings.section.now_playing"
+        case .lyrics: return "settings.section.lyrics"
+        case .led: return "settings.section.led"
+        case .language: return "settings.section.language"
+        case .about: return "settings.section.about"
         }
     }
 
     var systemImage: String {
         switch self {
-        case .appearance: return "paintbrush"
         case .nowPlaying: return "sparkles"
         case .lyrics: return "text.quote"
         case .led: return "waveform.path.ecg"
+        case .language: return "character.bubble"
         case .about: return "info.circle"
         }
     }
@@ -469,4 +874,6 @@ private enum SettingsCategory: String, CaseIterable, Identifiable {
 
 #Preview("Settings") {
     SettingsView()
+        .environment(LEDMeterService())
+        .environmentObject(ThemeStore.shared)
 }

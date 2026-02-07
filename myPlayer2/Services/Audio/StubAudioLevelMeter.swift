@@ -17,6 +17,7 @@ final class StubAudioLevelMeter: AudioLevelMeterProtocol {
     // MARK: - Published State
 
     private(set) var normalizedLevel: Float = 0
+    private(set) var audioMetrics: AudioMetrics = .zero
 
     // MARK: - Private
 

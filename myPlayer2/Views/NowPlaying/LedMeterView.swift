@@ -13,9 +13,13 @@ import SwiftUI
 /// 11-dot LED level meter with symmetric lighting from center.
 /// Uses Liquid Glass material for unlit dots and outline highlights.
 struct LedMeterView: View {
+    @Environment(\.colorScheme) private var colorScheme
 
     /// Normalized level (0.0 to 1.0)
     let level: Double
+
+    /// Optional per-LED brightness values (0.0 to 1.0)
+    var ledValues: [Float]? = nil
 
     /// Dot size
     var dotSize: CGFloat = 12
@@ -23,18 +27,21 @@ struct LedMeterView: View {
     /// Spacing between dots
     var spacing: CGFloat = 8
 
+    /// Optional pill tint (very subtle, above glass)
+    var pillTint: Color? = nil
+
     // MARK: - Settings (from AppSettings)
 
     private var numLEDs: Int {
-        AppSettings.shared.ledCount
+        ledValues?.count ?? AppSettings.shared.ledCount
     }
 
     private var brightnessLevels: Int {
         AppSettings.shared.ledBrightnessLevels
     }
 
-    private var glassOutlineIntensity: Double {
-        AppSettings.shared.ledGlassOutlineIntensity
+    private var outlineIntensity: Double {
+        colorScheme == .dark ? 0.55 : 0.35
     }
 
     // MARK: - Colors
@@ -43,21 +50,38 @@ struct LedMeterView: View {
     /// Brighter, more vivid colors (no glow effect)
     private var dotColors: [Color] {
         [
-            Color(hue: 0.35, saturation: 0.65, brightness: 0.95),  // Center: bright green
-            Color(hue: 0.30, saturation: 0.60, brightness: 0.92),  // Yellow-green
-            Color(hue: 0.18, saturation: 0.70, brightness: 0.90),  // Yellow
-            Color(hue: 0.10, saturation: 0.75, brightness: 0.88),  // Orange-yellow
-            Color(hue: 0.05, saturation: 0.80, brightness: 0.85),  // Orange
-            Color(hue: 0.00, saturation: 0.85, brightness: 0.82),  // Red-orange
+            Color(hue: 0.24, saturation: 0.10, brightness: 1.00),  // Center: Green (Low Sat)
+            Color(hue: 0.19, saturation: 0.15, brightness: 1.00),  // Yellow-Green (Low-Mid)
+            Color(hue: 0.17, saturation: 0.5, brightness: 1.00),  // Yellow (High Sat transition)
+            Color(hue: 0.12, saturation: 0.63, brightness: 1.00),  // Orange-Yellow (Peak Sat ~80%+)
+            Color(hue: 0.08, saturation: 0.68, brightness: 1.00),  // Orange (Sides ~70%+)
+            Color(hue: 0.05, saturation: 0.67, brightness: 1.00),  // Red (Sides ~70%)
         ]
     }
 
     var body: some View {
-        HStack(spacing: spacing) {
-            ForEach(0..<numLEDs, id: \.self) { index in
-                ledDot(at: index)
+        let baseOffsetY: CGFloat = 4
+        ZStack {
+            LEDPillBase(
+                ledCount: numLEDs,
+                dotSize: dotSize,
+                dotSpacing: spacing,
+                horizontalPadding: 14,
+                heightPadding: 14,
+                tint: pillTint
+            )
+            .offset(y: baseOffsetY)
+            .zIndex(0)
+
+            HStack(spacing: spacing) {
+                ForEach(0..<numLEDs, id: \.self) { index in
+                    ledDot(at: index)
+                }
             }
+            .offset(y: baseOffsetY)
+            .zIndex(1)
         }
+        .animation(.easeInOut(duration: 0.25), value: numLEDs)
     }
 
     // MARK: - LED Dot
@@ -86,9 +110,9 @@ struct LedMeterView: View {
                 .strokeBorder(
                     LinearGradient(
                         colors: [
-                            .white.opacity(0.4 * glassOutlineIntensity),
+                            .white.opacity(0.4 * outlineIntensity),
                             .clear,
-                            .white.opacity(0.15 * glassOutlineIntensity),
+                            .white.opacity(0.15 * outlineIntensity),
                         ],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
@@ -104,6 +128,12 @@ struct LedMeterView: View {
 
     /// Brightness state: 0 = off (glass only), 1..brightnessLevels-1 = lit levels
     private func calculateBrightnessState(for index: Int) -> Int {
+        if let ledValues, index < ledValues.count {
+            let value = max(0, min(1, Double(ledValues[index])))
+            let step = 1.0 / Double(max(1, brightnessLevels - 1))
+            return min(brightnessLevels - 1, Int(round(value / step)))
+        }
+
         let centerIndex = numLEDs / 2
 
         // Calculate distance from center
@@ -150,6 +180,62 @@ struct LedMeterView: View {
         // Clamp to available colors
         let colorIndex = min(distanceFromCenter, dotColors.count - 1)
         return dotColors[colorIndex]
+    }
+}
+
+// MARK: - LED Pill Base
+
+private struct LEDPillBase: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    let ledCount: Int
+    let dotSize: CGFloat
+    let dotSpacing: CGFloat
+    let horizontalPadding: CGFloat
+    let heightPadding: CGFloat
+    let tint: Color?
+
+    /// For capsule harmony, keep horizontal/vertical padding in sync so end-cap radius
+    /// matches the end LED geometry (end LED centers align with cap centers).
+    private var capAlignedPadding: CGFloat {
+        max(horizontalPadding, heightPadding)
+    }
+
+    private var pillWidth: CGFloat {
+        CGFloat(ledCount) * dotSize
+            + CGFloat(max(0, ledCount - 1)) * dotSpacing
+            + capAlignedPadding * 2
+    }
+
+    private var pillHeight: CGFloat {
+        dotSize + capAlignedPadding * 2
+    }
+
+    var body: some View {
+        Capsule()
+            .fill(Color.clear)
+            .frame(width: pillWidth, height: pillHeight)
+            .glassEffect(.clear, in: .capsule)
+            .overlay(
+                Capsule()
+                    .strokeBorder(Color.white.opacity(colorScheme == .dark ? 0.14 : 0.10), lineWidth: 1)
+            )
+            .overlay(
+                Group {
+                    if let tint {
+                        Capsule()
+                            .fill(tint.opacity(colorScheme == .dark ? 0.38 : 0.20))
+                            .blendMode(.normal)
+                    }
+                }
+            )
+            .shadow(
+                color: Color.black.opacity(colorScheme == .dark ? 0.08 : 0.12),
+                radius: 2,
+                x: 0,
+                y: 1
+            )
+            .animation(.easeInOut(duration: 0.25), value: ledCount)
     }
 }
 

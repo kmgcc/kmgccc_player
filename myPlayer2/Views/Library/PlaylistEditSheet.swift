@@ -36,13 +36,15 @@ struct PlaylistEditSheet: View {
             VStack(alignment: .leading, spacing: 24) {
                 // Name field
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Playlist Name")
+                    Text("edit.playlist.name")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
 
-                    TextField("My Playlist", text: $name)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.title3)
+                    TextField(
+                        "edit.playlist.placeholder", text: $name
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    .font(.title3)
                 }
 
                 // Track count (edit mode only)
@@ -51,7 +53,7 @@ struct PlaylistEditSheet: View {
                         Image(systemName: "music.note.list")
                             .foregroundStyle(.secondary)
 
-                        Text("\(playlist.tracks.count) tracks")
+                        Text("edit.playlist.tracks_count \(playlist.tracks.count)")
                             .foregroundStyle(.secondary)
                     }
                     .font(.subheadline)
@@ -64,7 +66,9 @@ struct PlaylistEditSheet: View {
                     Button(role: .destructive) {
                         showingDeleteConfirmation = true
                     } label: {
-                        Label("Delete Playlist", systemImage: "trash")
+                        Label(
+                            "edit.playlist.delete",
+                            systemImage: "trash")
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(.red)
@@ -84,16 +88,18 @@ struct PlaylistEditSheet: View {
             }
         }
         .confirmationDialog(
-            "Delete Playlist?",
+            "edit.playlist.delete_confirm_title",
             isPresented: $showingDeleteConfirmation,
             titleVisibility: .visible
         ) {
-            Button("Delete", role: .destructive) {
+            Button(
+                "edit.playlist.delete_confirm", role: .destructive
+            ) {
                 deletePlaylist()
             }
-            Button("Cancel", role: .cancel) {}
+            Button("edit.track.cancel", role: .cancel) {}
         } message: {
-            Text("This will remove the playlist but not the tracks themselves.")
+            Text("edit.playlist.delete_desc")
         }
     }
 
@@ -101,9 +107,13 @@ struct PlaylistEditSheet: View {
 
     private var headerView: some View {
         HStack {
-            Text(isCreating ? "New Playlist" : "Edit Playlist")
-                .font(.title2)
-                .fontWeight(.bold)
+            Text(
+                isCreating
+                    ? "sidebar.new_playlist"
+                    : "sidebar.edit_playlist"
+            )
+            .font(.title2)
+            .fontWeight(.bold)
 
             Spacer()
 
@@ -123,14 +133,18 @@ struct PlaylistEditSheet: View {
 
     private var footerView: some View {
         HStack {
-            Button("Cancel") {
+            Button("edit.track.cancel") {
                 dismiss()
             }
             .keyboardShortcut(.escape)
 
             Spacer()
 
-            Button(isCreating ? "Create" : "Save") {
+            Button(
+                isCreating
+                    ? "context.new_playlist"
+                    : "edit.track.save"
+            ) {
                 savePlaylist()
             }
             .buttonStyle(.borderedProminent)

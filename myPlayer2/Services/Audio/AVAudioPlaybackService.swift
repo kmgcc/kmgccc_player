@@ -33,6 +33,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     private let engine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
+    private let delayNode = AVAudioUnitDelay()
     private var audioFile: AVAudioFile?
 
     // MARK: - Playback State
@@ -43,6 +44,10 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     private var queueIndex: Int = 0
     private var shuffleHistory: [Int] = []
     private var activeScheduleToken = UUID()
+    private var completionWorkItem: DispatchWorkItem?
+    private var drainStartUptime: TimeInterval?
+    private var drainStartTime: Double = 0
+    private var lastLookaheadMs: Double = AppSettings.shared.lookaheadMs
 
     // MARK: - Timer
 
@@ -73,10 +78,19 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     private func setupEngine() {
         // Attach player node to engine
         engine.attach(playerNode)
+        engine.attach(delayNode)
 
         // Connect player to main mixer
         let mainMixer = engine.mainMixerNode
         engine.connect(playerNode, to: mainMixer, format: nil)
+
+        // Route main mixer through delay before output
+        engine.disconnectNodeOutput(mainMixer)
+        engine.connect(mainMixer, to: delayNode, format: nil)
+        engine.connect(delayNode, to: engine.outputNode, format: nil)
+
+        // Apply initial lookahead delay
+        configureDelay()
 
         // Apply initial volume
         applyVolume()
@@ -87,6 +101,40 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     private func applyVolume() {
         playerNode.volume = Float(volume)
+    }
+
+    // MARK: - Lookahead (Audio Delay)
+
+    private var lookaheadSeconds: Double {
+        let ms = max(0, min(200, lastLookaheadMs))
+        return ms / 1000.0
+    }
+
+    private func updateLookaheadIfNeeded(force: Bool = false) {
+        let newMs = AppSettings.shared.lookaheadMs
+        if force || abs(newMs - lastLookaheadMs) > 0.1 {
+            lastLookaheadMs = newMs
+            configureDelay()
+        }
+    }
+
+    private func configureDelay() {
+        let seconds = lookaheadSeconds
+        delayNode.delayTime = seconds
+        delayNode.feedback = 0
+        delayNode.wetDryMix = seconds > 0 ? 100 : 0
+        delayNode.lowPassCutoff = 20_000
+        delayNode.reset()
+    }
+
+    private func resetDelayBuffer() {
+        delayNode.reset()
+    }
+
+    private func cancelPendingCompletion() {
+        completionWorkItem?.cancel()
+        completionWorkItem = nil
+        drainStartUptime = nil
     }
 
     // MARK: - Scheduling Helpers
@@ -138,9 +186,12 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     private func playInternal(track: Track) {
         // Stop current playback but keep queue state.
         stopPlayback(clearQueue: false)
+        updateLookaheadIfNeeded(force: true)
+        resetDelayBuffer()
 
-        // Resolve bookmark to get file URL
+        // Resolve bookmark/local library path to get file URL
         let result = track.resolveFileURL()
+        track.availability = result.newAvailability
 
         guard let fileURL = result.url else {
             print("❌ Cannot play track: file not accessible - \(track.title)")
@@ -152,7 +203,6 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         // Update bookmark if stale
         if let refreshedData = result.refreshedBookmarkData {
             track.fileBookmarkData = refreshedData
-            track.availability = result.newAvailability
         }
 
         do {
@@ -203,7 +253,9 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     func pause() {
         guard isPlaying else { return }
 
+        cancelPendingCompletion()
         playerNode.pause()
+        resetDelayBuffer()
         isPlaying = false
         stopProgressTimer()
 
@@ -213,6 +265,8 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     func resume() {
         guard !isPlaying, audioFile != nil else { return }
 
+        updateLookaheadIfNeeded(force: true)
+        resetDelayBuffer()
         playerNode.play()
         isPlaying = true
         startProgressTimer()
@@ -227,8 +281,10 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     private func stopPlayback(clearQueue: Bool) {
         print("⏹️ stop() called")
 
+        cancelPendingCompletion()
         invalidateScheduleToken()
         playerNode.stop()
+        resetDelayBuffer()
         stopProgressTimer()
         stopAccessingCurrentFile()
 
@@ -253,8 +309,10 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         let wasPlaying = isPlaying
 
         // Stop current playback
+        cancelPendingCompletion()
         invalidateScheduleToken()
         playerNode.stop()
+        resetDelayBuffer()
         isPlaying = false
 
         // Calculate frame position
@@ -270,7 +328,8 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
         // Schedule from new position
         startingFramePosition = targetFrame
-        currentTime = seconds
+        updateLookaheadIfNeeded(force: true)
+        currentTime = max(0, min(seconds - lookaheadSeconds, duration))
 
         scheduleSegment(audioFile, startingFrame: targetFrame, frameCount: frameCount)
 
@@ -388,9 +447,18 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     }
 
     private func updateProgress() {
+        updateLookaheadIfNeeded()
+        let nowUptime = ProcessInfo.processInfo.systemUptime
+
+        if let drainStartUptime {
+            let elapsed = max(0, nowUptime - drainStartUptime)
+            currentTime = min(duration, drainStartTime + elapsed)
+            return
+        }
+
         guard isPlaying else { return }
         guard playerNode.isPlaying else {
-            // Node stopped but we think we're playing - sync state
+            // Node stopped but we think we're playing - wait for completion handler
             return
         }
 
@@ -405,8 +473,9 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         let currentFrame = startingFramePosition + playerTime.sampleTime
         let newTime = Double(currentFrame) / sampleRate
 
-        // Clamp to duration and ensure non-negative
-        currentTime = max(0, min(newTime, duration))
+        // Apply lookahead delay so UI/lyrics match audible output
+        let audibleTime = newTime - lookaheadSeconds
+        currentTime = max(0, min(audibleTime, duration))
     }
 
     // MARK: - Playback Completion
@@ -415,7 +484,34 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         guard token == activeScheduleToken else { return }
         // Only handle if we think we're still playing
         guard isPlaying else { return }
+        let delaySeconds = lookaheadSeconds
+        if delaySeconds > 0 {
+            beginDrain(lookaheadSeconds: delaySeconds, token: token)
+            return
+        }
 
+        finalizePlaybackCompletion(token: token)
+    }
+
+    private func beginDrain(lookaheadSeconds: Double, token: UUID) {
+        cancelPendingCompletion()
+        drainStartUptime = ProcessInfo.processInfo.systemUptime
+        drainStartTime = max(0, duration - lookaheadSeconds)
+        currentTime = drainStartTime
+
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            Task { @MainActor in
+                self.finalizePlaybackCompletion(token: token)
+            }
+        }
+        completionWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + lookaheadSeconds, execute: work)
+    }
+
+    private func finalizePlaybackCompletion(token: UUID) {
+        guard token == activeScheduleToken else { return }
+        cancelPendingCompletion()
         stopProgressTimer()
 
         print("✅ Playback completed: \(currentTrack?.title ?? "unknown")")

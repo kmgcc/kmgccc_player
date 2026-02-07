@@ -25,6 +25,9 @@ protocol LibraryRepositoryProtocol: AnyObject {
     /// Add multiple tracks to the library.
     func addTracks(_ tracks: [Track]) async
 
+    /// Add a playlist (used for bootstrap from disk).
+    func addPlaylist(_ playlist: Playlist) async
+
     /// Delete a track from the library.
     func deleteTrack(_ track: Track) async
 

@@ -32,10 +32,31 @@ final class LyricsBridge: NSObject, LyricsBridgeServiceProtocol {
 
     private var pendingCalls: [(String, String)] = []  // (method, jsonArgs)
 
+    // MARK: - Last Known State (for reattach/reload)
+
+    private var lastLyricsTTML: String?
+    private var lastConfigJSON: String?
+    private var lastIsPlaying: Bool?
+    private var lastTime: Double?
+    private var needsReplayOnReady: Bool = false
+    private var lastReloadAt: Date = .distantPast
+    private let minReloadInterval: TimeInterval = 2.0
+    private var isReloadInFlight: Bool = false
+
     // MARK: - Throttling
 
     private var lastTimeUpdate: Date = .distantPast
     private let timeUpdateInterval: TimeInterval = 0.1  // 10 Hz max
+
+    // MARK: - Web Content Lifecycle
+
+    func markWebContentInvalidated(_ reason: String) {
+        isReady = false
+        needsReplayOnReady = true
+        pendingCalls.removeAll()
+        lastTimeUpdate = .distantPast
+        print("[LyricsBridge] Web content invalidated: \(reason)")
+    }
 
     // MARK: - Initialization
 
@@ -48,6 +69,10 @@ final class LyricsBridge: NSObject, LyricsBridgeServiceProtocol {
 
     /// Attach to a WKWebView and register message handlers.
     func attachToWebView(_ webView: WKWebView) {
+        if self.webView === webView {
+            return
+        }
+
         // If SwiftUI recreates the WKWebView (e.g. panel toggles), ensure we
         // detach from the previous instance and reset readiness state.
         if self.webView != nil {
@@ -60,6 +85,8 @@ final class LyricsBridge: NSObject, LyricsBridgeServiceProtocol {
         capabilities = []
         pendingCalls.removeAll()
         lastTimeUpdate = .distantPast
+        needsReplayOnReady = true
+        isReloadInFlight = false
 
         // Register message handlers
         let contentController = webView.configuration.userContentController
@@ -68,6 +95,27 @@ final class LyricsBridge: NSObject, LyricsBridgeServiceProtocol {
         contentController.add(self, name: "log")  // Added logging
 
         print("[LyricsBridge] attached to WebView")
+    }
+
+    var hasAttachedWebView: Bool {
+        webView != nil
+    }
+
+    func reloadWebView(reason: String, force: Bool = false) {
+        guard let webView else { return }
+        if isReloadInFlight { return }
+        let now = Date()
+        if !force, now.timeIntervalSince(lastReloadAt) < minReloadInterval {
+            return
+        }
+        lastReloadAt = now
+        isReloadInFlight = true
+        markWebContentInvalidated("reload requested: \(reason)")
+        webView.reload()
+    }
+
+    func notifyWebNavigationFinished() {
+        isReloadInFlight = false
     }
 
     /// Detach from WebView (cleanup).
@@ -81,6 +129,7 @@ final class LyricsBridge: NSObject, LyricsBridgeServiceProtocol {
         version = ""
         capabilities = []
         pendingCalls.removeAll()
+        isReloadInFlight = false
         print("[LyricsBridge] detached")
     }
 
@@ -89,6 +138,7 @@ final class LyricsBridge: NSObject, LyricsBridgeServiceProtocol {
     // MARK: - LyricsBridgeServiceProtocol
 
     func setLyricsTTML(_ ttmlText: String) {
+        lastLyricsTTML = ttmlText
         // Enforce JSON serialization for safe string passing
         if let jsonArg = toJSONArg(ttmlText) {
             callJS("window.AMLL.setLyricsTTML(\(jsonArg))")
@@ -98,6 +148,8 @@ final class LyricsBridge: NSObject, LyricsBridgeServiceProtocol {
     }
 
     func setCurrentTime(_ seconds: Double) {
+        guard seconds.isFinite else { return }
+        lastTime = seconds
         // Throttle time updates to 10 Hz
         let now = Date()
         guard now.timeIntervalSince(lastTimeUpdate) >= timeUpdateInterval else {
@@ -118,11 +170,13 @@ final class LyricsBridge: NSObject, LyricsBridgeServiceProtocol {
     }
 
     func setPlaying(_ isPlaying: Bool) {
+        lastIsPlaying = isPlaying
         let boolStr = isPlaying ? "true" : "false"
         callJS("window.AMLL.setPlaying(\(boolStr))")
     }
 
     func setConfigJSON(_ json: String) {
+        lastConfigJSON = json
         // 'json' is already a JSON string representation of an object, e.g. {"fontSize": 12}
         // We pass it directly to the JS function which expects an object.
         // HOWEVER, if the JS function expects an OBJECT, we should parse this JSON string
@@ -222,8 +276,14 @@ extension LyricsBridge: WKScriptMessageHandler {
         version = dict["version"] as? String ?? "unknown"
         capabilities = dict["capabilities"] as? [String] ?? []
         isReady = true
+        isReloadInFlight = false
 
         print("[LyricsBridge] Ready - version: \(version), capabilities: \(capabilities)")
+
+        if needsReplayOnReady {
+            needsReplayOnReady = false
+            replayLastState()
+        }
 
         flushPendingCalls()
     }
@@ -244,5 +304,27 @@ extension LyricsBridge: WKScriptMessageHandler {
 
         print("[LyricsBridge] User seek to \(String(format: "%.2f", seconds))s")
         onUserSeek?(seconds)
+    }
+
+    // MARK: - Replay
+
+    private func replayLastState() {
+        if let lastConfigJSON {
+            callJS("window.AMLL.setConfig(\(lastConfigJSON))")
+        }
+
+        if let lastLyricsTTML, let jsonArg = toJSONArg(lastLyricsTTML) {
+            callJS("window.AMLL.setLyricsTTML(\(jsonArg))")
+        }
+
+        if let lastIsPlaying {
+            let boolStr = lastIsPlaying ? "true" : "false"
+            callJS("window.AMLL.setPlaying(\(boolStr))")
+        }
+
+        if let lastTime {
+            lastTimeUpdate = .distantPast
+            setCurrentTime(lastTime)
+        }
     }
 }

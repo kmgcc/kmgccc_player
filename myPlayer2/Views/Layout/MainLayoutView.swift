@@ -8,9 +8,10 @@
 //  Design Decisions:
 //  - NO global import button in toolbar
 //  - Import is done within PlaylistDetailView (per-playlist)
-//  - Sidebar always visible (no toggle)
+//  - Sidebar supports collapse/restore toggle
 //
 
+import AppKit
 import SwiftUI
 
 /// Main layout using NavigationSplitView for native macOS 26 Liquid Glass.
@@ -24,78 +25,93 @@ struct MainLayoutView: View {
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(LyricsViewModel.self) private var lyricsVM
 
-    /// Fixed column visibility - sidebar always visible
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var dragStartLyricsWidth: CGFloat?
+    @State private var dragWidthBounds: ClosedRange<CGFloat>?
+    @State private var isHoveringResizeHandle = false
+    @State private var windowWidth: CGFloat = 0
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-            // MARK: - Sidebar Column (System Glass - NO custom blur!)
-            SidebarView()
-                .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 300)
-        } detail: {
-            // MARK: - Detail Column (Main + Lyrics + MiniPlayer overlay)
-            ZStack(alignment: .bottom) {
-                // Content + Lyrics horizontal stack
-                HStack(spacing: 0) {
-                    // Main content (library or now playing)
-                    mainContentArea
-                        .frame(maxWidth: .infinity)
-                        .layoutPriority(1)
-
-                    // Lyrics panel (toggleable)
-                    if uiState.lyricsVisible {
-                        lyricsResizeHandle
-
-                        LyricsPanelView()
-                            .frame(width: uiState.lyricsWidth)
-                            .frame(maxHeight: .infinity, alignment: .top)
+        GeometryReader { proxy in
+            NavigationSplitView(columnVisibility: $columnVisibility) {
+                SidebarView()
+                    .navigationSplitViewColumnWidth(
+                        min: Constants.Layout.sidebarMinWidth,
+                        ideal: uiState.sidebarLastWidth,
+                        max: Constants.Layout.sidebarMaxWidth
+                    )
+                    .navigationTitle("")
+            } detail: {
+                ZStack(alignment: .bottom) {
+                    switch uiState.contentMode {
+                    case .library:
+                        libraryLayout
+                    case .nowPlaying:
+                        nowPlayingLayout
                     }
+
+                    MiniPlayerView()
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 12)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-
-                // MiniPlayer (only in detail area, not covering sidebar)
-                MiniPlayerView()
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 12)
-            }
-            // Allow lyrics glass + floating controls to reach the window top.
-            .ignoresSafeArea(.container, edges: .top)
-            .overlay(alignment: .topTrailing) {
-                lyricsToggleButton
-            }
-        }
-        // Force sidebar always visible - disable hiding
-        .navigationSplitViewStyle(.balanced)
-        // Sidebar is always visible; remove the system sidebar toggle button.
-        .toolbar(removing: .sidebarToggle)
-        // Some builds still show the default AppKit toolbar toggle; remove it at the window level.
-        .background(
-            WindowToolbarAccessor { window in
-                // Make the titlebar transparent so content can reach the top.
-                window.titlebarAppearsTransparent = true
-                window.isMovableByWindowBackground = true
-
-                // Fully remove the AppKit toolbar to prevent the default sidebar toggle.
-                if let toolbar = window.toolbar {
-                    toolbar.isVisible = false
-                    for (idx, item) in toolbar.items.enumerated().reversed() {
-                        if item.itemIdentifier == .toggleSidebar {
-                            toolbar.removeItem(at: idx)
+                .ignoresSafeArea(.container, edges: .top)
+                .overlay {
+                    ZStack {
+                        if uiState.contentMode == .nowPlaying {
+                            GeometryReader { detailProxy in
+                                lyricsToggleOverlay
+                                    .offset(y: -detailProxy.safeAreaInsets.top)
+                                    .frame(
+                                        maxWidth: .infinity,
+                                        maxHeight: .infinity,
+                                        alignment: .topTrailing
+                                    )
+                            }
                         }
+
                     }
                 }
-                window.toolbar = nil
-                window.standardWindowButton(.toolbarButton)?.isHidden = true
+                .navigationTitle("")
             }
-        )
-        .task {
-            await libraryVM.load()
-        }
-        // Lock column visibility to always show sidebar
-        .onChange(of: columnVisibility) { _, newValue in
-            if newValue != .all {
-                columnVisibility = .all
+            .navigationSplitViewStyle(.balanced)
+
+            .background(
+                WindowToolbarAccessor { window in
+                    window.titlebarAppearsTransparent = true
+                    // Keep window dragging on titlebar only; avoid conflicts with custom resize dividers.
+                    window.isMovableByWindowBackground = false
+                    window.titleVisibility = .hidden
+                    window.title = ""
+                    window.toolbarStyle = .unified
+                }
+            )
+            .task {
+                await libraryVM.load()
+            }
+            .onAppear {
+                columnVisibility = uiState.sidebarVisible ? .all : .detailOnly
+                updateWindowWidth(proxy.size.width)
+            }
+            .onChange(of: proxy.size.width) { _, newWidth in
+                updateWindowWidth(newWidth)
+            }
+            .onChange(of: columnVisibility) { _, newValue in
+                let shouldShowSidebar = newValue != .detailOnly
+                if shouldShowSidebar != uiState.sidebarVisible {
+                    uiState.sidebarVisible = shouldShowSidebar
+                }
+            }
+            .onChange(of: uiState.sidebarVisible) { _, newValue in
+                let desiredVisibility: NavigationSplitViewVisibility = newValue ? .all : .detailOnly
+                if columnVisibility != desiredVisibility {
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        columnVisibility = desiredVisibility
+                    }
+                }
+                uiState.lyricsWidth = clampLyricsWidth(uiState.lyricsWidth)
+            }
+            .onChange(of: uiState.sidebarLastWidth) { _, _ in
+                uiState.lyricsWidth = clampLyricsWidth(uiState.lyricsWidth)
             }
         }
     }
@@ -103,66 +119,155 @@ struct MainLayoutView: View {
     // MARK: - Lyrics Resizing
 
     private var lyricsResizeHandle: some View {
-        Rectangle()
-            .fill(Color.clear)
-            .frame(width: 6)
+        Color.clear
+            .frame(width: 12)
             .contentShape(Rectangle())
             .overlay(
-                Divider()
-                    .opacity(0.35)
+                Rectangle()
+                    .fill(Color.primary.opacity(isHoveringResizeHandle ? 0.1 : 0))
+                    .frame(width: 1)
+                    .allowsHitTesting(false)
             )
-            .gesture(
-                DragGesture()
+            .highPriorityGesture(
+                DragGesture(minimumDistance: 1, coordinateSpace: .local)
                     .onChanged { value in
                         if dragStartLyricsWidth == nil {
                             dragStartLyricsWidth = uiState.lyricsWidth
+                            dragWidthBounds = currentLyricsWidthBounds()
                         }
                         let baseWidth = dragStartLyricsWidth ?? uiState.lyricsWidth
                         let proposed = baseWidth - value.translation.width
-                        uiState.lyricsWidth = clampLyricsWidth(proposed)
+                        uiState.lyricsWidth = clampDuringDrag(proposed)
                     }
                     .onEnded { _ in
                         dragStartLyricsWidth = nil
-                    }
+                        dragWidthBounds = nil
+                        uiState.lyricsWidth = clampLyricsWidth(uiState.lyricsWidth)
+                    },
+                including: .gesture
             )
+            .onHover { hovering in
+                if hovering, !isHoveringResizeHandle {
+                    isHoveringResizeHandle = true
+                    NSCursor.resizeLeftRight.push()
+                } else if !hovering, isHoveringResizeHandle {
+                    isHoveringResizeHandle = false
+                    NSCursor.pop()
+                }
+            }
+            .onDisappear {
+                if isHoveringResizeHandle {
+                    isHoveringResizeHandle = false
+                    NSCursor.pop()
+                }
+            }
     }
 
     private func clampLyricsWidth(_ width: CGFloat) -> CGFloat {
-        min(
-            max(width, Constants.Layout.lyricsPanelMinWidth),
-            Constants.Layout.lyricsPanelMaxWidth
-        )
+        let bounds = currentLyricsWidthBounds()
+        return min(max(width, bounds.lowerBound), bounds.upperBound)
+    }
+
+    private func clampDuringDrag(_ width: CGFloat) -> CGFloat {
+        let bounds = dragWidthBounds ?? currentLyricsWidthBounds()
+        return min(max(width, bounds.lowerBound), bounds.upperBound)
+    }
+
+    private func currentLyricsWidthBounds() -> ClosedRange<CGFloat> {
+        let maxWidth = dynamicLyricsMaxWidth()
+        let minWidth = min(Constants.Layout.lyricsPanelMinWidth, maxWidth)
+        return minWidth...maxWidth
     }
 
     private var lyricsToggleButton: some View {
-        Button {
+        GlassToolbarButton(
+            systemImage: "quote.bubble",
+            help: uiState.lyricsVisible ? "Hide Lyrics" : "Show Lyrics",
+            style: .standard
+        ) {
             uiState.toggleLyrics()
-        } label: {
-            Image(systemName: "text.quote")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.primary)
-                .frame(width: 34, height: 34)
-        }
-        .buttonStyle(.plain)
-        .liquidGlass(in: Circle())
-        .help(uiState.lyricsVisible ? "Hide Lyrics" : "Show Lyrics")
-        .padding(.top, 4)
-        .padding(.trailing, 10)
-    }
-
-    // MARK: - Main Content Area
-
-    @ViewBuilder
-    private var mainContentArea: some View {
-        switch uiState.contentMode {
-        case .library:
-            PlaylistDetailView()
-                .safeAreaPadding(.top)
-        case .nowPlaying:
-            NowPlayingView()
-                .safeAreaPadding(.top)
         }
     }
+
+    private var lyricsToggleOverlay: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Spacer()
+                lyricsToggleButton
+            }
+            .cornerAvoidingHorizontalPadding(GlassStyleTokens.headerHorizontalPadding)
+            .frame(height: GlassStyleTokens.headerBarHeight)
+
+            Spacer(minLength: 0)
+        }
+    }
+
+    // MARK: - Layout Variants
+
+    private var libraryLayout: some View {
+        HStack(spacing: 0) {
+            PlaylistDetailView {
+                lyricsToggleButton
+            }
+            .frame(maxWidth: .infinity)
+            .layoutPriority(1)
+
+            if uiState.lyricsVisible {
+                lyricsPanelView
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private var nowPlayingLayout: some View {
+        ZStack(alignment: .topTrailing) {
+            NowPlayingHostView()
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+
+            if uiState.lyricsVisible {
+                lyricsPanelView
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private var lyricsPanelView: some View {
+        LyricsPanelView()
+            .frame(width: uiState.lyricsWidth)
+            .frame(maxHeight: .infinity, alignment: .top)
+            .overlay(alignment: .leading) {
+                lyricsResizeHandle
+            }
+    }
+
+    private func updateWindowWidth(_ width: CGFloat) {
+        guard width > 0 else { return }
+        windowWidth = width
+        uiState.lyricsWidth = clampLyricsWidth(uiState.lyricsWidth)
+    }
+
+    private func dynamicLyricsMaxWidth() -> CGFloat {
+        let defaultMax = Constants.Layout.lyricsPanelMaxWidth
+        guard windowWidth > 0 else { return defaultMax }
+
+        let compactThreshold: CGFloat = 1300
+        let minMainWidth: CGFloat = 560
+        let minLyricsWidthWhenTight: CGFloat = 180
+        let interPanelSpacing: CGFloat = 8
+
+        guard windowWidth < compactThreshold else { return defaultMax }
+
+        let sidebarFootprint =
+            uiState.sidebarVisible
+            ? max(uiState.sidebarLastWidth, Constants.Layout.sidebarMinWidth)
+            : 0
+        let detailWidth = max(0, windowWidth - sidebarFootprint)
+        let maxByMainReserve = detailWidth - minMainWidth - interPanelSpacing
+        let compactMax = max(minLyricsWidthWhenTight, maxByMainReserve)
+        return min(defaultMax, compactMax)
+    }
+
 }
 
 // MARK: - Preview
@@ -174,9 +279,10 @@ struct MainLayoutView: View {
     let playbackService = StubAudioPlaybackService()
     let levelMeter = StubAudioLevelMeter()
     let playerVM = PlayerViewModel(playbackService: playbackService, levelMeter: levelMeter)
+    let ledMeter = LEDMeterService()
+    let skinManager = SkinManager()
 
-    let bridgeService = StubLyricsBridgeService()
-    let lyricsVM = LyricsViewModel(bridgeService: bridgeService)
+    let lyricsVM = LyricsViewModel()
 
     let uiState = UIStateViewModel()
 
@@ -185,5 +291,8 @@ struct MainLayoutView: View {
         .environment(libraryVM)
         .environment(playerVM)
         .environment(lyricsVM)
+        .environment(ledMeter)
+        .environment(skinManager)
+        .environmentObject(ThemeStore.shared)
         .frame(width: 1200, height: 800)
 }

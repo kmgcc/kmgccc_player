@@ -33,29 +33,29 @@ struct TrueMusicApp: App {
     // MARK: - Body
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup("") {
             AppRootView()
-                .frame(minWidth: 900, minHeight: 600)
+                .frame(minWidth: 1100, minHeight: 600)
         }
         .modelContainer(sharedModelContainer)
-        .windowStyle(.automatic)
-        .defaultSize(width: 1200, height: 800)
+        .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 1100, height: 680)
         .commands {
             // Playback commands
             CommandGroup(after: .appSettings) {
                 Divider()
 
-                Button("Play/Pause") {
+                Button(NSLocalizedString("alert.play_pause", comment: "")) {
                     NotificationCenter.default.post(name: .togglePlayPause, object: nil)
                 }
                 .keyboardShortcut(.space, modifiers: [])
 
-                Button("Next Track") {
+                Button(NSLocalizedString("alert.next", comment: "")) {
                     NotificationCenter.default.post(name: .nextTrack, object: nil)
                 }
                 .keyboardShortcut(.rightArrow, modifiers: .command)
 
-                Button("Previous Track") {
+                Button(NSLocalizedString("alert.previous", comment: "")) {
                     NotificationCenter.default.post(name: .previousTrack, object: nil)
                 }
                 .keyboardShortcut(.leftArrow, modifiers: .command)
@@ -63,7 +63,7 @@ struct TrueMusicApp: App {
 
             // View commands
             CommandGroup(after: .sidebar) {
-                Button("Toggle Lyrics Panel") {
+                Button(NSLocalizedString("alert.toggle_lyrics", comment: "")) {
                     NotificationCenter.default.post(name: .toggleLyrics, object: nil)
                 }
                 .keyboardShortcut("l", modifiers: [.command, .option])
