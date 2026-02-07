@@ -6,8 +6,7 @@
 > kmgccc_player 当前仍处于 **Beta 阶段**，可能存在 Bug、未完成特性或行为变动。  
 > 不建议在重要环境中作为唯一播放器使用，欢迎通过 Issue 或 Pull Request 反馈问题。
 
-## 核心特性 (Features)
-
+## 特性
 - **Liquid Glass 风格**  
   应用整体遵循 Liquid Glass 设计语言，界面通透、克制，贴近原生系统体验，并在深色与浅色模式下保持一致的视觉表现。
 
@@ -21,7 +20,7 @@
 - **LDDC 歌词获取支持**  
   集成 **LDDC (Lyrics Data Digging Core)** 相关逻辑，用于歌词的搜索、匹配与管理，提升本地音乐库的歌词完整度。
 
-## 界面展示 (Screenshots)
+## 界面展示
 
 ![Main UI](screenshots/main.png)
 ![Cassette Player](screenshots/tape.png)
@@ -41,7 +40,7 @@
 2. 使用 Xcode 打开 `myPlayer2.xcodeproj`  
 3. 选择 `myPlayer2` Scheme 并运行
 
-## 致谢 (Credits)
+## 致谢
 
 本项目在开发过程中使用并修改了以下开源项目：
 
@@ -58,7 +57,7 @@
   提供音频频谱分析与可视化算法，本项目在播放界面与磁带视图中使用并修改了其部分实现。  
   https://github.com/taterboom/apple-audio-visualization
 
-## 版权与素材声明 (Artwork & Assets)
+## 版权与素材声明
 
 本项目中所使用的所有美术素材，包括但不限于界面插画、UI 装饰、皮肤、贴图、角色设计、视觉元素，均为作者原创作品。
 
