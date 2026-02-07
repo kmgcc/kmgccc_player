@@ -4,7 +4,7 @@
 //
 //  TrueMusic - UI State ViewModel
 //  Manages UI layout state (navigation, content mode).
-//  Sidebar is ALWAYS visible - no toggle provided.
+//  Sidebar can be collapsed and restored.
 //
 
 import Foundation
@@ -17,14 +17,35 @@ enum ContentMode: Equatable {
 }
 
 /// Observable ViewModel for UI layout state.
-/// - Sidebar: Always visible (no sidebarVisible property, no toggle)
+/// - Sidebar: Toggleable with width memory
 /// - Lyrics: Toggleable
 /// - Content: Switches between library and now playing
 @Observable
 @MainActor
 final class UIStateViewModel {
 
+    private enum StorageKey {
+        static let sidebarVisible = "ui.sidebarVisible"
+        static let sidebarLastWidth = "ui.sidebarLastWidth"
+    }
+
+    private let defaults = UserDefaults.standard
+
     // MARK: - Layout Visibility
+
+    /// Whether the sidebar is currently visible.
+    var sidebarVisible: Bool = true {
+        didSet {
+            defaults.set(sidebarVisible, forKey: StorageKey.sidebarVisible)
+        }
+    }
+
+    /// Last known visible sidebar width (used when restoring).
+    var sidebarLastWidth: CGFloat = Constants.Layout.sidebarDefaultWidth {
+        didSet {
+            defaults.set(Double(sidebarLastWidth), forKey: StorageKey.sidebarLastWidth)
+        }
+    }
 
     /// Whether the lyrics panel is visible (toggleable).
     var lyricsVisible: Bool = true
@@ -42,7 +63,36 @@ final class UIStateViewModel {
     /// Currently selected playlist (if any).
     var selectedPlaylist: Playlist?
 
+    init() {
+        if defaults.object(forKey: StorageKey.sidebarVisible) != nil {
+            sidebarVisible = defaults.bool(forKey: StorageKey.sidebarVisible)
+        }
+
+        let savedWidth = defaults.double(forKey: StorageKey.sidebarLastWidth)
+        if savedWidth >= Double(Constants.Layout.sidebarMinWidth)
+            && savedWidth <= Double(Constants.Layout.sidebarMaxWidth)
+        {
+            sidebarLastWidth = CGFloat(savedWidth)
+        }
+    }
+
     // MARK: - Actions
+
+    func toggleSidebar() {
+        withAnimation(.easeInOut(duration: 0.25)) {
+            sidebarVisible.toggle()
+        }
+    }
+
+    func updateSidebarWidth(_ width: CGFloat) {
+        let clamped = min(
+            max(width, Constants.Layout.sidebarMinWidth),
+            Constants.Layout.sidebarMaxWidth
+        )
+        if abs(clamped - sidebarLastWidth) > 0.5 {
+            sidebarLastWidth = clamped
+        }
+    }
 
     func toggleLyrics() {
         withAnimation(.easeInOut(duration: 0.25)) {

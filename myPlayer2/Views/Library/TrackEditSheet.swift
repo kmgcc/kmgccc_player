@@ -16,6 +16,9 @@ struct TrackEditSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
+    @Environment(PlayerViewModel.self) private var playerVM
+    @Environment(LyricsViewModel.self) private var lyricsVM
+    @EnvironmentObject private var themeStore: ThemeStore
 
     let track: Track
 
@@ -26,6 +29,7 @@ struct TrackEditSheet: View {
     @State private var album: String = ""
     @State private var lyricsText: String = ""
     @State private var artworkData: Data?
+    @State private var lyricsTimeOffsetMs: Double = 0
 
     // MARK: - UI State
 
@@ -54,6 +58,10 @@ struct TrackEditSheet: View {
 
                     // Lyrics section
                     lyricsSection
+
+                    // Extra scroll breathing room so the LDDC panel (results/preview/errors)
+                    // can be comfortably brought into view without fighting the footer.
+                    Color.clear.frame(height: 240)
                 }
                 .padding(24)
             }
@@ -63,7 +71,9 @@ struct TrackEditSheet: View {
             // Footer buttons
             footerView
         }
-        .frame(width: 500, height: 650)
+        .frame(width: 550, height: 750)
+        .tint(themeStore.accentColor)
+        .accentColor(themeStore.accentColor)
         .onAppear {
             loadTrackData()
         }
@@ -73,7 +83,7 @@ struct TrackEditSheet: View {
 
     private var headerView: some View {
         HStack {
-            Text("Edit Track")
+            Text("edit.track.title")
                 .font(.title2)
                 .fontWeight(.bold)
 
@@ -95,7 +105,7 @@ struct TrackEditSheet: View {
 
     private var artworkSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("Artwork", systemImage: "photo")
+            Label("edit.track.artwork", systemImage: "photo")
                 .font(.headline)
 
             HStack(spacing: 16) {
@@ -116,12 +126,12 @@ struct TrackEditSheet: View {
                 .clipShape(RoundedRectangle(cornerRadius: 8))
 
                 VStack(alignment: .leading, spacing: 8) {
-                    Button("Choose Image...") {
+                    Button(LocalizedStringKey("edit.track.choose_image")) {
                         showingArtworkPicker = true
                     }
 
                     if artworkData != nil {
-                        Button("Remove Artwork") {
+                        Button(LocalizedStringKey("edit.track.remove_artwork")) {
                             artworkData = nil
                         }
                         .foregroundStyle(.red)
@@ -142,40 +152,44 @@ struct TrackEditSheet: View {
 
     private var metadataSection: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Label("Metadata", systemImage: "info.circle")
+            Label("edit.track.metadata", systemImage: "info.circle")
                 .font(.headline)
 
             VStack(alignment: .leading, spacing: 12) {
                 // Title
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Title")
+                    Text("edit.track.track_title")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
-                    TextField("Track Title", text: $title)
-                        .textFieldStyle(.roundedBorder)
+                    TextField(
+                        "edit.track.track_title", text: $title
+                    )
+                    .textFieldStyle(.roundedBorder)
                 }
 
                 // Artist
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Artist")
+                    Text("edit.track.artist")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
-                    TextField("Artist Name", text: $artist)
-                        .textFieldStyle(.roundedBorder)
+                    TextField(
+                        "edit.track.artist_name", text: $artist
+                    )
+                    .textFieldStyle(.roundedBorder)
                 }
 
                 // Album
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Album")
+                    Text("edit.track.album")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
-                    TextField("Album Name", text: $album)
+                    TextField("edit.track.album_name", text: $album)
                         .textFieldStyle(.roundedBorder)
                 }
 
                 // Duration (read-only)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Duration")
+                    Text("edit.track.duration")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                     Text(formatDuration(track.duration))
@@ -190,12 +204,14 @@ struct TrackEditSheet: View {
     private var lyricsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Label("Lyrics (TTML/LRC)", systemImage: "text.quote")
-                    .font(.headline)
+                Label(
+                    "edit.track.lyrics", systemImage: "text.quote"
+                )
+                .font(.headline)
 
                 Spacer()
 
-                Button("Import...") {
+                Button(LocalizedStringKey("edit.track.import_lyrics")) {
                     showingLyricsPicker = true
                 }
                 .font(.caption)
@@ -209,9 +225,58 @@ struct TrackEditSheet: View {
                         .strokeBorder(Color.secondary.opacity(0.3), lineWidth: 1)
                 }
 
-            Text("Paste TTML or LRC lyrics, or import from file")
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("edit.track.offset")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(String(format: "%+.2f s", lyricsTimeOffsetMs / 1000.0))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                    Button(LocalizedStringKey("edit.track.reset")) {
+                        lyricsTimeOffsetMs = 0
+                    }
+                    .font(.caption)
+                }
+
+                Slider(value: $lyricsTimeOffsetMs, in: -5000...5000, step: 100)
+
+                Text(NSLocalizedString("edit.track.offset_desc", comment: ""))
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+
+            Text("edit.track.paste_desc")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
+
+            Divider()
+                .padding(.vertical, 8)
+
+            // LDDC Lyrics Search
+            LDDCSearchSection(track: track) { ttml in
+                // Update lyrics text and save
+                lyricsText = ttml
+                track.ttmlLyricText = ttml
+                track.lyricsText = nil
+
+                do {
+                    try modelContext.save()
+                    print("[TrackEditSheet] Applied LDDC lyrics for: \(track.title)")
+                    if playerVM.currentTrack?.id == track.id {
+                        lyricsVM.ensureAMLLLoaded(
+                            track: track,
+                            currentTime: playerVM.currentTime,
+                            isPlaying: playerVM.isPlaying,
+                            reason: "LDDC lyrics applied",
+                            forceLyricsReload: true
+                        )
+                    }
+                } catch {
+                    print("[TrackEditSheet] Failed to save LDDC lyrics: \(error)")
+                }
+            }
         }
         .fileImporter(
             isPresented: $showingLyricsPicker,
@@ -230,14 +295,14 @@ struct TrackEditSheet: View {
 
     private var footerView: some View {
         HStack {
-            Button("Cancel") {
+            Button(LocalizedStringKey("edit.track.cancel")) {
                 dismiss()
             }
             .keyboardShortcut(.escape)
 
             Spacer()
 
-            Button("Save Changes") {
+            Button(LocalizedStringKey("edit.track.save")) {
                 saveChanges()
                 dismiss()
             }
@@ -255,18 +320,43 @@ struct TrackEditSheet: View {
         album = track.album
         lyricsText = track.lyricsText ?? track.ttmlLyricText ?? ""
         artworkData = track.artworkData
+        lyricsTimeOffsetMs = track.lyricsTimeOffsetMs
     }
 
     private func saveChanges() {
-        track.title = title.isEmpty ? "Unknown Title" : title
-        track.artist = artist.isEmpty ? "Unknown Artist" : artist
-        track.album = album.isEmpty ? "Unknown Album" : album
-        track.lyricsText = lyricsText.isEmpty ? nil : lyricsText
+        track.title =
+            title.isEmpty ? NSLocalizedString("library.unknown_title", comment: "") : title
+        track.artist =
+            artist.isEmpty ? NSLocalizedString("library.unknown_artist", comment: "") : artist
+        track.album =
+            album.isEmpty ? NSLocalizedString("library.unknown_album", comment: "") : album
+        let trimmedLyrics = lyricsText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedLyrics.isEmpty {
+            track.lyricsText = nil
+            track.ttmlLyricText = nil
+        } else if trimmedLyrics.lowercased().contains("<tt") {
+            track.ttmlLyricText = trimmedLyrics
+            track.lyricsText = nil
+        } else {
+            track.lyricsText = trimmedLyrics
+            track.ttmlLyricText = nil
+        }
         track.artworkData = artworkData
+        track.lyricsTimeOffsetMs = lyricsTimeOffsetMs
 
         do {
             try modelContext.save()
+            LocalLibraryService.shared.writeSidecar(for: track)
             print("[TrackEditSheet] Saved changes for: \(track.title)")
+            if playerVM.currentTrack?.id == track.id {
+                lyricsVM.ensureAMLLLoaded(
+                    track: track,
+                    currentTime: playerVM.currentTime,
+                    isPlaying: playerVM.isPlaying,
+                    reason: "track info saved",
+                    forceLyricsReload: true
+                )
+            }
         } catch {
             print("[TrackEditSheet] Failed to save: \(error)")
         }

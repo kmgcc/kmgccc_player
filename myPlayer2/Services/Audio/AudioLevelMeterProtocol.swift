@@ -3,28 +3,70 @@
 //  myPlayer2
 //
 //  TrueMusic - Audio Level Meter Protocol
-//  Provides normalized audio level for LED visualization.
 //
 
 import Foundation
 
-/// Protocol for audio level metering.
-/// Returns a single normalized level value for LED visualization.
-///
-/// Design Decision: Using single normalized value (Option A) because:
-/// 1. The LED display maps to overall loudness, not frequency bands
-/// 2. Simpler to implement with AVAudioEngine's tap
-/// 3. UI maps the 0.0-1.0 value to 9 LEDs × 6 brightness levels internally
+public struct AudioMetrics: Sendable {
+    public var rms: Float
+    public var peak: Float
+    public var db: Float
+    public var bands: [Float]
+    public var smoothedBands: [Float]
+    public var smoothedLevel: Float
+    public var bassEnergy: Float
+    public var waveform: [Float]
+    public var transientLevel: Float
+    public var midEnergy: Float
+    // Now Playing background dynamics (pre-boost, 0...1).
+    public var lowBandDb: Float
+    public var lowBandLoudness: Float
+    public var kickPulse: Float
+
+    public init(
+        rms: Float, peak: Float, db: Float, bands: [Float], smoothedBands: [Float],
+        smoothedLevel: Float, bassEnergy: Float, waveform: [Float], transientLevel: Float,
+        midEnergy: Float,
+        lowBandDb: Float = -160,
+        lowBandLoudness: Float = 0,
+        kickPulse: Float = 0
+    ) {
+        self.rms = rms
+        self.peak = peak
+        self.db = db
+        self.bands = bands
+        self.smoothedBands = smoothedBands
+        self.smoothedLevel = smoothedLevel
+        self.bassEnergy = bassEnergy
+        self.waveform = waveform
+        self.transientLevel = transientLevel
+        self.midEnergy = midEnergy
+        self.lowBandDb = lowBandDb
+        self.lowBandLoudness = lowBandLoudness
+        self.kickPulse = kickPulse
+    }
+
+    public static let zero = AudioMetrics(
+        rms: 0,
+        peak: 0,
+        db: -160,
+        bands: [],
+        smoothedBands: [],
+        smoothedLevel: 0,
+        bassEnergy: 0,
+        waveform: [],
+        transientLevel: 0,
+        midEnergy: 0,
+        lowBandDb: -160,
+        lowBandLoudness: 0,
+        kickPulse: 0
+    )
+}
+
 @MainActor
-protocol AudioLevelMeterProtocol: AnyObject {
-
-    /// Normalized audio level (0.0 to 1.0).
-    /// UI will map this to LED visualization (9 LEDs × 6 brightness levels = 54 total steps).
+public protocol AudioLevelMeterProtocol: AnyObject {
     var normalizedLevel: Float { get }
-
-    /// Start monitoring audio levels.
+    var audioMetrics: AudioMetrics { get }
     func start()
-
-    /// Stop monitoring audio levels.
     func stop()
 }

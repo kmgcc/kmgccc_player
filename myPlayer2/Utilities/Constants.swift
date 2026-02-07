@@ -12,7 +12,7 @@ enum Constants {
 
     // MARK: - App Info
 
-    static let appName = "TrueMusic"
+    static var appName: String { NSLocalizedString("common.app_name", comment: "") }
     static let appVersion =
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
 
@@ -20,14 +20,14 @@ enum Constants {
 
     enum Layout {
         static let sidebarMinWidth: CGFloat = 200
-        static let sidebarMaxWidth: CGFloat = 300
-        static let sidebarDefaultWidth: CGFloat = 240
+        static let sidebarMaxWidth: CGFloat = 310
+        static let sidebarDefaultWidth: CGFloat = 220
 
         static let lyricsPanelMinWidth: CGFloat = 280
-        static let lyricsPanelMaxWidth: CGFloat = 400
+        static let lyricsPanelMaxWidth: CGFloat = 560
         static let lyricsPanelDefaultWidth: CGFloat = 320
 
-        static let miniPlayerHeight: CGFloat = 72
+        static let miniPlayerHeight: CGFloat = 50
         static let miniPlayerPadding: CGFloat = 16
 
         static let trackRowHeight: CGFloat = 48

@@ -1,0 +1,214 @@
+/* 
+  Localizable.strings (English)
+*/
+
+// MARK: - Common
+"common.app_name" = "TrueMusic";
+
+"sidebar.all_songs" = "All Songs";
+"sidebar.playlists" = "Playlists";
+"sidebar.new_playlist" = "New Playlist";
+"sidebar.edit_playlist" = "Edit Playlist";
+"sidebar.delete_playlist" = "Delete Playlist";
+"sidebar.settings" = "Settings";
+"sidebar.appearance_light" = "Appearance: Light";
+"sidebar.appearance_dark" = "Appearance: Dark";
+"sidebar.appearance_system" = "Appearance: Match System";
+
+// MARK: - Settings General
+"import.panel.title" = "Import Music to \"%@\"";
+"import.panel.message" = "Select audio files or folders to add to this playlist";
+"settings.title" = "Settings";
+"settings.section.now_playing" = "Now Playing";
+"settings.section.lyrics" = "Lyrics";
+"settings.section.led" = "LED Meter";
+"settings.section.language" = "Language";
+"settings.section.about" = "About";
+
+// MARK: - Settings Language
+"settings.language.title" = "Language";
+"settings.language.auto" = "Auto (System)";
+"settings.language.en" = "English";
+"settings.language.zh" = "Chinese (Simplified)";
+"settings.language.restart_notice" = "Some changes may require app restart to take full effect.";
+
+// MARK: - Settings Now Playing
+"settings.now_playing.select_skin" = "Select Skin";
+"settings.now_playing.skin_options" = "%@ Options";
+"skin.classic_led.name" = "Classic LED";
+"skin.classic_led.detail" = "Artwork + LED meter";
+"skin.rotating_cover.name" = "Rotating Cover";
+"skin.rotating_cover.detail" = "Spinning artwork";
+"skin.kmgccc_cassette.name" = "kmgccc Cassette";
+"skin.kmgccc_cassette.detail" = "Cassette deck";
+"skin.kmgccc_cassette.show_led" = "Show LED";
+"skin.kmgccc_cassette.show_kmg" = "Show kmg";
+
+// MARK: - Settings Lyrics
+"settings.lyrics.timing" = "Timing";
+"settings.lyrics.leadin" = "Lead-in";
+"settings.lyrics.leadin_desc" = "Advance the next line’s first word and the previous line’s last word.";
+"settings.lyrics.fonts" = "Fonts";
+"settings.lyrics.font_size" = "Font Size";
+"settings.lyrics.font_weight" = "Font Weight";
+"settings.lyrics.weight_thin" = "Thin";
+"settings.lyrics.weight_light" = "Light";
+"settings.lyrics.weight_regular" = "Regular";
+"settings.lyrics.weight_medium" = "Medium";
+"settings.lyrics.weight_semibold" = "Semibold";
+"settings.lyrics.weight_bold" = "Bold";
+"settings.lyrics.translation_size" = "Translation Size";
+"settings.lyrics.translation_weight" = "Translation Weight";
+"settings.lyrics.chinese_font" = "Chinese Font";
+"settings.lyrics.english_font" = "English Font";
+"settings.lyrics.translation_font" = "Translation Font";
+"settings.lyrics.preview" = "Preview";
+"settings.lyrics.preview_zh" = "雪把世界删改成更少的字";
+"settings.lyrics.preview_en" = "Snow edits the world into fewer words";
+"settings.lyrics.preview_translation" = "Translation: 雪把世界删改成更少的字 Snow edits the world into fewer words";
+
+// MARK: - Settings LED
+"settings.led.live_preview" = "Live Preview";
+"settings.led.config" = "Configuration";
+"settings.led.count" = "LED Count";
+"settings.led.brightness" = "Brightness Levels";
+"settings.led.sensitivity" = "Audio Sensitivity";
+"settings.led.sensitivity_desc" = "Higher values make the LEDs react more to quiet passages.";
+"settings.led.frequency" = "Cutoff Frequency";
+"settings.led.pregain" = "Pre-Gain";
+"settings.led.transient_threshold" = "Transient Threshold";
+"settings.led.transient_intensity" = "Transient Intensity";
+"settings.led.speed" = "Speed";
+"settings.led.publish_rate" = "Publish Rate";
+"settings.led.lookahead" = "Lookahead";
+"settings.led.lookahead_desc" = "Delays audio output so LEDs and lyrics can lead.";
+
+// MARK: - Settings About
+"settings.about.version" = "Version %@";
+"settings.about.quote" = "“Where words fail, music speaks.”";
+"settings.about.compliance" = "Open Source & Compliance";
+"settings.about.compliance_desc" = "This application includes and modifies open source software licensed under AGPL-3.0 and GPL-3.0.";
+"settings.about.source_code" = "Source Code";
+"settings.about.source_code_desc" = "This application is open source software. The complete corresponding source code for this version is available at:";
+"settings.about.license" = "Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).";
+"settings.about.copyright" = "© 2026 kmgccc. All rights reserved.";
+
+// MARK: - Library
+"library.all_songs" = "All Songs";
+"library.song_count" = "%d songs";
+"library.song_count_one" = "%d song";
+"library.song_count_filtered" = "%d / %d songs";
+"library.no_songs" = "No Songs";
+"library.click_to_import" = "Click 'Import' in the toolbar to add music.";
+"library.no_results" = "No Results";
+"library.no_matches" = "No songs match \"%@\"";
+"library.import_desc" = "Click \"Import\" to add music to this playlist";
+"library.import_btn" = "Import Music";
+"library.search_placeholder" = "Search";
+"library.file_missing" = "File missing";
+"library.new_playlist_name" = "New Playlist %d";
+"library.imported_playlist_name" = "Imported %@";
+"library.unknown_artist" = "Unknown Artist";
+"library.unknown_album" = "Unknown Album";
+"library.unknown_title" = "Unknown Title";
+
+// MARK: - Sorting
+"sort.by" = "Sort By";
+"sort.order" = "Order";
+"sort.imported_time" = "Imported Time";
+"sort.added_time" = "Added Time";
+"sort.title" = "Title";
+"sort.artist" = "Artist";
+"sort.duration" = "Duration";
+"sort.ascending" = "Ascending";
+"sort.descending" = "Descending";
+"sort.help" = "Sort Songs";
+
+// MARK: - Context Menu
+"context.play" = "Play";
+"context.play_all" = "Play All";
+"context.add_to_playlist" = "Add to Playlist";
+"context.remove_from_playlist" = "Remove from Playlist";
+"context.new_playlist" = "New Playlist";
+"context.get_info" = "Get Info";
+"context.delete_from_library" = "Delete from Library";
+"context.import" = "Import Music";
+"context.clear_search" = "Clear Search";
+
+// MARK: - Edit Track
+"edit.track.title" = "Edit Track";
+"edit.track.artwork" = "Artwork";
+"edit.track.choose_image" = "Choose Image...";
+"edit.track.remove_artwork" = "Remove Artwork";
+"edit.track.metadata" = "Metadata";
+"edit.track.track_title" = "Track Title";
+"edit.track.artist" = "Artist";
+"edit.track.artist_name" = "Artist Name";
+"edit.track.album" = "Album";
+"edit.track.album_name" = "Album Name";
+"edit.track.duration" = "Duration";
+"edit.track.lyrics" = "Lyrics (TTML/LRC)";
+"edit.track.import_lyrics" = "Import...";
+"edit.track.offset" = "Lyrics Time Offset";
+"edit.track.reset" = "Reset";
+"edit.track.offset_desc" = "Shift all lyric timestamps earlier or later.";
+"edit.track.paste_desc" = "Paste TTML or LRC lyrics, or import from file";
+"edit.track.cancel" = "Cancel";
+"edit.track.save" = "Save Changes";
+
+// MARK: - Edit Playlist
+"edit.playlist.name" = "Playlist Name";
+"edit.playlist.placeholder" = "My Playlist";
+"edit.playlist.tracks_count" = "%d tracks";
+"edit.playlist.delete" = "Delete Playlist";
+"edit.playlist.delete_confirm" = "Delete";
+"edit.playlist.delete_confirm_title" = "Delete Playlist?";
+"edit.playlist.delete_desc" = "This will remove the playlist but not the tracks themselves.";
+
+// MARK: - Search LDDC
+"search.lddc.title" = "Lyrics Search (LDDC)";
+"search.lddc.song" = "Song Title";
+"search.lddc.artist" = "Artist";
+"search.lddc.mode" = "Mode";
+"search.lddc.translation" = "Translation";
+"search.lddc.platform" = "Platform";
+"search.lddc.search" = "Search";
+"search.lddc.results_count" = "Results (%d)";
+"search.lddc.preview" = "Lyrics Preview";
+"search.lddc.apply" = "Apply to Track";
+"search.lddc.original" = "Original";
+"search.lddc.translated" = "Translated";
+"search.lddc.close" = "Close";
+"search.lddc.partial_failed" = "Search failed on some platforms:\n%@";
+"search.lddc.not_found" = "No lyrics found";
+"search.lddc.qm" = "QQ Music";
+"search.lddc.kg" = "Kugou";
+"search.lddc.ne" = "NetEase";
+"search.lddc.mode_line" = "Line-by-line";
+"search.lddc.mode_verbatim" = "Verbatim";
+
+// MARK: - Errors
+"error.lddc.not_running" = "LDDC service not running";
+"error.lddc.health_failed" = "LDDC service health check failed";
+"error.lddc.startup_failed" = "LDDC service startup failed: %@";
+"error.lddc.no_candidates" = "No server launch candidates found";
+"error.lddc.all_candidates_failed" = "All launch candidates failed";
+"error.lddc.port_failed" = "Could not find an available port";
+"error.lddc.request_failed" = "Request failed: %@";
+"error.lddc.invalid_resp" = "Server returned invalid response";
+"error.ttml.script_not_found" = "Conversion script not found: %@";
+"error.ttml.python_not_found" = "Python environment not found";
+"error.ttml.output_not_found" = "TTML output file not generated";
+"error.ttml.failed" = "Conversion failed: %@";
+"error.ttml.unknown" = "Unknown error";
+
+// MARK: - Mini Player
+"mini.not_playing" = "Not Playing";
+"lyrics.empty_state" = "This is true music.";
+
+// MARK: - Notifications / Alerts
+"alert.loading" = "Loading...";
+"alert.toggle_lyrics" = "Toggle Lyrics Panel";
+"alert.play_pause" = "Play/Pause";
+"alert.next" = "Next Track";
+"alert.previous" = "Previous Track";

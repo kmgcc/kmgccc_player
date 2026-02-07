@@ -1,0 +1,7 @@
+apple-audio-visualization
+Copyright (c) taterboom
+Licensed under the GNU General Public License v3.0 (GPL-3.0)
+
+This application includes partial source code from apple-audio-visualization.
+Original project:
+https://github.com/taterboom/apple-audio-visualization

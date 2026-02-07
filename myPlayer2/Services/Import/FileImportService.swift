@@ -35,11 +35,13 @@ final class FileImportService: FileImportServiceProtocol {
     // MARK: - Properties
 
     private let repository: LibraryRepositoryProtocol
+    private let libraryService: LocalLibraryService
 
     // MARK: - Initialization
 
-    init(repository: LibraryRepositoryProtocol) {
+    init(repository: LibraryRepositoryProtocol, libraryService: LocalLibraryService? = nil) {
         self.repository = repository
+        self.libraryService = libraryService ?? LocalLibraryService.shared
         print("📂 FileImportService initialized")
     }
 
@@ -54,15 +56,19 @@ final class FileImportService: FileImportServiceProtocol {
 
         // Configure open panel
         let panel = NSOpenPanel()
-        panel.title = "Import Music to \"\(playlist.name)\""
-        panel.message = "Select audio files or folders to add to this playlist"
+        panel.title = String(
+            format: NSLocalizedString("import.panel.title", comment: ""), playlist.name)
+        panel.message = NSLocalizedString("import.panel.message", comment: "")
         panel.canChooseFiles = true
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = true
         panel.allowedContentTypes = Self.supportedUTTypes
 
         // Show panel
+        // Use app-modal panel (instead of sheet) so NSOpenPanel uses full system styling
+        // and does not inherit custom host window chrome tweaks.
         print("📂 Showing NSOpenPanel...")
+        panel.appearance = NSApp.appearance
         let response = panel.runModal()
 
         guard response == .OK else {
@@ -134,9 +140,7 @@ final class FileImportService: FileImportServiceProtocol {
 
             // Import the file (bookmark creation now happens while we have access)
             if let track = await importFile(url: fileURL) {
-                print(
-                    "📀 Created Track: '\(track.title)', bookmarkData=\(track.fileBookmarkData.count) bytes"
-                )
+                print("📀 Created Track: '\(track.title)'")
                 await repository.addTrack(track)
                 importedTracks.append(track)
             }
@@ -157,65 +161,53 @@ final class FileImportService: FileImportServiceProtocol {
     /// Import a single audio file, creating a Track with bookmark.
     /// ASSUMES: Parent caller has already started accessing security-scoped resource.
     private func importFile(url: URL) async -> Track? {
-        // Create security-scoped bookmark
-        guard let bookmarkData = createBookmark(for: url) else {
-            print("❌ Failed to create bookmark for: \(url.lastPathComponent)")
-            return nil
-        }
-
         // Extract metadata
         let metadata = await extractMetadata(from: url)
 
         // Extract artwork
         let artworkData = await extractArtwork(from: url)
 
+        let trackId = UUID()
+
+        let libraryRelativePath: String
+        do {
+            libraryRelativePath = try libraryService.importAudioFile(from: url, trackId: trackId)
+        } catch {
+            print("❌ Failed to copy into library: \(error)")
+            return nil
+        }
+
+        let lyricsText = metadata.lyrics
+        let isTTML = lyricsText?.lowercased().contains("<tt") ?? false
+
         let track = Track(
+            id: trackId,
             title: metadata.title,
             artist: metadata.artist,
             album: metadata.album,
             duration: metadata.duration,
-            fileBookmarkData: bookmarkData,
+            importedAt: Date(),
+            fileBookmarkData: Data(),
             originalFilePath: url.path,
+            libraryRelativePath: libraryRelativePath,
             artworkData: artworkData,
-            ttmlLyricText: metadata.lyrics
+            ttmlLyricText: isTTML ? lyricsText : nil,
+            lyricsText: isTTML ? nil : lyricsText
         )
 
         return track
-    }
-
-    /// Create a security-scoped bookmark for a file URL.
-    /// ASSUMES: Caller has already called startAccessingSecurityScopedResource.
-    private func createBookmark(for url: URL) -> Data? {
-        print("🔖 Creating security-scoped bookmark for '\(url.lastPathComponent)'...")
-
-        do {
-            // CRITICAL: Use array syntax for options to ensure security-scoped bookmark
-            let bookmarkData = try url.bookmarkData(
-                options: [.withSecurityScope],
-                includingResourceValuesForKeys: nil,
-                relativeTo: nil
-            )
-            print("✅ Created security-scoped bookmark: \(bookmarkData.count) bytes")
-            return bookmarkData
-        } catch {
-            print("❌ Bookmark creation failed for '\(url.lastPathComponent)':")
-            print("   ↳ Error: \(error)")
-            print("   ↳ Error domain: \((error as NSError).domain)")
-            print("   ↳ Error code: \((error as NSError).code)")
-            return nil
-        }
     }
 
     /// Extract metadata from audio file using AVAsset.
     private func extractMetadata(from url: URL) async -> (
         title: String, artist: String, album: String, duration: Double, lyrics: String?
     ) {
-        let asset = AVAsset(url: url)
+        let asset = AVURLAsset(url: url)
 
         // Default values
         var title = url.deletingPathExtension().lastPathComponent
-        var artist = "Unknown Artist"
-        var album = "Unknown Album"
+        var artist = NSLocalizedString("library.unknown_artist", comment: "")
+        var album = NSLocalizedString("library.unknown_album", comment: "")
         var duration: Double = 0
         var lyrics: String? = nil
 
@@ -273,7 +265,7 @@ final class FileImportService: FileImportServiceProtocol {
 
     /// Extract artwork from audio file.
     private func extractArtwork(from url: URL) async -> Data? {
-        let asset = AVAsset(url: url)
+        let asset = AVURLAsset(url: url)
 
         do {
             let metadata = try await asset.load(.commonMetadata)

@@ -31,6 +31,9 @@ final class Track {
     var album: String
     var duration: Double  // seconds
     var addedAt: Date
+    var importedAt: Date?
+    /// Per-track lyric time offset in milliseconds (+/-).
+    var lyricsTimeOffsetMs: Double = 0
 
     // MARK: - File Access (security-scoped bookmark)
 
@@ -40,6 +43,10 @@ final class Track {
 
     /// Original file path (for display/debugging only - not for access!)
     var originalFilePath: String
+
+    /// Relative path inside the local library (e.g. "Tracks/<id>/audio.m4a").
+    /// Empty means the track still relies on a legacy bookmark.
+    var libraryRelativePath: String = ""
 
     /// Availability status (updated on bookmark resolution).
     /// Stored as String for SwiftData compatibility.
@@ -69,15 +76,19 @@ final class Track {
     init(
         id: UUID = UUID(),
         title: String,
-        artist: String = "Unknown Artist",
-        album: String = "Unknown Album",
+        artist: String = "",
+        album: String = "",
         duration: Double = 0,
         addedAt: Date = Date(),
+        importedAt: Date? = nil,
+        lyricsTimeOffsetMs: Double = 0,
         fileBookmarkData: Data,
         originalFilePath: String = "",
+        libraryRelativePath: String = "",
         availability: TrackAvailability = .available,
         artworkData: Data? = nil,
-        ttmlLyricText: String? = nil
+        ttmlLyricText: String? = nil,
+        lyricsText: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -85,11 +96,15 @@ final class Track {
         self.album = album
         self.duration = duration
         self.addedAt = addedAt
+        self.importedAt = importedAt ?? addedAt
+        self.lyricsTimeOffsetMs = lyricsTimeOffsetMs
         self.fileBookmarkData = fileBookmarkData
         self.originalFilePath = originalFilePath
+        self.libraryRelativePath = libraryRelativePath
         self.availabilityRaw = availability.rawValue
         self.artworkData = artworkData
         self.ttmlLyricText = ttmlLyricText
+        self.lyricsText = lyricsText
     }
 
     // MARK: - Bookmark Resolution
@@ -104,6 +119,19 @@ final class Track {
     /// Resolve the security-scoped bookmark to get a usable file URL.
     /// - Returns: ResolveResult containing URL (if accessible), refreshed bookmark (if stale), and new availability status.
     func resolveFileURL() -> ResolveResult {
+        if !libraryRelativePath.isEmpty {
+            let localURL = LocalLibraryPaths.libraryURL(from: libraryRelativePath)
+            if FileManager.default.fileExists(atPath: localURL.path) {
+                return ResolveResult(
+                    url: localURL, refreshedBookmarkData: nil, newAvailability: .available)
+            }
+            return ResolveResult(url: nil, refreshedBookmarkData: nil, newAvailability: .missing)
+        }
+
+        if fileBookmarkData.isEmpty {
+            return ResolveResult(url: nil, refreshedBookmarkData: nil, newAvailability: .missing)
+        }
+
         var isStale = false
 
         do {

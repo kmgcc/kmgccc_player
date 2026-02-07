@@ -1,0 +1,10 @@
+
+applemusic-like-lyrics
+Copyright (c) amll-dev contributors
+Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0)
+
+This application includes and modifies source code from applemusic-like-lyrics.
+The original project is available at:
+https://github.com/amll-dev/applemusic-like-lyrics
+
+Modifications have been made for integration into this application.
