@@ -12,6 +12,7 @@
 ### Changed
 - 优化了磁带播放界面的视觉细节。
 - 更新了文档，提供了更清晰的构建指引。
+- 对 LDDC Server 进行了 Universal Build 打包，理论上支持 Apple Silicon 与 Intel 芯片，但目前尚未在 x86_64 平台上进行验证。
 
 ## [v1.0.1-beta] - 2026-02-07
 
