@@ -19,7 +19,12 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     private(set) var isPlaying: Bool = false
     private(set) var currentTime: Double = 0
     private(set) var duration: Double = 0
-    private(set) var currentTrack: Track?
+    private(set) var currentTrack: Track? {
+        didSet {
+            guard oldValue?.id != currentTrack?.id else { return }
+            NotificationCenter.default.post(name: .playbackTrackDidChange, object: nil)
+        }
+    }
 
     var volume: Double {
         didSet {

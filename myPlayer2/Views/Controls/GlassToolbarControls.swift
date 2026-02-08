@@ -27,27 +27,10 @@ struct GlassIconButtonLabel: View {
     var body: some View {
         Image(systemName: systemImage)
             .font(.system(size: iconSize, weight: .semibold))
-            .foregroundStyle(isPrimary ? themeStore.accentColor : themeStore.textColor)
+            .foregroundStyle(iconForeground)
             .frame(width: size, height: size)
             .contentShape(Circle())
             .background(glassBackground)
-            .overlay(
-                Circle()
-                    .strokeBorder(outlineColor, lineWidth: 0.5)
-                    .allowsHitTesting(false)
-            )
-            .overlay(
-                Circle()
-                    .strokeBorder(
-                        LinearGradient(
-                            colors: [highlightColor, Color.clear],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        ),
-                        lineWidth: 0.5
-                    )
-                    .allowsHitTesting(false)
-            )
     }
 
     @ViewBuilder
@@ -56,45 +39,48 @@ struct GlassIconButtonLabel: View {
         case .defaultToolbar:
             Circle()
                 .glassEffect(.clear, in: .circle)
+                .overlay(Circle().fill(darkNeutralOverlay))
+                .overlay(Circle().fill(defaultToolbarTintFill))
                 .allowsHitTesting(false)
         case .sidebarBottom:
-            // Skills: $macos-appkit-liquid-glass-controls + $macos-appkit-liquid-glass-guide
-            // Keep icon crisp above glass; apply tint on top of glass layer so Light/Dark variance is visible.
             Circle()
                 .glassEffect(.clear, in: .circle)
-                .overlay(Circle().fill(sidebarBottomFill))
-                .compositingGroup()
+                .overlay(Circle().fill(darkNeutralOverlay))
+                .overlay(Circle().fill(sidebarBottomTintFill))
                 .allowsHitTesting(false)
         }
     }
 
-    private var sidebarBottomFill: Color {
-        if colorScheme == .dark {
-            return Color.black.opacity(0.26)
+    private var iconForeground: Color {
+        if isPrimary {
+            return themeStore.accentColor
         }
-        return Color.white.opacity(0.32)
-    }
-
-    private var outlineColor: Color {
         switch surfaceVariant {
         case .defaultToolbar:
-            return Color.primary.opacity(0.12)
+            return themeStore.accentColor.opacity(colorScheme == .dark ? 0.94 : 0.84)
         case .sidebarBottom:
-            return colorScheme == .dark
-                ? Color.white.opacity(0.07)
-                : Color.black.opacity(0.12)
+            return themeStore.accentColor.opacity(colorScheme == .dark ? 0.90 : 0.82)
         }
     }
 
-    private var highlightColor: Color {
-        switch surfaceVariant {
-        case .defaultToolbar:
-            return themeStore.textColor.opacity(0.16)
-        case .sidebarBottom:
-            return colorScheme == .dark
-                ? themeStore.accentColor.opacity(0.08)
-                : Color.white.opacity(0.20)
-        }
+    private var darkNeutralOverlay: Color {
+        colorScheme == .dark ? Color.black.opacity(0.18) : .clear
+    }
+
+    private var defaultToolbarTintFill: Color {
+        themeStore.accentColor.opacity(
+            colorScheme == .dark
+                ? (isPrimary ? 0.042 : 0.026)
+                : (isPrimary ? 0.036 : 0.024)
+        )
+    }
+
+    private var sidebarBottomTintFill: Color {
+        themeStore.accentColor.opacity(
+            colorScheme == .dark
+                ? (isPrimary ? 0.048 : 0.03)
+                : (isPrimary ? 0.038 : 0.026)
+        )
     }
 }
 
@@ -207,6 +193,7 @@ struct GlassToolbarPlayImportPill: View {
     let canPlay: Bool
     let onPlay: () -> Void
     let onImport: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
 
     var body: some View {
@@ -247,7 +234,9 @@ struct GlassToolbarPlayImportPill: View {
                             weight: .semibold
                         )
                     )
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(
+                        themeStore.accentColor.opacity(colorScheme == .dark ? 0.9 : 0.86)
+                    )
                     .frame(
                         width: GlassStyleTokens.headerControlHeight,
                         height: GlassStyleTokens.headerControlHeight
@@ -258,31 +247,23 @@ struct GlassToolbarPlayImportPill: View {
             .help("context.import")
         }
         .frame(height: GlassStyleTokens.headerControlHeight)
-        // Skills: $macos-appkit-liquid-glass-toolbar + $macos-appkit-liquid-glass-controls
-        // One grouped pill container, with separate hit regions for each action.
         .background(
             Capsule()
                 .glassEffect(.clear, in: .capsule)
-                .allowsHitTesting(false)
-        )
-        .overlay(
-            Capsule()
-                .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5)
-                .allowsHitTesting(false)
-        )
-        .overlay(
-            Capsule()
-                .strokeBorder(
-                    LinearGradient(
-                        colors: [Color.primary.opacity(0.16), Color.clear],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    ),
-                    lineWidth: 0.5
+                .overlay(
+                    Capsule().fill(colorScheme == .dark ? Color.black.opacity(0.18) : Color.clear)
+                )
+                .overlay(
+                    Capsule()
+                        .fill(themeStore.accentColor.opacity(toolbarSurfaceTintOpacity))
                 )
                 .allowsHitTesting(false)
         )
         .clipShape(Capsule())
+    }
+
+    private var toolbarSurfaceTintOpacity: Double {
+        colorScheme == .dark ? 0.026 : 0.024
     }
 }
 
@@ -292,6 +273,8 @@ struct GlassToolbarSearchField: View {
     @Binding var text: String
     let focused: FocusState<Bool>.Binding
     let onClear: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var themeStore: ThemeStore
 
     var body: some View {
         HStack(spacing: 8) {
@@ -332,31 +315,19 @@ struct GlassToolbarSearchField: View {
                 .clear,
                 in: .rect(cornerRadius: GlassStyleTokens.headerControlCornerRadius)
             )
-            .allowsHitTesting(false)
-        )
-        .overlay(
-            RoundedRectangle(
-                cornerRadius: GlassStyleTokens.headerControlCornerRadius,
-                style: .continuous
+            .overlay(
+                RoundedRectangle(
+                    cornerRadius: GlassStyleTokens.headerControlCornerRadius,
+                    style: .continuous
+                )
+                .fill(colorScheme == .dark ? Color.black.opacity(0.18) : Color.clear)
             )
-            .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5)
-            .allowsHitTesting(false)
-        )
-        .overlay(
-            RoundedRectangle(
-                cornerRadius: GlassStyleTokens.headerControlCornerRadius,
-                style: .continuous
-            )
-            .strokeBorder(
-                LinearGradient(
-                    colors: [
-                        Color.primary.opacity(0.16),
-                        Color.clear,
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                ),
-                lineWidth: 0.5
+            .overlay(
+                RoundedRectangle(
+                    cornerRadius: GlassStyleTokens.headerControlCornerRadius,
+                    style: .continuous
+                )
+                .fill(themeStore.accentColor.opacity(toolbarSurfaceTintOpacity))
             )
             .allowsHitTesting(false)
         )
@@ -369,5 +340,9 @@ struct GlassToolbarSearchField: View {
         .onTapGesture {
             focused.wrappedValue = true
         }
+    }
+
+    private var toolbarSurfaceTintOpacity: Double {
+        colorScheme == .dark ? 0.026 : 0.024
     }
 }
