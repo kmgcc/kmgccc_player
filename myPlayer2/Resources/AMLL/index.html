@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AMLL Lyrics</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: transparent;
+        }
+        #player {
+            width: 100%;
+            height: 100%;
+            background: transparent;
+        }
+
+        .amll-lyric-player {
+            font-family: var(--amll-lp-main-font-family, -apple-system, "Helvetica Neue", sans-serif);
+            font-weight: var(--amll-lp-main-font-weight, 600);
+        }
+        .amll-lyric-player.dom,
+        .amll-lyric-player.dom-slim {
+            line-height: 1.5em;
+        }
+        ._lyricLine_m23bz_6,
+        ._lyricLine_1jop6_6 {
+            overflow: visible;
+        }
+        ._lyricMainLine_m23bz_99,
+        ._lyricMainLine_1jop6_80 {
+            font-family: var(--amll-lp-main-font-family, -apple-system, "Helvetica Neue", sans-serif);
+            font-weight: var(--amll-lp-main-font-weight, 600);
+            line-height: 1.5em;
+            padding-bottom: 1.2em;
+        }
+        ._lyricSubLine_m23bz_145,
+        ._lyricSubLine_1jop6_90 {
+            font-family: var(--amll-lp-translation-font-family, -apple-system, "Helvetica Neue", sans-serif);
+            font-weight: var(--amll-lp-translation-font-weight, 400);
+            font-size: var(--amll-lp-translation-font-size, 0.75em);
+        }
+
+        /* Background (small) lyric lines:
+           hidden by default, fade in only when active, fade out after active ends. */
+        .amll-lyric-player [class*="_lyricBgLine_"] {
+            opacity: 0 !important;
+            padding-top: 0.2em !important;
+            padding-bottom: 0.2em !important;
+            scale: 1 !important;
+            transition: opacity .32s ease !important;
+        }
+        .amll-lyric-player [class*="_lyricBgLine_"][class*="_active_"] {
+            opacity: 0.4 !important;
+            scale: 1 !important;
+        }
+
+        /* Animate text inside bg-line so we don't override AMLL line positioning transform. */
+        .amll-lyric-player [class*="_lyricBgLine_"] > * {
+            transform: translateY(10px);
+            transition: transform .42s ease, opacity .32s ease;
+        }
+        .amll-lyric-player [class*="_lyricBgLine_"][class*="_active_"] > * {
+            transform: translateY(0);
+        }
+    </style>
+</head>
+<body>
+    <div id="player"></div>
+
+    <!-- Load Bridge first so logs & AMLL namespace are available -->
+    <script src="bridge.js"></script>
+
+    <script type="module">
+        import { LyricPlayer, parseTTML } from "./amll-core.js";
+
+        console.log("[LyricsRenderer] Module script loaded");
+
+        // Initialize Player
+        const playerContainer = document.getElementById('player');
+        const lyricPlayer = new LyricPlayer();
+        playerContainer.appendChild(lyricPlayer.getElement());
+        
+        // Initial config defaults
+        lyricPlayer.setEnableSpring(true);
+        lyricPlayer.setEnableBlur(true);
+        // Align active line toward top (instead of center)
+        lyricPlayer.setAlignAnchor("top");
+        lyricPlayer.setAlignPosition(0.2);
+        
+        // Helper to map TTML lines to AMLL LyricLine format
+        const mapTTMLLyric = (line) => ({
+            ...line,
+            words: line.words.map((word) => ({ obscene: false, romanWord: "", ...word })),
+            romanLyric: "",
+        });
+
+        let lastSeekAt = 0;
+        let lastSeekSeconds = null;
+        const emitSeek = (line) => {
+            if (!line) return;
+            const start = typeof line.startTime === "number" ? line.startTime : undefined;
+            if (start === undefined || Number.isNaN(start)) return;
+
+            const currentMs = typeof lyricPlayer.getCurrentTime === "function"
+                ? lyricPlayer.getCurrentTime()
+                : 0;
+            const looksLikeMs = start > 1000 || (currentMs > 0 && Math.abs(start - currentMs) < 5000);
+            const seconds = looksLikeMs ? start / 1000 : start;
+
+            const now = performance.now();
+            if (lastSeekSeconds !== null && Math.abs(seconds - lastSeekSeconds) < 0.01 && now - lastSeekAt < 250) {
+                return;
+            }
+            lastSeekAt = now;
+            lastSeekSeconds = seconds;
+
+            if (window.AMLL && typeof window.AMLL._onUserSeek === "function") {
+                window.AMLL._onUserSeek(seconds);
+            } else if (window.webkit?.messageHandlers?.onUserSeek) {
+                window.webkit.messageHandlers.onUserSeek.postMessage({ seconds });
+            }
+        };
+
+        const resolveLineFromTarget = (target) => {
+            let node = target;
+            const root = lyricPlayer.getElement();
+            while (node && node !== root) {
+                const lineObj = lyricPlayer.lyricLineElementMap?.get?.(node);
+                if (lineObj?.getLine) return lineObj.getLine();
+                node = node.parentElement;
+            }
+            return null;
+        };
+
+        // Seek on line click (notify native)
+        lyricPlayer.addEventListener("line-click", (e) => {
+            emitSeek(e?.line);
+        });
+
+        // Fallback: resolve clicked line from DOM target (some WebKit builds drop line-click)
+        lyricPlayer.getElement().addEventListener("click", (e) => {
+            const line = resolveLineFromTarget(e.target);
+            emitSeek(line);
+        });
+
+        // Ensure time is integer ms; preserve force flag for internal calls.
+        const originalSetCurrentTime = lyricPlayer.setCurrentTime.bind(lyricPlayer);
+        lyricPlayer.setCurrentTime = (ms, force = false) => {
+            const timeMs = Math.max(0, Math.floor(ms));
+            originalSetCurrentTime(timeMs, force);
+        };
+        let lastKnownTimeMs = 0;
+
+        const restoreOriginalLineTimes = (originalTimes) => {
+            const apply = (lines) => {
+                if (!Array.isArray(lines) || lines.length !== originalTimes.length) return false;
+                lines.forEach((line, idx) => {
+                    const orig = originalTimes[idx];
+                    if (!orig) return;
+                    if (Number.isFinite(orig.startTime)) line.startTime = orig.startTime;
+                    if (Number.isFinite(orig.endTime)) line.endTime = orig.endTime;
+                });
+                return true;
+            };
+            const didProcessed = apply(lyricPlayer.processedLines);
+            const didCurrent = apply(lyricPlayer.currentLyricLines);
+            return didProcessed || didCurrent;
+        };
+        let leadInMs = 300;
+        let timeOffsetMs = 0;
+        let lastTTML = "";
+        const applyLeadIn = (line) => {
+            if (!line || line.isBG) return;
+            const start = Number.isFinite(line.startTime) ? line.startTime : 0;
+            const end = Number.isFinite(line.endTime) ? line.endTime : 0;
+            if (!Array.isArray(line.words) || line.words.length === 0) {
+                const shift = Math.min(leadInMs, start);
+                line.startTime = Math.max(0, start - shift);
+                line.endTime = Math.max(line.startTime, end - shift);
+                return;
+            }
+            const firstWord = line.words[0];
+            const wordStart = Number.isFinite(firstWord?.startTime) ? firstWord.startTime : start;
+            const lastWord = line.words[line.words.length - 1];
+            const lastWordEnd = Number.isFinite(lastWord?.endTime) ? lastWord.endTime : end;
+            const shift = Math.min(leadInMs, start, wordStart, lastWordEnd);
+            line.startTime = Math.max(0, start - shift);
+            if (firstWord && Number.isFinite(firstWord.startTime)) {
+                firstWord.startTime = Math.max(0, wordStart - shift);
+            }
+            const newEnd = Math.max(line.startTime, end - shift);
+            line.endTime = newEnd;
+            if (lastWord && Number.isFinite(lastWord.endTime)) {
+                lastWord.endTime = Math.max(newEnd, lastWordEnd - shift);
+            }
+        };
+        const applyTimeOffset = (line) => {
+            if (!line) return;
+            const offset = Number.isFinite(timeOffsetMs) ? timeOffsetMs : 0;
+            if (!offset) return;
+            const adjust = (value) => Math.max(0, value + offset);
+
+            if (Number.isFinite(line.startTime)) {
+                line.startTime = adjust(line.startTime);
+            }
+            if (Number.isFinite(line.endTime)) {
+                line.endTime = Math.max(
+                    Number.isFinite(line.startTime) ? line.startTime : 0,
+                    adjust(line.endTime)
+                );
+            }
+            if (Array.isArray(line.words)) {
+                line.words.forEach((word) => {
+                    if (Number.isFinite(word.startTime)) {
+                        word.startTime = adjust(word.startTime);
+                    }
+                    if (Number.isFinite(word.endTime)) {
+                        word.endTime = Math.max(
+                            Number.isFinite(word.startTime) ? word.startTime : 0,
+                            adjust(word.endTime)
+                        );
+                    }
+                });
+            }
+        };
+
+        // Define the Renderer Implementation for Bridge
+        window.LyricsRenderer = {
+            setLyrics: (ttml) => {
+                if (!ttml) {
+                    lyricPlayer.setLyricLines([]);
+                    console.log("[LyricsRenderer] Cleared lyrics");
+                    lastTTML = "";
+                    return;
+                }
+                try {
+                    lastTTML = ttml;
+                    const result = parseTTML(ttml);
+                    const lines = result.lines.map(mapTTMLLyric);
+                    lines.forEach(applyLeadIn);
+                    lines.forEach(applyTimeOffset);
+                    const originalTimes = lines.map((line) => ({
+                        startTime: line.startTime,
+                        endTime: line.endTime
+                    }));
+                    // Preserve TTML intent (no mutation of duet/bg/ordering).
+                    lyricPlayer.setLyricLines(lines);
+                    const currentMs = Number.isFinite(lastKnownTimeMs)
+                        ? lastKnownTimeMs
+                        : (lyricPlayer.getCurrentTime ? lyricPlayer.getCurrentTime() : 0);
+                    // Undo core's non-overlap timing clamp so overlaps can highlight in parallel.
+                    restoreOriginalLineTimes(originalTimes);
+                    // Re-align playback position after (re)loading lyrics.
+                    originalSetCurrentTime(currentMs, true);
+                    console.log("[LyricsRenderer] Loaded lines:", lines.length);
+                } catch (e) {
+                    console.error("[LyricsRenderer] TTML Parse Error:", e);
+                    // Optionally fallback to plain text parsing if you had that logic
+                }
+            },
+            
+            setCurrentTime: (seconds) => {
+                const timeInMs = Math.max(0, Math.floor(seconds * 1000));
+                lastKnownTimeMs = timeInMs;
+                // If AMLL hasn't finished its first layout yet, non-forced setCurrentTime is ignored.
+                const needsForce = lyricPlayer.initialLayoutFinished === false;
+                originalSetCurrentTime(timeInMs, needsForce);
+            },
+            
+            setPlaying: (isPlaying) => {
+                // lyricPlayer.setIsPlaying(isPlaying); // If supported by core
+            },
+            
+            setConfig: (config) => {
+                try {
+                    // Apply config to lyricPlayer
+                    if (config.fontSize) {
+                         lyricPlayer.getElement().style.setProperty("--amll-lp-font-size", `${config.fontSize}px`);
+                    }
+                    if (config.fontWeight) {
+                        lyricPlayer.getElement().style.setProperty("--amll-lp-main-font-weight", `${config.fontWeight}`);
+                    }
+                    if (config.translationFontWeight) {
+                        lyricPlayer.getElement().style.setProperty(
+                            "--amll-lp-translation-font-weight",
+                            `${config.translationFontWeight}`
+                        );
+                    }
+                    if (config.translationFontSize) {
+                        lyricPlayer.getElement().style.setProperty(
+                            "--amll-lp-translation-font-size",
+                            `${config.translationFontSize}px`
+                        );
+                    }
+                    if (config.fontFamilyMain) {
+                        lyricPlayer.getElement().style.setProperty("--amll-lp-main-font-family", config.fontFamilyMain);
+                    }
+                    if (config.fontFamilyTranslation) {
+                        lyricPlayer.getElement().style.setProperty(
+                            "--amll-lp-translation-font-family",
+                            config.fontFamilyTranslation
+                        );
+                    }
+                    if (config.textColor) {
+                        lyricPlayer.getElement().style.setProperty("--amll-lp-color", config.textColor);
+                    }
+                    if (config.shadowColor) {
+                        lyricPlayer.getElement().style.textShadow = `0 1px 2px ${config.shadowColor}`;
+                    }
+                    if (typeof config.leadInMs === "number" && !Number.isNaN(config.leadInMs)) {
+                        leadInMs = Math.max(0, Math.min(1200, config.leadInMs));
+                        if (lastTTML) {
+                            window.LyricsRenderer.setLyrics(lastTTML);
+                        }
+                    }
+                    if (typeof config.timeOffsetMs === "number" && !Number.isNaN(config.timeOffsetMs)) {
+                        timeOffsetMs = Math.max(-15000, Math.min(15000, config.timeOffsetMs));
+                        if (lastTTML) {
+                            window.LyricsRenderer.setLyrics(lastTTML);
+                        }
+                    }
+                    console.log("[LyricsRenderer] Config updated:", config);
+                } catch (e) {
+                    console.error("[LyricsRenderer] Config Error:", e);
+                }
+            }
+        };
+
+        // Animation Loop
+        let lastTime = performance.now();
+        function animate(time) {
+            const delta = time - lastTime;
+            lastTime = time;
+            lyricPlayer.update(delta);
+            requestAnimationFrame(animate);
+        }
+        requestAnimationFrame(animate);
+
+        // Notify bridge that renderer is ready (after LyricsRenderer defined)
+        if (window.AMLL && typeof window.AMLL._onRendererReady === "function") {
+            window.AMLL._onRendererReady();
+        } else {
+            console.warn("[LyricsRenderer] AMLL bridge not ready");
+        }
+
+    </script>
+</body>
+</html>

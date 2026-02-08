@@ -1,0 +1,7 @@
+LDDC
+Copyright (c) chenmozhijin
+Licensed under the GNU General Public License v3.0 (GPL-3.0)
+
+This application includes and modifies source code from LDDC.
+Original project:
+https://github.com/chenmozhijin/LDDC

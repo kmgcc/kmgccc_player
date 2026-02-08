@@ -1,0 +1,20 @@
+[project]
+name = "lddc-fetch-core"
+version = "0.1.0"
+description = "Extracted lyric fetcher (title+artist -> LRC) from LDDC"
+requires-python = ">=3.10"
+dependencies = [
+  "httpx[http2,brotli]",
+  "pyaes",
+]
+
+[project.scripts]
+lddc-fetch = "lddc_fetch_core.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["src/lddc_fetch_core/**", "README.md", "examples/**"]
+

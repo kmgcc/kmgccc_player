@@ -1,0 +1,40 @@
+# User requested exclusions
+apple-audio-visualization-main/
+applemusic-like-lyrics-full-refractor/
+LDDC-main/
+skills/
+ARCHITECTURE.md
+scan_ui.py
+ui_candidates.txt
+myPlayer2/scan_ui.py
+myPlayer2/ui_candidates.txt
+myPlayer2/Assets.xcassets/
+
+
+# macOS
+.DS_Store
+
+# Xcode
+build/
+*.project/xcuserdata
+*.project/xcshareddata
+*.project/project.xcworkspace/xcuserdata
+*.xcodeproj/xcuserdata
+*.xcodeproj/xcshareddata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.xccheckout
+*.moved-aside
+DerivedData
+.derivedData
+*.hmap
+*.ipa
+*.xg
+
+# Python
+__pycache__/
+*.py[cod]
+*.class
+.venv/
+env/
+dist/
+*.spec
