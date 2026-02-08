@@ -16,6 +16,7 @@ struct TrackEditSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.openURL) private var openURL
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(LyricsViewModel.self) private var lyricsVM
     @EnvironmentObject private var themeStore: ThemeStore
@@ -35,6 +36,8 @@ struct TrackEditSheet: View {
 
     @State private var showingArtworkPicker = false
     @State private var showingLyricsPicker = false
+
+    private let amllDbURL = URL(string: "https://github.com/amll-dev/amll-ttml-db")!
 
     var body: some View {
         VStack(spacing: 0) {
@@ -210,6 +213,13 @@ struct TrackEditSheet: View {
                 .font(.headline)
 
                 Spacer()
+
+                Button {
+                    openURL(amllDbURL)
+                } label: {
+                    Label("AMLL DB", systemImage: "arrow.up.right.square")
+                }
+                .font(.caption)
 
                 Button(LocalizedStringKey("edit.track.import_lyrics")) {
                     showingLyricsPicker = true
