@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Hashable
 
 
-@dataclass(slots=True)
+@dataclass
 class _Entry:
     value: Any
     expire_at: float | None

@@ -2,7 +2,7 @@
 name = "lddc-fetch-core"
 version = "0.1.0"
 description = "Extracted lyric fetcher (title+artist -> LRC) from LDDC"
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 dependencies = [
   "httpx[http2,brotli]",
   "pyaes",

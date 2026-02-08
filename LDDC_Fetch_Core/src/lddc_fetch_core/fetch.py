@@ -17,7 +17,7 @@ from .providers.ne import NEProvider
 from .providers.qm import QMProvider
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class _ScoredSong:
     score: float
     song: Song
