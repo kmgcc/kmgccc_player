@@ -26,6 +26,7 @@
 ![Cassette Player](screenshots/tape.png)
 ![Color](screenshots/color.png)
 ![Mini Player](screenshots/glass.png)
+![LDDC](screenshots/lddc.png)
 
 ## 构建与运行 (Build)
 

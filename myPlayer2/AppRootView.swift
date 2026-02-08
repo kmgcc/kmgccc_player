@@ -19,7 +19,6 @@ struct AppRootView: View {
     @State private var settings = AppSettings.shared
     @Environment(\.colorScheme) private var swiftUIColorScheme
     @StateObject private var themeStore = ThemeStore.shared
-    @State private var themeRevision = 0
 
     // MARK: - State Objects
 
@@ -35,7 +34,6 @@ struct AppRootView: View {
             if let libraryVM, let playerVM, let lyricsVM, let ledMeter, let skinManager {
                 ZStack {
                     MainLayoutView()
-                        .id(themeRevision)
                         .id("root-\(settings.language.rawValue)")  // Force full UI rebuild on language change
                         .environment(\.locale, settings.language.locale)
 
@@ -70,10 +68,6 @@ struct AppRootView: View {
         // Theme Update Strategy: Follow effective SwiftUI ColorScheme
         .onChange(of: swiftUIColorScheme) { _, newScheme in
             syncThemeStoreWithSwiftUIColorScheme(newScheme)
-        }
-        .onReceive(themeStore.$palette) { palette in
-            guard palette != nil else { return }
-            themeRevision &+= 1
         }
         .onAppear {
             applyAppearanceToWindows()
@@ -186,6 +180,11 @@ private struct ThemeTrackObserver: View {
 
     var body: some View {
         Color.clear
+            .onReceive(NotificationCenter.default.publisher(for: .playbackTrackDidChange)) { _ in
+                Task { @MainActor in
+                    await themeStore.updateTheme(for: playerVM.currentTrack)
+                }
+            }
             .task(id: playerVM.currentTrack?.id) {
                 await themeStore.updateTheme(for: playerVM.currentTrack)
             }

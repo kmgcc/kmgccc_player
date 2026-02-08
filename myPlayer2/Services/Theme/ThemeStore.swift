@@ -27,12 +27,14 @@ struct ThemePalette {
 final class ThemeStore: ObservableObject {
 
     static let shared = ThemeStore()
+    static let darkModeMinimumThemeBrightness: CGFloat = 0.43
 
     @Published var colorScheme: ColorScheme = .dark
     @Published var palette: ThemePalette?
     @Published private(set) var baseColor: Color
     @Published private(set) var accentColor: Color
     @Published private(set) var selectionFill: Color
+    @Published private(set) var usesFallbackThemeColor: Bool = true
 
     let defaultBlue: Color
 
@@ -49,7 +51,13 @@ final class ThemeStore: ObservableObject {
     private var currentArtworkData: Data?
 
     private init() {
-        let fallback = NSColor(calibratedRed: 0.0, green: 122.0 / 255.0, blue: 1.0, alpha: 1.0)
+        // Default theme color: light orange-red.
+        let fallback = NSColor(
+            calibratedRed: 255.0 / 255.0,
+            green: 150.0 / 255.0,
+            blue: 50.0 / 255.0,
+            alpha: 1.0
+        )
         self.defaultBlueNS = fallback
         self.rawDominantColor = fallback
         self.defaultBlue = Color(nsColor: fallback)
@@ -82,34 +90,44 @@ final class ThemeStore: ObservableObject {
         extractionToken = UUID()
         let token = extractionToken
 
-        guard let trackID, let data, data.isEmpty == false else {
+        guard let data, data.isEmpty == false else {
             currentArtworkData = nil
             rawDominantColor = defaultBlueNS
+            usesFallbackThemeColor = true
             await refreshPalette(reason: "track_missing_artwork")
             return
         }
 
         currentArtworkData = data
 
-        if let cached = dominantColorCache[trackID] {
+        if let trackID, let cached = dominantColorCache[trackID] {
             rawDominantColor = cached
+            usesFallbackThemeColor = false
             await refreshPalette(reason: "track_artwork_cached")
             return
         }
 
-        // Immediate fallback so UI reacts quickly, then transitions to extracted color.
-        rawDominantColor = defaultBlueNS
-        await refreshPalette(reason: "track_artwork_pending")
+        async let quick = extractQuickColor(from: data)
+        async let extracted = extractDominantColor(from: data)
 
-        let extracted = await extractDominantColor(from: data)
+        if let quickColor = await quick, token == extractionToken, activeTrackID == trackID {
+            rawDominantColor = quickColor
+            usesFallbackThemeColor = false
+            await refreshPalette(reason: "track_artwork_quick")
+        }
+
+        let extractedColor = await extracted
 
         guard token == extractionToken, activeTrackID == trackID else {
             return
         }
 
-        let resolved = extracted ?? defaultBlueNS
-        dominantColorCache[trackID] = resolved
+        let resolved = extractedColor ?? rawDominantColor
+        if let trackID {
+            dominantColorCache[trackID] = resolved
+        }
         rawDominantColor = resolved
+        usesFallbackThemeColor = extractedColor == nil
         await refreshPalette(reason: "track_artwork_extracted")
     }
 
@@ -120,6 +138,14 @@ final class ThemeStore: ObservableObject {
                     ArtworkColorExtractor.uiAccentColor(from: data)
                     ?? ArtworkColorExtractor.averageColor(from: data)
                 continuation.resume(returning: raw)
+            }
+        }
+    }
+
+    private func extractQuickColor(from data: Data) async -> NSColor? {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(returning: ArtworkColorExtractor.quickAccentSample(from: data))
             }
         }
     }
@@ -224,6 +250,7 @@ final class ThemeStore: ObservableObject {
         if scheme == .dark {
             saturation = min(max(saturation * 1.06, 0.30), 0.90)
             brightness = min(max(brightness * 1.10, 0.62), 0.88)
+            brightness = max(brightness, Self.darkModeMinimumThemeBrightness)
         } else {
             saturation = min(max(saturation * 1.02, 0.28), 0.78)
             brightness = min(max(brightness * 0.88, 0.28), 0.68)
