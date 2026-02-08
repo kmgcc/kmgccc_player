@@ -1,0 +1,468 @@
+//
+//  LDDCSearchSection.swift
+//  myPlayer2
+//
+//  TrueMusic - LDDC Lyrics Search Section View
+//  Embedded in TrackEditSheet for searching and applying lyrics.
+//
+
+import SwiftData
+import SwiftUI
+
+/// LDDC lyrics search section with Liquid Glass styling.
+struct LDDCSearchSection: View {
+
+    let track: Track
+    let onApplyTTML: (String) -> Void
+
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    // MARK: - State
+
+    @State private var searchTitle = ""
+    @State private var searchArtist = ""
+    @State private var selectedMode: LDDCMode = .verbatim
+    @State private var includeTranslation = false
+    // Default platforms: QQ + Kugou + Netease (as requested).
+    @State private var selectedSources: Set<LDDCSource> = [.QM, .KG, .NE]
+
+    @State private var isSearching = false
+    @State private var searchResults: [LDDCCandidate] = []
+    @State private var searchError: String?
+
+    @State private var selectedCandidate: LDDCCandidate?
+    @State private var isFetchingPreview = false
+    @State private var previewLrcOrig: String?
+    @State private var previewLrcTrans: String?
+    @State private var previewError: String?
+
+    @State private var isApplying = false
+    @State private var applyError: String?
+
+    private let client = LDDCClient()
+    private let panelMaxWidth: CGFloat = 420
+
+    // MARK: - Body
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            // Header
+            sectionHeader
+
+            // Search Form
+            searchFormSection
+
+            // Results List
+            if !searchResults.isEmpty || isSearching {
+                resultsSection
+            }
+
+            // Preview Panel
+            if selectedCandidate != nil {
+                previewSection
+            }
+
+            // Error Display
+            if let error = searchError ?? previewError ?? applyError {
+                errorBanner(message: error)
+            }
+        }
+        .onAppear {
+            // Pre-fill from track
+            searchTitle = track.title
+            searchArtist = track.artist
+        }
+    }
+
+    // MARK: - Section Header
+
+    private var sectionHeader: some View {
+        HStack {
+            Label(
+                "search.lddc.title", systemImage: "magnifyingglass"
+            )
+            .font(.headline)
+
+            Spacer()
+
+            // Server status indicator
+            if isSearching || isFetchingPreview || isApplying {
+                ProgressView()
+                    .scaleEffect(0.7)
+            }
+        }
+    }
+
+    // MARK: - Search Form
+
+    private var searchFormSection: some View {
+        VStack(spacing: 12) {
+            // Title & Artist
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("search.lddc.song")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    TextField(
+                        "search.lddc.song", text: $searchTitle
+                    )
+                    .textFieldStyle(.roundedBorder)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("search.lddc.artist")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    TextField(
+                        "search.lddc.artist", text: $searchArtist
+                    )
+                    .textFieldStyle(.roundedBorder)
+                }
+            }
+
+            // Mode & Translation
+            HStack(spacing: 16) {
+                // Mode Picker
+                Picker("search.lddc.mode", selection: $selectedMode) {
+                    ForEach(LDDCMode.allCases) { mode in
+                        Text(LocalizedStringKey(mode.displayName)).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 150)
+
+                // Translation Toggle
+                Toggle(
+                    "search.lddc.translation",
+                    isOn: $includeTranslation
+                )
+                .toggleStyle(.switch)
+                .tint(themeStore.accentColor)
+
+                Spacer()
+            }
+
+            // Platform Selection
+            HStack(spacing: 8) {
+                Text("search.lddc.platform")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                ForEach(LDDCSource.allCases) { source in
+                    Toggle(
+                        source.displayName,
+                        isOn: Binding(
+                            get: { selectedSources.contains(source) },
+                            set: { isOn in
+                                if isOn {
+                                    selectedSources.insert(source)
+                                } else if selectedSources.count > 1 {
+                                    selectedSources.remove(source)
+                                }
+                            }
+                        )
+                    )
+                    .toggleStyle(.button)
+                    .buttonStyle(.bordered)
+                    .tint(platformColor(source))
+                }
+
+                Spacer()
+
+                // Search Button
+                Button {
+                    Task { await performSearch() }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "magnifyingglass")
+                        Text("search.lddc.search")
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(searchTitle.isEmpty || isSearching)
+            }
+        }
+    }
+
+    // MARK: - Results Section
+
+    private var resultsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("search.lddc.results_count \(searchResults.count)")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            ScrollView {
+                LazyVStack(spacing: 4) {
+                    ForEach(searchResults) { candidate in
+                        candidateRow(candidate)
+                    }
+                }
+            }
+            .frame(maxHeight: 280)
+            .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+        // Keep this panel narrower and left-aligned so the right side stays free for
+        // scrolling the outer sheet (avoids "mouse trapped inside inner scroll view").
+        .frame(maxWidth: panelMaxWidth, alignment: .leading)
+    }
+
+    private func candidateRow(_ candidate: LDDCCandidate) -> some View {
+        HStack(spacing: 8) {
+            // Platform Badge
+            Text(candidate.sourceEnum?.displayName ?? candidate.source)
+                .font(.caption2)
+                .fontWeight(.medium)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(platformColor(candidate.sourceEnum ?? .LRCLIB).opacity(0.2))
+                .foregroundStyle(platformColor(candidate.sourceEnum ?? .LRCLIB))
+                .clipShape(Capsule())
+
+            // Score
+            Text(String(format: "%.0f", candidate.score))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 30, alignment: .trailing)
+
+            // Title & Artist
+            VStack(alignment: .leading, spacing: 2) {
+                Text(candidate.title)
+                    .font(.subheadline)
+                    .lineLimit(1)
+
+                if let artist = candidate.artist {
+                    Text(artist)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer()
+
+            // Selection indicator
+            if selectedCandidate?.id == candidate.id {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(themeStore.accentColor)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(
+            selectedCandidate?.id == candidate.id
+                ? themeStore.selectionFill
+                : Color.clear
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            Task { await selectCandidate(candidate) }
+        }
+    }
+
+    // MARK: - Preview Section
+
+    private var previewSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("search.lddc.preview")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                if isFetchingPreview {
+                    ProgressView()
+                        .scaleEffect(0.6)
+                }
+
+                // Apply Button
+                Button {
+                    Task { await applyLyrics() }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "checkmark.circle")
+                        Text("search.lddc.apply")
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(previewLrcOrig == nil || isApplying)
+            }
+
+            // Preview Tabs or single view
+            if includeTranslation && previewLrcTrans != nil {
+                TabView {
+                    previewTextView(previewLrcOrig ?? "")
+                        .tabItem { Text("search.lddc.original") }
+
+                    previewTextView(previewLrcTrans ?? "")
+                        .tabItem { Text("search.lddc.translated") }
+                }
+                .frame(height: 220)
+            } else {
+                previewTextView(previewLrcOrig ?? "")
+                    .frame(height: 180)
+            }
+        }
+        .frame(maxWidth: panelMaxWidth, alignment: .leading)
+    }
+
+    private func previewTextView(_ text: String) -> some View {
+        ScrollView {
+            Text(text)
+                .font(.system(.caption, design: .monospaced))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(8)
+        }
+        .background(Color(nsColor: .textBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    // MARK: - Error Banner
+
+    private func errorBanner(message: String) -> some View {
+        HStack {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            Text(message)
+                .font(.caption)
+            Spacer()
+            Button("search.lddc.close") {
+                searchError = nil
+                previewError = nil
+                applyError = nil
+            }
+            .font(.caption)
+        }
+        .padding(8)
+        .background(Color.orange.opacity(0.1))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    // MARK: - Actions
+
+    private func performSearch() async {
+        guard !searchTitle.isEmpty else { return }
+
+        isSearching = true
+        searchError = nil
+        searchResults = []
+        selectedCandidate = nil
+        previewLrcOrig = nil
+        previewLrcTrans = nil
+
+        do {
+            let response = try await client.search(
+                title: searchTitle,
+                artist: searchArtist.isEmpty ? nil : searchArtist,
+                sources: Array(selectedSources),
+                mode: selectedMode,
+                translation: includeTranslation
+            )
+            searchResults = response.results
+
+            if let errors = response.errors, !errors.isEmpty {
+                // Keep results visible; surface partial failures (e.g. NE blocked) for debugging.
+                searchError = "search.lddc.partial_failed \(errors.joined(separator: "\n"))"
+            } else if response.results.isEmpty {
+                searchError = NSLocalizedString("search.lddc.not_found", comment: "")
+            }
+        } catch {
+            searchError = error.localizedDescription
+        }
+
+        isSearching = false
+    }
+
+    private func selectCandidate(_ candidate: LDDCCandidate) async {
+        selectedCandidate = candidate
+        isFetchingPreview = true
+        previewError = nil
+        previewLrcOrig = nil
+        previewLrcTrans = nil
+
+        do {
+            if includeTranslation {
+                let (orig, trans) = try await client.fetchByIdSeparate(
+                    candidate: candidate,
+                    mode: selectedMode
+                )
+                previewLrcOrig = orig
+                previewLrcTrans = trans
+            } else {
+                let lrc = try await client.fetchById(
+                    candidate: candidate,
+                    mode: selectedMode,
+                    translation: false
+                )
+                previewLrcOrig = lrc
+            }
+        } catch {
+            previewError = error.localizedDescription
+        }
+
+        isFetchingPreview = false
+    }
+
+    private func applyLyrics() async {
+        guard let origLrc = previewLrcOrig else { return }
+
+        isApplying = true
+        applyError = nil
+
+        do {
+            let ttml: String
+
+            if includeTranslation, let transLrc = previewLrcTrans {
+                ttml = try await TTMLConverter.shared.convertToTTMLWithTranslation(
+                    origLrc: origLrc,
+                    transLrc: transLrc
+                )
+            } else {
+                ttml = try await TTMLConverter.shared.convertToTTML(lrc: origLrc)
+            }
+
+            // Callback to parent to update track and UI
+            onApplyTTML(ttml)
+
+        } catch {
+            applyError = error.localizedDescription
+        }
+
+        isApplying = false
+    }
+
+    // MARK: - Helpers
+
+    private func platformColor(_ source: LDDCSource) -> Color {
+        switch source {
+        case .LRCLIB: return .blue
+        case .QM: return .green
+        case .KG: return .orange
+        case .NE: return .red
+        }
+    }
+}
+
+// MARK: - Preview
+
+#Preview("LDDC Search Section") {
+    let track = Track(
+        title: "守望者",
+        artist: "司南",
+        album: "Unknown",
+        duration: 240,
+        fileBookmarkData: Data()
+    )
+
+    ScrollView {
+        LDDCSearchSection(track: track) { ttml in
+            print("TTML applied: \(ttml.prefix(100))...")
+        }
+        .padding()
+    }
+    .environmentObject(ThemeStore.shared)
+    .frame(width: 500, height: 600)
+}

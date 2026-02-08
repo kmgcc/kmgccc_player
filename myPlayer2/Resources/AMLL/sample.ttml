@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<tt xmlns="http://www.w3.org/ns/ttml">
+  <head>
+    <metadata xmlns:ttm="http://www.w3.org/ns/ttml#metadata">
+      <ttm:title>Sample Lyrics</ttm:title>
+    </metadata>
+  </head>
+  <body>
+    <div>
+      <p begin="00:00:01.000" end="00:00:04.000">This is a sample line</p>
+      <p begin="00:00:04.500" end="00:00:08.000">AMLL rendering test</p>
+      <p begin="00:00:08.500" end="00:00:12.000">If you see this, it works!</p>
+    </div>
+  </body>
+</tt>

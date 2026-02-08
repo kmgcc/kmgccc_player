@@ -1,0 +1,213 @@
+/* 
+  Localizable.strings (Chinese Simplified)
+*/
+
+// MARK: - Common
+"common.app_name" = "kmgccc_player";
+
+"sidebar.all_songs" = "所有歌曲";
+"sidebar.playlists" = "播放列表";
+"sidebar.new_playlist" = "新建播放列表";
+"sidebar.edit_playlist" = "编辑播放列表";
+"sidebar.delete_playlist" = "删除播放列表";
+"sidebar.settings" = "设置";
+"sidebar.appearance_light" = "外观：浅色";
+"sidebar.appearance_dark" = "外观：深色";
+"sidebar.appearance_system" = "外观：跟随系统";
+
+// MARK: - Settings General
+"settings.title" = "设置";
+"settings.section.now_playing" = "正在播放";
+"settings.section.lyrics" = "歌词";
+"settings.section.led" = "LED 电平表";
+"settings.section.language" = "语言";
+"settings.section.about" = "关于";
+
+// MARK: - Settings Language
+"settings.language.title" = "语言";
+"settings.language.auto" = "自动 (系统)";
+"settings.language.en" = "English";
+"settings.language.zh" = "简体中文";
+"settings.language.restart_notice" = "某些更改可能需要重新启动 App 才能完全生效。";
+
+// MARK: - Settings Now Playing
+"settings.now_playing.select_skin" = "选择皮肤";
+"settings.now_playing.skin_options" = "%@ 选项";
+"skin.classic_led.name" = "经典 LED";
+"skin.classic_led.detail" = "封面 + LED 电平表";
+"skin.rotating_cover.name" = "旋转封面";
+"skin.rotating_cover.detail" = "黑胶风格旋转";
+"skin.kmgccc_cassette.name" = "kmgccc 磁带";
+"skin.kmgccc_cassette.detail" = "磁带卡座";
+"skin.kmgccc_cassette.show_led" = "显示 LED";
+"skin.kmgccc_cassette.show_kmg" = "显示 kmg";
+
+// MARK: - Settings Lyrics
+"settings.lyrics.timing" = "时间轴";
+"settings.lyrics.leadin" = "提前量";
+"settings.lyrics.leadin_desc" = "调整歌词行首和行尾单词的出现时机。";
+"settings.lyrics.fonts" = "字体";
+"settings.lyrics.font_size" = "字体大小";
+"settings.lyrics.font_weight" = "字体粗细";
+"settings.lyrics.weight_thin" = "极细";
+"settings.lyrics.weight_light" = "细";
+"settings.lyrics.weight_regular" = "常规";
+"settings.lyrics.weight_medium" = "中等";
+"settings.lyrics.weight_semibold" = "半粗";
+"settings.lyrics.weight_bold" = "粗体";
+"settings.lyrics.translation_size" = "翻译大小";
+"settings.lyrics.translation_weight" = "翻译粗细";
+"settings.lyrics.chinese_font" = "中文字体";
+"settings.lyrics.english_font" = "英文字体";
+"settings.lyrics.translation_font" = "翻译字体";
+"settings.lyrics.preview" = "预览";
+"settings.lyrics.preview_zh" = "雪把世界删改成更少的字";
+"settings.lyrics.preview_en" = "Snow edits the world into fewer words";
+"settings.lyrics.preview_translation" = "Translation: 雪把世界删改成更少的字 Snow edits the world into fewer words";
+
+
+// MARK: - Settings LED
+"settings.led.live_preview" = "实时预览";
+"settings.led.config" = "配置";
+"settings.led.count" = "LED 数量";
+"settings.led.brightness" = "亮度层级";
+"settings.led.sensitivity" = "音频灵敏度";
+"settings.led.sensitivity_desc" = "较高的数值会使 LED 对安静片段的反应更灵敏。";
+"settings.led.frequency" = "截止频率";
+"settings.led.pregain" = "前置增益";
+"settings.led.transient_threshold" = "瞬态阈值";
+"settings.led.transient_intensity" = "瞬态强度";
+"settings.led.speed" = "响应速度";
+"settings.led.publish_rate" = "刷新率";
+"settings.led.lookahead" = "提前量";
+"settings.led.lookahead_desc" = "延迟音频输出，使 LED 和歌词能够领先同步。";
+
+// MARK: - Settings About
+"settings.about.version" = "版本 %@";
+"settings.about.quote" = "“Where words fail, music speaks.”";
+"settings.about.compliance" = "开源与合规";
+"settings.about.compliance_desc" = "本程序包含并修改了受 AGPL-3.0 和 GPL-3.0 许可的开源软件。";
+"settings.about.source_code" = "源代码";
+"settings.about.source_code_desc" = "本程序为开源软件。此版本的完整相应源代码可在以下地址获得：";
+"settings.about.license" = "根据 GNU Affero General Public License v3.0 (AGPL-3.0) 授权。";
+"settings.about.copyright" = "© 2026 kmgccc. 版权所有。";
+
+// MARK: - Library
+"library.all_songs" = "所有歌曲";
+"library.song_count" = "%d 首歌曲";
+"library.song_count_one" = "%d 首歌曲";
+"library.song_count_filtered" = "%d / %d 首歌曲";
+"library.no_songs" = "无歌曲";
+"library.click_to_import" = "点击工具栏中的“导入”添加音乐。";
+"library.no_results" = "无搜索结果";
+"library.no_matches" = "没有找到匹配 \"%@\" 的歌曲";
+"library.import_desc" = "点击 “导入” 将音乐添加到此播放列表";
+"library.import_btn" = "导入音乐";
+"library.search_placeholder" = "搜索";
+"library.file_missing" = "文件丢失";
+"library.new_playlist_name" = "新建播放列表 %d";
+"library.imported_playlist_name" = "导入于 %@";
+"library.unknown_artist" = "未知艺术家";
+"library.unknown_album" = "未知专辑";
+"library.unknown_title" = "未知标题";
+
+// MARK: - Sorting
+"sort.by" = "排序方式";
+"sort.order" = "顺序";
+"sort.imported_time" = "导入时间";
+"sort.added_time" = "添加时间";
+"sort.title" = "标题";
+"sort.artist" = "歌手";
+"sort.duration" = "时长";
+"sort.ascending" = "升序";
+"sort.descending" = "降序";
+"sort.help" = "排序歌曲";
+
+// MARK: - Context Menu
+"context.play" = "播放";
+"context.play_all" = "全部播放";
+"context.add_to_playlist" = "添加到播放列表";
+"context.remove_from_playlist" = "从播放列表移除";
+"context.new_playlist" = "新建播放列表";
+"context.get_info" = "显示简介";
+"context.delete_from_library" = "从资料库删除";
+"context.import" = "导入音乐";
+"context.clear_search" = "清除搜索";
+
+// MARK: - Edit Track
+"edit.track.title" = "编辑歌曲信息";
+"edit.track.artwork" = "插图";
+"edit.track.choose_image" = "选择图像...";
+"edit.track.remove_artwork" = "移除插图";
+"edit.track.metadata" = "元数据";
+"edit.track.track_title" = "歌曲标题";
+"edit.track.artist" = "歌手";
+"edit.track.artist_name" = "歌手名称";
+"edit.track.album" = "专辑";
+"edit.track.album_name" = "专辑名称";
+"edit.track.duration" = "时长";
+"edit.track.lyrics" = "歌词 (TTML/LRC)";
+"edit.track.import_lyrics" = "导入...";
+"edit.track.offset" = "歌词时间偏移";
+"edit.track.reset" = "重置";
+"edit.track.offset_desc" = "将所有歌词时间轴提前或延后。";
+"edit.track.paste_desc" = "粘贴 TTML 或 LRC 歌词，或从文件导入";
+"edit.track.cancel" = "取消";
+"edit.track.save" = "保存更改";
+
+// MARK: - Edit Playlist
+"edit.playlist.name" = "播放列表名称";
+"edit.playlist.placeholder" = "我的播放列表";
+"edit.playlist.tracks_count" = "%d 首歌曲";
+"edit.playlist.delete" = "删除播放列表";
+"edit.playlist.delete_confirm" = "删除";
+"edit.playlist.delete_confirm_title" = "删除播放列表？";
+"edit.playlist.delete_desc" = "这将移除播放列表，但不会删除歌曲文件本身。";
+
+// MARK: - Search LDDC
+"search.lddc.title" = "歌词查找 (LDDC)";
+"search.lddc.song" = "歌名";
+"search.lddc.artist" = "歌手";
+"search.lddc.mode" = "模式";
+"search.lddc.translation" = "翻译";
+"search.lddc.platform" = "平台";
+"search.lddc.search" = "搜索";
+"search.lddc.results_count" = "搜索结果 (%d)";
+"search.lddc.preview" = "歌词预览";
+"search.lddc.apply" = "应用到本曲";
+"search.lddc.original" = "原文";
+"search.lddc.translated" = "翻译";
+"search.lddc.close" = "关闭";
+"search.lddc.partial_failed" = "部分平台搜索失败：\n%@";
+"search.lddc.not_found" = "未找到歌词";
+"search.lddc.qm" = "QQ音乐";
+"search.lddc.kg" = "酷狗";
+"search.lddc.ne" = "网易云";
+"search.lddc.mode_line" = "逐行";
+"search.lddc.mode_verbatim" = "逐字";
+
+// MARK: - Errors
+"error.lddc.not_running" = "LDDC 服务未运行";
+"error.lddc.health_failed" = "LDDC 服务健康检查失败";
+"error.lddc.startup_failed" = "LDDC 服务启动失败: %@";
+"error.lddc.no_candidates" = "未找到服务启动候选项";
+"error.lddc.all_candidates_failed" = "所有启动尝试均失败";
+"error.lddc.port_failed" = "无法找到可用端口";
+"error.lddc.request_failed" = "请求失败: %@";
+"error.lddc.invalid_resp" = "服务端返回无效响应";
+"error.ttml.script_not_found" = "转换脚本未找到: %@";
+"error.ttml.python_not_found" = "Python 运行环境未找到";
+"error.ttml.output_not_found" = "TTML 输出文件未生成";
+"error.ttml.failed" = "转换失败: %@";
+"error.ttml.unknown" = "未知错误";
+
+// MARK: - Mini Player
+"mini.not_playing" = "未在播放";
+"lyrics.empty_state" = "这才是真正的音乐。";
+
+// MARK: - Notifications / Alerts
+"alert.loading" = "加载中...";
+"alert.toggle_lyrics" = "切换歌词面板";
+"alert.play_pause" = "播放/暂停";
+"alert.next" = "下一首";
+"alert.previous" = "上一首";
