@@ -45,7 +45,7 @@ class Artist(tuple[str]):
         return bool(self.str())
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class Song:
     source: Source
     id: str | None = None
@@ -63,14 +63,14 @@ class Song:
         return a + t
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class LyricsWord:
     start: int | None
     end: int | None
     text: str
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class LyricsLine:
     start: int | None
     end: int | None
@@ -83,7 +83,7 @@ class LyricsLine:
 LyricsData = list[LyricsLine]
 
 
-@dataclass(slots=True)
+@dataclass
 class LyricsBundle:
     song: Song
     tags: dict[str, str] = field(default_factory=dict)
