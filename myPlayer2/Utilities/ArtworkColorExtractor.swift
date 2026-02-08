@@ -210,6 +210,37 @@ public enum ArtworkColorExtractor {
         let b = Int(round(rgb.blueComponent * 255))
         return "rgba(\(r),\(g),\(b),\(alpha))"
     }
+
+    /// Very fast accent estimate used to avoid "one-track-behind" tinting while
+    /// the full dominant-color extraction runs.
+    public static func quickAccentSample(from data: Data, side: Int = 18) -> NSColor? {
+        let s = max(8, min(32, side))
+        guard let pixels = resizedPixels(from: data, side: s) else { return nil }
+
+        var rSum: CGFloat = 0
+        var gSum: CGFloat = 0
+        var bSum: CGFloat = 0
+        var weightSum: CGFloat = 0
+
+        for i in stride(from: 0, to: pixels.count, by: 4) {
+            let a = CGFloat(pixels[i + 3]) / 255.0
+            if a < 0.10 { continue }
+
+            let w = a
+            rSum += (CGFloat(pixels[i]) / 255.0) * w
+            gSum += (CGFloat(pixels[i + 1]) / 255.0) * w
+            bSum += (CGFloat(pixels[i + 2]) / 255.0) * w
+            weightSum += w
+        }
+
+        guard weightSum > 0 else { return nil }
+        return NSColor(
+            calibratedRed: rSum / weightSum,
+            green: gSum / weightSum,
+            blue: bSum / weightSum,
+            alpha: 1.0
+        )
+    }
 }
 
 extension ArtworkColorExtractor {

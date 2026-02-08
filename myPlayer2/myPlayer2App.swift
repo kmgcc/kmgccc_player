@@ -79,4 +79,5 @@ extension Notification.Name {
     static let nextTrack = Notification.Name("TrueMusic.nextTrack")
     static let previousTrack = Notification.Name("TrueMusic.previousTrack")
     static let toggleLyrics = Notification.Name("TrueMusic.toggleLyrics")
+    static let playbackTrackDidChange = Notification.Name("TrueMusic.playbackTrackDidChange")
 }

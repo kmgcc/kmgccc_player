@@ -129,7 +129,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
 
     func fetchPlaylists() async -> [Playlist] {
         let descriptor = FetchDescriptor<Playlist>(
-            sortBy: [SortDescriptor(\.createdAt, order: .reverse)]
+            sortBy: [SortDescriptor(\.createdAt, order: .forward)]
         )
 
         do {

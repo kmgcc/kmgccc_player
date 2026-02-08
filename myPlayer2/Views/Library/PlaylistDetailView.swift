@@ -363,32 +363,17 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
     private var listBottomPadding: CGFloat { 16 }
 
     private var headerBackground: some View {
-        ZStack {
-            LinearGradient(
-                colors: [
-                    Color(nsColor: .windowBackgroundColor)
-                        .opacity(colorScheme == .dark ? 0.7 : 0.85),
-                    Color(nsColor: .windowBackgroundColor).opacity(0.0),
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-
-            Rectangle()
-                .fill(.regularMaterial)
-                .mask(
-                    LinearGradient(
-                        colors: [
-                            Color.white,
-                            Color.white.opacity(0.25),
-                            Color.clear,
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-                .opacity(colorScheme == .dark ? 0.32 : 0.22)
-        }
+        // Avoid glass-on-glass: toolbar controls already use `.glassEffect`.
+        // The header background should be a simple scrim to separate content.
+        LinearGradient(
+            colors: [
+                Color(nsColor: .windowBackgroundColor)
+                    .opacity(colorScheme == .dark ? 0.55 : 0.78),
+                Color(nsColor: .windowBackgroundColor).opacity(0.0),
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
         .allowsHitTesting(false)
     }
 
