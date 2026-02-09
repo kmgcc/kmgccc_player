@@ -32,15 +32,20 @@
 
 由于使用了 macOS 26 的新系统特性，构建环境要求如下：
 
-- **系统要求**：macOS 26 或更新版本  
+- **系统要求**：macOS 26.0 或更新版本  
 - **开发工具**：建议使用最新版本的 Xcode
 
 **构建步骤：**
 
 1. 克隆本仓库代码  
 2. 使用 Xcode 打开 `myPlayer2.xcodeproj`  
-3. 使用 pyinstaller 打包LDDC server
+3. 使用 pyinstaller 打包LDDC server，结果输出到Tools/lddc-server
 4. 选择 `myPlayer2` Scheme 并运行
+
+## 注意事项
+
+- app的数据文件存放在/Users/username/Music/TrueMusic Library中, 删除、替换 app 不会删除数据文件
+- 演示视频：http://xhslink.com/o/91KoiKaIKKM 
 
 ## 致谢
 
@@ -65,6 +70,7 @@
 
 上述美术素材 **不属于开源代码的一部分**，亦 **不适用 AGPL-3.0 许可证**。  
 未经明确许可，不得对这些素材进行复制、修改、再分发或用于 AI 训练等其他项目。
+且目前已从仓库中移除，需要请自行制作。
 
 版权所有 © kmg。保留所有权利。
 
