@@ -28,6 +28,7 @@ struct AppRootView: View {
     @State private var lyricsVM: LyricsViewModel?
     @State private var ledMeter: LEDMeterService?
     @State private var skinManager: SkinManager?
+    @State private var easterEggSFX: EasterEggSFXService?
 
     var body: some View {
         Group {
@@ -86,6 +87,9 @@ struct AppRootView: View {
         .onReceive(NotificationCenter.default.publisher(for: .toggleLyrics)) { _ in
             uiState.toggleLyrics()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .aboutEasterEggTriggered)) { _ in
+            easterEggSFX?.playRandomIfAllowed()
+        }
     }
 
     // MARK: - Setup
@@ -135,6 +139,7 @@ struct AppRootView: View {
         lyricsVM = LyricsViewModel()
         self.ledMeter = ledMeter
         skinManager = SkinManager()
+        easterEggSFX = EasterEggSFXService()
 
         libraryService.startMonitoring(repository: repository)
     }
