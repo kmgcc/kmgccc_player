@@ -49,6 +49,7 @@ struct SettingsView: View {
     @State private var ledCount: Int = AppSettings.shared.ledCount
     @State private var brightnessLevels: Int = AppSettings.shared.ledBrightnessLevels
     @State private var lookaheadMs: Double = AppSettings.shared.lookaheadMs
+    @State private var aboutEasterEggTracker = AboutEasterEggTapTracker()
 
     private var fontFamilies: [String] {
         NSFontManager.shared.availableFontFamilies.sorted()
@@ -696,14 +697,13 @@ struct SettingsView: View {
     // MARK: - About
 
     private var aboutSection: some View {
-        VStack(alignment: .center, spacing: 20) {
+        VStack(alignment: .center, spacing: 10) {
             Spacer(minLength: 40)
 
             Image("EmptyLyric")
                 .resizable()
                 .scaledToFit()
-                .frame(width: 180, height: 180)
-                .clipShape(RoundedRectangle(cornerRadius: 24))
+                .frame(width: 230, height: 230)
                 .shadow(color: Color.black.opacity(0.1), radius: 10, y: 5)
 
             VStack(spacing: 8) {
@@ -782,6 +782,53 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity)
+        .overlay {
+            GeometryReader { proxy in
+                let minimumSideWidth: CGFloat = 72
+                let centerWidth = min(
+                    560,
+                    max(280, proxy.size.width - minimumSideWidth * 2)
+                )
+                let sideWidth = max(0, (proxy.size.width - centerWidth) / 2)
+
+                HStack(spacing: 0) {
+                    Color.clear
+                        .frame(width: sideWidth, height: proxy.size.height)
+                        .contentShape(Rectangle())
+                        .onTapGesture { handleAboutTap(on: .left) }
+
+                    Color.clear
+                        .frame(width: centerWidth, height: proxy.size.height)
+                        .allowsHitTesting(false)
+
+                    Color.clear
+                        .frame(width: sideWidth, height: proxy.size.height)
+                        .contentShape(Rectangle())
+                        .onTapGesture { handleAboutTap(on: .right) }
+                }
+                .onAppear {
+                    print(
+                        "[AboutEasterEgg] overlay widths - total: \(Int(proxy.size.width)), center: \(Int(centerWidth)), side: \(Int(sideWidth))"
+                    )
+                }
+                .onChange(of: proxy.size.width) { _, newWidth in
+                    let adjustedCenter = min(560, max(280, newWidth - minimumSideWidth * 2))
+                    let adjustedSide = max(0, (newWidth - adjustedCenter) / 2)
+                    print(
+                        "[AboutEasterEgg] overlay widths changed - total: \(Int(newWidth)), center: \(Int(adjustedCenter)), side: \(Int(adjustedSide))"
+                    )
+                }
+            }
+            .allowsHitTesting(true)
+        }
+    }
+
+    private func handleAboutTap(on side: AboutTapSide) {
+        print("[AboutEasterEgg] side tap: \(side == .left ? "left" : "right")")
+        if aboutEasterEggTracker.registerTap(on: side) {
+            print("[AboutEasterEgg] sequence matched -> trigger")
+            NotificationCenter.default.post(name: .aboutEasterEggTriggered, object: nil)
+        }
     }
 
     private func complianceItem(name: String, url: String) -> some View {
@@ -838,6 +885,59 @@ struct SettingsView: View {
         )
     }
 
+}
+
+private enum AboutTapSide {
+    case left
+    case right
+}
+
+private struct AboutEasterEggTapTracker {
+    private static let requiredTapCount = 4
+    private static let minInterval: TimeInterval = 0.14
+    private static let maxInterval: TimeInterval = 1.05
+
+    private var lastSide: AboutTapSide?
+    private var lastTapTime: TimeInterval?
+    private var tapCount: Int = 0
+
+    mutating func registerTap(on side: AboutTapSide, now: TimeInterval = Date.timeIntervalSinceReferenceDate)
+        -> Bool
+    {
+        guard let previousSide = lastSide, let previousTime = lastTapTime else {
+            lastSide = side
+            lastTapTime = now
+            tapCount = 1
+            return false
+        }
+
+        let interval = now - previousTime
+        let isAlternating = previousSide != side
+        let isTimingValid = interval >= Self.minInterval && interval <= Self.maxInterval
+
+        if isAlternating && isTimingValid {
+            tapCount += 1
+            lastSide = side
+            lastTapTime = now
+
+            if tapCount >= Self.requiredTapCount {
+                reset()
+                return true
+            }
+            return false
+        }
+
+        lastSide = side
+        lastTapTime = now
+        tapCount = 1
+        return false
+    }
+
+    private mutating func reset() {
+        lastSide = nil
+        lastTapTime = nil
+        tapCount = 0
+    }
 }
 
 private enum SettingsCategory: String, CaseIterable, Identifiable {
