@@ -39,6 +39,11 @@ struct LyricsPanelView: View {
                 lyricsVM.setPlaying(newValue)
             }
             .onChange(of: playerVM.currentTrack?.id, handleTrackIdChange)
+            .onChange(of: themeStore.colorScheme) { _, _ in
+                // Theme mode switches must immediately re-push AMLL config,
+                // so light/dark dedicated font weights take effect without waiting for settings edits.
+                lyricsVM.refreshConfigFromSettings()
+            }
             // Settings observation moved to modifier to reduce compiler complexity
             .modifier(LyricsSettingsObserver(lyricsVM: lyricsVM))
     }
@@ -150,9 +155,13 @@ struct LyricsSettingsObserver: ViewModifier {
     @AppStorage("lyricsFontNameEn") private var lyricsFontNameEn: String = "SF Pro Text"
     @AppStorage("lyricsTranslationFontName") private var lyricsTranslationFontName: String =
         "SF Pro Text"
-    @AppStorage("lyricsFontWeight") private var lyricsFontWeight: Int = 600
+    @AppStorage("lyricsFontWeightLight") private var lyricsFontWeightLight: Int = 600
+    @AppStorage("lyricsFontWeightDark") private var lyricsFontWeightDark: Int = 600
     @AppStorage("lyricsTranslationFontSize") private var lyricsTranslationFontSize: Double = 18.0
-    @AppStorage("lyricsTranslationFontWeight") private var lyricsTranslationFontWeight: Int = 400
+    @AppStorage("lyricsTranslationFontWeightLight") private var lyricsTranslationFontWeightLight:
+        Int = 400
+    @AppStorage("lyricsTranslationFontWeightDark") private var lyricsTranslationFontWeightDark:
+        Int = 400
     @AppStorage("lyricsLeadInMs") private var lyricsLeadInMs: Double = 300
 
     func body(content: Content) -> some View {
@@ -162,11 +171,15 @@ struct LyricsSettingsObserver: ViewModifier {
             .onChange(of: lyricsFontNameEn) { _, _ in lyricsVM.refreshConfigFromSettings() }
             .onChange(of: lyricsTranslationFontName) { _, _ in lyricsVM.refreshConfigFromSettings()
             }
-            .onChange(of: lyricsFontWeight) { _, _ in lyricsVM.refreshConfigFromSettings() }
+            .onChange(of: lyricsFontWeightLight) { _, _ in lyricsVM.refreshConfigFromSettings() }
+            .onChange(of: lyricsFontWeightDark) { _, _ in lyricsVM.refreshConfigFromSettings() }
             .onChange(of: lyricsLeadInMs) { _, _ in lyricsVM.refreshConfigFromSettings() }
             .onChange(of: lyricsTranslationFontSize) { _, _ in lyricsVM.refreshConfigFromSettings()
             }
-            .onChange(of: lyricsTranslationFontWeight) { _, _ in
+            .onChange(of: lyricsTranslationFontWeightLight) { _, _ in
+                lyricsVM.refreshConfigFromSettings()
+            }
+            .onChange(of: lyricsTranslationFontWeightDark) { _, _ in
                 lyricsVM.refreshConfigFromSettings()
             }
     }

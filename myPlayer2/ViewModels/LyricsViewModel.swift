@@ -184,13 +184,18 @@ final class LyricsViewModel {
 
         let offsetMs = max(-15000, min(15000, currentTrack?.lyricsTimeOffsetMs ?? 0))
         let mainFontFamily = cssFontFamily([
-            settings.lyricsFontNameZh,
             settings.lyricsFontNameEn,
+            settings.lyricsFontNameZh,
         ])
         let translationFontFamily = cssFontFamily([
             settings.lyricsTranslationFontName
         ])
-        let clampedWeight = max(100, min(900, settings.lyricsFontWeight))
+        let modeWeight = isDarkMode ? settings.lyricsFontWeightDark : settings.lyricsFontWeightLight
+        let clampedWeight = max(100, min(900, modeWeight))
+        let translationWeight =
+            isDarkMode
+            ? settings.lyricsTranslationFontWeightDark : settings.lyricsTranslationFontWeightLight
+        let clampedTranslationWeight = max(100, min(900, translationWeight))
         let leadInMs = max(0, settings.lyricsLeadInMs)
 
         let config: [String: Any] = [
@@ -199,7 +204,7 @@ final class LyricsViewModel {
             "fontFamilyMain": mainFontFamily,
             "fontFamilyTranslation": translationFontFamily,
             "translationFontSize": settings.lyricsTranslationFontSize,
-            "translationFontWeight": settings.lyricsTranslationFontWeight,
+            "translationFontWeight": clampedTranslationWeight,
             "leadInMs": leadInMs,
             "timeOffsetMs": offsetMs,
             "theme": resolvedTheme,

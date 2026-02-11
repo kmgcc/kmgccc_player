@@ -20,6 +20,7 @@ struct NowPlayingHostView: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @EnvironmentObject private var themeStore: ThemeStore
     @State private var skinRevision = 0
+    @StateObject private var artBackgroundController = BKArtBackgroundController()
 
     var body: some View {
         let selectedSkinID = settings.selectedNowPlayingSkinID
@@ -37,6 +38,12 @@ struct NowPlayingHostView: View {
             ZStack(alignment: .topLeading) {
                 selectedSkin.makeBackground(context: context)
 
+                BKArtBackgroundView(
+                    controller: artBackgroundController,
+                    trackID: playerVM.currentTrack?.id,
+                    artworkData: playerVM.currentTrack?.artworkData
+                )
+
                 ZStack {
                     selectedSkin.makeArtwork(context: context)
                     if let overlay = selectedSkin.makeOverlay(context: context) {
@@ -51,6 +58,12 @@ struct NowPlayingHostView: View {
         }
         .onChange(of: selectedSkinID) { _, _ in
             skinRevision &+= 1
+        }
+        .onAppear {
+            artBackgroundController.triggerTransition()
+        }
+        .onChange(of: playerVM.currentTrack?.id) { _, _ in
+            artBackgroundController.triggerTransition()
         }
     }
 
