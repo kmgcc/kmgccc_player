@@ -35,7 +35,11 @@ struct MiniPlayerView: View {
         return HStack(spacing: 12) {
             // MARK: - Left: Cover + Title/Artist (tappable)
             Button {
-                uiState.showNowPlaying()
+                if uiState.contentMode == .nowPlaying {
+                    uiState.returnToLibraryFromNowPlaying()
+                } else {
+                    uiState.showNowPlaying()
+                }
             } label: {
                 HStack(spacing: 10) {
                     artworkView
