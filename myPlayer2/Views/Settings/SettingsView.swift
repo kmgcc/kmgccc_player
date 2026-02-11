@@ -31,12 +31,15 @@ struct SettingsView: View {
     @State private var lyricsFontNameEn: String = AppSettings.shared.lyricsFontNameEn
     @State private var lyricsTranslationFontName: String = AppSettings.shared
         .lyricsTranslationFontName
-    @State private var lyricsFontWeight: Int = AppSettings.shared.lyricsFontWeight
+    @State private var lyricsFontWeightLight: Int = AppSettings.shared.lyricsFontWeightLight
+    @State private var lyricsFontWeightDark: Int = AppSettings.shared.lyricsFontWeightDark
     @State private var lyricsFontSize: Double = AppSettings.shared.lyricsFontSize
     @State private var lyricsTranslationFontSize: Double = AppSettings.shared
         .lyricsTranslationFontSize
-    @State private var lyricsTranslationFontWeight: Int = AppSettings.shared
-        .lyricsTranslationFontWeight
+    @State private var lyricsTranslationFontWeightLight: Int = AppSettings.shared
+        .lyricsTranslationFontWeightLight
+    @State private var lyricsTranslationFontWeightDark: Int = AppSettings.shared
+        .lyricsTranslationFontWeightDark
     @State private var nowPlayingSkin: String = AppSettings.shared.selectedNowPlayingSkinID
 
     // MARK: - LED Settings State
@@ -168,13 +171,21 @@ struct SettingsView: View {
             .onChange(of: lyricsTranslationFontName) { _, val in
                 AppSettings.shared.lyricsTranslationFontName = val
             }
-            .onChange(of: lyricsFontWeight) { _, val in AppSettings.shared.lyricsFontWeight = val }
+            .onChange(of: lyricsFontWeightLight) { _, val in
+                AppSettings.shared.lyricsFontWeightLight = val
+            }
+            .onChange(of: lyricsFontWeightDark) { _, val in
+                AppSettings.shared.lyricsFontWeightDark = val
+            }
             .onChange(of: lyricsFontSize) { _, val in AppSettings.shared.lyricsFontSize = val }
             .onChange(of: lyricsTranslationFontSize) { _, val in
                 AppSettings.shared.lyricsTranslationFontSize = val
             }
-            .onChange(of: lyricsTranslationFontWeight) { _, val in
-                AppSettings.shared.lyricsTranslationFontWeight = val
+            .onChange(of: lyricsTranslationFontWeightLight) { _, val in
+                AppSettings.shared.lyricsTranslationFontWeightLight = val
+            }
+            .onChange(of: lyricsTranslationFontWeightDark) { _, val in
+                AppSettings.shared.lyricsTranslationFontWeightDark = val
             }
     }
 
@@ -363,9 +374,21 @@ struct SettingsView: View {
                 Slider(value: $lyricsFontSize, in: 16...48, step: 1)
 
                 HStack {
-                    Text("settings.lyrics.font_weight")
+                    Text("浅色模式字重")
                     Spacer()
-                    Picker("", selection: $lyricsFontWeight) {
+                    Picker("", selection: $lyricsFontWeightLight) {
+                        ForEach(fontWeights, id: \.value) { weight in
+                            Text(weight.label).tag(weight.value)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 140)
+                }
+
+                HStack {
+                    Text("深色模式字重")
+                    Spacer()
+                    Picker("", selection: $lyricsFontWeightDark) {
                         ForEach(fontWeights, id: \.value) { weight in
                             Text(weight.label).tag(weight.value)
                         }
@@ -386,9 +409,21 @@ struct SettingsView: View {
                 Slider(value: $lyricsTranslationFontSize, in: 12...36, step: 1)
 
                 HStack {
-                    Text("settings.lyrics.translation_weight")
+                    Text("翻译浅色字重")
                     Spacer()
-                    Picker("", selection: $lyricsTranslationFontWeight) {
+                    Picker("", selection: $lyricsTranslationFontWeightLight) {
+                        ForEach(fontWeights, id: \.value) { weight in
+                            Text(weight.label).tag(weight.value)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 140)
+                }
+
+                HStack {
+                    Text("翻译深色字重")
+                    Spacer()
+                    Picker("", selection: $lyricsTranslationFontWeightDark) {
                         ForEach(fontWeights, id: \.value) { weight in
                             Text(weight.label).tag(weight.value)
                         }
@@ -450,25 +485,65 @@ struct SettingsView: View {
 
     private var amllPreviewConfig: some View {
         GroupBox(LocalizedStringKey("settings.lyrics.preview")) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 12) {
-                    Text("settings.lyrics.preview_zh")
-                        .font(.custom(lyricsFontNameZh, size: CGFloat(lyricsFontSize)))
-                        .fontWeight(fontWeight(lyricsFontWeight))
-                    Text("settings.lyrics.preview_en")
-                        .font(.custom(lyricsFontNameEn, size: CGFloat(lyricsFontSize)))
-                        .fontWeight(fontWeight(lyricsFontWeight))
-                }
-                Text("settings.lyrics.preview_translation")
-                    .font(
-                        .custom(
-                            lyricsTranslationFontName,
-                            size: CGFloat(lyricsTranslationFontSize))
-                    )
-                    .fontWeight(fontWeight(lyricsTranslationFontWeight))
-                    .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 12) {
+                lyricsPreviewCard(
+                    title: "浅色模式预览",
+                    isDarkCard: false,
+                    mainWeight: lyricsFontWeightLight,
+                    translationWeight: lyricsTranslationFontWeightLight
+                )
+                lyricsPreviewCard(
+                    title: "深色模式预览",
+                    isDarkCard: true,
+                    mainWeight: lyricsFontWeightDark,
+                    translationWeight: lyricsTranslationFontWeightDark
+                )
             }
         }
+    }
+
+    private func lyricsPreviewCard(
+        title: String,
+        isDarkCard: Bool,
+        mainWeight: Int,
+        translationWeight: Int
+    ) -> some View {
+        let backgroundColor = isDarkCard ? Color(red: 0.18, green: 0.18, blue: 0.20) : .white
+        let titleColor = isDarkCard ? Color.white.opacity(0.78) : Color.black.opacity(0.65)
+        let mainTextColor = isDarkCard ? Color.white : Color.black
+        let translationColor = isDarkCard ? Color.white.opacity(0.72) : Color.black.opacity(0.62)
+
+        return VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(titleColor)
+
+            HStack(spacing: 12) {
+                Text("settings.lyrics.preview_zh")
+                    .font(.custom(lyricsFontNameZh, size: CGFloat(lyricsFontSize)))
+                    .fontWeight(fontWeight(mainWeight))
+                    .foregroundStyle(mainTextColor)
+                Text("settings.lyrics.preview_en")
+                    .font(.custom(lyricsFontNameEn, size: CGFloat(lyricsFontSize)))
+                    .fontWeight(fontWeight(mainWeight))
+                    .foregroundStyle(mainTextColor)
+            }
+
+            Text("settings.lyrics.preview_translation")
+                .font(.custom(lyricsTranslationFontName, size: CGFloat(lyricsTranslationFontSize)))
+                .fontWeight(fontWeight(translationWeight))
+                .foregroundStyle(translationColor)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(backgroundColor, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(
+                    isDarkCard ? Color.white.opacity(0.08) : Color.black.opacity(0.10),
+                    lineWidth: 1
+                )
+        )
     }
 
     // MARK: - LED Settings Section
@@ -687,6 +762,29 @@ struct SettingsView: View {
             Divider()
                 .padding(.vertical, 32)
 
+            HStack(spacing: 10) {
+                socialIconLink(
+                    title: "b",
+                    hexColor: "fb7299",
+                    destination: "https://space.bilibili.com/1605472940"
+                )
+                socialIconLink(
+                    title: "g",
+                    hexColor: "020408",
+                    destination: "https://github.com/kmgcc"
+                )
+                socialIconLink(
+                    title: "书",
+                    hexColor: "f72241",
+                    destination: "https://xhslink.com/m/7o53GE3YNQy"
+                )
+
+                Link("查看更新", destination: URL(string: "https://github.com/kmgcc/kmgccc_player/releases")!)
+                    .font(.subheadline.weight(.semibold))
+                    .buttonStyle(.bordered)
+            }
+            .padding(.bottom, 34)
+
             VStack(alignment: .leading, spacing: 20) {
                 Text(NSLocalizedString("settings.about.compliance", comment: ""))
                     .font(.headline)
@@ -725,8 +823,24 @@ struct SettingsView: View {
                 .padding(.top, 10)
 
                 Text("settings.about.license")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("版权与素材声明")
+                        .font(.headline)
+                    Text(
+                        "本项目中所使用的所有美术素材，包括但不限于界面插画、UI 装饰、皮肤、贴图、角色设计、视觉元素，均为作者原创作品。"
+                    )
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    Text(
+                        "上述美术素材 不属于开源代码的一部分，亦 不适用 AGPL-3.0 许可证。\n未经明确许可，不得对这些素材进行复制、修改、再分发或用于 AI 训练等其他项目。"
+                    )
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                }
+                .padding(.top, 2)
 
                 Spacer()
 
@@ -797,6 +911,20 @@ struct SettingsView: View {
             //                .font(.caption2)
             //                .foregroundStyle(.secondary)
         }
+    }
+
+    private func socialIconLink(title: String, hexColor: String, destination: String) -> some View {
+        Link(destination: URL(string: destination)!) {
+            Circle()
+                .fill(Color(hex: hexColor) ?? .secondary)
+                .frame(width: 30, height: 30)
+                .overlay {
+                    Text(title)
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(.white)
+                }
+        }
+        .buttonStyle(.plain)
     }
 
     private func headerLabel(_ title: String, systemImage: String) -> some View {

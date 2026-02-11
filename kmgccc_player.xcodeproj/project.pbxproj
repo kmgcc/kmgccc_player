@@ -7,18 +7,65 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		933AAE3F2F3CCBBB0081B59C /* BKArt.bundle in Resources */ = {isa = PBXBuildFile; fileRef = 933AADFD2F3CC8D40081B59C /* BKArt.bundle */; };
+		933AAE422F3CCCDF0081B59C /* BKThemes in Resources */ = {isa = PBXBuildFile; fileRef = 933AAE412F3CCCDF0081B59C /* BKThemes */; };
 		9351198E2F33149A00766A5F /* AMLL in Resources */ = {isa = PBXBuildFile; fileRef = 9351198D2F33149A00766A5F /* AMLL */; };
 		93CF3F832F344E9F0004C8E3 /* lddc-server in Resources */ = {isa = PBXBuildFile; fileRef = 93CF3F822F344E9F0004C8E3 /* lddc-server */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		933AAE3D2F3CCB9C0081B59C /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 9351188A2F3231C500766A5F /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 933AADFC2F3CC8D40081B59C;
+			remoteInfo = BKArt;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
-		933AACC12F3CB7F30081B59C /* bkMask.bundle */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = bkMask.bundle; sourceTree = BUILT_PRODUCTS_DIR; };
+		933AADFD2F3CC8D40081B59C /* BKArt.bundle */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BKArt.bundle; sourceTree = BUILT_PRODUCTS_DIR; };
+		933AAE412F3CCCDF0081B59C /* BKThemes */ = {isa = PBXFileReference; lastKnownFileType = folder; path = BKThemes; sourceTree = "<group>"; };
 		935118922F3231C500766A5F /* kmgccc_player.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = kmgccc_player.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		9351198D2F33149A00766A5F /* AMLL */ = {isa = PBXFileReference; lastKnownFileType = folder; name = AMLL; path = myPlayer2/Resources/AMLL; sourceTree = "<group>"; };
 		93CF3F822F344E9F0004C8E3 /* lddc-server */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "lddc-server"; path = "Tools/lddc-server"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		933AAE402F3CCCB60081B59C /* Exceptions for "BKThemes" folder in "BKArt" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Backgrounds/bk1.png,
+				Backgrounds/bk2.png,
+				Mask/frame_01.png,
+				Mask/frame_02.png,
+				Mask/frame_03.png,
+				Mask/frame_04.png,
+				Mask/frame_05.png,
+				Mask/frame_06.png,
+				Mask/frame_07.png,
+				Mask/frame_08.png,
+				Mask/frame_09.png,
+				Mask/frame_10.png,
+				Mask/frame_11.png,
+				Mask/frame_12.png,
+				Mask/frame_13.png,
+				Mask/frame_14.png,
+				Mask/frame_15.png,
+				Mask/frame_16.png,
+				Mask/frame_17.png,
+				Shapes/shape1.png,
+				Shapes/shape2.png,
+				Shapes/shape3.png,
+				Shapes/shape4.png,
+				Shapes/shape5.png,
+				Shapes/shape6.png,
+				Shapes/shape7.png,
+				Shapes/shape8.png,
+				Shapes/shape9.png,
+			);
+			target = 933AADFC2F3CC8D40081B59C /* BKArt */;
+		};
 		9351197F2F33130A00766A5F /* Exceptions for "myPlayer2" folder in "kmgccc_player" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
@@ -30,8 +77,11 @@
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		933AADD62F3CBB030081B59C /* BKThemes */ = {
+		933AAE202F3CC8EB0081B59C /* BKThemes */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				933AAE402F3CCCB60081B59C /* Exceptions for "BKThemes" folder in "BKArt" target */,
+			);
 			path = BKThemes;
 			sourceTree = "<group>";
 		};
@@ -46,7 +96,7 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		933AACBE2F3CB7F30081B59C /* Frameworks */ = {
+		933AADFA2F3CC8D40081B59C /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -66,11 +116,12 @@
 		935118892F3231C500766A5F = {
 			isa = PBXGroup;
 			children = (
+				933AAE412F3CCCDF0081B59C /* BKThemes */,
 				93CF3F822F344E9F0004C8E3 /* lddc-server */,
 				9351198D2F33149A00766A5F /* AMLL */,
 				935118942F3231C500766A5F /* myPlayer2 */,
 				935118932F3231C500766A5F /* Products */,
-				933AADD62F3CBB030081B59C /* BKThemes */,
+				933AAE202F3CC8EB0081B59C /* BKThemes */,
 			);
 			sourceTree = "<group>";
 		};
@@ -78,7 +129,7 @@
 			isa = PBXGroup;
 			children = (
 				935118922F3231C500766A5F /* kmgccc_player.app */,
-				933AACC12F3CB7F30081B59C /* bkMask.bundle */,
+				933AADFD2F3CC8D40081B59C /* BKArt.bundle */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -86,26 +137,26 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		933AACC02F3CB7F30081B59C /* bkMask */ = {
+		933AADFC2F3CC8D40081B59C /* BKArt */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 933AACC22F3CB7F30081B59C /* Build configuration list for PBXNativeTarget "bkMask" */;
+			buildConfigurationList = 933AADFE2F3CC8D40081B59C /* Build configuration list for PBXNativeTarget "BKArt" */;
 			buildPhases = (
-				933AACBD2F3CB7F30081B59C /* Sources */,
-				933AACBE2F3CB7F30081B59C /* Frameworks */,
-				933AACBF2F3CB7F30081B59C /* Resources */,
+				933AADF92F3CC8D40081B59C /* Sources */,
+				933AADFA2F3CC8D40081B59C /* Frameworks */,
+				933AADFB2F3CC8D40081B59C /* Resources */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				933AADD62F3CBB030081B59C /* BKThemes */,
+				933AAE202F3CC8EB0081B59C /* BKThemes */,
 			);
-			name = bkMask;
+			name = BKArt;
 			packageProductDependencies = (
 			);
-			productName = bkMask;
-			productReference = 933AACC12F3CB7F30081B59C /* bkMask.bundle */;
+			productName = BKArt;
+			productReference = 933AADFD2F3CC8D40081B59C /* BKArt.bundle */;
 			productType = "com.apple.product-type.bundle";
 		};
 		935118912F3231C500766A5F /* kmgccc_player */ = {
@@ -120,6 +171,7 @@
 			buildRules = (
 			);
 			dependencies = (
+				933AAE3E2F3CCB9C0081B59C /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				935118942F3231C500766A5F /* myPlayer2 */,
@@ -141,7 +193,7 @@
 				LastSwiftUpdateCheck = 2620;
 				LastUpgradeCheck = 2620;
 				TargetAttributes = {
-					933AACC02F3CB7F30081B59C = {
+					933AADFC2F3CC8D40081B59C = {
 						CreatedOnToolsVersion = 26.2;
 					};
 					935118912F3231C500766A5F = {
@@ -165,16 +217,17 @@
 			projectRoot = "";
 			targets = (
 				935118912F3231C500766A5F /* kmgccc_player */,
-				933AACC02F3CB7F30081B59C /* bkMask */,
+				933AADFC2F3CC8D40081B59C /* BKArt */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		933AACBF2F3CB7F30081B59C /* Resources */ = {
+		933AADFB2F3CC8D40081B59C /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				933AAE422F3CCCDF0081B59C /* BKThemes in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -182,6 +235,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				933AAE3F2F3CCBBB0081B59C /* BKArt.bundle in Resources */,
 				9351198E2F33149A00766A5F /* AMLL in Resources */,
 				93CF3F832F344E9F0004C8E3 /* lddc-server in Resources */,
 			);
@@ -210,7 +264,7 @@
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		933AACBD2F3CB7F30081B59C /* Sources */ = {
+		933AADF92F3CC8D40081B59C /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -226,8 +280,16 @@
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		933AAE3E2F3CCB9C0081B59C /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 933AADFC2F3CC8D40081B59C /* BKArt */;
+			targetProxy = 933AAE3D2F3CCB9C0081B59C /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
-		933AACC32F3CB7F30081B59C /* Debug */ = {
+		933AADFF2F3CC8D40081B59C /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
@@ -239,7 +301,7 @@
 				INFOPLIST_KEY_NSPrincipalClass = "";
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Bundles";
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = kmgccc.bkMask;
+				PRODUCT_BUNDLE_IDENTIFIER = kmgccc.BKArt;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -248,7 +310,7 @@
 			};
 			name = Debug;
 		};
-		933AACC42F3CB7F30081B59C /* Release */ = {
+		933AAE002F3CC8D40081B59C /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
@@ -260,7 +322,7 @@
 				INFOPLIST_KEY_NSPrincipalClass = "";
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Bundles";
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = kmgccc.bkMask;
+				PRODUCT_BUNDLE_IDENTIFIER = kmgccc.BKArt;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -508,11 +570,11 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		933AACC22F3CB7F30081B59C /* Build configuration list for PBXNativeTarget "bkMask" */ = {
+		933AADFE2F3CC8D40081B59C /* Build configuration list for PBXNativeTarget "BKArt" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				933AACC32F3CB7F30081B59C /* Debug */,
-				933AACC42F3CB7F30081B59C /* Release */,
+				933AADFF2F3CC8D40081B59C /* Debug */,
+				933AAE002F3CC8D40081B59C /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

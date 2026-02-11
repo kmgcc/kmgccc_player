@@ -168,15 +168,23 @@ public final class AppSettings {
 
     /// Translation font size
     @ObservationIgnored
-    @AppStorage("lyricsTranslationFontSize") var lyricsTranslationFontSize: Double = 15.0
+    @AppStorage("lyricsTranslationFontSize") var lyricsTranslationFontSize: Double = 12.0
 
-    /// Translation font weight (100~900)
+    /// Translation font weight in light mode (100~900)
     @ObservationIgnored
-    @AppStorage("lyricsTranslationFontWeight") var lyricsTranslationFontWeight: Int = 100
+    @AppStorage("lyricsTranslationFontWeightLight") var lyricsTranslationFontWeightLight: Int = 400
 
-    /// Lyrics font weight (100~900)
+    /// Translation font weight in dark mode (100~900)
     @ObservationIgnored
-    @AppStorage("lyricsFontWeight") var lyricsFontWeight: Int = 100
+    @AppStorage("lyricsTranslationFontWeightDark") var lyricsTranslationFontWeightDark: Int = 100
+
+    /// Lyrics font weight in light mode (100~900)
+    @ObservationIgnored
+    @AppStorage("lyricsFontWeightLight") var lyricsFontWeightLight: Int = 600
+
+    /// Lyrics font weight in dark mode (100~900)
+    @ObservationIgnored
+    @AppStorage("lyricsFontWeightDark") var lyricsFontWeightDark: Int = 100
 
     /// Lyrics font size
     @ObservationIgnored
