@@ -67,7 +67,11 @@ final class LibraryViewModel {
 
     /// Currently selected playlist (nil = All Songs).
     /// Published so UI can react to changes.
-    var selectedPlaylistId: UUID?
+    var selectedPlaylistId: UUID? {
+        didSet {
+            applySortPreferenceForCurrentSelection()
+        }
+    }
 
     /// Whether data is loading.
     private(set) var isLoading: Bool = false
@@ -81,20 +85,16 @@ final class LibraryViewModel {
     /// Track sorting preference for playlist views.
     var trackSortKey: TrackSortKey {
         didSet {
-            UserDefaults.standard.set(
-                trackSortKey.rawValue,
-                forKey: DefaultsKey.trackSortKey
-            )
+            if isApplyingSortPreference { return }
+            persistSortPreferenceForCurrentSelection()
         }
     }
 
     /// Track sorting order.
     var trackSortOrder: TrackSortOrder {
         didSet {
-            UserDefaults.standard.set(
-                trackSortOrder.rawValue,
-                forKey: DefaultsKey.trackSortOrder
-            )
+            if isApplyingSortPreference { return }
+            persistSortPreferenceForCurrentSelection()
         }
     }
 
@@ -103,6 +103,12 @@ final class LibraryViewModel {
     private let repository: LibraryRepositoryProtocol
     private var importService: FileImportServiceProtocol?
     private let libraryService: LocalLibraryService
+    private var isApplyingSortPreference = false
+
+    private struct SortPreference: Codable {
+        let key: String
+        let order: String
+    }
 
     // MARK: - Initialization
 
@@ -121,6 +127,8 @@ final class LibraryViewModel {
                     forKey: DefaultsKey.trackSortOrder
                 ) ?? ""
             ) ?? .descending
+        migrateLegacySortPreferenceIfNeeded()
+        applySortPreferenceForCurrentSelection()
         print("📚 LibraryViewModel initialized")
     }
 
@@ -338,6 +346,67 @@ final class LibraryViewModel {
     private enum DefaultsKey {
         static let trackSortKey = "trackSortKey"
         static let trackSortOrder = "trackSortOrder"
+        static let trackSortPreferencesByPlaylist = "trackSortPreferencesByPlaylist"
+        static let trackSortMigrationDone = "trackSortMigrationDone"
+    }
+
+    private var sortContextKey: String {
+        selectedPlaylistId?.uuidString ?? "__all_songs__"
+    }
+
+    private func persistSortPreferenceForCurrentSelection() {
+        var preferences = loadSortPreferencesMap()
+        preferences[sortContextKey] = SortPreference(
+            key: trackSortKey.rawValue,
+            order: trackSortOrder.rawValue
+        )
+        saveSortPreferencesMap(preferences)
+    }
+
+    private func applySortPreferenceForCurrentSelection() {
+        let preferences = loadSortPreferencesMap()
+        guard let preference = preferences[sortContextKey] else { return }
+        guard
+            let key = TrackSortKey(rawValue: preference.key),
+            let order = TrackSortOrder(rawValue: preference.order)
+        else {
+            return
+        }
+
+        isApplyingSortPreference = true
+        trackSortKey = key
+        trackSortOrder = order
+        isApplyingSortPreference = false
+    }
+
+    private func loadSortPreferencesMap() -> [String: SortPreference] {
+        guard
+            let data = UserDefaults.standard.data(forKey: DefaultsKey.trackSortPreferencesByPlaylist)
+        else {
+            return [:]
+        }
+        return (try? JSONDecoder().decode([String: SortPreference].self, from: data)) ?? [:]
+    }
+
+    private func saveSortPreferencesMap(_ map: [String: SortPreference]) {
+        guard let data = try? JSONEncoder().encode(map) else { return }
+        UserDefaults.standard.set(data, forKey: DefaultsKey.trackSortPreferencesByPlaylist)
+    }
+
+    private func migrateLegacySortPreferenceIfNeeded() {
+        let defaults = UserDefaults.standard
+        if defaults.bool(forKey: DefaultsKey.trackSortMigrationDone) { return }
+
+        var preferences = loadSortPreferencesMap()
+        if preferences["__all_songs__"] == nil {
+            preferences["__all_songs__"] = SortPreference(
+                key: trackSortKey.rawValue,
+                order: trackSortOrder.rawValue
+            )
+            saveSortPreferencesMap(preferences)
+        }
+
+        defaults.set(true, forKey: DefaultsKey.trackSortMigrationDone)
     }
 
     private func sortTrack(_ lhs: Track, _ rhs: Track) -> Bool {

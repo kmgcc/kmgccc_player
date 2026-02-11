@@ -9,6 +9,23 @@
 
 import SwiftUI
 
+private final class TrackArtworkThumbnailCache {
+    static let shared = TrackArtworkThumbnailCache()
+    private let cache = NSCache<NSString, NSImage>()
+
+    private init() {
+        cache.countLimit = 400
+    }
+
+    func image(for key: String) -> NSImage? {
+        cache.object(forKey: key as NSString)
+    }
+
+    func setImage(_ image: NSImage, for key: String) {
+        cache.setObject(image, forKey: key as NSString)
+    }
+}
+
 /// Row view for displaying a track in a list.
 struct TrackRowView<MenuContent: View>: View {
 
@@ -19,6 +36,7 @@ struct TrackRowView<MenuContent: View>: View {
 
     @EnvironmentObject private var themeStore: ThemeStore
     @State private var isHovering = false
+    @State private var artworkImage: NSImage?
 
     var body: some View {
         HStack(spacing: 12) {
@@ -81,7 +99,6 @@ struct TrackRowView<MenuContent: View>: View {
                 Image(systemName: "speaker.wave.2.fill")
                     .font(.caption)
                     .foregroundStyle(themeStore.accentColor)
-                    .symbolEffect(.variableColor.iterative)
             }
 
             // Duration
@@ -104,8 +121,9 @@ struct TrackRowView<MenuContent: View>: View {
             .menuIndicator(.hidden)
             .fixedSize()
         }
-        .padding(.vertical, 6)
+        .padding(.vertical, 4)
         .padding(.horizontal, 8)
+        .frame(height: Constants.Layout.trackRowHeight)
         .background(
             RoundedRectangle(cornerRadius: 8)
                 .fill(isHovering ? Color.primary.opacity(0.04) : Color.clear)
@@ -116,6 +134,9 @@ struct TrackRowView<MenuContent: View>: View {
         }
         .onTapGesture {
             handleTap()
+        }
+        .task(id: track.id) {
+            await loadArtworkIfNeeded()
         }
     }
 
@@ -143,10 +164,8 @@ struct TrackRowView<MenuContent: View>: View {
 
     @ViewBuilder
     private var artworkView: some View {
-        if let artworkData = track.artworkData,
-            let nsImage = NSImage(data: artworkData)
-        {
-            Image(nsImage: nsImage)
+        if let artworkImage {
+            Image(nsImage: artworkImage)
                 .resizable()
                 .aspectRatio(contentMode: .fill)
                 .frame(
@@ -189,6 +208,46 @@ struct TrackRowView<MenuContent: View>: View {
         if !isMissing {
             onTap()
         }
+    }
+
+    private func loadArtworkIfNeeded() async {
+        let key = track.id.uuidString
+
+        if let cached = TrackArtworkThumbnailCache.shared.image(for: key) {
+            if artworkImage !== cached {
+                artworkImage = cached
+            }
+            return
+        }
+
+        guard let artworkData = track.artworkData else {
+            artworkImage = nil
+            return
+        }
+
+        let decoded = await Task.detached(priority: .utility) {
+            NSImage(data: artworkData)
+        }.value
+
+        guard let decoded else {
+            artworkImage = nil
+            return
+        }
+
+        TrackArtworkThumbnailCache.shared.setImage(decoded, for: key)
+        artworkImage = decoded
+    }
+}
+
+extension TrackRowView: Equatable where MenuContent: View {
+    static func == (lhs: TrackRowView<MenuContent>, rhs: TrackRowView<MenuContent>) -> Bool {
+        lhs.track.id == rhs.track.id
+            && lhs.track.title == rhs.track.title
+            && lhs.track.artist == rhs.track.artist
+            && lhs.track.duration == rhs.track.duration
+            && lhs.track.availability == rhs.track.availability
+            && lhs.track.artworkData?.count == rhs.track.artworkData?.count
+            && lhs.isPlaying == rhs.isPlaying
     }
 }
 
