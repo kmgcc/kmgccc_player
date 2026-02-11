@@ -63,6 +63,20 @@ final class UIStateViewModel {
     /// Currently selected playlist (if any).
     var selectedPlaylist: Playlist?
 
+    // MARK: - Library Position Snapshot (for round-trip from Now Playing)
+
+    /// Playlist ID when user entered Now Playing from library.
+    var lastLibraryPlaylistID: UUID?
+
+    /// Last known top scroll anchor track ID in library list.
+    var lastLibraryScrollTrackID: UUID?
+
+    /// Whether the user has moved away from the default top position.
+    var libraryHasUserScrolled: Bool = false
+
+    /// One-shot flag to request restoring library scroll after leaving Now Playing.
+    var shouldRestoreLibraryScrollOnReturn: Bool = false
+
     init() {
         if defaults.object(forKey: StorageKey.sidebarVisible) != nil {
             sidebarVisible = defaults.bool(forKey: StorageKey.sidebarVisible)
@@ -110,5 +124,34 @@ final class UIStateViewModel {
         withAnimation(.easeInOut(duration: 0.3)) {
             contentMode = .library
         }
+    }
+
+    /// Called continuously by library list to keep the latest visible anchor snapshot.
+    func rememberLibraryContext(
+        playlistID: UUID?,
+        scrollTrackID: UUID?,
+        userScrolled: Bool
+    ) {
+        lastLibraryPlaylistID = playlistID
+        lastLibraryScrollTrackID = scrollTrackID
+        libraryHasUserScrolled = userScrolled
+    }
+
+    /// Return from now playing to library and request one-time position restore.
+    func returnToLibraryFromNowPlaying() {
+        shouldRestoreLibraryScrollOnReturn = true
+        showLibrary()
+    }
+
+    /// Consume one-time restore request for the matching playlist.
+    /// Returns nil when no restore is needed, so list falls back to default top.
+    func consumeLibraryRestoreTarget(for playlistID: UUID?) -> UUID? {
+        guard shouldRestoreLibraryScrollOnReturn else { return nil }
+        shouldRestoreLibraryScrollOnReturn = false
+
+        guard playlistID == lastLibraryPlaylistID, libraryHasUserScrolled else {
+            return nil
+        }
+        return lastLibraryScrollTrackID
     }
 }
