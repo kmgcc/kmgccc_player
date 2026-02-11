@@ -237,8 +237,6 @@ struct SettingsView: View {
                     amllSection
                 case .led:
                     ledSettingsSection
-                case .language:
-                    languageSection
                 case .about:
                     aboutSection
                 }
@@ -469,48 +467,6 @@ struct SettingsView: View {
                     )
                     .fontWeight(fontWeight(lyricsTranslationFontWeight))
                     .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    // MARK: - Language Section
-
-    private var languageSection: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            headerLabel(
-                "settings.language.title",
-                systemImage: "character.bubble")
-
-            VStack(alignment: .leading, spacing: 12) {
-                Text("settings.language.title")
-                    .font(.subheadline.bold())
-                    .foregroundStyle(.secondary)
-
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Picker("", selection: Bindable(AppSettings.shared).language) {
-                            ForEach(AppSettings.Language.allCases, id: \.self) { lang in
-                                Text(
-                                    LocalizedStringKey(
-                                        "settings.language.\(lang == .zhHans ? "zh" : lang.rawValue)"
-                                    )
-                                )
-                                .tag(lang)
-                            }
-                        }
-                        .pickerStyle(.radioGroup)
-                        .labelsHidden()
-
-                        Divider()
-                            .padding(.vertical, 8)
-
-                        Text("settings.language.restart_notice")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
             }
         }
     }
@@ -944,7 +900,6 @@ private enum SettingsCategory: String, CaseIterable, Identifiable {
     case nowPlaying
     case lyrics
     case led
-    case language
     case about
 
     var id: String { rawValue }
@@ -954,7 +909,6 @@ private enum SettingsCategory: String, CaseIterable, Identifiable {
         case .nowPlaying: return "settings.section.now_playing"
         case .lyrics: return "settings.section.lyrics"
         case .led: return "settings.section.led"
-        case .language: return "settings.section.language"
         case .about: return "settings.section.about"
         }
     }
@@ -964,7 +918,6 @@ private enum SettingsCategory: String, CaseIterable, Identifiable {
         case .nowPlaying: return "sparkles"
         case .lyrics: return "text.quote"
         case .led: return "waveform.path.ecg"
-        case .language: return "character.bubble"
         case .about: return "info.circle"
         }
     }

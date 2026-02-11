@@ -35,8 +35,6 @@ struct AppRootView: View {
             if let libraryVM, let playerVM, let lyricsVM, let ledMeter, let skinManager {
                 ZStack {
                     MainLayoutView()
-                        .id("root-\(settings.language.rawValue)")  // Force full UI rebuild on language change
-                        .environment(\.locale, settings.language.locale)
 
                     ThemeTrackObserver()
                         .allowsHitTesting(false)
@@ -52,9 +50,9 @@ struct AppRootView: View {
             } else {
                 ProgressView(NSLocalizedString("alert.loading", comment: ""))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .environment(\.locale, settings.language.locale)
             }
         }
+        .environment(\.locale, Locale(identifier: "zh-Hans"))
         .onAppear {
             setupDependencies()
         }

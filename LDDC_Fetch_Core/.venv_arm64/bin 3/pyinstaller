@@ -1,0 +1,6 @@
+#!/Users/kmg/Documents/vscode/player/myPlayer2/LDDC_Fetch_Core/.venv_arm64/bin/python3
+import sys
+from PyInstaller.__main__ import _console_script_run
+if __name__ == '__main__':
+    sys.argv[0] = sys.argv[0].removesuffix('.exe')
+    sys.exit(_console_script_run())

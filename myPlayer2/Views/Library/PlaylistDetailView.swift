@@ -18,6 +18,7 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
 
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(PlayerViewModel.self) private var playerVM
+    @Environment(UIStateViewModel.self) private var uiState
     @Environment(\.colorScheme) private var colorScheme
 
     private let headerAccessory: HeaderAccessory
@@ -30,6 +31,7 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
 
     @State private var trackToEdit: Track?
     @State private var searchText: String = ""
+    @State private var listScrollPositionID: UUID?
     @FocusState private var isSearchFocused: Bool
 
     // MARK: - Init
@@ -201,9 +203,22 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
                 // Bottom placeholder for MiniPlayer/Controls
                 Color.clear.frame(height: 160)
             }
+            .scrollTargetLayout()
             .padding(.top, listTopPadding)
             .padding(.bottom, listBottomPadding)
             .padding(.horizontal)
+        }
+        .scrollPosition(id: $listScrollPositionID, anchor: .top)
+        .onAppear {
+            restoreScrollIfNeeded()
+            updateLibrarySnapshot()
+        }
+        .onChange(of: listScrollPositionID) { _, _ in
+            updateLibrarySnapshot()
+        }
+        .onChange(of: libraryVM.selectedPlaylist?.id) { _, _ in
+            restoreScrollIfNeeded()
+            updateLibrarySnapshot()
         }
         .onTapGesture { clearSearchFocus() }
     }
@@ -381,6 +396,39 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         if isSearchFocused {
             isSearchFocused = false
         }
+    }
+
+    private func restoreScrollIfNeeded() {
+        let playlistID = libraryVM.selectedPlaylist?.id
+        let restoreID = uiState.consumeLibraryRestoreTarget(for: playlistID)
+
+        guard
+            let restoreID,
+            sortedTracks.contains(where: { $0.id == restoreID })
+        else {
+            // No restore target (or missing in current dataset): keep default initial position.
+            listScrollPositionID = nil
+            return
+        }
+
+        // Defer one runloop to ensure scroll container has mounted.
+        Task { @MainActor in
+            listScrollPositionID = restoreID
+        }
+    }
+
+    private func updateLibrarySnapshot() {
+        let firstID = sortedTracks.first?.id
+        let userScrolled = {
+            guard let position = listScrollPositionID, let firstID else { return false }
+            return position != firstID
+        }()
+
+        uiState.rememberLibraryContext(
+            playlistID: libraryVM.selectedPlaylist?.id,
+            scrollTrackID: listScrollPositionID,
+            userScrolled: userScrolled
+        )
     }
 }
 
