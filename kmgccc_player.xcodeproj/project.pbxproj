@@ -12,27 +12,33 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		935118922F3231C500766A5F /* myPlayer2.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = myPlayer2.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		933AACC12F3CB7F30081B59C /* bkMask.bundle */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = bkMask.bundle; sourceTree = BUILT_PRODUCTS_DIR; };
+		935118922F3231C500766A5F /* kmgccc_player.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = kmgccc_player.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		9351198D2F33149A00766A5F /* AMLL */ = {isa = PBXFileReference; lastKnownFileType = folder; name = AMLL; path = myPlayer2/Resources/AMLL; sourceTree = "<group>"; };
 		93CF3F822F344E9F0004C8E3 /* lddc-server */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "lddc-server"; path = "Tools/lddc-server"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		9351197F2F33130A00766A5F /* Exceptions for "myPlayer2" folder in "myPlayer2" target */ = {
+		9351197F2F33130A00766A5F /* Exceptions for "myPlayer2" folder in "kmgccc_player" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
 				scan_ui.py,
 			);
-			target = 935118912F3231C500766A5F /* myPlayer2 */;
+			target = 935118912F3231C500766A5F /* kmgccc_player */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		933AADD62F3CBB030081B59C /* BKThemes */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = BKThemes;
+			sourceTree = "<group>";
+		};
 		935118942F3231C500766A5F /* myPlayer2 */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
-				9351197F2F33130A00766A5F /* Exceptions for "myPlayer2" folder in "myPlayer2" target */,
+				9351197F2F33130A00766A5F /* Exceptions for "myPlayer2" folder in "kmgccc_player" target */,
 			);
 			path = myPlayer2;
 			sourceTree = "<group>";
@@ -40,6 +46,13 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		933AACBE2F3CB7F30081B59C /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		9351188F2F3231C500766A5F /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -57,13 +70,15 @@
 				9351198D2F33149A00766A5F /* AMLL */,
 				935118942F3231C500766A5F /* myPlayer2 */,
 				935118932F3231C500766A5F /* Products */,
+				933AADD62F3CBB030081B59C /* BKThemes */,
 			);
 			sourceTree = "<group>";
 		};
 		935118932F3231C500766A5F /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				935118922F3231C500766A5F /* myPlayer2.app */,
+				935118922F3231C500766A5F /* kmgccc_player.app */,
+				933AACC12F3CB7F30081B59C /* bkMask.bundle */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -71,9 +86,31 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		935118912F3231C500766A5F /* myPlayer2 */ = {
+		933AACC02F3CB7F30081B59C /* bkMask */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 9351189D2F3231C700766A5F /* Build configuration list for PBXNativeTarget "myPlayer2" */;
+			buildConfigurationList = 933AACC22F3CB7F30081B59C /* Build configuration list for PBXNativeTarget "bkMask" */;
+			buildPhases = (
+				933AACBD2F3CB7F30081B59C /* Sources */,
+				933AACBE2F3CB7F30081B59C /* Frameworks */,
+				933AACBF2F3CB7F30081B59C /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				933AADD62F3CBB030081B59C /* BKThemes */,
+			);
+			name = bkMask;
+			packageProductDependencies = (
+			);
+			productName = bkMask;
+			productReference = 933AACC12F3CB7F30081B59C /* bkMask.bundle */;
+			productType = "com.apple.product-type.bundle";
+		};
+		935118912F3231C500766A5F /* kmgccc_player */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 9351189D2F3231C700766A5F /* Build configuration list for PBXNativeTarget "kmgccc_player" */;
 			buildPhases = (
 				9351188E2F3231C500766A5F /* Sources */,
 				9351188F2F3231C500766A5F /* Frameworks */,
@@ -87,11 +124,11 @@
 			fileSystemSynchronizedGroups = (
 				935118942F3231C500766A5F /* myPlayer2 */,
 			);
-			name = myPlayer2;
+			name = kmgccc_player;
 			packageProductDependencies = (
 			);
 			productName = myPlayer2;
-			productReference = 935118922F3231C500766A5F /* myPlayer2.app */;
+			productReference = 935118922F3231C500766A5F /* kmgccc_player.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -104,12 +141,15 @@
 				LastSwiftUpdateCheck = 2620;
 				LastUpgradeCheck = 2620;
 				TargetAttributes = {
+					933AACC02F3CB7F30081B59C = {
+						CreatedOnToolsVersion = 26.2;
+					};
 					935118912F3231C500766A5F = {
 						CreatedOnToolsVersion = 26.2;
 					};
 				};
 			};
-			buildConfigurationList = 9351188D2F3231C500766A5F /* Build configuration list for PBXProject "myPlayer2" */;
+			buildConfigurationList = 9351188D2F3231C500766A5F /* Build configuration list for PBXProject "kmgccc_player" */;
 			developmentRegion = "zh-Hans";
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -124,12 +164,20 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				935118912F3231C500766A5F /* myPlayer2 */,
+				935118912F3231C500766A5F /* kmgccc_player */,
+				933AACC02F3CB7F30081B59C /* bkMask */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		933AACBF2F3CB7F30081B59C /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		935118902F3231C500766A5F /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -162,6 +210,13 @@
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		933AACBD2F3CB7F30081B59C /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		9351188E2F3231C500766A5F /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -172,6 +227,48 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin XCBuildConfiguration section */
+		933AACC32F3CB7F30081B59C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = TYU73KR9WW;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSPrincipalClass = "";
+				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Bundles";
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = kmgccc.bkMask;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				WRAPPER_EXTENSION = bundle;
+			};
+			name = Debug;
+		};
+		933AACC42F3CB7F30081B59C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = TYU73KR9WW;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSPrincipalClass = "";
+				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Bundles";
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = kmgccc.bkMask;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				WRAPPER_EXTENSION = bundle;
+			};
+			name = Release;
+		};
 		9351189B2F3231C700766A5F /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -411,7 +508,16 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		9351188D2F3231C500766A5F /* Build configuration list for PBXProject "myPlayer2" */ = {
+		933AACC22F3CB7F30081B59C /* Build configuration list for PBXNativeTarget "bkMask" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				933AACC32F3CB7F30081B59C /* Debug */,
+				933AACC42F3CB7F30081B59C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		9351188D2F3231C500766A5F /* Build configuration list for PBXProject "kmgccc_player" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				9351189B2F3231C700766A5F /* Debug */,
@@ -420,7 +526,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		9351189D2F3231C700766A5F /* Build configuration list for PBXNativeTarget "myPlayer2" */ = {
+		9351189D2F3231C700766A5F /* Build configuration list for PBXNativeTarget "kmgccc_player" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				9351189E2F3231C700766A5F /* Debug */,

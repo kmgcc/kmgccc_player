@@ -90,6 +90,11 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    private var sortedTrackIndexMap: [UUID: Int] {
+        Dictionary(
+            uniqueKeysWithValues: sortedTracks.enumerated().map { ($0.element.id, $0.offset) })
+    }
+
     // MARK: - Subviews
 
     private var headerView: some View {
@@ -182,20 +187,24 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
     }
 
     private var trackListView: some View {
-        ScrollView {
+        ScrollView(.vertical) {
             LazyVStack(spacing: 0) {
-                ForEach(Array(sortedTracks.enumerated()), id: \.element.id) { index, track in
+                ForEach(sortedTracks, id: \.id) { track in
                     TrackRowView(
                         track: track,
                         isPlaying: playerVM.currentTrack?.id == track.id,
                         onTap: {
-                            playerVM.playTracks(sortedTracks, startingAt: index)
+                            playerVM.playTracks(
+                                sortedTracks,
+                                startingAt: sortedTrackIndexMap[track.id] ?? 0
+                            )
                         }
                     ) {
-                        trackMenu(track: track, index: index)
+                        trackMenu(track: track, index: sortedTrackIndexMap[track.id] ?? 0)
                     }
+                    .equatable()
                     .contextMenu {
-                        trackMenu(track: track, index: index)
+                        trackMenu(track: track, index: sortedTrackIndexMap[track.id] ?? 0)
                     }
 
                 }
