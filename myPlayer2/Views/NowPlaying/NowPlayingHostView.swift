@@ -43,6 +43,8 @@ struct NowPlayingHostView: View {
                     trackID: playerVM.currentTrack?.id,
                     artworkData: playerVM.currentTrack?.artworkData
                 )
+                .frame(width: windowSize.width, height: windowSize.height, alignment: .topLeading)
+                .ignoresSafeArea()
 
                 ZStack {
                     selectedSkin.makeArtwork(context: context)

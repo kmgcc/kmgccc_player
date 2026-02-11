@@ -3,23 +3,16 @@
 //  myPlayer2
 //
 //  Now Playing artistic background:
-//  - bk1/bk2 cycling at 3fps
-//  - 5~6 opaque random tinted shapes
+//  - bk1/bk2 cycling at 1fps
+//  - 10~16 opaque random tinted shapes
 //  - transition via 6fps luma mask
 //
 
 import AppKit
 import Combine
+import CoreImage
 import QuartzCore
 import SwiftUI
-
-private enum BKArtDebugOptions {
-    // Debug verification toggles (default ON for定位):
-    // A) Force symbol into backgroundLayer.contents to verify contents链路。
-    static let forceSymbol = false
-    // B) Disable all mask assignment to verify base images/shapes visibility.
-    static let disableMask = false
-}
 
 @MainActor
 final class BKArtBackgroundController: ObservableObject {
@@ -50,7 +43,7 @@ struct BKArtBackgroundView: View {
         .onChange(of: trackID) { _, _ in
             refreshPalette()
         }
-        .onChange(of: artworkData?.count) { _, _ in
+        .onChange(of: artworkSignature) { _, _ in
             refreshPalette()
         }
     }
@@ -58,6 +51,10 @@ struct BKArtBackgroundView: View {
     private var seedValue: UInt64 {
         guard let id = trackID else { return 0xA17D_4C59_10F3_778D }
         return UInt64(bitPattern: Int64(id.uuidString.hashValue))
+    }
+
+    private var artworkSignature: Int {
+        artworkData?.hashValue ?? 0
     }
 
     private func refreshPalette() {
@@ -131,6 +128,9 @@ private final class BKArtBackgroundLayerView: NSView {
 
     private let assets = BKThemeAssets.shared
     private var palette: [CGColor] = BKArtBackgroundView.fallbackPalette.map(\.cgColor)
+    private let ciContext = CIContext(options: [.cacheIntermediates: true])
+    private var tintedBackgrounds: [CGImage] = []
+    private var paletteSignature: String = ""
 
     private var fromContainer: Container?
     private var toContainer: Container?
@@ -144,7 +144,8 @@ private final class BKArtBackgroundLayerView: NSView {
     private var backgroundTimer: DispatchSourceTimer?
     private var shapeTimer: DispatchSourceTimer?
     private var transitionTimer: DispatchSourceTimer?
-    private let debugBackgroundCGImage = BKArtBackgroundLayerView.makeDebugSymbolImage()
+    private var autoTransitionTimer: DispatchSourceTimer?
+    private var transitionSeedCounter: UInt64 = 0
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -161,6 +162,7 @@ private final class BKArtBackgroundLayerView: NSView {
         backgroundTimer?.cancel()
         shapeTimer?.cancel()
         transitionTimer?.cancel()
+        autoTransitionTimer?.cancel()
     }
 
     override func viewDidMoveToWindow() {
@@ -195,18 +197,25 @@ private final class BKArtBackgroundLayerView: NSView {
 
     func updatePalette(_ colors: [NSColor]) {
         guard !colors.isEmpty else { return }
-        palette = colors.map { ($0.usingColorSpace(.deviceRGB) ?? $0).cgColor }
+        let converted = colors.map { ($0.usingColorSpace(.deviceRGB) ?? $0).cgColor }
+        let signature = Self.paletteSignature(for: converted)
+        guard signature != paletteSignature else { return }
+
+        palette = converted
+        paletteSignature = signature
+        tintedBackgrounds = makeTintedBackgrounds(from: assets.backgrounds, palette: converted)
+        applyCurrentBackgroundPhase()
     }
 
     func ensureBaseContainer(seed: UInt64) {
         rebuildSeed = seed
         guard fromContainer == nil, !bounds.isEmpty else { return }
+        if tintedBackgrounds.isEmpty {
+            tintedBackgrounds = makeTintedBackgrounds(from: assets.backgrounds, palette: palette)
+        }
         let container = buildContainer(seed: seed)
         fromContainer = container
         layer?.addSublayer(container.layer)
-        #if DEBUG
-            print("[BKArt] ensureBaseContainer addSublayer fromContainer, frame=\(container.layer.frame)")
-        #endif
         applyCurrentBackgroundPhase()
         startTimersIfNeeded()
     }
@@ -216,23 +225,13 @@ private final class BKArtBackgroundLayerView: NSView {
         rebuildSeed = seed
         ensureBaseContainer(seed: seed)
         guard let current = fromContainer else { return }
+        guard toContainer == nil else { return }
 
         stopTransitionTimer()
         let next = buildContainer(seed: seed ^ 0x9E37_79B9_7F4A_7C15)
         toContainer = next
         layer?.insertSublayer(next.layer, above: current.layer)
-        #if DEBUG
-            print("[BKArt] triggerTransition insert toContainer above fromContainer")
-        #endif
         applyBackgroundPhase(to: next)
-
-        guard !BKArtDebugOptions.disableMask else {
-            current.layer.removeFromSuperlayer()
-            fromContainer = next
-            toContainer = nil
-            transitionMaskLayer = nil
-            return
-        }
 
         guard !assets.maskFrames.isEmpty else {
             finalizeTransition()
@@ -246,10 +245,6 @@ private final class BKArtBackgroundLayerView: NSView {
         mask.contents = assets.maskFrames[0]
         next.layer.mask = mask
         transitionMaskLayer = mask
-        #if DEBUG
-            print(
-                "[BKArt] mask attach -> to=\(next.layer.frame), mask=\(mask.frame), contentsNil=\(mask.contents == nil)")
-        #endif
         maskFrameIndex = 0
         startTransitionTimer()
     }
@@ -281,7 +276,7 @@ private final class BKArtBackgroundLayerView: NSView {
         let container = Container(frame: bounds)
         var rng = BKSeededRandom(seed: seed == 0 ? 0xA17D_4C59_10F3_778D : seed)
 
-        let count = rng.nextBool() ? 5 : 6
+        let count = rng.nextInt(in: 10...16)
         let chosenShapes = chooseShapeImages(count: count, rng: &rng)
         let forbiddenRect = CGRect(
             x: bounds.width * 0.28,
@@ -292,7 +287,7 @@ private final class BKArtBackgroundLayerView: NSView {
 
         for image in chosenShapes {
             let base = min(bounds.width, bounds.height)
-            let side = base * CGFloat(rng.next(in: 0.25...1.2)) * 0.24
+            let side = base * CGFloat(rng.next(in: 0.50...1.80)) * 0.22
             let shapeBounds = CGRect(x: 0, y: 0, width: side, height: side)
             let point = randomEdgePoint(
                 side: side,
@@ -415,15 +410,7 @@ private final class BKArtBackgroundLayerView: NSView {
         maskLayer.contentsGravity = .resizeAspect
         maskLayer.contentsScale = root.contentsScale
 
-        if BKArtDebugOptions.disableMask {
-            // Debug B: keep shapes visible without any mask usage.
-            fillLayer.contents = image
-            fillLayer.contentsGravity = .resizeAspect
-            fillLayer.contentsScale = root.contentsScale
-            fillLayer.backgroundColor = nil
-        } else {
-            fillLayer.mask = maskLayer
-        }
+        fillLayer.mask = maskLayer
         root.addSublayer(fillLayer)
         return root
     }
@@ -432,7 +419,7 @@ private final class BKArtBackgroundLayerView: NSView {
         guard window != nil else { return }
         if backgroundTimer == nil {
             let timer = DispatchSource.makeTimerSource(queue: .main)
-            timer.schedule(deadline: .now(), repeating: 1.0 / 3.0)
+            timer.schedule(deadline: .now(), repeating: 1.0)
             timer.setEventHandler { [weak self] in
                 self?.tickBackground()
             }
@@ -448,6 +435,15 @@ private final class BKArtBackgroundLayerView: NSView {
             timer.resume()
             shapeTimer = timer
         }
+        if autoTransitionTimer == nil {
+            let timer = DispatchSource.makeTimerSource(queue: .main)
+            timer.schedule(deadline: .now() + 15.0, repeating: 15.0)
+            timer.setEventHandler { [weak self] in
+                self?.tickAutoTransition()
+            }
+            timer.resume()
+            autoTransitionTimer = timer
+        }
     }
 
     private func stopTimers() {
@@ -455,6 +451,8 @@ private final class BKArtBackgroundLayerView: NSView {
         backgroundTimer = nil
         shapeTimer?.cancel()
         shapeTimer = nil
+        autoTransitionTimer?.cancel()
+        autoTransitionTimer = nil
         stopTransitionTimer()
     }
 
@@ -479,6 +477,11 @@ private final class BKArtBackgroundLayerView: NSView {
         applyCurrentBackgroundPhase()
     }
 
+    private func tickAutoTransition() {
+        let seed = nextTransitionSeed()
+        triggerTransition(seed: seed)
+    }
+
     private func applyCurrentBackgroundPhase() {
         applyBackgroundPhase(to: fromContainer)
         applyBackgroundPhase(to: toContainer)
@@ -486,14 +489,9 @@ private final class BKArtBackgroundLayerView: NSView {
 
     private func applyBackgroundPhase(to container: Container?) {
         guard let container else { return }
-        let image: CGImage? = {
-            if BKArtDebugOptions.forceSymbol {
-                return debugBackgroundCGImage
-            }
-            guard !assets.backgrounds.isEmpty else { return nil }
-            return assets.backgrounds[backgroundPhase % assets.backgrounds.count]
-        }()
-        guard let image else { return }
+        let source = !tintedBackgrounds.isEmpty ? tintedBackgrounds : assets.backgrounds
+        guard !source.isEmpty else { return }
+        let image = source[backgroundPhase % source.count]
         container.backgroundLayer.contentsGravity = .resizeAspectFill
         container.backgroundLayer.contentsScale =
             window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
@@ -533,7 +531,6 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     private func tickTransitionMask() {
-        guard !BKArtDebugOptions.disableMask else { return }
         guard let toContainer, let maskLayer = transitionMaskLayer else { return }
         guard !assets.maskFrames.isEmpty else {
             finalizeTransition()
@@ -559,9 +556,7 @@ private final class BKArtBackgroundLayerView: NSView {
             stopTransitionTimer()
             return
         }
-        if !BKArtDebugOptions.disableMask {
-            next.layer.mask = nil
-        }
+        next.layer.mask = nil
         transitionMaskLayer = nil
         fromContainer?.layer.removeFromSuperlayer()
         fromContainer = next
@@ -569,36 +564,134 @@ private final class BKArtBackgroundLayerView: NSView {
         stopTransitionTimer()
     }
 
-    private static func makeDebugSymbolImage() -> CGImage? {
-        if let symbol = NSImage(systemSymbolName: "star.fill", accessibilityDescription: nil) {
-            let canvasSize = NSSize(width: 512, height: 512)
-            let canvas = NSImage(size: canvasSize)
-            canvas.lockFocus()
-            NSColor.systemYellow.setFill()
-            let rect = NSRect(x: 96, y: 96, width: 320, height: 320)
-            symbol.draw(in: rect)
-            canvas.unlockFocus()
-            if let cg = canvas.cgImage(forProposedRect: nil, context: nil, hints: nil) {
-                return cg
-            }
+    private func makeTintedBackgrounds(from source: [CGImage], palette: [CGColor]) -> [CGImage] {
+        guard !source.isEmpty else { return [] }
+        let colors = normalizedPaletteColors(from: palette)
+        let mapImage = makeColorMapImage(colors: colors)
+
+        return source.compactMap { image in
+            let input = CIImage(cgImage: image)
+            let grayscale = input.applyingFilter(
+                "CIColorControls",
+                parameters: [
+                    kCIInputSaturationKey: 0.0,
+                    kCIInputContrastKey: 1.0,
+                    kCIInputBrightnessKey: 0.0,
+                ]
+            )
+            guard let mapImage else { return nil }
+
+            let mapped = grayscale.applyingFilter(
+                "CIColorMap",
+                parameters: ["inputGradientImage": mapImage]
+            )
+            return ciContext.createCGImage(mapped, from: mapped.extent)
+        }
+    }
+
+    private func normalizedPaletteColors(from colors: [CGColor]) -> [NSColor] {
+        let base = colors.compactMap { NSColor(cgColor: $0)?.usingColorSpace(.deviceRGB) }
+        let fallback = BKArtBackgroundView.fallbackPalette
+        let merged = (base + fallback)
+
+        var output: [NSColor] = []
+        for color in merged {
+            output.append(color)
+            if output.count == 3 { break }
         }
 
+        while output.count < 3 {
+            output.append(fallback[output.count % fallback.count])
+        }
+
+        let dark = output[0].blended(withFraction: 0.30, of: .black) ?? output[0]
+        let mid = output[1]
+        let light = output[2].blended(withFraction: 0.28, of: .white) ?? output[2]
+        return [dark, mid, light]
+    }
+
+    private func makeColorMapImage(colors: [NSColor]) -> CIImage? {
         let width = 256
-        let height = 256
+        let height = 1
+        let bytesPerPixel = 4
+        var data = [UInt8](repeating: 0, count: width * height * bytesPerPixel)
+
+        let c0 = colors[0].usingColorSpace(.deviceRGB) ?? colors[0]
+        let c1 = colors[1].usingColorSpace(.deviceRGB) ?? colors[1]
+        let c2 = colors[2].usingColorSpace(.deviceRGB) ?? colors[2]
+
+        for x in 0..<width {
+            let t = CGFloat(x) / CGFloat(width - 1)
+            let color: NSColor
+            if t < 0.5 {
+                let localT = t / 0.5
+                color = blend(c0, c1, t: localT)
+            } else {
+                let localT = (t - 0.5) / 0.5
+                color = blend(c1, c2, t: localT)
+            }
+
+            let rgb = color.usingColorSpace(.deviceRGB) ?? color
+            let idx = x * bytesPerPixel
+            data[idx + 0] = UInt8(clamp(rgb.redComponent) * 255.0)
+            data[idx + 1] = UInt8(clamp(rgb.greenComponent) * 255.0)
+            data[idx + 2] = UInt8(clamp(rgb.blueComponent) * 255.0)
+            data[idx + 3] = 255
+        }
+
         guard
-            let context = CGContext(
-                data: nil,
+            let provider = CGDataProvider(data: NSData(bytes: &data, length: data.count)),
+            let cgImage = CGImage(
                 width: width,
                 height: height,
                 bitsPerComponent: 8,
-                bytesPerRow: width * 4,
+                bitsPerPixel: 32,
+                bytesPerRow: width * bytesPerPixel,
                 space: CGColorSpaceCreateDeviceRGB(),
-                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                provider: provider,
+                decode: nil,
+                shouldInterpolate: true,
+                intent: .defaultIntent
             )
         else { return nil }
-        context.setFillColor(NSColor.systemPink.cgColor)
-        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
-        return context.makeImage()
+        return CIImage(cgImage: cgImage)
+    }
+
+    private func blend(_ lhs: NSColor, _ rhs: NSColor, t: CGFloat) -> NSColor {
+        let lt = lhs.usingColorSpace(.deviceRGB) ?? lhs
+        let rt = rhs.usingColorSpace(.deviceRGB) ?? rhs
+        let p = max(0, min(1, t))
+        return NSColor(
+            calibratedRed: lt.redComponent + (rt.redComponent - lt.redComponent) * p,
+            green: lt.greenComponent + (rt.greenComponent - lt.greenComponent) * p,
+            blue: lt.blueComponent + (rt.blueComponent - lt.blueComponent) * p,
+            alpha: 1.0
+        )
+    }
+
+    private func clamp(_ value: CGFloat) -> CGFloat {
+        min(1.0, max(0.0, value))
+    }
+
+    private func nextTransitionSeed() -> UInt64 {
+        transitionSeedCounter &+= 1
+        return rebuildSeed &+ (transitionSeedCounter &* 0x9E37_79B9_7F4A_7C15)
+    }
+
+    private static func paletteSignature(for colors: [CGColor]) -> String {
+        colors
+            .map { color in
+                let c = NSColor(cgColor: color)?.usingColorSpace(.deviceRGB) ?? NSColor.white
+                return String(
+                    format: "%.4f_%.4f_%.4f_%.4f",
+                    c.redComponent,
+                    c.greenComponent,
+                    c.blueComponent,
+                    c.alphaComponent
+                )
+            }
+            .joined(separator: "|")
     }
 }
 
@@ -625,6 +718,14 @@ private struct BKSeededRandom {
     mutating func next(in range: Range<Double>) -> Double {
         let unit = Double(nextUInt64() >> 11) / Double((1 << 53) - 1)
         return range.lowerBound + (range.upperBound - range.lowerBound) * unit
+    }
+
+    mutating func nextInt(in range: ClosedRange<Int>) -> Int {
+        let low = range.lowerBound
+        let high = range.upperBound
+        guard high >= low else { return low }
+        let span = high - low + 1
+        return low + Int(nextUInt64() % UInt64(span))
     }
 
     mutating func nextBool() -> Bool {
