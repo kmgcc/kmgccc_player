@@ -124,16 +124,89 @@ public final class AppSettings {
         case dark
     }
 
-    /// Appearance mode: "system", "light", or "dark"
-    var appearance: String = AppearanceMode.system.rawValue {
-        didSet {
-            UserDefaults.standard.set(appearance, forKey: "appearance")
+    enum ManualAppearance: String, CaseIterable {
+        case light
+        case dark
+    }
+
+    private enum AppearanceKeys {
+        static let globalArtworkTintEnabled = "globalArtworkTintEnabled"
+        static let followSystemAppearance = "followSystemAppearance"
+        static let manualAppearance = "manualAppearance"
+    }
+
+    /// Whether global accent/tint follows current artwork dominant color.
+    var globalArtworkTintEnabled: Bool {
+        get {
+            access(keyPath: \.globalArtworkTintEnabled)
+            if UserDefaults.standard.object(forKey: AppearanceKeys.globalArtworkTintEnabled) == nil {
+                return true
+            }
+            return UserDefaults.standard.bool(forKey: AppearanceKeys.globalArtworkTintEnabled)
+        }
+        set {
+            withMutation(keyPath: \.globalArtworkTintEnabled) {
+                UserDefaults.standard.set(
+                    newValue,
+                    forKey: AppearanceKeys.globalArtworkTintEnabled
+                )
+            }
         }
     }
 
+    /// Whether app appearance follows system (true => preferredColorScheme(nil)).
+    var followSystemAppearance: Bool {
+        get {
+            access(keyPath: \.followSystemAppearance)
+            if UserDefaults.standard.object(forKey: AppearanceKeys.followSystemAppearance) == nil {
+                return true
+            }
+            return UserDefaults.standard.bool(forKey: AppearanceKeys.followSystemAppearance)
+        }
+        set {
+            withMutation(keyPath: \.followSystemAppearance) {
+                UserDefaults.standard.set(
+                    newValue,
+                    forKey: AppearanceKeys.followSystemAppearance
+                )
+            }
+        }
+    }
+
+    /// Manual appearance mode used only when followSystemAppearance == false.
+    var manualAppearance: ManualAppearance {
+        get {
+            access(keyPath: \.manualAppearance)
+            let raw = UserDefaults.standard.string(forKey: AppearanceKeys.manualAppearance)
+                ?? ManualAppearance.dark.rawValue
+            return ManualAppearance(rawValue: raw) ?? .dark
+        }
+        set {
+            withMutation(keyPath: \.manualAppearance) {
+                UserDefaults.standard.set(newValue.rawValue, forKey: AppearanceKeys.manualAppearance)
+            }
+        }
+    }
+
+    /// Backward-compatible appearance mode facade.
     var appearanceMode: AppearanceMode {
-        get { AppearanceMode(rawValue: appearance) ?? .system }
-        set { appearance = newValue.rawValue }
+        get {
+            if followSystemAppearance { return .system }
+            return manualAppearance == .dark ? .dark : .light
+        }
+        set {
+            switch newValue {
+            case .system:
+                followSystemAppearance = true
+            case .light:
+                followSystemAppearance = false
+                manualAppearance = .light
+            case .dark:
+                followSystemAppearance = false
+                manualAppearance = .dark
+            }
+            UserDefaults.standard.set(newValue.rawValue, forKey: "appearance")
+        }
     }
 
     /// Accent color hex string
@@ -366,20 +439,28 @@ public final class AppSettings {
     // MARK: - Private Init
 
     private init() {
-        // Load initial value
-        if let saved = UserDefaults.standard.string(forKey: "appearance") {
-            self.appearance = saved
+        // Legacy migration from old `appearance` key.
+        if UserDefaults.standard.object(forKey: "followSystemAppearance") == nil,
+            let saved = UserDefaults.standard.string(forKey: "appearance"),
+            let mode = AppearanceMode(rawValue: saved)
+        {
+            switch mode {
+            case .system:
+                followSystemAppearance = true
+            case .light:
+                followSystemAppearance = false
+                manualAppearance = .light
+            case .dark:
+                followSystemAppearance = false
+                manualAppearance = .dark
+            }
         }
     }
 
     // MARK: - Computed Properties
 
     var colorScheme: ColorScheme? {
-        switch appearanceMode {
-        case .light: return .light
-        case .dark: return .dark
-        default: return nil
-        }
+        followSystemAppearance ? nil : (manualAppearance == .dark ? .dark : .light)
     }
 
     var accentColor: Color {

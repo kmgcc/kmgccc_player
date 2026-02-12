@@ -61,8 +61,16 @@ struct AppRootView: View {
         .tint(themeStore.accentColor)
         .accentColor(themeStore.accentColor)
         // Global Sync for Appearance Changes
-        .onChange(of: settings.appearanceMode) { _, _ in
+        .onChange(of: settings.followSystemAppearance) { _, _ in
             applyAppearanceToWindows()
+        }
+        .onChange(of: settings.manualAppearance) { _, _ in
+            applyAppearanceToWindows()
+        }
+        .onChange(of: settings.globalArtworkTintEnabled) { _, _ in
+            Task { @MainActor in
+                await themeStore.refreshPalette(reason: "global_artwork_tint_toggle")
+            }
         }
         // Theme Update Strategy: Follow effective SwiftUI ColorScheme
         .onChange(of: swiftUIColorScheme) { _, newScheme in
@@ -149,16 +157,15 @@ struct AppRootView: View {
     }
 
     private func applyAppearanceToWindows() {
-        let mode = settings.appearanceMode
-
-        print("[Appearance] Apply mode: \(mode.rawValue)")
-
-        if mode == .system {
+        if settings.followSystemAppearance {
+            print("[Appearance] Apply mode: system")
             NSApp.appearance = nil
             for window in NSApp.windows {
                 window.appearance = nil
             }
         } else {
+            let mode = settings.manualAppearance
+            print("[Appearance] Apply mode: \(mode.rawValue)")
             let appearanceName: NSAppearance.Name = mode == .dark ? .darkAqua : .aqua
             let appearance = NSAppearance(named: appearanceName)
             NSApp.appearance = appearance
