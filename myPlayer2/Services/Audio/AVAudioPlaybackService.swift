@@ -424,6 +424,10 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         AppSettings.shared.shuffleEnabled
     }
 
+    private var stopAfterTrackEnabled: Bool {
+        AppSettings.shared.stopAfterTrack
+    }
+
     private func computeNextIndex(autoAdvance: Bool) -> Int {
         if autoAdvance, repeatMode == .one {
             return queueIndex
@@ -569,6 +573,12 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         print("✅ Playback completed: \(currentTrack?.title ?? "unknown")")
 
         guard !queue.isEmpty else {
+            isPlaying = false
+            currentTime = duration
+            return
+        }
+
+        if stopAfterTrackEnabled {
             isPlaying = false
             currentTime = duration
             return
