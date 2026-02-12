@@ -21,6 +21,7 @@ final class PlayerViewModel {
     private let levelMeter: AudioLevelMeterProtocol
     private let settings: AppSettings
     private let nowPlayingService: NowPlayingService
+    private var isLevelMeterRunning = false
 
     // MARK: - Computed Properties (from playbackService)
 
@@ -74,7 +75,7 @@ final class PlayerViewModel {
     /// Play tracks starting at a specific index.
     func playTracks(_ tracks: [Track], startingAt index: Int = 0) {
         playbackService.playTracks(tracks, startingAt: index)
-        levelMeter.start()
+        startLevelMeterIfNeeded()
         nowPlayingService.updateNowPlaying(force: true)
     }
 
@@ -87,7 +88,7 @@ final class PlayerViewModel {
 
     func play(track: Track) {
         playbackService.play(track: track)
-        levelMeter.start()
+        startLevelMeterIfNeeded()
         nowPlayingService.updateNowPlaying(force: true)
     }
 
@@ -99,7 +100,7 @@ final class PlayerViewModel {
 
     func resume() {
         playbackService.resume()
-        levelMeter.start()
+        startLevelMeterIfNeeded()
         nowPlayingService.updateNowPlaying(force: true)
     }
 
@@ -114,7 +115,7 @@ final class PlayerViewModel {
 
     func stop() {
         playbackService.stop()
-        levelMeter.stop()
+        stopLevelMeterIfRunning()
         nowPlayingService.updateNowPlaying(force: true)
     }
 
@@ -140,6 +141,50 @@ final class PlayerViewModel {
     // MARK: - Cleanup
 
     func stopLevelMeter() {
+        stopLevelMeterIfRunning()
+    }
+
+    func setLedMeterEnabled(_ enabled: Bool) {
+        settings.ledMeterEnabled = enabled
+        refreshLedMeterStateFromSettings()
+    }
+
+    func refreshLedMeterStateFromSettings() {
+        if shouldRunLevelMeter, currentTrack != nil {
+            startLevelMeterIfNeeded()
+        } else {
+            stopLevelMeterIfRunning()
+        }
+    }
+
+    private func startLevelMeterIfNeeded() {
+        guard shouldRunLevelMeter else {
+            stopLevelMeterIfRunning()
+            return
+        }
+        guard !isLevelMeterRunning else { return }
+        levelMeter.start()
+        isLevelMeterRunning = true
+    }
+
+    private func stopLevelMeterIfRunning() {
+        guard isLevelMeterRunning else { return }
         levelMeter.stop()
+        isLevelMeterRunning = false
+    }
+
+    private var shouldRunLevelMeter: Bool {
+        settings.ledMeterEnabled && isLedEnabledForCurrentSkin
+    }
+
+    private var isLedEnabledForCurrentSkin: Bool {
+        guard settings.selectedNowPlayingSkinID == "kmgccc.cassette" else {
+            return true
+        }
+        let key = "skin.kmgcccCassette.showLEDMeter"
+        if UserDefaults.standard.object(forKey: key) == nil {
+            return true
+        }
+        return UserDefaults.standard.bool(forKey: key)
     }
 }

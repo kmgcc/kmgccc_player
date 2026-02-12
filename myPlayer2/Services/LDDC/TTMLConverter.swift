@@ -17,7 +17,7 @@ final class TTMLConverter {
     private init() {}
 
     /// Convert LRC to TTML (without translation).
-    func convertToTTML(lrc: String) async throws -> String {
+    func convertToTTML(lrc: String, stripMetadata: Bool = true) async throws -> String {
         let tempDir = FileManager.default.temporaryDirectory
         let lrcFile = tempDir.appendingPathComponent("input_\(UUID().uuidString).lrc")
         let ttmlFile = tempDir.appendingPathComponent("output_\(UUID().uuidString).ttml")
@@ -36,9 +36,14 @@ final class TTMLConverter {
         }
 
         // Run conversion
+        var args = ["-i", lrcFile.path, "-o", ttmlFile.path]
+        if !stripMetadata {
+            args.append("--no-strip-metadata")
+        }
+
         try await runPythonScript(
             scriptURL: scriptURL,
-            args: ["-i", lrcFile.path, "-o", ttmlFile.path]
+            args: args
         )
 
         // Read result
@@ -50,7 +55,11 @@ final class TTMLConverter {
     }
 
     /// Convert LRC with translation to TTML.
-    func convertToTTMLWithTranslation(origLrc: String, transLrc: String) async throws -> String {
+    func convertToTTMLWithTranslation(
+        origLrc: String,
+        transLrc: String,
+        stripMetadata: Bool = true
+    ) async throws -> String {
         let tempDir = FileManager.default.temporaryDirectory
         let origFile = tempDir.appendingPathComponent("orig_\(UUID().uuidString).lrc")
         let transFile = tempDir.appendingPathComponent("trans_\(UUID().uuidString).lrc")
@@ -72,9 +81,14 @@ final class TTMLConverter {
         }
 
         // Run conversion
+        var args = ["-i", origFile.path, "-t", transFile.path, "-o", ttmlFile.path]
+        if !stripMetadata {
+            args.append("--no-strip-metadata")
+        }
+
         try await runPythonScript(
             scriptURL: scriptURL,
-            args: ["-i", origFile.path, "-t", transFile.path, "-o", ttmlFile.path]
+            args: args
         )
 
         // Read result

@@ -38,6 +38,7 @@ struct TrackEditSheet: View {
     @State private var showingLyricsPicker = false
 
     private let amllDbURL = URL(string: "https://github.com/amll-dev/amll-ttml-db")!
+    private let ttmlToolURL = URL(string: "https://amll-ttml-tool.stevexmh.net/")!
 
     var body: some View {
         VStack(spacing: 0) {
@@ -221,11 +222,25 @@ struct TrackEditSheet: View {
                 }
                 .font(.caption)
 
+                Button {
+                    openURL(ttmlToolURL)
+                } label: {
+                    Label("TTML Tool", systemImage: "hammer.fill")
+                }
+                .font(.caption)
+
                 Button(LocalizedStringKey("edit.track.import_lyrics")) {
                     showingLyricsPicker = true
                 }
                 .font(.caption)
             }
+
+            Text(
+                "AMLL DB 歌词库中的 TTML 专为 AMLL 组件设计，支持对唱歌词、背景歌词等高级特性，来自网络的转换歌词仅为歌词缺失情况下的备选。您也可以使用 AMLL TTML Tool 自己制作歌词使用或贡献到 AMLL DB。"
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
 
             TextEditor(text: $lyricsText)
                 .font(.system(.body, design: .monospaced))
@@ -234,6 +249,10 @@ struct TrackEditSheet: View {
                     RoundedRectangle(cornerRadius: 6)
                         .strokeBorder(Color.secondary.opacity(0.3), lineWidth: 1)
                 }
+
+            Text("edit.track.paste_desc")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
@@ -256,10 +275,6 @@ struct TrackEditSheet: View {
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }
-
-            Text("edit.track.paste_desc")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
 
             Divider()
                 .padding(.vertical, 8)

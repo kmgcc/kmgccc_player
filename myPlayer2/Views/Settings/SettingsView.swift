@@ -14,6 +14,7 @@ struct SettingsView: View {
 
     @Environment(\.dismiss) private var dismiss
     @Environment(LEDMeterService.self) private var ledMeter
+    @Environment(PlayerViewModel.self) private var playerVM
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var themeStore: ThemeStore
 
@@ -43,6 +44,7 @@ struct SettingsView: View {
     @State private var nowPlayingSkin: String = AppSettings.shared.selectedNowPlayingSkinID
     @State private var globalArtworkTintEnabled: Bool = AppSettings.shared.globalArtworkTintEnabled
     @State private var followSystemAppearance: Bool = AppSettings.shared.followSystemAppearance
+    @AppStorage("skin.kmgcccCassette.showLEDMeter") private var cassetteShowLEDMeter: Bool = true
 
     // MARK: - LED Settings State
 
@@ -54,6 +56,7 @@ struct SettingsView: View {
     @State private var ledCount: Int = AppSettings.shared.ledCount
     @State private var brightnessLevels: Int = AppSettings.shared.ledBrightnessLevels
     @State private var lookaheadMs: Double = AppSettings.shared.lookaheadMs
+    @State private var ledMeterEnabled: Bool = AppSettings.shared.ledMeterEnabled
     @State private var aboutEasterEggTracker = AboutEasterEggTapTracker()
 
     private var fontFamilies: [String] {
@@ -139,6 +142,7 @@ struct SettingsView: View {
             nowPlayingSkin = settings.selectedNowPlayingSkinID
             globalArtworkTintEnabled = settings.globalArtworkTintEnabled
             followSystemAppearance = settings.followSystemAppearance
+            ledMeterEnabled = settings.ledMeterEnabled
             if SkinRegistry.options.contains(where: { $0.id == nowPlayingSkin }) == false {
                 nowPlayingSkin = SkinRegistry.defaultSkinID
             }
@@ -178,7 +182,13 @@ struct SettingsView: View {
 
     private var skinSyncLogic: some View {
         Color.clear
-            .onChange(of: nowPlayingSkin) { _, val in settings.selectedNowPlayingSkinID = val }
+            .onChange(of: nowPlayingSkin) { _, val in
+                settings.selectedNowPlayingSkinID = val
+                playerVM.refreshLedMeterStateFromSettings()
+            }
+            .onChange(of: cassetteShowLEDMeter) { _, _ in
+                playerVM.refreshLedMeterStateFromSettings()
+            }
     }
 
     private var lyricsSyncLogic: some View {
@@ -242,6 +252,10 @@ struct SettingsView: View {
                 }
                 .onChange(of: lookaheadMs) { _, val in
                     AppSettings.shared.lookaheadMs = val
+                }
+                .onChange(of: ledMeterEnabled) { _, val in
+                    settings.ledMeterEnabled = val
+                    playerVM.setLedMeterEnabled(val)
                 }
 
             Color.clear
@@ -602,14 +616,20 @@ struct SettingsView: View {
 
             // Live Preview
             VStack(alignment: .leading, spacing: 12) {
+                Toggle("启用 LED Meter 采样", isOn: $ledMeterEnabled)
+                    .toggleStyle(.switch)
+                Text("关闭后会停止 LED 相关音频分析，减少 CPU 占用。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
                 Text("settings.led.live_preview")
                     .font(.subheadline.bold())
                     .foregroundStyle(.secondary)
 
                 VStack(spacing: 8) {
                     LedMeterView(
-                        level: Double(ledMeter.normalizedLevel),
-                        ledValues: ledMeter.metrics.leds,
+                        level: ledMeterEnabled ? Double(ledMeter.normalizedLevel) : 0,
+                        ledValues: ledMeterEnabled ? ledMeter.metrics.leds : nil,
                         dotSize: 14,
                         spacing: 7
                     )
@@ -1101,7 +1121,13 @@ private enum SettingsCategory: String, CaseIterable, Identifiable {
 // MARK: - Preview
 
 #Preview("Settings") {
+    let playbackService = StubAudioPlaybackService()
+    let levelMeter = StubAudioLevelMeter()
+    let playerVM = PlayerViewModel(playbackService: playbackService, levelMeter: levelMeter)
+
     SettingsView()
         .environment(LEDMeterService())
+        .environment(playerVM)
+        .environment(AppSettings.shared)
         .environmentObject(ThemeStore.shared)
 }
