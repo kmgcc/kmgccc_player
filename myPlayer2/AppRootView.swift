@@ -39,7 +39,8 @@ struct AppRootView: View {
                         BKArtBackgroundView(
                             controller: artBackgroundController,
                             trackID: playerVM.currentTrack?.id,
-                            artworkData: playerVM.currentTrack?.artworkData
+                            artworkData: playerVM.currentTrack?.artworkData,
+                            isPlaying: playerVM.isPlaying
                         )
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                         .ignoresSafeArea()

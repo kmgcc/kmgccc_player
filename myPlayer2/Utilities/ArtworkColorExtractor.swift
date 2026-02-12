@@ -200,6 +200,107 @@ public enum ArtworkColorExtractor {
         uiThemePalette(from: data, maxColors: 3).first
     }
 
+    /// Rich palette for artistic backgrounds.
+    /// Unlike uiThemePalette, this does not synthesize variants; it returns
+    /// distinct colors that already exist in the artwork.
+    public static func uiThemePaletteRich(from data: Data, desiredCount: Int = 6) -> [NSColor] {
+        let targetCount = min(max(3, desiredCount), 8)
+        guard let pixels = resizedPixels(from: data, side: 72) else { return [] }
+
+        let bucketCount = 72
+        var buckets = [HueBucket](repeating: .zero, count: bucketCount)
+
+        var totalWeight: CGFloat = 0
+        for i in stride(from: 0, to: pixels.count, by: 4) {
+            let r = CGFloat(pixels[i]) / 255.0
+            let g = CGFloat(pixels[i + 1]) / 255.0
+            let b = CGFloat(pixels[i + 2]) / 255.0
+            let a = CGFloat(pixels[i + 3]) / 255.0
+            if a < 0.08 { continue }
+
+            let rgbColor = NSColor(calibratedRed: r, green: g, blue: b, alpha: 1)
+            guard let hsb = rgbColor.usingColorSpace(.deviceRGB) else { continue }
+            var hue: CGFloat = 0
+            var sat: CGFloat = 0
+            var bri: CGFloat = 0
+            var alpha: CGFloat = 0
+            hsb.getHue(&hue, saturation: &sat, brightness: &bri, alpha: &alpha)
+
+            let midBBoost = max(0, 1 - abs(bri - 0.55) / 0.55)
+            var weight = a * (0.70 + 0.30 * sat) * (0.70 + 0.30 * midBBoost)
+            if sat > 0.42 {
+                weight *= 1.08
+            }
+            if weight < 0.000_1 { continue }
+
+            totalWeight += weight
+            let idx = min(bucketCount - 1, max(0, Int(floor(hue * CGFloat(bucketCount)))))
+            buckets[idx].weight += weight
+            buckets[idx].r += r * weight
+            buckets[idx].g += g * weight
+            buckets[idx].b += b * weight
+        }
+
+        guard totalWeight > 0 else { return [] }
+        let threshold = totalWeight * 0.006
+
+        var candidates: [PaletteCandidate] = []
+        for bucket in buckets where bucket.weight > threshold {
+            let inv = 1 / bucket.weight
+            let raw = NSColor(
+                calibratedRed: bucket.r * inv,
+                green: bucket.g * inv,
+                blue: bucket.b * inv,
+                alpha: 1
+            )
+            let rgb = raw.usingColorSpace(.deviceRGB) ?? raw
+            var h: CGFloat = 0
+            var s: CGFloat = 0
+            var v: CGFloat = 0
+            var a: CGFloat = 0
+            rgb.getHue(&h, saturation: &s, brightness: &v, alpha: &a)
+            let normalized = NSColor(
+                calibratedHue: normalizedHue(h),
+                saturation: clamp(s, min: 0.01, max: 0.95),
+                brightness: clamp(v, min: 0.03, max: 0.96),
+                alpha: 1
+            )
+            let score = bucket.weight * (0.90 + s * 0.35)
+            candidates.append(PaletteCandidate(color: normalized, hue: h, score: score))
+        }
+
+        guard !candidates.isEmpty else { return [] }
+        candidates.sort { $0.score > $1.score }
+
+        var selected: [NSColor] = []
+        for candidate in candidates {
+            let distinct = selected.allSatisfy { existing in
+                let hueGap = circularHueDistance(hueValue(of: candidate.color), hueValue(of: existing))
+                let rgbGap = rgbDistance(candidate.color, existing)
+                return hueGap >= 0.05 || rgbGap >= 0.14
+            }
+            if distinct || selected.count < 2 {
+                selected.append(candidate.color)
+            }
+            if selected.count >= targetCount { break }
+        }
+
+        // Ensure vivid accents that exist in the artwork can be present.
+        if selected.count < targetCount {
+            for candidate in candidates where saturationValue(of: candidate.color) >= 0.45 {
+                let distinct = selected.allSatisfy {
+                    circularHueDistance(hueValue(of: candidate.color), hueValue(of: $0)) >= 0.05
+                }
+                if distinct {
+                    selected.append(candidate.color)
+                }
+                if selected.count >= targetCount { break }
+            }
+        }
+
+        return Array(selected.prefix(targetCount))
+    }
+
     public static func cssRGBA(_ color: NSColor, alpha: CGFloat) -> String {
         guard let rgb = color.usingColorSpace(.deviceRGB) else {
             return "rgba(255,255,255,\(alpha))"

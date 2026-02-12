@@ -24,16 +24,32 @@ enum CoverKind: String {
     case normal
 }
 
+enum PrimarySelectionSource: String {
+    case saliencyCandidate
+    case cluster
+    case scorer
+    case grayscaleFallback
+}
+
 struct HarmonizedPalette {
     let primaryHue: CGFloat
+    let imageHue: CGFloat
     let isDark: Bool
     let complexity: ColorComplexityLevel
     let grayScore: CGFloat
     let isGrayscaleCover: Bool
     let isNearGray: Bool
+    let coverLuma: CGFloat
+    let imageCoverLuma: CGFloat
+    let areaDominantS: CGFloat
+    let areaDominantB: CGFloat
+    let accentHue: CGFloat?
+    let accentStrength: CGFloat
+    let accentEnabled: Bool
 
     // Background (low sat)
     let bgStops: [CGColor]
+    let bgVariants: [[CGColor]]
 
     // Foreground pools (higher sat)
     let shapePool: [CGColor]
@@ -55,18 +71,40 @@ enum ElementKind {
 }
 
 struct BKColorEngine {
+    struct ShapeSwatchDiagnostics {
+        let avgS: CGFloat
+        let hueSpread: CGFloat
+        let swatchCount: Int
+        let swatchHSB: [String]
+        let nearestCandidateHueDiff: [CGFloat]
+    }
+
+    struct ShapeSwatchResult {
+        let colors: [CGColor]
+        let diagnostics: ShapeSwatchDiagnostics
+    }
+
     static func make(extracted: [NSColor], fallback: [NSColor], isDark: Bool) -> HarmonizedPalette {
-        let paletteInput = (extracted.isEmpty ? fallback : extracted).compactMap(hsb(from:))
+        let paletteInput = (extracted.isEmpty ? fallback : extracted)
+            .compactMap(hsb(from:))
+            .map(normalizeCandidateColor(_:))
         let stats = analyzePalette(paletteInput)
         let tier = tierRanges(
             isDark: isDark,
             complexity: stats.complexity,
             isNearGray: stats.isNearGray,
             lowSatColorCover: stats.lowSatColorCover,
-            coverKind: stats.coverKind
+            coverKind: stats.coverKind,
+            coverLuma: stats.imageCoverLuma,
+            veryDarkCover: stats.veryDarkCover,
+            areaDominantS: stats.areaDominantS,
+            areaDominantB: stats.areaDominantB
         )
-        let lumaTargetValue = lumaTarget(coverLuma: stats.coverLuma, isDark: isDark)
-        let lumaK = lumaBlendK(coverKind: stats.coverKind)
+        let lumaTargetBg = lumaTarget(coverLuma: stats.imageCoverLuma, isDark: isDark)
+        let lumaTargetFg = lumaTarget(coverLuma: stats.coverLuma, isDark: isDark)
+        let lumaKBg: CGFloat = isDark ? 0.82 : lumaBlendK(coverKind: stats.coverKind)
+        let lumaKShape: CGFloat = isDark ? 0.55 : lumaBlendK(coverKind: stats.coverKind)
+        let lumaKDot: CGFloat = isDark ? 0.45 : lumaBlendK(coverKind: stats.coverKind)
 
         if stats.coverKind == .grayscaleTrue {
             var triggered = Set<RiskFlag>()
@@ -74,34 +112,48 @@ struct BKColorEngine {
             logPalette(
                 primaryBefore: grayscalePalette.primaryHue,
                 primaryAfter: grayscalePalette.primaryHue,
+                primarySource: .grayscaleFallback,
                 stats: stats,
                 tier: grayscaleTierRanges(isDark: isDark),
                 triggered: triggered,
                 bgStops: grayscalePalette.bgStops.compactMap(hsb(from:)),
                 shapePool: grayscalePalette.shapePool.compactMap(hsb(from:)),
                 dotBase: hsb(from: grayscalePalette.dotBase)
-                    ?? HSBColor(h: grayscalePalette.primaryHue, s: 0.24, b: isDark ? 0.72 : 0.56, a: 1)
+                    ?? HSBColor(h: grayscalePalette.primaryHue, s: 0.24, b: isDark ? 0.72 : 0.56, a: 1),
+                injectedAccentCount: 0
             )
             return grayscalePalette
         }
 
-        let filteredCandidates = paletteInput.filter(isValidPrimaryCandidate(_:))
-        let candidates = filteredCandidates.isEmpty ? paletteInput : filteredCandidates
-        let colorCandidates = candidates.filter { $0.s > 0.22 && $0.b >= 0.12 && $0.b <= 0.90 }
-        let primaryCandidates =
-            (stats.coverKind == .mostlyBWWithColor && !colorCandidates.isEmpty) ? colorCandidates : candidates
-
         var globalTriggers = Set<RiskFlag>()
-        let primaryBefore = selectPrimaryHue(
-            from: primaryCandidates,
-            isDark: isDark,
-            complexity: stats.complexity,
-            isNearGray: stats.isNearGray,
-            dominantHue: stats.dominantHue,
+        let primarySource: PrimarySelectionSource
+        let primaryBefore: CGFloat
+        if let hue = stats.bestSalientHue, stats.maxColorCandidateScore >= 0.22 {
+            primaryBefore = normalizeHue(hue)
+            primarySource = .saliencyCandidate
+        } else if let clusterHue = stats.primaryClusterHue {
+            primaryBefore = normalizeHue(clusterHue)
+            primarySource = .cluster
+        } else {
+            let filteredCandidates = paletteInput.filter(isValidPrimaryCandidate(_:))
+            let candidates = filteredCandidates.isEmpty ? paletteInput : filteredCandidates
+            primaryBefore = selectPrimaryHue(
+                from: candidates,
+                isDark: isDark,
+                complexity: stats.complexity,
+                isNearGray: stats.isNearGray,
+                dominantHue: stats.dominantHue,
+                coverKind: stats.coverKind,
+                salientHues: stats.topSalientHues
+            )
+            primarySource = .scorer
+        }
+        let primaryAfter = adjustPrimaryHue(
+            primaryBefore,
+            source: primarySource,
             coverKind: stats.coverKind,
-            salientHues: stats.topSalientHues
+            triggered: &globalTriggers
         )
-        let primaryAfter = adjustPrimaryHue(primaryBefore, triggered: &globalTriggers)
 
         let hueFamily = makeHueFamily(
             primaryHue: primaryAfter,
@@ -112,7 +164,7 @@ struct BKColorEngine {
         )
 
         var bgStopsHSB = makeBackgroundStops(
-            primaryHue: primaryAfter,
+            primaryHue: stats.areaDominantHue,
             tier: tier,
             complexity: stats.complexity,
             isNearGray: stats.isNearGray,
@@ -120,21 +172,26 @@ struct BKColorEngine {
             lowSatColorCover: stats.lowSatColorCover,
             satBoost: stats.lowSatSatBoost,
             briBoost: stats.lowSatBriBoost,
-            lumaTarget: lumaTargetValue,
-            lumaK: lumaK,
+            lumaTarget: lumaTargetBg,
+            lumaK: lumaKBg,
             isDark: isDark,
             triggered: &globalTriggers
         )
+        var injectedAccentCount = 0
         var shapePoolHSB = makeShapePool(
             primaryHue: primaryAfter,
-            dominantHue: stats.dominantHue,
+            dominantHue: stats.primaryClusterHue ?? stats.dominantHue,
             dominantS: stats.dominantS,
             clusterCount: stats.clusterCount,
             hueFamily: hueFamily,
             accentHue: stats.accentHue,
             accentShare: stats.accentShare,
-            secondAccentHue: stats.secondAccentHue,
+            secondAccentHue: stats.accentClusterHue,
+            accentEnabled: stats.accentEnabled,
+            accentStrength: stats.accentStrength,
             salientHues: stats.topSalientHues,
+            topClusters: stats.topClusters,
+            injectAccentHues: stats.injectAccentHues,
             tier: tier,
             complexity: stats.complexity,
             isNearGray: stats.isNearGray,
@@ -142,14 +199,15 @@ struct BKColorEngine {
             lowSatColorCover: stats.lowSatColorCover,
             satBoost: stats.lowSatSatBoost,
             briBoost: stats.lowSatBriBoost,
-            lumaTarget: lumaTargetValue,
-            lumaK: lumaK,
+            lumaTarget: lumaTargetFg,
+            lumaK: lumaKShape,
             isDark: isDark,
+            injectedAccentCount: &injectedAccentCount,
             triggered: &globalTriggers
         )
         var dotBaseHSB = makeDotBase(
             primaryHue: primaryAfter,
-            dominantHue: stats.dominantHue,
+            dominantHue: stats.primaryClusterHue ?? stats.dominantHue,
             dominantS: stats.dominantS,
             tier: tier,
             complexity: stats.complexity,
@@ -158,14 +216,28 @@ struct BKColorEngine {
             lowSatColorCover: stats.lowSatColorCover,
             satBoost: stats.lowSatSatBoost,
             briBoost: stats.lowSatBriBoost,
-            lumaTarget: lumaTargetValue,
-            lumaK: lumaK,
+            lumaTarget: lumaTargetFg,
+            lumaK: lumaKDot,
+            isDark: isDark,
+            triggered: &globalTriggers
+        )
+
+        let candidateHues = paletteInput.map { normalizeHue($0.h) }
+        enforceCandidateHueSource(
+            candidateHues: candidateHues,
+            bgStops: &bgStopsHSB,
+            shapePool: &shapePoolHSB,
+            dotBase: &dotBaseHSB,
+            tier: tier,
+            complexity: stats.complexity,
+            isNearGray: stats.isNearGray,
             isDark: isDark,
             triggered: &globalTriggers
         )
 
         enforceDominantHueAffinity(
             dominantHue: stats.dominantHue,
+            bgReferenceHue: stats.areaDominantHue,
             bgStops: &bgStopsHSB,
             shapePool: &shapePoolHSB,
             dotBase: &dotBaseHSB,
@@ -197,14 +269,36 @@ struct BKColorEngine {
             triggered: &globalTriggers
         )
 
+        let bgVariantsHSB = makeBackgroundVariants(
+            candidates: paletteInput,
+            shapePool: shapePoolHSB,
+            baseStops: bgStopsHSB,
+            tier: tier,
+            complexity: stats.complexity,
+            isNearGray: stats.isNearGray,
+            avgS: stats.avgS,
+            hueSpread: stats.hueSpread,
+            isDark: isDark,
+            triggered: &globalTriggers
+        )
+
         let harmonized = HarmonizedPalette(
             primaryHue: normalizeHue(primaryAfter),
+            imageHue: normalizeHue(stats.areaDominantHue),
             isDark: isDark,
             complexity: stats.complexity,
             grayScore: stats.grayScore,
             isGrayscaleCover: stats.isGrayscaleCover,
             isNearGray: stats.isNearGray,
+            coverLuma: stats.coverLuma,
+            imageCoverLuma: stats.imageCoverLuma,
+            areaDominantS: stats.areaDominantS,
+            areaDominantB: stats.areaDominantB,
+            accentHue: stats.accentHue,
+            accentStrength: stats.accentStrength,
+            accentEnabled: stats.accentEnabled,
             bgStops: bgStopsHSB.map(toCGColor(_:)),
+            bgVariants: bgVariantsHSB.map { $0.map(toCGColor(_:)) },
             shapePool: shapePoolHSB.map(toCGColor(_:)),
             dotBase: toCGColor(dotBaseHSB),
             bgBRange: tier.bgB,
@@ -218,15 +312,186 @@ struct BKColorEngine {
         logPalette(
             primaryBefore: primaryBefore,
             primaryAfter: harmonized.primaryHue,
+            primarySource: primarySource,
             stats: stats,
             tier: tier,
             triggered: globalTriggers,
             bgStops: bgStopsHSB,
             shapePool: shapePoolHSB,
-            dotBase: dotBaseHSB
+            dotBase: dotBaseHSB,
+            injectedAccentCount: injectedAccentCount
         )
 
         return harmonized
+    }
+
+    static func makeShapeSwatches(
+        seed: UInt64,
+        extracted: [NSColor],
+        fallback: [NSColor],
+        isDark: Bool
+    ) -> ShapeSwatchResult {
+        let input = (extracted.isEmpty ? fallback : extracted)
+            .compactMap(hsb(from:))
+            .map(normalizeCandidateColor(_:))
+        guard !input.isEmpty else {
+            let fallbackHSB = HSBColor(h: 220, s: 0.36, b: isDark ? 0.58 : 0.70, a: 1)
+            return ShapeSwatchResult(
+                colors: [toCGColor(fallbackHSB)],
+                diagnostics: ShapeSwatchDiagnostics(
+                    avgS: 0,
+                    hueSpread: 0,
+                    swatchCount: 1,
+                    swatchHSB: [hsbString(fallbackHSB)],
+                    nearestCandidateHueDiff: [0]
+                )
+            )
+        }
+
+        struct Candidate {
+            let index: Int
+            let color: HSBColor
+            let score: CGFloat
+        }
+
+        let shares = inferredShares(count: input.count)
+        let avgS = input.map(\.s).reduce(0, +) / CGFloat(input.count)
+        let hues = input.map(\.h)
+        let hueSpread = maxHueSpread(hues)
+        let coverRichness = clamp((avgS / 0.55) * 0.6 + (hueSpread / 120) * 0.4, min: 0, max: 1)
+
+        let swatchCount: Int
+        if avgS < 0.16 {
+            swatchCount = 1 + (coverRichness > 0.35 ? 1 : 0)
+        } else if avgS < 0.42 {
+            swatchCount = 3
+        } else {
+            swatchCount = max(4, min(6, 4 + Int(round(2 * coverRichness))))
+        }
+
+        var candidates: [Candidate] = input.enumerated().map { idx, color in
+            let midBBoost = clamp(1 - abs(color.b - 0.55) / 0.55, min: 0, max: 1)
+            let saliency = pow(color.s, 1.25) * (0.55 + 0.45 * midBBoost)
+            let rankWeight = shares[idx]
+            let score = rankWeight * (1 + 1.6 * saliency)
+            return Candidate(index: idx, color: color, score: score)
+        }
+        candidates.sort { $0.score > $1.score }
+
+        let targetCount = max(1, min(swatchCount, 6))
+        var selected: [Candidate] = []
+        if let primary = candidates.first {
+            selected.append(primary)
+        }
+
+        if avgS >= 0.16, targetCount >= 3, let primary = selected.first {
+            if let accent = candidates.first(where: {
+                $0.index != primary.index && hueDistance($0.color.h, primary.color.h) >= 45
+            }) {
+                selected.append(accent)
+            } else if let accent = candidates.first(where: {
+                $0.index != primary.index && hueDistance($0.color.h, primary.color.h) >= 30
+            }) {
+                selected.append(accent)
+            }
+        }
+
+        let maxScore = max(0.0001, candidates.first?.score ?? 0.0001)
+        while selected.count < min(targetCount, candidates.count) {
+            var picked: Candidate?
+            var pickedComposite: CGFloat = -CGFloat.greatestFiniteMagnitude
+
+            for candidate in candidates where !selected.contains(where: { $0.index == candidate.index }) {
+                let minDistance = selected.map { hueDistance(candidate.color.h, $0.color.h) }.min() ?? 180
+                guard minDistance >= 18 else { continue }
+                let scoreNorm = candidate.score / maxScore
+                let composite = (minDistance / 180) * 0.65 + scoreNorm * 0.35
+                if composite > pickedComposite {
+                    pickedComposite = composite
+                    picked = candidate
+                }
+            }
+
+            if let picked {
+                selected.append(picked)
+            } else if let fallbackPick = candidates.first(where: { candidate in
+                !selected.contains(where: { $0.index == candidate.index })
+            }) {
+                selected.append(fallbackPick)
+            } else {
+                break
+            }
+        }
+
+        if selected.isEmpty, let first = candidates.first {
+            selected = [first]
+        }
+
+        while selected.count < targetCount {
+            guard let first = selected.first else { break }
+            selected.append(first)
+        }
+
+        var state: UInt64 = seed == 0 ? 0xD1B5_4A32_9C7E_44F1 : seed
+        func nextUnit(_ state: inout UInt64) -> CGFloat {
+            state &+= 0x9E37_79B9_7F4A_7C15
+            var value = state
+            value = (value ^ (value >> 30)) &* 0xBF58_476D_1CE4_E5B9
+            value = (value ^ (value >> 27)) &* 0x94D0_49BB_1331_11EB
+            let x = value ^ (value >> 31)
+            return CGFloat(Double(x >> 11) / Double((1 << 53) - 1))
+        }
+        func jittered(_ magnitude: CGFloat, _ state: inout UInt64) -> CGFloat {
+            (nextUnit(&state) * 2 - 1) * magnitude
+        }
+
+        let briJitterMax: CGFloat = isDark ? 0.035 : 0.03
+        let satJitterMax: CGFloat = 0.03
+
+        var swatches: [HSBColor] = []
+        swatches.reserveCapacity(targetCount)
+        var nearestDiffs: [CGFloat] = []
+        nearestDiffs.reserveCapacity(targetCount)
+        let candidateHues = candidates.map { normalizeHue($0.color.h) }
+
+        for index in 0..<targetCount {
+            let candidate = selected[index % selected.count]
+            let base = candidate.color
+            let hueJitterMax: CGFloat
+            if base.b < 0.18 {
+                hueJitterMax = 2
+            } else if base.s < 0.25 {
+                hueJitterMax = 4
+            } else if base.s < 0.45 {
+                hueJitterMax = 8
+            } else {
+                hueJitterMax = 12
+            }
+
+            let hue = clampHueDistance(
+                normalizeHue(base.h + jittered(hueJitterMax, &state)),
+                around: base.h,
+                maxDistance: 18
+            )
+            let sat = clamp(base.s + jittered(satJitterMax, &state), min: 0.01, max: 0.95)
+            let bri = clamp(base.b + jittered(briJitterMax, &state), min: 0.10, max: 0.96)
+            let swatch = HSBColor(h: hue, s: sat, b: bri, a: 1)
+            swatches.append(swatch)
+
+            let nearest = candidateHues.map { hueDistance($0, hue) }.min() ?? 0
+            nearestDiffs.append(nearest)
+        }
+
+        return ShapeSwatchResult(
+            colors: swatches.map(toCGColor(_:)),
+            diagnostics: ShapeSwatchDiagnostics(
+                avgS: avgS,
+                hueSpread: hueSpread,
+                swatchCount: targetCount,
+                swatchHSB: swatches.map(hsbString(_:)),
+                nearestCandidateHueDiff: nearestDiffs
+            )
+        )
     }
 
     static func stabilize(
@@ -238,7 +503,13 @@ struct BKColorEngine {
         brightnessJitter: CGFloat = 0
     ) -> CGColor {
         guard var hsb = hsb(from: color) else { return color }
-        hsb.h = normalizeHue(hsb.h + hueJitter)
+        let effectiveHueJitter: CGFloat
+        if hsb.b < 0.18 {
+            effectiveHueJitter = clamp(hueJitter, min: -2, max: 2)
+        } else {
+            effectiveHueJitter = hueJitter
+        }
+        hsb.h = normalizeHue(hsb.h + effectiveHueJitter)
         hsb.s = clamp01(hsb.s + saturationJitter)
         hsb.b = clamp01(hsb.b + brightnessJitter)
 
@@ -266,6 +537,7 @@ struct BKColorEngine {
 private extension BKColorEngine {
     enum RiskFlag: String, CaseIterable {
         case greenDanger = "green_danger"
+        case hospitalGreen = "hospital_green"
         case muddyYellow = "muddy_yellow"
         case plasticRed = "plastic_red"
         case dirtyPurple = "dirty_purple"
@@ -323,13 +595,22 @@ private extension BKColorEngine {
             let weight: CGFloat
         }
 
+        struct HueWeight {
+            let hue: CGFloat
+            let weight: CGFloat
+        }
+
         let avgS: CGFloat
+        let hueSpread: CGFloat
         let circularVariance: CGFloat
         let circularStdDegrees: CGFloat
         let clusterCenters: [CGFloat]
         let clusterCount: Int
         let dominantHue: CGFloat
+        let areaDominantHue: CGFloat
         let dominantS: CGFloat
+        let areaDominantS: CGFloat
+        let areaDominantB: CGFloat
         let dominantShare: CGFloat
         let accentHue: CGFloat?
         let accentShare: CGFloat
@@ -341,11 +622,21 @@ private extension BKColorEngine {
         let lowSatSatBoost: CGFloat
         let lowSatBriBoost: CGFloat
         let coverKind: CoverKind
+        let veryDarkCover: Bool
         let wBlack: CGFloat
         let wWhite: CGFloat
         let wColor: CGFloat
         let coverLuma: CGFloat
+        let imageCoverLuma: CGFloat
+        let accentEnabled: Bool
+        let accentStrength: CGFloat
         let topSalientHues: [SalientHue]
+        let topClusters: [HueWeight]
+        let primaryClusterHue: CGFloat?
+        let accentClusterHue: CGFloat?
+        let maxColorCandidateScore: CGFloat
+        let bestSalientHue: CGFloat?
+        let injectAccentHues: [CGFloat]
         let evenness: CGFloat
         let complexity: ColorComplexityLevel
     }
@@ -354,12 +645,16 @@ private extension BKColorEngine {
         guard !colors.isEmpty else {
             return PaletteStats(
                 avgS: 0.25,
+                hueSpread: 30,
                 circularVariance: 0.12,
                 circularStdDegrees: 18,
                 clusterCenters: [220],
                 clusterCount: 1,
                 dominantHue: 220,
+                areaDominantHue: 220,
                 dominantS: 0.30,
+                areaDominantS: 0.30,
+                areaDominantB: 0.45,
                 dominantShare: 0.60,
                 accentHue: nil,
                 accentShare: 0,
@@ -371,112 +666,207 @@ private extension BKColorEngine {
                 lowSatSatBoost: 1.0,
                 lowSatBriBoost: 1.0,
                 coverKind: .normal,
+                veryDarkCover: false,
                 wBlack: 0.15,
                 wWhite: 0.10,
                 wColor: 0.70,
                 coverLuma: 0.52,
+                imageCoverLuma: 0.45,
+                accentEnabled: false,
+                accentStrength: 0,
                 topSalientHues: [.init(hue: 220, weight: 1)],
+                topClusters: [.init(hue: 220, weight: 1)],
+                primaryClusterHue: 220,
+                accentClusterHue: nil,
+                maxColorCandidateScore: 0.30,
+                bestSalientHue: 220,
+                injectAccentHues: [],
                 evenness: 0.50,
                 complexity: .low
             )
         }
 
+        struct ScoredColor {
+            let index: Int
+            let color: HSBColor
+            let score: CGFloat
+            let saliency: CGFloat
+        }
+
         let avgS = colors.map(\.s).reduce(0, +) / CGFloat(colors.count)
+        let hueSpread = maxHueSpread(colors.map(\.h))
         let shares = inferredShares(count: colors.count)
-        let saliencyWeights = colors.indices.map { index in
-            let s = saliencyScore(colors[index])
-            return shares[index] * (1 + 1.8 * s)
-        }
-        let saliencyTotal = max(0.0001, saliencyWeights.reduce(0, +))
-        let normalizedSaliency = saliencyWeights.map { $0 / saliencyTotal }
+        let areaDominantIndex = shares.indices.max(by: { shares[$0] < shares[$1] }) ?? 0
+        let areaDominant = colors[areaDominantIndex]
+        let areaDominantHue = normalizeHue(areaDominant.h)
+        let areaDominantS = areaDominant.s
+        let areaDominantB = areaDominant.b
 
-        var meanX: CGFloat = 0
-        var meanY: CGFloat = 0
-        for index in colors.indices {
-            let c = colors[index]
-            let w = normalizedSaliency[index]
-            let radians = deg2rad(c.h)
-            meanX += cos(radians) * w
-            meanY += sin(radians) * w
-        }
-
-        let resultant = max(0, min(1, sqrt(meanX * meanX + meanY * meanY)))
-        let variance = 1 - resultant
-        let stdRadians = resultant > 0 ? sqrt(max(0, -2 * log(resultant))) : CGFloat.pi
-        let stdDegrees = rad2deg(stdRadians)
-
-        var clusters: [HueCluster] = []
-        for index in colors.indices {
-            let color = colors[index]
-            let weight = normalizedSaliency[index]
-            if let nearest = nearestClusterIndex(for: color.h, in: clusters),
-                hueDistance(clusters[nearest].centerHue, color.h) <= 25
-            {
-                clusters[nearest].add(hue: color.h, weight: weight)
-            } else {
-                clusters.append(HueCluster(hue: color.h, weight: weight))
-            }
-        }
-
-        let centers = clusters.map(\.centerHue)
-        let clusterCount = max(1, clusters.filter { $0.totalWeight > 0.10 }.count)
-
-        let dominantIndex = normalizedSaliency.indices.max(by: {
-            normalizedSaliency[$0] < normalizedSaliency[$1]
-        }) ?? 0
-        let dominant = colors[dominantIndex]
-        let dominantShare = shares[dominantIndex]
-
-        var grayWeightSum: CGFloat = 0
-        var totalWeight: CGFloat = 0
+        var colorCandidates: [ScoredColor] = []
+        var neutralCandidateIndices = Set<Int>()
         var wBlack: CGFloat = 0
         var wWhite: CGFloat = 0
         var wColor: CGFloat = 0
-        var coverLumaWeighted: CGFloat = 0
+
+        for index in colors.indices {
+            let c = colors[index]
+            let rankWeight = shares[index]
+
+            if c.b < 0.12 { wBlack += rankWeight }
+            if c.b > 0.90 { wWhite += rankWeight }
+            if c.s > 0.22 && c.b >= 0.12 && c.b <= 0.90 { wColor += rankWeight }
+
+            let isNeutral = c.s < 0.14 || c.b < 0.12 || c.b > 0.90
+            if isNeutral { neutralCandidateIndices.insert(index) }
+
+            let chroma = c.s * min(c.b, 1 - c.b)
+            if c.s >= 0.18 && c.b > 0.10 && c.b < 0.92 && chroma >= 0.08 {
+                let midBBoost = clamp(1 - abs(c.b - 0.55) / 0.55, min: 0, max: 1)
+                let saliency = pow(c.s, 1.35) * (0.65 + 0.35 * midBBoost)
+                let score = rankWeight * (1 + 2.2 * saliency)
+                colorCandidates.append(
+                    ScoredColor(index: index, color: c, score: score, saliency: saliency)
+                )
+            }
+        }
+
+        if !colorCandidates.isEmpty {
+            for candidate in colorCandidates {
+                neutralCandidateIndices.insert(candidate.index)
+            }
+        }
+
+        var coverLumaNum: CGFloat = 0
+        var coverLumaDen: CGFloat = 0
+        for index in colors.indices {
+            guard neutralCandidateIndices.contains(index) || neutralCandidateIndices.isEmpty else {
+                continue
+            }
+            let w = shares[index]
+            coverLumaNum += clamp(colors[index].b, min: 0.06, max: 0.96) * w
+            coverLumaDen += w
+        }
+        if coverLumaDen <= 0 {
+            for index in colors.indices {
+                let w = shares[index]
+                coverLumaNum += clamp(colors[index].b, min: 0.06, max: 0.96) * w
+                coverLumaDen += w
+            }
+        }
+        let coverLuma = clamp(coverLumaNum / max(0.0001, coverLumaDen), min: 0.06, max: 0.96)
+
+        var rankLumaNum: CGFloat = 0
+        var rankLumaDen: CGFloat = 0
+        for index in colors.indices {
+            let w = shares[index]
+            rankLumaNum += clamp(colors[index].b, min: 0.03, max: 0.96) * w
+            rankLumaDen += w
+        }
+        let rankLuma = rankLumaNum / max(0.0001, rankLumaDen)
+        let imageCoverLuma = clamp(
+            0.75 * clamp(areaDominantB, min: 0.03, max: 0.96) + 0.25 * rankLuma,
+            min: 0.03,
+            max: 0.96
+        )
+        let veryDarkCover = imageCoverLuma < 0.22
+
+        var grayWeightSum: CGFloat = 0
+        var totalWeight: CGFloat = 0
         for index in colors.indices {
             let c = colors[index]
             let chroma = c.s * min(c.b, 1 - c.b)
             let grayLike = c.s < 0.14 || chroma < 0.06
             let extreme = c.b < 0.12 || c.b > 0.92
-            let share = shares[index]
-            let weight: CGFloat = (extreme ? 1.8 : 1.0) * share
+            let weight: CGFloat = (extreme ? 1.8 : 1.0) * shares[index]
             totalWeight += weight
-            if grayLike {
-                grayWeightSum += weight
-            }
-            if c.b < 0.12 {
-                wBlack += share
-            }
-            if c.b > 0.90 {
-                wWhite += share
-            }
-            if c.s > 0.22 && c.b >= 0.12 && c.b <= 0.90 {
-                wColor += share
-            }
-            coverLumaWeighted += clamp(c.b, min: 0.06, max: 0.96) * normalizedSaliency[index]
+            if grayLike { grayWeightSum += weight }
         }
         let grayScore = totalWeight > 0 ? grayWeightSum / totalWeight : 0
-        let coverLuma = clamp(coverLumaWeighted, min: 0.06, max: 0.96)
 
-        var salientSorted: [PaletteStats.SalientHue] = []
-        for index in colors.indices.sorted(by: { normalizedSaliency[$0] > normalizedSaliency[$1] }) {
-            let hue = normalizeHue(colors[index].h)
-            let weight = normalizedSaliency[index]
-            if salientSorted.contains(where: { hueDistance($0.hue, hue) < 16 }) {
-                continue
+        var clusterCentersRaw: [HueCluster] = []
+        var clusterScores: [CGFloat] = []
+        var clusterMaxMember: [ScoredColor] = []
+        for candidate in colorCandidates {
+            if let nearest = nearestClusterIndex(for: candidate.color.h, in: clusterCentersRaw),
+                hueDistance(clusterCentersRaw[nearest].centerHue, candidate.color.h) <= 25
+            {
+                clusterCentersRaw[nearest].add(hue: candidate.color.h, weight: candidate.score)
+                clusterScores[nearest] += candidate.score
+                if candidate.score > clusterMaxMember[nearest].score {
+                    clusterMaxMember[nearest] = candidate
+                }
+            } else {
+                clusterCentersRaw.append(HueCluster(hue: candidate.color.h, weight: candidate.score))
+                clusterScores.append(candidate.score)
+                clusterMaxMember.append(candidate)
             }
-            salientSorted.append(.init(hue: hue, weight: weight))
-            if salientSorted.count >= 5 { break }
         }
-        let topSalient = Array(salientSorted.prefix(3))
-        let evenness = entropyNormalized(normalizedSaliency)
+
+        let sortedClusterIndices = clusterScores.indices.sorted {
+            clusterScores[$0] > clusterScores[$1]
+        }
+        let topClusterRawTotal = max(0.0001, sortedClusterIndices.map { clusterScores[$0] }.reduce(0, +))
+        let topClusters = sortedClusterIndices.prefix(3).map { idx in
+            PaletteStats.HueWeight(
+                hue: normalizeHue(clusterCentersRaw[idx].centerHue),
+                weight: clusterScores[idx] / topClusterRawTotal
+            )
+        }
+        let clusterCenters = clusterCentersRaw.map(\.centerHue)
+        let clusterCount = clusterCentersRaw.count
+        let clusterEvenness = entropyNormalized(
+            sortedClusterIndices.map { clusterScores[$0] / topClusterRawTotal }
+        )
+
+        let primaryClusterHue = sortedClusterIndices.first.map { normalizeHue(clusterCentersRaw[$0].centerHue) }
+        let accentClusterHue: CGFloat?
+        let secondClusterHasVivid: Bool
+        if sortedClusterIndices.count >= 2 {
+            let w0 = clusterScores[sortedClusterIndices[0]]
+            let w1 = clusterScores[sortedClusterIndices[1]]
+            secondClusterHasVivid = clusterMaxMember[sortedClusterIndices[1]].color.s >= 0.45
+            accentClusterHue =
+                (w1 >= 0.35 * w0)
+                ? normalizeHue(clusterCentersRaw[sortedClusterIndices[1]].centerHue) : nil
+        } else {
+            secondClusterHasVivid = false
+            accentClusterHue = nil
+        }
+
+        let maxColorCandidateScore = colorCandidates.map(\.score).max() ?? 0
+        let bestSalientHue = colorCandidates.max(by: { $0.score < $1.score })?.color.h
+
+        var salientRaw = colorCandidates.sorted(by: { $0.score > $1.score })
+        if salientRaw.isEmpty {
+            salientRaw = colors.enumerated().map { index, color in
+                let s = saliencyScore(color)
+                return ScoredColor(index: index, color: color, score: shares[index] * (1 + 1.8 * s), saliency: s)
+            }.sorted(by: { $0.score > $1.score })
+        }
+        let salientTotal = max(0.0001, salientRaw.map(\.score).reduce(0, +))
+        var salientOut: [PaletteStats.SalientHue] = []
+        for candidate in salientRaw {
+            let h = normalizeHue(candidate.color.h)
+            if salientOut.contains(where: { hueDistance($0.hue, h) < 14 }) { continue }
+            salientOut.append(.init(hue: h, weight: candidate.score / salientTotal))
+            if salientOut.count >= 3 { break }
+        }
+
+        var injectAccentHues: [CGFloat] = []
+        for clusterIndex in sortedClusterIndices.prefix(3) {
+            let representative = clusterMaxMember[clusterIndex]
+            if representative.color.s >= 0.55 {
+                injectAccentHues.append(normalizeHue(representative.color.h))
+            }
+            if injectAccentHues.count >= 2 { break }
+        }
 
         let coverKind: CoverKind
-        if wColor < 0.10 && avgS < 0.16 {
+        if colorCandidates.isEmpty && wColor < 0.10 && avgS < 0.16 {
             coverKind = .grayscaleTrue
         } else if (wBlack + wWhite) > 0.65 && wColor >= 0.10 {
             coverKind = .mostlyBWWithColor
-        } else if clusterCount >= 3 && evenness >= 0.72 && avgS >= 0.30 {
+        } else if clusterCount >= 3 && clusterEvenness >= 0.62 && avgS >= 0.30 {
             coverKind = .richDistributed
         } else if avgS < 0.22 {
             coverKind = .lowSatColor
@@ -485,8 +875,9 @@ private extension BKColorEngine {
         }
 
         let isGrayscaleCover = coverKind == .grayscaleTrue
-        let isNearGray = coverKind == .lowSatColor && grayScore >= 0.52
+        let isNearGray = coverKind == .lowSatColor && grayScore >= 0.55 && colorCandidates.isEmpty
         let lowSatColorCover = coverKind == .lowSatColor
+
         let satBoost: CGFloat
         let briBoost: CGFloat
         if lowSatColorCover {
@@ -514,50 +905,65 @@ private extension BKColorEngine {
             complexity = .high
         }
 
-        var accentHue: CGFloat?
-        var accentShare: CGFloat = 0
-        var bestAccentScore = -CGFloat.greatestFiniteMagnitude
-        for index in colors.indices {
-            let c = colors[index]
-            let share = shares[index]
-            guard share < 0.12 else { continue }
-            let hueDelta = hueDistance(c.h, dominant.h)
-            guard hueDelta >= 28 else { continue }
-            let satFloor = max(0.36, avgS + 0.16)
-            guard c.s >= satFloor else { continue }
+        let dominantIndex = shares.indices.max(by: { shares[$0] < shares[$1] }) ?? 0
+        let dominantColor = colors[dominantIndex]
+        let dominantHue = primaryClusterHue ?? dominantColor.h
+        let dominantS = colorCandidates.first(where: { hueDistance($0.color.h, dominantHue) < 12 })?.color.s
+            ?? dominantColor.s
+        let dominantShare = shares[dominantIndex]
+        let accentShare = (topClusters.count >= 2) ? topClusters[1].weight : 0
+        let accentStrength = clamp(
+            accentShare / max(0.0001, topClusters.first?.weight ?? 1),
+            min: 0,
+            max: 1
+        )
+        let forcedAccentInMostlyBW = coverKind == .mostlyBWWithColor
+            && colorCandidates.contains { $0.color.s >= 0.40 && hueDistance($0.color.h, dominantHue) > 12 }
+        let accentEnabled =
+            (topClusters.count >= 2
+                && topClusters[1].weight >= 0.28 * max(0.0001, topClusters[0].weight)
+                && secondClusterHasVivid)
+            || forcedAccentInMostlyBW
 
-            let score =
-                c.s * 1.4
-                + (hueDelta / 180) * 1.0
-                + (0.12 - share) * 1.2
-                - riskPenalty(h: c.h, s: c.s, b: c.b) * 0.35
-            if score > bestAccentScore {
-                bestAccentScore = score
-                accentHue = c.h
-                accentShare = share
+        var meanX: CGFloat = 0
+        var meanY: CGFloat = 0
+        if !colorCandidates.isEmpty {
+            let total = max(0.0001, colorCandidates.map(\.score).reduce(0, +))
+            for candidate in colorCandidates {
+                let w = candidate.score / total
+                let radians = deg2rad(candidate.color.h)
+                meanX += cos(radians) * w
+                meanY += sin(radians) * w
+            }
+        } else {
+            for index in colors.indices {
+                let w = shares[index]
+                let radians = deg2rad(colors[index].h)
+                meanX += cos(radians) * w
+                meanY += sin(radians) * w
             }
         }
-
-        let secondAccentHue: CGFloat?
-        if coverKind == .richDistributed, topSalient.count >= 2 {
-            let raw = topSalient[1].hue
-            secondAccentHue = clampHueDistance(raw, around: topSalient[0].hue, maxDistance: 75)
-        } else {
-            secondAccentHue = nil
-        }
+        let resultant = max(0, min(1, sqrt(meanX * meanX + meanY * meanY)))
+        let variance = 1 - resultant
+        let stdRadians = resultant > 0 ? sqrt(max(0, -2 * log(resultant))) : CGFloat.pi
+        let stdDegrees = rad2deg(stdRadians)
 
         return PaletteStats(
             avgS: avgS,
+            hueSpread: hueSpread,
             circularVariance: variance,
             circularStdDegrees: stdDegrees,
-            clusterCenters: centers,
-            clusterCount: clusterCount,
-            dominantHue: dominant.h,
-            dominantS: dominant.s,
+            clusterCenters: clusterCenters,
+            clusterCount: max(1, clusterCount),
+            dominantHue: normalizeHue(dominantHue),
+            areaDominantHue: areaDominantHue,
+            dominantS: dominantS,
+            areaDominantS: areaDominantS,
+            areaDominantB: areaDominantB,
             dominantShare: dominantShare,
-            accentHue: accentHue,
+            accentHue: accentEnabled ? accentClusterHue : nil,
             accentShare: accentShare,
-            secondAccentHue: secondAccentHue,
+            secondAccentHue: accentEnabled ? accentClusterHue : nil,
             grayScore: grayScore,
             isGrayscaleCover: isGrayscaleCover,
             isNearGray: isNearGray,
@@ -565,12 +971,22 @@ private extension BKColorEngine {
             lowSatSatBoost: satBoost,
             lowSatBriBoost: briBoost,
             coverKind: coverKind,
+            veryDarkCover: veryDarkCover,
             wBlack: wBlack,
             wWhite: wWhite,
             wColor: wColor,
             coverLuma: coverLuma,
-            topSalientHues: topSalient,
-            evenness: evenness,
+            imageCoverLuma: imageCoverLuma,
+            accentEnabled: accentEnabled,
+            accentStrength: accentStrength,
+            topSalientHues: salientOut,
+            topClusters: topClusters,
+            primaryClusterHue: primaryClusterHue,
+            accentClusterHue: accentClusterHue,
+            maxColorCandidateScore: maxColorCandidateScore,
+            bestSalientHue: bestSalientHue,
+            injectAccentHues: injectAccentHues,
+            evenness: clusterEvenness,
             complexity: complexity
         )
     }
@@ -648,7 +1064,11 @@ private extension BKColorEngine {
         complexity: ColorComplexityLevel,
         isNearGray: Bool,
         lowSatColorCover: Bool,
-        coverKind: CoverKind
+        coverKind: CoverKind,
+        coverLuma: CGFloat,
+        veryDarkCover: Bool,
+        areaDominantS: CGFloat,
+        areaDominantB: CGFloat
     ) -> TierRanges {
         var bgB: ClosedRange<CGFloat>
         var fgB: ClosedRange<CGFloat>
@@ -661,9 +1081,25 @@ private extension BKColorEngine {
             bgB = 0.24...0.40
             fgB = 0.44...0.64
             dotB = 0.56...0.82
-            bgS = 0.18...0.42
-            fgS = 0.34...0.70
-            dotS = 0.28...0.62
+            bgS = 0.24...0.50
+            fgS = 0.34...0.72
+            dotS = 0.30...0.62
+
+            if veryDarkCover || coverLuma < 0.22 {
+                bgB = 0.10...0.26
+                fgB = 0.30...0.52
+                dotB = 0.46...0.70
+                bgS = 0.08...0.26
+            }
+            if coverLuma < 0.34 && areaDominantB < 0.30 {
+                bgB = 0.10...0.20
+                fgB = 0.28...0.50
+                dotB = 0.42...0.66
+                bgS = makeRange(lower: 0.06, upper: min(bgS.upperBound, 0.20))
+            }
+            if areaDominantS < 0.14 {
+                bgS = makeRange(lower: 0.08, upper: min(bgS.upperBound, 0.24))
+            }
         } else {
             bgB = 0.78...0.85
             fgB = 0.66...0.78
@@ -832,12 +1268,21 @@ private extension BKColorEngine {
 
         return HarmonizedPalette(
             primaryHue: normalizeHue(safeHueBase),
+            imageHue: normalizeHue(stats.areaDominantHue),
             isDark: isDark,
             complexity: .monochrome,
             grayScore: stats.grayScore,
             isGrayscaleCover: true,
             isNearGray: false,
+            coverLuma: stats.coverLuma,
+            imageCoverLuma: stats.imageCoverLuma,
+            areaDominantS: stats.areaDominantS,
+            areaDominantB: stats.areaDominantB,
+            accentHue: nil,
+            accentStrength: 0,
+            accentEnabled: false,
             bgStops: bgStops.map(toCGColor(_:)),
+            bgVariants: [bgStops.map(toCGColor(_:))],
             shapePool: shapePool.map(toCGColor(_:)),
             dotBase: toCGColor(dotBase),
             bgBRange: tier.bgB,
@@ -1002,6 +1447,157 @@ private extension BKColorEngine {
         }
     }
 
+    static func makeBackgroundVariants(
+        candidates: [HSBColor],
+        shapePool: [HSBColor],
+        baseStops: [HSBColor],
+        tier: TierRanges,
+        complexity: ColorComplexityLevel,
+        isNearGray: Bool,
+        avgS: CGFloat,
+        hueSpread: CGFloat,
+        isDark: Bool,
+        triggered: inout Set<RiskFlag>
+    ) -> [[HSBColor]] {
+        let variantCount: Int
+        let stopCounts: [Int]
+        if avgS < 0.16 || hueSpread < 22 {
+            variantCount = 1
+            stopCounts = [(avgS < 0.10 || hueSpread < 12) ? 1 : 2]
+        } else if avgS < 0.42 {
+            variantCount = 2
+            stopCounts = [2, 3]
+        } else {
+            variantCount = 3
+            stopCounts = [3, 4, 5]
+        }
+
+        let sourcePool = (candidates.isEmpty ? shapePool : candidates).ifEmpty(baseStops)
+        let shares = inferredShares(count: sourcePool.count)
+        struct BgCandidate {
+            let color: HSBColor
+            let weight: CGFloat
+        }
+        var weighted: [BgCandidate] = sourcePool.enumerated().map { index, color in
+            let saliency = saliencyScore(color)
+            return BgCandidate(
+                color: normalizeCandidateColor(color),
+                weight: shares[index] * (0.85 + 0.30 * saliency)
+            )
+        }
+        weighted.sort { $0.weight > $1.weight }
+        if weighted.isEmpty {
+            return [baseStops]
+        }
+
+        let shapeMeanS = shapePool.isEmpty
+            ? midpoint(tier.fgS)
+            : shapePool.map(\.s).reduce(0, +) / CGFloat(shapePool.count)
+        let desiredGapMin: CGFloat = isNearGray ? 0.12 : 0.10
+        let desiredGapMax: CGFloat = isNearGray ? 0.08 : 0.06
+        let desiredBgLower = clamp(shapeMeanS - desiredGapMin, min: tier.bgS.lowerBound, max: tier.bgS.upperBound)
+        let desiredBgUpper = clamp(shapeMeanS - desiredGapMax, min: desiredBgLower, max: tier.bgS.upperBound)
+
+        let bgUpperCap = min(
+            tier.bgS.upperBound,
+            max(tier.bgS.lowerBound, tier.fgS.lowerBound - 0.08)
+        )
+        let variantSRange = makeRange(
+            lower: max(tier.bgS.lowerBound, desiredBgLower),
+            upper: min(bgUpperCap, desiredBgUpper)
+        )
+
+        func pickStops(count: Int, variantIndex: Int) -> [HSBColor] {
+            guard count > 0 else { return [] }
+            var selectedIndices: [Int] = []
+            let start = min(weighted.count - 1, variantIndex % weighted.count)
+            selectedIndices.append(start)
+
+            while selectedIndices.count < min(count, weighted.count) {
+                var best: Int?
+                var bestScore = -CGFloat.greatestFiniteMagnitude
+                for idx in weighted.indices where !selectedIndices.contains(idx) {
+                    let hue = weighted[idx].color.h
+                    let minDist = selectedIndices.map { hueDistance(hue, weighted[$0].color.h) }.min() ?? 180
+                    guard minDist >= 18 else { continue }
+                    let score = minDist * 0.72 + weighted[idx].weight * 120 * 0.28
+                    if score > bestScore {
+                        bestScore = score
+                        best = idx
+                    }
+                }
+                if let best {
+                    selectedIndices.append(best)
+                } else if let fallback = weighted.indices.first(where: { !selectedIndices.contains($0) }) {
+                    selectedIndices.append(fallback)
+                } else {
+                    break
+                }
+            }
+
+            while selectedIndices.count < count {
+                selectedIndices.append(selectedIndices[selectedIndices.count % max(1, selectedIndices.count)])
+            }
+
+            return selectedIndices.map { weighted[$0].color }
+        }
+
+        var variants: [[HSBColor]] = []
+        variants.reserveCapacity(variantCount)
+        let baseBMids = baseStops.ifEmpty([
+            HSBColor(
+                h: weighted[0].color.h,
+                s: midpoint(variantSRange),
+                b: midpoint(tier.bgB),
+                a: 1
+            )
+        ])
+
+        for variantIndex in 0..<variantCount {
+            let stopCount = stopCounts[min(stopCounts.count - 1, variantIndex)]
+            let selected = pickStops(count: stopCount, variantIndex: variantIndex)
+            var variantStops: [HSBColor] = []
+            for (idx, selectedColor) in selected.enumerated() {
+                let baseRef = baseBMids[min(idx, baseBMids.count - 1)]
+                let satScale: CGFloat
+                if avgS < 0.16 {
+                    satScale = 0.52
+                } else if avgS < 0.42 || isNearGray {
+                    satScale = 0.66
+                } else {
+                    satScale = 0.78
+                }
+                let targetS = clamp(selectedColor.s * satScale, min: variantSRange.lowerBound, max: variantSRange.upperBound)
+                let targetB = clamp(
+                    lerp(baseRef.b, selectedColor.b, t: 0.30),
+                    min: tier.bgB.lowerBound,
+                    max: tier.bgB.upperBound
+                )
+                let stop = sanitize(
+                    HSBColor(h: selectedColor.h, s: targetS, b: targetB, a: 1),
+                    kind: .background,
+                    bRange: tier.bgB,
+                    sRange: variantSRange,
+                    complexity: complexity,
+                    isNearGray: isNearGray,
+                    isDark: isDark,
+                    triggered: &triggered
+                )
+                variantStops.append(stop)
+            }
+            variants.append(variantStops)
+        }
+
+        if variants.isEmpty {
+            return [baseStops]
+        }
+        let stopCountsLog = variants.map { String($0.count) }.joined(separator: ",")
+        print(
+            "[BKColorEngine] bgVariants count=\(variants.count) stops=[\(stopCountsLog)] avgS=\(f3(avgS)) hueSpread=\(f1(hueSpread)) bgSRange=\(f3(variantSRange.lowerBound))...\(f3(variantSRange.upperBound)) shapeMeanS=\(f3(shapeMeanS))"
+        )
+        return variants
+    }
+
     static func makeShapePool(
         primaryHue: CGFloat,
         dominantHue: CGFloat,
@@ -1011,7 +1607,11 @@ private extension BKColorEngine {
         accentHue: CGFloat?,
         accentShare: CGFloat,
         secondAccentHue: CGFloat?,
+        accentEnabled: Bool,
+        accentStrength: CGFloat,
         salientHues: [PaletteStats.SalientHue],
+        topClusters: [PaletteStats.HueWeight],
+        injectAccentHues: [CGFloat],
         tier: TierRanges,
         complexity: ColorComplexityLevel,
         isNearGray: Bool,
@@ -1022,6 +1622,7 @@ private extension BKColorEngine {
         lumaTarget: CGFloat,
         lumaK: CGFloat,
         isDark: Bool,
+        injectedAccentCount: inout Int,
         triggered: inout Set<RiskFlag>
     ) -> [HSBColor] {
         let targetCount: Int
@@ -1043,71 +1644,52 @@ private extension BKColorEngine {
         }
 
         var hueQueue: [CGFloat] = []
-        let localOffsets: [CGFloat] = [0, 6, -6, 10, -10, 4, -4, 8, -8, 2]
+        let offsetsPrimary: [CGFloat] = [0, 6, -6, 10, -10, 14, -14, 4, -4, 8]
+        let offsetsAccent: [CGFloat] = [0, 5, -5, 9, -9, 3, -3]
+        let offsetsExpand: [CGFloat] = [0, 12, -12, 18, -18, 26, -26, 32, -32]
 
-        var accentQuota = 0
-        if coverKind == .richDistributed, !salientHues.isEmpty {
-            let top = Array(salientHues.prefix(3))
-            let totalWeight = max(0.0001, top.map(\.weight).reduce(0, +))
-            var assigned = 0
-            for (index, salient) in top.enumerated() {
-                let ratio = salient.weight / totalWeight
-                var count = Int(round(CGFloat(targetCount) * ratio))
-                if index < min(2, top.count) { count = max(2, count) }
-                if index == top.count - 1 {
-                    count = max(1, targetCount - assigned)
-                }
-                count = min(count, targetCount - assigned)
-                assigned += count
-                for n in 0..<count {
-                    hueQueue.append(normalizeHue(salient.hue + localOffsets[(index + n) % localOffsets.count]))
-                }
-                if assigned >= targetCount { break }
-            }
-            while hueQueue.count < targetCount {
-                hueQueue.append(normalizeHue(primaryHue + localOffsets[hueQueue.count % localOffsets.count]))
-            }
+        let primaryBase = topClusters.first?.hue ?? dominantHue
+        let clusterAccentBase = secondAccentHue ?? accentHue ?? topClusters.dropFirst().first?.hue
 
-            if let secondAccentHue {
-                accentQuota = max(1, Int(round(Double(targetCount) * 0.20)))
-                accentQuota = min(accentQuota, targetCount)
-                for idx in (targetCount - accentQuota)..<targetCount {
-                    let offset = localOffsets[idx % localOffsets.count]
-                    hueQueue[idx] = normalizeHue(secondAccentHue + offset * 0.9)
-                }
-            }
-        } else {
-            let allowAccent = accentHue != nil && accentShare > 0 && !isNearGray && targetCount >= 8
-            let accentCount = allowAccent ? 1 : 0
-            let dominantRatio = isNearGray ? 0.70 : (lowSatColorCover ? 0.70 : 0.62)
-            var dominantCount = max(1, Int(round(Double(targetCount) * dominantRatio)))
-            dominantCount = min(dominantCount, targetCount - accentCount - 1)
-            let neighborCount = max(1, targetCount - dominantCount - accentCount)
+        let primaryCount = max(1, Int(round(Double(targetCount) * 0.65)))
+        var accentCount = 0
+        if accentEnabled {
+            let ratio = clamp(0.22 + 0.18 * accentStrength, min: 0.22, max: 0.40)
+            accentCount = max(2, Int(round(CGFloat(targetCount) * ratio)))
+        }
+        if primaryCount + accentCount > targetCount {
+            accentCount = max(0, targetCount - primaryCount)
+        }
+        let expandedCount = max(0, targetCount - primaryCount - accentCount)
 
-            let dominantOffsets: [CGFloat] = [0, 4, -4, 8, -8, 10, -10, 6]
-            for index in 0..<dominantCount {
-                let raw = normalizeHue(dominantHue + dominantOffsets[index % dominantOffsets.count])
-                hueQueue.append(clampHueDistance(raw, around: dominantHue, maxDistance: isNearGray ? 12 : 18))
-            }
+        for i in 0..<primaryCount {
+            let raw = normalizeHue(primaryBase + offsetsPrimary[i % offsetsPrimary.count])
+            hueQueue.append(clampHueDistance(raw, around: primaryBase, maxDistance: 18))
+        }
 
-            let neighborCandidates = hueFamily
-                .filter {
-                    let distance = hueDistance($0, dominantHue)
-                    return distance >= 8 && distance <= (isNearGray ? 35 : 42)
-                }
-                .ifEmpty([normalizeHue(primaryHue + 10), normalizeHue(primaryHue - 10)])
-            let neighborOffsets: [CGFloat] = [0, 2, -2, 4, -4, 6, -6]
-            for index in 0..<neighborCount {
-                let base = neighborCandidates[index % neighborCandidates.count]
-                var candidate = normalizeHue(base + neighborOffsets[index % neighborOffsets.count])
-                candidate = clampHueDistance(candidate, around: dominantHue, maxDistance: isNearGray ? 24 : 35)
-                hueQueue.append(candidate)
+        if let accentBase = clusterAccentBase, accentCount > 0 {
+            let boundedAccent = clampHueDistance(accentBase, around: primaryBase, maxDistance: 75)
+            for i in 0..<accentCount {
+                let raw = normalizeHue(boundedAccent + offsetsAccent[i % offsetsAccent.count])
+                hueQueue.append(clampHueDistance(raw, around: boundedAccent, maxDistance: 18))
             }
+        }
 
-            if let accentHue, allowAccent {
-                let cappedAccent = clampHueDistance(accentHue, around: dominantHue, maxDistance: 45)
-                hueQueue.append(cappedAccent)
-            }
+        for i in 0..<expandedCount {
+            let raw = normalizeHue(primaryBase + offsetsExpand[i % offsetsExpand.count])
+            hueQueue.append(clampHueDistance(raw, around: primaryBase, maxDistance: 35))
+        }
+
+        while hueQueue.count < targetCount {
+            hueQueue.append(normalizeHue(primaryBase))
+        }
+
+        let injectCount = min(2, injectAccentHues.count, targetCount)
+        injectedAccentCount = injectCount
+        for i in 0..<injectCount {
+            let injectHue = injectAccentHues[i]
+            let jitter: CGFloat = i == 0 ? -4 : 4
+            hueQueue[i] = normalizeHue(injectHue + jitter)
         }
 
         let remapped = lerp(midpoint(tier.fgB), lumaTarget, t: lumaK)
@@ -1119,9 +1701,7 @@ private extension BKColorEngine {
         var output: [HSBColor] = []
         for index in 0..<targetCount {
             let rawHue = hueQueue[index % hueQueue.count]
-            let isAccentSlot =
-                coverKind == .richDistributed && secondAccentHue != nil && accentQuota > 0
-                && index >= (targetCount - accentQuota)
+            let isAccentSlot = index < injectCount || (index >= primaryCount && index < (primaryCount + accentCount))
             let maxDistanceFromBg: CGFloat
             if isAccentSlot {
                 maxDistanceFromBg = 75
@@ -1132,7 +1712,10 @@ private extension BKColorEngine {
             } else {
                 maxDistanceFromBg = 10
             }
-            let hue = clampHueDistance(rawHue, around: primaryHue, maxDistance: maxDistanceFromBg)
+            var hue = clampHueDistance(rawHue, around: primaryHue, maxDistance: maxDistanceFromBg)
+            if coverKind == .lowSatColor || coverKind == .mostlyBWWithColor {
+                hue = lerpHue(hue, to: primaryHue, t: 0.18)
+            }
             var targetB = clamp(bMid + bOffsets[index], min: tier.fgB.lowerBound, max: tier.fgB.upperBound)
 
             var targetS = clamp(sMid + sOffsets[index], min: tier.fgS.lowerBound, max: tier.fgS.upperBound)
@@ -1211,8 +1794,60 @@ private extension BKColorEngine {
         )
     }
 
+    static func enforceCandidateHueSource(
+        candidateHues: [CGFloat],
+        bgStops: inout [HSBColor],
+        shapePool: inout [HSBColor],
+        dotBase: inout HSBColor,
+        tier: TierRanges,
+        complexity: ColorComplexityLevel,
+        isNearGray: Bool,
+        isDark: Bool,
+        triggered: inout Set<RiskFlag>
+    ) {
+        guard !candidateHues.isEmpty else { return }
+
+        func nearestHue(to hue: CGFloat) -> CGFloat {
+            candidateHues.min(by: { hueDistance($0, hue) < hueDistance($1, hue) }) ?? hue
+        }
+
+        func clampToCandidate(
+            _ color: HSBColor,
+            kind: ElementKind,
+            bRange: ClosedRange<CGFloat>,
+            sRange: ClosedRange<CGFloat>
+        ) -> HSBColor {
+            var adjusted = color
+            let nearest = nearestHue(to: adjusted.h)
+            let delta = hueDistance(adjusted.h, nearest)
+            if delta > 18 {
+                adjusted.h = clampHueDistance(adjusted.h, around: nearest, maxDistance: 18)
+                triggered.insert(.reverseHue)
+            }
+            return sanitize(
+                adjusted,
+                kind: kind,
+                bRange: bRange,
+                sRange: sRange,
+                complexity: complexity,
+                isNearGray: isNearGray,
+                isDark: isDark,
+                triggered: &triggered
+            )
+        }
+
+        for i in bgStops.indices {
+            bgStops[i] = clampToCandidate(bgStops[i], kind: .background, bRange: tier.bgB, sRange: tier.bgS)
+        }
+        for i in shapePool.indices {
+            shapePool[i] = clampToCandidate(shapePool[i], kind: .shape, bRange: tier.fgB, sRange: tier.fgS)
+        }
+        dotBase = clampToCandidate(dotBase, kind: .dot, bRange: tier.dotB, sRange: tier.dotS)
+    }
+
     static func enforceDominantHueAffinity(
         dominantHue: CGFloat,
+        bgReferenceHue: CGFloat,
         bgStops: inout [HSBColor],
         shapePool: inout [HSBColor],
         dotBase: inout HSBColor,
@@ -1230,13 +1865,14 @@ private extension BKColorEngine {
             sRange: ClosedRange<CGFloat>
         ) -> HSBColor {
             var c = color
-            if hueDistance(c.h, dominantHue) > 90 {
-                c.h = clampHueDistance(c.h, around: dominantHue, maxDistance: 15)
+            let reverseCenter = (kind == .background) ? bgReferenceHue : dominantHue
+            if hueDistance(c.h, reverseCenter) > 90 {
+                c.h = clampHueDistance(c.h, around: reverseCenter, maxDistance: 15)
                 triggered.insert(.reverseHue)
             }
             switch kind {
             case .background:
-                c.h = clampHueDistance(c.h, around: dominantHue, maxDistance: 6)
+                c.h = clampHueDistance(c.h, around: bgReferenceHue, maxDistance: 6)
             case .shape:
                 let shapeMax: CGFloat =
                     (coverKind == .richDistributed) ? 75
@@ -1286,7 +1922,7 @@ private extension BKColorEngine {
         triggered: inout Set<RiskFlag>
     ) {
         guard let maxBg = bgStops.map(\.s).max(), let minFg = shapePool.map(\.s).min() else { return }
-        let requiredGap: CGFloat = 0.08
+        let requiredGap: CGFloat = 0.06
         guard maxBg >= (minFg - requiredGap) else { return }
 
         let desiredBgMax = max(tier.bgS.lowerBound, minFg - requiredGap)
@@ -1464,7 +2100,12 @@ private extension BKColorEngine {
         return true
     }
 
-    static func adjustPrimaryHue(_ hue: CGFloat, triggered: inout Set<RiskFlag>) -> CGFloat {
+    static func adjustPrimaryHue(
+        _ hue: CGFloat,
+        source: PrimarySelectionSource,
+        coverKind: CoverKind,
+        triggered: inout Set<RiskFlag>
+    ) -> CGFloat {
         var h = normalizeHue(hue)
 
         if inRange(h, 92, 140) {
@@ -1472,21 +2113,24 @@ private extension BKColorEngine {
             h = abs(h - 90) <= abs(h - 148) ? 90 : 148
         }
 
-        if inRange(h, 45, 78) {
+        if inRange(h, 45, 78), source == .scorer {
             triggered.insert(.muddyYellow)
-            h = (h > 66) ? 85 : 38
+            h = lerpHue(h, to: 42, t: 0.40)
+        } else if inRange(h, 45, 78) {
+            triggered.insert(.muddyYellow)
+            h = lerpHue(h, to: 42, t: 0.28)
         }
 
         if inRedZone(h) {
             triggered.insert(.plasticRed)
-            h = lerpHue(h, to: 22, t: 0.18)
         }
 
-        let blandRanges: [(CGFloat, CGFloat)] = [(120, 170), (35, 55), (75, 92), (140, 160)]
-        if blandRanges.contains(where: { inRange(h, $0.0, $0.1) }) {
+        let blandRanges: [(CGFloat, CGFloat)] = [(120, 170), (140, 160)]
+        if source == .scorer, blandRanges.contains(where: { inRange(h, $0.0, $0.1) }) {
             let preferred: [CGFloat] = [220, 190, 265, 28, 350]
             let nearest = preferred.min { hueDistance(h, $0) < hueDistance(h, $1) } ?? 220
-            h = lerpHue(h, to: nearest, t: 0.22)
+            let t: CGFloat = (coverKind == .mostlyBWWithColor) ? 0.12 : 0.22
+            h = lerpHue(h, to: nearest, t: t)
         }
 
         return normalizeHue(h)
@@ -1505,6 +2149,7 @@ private extension BKColorEngine {
         var c = color
         c.h = normalizeHue(c.h)
         c.b = clamp(c.b, min: bRange.lowerBound, max: bRange.upperBound)
+        c.s = min(c.s, darkShadowSaturationCap(forBrightness: c.b) ?? c.s)
 
         let hardCap = saturationHardCap(
             kind: kind,
@@ -1513,7 +2158,12 @@ private extension BKColorEngine {
             isNearGray: isNearGray
         )
         let sLower = max(sRange.lowerBound, sMin(forBrightness: c.b))
-        let sUpper = min(sRange.upperBound, sMax(forBrightness: c.b), hardCap)
+        let sUpper = min(
+            sRange.upperBound,
+            sMax(forBrightness: c.b),
+            hardCap,
+            darkShadowSaturationCap(forBrightness: c.b) ?? 1
+        )
         c.s = clamp(c.s, min: sLower, max: sUpper)
 
         c = applyRiskRules(
@@ -1527,9 +2177,24 @@ private extension BKColorEngine {
             triggered: &triggered
         )
 
+        c = avoidHospitalGreen(
+            c,
+            kind: kind,
+            bRange: bRange,
+            sRange: sRange,
+            isDark: isDark,
+            triggered: &triggered
+        )
+
         c.b = clamp(c.b, min: bRange.lowerBound, max: bRange.upperBound)
+        c.s = min(c.s, darkShadowSaturationCap(forBrightness: c.b) ?? c.s)
         let finalLower = max(sRange.lowerBound, sMin(forBrightness: c.b))
-        let finalUpper = min(sRange.upperBound, sMax(forBrightness: c.b), hardCap)
+        let finalUpper = min(
+            sRange.upperBound,
+            sMax(forBrightness: c.b),
+            hardCap,
+            darkShadowSaturationCap(forBrightness: c.b) ?? 1
+        )
         c.s = clamp(c.s, min: finalLower, max: finalUpper)
         return c
     }
@@ -1559,18 +2224,23 @@ private extension BKColorEngine {
             if c.s > 0.4 {
                 c.s *= 0.6
             }
+            c.h = lerpHue(c.h, to: 42, t: kind == .background ? 0.38 : 0.24)
             let floor = max(bRange.lowerBound, kind == .background ? 0.30 : 0.38)
             c.b = max(c.b, floor)
         }
 
         if inRedZone(c.h) {
             triggered.insert(.plasticRed)
-            c.h = lerpHue(c.h, to: 22, t: 0.18)
-            let cap: CGFloat = (kind == .background) ? 0.45 : 0.62
-            c.s = min(c.s, cap)
-            let bLow = max(bRange.lowerBound, kind == .background ? 0.24 : 0.30)
-            let bHigh = min(bRange.upperBound, kind == .background ? 0.60 : 0.78)
-            c.b = clamp(c.b, min: bLow, max: bHigh)
+            if c.s > 0.70 {
+                c.s *= 0.75
+            }
+            if c.b > 0.78 {
+                c.b *= 0.92
+            }
+            if kind == .background {
+                let bgCap: CGFloat = isDark ? 0.40 : 0.30
+                c.s = min(c.s, bgCap)
+            }
         }
 
         if inRange(c.h, 255, 290), c.b < 0.30 {
@@ -1611,8 +2281,125 @@ private extension BKColorEngine {
         return c
     }
 
+    static func avoidHospitalGreen(
+        _ color: HSBColor,
+        kind: ElementKind,
+        bRange: ClosedRange<CGFloat>,
+        sRange: ClosedRange<CGFloat>,
+        isDark: Bool,
+        triggered: inout Set<RiskFlag>
+    ) -> HSBColor {
+        var c = color
+        let before = c
+        var action = "none"
+
+        if isHospitalGreenPrimary(c) {
+            let t = clamp((c.h - 118) / 24, min: 0, max: 1)
+            switch kind {
+            case .background:
+                c.s *= 0.62
+                c.b = min(max(c.b, 0.58), isDark ? 0.62 : 0.85)
+                c.h = normalizeHue(c.h + lerp(10, 18, t: t))
+                action = "desat+lift+shiftC"
+            case .shape:
+                c.s *= 0.65
+                c.b = min(max(c.b, isDark ? 0.52 : 0.62), isDark ? 0.70 : 0.85)
+                c.h = normalizeHue(c.h - lerp(10, 18, t: t))
+                action = "desat+lift+shiftY"
+            case .dot:
+                c.s *= 0.72
+                c.b = min(max(c.b, isDark ? 0.50 : 0.60), isDark ? 0.74 : 0.88)
+                c.h = normalizeHue(c.h + lerp(8, 14, t: t))
+                action = "desat+lift+shiftCdot"
+            }
+        }
+
+        if isHospitalGreenSecondaryA(c) {
+            switch kind {
+            case .background:
+                c.b = max(c.b, 0.26)
+                c.s = min(c.s, (0.22 + 0.8 * c.b) * 0.90)
+                c.h = normalizeHue(c.h - 8)
+            case .shape:
+                c.b = max(c.b, 0.26)
+                c.s = min(c.s, 0.22 + 0.8 * c.b)
+                c.h = normalizeHue(c.h - 10)
+            case .dot:
+                c.b = max(c.b, 0.30)
+                c.s = min(c.s, 0.24 + 0.8 * c.b)
+                c.h = normalizeHue(c.h - 6)
+            }
+            action = action == "none" ? "lift+capS+shiftY" : "\(action)+A"
+        }
+
+        if isHospitalGreenSecondaryB(c) {
+            switch kind {
+            case .background:
+                c.s *= 0.75
+                c.b = min(c.b + 0.10, isDark ? 0.60 : 0.85)
+                action = action == "none" ? "desat+liftBg" : "\(action)+BgB"
+            case .shape:
+                c.b = max(c.b, isDark ? 0.42 : 0.58)
+                action = action == "none" ? "liftFg" : "\(action)+FgB"
+            case .dot:
+                c.b = max(c.b, isDark ? 0.48 : 0.62)
+                c.s = min(c.s, 0.58)
+                action = action == "none" ? "liftDot" : "\(action)+DotB"
+            }
+        }
+
+        if kind == .background {
+            let bgExtraCap = min(sRange.upperBound, isDark ? 0.34 : 0.30)
+            c.s = min(c.s, bgExtraCap)
+        } else if kind == .dot {
+            if c.b < 0.24 { c.b = 0.24 }
+            if c.b < 0.38, c.s > 0.62 {
+                c.s = 0.62
+            }
+        }
+
+        if isHospitalGreenPrimary(c) {
+            switch kind {
+            case .background:
+                c.s = min(c.s, 0.28)
+                c.b = max(c.b, 0.58)
+                c.h = normalizeHue(c.h + 16)
+            case .shape:
+                c.s = min(c.s, 0.30)
+                c.b = max(c.b, isDark ? 0.52 : 0.62)
+                c.h = normalizeHue(c.h - 12)
+            case .dot:
+                c.s = min(c.s, 0.34)
+                c.b = max(c.b, isDark ? 0.50 : 0.62)
+                c.h = normalizeHue(c.h + 12)
+            }
+            action = action == "none" ? "force_exit" : "\(action)+force_exit"
+        }
+
+        c.s = clamp(c.s, min: sRange.lowerBound, max: sRange.upperBound)
+        c.b = clamp(c.b, min: bRange.lowerBound, max: bRange.upperBound)
+
+        if action != "none" {
+            triggered.insert(.hospitalGreen)
+            print(
+                "[BKColorEngine] avoid_hospital_green kind=\(elementKindName(kind)) hsb before={\(hsbString(before))} after={\(hsbString(c))} action=\(action)"
+            )
+        }
+        return c
+    }
+
     static func riskPenalty(h: CGFloat, s: CGFloat, b: CGFloat) -> CGFloat {
         var penalty: CGFloat = 0
+
+        if inRange(h, 118, 142), s >= 0.32, s <= 0.75, b >= 0.18, b <= 0.55 {
+            penalty += 0.95 + max(0, s - 0.35) * 0.7 + max(0, 0.55 - b) * 0.5
+        }
+        if inRange(h, 110, 150), b < 0.22, s > 0.22 {
+            penalty += 0.60 + (0.22 - b) * 1.4 + (s - 0.22) * 0.4
+        }
+        if inRange(h, 115, 145), s >= 0.18, s <= 0.35, b >= 0.35, b <= 0.55 {
+            penalty += 0.45
+        }
 
         if inRange(h, 92, 140) {
             penalty += 0.42 + max(0, s - 0.34) * 0.9
@@ -1621,7 +2408,7 @@ private extension BKColorEngine {
             penalty += 0.55 + max(0, 0.40 - b) * 1.2 + max(0, s - 0.42) * 0.7
         }
         if inRedZone(h) {
-            penalty += 0.35 + max(0, s - 0.60) * 1.3 + max(0, b - 0.78) * 0.8
+            penalty += 0.18 + max(0, s - 0.70) * 0.9 + max(0, b - 0.80) * 0.5
         }
         if inRange(h, 255, 290), b < 0.32 {
             penalty += 0.60 + (0.32 - b) * 1.8
@@ -1645,7 +2432,7 @@ private extension BKColorEngine {
         let base: CGFloat
         switch kind {
         case .background:
-            base = isDark ? 0.42 : 0.36
+            base = isDark ? 0.50 : 0.36
         case .shape:
             base = isDark ? 0.70 : 0.60
         case .dot:
@@ -1664,6 +2451,92 @@ private extension BKColorEngine {
         case .medium, .high:
             return base
         }
+    }
+
+    static func normalizeCandidateColor(_ color: HSBColor) -> HSBColor {
+        var c = color
+        c.h = biasedBlueVioletHue(c.h, s: c.s, b: c.b)
+        if let cap = darkShadowSaturationCap(forBrightness: c.b) {
+            c.s = min(c.s, cap)
+        }
+        c = avoidHospitalGreenCandidate(c)
+        c.h = normalizeHue(c.h)
+        c.s = clamp01(c.s)
+        c.b = clamp01(c.b)
+        return c
+    }
+
+    static func biasedBlueVioletHue(_ hue: CGFloat, s: CGFloat, b: CGFloat) -> CGFloat {
+        let h = normalizeHue(hue)
+        guard s >= 0.20, b >= 0.22, b <= 0.78, h >= 55, h <= 90 else { return h }
+        let t = clamp((h - 55) / 35, min: 0, max: 1)
+        let satFactor = clamp((s - 0.20) / 0.50, min: 0, max: 1)
+        let delta = min(14, max(0, lerp(6, 14, t: t) * satFactor))
+        return normalizeHue(h + delta)
+    }
+
+    static func darkShadowSaturationCap(forBrightness b: CGFloat) -> CGFloat? {
+        if b < 0.18 {
+            return lerp(0.10, 0.22, t: clamp(b / 0.18, min: 0, max: 1))
+        }
+        if b <= 0.30 {
+            return lerp(0.22, 0.38, t: clamp((b - 0.18) / 0.12, min: 0, max: 1))
+        }
+        return nil
+    }
+
+    static func isHospitalGreenPrimary(_ c: HSBColor) -> Bool {
+        inRange(c.h, 118, 142)
+            && c.s >= 0.32 && c.s <= 0.75
+            && c.b >= 0.18 && c.b <= 0.55
+    }
+
+    static func isHospitalGreenSecondaryA(_ c: HSBColor) -> Bool {
+        inRange(c.h, 110, 150) && c.b < 0.22 && c.s > 0.22
+    }
+
+    static func isHospitalGreenSecondaryB(_ c: HSBColor) -> Bool {
+        inRange(c.h, 115, 145)
+            && c.s >= 0.18 && c.s <= 0.35
+            && c.b >= 0.35 && c.b <= 0.55
+    }
+
+    static func avoidHospitalGreenCandidate(_ color: HSBColor) -> HSBColor {
+        var c = color
+        let before = c
+        var action = "none"
+
+        if isHospitalGreenPrimary(c) {
+            let t = clamp((c.h - 118) / 24, min: 0, max: 1)
+            c.s *= 0.65
+            c.b = min(max(c.b, 0.58), 0.80)
+            c.h = normalizeHue(c.h + lerp(10, 18, t: t))
+            action = "desat+lift+shiftC"
+        }
+        if isHospitalGreenSecondaryA(c) {
+            c.b = max(c.b, 0.26)
+            c.s = min(c.s, 0.22 + 0.8 * c.b)
+            c.h = normalizeHue(c.h - 8)
+            action = action == "none" ? "lift+capS+shiftY" : "\(action)+A"
+        }
+        if isHospitalGreenSecondaryB(c) {
+            c.s *= 0.78
+            c.b = min(c.b + 0.08, 0.80)
+            action = action == "none" ? "desat+liftB" : "\(action)+B"
+        }
+        if isHospitalGreenPrimary(c) {
+            c.s = min(c.s, 0.30)
+            c.b = max(c.b, 0.58)
+            c.h = normalizeHue(c.h + 14)
+            action = action == "none" ? "force_exit" : "\(action)+force_exit"
+        }
+
+        if action != "none" {
+            print(
+                "[BKColorEngine] avoid_hospital_green kind=candidate hsb before={\(hsbString(before))} after={\(hsbString(c))} action=\(action)"
+            )
+        }
+        return c
     }
 
     static func sMax(forBrightness b: CGFloat) -> CGFloat {
@@ -1685,12 +2558,14 @@ private extension BKColorEngine {
     static func logPalette(
         primaryBefore: CGFloat,
         primaryAfter: CGFloat,
+        primarySource: PrimarySelectionSource,
         stats: PaletteStats,
         tier: TierRanges,
         triggered: Set<RiskFlag>,
         bgStops: [HSBColor],
         shapePool: [HSBColor],
-        dotBase: HSBColor
+        dotBase: HSBColor,
+        injectedAccentCount: Int
     ) {
         let triggerText = triggered.isEmpty
             ? "none"
@@ -1702,17 +2577,21 @@ private extension BKColorEngine {
         let salientText = stats.topSalientHues.prefix(3).map {
             "\(f1($0.hue))@\(f3($0.weight))"
         }.joined(separator: " | ")
+        let clusterText = stats.topClusters.prefix(3).map {
+            "\(f1($0.hue))@\(f3($0.weight))"
+        }.joined(separator: " | ")
 
         print(
-            "[BKColorEngine] coverKind=\(stats.coverKind.rawValue) complexity=\(stats.complexity.rawValue) avgS=\(f3(stats.avgS)) grayScore=\(f3(stats.grayScore)) wBlack=\(f3(stats.wBlack)) wWhite=\(f3(stats.wWhite)) wColor=\(f3(stats.wColor)) coverLuma=\(f3(stats.coverLuma)) evenness=\(f3(stats.evenness)) gray=\(stats.isGrayscaleCover ? 1 : 0) nearGray=\(stats.isNearGray ? 1 : 0) lowSatColor=\(stats.lowSatColorCover ? 1 : 0)"
+            "[BKColorEngine] coverKind=\(stats.coverKind.rawValue) complexity=\(stats.complexity.rawValue) avgS=\(f3(stats.avgS)) grayScore=\(f3(stats.grayScore)) wBlack=\(f3(stats.wBlack)) wWhite=\(f3(stats.wWhite)) wColor=\(f3(stats.wColor)) coverLuma=\(f3(stats.coverLuma)) imageLuma=\(f3(stats.imageCoverLuma)) areaB=\(f3(stats.areaDominantB)) areaS=\(f3(stats.areaDominantS)) veryDark=\(stats.veryDarkCover ? 1 : 0) accentEnabled=\(stats.accentEnabled ? 1 : 0) accentStrength=\(f3(stats.accentStrength)) maxColorScore=\(f3(stats.maxColorCandidateScore)) evenness=\(f3(stats.evenness)) gray=\(stats.isGrayscaleCover ? 1 : 0) nearGray=\(stats.isNearGray ? 1 : 0) lowSatColor=\(stats.lowSatColorCover ? 1 : 0)"
         )
         print(
-            "[BKColorEngine] primaryHue before=\(f1(primaryBefore)) after=\(f1(primaryAfter)) dominantHue=\(f1(stats.dominantHue)) dominantShare=\(f3(stats.dominantShare)) accentHue=\(stats.accentHue.map(f1) ?? "none") secondAccent=\(stats.secondAccentHue.map(f1) ?? "none") triggers=\(triggerText)"
+            "[BKColorEngine] primary selected from=\(primarySource.rawValue) primaryHue before=\(f1(primaryBefore)) after=\(f1(primaryAfter)) imageHue=\(f1(stats.areaDominantHue)) dominantHue=\(f1(stats.dominantHue)) dominantShare=\(f3(stats.dominantShare)) accentHue=\(stats.accentHue.map(f1) ?? "none") secondAccent=\(stats.secondAccentHue.map(f1) ?? "none") triggers=\(triggerText)"
         )
         print(
             "[BKColorEngine] ranges bgB=\(f3(tier.bgB.lowerBound))...\(f3(tier.bgB.upperBound)) bgS=\(f3(tier.bgS.lowerBound))...\(f3(tier.bgS.upperBound)) fgB=\(f3(tier.fgB.lowerBound))...\(f3(tier.fgB.upperBound)) fgS=\(f3(tier.fgS.lowerBound))...\(f3(tier.fgS.upperBound)) dotB=\(f3(tier.dotB.lowerBound))...\(f3(tier.dotB.upperBound)) dotS=\(f3(tier.dotS.lowerBound))...\(f3(tier.dotS.upperBound))"
         )
         print("[BKColorEngine] topSalientHues \(salientText)")
+        print("[BKColorEngine] topClusters \(clusterText)")
 
         if let bg0 = bgStops.first, let shape0 = shapePool.first {
             print(
@@ -1720,7 +2599,7 @@ private extension BKColorEngine {
             )
         }
 
-        print("[BKColorEngine] shapePoolHueDist [\(hueDist)] maxHueDelta=\(f1(hueSpan)) secondAccentEnabled=\(stats.secondAccentHue != nil ? 1 : 0)")
+        print("[BKColorEngine] shapePoolHueDist [\(hueDist)] maxHueDelta=\(f1(hueSpan)) secondAccentEnabled=\(stats.secondAccentHue != nil ? 1 : 0) injectedAccentColors=\(injectedAccentCount)")
         if hueSpan > 90, stats.complexity != .high {
             print("[BKColorEngine][WARN] hue span exceeds 90 in non-high complexity")
         }
@@ -1740,8 +2619,27 @@ private extension BKColorEngine {
         return maxOffset - minOffset
     }
 
+    static func maxHueSpread(_ hues: [CGFloat]) -> CGFloat {
+        guard hues.count >= 2 else { return 0 }
+        var maxDelta: CGFloat = 0
+        for i in 0..<(hues.count - 1) {
+            for j in (i + 1)..<hues.count {
+                maxDelta = max(maxDelta, hueDistance(hues[i], hues[j]))
+            }
+        }
+        return maxDelta
+    }
+
     static func hsbString(_ c: HSBColor) -> String {
         "h=\(f1(c.h)) s=\(f3(c.s)) b=\(f3(c.b))"
+    }
+
+    static func elementKindName(_ kind: ElementKind) -> String {
+        switch kind {
+        case .background: return "bg"
+        case .shape: return "shape"
+        case .dot: return "dot"
+        }
     }
 
     static func hsb(from color: NSColor) -> HSBColor? {

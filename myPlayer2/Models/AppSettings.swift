@@ -436,6 +436,10 @@ public final class AppSettings {
     @ObservationIgnored
     @AppStorage("repeatMode") var repeatMode: String = "off"
 
+    /// Pause playback after current song finishes (single-cycle stop mode).
+    @ObservationIgnored
+    @AppStorage("stopAfterTrack") var stopAfterTrack: Bool = false
+
     // MARK: - Private Init
 
     private init() {
