@@ -48,7 +48,7 @@ struct MiniPlayerView: View {
                         if let track = playerVM.currentTrack {
                             MarqueeText(
                                 text: track.title,
-                                font: .subheadline,
+                                style: .subheadline,
                                 fontWeight: .medium,
                                 color: .primary
                             )
@@ -57,7 +57,7 @@ struct MiniPlayerView: View {
                                 text: track.artist.isEmpty
                                     ? NSLocalizedString("library.unknown_artist", comment: "")
                                     : track.artist,
-                                font: .caption,
+                                style: .caption,
                                 fontWeight: .regular,
                                 color: .secondary
                             )
@@ -67,7 +67,8 @@ struct MiniPlayerView: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    .frame(maxWidth: 110, alignment: .leading)
+                    .frame(width: 180, alignment: .leading)
+                    .clipped()
 
                 }
                 .contentShape(Rectangle())

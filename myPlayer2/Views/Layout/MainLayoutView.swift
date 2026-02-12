@@ -30,21 +30,10 @@ struct MainLayoutView: View {
     @State private var dragWidthBounds: ClosedRange<CGFloat>?
     @State private var isHoveringResizeHandle = false
     @State private var windowWidth: CGFloat = 0
-    @StateObject private var artBackgroundController = BKArtBackgroundController()
 
 	    var body: some View {
 	        GeometryReader { proxy in
 	            ZStack {
-                if uiState.contentMode == .nowPlaying {
-                    BKArtBackgroundView(
-                        controller: artBackgroundController,
-                        trackID: playerVM.currentTrack?.id,
-                        artworkData: playerVM.currentTrack?.artworkData
-                    )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    .allowsHitTesting(false)
-                }
-
                 NavigationSplitView(columnVisibility: $columnVisibility) {
                     SidebarView()
                         .navigationSplitViewColumnWidth(
@@ -92,12 +81,15 @@ struct MainLayoutView: View {
 
             .background(
                 WindowToolbarAccessor { window in
+                    window.styleMask.insert(.fullSizeContentView)
                     window.titlebarAppearsTransparent = true
+                    if #available(macOS 11.0, *) {
+                        window.titlebarSeparatorStyle = .none
+                    }
                     // Keep window dragging on titlebar only; avoid conflicts with custom resize dividers.
                     window.isMovableByWindowBackground = false
                     window.titleVisibility = .hidden
                     window.title = ""
-                    window.toolbarStyle = .unified
                 }
             )
             .task {
@@ -128,22 +120,8 @@ struct MainLayoutView: View {
             .onChange(of: uiState.sidebarLastWidth) { _, _ in
                 uiState.lyricsWidth = clampLyricsWidth(uiState.lyricsWidth)
             }
-            .onAppear {
-                if uiState.contentMode == .nowPlaying {
-                    artBackgroundController.triggerTransition()
-                }
-            }
-            .onChange(of: uiState.contentMode) { _, newValue in
-                if newValue == .nowPlaying {
-                    artBackgroundController.triggerTransition()
-                }
-            }
-            .onChange(of: playerVM.currentTrack?.id) { _, _ in
-                if uiState.contentMode == .nowPlaying {
-                    artBackgroundController.triggerTransition()
-                }
-            }
         }
+        .modifier(WindowToolbarHider())
     }
 
     // MARK: - Lyrics Resizing
@@ -297,6 +275,18 @@ struct MainLayoutView: View {
         return min(defaultMax, compactMax)
     }
 
+}
+
+private struct WindowToolbarHider: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 13.0, *) {
+            content
+                .toolbar(.hidden, for: .windowToolbar)
+                .toolbarBackground(.hidden, for: .windowToolbar)
+        } else {
+            content
+        }
+    }
 }
 
 // MARK: - Preview
