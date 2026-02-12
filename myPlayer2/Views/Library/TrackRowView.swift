@@ -47,45 +47,39 @@ struct TrackRowView<MenuContent: View>: View {
             ViewThatFits(in: .horizontal) {
                 // 1. Horizontal Layout (Title left, Artist center)
                 HStack(alignment: .center, spacing: 8) {
-                    Text(track.title)
-                        .font(.body)
-                        .fontWeight(isPlaying ? .semibold : .regular)
-                        .foregroundStyle(textPrimaryColor)
-                        .lineLimit(1)
+                    MarqueeText(
+                        text: track.title,
+                        font: .body,
+                        fontWeight: isPlaying ? .semibold : .regular,
+                        color: textPrimaryColor
+                    )
                         .frame(maxWidth: .infinity, alignment: .leading)
 
-                    if track.artist.isEmpty {
-                        Text("library.unknown_artist")
-                            .font(.subheadline)
-                            .foregroundStyle(textSecondaryColor)
-                            .lineLimit(1)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    } else {
-                        Text(track.artist)
-                            .font(.subheadline)
-                            .foregroundStyle(textSecondaryColor)
-                            .lineLimit(1)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
+                    MarqueeText(
+                        text: artistDisplayText,
+                        font: .subheadline,
+                        fontWeight: .regular,
+                        color: textSecondaryColor
+                    )
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
                 // 2. Vertical Layout (Stacked)
                 // Fallback when width is small
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(track.title)
-                        .font(.body)
-                        .fontWeight(isPlaying ? .semibold : .regular)
-                        .foregroundStyle(textPrimaryColor)
-                        .lineLimit(1)
-
-                    Text(
-                        track.artist.isEmpty
-                            ? NSLocalizedString("library.unknown_artist", comment: "")
-                            : track.artist
+                    MarqueeText(
+                        text: track.title,
+                        font: .body,
+                        fontWeight: isPlaying ? .semibold : .regular,
+                        color: textPrimaryColor
                     )
-                    .font(.subheadline)
-                    .foregroundStyle(textSecondaryColor)
-                    .lineLimit(1)
+
+                    MarqueeText(
+                        text: artistDisplayText,
+                        font: .subheadline,
+                        fontWeight: .regular,
+                        color: textSecondaryColor
+                    )
                 }
             }
             .contentShape(Rectangle())
@@ -158,6 +152,12 @@ struct TrackRowView<MenuContent: View>: View {
 
     private var textTertiaryColor: Color {
         ColorTokens.textTertiary
+    }
+
+    private var artistDisplayText: String {
+        track.artist.isEmpty
+            ? NSLocalizedString("library.unknown_artist", comment: "")
+            : track.artist
     }
 
     // MARK: - Subviews

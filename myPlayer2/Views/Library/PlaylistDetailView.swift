@@ -95,6 +95,10 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             uniqueKeysWithValues: sortedTracks.enumerated().map { ($0.element.id, $0.offset) })
     }
 
+    private var sortedTrackIDs: [UUID] {
+        sortedTracks.map(\.id)
+    }
+
     // MARK: - Subviews
 
     private var headerView: some View {
@@ -221,6 +225,7 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         .onAppear {
             restoreScrollIfNeeded()
             updateLibrarySnapshot()
+            playerVM.updateQueueTracks(sortedTracks)
         }
         .onChange(of: listScrollPositionID) { _, _ in
             updateLibrarySnapshot()
@@ -228,6 +233,10 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         .onChange(of: libraryVM.selectedPlaylist?.id) { _, _ in
             restoreScrollIfNeeded()
             updateLibrarySnapshot()
+            playerVM.updateQueueTracks(sortedTracks)
+        }
+        .onChange(of: sortedTrackIDs) { _, _ in
+            playerVM.updateQueueTracks(sortedTracks)
         }
         .onTapGesture { clearSearchFocus() }
     }

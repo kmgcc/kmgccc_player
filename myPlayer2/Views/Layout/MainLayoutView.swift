@@ -30,50 +30,65 @@ struct MainLayoutView: View {
     @State private var dragWidthBounds: ClosedRange<CGFloat>?
     @State private var isHoveringResizeHandle = false
     @State private var windowWidth: CGFloat = 0
+    @StateObject private var artBackgroundController = BKArtBackgroundController()
 
-    var body: some View {
-        GeometryReader { proxy in
-            NavigationSplitView(columnVisibility: $columnVisibility) {
-                SidebarView()
-                    .navigationSplitViewColumnWidth(
-                        min: Constants.Layout.sidebarMinWidth,
-                        ideal: uiState.sidebarLastWidth,
-                        max: Constants.Layout.sidebarMaxWidth
+	    var body: some View {
+	        GeometryReader { proxy in
+	            ZStack {
+                if uiState.contentMode == .nowPlaying {
+                    BKArtBackgroundView(
+                        controller: artBackgroundController,
+                        trackID: playerVM.currentTrack?.id,
+                        artworkData: playerVM.currentTrack?.artworkData
                     )
-                    .navigationTitle("")
-            } detail: {
-                ZStack(alignment: .bottom) {
-                    switch uiState.contentMode {
-                    case .library:
-                        libraryLayout
-                    case .nowPlaying:
-                        nowPlayingLayout
-                    }
-
-                    MiniPlayerView()
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 12)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .allowsHitTesting(false)
                 }
-                .ignoresSafeArea(.container, edges: .top)
-                .overlay {
-                    ZStack {
-                        if uiState.contentMode == .nowPlaying {
-                            GeometryReader { detailProxy in
-                                lyricsToggleOverlay
-                                    .offset(y: -detailProxy.safeAreaInsets.top)
-                                    .frame(
-                                        maxWidth: .infinity,
-                                        maxHeight: .infinity,
-                                        alignment: .topTrailing
-                                    )
-                            }
+
+                NavigationSplitView(columnVisibility: $columnVisibility) {
+                    SidebarView()
+                        .navigationSplitViewColumnWidth(
+                            min: Constants.Layout.sidebarMinWidth,
+                            ideal: uiState.sidebarLastWidth,
+                            max: Constants.Layout.sidebarMaxWidth
+                        )
+                        .navigationTitle("")
+                } detail: {
+                    ZStack(alignment: .bottom) {
+                        switch uiState.contentMode {
+                        case .library:
+                            libraryLayout
+                        case .nowPlaying:
+                            nowPlayingLayout
                         }
 
+                        MiniPlayerView()
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 12)
                     }
+                    .ignoresSafeArea(.container, edges: .top)
+                    .overlay {
+                        ZStack {
+                            if uiState.contentMode == .nowPlaying {
+                                GeometryReader { detailProxy in
+                                    lyricsToggleOverlay
+                                        .offset(y: -detailProxy.safeAreaInsets.top)
+                                        .frame(
+                                            maxWidth: .infinity,
+                                            maxHeight: .infinity,
+                                            alignment: .topTrailing
+                                        )
+                                }
+                            }
+
+                        }
+                    }
+                    .navigationTitle("")
                 }
-                .navigationTitle("")
+                .navigationSplitViewStyle(.balanced)
+                .ignoresSafeArea(.container, edges: .bottom)
             }
-            .navigationSplitViewStyle(.balanced)
+            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
 
             .background(
                 WindowToolbarAccessor { window in
@@ -112,6 +127,21 @@ struct MainLayoutView: View {
             }
             .onChange(of: uiState.sidebarLastWidth) { _, _ in
                 uiState.lyricsWidth = clampLyricsWidth(uiState.lyricsWidth)
+            }
+            .onAppear {
+                if uiState.contentMode == .nowPlaying {
+                    artBackgroundController.triggerTransition()
+                }
+            }
+            .onChange(of: uiState.contentMode) { _, newValue in
+                if newValue == .nowPlaying {
+                    artBackgroundController.triggerTransition()
+                }
+            }
+            .onChange(of: playerVM.currentTrack?.id) { _, _ in
+                if uiState.contentMode == .nowPlaying {
+                    artBackgroundController.triggerTransition()
+                }
             }
         }
     }
@@ -226,7 +256,6 @@ struct MainLayoutView: View {
 
             if uiState.lyricsVisible {
                 lyricsPanelView
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)

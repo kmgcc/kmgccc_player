@@ -19,7 +19,7 @@ struct SettingsView: View {
 
     // MARK: - Navigation
 
-    @State private var selection: SettingsCategory = .nowPlaying
+    @State private var selection: SettingsCategory = .appearance
     @State private var columnVisibility = NavigationSplitViewVisibility.all
 
     // MARK: - App Settings
@@ -41,6 +41,8 @@ struct SettingsView: View {
     @State private var lyricsTranslationFontWeightDark: Int = AppSettings.shared
         .lyricsTranslationFontWeightDark
     @State private var nowPlayingSkin: String = AppSettings.shared.selectedNowPlayingSkinID
+    @State private var globalArtworkTintEnabled: Bool = AppSettings.shared.globalArtworkTintEnabled
+    @State private var followSystemAppearance: Bool = AppSettings.shared.followSystemAppearance
 
     // MARK: - LED Settings State
 
@@ -135,6 +137,8 @@ struct SettingsView: View {
         .frame(minWidth: 760, minHeight: 680)
         .onAppear {
             nowPlayingSkin = settings.selectedNowPlayingSkinID
+            globalArtworkTintEnabled = settings.globalArtworkTintEnabled
+            followSystemAppearance = settings.followSystemAppearance
             if SkinRegistry.options.contains(where: { $0.id == nowPlayingSkin }) == false {
                 nowPlayingSkin = SkinRegistry.defaultSkinID
             }
@@ -152,10 +156,24 @@ struct SettingsView: View {
     // Extracted Sync Logic to reduce body complexity
     private var settingsSyncLogic: some View {
         Group {
+            appearanceSyncLogic
             skinSyncLogic
             lyricsSyncLogic
             ledSyncLogic
         }
+    }
+
+    private var appearanceSyncLogic: some View {
+        Color.clear
+            .onChange(of: globalArtworkTintEnabled) { _, val in
+                settings.globalArtworkTintEnabled = val
+                Task { @MainActor in
+                    await themeStore.refreshPalette(reason: "settings_global_tint_change")
+                }
+            }
+            .onChange(of: followSystemAppearance) { _, val in
+                settings.followSystemAppearance = val
+            }
     }
 
     private var skinSyncLogic: some View {
@@ -242,6 +260,8 @@ struct SettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 switch selection {
+                case .appearance:
+                    appearanceSection
                 case .nowPlaying:
                     nowPlayingSection
                 case .lyrics:
@@ -260,6 +280,30 @@ struct SettingsView: View {
     }
 
     // MARK: - Now Playing Section
+
+    private var appearanceSection: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            headerLabel("外观", systemImage: "paintpalette")
+
+            GroupBox {
+                VStack(alignment: .leading, spacing: 16) {
+                    Toggle("全局取色", isOn: $globalArtworkTintEnabled)
+                    Text("开启后重点色跟随当前歌曲封面；关闭后使用默认主题色。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Divider()
+
+                    Toggle("跟随系统", isOn: $followSystemAppearance)
+                    Text("开启后跟随系统深浅色；关闭后可用侧边栏按钮手动切换深/浅。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .toggleStyle(.switch)
+                .padding(12)
+            }
+        }
+    }
 
     private var nowPlayingSection: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -764,12 +808,12 @@ struct SettingsView: View {
 
             HStack(spacing: 10) {
                 socialIconLink(
-                    title: "b",
+                    title: "哔",
                     hexColor: "fb7299",
                     destination: "https://space.bilibili.com/1605472940"
                 )
                 socialIconLink(
-                    title: "g",
+                    title: "码",
                     hexColor: "020408",
                     destination: "https://github.com/kmgcc"
                 )
@@ -1025,6 +1069,7 @@ private struct AboutEasterEggTapTracker {
 }
 
 private enum SettingsCategory: String, CaseIterable, Identifiable {
+    case appearance
     case nowPlaying
     case lyrics
     case led
@@ -1034,6 +1079,7 @@ private enum SettingsCategory: String, CaseIterable, Identifiable {
 
     var title: LocalizedStringKey {
         switch self {
+        case .appearance: return "外观"
         case .nowPlaying: return "settings.section.now_playing"
         case .lyrics: return "settings.section.lyrics"
         case .led: return "settings.section.led"
@@ -1043,6 +1089,7 @@ private enum SettingsCategory: String, CaseIterable, Identifiable {
 
     var systemImage: String {
         switch self {
+        case .appearance: return "paintpalette"
         case .nowPlaying: return "sparkles"
         case .lyrics: return "text.quote"
         case .led: return "waveform.path.ecg"

@@ -47,7 +47,8 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     private var startingFramePosition: AVAudioFramePosition = 0
     private var queue: [Track] = []
     private var queueIndex: Int = 0
-    private var shuffleHistory: [Int] = []
+    private let shuffleQueue = ShuffleQueueManager(recentLimit: 15)
+    private var lastKnownShuffleEnabled = AppSettings.shared.shuffleEnabled
     private var activeScheduleToken = UUID()
     private var completionWorkItem: DispatchWorkItem?
     private var drainStartUptime: TimeInterval?
@@ -184,7 +185,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         // Single-track play resets queue to just this track.
         queue = [track]
         queueIndex = 0
-        shuffleHistory.removeAll()
+        shuffleQueue.rebuild(with: [track.id], currentTrackID: track.id, resetHistory: true)
         playInternal(track: track)
     }
 
@@ -304,7 +305,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         if clearQueue {
             queue.removeAll()
             queueIndex = 0
-            shuffleHistory.removeAll()
+            shuffleQueue.reset()
         }
     }
 
@@ -353,12 +354,42 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         guard index >= 0, index < tracks.count else { return }
         queue = tracks
         queueIndex = index
-        shuffleHistory.removeAll()
+        shuffleQueue.rebuild(
+            with: tracks.map(\.id),
+            currentTrackID: tracks[index].id,
+            resetHistory: true
+        )
+        lastKnownShuffleEnabled = shuffleEnabled
         playInternal(track: tracks[index])
+    }
+
+    func updateQueueTracks(_ tracks: [Track]) {
+        guard !tracks.isEmpty else { return }
+        queue = tracks
+
+        if let currentID = currentTrack?.id,
+            let index = queue.firstIndex(where: { $0.id == currentID })
+        {
+            queueIndex = index
+            shuffleQueue.rebuild(
+                with: tracks.map(\.id),
+                currentTrackID: currentID,
+                resetHistory: false
+            )
+        } else {
+            queueIndex = min(max(queueIndex, 0), max(0, queue.count - 1))
+            let currentID = queue.indices.contains(queueIndex) ? queue[queueIndex].id : nil
+            shuffleQueue.rebuild(
+                with: tracks.map(\.id),
+                currentTrackID: currentID,
+                resetHistory: true
+            )
+        }
     }
 
     func next() {
         guard !queue.isEmpty else { return }
+        syncShuffleStateIfNeeded()
         let nextIndex = computeNextIndex(autoAdvance: false)
         queueIndex = nextIndex
         playInternal(track: queue[nextIndex])
@@ -366,6 +397,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     func previous() {
         guard !queue.isEmpty else { return }
+        syncShuffleStateIfNeeded()
 
         // Standard behavior: if you're a few seconds in, restart.
         if currentTime > 3 {
@@ -398,15 +430,14 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         }
 
         if shuffleEnabled, queue.count > 1 {
-            // Pick a random next different from current; store history for previous().
-            shuffleHistory.append(queueIndex)
-            var candidate = queueIndex
-            var tries = 0
-            while candidate == queueIndex && tries < 8 {
-                candidate = Int.random(in: 0..<queue.count)
-                tries += 1
+            let currentID = queue[queueIndex].id
+            guard
+                let nextID = shuffleQueue.nextTrackID(currentTrackID: currentID),
+                let nextIndex = queue.firstIndex(where: { $0.id == nextID })
+            else {
+                return queueIndex
             }
-            return candidate == queueIndex ? (queueIndex + 1) % queue.count : candidate
+            return nextIndex
         }
 
         let next = queueIndex + 1
@@ -417,14 +448,30 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     }
 
     private func computePreviousIndex() -> Int {
-        if shuffleEnabled, let last = shuffleHistory.popLast() {
-            return last
+        if shuffleEnabled, let lastID = shuffleQueue.previousTrackID(),
+            let idx = queue.firstIndex(where: { $0.id == lastID })
+        {
+            return idx
         }
         let prev = queueIndex - 1
         if prev >= 0 {
             return prev
         }
         return repeatMode == .all ? max(0, queue.count - 1) : queueIndex
+    }
+
+    private func syncShuffleStateIfNeeded() {
+        let enabled = shuffleEnabled
+        guard enabled != lastKnownShuffleEnabled else { return }
+        lastKnownShuffleEnabled = enabled
+        if enabled {
+            let currentID = queue.indices.contains(queueIndex) ? queue[queueIndex].id : nil
+            shuffleQueue.rebuild(
+                with: queue.map(\.id),
+                currentTrackID: currentID,
+                resetHistory: false
+            )
+        }
     }
 
     // MARK: - Progress Timer

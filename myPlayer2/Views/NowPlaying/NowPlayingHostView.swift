@@ -20,8 +20,6 @@ struct NowPlayingHostView: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @EnvironmentObject private var themeStore: ThemeStore
     @State private var skinRevision = 0
-    @StateObject private var artBackgroundController = BKArtBackgroundController()
-
     var body: some View {
         let selectedSkinID = settings.selectedNowPlayingSkinID
         let selectedSkin = skinManager.skin(for: selectedSkinID)
@@ -36,15 +34,10 @@ struct NowPlayingHostView: View {
             let context = makeContext(windowSize: windowSize, contentBounds: contentBounds)
 
             ZStack(alignment: .topLeading) {
-                selectedSkin.makeBackground(context: context)
-
-                BKArtBackgroundView(
-                    controller: artBackgroundController,
-                    trackID: playerVM.currentTrack?.id,
-                    artworkData: playerVM.currentTrack?.artworkData
-                )
-                .frame(width: windowSize.width, height: windowSize.height, alignment: .topLeading)
-                .ignoresSafeArea()
+                // BKArtBackgroundView is rendered at the window level (MainLayoutView) to cover the
+                // full window, including the sidebar. Keep the skin background transparent here
+                // so BKArt stays visible and we don't regress into the MeshGradient covering it.
+                Color.clear
 
                 ZStack {
                     selectedSkin.makeArtwork(context: context)
@@ -56,16 +49,11 @@ struct NowPlayingHostView: View {
                 .clipped()
             }
             .id("nowPlayingSkin_\(selectedSkinID)_\(skinRevision)")
+            .frame(width: windowSize.width, height: windowSize.height, alignment: .topLeading)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .onChange(of: selectedSkinID) { _, _ in
             skinRevision &+= 1
-        }
-        .onAppear {
-            artBackgroundController.triggerTransition()
-        }
-        .onChange(of: playerVM.currentTrack?.id) { _, _ in
-            artBackgroundController.triggerTransition()
         }
     }
 

@@ -47,6 +47,17 @@ final class StubAudioPlaybackService: AudioPlaybackServiceProtocol {
         }
     }
 
+    func updateQueueTracks(_ tracks: [Track]) {
+        queue = tracks
+        if let currentID = currentTrack?.id,
+            let idx = tracks.firstIndex(where: { $0.id == currentID })
+        {
+            currentIndex = idx
+        } else {
+            currentIndex = min(max(currentIndex, 0), max(0, tracks.count - 1))
+        }
+    }
+
     func pause() {
         isPlaying = false
         stopTimer()

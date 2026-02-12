@@ -22,6 +22,7 @@ struct SidebarView: View {
     @Environment(UIStateViewModel.self) private var uiState
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var currentColorScheme
 
     @State private var showSettings = false
     @State private var showingPlaylistSheet = false
@@ -190,21 +191,18 @@ struct SidebarView: View {
     }
 
     private var appearanceSwitchButton: some View {
-        let currentMode = settings.appearanceMode
-        let icon: String = {
-            switch currentMode {
-            case .light: return "sun.max"
-            case .dark: return "moon"
-            case .system: return "circle.lefthalf.filled"
+        let effectiveManualMode: AppSettings.ManualAppearance = {
+            if settings.followSystemAppearance {
+                return currentColorScheme == .dark ? .dark : .light
             }
+            return settings.manualAppearance
+        }()
+        let icon: String = {
+            effectiveManualMode == .dark ? "moon" : "sun.max"
         }()
 
         let helpText: LocalizedStringKey = {
-            switch currentMode {
-            case .light: return "sidebar.appearance_light"
-            case .dark: return "sidebar.appearance_dark"
-            case .system: return "sidebar.appearance_system"
-            }
+            effectiveManualMode == .dark ? "sidebar.appearance_dark" : "sidebar.appearance_light"
         }()
 
         return GlassIconButton(
@@ -220,15 +218,19 @@ struct SidebarView: View {
     }
 
     private func cycleAppearance() {
-        withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
-            switch settings.appearanceMode {
-            case .system:
-                settings.appearanceMode = .light
-            case .light:
-                settings.appearanceMode = .dark
-            case .dark:
-                settings.appearanceMode = .system
+        let currentManual: AppSettings.ManualAppearance = {
+            if settings.followSystemAppearance {
+                return currentColorScheme == .dark ? .dark : .light
             }
+            return settings.manualAppearance
+        }()
+        let target: AppSettings.ManualAppearance = currentManual == .dark ? .light : .dark
+
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
+            if settings.followSystemAppearance {
+                settings.followSystemAppearance = false
+            }
+            settings.manualAppearance = target
         }
     }
 
