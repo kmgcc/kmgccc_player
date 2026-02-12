@@ -27,6 +27,7 @@ struct BKArtBackgroundView: View {
     @ObservedObject var controller: BKArtBackgroundController
     let trackID: UUID?
     let artworkData: Data?
+    @Environment(\.colorScheme) private var colorScheme
 
     @State private var palette: [NSColor] = Self.fallbackPalette
 
@@ -34,7 +35,8 @@ struct BKArtBackgroundView: View {
         BKArtBackgroundRepresentable(
             transitionID: controller.transitionID,
             seed: seedValue,
-            palette: palette
+            palette: palette,
+            isDark: colorScheme == .dark
         )
         .allowsHitTesting(false)
         .onAppear {
@@ -77,49 +79,23 @@ private struct BKArtBackgroundRepresentable: NSViewRepresentable {
     let transitionID: Int
     let seed: UInt64
     let palette: [NSColor]
+    let isDark: Bool
 
-    final class Coordinator {
-        weak var contentView: BKArtBackgroundLayerView?
-    }
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator()
-    }
-
-    func makeNSView(context: Context) -> NSBackgroundExtensionView {
-        let extensionView = NSBackgroundExtensionView()
-
+    func makeNSView(context: Context) -> BKArtBackgroundLayerView {
         let contentView = BKArtBackgroundLayerView()
-        contentView.translatesAutoresizingMaskIntoConstraints = false
-
-        extensionView.contentView = contentView
-        context.coordinator.contentView = contentView
-
-        NSLayoutConstraint.activate([
-            contentView.leadingAnchor.constraint(equalTo: extensionView.leadingAnchor),
-            contentView.trailingAnchor.constraint(equalTo: extensionView.trailingAnchor),
-            contentView.topAnchor.constraint(equalTo: extensionView.topAnchor),
-            contentView.bottomAnchor.constraint(equalTo: extensionView.bottomAnchor),
-        ])
-
-        contentView.updatePalette(palette)
+        contentView.updatePalette(palette, isDark: isDark)
         contentView.ensureBaseContainer(seed: seed)
         contentView.currentTransitionID = transitionID
-        return extensionView
+        return contentView
     }
 
-    func updateNSView(_ nsView: NSBackgroundExtensionView, context: Context) {
-        guard
-            let contentView = context.coordinator.contentView
-                ?? (nsView.contentView as? BKArtBackgroundLayerView)
-        else { return }
+    func updateNSView(_ nsView: BKArtBackgroundLayerView, context: Context) {
+        nsView.updatePalette(palette, isDark: isDark)
+        nsView.ensureBaseContainer(seed: seed)
 
-        contentView.updatePalette(palette)
-        contentView.ensureBaseContainer(seed: seed)
-
-        if contentView.currentTransitionID != transitionID {
-            contentView.currentTransitionID = transitionID
-            contentView.triggerTransition(seed: seed &+ UInt64(truncatingIfNeeded: transitionID))
+        if nsView.currentTransitionID != transitionID {
+            nsView.currentTransitionID = transitionID
+            nsView.triggerTransition(seed: seed &+ UInt64(truncatingIfNeeded: transitionID))
         }
     }
 }
@@ -134,6 +110,12 @@ private final class BKArtBackgroundLayerView: NSView {
         var phaseSpeed: CGFloat
         var angle: CGFloat
         var angularSpeed: CGFloat
+    }
+
+    private struct SelectedShape {
+        var image: CGImage
+        var scaleMultiplier: CGFloat
+        var isEdgePinned: Bool
     }
 
     private enum BackgroundStyle: Int {
@@ -182,6 +164,8 @@ private final class BKArtBackgroundLayerView: NSView {
     private final class Container {
         let layer = CALayer()
         let backgroundLayer = CALayer()
+        let backgroundToneLayer = CALayer()
+        let shapesRoot = CALayer()
 
         var style: BackgroundStyle = .image
         var dotRoot: CALayer?
@@ -193,8 +177,6 @@ private final class BKArtBackgroundLayerView: NSView {
         // Removed old single-instance properties
         // var dotMasks... var dotAnim... var dotCells... var dotColor...
 
-        var backgroundTintLayer: CALayer?  // Tint layer for image backgrounds
-
         var shapeLayers: [CALayer] = []
         var shapeStates: [ShapeState] = []
 
@@ -202,22 +184,32 @@ private final class BKArtBackgroundLayerView: NSView {
             layer.frame = frame
             layer.masksToBounds = true
             layer.backgroundColor = NSColor.black.cgColor
+
             backgroundLayer.frame = frame
             backgroundLayer.backgroundColor = NSColor.black.cgColor
             backgroundLayer.contentsGravity = .resizeAspectFill
             layer.addSublayer(backgroundLayer)
+
+            backgroundToneLayer.frame = frame
+            layer.addSublayer(backgroundToneLayer)
+
+            shapesRoot.frame = frame
+            layer.addSublayer(shapesRoot)
         }
     }
 
     var currentTransitionID: Int = 0
 
     private let assets = BKThemeAssets.shared
-    private var palette: [CGColor] = BKArtBackgroundView.fallbackPalette.map(\.cgColor)
+    private var harmonized: HarmonizedPalette = BKColorEngine.make(
+        extracted: BKArtBackgroundView.fallbackPalette,
+        fallback: BKArtBackgroundView.fallbackPalette,
+        isDark: false
+    )
     private let ciContext = CIContext(options: [.cacheIntermediates: true])
     private var tintedBackgrounds: [CGImage] = []
     private var paletteSignature: String = ""
     private var processedMaskFrames: [CGImage] = []
-
     private var fromContainer: Container?
     private var toContainer: Container?
     private var transitionMaskLayer: CALayer?
@@ -233,6 +225,15 @@ private final class BKArtBackgroundLayerView: NSView {
     private var transitionTimer: DispatchSourceTimer?
     private var autoTransitionTimer: DispatchSourceTimer?
     private var transitionSeedCounter: UInt64 = 0
+    private var didPrewarmMaskFrames = false
+    private var pendingBoundsRebuild = false
+    private var isTransitionInFlight = false
+    private var didPauseBackgroundTimerForTransition = false
+    private var didPauseDotTimerForTransition = false
+
+    // Style Selector State
+    private var lastStyle: BackgroundStyle?
+    private var lastStyleRunCount: Int = 0
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -277,6 +278,13 @@ private final class BKArtBackgroundLayerView: NSView {
             || abs(lastLayoutSize.height - bounds.height) > 4
         {
             lastLayoutSize = bounds.size
+            if isTransitionInFlight || toContainer != nil {
+                pendingBoundsRebuild = true
+                layoutContainer(fromContainer)
+                layoutContainer(toContainer)
+                transitionMaskLayer?.frame = expandedBounds
+                return
+            }
             rebuildForCurrentBounds()
             return
         }
@@ -286,35 +294,51 @@ private final class BKArtBackgroundLayerView: NSView {
         transitionMaskLayer?.frame = expandedBounds
     }
 
-    func updatePalette(_ colors: [NSColor]) {
+    func updatePalette(_ colors: [NSColor], isDark: Bool) {
         guard !colors.isEmpty else { return }
-        let converted = colors.map { ($0.usingColorSpace(.deviceRGB) ?? $0).cgColor }
-        let signature = Self.paletteSignature(for: converted)
+        let converted = colors.map { $0.usingColorSpace(.deviceRGB) ?? $0 }
+        let colorSignature = Self.paletteSignature(for: converted.map(\.cgColor))
+        let signature = "\(colorSignature)|dark:\(isDark ? 1 : 0)"
         guard signature != paletteSignature else { return }
 
-        palette = converted
+        harmonized = BKColorEngine.make(
+            extracted: converted,
+            fallback: BKArtBackgroundView.fallbackPalette,
+            isDark: isDark
+        )
         paletteSignature = signature
-        tintedBackgrounds = makeTintedBackgrounds(from: assets.backgrounds, palette: converted)
+        tintedBackgrounds = makeTintedBackgrounds(from: assets.backgrounds)
+        let toneColor = harmonized.bgStops.first
+            ?? (harmonized.isDark ? NSColor.black.cgColor : NSColor.white.cgColor)
+        let toneOpacity: Float = harmonized.isDark ? 0.30 : 0.18
+        fromContainer?.backgroundToneLayer.backgroundColor = toneColor
+        fromContainer?.backgroundToneLayer.opacity = toneOpacity
+        toContainer?.backgroundToneLayer.backgroundColor = toneColor
+        toContainer?.backgroundToneLayer.opacity = toneOpacity
         applyCurrentBackgroundPhase()
 
-        // Update gradient immediately, BUT DO NOT update dot colors here.
-        // Dot colors will update on next animation cycle (startNewDotRun).
+        // Dot colors stay locked during moving and refresh on next idle->moving run start.
         if let from = fromContainer { updateDotGradient(from) }
         if let to = toContainer { updateDotGradient(to) }
+
+        retintShapes(in: fromContainer)
+        retintShapes(in: toContainer)
     }
 
     func ensureBaseContainer(seed: UInt64) {
         rebuildSeed = seed
         guard fromContainer == nil, !bounds.isEmpty else { return }
         if tintedBackgrounds.isEmpty {
-            tintedBackgrounds = makeTintedBackgrounds(from: assets.backgrounds, palette: palette)
+            tintedBackgrounds = makeTintedBackgrounds(from: assets.backgrounds)
         }
+        prewarmTransitionAssetsIfNeeded()
         let container = buildContainer(seed: seed)
         // Ensure initial container respects style choice
         if container.style == .image && tintedBackgrounds.isEmpty {
             // Fallback or retry? Should be fine as applyBackgroundPhase handles empty.
         }
         fromContainer = container
+        commitStyleHistory(container.style)
         layer?.addSublayer(container.layer)
         applyCurrentBackgroundPhase()
         startTimersIfNeeded()
@@ -327,8 +351,11 @@ private final class BKArtBackgroundLayerView: NSView {
         guard let current = fromContainer else { return }
         guard toContainer == nil else { return }
 
+        enterTransitionPerformanceMode(currentStyle: current.style)
         stopTransitionTimer()
-        let next = buildContainer(seed: seed ^ 0x9E37_79B9_7F4A_7C15)
+        // Mix seed more aggressively
+        let mixed = seed ^ 0x9E37_79B9_7F4A_7C15 ^ (UInt64(maskFrameIndex) &* 0xBF58_476D_1CE4_E5B9)
+        let next = buildContainer(seed: mixed)
         toContainer = next
         layer?.insertSublayer(next.layer, above: current.layer)
         applyBackgroundPhase(to: next)
@@ -352,6 +379,11 @@ private final class BKArtBackgroundLayerView: NSView {
 
     private func rebuildForCurrentBounds() {
         guard !bounds.isEmpty else { return }
+        guard !isTransitionInFlight else {
+            pendingBoundsRebuild = true
+            return
+        }
+        pendingBoundsRebuild = false
         stopTransitionTimer()
 
         let replacement = buildContainer(seed: rebuildSeed)
@@ -360,6 +392,7 @@ private final class BKArtBackgroundLayerView: NSView {
         transitionMaskLayer = nil
         fromContainer = replacement
         toContainer = nil
+        commitStyleHistory(replacement.style)
 
         layer?.addSublayer(replacement.layer)
         applyCurrentBackgroundPhase()
@@ -368,50 +401,65 @@ private final class BKArtBackgroundLayerView: NSView {
 
     private func layoutContainer(_ container: Container?) {
         guard let container else { return }
-        container.layer.frame = expandedBounds
-        container.backgroundLayer.frame = expandedBounds
+        let layoutFrame = expandedBounds
+        container.layer.frame = layoutFrame
+        container.backgroundLayer.frame = layoutFrame
         container.backgroundLayer.contentsScale =
             window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
+        container.backgroundToneLayer.frame = layoutFrame
+        container.shapesRoot.frame = layoutFrame
+
+        if let dotRoot = container.dotRoot {
+            dotRoot.frame = layoutFrame
+            container.dotGradient?.frame = dotRoot.bounds
+
+            for slot in container.dotSlots {
+                slot.rootLayer.frame = dotRoot.bounds
+                slot.maskBig?.frame = dotRoot.bounds
+                slot.maskSmall?.frame = dotRoot.bounds
+                slot.rootLayer.sublayers?.forEach { sublayer in
+                    sublayer.frame = dotRoot.bounds
+                }
+            }
+        }
     }
 
     private func buildContainer(seed: UInt64) -> Container {
         let container = Container(frame: bounds)
-        var rng = BKSeededRandom(seed: seed == 0 ? 0xA17D_4C59_10F3_778D : seed)
+        let normalizedSeed = seed == 0 ? 0xA17D_4C59_10F3_778D : seed
+        var rng = BKSeededRandom(seed: normalizedSeed)
+        let hasImageBackgrounds = !(!tintedBackgrounds.isEmpty ? tintedBackgrounds : assets.backgrounds).isEmpty
 
-        // 1) Weighted probability: 35% Dot, 65% Image
-        let roll = rng.next(in: 0.0..<1.0)
-        container.style = roll < 0.35 ? .dot : .image
-
-        if container.style == .dot {
-            setupDotBackground(in: container, rng: &rng)
+        // 1) 50/50 choose + anti-streak breaker.
+        let bit = ((normalizedSeed >> 17) ^ (normalizedSeed >> 41) ^ normalizedSeed) & 1
+        var proposedStyle: BackgroundStyle = (bit == 0) ? .image : .dot
+        if fromContainer == nil, hasImageBackgrounds {
+            // Ensure first screen shows artwork background at least once.
+            proposedStyle = .image
         }
-
-        // Tint Layer for Image Backgrounds (Add to every container, hide if dot)
-        // Wait, if dot mode, we might want it hidden or behind dots?
-        // Current logic: BackgroundLayer (Image) -> TintLayer -> Shapes -> Dots (if dot mode) ??
-        // Actually dot setup adds dotRoot.
-        // Let's keep tint layer consistent.
-        let tintLayer = CALayer()
-        tintLayer.frame = expandedBounds
-        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-
-        if isDark {
-            tintLayer.backgroundColor = NSColor.black.cgColor
-            tintLayer.opacity = 0.22
-        } else {
-            tintLayer.backgroundColor = NSColor.white.cgColor
-            tintLayer.opacity = 0.12
+        if !hasImageBackgrounds {
+            proposedStyle = .dot
+        } else if let last = lastStyle, lastStyleRunCount >= 1, proposedStyle == last {
+            proposedStyle = (last == .dot) ? .image : .dot
         }
-        container.backgroundTintLayer = tintLayer
-        container.layer.insertSublayer(tintLayer, above: container.backgroundLayer)
+        container.style = proposedStyle
 
-        // 2) Shapes MUST exist regardless of style
+        let currentStyle = fromContainer?.style ?? lastStyle
+        let currentStyleText = currentStyle.map(styleName) ?? "none"
+        print(
+            "[BKArtBackground] style choose \(currentStyleText)->\(styleName(container.style)) runCount=\(lastStyleRunCount) hasImage=\(hasImageBackgrounds ? 1 : 0)"
+        )
+
+        container.backgroundToneLayer.frame = expandedBounds
+        let isDark = harmonized.isDark
+        container.backgroundToneLayer.backgroundColor =
+            harmonized.bgStops.first ?? (isDark ? NSColor.black.cgColor : NSColor.white.cgColor)
+        container.backgroundToneLayer.opacity = isDark ? 0.30 : 0.18
+
+        applyStyle(to: container, style: container.style, rng: &rng)
+
         let count = rng.nextInt(in: 10...16)
         let chosenShapes = chooseShapeImages(count: count, rng: &rng)
-        let rawTint = palette.randomElement() ?? palette[0]
-        let nsTint = NSColor(cgColor: rawTint) ?? .white
-
-        let finalTint = applyForegroundTone(nsTint, mode: isDark ? .dark : .light).cgColor
 
         let forbiddenRect = CGRect(
             x: bounds.width * 0.28,
@@ -420,59 +468,214 @@ private final class BKArtBackgroundLayerView: NSView {
             height: bounds.height * 0.50
         )
 
-        for image in chosenShapes {
+        for selectedShape in chosenShapes {
             let base = min(bounds.width, bounds.height)
-            let side = base * CGFloat(rng.next(in: 0.50...1.80)) * 0.22
-            let point = randomEdgePoint(side: side, forbiddenRect: forbiddenRect, rng: &rng)
+            let randomScale = CGFloat(rng.next(in: 0.50...1.80))
+            let baseSide = base * randomScale * 0.22
 
-            // 3) Fix Geometry: Use (0,0,w,h) bounds
+            let minSpecialRandomScale: CGFloat = selectedShape.scaleMultiplier >= 3.0 ? 1.20
+                : (selectedShape.scaleMultiplier >= 2.0 ? 0.95 : 0.50)
+            let enforcedBaseSide = base * max(randomScale, minSpecialRandomScale) * 0.22
+            let side = selectedShape.scaleMultiplier > 1.0
+                ? (enforcedBaseSide * selectedShape.scaleMultiplier)
+                : baseSide
+            let point = selectedShape.isEdgePinned
+                ? randomPinnedEdgePoint(side: side, rng: &rng)
+                : randomEdgePoint(side: side, forbiddenRect: forbiddenRect, rng: &rng)
+
             let size = CGSize(width: side, height: side)
-            let shape = makeTintedShapeLayer(image: image, size: size, tint: finalTint)
+            let finalTint = nextShapeTint(rng: &rng)
+            let shape = makeTintedShapeLayer(image: selectedShape.image, size: size, tint: finalTint)
             shape.position = point
 
-            // Insert shapes above tint layer
-            container.layer.insertSublayer(shape, above: tintLayer)
+            container.shapesRoot.addSublayer(shape)
             container.shapeLayers.append(shape)
 
+            let driftX = selectedShape.isEdgePinned ? CGFloat(0) : CGFloat(rng.next(in: -12...12))
+            let driftY = selectedShape.isEdgePinned ? CGFloat(0) : CGFloat(rng.next(in: -16...16))
+            let phaseSpeed = selectedShape.isEdgePinned ? CGFloat(0) : CGFloat(rng.next(in: 0.35...0.95))
             let state = ShapeState(
                 basePosition: point,
-                driftX: CGFloat(rng.next(in: -12...12)),
-                driftY: CGFloat(rng.next(in: -16...16)),
+                driftX: driftX,
+                driftY: driftY,
                 phase: CGFloat(rng.next(in: 0...(Double.pi * 2))),
-                phaseSpeed: CGFloat(rng.next(in: 0.35...0.95)),
+                phaseSpeed: phaseSpeed,
                 angle: CGFloat(rng.next(in: 0...(Double.pi * 2))),
                 angularSpeed: CGFloat(rng.next(in: -0.22...0.22))
             )
             container.shapeStates.append(state)
         }
 
-        // If Dot Mode, ensure DotRoot is ABOVE shapes (if it was added by setupDotBackground)
-        if let dotRoot = container.dotRoot {
-            // Re-order dotRoot to be top-most
-            dotRoot.removeFromSuperlayer()
-            container.layer.addSublayer(dotRoot)
-        }
+        ensureLayerOrder(for: container)
 
-        // 4) Temporary Logging
-        print(
-            "[BKArtBackground] Built Container | Style: \(container.style) | Shapes: \(container.shapeLayers.count) | DotRoot: \(container.dotRoot != nil)"
-        )
+#if DEBUG
+        let minExpectedShapeCount = assets.shapes.isEmpty ? 0 : 10
+        assert(container.shapeLayers.count >= minExpectedShapeCount)
+        assert(container.shapesRoot.sublayers?.count ?? 0 >= minExpectedShapeCount)
+#endif
 
         return container
     }
 
-    private func chooseShapeImages(count: Int, rng: inout BKSeededRandom) -> [CGImage] {
+    private func commitStyleHistory(_ style: BackgroundStyle) {
+        if lastStyle == style {
+            lastStyleRunCount += 1
+        } else {
+            lastStyle = style
+            lastStyleRunCount = 0
+        }
+    }
+
+    private func styleName(_ style: BackgroundStyle) -> String {
+        switch style {
+        case .image: return "image"
+        case .dot: return "dot"
+        }
+    }
+
+    private func applyStyle(
+        to container: Container,
+        style: BackgroundStyle,
+        rng: inout BKSeededRandom
+    ) {
+        container.style = style
+
+        switch style {
+        case .image:
+            if let dotRoot = container.dotRoot {
+                dotRoot.removeFromSuperlayer()
+            }
+            container.dotSlots.forEach { $0.rootLayer.removeFromSuperlayer() }
+            container.dotSlots.removeAll(keepingCapacity: false)
+            container.dotGradient = nil
+            container.dotRoot = nil
+            container.backgroundToneLayer.isHidden = false
+
+#if DEBUG
+            assert(container.dotRoot == nil || container.dotRoot?.isHidden == true)
+#endif
+
+        case .dot:
+            if container.dotRoot == nil {
+                setupDotBackground(in: container, rng: &rng)
+            }
+            container.backgroundToneLayer.isHidden = true
+        }
+
+        ensureLayerOrder(for: container)
+    }
+
+    private func ensureLayerOrder(for container: Container) {
+        container.layer.insertSublayer(container.backgroundLayer, at: 0)
+        container.layer.insertSublayer(container.backgroundToneLayer, above: container.backgroundLayer)
+
+        if let dotRoot = container.dotRoot {
+            container.layer.insertSublayer(dotRoot, above: container.backgroundToneLayer)
+            container.layer.insertSublayer(container.shapesRoot, above: dotRoot)
+        } else {
+            container.layer.insertSublayer(container.shapesRoot, above: container.backgroundToneLayer)
+        }
+    }
+
+    private func chooseShapeImages(count: Int, rng: inout BKSeededRandom) -> [SelectedShape] {
         guard !assets.shapes.isEmpty else { return [] }
         var indexed = Array(assets.shapes.enumerated())
         indexed.shuffle(using: &rng)
         if indexed.count >= count {
-            return Array(indexed.prefix(count).map(\.element))
+            return Array(indexed.prefix(count)).map { pair in
+                SelectedShape(
+                    image: pair.element,
+                    scaleMultiplier: assets.specialShapeScaleByIndex[pair.offset] ?? 1.0,
+                    isEdgePinned: assets.edgePinnedShapeIndices.contains(pair.offset)
+                )
+            }
         }
-        var output = indexed.map(\.element)
+        var output = indexed.map { pair in
+            SelectedShape(
+                image: pair.element,
+                scaleMultiplier: assets.specialShapeScaleByIndex[pair.offset] ?? 1.0,
+                isEdgePinned: assets.edgePinnedShapeIndices.contains(pair.offset)
+            )
+        }
         while output.count < count {
-            output.append(assets.shapes[Int(rng.next(in: 0..<Double(assets.shapes.count)))])
+            let randomIndex = Int(rng.next(in: 0..<Double(assets.shapes.count)))
+            output.append(
+                SelectedShape(
+                    image: assets.shapes[randomIndex],
+                    scaleMultiplier: assets.specialShapeScaleByIndex[randomIndex] ?? 1.0,
+                    isEdgePinned: assets.edgePinnedShapeIndices.contains(randomIndex)
+                )
+            )
         }
         return output
+    }
+
+    private func randomPinnedEdgePoint(side: CGFloat, rng: inout BKSeededRandom) -> CGPoint {
+        let half = side * 0.5
+        let overflowRatio = CGFloat(rng.next(in: 0.20...0.40))
+        let overflow = half * overflowRatio
+
+        let sidePick = rng.nextInt(in: 0...3)
+        switch sidePick {
+        case 0:  // top
+            return CGPoint(
+                x: CGFloat(rng.next(in: Double(-half)...Double(bounds.width + half))),
+                y: bounds.height - half + overflow
+            )
+        case 1:  // bottom
+            return CGPoint(
+                x: CGFloat(rng.next(in: Double(-half)...Double(bounds.width + half))),
+                y: half - overflow
+            )
+        case 2:  // left
+            return CGPoint(
+                x: half - overflow,
+                y: CGFloat(rng.next(in: Double(-half)...Double(bounds.height + half)))
+            )
+        default:  // right
+            return CGPoint(
+                x: bounds.width - half + overflow,
+                y: CGFloat(rng.next(in: Double(-half)...Double(bounds.height + half)))
+            )
+        }
+    }
+
+    private func nextShapeTint(rng: inout BKSeededRandom) -> CGColor {
+        guard !harmonized.shapePool.isEmpty else {
+            return harmonized.dotBase
+        }
+        let index = Int(rng.next(in: 0..<Double(harmonized.shapePool.count)))
+        let base = harmonized.shapePool[index]
+        let jitter = shapeJitterBudget()
+        let hueJitter = CGFloat(rng.next(in: jitter.hue))
+        let satJitter = CGFloat(rng.next(in: jitter.saturation))
+        let briJitter = CGFloat(rng.next(in: jitter.brightness))
+        return BKColorEngine.stabilize(
+            color: base,
+            kind: .shape,
+            palette: harmonized,
+            hueJitter: hueJitter,
+            saturationJitter: satJitter,
+            brightnessJitter: briJitter
+        )
+    }
+
+    private func retintShapes(in container: Container?) {
+        guard let container, !container.shapeLayers.isEmpty else { return }
+        var rng = BKSeededRandom(
+            seed: rebuildSeed
+                ^ UInt64(truncatingIfNeeded: container.shapeLayers.count)
+                ^ UInt64(truncatingIfNeeded: backgroundPhase)
+        )
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for layer in container.shapeLayers {
+            let tint = nextShapeTint(rng: &rng)
+            if let fill = layer.sublayers?.first {
+                fill.backgroundColor = tint
+            }
+        }
+        CATransaction.commit()
     }
 
     private func randomEdgePoint(
@@ -480,59 +683,65 @@ private final class BKArtBackgroundLayerView: NSView {
         forbiddenRect: CGRect,
         rng: inout BKSeededRandom
     ) -> CGPoint {
-        let edgeBandX = max(24, bounds.width * 0.18)
-        let edgeBandY = max(24, bounds.height * 0.18)
-        let half = side * 0.5
-        let xRange = half...(bounds.width - half)
-        let yRange = half...(bounds.height - half)
+        let minDimension = max(1, min(bounds.width, bounds.height))
+        let safeSide = min(max(side, 1), max(1, minDimension - 2))
+        let half = safeSide * 0.5
+        let xLower = half
+        let xUpper = max(half, bounds.width - half)
+        let yLower = half
+        let yUpper = max(half, bounds.height - half)
+        let xSpan = max(0, xUpper - xLower)
+        let ySpan = max(0, yUpper - yLower)
+        let edgeBandX = min(max(24, bounds.width * 0.18), xSpan)
+        let edgeBandY = min(max(24, bounds.height * 0.18), ySpan)
+
+        func randomBetween(_ a: CGFloat, _ b: CGFloat) -> CGFloat {
+            let lo = min(a, b)
+            let hi = max(a, b)
+            return CGFloat(rng.next(in: Double(lo)...Double(hi)))
+        }
 
         for _ in 0..<28 {
             let sidePick = rng.next(in: 0.0..<1.0)
             let point: CGPoint
             if sidePick < 0.30 {
                 point = CGPoint(
-                    x: CGFloat(rng.next(in: Double(xRange.lowerBound)...Double(xRange.upperBound))),
-                    y: CGFloat(
-                        rng.next(
-                            in: Double(yRange.upperBound - edgeBandY)...Double(yRange.upperBound)))
+                    x: randomBetween(xLower, xUpper),
+                    y: randomBetween(yUpper - edgeBandY, yUpper)
                 )
             } else if sidePick < 0.60 {
                 point = CGPoint(
-                    x: CGFloat(rng.next(in: Double(xRange.lowerBound)...Double(xRange.upperBound))),
-                    y: CGFloat(
-                        rng.next(
-                            in: Double(yRange.lowerBound)...Double(yRange.lowerBound + edgeBandY)))
+                    x: randomBetween(xLower, xUpper),
+                    y: randomBetween(yLower, yLower + edgeBandY)
                 )
             } else if sidePick < 0.80 {
                 point = CGPoint(
-                    x: CGFloat(
-                        rng.next(
-                            in: Double(xRange.lowerBound)...Double(xRange.lowerBound + edgeBandX))),
-                    y: CGFloat(rng.next(in: Double(yRange.lowerBound)...Double(yRange.upperBound)))
+                    x: randomBetween(xLower, xLower + edgeBandX),
+                    y: randomBetween(yLower, yUpper)
                 )
             } else {
                 point = CGPoint(
-                    x: CGFloat(
-                        rng.next(
-                            in: Double(xRange.upperBound - edgeBandX)...Double(xRange.upperBound))),
-                    y: CGFloat(rng.next(in: Double(yRange.lowerBound)...Double(yRange.upperBound)))
+                    x: randomBetween(xUpper - edgeBandX, xUpper),
+                    y: randomBetween(yLower, yUpper)
                 )
             }
 
             let frame = CGRect(
                 x: point.x - half,
                 y: point.y - half,
-                width: side,
-                height: side
+                width: safeSide,
+                height: safeSide
             )
             if !frame.intersects(forbiddenRect) {
                 return point
             }
         }
 
+        let fallbackX = min(max(half + 16, xLower), xUpper)
+        let fallbackY = min(max(bounds.height - half - 16, yLower), yUpper)
         return CGPoint(
-            x: half + 16,
-            y: bounds.height - half - 16
+            x: fallbackX,
+            y: fallbackY
         )
     }
 
@@ -562,16 +771,8 @@ private final class BKArtBackgroundLayerView: NSView {
 
     private func startTimersIfNeeded() {
         guard window != nil else { return }
-        if backgroundTimer == nil {
-            let timer = DispatchSource.makeTimerSource(queue: .main)
-            // 0.7 fps = 1.0 / 0.7 ~= 1.428s
-            timer.schedule(deadline: .now(), repeating: 1.0 / 0.7)
-            timer.setEventHandler { [weak self] in
-                self?.tickBackground()
-            }
-            timer.resume()
-            backgroundTimer = timer
-        }
+        prewarmTransitionAssetsIfNeeded()
+        startBackgroundTimerIfNeeded()
         if shapeTimer == nil {
             let timer = DispatchSource.makeTimerSource(queue: .main)
             timer.schedule(deadline: .now(), repeating: 1.0 / 6.0)
@@ -581,25 +782,32 @@ private final class BKArtBackgroundLayerView: NSView {
             timer.resume()
             shapeTimer = timer
         }
-        if dotTimer == nil {
-            let timer = DispatchSource.makeTimerSource(queue: .main)
-            // 15fps for smooth dots
-            timer.schedule(deadline: .now(), repeating: 1.0 / 15.0)
-            timer.setEventHandler { [weak self] in
-                self?.tickDotAnimation()
-            }
-            timer.resume()
-            dotTimer = timer
-        }
+        startDotTimerIfNeeded()
         if autoTransitionTimer == nil {
-            let timer = DispatchSource.makeTimerSource(queue: .main)
-            timer.schedule(deadline: .now() + 15.0, repeating: 15.0)
-            timer.setEventHandler { [weak self] in
-                self?.tickAutoTransition()
-            }
-            timer.resume()
-            autoTransitionTimer = timer
+            scheduleNextAutoTransition()
         }
+    }
+
+    private func startBackgroundTimerIfNeeded() {
+        guard backgroundTimer == nil else { return }
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now(), repeating: 1.0 / 0.7)
+        timer.setEventHandler { [weak self] in
+            self?.tickBackground()
+        }
+        timer.resume()
+        backgroundTimer = timer
+    }
+
+    private func startDotTimerIfNeeded() {
+        guard dotTimer == nil else { return }
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now(), repeating: 1.0 / 15.0)
+        timer.setEventHandler { [weak self] in
+            self?.tickDotAnimation()
+        }
+        timer.resume()
+        dotTimer = timer
     }
 
     private func stopTimers() {
@@ -612,6 +820,9 @@ private final class BKArtBackgroundLayerView: NSView {
         autoTransitionTimer?.cancel()
         autoTransitionTimer = nil
         stopTransitionTimer()
+        isTransitionInFlight = false
+        didPauseBackgroundTimerForTransition = false
+        didPauseDotTimerForTransition = false
     }
 
     private func startTransitionTimer() {
@@ -629,6 +840,45 @@ private final class BKArtBackgroundLayerView: NSView {
         transitionTimer = nil
     }
 
+    private func enterTransitionPerformanceMode(currentStyle: BackgroundStyle) {
+        isTransitionInFlight = true
+
+        if backgroundTimer != nil {
+            backgroundTimer?.cancel()
+            backgroundTimer = nil
+            didPauseBackgroundTimerForTransition = true
+        } else {
+            didPauseBackgroundTimerForTransition = false
+        }
+
+        if currentStyle != .dot, dotTimer != nil {
+            dotTimer?.cancel()
+            dotTimer = nil
+            didPauseDotTimerForTransition = true
+        } else {
+            didPauseDotTimerForTransition = false
+        }
+    }
+
+    private func exitTransitionPerformanceMode() {
+        isTransitionInFlight = false
+
+        if didPauseBackgroundTimerForTransition {
+            didPauseBackgroundTimerForTransition = false
+            startBackgroundTimerIfNeeded()
+        }
+
+        if didPauseDotTimerForTransition {
+            didPauseDotTimerForTransition = false
+            startDotTimerIfNeeded()
+        }
+
+        if pendingBoundsRebuild {
+            pendingBoundsRebuild = false
+            rebuildForCurrentBounds()
+        }
+    }
+
     private func tickBackground() {
         guard !assets.backgrounds.isEmpty else { return }
         backgroundPhase &+= 1
@@ -636,40 +886,25 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     private func updateDotGradient(_ container: Container) {
-        guard let gradient = container.dotGradient, !palette.isEmpty else { return }
-
-        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        let colors = normalizedPaletteColors(from: palette).map {
-            applyBackgroundTone($0, mode: isDark ? .dark : .light).cgColor
-        }
-
-        // Simple linear gradient from palette (Tone mapped)
-        gradient.colors = [
-            colors[0],
-            colors[1],
-            colors[2],
-        ]
-
-        // No dot color update here. Dot slots manage their own colors.
-        // If we are recovering state and have slots but no color (unlikely),
-        // tickDotBackground will handle spawning new slots which get colored.
+        guard let gradient = container.dotGradient else { return }
+        gradient.colors = harmonized.bgStops
     }
 
-    // Legacy assignRandomDotColor removed.
-    // New logic uses assignRandomColor(to: Slot)
-
-    private func assignRandomColor(to slot: DotSlot, with palette: [CGColor]) {
-        guard !palette.isEmpty else { return }
-        // Pick random
-        let rawColor = palette.randomElement() ?? palette[0]
-        let nsColor = NSColor(cgColor: rawColor) ?? .white
-        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-
-        // Apply FG Tone
-        let finalColor = applyForegroundTone(nsColor, mode: isDark ? .dark : .light)
-        let colorWithAlpha = finalColor.withAlphaComponent(0.90)
-
-        slot.color = colorWithAlpha.cgColor
+    private func assignRandomColor(to slot: DotSlot, rng: inout BKSeededRandom) {
+        let jitter = dotJitterBudget()
+        let hueJitter = CGFloat(rng.next(in: jitter.hue))
+        let satJitter = CGFloat(rng.next(in: jitter.saturation))
+        let briJitter = CGFloat(rng.next(in: jitter.brightness))
+        let finalColor = BKColorEngine.stabilize(
+            color: harmonized.dotBase,
+            kind: .dot,
+            palette: harmonized,
+            hueJitter: hueJitter,
+            saturationJitter: satJitter,
+            brightnessJitter: briJitter
+        )
+        let withAlpha = (NSColor(cgColor: finalColor) ?? .white).withAlphaComponent(0.90).cgColor
+        slot.color = withAlpha
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -678,11 +913,33 @@ private final class BKArtBackgroundLayerView: NSView {
         CATransaction.commit()
     }
 
-    // MARK: - Tone Mapping Helpers
+    private func scheduleNextAutoTransition() {
+        autoTransitionTimer?.cancel()
+
+        // Dynamic interval: 20s if Dot (to let animation breathe), 15s if Image
+        let interval: TimeInterval = (fromContainer?.style == .dot) ? 20.0 : 15.0
+
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + interval, repeating: .infinity)  // One-shot logic effectively via reschedule
+        timer.setEventHandler { [weak self] in
+            self?.tickAutoTransition()
+        }
+        timer.resume()
+        autoTransitionTimer = timer
+    }
 
     private func tickAutoTransition() {
         let seed = nextTransitionSeed()
         triggerTransition(seed: seed)
+
+        // Reschedule based on new state (after transition starts)
+        // Note: triggerTransition updates toContainer, but fromContainer is still the old one until finalize.
+        // We ideally want to schedule based on the *next* container's style,
+        // but 'toContainer' is the one entering.
+        // Let's rely on the fact that when finalize happens, loop continues.
+        // Actually, triggerTransition creates toContainer. Let's peek at toContainer style for next delay?
+        // Or simple: Just schedule next tick.
+        scheduleNextAutoTransition()
     }
 
     private func applyCurrentBackgroundPhase() {
@@ -693,25 +950,35 @@ private final class BKArtBackgroundLayerView: NSView {
     private func applyBackgroundPhase(to container: Container?) {
         guard let container else { return }
 
+        var styleRng = BKSeededRandom(
+            seed: rebuildSeed
+                ^ UInt64(bitPattern: Int64(container.style.rawValue))
+                ^ UInt64(bitPattern: Int64(backgroundPhase))
+        )
+        applyStyle(to: container, style: container.style, rng: &styleRng)
+
         if container.style == .dot {
-            // For dot style, ensure backgroundLayer is clean'ish
             container.backgroundLayer.contents = nil
-            container.backgroundLayer.backgroundColor = NSColor.black.cgColor
-            // Update gradient colors if palette changed
+            container.backgroundLayer.backgroundColor = harmonized.bgStops.first ?? NSColor.black.cgColor
             updateDotGradient(container)
             return
         }
 
-        // If image style, ensure tint layer is visible
-        container.backgroundTintLayer?.isHidden = false
-
         let source = !tintedBackgrounds.isEmpty ? tintedBackgrounds : assets.backgrounds
         guard !source.isEmpty else { return }
-        let image = source[backgroundPhase % source.count]
+        let sourceIndex = backgroundPhase % source.count
+        let image = source[sourceIndex]
         container.backgroundLayer.contentsGravity = .resizeAspectFill
         container.backgroundLayer.contentsScale =
             window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
         container.backgroundLayer.contents = image
+
+#if DEBUG
+        assert(container.dotRoot == nil || container.dotRoot?.isHidden == true)
+        assert(container.backgroundLayer.contents != nil)
+        let minExpectedShapeCount = assets.shapes.isEmpty ? 0 : 10
+        assert(container.shapesRoot.sublayers?.count ?? 0 >= minExpectedShapeCount)
+#endif
     }
 
     private func tickShapes() {
@@ -776,6 +1043,7 @@ private final class BKArtBackgroundLayerView: NSView {
     private func finalizeTransition() {
         guard let next = toContainer else {
             stopTransitionTimer()
+            exitTransitionPerformanceMode()
             return
         }
         next.layer.mask = nil
@@ -783,12 +1051,14 @@ private final class BKArtBackgroundLayerView: NSView {
         fromContainer?.layer.removeFromSuperlayer()
         fromContainer = next
         toContainer = nil
+        commitStyleHistory(next.style)
         stopTransitionTimer()
+        exitTransitionPerformanceMode()
     }
 
-    private func makeTintedBackgrounds(from source: [CGImage], palette: [CGColor]) -> [CGImage] {
+    private func makeTintedBackgrounds(from source: [CGImage]) -> [CGImage] {
         guard !source.isEmpty else { return [] }
-        let colors = normalizedPaletteColors(from: palette)
+        let colors = backgroundToneStops()
         let mapImage = makeColorMapImage(colors: colors)
 
         return source.compactMap { image in
@@ -797,7 +1067,7 @@ private final class BKArtBackgroundLayerView: NSView {
                 "CIColorControls",
                 parameters: [
                     kCIInputSaturationKey: 0.0,
-                    kCIInputContrastKey: 1.0,
+                    kCIInputContrastKey: 1.08,
                     kCIInputBrightnessKey: 0.0,
                 ]
             )
@@ -807,29 +1077,60 @@ private final class BKArtBackgroundLayerView: NSView {
                 "CIColorMap",
                 parameters: ["inputGradientImage": mapImage]
             )
-            return ciContext.createCGImage(mapped, from: mapped.extent)
+            let mappedSoftAlpha = mapped.applyingFilter(
+                "CIColorMatrix",
+                parameters: [
+                    "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 0.66)
+                ]
+            )
+            let desaturatedOriginal = input.applyingFilter(
+                "CIColorControls",
+                parameters: [
+                    kCIInputSaturationKey: 0.22,
+                    kCIInputContrastKey: 1.10,
+                    kCIInputBrightnessKey: 0.0,
+                ]
+            )
+            let composed = mappedSoftAlpha.applyingFilter(
+                "CISourceOverCompositing",
+                parameters: [kCIInputBackgroundImageKey: desaturatedOriginal]
+            )
+            return ciContext.createCGImage(composed, from: input.extent)
         }
     }
 
-    private func normalizedPaletteColors(from colors: [CGColor]) -> [NSColor] {
-        let base = colors.compactMap { NSColor(cgColor: $0)?.usingColorSpace(.deviceRGB) }
+    private func backgroundToneStops() -> [NSColor] {
+        let stops = harmonized.bgStops.compactMap { NSColor(cgColor: $0)?.usingColorSpace(.deviceRGB) }
+        let normalized: [NSColor]
+        if harmonized.isGrayscaleCover {
+            normalized = stops
+        } else {
+            normalized = stops.map { enforceImageToneFloor($0) }
+        }
+        if normalized.count >= 3 {
+            return Array(normalized.prefix(3))
+        }
         let fallback = BKArtBackgroundView.fallbackPalette
-        let merged = (base + fallback)
-
-        var output: [NSColor] = []
-        for color in merged {
-            output.append(color)
-            if output.count == 3 { break }
-        }
-
+        var output = normalized
         while output.count < 3 {
-            output.append(fallback[output.count % fallback.count])
+            output.append(fallback[output.count % fallback.count].usingColorSpace(.deviceRGB) ?? fallback[output.count % fallback.count])
         }
+        if !harmonized.isGrayscaleCover {
+            output = output.map { enforceImageToneFloor($0) }
+        }
+        return output
+    }
 
-        let dark = output[0].blended(withFraction: 0.30, of: .black) ?? output[0]
-        let mid = output[1]
-        let light = output[2].blended(withFraction: 0.28, of: .white) ?? output[2]
-        return [dark, mid, light]
+    private func enforceImageToneFloor(_ color: NSColor) -> NSColor {
+        let rgb = color.usingColorSpace(.deviceRGB) ?? color
+        var h: CGFloat = 0
+        var s: CGFloat = 0
+        var b: CGFloat = 0
+        var a: CGFloat = 0
+        rgb.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+        let clampedS = max(0.18, min(1.0, s))
+        let clampedB = max(0.22, min(1.0, b))
+        return NSColor(deviceHue: h, saturation: clampedS, brightness: clampedB, alpha: a)
     }
 
     private func makeColorMapImage(colors: [NSColor]) -> CIImage? {
@@ -862,7 +1163,7 @@ private final class BKArtBackgroundLayerView: NSView {
         }
 
         guard
-            let provider = CGDataProvider(data: NSData(bytes: &data, length: data.count)),
+            let provider = CGDataProvider(data: Data(data) as CFData),
             let cgImage = CGImage(
                 width: width,
                 height: height,
@@ -905,6 +1206,13 @@ private final class BKArtBackgroundLayerView: NSView {
         bounds.insetBy(dx: -1.0, dy: -1.0)
     }
 
+    private func prewarmTransitionAssetsIfNeeded() {
+        guard !didPrewarmMaskFrames else { return }
+        guard !assets.maskFrames.isEmpty else { return }
+        didPrewarmMaskFrames = true
+        _ = resolvedMaskFrames()
+    }
+
     private func resolvedMaskFrames() -> [CGImage] {
         if !processedMaskFrames.isEmpty {
             return processedMaskFrames
@@ -941,7 +1249,7 @@ private final class BKArtBackgroundLayerView: NSView {
         root.frame = expandedBounds
         root.masksToBounds = true
         container.dotRoot = root
-        container.layer.insertSublayer(root, above: container.backgroundLayer)
+        container.layer.insertSublayer(root, above: container.backgroundToneLayer)
 
         // A) Gradient Background (Shared)
         let gradient = CAGradientLayer()
@@ -952,20 +1260,25 @@ private final class BKArtBackgroundLayerView: NSView {
         root.addSublayer(gradient)
         updateDotGradient(container)
 
-        // Initialize first Slot
-        createAndAddSlot(to: container, rng: &rng, overlapT: 0.88)  // Initial overlap T
+        // Initialize first Slot.
+        createAndAddSlot(to: container, rng: &rng, overlapT: 0.88, initialIdleDelay: 0)
+        ensureLayerOrder(for: container)
     }
 
     private func createAndAddSlot(
-        to container: Container, rng: inout BKSeededRandom, overlapT: Double? = nil
+        to container: Container,
+        rng: inout BKSeededRandom,
+        overlapT: Double? = nil,
+        initialIdleDelay: TimeInterval? = nil
     ) {
         guard let root = container.dotRoot else { return }
 
         // 1. Random Parameters
         let baseSize = max(bounds.width, bounds.height)
         let r = baseSize * 0.30
-        let start = randomOffscreenPoint(radius: r, rng: &rng)
-        let end = randomOffscreenPoint(radius: r, rng: &rng)
+        // Use marginMul 1.05 for start (closer/faster entry), 1.45 for end
+        let start = randomOffscreenPoint(radius: r, rng: &rng, marginMul: 1.05)
+        let end = randomOffscreenPoint(radius: r, rng: &rng, marginMul: 1.45)
 
         let cp1 = CGPoint(
             x: rng.next(in: Double(bounds.minX)...Double(bounds.maxX)),
@@ -975,13 +1288,19 @@ private final class BKArtBackgroundLayerView: NSView {
             x: rng.next(in: Double(bounds.minX)...Double(bounds.maxX)),
             y: rng.next(in: Double(bounds.minY)...Double(bounds.maxY))
         )
-        // Slower duration: 12.0 ... 22.0
-        let duration = rng.next(in: 12.0...22.0)
-        // Lead-in overlap: 0.82 ... 0.92
-        let leadIn = overlapT ?? rng.next(in: 0.82...0.92)
+        // Slower duration: 12.0 ... 17.0 (Don't go too slow)
+        let duration = rng.next(in: 12.0...17.0)
 
+        // Lead-in overlap: 0.55 ... 0.75 (Earlier spawn)
+        var leadIn = overlapT ?? rng.next(in: 0.55...0.75)
+        // If really slow, pull lead-in even earlier
+        if duration > 16.0 {
+            leadIn = max(0.50, leadIn - 0.05)
+        }
+
+        let idleDelay = max(0, initialIdleDelay ?? rng.next(in: 0.10...0.45))
         let anim = DotAnimState(
-            motion: .moving(0.0),
+            motion: .idle(idleDelay),
             start: start, cp1: cp1, cp2: cp2, end: end,
             duration: duration,
             leadInOverlapT: leadIn
@@ -1008,7 +1327,7 @@ private final class BKArtBackgroundLayerView: NSView {
             to: grid1, cols: cols, rows: rows, spacing: dotSpacing, radius: slot.radiusBig,
             opacity: 0.90)
         slot.rootLayer.addSublayer(grid1)
-        slot.cellBig = cell1  // Save for coloring
+        slot.cellBig = cell1
 
         let mask1 = CAShapeLayer()
         mask1.fillColor = NSColor.black.cgColor
@@ -1029,12 +1348,61 @@ private final class BKArtBackgroundLayerView: NSView {
         grid2.mask = mask2
         slot.maskSmall = mask2
 
-        // 4. Assign Color
-        assignRandomColor(to: slot, with: self.palette)
-
-        // 5. Add to container
+        // 4. Add to container. Tint is assigned when this slot enters moving.
         root.addSublayer(slot.rootLayer)
         container.dotSlots.append(slot)
+    }
+
+    private struct JitterBudget {
+        let hue: ClosedRange<Double>
+        let saturation: ClosedRange<Double>
+        let brightness: ClosedRange<Double>
+    }
+
+    private func shapeJitterBudget() -> JitterBudget {
+        if harmonized.isGrayscaleCover {
+            return JitterBudget(hue: -6...6, saturation: -0.02...0.02, brightness: -0.02...0.02)
+        }
+        if harmonized.isNearGray {
+            return JitterBudget(hue: -12...12, saturation: -0.03...0.03, brightness: -0.03...0.03)
+        }
+        switch harmonized.complexity {
+        case .monochrome:
+            return JitterBudget(hue: -6...6, saturation: -0.02...0.02, brightness: -0.02...0.02)
+        case .low:
+            return JitterBudget(hue: -4...4, saturation: -0.03...0.03, brightness: -0.03...0.03)
+        case .medium, .high:
+            return JitterBudget(hue: -6...6, saturation: -0.04...0.04, brightness: -0.04...0.04)
+        }
+    }
+
+    private func dotJitterBudget() -> JitterBudget {
+        if harmonized.isGrayscaleCover {
+            return JitterBudget(hue: -6...6, saturation: -0.02...0.02, brightness: -0.02...0.02)
+        }
+        if harmonized.isNearGray {
+            return JitterBudget(hue: -12...12, saturation: -0.03...0.03, brightness: -0.03...0.03)
+        }
+        switch harmonized.complexity {
+        case .monochrome:
+            return JitterBudget(hue: -6...6, saturation: -0.02...0.02, brightness: -0.02...0.02)
+        case .low:
+            return JitterBudget(hue: -3...3, saturation: -0.03...0.03, brightness: -0.03...0.03)
+        case .medium, .high:
+            return JitterBudget(hue: -6...6, saturation: -0.04...0.04, brightness: -0.04...0.04)
+        }
+    }
+
+    private func dotColorSeed(for slot: DotSlot) -> UInt64 {
+        let sx = UInt64(bitPattern: Int64((Double(slot.anim.start.x) * 1000).rounded()))
+        let sy = UInt64(bitPattern: Int64((Double(slot.anim.start.y) * 1000).rounded()))
+        let ex = UInt64(bitPattern: Int64((Double(slot.anim.end.x) * 1000).rounded()))
+        let ey = UInt64(bitPattern: Int64((Double(slot.anim.end.y) * 1000).rounded()))
+        return
+            sx
+            ^ (sy &* 0x9E37_79B9_7F4A_7C15)
+            ^ (ex &* 0xBF58_476D_1CE4_E5B9)
+            ^ (ey &* 0x94D0_49BB_1331_11EB)
     }
 
     @discardableResult
@@ -1045,7 +1413,7 @@ private final class BKArtBackgroundLayerView: NSView {
         let dot = CAShapeLayer()
         dot.bounds = CGRect(x: 0, y: 0, width: radius * 2, height: radius * 2)
         dot.path = CGPath(ellipseIn: dot.bounds, transform: nil)
-        // Default color, dark grey from palette to avoid white flash
+        // Default neutral color to avoid white flash before slot tint is assigned.
         dot.fillColor = NSColor(white: 0.3, alpha: 1.0).cgColor
         dot.opacity = opacity
 
@@ -1079,6 +1447,12 @@ private final class BKArtBackgroundLayerView: NSView {
             case .idle(let remaining):
                 let next = remaining - dt
                 if next <= 0 {
+                    var recolorRng = BKSeededRandom(
+                        seed: rebuildSeed
+                            ^ dotColorSeed(for: slot)
+                            ^ UInt64(bitPattern: Int64(Double(backgroundPhase) * 131.0))
+                    )
+                    assignRandomColor(to: slot, rng: &recolorRng)
                     slot.anim.motion = .moving(0)
                 } else {
                     slot.anim.motion = .idle(next)
@@ -1152,7 +1526,7 @@ private final class BKArtBackgroundLayerView: NSView {
         // Safety: If somehow empty, spawn one
         if container.dotSlots.isEmpty {
             var rng = BKSeededRandom(seed: UInt64(Date().timeIntervalSince1970))
-            createAndAddSlot(to: container, rng: &rng)
+            createAndAddSlot(to: container, rng: &rng, initialIdleDelay: 0)
         }
     }
 
@@ -1180,13 +1554,13 @@ private final class BKArtBackgroundLayerView: NSView {
         return x * x * x * x * x
     }
 
-    private func randomOffscreenPoint(radius: CGFloat, rng: inout BKSeededRandom) -> CGPoint {
+    private func randomOffscreenPoint(
+        radius: CGFloat, rng: inout BKSeededRandom, marginMul: CGFloat = 1.5
+    ) -> CGPoint {
         // Pick a side: 0=top, 1=bottom, 2=left, 3=right
         let side = rng.nextInt(in: 0...3)
         // Explicitly force far offscreen.
-        // If center is here, and radius is r. To be fully offscreen, center needs to be > r away from edge.
-        // Let's go 1.5 * r just to be safe and "slowly enter"
-        let margin = radius * 1.5
+        let margin = radius * marginMul
 
         switch side {
         case 0:  // Top
@@ -1216,62 +1590,6 @@ private final class BKArtBackgroundLayerView: NSView {
         }
     }
 
-    private enum ToneMode {
-        case dark
-        case light
-    }
-
-    private func applyBackgroundTone(_ color: NSColor, mode: ToneMode) -> NSColor {
-        // Uniform desaturation
-        var h: CGFloat = 0
-        var s: CGFloat = 0
-        var b: CGFloat = 0
-        var a: CGFloat = 0
-        color.usingColorSpace(.deviceRGB)?.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
-
-        // s *= 0.65~0.80 -> 0.70
-        let newS = s * 0.70
-        var newB = b
-
-        if mode == .dark {
-            // Dark: clamp b to 0.35~0.55 if possible, then limit max
-            // Logic: b = min(b, 0.55) * 0.85
-            newB = min(b, 0.55) * 0.85
-        } else {
-            // Light: Lift floor, Cap ceiling.
-            // b = min(max(b, 0.60), 0.85)
-            newB = min(max(b, 0.60), 0.85)
-        }
-        return NSColor(hue: h, saturation: newS, brightness: newB, alpha: 1.0)
-    }
-
-    private func applyForegroundTone(_ color: NSColor, mode: ToneMode) -> NSColor {
-        // Shapes & Dots
-        var h: CGFloat = 0
-        var s: CGFloat = 0
-        var b: CGFloat = 0
-        var a: CGFloat = 0
-        color.usingColorSpace(.deviceRGB)?.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
-
-        // Moderate saturation
-        let newS = min(s, 0.85)
-        var newB = b
-
-        if mode == .dark {
-            // Dark mode: FG should be brighter than BG
-            // b >= 0.65
-            newB = max(b, 0.65)
-            // Cap at 0.92 to avoid glare
-            newB = min(newB, 0.92)
-        } else {
-            // Light mode: FG should be darker than BG
-            // b <= 0.70
-            newB = min(b, 0.70)
-            // Floor at 0.3 to ensure visibility
-            newB = max(newB, 0.30)
-        }
-        return NSColor(hue: h, saturation: newS, brightness: newB, alpha: 1.0)
-    }
 }
 
 private struct BKSeededRandom {
