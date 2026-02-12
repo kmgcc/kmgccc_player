@@ -75,9 +75,11 @@ def is_song_info_line(text):
         '作词:', '作曲:', '编曲:', '制作:', '录音:', '混音:', 
         '发行:', '出品:', '母带:', '监制:', 'SP:', 'OP:',
         'Lyrics:', 'Music:', 'Arrangement:', 'Producer:', 
-        'Recording:', 'Mixing:', 'Mastering:','作词', '作曲', '编曲', '制作', '录音', '混音', '发行', '出品', '母带', '监制', 'SP', 'OP',
+        'Recording:', 'Mixing:', 'Mastering:', '作词', '作曲', '编曲',
+        '制作', '录音', '混音', '发行', '出品', '母带', '监制', 'SP', 'OP',
         'Lyrics', 'Music', 'Arrangement', 'Producer', 
-        'Recording', 'Mixing', 'Mastering','和声','编写',"%","&","/","\\","-"
+        'Recording', 'Mixing', 'Mastering', '和声', '编写',
+        '%', '&', '/', '\\', '-','版权','网易云','QQ音乐'
     ]
     
     # 检查是否包含歌曲信息关键词
@@ -88,7 +90,7 @@ def is_song_info_line(text):
     # 检查明确的制作信息模式（更精确的冒号判断）
     # 只有当冒号前面是明确的制作信息词汇时才过滤
     colon_patterns = [
-        r'^[^:：]*(?:作词|作曲|编曲|制作|录音|混音|发行|出品|母带|监制|SP|OP|词|曲|)[^:：]*[:：]',
+        r'^[^:：]*(?:作词|作曲|编曲|制作|录音|混音|发行|出品|母带|监制|SP|OP|词|曲)[^:：]*[:：]',
         r'^[^:：]*(?:Lyrics|Music|Arrangement|Producer|Recording|Mixing|Mastering)[^:：]*[:：]',
         r'^[^:：]*(?:by|By|BY)[^:：]*[:：]',  # 制作人信息
         r'^[^:：]*(?:Studio|Label|Records)[^:：]*[:：]'  # 工作室信息
@@ -114,24 +116,24 @@ def is_song_info_line(text):
 
 
 def filter_song_info_lines(lyrics_data):
-    """批量过滤歌曲信息：找到最后一个info行，删除它及以上所有行"""
+    """批量过滤歌曲信息"""
     if not lyrics_data:
         return lyrics_data
     
-    last_info_index = -1
-    
-    # 找到最后一个包含歌曲信息的行
-    for i, line_data in enumerate(lyrics_data):
+    filtered_data = []
+    for line_data in lyrics_data:
+        # 只要行内所有segment都不判定为info，或是部分不为info，采取保留策略
+        # 简单起见，如果所有segment都是info，则过滤该行
+        is_info = True
         for segment in line_data['segments']:
-            if is_song_info_line(segment['text']):
-                last_info_index = i
-                break  # 找到这一行有info就跳出内层循环
-    
-    # 如果找到info行，删除该行及之前的所有行
-    if last_info_index >= 0:
-        return lyrics_data[last_info_index + 1:]
-    
-    return lyrics_data
+            if not is_song_info_line(segment['text']):
+                is_info = False
+                break
+        
+        if not is_info:
+            filtered_data.append(line_data)
+            
+    return filtered_data
 
 
 def parse_lrc_line_with_char_timing(line):
