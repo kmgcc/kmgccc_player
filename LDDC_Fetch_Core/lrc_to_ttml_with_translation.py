@@ -54,7 +54,7 @@ def format_time_for_ttml(seconds):
 
 
 def is_song_info_line(text):
-    """识别是否为歌曲信息行而非歌词内容"""
+    """识别是否为歌曲信息行而非歌词内容（仅用于原歌词过滤）"""
     if not text or not text.strip():
         return False
     
@@ -63,24 +63,29 @@ def is_song_info_line(text):
     if text.startswith('*'):
         return True
     
+    # 包含特定歌曲信息关键词的行
     song_info_keywords = [
         '作词：', '作曲：', '编曲：', '制作：', '录音：', '混音：', 
         '发行：', '出品：', '母带：', '监制：', 'SP：', 'OP：',
         '作词:', '作曲:', '编曲:', '制作:', '录音:', '混音:', 
         '发行:', '出品:', '母带:', '监制:', 'SP:', 'OP:',
         'Lyrics:', 'Music:', 'Arrangement:', 'Producer:', 
-        'Recording:', 'Mixing:', 'Mastering:','作词', '作曲', '编曲', '制作', '录音', '混音', '发行', '出品', '母带', '监制', 'SP', 'OP',
+        'Recording:', 'Mixing:', 'Mastering:', '作词', '作曲', '编曲',
+        '制作', '录音', '混音', '发行', '出品', '母带', '监制', 'SP', 'OP',
         'Lyrics', 'Music', 'Arrangement', 'Producer', 
-        'Recording', 'Mixing', 'Mastering','和声','编写',"%","&","/","\\","-",
-        'TME享有本翻译作品的著作权'  # 过滤版权声明
+        'Recording', 'Mixing', 'Mastering', '和声', '编写',
+        '%', '&', '/', '\\', '-',
+        'TME享有本翻译作品的著作权', '享有本翻译作品的著作权','QQ音乐','版权','网易云'
+        ''
     ]
     
     for keyword in song_info_keywords:
         if keyword in text:
             return True
     
+    # 冒号模式（注意：不能有尾部空 alternation |）
     colon_patterns = [
-        r'^[^:：]*(?:作词|作曲|编曲|制作|录音|混音|发行|出品|母带|监制|SP|OP|词|曲|)[^:：]*[:：]',
+        r'^[^:：]*(?:作词|作曲|编曲|制作|录音|混音|发行|出品|母带|监制|SP|OP|词|曲)[^:：]*[:：]',
         r'^[^:：]*(?:Lyrics|Music|Arrangement|Producer|Recording|Mixing|Mastering)[^:：]*[:：]',
         r'^[^:：]*(?:by|By|BY)[^:：]*[:：]',
         r'^[^:：]*(?:Studio|Label|Records)[^:：]*[:：]'
@@ -101,23 +106,32 @@ def is_song_info_line(text):
     return False
 
 
-def filter_song_info_lines(lyrics_data):
-    """批量过滤歌曲信息：找到最后一个info行，删除它及以上所有行"""
+def filter_song_info_lines_with_timestamps(lyrics_data):
+    """
+    过滤原歌词中的歌曲信息行，并返回被删除行的时间戳集合。
+    翻译将根据该时间戳集合进行对应删除。
+    """
     if not lyrics_data:
-        return lyrics_data
+        return lyrics_data, set()
     
-    last_info_index = -1
+    filtered_data = []
+    removed_times = set()
     
-    for i, line_data in enumerate(lyrics_data):
+    for line_data in lyrics_data:
+        is_info = True
         for segment in line_data['segments']:
-            if is_song_info_line(segment['text']):
-                last_info_index = i
+            if not is_song_info_line(segment['text']):
+                is_info = False
                 break
+        
+        if is_info:
+            # 记录被删除行的起始时间
+            if line_data['segments']:
+                removed_times.add(line_data['segments'][0]['time'])
+        else:
+            filtered_data.append(line_data)
     
-    if last_info_index >= 0:
-        return lyrics_data[last_info_index + 1:]
-    
-    return lyrics_data
+    return filtered_data, removed_times
 
 
 def parse_lrc_line_with_char_timing(line):
@@ -144,9 +158,18 @@ def parse_lrc_line_with_char_timing(line):
     return segments
 
 
-def parse_translation_lrc(lrc_file_path):
-    """解析翻译LRC文件，返回 {start_time_seconds: translation_text} 的字典"""
+def strip_trailing_timestamps(text):
+    """移除翻译文本末尾的时间戳，如 '倘若无人观看[00:05.870]' -> '倘若无人观看'"""
+    return re.sub(r'\[\d+:\d+\.\d+\]\s*$', '', text).strip()
+
+
+def parse_translation_lrc(lrc_file_path, removed_times=None):
+    """
+    解析翻译LRC文件，返回 {start_time_seconds: translation_text} 的字典。
+    翻译行不做 is_song_info_line 匹配，仅根据 removed_times 删除对应时间的行。
+    """
     translations = {}
+    tolerance = 0.5
     
     try:
         with open(lrc_file_path, 'r', encoding='utf-8') as f:
@@ -174,11 +197,36 @@ def parse_translation_lrc(lrc_file_path):
             time_str = match.group(1)
             text = match.group(2).strip()
             
-            # 过滤版权声明等信息行
-            if is_song_info_line(text):
+            # 移除末尾残留的时间戳
+            text = strip_trailing_timestamps(text)
+            
+            if not text:
+                continue
+            
+            # 仅过滤版权声明行（不做通用 is_song_info_line 匹配）
+            copyright_keywords = [
+                'TME享有本翻译作品的著作权',
+                'QQ音乐享有本翻译作品的著作权',
+                '网易云音乐享有本翻译作品的著作权',
+                '酷狗音乐享有本翻译作品的著作权',
+                '著作权', '版权'
+            ]
+            is_copyright = any(kw in text for kw in copyright_keywords)
+            if is_copyright:
                 continue
             
             start_time = parse_time_to_seconds(time_str)
+            
+            # 根据原歌词删除的时间戳，跳过对应翻译行
+            if removed_times:
+                should_skip = False
+                for rt in removed_times:
+                    if abs(rt - start_time) <= tolerance:
+                        should_skip = True
+                        break
+                if should_skip:
+                    continue
+            
             translations[start_time] = text
     
     return translations
@@ -377,11 +425,11 @@ def convert_lrc_to_ttml_with_translation(orig_lrc_path, trans_lrc_path, output_f
     if not lyrics_data:
         raise ValueError("没有找到有效的歌词数据")
     
-    # 过滤掉歌曲信息行
-    lyrics_data = filter_song_info_lines(lyrics_data)
+    # 过滤原歌词中的歌曲信息行，收集被删除行的时间戳
+    lyrics_data, removed_times = filter_song_info_lines_with_timestamps(lyrics_data)
     
-    # 解析翻译LRC
-    translations = parse_translation_lrc(trans_lrc_path)
+    # 解析翻译LRC（翻译不做关键词匹配，只根据 removed_times 删除对应行）
+    translations = parse_translation_lrc(trans_lrc_path, removed_times)
     
     # 检测歌词类型并计算合适的结束时间
     lyric_type = detect_lyric_type(lyrics_data)

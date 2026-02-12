@@ -75,7 +75,7 @@ struct MainLayoutView: View {
                     .navigationTitle("")
                 }
                 .navigationSplitViewStyle(.balanced)
-                .ignoresSafeArea(.container, edges: .bottom)
+                .ignoresSafeArea(.container, edges: [.top, .bottom])
             }
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
 
@@ -89,7 +89,6 @@ struct MainLayoutView: View {
                     // Keep window dragging on titlebar only; avoid conflicts with custom resize dividers.
                     window.isMovableByWindowBackground = false
                     window.titleVisibility = .hidden
-                    window.title = ""
                 }
             )
             .task {
@@ -121,7 +120,6 @@ struct MainLayoutView: View {
                 uiState.lyricsWidth = clampLyricsWidth(uiState.lyricsWidth)
             }
         }
-        .modifier(WindowToolbarHider())
     }
 
     // MARK: - Lyrics Resizing
@@ -275,18 +273,6 @@ struct MainLayoutView: View {
         return min(defaultMax, compactMax)
     }
 
-}
-
-private struct WindowToolbarHider: ViewModifier {
-    func body(content: Content) -> some View {
-        if #available(macOS 13.0, *) {
-            content
-                .toolbar(.hidden, for: .windowToolbar)
-                .toolbarBackground(.hidden, for: .windowToolbar)
-        } else {
-            content
-        }
-    }
 }
 
 // MARK: - Preview
