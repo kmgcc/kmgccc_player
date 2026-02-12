@@ -7,6 +7,7 @@
 //
 
 import Combine
+import CryptoKit
 import Foundation
 import SwiftUI
 import WebKit
@@ -154,6 +155,7 @@ final class LyricsWebViewStore: NSObject {
         print(
             "[LyricsStore] setLyricsTTML: len=\(ttml.count), objectID=\(webViewObjectID), isReady=\(isReady)"
         )
+        logTTMLDiagnostics(ttml, stage: "setLyricsTTML")
         guard let jsonArg = encodeJSONString(ttml) else {
             print("[LyricsStore] Failed to encode TTML")
             return
@@ -263,6 +265,7 @@ final class LyricsWebViewStore: NSObject {
 
         // Step 2: TTML
         if let ttml = lastTTML, let jsonArg = encodeJSONString(ttml) {
+            logTTMLDiagnostics(ttml, stage: "replayStateSnapshot")
             let js = "window.AMLL.setLyricsTTML(\(jsonArg))"
             webView.evaluateJavaScript(js, completionHandler: nil)
         }
@@ -398,6 +401,40 @@ final class LyricsWebViewStore: NSObject {
     }
 
     // MARK: - Helpers
+
+    private func logTTMLDiagnostics(_ ttml: String, stage: String) {
+        let sha = sha256Hex(ttml)
+        print(
+            "[LyricsStore][TTML][\(stage)] sha256=\(sha), utf8=\(ttml.utf8.count), chars=\(ttml.count)"
+        )
+        print("[LyricsStore][TTML][\(stage)] head200=\(escapedLogSnippet(String(ttml.prefix(200))))")
+        print("[LyricsStore][TTML][\(stage)] tail200=\(escapedLogSnippet(String(ttml.suffix(200))))")
+
+        let xbgPattern = "ttm:role=\"x-bg\""
+        guard let roleRange = ttml.range(of: xbgPattern) ?? ttml.range(of: "role=\"x-bg\"") else {
+            print("[LyricsStore][TTML][\(stage)] x-bg not found")
+            return
+        }
+        let start = ttml.index(roleRange.lowerBound, offsetBy: -200, limitedBy: ttml.startIndex)
+            ?? ttml.startIndex
+        let end = ttml.index(roleRange.upperBound, offsetBy: 200, limitedBy: ttml.endIndex)
+            ?? ttml.endIndex
+        let slice = String(ttml[start..<end])
+        print("[LyricsStore][TTML][\(stage)] xbgWindow=\(escapedLogSnippet(slice))")
+    }
+
+    private func sha256Hex(_ text: String) -> String {
+        let digest = SHA256.hash(data: Data(text.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func escapedLogSnippet(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\n", with: "\\n")
+            .replacingOccurrences(of: "\r", with: "\\r")
+            .replacingOccurrences(of: "\t", with: "\\t")
+    }
 
     private func encodeJSONString(_ string: String) -> String? {
         // Enforce valid JSON string logic

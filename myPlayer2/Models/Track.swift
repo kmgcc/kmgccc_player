@@ -57,6 +57,12 @@ final class Track {
         set { availabilityRaw = newValue.rawValue }
     }
 
+    // MARK: - Relationships
+
+    /// Playlists this track belongs to.
+    /// Inverse relationship for Playlist.tracks.
+    @Relationship(inverse: \Playlist.tracks) var playlists: [Playlist] = []
+
     // MARK: - Artwork
 
     /// Embedded or user-edited cover art (JPEG/PNG data).

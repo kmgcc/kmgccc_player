@@ -302,9 +302,10 @@ struct MiniPlayerView: View {
     }
 
     private var progressArea: some View {
-        ZStack(alignment: .top) {
+        ZStack {
             progressBar
-
+        }
+        .overlay(alignment: .top) {
             HStack {
                 Text(formattedTime(progressDisplayTime))
                     .font(.caption2)
@@ -318,7 +319,7 @@ struct MiniPlayerView: View {
                     .foregroundStyle(.secondary)
                     .opacity(isProgressHovering ? 1 : 0)
             }
-            .offset(y: -11)
+            .offset(y: -8)
             .animation(.easeInOut(duration: 0.12), value: isProgressHovering)
         }
         .frame(height: 18)

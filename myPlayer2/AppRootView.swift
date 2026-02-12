@@ -35,7 +35,7 @@ struct AppRootView: View {
         Group {
             if let libraryVM, let playerVM, let lyricsVM, let ledMeter, let skinManager {
                 ZStack {
-                    if uiState.contentMode == .nowPlaying {
+                    if uiState.contentMode == .nowPlaying && settings.nowPlayingArtBackgroundEnabled {
                         BKArtBackgroundView(
                             controller: artBackgroundController,
                             trackID: playerVM.currentTrack?.id,
@@ -53,17 +53,22 @@ struct AppRootView: View {
                         .allowsHitTesting(false)
                 }
                 .onAppear {
-                    if uiState.contentMode == .nowPlaying {
+                    if uiState.contentMode == .nowPlaying && settings.nowPlayingArtBackgroundEnabled {
                         artBackgroundController.triggerTransition()
                     }
                 }
                 .onChange(of: uiState.contentMode) { _, newValue in
-                    if newValue == .nowPlaying {
+                    if newValue == .nowPlaying && settings.nowPlayingArtBackgroundEnabled {
                         artBackgroundController.triggerTransition()
                     }
                 }
                 .onChange(of: playerVM.currentTrack?.id) { _, _ in
-                    if uiState.contentMode == .nowPlaying {
+                    if uiState.contentMode == .nowPlaying && settings.nowPlayingArtBackgroundEnabled {
+                        artBackgroundController.triggerTransition()
+                    }
+                }
+                .onChange(of: settings.nowPlayingArtBackgroundEnabled) { _, enabled in
+                    if enabled && uiState.contentMode == .nowPlaying {
                         artBackgroundController.triggerTransition()
                     }
                 }

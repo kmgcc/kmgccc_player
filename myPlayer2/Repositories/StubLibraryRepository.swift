@@ -96,6 +96,22 @@ final class StubLibraryRepository: LibraryRepositoryProtocol {
         allTracks.count
     }
 
+    // MARK: - Metadata Listing
+
+    func fetchUniqueArtists() async -> [String] {
+        let artists = Set(allTracks.map { $0.artist }.filter { !$0.isEmpty })
+        return Array(artists).sorted()
+    }
+
+    func fetchUniqueAlbums() async -> [String] {
+        let albums = Set(allTracks.map { $0.album }.filter { !$0.isEmpty })
+        return Array(albums).sorted()
+    }
+
+    func save() async {
+        // No-op for stub
+    }
+
     // MARK: - Fake Data Setup
 
     private func setupFakeData() {

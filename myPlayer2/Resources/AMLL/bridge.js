@@ -42,6 +42,74 @@
     // State
     let isReady = false;
     const pendingCalls = [];
+
+    const sha256Hex = async function(text) {
+        if (!window.crypto || !window.crypto.subtle || typeof TextEncoder === 'undefined') {
+            return null;
+        }
+        const bytes = new TextEncoder().encode(text);
+        const digest = await window.crypto.subtle.digest('SHA-256', bytes);
+        const view = new Uint8Array(digest);
+        return Array.from(view).map((b) => b.toString(16).padStart(2, '0')).join('');
+    };
+
+    const collectXBgNodes = function(ttmlText) {
+        if (typeof ttmlText !== 'string' || ttmlText.trim().length === 0) {
+            return [];
+        }
+        const doc = new DOMParser().parseFromString(ttmlText, 'application/xml');
+        if (doc.querySelector('parsererror')) {
+            console.error('[Bridge][TTML] parsererror while scanning x-bg nodes');
+            return [];
+        }
+        return Array.from(doc.getElementsByTagName('*')).filter((el) => {
+            if (el.localName !== 'span') return false;
+            const role = el.getAttribute('ttm:role')
+                || el.getAttributeNS('http://www.w3.org/ns/ttml#metadata', 'role')
+                || el.getAttribute('role');
+            return role === 'x-bg';
+        }).map((node) => {
+            const words = Array.from(node.children)
+                .filter((child) => child.localName === 'span')
+                .map((child) => ({
+                    begin: child.getAttribute('begin'),
+                    end: child.getAttribute('end'),
+                    text: (child.textContent || '').trim(),
+                }));
+            return {
+                begin: node.getAttribute('begin'),
+                end: node.getAttribute('end'),
+                words,
+            };
+        });
+    };
+
+    const logTTMLDiagnostics = function(ttmlText, stage) {
+        const text = typeof ttmlText === 'string' ? ttmlText : String(ttmlText ?? '');
+        console.log(`[Bridge][TTML][${stage}] len=${text.length}`);
+
+        sha256Hex(text).then((hash) => {
+            if (hash) {
+                console.log(`[Bridge][TTML][${stage}] sha256=${hash}`);
+            } else {
+                console.warn(`[Bridge][TTML][${stage}] sha256 unavailable`);
+            }
+        }).catch((err) => {
+            console.error('[Bridge][TTML] sha256 error', err);
+        });
+
+        const xbgNodes = collectXBgNodes(text);
+        console.log(`[Bridge][TTML][${stage}] x-bg count=${xbgNodes.length}`);
+        xbgNodes.forEach((item, idx) => {
+            const previewWords = item.words.slice(0, 12).map((word, wi) => (
+                `#${wi}(${word.begin}~${word.end})${word.text}`
+            ));
+            const suffix = item.words.length > 12 ? ` ...(+${item.words.length - 12} words)` : '';
+            console.log(
+                `[Bridge][TTML][${stage}] x-bg#${idx} begin=${item.begin} end=${item.end} words=${item.words.length} ${previewWords.join(' | ')}${suffix}`
+            );
+        });
+    };
     
     // AMLL namespace
     window.AMLL = {
@@ -55,6 +123,7 @@
         setLyricsTTML: function(ttmlText) {
             try {
                 if (window.updateDebugTTML) window.updateDebugTTML(ttmlText ? ttmlText.length : 0);
+                logTTMLDiagnostics(ttmlText, 'setLyricsTTML');
                 
                 if (!isReady) {
                     pendingCalls.push({ method: 'setLyricsTTML', args: [ttmlText] });

@@ -64,4 +64,18 @@ protocol LibraryRepositoryProtocol: AnyObject {
 
     /// Get total track count in library.
     func totalTrackCount() async -> Int
+
+    // MARK: - Metadata Listing
+
+    /// Fetch all unique artist names.
+    func fetchUniqueArtists() async -> [String]
+
+    /// Fetch all unique album names.
+    func fetchUniqueAlbums() async -> [String]
+
+    // MARK: - Persistence
+
+    /// Save any pending changes to the persistent store without writing sidecars to disk.
+    /// Used by sync operations that read FROM disk to avoid feedback loops.
+    func save() async
 }
