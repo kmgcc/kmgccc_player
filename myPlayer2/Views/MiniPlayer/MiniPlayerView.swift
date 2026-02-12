@@ -46,16 +46,21 @@ struct MiniPlayerView: View {
 
                     VStack(alignment: .leading, spacing: 4) {
                         if let track = playerVM.currentTrack {
-                            Text(track.title)
-                                .font(.subheadline)
-                                .fontWeight(.medium)
-                                .foregroundStyle(.primary)
-                                .lineLimit(1)
+                            MarqueeText(
+                                text: track.title,
+                                font: .subheadline,
+                                fontWeight: .medium,
+                                color: .primary
+                            )
 
-                            Text(track.artist)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
+                            MarqueeText(
+                                text: track.artist.isEmpty
+                                    ? NSLocalizedString("library.unknown_artist", comment: "")
+                                    : track.artist,
+                                font: .caption,
+                                fontWeight: .regular,
+                                color: .secondary
+                            )
                         } else {
                             Text("mini.not_playing")
                                 .font(.subheadline)

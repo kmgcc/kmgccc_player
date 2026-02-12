@@ -38,6 +38,9 @@ protocol AudioPlaybackServiceProtocol: AnyObject {
     /// Play multiple tracks starting at an index.
     func playTracks(_ tracks: [Track], startingAt index: Int)
 
+    /// Update current playable track set (playlist/filter/import/delete changes).
+    func updateQueueTracks(_ tracks: [Track])
+
     /// Pause playback.
     func pause()
 

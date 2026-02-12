@@ -155,12 +155,15 @@ final class ThemeStore: ObservableObject {
         let isDark = colorScheme == .dark
         print("[Theme] schemeChanged -> refreshPalette (reason=\(reason), isDark=\(isDark))")
 
-        let optimizedAccent = optimizeAccentColor(rawDominantColor, scheme: colorScheme)
+        let optimizedArtworkAccent = optimizeAccentColor(rawDominantColor, scheme: colorScheme)
+        let defaultAccentNS = NSColor(AppSettings.shared.accentColor)
+        let resolvedAccentNS =
+            AppSettings.shared.globalArtworkTintEnabled ? optimizedArtworkAccent : defaultAccentNS
         let fillAlpha = colorScheme == .dark ? 0.20 : 0.14
         withAnimation(.easeInOut(duration: 0.20)) {
             baseColor = Color(nsColor: rawDominantColor)
-            accentColor = Color(nsColor: optimizedAccent)
-            selectionFill = Color(nsColor: optimizedAccent).opacity(fillAlpha)
+            accentColor = Color(nsColor: resolvedAccentNS)
+            selectionFill = Color(nsColor: resolvedAccentNS).opacity(fillAlpha)
         }
 
         // Default fallbacks
@@ -168,7 +171,7 @@ final class ThemeStore: ObservableObject {
         var text = isDark ? "rgba(255, 255, 255, 0.95)" : "rgba(30, 30, 30, 0.95)"
         var active = isDark ? "rgba(255, 255, 255, 1.0)" : "rgba(0, 0, 0, 1.0)"
         var inactive = isDark ? "rgba(255, 255, 255, 0.35)" : "rgba(0, 0, 0, 0.35)"
-        var accent = ArtworkColorExtractor.cssRGBA(optimizedAccent, alpha: 1.0)
+        var accent = ArtworkColorExtractor.cssRGBA(resolvedAccentNS, alpha: 1.0)
         var shadow = isDark ? "rgba(0, 0, 0, 0.3)" : "rgba(0, 0, 0, 0.1)"
 
         // If we have artwork, perform adaptive extraction
@@ -181,7 +184,7 @@ final class ThemeStore: ObservableObject {
                 text = ArtworkColorExtractor.cssRGBA(adjusted, alpha: 0.95)
                 active = ArtworkColorExtractor.cssRGBA(adjusted, alpha: 1.0)
                 inactive = ArtworkColorExtractor.cssRGBA(adjusted, alpha: 0.35)
-                accent = ArtworkColorExtractor.cssRGBA(optimizedAccent, alpha: 1.0)
+                accent = ArtworkColorExtractor.cssRGBA(resolvedAccentNS, alpha: 1.0)
 
                 // Deepen/Brighten background based on adjusted color if needed,
                 // but usually we keep it neutral glass for now.
