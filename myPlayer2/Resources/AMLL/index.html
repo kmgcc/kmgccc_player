@@ -149,29 +149,248 @@
             emitSeek(line);
         });
 
-        // Ensure time is integer ms; preserve force flag for internal calls.
-        const originalSetCurrentTime = lyricPlayer.setCurrentTime.bind(lyricPlayer);
-        lyricPlayer.setCurrentTime = (ms, force = false) => {
-            const timeMs = Math.max(0, Math.floor(ms));
-            originalSetCurrentTime(timeMs, force);
+        const parseTTMLTimeToMs = (value) => {
+            if (typeof value !== "string" || value.length === 0) return null;
+            if (value.endsWith("ms")) {
+                const n = Number.parseFloat(value.slice(0, -2));
+                return Number.isFinite(n) ? Math.round(n) : null;
+            }
+            if (value.endsWith("s")) {
+                const n = Number.parseFloat(value.slice(0, -1));
+                return Number.isFinite(n) ? Math.round(n * 1000) : null;
+            }
+            const parts = value.split(":");
+            if (parts.length === 2 || parts.length === 3) {
+                const nums = parts.map((part) => Number.parseFloat(part));
+                if (nums.some((n) => !Number.isFinite(n))) return null;
+                if (parts.length === 2) {
+                    return Math.round((nums[0] * 60 + nums[1]) * 1000);
+                }
+                return Math.round((nums[0] * 3600 + nums[1] * 60 + nums[2]) * 1000);
+            }
+            const raw = Number.parseFloat(value);
+            return Number.isFinite(raw) ? Math.round(raw * 1000) : null;
         };
-        let lastKnownTimeMs = 0;
 
-        const restoreOriginalLineTimes = (originalTimes) => {
-            const apply = (lines) => {
-                if (!Array.isArray(lines) || lines.length !== originalTimes.length) return false;
-                lines.forEach((line, idx) => {
-                    const orig = originalTimes[idx];
-                    if (!orig) return;
-                    if (Number.isFinite(orig.startTime)) line.startTime = orig.startTime;
-                    if (Number.isFinite(orig.endTime)) line.endTime = orig.endTime;
-                });
-                return true;
-            };
-            const didProcessed = apply(lyricPlayer.processedLines);
-            const didCurrent = apply(lyricPlayer.currentLyricLines);
-            return didProcessed || didCurrent;
+        const collectXBgFromTTML = (ttml) => {
+            if (typeof ttml !== "string" || ttml.trim().length === 0) return [];
+            const xml = new DOMParser().parseFromString(ttml, "application/xml");
+            if (xml.querySelector("parsererror")) {
+                return [];
+            }
+
+            const nodes = Array.from(xml.getElementsByTagName("*")).filter((el) => {
+                if (el.localName !== "span") return false;
+                const role =
+                    el.getAttribute("ttm:role")
+                    || el.getAttributeNS("http://www.w3.org/ns/ttml#metadata", "role")
+                    || el.getAttribute("role");
+                return role === "x-bg";
+            });
+
+            return nodes.map((node) => {
+                const words = Array.from(node.children)
+                    .filter((child) => child.localName === "span")
+                    .map((child) => ({
+                        startTime: parseTTMLTimeToMs(child.getAttribute("begin")),
+                        endTime: parseTTMLTimeToMs(child.getAttribute("end")),
+                        text: (child.textContent || "").trim(),
+                    }));
+                return {
+                    startTime: parseTTMLTimeToMs(node.getAttribute("begin")),
+                    endTime: parseTTMLTimeToMs(node.getAttribute("end")),
+                    words,
+                };
+            });
         };
+
+        const assertXBgTiming = (ttml, parsedLines) => {
+            const source = collectXBgFromTTML(ttml);
+            if (source.length === 0) return;
+
+            const parsed = (Array.isArray(parsedLines) ? parsedLines : [])
+                .filter((line) => line?.isBG)
+                .map((line) => ({
+                    startTime: Number.isFinite(line.startTime) ? line.startTime : null,
+                    endTime: Number.isFinite(line.endTime) ? line.endTime : null,
+                    words: Array.isArray(line.words)
+                        ? line.words.map((word) => ({
+                            startTime: Number.isFinite(word.startTime) ? word.startTime : null,
+                            endTime: Number.isFinite(word.endTime) ? word.endTime : null,
+                            text: (word.word || "").trim(),
+                        }))
+                        : [],
+                }));
+
+            console.log(
+                `[LyricsRenderer][x-bg][assert] source=${source.length}, parsed=${parsed.length}`
+            );
+            if (source.length !== parsed.length) {
+                console.error("[LyricsRenderer][x-bg][assert] line count mismatch");
+            }
+
+            const n = Math.min(source.length, parsed.length);
+            for (let i = 0; i < n; i++) {
+                const src = source[i];
+                const expected = {
+                    startTime: Number.isFinite(src.startTime) ? Math.max(0, src.startTime + timeOffsetMs) : null,
+                    endTime: Number.isFinite(src.endTime) ? Math.max(0, src.endTime + timeOffsetMs) : null,
+                    words: src.words.map((word) => ({
+                        startTime: Number.isFinite(word.startTime)
+                            ? Math.max(0, word.startTime + timeOffsetMs)
+                            : null,
+                        endTime: Number.isFinite(word.endTime)
+                            ? Math.max(0, word.endTime + timeOffsetMs)
+                            : null,
+                        text: word.text,
+                    })),
+                };
+                const got = parsed[i];
+                const startOk = expected.startTime === got.startTime;
+                const endOk = expected.endTime === got.endTime;
+                const wordCountOk = expected.words.length === got.words.length;
+                const firstWordStartOk =
+                    expected.words.length === 0
+                    || got.words.length === 0
+                    || expected.words[0].startTime === got.words[0].startTime;
+                const lastWordEndOk =
+                    expected.words.length === 0
+                    || got.words.length === 0
+                    || expected.words[expected.words.length - 1].endTime === got.words[got.words.length - 1].endTime;
+                const ok = startOk && endOk && wordCountOk && firstWordStartOk && lastWordEndOk;
+
+                if (ok) {
+                    console.log(
+                        `[LyricsRenderer][x-bg][assert] #${i} PASS start=${got.startTime} end=${got.endTime} words=${got.words.length}`
+                    );
+                } else {
+                    console.error(
+                        `[LyricsRenderer][x-bg][assert] #${i} FAIL expected=${JSON.stringify(expected)} parsed=${JSON.stringify(got)}`
+                    );
+                }
+            }
+        };
+
+        const captureTimingSnapshot = (lines) => {
+            if (!Array.isArray(lines)) return [];
+            return lines.map((line) => ({
+                startTime: Number.isFinite(line?.startTime) ? line.startTime : null,
+                endTime: Number.isFinite(line?.endTime) ? line.endTime : null,
+                words: Array.isArray(line?.words)
+                    ? line.words.map((word) => ({
+                        startTime: Number.isFinite(word?.startTime) ? word.startTime : null,
+                        endTime: Number.isFinite(word?.endTime) ? word.endTime : null,
+                    }))
+                    : [],
+            }));
+        };
+
+        const applyTimingSnapshot = (lines, snapshot) => {
+            if (!Array.isArray(lines) || !Array.isArray(snapshot) || lines.length !== snapshot.length) {
+                return false;
+            }
+            lines.forEach((line, idx) => {
+                const snap = snapshot[idx];
+                if (!line || !snap) return;
+                if (Number.isFinite(snap.startTime)) line.startTime = snap.startTime;
+                if (Number.isFinite(snap.endTime)) line.endTime = snap.endTime;
+                if (!Array.isArray(line.words) || !Array.isArray(snap.words)) return;
+                const wordCount = Math.min(line.words.length, snap.words.length);
+                for (let wi = 0; wi < wordCount; wi++) {
+                    const word = line.words[wi];
+                    const wordSnap = snap.words[wi];
+                    if (!word || !wordSnap) continue;
+                    if (Number.isFinite(wordSnap.startTime)) word.startTime = wordSnap.startTime;
+                    if (Number.isFinite(wordSnap.endTime)) word.endTime = wordSnap.endTime;
+                }
+            });
+            return true;
+        };
+
+        const restoreTimingSnapshot = (snapshot) => {
+            const didProcessed = applyTimingSnapshot(lyricPlayer.processedLines, snapshot);
+            const didCurrent = applyTimingSnapshot(lyricPlayer.currentLyricLines, snapshot);
+            const objectLines = Array.isArray(lyricPlayer.currentLyricLineObjects)
+                ? lyricPlayer.currentLyricLineObjects
+                    .map((obj) => obj?.getLine?.() ?? obj?.lyricLine)
+                    .filter(Boolean)
+                : [];
+            const didObjects = applyTimingSnapshot(objectLines, snapshot);
+            return didProcessed || didCurrent || didObjects;
+        };
+
+        let lastKnownTimeMs = 0;
+        let bgActiveIndexes = new Set();
+        const enforceBGTimingWindows = (timeMs, force = false) => {
+            if (!Array.isArray(lyricPlayer.currentLyricLineObjects)) {
+                bgActiveIndexes = new Set();
+                return;
+            }
+
+            const nextActive = new Set();
+            let layoutChanged = false;
+            const isPlaying = typeof lyricPlayer.getIsPlaying === "function"
+                ? lyricPlayer.getIsPlaying()
+                : true;
+
+            lyricPlayer.currentLyricLineObjects.forEach((lineObj, idx) => {
+                const line = lineObj?.getLine?.() ?? lineObj?.lyricLine;
+                if (!line?.isBG) return;
+
+                const shouldBeActive =
+                    Number.isFinite(line.startTime)
+                    && Number.isFinite(line.endTime)
+                    && timeMs >= line.startTime
+                    && timeMs < line.endTime;
+                const wasActive = bgActiveIndexes.has(idx);
+
+                if (shouldBeActive) {
+                    nextActive.add(idx);
+                    if (!lyricPlayer.hotLines?.has(idx)) {
+                        lyricPlayer.hotLines?.add(idx);
+                        layoutChanged = true;
+                    }
+                    if (!lyricPlayer.bufferedLines?.has(idx)) {
+                        lyricPlayer.bufferedLines?.add(idx);
+                        layoutChanged = true;
+                    }
+                    if (!wasActive && typeof lineObj?.enable === "function") {
+                        lineObj.enable(timeMs, isPlaying);
+                    }
+                    if ((force || !wasActive) && typeof lineObj?.setMaskAnimationState === "function") {
+                        lineObj.setMaskAnimationState(timeMs);
+                    }
+                } else {
+                    if (lyricPlayer.hotLines?.has(idx)) {
+                        lyricPlayer.hotLines.delete(idx);
+                        layoutChanged = true;
+                    }
+                    if (lyricPlayer.bufferedLines?.has(idx)) {
+                        lyricPlayer.bufferedLines.delete(idx);
+                        layoutChanged = true;
+                    }
+                    if (wasActive && typeof lineObj?.disable === "function") {
+                        lineObj.disable();
+                    }
+                }
+            });
+
+            if (layoutChanged && typeof lyricPlayer.calcLayout === "function") {
+                lyricPlayer.calcLayout();
+            }
+            bgActiveIndexes = nextActive;
+        };
+
+        // Ensure time is integer ms and keep x-bg activation tied to its own begin/end.
+        const coreSetCurrentTime = lyricPlayer.setCurrentTime.bind(lyricPlayer);
+        const originalSetCurrentTime = (ms, force = false) => {
+            const timeMs = Math.max(0, Math.floor(ms));
+            const delta = Math.abs(timeMs - lastKnownTimeMs);
+            lastKnownTimeMs = timeMs;
+            coreSetCurrentTime(timeMs, force);
+            enforceBGTimingWindows(timeMs, force || delta > 500);
+        };
+        lyricPlayer.setCurrentTime = originalSetCurrentTime;
         let leadInMs = 300;
         let timeOffsetMs = 0;
         let lastTTML = "";
@@ -235,6 +454,7 @@
             setLyrics: (ttml) => {
                 if (!ttml) {
                     lyricPlayer.setLyricLines([]);
+                    bgActiveIndexes = new Set();
                     console.log("[LyricsRenderer] Cleared lyrics");
                     lastTTML = "";
                     return;
@@ -245,17 +465,15 @@
                     const lines = result.lines.map(mapTTMLLyric);
                     lines.forEach(applyLeadIn);
                     lines.forEach(applyTimeOffset);
-                    const originalTimes = lines.map((line) => ({
-                        startTime: line.startTime,
-                        endTime: line.endTime
-                    }));
+                    const timingSnapshot = captureTimingSnapshot(lines);
                     // Preserve TTML intent (no mutation of duet/bg/ordering).
                     lyricPlayer.setLyricLines(lines);
                     const currentMs = Number.isFinite(lastKnownTimeMs)
                         ? lastKnownTimeMs
                         : (lyricPlayer.getCurrentTime ? lyricPlayer.getCurrentTime() : 0);
-                    // Undo core's non-overlap timing clamp so overlaps can highlight in parallel.
-                    restoreOriginalLineTimes(originalTimes);
+                    // Undo core timing normalization so x-bg keeps original line/word timing.
+                    restoreTimingSnapshot(timingSnapshot);
+                    assertXBgTiming(ttml, lines);
                     // Re-align playback position after (re)loading lyrics.
                     originalSetCurrentTime(currentMs, true);
                     console.log("[LyricsRenderer] Loaded lines:", lines.length);
@@ -267,7 +485,6 @@
             
             setCurrentTime: (seconds) => {
                 const timeInMs = Math.max(0, Math.floor(seconds * 1000));
-                lastKnownTimeMs = timeInMs;
                 // If AMLL hasn't finished its first layout yet, non-forced setCurrentTime is ignored.
                 const needsForce = lyricPlayer.initialLayoutFinished === false;
                 originalSetCurrentTime(timeInMs, needsForce);

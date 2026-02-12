@@ -199,6 +199,38 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         }
     }
 
+    // MARK: - Metadata Listing
+
+    func fetchUniqueArtists() async -> [String] {
+        // Fetch all tracks to extract unique artists.
+        // Optimization: In a larger app, this should be a direct query if SwiftData supports distinct properties efficiently.
+        let descriptor = FetchDescriptor<Track>(sortBy: [SortDescriptor(\.artist)])
+        do {
+            let tracks = try modelContext.fetch(descriptor)
+            let artists = Set(tracks.map { $0.artist }.filter { !$0.isEmpty })
+            return Array(artists).sorted {
+                $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+            }
+        } catch {
+            print("❌ Failed to fetch unique artists: \(error)")
+            return []
+        }
+    }
+
+    func fetchUniqueAlbums() async -> [String] {
+        let descriptor = FetchDescriptor<Track>(sortBy: [SortDescriptor(\.album)])
+        do {
+            let tracks = try modelContext.fetch(descriptor)
+            let albums = Set(tracks.map { $0.album }.filter { !$0.isEmpty })
+            return Array(albums).sorted {
+                $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+            }
+        } catch {
+            print("❌ Failed to fetch unique albums: \(error)")
+            return []
+        }
+    }
+
     // MARK: - Private Helpers
 
     private func saveContext() {
@@ -208,5 +240,9 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         } catch {
             print("❌ Failed to save context: \(error)")
         }
+    }
+
+    func save() async {
+        saveContext()
     }
 }

@@ -32,6 +32,14 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
     @State private var trackToEdit: Track?
     @State private var searchText: String = ""
     @State private var listScrollPositionID: UUID?
+    @State private var displayedTracksCache: [Track] = []
+    @State private var filteredTracksCache: [Track] = []
+    @State private var sortedTracksCache: [Track] = []
+    @State private var rowModelsCache: [TrackRowModel] = []
+    @State private var sortedTrackIndexMapCache: [UUID: Int] = [:]
+    @State private var trackByIDCache: [UUID: Track] = [:]
+    @State private var prefetchTask: Task<Void, Never>?
+    @State private var snapshotUpdateTask: Task<Void, Never>?
     @FocusState private var isSearchFocused: Bool
 
     // MARK: - Init
@@ -44,9 +52,9 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
 
     var body: some View {
         Group {
-            if displayedTracks.isEmpty {
+            if displayedTracksCache.isEmpty {
                 emptyStateView
-            } else if filteredTracks.isEmpty {
+            } else if filteredTracksCache.isEmpty {
                 noResultsView
             } else {
                 trackListView
@@ -61,42 +69,69 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         .sheet(item: $trackToEdit) { track in
             TrackEditSheet(track: track)
         }
+        .onAppear {
+            rebuildTrackCaches(reason: "appear")
+            restoreScrollIfNeeded()
+            updateLibrarySnapshot()
+            playerVM.updateQueueTracks(sortedTracksCache)
+        }
+        .onDisappear {
+            prefetchTask?.cancel()
+            prefetchTask = nil
+            snapshotUpdateTask?.cancel()
+            snapshotUpdateTask = nil
+        }
+        .onChange(of: libraryVM.selectedPlaylist?.id) { _, _ in
+            rebuildTrackCaches(reason: "playlist")
+            restoreScrollIfNeeded()
+            updateLibrarySnapshot()
+            playerVM.updateQueueTracks(sortedTracksCache)
+        }
+        .onChange(of: libraryVM.selectedArtist) { _, _ in
+            rebuildTrackCaches(reason: "artist")
+            restoreScrollIfNeeded()
+            updateLibrarySnapshot()
+            playerVM.updateQueueTracks(sortedTracksCache)
+        }
+        .onChange(of: libraryVM.selectedAlbum) { _, _ in
+            rebuildTrackCaches(reason: "album")
+            restoreScrollIfNeeded()
+            updateLibrarySnapshot()
+            playerVM.updateQueueTracks(sortedTracksCache)
+        }
+        .onChange(of: searchText) { _, _ in
+            rebuildTrackCaches(reason: "search")
+            updateLibrarySnapshot()
+            playerVM.updateQueueTracks(sortedTracksCache)
+        }
+        .onChange(of: libraryVM.trackSortKey) { _, _ in
+            rebuildTrackCaches(reason: "sortKey")
+            updateLibrarySnapshot()
+            playerVM.updateQueueTracks(sortedTracksCache)
+        }
+        .onChange(of: libraryVM.trackSortOrder) { _, _ in
+            rebuildTrackCaches(reason: "sortOrder")
+            updateLibrarySnapshot()
+            playerVM.updateQueueTracks(sortedTracksCache)
+        }
+        .onChange(of: allTracks.count) { _, _ in
+            rebuildTrackCaches(reason: "trackCount")
+            restoreScrollIfNeeded()
+            updateLibrarySnapshot()
+            playerVM.updateQueueTracks(sortedTracksCache)
+        }
+        .onChange(of: libraryVM.refreshTrigger) { _, _ in
+            rebuildTrackCaches(reason: "refresh")
+            restoreScrollIfNeeded()
+            updateLibrarySnapshot()
+            playerVM.updateQueueTracks(sortedTracksCache)
+        }
     }
 
     // MARK: - Computed Properties
 
-    /// Tracks to display based on selected playlist.
-    private var displayedTracks: [Track] {
-        if let playlist = libraryVM.selectedPlaylist {
-            // Show only tracks in this playlist
-            return playlist.tracks.filter { $0.availability != .missing }
-        } else {
-            // Show all tracks
-            return allTracks.filter { $0.availability != .missing }
-        }
-    }
-
-    private var filteredTracks: [Track] {
-        let term = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !term.isEmpty else { return displayedTracks }
-        return displayedTracks.filter { $0.title.localizedCaseInsensitiveContains(term) }
-    }
-
-    private var sortedTracks: [Track] {
-        libraryVM.sortedTracks(filteredTracks)
-    }
-
     private var isFiltering: Bool {
         !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    private var sortedTrackIndexMap: [UUID: Int] {
-        Dictionary(
-            uniqueKeysWithValues: sortedTracks.enumerated().map { ($0.element.id, $0.offset) })
-    }
-
-    private var sortedTrackIDs: [UUID] {
-        sortedTracks.map(\.id)
     }
 
     // MARK: - Subviews
@@ -123,10 +158,10 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
                 // Skills: $macos-appkit-liquid-glass-toolbar + $macos-appkit-liquid-glass-controls
                 // Group Play + Import into one pill while preserving separate hit targets.
                 GlassToolbarPlayImportPill(
-                    canPlay: !sortedTracks.isEmpty,
+                    canPlay: !sortedTracksCache.isEmpty,
                     onPlay: {
-                        guard !sortedTracks.isEmpty else { return }
-                        playerVM.playTracks(sortedTracks)
+                        guard !sortedTracksCache.isEmpty else { return }
+                        playerVM.playTracks(sortedTracksCache)
                     },
                     onImport: {
                         print("🔘 Import button tapped")
@@ -193,24 +228,29 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
     private var trackListView: some View {
         ScrollView(.vertical) {
             LazyVStack(spacing: 0) {
-                ForEach(sortedTracks, id: \.id) { track in
-                    TrackRowView(
-                        track: track,
-                        isPlaying: playerVM.currentTrack?.id == track.id,
-                        onTap: {
-                            playerVM.playTracks(
-                                sortedTracks,
-                                startingAt: sortedTrackIndexMap[track.id] ?? 0
-                            )
+                ForEach(rowModelsCache, id: \.id) { rowModel in
+                    if let track = trackByIDCache[rowModel.id] {
+                        let rowIndex = sortedTrackIndexMapCache[rowModel.id] ?? 0
+                        TrackRowView(
+                            model: rowModel,
+                            isPlaying: playerVM.currentTrack?.id == rowModel.id,
+                            onTap: {
+                                playerVM.playTracks(
+                                    sortedTracksCache,
+                                    startingAt: rowIndex
+                                )
+                            },
+                            onRowAppear: {
+                                prefetchAroundTrackID(rowModel.id)
+                            }
+                        ) {
+                            trackMenu(track: track, index: rowIndex)
                         }
-                    ) {
-                        trackMenu(track: track, index: sortedTrackIndexMap[track.id] ?? 0)
+                        .equatable()
+                        .contextMenu {
+                            trackMenu(track: track, index: rowIndex)
+                        }
                     }
-                    .equatable()
-                    .contextMenu {
-                        trackMenu(track: track, index: sortedTrackIndexMap[track.id] ?? 0)
-                    }
-
                 }
 
                 // Bottom placeholder for MiniPlayer/Controls
@@ -220,23 +260,13 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             .padding(.top, listTopPadding)
             .padding(.bottom, listBottomPadding)
             .padding(.horizontal)
+            .transaction { tx in
+                tx.animation = nil
+            }
         }
         .scrollPosition(id: $listScrollPositionID, anchor: .top)
-        .onAppear {
-            restoreScrollIfNeeded()
-            updateLibrarySnapshot()
-            playerVM.updateQueueTracks(sortedTracks)
-        }
         .onChange(of: listScrollPositionID) { _, _ in
-            updateLibrarySnapshot()
-        }
-        .onChange(of: libraryVM.selectedPlaylist?.id) { _, _ in
-            restoreScrollIfNeeded()
-            updateLibrarySnapshot()
-            playerVM.updateQueueTracks(sortedTracks)
-        }
-        .onChange(of: sortedTrackIDs) { _, _ in
-            playerVM.updateQueueTracks(sortedTracks)
+            scheduleSnapshotUpdate()
         }
         .onTapGesture { clearSearchFocus() }
     }
@@ -303,20 +333,20 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         if isFiltering {
             return String(
                 format: NSLocalizedString("library.song_count_filtered", comment: ""),
-                filteredTracks.count, displayedTracks.count)
+                filteredTracksCache.count, displayedTracksCache.count)
         }
         let format =
-            displayedTracks.count == 1
+            displayedTracksCache.count == 1
             ? NSLocalizedString("library.song_count_one", comment: "")
             : NSLocalizedString("library.song_count", comment: "")
-        return String(format: format, displayedTracks.count)
+        return String(format: format, displayedTracksCache.count)
     }
 
     @ViewBuilder
     private func trackMenu(track: Track, index: Int) -> some View {
         // Play
         Button {
-            playerVM.playTracks(filteredTracks, startingAt: index)
+            playerVM.playTracks(sortedTracksCache, startingAt: index)
         } label: {
             Label("context.play", systemImage: "play")
         }
@@ -422,7 +452,7 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
 
         guard
             let restoreID,
-            sortedTracks.contains(where: { $0.id == restoreID })
+            sortedTracksCache.contains(where: { $0.id == restoreID })
         else {
             // No restore target (or missing in current dataset): keep default initial position.
             listScrollPositionID = nil
@@ -436,7 +466,7 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
     }
 
     private func updateLibrarySnapshot() {
-        let firstID = sortedTracks.first?.id
+        let firstID = sortedTracksCache.first?.id
         let userScrolled = {
             guard let position = listScrollPositionID, let firstID else { return false }
             return position != firstID
@@ -447,6 +477,106 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             scrollTrackID: listScrollPositionID,
             userScrolled: userScrolled
         )
+    }
+
+    private func scheduleSnapshotUpdate() {
+        snapshotUpdateTask?.cancel()
+        snapshotUpdateTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            guard !Task.isCancelled else { return }
+            updateLibrarySnapshot()
+        }
+    }
+
+    private func rebuildTrackCaches(reason: String) {
+        let rebuildStart = ProcessInfo.processInfo.systemUptime
+
+        let displayedTracks: [Track] = {
+            if let playlist = libraryVM.selectedPlaylist {
+                return playlist.tracks.filter { $0.availability != .missing }
+            } else if let artist = libraryVM.selectedArtist {
+                return allTracks.filter { $0.artist == artist && $0.availability != .missing }
+            } else if let album = libraryVM.selectedAlbum {
+                return allTracks.filter { $0.album == album && $0.availability != .missing }
+            }
+            return allTracks.filter { $0.availability != .missing }
+        }()
+
+        let trimmedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let filteredTracks: [Track] = {
+            guard !trimmedSearch.isEmpty else { return displayedTracks }
+            return displayedTracks.filter {
+                $0.title.localizedCaseInsensitiveContains(trimmedSearch)
+            }
+        }()
+
+        let sortedTracks = libraryVM.sortedTracks(filteredTracks)
+        let rowScale = NSScreen.main?.backingScaleFactor ?? 2.0
+        let rowPixels = CGSize(
+            width: Constants.Layout.artworkSmallSize * rowScale,
+            height: Constants.Layout.artworkSmallSize * rowScale
+        )
+
+        displayedTracksCache = displayedTracks
+        filteredTracksCache = filteredTracks
+        sortedTracksCache = sortedTracks
+        sortedTrackIndexMapCache = Dictionary(
+            uniqueKeysWithValues: sortedTracks.enumerated().map { ($0.element.id, $0.offset) })
+        trackByIDCache = Dictionary(uniqueKeysWithValues: sortedTracks.map { ($0.id, $0) })
+        rowModelsCache = sortedTracks.map { track in
+            let checksum = ArtworkLoader.checksum(for: track.artworkData)
+            let cacheKey = ArtworkLoader.cacheKey(
+                trackID: track.id,
+                checksum: checksum,
+                targetPixelSize: rowPixels
+            )
+            return TrackRowModel(
+                id: track.id,
+                title: track.title,
+                artist: track.artist,
+                durationText: formatDuration(track.duration),
+                artworkData: track.artworkData,
+                artworkCacheKey: cacheKey,
+                isMissing: track.availability == .missing
+            )
+        }
+        let rebuildDurationMs = (ProcessInfo.processInfo.systemUptime - rebuildStart) * 1000
+        PlaylistPerfDiagnostics.markListRebuild(
+            reason: reason,
+            trackCount: rowModelsCache.count,
+            durationMs: rebuildDurationMs
+        )
+    }
+
+    private func prefetchAroundTrackID(_ trackID: UUID) {
+        guard let startIndex = sortedTrackIndexMapCache[trackID] else { return }
+        guard startIndex % 3 == 0 else { return }
+        let rowScale = NSScreen.main?.backingScaleFactor ?? 2.0
+        let rowPixels = CGSize(
+            width: Constants.Layout.artworkSmallSize * rowScale,
+            height: Constants.Layout.artworkSmallSize * rowScale
+        )
+        let start = min(startIndex + 1, rowModelsCache.count)
+        let end = min(rowModelsCache.count, startIndex + 9)
+        guard start < end else { return }
+
+        let requests = rowModelsCache[start..<end].map { model in
+            ArtworkPrefetchRequest(
+                cacheKey: model.artworkCacheKey,
+                artworkData: model.artworkData,
+                targetPixelSize: rowPixels
+            )
+        }
+        prefetchTask?.cancel()
+        prefetchTask = ArtworkLoader.prefetch(Array(requests))
+    }
+
+    private func formatDuration(_ duration: Double) -> String {
+        guard duration.isFinite, duration > 0 else { return "0:00" }
+        let totalSeconds = Int(duration.rounded(.down))
+        let minutes = totalSeconds / 60
+        let seconds = totalSeconds % 60
+        return String(format: "%d:%02d", minutes, seconds)
     }
 }
 

@@ -42,6 +42,8 @@ struct SettingsView: View {
     @State private var lyricsTranslationFontWeightDark: Int = AppSettings.shared
         .lyricsTranslationFontWeightDark
     @State private var nowPlayingSkin: String = AppSettings.shared.selectedNowPlayingSkinID
+    @State private var nowPlayingArtBackgroundEnabled: Bool = AppSettings.shared
+        .nowPlayingArtBackgroundEnabled
     @State private var globalArtworkTintEnabled: Bool = AppSettings.shared.globalArtworkTintEnabled
     @State private var followSystemAppearance: Bool = AppSettings.shared.followSystemAppearance
     @AppStorage("skin.kmgcccCassette.showLEDMeter") private var cassetteShowLEDMeter: Bool = true
@@ -140,6 +142,7 @@ struct SettingsView: View {
         .frame(minWidth: 760, minHeight: 680)
         .onAppear {
             nowPlayingSkin = settings.selectedNowPlayingSkinID
+            nowPlayingArtBackgroundEnabled = settings.nowPlayingArtBackgroundEnabled
             globalArtworkTintEnabled = settings.globalArtworkTintEnabled
             followSystemAppearance = settings.followSystemAppearance
             ledMeterEnabled = settings.ledMeterEnabled
@@ -185,6 +188,9 @@ struct SettingsView: View {
             .onChange(of: nowPlayingSkin) { _, val in
                 settings.selectedNowPlayingSkinID = val
                 playerVM.refreshLedMeterStateFromSettings()
+            }
+            .onChange(of: nowPlayingArtBackgroundEnabled) { _, val in
+                settings.nowPlayingArtBackgroundEnabled = val
             }
             .onChange(of: cassetteShowLEDMeter) { _, _ in
                 playerVM.refreshLedMeterStateFromSettings()
@@ -326,6 +332,17 @@ struct SettingsView: View {
                 systemImage: "sparkles")
 
             VStack(alignment: .leading, spacing: 12) {
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Toggle("启用艺术背景 (Beta)", isOn: $nowPlayingArtBackgroundEnabled)
+                            .toggleStyle(.switch)
+                        Text(" 遇到性能问题时，可以关闭此选项。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(12)
+                }
+
                 Text("settings.now_playing.select_skin")
                     .font(.subheadline.bold())
                     .foregroundStyle(.secondary)

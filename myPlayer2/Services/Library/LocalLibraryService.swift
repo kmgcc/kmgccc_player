@@ -45,8 +45,8 @@ final class LocalLibraryService {
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
-    private var monitor: DispatchSourceFileSystemObject?
-    private var monitorFD: Int32 = -1
+    private var monitors: [String: DispatchSourceFileSystemObject] = [:]
+    private var monitorFDs: [String: Int32] = [:]
     private var pendingSync: DispatchWorkItem?
 
     private init() {
@@ -159,7 +159,9 @@ final class LocalLibraryService {
         return artworkURL.lastPathComponent
     }
 
-    private func writeLyricsIfNeeded(track: Track, folder: URL) throws -> (fileName: String?, type: String?) {
+    private func writeLyricsIfNeeded(track: Track, folder: URL) throws -> (
+        fileName: String?, type: String?
+    ) {
         let text = preferredLyricsText(for: track)
 
         let existing = try? fileManager.contentsOfDirectory(
@@ -167,7 +169,9 @@ final class LocalLibraryService {
             includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles]
         )
-        let existingLyrics = (existing ?? []).filter { $0.lastPathComponent.lowercased().hasPrefix("lyrics.") }
+        let existingLyrics = (existing ?? []).filter {
+            $0.lastPathComponent.lowercased().hasPrefix("lyrics.")
+        }
 
         guard let lyrics = text else {
             for url in existingLyrics {
@@ -291,47 +295,125 @@ final class LocalLibraryService {
     }
 
     func refreshAvailability(repository: LibraryRepositoryProtocol) async {
+        // 1. Refresh Tracks Availability
         let tracks = await repository.fetchTracks(in: nil)
-        var cachedPlaylists: [Playlist]? = nil
         for track in tracks {
             guard !track.libraryRelativePath.isEmpty else { continue }
             let url = LocalLibraryPaths.libraryURL(from: track.libraryRelativePath)
             let exists = fileManager.fileExists(atPath: url.path)
-            if !exists {
-                if cachedPlaylists == nil {
-                    cachedPlaylists = await repository.fetchPlaylists()
-                }
-                if let playlists = cachedPlaylists {
-                    for playlist in playlists where playlist.tracks.contains(where: { $0.id == track.id }) {
-                        await repository.removeTracks([track], from: playlist)
-                    }
-                }
 
-                let needsImportBackfill = track.importedAt == nil
-                if track.availability != .missing || needsImportBackfill {
-                    track.availability = .missing
-                    if needsImportBackfill {
-                        track.importedAt = track.addedAt
-                    }
-                    await repository.updateTrack(track)
-                }
-                continue
-            }
-
+            let newAvailability: TrackAvailability = exists ? .available : .missing
             let needsImportBackfill = track.importedAt == nil
-            if track.availability != .available || needsImportBackfill {
-                track.availability = .available
+
+            if track.availability != newAvailability || needsImportBackfill {
+                track.availability = newAvailability
                 if needsImportBackfill {
                     track.importedAt = track.addedAt
                 }
                 await repository.updateTrack(track)
             }
         }
+
+        // 2. Refresh Playlists from Disk
+        await refreshPlaylists(repository: repository)
+    }
+
+    /// Refresh playlists by comparing raw disk sidecar data against the DB.
+    /// IMPORTANT: We use PlaylistSidecar structs (not @Model Playlist objects) to avoid
+    /// SwiftData implicitly inserting phantom Playlist objects into the context when
+    /// managed Track objects are assigned to their relationships.
+    /// IMPORTANT: We do NOT write back to disk during sync to avoid triggering
+    /// the file system monitor and creating an infinite feedback loop.
+    private func refreshPlaylists(repository: LibraryRepositoryProtocol) async {
+        let tracks = await repository.fetchTracks(in: nil)
+        let tracksById = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) })
+        let diskSidecars = loadPlaylistSidecarsFromDisk()
+
+        let dbPlaylists = await repository.fetchPlaylists()
+
+        // 1. Identify IDs
+        let diskIds = Set(diskSidecars.map { $0.id })
+        let dbIds = Set(dbPlaylists.map { $0.id })
+
+        // 2. Add New (On Disk, not in DB)
+        for sidecar in diskSidecars where !dbIds.contains(sidecar.id) {
+            print("📥 Found new playlist on disk: \(sidecar.name)")
+            let resolvedTracks = sidecar.trackIds.compactMap { tracksById[$0] }
+            let playlist = Playlist(
+                id: sidecar.id,
+                name: sidecar.name,
+                createdAt: sidecar.createdAt,
+                tracks: resolvedTracks
+            )
+            await repository.addPlaylist(playlist)
+        }
+
+        // 3. Delete Stale (In DB, not on Disk)
+        for playlist in dbPlaylists where !diskIds.contains(playlist.id) {
+            print("🗑️ Removing stale playlist from DB: \(playlist.name)")
+            await repository.deletePlaylist(playlist)
+        }
+
+        // 4. Update Existing
+        // Use Set comparison to avoid false positives from SwiftData ordering differences.
+        // Directly modify the managed Playlist object and save WITHOUT writing back to disk,
+        // to prevent triggering the file system monitor → infinite refresh loop.
+        var needsSave = false
+        for sidecar in diskSidecars {
+            if let dbPlaylist = dbPlaylists.first(where: { $0.id == sidecar.id }) {
+                // Sync Name
+                if dbPlaylist.name != sidecar.name {
+                    dbPlaylist.name = sidecar.name
+                    needsSave = true
+                }
+
+                // Sync Tracks — compare as Sets (order-insensitive)
+                let dbTrackIdSet = Set(dbPlaylist.tracks.map { $0.id })
+                let diskTrackIdSet = Set(sidecar.trackIds)
+
+                if dbTrackIdSet != diskTrackIdSet {
+                    print("🔄 Syncing tracks for playlist: \(sidecar.name)")
+                    let resolvedTracks = sidecar.trackIds.compactMap { tracksById[$0] }
+                    dbPlaylist.tracks = resolvedTracks
+                    needsSave = true
+                }
+            }
+        }
+
+        if needsSave {
+            await repository.save()
+        }
+    }
+
+    /// Load raw playlist sidecar data from disk without creating @Model objects.
+    /// This is safe to call during refresh because it does not touch the SwiftData context.
+    func loadPlaylistSidecarsFromDisk() -> [PlaylistSidecar] {
+        ensureLibraryFolders()
+        var sidecars: [PlaylistSidecar] = []
+
+        let files =
+            (try? fileManager.contentsOfDirectory(
+                at: LocalLibraryPaths.playlistsRootURL,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )) ?? []
+
+        for file in files where file.pathExtension.lowercased() == "json" {
+            guard let data = try? Data(contentsOf: file),
+                let sidecar = try? decoder.decode(PlaylistSidecar.self, from: data)
+            else {
+                continue
+            }
+            sidecars.append(sidecar)
+        }
+
+        return sidecars
     }
 
     func migrateLegacyTracksIfNeeded(repository: LibraryRepositoryProtocol) async {
         let tracks = await repository.fetchTracks(in: nil)
-        for track in tracks where track.libraryRelativePath.isEmpty && !track.fileBookmarkData.isEmpty {
+        for track in tracks
+        where track.libraryRelativePath.isEmpty && !track.fileBookmarkData.isEmpty {
             let result = track.resolveFileURL()
             guard let sourceURL = result.url else {
                 track.availability = .missing
@@ -361,11 +443,12 @@ final class LocalLibraryService {
         ensureLibraryFolders()
         var tracks: [Track] = []
 
-        let trackDirs = (try? fileManager.contentsOfDirectory(
-            at: LocalLibraryPaths.tracksRootURL,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        )) ?? []
+        let trackDirs =
+            (try? fileManager.contentsOfDirectory(
+                at: LocalLibraryPaths.tracksRootURL,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )) ?? []
 
         for dir in trackDirs where dir.hasDirectoryPath {
             let metaURL = dir.appendingPathComponent("meta.json")
@@ -383,7 +466,8 @@ final class LocalLibraryService {
                 return ""
             }()
 
-            let audioURL = relativePath.isEmpty
+            let audioURL =
+                relativePath.isEmpty
                 ? nil
                 : LocalLibraryPaths.libraryURL(from: relativePath)
             let isAvailable = audioURL.map { fileManager.fileExists(atPath: $0.path) } ?? false
@@ -434,11 +518,12 @@ final class LocalLibraryService {
         ensureLibraryFolders()
         var playlists: [Playlist] = []
 
-        let files = (try? fileManager.contentsOfDirectory(
-            at: LocalLibraryPaths.playlistsRootURL,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        )) ?? []
+        let files =
+            (try? fileManager.contentsOfDirectory(
+                at: LocalLibraryPaths.playlistsRootURL,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )) ?? []
 
         for file in files where file.pathExtension.lowercased() == "json" {
             guard let data = try? Data(contentsOf: file),
@@ -461,13 +546,15 @@ final class LocalLibraryService {
     }
 
     private func findAudioFileName(in folder: URL) -> String? {
-        let files = (try? fileManager.contentsOfDirectory(
-            at: folder,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        )) ?? []
+        let files =
+            (try? fileManager.contentsOfDirectory(
+                at: folder,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )) ?? []
 
-        if let audio = files.first(where: { $0.lastPathComponent.lowercased().hasPrefix("audio.") }) {
+        if let audio = files.first(where: { $0.lastPathComponent.lowercased().hasPrefix("audio.") })
+        {
             return audio.lastPathComponent
         }
 
@@ -485,39 +572,51 @@ final class LocalLibraryService {
         stopMonitoring()
         ensureLibraryFolders()
 
-        let path = LocalLibraryPaths.tracksRootURL.path
-        let fd = open(path, O_EVTONLY)
-        guard fd >= 0 else {
-            print("⚠️ Failed to open library path for monitoring: \(path)")
-            return
+        let pathsToMonitor = [
+            "tracks": LocalLibraryPaths.tracksRootURL.path,
+            "playlists": LocalLibraryPaths.playlistsRootURL.path,
+        ]
+
+        for (name, path) in pathsToMonitor {
+            let fd = open(path, O_EVTONLY)
+            guard fd >= 0 else {
+                print("⚠️ Failed to open \(name) path for monitoring: \(path)")
+                continue
+            }
+
+            let source = DispatchSource.makeFileSystemObjectSource(
+                fileDescriptor: fd,
+                eventMask: [.write, .delete, .rename, .extend, .attrib],  // Added .extend/.attrib for better file change detection
+                queue: DispatchQueue.global(qos: .utility)
+            )
+
+            source.setEventHandler { [weak self] in
+                print("📝 Detected change in \(name) folder")
+                self?.scheduleAvailabilitySync(repository: repository)
+            }
+
+            source.setCancelHandler { [fd] in
+                close(fd)
+            }
+
+            source.resume()
+            monitors[name] = source
+            monitorFDs[name] = fd
+            print("👀 Started monitoring \(name) at \(path)")
         }
-
-        monitorFD = fd
-        let source = DispatchSource.makeFileSystemObjectSource(
-            fileDescriptor: fd,
-            eventMask: [.write, .delete, .rename],
-            queue: DispatchQueue.global(qos: .utility)
-        )
-
-        source.setEventHandler { [weak self] in
-            self?.scheduleAvailabilitySync(repository: repository)
-        }
-
-        source.setCancelHandler { [fd] in
-            close(fd)
-        }
-
-        source.resume()
-        monitor = source
     }
 
     func stopMonitoring() {
         pendingSync?.cancel()
         pendingSync = nil
 
-        monitor?.cancel()
-        monitor = nil
-        monitorFD = -1
+        for source in monitors.values {
+            source.cancel()
+        }
+        monitors.removeAll()
+
+        // FDs are closed in cancel handler, but we clear our tracking
+        monitorFDs.removeAll()
     }
 
     private func scheduleAvailabilitySync(repository: LibraryRepositoryProtocol) {
@@ -532,8 +631,8 @@ final class LocalLibraryService {
     }
 }
 
-private extension NSImage {
-    func jpegData(compression: CGFloat) -> Data? {
+extension NSImage {
+    fileprivate func jpegData(compression: CGFloat) -> Data? {
         guard let tiff = tiffRepresentation,
             let rep = NSBitmapImageRep(data: tiff)
         else {

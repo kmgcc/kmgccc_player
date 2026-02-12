@@ -219,11 +219,11 @@ final class FileImportService: FileImportServiceProtocol {
         let asset = AVURLAsset(url: url)
 
         // Default values
-        var title = url.deletingPathExtension().lastPathComponent
-        var artist = NSLocalizedString("library.unknown_artist", comment: "")
-        var album = NSLocalizedString("library.unknown_album", comment: "")
+        var title: String?
+        var artist: String?
+        var album: String?
+        var lyrics: String?
         var duration: Double = 0
-        var lyrics: String? = nil
 
         // Get duration
         do {
@@ -233,68 +233,87 @@ final class FileImportService: FileImportServiceProtocol {
             print("⚠️ Failed to load duration: \(error)")
         }
 
-        // Get metadata
-        do {
-            let metadata = try await asset.load(.commonMetadata)
+        // Collect all metadata items: common first, then full set as fallback
+        var allItems: [AVMetadataItem] = []
+        if let common = try? await asset.load(.commonMetadata) {
+            allItems.append(contentsOf: common)
+        }
+        if let full = try? await asset.load(.metadata) {
+            allItems.append(contentsOf: full)
+        }
 
-            for item in metadata {
-                guard let key = item.commonKey?.rawValue,
-                    let value = try? await item.load(.stringValue)
-                else {
-                    continue
-                }
-
+        for item in allItems {
+            // 1. Try Common Key
+            if let key = item.commonKey?.rawValue {
                 switch key {
                 case "title":
-                    title = value
+                    if title == nil { title = try? await item.load(.stringValue) }
                 case "artist":
-                    artist = value
+                    if artist == nil { artist = try? await item.load(.stringValue) }
                 case "albumName":
-                    album = value
+                    if album == nil { album = try? await item.load(.stringValue) }
                 case "lyrics":
-                    lyrics = value
+                    if lyrics == nil { lyrics = try? await item.load(.stringValue) }
                 default:
                     break
                 }
             }
 
-            // Fallback: Check for ID3 USLT if common metadata failed
-            if lyrics == nil {
-                let id3Metadata = try await asset.load(.metadata)
-                for item in id3Metadata {
-                    if let key = item.identifier?.rawValue, key == "id3/USLT",
-                        let value = try? await item.load(.stringValue)
-                    {
-                        lyrics = value
-                        break
-                    }
+            // 2. Try raw key string (fallback for FLAC / Vorbis Comment tags)
+            if let keyString = (item.key as? String)?.uppercased() {
+                if title == nil && keyString == "TITLE" {
+                    title = try? await item.load(.stringValue)
+                }
+                if artist == nil && keyString == "ARTIST" {
+                    artist = try? await item.load(.stringValue)
+                }
+                if album == nil && (keyString == "ALBUM" || keyString == "ALBUMTITLE") {
+                    album = try? await item.load(.stringValue)
+                }
+                if lyrics == nil
+                    && (keyString == "LYRICS" || keyString == "UNSYNCEDLYRICS"
+                        || keyString == "USLT")
+                {
+                    lyrics = try? await item.load(.stringValue)
                 }
             }
-        } catch {
-            print("⚠️ Failed to load metadata: \(error)")
+
+            // 3. ID3 USLT via identifier
+            if lyrics == nil,
+                let identifier = item.identifier?.rawValue,
+                identifier == "id3/USLT"
+            {
+                lyrics = try? await item.load(.stringValue)
+            }
         }
 
-        return (title, artist, album, duration, lyrics)
+        // Apply defaults
+        let finalTitle = title ?? url.deletingPathExtension().lastPathComponent
+        let finalArtist = artist ?? NSLocalizedString("library.unknown_artist", comment: "")
+        let finalAlbum = album ?? NSLocalizedString("library.unknown_album", comment: "")
+
+        return (finalTitle, finalArtist, finalAlbum, duration, lyrics)
     }
 
     /// Extract artwork from audio file.
     private func extractArtwork(from url: URL) async -> Data? {
         let asset = AVURLAsset(url: url)
 
-        do {
-            let metadata = try await asset.load(.commonMetadata)
+        // Collect all metadata items
+        var allItems: [AVMetadataItem] = []
+        if let common = try? await asset.load(.commonMetadata) {
+            allItems.append(contentsOf: common)
+        }
+        if let full = try? await asset.load(.metadata) {
+            allItems.append(contentsOf: full)
+        }
 
-            for item in metadata {
-                guard let key = item.commonKey?.rawValue, key == "artwork" else {
-                    continue
-                }
-
+        for item in allItems {
+            if let key = item.commonKey?.rawValue, key == "artwork" {
                 if let data = try? await item.load(.dataValue) {
                     return data
                 }
             }
-        } catch {
-            print("⚠️ Failed to load artwork: \(error)")
         }
 
         return nil

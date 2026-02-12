@@ -65,11 +65,44 @@ final class LibraryViewModel {
     /// All playlists in the library.
     private(set) var playlists: [Playlist] = []
 
-    /// Currently selected playlist (nil = All Songs).
+    /// Unique artists in the library.
+    private(set) var uniqueArtists: [String] = []
+
+    /// Unique albums in the library.
+    private(set) var uniqueAlbums: [String] = []
+
+    /// Currently selected playlist (nil = All Songs, unless artist/album selected).
     /// Published so UI can react to changes.
     var selectedPlaylistId: UUID? {
         didSet {
-            applySortPreferenceForCurrentSelection()
+            if selectedPlaylistId != nil {
+                selectedArtist = nil
+                selectedAlbum = nil
+                applySortPreferenceForCurrentSelection()
+            } else if selectedArtist == nil && selectedAlbum == nil {
+                // Only apply sort if we reverted to All Songs (no other selection active)
+                applySortPreferenceForCurrentSelection()
+            }
+        }
+    }
+
+    /// Currently selected artist.
+    var selectedArtist: String? {
+        didSet {
+            if selectedArtist != nil {
+                selectedPlaylistId = nil
+                selectedAlbum = nil
+            }
+        }
+    }
+
+    /// Currently selected album.
+    var selectedAlbum: String? {
+        didSet {
+            if selectedAlbum != nil {
+                selectedPlaylistId = nil
+                selectedArtist = nil
+            }
         }
     }
 
@@ -162,8 +195,12 @@ final class LibraryViewModel {
         await libraryService.bootstrapIfNeeded(repository: repository)
         playlists = await repository.fetchPlaylists()
         totalTrackCount = await repository.totalTrackCount()
+        uniqueArtists = await repository.fetchUniqueArtists()
+        uniqueAlbums = await repository.fetchUniqueAlbums()
 
-        print("📚 Loaded \(playlists.count) playlists, \(totalTrackCount) total tracks")
+        print(
+            "📚 Loaded \(playlists.count) playlists, \(totalTrackCount) total tracks, \(uniqueArtists.count) artists, \(uniqueAlbums.count) albums"
+        )
     }
 
     /// Refresh all data and trigger UI update.
@@ -223,8 +260,10 @@ final class LibraryViewModel {
         let count = await service.pickAndImport(to: targetPlaylist)
         print("📥 pickAndImport returned: \(count) tracks imported")
 
-        // Always refresh after import attempt
-        await refresh()
+        // Only refresh if tracks were actually imported
+        if count > 0 {
+            await refresh()
+        }
     }
 
     /// Import to a specific playlist.
@@ -263,10 +302,24 @@ final class LibraryViewModel {
     /// Select a playlist by ID.
     func selectPlaylist(_ playlist: Playlist?) {
         selectedPlaylistId = playlist?.id
+        selectedArtist = nil
+        selectedAlbum = nil
         if let id = playlist?.id {
             UserDefaults.standard.set(id.uuidString, forKey: "lastSelectedPlaylistId")
         }
         print("📚 Selected playlist: \(playlist?.name ?? "All Songs")")
+    }
+
+    /// Select an artist.
+    func selectArtist(_ artist: String) {
+        selectedArtist = artist
+        // selectedPlaylistId handled by didSet
+    }
+
+    /// Select an album.
+    func selectAlbum(_ album: String) {
+        selectedAlbum = album
+        // selectedPlaylistId handled by didSet
     }
 
     func renamePlaylist(_ playlist: Playlist, name: String) async {
@@ -315,7 +368,14 @@ final class LibraryViewModel {
 
     /// Title for the current view.
     var currentTitle: String {
-        selectedPlaylist?.name ?? NSLocalizedString("library.all_songs", comment: "")
+        if let playlist = selectedPlaylist {
+            return playlist.name
+        } else if let artist = selectedArtist {
+            return artist
+        } else if let album = selectedAlbum {
+            return album
+        }
+        return NSLocalizedString("library.all_songs", comment: "")
     }
 
     /// Subtitle for the current view.
@@ -351,7 +411,14 @@ final class LibraryViewModel {
     }
 
     private var sortContextKey: String {
-        selectedPlaylistId?.uuidString ?? "__all_songs__"
+        if let id = selectedPlaylistId {
+            return id.uuidString
+        } else if let artist = selectedArtist {
+            return "ARTIST_\(artist)"
+        } else if let album = selectedAlbum {
+            return "ALBUM_\(album)"
+        }
+        return "__all_songs__"
     }
 
     private func persistSortPreferenceForCurrentSelection() {
@@ -381,7 +448,8 @@ final class LibraryViewModel {
 
     private func loadSortPreferencesMap() -> [String: SortPreference] {
         guard
-            let data = UserDefaults.standard.data(forKey: DefaultsKey.trackSortPreferencesByPlaylist)
+            let data = UserDefaults.standard.data(
+                forKey: DefaultsKey.trackSortPreferencesByPlaylist)
         else {
             return [:]
         }
