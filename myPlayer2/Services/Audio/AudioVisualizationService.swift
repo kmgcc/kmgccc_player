@@ -61,6 +61,7 @@ final class AudioVisualizationService {
         guard activeRefs == 1 else { return }
 
         lastUpdateTime = Date().timeIntervalSinceReferenceDate
+        hub.start()
 
         stopTimer()
         silenceTimer = Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) {
@@ -132,6 +133,7 @@ final class AudioVisualizationService {
             hub.removeConsumer(id)
         }
         consumerId = nil
+        hub.stop()
         stopTimer()
         wave9 = Array(repeating: 0, count: 9)
         liveWave = Array(repeating: 0, count: 9)

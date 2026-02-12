@@ -70,11 +70,6 @@ struct BKArtBackgroundView: View {
         let rich = ArtworkColorExtractor.uiThemePaletteRich(from: data, desiredCount: 8)
         let chosen = rich.isEmpty ? base : rich
         palette = chosen.isEmpty ? Self.fallbackPalette : chosen
-        Self.logExtractedPalette(
-            base: base.isEmpty ? Self.fallbackPalette : base,
-            rich: rich,
-            used: palette
-        )
     }
 
     fileprivate static let fallbackPalette: [NSColor] = [
@@ -82,62 +77,6 @@ struct BKArtBackgroundView: View {
         NSColor(calibratedRed: 0.76, green: 0.54, blue: 0.52, alpha: 1.0),
         NSColor(calibratedRed: 0.56, green: 0.72, blue: 0.46, alpha: 1.0),
     ]
-
-    private static func logExtractedPalette(base: [NSColor], rich: [NSColor], used: [NSColor]) {
-        func hsbTuple(_ color: NSColor) -> (h: CGFloat, s: CGFloat, b: CGFloat)? {
-            guard let rgb = color.usingColorSpace(.deviceRGB) else { return nil }
-            var h: CGFloat = 0
-            var s: CGFloat = 0
-            var b: CGFloat = 0
-            var a: CGFloat = 0
-            rgb.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
-            return ((h * 360).truncatingRemainder(dividingBy: 360), s, b)
-        }
-
-        func hueDistance(_ lhs: CGFloat, _ rhs: CGFloat) -> CGFloat {
-            var d = abs(lhs - rhs).truncatingRemainder(dividingBy: 360)
-            if d > 180 { d = 360 - d }
-            return d
-        }
-
-        func summarize(_ colors: [NSColor]) -> (avgS: CGFloat, hueSpread: CGFloat, text: String) {
-            let hsbs = colors.compactMap(hsbTuple(_:))
-            guard !hsbs.isEmpty else { return (0, 0, "none") }
-            let avgS = hsbs.map(\.s).reduce(0, +) / CGFloat(hsbs.count)
-            var spread: CGFloat = 0
-            if hsbs.count > 1 {
-                for i in 0..<(hsbs.count - 1) {
-                    for j in (i + 1)..<hsbs.count {
-                        spread = max(spread, hueDistance(hsbs[i].h, hsbs[j].h))
-                    }
-                }
-            }
-            let text = hsbs.enumerated().map { idx, c in
-                "\(idx):{h=\(f1(c.h)) s=\(f3(c.s)) b=\(f3(c.b))}"
-            }.joined(separator: " ")
-            return (avgS, spread, text)
-        }
-
-        let baseSummary = summarize(base)
-        let richSummary = summarize(rich)
-        let usedSummary = summarize(used)
-        print(
-            "[BKArtBackground] extractor baseCount=\(base.count) richCount=\(rich.count) usedCount=\(used.count) baseAvgS=\(f3(baseSummary.avgS)) baseHueSpread=\(f1(baseSummary.hueSpread)) richAvgS=\(f3(richSummary.avgS)) richHueSpread=\(f1(richSummary.hueSpread)) usedAvgS=\(f3(usedSummary.avgS)) usedHueSpread=\(f1(usedSummary.hueSpread))"
-        )
-        print("[BKArtBackground] extractor baseHSB \(baseSummary.text)")
-        if !rich.isEmpty {
-            print("[BKArtBackground] extractor richHSB \(richSummary.text)")
-        }
-        print("[BKArtBackground] extractor usedHSB \(usedSummary.text)")
-    }
-
-    private static func f1(_ value: CGFloat) -> String {
-        String(format: "%.1f", Double(value))
-    }
-
-    private static func f3(_ value: CGFloat) -> String {
-        String(format: "%.3f", Double(value))
-    }
 }
 
 private struct BKArtBackgroundRepresentable: NSViewRepresentable {
@@ -220,12 +159,16 @@ private final class BKArtBackgroundLayerView: NSView {
         var baseRadius: CGFloat
         var radiusBig: CGFloat
         var radiusSmall: CGFloat
+        var maskBaseRadiusBig: CGFloat
+        var maskBaseRadiusSmall: CGFloat
 
         init(anim: DotAnimState, baseRadius: CGFloat) {
             self.anim = anim
             self.baseRadius = baseRadius
             self.radiusBig = 0
             self.radiusSmall = 0
+            self.maskBaseRadiusBig = max(1, baseRadius * 0.75)
+            self.maskBaseRadiusSmall = max(1, baseRadius)
         }
     }
 
@@ -280,10 +223,9 @@ private final class BKArtBackgroundLayerView: NSView {
         isDark: false
     )
     private var extractedPaletteForSwatches: [NSColor] = BKArtBackgroundView.fallbackPalette
-    private let ciContext = CIContext(options: [.cacheIntermediates: true])
+    private let ciContext = CIContext(options: [.cacheIntermediates: false])
     private var tintedBackgroundVariants: [[CGImage]] = []
     private var paletteSignature: String = ""
-    private var processedMaskFrames: [CGImage] = []
     private var fromContainer: Container?
     private var toContainer: Container?
     private var transitionMaskLayer: CALayer?
@@ -585,7 +527,6 @@ private final class BKArtBackgroundLayerView: NSView {
         container.backgroundToneLayer.backgroundColor =
             toneVariant.first ?? (isDark ? NSColor.black.cgColor : NSColor.white.cgColor)
         container.backgroundToneLayer.opacity = isDark ? 0.30 : 0.18
-        print("[BKArtBackground] imageVariant index=\(container.bgVariantIndex) count=\(variantCount)")
 
         applyStyle(to: container, style: container.style, rng: &rng)
         let swatchResult = BKColorEngine.makeShapeSwatches(
@@ -596,7 +537,6 @@ private final class BKArtBackgroundLayerView: NSView {
         )
         container.shapeSwatches = swatchResult.colors.isEmpty ? harmonized.shapePool : swatchResult.colors
         container.swatchDiagnostics = swatchResult.diagnostics
-        logContainerSwatches(swatchResult.diagnostics)
 
         let count = rng.nextInt(in: 10...16)
         let chosenShapes = chooseShapeImages(count: count, rng: &rng)
@@ -852,18 +792,6 @@ private final class BKArtBackgroundLayerView: NSView {
             }
         }
         CATransaction.commit()
-    }
-
-    private func logContainerSwatches(_ diagnostics: BKColorEngine.ShapeSwatchDiagnostics) {
-        let nearestText = diagnostics.nearestCandidateHueDiff.map { f1($0) }.joined(separator: ",")
-        let swatchText = diagnostics.swatchHSB.joined(separator: " | ")
-        let maxNearest = diagnostics.nearestCandidateHueDiff.max() ?? 0
-        print(
-            "[BKArtBackground] shapeSwatches avgS=\(f3(diagnostics.avgS)) hueSpread=\(f1(diagnostics.hueSpread)) swatchCount=\(diagnostics.swatchCount) nearestCandidateHueDiff=[\(nearestText)] swatches=\(swatchText)"
-        )
-        if maxNearest > 18 {
-            print("[BKArtBackground][WARN] swatch hue drift exceeds 18deg max=\(f1(maxNearest))")
-        }
     }
 
     private func randomEdgePoint(
@@ -1397,77 +1325,66 @@ private final class BKArtBackgroundLayerView: NSView {
     private func makeTintedBackgroundVariants(from source: [CGImage]) -> [[CGImage]] {
         guard !source.isEmpty else { return [] }
         let variants = backgroundToneVariants()
+        let toneStops = variants.first ?? [BKArtBackgroundView.fallbackPalette[0]]
+        guard let mapImage = makeColorMapImage(colors: toneStops) else { return [source] }
         let darkConfig = harmonized.isDark ? makeDarkToneMapConfig() : nil
-        if let darkConfig {
-            print(
-                "[BKArtBackground] toneMap imageLuma=\(f3(harmonized.imageCoverLuma)) bgTarget=\(f3(darkConfig.targetBgB)) shapeRef=\(f3(darkConfig.shapeReferenceB)) exposureDown=\(f3(darkConfig.exposureDown)) p4y=\(f3(darkConfig.p4Y)) sat=\(f3(darkConfig.saturation)) contrast=\(f3(darkConfig.contrast)) shadow=\(f3(darkConfig.shadowLift)) detail=\(f3(darkConfig.detailAlpha)) ultraDark=\(darkConfig.ultraDark ? 1 : 0)"
+        let tuning = imageVariantTuning(for: toneStops)
+        let variantImages = source.compactMap { image in
+            let input = CIImage(cgImage: image)
+            let grayscale = input.applyingFilter(
+                "CIColorControls",
+                parameters: [
+                    kCIInputSaturationKey: 0.0,
+                    kCIInputContrastKey: 1.08,
+                    kCIInputBrightnessKey: 0.0,
+                ]
             )
-        }
-        print("[BKArtBackground] image bg variants count=\(variants.count)")
 
-        return variants.enumerated().compactMap { variantIndex, colors in
-            guard let mapImage = makeColorMapImage(colors: colors) else { return nil }
-            let tuning = imageVariantTuning(for: colors)
-            print(
-                "[BKArtBackground] image variant#\(variantIndex) avgS=\(f3(tuning.avgS)) hueSpread=\(f1(tuning.hueSpread)) rich=\(f3(tuning.richScore)) mapAlpha=\(f3(tuning.mapAlpha)) origSat=\(f3(tuning.originalSaturation)) boost=\(f3(tuning.composedSaturationBoost))"
+            let mapped = grayscale.applyingFilter(
+                "CIColorMap",
+                parameters: ["inputGradientImage": mapImage]
             )
-            let variantImages = source.compactMap { image in
-                let input = CIImage(cgImage: image)
-                let grayscale = input.applyingFilter(
+            let mappedSoftAlpha = mapped.applyingFilter(
+                "CIColorMatrix",
+                parameters: [
+                    "inputAVector": CIVector(x: 0, y: 0, z: 0, w: tuning.mapAlpha)
+                ]
+            )
+            let desaturatedOriginal = input.applyingFilter(
+                "CIColorControls",
+                parameters: [
+                    kCIInputSaturationKey: tuning.originalSaturation,
+                    kCIInputContrastKey: 1.10,
+                    kCIInputBrightnessKey: 0.0,
+                ]
+            )
+            var composed = mappedSoftAlpha.applyingFilter(
+                "CISourceOverCompositing",
+                parameters: [kCIInputBackgroundImageKey: desaturatedOriginal]
+            )
+            if abs(tuning.composedSaturationBoost - 1.0) > 0.01 {
+                composed = composed.applyingFilter(
                     "CIColorControls",
                     parameters: [
-                        kCIInputSaturationKey: 0.0,
-                        kCIInputContrastKey: 1.08,
+                        kCIInputSaturationKey: tuning.composedSaturationBoost,
+                        kCIInputContrastKey: 1.02,
                         kCIInputBrightnessKey: 0.0,
                     ]
                 )
-
-                let mapped = grayscale.applyingFilter(
-                    "CIColorMap",
-                    parameters: ["inputGradientImage": mapImage]
-                )
-                let mappedSoftAlpha = mapped.applyingFilter(
-                    "CIColorMatrix",
-                    parameters: [
-                        "inputAVector": CIVector(x: 0, y: 0, z: 0, w: tuning.mapAlpha)
-                    ]
-                )
-                let desaturatedOriginal = input.applyingFilter(
-                    "CIColorControls",
-                    parameters: [
-                        kCIInputSaturationKey: tuning.originalSaturation,
-                        kCIInputContrastKey: 1.10,
-                        kCIInputBrightnessKey: 0.0,
-                    ]
-                )
-                var composed = mappedSoftAlpha.applyingFilter(
-                    "CISourceOverCompositing",
-                    parameters: [kCIInputBackgroundImageKey: desaturatedOriginal]
-                )
-                if abs(tuning.composedSaturationBoost - 1.0) > 0.01 {
-                    composed = composed.applyingFilter(
-                        "CIColorControls",
-                        parameters: [
-                            kCIInputSaturationKey: tuning.composedSaturationBoost,
-                            kCIInputContrastKey: 1.02,
-                            kCIInputBrightnessKey: 0.0,
-                        ]
-                    )
-                }
-                let finalImage: CIImage
-                if let darkConfig {
-                    finalImage = toneMap(
-                        image: composed,
-                        isDark: true,
-                        config: darkConfig
-                    )
-                } else {
-                    finalImage = composed
-                }
-                return ciContext.createCGImage(finalImage, from: input.extent)
             }
-            return variantImages.isEmpty ? nil : variantImages
+            let finalImage: CIImage
+            if let darkConfig {
+                finalImage = toneMap(
+                    image: composed,
+                    isDark: true,
+                    config: darkConfig
+                )
+            } else {
+                finalImage = composed
+            }
+            return ciContext.createCGImage(finalImage, from: input.extent)
         }
+        return variantImages.isEmpty ? [source] : [variantImages]
     }
 
     private func makeDarkToneMapConfig() -> DarkToneMapConfig {
@@ -1804,14 +1721,6 @@ private final class BKArtBackgroundLayerView: NSView {
         return a + (b - a) * p
     }
 
-    private func f3(_ value: CGFloat) -> String {
-        String(format: "%.3f", Double(value))
-    }
-
-    private func f1(_ value: CGFloat) -> String {
-        String(format: "%.1f", Double(value))
-    }
-
     private func nextTransitionSeed() -> UInt64 {
         transitionSeedCounter &+= 1
         return rebuildSeed &+ (transitionSeedCounter &* 0x9E37_79B9_7F4A_7C15)
@@ -1829,17 +1738,7 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     private func resolvedMaskFrames() -> [CGImage] {
-        if !processedMaskFrames.isEmpty {
-            return processedMaskFrames
-        }
-        processedMaskFrames = assets.maskFrames.compactMap { convertedMaskFrame(from: $0) ?? $0 }
-        return processedMaskFrames
-    }
-
-    private func convertedMaskFrame(from image: CGImage) -> CGImage? {
-        let input = CIImage(cgImage: image)
-        let alphaMask = input.applyingFilter("CIMaskToAlpha")
-        return ciContext.createCGImage(alphaMask, from: alphaMask.extent)
+        assets.maskFrames
     }
 
     private static func paletteSignature(for colors: [CGColor]) -> String {
@@ -1926,6 +1825,8 @@ private final class BKArtBackgroundLayerView: NSView {
         let slot = DotSlot(anim: anim, baseRadius: dotBaseRadius)
         slot.radiusBig = CGFloat(rng.next(in: 5.0...6.2))
         slot.radiusSmall = CGFloat(rng.next(in: 3.0...4.0))
+        slot.maskBaseRadiusBig = max(1, dotBaseRadius * 0.75)
+        slot.maskBaseRadiusSmall = max(1, dotBaseRadius)
 
         slot.rootLayer.frame = root.bounds
 
@@ -1946,6 +1847,15 @@ private final class BKArtBackgroundLayerView: NSView {
 
         let mask1 = CAShapeLayer()
         mask1.fillColor = NSColor.black.cgColor
+        mask1.bounds = CGRect(
+            x: 0,
+            y: 0,
+            width: slot.maskBaseRadiusBig * 2,
+            height: slot.maskBaseRadiusBig * 2
+        )
+        mask1.path = CGPath(ellipseIn: mask1.bounds, transform: nil)
+        mask1.position = start
+        mask1.anchorPoint = CGPoint(x: 0.5, y: 0.5)
         grid1.mask = mask1
         slot.maskBig = mask1
 
@@ -1960,6 +1870,15 @@ private final class BKArtBackgroundLayerView: NSView {
 
         let mask2 = CAShapeLayer()
         mask2.fillColor = NSColor.black.cgColor
+        mask2.bounds = CGRect(
+            x: 0,
+            y: 0,
+            width: slot.maskBaseRadiusSmall * 2,
+            height: slot.maskBaseRadiusSmall * 2
+        )
+        mask2.path = CGPath(ellipseIn: mask2.bounds, transform: nil)
+        mask2.position = start
+        mask2.anchorPoint = CGPoint(x: 0.5, y: 0.5)
         grid2.mask = mask2
         slot.maskSmall = mask2
 
@@ -2094,14 +2013,16 @@ private final class BKArtBackgroundLayerView: NSView {
                 CATransaction.setDisableActions(true)
 
                 if let mask0 = slot.maskBig {
-                    let r0 = currentR * 0.75
-                    let rect0 = CGRect(x: pos.x - r0, y: pos.y - r0, width: r0 * 2, height: r0 * 2)
-                    mask0.path = CGPath(ellipseIn: rect0, transform: nil)
+                    let targetR0 = max(1, currentR * 0.75)
+                    let scale0 = targetR0 / max(1, slot.maskBaseRadiusBig)
+                    mask0.position = pos
+                    mask0.setAffineTransform(CGAffineTransform(scaleX: scale0, y: scale0))
                 }
                 if let mask1 = slot.maskSmall {
-                    let r1 = currentR
-                    let rect1 = CGRect(x: pos.x - r1, y: pos.y - r1, width: r1 * 2, height: r1 * 2)
-                    mask1.path = CGPath(ellipseIn: rect1, transform: nil)
+                    let targetR1 = max(1, currentR)
+                    let scale1 = targetR1 / max(1, slot.maskBaseRadiusSmall)
+                    mask1.position = pos
+                    mask1.setAffineTransform(CGAffineTransform(scaleX: scale1, y: scale1))
                 }
 
                 CATransaction.commit()

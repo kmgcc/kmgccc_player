@@ -55,6 +55,7 @@ public final class AudioAnalysisHub {
     private var consumers: [UUID: (AudioAnalysisData) -> Void] = [:]
     private let consumerLock = NSLock()
     private var timer: DispatchSourceTimer?
+    private var activeClients: Int = 0
 
     // Config
     var targetHz: Int = 60
@@ -77,9 +78,11 @@ public final class AudioAnalysisHub {
     }
 
     func start() {
+        activeClients += 1
         guard !isInstalled else { return }
         guard let mixer = mixerNode else {
             print("⚠️ AudioAnalysisHub: No mixer attached")
+            activeClients = max(0, activeClients - 1)
             return
         }
 
@@ -99,6 +102,8 @@ public final class AudioAnalysisHub {
     }
 
     func stop() {
+        activeClients = max(0, activeClients - 1)
+        guard activeClients == 0 else { return }
         guard isInstalled else { return }
         mixerNode?.removeTap(onBus: 0)
         isInstalled = false

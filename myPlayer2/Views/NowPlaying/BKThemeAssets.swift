@@ -6,6 +6,7 @@
 //
 
 import AppKit
+import CoreImage
 import ImageIO
 
 @MainActor
@@ -18,36 +19,34 @@ final class BKThemeAssets {
     let edgePinnedShapeIndices: Set<Int>
     let maskFrames: [CGImage]
 
+    private struct PixelBudget {
+        let background: Int
+        let shape: Int
+        let mask: Int
+    }
+
+    private static let maskProcessingContext = CIContext(options: [.cacheIntermediates: false])
+
     private init() {
         let bundle = Self.resolveBundle()
-        print("[BKThemeAssets] Resolved bundleURL: \(bundle?.bundleURL.path ?? "nil")")
+        let budget = Self.pixelBudget()
 
-        self.backgrounds = Self.loadBackgrounds(from: bundle)
-        let shapeLoadResult = Self.loadShapes(from: bundle)
+        self.backgrounds = Self.loadBackgrounds(from: bundle, budget: budget)
+        let shapeLoadResult = Self.loadShapes(from: bundle, budget: budget)
         self.shapes = shapeLoadResult.images
         self.specialShapeScaleByIndex = shapeLoadResult.scaleByIndex
         self.edgePinnedShapeIndices = shapeLoadResult.edgePinnedIndices
-        self.maskFrames = Self.loadMaskFrames(from: bundle)
-
-        // Verification logs
-        print("---------- BKThemeAssets Verification ----------")
-        print("[BKThemeAssets] shapes.count: \(shapes.count)")
-        print("[BKThemeAssets] maskFrames.count: \(maskFrames.count)")
-        print("[BKThemeAssets] bk1/bk2 loaded success: \(backgrounds.count >= 2)")
-        print("------------------------------------------------")
+        self.maskFrames = Self.loadMaskFrames(from: bundle, budget: budget)
     }
 
     private static func resolveBundle() -> Bundle? {
         let candidateIdentifiers = [
-            "kmgccc.bkMask",  // current BKArt target id in project.pbxproj
-            "kmgccc.BKArt",  // historical/expected id
+            "kmgccc.bkMask",
+            "kmgccc.BKArt",
         ]
 
         for identifier in candidateIdentifiers {
-            if let bundle = Bundle(identifier: identifier) {
-                print("[BKThemeAssets] Found bundle by identifier(\(identifier)): \(bundle.bundleURL.path)")
-                return bundle
-            }
+            if let bundle = Bundle(identifier: identifier) { return bundle }
         }
 
         let candidateNames = ["BKArt", "bkArt", "bkMask"]
@@ -57,7 +56,6 @@ final class BKThemeAssets {
                 if let url = host.url(forResource: name, withExtension: "bundle"),
                     let bundle = Bundle(url: url)
                 {
-                    print("[BKThemeAssets] Found bundle by name(\(name)) in host: \(url.path)")
                     return bundle
                 }
             }
@@ -73,10 +71,7 @@ final class BKThemeAssets {
                     guard fileURL.pathExtension.lowercased() == "bundle" else { continue }
                     let lowerName = fileURL.lastPathComponent.lowercased()
                     guard lowerName.contains("bkart") || lowerName.contains("bkmask") else { continue }
-                    if let bundle = Bundle(url: fileURL) {
-                        print("[BKThemeAssets] Found bundle by scan: \(fileURL.path)")
-                        return bundle
-                    }
+                    if let bundle = Bundle(url: fileURL) { return bundle }
                 }
             }
         }
@@ -84,45 +79,48 @@ final class BKThemeAssets {
         if Bundle.main.url(forResource: "bk1", withExtension: "png", subdirectory: "BKThemes/Backgrounds")
             != nil
         {
-            print("[BKThemeAssets] Using Bundle.main directly (BKThemes folder exists in app resources)")
             return Bundle.main
         }
 
-        print("[BKThemeAssets] Error: BKArt bundle not found! Checked identifiers, names, and scanned Resources.")
-        if let resourcePath = Bundle.main.resourcePath {
-            print("[BKThemeAssets] Main Bundle Resource Path: \(resourcePath)")
-        }
         return nil
     }
 
-    private static func loadBackgrounds(from bundle: Bundle?) -> [CGImage] {
-        let searchBundles = [bundle, Bundle.main]
+    private static func pixelBudget() -> PixelBudget {
+        let scale = NSScreen.main?.backingScaleFactor ?? 2.0
+        let maxPoints = NSScreen.screens
+            .map { max($0.frame.width, $0.frame.height) }
+            .max() ?? 1512
+        let nativePixel = Int((maxPoints * scale).rounded())
+        let background = min(max(nativePixel, 1024), 2048)
+        let shape = min(max(background / 2, 384), 1024)
+        return PixelBudget(background: background, shape: shape, mask: background)
+    }
+
+    private static func uniqueBundles(_ bundles: [Bundle?]) -> [Bundle] {
+        bundles
             .compactMap { $0 }
             .reduce(into: [Bundle]()) { partial, item in
                 if !partial.contains(where: { $0.bundleURL == item.bundleURL }) {
                     partial.append(item)
                 }
             }
+    }
+
+    private static func loadBackgrounds(from bundle: Bundle?, budget: PixelBudget) -> [CGImage] {
+        let searchBundles = uniqueBundles([bundle, Bundle.main])
 
         for source in searchBundles {
             let bk1URL = backgroundURL(named: "bk1", in: source)
             let bk2URL = backgroundURL(named: "bk2", in: source)
 
-            if bk1URL != nil || bk2URL != nil {
-                print("[BKThemeAssets] Background lookup bundle: \(source.bundleURL.path)")
-                print("[BKThemeAssets] bk1URL: \(bk1URL?.path ?? "nil")")
-                print("[BKThemeAssets] bk2URL: \(bk2URL?.path ?? "nil")")
-            }
-
-            let bk1 = bk1URL.flatMap(Self.cgImage(from:))
-            let bk2 = bk2URL.flatMap(Self.cgImage(from:))
+            let bk1 = bk1URL.flatMap { downsampledImage(from: $0, maxPixel: budget.background) }
+            let bk2 = bk2URL.flatMap { downsampledImage(from: $0, maxPixel: budget.background) }
             let loaded = [bk1, bk2].compactMap { $0 }
             if !loaded.isEmpty {
                 return loaded
             }
         }
 
-        print("[BKThemeAssets] Warning: bk1/bk2 not found in any known bundle path.")
         return []
     }
 
@@ -146,7 +144,7 @@ final class BKThemeAssets {
         var edgePinnedIndices: Set<Int>
     }
 
-    private static func loadShapes(from bundle: Bundle?) -> ShapeLoadResult {
+    private static func loadShapes(from bundle: Bundle?, budget: PixelBudget) -> ShapeLoadResult {
         guard let bundle = bundle else {
             return ShapeLoadResult(images: [], scaleByIndex: [:], edgePinnedIndices: [])
         }
@@ -158,13 +156,12 @@ final class BKThemeAssets {
             let shapesDir = bundle.url(
                 forResource: "Shapes", withExtension: nil, subdirectory: "BKThemes")
         else {
-            print("[BKThemeAssets] 'BKThemes/Shapes' directory not found in bundle; fallback by indexed filenames.")
             for index in 1...128 {
                 let shapeName = "shape\(index)"
                 guard
                     let url = bundle.url(
                         forResource: shapeName, withExtension: "png", subdirectory: "BKThemes/Shapes"),
-                    let image = Self.cgImage(from: url)
+                    let image = downsampledImage(from: url, maxPixel: budget.shape)
                 else { continue }
                 loadedShapes.append(image)
                 if index == 10 {
@@ -185,31 +182,35 @@ final class BKThemeAssets {
             let contents = try fileManager.contentsOfDirectory(
                 at: shapesDir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
 
-            // Filter png and sort
-            let pngFiles = contents.filter { $0.pathExtension.lowercased() == "png" }
-                .sorted { $0.lastPathComponent < $1.lastPathComponent }
-
-            // Log for verification
-            let names = pngFiles.map { $0.lastPathComponent }
-            if names.contains("shape10.png") {
-                print("[BKThemeAssets] Verification: Found shape10.png")
-            }
-            if names.contains("shape11.png") {
-                print("[BKThemeAssets] Verification: Found shape11.png")
-            }
+            let pngFiles = contents
+                .filter { $0.pathExtension.lowercased() == "png" }
+                .map { (url: $0, index: shapeIndex(from: $0.lastPathComponent)) }
+                .sorted { lhs, rhs in
+                    switch (lhs.index, rhs.index) {
+                    case let (.some(li), .some(ri)):
+                        return li < ri
+                    case (.some, .none):
+                        return true
+                    case (.none, .some):
+                        return false
+                    case (.none, .none):
+                        return lhs.url.lastPathComponent < rhs.url.lastPathComponent
+                    }
+                }
 
             loadedShapes = []
             scaleByIndex.removeAll(keepingCapacity: true)
             edgePinnedIndices.removeAll(keepingCapacity: true)
-            for url in pngFiles {
-                guard let image = Self.cgImage(from: url) else { continue }
+            for entry in pngFiles {
+                guard let image = downsampledImage(from: entry.url, maxPixel: budget.shape) else {
+                    continue
+                }
                 loadedShapes.append(image)
-                let fileName = url.lastPathComponent.lowercased()
-                if fileName == "shape10.png" {
+                if entry.index == 10 {
                     scaleByIndex[loadedShapes.count - 1] = 3.0
                     edgePinnedIndices.insert(loadedShapes.count - 1)
                 }
-                if fileName == "shape11.png" { scaleByIndex[loadedShapes.count - 1] = 2.0 }
+                if entry.index == 11 { scaleByIndex[loadedShapes.count - 1] = 2.0 }
             }
             if loadedShapes.isEmpty {
                 for index in 1...128 {
@@ -219,7 +220,7 @@ final class BKThemeAssets {
                             forResource: shapeName,
                             withExtension: "png",
                             subdirectory: "BKThemes/Shapes"),
-                        let image = Self.cgImage(from: url)
+                        let image = downsampledImage(from: url, maxPixel: budget.shape)
                     else { continue }
                     loadedShapes.append(image)
                     if index == 10 {
@@ -235,13 +236,12 @@ final class BKThemeAssets {
                 edgePinnedIndices: edgePinnedIndices
             )
         } catch {
-            print("[BKThemeAssets] Error scanning shapes directory: \(error)")
             for index in 1...128 {
                 let shapeName = "shape\(index)"
                 guard
                     let url = bundle.url(
                         forResource: shapeName, withExtension: "png", subdirectory: "BKThemes/Shapes"),
-                    let image = Self.cgImage(from: url)
+                    let image = downsampledImage(from: url, maxPixel: budget.shape)
                 else { continue }
                 loadedShapes.append(image)
                 if index == 10 {
@@ -258,29 +258,60 @@ final class BKThemeAssets {
         }
     }
 
-    private static func loadMaskFrames(from bundle: Bundle?) -> [CGImage] {
-        guard let bundle = bundle else { return [] }
+    private static func loadMaskFrames(from bundle: Bundle?, budget: PixelBudget) -> [CGImage] {
+        let searchBundles = uniqueBundles([bundle, Bundle.main])
         var frames: [CGImage] = []
-        var index = 0
-        while true {
-            let name = String(format: "frame_%02d", index)
-            let url = bundle.url(
-                forResource: name, withExtension: "png", subdirectory: "BKThemes/Mask")
+        for source in searchBundles {
+            frames.removeAll(keepingCapacity: true)
+            var index = 0
+            while true {
+                let name = String(format: "frame_%02d", index)
+                let url = source.url(
+                    forResource: name, withExtension: "png", subdirectory: "BKThemes/Mask")
 
-            guard let url, let image = Self.cgImage(from: url) else {
-                break
+                guard
+                    let url,
+                    let sampled = downsampledImage(from: url, maxPixel: budget.mask)
+                else {
+                    break
+                }
+                frames.append(maskAlphaImage(from: sampled) ?? sampled)
+                index += 1
             }
-            frames.append(image)
-            index += 1
+            if !frames.isEmpty { return frames }
         }
         return frames
     }
 
-    private static func cgImage(from url: URL) -> CGImage? {
+    private static func downsampledImage(from url: URL, maxPixel: Int) -> CGImage? {
+        guard maxPixel > 0 else { return nil }
         guard
-            let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-            let image = CGImageSourceCreateImageAtIndex(source, 0, nil)
+            let source = CGImageSourceCreateWithURL(
+                url as CFURL,
+                [kCGImageSourceShouldCache: false] as CFDictionary
+            )
         else { return nil }
-        return image
+
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixel,
+        ]
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+    }
+
+    private static func maskAlphaImage(from image: CGImage) -> CGImage? {
+        let input = CIImage(cgImage: image)
+        let alphaMask = input.applyingFilter("CIMaskToAlpha")
+        return maskProcessingContext.createCGImage(alphaMask, from: alphaMask.extent)
+    }
+
+    private static func shapeIndex(from fileName: String) -> Int? {
+        let stem = fileName
+            .lowercased()
+            .replacingOccurrences(of: ".png", with: "")
+        guard stem.hasPrefix("shape") else { return nil }
+        return Int(stem.dropFirst("shape".count))
     }
 }
