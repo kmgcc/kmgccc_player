@@ -29,15 +29,42 @@ struct AppRootView: View {
     @State private var ledMeter: LEDMeterService?
     @State private var skinManager: SkinManager?
     @State private var easterEggSFX: EasterEggSFXService?
+    @StateObject private var artBackgroundController = BKArtBackgroundController()
 
     var body: some View {
         Group {
             if let libraryVM, let playerVM, let lyricsVM, let ledMeter, let skinManager {
                 ZStack {
+                    if uiState.contentMode == .nowPlaying {
+                        BKArtBackgroundView(
+                            controller: artBackgroundController,
+                            trackID: playerVM.currentTrack?.id,
+                            artworkData: playerVM.currentTrack?.artworkData
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        .ignoresSafeArea()
+                        .allowsHitTesting(false)
+                    }
+
                     MainLayoutView()
 
                     ThemeTrackObserver()
                         .allowsHitTesting(false)
+                }
+                .onAppear {
+                    if uiState.contentMode == .nowPlaying {
+                        artBackgroundController.triggerTransition()
+                    }
+                }
+                .onChange(of: uiState.contentMode) { _, newValue in
+                    if newValue == .nowPlaying {
+                        artBackgroundController.triggerTransition()
+                    }
+                }
+                .onChange(of: playerVM.currentTrack?.id) { _, _ in
+                    if uiState.contentMode == .nowPlaying {
+                        artBackgroundController.triggerTransition()
+                    }
                 }
                 .environment(settings)
                 .environment(uiState)

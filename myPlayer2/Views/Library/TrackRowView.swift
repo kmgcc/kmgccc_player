@@ -45,43 +45,52 @@ struct TrackRowView<MenuContent: View>: View {
 
             // Track info (Responsive)
             ViewThatFits(in: .horizontal) {
-                // 1. Horizontal Layout (Title left, Artist center)
-                HStack(alignment: .center, spacing: 8) {
-                    MarqueeText(
-                        text: track.title,
-                        font: .body,
-                        fontWeight: isPlaying ? .semibold : .regular,
-                        color: textPrimaryColor
-                    )
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                // 1. Horizontal Layout (fixed columns, each clipped; long text scrolls in-place)
+                GeometryReader { proxy in
+                    let spacing: CGFloat = 10
+                    let artistWidth = min(max(120, proxy.size.width * 0.34), 260)
+                    let titleWidth = max(80, proxy.size.width - artistWidth - spacing)
 
-                    MarqueeText(
-                        text: artistDisplayText,
-                        font: .subheadline,
-                        fontWeight: .regular,
-                        color: textSecondaryColor
-                    )
+                    HStack(alignment: .center, spacing: spacing) {
+                        MarqueeText(
+                            text: track.title,
+                            style: .body,
+                            fontWeight: isPlaying ? .semibold : .regular,
+                            color: textPrimaryColor
+                        )
+                        .frame(width: titleWidth, alignment: .leading)
+
+                        MarqueeText(
+                            text: artistDisplayText,
+                            style: .subheadline,
+                            fontWeight: .regular,
+                            color: textSecondaryColor
+                        )
+                        .frame(width: artistWidth, alignment: .leading)
+                    }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .frame(height: 24)
 
                 // 2. Vertical Layout (Stacked)
                 // Fallback when width is small
                 VStack(alignment: .leading, spacing: 2) {
                     MarqueeText(
                         text: track.title,
-                        font: .body,
+                        style: .body,
                         fontWeight: isPlaying ? .semibold : .regular,
                         color: textPrimaryColor
                     )
 
                     MarqueeText(
                         text: artistDisplayText,
-                        font: .subheadline,
+                        style: .subheadline,
                         fontWeight: .regular,
                         color: textSecondaryColor
                     )
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
 
             // Playing indicator or Missing icon

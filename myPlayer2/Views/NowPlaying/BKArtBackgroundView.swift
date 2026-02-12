@@ -96,13 +96,10 @@ private struct BKArtBackgroundRepresentable: NSViewRepresentable {
         context.coordinator.contentView = contentView
 
         NSLayoutConstraint.activate([
-            contentView.leadingAnchor.constraint(
-                equalTo: extensionView.safeAreaLayoutGuide.leadingAnchor),
-            contentView.trailingAnchor.constraint(
-                equalTo: extensionView.safeAreaLayoutGuide.trailingAnchor),
-            contentView.topAnchor.constraint(equalTo: extensionView.safeAreaLayoutGuide.topAnchor),
-            contentView.bottomAnchor.constraint(
-                equalTo: extensionView.safeAreaLayoutGuide.bottomAnchor),
+            contentView.leadingAnchor.constraint(equalTo: extensionView.leadingAnchor),
+            contentView.trailingAnchor.constraint(equalTo: extensionView.trailingAnchor),
+            contentView.topAnchor.constraint(equalTo: extensionView.topAnchor),
+            contentView.bottomAnchor.constraint(equalTo: extensionView.bottomAnchor),
         ])
 
         contentView.updatePalette(palette)
@@ -156,6 +153,30 @@ private final class BKArtBackgroundLayerView: NSView {
         var cp2: CGPoint
         var end: CGPoint
         var duration: TimeInterval
+        // Overlap logic
+        var leadInOverlapT: Double  // e.g. 0.85, at which point next slot starts
+    }
+
+    private class DotSlot {
+        let rootLayer: CALayer = CALayer()
+        var maskBig: CAShapeLayer?
+        var maskSmall: CAShapeLayer?
+        var cellBig: CAShapeLayer?  // Reference to replicator prototype or similar if we want to change color
+        var cellSmall: CAShapeLayer?
+
+        var anim: DotAnimState
+        var color: CGColor?
+
+        var baseRadius: CGFloat
+        var radiusBig: CGFloat
+        var radiusSmall: CGFloat
+
+        init(anim: DotAnimState, baseRadius: CGFloat) {
+            self.anim = anim
+            self.baseRadius = baseRadius
+            self.radiusBig = 0
+            self.radiusSmall = 0
+        }
     }
 
     private final class Container {
@@ -164,17 +185,15 @@ private final class BKArtBackgroundLayerView: NSView {
 
         var style: BackgroundStyle = .image
         var dotRoot: CALayer?
-        var dotMasks: [CAShapeLayer] = []
-        var dotAnim: DotAnimState?
         var dotGradient: CAGradientLayer?
-        var dotCells: [CAShapeLayer] = []  // Keep references to actual dot shapes
-        var dotColor: CGColor?  // Current round color
-        var backgroundTintLayer: CALayer?  // Tint layer for image backgrounds
 
-        // Randomize sizes per run
-        var dotBaseRadius: CGFloat = 0
-        var dotRadiusLarge: CGFloat = 4.2
-        var dotRadiusSmall: CGFloat = 2.5
+        // Multi-slot support for overlapping dot windows
+        var dotSlots: [DotSlot] = []
+
+        // Removed old single-instance properties
+        // var dotMasks... var dotAnim... var dotCells... var dotColor...
+
+        var backgroundTintLayer: CALayer?  // Tint layer for image backgrounds
 
         var shapeLayers: [CALayer] = []
         var shapeStates: [ShapeState] = []
@@ -277,6 +296,11 @@ private final class BKArtBackgroundLayerView: NSView {
         paletteSignature = signature
         tintedBackgrounds = makeTintedBackgrounds(from: assets.backgrounds, palette: converted)
         applyCurrentBackgroundPhase()
+
+        // Update gradient immediately, BUT DO NOT update dot colors here.
+        // Dot colors will update on next animation cycle (startNewDotRun).
+        if let from = fromContainer { updateDotGradient(from) }
+        if let to = toContainer { updateDotGradient(to) }
     }
 
     func ensureBaseContainer(seed: UInt64) {
@@ -354,70 +378,85 @@ private final class BKArtBackgroundLayerView: NSView {
         let container = Container(frame: bounds)
         var rng = BKSeededRandom(seed: seed == 0 ? 0xA17D_4C59_10F3_778D : seed)
 
-        // Decide style randomly (approx 50/50)
-        container.style = rng.nextBool() ? .dot : .image
+        // 1) Weighted probability: 35% Dot, 65% Image
+        let roll = rng.next(in: 0.0..<1.0)
+        container.style = roll < 0.35 ? .dot : .image
 
         if container.style == .dot {
             setupDotBackground(in: container, rng: &rng)
-            // Dot mode hides the tint layer effectively by covering it, or we can explicit hide it later
         }
 
         // Tint Layer for Image Backgrounds (Add to every container, hide if dot)
+        // Wait, if dot mode, we might want it hidden or behind dots?
+        // Current logic: BackgroundLayer (Image) -> TintLayer -> Shapes -> Dots (if dot mode) ??
+        // Actually dot setup adds dotRoot.
+        // Let's keep tint layer consistent.
         let tintLayer = CALayer()
-        tintLayer.frame = expandedBounds  // Tint covers full bound
+        tintLayer.frame = expandedBounds
         let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
 
         if isDark {
             tintLayer.backgroundColor = NSColor.black.cgColor
-            tintLayer.opacity = 0.22  // Darken background 22%
+            tintLayer.opacity = 0.22
         } else {
             tintLayer.backgroundColor = NSColor.white.cgColor
-            tintLayer.opacity = 0.12  // Lighten background 12%
+            tintLayer.opacity = 0.12
         }
         container.backgroundTintLayer = tintLayer
         container.layer.insertSublayer(tintLayer, above: container.backgroundLayer)
 
-        if container.style == .image {
-            // Shapes
-            let count = rng.nextInt(in: 10...16)
-            let chosenShapes = chooseShapeImages(count: count, rng: &rng)
-            let rawTint = palette.randomElement() ?? palette[0]
-            let nsTint = NSColor(cgColor: rawTint) ?? .white
-            // Apply FG Tone to shapes
-            let finalTint = applyForegroundTone(nsTint, mode: isDark ? .dark : .light).cgColor
+        // 2) Shapes MUST exist regardless of style
+        let count = rng.nextInt(in: 10...16)
+        let chosenShapes = chooseShapeImages(count: count, rng: &rng)
+        let rawTint = palette.randomElement() ?? palette[0]
+        let nsTint = NSColor(cgColor: rawTint) ?? .white
 
-            let forbiddenRect = CGRect(
-                x: bounds.width * 0.28,
-                y: bounds.height * 0.22,
-                width: bounds.width * 0.44,
-                height: bounds.height * 0.50
+        let finalTint = applyForegroundTone(nsTint, mode: isDark ? .dark : .light).cgColor
+
+        let forbiddenRect = CGRect(
+            x: bounds.width * 0.28,
+            y: bounds.height * 0.22,
+            width: bounds.width * 0.44,
+            height: bounds.height * 0.50
+        )
+
+        for image in chosenShapes {
+            let base = min(bounds.width, bounds.height)
+            let side = base * CGFloat(rng.next(in: 0.50...1.80)) * 0.22
+            let point = randomEdgePoint(side: side, forbiddenRect: forbiddenRect, rng: &rng)
+
+            // 3) Fix Geometry: Use (0,0,w,h) bounds
+            let size = CGSize(width: side, height: side)
+            let shape = makeTintedShapeLayer(image: image, size: size, tint: finalTint)
+            shape.position = point
+
+            // Insert shapes above tint layer
+            container.layer.insertSublayer(shape, above: tintLayer)
+            container.shapeLayers.append(shape)
+
+            let state = ShapeState(
+                basePosition: point,
+                driftX: CGFloat(rng.next(in: -12...12)),
+                driftY: CGFloat(rng.next(in: -16...16)),
+                phase: CGFloat(rng.next(in: 0...(Double.pi * 2))),
+                phaseSpeed: CGFloat(rng.next(in: 0.35...0.95)),
+                angle: CGFloat(rng.next(in: 0...(Double.pi * 2))),
+                angularSpeed: CGFloat(rng.next(in: -0.22...0.22))
             )
-
-            for image in chosenShapes {
-                let base = min(bounds.width, bounds.height)
-                let side = base * CGFloat(rng.next(in: 0.50...1.80)) * 0.22
-                let point = randomEdgePoint(side: side, forbiddenRect: forbiddenRect, rng: &rng)
-
-                let frame = CGRect(
-                    x: point.x - side / 2, y: point.y - side / 2, width: side, height: side)
-                // Use unified finalTint
-                let shape = makeTintedShapeLayer(image: image, frame: frame, tint: finalTint)
-
-                container.layer.insertSublayer(shape, above: tintLayer)
-                container.shapeLayers.append(shape)
-
-                let state = ShapeState(
-                    basePosition: point,
-                    driftX: CGFloat(rng.next(in: -12...12)),
-                    driftY: CGFloat(rng.next(in: -16...16)),
-                    phase: CGFloat(rng.next(in: 0...(Double.pi * 2))),
-                    phaseSpeed: CGFloat(rng.next(in: 0.35...0.95)),
-                    angle: CGFloat(rng.next(in: 0...(Double.pi * 2))),
-                    angularSpeed: CGFloat(rng.next(in: -0.22...0.22))
-                )
-                container.shapeStates.append(state)
-            }
+            container.shapeStates.append(state)
         }
+
+        // If Dot Mode, ensure DotRoot is ABOVE shapes (if it was added by setupDotBackground)
+        if let dotRoot = container.dotRoot {
+            // Re-order dotRoot to be top-most
+            dotRoot.removeFromSuperlayer()
+            container.layer.addSublayer(dotRoot)
+        }
+
+        // 4) Temporary Logging
+        print(
+            "[BKArtBackground] Built Container | Style: \(container.style) | Shapes: \(container.shapeLayers.count) | DotRoot: \(container.dotRoot != nil)"
+        )
 
         return container
     }
@@ -497,9 +536,11 @@ private final class BKArtBackgroundLayerView: NSView {
         )
     }
 
-    private func makeTintedShapeLayer(image: CGImage, frame: CGRect, tint: CGColor) -> CALayer {
+    private func makeTintedShapeLayer(image: CGImage, size: CGSize, tint: CGColor) -> CALayer {
         let root = CALayer()
-        root.bounds = frame
+        // Geometry Fix: bounds origin must be 0,0
+        root.bounds = CGRect(origin: .zero, size: size)
+        // Anchor point default is 0.5,0.5, so setting position externally works as center
         root.opacity = 1.0
         root.contentsScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
 
@@ -609,36 +650,31 @@ private final class BKArtBackgroundLayerView: NSView {
             colors[2],
         ]
 
-        // Initial dot color update (will be overridden by per-round random)
-        if container.dotRoot != nil {
-            if container.dotColor == nil {
-                assignRandomDotColor(to: container, with: palette)
-            }
-        }
+        // No dot color update here. Dot slots manage their own colors.
+        // If we are recovering state and have slots but no color (unlikely),
+        // tickDotBackground will handle spawning new slots which get colored.
     }
 
-    private func assignRandomDotColor(to container: Container, with palette: [CGColor]) {
-        guard !palette.isEmpty else { return }
+    // Legacy assignRandomDotColor removed.
+    // New logic uses assignRandomColor(to: Slot)
 
-        // Pick a random color from palette
+    private func assignRandomColor(to slot: DotSlot, with palette: [CGColor]) {
+        guard !palette.isEmpty else { return }
+        // Pick random
         let rawColor = palette.randomElement() ?? palette[0]
         let nsColor = NSColor(cgColor: rawColor) ?? .white
         let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
 
-        // Apply FG Tone mapping for Dots
+        // Apply FG Tone
         let finalColor = applyForegroundTone(nsColor, mode: isDark ? .dark : .light)
-
-        // Dot opacity was 0.9 previously, maintain it via color alpha if needed,
-        // but tone mapping returns alpha 1.0. Let's adjust alpha here.
         let colorWithAlpha = finalColor.withAlphaComponent(0.90)
 
-        container.dotColor = colorWithAlpha.cgColor
+        slot.color = colorWithAlpha.cgColor
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        for dot in container.dotCells {
-            dot.fillColor = container.dotColor
-        }
+        slot.cellBig?.fillColor = slot.color
+        slot.cellSmall?.fillColor = slot.color
         CATransaction.commit()
     }
 
@@ -663,10 +699,6 @@ private final class BKArtBackgroundLayerView: NSView {
             container.backgroundLayer.backgroundColor = NSColor.black.cgColor
             // Update gradient colors if palette changed
             updateDotGradient(container)
-            // Ensure dot color is set initially
-            if container.dotRoot != nil {
-                assignRandomDotColor(to: container, with: palette)
-            }
             return
         }
 
@@ -911,7 +943,7 @@ private final class BKArtBackgroundLayerView: NSView {
         container.dotRoot = root
         container.layer.insertSublayer(root, above: container.backgroundLayer)
 
-        // A) Gradient Background
+        // A) Gradient Background (Shared)
         let gradient = CAGradientLayer()
         gradient.frame = root.bounds
         gradient.startPoint = CGPoint(x: 0, y: 0)
@@ -920,44 +952,17 @@ private final class BKArtBackgroundLayerView: NSView {
         root.addSublayer(gradient)
         updateDotGradient(container)
 
-        // B) Dot Pattern
-        // Larger dots, slightly more spacing
+        // Initialize first Slot
+        createAndAddSlot(to: container, rng: &rng, overlapT: 0.88)  // Initial overlap T
+    }
+
+    private func createAndAddSlot(
+        to container: Container, rng: inout BKSeededRandom, overlapT: Double? = nil
+    ) {
+        guard let root = container.dotRoot else { return }
+
+        // 1. Random Parameters
         let baseSize = max(bounds.width, bounds.height)
-        let dotSpacing: CGFloat = 30  // Increased from 24
-        let cols = Int(baseSize / dotSpacing) + 6
-        let rows = Int(baseSize / dotSpacing) + 6
-
-        // Grid 1: Larger dots (Center) - High opacity
-        let grid1 = CALayer()
-        grid1.frame = root.bounds
-        let dot1 = addDotGrid(
-            to: grid1, cols: cols, rows: rows, spacing: dotSpacing, radius: 4.2, opacity: 0.90)
-        root.addSublayer(grid1)
-
-        // Grid 2: Smaller dots (Edges) - Lower opacity
-        let grid2 = CALayer()
-        grid2.frame = root.bounds
-        let dot2 = addDotGrid(
-            to: grid2, cols: cols, rows: rows, spacing: dotSpacing, radius: 2.5, opacity: 0.50)
-        root.addSublayer(grid2)
-
-        container.dotCells = [dot1, dot2]
-
-        // C) Masks
-        // mask1 for grid1 (Big): Will have smaller radius, so big dots disappear first
-        // mask2 for grid2 (Small): Will have larger radius, so small dots persist longer
-        let mask1 = CAShapeLayer()
-        mask1.fillColor = NSColor.black.cgColor
-
-        let mask2 = CAShapeLayer()
-        mask2.fillColor = NSColor.black.cgColor
-
-        grid1.mask = mask1
-        grid2.mask = mask2
-
-        container.dotMasks = [mask1, mask2]
-
-        // Setup Animation State (Starts totally Off-screen)
         let r = baseSize * 0.30
         let start = randomOffscreenPoint(radius: r, rng: &rng)
         let end = randomOffscreenPoint(radius: r, rng: &rng)
@@ -970,15 +975,66 @@ private final class BKArtBackgroundLayerView: NSView {
             x: rng.next(in: Double(bounds.minX)...Double(bounds.maxX)),
             y: rng.next(in: Double(bounds.minY)...Double(bounds.maxY))
         )
+        // Slower duration: 12.0 ... 22.0
+        let duration = rng.next(in: 12.0...22.0)
+        // Lead-in overlap: 0.82 ... 0.92
+        let leadIn = overlapT ?? rng.next(in: 0.82...0.92)
 
-        container.dotAnim = DotAnimState(
+        let anim = DotAnimState(
             motion: .moving(0.0),
-            start: start,
-            cp1: cp1,
-            cp2: cp2,
-            end: end,
-            duration: 12.0
+            start: start, cp1: cp1, cp2: cp2, end: end,
+            duration: duration,
+            leadInOverlapT: leadIn
         )
+
+        // 2. Create Slot
+        let dotBaseRadius = baseSize * CGFloat(rng.next(in: 0.26...0.34))
+        let slot = DotSlot(anim: anim, baseRadius: dotBaseRadius)
+        slot.radiusBig = CGFloat(rng.next(in: 5.0...6.2))
+        slot.radiusSmall = CGFloat(rng.next(in: 3.0...4.0))
+
+        slot.rootLayer.frame = root.bounds
+
+        // 3. Build Layer Tree for this Slot
+        // We need new Grid layers specific to this slot to allow independent masking and coloring
+        let dotSpacing: CGFloat = 30
+        let cols = Int(baseSize / dotSpacing) + 6
+        let rows = Int(baseSize / dotSpacing) + 6
+
+        // Grid 1 (Big)
+        let grid1 = CALayer()
+        grid1.frame = root.bounds
+        let cell1 = addDotGrid(
+            to: grid1, cols: cols, rows: rows, spacing: dotSpacing, radius: slot.radiusBig,
+            opacity: 0.90)
+        slot.rootLayer.addSublayer(grid1)
+        slot.cellBig = cell1  // Save for coloring
+
+        let mask1 = CAShapeLayer()
+        mask1.fillColor = NSColor.black.cgColor
+        grid1.mask = mask1
+        slot.maskBig = mask1
+
+        // Grid 2 (Small)
+        let grid2 = CALayer()
+        grid2.frame = root.bounds
+        let cell2 = addDotGrid(
+            to: grid2, cols: cols, rows: rows, spacing: dotSpacing, radius: slot.radiusSmall,
+            opacity: 0.50)
+        slot.rootLayer.addSublayer(grid2)
+        slot.cellSmall = cell2
+
+        let mask2 = CAShapeLayer()
+        mask2.fillColor = NSColor.black.cgColor
+        grid2.mask = mask2
+        slot.maskSmall = mask2
+
+        // 4. Assign Color
+        assignRandomColor(to: slot, with: self.palette)
+
+        // 5. Add to container
+        root.addSublayer(slot.rootLayer)
+        container.dotSlots.append(slot)
     }
 
     @discardableResult
@@ -1010,139 +1066,94 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     private func tickDotBackground(for container: Container?) {
-        guard let container, container.style == .dot,
-            let anim = container.dotAnim,
-            !container.dotMasks.isEmpty
-        else { return }
+        guard let container, container.style == .dot, container.dotRoot != nil else { return }
 
-        // 15fps timer triggers this.
         let dt = 1.0 / 15.0
+        var slotsToRemove: [Int] = []
+        var shouldSpawnNext = false
+        var lastSlotRng: BKSeededRandom?
 
-        switch anim.motion {
-        case .idle(let remaining):
-            let next = remaining - dt
-            if next <= 0 {
-                // Generate new path with seeded random
-                // We use a simple hash of current end point to seed the next path to keep it deterministic-ish
-                let seed = UInt64(bitPattern: Int64(anim.end.x * 100 + anim.end.y))
-                var rng = BKSeededRandom(seed: seed ^ 0x1234_5678)
+        // Iterate slots
+        for (index, slot) in container.dotSlots.enumerated() {
+            switch slot.anim.motion {
+            case .idle(let remaining):
+                let next = remaining - dt
+                if next <= 0 {
+                    slot.anim.motion = .moving(0)
+                } else {
+                    slot.anim.motion = .idle(next)
+                }
 
-                startNewDotRun(container: container, rng: &rng)
-                // startNewDotRun updates container.dotAnim
-            } else {
-                container.dotAnim?.motion = .idle(next)
-                return
+            case .moving(let t):
+                let step = dt / slot.anim.duration
+                let nextT = t + step
+
+                // LEAD-IN LOGIC: If this is the "latest" slot, check overlap overlapT
+                if index == container.dotSlots.count - 1 {
+                    if nextT >= slot.anim.leadInOverlapT && container.dotSlots.count < 2 {
+                        shouldSpawnNext = true
+                        let s = UInt64(bitPattern: Int64(slot.anim.end.x * 100 + slot.anim.end.y))
+                        lastSlotRng = BKSeededRandom(seed: s ^ 0xDEAD_BEEF)
+                    }
+                }
+
+                if nextT >= 1.0 {
+                    slotsToRemove.append(index)
+                    slot.anim.motion = .moving(1.0)
+                } else {
+                    slot.anim.motion = .moving(nextT)
+                }
+
+                // Visuals
+                let pos = cubicBezier(
+                    t: min(1.0, nextT), p0: slot.anim.start, p1: slot.anim.cp1, p2: slot.anim.cp2,
+                    p3: slot.anim.end)
+
+                var scale: CGFloat = 1.0
+                if nextT < 0.25 {
+                    scale = 0.6 + 0.4 * easeOutQuint(nextT / 0.25)
+                } else if nextT > 0.8 {
+                    scale = 1.0 - 0.4 * easeInQuint((nextT - 0.8) / 0.2)
+                }
+
+                let currentR =
+                    (slot.baseRadius > 0
+                        ? slot.baseRadius : max(bounds.width, bounds.height) * 0.30) * scale
+
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+
+                if let mask0 = slot.maskBig {
+                    let r0 = currentR * 0.75
+                    let rect0 = CGRect(x: pos.x - r0, y: pos.y - r0, width: r0 * 2, height: r0 * 2)
+                    mask0.path = CGPath(ellipseIn: rect0, transform: nil)
+                }
+                if let mask1 = slot.maskSmall {
+                    let r1 = currentR
+                    let rect1 = CGRect(x: pos.x - r1, y: pos.y - r1, width: r1 * 2, height: r1 * 2)
+                    mask1.path = CGPath(ellipseIn: rect1, transform: nil)
+                }
+
+                CATransaction.commit()
             }
-
-        case .moving(let t):
-            // Advance
-            let step = dt / anim.duration
-            var nextT = t + step
-
-            if nextT >= 1.0 {
-                // Completed, switch to idle
-                let wait = Double.random(in: 0.25...0.45)
-                container.dotAnim?.motion = .idle(wait)
-                nextT = 1.0
-            } else {
-                container.dotAnim?.motion = .moving(nextT)
-            }
-
-            // Calculate visual
-            let pos = cubicBezier(
-                t: nextT, p0: anim.start, p1: anim.cp1, p2: anim.cp2, p3: anim.end)
-
-            // Radius/Scale logic:
-            // Enter (0..0.25): 0.6 -> 1.0
-            // Exit (0.8..1.0): 1.0 -> 0.6
-            var scale: CGFloat = 1.0
-            if nextT < 0.25 {
-                let localT = nextT / 0.25
-                scale = 0.6 + 0.4 * easeOutQuint(localT)
-            } else if nextT > 0.8 {
-                let localT = (nextT - 0.8) / 0.2
-                scale = 1.0 - 0.4 * easeInQuint(localT)
-            }
-
-            // Use randomized base radius
-            let baseR =
-                (container.dotBaseRadius > 0
-                    ? container.dotBaseRadius : max(bounds.width, bounds.height) * 0.30)
-            let currentR = baseR * scale
-
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-
-            if container.dotMasks.count >= 2 {
-                // Mask 0 (Big dots): 75% radius
-                let r0 = currentR * 0.75
-                let rect0 = CGRect(x: pos.x - r0, y: pos.y - r0, width: r0 * 2, height: r0 * 2)
-                container.dotMasks[0].path = CGPath(ellipseIn: rect0, transform: nil)
-
-                // Mask 1 (Small dots): 100% radius (fading edge)
-                let r1 = currentR
-                let rect1 = CGRect(x: pos.x - r1, y: pos.y - r1, width: r1 * 2, height: r1 * 2)
-                container.dotMasks[1].path = CGPath(ellipseIn: rect1, transform: nil)
-            }
-
-            CATransaction.commit()
         }
-    }
 
-    private func startNewDotRun(container: Container, rng: inout BKSeededRandom) {
-        let r = max(bounds.width, bounds.height) * 0.30
-        let start = randomOffscreenPoint(radius: r, rng: &rng)
-        let end = randomOffscreenPoint(radius: r, rng: &rng)
-
-        let c1 = CGPoint(
-            x: rng.next(in: Double(bounds.minX)...Double(bounds.maxX)),
-            y: rng.next(in: Double(bounds.minY)...Double(bounds.maxY))
-        )
-        let c2 = CGPoint(
-            x: rng.next(in: Double(bounds.minX)...Double(bounds.maxX)),
-            y: rng.next(in: Double(bounds.minY)...Double(bounds.maxY))
-        )
-
-        // Randomized Sizes per run
-        // Base Radius: 0.26 ... 0.34
-        let baseSize = max(bounds.width, bounds.height)
-        container.dotBaseRadius = baseSize * CGFloat(rng.next(in: 0.26...0.34))
-
-        // Dot Sizes
-        container.dotRadiusLarge = CGFloat(rng.next(in: 5.0...6.2))
-        container.dotRadiusSmall = CGFloat(rng.next(in: 3.0...4.0))
-
-        // Randomize Color for this run
-        self.assignRandomDotColor(to: container, with: self.palette)
-
-        var anim =
-            container.dotAnim
-            ?? DotAnimState(
-                motion: .moving(0), start: .zero, cp1: .zero, cp2: .zero, end: .zero, duration: 12)
-        anim.start = start
-        anim.end = end
-        anim.cp1 = c1
-        anim.cp2 = c2
-        anim.motion = .moving(0.0)
-        container.dotAnim = anim
-
-        // Update Dot Shapes (Path) for new sizes
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        if container.dotCells.count >= 2 {
-            let dot1 = container.dotCells[0]
-            let r1 = container.dotRadiusLarge
-            dot1.path = CGPath(
-                ellipseIn: CGRect(x: 0, y: 0, width: r1 * 2, height: r1 * 2), transform: nil)
-            dot1.bounds = CGRect(x: 0, y: 0, width: r1 * 2, height: r1 * 2)
-
-            let dot2 = container.dotCells[1]
-            let r2 = container.dotRadiusSmall
-            dot2.path = CGPath(
-                ellipseIn: CGRect(x: 0, y: 0, width: r2 * 2, height: r2 * 2), transform: nil)
-            dot2.bounds = CGRect(x: 0, y: 0, width: r2 * 2, height: r2 * 2)
+        if shouldSpawnNext {
+            var rng = lastSlotRng ?? BKSeededRandom(seed: UInt64(Date().timeIntervalSince1970))
+            createAndAddSlot(to: container, rng: &rng)
         }
-        CATransaction.commit()
+
+        for i in slotsToRemove.reversed() {
+            let slot = container.dotSlots[i]
+            slot.rootLayer.removeFromSuperlayer()
+            container.dotSlots.remove(at: i)
+        }
+
+        // Safety: If somehow empty, spawn one
+        if container.dotSlots.isEmpty {
+            var rng = BKSeededRandom(seed: UInt64(Date().timeIntervalSince1970))
+            createAndAddSlot(to: container, rng: &rng)
+        }
     }
 
     private func cubicBezier(t: Double, p0: CGPoint, p1: CGPoint, p2: CGPoint, p3: CGPoint)
