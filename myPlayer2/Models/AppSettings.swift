@@ -296,6 +296,10 @@ public final class AppSettings {
 
     // MARK: - Now Playing Background Settings
 
+    /// Enable BKArt animated background layer in Now Playing.
+    @ObservationIgnored
+    @AppStorage("nowPlayingArtBackgroundEnabled") var nowPlayingArtBackgroundEnabled: Bool = true
+
     /// Legacy background blur multiplier (kept for compatibility)
     @ObservationIgnored
     @AppStorage("nowPlayingBackgroundBlur") var nowPlayingBackgroundBlur: Double = 1.0

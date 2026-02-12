@@ -34,10 +34,12 @@ struct NowPlayingHostView: View {
             let context = makeContext(windowSize: windowSize, contentBounds: contentBounds)
 
             ZStack(alignment: .topLeading) {
-                // BKArtBackgroundView is rendered at the window level (MainLayoutView) to cover the
-                // full window, including the sidebar. Keep the skin background transparent here
-                // so BKArt stays visible and we don't regress into the MeshGradient covering it.
-                Color.clear
+                if settings.nowPlayingArtBackgroundEnabled {
+                    // BKArt is rendered at window level; keep this layer transparent.
+                    Color.clear
+                } else {
+                    selectedSkin.makeBackground(context: context)
+                }
 
                 ZStack {
                     selectedSkin.makeArtwork(context: context)

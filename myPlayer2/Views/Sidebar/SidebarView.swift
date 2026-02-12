@@ -28,6 +28,11 @@ struct SidebarView: View {
     @State private var showingPlaylistSheet = false
     @State private var playlistToEdit: Playlist?  // nil = create new
     @State private var isHoveringPlaylists = false
+    @State private var isArtistsExpanded = false
+    @State private var isAlbumsExpanded = false
+
+    @State private var isHoveringArtists = false
+    @State private var isHoveringAlbums = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -63,7 +68,7 @@ struct SidebarView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
                 .background(
-                    selectionFill(isSelected: libraryVM.selectedPlaylistId == nil)
+                    selectionFill(isSelected: currentSelection == .allSongs)
                 )
                 .contentShape(Rectangle())
             }
@@ -139,6 +144,104 @@ struct SidebarView: View {
                     }
                     .padding(.horizontal, 4)
                     .padding(.bottom, 4)
+                }
+
+                // Artists Section
+                Section {
+                    if isArtistsExpanded {
+                        ForEach(libraryVM.uniqueArtists, id: \.self) { artist in
+                            Button {
+                                handleSelection(.artist(artist))
+                            } label: {
+                                HStack {
+                                    Text(artist)
+                                    Spacer()
+                                }
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(
+                                    selectionFill(
+                                        isSelected: currentSelection == .artist(artist))
+                                )
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .listRowInsets(EdgeInsets(top: 1, leading: 6, bottom: 1, trailing: 6))
+                            .listRowBackground(Color.clear)
+                        }
+                    }
+                } header: {
+                    Button {
+                        withAnimation {
+                            isArtistsExpanded.toggle()
+                        }
+                    } label: {
+                        HStack {
+                            Text("sidebar.artists")
+                                .font(.caption.bold())
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption2.bold())
+                                .foregroundStyle(.secondary)
+                                .rotationEffect(.degrees(isArtistsExpanded ? 90 : 0))
+                                .opacity(isHoveringArtists ? 1 : 0)
+                        }
+                        .padding(.horizontal, 4)
+                        .padding(.bottom, 4)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .onHover { isHoveringArtists = $0 }
+                }
+
+                // Albums Section
+                Section {
+                    if isAlbumsExpanded {
+                        ForEach(libraryVM.uniqueAlbums, id: \.self) { album in
+                            Button {
+                                handleSelection(.album(album))
+                            } label: {
+                                HStack {
+                                    Text(album)
+                                    Spacer()
+                                }
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(
+                                    selectionFill(
+                                        isSelected: currentSelection == .album(album))
+                                )
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .listRowInsets(EdgeInsets(top: 1, leading: 6, bottom: 1, trailing: 6))
+                            .listRowBackground(Color.clear)
+                        }
+                    }
+                } header: {
+                    Button {
+                        withAnimation {
+                            isAlbumsExpanded.toggle()
+                        }
+                    } label: {
+                        HStack {
+                            Text("sidebar.albums")
+                                .font(.caption.bold())
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption2.bold())
+                                .foregroundStyle(.secondary)
+                                .rotationEffect(.degrees(isAlbumsExpanded ? 90 : 0))
+                                .opacity(isHoveringAlbums ? 1 : 0)
+                        }
+                        .padding(.horizontal, 4)
+                        .padding(.bottom, 4)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .onHover { isHoveringAlbums = $0 }
                 }
             }
             .listStyle(.sidebar)
@@ -238,18 +341,25 @@ struct SidebarView: View {
         switch item {
         case .allSongs:
             libraryVM.selectPlaylist(nil)
-            uiState.showLibrary()
         case .playlist(let id):
             if let playlist = libraryVM.playlists.first(where: { $0.id == id }) {
                 libraryVM.selectPlaylist(playlist)
-                uiState.showLibrary()
             }
+        case .artist(let name):
+            libraryVM.selectArtist(name)
+        case .album(let name):
+            libraryVM.selectAlbum(name)
         }
+        uiState.showLibrary()
     }
 
     private var currentSelection: SidebarSelection {
         if let id = libraryVM.selectedPlaylistId {
             return .playlist(id)
+        } else if let artist = libraryVM.selectedArtist {
+            return .artist(artist)
+        } else if let album = libraryVM.selectedAlbum {
+            return .album(album)
         }
         return .allSongs
     }
@@ -266,6 +376,8 @@ struct SidebarView: View {
 private enum SidebarSelection: Hashable {
     case allSongs
     case playlist(UUID)
+    case artist(String)
+    case album(String)
 }
 
 private struct SidebarWidthPreferenceKey: PreferenceKey {

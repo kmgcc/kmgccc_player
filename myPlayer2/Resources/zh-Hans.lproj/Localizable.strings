@@ -14,6 +14,8 @@
 "sidebar.appearance_light" = "外观：浅色";
 "sidebar.appearance_dark" = "外观：深色";
 "sidebar.appearance_system" = "外观：跟随系统";
+"sidebar.artists" = "歌手";
+"sidebar.albums" = "专辑";
 
 // MARK: - Settings General
 "settings.title" = "设置";
@@ -90,7 +92,7 @@
 "settings.about.source_code" = "源代码";
 "settings.about.source_code_desc" = "本程序为开源软件。此版本的完整相应源代码可在以下地址获得：";
 "settings.about.license" = "根据 GNU Affero General Public License v3.0 (AGPL-3.0) 授权。";
-"settings.about.copyright" = "© 2026 kmgccc. 版权所有。";
+"settings.about.copyright" = "© 2026 kmg. 版权所有。";
 
 // MARK: - Library
 "library.all_songs" = "所有歌曲";

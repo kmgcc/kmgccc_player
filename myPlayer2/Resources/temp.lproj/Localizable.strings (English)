@@ -14,6 +14,8 @@
 "sidebar.appearance_light" = "Appearance: Light";
 "sidebar.appearance_dark" = "Appearance: Dark";
 "sidebar.appearance_system" = "Appearance: Match System";
+"sidebar.artists" = "Artists";
+"sidebar.albums" = "Albums";
 
 // MARK: - Settings General
 "import.panel.title" = "Import Music to \"%@\"";

@@ -924,7 +924,7 @@ private final class BKArtBackgroundLayerView: NSView {
     private func startShapeTimerIfNeeded() {
         guard shapeTimer == nil else { return }
         let timer = DispatchSource.makeTimerSource(queue: .main)
-        timer.schedule(deadline: .now(), repeating: 1.0 / 6.0)
+        timer.schedule(deadline: .now(), repeating: 1.0 / 12.0)
         timer.setEventHandler { [weak self] in
             self?.tickShapes()
         }
@@ -1218,7 +1218,7 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     private func tickShapes() {
-        let dt = CGFloat((1.0 / 6.0) * speedCurrent)
+        let dt = CGFloat((1.0 / 12.0) * speedCurrent)
         guard dt > 0.0001 else { return }
         updateShapes(for: fromContainer, dt: dt)
         updateShapes(for: toContainer, dt: dt)

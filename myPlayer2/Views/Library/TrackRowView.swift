@@ -3,114 +3,99 @@
 //  myPlayer2
 //
 //  TrueMusic - Track Row View
-//  Displays a single track in a list.
-//  Supports responsive layout (Side-by-side vs Stacked) and inline Menu.
+//  Displays a single track row using pure row data.
 //
 
+import AppKit
 import SwiftUI
 
-private final class TrackArtworkThumbnailCache {
-    static let shared = TrackArtworkThumbnailCache()
-    private let cache = NSCache<NSString, NSImage>()
+struct TrackRowModel: Identifiable, Equatable {
+    let id: UUID
+    let title: String
+    let artist: String
+    let durationText: String
+    let artworkData: Data?
+    let artworkCacheKey: String
+    let isMissing: Bool
 
-    private init() {
-        cache.countLimit = 400
-    }
-
-    func image(for key: String) -> NSImage? {
-        cache.object(forKey: key as NSString)
-    }
-
-    func setImage(_ image: NSImage, for key: String) {
-        cache.setObject(image, forKey: key as NSString)
+    static func == (lhs: TrackRowModel, rhs: TrackRowModel) -> Bool {
+        lhs.id == rhs.id
+            && lhs.title == rhs.title
+            && lhs.artist == rhs.artist
+            && lhs.durationText == rhs.durationText
+            && lhs.artworkCacheKey == rhs.artworkCacheKey
+            && lhs.isMissing == rhs.isMissing
     }
 }
 
 /// Row view for displaying a track in a list.
 struct TrackRowView<MenuContent: View>: View {
-
-    let track: Track
+    let model: TrackRowModel
     let isPlaying: Bool
     let onTap: () -> Void
+    let onRowAppear: (() -> Void)?
     @ViewBuilder let menuContent: () -> MenuContent
 
-    @EnvironmentObject private var themeStore: ThemeStore
     @State private var isHovering = false
     @State private var artworkImage: NSImage?
+    @State private var isArtworkReady = false
+
+    init(
+        model: TrackRowModel,
+        isPlaying: Bool,
+        onTap: @escaping () -> Void,
+        onRowAppear: (() -> Void)? = nil,
+        @ViewBuilder menuContent: @escaping () -> MenuContent
+    ) {
+        self.model = model
+        self.isPlaying = isPlaying
+        self.onTap = onTap
+        self.onRowAppear = onRowAppear
+        self.menuContent = menuContent
+    }
 
     var body: some View {
+        let _ = PlaylistPerfDiagnostics.markRowBodyRecompute()
+
         HStack(spacing: 12) {
-            // Artwork
             artworkView
 
-            // Track info (Responsive)
-            ViewThatFits(in: .horizontal) {
-                // 1. Horizontal Layout (fixed columns, each clipped; long text scrolls in-place)
-                GeometryReader { proxy in
-                    let spacing: CGFloat = 10
-                    let artistWidth = min(max(120, proxy.size.width * 0.34), 260)
-                    let titleWidth = max(80, proxy.size.width - artistWidth - spacing)
+            HStack(spacing: 10) {
+                MarqueeText(
+                    text: model.title,
+                    style: .body,
+                    fontWeight: isPlaying ? .semibold : .regular,
+                    color: textPrimaryColor
+                )
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-                    HStack(alignment: .center, spacing: spacing) {
-                        MarqueeText(
-                            text: track.title,
-                            style: .body,
-                            fontWeight: isPlaying ? .semibold : .regular,
-                            color: textPrimaryColor
-                        )
-                        .frame(width: titleWidth, alignment: .leading)
-
-                        MarqueeText(
-                            text: artistDisplayText,
-                            style: .subheadline,
-                            fontWeight: .regular,
-                            color: textSecondaryColor
-                        )
-                        .frame(width: artistWidth, alignment: .leading)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(height: 24)
-
-                // 2. Vertical Layout (Stacked)
-                // Fallback when width is small
-                VStack(alignment: .leading, spacing: 2) {
-                    MarqueeText(
-                        text: track.title,
-                        style: .body,
-                        fontWeight: isPlaying ? .semibold : .regular,
-                        color: textPrimaryColor
-                    )
-
-                    MarqueeText(
-                        text: artistDisplayText,
-                        style: .subheadline,
-                        fontWeight: .regular,
-                        color: textSecondaryColor
-                    )
-                }
+                MarqueeText(
+                    text: artistText,
+                    style: .subheadline,
+                    fontWeight: .regular,
+                    color: textSecondaryColor
+                )
+                .frame(width: 220, alignment: .leading)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
+            .frame(height: 24)
 
-            // Playing indicator or Missing icon
-            if isMissing {
+            if model.isMissing {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.yellow)
                     .help("library.file_missing")
             } else if isPlaying {
                 Image(systemName: "speaker.wave.2.fill")
                     .font(.caption)
-                    .foregroundStyle(themeStore.accentColor)
+                    .foregroundStyle(Color.accentColor)
             }
 
-            // Duration
-            Text(formattedDuration)
+            Text(model.durationText)
                 .font(.caption)
-                .foregroundStyle(textTertiaryColor)
+                .foregroundStyle(ColorTokens.textTertiary)
                 .monospacedDigit()
+                .frame(width: 42, alignment: .trailing)
 
-            // Menu Button (Three dots - pure ellipsis)
             Menu {
                 menuContent()
             } label: {
@@ -136,40 +121,33 @@ struct TrackRowView<MenuContent: View>: View {
             isHovering = hover
         }
         .onTapGesture {
-            handleTap()
+            if !model.isMissing {
+                onTap()
+            }
         }
-        .task(id: track.id) {
-            await loadArtworkIfNeeded()
+        .onAppear {
+            onRowAppear?()
+        }
+        .task(id: model.artworkCacheKey) {
+            await loadArtwork()
         }
     }
 
-    // MARK: - Computed Properties
-
-    private var isMissing: Bool {
-        track.availability == .missing
+    private var artistText: String {
+        model.artist.isEmpty
+            ? NSLocalizedString("library.unknown_artist", comment: "")
+            : model.artist
     }
 
     private var textPrimaryColor: Color {
-        if isMissing { return .secondary }
-        return isPlaying ? themeStore.accentColor : ColorTokens.textPrimary
+        if model.isMissing { return .secondary }
+        return isPlaying ? Color.accentColor : ColorTokens.textPrimary
     }
 
     private var textSecondaryColor: Color {
-        if isMissing { return Color.gray.opacity(0.6) }
+        if model.isMissing { return Color.gray.opacity(0.6) }
         return ColorTokens.textSecondary
     }
-
-    private var textTertiaryColor: Color {
-        ColorTokens.textTertiary
-    }
-
-    private var artistDisplayText: String {
-        track.artist.isEmpty
-            ? NSLocalizedString("library.unknown_artist", comment: "")
-            : track.artist
-    }
-
-    // MARK: - Subviews
 
     @ViewBuilder
     private var artworkView: some View {
@@ -182,80 +160,73 @@ struct TrackRowView<MenuContent: View>: View {
                     height: Constants.Layout.artworkSmallSize
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 6))
-                .grayscale(isMissing ? 1.0 : 0.0)
+                .grayscale(model.isMissing ? 1.0 : 0.0)
+                .opacity(isArtworkReady ? 1.0 : 0.0)
+                .animation(.easeInOut(duration: 0.20), value: isArtworkReady)
         } else {
-            RoundedRectangle(cornerRadius: 6)
-                .fill(
-                    LinearGradient(
-                        colors: [.purple.opacity(0.6), .blue.opacity(0.6)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-                .frame(
-                    width: Constants.Layout.artworkSmallSize,
-                    height: Constants.Layout.artworkSmallSize
-                )
-                .overlay {
-                    Image(systemName: "music.note")
-                        .font(.system(size: 16))
-                        .foregroundStyle(.white.opacity(0.8))
-                }
-                .grayscale(isMissing ? 1.0 : 0.0)
+            placeholderArtwork
         }
     }
 
-    // MARK: - Helpers
-
-    private var formattedDuration: String {
-        let minutes = Int(track.duration) / 60
-        let seconds = Int(track.duration) % 60
-        return String(format: "%d:%02d", minutes, seconds)
-    }
-
-    private func handleTap() {
-        if !isMissing {
-            onTap()
-        }
-    }
-
-    private func loadArtworkIfNeeded() async {
-        let key = track.id.uuidString
-
-        if let cached = TrackArtworkThumbnailCache.shared.image(for: key) {
-            if artworkImage !== cached {
-                artworkImage = cached
+    private var placeholderArtwork: some View {
+        RoundedRectangle(cornerRadius: 6)
+            .fill(
+                LinearGradient(
+                    colors: [.purple.opacity(0.6), .blue.opacity(0.6)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
+            .frame(
+                width: Constants.Layout.artworkSmallSize,
+                height: Constants.Layout.artworkSmallSize
+            )
+            .overlay {
+                Image(systemName: "music.note")
+                    .font(.system(size: 16))
+                    .foregroundStyle(.white.opacity(0.8))
             }
-            return
-        }
+            .grayscale(model.isMissing ? 1.0 : 0.0)
+    }
 
-        guard let artworkData = track.artworkData else {
+    @MainActor
+    private func loadArtwork() async {
+        guard let data = model.artworkData, !data.isEmpty else {
             artworkImage = nil
+            isArtworkReady = false
             return
         }
 
-        let decoded = await Task.detached(priority: .utility) {
-            NSImage(data: artworkData)
-        }.value
+        let scale = NSScreen.main?.backingScaleFactor ?? 2.0
+        let targetPixels = CGSize(
+            width: Constants.Layout.artworkSmallSize * scale,
+            height: Constants.Layout.artworkSmallSize * scale
+        )
 
-        guard let decoded else {
+        let image = await ArtworkLoader.loadImage(
+            artworkData: data,
+            cacheKey: model.artworkCacheKey,
+            targetPixelSize: targetPixels
+        )
+
+        guard !Task.isCancelled else { return }
+
+        if let image {
+            artworkImage = image
+            isArtworkReady = false
+            withAnimation(.easeInOut(duration: 0.20)) {
+                isArtworkReady = true
+            }
+        } else {
             artworkImage = nil
-            return
+            isArtworkReady = false
         }
-
-        TrackArtworkThumbnailCache.shared.setImage(decoded, for: key)
-        artworkImage = decoded
     }
 }
 
 extension TrackRowView: Equatable where MenuContent: View {
     static func == (lhs: TrackRowView<MenuContent>, rhs: TrackRowView<MenuContent>) -> Bool {
-        lhs.track.id == rhs.track.id
-            && lhs.track.title == rhs.track.title
-            && lhs.track.artist == rhs.track.artist
-            && lhs.track.duration == rhs.track.duration
-            && lhs.track.availability == rhs.track.availability
-            && lhs.track.artworkData?.count == rhs.track.artworkData?.count
+        lhs.model == rhs.model
             && lhs.isPlaying == rhs.isPlaying
     }
 }
@@ -265,30 +236,39 @@ extension TrackRowView: Equatable where MenuContent: View {
 #Preview("Track Row") {
     VStack(spacing: 0) {
         TrackRowView(
-            track: Track(
-                title: "Blinding Lights", artist: "The Weeknd", album: "After Hours", duration: 203,
-                fileBookmarkData: Data()),
-            isPlaying: false,
-            onTap: {}
-        ) {
-            Button("Play") {}
-            Button("Add to Playlist") {}
-        }
-        .environmentObject(ThemeStore.shared)
-
-        Divider()
-
-        TrackRowView(
-            track: Track(
-                title: "Bohemian Rhapsody", artist: "Queen", album: "A Night at the Opera",
-                duration: 354, fileBookmarkData: Data()),
+            model: TrackRowModel(
+                id: UUID(),
+                title: "Blinding Lights",
+                artist: "The Weeknd",
+                durationText: "3:23",
+                artworkData: nil,
+                artworkCacheKey: "demo",
+                isMissing: false
+            ),
             isPlaying: true,
             onTap: {}
         ) {
             Button("Play") {}
+            Button("Delete", role: .destructive) {}
         }
-        .environmentObject(ThemeStore.shared)
+
+        Divider()
+
+        TrackRowView(
+            model: TrackRowModel(
+                id: UUID(),
+                title: "Missing Track",
+                artist: "Unknown Artist",
+                durationText: "0:00",
+                artworkData: nil,
+                artworkCacheKey: "missing",
+                isMissing: true
+            ),
+            isPlaying: false,
+            onTap: {}
+        ) {
+            Button("Info") {}
+        }
     }
-    .frame(width: 400)
     .padding()
 }

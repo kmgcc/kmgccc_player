@@ -46,7 +46,7 @@ final class LDDCServerManager: ObservableObject {
     // PyInstaller onedir cold start (especially under Xcode) can be noticeably slower.
     private let healthCheckTimeout: TimeInterval = 60
     private let healthCheckInterval: TimeInterval = 0.5
-    private let idleTimeout: TimeInterval = 300  // 5 minutes
+    private let idleTimeout: TimeInterval = 60  // 1 minute
 
     // MARK: - Private State
 
