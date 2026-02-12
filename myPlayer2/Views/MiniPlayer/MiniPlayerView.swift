@@ -12,6 +12,7 @@ private enum PlaybackMode {
     case sequence
     case shuffle
     case repeatOne
+    case stopAfterTrack
 }
 
 /// Mini player bar with true Liquid Glass capsule effect.
@@ -25,11 +26,13 @@ struct MiniPlayerView: View {
 
     @AppStorage("shuffleEnabled") private var shuffleEnabled: Bool = false
     @AppStorage("repeatMode") private var repeatMode: String = "off"
+    @AppStorage("stopAfterTrack") private var stopAfterTrack: Bool = false
 
     /// For drag-to-seek
     @State private var isDragging = false
     @State private var dragProgress: Double = 0
     @State private var trackToEdit: Track?
+    @State private var isProgressHovering = false
 
     var body: some View {
         return HStack(spacing: 12) {
@@ -67,7 +70,7 @@ struct MiniPlayerView: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    .frame(width: 180, alignment: .leading)
+                    .frame(width: 136, alignment: .leading)
                     .clipped()
 
                 }
@@ -85,8 +88,8 @@ struct MiniPlayerView: View {
             // MARK: - Playback Mode
             playbackModeView
 
-            // MARK: - Progress bar (draggable)
-            progressBar
+            // MARK: - Progress bar (draggable + hover time labels)
+            progressArea
                 .frame(minWidth: 200, maxWidth: .infinity)
 
             // MARK: - Right: Volume Slider
@@ -194,6 +197,7 @@ struct MiniPlayerView: View {
     }
 
     private var currentPlaybackMode: PlaybackMode {
+        if stopAfterTrack { return .stopAfterTrack }
         if repeatMode == "one" { return .repeatOne }
         if shuffleEnabled { return .shuffle }
         return .sequence
@@ -208,16 +212,23 @@ struct MiniPlayerView: View {
                 case .sequence:
                     shuffleEnabled = false
                     repeatMode = "off"
+                    stopAfterTrack = false
                 case .shuffle:
                     shuffleEnabled = true
                     repeatMode = "off"
+                    stopAfterTrack = false
                 case .repeatOne:
                     shuffleEnabled = false
                     repeatMode = "one"
+                    stopAfterTrack = false
+                case .stopAfterTrack:
+                    shuffleEnabled = false
+                    repeatMode = "off"
+                    stopAfterTrack = true
                 }
             }
         )
-        .frame(width: 128, height: 26)
+        .frame(width: 168, height: 26)
     }
 
     @ViewBuilder
@@ -288,6 +299,44 @@ struct MiniPlayerView: View {
             )
         }
         .frame(height: 18)
+    }
+
+    private var progressArea: some View {
+        ZStack(alignment: .top) {
+            progressBar
+
+            HStack {
+                Text(formattedTime(progressDisplayTime))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .opacity(isProgressHovering ? 1 : 0)
+
+                Spacer()
+
+                Text(formattedTime(playerVM.duration))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .opacity(isProgressHovering ? 1 : 0)
+            }
+            .offset(y: -11)
+            .animation(.easeInOut(duration: 0.12), value: isProgressHovering)
+        }
+        .frame(height: 18)
+        .onHover { hovering in
+            isProgressHovering = hovering
+        }
+    }
+
+    private var progressDisplayTime: Double {
+        isDragging ? dragProgress : playerVM.currentTime
+    }
+
+    private func formattedTime(_ time: Double) -> String {
+        guard time.isFinite, time > 0 else { return "0:00" }
+        let total = Int(time.rounded(.down))
+        let minutes = total / 60
+        let seconds = total % 60
+        return String(format: "%d:%02d", minutes, seconds)
     }
 
     private var progressFillColor: Color {
@@ -369,6 +418,7 @@ private struct PlaybackModeSlider: View {
         case .shuffle: return 0
         case .sequence: return 1
         case .repeatOne: return 2
+        case .stopAfterTrack: return 3
         }
     }
 
@@ -376,7 +426,8 @@ private struct PlaybackModeSlider: View {
         switch index {
         case 0: return .shuffle
         case 1: return .sequence
-        default: return .repeatOne
+        case 2: return .repeatOne
+        default: return .stopAfterTrack
         }
     }
 
@@ -384,7 +435,7 @@ private struct PlaybackModeSlider: View {
         GeometryReader { geometry in
             let inset: CGFloat = 2
             let totalWidth = geometry.size.width - inset * 2
-            let segmentWidth = max(1, totalWidth / 3)
+            let segmentWidth = max(1, totalWidth / 4)
             let baseOffset = CGFloat(modeIndex) * segmentWidth
             let effectiveDrag = isDragging ? dragTranslation : 0
             let knobOffset = clampOffset(
@@ -421,6 +472,12 @@ private struct PlaybackModeSlider: View {
                     ) {
                         selectMode(.repeatOne, snap: snap)
                     }
+                    segmentButton(
+                        systemImage: "pause.circle", isSelected: modeIndex == 3,
+                        width: segmentWidth
+                    ) {
+                        selectMode(.stopAfterTrack, snap: snap)
+                    }
                 }
                 .padding(.horizontal, inset)
             }
@@ -436,7 +493,7 @@ private struct PlaybackModeSlider: View {
                         let index = Int(round(raw / segmentWidth))
                         dragTranslation = 0
                         isDragging = false
-                        let clampedIndex = max(0, min(2, index))
+                        let clampedIndex = max(0, min(3, index))
                         selectMode(modeForIndex(clampedIndex), snap: snap)
                     }
             )
