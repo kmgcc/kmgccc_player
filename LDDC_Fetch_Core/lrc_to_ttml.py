@@ -326,7 +326,7 @@ def create_ttml_structure(metadata, lyrics_data):
     return root
 
 
-def convert_lrc_to_ttml(lrc_file_path, output_file_path=None):
+def convert_lrc_to_ttml(lrc_file_path, output_file_path=None, strip_metadata=True):
     """将LRC文件转换为TTML格式"""
     try:
         with open(lrc_file_path, 'r', encoding='utf-8') as f:
@@ -361,8 +361,9 @@ def convert_lrc_to_ttml(lrc_file_path, output_file_path=None):
     if not lyrics_data:
         raise ValueError("没有找到有效的歌词数据")
     
-    # 过滤掉歌曲信息行
-    lyrics_data = filter_song_info_lines(lyrics_data)
+    # 可选：过滤掉歌曲信息行
+    if strip_metadata:
+        lyrics_data = filter_song_info_lines(lyrics_data)
 
     # 检测歌词类型并计算合适的结束时间
     lyric_type = detect_lyric_type(lyrics_data)
@@ -417,6 +418,19 @@ def main():
     )
     parser.add_argument('--input', '-i', help='输入的LRC文件路径')
     parser.add_argument('--output', '-o', help='输出的TTML文件路径（可选）')
+    parser.add_argument(
+        '--strip-metadata',
+        dest='strip_metadata',
+        action='store_true',
+        default=True,
+        help='转换时去除疑似平台声明/制作信息行（默认开启）'
+    )
+    parser.add_argument(
+        '--no-strip-metadata',
+        dest='strip_metadata',
+        action='store_false',
+        help='仅做LRC到TTML格式转换，不移除任何歌词行'
+    )
     parser.add_argument('--version', action='version', version='LRC to TTML Converter 1.0')
     
     args = parser.parse_args()
@@ -438,7 +452,11 @@ def main():
     try:
         # 执行转换
         print("🔄 正在转换...")
-        output_file = convert_lrc_to_ttml(lrc_file, args.output)
+        output_file = convert_lrc_to_ttml(
+            lrc_file,
+            args.output,
+            strip_metadata=args.strip_metadata
+        )
         print("✅ 转换成功！")
         print(f"📁 输入文件: {lrc_file}")
         print(f"📁 输出文件: {output_file}")

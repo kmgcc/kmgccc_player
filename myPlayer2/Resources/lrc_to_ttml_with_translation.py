@@ -144,7 +144,7 @@ def parse_lrc_line_with_char_timing(line):
     return segments
 
 
-def parse_translation_lrc(lrc_file_path):
+def parse_translation_lrc(lrc_file_path, strip_metadata=True):
     """解析翻译LRC文件，返回 {start_time_seconds: translation_text} 的字典"""
     translations = {}
     
@@ -174,8 +174,8 @@ def parse_translation_lrc(lrc_file_path):
             time_str = match.group(1)
             text = match.group(2).strip()
             
-            # 过滤版权声明等信息行
-            if is_song_info_line(text):
+            # 可选：过滤版权声明等信息行
+            if strip_metadata and is_song_info_line(text):
                 continue
             
             start_time = parse_time_to_seconds(time_str)
@@ -344,7 +344,12 @@ def create_ttml_structure_with_translation(metadata, lyrics_data, translations):
     return root
 
 
-def convert_lrc_to_ttml_with_translation(orig_lrc_path, trans_lrc_path, output_file_path=None):
+def convert_lrc_to_ttml_with_translation(
+    orig_lrc_path,
+    trans_lrc_path,
+    output_file_path=None,
+    strip_metadata=True
+):
     """将原文LRC和翻译LRC文件转换为带翻译的TTML格式"""
     # 解析原文LRC
     try:
@@ -377,11 +382,12 @@ def convert_lrc_to_ttml_with_translation(orig_lrc_path, trans_lrc_path, output_f
     if not lyrics_data:
         raise ValueError("没有找到有效的歌词数据")
     
-    # 过滤掉歌曲信息行
-    lyrics_data = filter_song_info_lines(lyrics_data)
+    # 可选：过滤掉歌曲信息行
+    if strip_metadata:
+        lyrics_data = filter_song_info_lines(lyrics_data)
     
     # 解析翻译LRC
-    translations = parse_translation_lrc(trans_lrc_path)
+    translations = parse_translation_lrc(trans_lrc_path, strip_metadata=strip_metadata)
     
     # 检测歌词类型并计算合适的结束时间
     lyric_type = detect_lyric_type(lyrics_data)
@@ -436,6 +442,19 @@ def main():
     parser.add_argument('--input', '-i', help='输入的原文LRC文件路径')
     parser.add_argument('--translation', '-t', help='输入的翻译LRC文件路径')
     parser.add_argument('--output', '-o', help='输出的TTML文件路径（可选）')
+    parser.add_argument(
+        '--strip-metadata',
+        dest='strip_metadata',
+        action='store_true',
+        default=True,
+        help='转换时去除疑似平台声明/制作信息行（默认开启）'
+    )
+    parser.add_argument(
+        '--no-strip-metadata',
+        dest='strip_metadata',
+        action='store_false',
+        help='仅做LRC到TTML格式转换，不移除任何歌词行'
+    )
     parser.add_argument('--version', action='version', version='LRC to TTML (with Translation) Converter 1.0')
     
     args = parser.parse_args()
@@ -462,7 +481,12 @@ def main():
     
     try:
         print("🔄 正在转换...")
-        output_file = convert_lrc_to_ttml_with_translation(orig_lrc_file, trans_lrc_file, args.output)
+        output_file = convert_lrc_to_ttml_with_translation(
+            orig_lrc_file,
+            trans_lrc_file,
+            args.output,
+            strip_metadata=args.strip_metadata
+        )
         print("✅ 转换成功！")
         print(f"📁 原文文件: {orig_lrc_file}")
         print(f"📁 翻译文件: {trans_lrc_file}")
