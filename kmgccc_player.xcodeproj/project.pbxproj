@@ -169,7 +169,6 @@
 				9351188E2F3231C500766A5F /* Sources */,
 				9351188F2F3231C500766A5F /* Frameworks */,
 				935118902F3231C500766A5F /* Resources */,
-				93B36E162F376C950075F4DB /* ShellScript */,
 			);
 			buildRules = (
 			);
@@ -245,26 +244,6 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
-
-/* Begin PBXShellScriptBuildPhase section */
-		93B36E162F376C950075F4DB /* ShellScript */ = {
-			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-			);
-			outputFileListPaths = (
-			);
-			outputPaths = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "set -euo pipefail\n\nAPP_PATH=\"${TARGET_BUILD_DIR}/${WRAPPER_NAME}\"\nBIN_PATH=\"${APP_PATH}/Contents/Resources/lddc-server\"\nIDENTITY=\"${EXPANDED_CODE_SIGN_IDENTITY_NAME}\"\n\nif [ ! -f \"$BIN_PATH\" ]; then\n  echo \"lddc-server not found at $BIN_PATH\"\n  exit 0\nfi\n\necho \"Signing embedded lddc-server with hardened runtime...\"\n/usr/bin/codesign --force --sign \"$IDENTITY\" --timestamp --options runtime \"$BIN_PATH\"\n\necho \"Re-signing app bundle...\"\n/usr/bin/codesign --force --deep --sign \"$IDENTITY\" --timestamp --options runtime \"$APP_PATH\"\n\necho \"Done.\"\n";
-		};
-/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		933AADF92F3CC8D40081B59C /* Sources */ = {

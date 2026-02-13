@@ -16,16 +16,18 @@ struct LyricsPanelView: View {
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(LyricsViewModel.self) private var lyricsVM
     @Environment(UIStateViewModel.self) private var uiState
+    @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var themeStore: ThemeStore
 
     var body: some View {
         panelContent
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .glassRect(cornerRadius: 0)
-            .overlay {
-                themeStore.backgroundColor.opacity(0.10)
-                    .allowsHitTesting(false)
-            }
+            .applyLyricsBackground(
+                mode: settings.lyricsBackgroundMode,
+                colorScheme: themeStore.colorScheme,
+                accentColor: themeStore.accentColor,
+                backgroundColor: themeStore.backgroundColor
+            )
             .onAppear {
                 setupSeekCallback()
                 reloadLyricsSurface(
@@ -143,6 +145,44 @@ struct LyricsPanelView: View {
     }
     .frame(width: 800, height: 600)
     .preferredColorScheme(.dark)
+}
+
+// MARK: - Background Modifier extension
+
+extension View {
+    @ViewBuilder
+    func applyLyricsBackground(
+        mode: AppSettings.LyricsBackgroundMode,
+        colorScheme: ColorScheme,
+        accentColor: Color,
+        backgroundColor: Color
+    ) -> some View {
+        switch mode {
+        case .sidebar:
+            self.glassEffect(.regular, in: .rect(cornerRadius: 0))
+                .overlay {
+                    backgroundColor.opacity(0.10)
+                        .allowsHitTesting(false)
+                }
+        case .clear:
+            // "Frosted Glass" (磨砂玻璃) mode as requested:
+            // Regular Material (blur) + higher opacity dimming/brightening layer
+            self
+                .background(
+                    ZStack {
+                        Rectangle()
+                            .fill(.ultraThinMaterial)
+
+                        if colorScheme == .dark {
+                            Color.black.opacity(0.3)  // Darken in dark mode
+                        } else {
+                            Color.white.opacity(0.3)  // Brighten in light mode
+                        }
+                    }
+                    .allowsHitTesting(false)
+                )
+        }
+    }
 }
 
 // MARK: - Settings Observer Modifier

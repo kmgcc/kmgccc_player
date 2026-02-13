@@ -31,9 +31,9 @@ struct MainLayoutView: View {
     @State private var isHoveringResizeHandle = false
     @State private var windowWidth: CGFloat = 0
 
-	    var body: some View {
-	        GeometryReader { proxy in
-	            ZStack {
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack {
                 NavigationSplitView(columnVisibility: $columnVisibility) {
                     SidebarView()
                         .navigationSplitViewColumnWidth(
