@@ -2,7 +2,7 @@
 //  StubLibraryRepository.swift
 //  myPlayer2
 //
-//  TrueMusic - Stub Library Repository
+//  kmgccc_player - Stub Library Repository
 //  Provides fake data for UI development and previews.
 //
 

@@ -2,7 +2,7 @@
 //  ArtworkColorExtractor.swift
 //  myPlayer2
 //
-//  TrueMusic - Artwork Color Extraction
+//  kmgccc_player - Artwork Color Extraction
 //  Computes artwork colors for lyrics and UI themes.
 //
 

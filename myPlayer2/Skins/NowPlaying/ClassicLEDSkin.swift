@@ -2,7 +2,7 @@
 //  ClassicLEDSkin.swift
 //  myPlayer2
 //
-//  TrueMusic - Classic LED Skin
+//  kmgccc_player - Classic LED Skin
 //
 
 import SwiftUI

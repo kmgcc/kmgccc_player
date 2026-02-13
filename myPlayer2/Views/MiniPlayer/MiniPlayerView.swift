@@ -2,7 +2,7 @@
 //  MiniPlayerView.swift
 //  myPlayer2
 //
-//  TrueMusic - Mini Player View
+//  kmgccc_player - Mini Player View
 //  Uses native SwiftUI .glassEffect() for true macOS 26 Liquid Glass capsule.
 //
 

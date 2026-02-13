@@ -2,7 +2,7 @@
 //  TrackEditSheet.swift
 //  myPlayer2
 //
-//  TrueMusic - Track Metadata Edit Sheet
+//  kmgccc_player - Track Metadata Edit Sheet
 //  Edit track title, artist, album, artwork, and lyrics.
 //
 

@@ -2,7 +2,7 @@
 //  KmgcccCassetteSkin.swift
 //  myPlayer2
 //
-//  TrueMusic - kmgccc Cassette Skin
+//  kmgccc_player - kmgccc Cassette Skin
 //
 
 import AppKit

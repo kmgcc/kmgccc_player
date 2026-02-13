@@ -2,7 +2,7 @@
 //  TTMLConverter.swift
 //  myPlayer2
 //
-//  TrueMusic - LRC to TTML Converter
+//  kmgccc_player - LRC to TTML Converter
 //  Calls Python scripts to convert LRC lyrics to TTML format.
 //
 

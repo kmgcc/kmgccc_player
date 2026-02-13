@@ -2,7 +2,7 @@
 //  AudioAnalysisHub.swift
 //  myPlayer2
 //
-//  TrueMusic - Audio Analysis Hub
+//  kmgccc_player - Audio Analysis Hub
 //  Centralized audio tap and FFT processing.
 //  Provides raw FFT magnitudes to consumers (LED Meter, Waveform, etc.).
 //

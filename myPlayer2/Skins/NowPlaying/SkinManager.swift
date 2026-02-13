@@ -2,7 +2,7 @@
 //  SkinManager.swift
 //  myPlayer2
 //
-//  TrueMusic - Now Playing Skin Manager
+//  kmgccc_player - Now Playing Skin Manager
 //
 
 import SwiftUI

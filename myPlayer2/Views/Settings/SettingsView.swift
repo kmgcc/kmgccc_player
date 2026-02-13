@@ -2,7 +2,7 @@
 //  SettingsView.swift
 //  myPlayer2
 //
-//  TrueMusic - Settings View
+//  kmgccc_player - Settings View
 //  Provides user-configurable settings including LED meter, Appearance, and AMLL.
 //
 
@@ -60,6 +60,7 @@ struct SettingsView: View {
     @State private var lookaheadMs: Double = AppSettings.shared.lookaheadMs
     @State private var ledMeterEnabled: Bool = AppSettings.shared.ledMeterEnabled
     @State private var aboutEasterEggTracker = AboutEasterEggTapTracker()
+    @State private var showEasterEggImage: Bool = false
 
     private var fontFamilies: [String] {
         NSFontManager.shared.availableFontFamilies.sorted()
@@ -141,6 +142,7 @@ struct SettingsView: View {
         }
         .frame(minWidth: 760, minHeight: 680)
         .onAppear {
+            showEasterEggImage = false
             nowPlayingSkin = settings.selectedNowPlayingSkinID
             nowPlayingArtBackgroundEnabled = settings.nowPlayingArtBackgroundEnabled
             globalArtworkTintEnabled = settings.globalArtworkTintEnabled
@@ -812,7 +814,7 @@ struct SettingsView: View {
         VStack(alignment: .center, spacing: 10) {
             Spacer(minLength: 40)
 
-            Image("EmptyLyric")
+            Image(showEasterEggImage ? "jntm" : "EmptyLyric")
                 .resizable()
                 .scaledToFit()
                 .frame(width: 230, height: 230)
@@ -860,9 +862,12 @@ struct SettingsView: View {
                     destination: "https://xhslink.com/m/7o53GE3YNQy"
                 )
 
-                Link("查看更新", destination: URL(string: "https://github.com/kmgcc/kmgccc_player/releases")!)
-                    .font(.subheadline.weight(.semibold))
-                    .buttonStyle(.bordered)
+                Link(
+                    "查看更新",
+                    destination: URL(string: "https://github.com/kmgcc/kmgccc_player/releases")!
+                )
+                .font(.subheadline.weight(.semibold))
+                .buttonStyle(.bordered)
             }
             .padding(.bottom, 34)
 
@@ -896,7 +901,7 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Link(
-                        "https://github.com/kmgccc/TrueMusic",
+                        "https://github.com/kmgccc/kmgccc_player",
                         destination: URL(string: "https://github.com/kmgcc/kmgccc_player")!
                     )
                     .font(.caption)
@@ -978,6 +983,7 @@ struct SettingsView: View {
         print("[AboutEasterEgg] side tap: \(side == .left ? "left" : "right")")
         if aboutEasterEggTracker.registerTap(on: side) {
             print("[AboutEasterEgg] sequence matched -> trigger")
+            showEasterEggImage = true
             NotificationCenter.default.post(name: .aboutEasterEggTriggered, object: nil)
         }
     }
@@ -1066,7 +1072,9 @@ private struct AboutEasterEggTapTracker {
     private var lastTapTime: TimeInterval?
     private var tapCount: Int = 0
 
-    mutating func registerTap(on side: AboutTapSide, now: TimeInterval = Date.timeIntervalSinceReferenceDate)
+    mutating func registerTap(
+        on side: AboutTapSide, now: TimeInterval = Date.timeIntervalSinceReferenceDate
+    )
         -> Bool
     {
         guard let previousSide = lastSide, let previousTime = lastTapTime else {

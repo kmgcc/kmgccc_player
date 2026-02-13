@@ -2,7 +2,7 @@
 //  LyricsPanelView.swift
 //  myPlayer2
 //
-//  TrueMusic - Lyrics Panel View
+//  kmgccc_player - Lyrics Panel View
 //  Right-side panel hosting AMLL lyrics with player state binding.
 //  Uses LyricsWebViewStore singleton for stable WebView lifecycle.
 //

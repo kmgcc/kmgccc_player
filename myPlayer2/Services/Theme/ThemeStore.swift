@@ -2,7 +2,7 @@
 //  ThemeStore.swift
 //  myPlayer2
 //
-//  TrueMusic - Unified Theme Management
+//  kmgccc_player - Unified Theme Management
 //  Manages color scheme and computed palette for the application.
 //
 

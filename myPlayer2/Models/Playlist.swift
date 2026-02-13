@@ -2,7 +2,7 @@
 //  Playlist.swift
 //  myPlayer2
 //
-//  TrueMusic - SwiftData Playlist Model
+//  kmgccc_player - SwiftData Playlist Model
 //  Represents a user-created playlist containing tracks.
 //
 

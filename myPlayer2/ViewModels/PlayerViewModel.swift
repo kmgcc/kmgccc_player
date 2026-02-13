@@ -2,7 +2,7 @@
 //  PlayerViewModel.swift
 //  myPlayer2
 //
-//  TrueMusic - Player ViewModel
+//  kmgccc_player - Player ViewModel
 //  Manages playback state and controls.
 //
 

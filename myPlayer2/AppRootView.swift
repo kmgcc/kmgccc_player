@@ -2,7 +2,7 @@
 //  AppRootView.swift
 //  myPlayer2
 //
-//  TrueMusic - App Root View
+//  kmgccc_player - App Root View
 //  Creates and injects all dependencies.
 //
 

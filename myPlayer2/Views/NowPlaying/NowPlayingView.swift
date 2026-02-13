@@ -2,7 +2,7 @@
 //  NowPlayingView.swift
 //  myPlayer2
 //
-//  TrueMusic - Now Playing View
+//  kmgccc_player - Now Playing View
 //  Wrapper for the skinned host view.
 //
 

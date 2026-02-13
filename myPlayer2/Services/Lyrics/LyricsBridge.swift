@@ -2,7 +2,7 @@
 //  LyricsBridge.swift
 //  myPlayer2
 //
-//  TrueMusic - Lyrics Bridge (Swift <-> WKWebView)
+//  kmgccc_player - Lyrics Bridge (Swift <-> WKWebView)
 //  Handles bidirectional communication with AMLL lyrics renderer.
 //
 

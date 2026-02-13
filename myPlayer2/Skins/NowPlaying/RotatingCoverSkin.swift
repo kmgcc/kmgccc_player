@@ -2,7 +2,7 @@
 //  RotatingCoverSkin.swift
 //  myPlayer2
 //
-//  TrueMusic - Rotating Cover Skin
+//  kmgccc_player - Rotating Cover Skin
 //
 
 import SwiftUI

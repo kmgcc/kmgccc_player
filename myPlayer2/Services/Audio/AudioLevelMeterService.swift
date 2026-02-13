@@ -2,7 +2,7 @@
 //  AudioLevelMeterService.swift
 //  myPlayer2
 //
-//  TrueMusic - Real Audio Level Meter Service
+//  kmgccc_player - Real Audio Level Meter Service
 //  Uses AVAudioEngine tap with RMS/peak energy detection.
 //
 //  Algorithm:

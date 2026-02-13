@@ -2,7 +2,7 @@
 //  LDDCClient.swift
 //  myPlayer2
 //
-//  TrueMusic - LDDC HTTP API Client
+//  kmgccc_player - LDDC HTTP API Client
 //  Makes requests to the local LDDC server.
 //
 

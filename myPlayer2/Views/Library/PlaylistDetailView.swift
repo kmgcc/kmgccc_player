@@ -2,7 +2,7 @@
 //  PlaylistDetailView.swift
 //  myPlayer2
 //
-//  TrueMusic - Playlist Detail View
+//  kmgccc_player - Playlist Detail View
 //  Displays tracks in a playlist or all songs.
 //
 //  Uses @Query for automatic SwiftData refresh (方案 A).

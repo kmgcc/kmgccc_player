@@ -2,7 +2,7 @@
 //  StubAudioLevelMeter.swift
 //  myPlayer2
 //
-//  TrueMusic - Stub Audio Level Meter
+//  kmgccc_player - Stub Audio Level Meter
 //  Generates fake level data for LED animation preview.
 //
 

@@ -2,7 +2,7 @@
 //  MainLayoutView.swift
 //  myPlayer2
 //
-//  TrueMusic - Main Layout View
+//  kmgccc_player - Main Layout View
 //  Uses NavigationSplitView for system Liquid Glass sidebar.
 //
 //  Design Decisions:

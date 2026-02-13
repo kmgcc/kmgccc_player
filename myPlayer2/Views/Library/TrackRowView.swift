@@ -2,7 +2,7 @@
 //  TrackRowView.swift
 //  myPlayer2
 //
-//  TrueMusic - Track Row View
+//  kmgccc_player - Track Row View
 //  Displays a single track row using pure row data.
 //
 

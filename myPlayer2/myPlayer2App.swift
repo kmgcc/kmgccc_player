@@ -2,14 +2,14 @@
 //  myPlayer2App.swift
 //  myPlayer2
 //
-//  TrueMusic - App Entry Point
+//  kmgccc_player - App Entry Point
 //
 
 import SwiftData
 import SwiftUI
 
 @main
-struct TrueMusicApp: App {
+struct KmgcccPlayerApp: App {
 
     // MARK: - SwiftData Container
 
@@ -75,10 +75,10 @@ struct TrueMusicApp: App {
 // MARK: - Notification Names
 
 extension Notification.Name {
-    static let togglePlayPause = Notification.Name("TrueMusic.togglePlayPause")
-    static let nextTrack = Notification.Name("TrueMusic.nextTrack")
-    static let previousTrack = Notification.Name("TrueMusic.previousTrack")
-    static let toggleLyrics = Notification.Name("TrueMusic.toggleLyrics")
-    static let playbackTrackDidChange = Notification.Name("TrueMusic.playbackTrackDidChange")
-    static let aboutEasterEggTriggered = Notification.Name("TrueMusic.aboutEasterEggTriggered")
+    static let togglePlayPause = Notification.Name("kmgccc_player.togglePlayPause")
+    static let nextTrack = Notification.Name("kmgccc_player.nextTrack")
+    static let previousTrack = Notification.Name("kmgccc_player.previousTrack")
+    static let toggleLyrics = Notification.Name("kmgccc_player.toggleLyrics")
+    static let playbackTrackDidChange = Notification.Name("kmgccc_player.playbackTrackDidChange")
+    static let aboutEasterEggTriggered = Notification.Name("kmgccc_player.aboutEasterEggTriggered")
 }

@@ -2,7 +2,7 @@
 //  LDDCSearchSection.swift
 //  myPlayer2
 //
-//  TrueMusic - LDDC Lyrics Search Section View
+//  kmgccc_player - LDDC Lyrics Search Section View
 //  Embedded in TrackEditSheet for searching and applying lyrics.
 //
 
