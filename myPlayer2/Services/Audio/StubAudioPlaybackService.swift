@@ -2,7 +2,7 @@
 //  StubAudioPlaybackService.swift
 //  myPlayer2
 //
-//  TrueMusic - Stub Audio Playback Service
+//  kmgccc_player - Stub Audio Playback Service
 //  Provides fake playback state for UI development.
 //
 

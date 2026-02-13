@@ -2,7 +2,7 @@
 //  LDDCModels.swift
 //  myPlayer2
 //
-//  TrueMusic - LDDC Data Models
+//  kmgccc_player - LDDC Data Models
 //  Models for LDDC lyrics search API responses.
 //
 

@@ -2,7 +2,7 @@
 //  FileImportService.swift
 //  myPlayer2
 //
-//  TrueMusic - File Import Service
+//  kmgccc_player - File Import Service
 //  Imports audio files into a SPECIFIC PLAYLIST using NSOpenPanel.
 //  Creates security-scoped bookmarks for sandbox access.
 //

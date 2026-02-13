@@ -19997,11 +19997,12 @@ let QN = class extends $A {
       const I = A.mainElement;
       if (I) {
         A.width = I.clientWidth, A.height = I.clientHeight;
-        const g = A.height * this.lyricPlayer.getWordFadeWidth(), [C, Q] = Xi(
-          g / A.width
+        const g = A.height * this.lyricPlayer.getWordFadeWidth(), C0 = 4, [C, Q] = Xi(
+          g / A.width,
+          C0 * 2 / Math.max(1, A.width)
         ), E = `${Q * 100}% 100%`;
         this.lyricPlayer.supportMaskImage ? (I.style.maskImage = C, I.style.maskRepeat = "no-repeat", I.style.maskOrigin = "left", I.style.maskSize = E) : (I.style.webkitMaskImage = C, I.style.webkitMaskRepeat = "no-repeat", I.style.webkitMaskOrigin = "left", I.style.webkitMaskSize = E);
-        const i = A.width + g, o = `clamp(${-i}px,calc(${-i}px + (var(--amll-player-time) - ${A.startTime})*${i / Math.abs(A.endTime - A.startTime)}px),0px) 0px, left top`;
+        const i = A.width + g, o = `clamp(${-i - C0}px,calc(${-i - C0}px + (var(--amll-player-time) - ${A.startTime})*${i / Math.abs(A.endTime - A.startTime)}px),${-C0}px) 0px, left top`;
         I.style.maskPosition = o, I.style.webkitMaskPosition = o;
       }
     }
@@ -20014,8 +20015,9 @@ let QN = class extends $A {
     this.splittedWords.forEach((I, g) => {
       const C = I.mainElement;
       if (C) {
-        const Q = I.height * this.lyricPlayer.getWordFadeWidth(), [E, i] = Xi(
-          Q / (I.width + I.padding * 2)
+        const Q = I.height * this.lyricPlayer.getWordFadeWidth(), D0 = 4, [E, i] = Xi(
+          Q / (I.width + I.padding * 2),
+          D0 * 2 / Math.max(1, I.width + I.padding * 2)
         ), o = `${i * 100}% 100%`;
         this.lyricPlayer.supportMaskImage ? (C.style.maskImage = E, C.style.maskRepeat = "no-repeat", C.style.maskOrigin = "left", C.style.maskSize = o) : (C.style.webkitMaskImage = E, C.style.webkitMaskRepeat = "no-repeat", C.style.webkitMaskOrigin = "left", C.style.webkitMaskSize = o);
         const D = this.splittedWords.slice(0, g).reduce((m, j) => m + j.width, 0) + (this.splittedWords[0] ? Q : 0), c = -(I.width + I.padding * 2 + Q), t = (m) => Math.max(c, Math.min(0, m));
@@ -20025,20 +20027,20 @@ let QN = class extends $A {
         const Y = () => {
           const m = N - e, j = Math.max(0, Math.min(1, s)), M = j - h, O = Math.abs(M / m);
           if (N > c && e < c) {
-            const X = Math.abs(e - c) * O, T = `${t(e)}px 0`, U = {
+            const X = Math.abs(e - c) * O, T = `${t(e) - D0}px 0`, U = {
               offset: h + X,
               maskPosition: T
             };
             a.push(U);
           }
           if (N > 0 && e < 0) {
-            const X = Math.abs(e) * O, T = `${t(N)}px 0`, U = {
+            const X = Math.abs(e) * O, T = `${t(N) - D0}px 0`, U = {
               offset: h + X,
               maskPosition: T
             };
             a.push(U);
           }
-          const G = `${t(N)}px 0`, J = {
+          const G = `${t(N) - D0}px 0`, J = {
             offset: j,
             maskPosition: G
           };
@@ -20076,9 +20078,14 @@ let QN = class extends $A {
   }
   updateMaskAlpha(A) {
     const I = Math.max(0, Math.min(1, (A - 0.97) / 0.03));
+    // BG lines are often rendered at smaller scale values; the original alpha floor (0.2)
+    // can make ultra-thin glyph edges disappear in WebKit. Use a higher floor for BG.
+    const isBG = !!this.lyricLine?.isBG;
+    const brightScale = isBG ? 0.4 : 0.8;
+    const brightBase = isBG ? 0.6 : 0.2;
     this.element.style.setProperty(
       "--bright-mask-alpha",
-      `${I * 0.8 + 0.2}`
+      `${I * brightScale + brightBase}`
     ), this.element.style.setProperty(
       "--dark-mask-alpha",
       `${I * 0.2 + 0.2}`
@@ -20829,11 +20836,12 @@ class FN extends $A {
       const I = A.mainElement;
       if (I) {
         A.width = I.clientWidth, A.height = I.clientHeight;
-        const g = A.height * this.lyricPlayer.getWordFadeWidth(), [C, Q] = Ti(
-          g / A.width
+        const g = A.height * this.lyricPlayer.getWordFadeWidth(), C0 = 4, [C, Q] = Ti(
+          g / A.width,
+          C0 * 2 / Math.max(1, A.width)
         ), E = `${Q * 100}% 100%`;
         this.lyricPlayer.supportMaskImage ? (I.style.maskImage = C, I.style.maskRepeat = "no-repeat", I.style.maskOrigin = "left", I.style.maskSize = E) : (I.style.webkitMaskImage = C, I.style.webkitMaskRepeat = "no-repeat", I.style.webkitMaskOrigin = "left", I.style.webkitMaskSize = E);
-        const i = A.width + g, o = `clamp(${-i}px,calc(${-i}px + (var(--amll-player-time) - ${A.startTime})*${i / Math.abs(A.endTime - A.startTime)}px),0px) 0px, left top`;
+        const i = A.width + g, o = `clamp(${-i - C0}px,calc(${-i - C0}px + (var(--amll-player-time) - ${A.startTime})*${i / Math.abs(A.endTime - A.startTime)}px),${-C0}px) 0px, left top`;
         I.style.maskPosition = o, I.style.webkitMaskPosition = o;
       }
     }
@@ -20846,8 +20854,9 @@ class FN extends $A {
     this.splittedWords.forEach((I, g) => {
       const C = I.mainElement;
       if (C) {
-        const Q = I.height * this.lyricPlayer.getWordFadeWidth(), [E, i] = Ti(
-          Q / (I.width + I.padding * 2)
+        const Q = I.height * this.lyricPlayer.getWordFadeWidth(), D0 = 4, [E, i] = Ti(
+          Q / (I.width + I.padding * 2),
+          D0 * 2 / Math.max(1, I.width + I.padding * 2)
         ), o = `${i * 100}% 100%`;
         this.lyricPlayer.supportMaskImage ? (C.style.maskImage = E, C.style.maskRepeat = "no-repeat", C.style.maskOrigin = "left", C.style.maskSize = o) : (C.style.webkitMaskImage = E, C.style.webkitMaskRepeat = "no-repeat", C.style.webkitMaskOrigin = "left", C.style.webkitMaskSize = o);
         const D = this.splittedWords.slice(0, g).reduce((m, j) => m + j.width, 0) + (this.splittedWords[0] ? Q : 0), c = -(I.width + I.padding * 2 + Q), t = (m) => Math.max(c, Math.min(0, m));
@@ -20857,20 +20866,20 @@ class FN extends $A {
         const Y = () => {
           const m = N - e, j = Math.max(0, Math.min(1, s)), M = j - h, O = Math.abs(M / m);
           if (N > c && e < c) {
-            const X = Math.abs(e - c) * O, T = `${t(e)}px 0`, U = {
+            const X = Math.abs(e - c) * O, T = `${t(e) - D0}px 0`, U = {
               offset: h + X,
               maskPosition: T
             };
             a.push(U);
           }
           if (N > 0 && e < 0) {
-            const X = Math.abs(e) * O, T = `${t(N)}px 0`, U = {
+            const X = Math.abs(e) * O, T = `${t(N) - D0}px 0`, U = {
               offset: h + X,
               maskPosition: T
             };
             a.push(U);
           }
-          const G = `${t(N)}px 0`, J = {
+          const G = `${t(N) - D0}px 0`, J = {
             offset: j,
             maskPosition: G
           };

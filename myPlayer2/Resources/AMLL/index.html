@@ -26,7 +26,7 @@
         }
         .amll-lyric-player.dom,
         .amll-lyric-player.dom-slim {
-            line-height: 1.5em;
+            line-height: 1.44em;
         }
         ._lyricLine_m23bz_6,
         ._lyricLine_1jop6_6 {
@@ -36,14 +36,15 @@
         ._lyricMainLine_1jop6_80 {
             font-family: var(--amll-lp-main-font-family, -apple-system, "Helvetica Neue", sans-serif);
             font-weight: var(--amll-lp-main-font-weight, 600);
-            line-height: 1.5em;
-            padding-bottom: 1.2em;
+            line-height: 1.42em;
+            padding-bottom: 1.05em;
         }
         ._lyricSubLine_m23bz_145,
         ._lyricSubLine_1jop6_90 {
             font-family: var(--amll-lp-translation-font-family, -apple-system, "Helvetica Neue", sans-serif);
             font-weight: var(--amll-lp-translation-font-weight, 400);
             font-size: var(--amll-lp-translation-font-size, 0.75em);
+            line-height: 1.42em;
         }
 
         /* Background (small) lyric lines:
@@ -89,6 +90,7 @@
         // Initial config defaults
         lyricPlayer.setEnableSpring(true);
         lyricPlayer.setEnableBlur(true);
+        lyricPlayer.setWordFadeWidth(0.7);
         // Align active line toward top (instead of center)
         lyricPlayer.setAlignAnchor("top");
         lyricPlayer.setAlignPosition(0.2);
@@ -321,6 +323,28 @@
 
         let lastKnownTimeMs = 0;
         let bgActiveIndexes = new Set();
+        const getPairedMainLineIndex = (index) => {
+            if (!Array.isArray(lyricPlayer.processedLines)) return -1;
+            if (index > 0 && lyricPlayer.processedLines[index - 1] && !lyricPlayer.processedLines[index - 1].isBG) {
+                return index - 1;
+            }
+            if (
+                index + 1 < lyricPlayer.processedLines.length
+                && lyricPlayer.processedLines[index + 1]
+                && !lyricPlayer.processedLines[index + 1].isBG
+            ) {
+                return index + 1;
+            }
+            return -1;
+        };
+        const isMainLineStillVisible = (index) => {
+            if (index < 0) return false;
+            if (lyricPlayer.hotLines?.has(index) || lyricPlayer.bufferedLines?.has(index)) {
+                return true;
+            }
+            const mainObj = lyricPlayer.currentLyricLineObjects?.[index];
+            return mainObj?.isEnabled === true;
+        };
         const enforceBGTimingWindows = (timeMs, force = false) => {
             if (!Array.isArray(lyricPlayer.currentLyricLineObjects)) {
                 bgActiveIndexes = new Set();
@@ -337,11 +361,15 @@
                 const line = lineObj?.getLine?.() ?? lineObj?.lyricLine;
                 if (!line?.isBG) return;
 
-                const shouldBeActive =
+                const pairedMainIndex = getPairedMainLineIndex(idx);
+                const mainStillVisible = isMainLineStillVisible(pairedMainIndex);
+                const inOwnTimeWindow =
                     Number.isFinite(line.startTime)
                     && Number.isFinite(line.endTime)
                     && timeMs >= line.startTime
                     && timeMs < line.endTime;
+                const started = Number.isFinite(line.startTime) && timeMs >= line.startTime;
+                const shouldBeActive = inOwnTimeWindow || (started && mainStillVisible);
                 const wasActive = bgActiveIndexes.has(idx);
 
                 if (shouldBeActive) {

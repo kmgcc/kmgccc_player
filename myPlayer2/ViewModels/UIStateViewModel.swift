@@ -2,7 +2,7 @@
 //  UIStateViewModel.swift
 //  myPlayer2
 //
-//  TrueMusic - UI State ViewModel
+//  kmgccc_player - UI State ViewModel
 //  Manages UI layout state (navigation, content mode).
 //  Sidebar can be collapsed and restored.
 //

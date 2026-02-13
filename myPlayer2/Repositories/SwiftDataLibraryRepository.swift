@@ -2,7 +2,7 @@
 //  SwiftDataLibraryRepository.swift
 //  myPlayer2
 //
-//  TrueMusic - SwiftData Library Repository
+//  kmgccc_player - SwiftData Library Repository
 //  Implements LibraryRepositoryProtocol using SwiftData.
 //
 

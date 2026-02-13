@@ -2,7 +2,7 @@
 //  AMLLWebView.swift
 //  myPlayer2
 //
-//  TrueMusic - AMLL WKWebView Wrapper
+//  kmgccc_player - AMLL WKWebView Wrapper
 //  NSViewRepresentable wrapper that returns the singleton WebView from LyricsWebViewStore.
 //  The WebView is NEVER recreated - only attached/detached.
 //

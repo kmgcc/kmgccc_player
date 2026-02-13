@@ -2,7 +2,7 @@
 //  LDDCServerManager.swift
 //  myPlayer2
 //
-//  TrueMusic - LDDC Server Process Manager
+//  kmgccc_player - LDDC Server Process Manager
 //  Manages the lifecycle of the local LDDC HTTP server.
 //
 

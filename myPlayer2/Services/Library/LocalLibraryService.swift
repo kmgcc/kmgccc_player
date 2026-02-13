@@ -2,8 +2,8 @@
 //  LocalLibraryService.swift
 //  myPlayer2
 //
-//  TrueMusic - Local Library Service
-//  Stores audio + sidecar metadata under ~/Music/TrueMusic Library
+//  kmgccc_player - Local Library Service
+//  Stores audio + sidecar metadata under ~/Music/kmgccc_player Library
 //
 
 import AppKit

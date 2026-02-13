@@ -2,7 +2,7 @@
 //  LedMeterView.swift
 //  myPlayer2
 //
-//  TrueMusic - 11-Dot LED Level Meter with Liquid Glass
+//  kmgccc_player - 11-Dot LED Level Meter with Liquid Glass
 //  Center dot (6th) lights first, then symmetrically outward.
 //  Each dot has configurable brightness levels (default 5).
 //  Liquid Glass material for unlit state and outline.

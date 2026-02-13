@@ -2,7 +2,7 @@
 //  ContentView.swift
 //  myPlayer2
 //
-//  TrueMusic - Legacy Content View
+//  kmgccc_player - Legacy Content View
 //  This file is kept for compatibility but AppRootView is the main entry.
 //
 

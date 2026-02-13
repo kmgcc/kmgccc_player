@@ -2,7 +2,7 @@
 //  NowPlayingService.swift
 //  myPlayer2
 //
-//  TrueMusic - Media keys + Control Center Now Playing
+//  kmgccc_player - Media keys + Control Center Now Playing
 //
 
 import AppKit

@@ -2,7 +2,7 @@
 //  AudioVisualizationService.swift
 //  myPlayer2
 //
-//  TrueMusic - 9-Band Audio Visualizer Service
+//  kmgccc_player - 9-Band Audio Visualizer Service
 //  Provides smoothed, cubic-eased 9-band spectrum for skins.
 //  Subscribes to AudioAnalysisHub for FFT data.
 //

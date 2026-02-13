@@ -44,7 +44,7 @@
 
 ## 注意事项
 
-- app的数据文件存放在`/Users/username/Music/TrueMusic Library`中, 删除、替换 app 不会删除数据文件
+- app的数据文件存放在`/Users/username/Music/kmgccc_player Library`中, 删除、替换 app 不会删除数据文件
 - 演示视频：http://xhslink.com/o/91KoiKaIKKM 
 
 ### beta已知问题

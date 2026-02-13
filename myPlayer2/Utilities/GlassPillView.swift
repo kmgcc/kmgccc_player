@@ -2,7 +2,7 @@
 //  GlassPillView.swift
 //  myPlayer2
 //
-//  TrueMusic - True Liquid Glass Helpers
+//  kmgccc_player - True Liquid Glass Helpers
 //  Uses macOS 26 native SwiftUI .glassEffect() modifier.
 //
 

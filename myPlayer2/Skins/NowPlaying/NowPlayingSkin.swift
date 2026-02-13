@@ -2,7 +2,7 @@
 //  NowPlayingSkin.swift
 //  myPlayer2
 //
-//  TrueMusic - Now Playing Skin Protocol
+//  kmgccc_player - Now Playing Skin Protocol
 //
 
 import SwiftUI

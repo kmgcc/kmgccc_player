@@ -2,7 +2,7 @@
 //  NowPlayingHostView.swift
 //  myPlayer2
 //
-//  TrueMusic - Now Playing Host View
+//  kmgccc_player - Now Playing Host View
 //  Hosts skins (background + artwork/overlay) while keeping lyrics outside skins.
 //
 

@@ -2,7 +2,7 @@
 //  Constants.swift
 //  myPlayer2
 //
-//  TrueMusic - App Constants
+//  kmgccc_player - App Constants
 //
 
 import Foundation

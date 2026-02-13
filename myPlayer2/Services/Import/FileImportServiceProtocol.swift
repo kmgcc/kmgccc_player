@@ -2,7 +2,7 @@
 //  FileImportServiceProtocol.swift
 //  myPlayer2
 //
-//  TrueMusic - File Import Service Protocol
+//  kmgccc_player - File Import Service Protocol
 //
 //  Design Decision: Import is ALWAYS per-playlist.
 //  There is no global import action.

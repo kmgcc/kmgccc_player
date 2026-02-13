@@ -2,13 +2,13 @@
 //  ColorTokens.swift
 //  myPlayer2
 //
-//  TrueMusic - Color Design Tokens
+//  kmgccc_player - Color Design Tokens
 //  Low-saturation LED colors and Glass styling.
 //
 
 import SwiftUI
 
-/// Color design tokens for TrueMusic.
+/// Color design tokens for kmgccc_player.
 enum ColorTokens {
 
     // MARK: - LED Colors (Low Saturation, 6 Brightness Levels)

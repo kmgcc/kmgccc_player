@@ -2,7 +2,7 @@
 //  AudioLevelMeterProtocol.swift
 //  myPlayer2
 //
-//  TrueMusic - Audio Level Meter Protocol
+//  kmgccc_player - Audio Level Meter Protocol
 //
 
 import Foundation

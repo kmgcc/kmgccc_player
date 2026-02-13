@@ -2,7 +2,7 @@
 //  SkinRegistry.swift
 //  myPlayer2
 //
-//  TrueMusic - Now Playing Skin Registry
+//  kmgccc_player - Now Playing Skin Registry
 //
 
 import Foundation

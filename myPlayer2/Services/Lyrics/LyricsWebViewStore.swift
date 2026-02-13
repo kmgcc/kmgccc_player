@@ -2,7 +2,7 @@
 //  LyricsWebViewStore.swift
 //  myPlayer2
 //
-//  TrueMusic - Singleton WebView Owner for AMLL Lyrics
+//  kmgccc_player - Singleton WebView Owner for AMLL Lyrics
 //  Ensures WKWebView instance is NEVER recreated by SwiftUI.
 //
 

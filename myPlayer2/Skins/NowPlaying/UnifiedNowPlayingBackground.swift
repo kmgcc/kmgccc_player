@@ -2,7 +2,7 @@
 //  UnifiedNowPlayingBackground.swift
 //  myPlayer2
 //
-//  TrueMusic - Shared Now Playing Background
+//  kmgccc_player - Shared Now Playing Background
 //  Static mesh gradient using artwork-derived colors.
 //
 

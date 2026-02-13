@@ -2,7 +2,7 @@
 //  AppSettings.swift
 //  myPlayer2
 //
-//  TrueMusic - App Settings Model
+//  kmgccc_player - App Settings Model
 //  Uses AppStorage for persistent user preferences.
 //
 

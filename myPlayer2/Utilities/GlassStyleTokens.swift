@@ -2,7 +2,7 @@
 //  GlassStyleTokens.swift
 //  myPlayer2
 //
-//  TrueMusic - Centralized glass/material style tokens
+//  kmgccc_player - Centralized glass/material style tokens
 //  Following Apple's Liquid Glass design language
 //
 

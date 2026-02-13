@@ -2,15 +2,15 @@
 //  LocalLibraryPaths.swift
 //  myPlayer2
 //
-//  TrueMusic - Local Library Paths
-//  Fixed library root under ~/Music/TrueMusic Library
+//  kmgccc_player - Local Library Paths
+//  Fixed library root under ~/Music/kmgccc_player Library
 //
 
 import Foundation
 
 enum LocalLibraryPaths {
 
-    static let libraryRootName = "TrueMusic Library"
+    static let libraryRootName = "kmgccc_player Library"
 
     static var libraryRootURL: URL {
         let base = FileManager.default.urls(for: .musicDirectory, in: .userDomainMask).first
@@ -50,4 +50,3 @@ enum LocalLibraryPaths {
         libraryRootURL.appendingPathComponent(relativePath)
     }
 }
-

@@ -2,7 +2,7 @@
 //  LibraryRepositoryProtocol.swift
 //  myPlayer2
 //
-//  TrueMusic - Library Repository Protocol
+//  kmgccc_player - Library Repository Protocol
 //  Defines CRUD operations for tracks and playlists.
 //
 
