@@ -97,18 +97,12 @@ struct MiniPlayerView: View {
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 8)
-        .frame(height: Constants.Layout.miniPlayerHeight)
-        .glassEffect(.clear, in: .capsule)
-        .overlay(
-            Capsule()
-                .fill(miniPlayerTintColor)
-                .allowsHitTesting(false)
-        )
-        .shadow(
-            color: colorScheme == .light ? Color.black.opacity(0.08) : Color.clear,
-            radius: 6,
-            x: 0,
-            y: 2
+        .frame(height: GlassStyleTokens.miniPlayerHeight)
+        .liquidGlassPill(
+            colorScheme: colorScheme,
+            accentColor: themeStore.usesFallbackThemeColor ? nil : themeStore.accentColor,
+            prominence: .prominent,
+            isFloating: true
         )
         .contentShape(Capsule())
         .onTapGesture {}
@@ -393,14 +387,6 @@ struct MiniPlayerView: View {
 
     private var controlDisabledColor: Color {
         Color.secondary.opacity(0.5)
-    }
-
-    private var miniPlayerTintColor: Color {
-        guard !themeStore.usesFallbackThemeColor else { return .clear }
-        if colorScheme == .dark {
-            return themeStore.accentColor.opacity(0.045)
-        }
-        return themeStore.accentColor.opacity(0.03)
     }
 }
 

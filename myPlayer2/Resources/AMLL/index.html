@@ -323,8 +323,8 @@
 
 	        let lastKnownTimeMs = 0;
 	        let bgActiveIndexes = new Set();
-	        // Main-line indexes that were force-exited by the near-gap early-switch logic.
-	        // Used to keep BG lines in sync (BG should hide when its paired main hides).
+	        // Main-line indexes that were force-hidden by runtime logic.
+	        // Kept for BG visibility sync.
 	        let forcedExitedMainLines = new Set();
         const getPairedMainLineIndex = (index) => {
             if (!Array.isArray(lyricPlayer.processedLines)) return -1;
@@ -438,24 +438,7 @@
         };
 
 	        // Ensure time is integer ms and keep x-bg activation tied to its own begin/end.
-	        // Also implements "near-gap early switch": if next line starts very soon after current ends,
-	        // switch layout focus to next line early (leadInMs), and let current line exit quickly.
 	        const coreSetCurrentTime = lyricPlayer.setCurrentTime.bind(lyricPlayer);
-	        const nearSwitchEndOverrides = new Map(); // mainIndex -> { originalEnd: number, restoreAt: number }
-	        const nearSwitchFastExited = new Set(); // indexes (main and bg) we've already fast-disabled
-	        const getOriginalMainEndTime = (index, line) => {
-	            const info = nearSwitchEndOverrides.get(index);
-	            if (info && Number.isFinite(info.originalEnd)) return info.originalEnd;
-	            return Number.isFinite(line?.endTime) ? line.endTime : null;
-	        };
-	        const findNextMainIndex = (fromIndex) => {
-	            if (!Array.isArray(lyricPlayer.processedLines)) return -1;
-	            for (let i = fromIndex + 1; i < lyricPlayer.processedLines.length; i++) {
-	                const line = lyricPlayer.processedLines[i];
-	                if (line && !line.isBG) return i;
-	            }
-	            return -1;
-	        };
 	        const findPairedBgIndex = (mainIndex) => {
 	            if (!Array.isArray(lyricPlayer.processedLines)) return -1;
 	            const bgIndex = mainIndex + 1;
@@ -464,235 +447,196 @@
 	            }
 	            return -1;
 	        };
-	        const restoreExpiredNearSwitchOverrides = (timeMs, forceClear = false) => {
-	            if (forceClear) {
-	                for (const [idx, info] of nearSwitchEndOverrides.entries()) {
-	                    const line = lyricPlayer.processedLines?.[idx];
-	                    if (line && Number.isFinite(info.originalEnd)) {
-	                        line.endTime = info.originalEnd;
-	                    }
-	                }
-	                nearSwitchEndOverrides.clear();
-	                nearSwitchFastExited.clear();
-	                forcedExitedMainLines = new Set();
-	                return;
-	            }
-	            for (const [idx, info] of nearSwitchEndOverrides.entries()) {
-	                if (!info || !Number.isFinite(info.restoreAt)) continue;
-	                if (timeMs < info.restoreAt) continue;
-	                const line = lyricPlayer.processedLines?.[idx];
-	                if (line && Number.isFinite(info.originalEnd)) {
-	                    line.endTime = info.originalEnd;
-	                }
-	                nearSwitchEndOverrides.delete(idx);
-	            }
-	        };
-	        const fastDisableLineObject = (index) => {
-	            const obj = lyricPlayer.currentLyricLineObjects?.[index];
-	            if (!obj || typeof obj.disable !== "function") return;
-	            try {
-	                obj.disable();
-	                // Speed up the reverse "float" so the line can exit quickly.
-	                const words = obj.splittedWords;
-	                if (!Array.isArray(words)) return;
-	                for (const w of words) {
-	                    const anims = w?.elementAnimations;
-	                    if (!Array.isArray(anims)) continue;
-	                    for (const anim of anims) {
-	                        const id = anim?.id || "";
-	                        if (!id) continue;
-	                        if (id === "float-word" || id.includes("emphasize-word-float")) {
-	                            anim.playbackRate = -6;
-	                            anim.play();
-	                        }
-	                    }
-	                }
-	            } catch (e) {
-	                // ignore
-	            }
-	        };
-	        let nearSwitchGapMs = 70;
-	        let lastNearSwitchMainIndex = -1;
-	        const toMainIndex = (idx) => {
-	            const lines = lyricPlayer.processedLines;
-	            if (!Array.isArray(lines)) return -1;
-	            if (!Number.isInteger(idx) || idx < 0 || idx >= lines.length) return -1;
-	            const line = lines[idx];
-	            if (line && !line.isBG) return idx;
-	            return getPairedMainLineIndex(idx);
-	        };
-	        const pickCurrentMainIndex = () => {
-	            const lines = lyricPlayer.processedLines;
-	            if (!Array.isArray(lines) || lines.length === 0) return -1;
-	
-	            // Prefer the latest hot main line (handles overlaps).
-	            let hotMain = -1;
-	            for (const idx of (lyricPlayer.hotLines ?? [])) {
-	                const line = lines[idx];
-	                if (!line || line.isBG) continue;
-	                if (idx > hotMain) hotMain = idx;
-	            }
-	            if (hotMain !== -1) {
-	                lastNearSwitchMainIndex = hotMain;
-	                return hotMain;
-	            }
-	
-	            // Fall back to previous main index if still valid.
-	            if (
-	                Number.isInteger(lastNearSwitchMainIndex)
-	                && lastNearSwitchMainIndex >= 0
-	                && lastNearSwitchMainIndex < lines.length
-	                && lines[lastNearSwitchMainIndex]
-	                && !lines[lastNearSwitchMainIndex].isBG
-	            ) {
-	                return lastNearSwitchMainIndex;
-	            }
-	
-	            // Last fall back: derive from scrollToIndex (may point to BG or main).
-	            const guessed = toMainIndex(lyricPlayer.scrollToIndex);
-	            if (guessed !== -1) {
-	                lastNearSwitchMainIndex = guessed;
-	                return guessed;
-	            }
-	            return -1;
-	        };
-	        const findNearSwitchCandidate = (timeMs) => {
-	            const lines = lyricPlayer.processedLines;
-	            if (!Array.isArray(lines) || lines.length === 0) return null;
-	            if (!Number.isFinite(nearSwitchGapMs) || nearSwitchGapMs <= 0) return null;
-	            if (!Number.isFinite(leadInMs) || leadInMs <= 0) return null;
-
-	            const currentMain = pickCurrentMainIndex();
-	            if (currentMain === -1) return null;
-	            const nextMain = findNextMainIndex(currentMain);
-	            if (nextMain === -1) return null;
-	
-	            const currentLine = lines[currentMain];
-	            const nextLine = lines[nextMain];
-	            const currentEnd = getOriginalMainEndTime(currentMain, currentLine);
-	            const nextStart = nextLine?.startTime;
-	            if (!Number.isFinite(currentEnd) || !Number.isFinite(nextStart)) return null;
-	
-	            const gap = nextStart - currentEnd;
-	            if (!(gap >= 0 && gap < nearSwitchGapMs)) return null;
-	
-	            const currentStart = Number.isFinite(currentLine?.startTime) ? currentLine.startTime : currentEnd;
-	            const switchAt = Math.max(currentStart, currentEnd - leadInMs);
-	            // No need to run near-switch far ahead of its active window.
-	            if (timeMs + 8 < switchAt) return null;
-	            return {
-	                currentIndex: currentMain,
-	                nextIndex: nextMain,
-	                currentEnd,
-	                nextStart,
-	                gap,
-	                switchAt,
-	            };
-	        };
-	        const ensureNearSwitchCutoff = (candidate, cutoffMs) => {
-	            if (!candidate) return;
-	            const idx = candidate.currentIndex;
-	            const line = lyricPlayer.processedLines?.[idx];
-	            if (!line || line.isBG) return;
-	            const originalEnd = getOriginalMainEndTime(idx, line);
-	            const lineStart = Number.isFinite(line.startTime) ? line.startTime : 0;
-	            const targetEnd = Math.max(lineStart, Math.min(originalEnd ?? line.endTime, cutoffMs));
-	            if (!Number.isFinite(targetEnd) || targetEnd <= 0) return;
-	            if (!nearSwitchEndOverrides.has(idx)) {
-	                nearSwitchEndOverrides.set(idx, { originalEnd: originalEnd ?? line.endTime, restoreAt: candidate.nextStart });
-	            }
-	            if (!Number.isFinite(line.endTime) || line.endTime > targetEnd) {
-	                line.endTime = targetEnd;
-	            }
-	        };
-	        const enforceNearSwitch = (timeMs, candidate) => {
-	            if (!candidate) return false;
-	            if (!(timeMs >= candidate.switchAt && timeMs < candidate.nextStart)) return false;
-	            if (nearSwitchFastExited.has(candidate.currentIndex)) return false;
-	
-	            let layoutChanged = false;
-	            const ensureBuffered = (idx) => {
-	                if (idx === -1) return;
-	                if (!lyricPlayer.bufferedLines?.has(idx)) {
-	                    lyricPlayer.bufferedLines?.add(idx);
-	                    layoutChanged = true;
-	                }
-	            };
-	            const removeHotBuffered = (idx) => {
-	                if (idx === -1) return;
-	                if (lyricPlayer.hotLines?.has(idx)) {
-	                    lyricPlayer.hotLines.delete(idx);
-	                    layoutChanged = true;
-	                }
-	                if (lyricPlayer.bufferedLines?.has(idx)) {
-	                    lyricPlayer.bufferedLines.delete(idx);
-	                    layoutChanged = true;
-	                }
-	            };
-	
-	            const curBg = findPairedBgIndex(candidate.currentIndex);
-	            const nextBg = findPairedBgIndex(candidate.nextIndex);
-
-	            // One-shot switch: prevent core from re-activating current line in following ticks.
-	            ensureNearSwitchCutoff(candidate, timeMs);
-	            forcedExitedMainLines.add(candidate.currentIndex);
-	            nearSwitchFastExited.add(candidate.currentIndex);
-	            removeHotBuffered(candidate.currentIndex);
-	            removeHotBuffered(curBg);
-
-	            // Keep target line around so layout can settle on next line immediately.
-	            ensureBuffered(candidate.nextIndex);
-	            ensureBuffered(nextBg);
-	
-	            // Focus the layout on the next line.
-	            if (lyricPlayer.scrollToIndex !== candidate.nextIndex) {
-	                lyricPlayer.scrollToIndex = candidate.nextIndex;
-	                layoutChanged = true;
-	            }
-	            lastNearSwitchMainIndex = candidate.nextIndex;
-	
-	            // Force-exit the current main line (and its BG) immediately.
-	            fastDisableLineObject(candidate.currentIndex);
-	            if (curBg !== -1) {
-	                nearSwitchFastExited.add(curBg);
-	                fastDisableLineObject(curBg);
-	            }
-	            return layoutChanged;
-	        };
 	        const originalSetCurrentTime = (ms, force = false) => {
 	            const timeMs = Math.max(0, Math.floor(ms));
-	            const prevTimeMs = lastKnownTimeMs;
 	            const delta = Math.abs(timeMs - lastKnownTimeMs);
-	            const timeWentBack = timeMs + 50 < prevTimeMs;
-	            const isSeekLike = force || delta > 800 || timeWentBack;
-	            let layoutDirty = false;
-	            if (isSeekLike) {
-	                lastNearSwitchMainIndex = -1;
-	            }
-	
 	            lastKnownTimeMs = timeMs;
-	
-	            // Clear any temporary state on seeks / big jumps / backwards time.
-	            restoreExpiredNearSwitchOverrides(timeMs, isSeekLike);
-	
-	            const candidate = findNearSwitchCandidate(timeMs);
-	
-	            coreSetCurrentTime(timeMs, isSeekLike);
-	
-	            // Apply near-gap early switch behavior (layout + fast exit).
-	            if (enforceNearSwitch(timeMs, candidate)) layoutDirty = true;
-	
-	            // BG enforcement should run after near-switch so forcedExitedMainLines takes effect.
-	            if (enforceBGTimingWindows(timeMs, isSeekLike || delta > 500)) layoutDirty = true;
-	
+	            forcedExitedMainLines = new Set();
+	            coreSetCurrentTime(timeMs, force);
+	            const layoutDirty = enforceBGTimingWindows(timeMs, force || delta > 500);
+	            applyNearSwitchRetreatVisual(timeMs);
 	            if (layoutDirty && typeof lyricPlayer.calcLayout === "function") {
 	                lyricPlayer.calcLayout();
 	            }
 	        };
 	        lyricPlayer.setCurrentTime = originalSetCurrentTime;
 	        let leadInMs = 300;
+	        let generalLeadInMs = 0;
+	        let nearSwitchGapMs = 70;
+	        let nearSwitchWordLeadInRatio = 0.6;
 	        let timeOffsetMs = 0;
 	        let lastTTML = "";
+	        let nearSwitchRetreatMeta = new Map(); // lineIndex -> { retreatStart, retreatEnd, maskFrom, maskTo, actualRetreatStart?, actualRetreatEnd? }
+	        const hasTailHighlightOverflow = (line, newEnd) => {
+	            if (!line || !Array.isArray(line.words) || !Number.isFinite(newEnd)) return false;
+	            return line.words.some((word) => Number.isFinite(word?.endTime) && word.endTime > newEnd);
+	        };
+	        const applyNearSwitchRetreatVisual = (timeMs) => {
+	            if (!Array.isArray(lyricPlayer.currentLyricLineObjects) || nearSwitchRetreatMeta.size === 0) {
+	                return;
+	            }
+	            for (const [idx, meta] of nearSwitchRetreatMeta.entries()) {
+	                const obj = lyricPlayer.currentLyricLineObjects[idx];
+	                const mainElement = obj?.element?.children?.[0];
+	                if (!obj || !mainElement || !meta) continue;
+	
+	                const retreatStart = Number.isFinite(meta.retreatStart) ? meta.retreatStart : null;
+	                const retreatEnd = Number.isFinite(meta.retreatEnd) ? meta.retreatEnd : null;
+	                const maskFrom = Number.isFinite(meta.maskFrom) ? meta.maskFrom : null;
+	                const maskTo = Number.isFinite(meta.maskTo) ? meta.maskTo : null;
+	                if (
+	                    retreatStart === null || retreatEnd === null || retreatEnd <= retreatStart
+	                    || maskFrom === null || maskTo === null || maskTo <= maskFrom
+	                ) {
+	                    mainElement.style.opacity = "";
+	                    nearSwitchRetreatMeta.delete(idx);
+	                    continue;
+	                }
+	
+	                // Strict rule: do not compress while line is still in normal (enabled) display state.
+	                if (obj.isEnabled === true) {
+	                    mainElement.style.opacity = "";
+	                    continue;
+	                }
+
+	                if (timeMs < retreatStart) {
+	                    mainElement.style.opacity = "";
+	                    continue;
+	                }
+
+	                const retreatDuration = Math.max(1, retreatEnd - retreatStart);
+	                if (!Number.isFinite(meta.actualRetreatStart) || !Number.isFinite(meta.actualRetreatEnd)) {
+	                    meta.actualRetreatStart = timeMs;
+	                    meta.actualRetreatEnd = timeMs + retreatDuration;
+	                }
+
+	                const actualRetreatStart = meta.actualRetreatStart;
+	                const actualRetreatEnd = meta.actualRetreatEnd;
+
+	                if (timeMs >= actualRetreatEnd) {
+	                    if (typeof obj?.setMaskAnimationState === "function") {
+	                        obj.setMaskAnimationState(maskTo);
+	                    }
+	                    mainElement.style.opacity = "";
+	                    if (timeMs > actualRetreatEnd + 150) {
+	                        nearSwitchRetreatMeta.delete(idx);
+	                    }
+	                    continue;
+	                }
+
+	                const progress = Math.max(0, Math.min(1, (timeMs - actualRetreatStart) / (actualRetreatEnd - actualRetreatStart)));
+	                const virtualMaskTime = maskFrom + (maskTo - maskFrom) * progress;
+	                if (typeof obj?.setMaskAnimationState === "function") {
+	                    obj.setMaskAnimationState(virtualMaskTime);
+	                }
+	                const fade = 1 - progress * 0.45;
+	                mainElement.style.opacity = `${Math.max(0.35, Math.min(1, fade))}`;
+	            }
+	        };
+	        const shiftLineStartEarlier = (line, shift, wordShift = shift) => {
+	            if (!line || !Number.isFinite(shift) || shift <= 0) return;
+	            const oldStart = Number.isFinite(line.startTime) ? line.startTime : 0;
+	            const newStart = Math.max(0, oldStart - shift);
+	            line.startTime = newStart;
+	            if (!Array.isArray(line.words) || !Number.isFinite(wordShift) || wordShift <= 0) return;
+	            for (const word of line.words) {
+	                if (Number.isFinite(word.startTime)) {
+	                    word.startTime = Math.max(0, word.startTime - wordShift);
+	                }
+	                if (Number.isFinite(word.endTime)) {
+	                    word.endTime = Math.max(
+	                        Number.isFinite(word.startTime) ? word.startTime : 0,
+	                        word.endTime - wordShift
+	                    );
+	                }
+	            }
+	        };
+	        const applyNearSwitchLeadIn = (lines) => {
+	            if (!Array.isArray(lines) || lines.length === 0) return;
+	            const hasNearLeadIn = Number.isFinite(leadInMs) && leadInMs > 0 && Number.isFinite(nearSwitchGapMs) && nearSwitchGapMs > 0;
+	            const hasGeneralLeadIn = Number.isFinite(generalLeadInMs) && generalLeadInMs > 0;
+	            if (!hasNearLeadIn && !hasGeneralLeadIn) return;
+	
+	            const mainIndexes = [];
+	            for (let i = 0; i < lines.length; i++) {
+	                const line = lines[i];
+	                if (line && !line.isBG) mainIndexes.push(i);
+	            }
+	            if (mainIndexes.length < 2) return;
+	
+	            const startShiftByIndex = new Map();
+	            const startWordShiftByIndex = new Map();
+	            const endShiftByIndex = new Map();
+	            nearSwitchRetreatMeta = new Map();
+	            const getPairedBg = (mainIdx) => {
+	                const bgIdx = mainIdx + 1;
+	                return lines[bgIdx]?.isBG ? bgIdx : -1;
+	            };
+	
+	            for (let i = 0; i < mainIndexes.length - 1; i++) {
+	                const currentIndex = mainIndexes[i];
+	                const nextIndex = mainIndexes[i + 1];
+	                const currentLine = lines[currentIndex];
+	                const nextLine = lines[nextIndex];
+	                if (!currentLine || !nextLine) continue;
+	
+	                const currentStart = Number.isFinite(currentLine.startTime) ? currentLine.startTime : 0;
+	                const currentEnd = Number.isFinite(currentLine.endTime) ? currentLine.endTime : currentStart;
+	                const nextStart = Number.isFinite(nextLine.startTime) ? nextLine.startTime : currentEnd;
+	                const currentDuration = Math.max(0, currentEnd - currentStart);
+	                const nextHeadroom = Math.max(0, nextStart);
+	                const budget = Math.min(currentDuration, nextHeadroom);
+	                if (!(budget > 0)) continue;
+	                const gap = nextStart - currentEnd;
+	                const baseShift = hasGeneralLeadIn ? Math.min(generalLeadInMs, budget) : 0;
+	                const nearEligible = hasNearLeadIn && gap >= 0 && gap < nearSwitchGapMs;
+	                const nearExtra = nearEligible ? Math.min(leadInMs, Math.max(0, budget - baseShift)) : 0;
+	                const shift = baseShift + nearExtra;
+	                if (!(shift > 0)) continue;
+	
+	                endShiftByIndex.set(currentIndex, Math.max(endShiftByIndex.get(currentIndex) ?? 0, shift));
+	                startShiftByIndex.set(nextIndex, Math.max(startShiftByIndex.get(nextIndex) ?? 0, shift));
+	                const mainWordShift = Math.max(0, Math.min(shift, shift * nearSwitchWordLeadInRatio));
+	                startWordShiftByIndex.set(nextIndex, Math.max(startWordShiftByIndex.get(nextIndex) ?? 0, mainWordShift));
+	                const curBgIndex = currentIndex + 1;
+	                if (lines[curBgIndex]?.isBG) {
+	                    endShiftByIndex.set(curBgIndex, Math.max(endShiftByIndex.get(curBgIndex) ?? 0, shift));
+	                }
+	                const nextBgIndex = getPairedBg(nextIndex);
+	                if (nextBgIndex !== -1) {
+	                    // BG under an early-switched main line must receive the same lead-in.
+	                    startShiftByIndex.set(nextBgIndex, Math.max(startShiftByIndex.get(nextBgIndex) ?? 0, shift));
+	                    startWordShiftByIndex.set(nextBgIndex, Math.max(startWordShiftByIndex.get(nextBgIndex) ?? 0, mainWordShift));
+	                }
+	            }
+
+	            for (const [idx, shift] of startShiftByIndex.entries()) {
+	                const line = lines[idx];
+	                if (!line) continue;
+	                const wordShift = Math.max(0, Math.min(shift, startWordShiftByIndex.get(idx) ?? shift));
+	                shiftLineStartEarlier(line, shift, wordShift);
+	            }
+	
+	            for (const [idx, shift] of endShiftByIndex.entries()) {
+	                const line = lines[idx];
+	                if (!line) continue;
+	                const oldEnd = Number.isFinite(line.endTime) ? line.endTime : line.startTime;
+	                const lineStart = Number.isFinite(line.startTime) ? line.startTime : 0;
+	                const newEnd = Math.max(lineStart + 1, oldEnd - shift);
+	                const needsRetreatCompression = hasTailHighlightOverflow(line, newEnd);
+	                line.endTime = newEnd;
+	                if (!line.isBG && needsRetreatCompression) {
+	                    const retreatWindow = Math.max(60, Math.min(220, oldEnd - newEnd));
+	                    nearSwitchRetreatMeta.set(idx, {
+	                        // Strict rule: no compression while line is still in normal display.
+	                        retreatStart: newEnd,
+	                        retreatEnd: newEnd + retreatWindow,
+	                        maskFrom: newEnd,
+	                        maskTo: oldEnd,
+	                    });
+	                }
+	            }
+	        };
 	        const applyTimeOffset = (line) => {
 	            if (!line) return;
 	            const offset = Number.isFinite(timeOffsetMs) ? timeOffsetMs : 0;
@@ -733,14 +677,19 @@
                     lastTTML = "";
                     return;
                 }
-                try {
-	                    lastTTML = ttml;
-	                    const result = parseTTML(ttml);
-	                    const lines = result.lines.map(mapTTMLLyric);
-	                    lines.forEach(applyTimeOffset);
-		                    const timingSnapshot = captureTimingSnapshot(lines);
-		                    // Preserve TTML intent (no mutation of duet/bg/ordering).
-		                    lyricPlayer.setLyricLines(lines);
+	                try {
+		                    lastTTML = ttml;
+		                    const result = parseTTML(ttml);
+		                    const lines = result.lines.map(mapTTMLLyric);
+		                    lines.forEach(applyTimeOffset);
+		                    try {
+		                        applyNearSwitchLeadIn(lines);
+		                    } catch (e) {
+		                        console.error("[LyricsRenderer] applyNearSwitchLeadIn error:", e);
+		                    }
+			                    const timingSnapshot = captureTimingSnapshot(lines);
+			                    // Preserve TTML intent (no mutation of duet/bg/ordering).
+			                    lyricPlayer.setLyricLines(lines);
 	                    const currentMs = Number.isFinite(lastKnownTimeMs)
 	                        ? lastKnownTimeMs
 	                        : (lyricPlayer.getCurrentTime ? lyricPlayer.getCurrentTime() : 0);
@@ -776,62 +725,86 @@
                 // lyricPlayer.setIsPlaying(isPlaying); // If supported by core
             },
             
-            setConfig: (config) => {
-                try {
-                    // Apply config to lyricPlayer
-                    if (config.fontSize) {
-                         lyricPlayer.getElement().style.setProperty("--amll-lp-font-size", `${config.fontSize}px`);
-                    }
-                    if (config.fontWeight) {
-                        lyricPlayer.getElement().style.setProperty("--amll-lp-main-font-weight", `${config.fontWeight}`);
-                    }
-                    if (config.translationFontWeight) {
-                        lyricPlayer.getElement().style.setProperty(
-                            "--amll-lp-translation-font-weight",
-                            `${config.translationFontWeight}`
-                        );
-                    }
-                    if (config.translationFontSize) {
-                        lyricPlayer.getElement().style.setProperty(
-                            "--amll-lp-translation-font-size",
-                            `${config.translationFontSize}px`
-                        );
-                    }
-                    if (config.fontFamilyMain) {
-                        lyricPlayer.getElement().style.setProperty("--amll-lp-main-font-family", config.fontFamilyMain);
-                    }
-                    if (config.fontFamilyTranslation) {
-                        lyricPlayer.getElement().style.setProperty(
-                            "--amll-lp-translation-font-family",
-                            config.fontFamilyTranslation
-                        );
-                    }
-                    if (config.textColor) {
-                        lyricPlayer.getElement().style.setProperty("--amll-lp-color", config.textColor);
-                    }
-                    if (config.shadowColor) {
-                        lyricPlayer.getElement().style.textShadow = `0 1px 2px ${config.shadowColor}`;
-                    }
+	            setConfig: (config) => {
+	                try {
+	                    let needsLyricsReload = false;
+	                    // Apply config to lyricPlayer
+	                    if (config.fontSize) {
+	                        lyricPlayer.getElement().style.setProperty("--amll-lp-font-size", `${config.fontSize}px`);
+	                    }
+	                    if (config.fontWeight) {
+	                        lyricPlayer.getElement().style.setProperty("--amll-lp-main-font-weight", `${config.fontWeight}`);
+	                    }
+	                    if (config.translationFontWeight) {
+	                        lyricPlayer.getElement().style.setProperty(
+	                            "--amll-lp-translation-font-weight",
+	                            `${config.translationFontWeight}`
+	                        );
+	                    }
+	                    if (config.translationFontSize) {
+	                        lyricPlayer.getElement().style.setProperty(
+	                            "--amll-lp-translation-font-size",
+	                            `${config.translationFontSize}px`
+	                        );
+	                    }
+	                    if (config.fontFamilyMain) {
+	                        lyricPlayer.getElement().style.setProperty("--amll-lp-main-font-family", config.fontFamilyMain);
+	                    }
+	                    if (config.fontFamilyTranslation) {
+	                        lyricPlayer.getElement().style.setProperty(
+	                            "--amll-lp-translation-font-family",
+	                            config.fontFamilyTranslation
+	                        );
+	                    }
+	                    if (config.textColor) {
+	                        lyricPlayer.getElement().style.setProperty("--amll-lp-color", config.textColor);
+	                    }
+	                    if (config.shadowColor) {
+	                        lyricPlayer.getElement().style.textShadow = `0 1px 2px ${config.shadowColor}`;
+	                    }
 	                    if (typeof config.leadInMs === "number" && !Number.isNaN(config.leadInMs)) {
-	                        leadInMs = Math.max(0, Math.min(1200, config.leadInMs));
-	                        // Lead-in affects near-gap early-switch behavior; clear any cached state.
-	                        restoreExpiredNearSwitchOverrides(lastKnownTimeMs, true);
+	                        const nextLeadInMs = Math.max(0, Math.min(1200, config.leadInMs));
+	                        if (nextLeadInMs !== leadInMs) {
+	                            leadInMs = nextLeadInMs;
+	                            needsLyricsReload = true;
+	                        }
+	                    }
+	                    if (typeof config.generalLeadInMs === "number" && !Number.isNaN(config.generalLeadInMs)) {
+	                        const nextGeneralLeadInMs = Math.max(0, Math.min(1200, config.generalLeadInMs));
+	                        if (nextGeneralLeadInMs !== generalLeadInMs) {
+	                            generalLeadInMs = nextGeneralLeadInMs;
+	                            needsLyricsReload = true;
+	                        }
 	                    }
 	                    if (typeof config.nearSwitchGapMs === "number" && !Number.isNaN(config.nearSwitchGapMs)) {
-	                        nearSwitchGapMs = Math.max(0, Math.min(300, config.nearSwitchGapMs));
-	                        restoreExpiredNearSwitchOverrides(lastKnownTimeMs, true);
+	                        const nextNearSwitchGapMs = Math.max(0, Math.min(300, config.nearSwitchGapMs));
+	                        if (nextNearSwitchGapMs !== nearSwitchGapMs) {
+	                            nearSwitchGapMs = nextNearSwitchGapMs;
+	                            needsLyricsReload = true;
+	                        }
+	                    }
+	                    if (typeof config.nearSwitchWordLeadInRatio === "number" && !Number.isNaN(config.nearSwitchWordLeadInRatio)) {
+	                        const nextRatio = Math.max(0, Math.min(1, config.nearSwitchWordLeadInRatio));
+	                        if (nextRatio !== nearSwitchWordLeadInRatio) {
+	                            nearSwitchWordLeadInRatio = nextRatio;
+	                            needsLyricsReload = true;
+	                        }
 	                    }
 	                    if (typeof config.timeOffsetMs === "number" && !Number.isNaN(config.timeOffsetMs)) {
-	                        timeOffsetMs = Math.max(-15000, Math.min(15000, config.timeOffsetMs));
-	                        if (lastTTML) {
-	                            window.LyricsRenderer.setLyrics(lastTTML);
-                        }
-                    }
-                    console.log("[LyricsRenderer] Config updated:", config);
-                } catch (e) {
-                    console.error("[LyricsRenderer] Config Error:", e);
-                }
-            }
+	                        const nextTimeOffsetMs = Math.max(-15000, Math.min(15000, config.timeOffsetMs));
+	                        if (nextTimeOffsetMs !== timeOffsetMs) {
+	                            timeOffsetMs = nextTimeOffsetMs;
+	                            needsLyricsReload = true;
+	                        }
+	                    }
+	                    if (needsLyricsReload && lastTTML) {
+	                        window.LyricsRenderer.setLyrics(lastTTML);
+	                    }
+	                    console.log("[LyricsRenderer] Config updated:", config);
+	                } catch (e) {
+	                    console.error("[LyricsRenderer] Config Error:", e);
+	                }
+	            }
         };
 
         // Animation Loop

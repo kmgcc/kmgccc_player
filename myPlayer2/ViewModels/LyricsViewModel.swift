@@ -182,7 +182,9 @@ final class LyricsViewModel {
         let palette = ThemeStore.shared.palette
         let paletteMatchesScheme = palette?.scheme == resolvedScheme
 
-        let offsetMs = max(-15000, min(15000, currentTrack?.lyricsTimeOffsetMs ?? 0))
+        let trackOffsetMs = max(-15000, min(15000, currentTrack?.lyricsTimeOffsetMs ?? 0))
+        let globalAdvanceMs = max(-5000, min(5000, settings.lyricsGlobalAdvanceMs))
+        let combinedOffsetMs = max(-20000, min(20000, trackOffsetMs - globalAdvanceMs))
         let mainFontFamily = cssFontFamily([
             settings.lyricsFontNameEn,
             settings.lyricsFontNameZh,
@@ -197,6 +199,7 @@ final class LyricsViewModel {
             ? settings.lyricsTranslationFontWeightDark : settings.lyricsTranslationFontWeightLight
         let clampedTranslationWeight = max(100, min(900, translationWeight))
         let leadInMs = max(0, settings.lyricsLeadInMs)
+        let generalLeadInMs = max(0, min(1000, settings.lyricsGeneralLeadInMs))
         let nearSwitchGapMs = max(0, min(300, settings.lyricsNearSwitchGapMs))
 
         let config: [String: Any] = [
@@ -207,15 +210,15 @@ final class LyricsViewModel {
             "translationFontSize": settings.lyricsTranslationFontSize,
             "translationFontWeight": clampedTranslationWeight,
             "leadInMs": leadInMs,
+            "generalLeadInMs": generalLeadInMs,
             "nearSwitchGapMs": nearSwitchGapMs,
-            "timeOffsetMs": offsetMs,
+            "timeOffsetMs": combinedOffsetMs,
             "theme": resolvedTheme,
             "lineHeight": 1.5,
             "activeScale": 1.1,
             "textColor": (paletteMatchesScheme ? palette?.text : nil)
                 ?? (isDarkMode ? "rgba(255,255,255,0.98)" : "rgba(0,0,0,0.9)"),
-            "shadowColor": (paletteMatchesScheme ? palette?.shadow : nil)
-                ?? (isDarkMode ? "rgba(0,0,0,0.2)" : "rgba(0,0,0,0.05)"),
+            "shadowColor": "rgba(0,0,0,0)",
         ]
 
         if let data = try? JSONSerialization.data(withJSONObject: config),

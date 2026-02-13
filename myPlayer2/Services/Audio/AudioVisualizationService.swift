@@ -167,11 +167,11 @@ private final class SpectrumProcessor: @unchecked Sendable {
             (0.44, 0.85),  // 1: Bass (60-140Hz)
             (0.35, 0.88),  // 2: Low-Mid (140-260Hz)
             (0.24, 0.80),  // 3: Mid (260-420Hz)
-            (0.08, 0.550),  // 4: Low-Treble (420-650Hz)
-            (0.07, 0.650),  // 5: Mid-Treble (650-1000Hz)
+            (0.08, 0.600),  // 4: Low-Treble (420-650Hz)
+            (0.06, 0.580),  // 5: Mid-Treble (650-1000Hz)
             (0.01, 0.400),  // 6: High-Treble (1000-3500Hz)
             (0.00, 0.280),  // 7: High+ (3500-12000Hz)
-            (0.00, 0.15),  // 8: Air (12000-20000Hz) - Very High Sensitivity
+            (0.00, 0.07),  // 8: Air (12000-20000Hz) - Very High Sensitivity
         ]
 
         // 3. Dynamics (Soft-Knee & Smoothing)
@@ -179,8 +179,8 @@ private final class SpectrumProcessor: @unchecked Sendable {
         static let knee: Float = 0.68 // Knee point for transition to compression
         static let hard: Float = 0.33  // Compression strength for high-level signals
         static let cubicPower: Float = 3.0
-        static let attack: Float = 0.30
-        static let release: Float = 0.48
+        static let attack: Float = 0.35
+        static let release: Float = 0.45
         // 4. Per-band Small Gates
         static let bandGates: [Float] = [
             0.01, 0.01, 0.01, 0.008, 0.008, 0.005, 0.005, 0.003, 0.003,

@@ -133,17 +133,33 @@ public final class AppSettings {
         case dark
     }
 
+    enum LyricsBackgroundMode: String, CaseIterable, Identifiable {
+        case clear
+        case sidebar
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .clear: return "磨砂玻璃"
+            case .sidebar: return "液态玻璃"
+            }
+        }
+    }
+
     private enum AppearanceKeys {
         static let globalArtworkTintEnabled = "globalArtworkTintEnabled"
         static let followSystemAppearance = "followSystemAppearance"
         static let manualAppearance = "manualAppearance"
+        static let lyricsBackgroundMode = "lyricsBackgroundMode"
     }
 
     /// Whether global accent/tint follows current artwork dominant color.
     var globalArtworkTintEnabled: Bool {
         get {
             access(keyPath: \.globalArtworkTintEnabled)
-            if UserDefaults.standard.object(forKey: AppearanceKeys.globalArtworkTintEnabled) == nil {
+            if UserDefaults.standard.object(forKey: AppearanceKeys.globalArtworkTintEnabled) == nil
+            {
                 return true
             }
             return UserDefaults.standard.bool(forKey: AppearanceKeys.globalArtworkTintEnabled)
@@ -181,13 +197,15 @@ public final class AppSettings {
     var manualAppearance: ManualAppearance {
         get {
             access(keyPath: \.manualAppearance)
-            let raw = UserDefaults.standard.string(forKey: AppearanceKeys.manualAppearance)
+            let raw =
+                UserDefaults.standard.string(forKey: AppearanceKeys.manualAppearance)
                 ?? ManualAppearance.dark.rawValue
             return ManualAppearance(rawValue: raw) ?? .dark
         }
         set {
             withMutation(keyPath: \.manualAppearance) {
-                UserDefaults.standard.set(newValue.rawValue, forKey: AppearanceKeys.manualAppearance)
+                UserDefaults.standard.set(
+                    newValue.rawValue, forKey: AppearanceKeys.manualAppearance)
             }
         }
     }
@@ -210,6 +228,23 @@ public final class AppSettings {
                 manualAppearance = .dark
             }
             UserDefaults.standard.set(newValue.rawValue, forKey: "appearance")
+        }
+    }
+
+    /// Lyrics Background Mode
+    var lyricsBackgroundMode: LyricsBackgroundMode {
+        get {
+            access(keyPath: \.lyricsBackgroundMode)
+            let raw =
+                UserDefaults.standard.string(forKey: AppearanceKeys.lyricsBackgroundMode)
+                ?? LyricsBackgroundMode.clear.rawValue
+            return LyricsBackgroundMode(rawValue: raw) ?? .clear
+        }
+        set {
+            withMutation(keyPath: \.lyricsBackgroundMode) {
+                UserDefaults.standard.set(
+                    newValue.rawValue, forKey: AppearanceKeys.lyricsBackgroundMode)
+            }
         }
     }
 
@@ -269,12 +304,20 @@ public final class AppSettings {
 
     /// Lead-in milliseconds for next line start/word timing
     @ObservationIgnored
-    @AppStorage("lyricsLeadInMs") var lyricsLeadInMs: Double = 240
+    @AppStorage("lyricsLeadInMs") var lyricsLeadInMs: Double = 300
+
+    /// Lead-in milliseconds for all adjacent lyric lines (applies even when not near-switch).
+    @ObservationIgnored
+    @AppStorage("lyricsGeneralLeadInMs") var lyricsGeneralLeadInMs: Double = 205
 
     /// If the next main line begins within this gap (ms) after current main line ends,
     /// the lyrics renderer will early-switch to the next line using `lyricsLeadInMs`.
     @ObservationIgnored
-    @AppStorage("lyricsNearSwitchGapMs") var lyricsNearSwitchGapMs: Double = 70
+    @AppStorage("lyricsNearSwitchGapMs") var lyricsNearSwitchGapMs: Double = 85
+
+    /// Global lyrics advance amount in milliseconds (positive value means lyrics appear earlier).
+    @ObservationIgnored
+    @AppStorage("lyricsGlobalAdvanceMs") var lyricsGlobalAdvanceMs: Double = 0
 
     /// Now Playing skin identifier
     @ObservationIgnored

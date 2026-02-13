@@ -564,18 +564,27 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
     private var listBottomPadding: CGFloat { 16 }
 
     private var headerBackground: some View {
-        // Avoid glass-on-glass: toolbar controls already use `.glassEffect`.
-        // The header background should be a simple scrim to separate content.
-        LinearGradient(
-            colors: [
-                Color(nsColor: .windowBackgroundColor)
-                    .opacity(colorScheme == .dark ? 0.55 : 0.78),
-                Color(nsColor: .windowBackgroundColor).opacity(0.0),
-            ],
-            startPoint: .top,
-            endPoint: .bottom
-        )
+        // Progressive Blur (Variable Blur)
+        // Uses an UltraThinMaterial layer masked by a gradient to fade the blur out.
+        // We use UltraThinMaterial for a more distinct blur effect.
+        ZStack(alignment: .top) {
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .mask {
+                    LinearGradient(
+                        stops: [
+                            .init(color: .black, location: 0.0),   // Full blur
+                            .init(color: .black, location: 0.2),   // Hold full blur briefly
+                            .init(color: .black.opacity(0.5), location: 0.6), // Fade
+                            .init(color: .clear, location: 1.0)    // Gone
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                }
+        }
         .allowsHitTesting(false)
+        .ignoresSafeArea()
     }
 
     private func clearSearchFocus() {

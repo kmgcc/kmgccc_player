@@ -15,6 +15,7 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(LEDMeterService.self) private var ledMeter
     @Environment(PlayerViewModel.self) private var playerVM
+    @Environment(LyricsViewModel.self) private var lyricsVM
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var themeStore: ThemeStore
 
@@ -28,7 +29,9 @@ struct SettingsView: View {
     // MARK: - AMLL Settings
 
     @State private var lyricsLeadInMs: Double = AppSettings.shared.lyricsLeadInMs
+    @State private var lyricsGeneralLeadInMs: Double = AppSettings.shared.lyricsGeneralLeadInMs
     @State private var lyricsNearSwitchGapMs: Double = AppSettings.shared.lyricsNearSwitchGapMs
+    @State private var lyricsGlobalAdvanceMs: Double = AppSettings.shared.lyricsGlobalAdvanceMs
     @State private var lyricsFontNameZh: String = AppSettings.shared.lyricsFontNameZh
     @State private var lyricsFontNameEn: String = AppSettings.shared.lyricsFontNameEn
     @State private var lyricsTranslationFontName: String = AppSettings.shared
@@ -47,6 +50,8 @@ struct SettingsView: View {
         .nowPlayingArtBackgroundEnabled
     @State private var globalArtworkTintEnabled: Bool = AppSettings.shared.globalArtworkTintEnabled
     @State private var followSystemAppearance: Bool = AppSettings.shared.followSystemAppearance
+    @State private var lyricsBackgroundMode: AppSettings.LyricsBackgroundMode = AppSettings.shared
+        .lyricsBackgroundMode
     @AppStorage("skin.kmgcccCassette.showLEDMeter") private var cassetteShowLEDMeter: Bool = true
 
     // MARK: - LED Settings State
@@ -85,29 +90,44 @@ struct SettingsView: View {
                     HStack(spacing: 12) {
                         Image(systemName: category.systemImage)
                             .font(.system(size: 15, weight: .medium))
-                            .frame(width: 24)
-                            .foregroundStyle(selection == category ? .primary : .secondary)
+                            .frame(width: 20)
+                            .foregroundStyle(selection == category ? .white : .primary)
 
                         Text(category.title)
                             .font(.body)
+                            .fontWeight(selection == category ? .medium : .regular)
+                            .foregroundStyle(selection == category ? .white : .primary)
 
                         Spacer()
                     }
                     .padding(.vertical, 8)
-                    .padding(.horizontal, 6)  // Reduced from 12 to bring content closer to pill edge
+                    .padding(.horizontal, 6)  // Reverted to original 6
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .listRowInsets(EdgeInsets(top: 1, leading: 4, bottom: 1, trailing: 4))  // Much tighter to sidebar edges
+                .listRowInsets(EdgeInsets(top: 1, leading: 4, bottom: 1, trailing: 4))  // Reverted to original 4
                 .listRowBackground(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(selection == category ? themeStore.selectionFill : Color.clear)
-                        .padding(.horizontal, 14)  // Narrower, centered pill look
+                    RoundedRectangle(
+                        cornerRadius: GlassStyleTokens.sidebarSelectionCornerRadius,
+                        style: .continuous
+                    )
+                    .fill(selection == category ? themeStore.accentColor : Color.clear)
+                    .opacity(selection == category ? 1.0 : 0)
+                    .shadow(
+                        color: selection == category ? Color.black.opacity(0.1) : Color.clear,
+                        radius: 2, x: 0, y: 1
+                    )
+                    .padding(.horizontal, 14)  // Reverted to original centered pill look
                 )
             }
             .listStyle(.sidebar)
-            .padding(.top, 16)  // Add top breathing room
-            .navigationSplitViewColumnWidth(min: 220, ideal: 240, max: 300)
+            .padding(.top, 48)
+            // Explicitly define sidebar container shape and material
+            .background(.regularMaterial)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .navigationSplitViewColumnWidth(
+                min: GlassStyleTokens.sidebarMinWidth, ideal: GlassStyleTokens.sidebarWidth,
+                max: 300)
         } detail: {
             detailView
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -148,6 +168,7 @@ struct SettingsView: View {
             nowPlayingArtBackgroundEnabled = settings.nowPlayingArtBackgroundEnabled
             globalArtworkTintEnabled = settings.globalArtworkTintEnabled
             followSystemAppearance = settings.followSystemAppearance
+            lyricsBackgroundMode = settings.lyricsBackgroundMode
             ledMeterEnabled = settings.ledMeterEnabled
             if SkinRegistry.options.contains(where: { $0.id == nowPlayingSkin }) == false {
                 nowPlayingSkin = SkinRegistry.defaultSkinID
@@ -184,6 +205,9 @@ struct SettingsView: View {
             .onChange(of: followSystemAppearance) { _, val in
                 settings.followSystemAppearance = val
             }
+            .onChange(of: lyricsBackgroundMode) { _, val in
+                settings.lyricsBackgroundMode = val
+            }
     }
 
     private var skinSyncLogic: some View {
@@ -202,28 +226,57 @@ struct SettingsView: View {
 
     private var lyricsSyncLogic: some View {
         Color.clear
-            .onChange(of: lyricsLeadInMs) { _, val in AppSettings.shared.lyricsLeadInMs = val }
-            .onChange(of: lyricsNearSwitchGapMs) { _, val in AppSettings.shared.lyricsNearSwitchGapMs = val }
-            .onChange(of: lyricsFontNameZh) { _, val in AppSettings.shared.lyricsFontNameZh = val }
-            .onChange(of: lyricsFontNameEn) { _, val in AppSettings.shared.lyricsFontNameEn = val }
+            .onChange(of: lyricsLeadInMs) { _, val in
+                AppSettings.shared.lyricsLeadInMs = val
+                lyricsVM.refreshConfigFromSettings()
+            }
+            .onChange(of: lyricsGeneralLeadInMs) { _, val in
+                AppSettings.shared.lyricsGeneralLeadInMs = val
+                lyricsVM.refreshConfigFromSettings()
+            }
+            .onChange(of: lyricsNearSwitchGapMs) { _, val in
+                AppSettings.shared.lyricsNearSwitchGapMs = val
+                lyricsVM.refreshConfigFromSettings()
+            }
+            .onChange(of: lyricsGlobalAdvanceMs) { _, val in
+                AppSettings.shared.lyricsGlobalAdvanceMs = val
+                lyricsVM.refreshConfigFromSettings()
+            }
+            .onChange(of: lyricsFontNameZh) { _, val in
+                AppSettings.shared.lyricsFontNameZh = val
+                lyricsVM.refreshConfigFromSettings()
+            }
+            .onChange(of: lyricsFontNameEn) { _, val in
+                AppSettings.shared.lyricsFontNameEn = val
+                lyricsVM.refreshConfigFromSettings()
+            }
             .onChange(of: lyricsTranslationFontName) { _, val in
                 AppSettings.shared.lyricsTranslationFontName = val
+                lyricsVM.refreshConfigFromSettings()
             }
             .onChange(of: lyricsFontWeightLight) { _, val in
                 AppSettings.shared.lyricsFontWeightLight = val
+                lyricsVM.refreshConfigFromSettings()
             }
             .onChange(of: lyricsFontWeightDark) { _, val in
                 AppSettings.shared.lyricsFontWeightDark = val
+                lyricsVM.refreshConfigFromSettings()
             }
-            .onChange(of: lyricsFontSize) { _, val in AppSettings.shared.lyricsFontSize = val }
+            .onChange(of: lyricsFontSize) { _, val in
+                AppSettings.shared.lyricsFontSize = val
+                lyricsVM.refreshConfigFromSettings()
+            }
             .onChange(of: lyricsTranslationFontSize) { _, val in
                 AppSettings.shared.lyricsTranslationFontSize = val
+                lyricsVM.refreshConfigFromSettings()
             }
             .onChange(of: lyricsTranslationFontWeightLight) { _, val in
                 AppSettings.shared.lyricsTranslationFontWeightLight = val
+                lyricsVM.refreshConfigFromSettings()
             }
             .onChange(of: lyricsTranslationFontWeightDark) { _, val in
                 AppSettings.shared.lyricsTranslationFontWeightDark = val
+                lyricsVM.refreshConfigFromSettings()
             }
     }
 
@@ -322,6 +375,20 @@ struct SettingsView: View {
                     Text("开启后跟随系统深浅色；关闭后可用侧边栏按钮手动切换深/浅。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+
+                    Divider()
+
+                    HStack {
+                        Text("歌词背景")
+                        Spacer()
+                        Picker("", selection: $lyricsBackgroundMode) {
+                            ForEach(AppSettings.LyricsBackgroundMode.allCases) { mode in
+                                Text(mode.title).tag(mode)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 140)
+                    }
                 }
                 .toggleStyle(.switch)
                 .padding(12)
@@ -414,9 +481,28 @@ struct SettingsView: View {
 
     private var amllTimingConfig: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("settings.lyrics.timing")
-                .font(.subheadline.bold())
-                .foregroundStyle(.secondary)
+            HStack {
+                Text("settings.lyrics.timing")
+                    .font(.subheadline.bold())
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("恢复默认值") {
+                    lyricsLeadInMs = 300
+                    lyricsGeneralLeadInMs = 205
+                    lyricsNearSwitchGapMs = 85
+                    lyricsGlobalAdvanceMs = 0
+                    AppSettings.shared.lyricsLeadInMs = 300
+                    AppSettings.shared.lyricsGeneralLeadInMs = 205
+                    AppSettings.shared.lyricsNearSwitchGapMs = 85
+                    AppSettings.shared.lyricsGlobalAdvanceMs = 0
+                    lyricsVM.refreshConfigFromSettings()
+                }
+                .buttonStyle(.borderless)
+                .font(.caption)
+            }
+            Text("参数仅供调试，正常使用无需调整")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
 
             GroupBox {
                 VStack(alignment: .leading, spacing: 16) {
@@ -439,6 +525,23 @@ struct SettingsView: View {
 
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
+                            Text("常规提前量")
+                            Spacer()
+                            Text("\(Int(lyricsGeneralLeadInMs)) ms")
+                                .foregroundStyle(themeStore.accentColor)
+                                .font(.system(.subheadline, design: .monospaced))
+                        }
+                        Slider(value: $lyricsGeneralLeadInMs, in: 0...300, step: 5)
+                    }
+
+                    Text("未达到紧邻切行阈值时也生效：下一句提前 y ms 开始，上一句尾部提前 y ms 收束。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
                             Text("settings.lyrics.near_switch_gap")
                             Spacer()
                             Text("\(Int(lyricsNearSwitchGapMs)) ms")
@@ -449,6 +552,23 @@ struct SettingsView: View {
                     }
 
                     Text("settings.lyrics.near_switch_gap_desc")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("歌词整体提前量")
+                            Spacer()
+                            Text("\(Int(lyricsGlobalAdvanceMs)) ms")
+                                .foregroundStyle(themeStore.accentColor)
+                                .font(.system(.subheadline, design: .monospaced))
+                        }
+                        Slider(value: $lyricsGlobalAdvanceMs, in: -1000...1000, step: 10)
+                    }
+
+                    Text("全曲统一提前（正值=更早显示，负值=更晚显示）。会与单曲时间偏移共同作用。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -1168,10 +1288,12 @@ private enum SettingsCategory: String, CaseIterable, Identifiable {
     let playbackService = StubAudioPlaybackService()
     let levelMeter = StubAudioLevelMeter()
     let playerVM = PlayerViewModel(playbackService: playbackService, levelMeter: levelMeter)
+    let lyricsVM = LyricsViewModel()
 
     SettingsView()
         .environment(LEDMeterService())
         .environment(playerVM)
+        .environment(lyricsVM)
         .environment(AppSettings.shared)
         .environmentObject(ThemeStore.shared)
 }
