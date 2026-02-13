@@ -188,6 +188,123 @@ struct GlassToolbarMenuButton<Content: View>: View {
     }
 }
 
+struct GlassToolbarTriplePill: View {
+    let isMultiselectActive: Bool
+    let onToggleMultiselect: () -> Void
+    let canPlay: Bool
+    let onPlay: () -> Void
+    let onImport: () -> Void
+
+    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    var body: some View {
+        HStack(spacing: 0) {
+            // Multiselect Button
+            Button(action: onToggleMultiselect) {
+                Image(systemName: "checkmark.circle")
+                    .font(
+                        .system(
+                            size: GlassToolbarButton.iconSize(for: .standard),
+                            weight: .semibold
+                        )
+                    )
+                    .foregroundStyle(
+                        isMultiselectActive
+                            ? themeStore.accentColor
+                            : themeStore.secondaryTextColor
+                    )
+                    .frame(
+                        width: GlassStyleTokens.headerControlHeight,
+                        height: GlassStyleTokens.headerControlHeight
+                    )
+                    .contentShape(Rectangle())
+                    .background(
+                        isMultiselectActive
+                            ? themeStore.accentColor.opacity(0.1)
+                            : Color.clear
+                    )
+            }
+            .buttonStyle(.plain)
+            .help("context.multiselect")
+
+            divider
+
+            // Play Button
+            Button(action: onPlay) {
+                Image(systemName: "play.fill")
+                    .font(
+                        .system(
+                            size: GlassToolbarButton.iconSize(for: .primary),
+                            weight: .semibold
+                        )
+                    )
+                    .foregroundStyle(
+                        canPlay ? themeStore.accentColor : themeStore.secondaryTextColor
+                    )
+                    .frame(
+                        width: GlassStyleTokens.headerControlHeight,
+                        height: GlassStyleTokens.headerControlHeight
+                    )
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!canPlay)
+            .help("context.play_all")
+
+            divider
+
+            // Import Button
+            Button(action: onImport) {
+                Image(systemName: "plus")
+                    .font(
+                        .system(
+                            size: GlassToolbarButton.iconSize(for: .standard),
+                            weight: .semibold
+                        )
+                    )
+                    .foregroundStyle(
+                        themeStore.accentColor.opacity(colorScheme == .dark ? 0.9 : 0.86)
+                    )
+                    .frame(
+                        width: GlassStyleTokens.headerControlHeight,
+                        height: GlassStyleTokens.headerControlHeight
+                    )
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("context.import")
+        }
+        .frame(height: GlassStyleTokens.headerControlHeight)
+        .background(
+            Capsule()
+                .glassEffect(.clear, in: .capsule)
+                .overlay(
+                    Capsule().fill(colorScheme == .dark ? Color.black.opacity(0.18) : Color.clear)
+                )
+                .overlay(
+                    Capsule()
+                        .fill(themeStore.accentColor.opacity(toolbarSurfaceTintOpacity))
+                )
+                .allowsHitTesting(false)
+        )
+        .clipShape(Capsule())
+    }
+
+    private var divider: some View {
+        Rectangle()
+            .fill(Color.primary.opacity(0.10))
+            .frame(
+                width: 0.5,
+                height: GlassStyleTokens.headerControlHeight - 12
+            )
+    }
+
+    private var toolbarSurfaceTintOpacity: Double {
+        colorScheme == .dark ? 0.026 : 0.024
+    }
+}
+
 /// Unified pill for Play + Import in the header bar.
 struct GlassToolbarPlayImportPill: View {
     let canPlay: Bool
@@ -302,10 +419,6 @@ struct GlassToolbarSearchField: View {
         }
         .padding(.horizontal, 12)
         .frame(height: GlassStyleTokens.headerControlHeight)
-        .frame(
-            minWidth: GlassStyleTokens.headerSearchMinWidth,
-            maxWidth: GlassStyleTokens.headerSearchMaxWidth
-        )
         .background(
             RoundedRectangle(
                 cornerRadius: GlassStyleTokens.headerControlCornerRadius,

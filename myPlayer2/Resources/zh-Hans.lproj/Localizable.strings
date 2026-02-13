@@ -48,6 +48,8 @@
 "settings.lyrics.timing" = "时间轴";
 "settings.lyrics.leadin" = "提前量";
 "settings.lyrics.leadin_desc" = "调整歌词行首和行尾单词的出现时机。";
+"settings.lyrics.near_switch_gap" = "紧邻切行阈值";
+"settings.lyrics.near_switch_gap_desc" = "当下一句开始时间与当前句结束时间间隔小于该值时，会在“提前量”剩余时提前切到下一句，并让当前句快速隐退。";
 "settings.lyrics.fonts" = "字体";
 "settings.lyrics.font_size" = "字体大小";
 "settings.lyrics.font_weight" = "字体粗细";
