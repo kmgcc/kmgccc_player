@@ -2,7 +2,7 @@
 //  AVAudioPlaybackService.swift
 //  myPlayer2
 //
-//  TrueMusic - AVAudioEngine Playback Service
+//  kmgccc_player - AVAudioEngine Playback Service
 //  Real audio playback using AVAudioEngine + AVAudioPlayerNode.
 //
 

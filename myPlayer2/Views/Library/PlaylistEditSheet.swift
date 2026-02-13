@@ -2,7 +2,7 @@
 //  PlaylistEditSheet.swift
 //  myPlayer2
 //
-//  TrueMusic - Playlist Edit Sheet
+//  kmgccc_player - Playlist Edit Sheet
 //  Create, rename, or delete playlists.
 //
 

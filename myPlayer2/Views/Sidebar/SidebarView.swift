@@ -2,7 +2,7 @@
 //  SidebarView.swift
 //  myPlayer2
 //
-//  TrueMusic - Sidebar View
+//  kmgccc_player - Sidebar View
 //  NO custom blur/material - let macOS 26 system render Liquid Glass.
 //  Supports:
 //  - New Playlist creation (creates and selects immediately)

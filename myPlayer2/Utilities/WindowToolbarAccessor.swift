@@ -2,7 +2,7 @@
 //  WindowToolbarAccessor.swift
 //  myPlayer2
 //
-//  TrueMusic - Window Toolbar Accessor
+//  kmgccc_player - Window Toolbar Accessor
 //  Allows small AppKit adjustments (e.g. removing default toolbar items).
 //
 

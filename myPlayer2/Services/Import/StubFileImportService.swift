@@ -2,7 +2,7 @@
 //  StubFileImportService.swift
 //  myPlayer2
 //
-//  TrueMusic - Stub File Import Service
+//  kmgccc_player - Stub File Import Service
 //  Does nothing - for UI previews only.
 //
 

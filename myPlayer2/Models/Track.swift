@@ -2,7 +2,7 @@
 //  Track.swift
 //  myPlayer2
 //
-//  TrueMusic - SwiftData Track Model
+//  kmgccc_player - SwiftData Track Model
 //  Represents a music file indexed in the library.
 //
 

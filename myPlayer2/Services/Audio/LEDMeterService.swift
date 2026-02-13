@@ -2,7 +2,7 @@
 //  LEDMeterService.swift
 //  myPlayer2
 //
-//  TrueMusic - LED Meter Service (low-frequency weighted)
+//  kmgccc_player - LED Meter Service (low-frequency weighted)
 //  Computes low-frequency energy with FFT and publishes quantized LED levels.
 //
 

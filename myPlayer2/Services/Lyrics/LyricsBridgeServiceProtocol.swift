@@ -2,7 +2,7 @@
 //  LyricsBridgeServiceProtocol.swift
 //  myPlayer2
 //
-//  TrueMusic - Lyrics Bridge Service Protocol
+//  kmgccc_player - Lyrics Bridge Service Protocol
 //  Defines interface for WKWebView + AMLL communication.
 //
 

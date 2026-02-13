@@ -2,7 +2,7 @@
 //  AudioPlaybackServiceProtocol.swift
 //  myPlayer2
 //
-//  TrueMusic - Audio Playback Service Protocol
+//  kmgccc_player - Audio Playback Service Protocol
 //  Defines playback control interface for AVAudioEngine implementation.
 //
 

@@ -2,7 +2,7 @@
 //  LyricsViewModel.swift
 //  myPlayer2
 //
-//  TrueMusic - Lyrics ViewModel
+//  kmgccc_player - Lyrics ViewModel
 //  Manages lyrics display and sync via LyricsWebViewStore.
 //
 

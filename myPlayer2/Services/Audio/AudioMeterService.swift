@@ -2,7 +2,7 @@
 //  AudioMeterService.swift
 //  myPlayer2
 //
-//  TrueMusic - Audio Meter Service (full metrics)
+//  kmgccc_player - Audio Meter Service (full metrics)
 //  Provides RMS/Peak/dB, multi-band energy, smoothed values, and waveform samples.
 //
 

@@ -2,7 +2,7 @@
 //  LibraryViewModel.swift
 //  myPlayer2
 //
-//  TrueMusic - Library ViewModel
+//  kmgccc_player - Library ViewModel
 //  Manages playlists for the UI.
 //
 //  NOTE: Track display is handled by @Query in PlaylistDetailView.

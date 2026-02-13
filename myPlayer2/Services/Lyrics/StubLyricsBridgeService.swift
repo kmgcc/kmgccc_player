@@ -2,7 +2,7 @@
 //  StubLyricsBridgeService.swift
 //  myPlayer2
 //
-//  TrueMusic - Stub Lyrics Bridge Service
+//  kmgccc_player - Stub Lyrics Bridge Service
 //  Placeholder for AMLL WebView bridge.
 //
 

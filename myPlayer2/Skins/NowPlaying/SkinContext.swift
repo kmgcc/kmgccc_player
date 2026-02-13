@@ -2,7 +2,7 @@
 //  SkinContext.swift
 //  myPlayer2
 //
-//  TrueMusic - Now Playing Skin Context
+//  kmgccc_player - Now Playing Skin Context
 //  Read-only context provided to skins.
 //
 
