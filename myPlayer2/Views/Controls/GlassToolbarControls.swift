@@ -35,52 +35,19 @@ struct GlassIconButtonLabel: View {
 
     @ViewBuilder
     private var glassBackground: some View {
-        switch surfaceVariant {
-        case .defaultToolbar:
-            Circle()
-                .glassEffect(.clear, in: .circle)
-                .overlay(Circle().fill(darkNeutralOverlay))
-                .overlay(Circle().fill(defaultToolbarTintFill))
-                .allowsHitTesting(false)
-        case .sidebarBottom:
-            Circle()
-                .glassEffect(.clear, in: .circle)
-                .overlay(Circle().fill(darkNeutralOverlay))
-                .overlay(Circle().fill(sidebarBottomTintFill))
-                .allowsHitTesting(false)
-        }
+        Circle()
+            .liquidGlassCircle(
+                colorScheme: colorScheme,
+                accentColor: nil as Color?
+            )
+            .allowsHitTesting(false)
     }
 
     private var iconForeground: Color {
         if isPrimary {
             return themeStore.accentColor
         }
-        switch surfaceVariant {
-        case .defaultToolbar:
-            return themeStore.accentColor.opacity(colorScheme == .dark ? 0.94 : 0.84)
-        case .sidebarBottom:
-            return themeStore.accentColor.opacity(colorScheme == .dark ? 0.90 : 0.82)
-        }
-    }
-
-    private var darkNeutralOverlay: Color {
-        colorScheme == .dark ? Color.black.opacity(0.18) : .clear
-    }
-
-    private var defaultToolbarTintFill: Color {
-        themeStore.accentColor.opacity(
-            colorScheme == .dark
-                ? (isPrimary ? 0.042 : 0.026)
-                : (isPrimary ? 0.036 : 0.024)
-        )
-    }
-
-    private var sidebarBottomTintFill: Color {
-        themeStore.accentColor.opacity(
-            colorScheme == .dark
-                ? (isPrimary ? 0.048 : 0.03)
-                : (isPrimary ? 0.038 : 0.026)
-        )
+        return themeStore.accentColor.opacity(colorScheme == .dark ? 0.94 : 0.84)
     }
 }
 
@@ -276,18 +243,7 @@ struct GlassToolbarTriplePill: View {
             .help("context.import")
         }
         .frame(height: GlassStyleTokens.headerControlHeight)
-        .background(
-            Capsule()
-                .glassEffect(.clear, in: .capsule)
-                .overlay(
-                    Capsule().fill(colorScheme == .dark ? Color.black.opacity(0.18) : Color.clear)
-                )
-                .overlay(
-                    Capsule()
-                        .fill(themeStore.accentColor.opacity(toolbarSurfaceTintOpacity))
-                )
-                .allowsHitTesting(false)
-        )
+        .liquidGlassPill(colorScheme: colorScheme, accentColor: nil as Color?)
         .clipShape(Capsule())
     }
 
@@ -298,10 +254,6 @@ struct GlassToolbarTriplePill: View {
                 width: 0.5,
                 height: GlassStyleTokens.headerControlHeight - 12
             )
-    }
-
-    private var toolbarSurfaceTintOpacity: Double {
-        colorScheme == .dark ? 0.026 : 0.024
     }
 }
 
@@ -364,23 +316,8 @@ struct GlassToolbarPlayImportPill: View {
             .help("context.import")
         }
         .frame(height: GlassStyleTokens.headerControlHeight)
-        .background(
-            Capsule()
-                .glassEffect(.clear, in: .capsule)
-                .overlay(
-                    Capsule().fill(colorScheme == .dark ? Color.black.opacity(0.18) : Color.clear)
-                )
-                .overlay(
-                    Capsule()
-                        .fill(themeStore.accentColor.opacity(toolbarSurfaceTintOpacity))
-                )
-                .allowsHitTesting(false)
-        )
+        .liquidGlassPill(colorScheme: colorScheme, accentColor: nil as Color?)
         .clipShape(Capsule())
-    }
-
-    private var toolbarSurfaceTintOpacity: Double {
-        colorScheme == .dark ? 0.026 : 0.024
     }
 }
 
@@ -419,43 +356,13 @@ struct GlassToolbarSearchField: View {
         }
         .padding(.horizontal, 12)
         .frame(height: GlassStyleTokens.headerControlHeight)
-        .background(
-            RoundedRectangle(
-                cornerRadius: GlassStyleTokens.headerControlCornerRadius,
-                style: .continuous
-            )
-            .glassEffect(
-                .clear,
-                in: .rect(cornerRadius: GlassStyleTokens.headerControlCornerRadius)
-            )
-            .overlay(
-                RoundedRectangle(
-                    cornerRadius: GlassStyleTokens.headerControlCornerRadius,
-                    style: .continuous
-                )
-                .fill(colorScheme == .dark ? Color.black.opacity(0.18) : Color.clear)
-            )
-            .overlay(
-                RoundedRectangle(
-                    cornerRadius: GlassStyleTokens.headerControlCornerRadius,
-                    style: .continuous
-                )
-                .fill(themeStore.accentColor.opacity(toolbarSurfaceTintOpacity))
-            )
-            .allowsHitTesting(false)
-        )
-        .contentShape(
-            RoundedRectangle(
-                cornerRadius: GlassStyleTokens.headerControlCornerRadius,
-                style: .continuous
-            )
+        .liquidGlassRect(
+            cornerRadius: GlassStyleTokens.headerControlCornerRadius,
+            colorScheme: colorScheme,
+            accentColor: nil as Color?
         )
         .onTapGesture {
             focused.wrappedValue = true
         }
-    }
-
-    private var toolbarSurfaceTintOpacity: Double {
-        colorScheme == .dark ? 0.026 : 0.024
     }
 }

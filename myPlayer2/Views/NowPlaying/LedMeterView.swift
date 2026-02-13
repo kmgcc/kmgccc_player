@@ -215,25 +215,11 @@ private struct LEDPillBase: View {
         Capsule()
             .fill(Color.clear)
             .frame(width: pillWidth, height: pillHeight)
-            .glassEffect(.clear, in: .capsule)
-            .overlay(
-                Capsule()
-                    .strokeBorder(Color.white.opacity(colorScheme == .dark ? 0.14 : 0.10), lineWidth: 1)
-            )
-            .overlay(
-                Group {
-                    if let tint {
-                        Capsule()
-                            .fill(tint.opacity(colorScheme == .dark ? 0.38 : 0.20))
-                            .blendMode(.normal)
-                    }
-                }
-            )
-            .shadow(
-                color: Color.black.opacity(colorScheme == .dark ? 0.08 : 0.12),
-                radius: 2,
-                x: 0,
-                y: 1
+            .liquidGlassPill(
+                colorScheme: colorScheme,
+                accentColor: tint,
+                prominence: tint != nil ? .prominent : .standard,
+                isFloating: false
             )
             .animation(.easeInOut(duration: 0.25), value: ledCount)
     }
