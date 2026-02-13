@@ -41,6 +41,8 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
     @State private var prefetchTask: Task<Void, Never>?
     @State private var snapshotUpdateTask: Task<Void, Never>?
     @FocusState private var isSearchFocused: Bool
+    @State private var isMultiselectMode = false
+    @State private var selectedTrackIDs: Set<UUID> = []
 
     // MARK: - Init
 
@@ -139,29 +141,74 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
     private var headerView: some View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 6) {
-                Text(libraryVM.currentTitle)
-                    .font(.headline)
-                    .fontWeight(.semibold)
-                    .lineLimit(1)
+                if isMultiselectMode {
+                    Text("已选择")
+                        .font(.headline)
+                        .fontWeight(.semibold)
+                        .lineLimit(1)
 
-                Text(songCountText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    HStack(spacing: 8) {
+                        Text("\(selectedTrackIDs.count)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+
+                        Button {
+                            if selectedTrackIDs.count == sortedTracksCache.count {
+                                selectedTrackIDs.removeAll()
+                            } else {
+                                selectedTrackIDs = Set(sortedTracksCache.map(\.id))
+                            }
+                        } label: {
+                            Text(
+                                totalSelectionCount == sortedTracksCache.count
+                                    ? "取消全选" : "全选"
+                            )
+                            .font(.caption)
+                            .foregroundStyle(Color.accentColor)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                } else {
+                    Text(libraryVM.currentTitle)
+                        .font(.headline)
+                        .fontWeight(.semibold)
+                        .lineLimit(1)
+
+                    Text(songCountText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
 
             Spacer()
 
-            HStack(spacing: GlassStyleTokens.headerControlSpacing) {
+            HStack(spacing: 12) {
                 sortMenu
 
                 // Skills: $macos-appkit-liquid-glass-toolbar + $macos-appkit-liquid-glass-controls
-                // Group Play + Import into one pill while preserving separate hit targets.
-                GlassToolbarPlayImportPill(
+                // Group Multiselect + Play + Import into one pill
+                GlassToolbarTriplePill(
+                    isMultiselectActive: isMultiselectMode,
+                    onToggleMultiselect: {
+                        isMultiselectMode.toggle()
+                        if !isMultiselectMode {
+                            selectedTrackIDs.removeAll()
+                        }
+                    },
                     canPlay: !sortedTracksCache.isEmpty,
                     onPlay: {
-                        guard !sortedTracksCache.isEmpty else { return }
-                        playerVM.playTracks(sortedTracksCache)
+                        if isMultiselectMode && !selectedTrackIDs.isEmpty {
+                            // Play selected
+                            let selected = sortedTracksCache.filter {
+                                selectedTrackIDs.contains($0.id)
+                            }
+                            playerVM.playTracks(selected)
+                        } else {
+                            guard !sortedTracksCache.isEmpty else { return }
+                            playerVM.playTracks(sortedTracksCache)
+                        }
                     },
                     onImport: {
                         print("🔘 Import button tapped")
@@ -172,12 +219,13 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
                 )
 
                 GlassToolbarSearchField(
-                    placeholder: "library.search_placeholder",
+                    placeholder: "搜索",
                     text: $searchText,
                     focused: $isSearchFocused
                 ) {
                     searchText = ""
                 }
+                .frame(width: 140)
 
                 headerAccessory
             }
@@ -234,11 +282,20 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
                         TrackRowView(
                             model: rowModel,
                             isPlaying: playerVM.currentTrack?.id == rowModel.id,
+                            isSelected: isMultiselectMode && selectedTrackIDs.contains(rowModel.id),
                             onTap: {
-                                playerVM.playTracks(
-                                    sortedTracksCache,
-                                    startingAt: rowIndex
-                                )
+                                if isMultiselectMode {
+                                    if selectedTrackIDs.contains(rowModel.id) {
+                                        selectedTrackIDs.remove(rowModel.id)
+                                    } else {
+                                        selectedTrackIDs.insert(rowModel.id)
+                                    }
+                                } else {
+                                    playerVM.playTracks(
+                                        sortedTracksCache,
+                                        startingAt: rowIndex
+                                    )
+                                }
                             },
                             onRowAppear: {
                                 prefetchAroundTrackID(rowModel.id)
@@ -268,7 +325,12 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         .onChange(of: listScrollPositionID) { _, _ in
             scheduleSnapshotUpdate()
         }
-        .onTapGesture { clearSearchFocus() }
+        .onTapGesture {
+            clearSearchFocus()
+            // Verify if we should clear selection on background tap?
+            // User didn't specify, but usually background tap doesn't clear multiselect mode itself,
+            // maybe just selection? For now, keep it simple.
+        }
     }
 
     private var emptyStateView: some View {
@@ -342,82 +404,158 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         return String(format: format, displayedTracksCache.count)
     }
 
+    private var totalSelectionCount: Int {
+        selectedTrackIDs.count
+    }
+
     @ViewBuilder
     private func trackMenu(track: Track, index: Int) -> some View {
-        // Play
-        Button {
-            playerVM.playTracks(sortedTracksCache, startingAt: index)
-        } label: {
-            Label("context.play", systemImage: "play")
-        }
+        if isMultiselectMode && selectedTrackIDs.contains(track.id) {
+            // Batch Actions
+            Text("已选择 \(selectedTrackIDs.count) 首歌曲")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 4)
 
-        Divider()
+            Divider()
 
-        // Add to Playlist
-        Menu {
-            ForEach(libraryVM.playlists) { playlist in
-                // Don't show current playlist if we are in it
-                if libraryVM.selectedPlaylist?.id != playlist.id {
-                    Button {
-                        Task {
-                            await libraryVM.addTracksToPlaylist(
-                                [track], playlist: playlist)
+            Menu {
+                ForEach(libraryVM.playlists) { playlist in
+                    if libraryVM.selectedPlaylist?.id != playlist.id {
+                        Button {
+                            processBatchAction { tracks in
+                                await libraryVM.addTracksToPlaylist(tracks, playlist: playlist)
+                            }
+                        } label: {
+                            Label(playlist.name, systemImage: "music.note.list")
                         }
-                    } label: {
-                        Label(playlist.name, systemImage: "music.note.list")
                     }
+                }
+
+                Divider()
+
+                Button {
+                    processBatchAction { tracks in
+                        let playlist = await libraryVM.createNewPlaylist()
+                        await libraryVM.addTracksToPlaylist(tracks, playlist: playlist)
+                    }
+                } label: {
+                    Label("新建播放列表", systemImage: "plus")
+                }
+            } label: {
+                Label("添加到播放列表...", systemImage: "plus.circle")
+            }
+
+            if let currentPlaylist = libraryVM.selectedPlaylist {
+                Button {
+                    processBatchAction { tracks in
+                        await libraryVM.removeTracksFromPlaylist(tracks, playlist: currentPlaylist)
+                    }
+                } label: {
+                    Label("从当前播放列表移除", systemImage: "minus.circle")
                 }
             }
 
             Divider()
 
-            Button {
-                Task {
-                    let playlist = await libraryVM.createNewPlaylist()
-                    await libraryVM.addTracksToPlaylist([track], playlist: playlist)
+            Button(role: .destructive) {
+                processBatchAction { tracks in
+                    for track in tracks {
+                        await libraryVM.deleteTrack(track)
+                    }
+                    // Clear selection after delete
+                    await MainActor.run {
+                        // Selection will be cleared by cache rebuild or logic
+                        selectedTrackIDs.removeAll()
+                    }
                 }
             } label: {
-                Label("context.new_playlist", systemImage: "plus")
+                Label("从资料库删除", systemImage: "trash")
             }
-        } label: {
-            Label(
-                "context.add_to_playlist",
-                systemImage: "plus.circle")
-        }
 
-        // Remove from Playlist (if in one)
-        if let currentPlaylist = libraryVM.selectedPlaylist {
+        } else {
+            // SINGLE TRACK ACTIONS (Keep existing)
+            // Play
             Button {
-                Task {
-                    await libraryVM.removeTracksFromPlaylist(
-                        [track], playlist: currentPlaylist)
+                playerVM.playTracks(sortedTracksCache, startingAt: index)
+            } label: {
+                Label("播放", systemImage: "play")
+            }
+
+            Divider()
+
+            // Add to Playlist
+            Menu {
+                ForEach(libraryVM.playlists) { playlist in
+                    // Don't show current playlist if we are in it
+                    if libraryVM.selectedPlaylist?.id != playlist.id {
+                        Button {
+                            Task {
+                                await libraryVM.addTracksToPlaylist(
+                                    [track], playlist: playlist)
+                            }
+                        } label: {
+                            Label(playlist.name, systemImage: "music.note.list")
+                        }
+                    }
+                }
+
+                Divider()
+
+                Button {
+                    Task {
+                        let playlist = await libraryVM.createNewPlaylist()
+                        await libraryVM.addTracksToPlaylist([track], playlist: playlist)
+                    }
+                } label: {
+                    Label("新建播放列表", systemImage: "plus")
                 }
             } label: {
-                Label(
-                    "context.remove_from_playlist",
-                    systemImage: "minus.circle")
+                Label("添加到播放列表...", systemImage: "plus.circle")
+            }
+
+            // Remove from Playlist (if in one)
+            if let currentPlaylist = libraryVM.selectedPlaylist {
+                Button {
+                    Task {
+                        await libraryVM.removeTracksFromPlaylist(
+                            [track], playlist: currentPlaylist)
+                    }
+                } label: {
+                    Label("从当前播放列表移除", systemImage: "minus.circle")
+                }
+            }
+
+            Divider()
+
+            // Edit Metadata
+            Button {
+                trackToEdit = track
+            } label: {
+                Label("显示简介", systemImage: "info.circle")
+            }
+
+            Divider()
+
+            // Delete from Library
+            Button(role: .destructive) {
+                Task {
+                    await libraryVM.deleteTrack(track)
+                }
+            } label: {
+                Label("从资料库删除", systemImage: "trash")
             }
         }
+    }
 
-        Divider()
-
-        // Edit Metadata
-        Button {
-            trackToEdit = track
-        } label: {
-            Label("context.get_info", systemImage: "info.circle")
-        }
-
-        Divider()
-
-        // Delete from Library
-        Button(role: .destructive) {
-            Task {
-                await libraryVM.deleteTrack(track)
+    private func processBatchAction(action: @escaping ([Track]) async -> Void) {
+        let selectedTracks = sortedTracksCache.filter { selectedTrackIDs.contains($0.id) }
+        Task {
+            await action(selectedTracks)
+            await MainActor.run {
+                isMultiselectMode = false
+                selectedTrackIDs.removeAll()
             }
-        } label: {
-            Label(
-                "context.delete_from_library", systemImage: "trash")
         }
     }
 

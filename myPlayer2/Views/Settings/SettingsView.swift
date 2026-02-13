@@ -28,6 +28,7 @@ struct SettingsView: View {
     // MARK: - AMLL Settings
 
     @State private var lyricsLeadInMs: Double = AppSettings.shared.lyricsLeadInMs
+    @State private var lyricsNearSwitchGapMs: Double = AppSettings.shared.lyricsNearSwitchGapMs
     @State private var lyricsFontNameZh: String = AppSettings.shared.lyricsFontNameZh
     @State private var lyricsFontNameEn: String = AppSettings.shared.lyricsFontNameEn
     @State private var lyricsTranslationFontName: String = AppSettings.shared
@@ -202,6 +203,7 @@ struct SettingsView: View {
     private var lyricsSyncLogic: some View {
         Color.clear
             .onChange(of: lyricsLeadInMs) { _, val in AppSettings.shared.lyricsLeadInMs = val }
+            .onChange(of: lyricsNearSwitchGapMs) { _, val in AppSettings.shared.lyricsNearSwitchGapMs = val }
             .onChange(of: lyricsFontNameZh) { _, val in AppSettings.shared.lyricsFontNameZh = val }
             .onChange(of: lyricsFontNameEn) { _, val in AppSettings.shared.lyricsFontNameEn = val }
             .onChange(of: lyricsTranslationFontName) { _, val in
@@ -430,6 +432,23 @@ struct SettingsView: View {
                     }
 
                     Text("settings.lyrics.leadin_desc")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("settings.lyrics.near_switch_gap")
+                            Spacer()
+                            Text("\(Int(lyricsNearSwitchGapMs)) ms")
+                                .foregroundStyle(themeStore.accentColor)
+                                .font(.system(.subheadline, design: .monospaced))
+                        }
+                        Slider(value: $lyricsNearSwitchGapMs, in: 0...200, step: 5)
+                    }
+
+                    Text("settings.lyrics.near_switch_gap_desc")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
