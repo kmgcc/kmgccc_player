@@ -271,6 +271,11 @@ public final class AppSettings {
     @ObservationIgnored
     @AppStorage("lyricsLeadInMs") var lyricsLeadInMs: Double = 240
 
+    /// If the next main line begins within this gap (ms) after current main line ends,
+    /// the lyrics renderer will early-switch to the next line using `lyricsLeadInMs`.
+    @ObservationIgnored
+    @AppStorage("lyricsNearSwitchGapMs") var lyricsNearSwitchGapMs: Double = 70
+
     /// Now Playing skin identifier
     @ObservationIgnored
     @AppStorage("nowPlayingSkin") var nowPlayingSkin: String = "coverLed"

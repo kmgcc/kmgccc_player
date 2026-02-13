@@ -50,6 +50,8 @@
 "settings.lyrics.timing" = "Timing";
 "settings.lyrics.leadin" = "Lead-in";
 "settings.lyrics.leadin_desc" = "Advance the next line’s first word and the previous line’s last word.";
+"settings.lyrics.near_switch_gap" = "Near-line switch gap";
+"settings.lyrics.near_switch_gap_desc" = "If the next line starts within this gap, switch to it early using Lead-in and let the previous line exit quickly.";
 "settings.lyrics.fonts" = "Fonts";
 "settings.lyrics.font_size" = "Font Size";
 "settings.lyrics.font_weight" = "Font Weight";

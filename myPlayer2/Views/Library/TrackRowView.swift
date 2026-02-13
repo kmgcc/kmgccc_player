@@ -32,6 +32,7 @@ struct TrackRowModel: Identifiable, Equatable {
 struct TrackRowView<MenuContent: View>: View {
     let model: TrackRowModel
     let isPlaying: Bool
+    let isSelected: Bool
     let onTap: () -> Void
     let onRowAppear: (() -> Void)?
     @ViewBuilder let menuContent: () -> MenuContent
@@ -40,15 +41,19 @@ struct TrackRowView<MenuContent: View>: View {
     @State private var artworkImage: NSImage?
     @State private var isArtworkReady = false
 
+    @Environment(\.colorScheme) private var colorScheme
+
     init(
         model: TrackRowModel,
         isPlaying: Bool,
+        isSelected: Bool = false,
         onTap: @escaping () -> Void,
         onRowAppear: (() -> Void)? = nil,
         @ViewBuilder menuContent: @escaping () -> MenuContent
     ) {
         self.model = model
         self.isPlaying = isPlaying
+        self.isSelected = isSelected
         self.onTap = onTap
         self.onRowAppear = onRowAppear
         self.menuContent = menuContent
@@ -114,7 +119,7 @@ struct TrackRowView<MenuContent: View>: View {
         .frame(height: Constants.Layout.trackRowHeight)
         .background(
             RoundedRectangle(cornerRadius: 8)
-                .fill(isHovering ? Color.primary.opacity(0.04) : Color.clear)
+                .fill(backgroundFill)
         )
         .contentShape(Rectangle())
         .onHover { hover in
@@ -147,6 +152,13 @@ struct TrackRowView<MenuContent: View>: View {
     private var textSecondaryColor: Color {
         if model.isMissing { return Color.gray.opacity(0.6) }
         return ColorTokens.textSecondary
+    }
+
+    private var backgroundFill: Color {
+        if isSelected {
+            return Color.accentColor.opacity(colorScheme == .dark ? 0.2 : 0.15)
+        }
+        return isHovering ? Color.primary.opacity(0.04) : Color.clear
     }
 
     @ViewBuilder
@@ -228,6 +240,7 @@ extension TrackRowView: Equatable where MenuContent: View {
     static func == (lhs: TrackRowView<MenuContent>, rhs: TrackRowView<MenuContent>) -> Bool {
         lhs.model == rhs.model
             && lhs.isPlaying == rhs.isPlaying
+            && lhs.isSelected == rhs.isSelected
     }
 }
 

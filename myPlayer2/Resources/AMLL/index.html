@@ -321,8 +321,11 @@
             return didProcessed || didCurrent || didObjects;
         };
 
-        let lastKnownTimeMs = 0;
-        let bgActiveIndexes = new Set();
+	        let lastKnownTimeMs = 0;
+	        let bgActiveIndexes = new Set();
+	        // Main-line indexes that were force-exited by the near-gap early-switch logic.
+	        // Used to keep BG lines in sync (BG should hide when its paired main hides).
+	        let forcedExitedMainLines = new Set();
         const getPairedMainLineIndex = (index) => {
             if (!Array.isArray(lyricPlayer.processedLines)) return -1;
             if (index > 0 && lyricPlayer.processedLines[index - 1] && !lyricPlayer.processedLines[index - 1].isBG) {
@@ -337,29 +340,52 @@
             }
             return -1;
         };
-        const isMainLineStillVisible = (index) => {
-            if (index < 0) return false;
-            if (lyricPlayer.hotLines?.has(index) || lyricPlayer.bufferedLines?.has(index)) {
-                return true;
-            }
-            const mainObj = lyricPlayer.currentLyricLineObjects?.[index];
-            return mainObj?.isEnabled === true;
-        };
+	        const isMainLineStillVisible = (index) => {
+	            if (index < 0) return false;
+	            if (forcedExitedMainLines.has(index)) return false;
+	            if (lyricPlayer.hotLines?.has(index) || lyricPlayer.bufferedLines?.has(index)) {
+	                return true;
+	            }
+	            const mainObj = lyricPlayer.currentLyricLineObjects?.[index];
+	            return mainObj?.isEnabled === true;
+	        };
         const enforceBGTimingWindows = (timeMs, force = false) => {
             if (!Array.isArray(lyricPlayer.currentLyricLineObjects)) {
                 bgActiveIndexes = new Set();
-                return;
+                return false;
             }
 
+            const lines = lyricPlayer.processedLines;
             const nextActive = new Set();
             let layoutChanged = false;
             const isPlaying = typeof lyricPlayer.getIsPlaying === "function"
                 ? lyricPlayer.getIsPlaying()
                 : true;
 
-            lyricPlayer.currentLyricLineObjects.forEach((lineObj, idx) => {
+            // Only consider BG lines that are relevant right now:
+            // - previously active BG lines
+            // - BG lines already in hot/buffered sets
+            // - BG lines paired with currently-hot main lines (core may have enabled them early)
+            const candidateIndexes = new Set();
+            const addIndex = (idx) => {
+                if (!Number.isInteger(idx) || idx < 0) return;
+                candidateIndexes.add(idx);
+            };
+            for (const idx of bgActiveIndexes) addIndex(idx);
+            for (const idx of (lyricPlayer.hotLines ?? [])) {
+                addIndex(idx);
+                const maybeMain = lines?.[idx];
+                if (maybeMain && !maybeMain.isBG) {
+                    const bgIdx = findPairedBgIndex(idx);
+                    if (bgIdx !== -1) addIndex(bgIdx);
+                }
+            }
+            for (const idx of (lyricPlayer.bufferedLines ?? [])) addIndex(idx);
+
+            for (const idx of candidateIndexes) {
+                const lineObj = lyricPlayer.currentLyricLineObjects[idx];
                 const line = lineObj?.getLine?.() ?? lineObj?.lyricLine;
-                if (!line?.isBG) return;
+                if (!line?.isBG) continue;
 
                 const pairedMainIndex = getPairedMainLineIndex(idx);
                 const mainStillVisible = isMainLineStillVisible(pairedMainIndex);
@@ -369,8 +395,10 @@
                     && timeMs >= line.startTime
                     && timeMs < line.endTime;
                 const started = Number.isFinite(line.startTime) && timeMs >= line.startTime;
-                const shouldBeActive = inOwnTimeWindow || (started && mainStillVisible);
+                const mainForcedExit = forcedExitedMainLines.has(pairedMainIndex);
+                const shouldBeActive = !mainForcedExit && (inOwnTimeWindow || (started && mainStillVisible));
                 const wasActive = bgActiveIndexes.has(idx);
+                const isEnabled = lineObj?.isEnabled === true;
 
                 if (shouldBeActive) {
                     nextActive.add(idx);
@@ -382,7 +410,7 @@
                         lyricPlayer.bufferedLines?.add(idx);
                         layoutChanged = true;
                     }
-                    if (!wasActive && typeof lineObj?.enable === "function") {
+                    if (!isEnabled && typeof lineObj?.enable === "function") {
                         lineObj.enable(timeMs, isPlaying);
                     }
                     if ((force || !wasActive) && typeof lineObj?.setMaskAnimationState === "function") {
@@ -397,60 +425,278 @@
                         lyricPlayer.bufferedLines.delete(idx);
                         layoutChanged = true;
                     }
-                    if (wasActive && typeof lineObj?.disable === "function") {
+                    // Core can enable BG lines early when a main line becomes hot. Always disable if it's enabled
+                    // but not within its own timing window (prevents "plays twice" and early animation).
+                    if ((wasActive || isEnabled) && typeof lineObj?.disable === "function") {
                         lineObj.disable();
                     }
                 }
-            });
-
-            if (layoutChanged && typeof lyricPlayer.calcLayout === "function") {
-                lyricPlayer.calcLayout();
             }
+
             bgActiveIndexes = nextActive;
+            return layoutChanged;
         };
 
-        // Ensure time is integer ms and keep x-bg activation tied to its own begin/end.
-        const coreSetCurrentTime = lyricPlayer.setCurrentTime.bind(lyricPlayer);
-        const originalSetCurrentTime = (ms, force = false) => {
-            const timeMs = Math.max(0, Math.floor(ms));
-            const delta = Math.abs(timeMs - lastKnownTimeMs);
-            lastKnownTimeMs = timeMs;
-            coreSetCurrentTime(timeMs, force);
-            enforceBGTimingWindows(timeMs, force || delta > 500);
-        };
-        lyricPlayer.setCurrentTime = originalSetCurrentTime;
-        let leadInMs = 300;
-        let timeOffsetMs = 0;
-        let lastTTML = "";
-        const applyLeadIn = (line) => {
-            if (!line || line.isBG) return;
-            const start = Number.isFinite(line.startTime) ? line.startTime : 0;
-            const end = Number.isFinite(line.endTime) ? line.endTime : 0;
-            if (!Array.isArray(line.words) || line.words.length === 0) {
-                const shift = Math.min(leadInMs, start);
-                line.startTime = Math.max(0, start - shift);
-                line.endTime = Math.max(line.startTime, end - shift);
-                return;
-            }
-            const firstWord = line.words[0];
-            const wordStart = Number.isFinite(firstWord?.startTime) ? firstWord.startTime : start;
-            const lastWord = line.words[line.words.length - 1];
-            const lastWordEnd = Number.isFinite(lastWord?.endTime) ? lastWord.endTime : end;
-            const shift = Math.min(leadInMs, start, wordStart, lastWordEnd);
-            line.startTime = Math.max(0, start - shift);
-            if (firstWord && Number.isFinite(firstWord.startTime)) {
-                firstWord.startTime = Math.max(0, wordStart - shift);
-            }
-            const newEnd = Math.max(line.startTime, end - shift);
-            line.endTime = newEnd;
-            if (lastWord && Number.isFinite(lastWord.endTime)) {
-                lastWord.endTime = Math.max(newEnd, lastWordEnd - shift);
-            }
-        };
-        const applyTimeOffset = (line) => {
-            if (!line) return;
-            const offset = Number.isFinite(timeOffsetMs) ? timeOffsetMs : 0;
-            if (!offset) return;
+	        // Ensure time is integer ms and keep x-bg activation tied to its own begin/end.
+	        // Also implements "near-gap early switch": if next line starts very soon after current ends,
+	        // switch layout focus to next line early (leadInMs), and let current line exit quickly.
+	        const coreSetCurrentTime = lyricPlayer.setCurrentTime.bind(lyricPlayer);
+	        const nearSwitchEndOverrides = new Map(); // mainIndex -> { originalEnd: number, restoreAt: number }
+	        const nearSwitchFastExited = new Set(); // indexes (main and bg) we've already fast-disabled
+	        const getOriginalMainEndTime = (index, line) => {
+	            const info = nearSwitchEndOverrides.get(index);
+	            if (info && Number.isFinite(info.originalEnd)) return info.originalEnd;
+	            return Number.isFinite(line?.endTime) ? line.endTime : null;
+	        };
+	        const findNextMainIndex = (fromIndex) => {
+	            if (!Array.isArray(lyricPlayer.processedLines)) return -1;
+	            for (let i = fromIndex + 1; i < lyricPlayer.processedLines.length; i++) {
+	                const line = lyricPlayer.processedLines[i];
+	                if (line && !line.isBG) return i;
+	            }
+	            return -1;
+	        };
+	        const findPairedBgIndex = (mainIndex) => {
+	            if (!Array.isArray(lyricPlayer.processedLines)) return -1;
+	            const bgIndex = mainIndex + 1;
+	            if (bgIndex >= 0 && bgIndex < lyricPlayer.processedLines.length && lyricPlayer.processedLines[bgIndex]?.isBG) {
+	                return bgIndex;
+	            }
+	            return -1;
+	        };
+	        const restoreExpiredNearSwitchOverrides = (timeMs, forceClear = false) => {
+	            if (forceClear) {
+	                for (const [idx, info] of nearSwitchEndOverrides.entries()) {
+	                    const line = lyricPlayer.processedLines?.[idx];
+	                    if (line && Number.isFinite(info.originalEnd)) {
+	                        line.endTime = info.originalEnd;
+	                    }
+	                }
+	                nearSwitchEndOverrides.clear();
+	                nearSwitchFastExited.clear();
+	                forcedExitedMainLines = new Set();
+	                return;
+	            }
+	            for (const [idx, info] of nearSwitchEndOverrides.entries()) {
+	                if (!info || !Number.isFinite(info.restoreAt)) continue;
+	                if (timeMs < info.restoreAt) continue;
+	                const line = lyricPlayer.processedLines?.[idx];
+	                if (line && Number.isFinite(info.originalEnd)) {
+	                    line.endTime = info.originalEnd;
+	                }
+	                nearSwitchEndOverrides.delete(idx);
+	            }
+	        };
+	        const fastDisableLineObject = (index) => {
+	            const obj = lyricPlayer.currentLyricLineObjects?.[index];
+	            if (!obj || typeof obj.disable !== "function") return;
+	            try {
+	                obj.disable();
+	                // Speed up the reverse "float" so the line can exit quickly.
+	                const words = obj.splittedWords;
+	                if (!Array.isArray(words)) return;
+	                for (const w of words) {
+	                    const anims = w?.elementAnimations;
+	                    if (!Array.isArray(anims)) continue;
+	                    for (const anim of anims) {
+	                        const id = anim?.id || "";
+	                        if (!id) continue;
+	                        if (id === "float-word" || id.includes("emphasize-word-float")) {
+	                            anim.playbackRate = -6;
+	                            anim.play();
+	                        }
+	                    }
+	                }
+	            } catch (e) {
+	                // ignore
+	            }
+	        };
+	        let nearSwitchGapMs = 70;
+	        let lastNearSwitchMainIndex = -1;
+	        const toMainIndex = (idx) => {
+	            const lines = lyricPlayer.processedLines;
+	            if (!Array.isArray(lines)) return -1;
+	            if (!Number.isInteger(idx) || idx < 0 || idx >= lines.length) return -1;
+	            const line = lines[idx];
+	            if (line && !line.isBG) return idx;
+	            return getPairedMainLineIndex(idx);
+	        };
+	        const pickCurrentMainIndex = () => {
+	            const lines = lyricPlayer.processedLines;
+	            if (!Array.isArray(lines) || lines.length === 0) return -1;
+	
+	            // Prefer the latest hot main line (handles overlaps).
+	            let hotMain = -1;
+	            for (const idx of (lyricPlayer.hotLines ?? [])) {
+	                const line = lines[idx];
+	                if (!line || line.isBG) continue;
+	                if (idx > hotMain) hotMain = idx;
+	            }
+	            if (hotMain !== -1) {
+	                lastNearSwitchMainIndex = hotMain;
+	                return hotMain;
+	            }
+	
+	            // Fall back to previous main index if still valid.
+	            if (
+	                Number.isInteger(lastNearSwitchMainIndex)
+	                && lastNearSwitchMainIndex >= 0
+	                && lastNearSwitchMainIndex < lines.length
+	                && lines[lastNearSwitchMainIndex]
+	                && !lines[lastNearSwitchMainIndex].isBG
+	            ) {
+	                return lastNearSwitchMainIndex;
+	            }
+	
+	            // Last fall back: derive from scrollToIndex (may point to BG or main).
+	            const guessed = toMainIndex(lyricPlayer.scrollToIndex);
+	            if (guessed !== -1) {
+	                lastNearSwitchMainIndex = guessed;
+	                return guessed;
+	            }
+	            return -1;
+	        };
+	        const findNearSwitchCandidate = (timeMs) => {
+	            const lines = lyricPlayer.processedLines;
+	            if (!Array.isArray(lines) || lines.length === 0) return null;
+	            if (!Number.isFinite(nearSwitchGapMs) || nearSwitchGapMs <= 0) return null;
+	            if (!Number.isFinite(leadInMs) || leadInMs <= 0) return null;
+
+	            const currentMain = pickCurrentMainIndex();
+	            if (currentMain === -1) return null;
+	            const nextMain = findNextMainIndex(currentMain);
+	            if (nextMain === -1) return null;
+	
+	            const currentLine = lines[currentMain];
+	            const nextLine = lines[nextMain];
+	            const currentEnd = getOriginalMainEndTime(currentMain, currentLine);
+	            const nextStart = nextLine?.startTime;
+	            if (!Number.isFinite(currentEnd) || !Number.isFinite(nextStart)) return null;
+	
+	            const gap = nextStart - currentEnd;
+	            if (!(gap >= 0 && gap < nearSwitchGapMs)) return null;
+	
+	            const currentStart = Number.isFinite(currentLine?.startTime) ? currentLine.startTime : currentEnd;
+	            const switchAt = Math.max(currentStart, currentEnd - leadInMs);
+	            // No need to run near-switch far ahead of its active window.
+	            if (timeMs + 8 < switchAt) return null;
+	            return {
+	                currentIndex: currentMain,
+	                nextIndex: nextMain,
+	                currentEnd,
+	                nextStart,
+	                gap,
+	                switchAt,
+	            };
+	        };
+	        const ensureNearSwitchCutoff = (candidate, cutoffMs) => {
+	            if (!candidate) return;
+	            const idx = candidate.currentIndex;
+	            const line = lyricPlayer.processedLines?.[idx];
+	            if (!line || line.isBG) return;
+	            const originalEnd = getOriginalMainEndTime(idx, line);
+	            const lineStart = Number.isFinite(line.startTime) ? line.startTime : 0;
+	            const targetEnd = Math.max(lineStart, Math.min(originalEnd ?? line.endTime, cutoffMs));
+	            if (!Number.isFinite(targetEnd) || targetEnd <= 0) return;
+	            if (!nearSwitchEndOverrides.has(idx)) {
+	                nearSwitchEndOverrides.set(idx, { originalEnd: originalEnd ?? line.endTime, restoreAt: candidate.nextStart });
+	            }
+	            if (!Number.isFinite(line.endTime) || line.endTime > targetEnd) {
+	                line.endTime = targetEnd;
+	            }
+	        };
+	        const enforceNearSwitch = (timeMs, candidate) => {
+	            if (!candidate) return false;
+	            if (!(timeMs >= candidate.switchAt && timeMs < candidate.nextStart)) return false;
+	            if (nearSwitchFastExited.has(candidate.currentIndex)) return false;
+	
+	            let layoutChanged = false;
+	            const ensureBuffered = (idx) => {
+	                if (idx === -1) return;
+	                if (!lyricPlayer.bufferedLines?.has(idx)) {
+	                    lyricPlayer.bufferedLines?.add(idx);
+	                    layoutChanged = true;
+	                }
+	            };
+	            const removeHotBuffered = (idx) => {
+	                if (idx === -1) return;
+	                if (lyricPlayer.hotLines?.has(idx)) {
+	                    lyricPlayer.hotLines.delete(idx);
+	                    layoutChanged = true;
+	                }
+	                if (lyricPlayer.bufferedLines?.has(idx)) {
+	                    lyricPlayer.bufferedLines.delete(idx);
+	                    layoutChanged = true;
+	                }
+	            };
+	
+	            const curBg = findPairedBgIndex(candidate.currentIndex);
+	            const nextBg = findPairedBgIndex(candidate.nextIndex);
+
+	            // One-shot switch: prevent core from re-activating current line in following ticks.
+	            ensureNearSwitchCutoff(candidate, timeMs);
+	            forcedExitedMainLines.add(candidate.currentIndex);
+	            nearSwitchFastExited.add(candidate.currentIndex);
+	            removeHotBuffered(candidate.currentIndex);
+	            removeHotBuffered(curBg);
+
+	            // Keep target line around so layout can settle on next line immediately.
+	            ensureBuffered(candidate.nextIndex);
+	            ensureBuffered(nextBg);
+	
+	            // Focus the layout on the next line.
+	            if (lyricPlayer.scrollToIndex !== candidate.nextIndex) {
+	                lyricPlayer.scrollToIndex = candidate.nextIndex;
+	                layoutChanged = true;
+	            }
+	            lastNearSwitchMainIndex = candidate.nextIndex;
+	
+	            // Force-exit the current main line (and its BG) immediately.
+	            fastDisableLineObject(candidate.currentIndex);
+	            if (curBg !== -1) {
+	                nearSwitchFastExited.add(curBg);
+	                fastDisableLineObject(curBg);
+	            }
+	            return layoutChanged;
+	        };
+	        const originalSetCurrentTime = (ms, force = false) => {
+	            const timeMs = Math.max(0, Math.floor(ms));
+	            const prevTimeMs = lastKnownTimeMs;
+	            const delta = Math.abs(timeMs - lastKnownTimeMs);
+	            const timeWentBack = timeMs + 50 < prevTimeMs;
+	            const isSeekLike = force || delta > 800 || timeWentBack;
+	            let layoutDirty = false;
+	            if (isSeekLike) {
+	                lastNearSwitchMainIndex = -1;
+	            }
+	
+	            lastKnownTimeMs = timeMs;
+	
+	            // Clear any temporary state on seeks / big jumps / backwards time.
+	            restoreExpiredNearSwitchOverrides(timeMs, isSeekLike);
+	
+	            const candidate = findNearSwitchCandidate(timeMs);
+	
+	            coreSetCurrentTime(timeMs, isSeekLike);
+	
+	            // Apply near-gap early switch behavior (layout + fast exit).
+	            if (enforceNearSwitch(timeMs, candidate)) layoutDirty = true;
+	
+	            // BG enforcement should run after near-switch so forcedExitedMainLines takes effect.
+	            if (enforceBGTimingWindows(timeMs, isSeekLike || delta > 500)) layoutDirty = true;
+	
+	            if (layoutDirty && typeof lyricPlayer.calcLayout === "function") {
+	                lyricPlayer.calcLayout();
+	            }
+	        };
+	        lyricPlayer.setCurrentTime = originalSetCurrentTime;
+	        let leadInMs = 300;
+	        let timeOffsetMs = 0;
+	        let lastTTML = "";
+	        const applyTimeOffset = (line) => {
+	            if (!line) return;
+	            const offset = Number.isFinite(timeOffsetMs) ? timeOffsetMs : 0;
+	            if (!offset) return;
             const adjust = (value) => Math.max(0, value + offset);
 
             if (Number.isFinite(line.startTime)) {
@@ -488,24 +734,32 @@
                     return;
                 }
                 try {
-                    lastTTML = ttml;
-                    const result = parseTTML(ttml);
-                    const lines = result.lines.map(mapTTMLLyric);
-                    lines.forEach(applyLeadIn);
-                    lines.forEach(applyTimeOffset);
-                    const timingSnapshot = captureTimingSnapshot(lines);
-                    // Preserve TTML intent (no mutation of duet/bg/ordering).
-                    lyricPlayer.setLyricLines(lines);
-                    const currentMs = Number.isFinite(lastKnownTimeMs)
-                        ? lastKnownTimeMs
-                        : (lyricPlayer.getCurrentTime ? lyricPlayer.getCurrentTime() : 0);
-                    // Undo core timing normalization so x-bg keeps original line/word timing.
-                    restoreTimingSnapshot(timingSnapshot);
-                    assertXBgTiming(ttml, lines);
-                    // Re-align playback position after (re)loading lyrics.
-                    originalSetCurrentTime(currentMs, true);
-                    console.log("[LyricsRenderer] Loaded lines:", lines.length);
-                } catch (e) {
+	                    lastTTML = ttml;
+	                    const result = parseTTML(ttml);
+	                    const lines = result.lines.map(mapTTMLLyric);
+	                    lines.forEach(applyTimeOffset);
+		                    const timingSnapshot = captureTimingSnapshot(lines);
+		                    // Preserve TTML intent (no mutation of duet/bg/ordering).
+		                    lyricPlayer.setLyricLines(lines);
+	                    const currentMs = Number.isFinite(lastKnownTimeMs)
+	                        ? lastKnownTimeMs
+	                        : (lyricPlayer.getCurrentTime ? lyricPlayer.getCurrentTime() : 0);
+	                    // Undo core timing normalization so x-bg keeps original line/word timing.
+	                    restoreTimingSnapshot(timingSnapshot);
+	                    // Core may have already generated mask animations based on its normalized timing.
+	                    // Rebuild masks for currently-built lines so per-word highlight uses restored TTML timing.
+	                    if (Array.isArray(lyricPlayer.currentLyricLineObjects)) {
+	                        for (const obj of lyricPlayer.currentLyricLineObjects) {
+	                            if (obj?.built && typeof obj.updateMaskImageSync === "function") {
+	                                obj.updateMaskImageSync();
+	                            }
+	                        }
+	                    }
+	                    assertXBgTiming(ttml, lines);
+	                    // Re-align playback position after (re)loading lyrics.
+	                    originalSetCurrentTime(currentMs, true);
+	                    console.log("[LyricsRenderer] Loaded lines:", lines.length);
+	                } catch (e) {
                     console.error("[LyricsRenderer] TTML Parse Error:", e);
                     // Optionally fallback to plain text parsing if you had that logic
                 }
@@ -558,16 +812,19 @@
                     if (config.shadowColor) {
                         lyricPlayer.getElement().style.textShadow = `0 1px 2px ${config.shadowColor}`;
                     }
-                    if (typeof config.leadInMs === "number" && !Number.isNaN(config.leadInMs)) {
-                        leadInMs = Math.max(0, Math.min(1200, config.leadInMs));
-                        if (lastTTML) {
-                            window.LyricsRenderer.setLyrics(lastTTML);
-                        }
-                    }
-                    if (typeof config.timeOffsetMs === "number" && !Number.isNaN(config.timeOffsetMs)) {
-                        timeOffsetMs = Math.max(-15000, Math.min(15000, config.timeOffsetMs));
-                        if (lastTTML) {
-                            window.LyricsRenderer.setLyrics(lastTTML);
+	                    if (typeof config.leadInMs === "number" && !Number.isNaN(config.leadInMs)) {
+	                        leadInMs = Math.max(0, Math.min(1200, config.leadInMs));
+	                        // Lead-in affects near-gap early-switch behavior; clear any cached state.
+	                        restoreExpiredNearSwitchOverrides(lastKnownTimeMs, true);
+	                    }
+	                    if (typeof config.nearSwitchGapMs === "number" && !Number.isNaN(config.nearSwitchGapMs)) {
+	                        nearSwitchGapMs = Math.max(0, Math.min(300, config.nearSwitchGapMs));
+	                        restoreExpiredNearSwitchOverrides(lastKnownTimeMs, true);
+	                    }
+	                    if (typeof config.timeOffsetMs === "number" && !Number.isNaN(config.timeOffsetMs)) {
+	                        timeOffsetMs = Math.max(-15000, Math.min(15000, config.timeOffsetMs));
+	                        if (lastTTML) {
+	                            window.LyricsRenderer.setLyrics(lastTTML);
                         }
                     }
                     console.log("[LyricsRenderer] Config updated:", config);

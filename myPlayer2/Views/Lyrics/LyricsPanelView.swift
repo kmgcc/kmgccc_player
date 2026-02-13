@@ -163,6 +163,7 @@ struct LyricsSettingsObserver: ViewModifier {
     @AppStorage("lyricsTranslationFontWeightDark") private var lyricsTranslationFontWeightDark:
         Int = 400
     @AppStorage("lyricsLeadInMs") private var lyricsLeadInMs: Double = 300
+    @AppStorage("lyricsNearSwitchGapMs") private var lyricsNearSwitchGapMs: Double = 70
 
     func body(content: Content) -> some View {
         content
@@ -174,6 +175,7 @@ struct LyricsSettingsObserver: ViewModifier {
             .onChange(of: lyricsFontWeightLight) { _, _ in lyricsVM.refreshConfigFromSettings() }
             .onChange(of: lyricsFontWeightDark) { _, _ in lyricsVM.refreshConfigFromSettings() }
             .onChange(of: lyricsLeadInMs) { _, _ in lyricsVM.refreshConfigFromSettings() }
+            .onChange(of: lyricsNearSwitchGapMs) { _, _ in lyricsVM.refreshConfigFromSettings() }
             .onChange(of: lyricsTranslationFontSize) { _, _ in lyricsVM.refreshConfigFromSettings()
             }
             .onChange(of: lyricsTranslationFontWeightLight) { _, _ in
