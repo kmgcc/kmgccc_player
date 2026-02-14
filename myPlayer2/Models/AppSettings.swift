@@ -321,7 +321,7 @@ public final class AppSettings {
 
     /// Now Playing skin identifier
     @ObservationIgnored
-    @AppStorage("nowPlayingSkin") var nowPlayingSkin: String = "coverLed"
+    @AppStorage("nowPlayingSkin") var nowPlayingSkin: String = "kmgccc.cassette"
 
     /// Single source of truth for Now Playing skin.
     var selectedNowPlayingSkinID: String {

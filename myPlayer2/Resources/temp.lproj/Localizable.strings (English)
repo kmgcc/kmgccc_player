@@ -39,6 +39,7 @@
 "settings.now_playing.skin_options" = "%@ Options";
 "skin.classic_led.name" = "Classic LED";
 "skin.classic_led.detail" = "Artwork + LED meter";
+"skin.classic_led.show_led" = "Show LED";
 "skin.rotating_cover.name" = "Rotating Cover";
 "skin.rotating_cover.detail" = "Spinning artwork";
 "skin.kmgccc_cassette.name" = "kmgccc Cassette";

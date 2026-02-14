@@ -64,7 +64,6 @@ struct LyricsPanelView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(.horizontal, 24)
                 .padding(.bottom, 12)
-                .safeAreaPadding(.top)
                 .opacity(playerVM.currentTrack != nil ? 1 : 0)
         }
     }
