@@ -6,6 +6,7 @@
 //  Hosts skins (background + artwork/overlay) while keeping lyrics outside skins.
 //
 
+import AppKit
 import SwiftUI
 
 @MainActor
@@ -50,6 +51,7 @@ struct NowPlayingHostView: View {
                 }
                 .frame(width: contentBounds.width, height: contentBounds.height)
                 .clipped()
+
             }
             .id("nowPlayingSkin_\(selectedSkinID)_\(skinRevision)")
             .frame(width: windowSize.width, height: windowSize.height, alignment: .topLeading)
@@ -118,24 +120,6 @@ struct NowPlayingHostView: View {
     private func resolveArtworkAccent(for track: Track?) -> Color? {
         guard let artwork = track?.artworkData else { return nil }
         guard let accent = ArtworkColorExtractor.uiAccentColor(from: artwork) else { return nil }
-        return Color(nsColor: normalizedArtworkAccent(accent))
-    }
-
-    private func normalizedArtworkAccent(_ color: NSColor) -> NSColor {
-        guard colorScheme == .dark else { return color }
-        guard let rgb = color.usingColorSpace(.deviceRGB) else { return color }
-
-        var hue: CGFloat = 0
-        var saturation: CGFloat = 0
-        var brightness: CGFloat = 0
-        var alpha: CGFloat = 0
-        rgb.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
-
-        return NSColor(
-            calibratedHue: hue,
-            saturation: saturation,
-            brightness: max(brightness, ThemeStore.darkModeMinimumThemeBrightness),
-            alpha: alpha
-        )
+        return Color(nsColor: accent)
     }
 }

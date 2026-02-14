@@ -176,6 +176,7 @@ private final class BKArtBackgroundLayerView: NSView {
         let layer = CALayer()
         let backgroundLayer = CALayer()
         let backgroundToneLayer = CALayer()
+        var ultraDarkOverlay: CALayer?
         let shapesRoot = CALayer()
 
         var style: BackgroundStyle = .image
@@ -200,10 +201,13 @@ private final class BKArtBackgroundLayerView: NSView {
             layer.frame = frame
             layer.masksToBounds = true
             layer.backgroundColor = NSColor.black.cgColor
+            layer.isOpaque = true
 
             backgroundLayer.frame = frame
             backgroundLayer.backgroundColor = NSColor.black.cgColor
             backgroundLayer.contentsGravity = .resizeAspectFill
+            backgroundLayer.isOpaque = true
+            backgroundLayer.contentsFormat = .RGBA8Uint
             layer.addSublayer(backgroundLayer)
 
             backgroundToneLayer.frame = frame
@@ -254,6 +258,7 @@ private final class BKArtBackgroundLayerView: NSView {
     private var didPauseBackgroundTimerForTransition = false
     private var didPauseDotTimerForTransition = false
     private var deferredPaletteUpdate: ([NSColor], Bool)?
+    private let ultraDarkOverlayOpacity: Float = 0.40
 
     // Style Selector State
     private var lastStyle: BackgroundStyle?
@@ -376,18 +381,21 @@ private final class BKArtBackgroundLayerView: NSView {
         }
         let toneOpacity: Float
         if harmonized.isDark {
-            toneOpacity = isUltraDarkCover ? 0.14 : 0.30
+            toneOpacity = 0.30
         } else {
             toneOpacity = 0.18
         }
-        if let from = fromContainer {
-            from.backgroundToneLayer.backgroundColor = toneColorForVariant(from.bgVariantIndex)
+
+        func applyTone(_ container: Container?) {
+            guard let container else { return }
+            container.backgroundToneLayer.backgroundColor = toneColorForVariant(container.bgVariantIndex)
+            container.backgroundToneLayer.opacity = toneOpacity
+            container.backgroundToneLayer.compositingFilter = nil
+            updateUltraDarkOverlay(for: container)
         }
-        fromContainer?.backgroundToneLayer.opacity = toneOpacity
-        if let to = toContainer {
-            to.backgroundToneLayer.backgroundColor = toneColorForVariant(to.bgVariantIndex)
-        }
-        toContainer?.backgroundToneLayer.opacity = toneOpacity
+
+        applyTone(fromContainer)
+        applyTone(toContainer)
         applyCurrentBackgroundPhase()
 
         if let from = fromContainer { updateDotGradient(from) }
@@ -459,7 +467,6 @@ private final class BKArtBackgroundLayerView: NSView {
         }
         pendingBoundsRebuild = false
         stopTransitionTimer()
-
         let replacement = buildContainer(seed: rebuildSeed)
         fromContainer?.layer.removeFromSuperlayer()
         toContainer?.layer.removeFromSuperlayer()
@@ -481,6 +488,9 @@ private final class BKArtBackgroundLayerView: NSView {
         container.backgroundLayer.contentsScale =
             window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
         container.backgroundToneLayer.frame = layoutFrame
+        container.ultraDarkOverlay?.frame = layoutFrame
+        container.ultraDarkOverlay?.contentsScale =
+            window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
         container.shapesRoot.frame = layoutFrame
 
         if let dotRoot = container.dotRoot {
@@ -533,11 +543,12 @@ private final class BKArtBackgroundLayerView: NSView {
             toneVariant.first ?? (isDark ? NSColor.black.cgColor : NSColor.white.cgColor)
         let toneOpacity: Float
         if isDark {
-            toneOpacity = isUltraDarkCover ? 0.14 : 0.30
+            toneOpacity = 0.30
         } else {
             toneOpacity = 0.18
         }
         container.backgroundToneLayer.opacity = toneOpacity
+        container.backgroundToneLayer.compositingFilter = nil
 
         applyStyle(to: container, style: container.style, rng: &rng)
         let swatchResult = BKColorEngine.makeShapeSwatches(
@@ -583,6 +594,7 @@ private final class BKArtBackgroundLayerView: NSView {
             let size = CGSize(width: side, height: side)
             let finalTint = plannedTints[shapeIndex]
             let shape = makeTintedShapeLayer(image: selectedShape.image, size: size, tint: finalTint)
+            shape.opacity = 1.0
             shape.position = point
 
             container.shapesRoot.addSublayer(shape)
@@ -604,6 +616,7 @@ private final class BKArtBackgroundLayerView: NSView {
         }
 
         ensureLayerOrder(for: container)
+        updateUltraDarkOverlay(for: container)
 
 #if DEBUG
         let minExpectedShapeCount = assets.shapes.isEmpty ? 0 : 10
@@ -652,18 +665,57 @@ private final class BKArtBackgroundLayerView: NSView {
             container.backgroundToneLayer.isHidden = true
         }
 
+        updateUltraDarkOverlay(for: container)
         ensureLayerOrder(for: container)
     }
 
     private func ensureLayerOrder(for container: Container) {
+        ensureUltraDarkOverlay(for: container)
         container.layer.insertSublayer(container.backgroundLayer, at: 0)
         container.layer.insertSublayer(container.backgroundToneLayer, above: container.backgroundLayer)
+        if let overlay = container.ultraDarkOverlay {
+            container.layer.insertSublayer(overlay, above: container.backgroundToneLayer)
+        }
 
         if let dotRoot = container.dotRoot {
-            container.layer.insertSublayer(dotRoot, above: container.backgroundToneLayer)
+            if let overlay = container.ultraDarkOverlay {
+                container.layer.insertSublayer(dotRoot, above: overlay)
+            } else {
+                container.layer.insertSublayer(dotRoot, above: container.backgroundToneLayer)
+            }
             container.layer.insertSublayer(container.shapesRoot, above: dotRoot)
         } else {
-            container.layer.insertSublayer(container.shapesRoot, above: container.backgroundToneLayer)
+            if let overlay = container.ultraDarkOverlay {
+                container.layer.insertSublayer(container.shapesRoot, above: overlay)
+            } else {
+                container.layer.insertSublayer(container.shapesRoot, above: container.backgroundToneLayer)
+            }
+        }
+    }
+
+    private func ensureUltraDarkOverlay(for container: Container) {
+        if container.ultraDarkOverlay == nil {
+            let overlay = CALayer()
+            overlay.frame = expandedBounds
+            overlay.backgroundColor = NSColor.black.cgColor
+            overlay.opacity = 0
+            overlay.isHidden = true
+            overlay.contentsScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
+            container.ultraDarkOverlay = overlay
+        }
+    }
+
+    private func updateUltraDarkOverlay(for container: Container) {
+        guard let overlay = container.ultraDarkOverlay else { return }
+        overlay.frame = expandedBounds
+        overlay.contentsScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
+        let shouldShowOverlay = container.style == .image && isUltraDarkCover
+        if shouldShowOverlay {
+            overlay.opacity = ultraDarkOverlayOpacity
+            overlay.isHidden = false
+        } else {
+            overlay.opacity = 0
+            overlay.isHidden = true
         }
     }
 
@@ -801,7 +853,9 @@ private final class BKArtBackgroundLayerView: NSView {
             if let fill = layer.sublayers?.first {
                 fill.backgroundColor = tint
             }
+            layer.opacity = 1.0
         }
+        container.shapesRoot.opacity = 1.0
         CATransaction.commit()
     }
 
@@ -1100,28 +1154,13 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     private func dotGradientStops() -> [CGColor] {
-        guard harmonized.isDark, isUltraDarkCover else {
-            return harmonized.bgStops
-        }
-        return harmonized.bgStops.map { darkenForUltraDarkDot($0) }
+        harmonized.bgStops
     }
 
     private var isUltraDarkCover: Bool {
         let luma = harmonized.imageCoverLuma
         return (luma < 0.36 && harmonized.areaDominantB < 0.30)
             || (luma < 0.30 && harmonized.grayScore > 0.70)
-    }
-
-    private func darkenForUltraDarkDot(_ color: CGColor) -> CGColor {
-        guard let rgb = NSColor(cgColor: color)?.usingColorSpace(.deviceRGB) else { return color }
-        var h: CGFloat = 0
-        var s: CGFloat = 0
-        var b: CGFloat = 0
-        var a: CGFloat = 0
-        rgb.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
-        let targetB = max(0.08, min(0.24, min(b * 0.58, b - 0.06)))
-        let targetS = max(0.08, min(0.38, s * 0.92))
-        return NSColor(deviceHue: h, saturation: targetS, brightness: targetB, alpha: a).cgColor
     }
 
     private func assignRandomColor(to slot: DotSlot, rng: inout BKSeededRandom) {
@@ -1199,6 +1238,7 @@ private final class BKArtBackgroundLayerView: NSView {
         if container.style == .dot {
             container.backgroundLayer.contents = nil
             container.backgroundLayer.backgroundColor = harmonized.bgStops.first ?? NSColor.black.cgColor
+            container.shapesRoot.opacity = 1.0
             updateDotGradient(container)
             return
         }
@@ -1219,6 +1259,8 @@ private final class BKArtBackgroundLayerView: NSView {
         container.backgroundLayer.contentsScale =
             window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
         container.backgroundLayer.contents = image
+        container.shapesRoot.opacity = 1.0
+        updateUltraDarkOverlay(for: container)
 
 #if DEBUG
         assert(container.dotRoot == nil || container.dotRoot?.isHidden == true)
@@ -1311,27 +1353,6 @@ private final class BKArtBackgroundLayerView: NSView {
         exitTransitionPerformanceMode()
     }
 
-    private struct DarkToneMapConfig {
-        let exposureDown: CGFloat
-        let p4Y: CGFloat
-        let saturation: CGFloat
-        let contrast: CGFloat
-        let shadowLift: CGFloat
-        let highlightAmount: CGFloat
-        let detailAlpha: CGFloat
-        let targetBgB: CGFloat
-        let shapeReferenceB: CGFloat
-        let ultraDark: Bool
-    }
-
-    private struct BKArtLumaStats {
-        let low: Double
-        let high: Double
-        let mean: Double
-        let p10: Double
-        let p90: Double
-    }
-
     private struct ImageVariantTuning {
         let avgS: CGFloat
         let hueSpread: CGFloat
@@ -1345,10 +1366,9 @@ private final class BKArtBackgroundLayerView: NSView {
         guard !source.isEmpty else { return [] }
         let variants = backgroundToneVariants()
         let toneStops = variants.first ?? [BKArtBackgroundView.fallbackPalette[0]]
+        let outputSpace = CGColorSpace(name: CGColorSpace.sRGB)
         guard let mapImage = makeColorMapImage(colors: toneStops) else { return [source] }
-        let darkConfig = harmonized.isDark ? makeDarkToneMapConfig() : nil
         let tuning = imageVariantTuning(for: toneStops)
-        let isUltra = darkConfig?.ultraDark == true
         let variantImages = source.compactMap { image in
             let input = CIImage(cgImage: image)
             let grayscale = input.applyingFilter(
@@ -1364,35 +1384,24 @@ private final class BKArtBackgroundLayerView: NSView {
                 "CIColorMap",
                 parameters: ["inputGradientImage": mapImage]
             )
-            let mapAlpha = isUltra ? min(0.42, tuning.mapAlpha * 0.58) : tuning.mapAlpha
             let mappedSoftAlpha = mapped.applyingFilter(
                 "CIColorMatrix",
                 parameters: [
-                    "inputAVector": CIVector(x: 0, y: 0, z: 0, w: mapAlpha)
+                    "inputAVector": CIVector(x: 0, y: 0, z: 0, w: tuning.mapAlpha)
                 ]
             )
             let desaturatedOriginal = input.applyingFilter(
                 "CIColorControls",
                 parameters: [
-                    kCIInputSaturationKey: isUltra ? min(0.26, tuning.originalSaturation * 0.75) : tuning.originalSaturation,
-                    kCIInputContrastKey: isUltra ? 1.02 : 1.10,
-                    kCIInputBrightnessKey: isUltra ? -0.10 : 0.0,
+                    kCIInputSaturationKey: tuning.originalSaturation,
+                    kCIInputContrastKey: 1.10,
+                    kCIInputBrightnessKey: 0.0,
                 ]
             )
             var composed = mappedSoftAlpha.applyingFilter(
                 "CISourceOverCompositing",
                 parameters: [kCIInputBackgroundImageKey: desaturatedOriginal]
             )
-            if isUltra {
-                composed = composed.applyingFilter(
-                    "CIColorControls",
-                    parameters: [
-                        kCIInputSaturationKey: 0.86,
-                        kCIInputContrastKey: 0.97,
-                        kCIInputBrightnessKey: -0.10,
-                    ]
-                )
-            }
             if abs(tuning.composedSaturationBoost - 1.0) > 0.01 {
                 composed = composed.applyingFilter(
                     "CIColorControls",
@@ -1403,403 +1412,22 @@ private final class BKArtBackgroundLayerView: NSView {
                     ]
                 )
             }
-            let finalImage: CIImage
-            if let darkConfig {
-                finalImage = toneMap(
-                    image: composed,
-                    isDark: true,
-                    config: darkConfig
-                )
-            } else {
-                finalImage = composed
-            }
-            return ciContext.createCGImage(finalImage, from: input.extent)
+            let finalImage = toneMap(image: composed, isDark: harmonized.isDark)
+
+            let outSpace = outputSpace ?? CGColorSpaceCreateDeviceRGB()
+            return ciContext.createCGImage(
+                finalImage,
+                from: input.extent,
+                format: .RGBA8,
+                colorSpace: outSpace
+            )
         }
         return variantImages.isEmpty ? [source] : [variantImages]
     }
 
-    private func makeDarkToneMapConfig() -> DarkToneMapConfig {
-        let coverLuma = max(0, min(1, harmonized.imageCoverLuma))
-        let shapeReferenceB = max(0.10, min(1.0, (harmonized.fgBRange.lowerBound + harmonized.fgBRange.upperBound) * 0.5))
-        let rawBgTarget = (harmonized.bgBRange.lowerBound + harmonized.bgBRange.upperBound) * 0.5
-        var targetBgB = max(0.11, min(shapeReferenceB - 0.10, rawBgTarget))
-        let ultraDark = isUltraDarkCover
-        if coverLuma < 0.22 {
-            targetBgB = max(0.11, min(targetBgB, 0.25))
-        }
-        if coverLuma < 0.14 {
-            targetBgB = max(0.11, min(targetBgB, 0.20))
-        }
-        if ultraDark {
-            let t = max(0, min(1, (0.36 - coverLuma) / 0.36))
-            let ultraTarget = lerp(0.25, 0.13, t: t)
-            targetBgB = max(0.11, min(targetBgB, ultraTarget))
-        }
-        targetBgB = max(0.11, min(targetBgB, 0.25))
-        let darkNeutralBias = (harmonized.grayScore > 0.68 || harmonized.areaDominantS < 0.16)
-            && coverLuma < 0.40
-            && !harmonized.accentEnabled
-
-        let exposureDown: CGFloat
-        if coverLuma < 0.22 {
-            exposureDown = lerp(-0.90, -0.35, t: coverLuma / 0.22)
-        } else {
-            exposureDown = lerp(-0.35, -0.10, t: (coverLuma - 0.22) / 0.78)
-        }
-
-        let exposureBias2 = max(
-            -1.6,
-            min(0.0, log2(max(0.08, targetBgB) / 0.30))
-        )
-        var finalExposure = min(exposureDown, exposureBias2)
-        if darkNeutralBias {
-            finalExposure = min(finalExposure - 0.28, -0.55)
-        }
-        if ultraDark {
-            let t = max(0, min(1, (0.36 - coverLuma) / 0.36))
-            finalExposure = min(finalExposure - (0.06 + 0.12 * t), -0.50)
-            finalExposure = max(finalExposure, -0.30)
-        }
-        finalExposure = max(-2.0, min(-0.1, finalExposure))
-        var p4Y: CGFloat = coverLuma < 0.14 ? 0.80 : 0.86
-        if darkNeutralBias {
-            p4Y = min(p4Y, coverLuma < 0.16 ? 0.74 : 0.78)
-        }
-        if ultraDark {
-            let t = max(0, min(1, (0.36 - coverLuma) / 0.36))
-            p4Y = min(p4Y, lerp(0.86, 0.76, t: t))
-        }
-        let avgPaletteSat = averagePaletteSaturation()
-        let bgVariantSat = averageBackgroundVariantSaturation()
-        var saturation = max(0.88, min(1.10, 0.90 + 0.45 * max(avgPaletteSat, bgVariantSat)))
-        if darkNeutralBias {
-            saturation = min(saturation, 0.98)
-        }
-        if ultraDark {
-            saturation = min(saturation, 1.02)
-        }
-        var contrast = max(1.02, min(1.10, 1.10 - 0.08 * coverLuma))
-        if darkNeutralBias {
-            contrast = max(1.05, min(1.10, contrast + 0.03))
-        }
-        if ultraDark {
-            contrast = max(contrast, 1.09)
-        }
-
-        let shadowLift: CGFloat = ultraDark ? 0.16 : 0.12
-        let highlightAmount: CGFloat = ultraDark ? 0.72 : 0.80
-        var detailAlpha: CGFloat = ultraDark ? 0.16 : 0.08
-        if darkNeutralBias {
-            detailAlpha = min(0.20, detailAlpha + 0.02)
-        }
-
-        return DarkToneMapConfig(
-            exposureDown: finalExposure,
-            p4Y: p4Y,
-            saturation: saturation,
-            contrast: contrast,
-            shadowLift: shadowLift,
-            highlightAmount: highlightAmount,
-            detailAlpha: detailAlpha,
-            targetBgB: targetBgB,
-            shapeReferenceB: shapeReferenceB,
-            ultraDark: ultraDark
-        )
-    }
-
-    private func toneMap(
-        image: CIImage,
-        isDark: Bool,
-        config: DarkToneMapConfig
-    ) -> CIImage {
+    private func toneMap(image: CIImage, isDark: Bool) -> CIImage {
         guard isDark else { return image }
-        let shouldUseUltraCompression = config.ultraDark || isUltraDarkCover
-        if shouldUseUltraCompression {
-            let gentleBase = image.applyingFilter(
-                "CIColorControls",
-                parameters: [
-                    kCIInputSaturationKey: min(1.0, max(0.88, config.saturation * 0.92)),
-                    kCIInputContrastKey: 1.01,
-                    kCIInputBrightnessKey: 0.0,
-                ]
-            )
-            let gentlyShaped = gentleBase.applyingFilter(
-                "CIHighlightShadowAdjust",
-                parameters: [
-                    "inputShadowAmount": 0.08,
-                    "inputHighlightAmount": 0.90,
-                ]
-            )
-            return compressUltraDarkLuma(
-                image: gentlyShaped,
-                lo: 0.08,
-                hi: 0.20
-            )
-        }
-        let exposed = image.applyingFilter(
-            "CIExposureAdjust",
-            parameters: [kCIInputEVKey: config.exposureDown]
-        )
-        let curved = exposed.applyingFilter(
-            "CIToneCurve",
-            parameters: [
-                "inputPoint0": CIVector(x: 0.00, y: 0.02),
-                "inputPoint1": CIVector(x: 0.25, y: 0.22),
-                "inputPoint2": CIVector(x: 0.50, y: 0.45),
-                "inputPoint3": CIVector(x: 0.75, y: 0.66),
-                "inputPoint4": CIVector(x: 1.00, y: config.p4Y),
-            ]
-        )
-        let tuned = curved.applyingFilter(
-            "CIColorControls",
-            parameters: [
-                kCIInputSaturationKey: config.saturation,
-                kCIInputContrastKey: config.contrast,
-                kCIInputBrightnessKey: 0.0,
-            ]
-        )
-        let shaped = tuned.applyingFilter(
-            "CIHighlightShadowAdjust",
-            parameters: [
-                "inputShadowAmount": config.shadowLift,
-                "inputHighlightAmount": config.highlightAmount,
-            ]
-        )
-        let detail = image.applyingFilter(
-            "CIColorControls",
-            parameters: [
-                kCIInputSaturationKey: 0.0,
-                kCIInputContrastKey: 1.12,
-                kCIInputBrightnessKey: 0.0,
-            ]
-        )
-        let detailLayer = detail.applyingFilter(
-            "CIColorMatrix",
-            parameters: [
-                "inputAVector": CIVector(x: 0, y: 0, z: 0, w: config.detailAlpha)
-            ]
-        )
-        let composited = detailLayer.applyingFilter(
-            "CISourceOverCompositing",
-            parameters: [kCIInputBackgroundImageKey: shaped]
-        )
-        return composited
-    }
-
-    private func compressUltraDarkLuma(
-        image: CIImage,
-        lo: Double,
-        hi: Double
-    ) -> CIImage {
-        guard let linearSpace = CGColorSpace(name: CGColorSpace.linearSRGB) else { return image }
-
-        let safeLo = max(0.02, min(lo, 0.40))
-        let safeHi = max(safeLo + 0.02, min(hi, 0.55))
-        let hiLinear = Self.srgbToLinear(safeHi)
-        let loLinear = Self.srgbToLinear(safeLo)
-
-        let linearInput = image.applyingFilter("CISRGBToneCurveToLinear")
-        guard let before = sampledLumaStats(from: linearInput, linearSpace: linearSpace) else {
-            return image
-        }
-
-        let sourceHigh = max(1e-4, before.high)
-        let sourceMid = max(1e-4, before.mean)
-        let targetMidLinear = max(loLinear * 1.40, min(hiLinear * 0.72, hiLinear * 0.58))
-
-        let evDown = sourceHigh > hiLinear ? log2(hiLinear / sourceHigh) * 0.82 : 0.0
-        let evUpNeed = sourceMid < targetMidLinear ? log2(targetMidLinear / sourceMid) * 0.70 : 0.0
-        let evUpLimit = log2(hiLinear / max(1e-4, sourceHigh))
-        let evUp = min(max(0, evUpNeed), max(0, evUpLimit))
-        let exposureEV = max(-0.65, min(0.38, evDown + evUp))
-        let exposedLinear = abs(exposureEV) > 1e-4
-            ? linearInput.applyingFilter("CIExposureAdjust", parameters: ["inputEV": exposureEV])
-            : linearInput
-
-        guard let afterExposure = sampledLumaStats(from: exposedLinear, linearSpace: linearSpace) else {
-            return image
-        }
-
-        let toeDeficit = max(0, loLinear - afterExposure.p10)
-        let shoulderPressure = max(0, afterExposure.p90 - hiLinear) / max(1e-4, 1.0 - hiLinear)
-        let toeLift = min(0.07, max(0.015, toeDeficit * 0.85))
-        let shoulderDrop = min(0.14, max(0.03, shoulderPressure * 0.12))
-        let midAnchor = max(0.485, min(0.515, 0.50 + (targetMidLinear - afterExposure.mean) * 0.16))
-
-        let tonedLinear = exposedLinear.applyingFilter(
-            "CIToneCurve",
-            parameters: [
-                "inputPoint0": CIVector(x: 0.0, y: 0.0),
-                "inputPoint1": CIVector(x: 0.25, y: CGFloat(min(0.33, 0.25 + toeLift))),
-                "inputPoint2": CIVector(x: 0.50, y: CGFloat(midAnchor)),
-                "inputPoint3": CIVector(x: 0.75, y: CGFloat(max(0.56, 0.75 - shoulderDrop))),
-                "inputPoint4": CIVector(x: 1.0, y: 1.0),
-            ]
-        )
-
-        let ditheredLinear: CIImage = {
-            guard let noiseSource = CIFilter(name: "CIRandomGenerator")?.outputImage else {
-                return tonedLinear
-            }
-            let ditherAmount = CGFloat(1.0 / 255.0)
-            let noise =
-                noiseSource
-                .cropped(to: tonedLinear.extent)
-                .applyingFilter(
-                    "CIColorMatrix",
-                    parameters: [
-                        "inputRVector": CIVector(x: 0.3333, y: 0.3333, z: 0.3333, w: 0),
-                        "inputGVector": CIVector(x: 0.3333, y: 0.3333, z: 0.3333, w: 0),
-                        "inputBVector": CIVector(x: 0.3333, y: 0.3333, z: 0.3333, w: 0),
-                        "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 0),
-                        "inputBiasVector": CIVector(x: -0.5, y: -0.5, z: -0.5, w: 0),
-                    ]
-                )
-                .applyingFilter(
-                    "CIColorMatrix",
-                    parameters: [
-                        "inputRVector": CIVector(x: ditherAmount, y: 0, z: 0, w: 0),
-                        "inputGVector": CIVector(x: 0, y: ditherAmount, z: 0, w: 0),
-                        "inputBVector": CIVector(x: 0, y: 0, z: ditherAmount, w: 0),
-                        "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 0),
-                    ]
-                )
-
-            return noise
-                .applyingFilter(
-                    "CIAdditionCompositing",
-                    parameters: ["inputBackgroundImage": tonedLinear]
-                )
-                .cropped(to: tonedLinear.extent)
-        }()
-
-        let saturationGuard = ditheredLinear.applyingFilter(
-            "CIColorControls",
-            parameters: [
-                kCIInputSaturationKey: 0.94,
-                kCIInputContrastKey: 1.00,
-                kCIInputBrightnessKey: 0.0,
-            ]
-        )
-        let clampedLinear = saturationGuard.applyingFilter(
-            "CIColorClamp",
-            parameters: [
-                "inputMinComponents": CIVector(x: 0, y: 0, z: 0, w: 0),
-                "inputMaxComponents": CIVector(x: CGFloat(hiLinear * 0.93), y: CGFloat(hiLinear * 0.93), z: CGFloat(hiLinear * 0.93), w: 1),
-            ]
-        )
-        let srgb = clampedLinear
-            .applyingFilter("CILinearToSRGBToneCurve")
-            .applyingFilter(
-                "CIHighlightShadowAdjust",
-                parameters: [
-                    "inputShadowAmount": 0.08,
-                    "inputHighlightAmount": 1.0,
-                ]
-            )
-        return srgb
-            .applyingFilter(
-            "CIColorClamp",
-            parameters: [
-                "inputMinComponents": CIVector(x: 0, y: 0, z: 0, w: 0),
-                "inputMaxComponents": CIVector(x: CGFloat(safeHi * 0.84), y: CGFloat(safeHi * 0.84), z: CGFloat(safeHi * 0.84), w: 1),
-            ]
-        )
-    }
-
-    private static func srgbToLinear(_ value: Double) -> Double {
-        let v = max(0, min(1, value))
-        if v <= 0.04045 { return v / 12.92 }
-        return pow((v + 0.055) / 1.055, 2.4)
-    }
-
-    private func sampledLumaStats(
-        from linearImage: CIImage,
-        linearSpace: CGColorSpace
-    ) -> BKArtLumaStats? {
-        let sampleW = 32
-        let sampleH = 32
-        guard linearImage.extent.width > 0, linearImage.extent.height > 0 else { return nil }
-
-        let downsampled = linearImage
-            .transformed(
-                by: CGAffineTransform(
-                    scaleX: CGFloat(sampleW) / linearImage.extent.width,
-                    y: CGFloat(sampleH) / linearImage.extent.height
-                )
-            )
-            .cropped(to: CGRect(x: 0, y: 0, width: sampleW, height: sampleH))
-
-        var bitmap = [Float](repeating: 0, count: sampleW * sampleH * 4)
-        ciContext.render(
-            downsampled,
-            toBitmap: &bitmap,
-            rowBytes: sampleW * 4 * MemoryLayout<Float>.size,
-            bounds: CGRect(x: 0, y: 0, width: sampleW, height: sampleH),
-            format: .RGBAf,
-            colorSpace: linearSpace
-        )
-
-        var samples: [Double] = []
-        samples.reserveCapacity(sampleW * sampleH)
-        var total = 0.0
-        for y in 0..<sampleH {
-            for x in 0..<sampleW {
-                let index = (y * sampleW + x) * 4
-                let r = Double(bitmap[index + 0])
-                let g = Double(bitmap[index + 1])
-                let b = Double(bitmap[index + 2])
-                let luma = max(0, min(1, 0.2126 * r + 0.7152 * g + 0.0722 * b))
-                samples.append(luma)
-                total += luma
-            }
-        }
-
-        guard !samples.isEmpty else { return nil }
-        samples.sort()
-        let count = samples.count
-        let p10Index = min(count - 1, Int(Double(count - 1) * 0.10))
-        let p90Index = min(count - 1, Int(Double(count - 1) * 0.90))
-        let low = samples.first ?? 0
-        let high = samples.last ?? 1
-        let mean = total / Double(count)
-        return BKArtLumaStats(
-            low: low,
-            high: high,
-            mean: mean,
-            p10: samples[p10Index],
-            p90: samples[p90Index]
-        )
-    }
-
-    private func averagePaletteSaturation() -> CGFloat {
-        let all = harmonized.shapePool + harmonized.bgStops + [harmonized.dotBase]
-        let sats: [CGFloat] = all.compactMap { color in
-            guard let rgb = NSColor(cgColor: color)?.usingColorSpace(.deviceRGB) else { return nil }
-            var h: CGFloat = 0
-            var s: CGFloat = 0
-            var b: CGFloat = 0
-            var a: CGFloat = 0
-            rgb.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
-            return s
-        }
-        guard !sats.isEmpty else { return 0.5 }
-        return sats.reduce(0, +) / CGFloat(sats.count)
-    }
-
-    private func averageBackgroundVariantSaturation() -> CGFloat {
-        let all = harmonized.bgVariants.flatMap { $0 }
-        let sats: [CGFloat] = all.compactMap { color in
-            guard let rgb = NSColor(cgColor: color)?.usingColorSpace(.deviceRGB) else { return nil }
-            var h: CGFloat = 0
-            var s: CGFloat = 0
-            var b: CGFloat = 0
-            var a: CGFloat = 0
-            rgb.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
-            return s
-        }
-        guard !sats.isEmpty else { return 0.30 }
-        return sats.reduce(0, +) / CGFloat(sats.count)
+        return image
     }
 
     private func imageVariantTuning(for colors: [NSColor]) -> ImageVariantTuning {
