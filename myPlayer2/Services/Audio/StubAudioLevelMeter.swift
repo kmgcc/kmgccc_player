@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import Observation
 
 /// Stub implementation of AudioLevelMeterProtocol.
 /// Generates sinusoidal/noise level for LED preview.
@@ -21,7 +22,6 @@ final class StubAudioLevelMeter: AudioLevelMeterProtocol {
 
     // MARK: - Private
 
-    private var timer: Timer?
     private var phase: Double = 0
     private var isRunning: Bool = false
 
@@ -31,17 +31,16 @@ final class StubAudioLevelMeter: AudioLevelMeterProtocol {
         guard !isRunning else { return }
         isRunning = true
 
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.updateLevel()
+        Task { @MainActor in
+            while isRunning {
+                updateLevel()
+                try? await Task.sleep(nanoseconds: 33_333_333)  // ~30fps
             }
         }
     }
 
     func stop() {
         isRunning = false
-        timer?.invalidate()
-        timer = nil
         normalizedLevel = 0
     }
 

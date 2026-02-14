@@ -1348,6 +1348,7 @@ private final class BKArtBackgroundLayerView: NSView {
         guard let mapImage = makeColorMapImage(colors: toneStops) else { return [source] }
         let darkConfig = harmonized.isDark ? makeDarkToneMapConfig() : nil
         let tuning = imageVariantTuning(for: toneStops)
+        let isUltra = darkConfig?.ultraDark == true
         let variantImages = source.compactMap { image in
             let input = CIImage(cgImage: image)
             let grayscale = input.applyingFilter(
@@ -1363,24 +1364,35 @@ private final class BKArtBackgroundLayerView: NSView {
                 "CIColorMap",
                 parameters: ["inputGradientImage": mapImage]
             )
+            let mapAlpha = isUltra ? min(0.42, tuning.mapAlpha * 0.58) : tuning.mapAlpha
             let mappedSoftAlpha = mapped.applyingFilter(
                 "CIColorMatrix",
                 parameters: [
-                    "inputAVector": CIVector(x: 0, y: 0, z: 0, w: tuning.mapAlpha)
+                    "inputAVector": CIVector(x: 0, y: 0, z: 0, w: mapAlpha)
                 ]
             )
             let desaturatedOriginal = input.applyingFilter(
                 "CIColorControls",
                 parameters: [
-                    kCIInputSaturationKey: tuning.originalSaturation,
-                    kCIInputContrastKey: 1.10,
-                    kCIInputBrightnessKey: 0.0,
+                    kCIInputSaturationKey: isUltra ? min(0.26, tuning.originalSaturation * 0.75) : tuning.originalSaturation,
+                    kCIInputContrastKey: isUltra ? 1.02 : 1.10,
+                    kCIInputBrightnessKey: isUltra ? -0.10 : 0.0,
                 ]
             )
             var composed = mappedSoftAlpha.applyingFilter(
                 "CISourceOverCompositing",
                 parameters: [kCIInputBackgroundImageKey: desaturatedOriginal]
             )
+            if isUltra {
+                composed = composed.applyingFilter(
+                    "CIColorControls",
+                    parameters: [
+                        kCIInputSaturationKey: 0.86,
+                        kCIInputContrastKey: 0.97,
+                        kCIInputBrightnessKey: -0.10,
+                    ]
+                )
+            }
             if abs(tuning.composedSaturationBoost - 1.0) > 0.01 {
                 composed = composed.applyingFilter(
                     "CIColorControls",
@@ -1501,7 +1513,8 @@ private final class BKArtBackgroundLayerView: NSView {
         config: DarkToneMapConfig
     ) -> CIImage {
         guard isDark else { return image }
-        if config.ultraDark {
+        let shouldUseUltraCompression = config.ultraDark || isUltraDarkCover
+        if shouldUseUltraCompression {
             let gentleBase = image.applyingFilter(
                 "CIColorControls",
                 parameters: [
@@ -1513,14 +1526,14 @@ private final class BKArtBackgroundLayerView: NSView {
             let gentlyShaped = gentleBase.applyingFilter(
                 "CIHighlightShadowAdjust",
                 parameters: [
-                    "inputShadowAmount": 0.18,
-                    "inputHighlightAmount": 0.96,
+                    "inputShadowAmount": 0.08,
+                    "inputHighlightAmount": 0.90,
                 ]
             )
             return compressUltraDarkLuma(
                 image: gentlyShaped,
-                lo: 0.11,
-                hi: 0.25
+                lo: 0.08,
+                hi: 0.20
             )
         }
         let exposed = image.applyingFilter(
@@ -1680,7 +1693,7 @@ private final class BKArtBackgroundLayerView: NSView {
             .applyingFilter(
                 "CIHighlightShadowAdjust",
                 parameters: [
-                    "inputShadowAmount": 0.30,
+                    "inputShadowAmount": 0.08,
                     "inputHighlightAmount": 1.0,
                 ]
             )
@@ -1689,7 +1702,7 @@ private final class BKArtBackgroundLayerView: NSView {
             "CIColorClamp",
             parameters: [
                 "inputMinComponents": CIVector(x: 0, y: 0, z: 0, w: 0),
-                "inputMaxComponents": CIVector(x: CGFloat(safeHi * 0.94), y: CGFloat(safeHi * 0.94), z: CGFloat(safeHi * 0.94), w: 1),
+                "inputMaxComponents": CIVector(x: CGFloat(safeHi * 0.84), y: CGFloat(safeHi * 0.84), z: CGFloat(safeHi * 0.84), w: 1),
             ]
         )
     }

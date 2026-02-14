@@ -12,7 +12,7 @@ import SwiftUI
 
 final class CachedArtworkImage: @unchecked Sendable {
     let image: NSImage
-    init(_ image: NSImage) {
+    nonisolated init(_ image: NSImage) {
         self.image = image
     }
 }
@@ -123,7 +123,8 @@ enum PlaylistPerfDiagnostics {
         let now = ProcessInfo.processInfo.systemUptime
         guard now - lastDumpUptime >= 1.2 else { return }
         let avgDecode = decodeCount > 0 ? (accumulatedDecodeMs / Double(decodeCount)) : 0
-        let avgRebuild = listRebuildCount > 0 ? (accumulatedListRebuildMs / Double(listRebuildCount)) : 0
+        let avgRebuild =
+            listRebuildCount > 0 ? (accumulatedListRebuildMs / Double(listRebuildCount)) : 0
         print(
             "[PlaylistPerf] rowBody/s=\(rowBodyRecomputeCount), decode/s=\(decodeCount), decodeAvgMs=\(String(format: "%.2f", avgDecode)), decodeOnMain=\(decodeMainThreadWarnings), listRebuild/s=\(listRebuildCount), listRebuildAvgMs=\(String(format: "%.2f", avgRebuild)), last=\(lastRebuildReason)"
         )
@@ -173,16 +174,15 @@ enum ArtworkLoader {
         let signpost = PlaylistPerfDiagnostics.beginDecodeSignpost()
         let startUptime = ProcessInfo.processInfo.systemUptime
 
-        let (image, decodeOnMainThread) = await Task.detached(priority: .utility) {
-            let decoded = downsampledImage(data: artworkData, targetPixelSize: targetPixelSize)
-            return (decoded, Thread.isMainThread)
+        let image = await Task.detached(priority: .utility) {
+            return downsampledImage(data: artworkData, targetPixelSize: targetPixelSize)
         }.value
 
         let endUptime = ProcessInfo.processInfo.systemUptime
         PlaylistPerfDiagnostics.endDecodeSignpost(signpost)
         PlaylistPerfDiagnostics.markDecode(
             durationMs: (endUptime - startUptime) * 1000,
-            wasOnMainThread: decodeOnMainThread
+            wasOnMainThread: false
         )
         await decodeGate.release()
 
@@ -212,7 +212,9 @@ enum ArtworkLoader {
         }
     }
 
-    private static func downsampledImage(data: Data, targetPixelSize: CGSize) -> NSImage? {
+    private nonisolated static func downsampledImage(data: Data, targetPixelSize: CGSize)
+        -> NSImage?
+    {
         guard
             let source = CGImageSourceCreateWithData(data as CFData, nil)
         else { return nil }
@@ -228,7 +230,9 @@ enum ArtworkLoader {
         guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
         else { return nil }
 
-        return NSImage(cgImage: cgImage, size: .init(width: targetPixelSize.width, height: targetPixelSize.height))
+        return NSImage(
+            cgImage: cgImage,
+            size: .init(width: targetPixelSize.width, height: targetPixelSize.height))
     }
 }
 

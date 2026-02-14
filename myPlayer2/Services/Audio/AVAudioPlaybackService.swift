@@ -8,6 +8,8 @@
 
 import AVFoundation
 import Foundation
+import SwiftData
+import SwiftUI
 
 /// Real audio playback service using AVAudioEngine.
 @Observable
@@ -153,7 +155,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         let token = UUID()
         activeScheduleToken = token
         playerNode.scheduleFile(file, at: nil) { [weak self] in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 self?.handlePlaybackCompletion(token: token)
             }
         }
@@ -172,7 +174,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             frameCount: frameCount,
             at: nil
         ) { [weak self] in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 self?.handlePlaybackCompletion(token: token)
             }
         }
@@ -486,7 +488,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         // Use Timer for progress updates (10 times per second)
         progressTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) {
             [weak self] _ in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 self?.updateProgress()
             }
         }
@@ -555,14 +557,11 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         drainStartTime = max(0, duration - lookaheadSeconds)
         currentTime = drainStartTime
 
-        let work = DispatchWorkItem { [weak self] in
+        Task { @MainActor [weak self] in
             guard let self else { return }
-            Task { @MainActor in
-                self.finalizePlaybackCompletion(token: token)
-            }
+            try? await Task.sleep(nanoseconds: UInt64(lookaheadSeconds * 1_000_000_000))
+            self.finalizePlaybackCompletion(token: token)
         }
-        completionWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + lookaheadSeconds, execute: work)
     }
 
     private func finalizePlaybackCompletion(token: UUID) {

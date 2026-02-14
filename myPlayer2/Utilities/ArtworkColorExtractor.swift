@@ -11,11 +11,11 @@ import CoreImage
 
 public enum ArtworkColorExtractor {
 
-    private static let ciContext = CIContext(options: [
+    private nonisolated static let ciContext = CIContext(options: [
         .workingColorSpace: NSNull()
     ])
 
-    public static func averageColor(from data: Data) -> NSColor? {
+    public nonisolated static func averageColor(from data: Data) -> NSColor? {
         guard let image = NSImage(data: data),
             let tiff = image.tiffRepresentation,
             let ciImage = CIImage(data: tiff)
@@ -203,7 +203,9 @@ public enum ArtworkColorExtractor {
     /// Rich palette for artistic backgrounds.
     /// Unlike uiThemePalette, this does not synthesize variants; it returns
     /// distinct colors that already exist in the artwork.
-    public static func uiThemePaletteRich(from data: Data, desiredCount: Int = 6) -> [NSColor] {
+    public nonisolated static func uiThemePaletteRich(from data: Data, desiredCount: Int = 6)
+        -> [NSColor]
+    {
         let targetCount = min(max(3, desiredCount), 8)
         guard let pixels = resizedPixels(from: data, side: 72) else { return [] }
 
@@ -275,7 +277,8 @@ public enum ArtworkColorExtractor {
         var selected: [NSColor] = []
         for candidate in candidates {
             let distinct = selected.allSatisfy { existing in
-                let hueGap = circularHueDistance(hueValue(of: candidate.color), hueValue(of: existing))
+                let hueGap = circularHueDistance(
+                    hueValue(of: candidate.color), hueValue(of: existing))
                 let rgbGap = rgbDistance(candidate.color, existing)
                 return hueGap >= 0.05 || rgbGap >= 0.14
             }
@@ -351,7 +354,7 @@ extension ArtworkColorExtractor {
         var g: CGFloat
         var b: CGFloat
 
-        static let zero = HueBucket(weight: 0, r: 0, g: 0, b: 0)
+        nonisolated static let zero = HueBucket(weight: 0, r: 0, g: 0, b: 0)
     }
 
     fileprivate struct PaletteCandidate {
@@ -366,7 +369,7 @@ extension ArtworkColorExtractor {
         let vividness: CGFloat
     }
 
-    fileprivate static func resizedPixels(from data: Data, side: Int) -> [UInt8]? {
+    fileprivate nonisolated static func resizedPixels(from data: Data, side: Int) -> [UInt8]? {
         guard let image = NSImage(data: data) else { return nil }
         var rect = CGRect(origin: .zero, size: image.size)
         guard let cgImage = image.cgImage(forProposedRect: &rect, context: nil, hints: nil) else {
@@ -396,7 +399,8 @@ extension ArtworkColorExtractor {
         return pixels
     }
 
-    fileprivate static func tuneUI(_ color: NSColor, profile: ArtworkProfile) -> NSColor {
+    fileprivate nonisolated static func tuneUI(_ color: NSColor, profile: ArtworkProfile) -> NSColor
+    {
         guard let rgb = color.usingColorSpace(.deviceRGB) else { return color }
         var h: CGFloat = 0
         var s: CGFloat = 0
@@ -417,7 +421,9 @@ extension ArtworkColorExtractor {
         return NSColor(calibratedHue: h, saturation: s, brightness: b, alpha: 1)
     }
 
-    fileprivate static func paletteVariant(from color: NSColor, index: Int, profile: ArtworkProfile)
+    fileprivate nonisolated static func paletteVariant(
+        from color: NSColor, index: Int, profile: ArtworkProfile
+    )
         -> NSColor
     {
         guard let rgb = color.usingColorSpace(.deviceRGB) else { return color }
@@ -441,7 +447,7 @@ extension ArtworkColorExtractor {
         return NSColor(calibratedHue: newHue, saturation: newSat, brightness: newBri, alpha: 1)
     }
 
-    fileprivate static func hueValue(of color: NSColor) -> CGFloat {
+    fileprivate nonisolated static func hueValue(of color: NSColor) -> CGFloat {
         guard let rgb = color.usingColorSpace(.deviceRGB) else { return 0 }
         var h: CGFloat = 0
         var s: CGFloat = 0
@@ -451,7 +457,7 @@ extension ArtworkColorExtractor {
         return h
     }
 
-    fileprivate static func saturationValue(of color: NSColor) -> CGFloat {
+    fileprivate nonisolated static func saturationValue(of color: NSColor) -> CGFloat {
         guard let rgb = color.usingColorSpace(.deviceRGB) else { return 0 }
         var h: CGFloat = 0
         var s: CGFloat = 0
@@ -461,12 +467,12 @@ extension ArtworkColorExtractor {
         return s
     }
 
-    fileprivate static func circularHueDistance(_ a: CGFloat, _ b: CGFloat) -> CGFloat {
+    fileprivate nonisolated static func circularHueDistance(_ a: CGFloat, _ b: CGFloat) -> CGFloat {
         let d = abs(a - b)
         return min(d, 1 - d)
     }
 
-    fileprivate static func rgbDistance(_ lhs: NSColor, _ rhs: NSColor) -> CGFloat {
+    fileprivate nonisolated static func rgbDistance(_ lhs: NSColor, _ rhs: NSColor) -> CGFloat {
         let l = lhs.usingColorSpace(.deviceRGB) ?? lhs
         let r = rhs.usingColorSpace(.deviceRGB) ?? rhs
         let dr = l.redComponent - r.redComponent
@@ -475,13 +481,15 @@ extension ArtworkColorExtractor {
         return sqrt(dr * dr + dg * dg + db * db)
     }
 
-    fileprivate static func normalizedHue(_ value: CGFloat) -> CGFloat {
+    fileprivate nonisolated static func normalizedHue(_ value: CGFloat) -> CGFloat {
         var h = value.truncatingRemainder(dividingBy: 1)
         if h < 0 { h += 1 }
         return h
     }
 
-    fileprivate static func clamp(_ value: CGFloat, min minValue: CGFloat, max maxValue: CGFloat)
+    fileprivate nonisolated static func clamp(
+        _ value: CGFloat, min minValue: CGFloat, max maxValue: CGFloat
+    )
         -> CGFloat
     {
         Swift.min(maxValue, Swift.max(minValue, value))

@@ -10,6 +10,7 @@ import AppKit
 import SwiftUI
 
 /// Settings view with sidebar categories.
+@MainActor
 struct SettingsView: View {
 
     @Environment(\.dismiss) private var dismiss
@@ -121,7 +122,7 @@ struct SettingsView: View {
                 )
             }
             .listStyle(.sidebar)
-            .padding(.top, 48)
+            .padding(.top, 36)
             // Explicitly define sidebar container shape and material
             .background(.regularMaterial)
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -1284,7 +1285,7 @@ private enum SettingsCategory: String, CaseIterable, Identifiable {
 
 // MARK: - Preview
 
-#Preview("Settings") {
+#Preview("Settings") { @MainActor in
     let playbackService = StubAudioPlaybackService()
     let levelMeter = StubAudioLevelMeter()
     let playerVM = PlayerViewModel(playbackService: playbackService, levelMeter: levelMeter)
