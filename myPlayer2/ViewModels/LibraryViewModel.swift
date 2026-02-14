@@ -115,6 +115,9 @@ final class LibraryViewModel {
     /// Trigger for UI refresh (increment to force @Query update).
     private(set) var refreshTrigger: Int = 0
 
+    /// Trigger to reset search text and focus in the UI (incremented on sidebar selection).
+    private(set) var searchResetTrigger: Int = 0
+
     /// Track sorting preference for playlist views.
     var trackSortKey: TrackSortKey {
         didSet {
@@ -301,6 +304,7 @@ final class LibraryViewModel {
 
     /// Select a playlist by ID.
     func selectPlaylist(_ playlist: Playlist?) {
+        searchResetTrigger += 1
         selectedPlaylistId = playlist?.id
         selectedArtist = nil
         selectedAlbum = nil
@@ -312,12 +316,14 @@ final class LibraryViewModel {
 
     /// Select an artist.
     func selectArtist(_ artist: String) {
+        searchResetTrigger += 1
         selectedArtist = artist
         // selectedPlaylistId handled by didSet
     }
 
     /// Select an album.
     func selectAlbum(_ album: String) {
+        searchResetTrigger += 1
         selectedAlbum = album
         // selectedPlaylistId handled by didSet
     }

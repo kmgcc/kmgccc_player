@@ -91,6 +91,17 @@
         lyricPlayer.setEnableSpring(true);
         lyricPlayer.setEnableBlur(true);
         lyricPlayer.setWordFadeWidth(0.7);
+        let renderScale = 0.75;
+        if (typeof lyricPlayer.setRenderScale === "function") {
+            lyricPlayer.setRenderScale(renderScale);
+        }
+        // Remove core's default 30fps ticker cap if API is available.
+        if (typeof lyricPlayer.setFPS === "function") {
+            lyricPlayer.setFPS(0);
+        }
+        let externalTimeMs = 0;
+        let externalTimeAnchorPerfMs = performance.now();
+        let externalIsPlaying = true;
         // Align active line toward top (instead of center)
         lyricPlayer.setAlignAnchor("top");
         lyricPlayer.setAlignPosition(0.2);
@@ -736,9 +747,9 @@
 	                        // Force AMLL to use non-dynamic line opacity behavior for pure line-timing lyrics.
 	                        lyricPlayer.isNonDynamic = true;
 	                    }
-	                    const currentMs = Number.isFinite(lastKnownTimeMs)
-	                        ? lastKnownTimeMs
-	                        : (lyricPlayer.getCurrentTime ? lyricPlayer.getCurrentTime() : 0);
+		                    const currentMs = Number.isFinite(lastKnownTimeMs)
+		                        ? lastKnownTimeMs
+		                        : (lyricPlayer.getCurrentTime ? lyricPlayer.getCurrentTime() : 0);
 	                    // Undo core timing normalization so x-bg keeps original line/word timing.
 	                    restoreTimingSnapshot(timingSnapshot);
 	                    // Core may have already generated mask animations based on its normalized timing.
@@ -751,33 +762,53 @@
 	                        }
 	                    }
 	                    assertXBgTiming(ttml, lines);
-	                    // Re-align playback position after (re)loading lyrics.
-	                    originalSetCurrentTime(currentMs, true);
-	                    console.log("[LyricsRenderer] Loaded lines:", lines.length);
-	                } catch (e) {
+		                    // Re-align playback position after (re)loading lyrics.
+		                    originalSetCurrentTime(currentMs, true);
+                            externalTimeMs = currentMs;
+                            externalTimeAnchorPerfMs = performance.now();
+		                    console.log("[LyricsRenderer] Loaded lines:", lines.length);
+		                } catch (e) {
                     console.error("[LyricsRenderer] TTML Parse Error:", e);
                     // Optionally fallback to plain text parsing if you had that logic
                 }
             },
             
-            setCurrentTime: (seconds) => {
-                const timeInMs = Math.max(0, Math.floor(seconds * 1000));
-                // If AMLL hasn't finished its first layout yet, non-forced setCurrentTime is ignored.
-                const needsForce = lyricPlayer.initialLayoutFinished === false;
-                originalSetCurrentTime(timeInMs, needsForce);
-            },
+	            setCurrentTime: (seconds) => {
+	                const timeInMs = Math.max(0, Math.floor(seconds * 1000));
+	                // If AMLL hasn't finished its first layout yet, non-forced setCurrentTime is ignored.
+	                const needsForce = lyricPlayer.initialLayoutFinished === false;
+	                originalSetCurrentTime(timeInMs, needsForce);
+                    externalTimeMs = timeInMs;
+                    externalTimeAnchorPerfMs = performance.now();
+	            },
+	            
+	            setPlaying: (isPlaying) => {
+                    externalIsPlaying = !!isPlaying;
+                    externalTimeMs = Number.isFinite(lastKnownTimeMs) ? lastKnownTimeMs : externalTimeMs;
+                    externalTimeAnchorPerfMs = performance.now();
+                    if (externalIsPlaying) {
+                        if (typeof lyricPlayer.resume === "function") {
+                            lyricPlayer.resume();
+                        }
+                    } else if (typeof lyricPlayer.pause === "function") {
+                        lyricPlayer.pause();
+                    }
+	            },
             
-            setPlaying: (isPlaying) => {
-                // lyricPlayer.setIsPlaying(isPlaying); // If supported by core
-            },
-            
-	            setConfig: (config) => {
-	                try {
-	                    let needsLyricsReload = false;
-	                    // Apply config to lyricPlayer
-	                    if (config.fontSize) {
-	                        lyricPlayer.getElement().style.setProperty("--amll-lp-font-size", `${config.fontSize}px`);
-	                    }
+		            setConfig: (config) => {
+		                try {
+		                    let needsLyricsReload = false;
+		                    if (typeof config.renderScale === "number" && !Number.isNaN(config.renderScale)) {
+		                        const nextRenderScale = Math.max(0.35, Math.min(1.0, config.renderScale));
+		                        if (nextRenderScale !== renderScale && typeof lyricPlayer.setRenderScale === "function") {
+		                            renderScale = nextRenderScale;
+		                            lyricPlayer.setRenderScale(renderScale);
+		                        }
+		                    }
+		                    // Apply config to lyricPlayer
+		                    if (config.fontSize) {
+		                        lyricPlayer.getElement().style.setProperty("--amll-lp-font-size", `${config.fontSize}px`);
+		                    }
 	                    if (config.fontWeight) {
 	                        lyricPlayer.getElement().style.setProperty("--amll-lp-main-font-weight", `${config.fontWeight}`);
 	                    }
@@ -858,6 +889,16 @@
         function animate(time) {
             const delta = time - lastTime;
             lastTime = time;
+            if (externalIsPlaying) {
+                const predictedTimeMs = Math.max(
+                    0,
+                    Math.floor(externalTimeMs + (time - externalTimeAnchorPerfMs))
+                );
+                // Keep AMLL progression smooth in JS without requiring high-frequency Swift updates.
+                if (Math.abs(predictedTimeMs - lastKnownTimeMs) >= 1) {
+                    originalSetCurrentTime(predictedTimeMs, false);
+                }
+            }
             lyricPlayer.update(delta);
             requestAnimationFrame(animate);
         }

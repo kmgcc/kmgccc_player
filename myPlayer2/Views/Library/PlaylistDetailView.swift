@@ -81,10 +81,16 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         .sheet(item: $trackToEdit) { track in
             TrackEditSheet(track: track)
         }
-        .sheet(item: $batchEditRequest) { request in
+        .sheet(
+            item: $batchEditRequest,
+            onDismiss: {
+                clearMultiselectState()
+            }
+        ) { request in
             BatchTrackEditSheet(
                 tracks: request.tracks
             )
+            .presentationSizing(.page)
         }
         .onAppear {
             rebuildTrackCaches(reason: "appear")
@@ -144,6 +150,10 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             restoreScrollIfNeeded()
             updateLibrarySnapshot()
             playerVM.updateQueueTracks(parentSortedTracksCache)
+        }
+        .onChange(of: libraryVM.searchResetTrigger) { _, _ in
+            searchText = ""
+            isSearchFocused = false
         }
     }
 
@@ -600,9 +610,16 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
     private func openBatchEditor() {
         let selectedTracks = selectedTracksForBatchEditor()
         guard !selectedTracks.isEmpty else { return }
+        uiState.lyricsPanelSuppressedByModal = true
         batchEditRequest = BatchEditRequest(
             tracks: selectedTracks
         )
+    }
+
+    private func clearMultiselectState() {
+        uiState.lyricsPanelSuppressedByModal = false
+        isMultiselectMode = false
+        selectedTrackIDs.removeAll()
     }
 
     private var listTopPadding: CGFloat { GlassStyleTokens.headerBarHeight + 16 }
@@ -732,7 +749,8 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         sortedTrackIndexMapCache = Dictionary(
             uniqueKeysWithValues: sortedTracks.enumerated().map { ($0.element.id, $0.offset) })
         parentSortedTrackIndexMapCache = Dictionary(
-            uniqueKeysWithValues: parentSortedTracks.enumerated().map { ($0.element.id, $0.offset) })
+            uniqueKeysWithValues: parentSortedTracks.enumerated().map { ($0.element.id, $0.offset) }
+        )
         trackByIDCache = Dictionary(uniqueKeysWithValues: sortedTracks.map { ($0.id, $0) })
         rowModelsCache = sortedTracks.map { track in
             let checksum = ArtworkLoader.checksum(for: track.artworkData)
