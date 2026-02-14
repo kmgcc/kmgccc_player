@@ -31,6 +31,8 @@ struct MainLayoutView: View {
     @State private var dragWidthBounds: ClosedRange<CGFloat>?
     @State private var isHoveringResizeHandle = false
     @State private var windowWidth: CGFloat = 0
+    @State private var lyricsFlashFilled = false
+    @State private var lyricsFlashTicket = 0
 
     var body: some View {
         GeometryReader { proxy in
@@ -187,13 +189,28 @@ struct MainLayoutView: View {
     }
 
     private var lyricsToggleButton: some View {
-        GlassToolbarButton(
-            systemImage: "quote.bubble",
+        GlassIconButton(
+            systemImage: lyricsFlashFilled ? "quote.bubble.fill" : "quote.bubble",
+            size: GlassStyleTokens.headerControlHeight,
+            iconSize: GlassToolbarButton.iconSize(for: .standard),
+            isPrimary: false,
             help: uiState.lyricsVisible ? "Hide Lyrics" : "Show Lyrics",
-            style: .standard
+            surfaceVariant: .defaultToolbar
         ) {
+            lyricsFlashTicket += 1
+            let ticket = lyricsFlashTicket
+            lyricsFlashFilled = true
             uiState.toggleLyrics()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.24) {
+                if lyricsFlashTicket == ticket {
+                    lyricsFlashFilled = false
+                }
+            }
         }
+        .contentTransition(
+            .symbolEffect(.replace.magic(fallback: .offUp.byLayer), options: .nonRepeating)
+        )
+        .animation(.snappy(duration: 0.22), value: lyricsFlashFilled)
     }
 
     private var lyricsToggleOverlay: some View {

@@ -109,7 +109,7 @@ struct BKColorEngine {
             isNearGray: stats.isNearGray,
             lowSatColorCover: stats.lowSatColorCover,
             coverKind: stats.coverKind,
-            avgS: stats.avgS,
+            avgS: stats.matchedAvgS,
             coverLuma: stats.imageCoverLuma,
             veryDarkCover: stats.veryDarkCover,
             areaDominantS: stats.areaDominantS,
@@ -286,10 +286,19 @@ struct BKColorEngine {
             triggered: &globalTriggers
         )
         enforceCoverSaturationMatch(
-            avgS: stats.avgS,
+            avgS: stats.matchedAvgS,
             bgStops: &bgStopsHSB,
             shapePool: &shapePoolHSB,
             dotBase: &dotBaseHSB,
+            tier: tier,
+            complexity: stats.complexity,
+            isNearGray: stats.isNearGray,
+            isDark: isDark,
+            triggered: &globalTriggers
+        )
+        enforceSaturationGap(
+            bgStops: &bgStopsHSB,
+            shapePool: &shapePoolHSB,
             tier: tier,
             complexity: stats.complexity,
             isNearGray: stats.isNearGray,
@@ -304,7 +313,7 @@ struct BKColorEngine {
             tier: tier,
             complexity: stats.complexity,
             isNearGray: stats.isNearGray,
-            avgS: stats.avgS,
+            avgS: stats.matchedAvgS,
             hueSpread: stats.hueSpread,
             isDark: isDark,
             triggered: &globalTriggers
@@ -320,7 +329,7 @@ struct BKColorEngine {
             isNearGray: stats.isNearGray,
             coverLuma: stats.coverLuma,
             imageCoverLuma: stats.imageCoverLuma,
-            coverAvgS: stats.avgS,
+            coverAvgS: stats.matchedAvgS,
             areaDominantS: stats.areaDominantS,
             areaDominantB: stats.areaDominantB,
             accentHue: stats.accentHue,
@@ -632,6 +641,7 @@ extension BKColorEngine {
         }
 
         let avgS: CGFloat
+        let matchedAvgS: CGFloat
         let hueSpread: CGFloat
         let circularVariance: CGFloat
         let circularStdDegrees: CGFloat
@@ -676,6 +686,7 @@ extension BKColorEngine {
         guard !colors.isEmpty else {
             return PaletteStats(
                 avgS: 0.25,
+                matchedAvgS: 0.22,
                 hueSpread: 30,
                 circularVariance: 0.12,
                 circularStdDegrees: 18,
@@ -724,9 +735,25 @@ extension BKColorEngine {
             let saliency: CGFloat
         }
 
-        let avgS = colors.map(\.s).reduce(0, +) / CGFloat(colors.count)
-        let hueSpread = maxHueSpread(colors.map(\.h))
         let shares = inferredShares(count: colors.count)
+        let avgS = colors.map(\.s).reduce(0, +) / CGFloat(colors.count)
+        var matchedSatNumerator: CGFloat = 0
+        var matchedSatDenominator: CGFloat = 0
+        for index in colors.indices {
+            let c = colors[index]
+            let w = shares[index]
+            let chroma = c.s * min(c.b, 1 - c.b)
+            // Suppress fake vivid noise from near-black/near-white buckets.
+            let matched = clamp(chroma * 2.2, min: 0, max: 1)
+            matchedSatNumerator += matched * w
+            matchedSatDenominator += w
+        }
+        let matchedAvgS = clamp(
+            matchedSatNumerator / max(0.0001, matchedSatDenominator),
+            min: 0,
+            max: 1
+        )
+        let hueSpread = maxHueSpread(colors.map(\.h))
         let areaDominantIndex = shares.indices.max(by: { shares[$0] < shares[$1] }) ?? 0
         let areaDominant = colors[areaDominantIndex]
         let areaDominantHue = normalizeHue(areaDominant.h)
@@ -896,15 +923,18 @@ extension BKColorEngine {
             }
             if injectAccentHues.count >= 2 { break }
         }
+        if matchedAvgS < 0.16 {
+            injectAccentHues.removeAll()
+        }
 
         let coverKind: CoverKind
-        if colorCandidates.isEmpty && wColor < 0.10 && avgS < 0.16 {
+        if colorCandidates.isEmpty && wColor < 0.10 && matchedAvgS < 0.12 {
             coverKind = .grayscaleTrue
         } else if (wBlack + wWhite) > 0.65 && wColor >= 0.10 {
             coverKind = .mostlyBWWithColor
-        } else if clusterCount >= 3 && clusterEvenness >= 0.62 && avgS >= 0.30 {
+        } else if clusterCount >= 3 && clusterEvenness >= 0.62 && matchedAvgS >= 0.24 {
             coverKind = .richDistributed
-        } else if avgS < 0.22 {
+        } else if matchedAvgS < 0.20 {
             coverKind = .lowSatColor
         } else {
             coverKind = .normal
@@ -918,7 +948,7 @@ extension BKColorEngine {
         let briBoost: CGFloat
         if lowSatColorCover {
             // Only mildly boost low-sat covers; ultra-low sat should not be pushed vivid.
-            let t = clamp((avgS - 0.06) / 0.20, min: 0, max: 1)
+            let t = clamp((matchedAvgS - 0.05) / 0.18, min: 0, max: 1)
             satBoost = lerp(0.88, 1.24, t: t)
             briBoost = lerp(1.02, 1.10, t: t)
         } else if coverKind == .mostlyBWWithColor {
@@ -936,7 +966,7 @@ extension BKColorEngine {
             complexity = .low
         } else if coverKind == .richDistributed {
             complexity = .high
-        } else if avgS < 0.30 || clusterCount <= 2 {
+        } else if matchedAvgS < 0.26 || clusterCount <= 2 {
             complexity = .medium
         } else {
             complexity = .high
@@ -991,6 +1021,7 @@ extension BKColorEngine {
 
         return PaletteStats(
             avgS: avgS,
+            matchedAvgS: matchedAvgS,
             hueSpread: hueSpread,
             circularVariance: variance,
             circularStdDegrees: stdDegrees,
@@ -1346,7 +1377,7 @@ extension BKColorEngine {
             isNearGray: false,
             coverLuma: stats.coverLuma,
             imageCoverLuma: stats.imageCoverLuma,
-            coverAvgS: stats.avgS,
+            coverAvgS: stats.matchedAvgS,
             areaDominantS: stats.areaDominantS,
             areaDominantB: stats.areaDominantB,
             accentHue: nil,
@@ -1585,10 +1616,20 @@ extension BKColorEngine {
             tier.bgS.upperBound,
             max(tier.bgS.lowerBound, tier.fgS.lowerBound - 0.08)
         )
-        let variantSRange = makeRange(
+        var variantSRange = makeRange(
             lower: max(tier.bgS.lowerBound, desiredBgLower),
             upper: min(bgUpperCap, desiredBgUpper)
         )
+        if avgS >= 0.10 && avgS < 0.22 {
+            let colorFloor = clamp(
+                (isDark ? 0.10 : 0.08) + avgS * (isDark ? 0.75 : 0.65),
+                min: tier.bgS.lowerBound,
+                max: min(bgUpperCap, tier.bgS.upperBound)
+            )
+            let raisedLower = max(variantSRange.lowerBound, colorFloor)
+            let raisedUpper = min(bgUpperCap, max(variantSRange.upperBound, raisedLower + 0.06))
+            variantSRange = makeRange(lower: raisedLower, upper: raisedUpper)
+        }
 
         func pickStops(count: Int, variantIndex: Int) -> [HSBColor] {
             guard count > 0 else { return [] }
@@ -1647,14 +1688,16 @@ extension BKColorEngine {
             for (idx, selectedColor) in selected.enumerated() {
                 let baseRef = baseBMids[min(idx, baseBMids.count - 1)]
                 let satScale: CGFloat
-                if avgS < 0.08 || (avgS < 0.12 && isNearGray) {
-                    satScale = 0.48
-                } else if avgS < 0.16 {
-                    satScale = 0.78
+                if avgS < 0.06 || (avgS < 0.09 && isNearGray) {
+                    satScale = 0.40
+                } else if avgS < 0.12 {
+                    satScale = 0.70
+                } else if avgS < 0.22 {
+                    satScale = 0.94
                 } else if avgS < 0.42 || isNearGray {
-                    satScale = 0.82
-                } else {
                     satScale = 0.86
+                } else {
+                    satScale = 0.90
                 }
                 let targetS = clamp(
                     selectedColor.s * satScale, min: variantSRange.lowerBound,
@@ -2070,17 +2113,17 @@ extension BKColorEngine {
         let bgFloor: CGFloat
 
         if ultraLow {
-            bgCap = min(tier.bgS.upperBound, isDark ? 0.14 : 0.11)
-            shapeCap = min(tier.fgS.upperBound, isDark ? 0.24 : 0.20)
-            dotCap = min(tier.dotS.upperBound, isDark ? 0.26 : 0.22)
-            bgFloor = max(tier.bgS.lowerBound, isDark ? 0.03 : 0.02)
+            bgCap = min(tier.bgS.upperBound, isDark ? 0.10 : 0.08)
+            shapeCap = min(tier.fgS.upperBound, isDark ? 0.16 : 0.14)
+            dotCap = min(tier.dotS.upperBound, isDark ? 0.18 : 0.16)
+            bgFloor = max(tier.bgS.lowerBound, isDark ? 0.01 : 0.00)
         } else {
-            bgCap = min(tier.bgS.upperBound, isDark ? 0.28 : 0.24)
-            shapeCap = min(tier.fgS.upperBound, isDark ? 0.40 : 0.36)
-            dotCap = min(tier.dotS.upperBound, isDark ? 0.42 : 0.38)
+            bgCap = min(tier.bgS.upperBound, isDark ? 0.32 : 0.27)
+            shapeCap = min(tier.fgS.upperBound, isDark ? 0.30 : 0.28)
+            dotCap = min(tier.dotS.upperBound, isDark ? 0.32 : 0.30)
             bgFloor = max(
                 tier.bgS.lowerBound,
-                clamp(avgS * (isDark ? 0.95 : 0.85), min: 0.10, max: 0.18)
+                clamp(avgS * (isDark ? 1.00 : 0.92) + 0.05, min: 0.12, max: 0.22)
             )
         }
 
@@ -2779,7 +2822,7 @@ extension BKColorEngine {
         }.joined(separator: " | ")
 
         print(
-            "[BKColorEngine] coverKind=\(stats.coverKind.rawValue) complexity=\(stats.complexity.rawValue) avgS=\(f3(stats.avgS)) grayScore=\(f3(stats.grayScore)) wBlack=\(f3(stats.wBlack)) wWhite=\(f3(stats.wWhite)) wColor=\(f3(stats.wColor)) coverLuma=\(f3(stats.coverLuma)) imageLuma=\(f3(stats.imageCoverLuma)) areaB=\(f3(stats.areaDominantB)) areaS=\(f3(stats.areaDominantS)) veryDark=\(stats.veryDarkCover ? 1 : 0) accentEnabled=\(stats.accentEnabled ? 1 : 0) accentStrength=\(f3(stats.accentStrength)) maxColorScore=\(f3(stats.maxColorCandidateScore)) evenness=\(f3(stats.evenness)) gray=\(stats.isGrayscaleCover ? 1 : 0) nearGray=\(stats.isNearGray ? 1 : 0) lowSatColor=\(stats.lowSatColorCover ? 1 : 0)"
+            "[BKColorEngine] coverKind=\(stats.coverKind.rawValue) complexity=\(stats.complexity.rawValue) avgS=\(f3(stats.avgS)) matchedAvgS=\(f3(stats.matchedAvgS)) grayScore=\(f3(stats.grayScore)) wBlack=\(f3(stats.wBlack)) wWhite=\(f3(stats.wWhite)) wColor=\(f3(stats.wColor)) coverLuma=\(f3(stats.coverLuma)) imageLuma=\(f3(stats.imageCoverLuma)) areaB=\(f3(stats.areaDominantB)) areaS=\(f3(stats.areaDominantS)) veryDark=\(stats.veryDarkCover ? 1 : 0) accentEnabled=\(stats.accentEnabled ? 1 : 0) accentStrength=\(f3(stats.accentStrength)) maxColorScore=\(f3(stats.maxColorCandidateScore)) evenness=\(f3(stats.evenness)) gray=\(stats.isGrayscaleCover ? 1 : 0) nearGray=\(stats.isNearGray ? 1 : 0) lowSatColor=\(stats.lowSatColorCover ? 1 : 0)"
         )
         print(
             "[BKColorEngine] primary selected from=\(primarySource.rawValue) primaryHue before=\(f1(primaryBefore)) after=\(f1(primaryAfter)) imageHue=\(f1(stats.areaDominantHue)) dominantHue=\(f1(stats.dominantHue)) dominantShare=\(f3(stats.dominantShare)) accentHue=\(stats.accentHue.map(f1) ?? "none") secondAccent=\(stats.secondAccentHue.map(f1) ?? "none") triggers=\(triggerText)"
