@@ -1482,17 +1482,23 @@ private final class BKArtBackgroundLayerView: NSView {
             )
         )
         let coverAvgS = harmonized.coverAvgS
+        let lowColorCover = coverAvgS >= 0.08 && coverAvgS < 0.22
         let lowSatLift = harmonized.isGrayscaleCover
             ? 0
             : max(0, min(1, (0.26 - max(avgS, coverAvgS)) / 0.18))
-        let mapAlpha = max(0.68, min(0.90, lerp(0.70, 0.86, t: richScore) + lowSatLift * 0.04))
-        let originalSaturation = max(
+        var mapAlpha = max(0.68, min(0.90, lerp(0.70, 0.86, t: richScore) + lowSatLift * 0.04))
+        var originalSaturation = max(
             harmonized.isGrayscaleCover ? 0.02 : 0.08,
             min(0.30, lerp(0.10, 0.24, t: richScore) - lowSatLift * 0.06)
         )
-        let composedBoost: CGFloat = harmonized.isGrayscaleCover
+        var composedBoost: CGFloat = harmonized.isGrayscaleCover
             ? lerp(0.90, 1.00, t: richScore)
             : max(1.02, min(1.18, lerp(1.02, 1.14, t: richScore) + lowSatLift * 0.06))
+        if lowColorCover && !harmonized.isGrayscaleCover {
+            mapAlpha = max(mapAlpha, 0.84)
+            originalSaturation = min(originalSaturation, 0.12)
+            composedBoost = max(composedBoost, 1.16)
+        }
 
         return ImageVariantTuning(
             avgS: avgS,
@@ -1540,14 +1546,14 @@ private final class BKArtBackgroundLayerView: NSView {
             if isUltraDesatCover {
                 minS = 0.04
             } else {
-                let adaptive = max(0.14, min(0.34, 0.16 + coverAvgS * 0.85))
+                let adaptive = max(0.16, min(0.36, 0.16 + coverAvgS * 0.95))
                 minS = max(adaptive, min(0.32, harmonized.bgSRange.lowerBound + 0.04))
             }
         } else {
             if isUltraDesatCover {
                 minS = 0.03
             } else {
-                let adaptive = max(0.16, min(0.32, 0.18 + coverAvgS * 0.70))
+                let adaptive = max(0.16, min(0.34, 0.18 + coverAvgS * 0.82))
                 minS = max(adaptive, min(0.32, harmonized.bgSRange.lowerBound + 0.03))
             }
         }

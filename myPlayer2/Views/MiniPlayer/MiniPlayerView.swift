@@ -33,6 +33,9 @@ struct MiniPlayerView: View {
     @State private var dragProgress: Double = 0
     @State private var trackToEdit: Track?
     @State private var isProgressHovering = false
+    @State private var previousSymbolEffectTrigger = 0
+    @State private var playPauseSymbolEffectTrigger = 0
+    @State private var nextSymbolEffectTrigger = 0
 
     var body: some View {
         return HStack(spacing: 12) {
@@ -119,6 +122,7 @@ struct MiniPlayerView: View {
         return HStack(spacing: 14) {
             // Previous
             Button {
+                previousSymbolEffectTrigger += 1
                 playerVM.previous()
             } label: {
                 ZStack {
@@ -127,6 +131,7 @@ struct MiniPlayerView: View {
                     Image(systemName: "backward.fill")
                         .font(.body)
                         .foregroundStyle(isEnabled ? controlPrimaryColor : controlDisabledColor)
+                        .symbolEffect(.wiggle, value: previousSymbolEffectTrigger)
                 }
                 .frame(width: controlHitSize, height: controlHitSize)
                 .contentShape(Rectangle())
@@ -138,6 +143,7 @@ struct MiniPlayerView: View {
 
             // Play/Pause
             Button {
+                playPauseSymbolEffectTrigger += 1
                 playerVM.togglePlayPause()
             } label: {
                 ZStack {
@@ -146,6 +152,7 @@ struct MiniPlayerView: View {
                     Image(systemName: playerVM.isPlaying ? "pause.fill" : "play.fill")
                         .font(.title3)
                         .foregroundStyle(isEnabled ? controlPrimaryColor : controlDisabledColor)
+                        .symbolEffect(.bounce, value: playPauseSymbolEffectTrigger)
                 }
                 .frame(width: controlHitSize, height: controlHitSize)
                 .contentShape(Rectangle())
@@ -157,6 +164,7 @@ struct MiniPlayerView: View {
 
             // Next
             Button {
+                nextSymbolEffectTrigger += 1
                 playerVM.next()
             } label: {
                 ZStack {
@@ -165,6 +173,7 @@ struct MiniPlayerView: View {
                     Image(systemName: "forward.fill")
                         .font(.body)
                         .foregroundStyle(isEnabled ? controlPrimaryColor : controlDisabledColor)
+                        .symbolEffect(.wiggle, value: nextSymbolEffectTrigger)
                 }
                 .frame(width: controlHitSize, height: controlHitSize)
                 .contentShape(Rectangle())
@@ -382,11 +391,106 @@ struct MiniPlayerView: View {
     }
 
     private var controlPrimaryColor: Color {
-        Color.primary.opacity(0.9)
+        let base = themeStore.accentNSColor
+        let tuned: NSColor
+        if colorScheme == .dark {
+            tuned = Self.enforceMinimumHslLightness(base, minimumLightness: 0.70)
+        } else {
+            tuned = Self.enforceMaximumHslLightness(base, maximumLightness: 0.45)
+        }
+        return Color(nsColor: tuned).opacity(colorScheme == .dark ? 0.98 : 0.92)
     }
 
     private var controlDisabledColor: Color {
         Color.secondary.opacity(0.5)
+    }
+
+    private static func enforceMinimumHslLightness(_ color: NSColor, minimumLightness: CGFloat)
+        -> NSColor
+    {
+        guard let hsl = hslComponents(from: color) else { return color }
+        let targetL = max(hsl.l, minimumLightness)
+        if targetL <= hsl.l + 0.000_001 { return color }
+        return rgbColorFromHsl(h: hsl.h, s: hsl.s, l: targetL)
+    }
+
+    private static func enforceMaximumHslLightness(_ color: NSColor, maximumLightness: CGFloat)
+        -> NSColor
+    {
+        guard let hsl = hslComponents(from: color) else { return color }
+        let targetL = min(hsl.l, maximumLightness)
+        if targetL >= hsl.l - 0.000_001 { return color }
+        return rgbColorFromHsl(h: hsl.h, s: hsl.s, l: targetL)
+    }
+
+    private static func hslComponents(from color: NSColor) -> (h: CGFloat, s: CGFloat, l: CGFloat)? {
+        guard let rgb = color.usingColorSpace(.deviceRGB) else { return nil }
+
+        let r = clamp01(rgb.redComponent)
+        let g = clamp01(rgb.greenComponent)
+        let b = clamp01(rgb.blueComponent)
+
+        let maxV = max(r, max(g, b))
+        let minV = min(r, min(g, b))
+        let delta = maxV - minV
+        let l = (maxV + minV) * 0.5
+
+        var h: CGFloat = 0
+        if delta > 0.000_001 {
+            if maxV == r {
+                h = ((g - b) / delta).truncatingRemainder(dividingBy: 6)
+            } else if maxV == g {
+                h = ((b - r) / delta) + 2
+            } else {
+                h = ((r - g) / delta) + 4
+            }
+            h /= 6
+            if h < 0 { h += 1 }
+        }
+
+        var s: CGFloat = 0
+        if delta > 0.000_001 {
+            s = delta / (1 - abs(2 * l - 1))
+        }
+
+        return (h: h, s: s, l: l)
+    }
+
+    private static func rgbColorFromHsl(h: CGFloat, s: CGFloat, l: CGFloat) -> NSColor {
+        let c = (1 - abs(2 * l - 1)) * s
+        let hPrime = h * 6
+        let x = c * (1 - abs(hPrime.truncatingRemainder(dividingBy: 2) - 1))
+
+        var rp: CGFloat = 0
+        var gp: CGFloat = 0
+        var bp: CGFloat = 0
+
+        switch hPrime {
+        case 0..<1:
+            rp = c; gp = x; bp = 0
+        case 1..<2:
+            rp = x; gp = c; bp = 0
+        case 2..<3:
+            rp = 0; gp = c; bp = x
+        case 3..<4:
+            rp = 0; gp = x; bp = c
+        case 4..<5:
+            rp = x; gp = 0; bp = c
+        default:
+            rp = c; gp = 0; bp = x
+        }
+
+        let m = l - c * 0.5
+        return NSColor(
+            calibratedRed: clamp01(rp + m),
+            green: clamp01(gp + m),
+            blue: clamp01(bp + m),
+            alpha: 1.0
+        )
+    }
+
+    private static func clamp01(_ value: CGFloat) -> CGFloat {
+        Swift.min(Swift.max(value, 0), 1)
     }
 }
 
@@ -399,6 +503,8 @@ private struct PlaybackModeSlider: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var dragTranslation: CGFloat = 0
     @State private var isDragging: Bool = false
+    @State private var animatedModeIndex: Int?
+    @State private var modeAnimationTrigger = 0
 
     private var modeIndex: Int {
         switch mode {
@@ -445,22 +551,25 @@ private struct PlaybackModeSlider: View {
 
                 HStack(spacing: 0) {
                     segmentButton(
-                        systemImage: "shuffle", isSelected: modeIndex == 0, width: segmentWidth
+                        systemImage: "shuffle", index: 0, isSelected: modeIndex == 0,
+                        width: segmentWidth
                     ) {
                         selectMode(.shuffle, snap: snap)
                     }
                     segmentButton(
-                        systemImage: "list.bullet", isSelected: modeIndex == 1, width: segmentWidth
+                        systemImage: "list.bullet", index: 1, isSelected: modeIndex == 1,
+                        width: segmentWidth
                     ) {
                         selectMode(.sequence, snap: snap)
                     }
                     segmentButton(
-                        systemImage: "repeat.1", isSelected: modeIndex == 2, width: segmentWidth
+                        systemImage: "repeat.1", index: 2, isSelected: modeIndex == 2,
+                        width: segmentWidth
                     ) {
                         selectMode(.repeatOne, snap: snap)
                     }
                     segmentButton(
-                        systemImage: "pause.circle", isSelected: modeIndex == 3,
+                        systemImage: "pause.circle", index: 3, isSelected: modeIndex == 3,
                         width: segmentWidth
                     ) {
                         selectMode(.stopAfterTrack, snap: snap)
@@ -487,6 +596,13 @@ private struct PlaybackModeSlider: View {
         }
         .opacity(isEnabled ? 1 : 0.4)
         .disabled(!isEnabled)
+        .onChange(of: modeIndex) { oldValue, newValue in
+            guard oldValue != newValue else { return }
+            animatedModeIndex = newValue
+            DispatchQueue.main.async {
+                modeAnimationTrigger += 1
+            }
+        }
     }
 
     private func selectMode(_ newMode: PlaybackMode, snap: Animation) {
@@ -505,6 +621,7 @@ private struct PlaybackModeSlider: View {
 
     private func segmentButton(
         systemImage: String,
+        index: Int,
         isSelected: Bool,
         width: CGFloat,
         action: @escaping () -> Void
@@ -513,9 +630,7 @@ private struct PlaybackModeSlider: View {
             ZStack {
                 Rectangle()
                     .fill(Color.clear)
-                Image(systemName: systemImage)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(isSelected ? .primary : .secondary)
+                segmentIcon(systemImage: systemImage, index: index, isSelected: isSelected)
             }
             .frame(width: width, height: 28)
             .contentShape(Rectangle())
@@ -523,6 +638,19 @@ private struct PlaybackModeSlider: View {
         .buttonStyle(.plain)
         .frame(width: width, height: 28)
         .contentShape(Rectangle())
+    }
+
+    @ViewBuilder
+    private func segmentIcon(systemImage: String, index: Int, isSelected: Bool) -> some View {
+        let icon = Image(systemName: systemImage)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(isSelected ? .primary : .secondary)
+
+        if isSelected, animatedModeIndex == index {
+            icon.symbolEffect(.bounce, value: modeAnimationTrigger)
+        } else {
+            icon
+        }
     }
 
     private var trackFill: Color {

@@ -93,12 +93,13 @@ struct SettingsView: View {
                         Image(systemName: category.systemImage)
                             .font(.system(size: 15, weight: .medium))
                             .frame(width: 20)
-                            .foregroundStyle(selection == category ? .white : .primary)
+                            .foregroundStyle(
+                                selection == category ? themeStore.accentColor : .primary)
 
                         Text(category.title)
                             .font(.body)
                             .fontWeight(selection == category ? .medium : .regular)
-                            .foregroundStyle(selection == category ? .white : .primary)
+                            .foregroundStyle(.primary)
 
                         Spacer()
                     }
@@ -113,19 +114,15 @@ struct SettingsView: View {
                         cornerRadius: GlassStyleTokens.sidebarSelectionCornerRadius,
                         style: .continuous
                     )
-                    .fill(selection == category ? themeStore.accentColor : Color.clear)
-                    .opacity(selection == category ? 1.0 : 0)
-                    .shadow(
-                        color: selection == category ? Color.black.opacity(0.1) : Color.clear,
-                        radius: 2, x: 0, y: 1
-                    )
-                    .padding(.horizontal, 14)  // Reverted to original centered pill look
+                    .fill(selection == category ? themeStore.selectionFill : Color.clear)
+                    .padding(.horizontal, 14)
                 )
             }
             .listStyle(.sidebar)
-            .padding(.top, 36)
+            // Manual Adjustment: Sidebar top padding (clearance for traffic lights)
+            .padding(.top, 24)
             // Explicitly define sidebar container shape and material
-            .background(.regularMaterial)
+            .background(Material.regularMaterial)
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             .navigationSplitViewColumnWidth(
                 min: GlassStyleTokens.sidebarMinWidth, ideal: GlassStyleTokens.sidebarWidth,
@@ -139,29 +136,17 @@ struct SettingsView: View {
         .tint(themeStore.accentColor)
         .accentColor(themeStore.accentColor)
         .overlay(alignment: .topTrailing) {
-            Button {
+            GlassIconButton(
+                systemImage: "xmark",
+                size: GlassStyleTokens.headerControlHeight,
+                iconSize: GlassStyleTokens.headerStandardIconSize,
+                isPrimary: false,
+                help: "关闭",
+                surfaceVariant: .defaultToolbar
+            ) {
                 dismiss()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 36, height: 36)
-                    .contentShape(Circle())
             }
-            .buttonStyle(.plain)
-            .background(.ultraThinMaterial)
-            .clipShape(RoundedRectangle(cornerRadius: 36, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 36, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.15), lineWidth: 0.5)
-            )
-            .overlay(
-                GlassStyleTokens.highlightGradient
-                    .mask(RoundedRectangle(cornerRadius: 36, style: .continuous))
-                    .allowsHitTesting(false)
-            )
-            .shadow(color: Color.black.opacity(0.12), radius: 4, x: 0, y: 2)
-            .padding(16)
+            .padding(GlassStyleTokens.headerHorizontalPadding)
         }
         .frame(minWidth: 760, minHeight: 680)
         .onAppear {
@@ -386,7 +371,8 @@ struct SettingsView: View {
                 }
             }
             .padding(.horizontal, 32)
-            .padding(.vertical, 24)
+            // Manual Adjustment: Main detail content top padding
+            .padding(.vertical, 40)
             .frame(maxWidth: 800, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
         }

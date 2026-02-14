@@ -16,6 +16,12 @@ import SwiftUI
 /// Uses @Query for automatic data refresh when tracks are added.
 struct PlaylistDetailView<HeaderAccessory: View>: View {
 
+    private struct BatchEditRequest: Identifiable {
+        let id = UUID()
+        let tracks: [Track]
+        let focus: BatchTrackEditSheet.EntryFocus
+    }
+
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(UIStateViewModel.self) private var uiState
@@ -35,14 +41,18 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
     @State private var displayedTracksCache: [Track] = []
     @State private var filteredTracksCache: [Track] = []
     @State private var sortedTracksCache: [Track] = []
+    @State private var parentSortedTracksCache: [Track] = []
     @State private var rowModelsCache: [TrackRowModel] = []
     @State private var sortedTrackIndexMapCache: [UUID: Int] = [:]
+    @State private var parentSortedTrackIndexMapCache: [UUID: Int] = [:]
     @State private var trackByIDCache: [UUID: Track] = [:]
     @State private var prefetchTask: Task<Void, Never>?
     @State private var snapshotUpdateTask: Task<Void, Never>?
     @FocusState private var isSearchFocused: Bool
     @State private var isMultiselectMode = false
     @State private var selectedTrackIDs: Set<UUID> = []
+    @State private var sortSymbolEffectTrigger = 0
+    @State private var batchEditRequest: BatchEditRequest?
 
     // MARK: - Init
 
@@ -72,11 +82,17 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         .sheet(item: $trackToEdit) { track in
             TrackEditSheet(track: track)
         }
+        .sheet(item: $batchEditRequest) { request in
+            BatchTrackEditSheet(
+                tracks: request.tracks,
+                entryFocus: request.focus
+            )
+        }
         .onAppear {
             rebuildTrackCaches(reason: "appear")
             restoreScrollIfNeeded()
             updateLibrarySnapshot()
-            playerVM.updateQueueTracks(sortedTracksCache)
+            playerVM.updateQueueTracks(parentSortedTracksCache)
         }
         .onDisappear {
             prefetchTask?.cancel()
@@ -88,46 +104,48 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             rebuildTrackCaches(reason: "playlist")
             restoreScrollIfNeeded()
             updateLibrarySnapshot()
-            playerVM.updateQueueTracks(sortedTracksCache)
+            playerVM.updateQueueTracks(parentSortedTracksCache)
         }
         .onChange(of: libraryVM.selectedArtist) { _, _ in
             rebuildTrackCaches(reason: "artist")
             restoreScrollIfNeeded()
             updateLibrarySnapshot()
-            playerVM.updateQueueTracks(sortedTracksCache)
+            playerVM.updateQueueTracks(parentSortedTracksCache)
         }
         .onChange(of: libraryVM.selectedAlbum) { _, _ in
             rebuildTrackCaches(reason: "album")
             restoreScrollIfNeeded()
             updateLibrarySnapshot()
-            playerVM.updateQueueTracks(sortedTracksCache)
+            playerVM.updateQueueTracks(parentSortedTracksCache)
         }
         .onChange(of: searchText) { _, _ in
             rebuildTrackCaches(reason: "search")
             updateLibrarySnapshot()
-            playerVM.updateQueueTracks(sortedTracksCache)
+            playerVM.updateQueueTracks(parentSortedTracksCache)
         }
         .onChange(of: libraryVM.trackSortKey) { _, _ in
+            sortSymbolEffectTrigger += 1
             rebuildTrackCaches(reason: "sortKey")
             updateLibrarySnapshot()
-            playerVM.updateQueueTracks(sortedTracksCache)
+            playerVM.updateQueueTracks(parentSortedTracksCache)
         }
         .onChange(of: libraryVM.trackSortOrder) { _, _ in
+            sortSymbolEffectTrigger += 1
             rebuildTrackCaches(reason: "sortOrder")
             updateLibrarySnapshot()
-            playerVM.updateQueueTracks(sortedTracksCache)
+            playerVM.updateQueueTracks(parentSortedTracksCache)
         }
         .onChange(of: allTracks.count) { _, _ in
             rebuildTrackCaches(reason: "trackCount")
             restoreScrollIfNeeded()
             updateLibrarySnapshot()
-            playerVM.updateQueueTracks(sortedTracksCache)
+            playerVM.updateQueueTracks(parentSortedTracksCache)
         }
         .onChange(of: libraryVM.refreshTrigger) { _, _ in
             rebuildTrackCaches(reason: "refresh")
             restoreScrollIfNeeded()
             updateLibrarySnapshot()
-            playerVM.updateQueueTracks(sortedTracksCache)
+            playerVM.updateQueueTracks(parentSortedTracksCache)
         }
     }
 
@@ -273,6 +291,12 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
                 }
             }
         }
+        .symbolEffect(.bounce, value: sortSymbolEffectTrigger)
+        .simultaneousGesture(
+            TapGesture().onEnded {
+                sortSymbolEffectTrigger += 1
+            }
+        )
     }
 
     private var trackListView: some View {
@@ -280,7 +304,6 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             LazyVStack(spacing: 0) {
                 ForEach(rowModelsCache, id: \.id) { rowModel in
                     if let track = trackByIDCache[rowModel.id] {
-                        let rowIndex = sortedTrackIndexMapCache[rowModel.id] ?? 0
                         TrackRowView(
                             model: rowModel,
                             isPlaying: playerVM.currentTrack?.id == rowModel.id,
@@ -293,9 +316,11 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
                                         selectedTrackIDs.insert(rowModel.id)
                                     }
                                 } else {
+                                    let startIndex =
+                                        parentSortedTrackIndexMapCache[rowModel.id] ?? 0
                                     playerVM.playTracks(
-                                        sortedTracksCache,
-                                        startingAt: rowIndex
+                                        parentSortedTracksCache,
+                                        startingAt: startIndex
                                     )
                                 }
                             },
@@ -303,11 +328,10 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
                                 prefetchAroundTrackID(rowModel.id)
                             }
                         ) {
-                            trackMenu(track: track, index: rowIndex)
+                            trackMenu(track: track)
                         }
-                        .equatable()
                         .contextMenu {
-                            trackMenu(track: track, index: rowIndex)
+                            trackMenu(track: track)
                         }
                     }
                 }
@@ -412,13 +436,31 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
     }
 
     @ViewBuilder
-    private func trackMenu(track: Track, index: Int) -> some View {
+    private func trackMenu(track: Track) -> some View {
         if isMultiselectMode && selectedTrackIDs.contains(track.id) {
             // Batch Actions
             Text("已选择 \(selectedTrackIDs.count) 首歌曲")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 4)
+
+            Divider()
+
+            Menu {
+                Button {
+                    openBatchEditor(focus: .metadata)
+                } label: {
+                    Label("批量编辑元数据…", systemImage: "slider.horizontal.3")
+                }
+
+                Button {
+                    openBatchEditor(focus: .lyrics)
+                } label: {
+                    Label("批量查找/导入歌词…", systemImage: "text.badge.magnifyingglass")
+                }
+            } label: {
+                Label("批量处理", systemImage: "square.stack.3d.forward.dottedline")
+            }
 
             Divider()
 
@@ -480,7 +522,8 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             // SINGLE TRACK ACTIONS (Keep existing)
             // Play
             Button {
-                playerVM.playTracks(sortedTracksCache, startingAt: index)
+                let startIndex = parentSortedTrackIndexMapCache[track.id] ?? 0
+                playerVM.playTracks(parentSortedTracksCache, startingAt: startIndex)
             } label: {
                 Label("播放", systemImage: "play")
             }
@@ -562,46 +605,58 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         }
     }
 
+    private func selectedTracksForBatchEditor() -> [Track] {
+        sortedTracksCache.filter { selectedTrackIDs.contains($0.id) }
+    }
+
+    private func openBatchEditor(focus: BatchTrackEditSheet.EntryFocus) {
+        let selectedTracks = selectedTracksForBatchEditor()
+        guard !selectedTracks.isEmpty else { return }
+        batchEditRequest = BatchEditRequest(
+            tracks: selectedTracks,
+            focus: focus
+        )
+    }
+
     private var listTopPadding: CGFloat { GlassStyleTokens.headerBarHeight + 16 }
 
     private var listBottomPadding: CGFloat { 16 }
 
     private var headerBackground: some View {
         // Progressive Blur (Variable Blur)
-        // Uses a Material layer masked by a gradient to fade the blur out from top to bottom.
-        // Important: .allowsHitTesting(false) ensures this layer is click-through.
+        // Strictly confined and made significantly smaller as requested.
         ZStack(alignment: .top) {
             Rectangle()
                 .fill(.regularMaterial)
                 .mask {
                     LinearGradient(
                         stops: [
-                            .init(color: .black, location: 0.0),  // Full blur at window edge
-                            .init(color: .black, location: 0.75),  // Tight range: hold blur longer
-                            .init(color: .clear, location: 1.0),  // Final fade out
+                            .init(color: .black, location: 0.0),  // Full blur at top
+                            .init(color: .clear, location: 0.8),  // Fade out earlier (80% of bar)
                         ],
                         startPoint: .top,
                         endPoint: .bottom
                     )
                 }
 
-            // Subtle theme-tinted scrim to enhance contrast
+            // Subtle theme-tinted scrim: even tighter fade
             Rectangle()
                 .fill(
-                    Color(nsColor: .windowBackgroundColor).opacity(colorScheme == .dark ? 0.3 : 0.1)
+                    Color(nsColor: .windowBackgroundColor).opacity(
+                        colorScheme == .dark ? 0.2 : 0.05)
                 )
                 .mask {
                     LinearGradient(
                         stops: [
                             .init(color: .black, location: 0.0),
-                            .init(color: .clear, location: 1.0),
+                            .init(color: .clear, location: 0.6),
                         ],
                         startPoint: .top,
                         endPoint: .bottom
                     )
                 }
         }
-        .frame(height: GlassStyleTokens.headerBarHeight + 20)
+        .frame(height: GlassStyleTokens.headerBarHeight)
         .allowsHitTesting(false)
     }
 
@@ -676,6 +731,7 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         }()
 
         let sortedTracks = libraryVM.sortedTracks(filteredTracks)
+        let parentSortedTracks = libraryVM.sortedTracks(displayedTracks)
         let rowScale = NSScreen.main?.backingScaleFactor ?? 2.0
         let rowPixels = CGSize(
             width: Constants.Layout.artworkSmallSize * rowScale,
@@ -685,8 +741,11 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         displayedTracksCache = displayedTracks
         filteredTracksCache = filteredTracks
         sortedTracksCache = sortedTracks
+        parentSortedTracksCache = parentSortedTracks
         sortedTrackIndexMapCache = Dictionary(
             uniqueKeysWithValues: sortedTracks.enumerated().map { ($0.element.id, $0.offset) })
+        parentSortedTrackIndexMapCache = Dictionary(
+            uniqueKeysWithValues: parentSortedTracks.enumerated().map { ($0.element.id, $0.offset) })
         trackByIDCache = Dictionary(uniqueKeysWithValues: sortedTracks.map { ($0.id, $0) })
         rowModelsCache = sortedTracks.map { track in
             let checksum = ArtworkLoader.checksum(for: track.artworkData)
