@@ -33,6 +33,8 @@ struct SidebarView: View {
 
     @State private var isHoveringArtists = false
     @State private var isHoveringAlbums = false
+    @State private var settingsRotateTrigger = 0
+    @State private var appearanceRotateTrigger = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -289,8 +291,10 @@ struct SidebarView: View {
             help: LocalizedStringKey("sidebar.settings"),
             surfaceVariant: .sidebarBottom
         ) {
+            settingsRotateTrigger += 1
             showSettings = true
         }
+        .symbolEffect(.rotate, value: settingsRotateTrigger)
     }
 
     private var appearanceSwitchButton: some View {
@@ -316,25 +320,36 @@ struct SidebarView: View {
             help: helpText,
             surfaceVariant: .sidebarBottom
         ) {
-            cycleAppearance()
+            let target = nextAppearanceTarget()
+            if target == .light {
+                appearanceRotateTrigger += 1
+            }
+            cycleAppearance(to: target)
         }
+        .symbolEffect(.rotate, value: appearanceRotateTrigger)
+        .contentTransition(
+            .symbolEffect(.replace.magic(fallback: .offUp.byLayer), options: .nonRepeating)
+        )
+        .animation(.snappy(duration: 0.24), value: icon)
     }
 
-    private func cycleAppearance() {
-        let currentManual: AppSettings.ManualAppearance = {
-            if settings.followSystemAppearance {
-                return currentColorScheme == .dark ? .dark : .light
-            }
-            return settings.manualAppearance
-        }()
-        let target: AppSettings.ManualAppearance = currentManual == .dark ? .light : .dark
-
+    private func cycleAppearance(to target: AppSettings.ManualAppearance) {
         withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
             if settings.followSystemAppearance {
                 settings.followSystemAppearance = false
             }
             settings.manualAppearance = target
         }
+    }
+
+    private func nextAppearanceTarget() -> AppSettings.ManualAppearance {
+        let currentManual: AppSettings.ManualAppearance = {
+            if settings.followSystemAppearance {
+                return currentColorScheme == .dark ? .dark : .light
+            }
+            return settings.manualAppearance
+        }()
+        return currentManual == .dark ? .light : .dark
     }
 
     private func handleSelection(_ item: SidebarSelection) {

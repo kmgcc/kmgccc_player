@@ -38,7 +38,7 @@ struct GlassIconButtonLabel: View {
 
     private var iconForeground: Color {
         if isPrimary {
-            return themeStore.accentColor
+            return themeStore.accentColor.opacity(colorScheme == .dark ? 0.98 : 0.90)
         }
         return themeStore.accentColor.opacity(colorScheme == .dark ? 0.94 : 0.84)
     }
@@ -161,19 +161,22 @@ struct GlassToolbarTriplePill: View {
     var body: some View {
         HStack(spacing: 0) {
             // Multiselect Button
-            Button(action: onToggleMultiselect) {
-                Image(systemName: "checkmark.circle")
+            Button {
+                onToggleMultiselect()
+            } label: {
+                Image(systemName: isMultiselectActive ? "checkmark.circle.fill" : "checkmark.circle")
+                    .id(isMultiselectActive ? "multiselect-fill" : "multiselect-outline")
                     .font(
                         .system(
                             size: GlassToolbarButton.iconSize(for: .standard),
                             weight: .semibold
                         )
                     )
-                    .foregroundStyle(
-                        isMultiselectActive
-                            ? themeStore.accentColor
-                            : themeStore.secondaryTextColor
+                    .foregroundStyle(activeIconColor)
+                    .contentTransition(
+                        .symbolEffect(.replace.magic(fallback: .offUp.byLayer), options: .nonRepeating)
                     )
+                    .animation(.snappy(duration: 0.22), value: isMultiselectActive)
                     .frame(
                         width: GlassStyleTokens.headerControlHeight,
                         height: GlassStyleTokens.headerControlHeight
@@ -200,7 +203,7 @@ struct GlassToolbarTriplePill: View {
                         )
                     )
                     .foregroundStyle(
-                        canPlay ? themeStore.accentColor : themeStore.secondaryTextColor
+                        canPlay ? activeIconColor : themeStore.secondaryTextColor
                     )
                     .frame(
                         width: GlassStyleTokens.headerControlHeight,
@@ -224,7 +227,7 @@ struct GlassToolbarTriplePill: View {
                         )
                     )
                     .foregroundStyle(
-                        themeStore.accentColor.opacity(colorScheme == .dark ? 0.9 : 0.86)
+                        activeIconColor
                     )
                     .frame(
                         width: GlassStyleTokens.headerControlHeight,
@@ -248,6 +251,10 @@ struct GlassToolbarTriplePill: View {
                 height: GlassStyleTokens.headerControlHeight - 12
             )
     }
+
+    private var activeIconColor: Color {
+        themeStore.accentColor.opacity(colorScheme == .dark ? 0.96 : 0.88)
+    }
 }
 
 /// Unified pill for Play + Import in the header bar.
@@ -269,7 +276,7 @@ struct GlassToolbarPlayImportPill: View {
                         )
                     )
                     .foregroundStyle(
-                        canPlay ? themeStore.accentColor : themeStore.secondaryTextColor
+                        canPlay ? activeIconColor : themeStore.secondaryTextColor
                     )
                     .frame(
                         width: GlassStyleTokens.headerControlHeight,
@@ -297,7 +304,7 @@ struct GlassToolbarPlayImportPill: View {
                         )
                     )
                     .foregroundStyle(
-                        themeStore.accentColor.opacity(colorScheme == .dark ? 0.9 : 0.86)
+                        activeIconColor
                     )
                     .frame(
                         width: GlassStyleTokens.headerControlHeight,
@@ -311,6 +318,10 @@ struct GlassToolbarPlayImportPill: View {
         .frame(height: GlassStyleTokens.headerControlHeight)
         .liquidGlassPill(colorScheme: colorScheme, accentColor: nil as Color?)
         .clipShape(Capsule())
+    }
+
+    private var activeIconColor: Color {
+        themeStore.accentColor.opacity(colorScheme == .dark ? 0.96 : 0.88)
     }
 }
 
@@ -339,7 +350,7 @@ struct GlassToolbarSearchField: View {
                 Button(action: onClear) {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(themeStore.accentColor.opacity(colorScheme == .dark ? 0.92 : 0.84))
                         .frame(width: 22, height: 22)
                         .contentShape(Circle())
                 }

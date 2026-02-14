@@ -12,7 +12,15 @@ import SwiftUI
 /// LDDC lyrics search section with Liquid Glass styling.
 struct LDDCSearchSection: View {
 
+    enum LayoutStyle {
+        case stacked
+        case split
+    }
+
     let track: Track
+    let layoutStyle: LayoutStyle
+    let includeTranslationDefault: Bool
+    let autoSearchToken: Int
     let onApplyTTML: (String) -> Void
 
     @EnvironmentObject private var themeStore: ThemeStore
@@ -22,9 +30,10 @@ struct LDDCSearchSection: View {
     @State private var searchTitle = ""
     @State private var searchArtist = ""
     @State private var selectedMode: LDDCMode = .verbatim
-    @State private var includeTranslation = false
+    @State private var includeTranslation: Bool
     // Default platforms: QQ + Kugou + Netease (as requested).
     @State private var selectedSources: Set<LDDCSource> = [.QM, .KG, .NE]
+    @State private var lastAutoSearchToken = 0
 
     @State private var isSearching = false
     @State private var searchResults: [LDDCCandidate] = []
@@ -46,6 +55,21 @@ struct LDDCSearchSection: View {
     private let panelMaxWidth: CGFloat = 380
     private let visibleSources: [LDDCSource] = [.QM, .KG, .NE]
 
+    init(
+        track: Track,
+        layoutStyle: LayoutStyle = .stacked,
+        includeTranslationDefault: Bool = false,
+        autoSearchToken: Int = 0,
+        onApplyTTML: @escaping (String) -> Void
+    ) {
+        self.track = track
+        self.layoutStyle = layoutStyle
+        self.includeTranslationDefault = includeTranslationDefault
+        self.autoSearchToken = autoSearchToken
+        self.onApplyTTML = onApplyTTML
+        _includeTranslation = State(initialValue: includeTranslationDefault)
+    }
+
     // MARK: - Body
 
     var body: some View {
@@ -56,14 +80,18 @@ struct LDDCSearchSection: View {
             // Search Form
             searchFormSection
 
-            // Results List
-            if !searchResults.isEmpty || isSearching {
-                resultsSection
-            }
+            if layoutStyle == .split {
+                splitPanelSection
+            } else {
+                // Results List
+                if !searchResults.isEmpty || isSearching {
+                    resultsSection
+                }
 
-            // Preview Panel
-            if selectedCandidate != nil {
-                previewSection
+                // Preview Panel
+                if selectedCandidate != nil {
+                    previewSection
+                }
             }
 
             // Error Display
@@ -72,9 +100,14 @@ struct LDDCSearchSection: View {
             }
         }
         .onAppear {
-            // Pre-fill from track
-            searchTitle = track.title
-            searchArtist = track.artist
+            resetQueryForCurrentTrack()
+            triggerAutoSearchIfNeeded(autoSearchToken, force: true)
+        }
+        .onChange(of: track.id) { _, _ in
+            resetQueryForCurrentTrack()
+        }
+        .onChange(of: autoSearchToken) { _, newValue in
+            triggerAutoSearchIfNeeded(newValue, force: false)
         }
     }
 
@@ -212,6 +245,55 @@ struct LDDCSearchSection: View {
         .frame(maxWidth: panelMaxWidth, alignment: .leading)
     }
 
+    private var splitPanelSection: some View {
+        HStack(alignment: .top, spacing: 16) {
+            splitResultsSection
+            splitPreviewSection
+        }
+    }
+
+    private var splitResultsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("search.lddc.results_count \(searchResults.count)")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            Group {
+                if isSearching {
+                    VStack(spacing: 8) {
+                        ProgressView()
+                        Text("search.lddc.search")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 440)
+                } else if searchResults.isEmpty {
+                    VStack(spacing: 8) {
+                        Image(systemName: "text.magnifyingglass")
+                            .foregroundStyle(.secondary)
+                        Text("请先搜索歌词候选，或切换到下一首触发自动查词。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 440)
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 4) {
+                            ForEach(searchResults) { candidate in
+                                candidateRow(candidate)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 460)
+                }
+            }
+            .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     private func candidateRow(_ candidate: LDDCCandidate) -> some View {
         HStack(spacing: 8) {
             // Platform Badge
@@ -326,12 +408,81 @@ struct LDDCSearchSection: View {
         .frame(maxWidth: panelMaxWidth, alignment: .leading)
     }
 
+    private var splitPreviewSection: some View {
+        Group {
+            if selectedCandidate != nil {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("search.lddc.preview")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+
+                        Spacer()
+
+                        if isFetchingPreview {
+                            ProgressView()
+                                .scaleEffect(0.6)
+                        }
+
+                        Button {
+                            Task { await applyLyrics() }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "checkmark.circle")
+                                Text("search.lddc.apply")
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(
+                            editableLrcOrig.trimmingCharacters(
+                                in: .whitespacesAndNewlines
+                            ).isEmpty || isApplying
+                        )
+                    }
+
+                    Toggle("转换时去除多余信息", isOn: $stripExtraInfo)
+                        .toggleStyle(.switch)
+                        .tint(themeStore.accentColor)
+                        .font(.caption)
+
+                    if includeTranslation && previewLrcTrans != nil {
+                        TabView {
+                            previewEditorView(text: $editableLrcOrig)
+                                .tabItem { Text("search.lddc.original") }
+
+                            previewEditorView(text: $editableLrcTrans)
+                                .tabItem { Text("search.lddc.translated") }
+                        }
+                        .frame(minHeight: 460)
+                    } else {
+                        previewEditorView(text: $editableLrcOrig)
+                            .frame(minHeight: 460)
+                    }
+                }
+            } else {
+                VStack(spacing: 8) {
+                    Image(systemName: "text.alignleft")
+                        .foregroundStyle(.secondary)
+                    Text("从左侧选择候选后，可在这里预览、预编辑并转换成 TTML。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity, minHeight: 520)
+            }
+        }
+        .padding(10)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.45))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     private func previewEditorView(text: Binding<String>) -> some View {
         TextEditor(text: text)
-            .font(.system(.caption, design: .monospaced))
+            .font(.system(.body, design: .monospaced))
             .padding(6)
-        .background(Color(nsColor: .textBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
+            .background(Color(nsColor: .textBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 
     // MARK: - Error Banner
@@ -356,6 +507,31 @@ struct LDDCSearchSection: View {
     }
 
     // MARK: - Actions
+
+    private func resetQueryForCurrentTrack() {
+        searchTitle = track.title
+        searchArtist = track.artist
+        selectedCandidate = nil
+        previewLrcOrig = nil
+        previewLrcTrans = nil
+        editableLrcOrig = ""
+        editableLrcTrans = ""
+        searchError = nil
+        previewError = nil
+        applyError = nil
+    }
+
+    private func triggerAutoSearchIfNeeded(_ token: Int, force: Bool) {
+        guard token > 0 else { return }
+        if !force && token == lastAutoSearchToken {
+            return
+        }
+        lastAutoSearchToken = token
+        searchTitle = track.title
+        searchArtist = track.artist
+        includeTranslation = includeTranslationDefault
+        Task { await performSearch() }
+    }
 
     private func performSearch() async {
         guard !searchTitle.isEmpty else { return }
