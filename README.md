@@ -14,6 +14,9 @@
   加入独立的“正在播放”视图，采用磁带外观设计。  
   磁带轮会随音乐播放实时转动，并基于音频频谱算法将音乐能量映射到磁带与指示元素上，在现代界面中保留实体播放设备的仪式感。
 
+- **艺术背景 (Beta)**  
+  将当前播放曲目的封面色彩进行风格化解析与图案拼贴展示，作为“正在播放”视图的动态背景。通过提取封面色彩特征，提供更具沉浸感的视觉反馈。
+
 - **AMLL 歌词组件集成**  
   集成 **AppleMusic-Like Lyrics (AMLL)** 歌词渲染组件，支持高质量逐行歌词显示与平滑滚动效果。
 
@@ -24,9 +27,11 @@
 
 ![Main UI](screenshots/main.png)
 ![Cassette Player](screenshots/tape.png)
+![Art Background](screenshots/tape2.png)
 ![Color](screenshots/color.png)
+![Batch Edit](screenshots/batch_edit.png)
 ![Mini Player](screenshots/glass.png)
-![LDDC](screenshots/lddc.png)
+![LDDC](screenshots/LDDC.png)
 
 ## 构建与运行 (Build)
 
