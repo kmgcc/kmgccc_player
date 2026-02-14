@@ -118,7 +118,7 @@ public final class AppSettings {
 
     /// Master switch for LED meter sampling/analysis.
     @ObservationIgnored
-    @AppStorage("ledMeterEnabled") var ledMeterEnabled: Bool = true
+    @AppStorage("ledMeterEnabled") var ledMeterEnabled: Bool = false
 
     // MARK: - Appearance Settings
 
@@ -237,8 +237,8 @@ public final class AppSettings {
             access(keyPath: \.lyricsBackgroundMode)
             let raw =
                 UserDefaults.standard.string(forKey: AppearanceKeys.lyricsBackgroundMode)
-                ?? LyricsBackgroundMode.clear.rawValue
-            return LyricsBackgroundMode(rawValue: raw) ?? .clear
+                ?? LyricsBackgroundMode.sidebar.rawValue
+            return LyricsBackgroundMode(rawValue: raw) ?? .sidebar
         }
         set {
             withMutation(keyPath: \.lyricsBackgroundMode) {

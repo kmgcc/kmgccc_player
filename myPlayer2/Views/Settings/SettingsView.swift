@@ -53,8 +53,9 @@ struct SettingsView: View {
     @State private var followSystemAppearance: Bool = AppSettings.shared.followSystemAppearance
     @State private var lyricsBackgroundMode: AppSettings.LyricsBackgroundMode = AppSettings.shared
         .lyricsBackgroundMode
-    @AppStorage("skin.classicLED.showLEDMeter") private var classicShowLEDMeter: Bool = true
-    @AppStorage("skin.kmgcccCassette.showLEDMeter") private var cassetteShowLEDMeter: Bool = true
+    @AppStorage("skin.classicLED.showLEDMeter") private var classicShowLEDMeter: Bool = false
+    @AppStorage("skin.kmgcccCassette.showLEDMeter") private var cassetteShowLEDMeter: Bool = false
+    @AppStorage("skin.kmgcccCassette.showKmgLook") private var cassetteShowKmgLook: Bool = false
 
     // MARK: - LED Settings State
 
@@ -69,6 +70,7 @@ struct SettingsView: View {
     @State private var ledMeterEnabled: Bool = AppSettings.shared.ledMeterEnabled
     @State private var aboutEasterEggTracker = AboutEasterEggTapTracker()
     @State private var showEasterEggImage: Bool = false
+    @State private var showResetDataAlert: Bool = false
 
     private var fontFamilies: [String] {
         NSFontManager.shared.availableFontFamilies.sorted()
@@ -172,6 +174,14 @@ struct SettingsView: View {
                 window.titlebarAppearsTransparent = true
             }
         )
+        .alert("初始化应用数据？", isPresented: $showResetDataAlert) {
+            Button("取消", role: .cancel) {}
+            Button("初始化", role: .destructive) {
+                resetAppDataExceptMusicLibrary()
+            }
+        } message: {
+            Text("会重置应用设置与界面状态，不会修改音乐资料库内容。")
+        }
     }
 
     // Extracted Sync Logic to reduce body complexity
@@ -366,6 +376,8 @@ struct SettingsView: View {
                     amllSection
                 case .led:
                     ledSettingsSection
+                case .data:
+                    dataSection
                 case .about:
                     aboutSection
                 }
@@ -786,8 +798,8 @@ struct SettingsView: View {
 
     // MARK: - LED Settings Section
 
-    @AppStorage("ledTransientThreshold") private var transientThreshold: Double = 3.0
-    @AppStorage("ledTransientIntensity") private var transientIntensity: Double = 1.5
+    @AppStorage("ledTransientThreshold") private var transientThreshold: Double = 12.0
+    @AppStorage("ledTransientIntensity") private var transientIntensity: Double = 4.0
     private var ledSettingsSection: some View {
         VStack(alignment: .leading, spacing: 20) {  // Reduced from 32
             headerLabel(
@@ -967,6 +979,84 @@ struct SettingsView: View {
         }
         .font(.subheadline)
         .padding(.horizontal, 10)
+    }
+
+    // MARK: - Data Section
+
+    private var dataSection: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            headerLabel("数据", systemImage: "arrow.counterclockwise.circle")
+
+            GroupBox {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("将应用配置恢复为初始默认值，不会修改音乐资料库。")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+
+                    Button("初始化应用数据（保留音乐资料库）", role: .destructive) {
+                        showResetDataAlert = true
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                .padding(12)
+            }
+        }
+    }
+
+    private func resetAppDataExceptMusicLibrary() {
+        guard let bundleIdentifier = Bundle.main.bundleIdentifier else { return }
+
+        // Only clear app defaults. Local music library under ~/Music is untouched.
+        UserDefaults.standard.removePersistentDomain(forName: bundleIdentifier)
+        UserDefaults.standard.synchronize()
+
+        reloadStateFromDefaults()
+    }
+
+    private func reloadStateFromDefaults() {
+        nowPlayingSkin = AppSettings.shared.selectedNowPlayingSkinID
+        nowPlayingArtBackgroundEnabled = AppSettings.shared.nowPlayingArtBackgroundEnabled
+        globalArtworkTintEnabled = AppSettings.shared.globalArtworkTintEnabled
+        followSystemAppearance = AppSettings.shared.followSystemAppearance
+        lyricsBackgroundMode = AppSettings.shared.lyricsBackgroundMode
+        ledMeterEnabled = AppSettings.shared.ledMeterEnabled
+
+        classicShowLEDMeter = false
+        cassetteShowLEDMeter = false
+        cassetteShowKmgLook = false
+
+        sensitivity = AppSettings.shared.ledSensitivity
+        cutoffHz = AppSettings.shared.ledCutoffHz
+        preGain = AppSettings.shared.ledPreGain
+        speed = AppSettings.shared.ledSpeed
+        targetHz = AppSettings.shared.ledTargetHz
+        ledCount = AppSettings.shared.ledCount
+        brightnessLevels = AppSettings.shared.ledBrightnessLevels
+        lookaheadMs = AppSettings.shared.lookaheadMs
+        transientThreshold = AppSettings.shared.ledTransientThreshold
+        transientIntensity = AppSettings.shared.ledTransientIntensity
+
+        lyricsLeadInMs = AppSettings.shared.lyricsLeadInMs
+        lyricsGeneralLeadInMs = AppSettings.shared.lyricsGeneralLeadInMs
+        lyricsNearSwitchGapMs = AppSettings.shared.lyricsNearSwitchGapMs
+        lyricsGlobalAdvanceMs = AppSettings.shared.lyricsGlobalAdvanceMs
+        lyricsFontNameZh = AppSettings.shared.lyricsFontNameZh
+        lyricsFontNameEn = AppSettings.shared.lyricsFontNameEn
+        lyricsTranslationFontName = AppSettings.shared.lyricsTranslationFontName
+        lyricsFontWeightLight = AppSettings.shared.lyricsFontWeightLight
+        lyricsFontWeightDark = AppSettings.shared.lyricsFontWeightDark
+        lyricsFontSize = AppSettings.shared.lyricsFontSize
+        lyricsTranslationFontSize = AppSettings.shared.lyricsTranslationFontSize
+        lyricsTranslationFontWeightLight = AppSettings.shared.lyricsTranslationFontWeightLight
+        lyricsTranslationFontWeightDark = AppSettings.shared.lyricsTranslationFontWeightDark
+
+        applyLedConfig()
+        lyricsVM.refreshConfigFromSettings()
+        playerVM.setLedMeterEnabled(ledMeterEnabled)
+        playerVM.refreshLedMeterStateFromSettings()
+        Task { @MainActor in
+            await themeStore.refreshPalette(reason: "settings_reset_defaults")
+        }
     }
 
     // MARK: - About
@@ -1279,6 +1369,7 @@ private enum SettingsCategory: String, CaseIterable, Identifiable {
     case nowPlaying
     case lyrics
     case led
+    case data
     case about
 
     var id: String { rawValue }
@@ -1289,6 +1380,7 @@ private enum SettingsCategory: String, CaseIterable, Identifiable {
         case .nowPlaying: return "settings.section.now_playing"
         case .lyrics: return "settings.section.lyrics"
         case .led: return "settings.section.led"
+        case .data: return "数据"
         case .about: return "settings.section.about"
         }
     }
@@ -1299,6 +1391,7 @@ private enum SettingsCategory: String, CaseIterable, Identifiable {
         case .nowPlaying: return "sparkles"
         case .lyrics: return "text.quote"
         case .led: return "waveform.path.ecg"
+        case .data: return "arrow.counterclockwise.circle"
         case .about: return "info.circle"
         }
     }
