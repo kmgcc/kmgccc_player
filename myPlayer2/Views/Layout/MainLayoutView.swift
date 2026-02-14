@@ -236,7 +236,7 @@ struct MainLayoutView: View {
             .frame(maxWidth: .infinity)
             .layoutPriority(1)
 
-            if uiState.lyricsVisible {
+            if uiState.lyricsVisible && !uiState.lyricsPanelSuppressedByModal {
                 lyricsPanelView
             }
         }
@@ -248,7 +248,7 @@ struct MainLayoutView: View {
             NowPlayingHostView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
-            if uiState.lyricsVisible {
+            if uiState.lyricsVisible && !uiState.lyricsPanelSuppressedByModal {
                 lyricsPanelView
             }
         }

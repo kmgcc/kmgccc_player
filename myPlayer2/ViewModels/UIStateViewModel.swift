@@ -50,6 +50,10 @@ final class UIStateViewModel {
     /// Whether the lyrics panel is visible (toggleable).
     var lyricsVisible: Bool = true
 
+    /// Temporarily hide the main lyrics panel when another lyrics surface
+    /// (e.g. batch editor preview) is actively displayed.
+    var lyricsPanelSuppressedByModal: Bool = false
+
     /// Current lyrics panel width (user-resizable).
     var lyricsWidth: CGFloat = Constants.Layout.lyricsPanelDefaultWidth
 

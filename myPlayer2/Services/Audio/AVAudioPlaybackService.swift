@@ -485,7 +485,8 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     private func startProgressTimer() {
         stopProgressTimer()
 
-        // Use Timer for progress updates (10 times per second)
+        // Keep UI-facing playback state updates lightweight to avoid
+        // triggering large SwiftUI view recomputations during playback.
         progressTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) {
             [weak self] _ in
             Task { @MainActor [weak self] in
