@@ -30,7 +30,7 @@ struct ClassicLEDSkin: NowPlayingSkin {
 
 private struct ClassicLEDArtwork: View {
     let context: SkinContext
-    @AppStorage("skin.classicLED.showLEDMeter") private var showLEDMeter: Bool = true
+    @AppStorage("skin.classicLED.showLEDMeter") private var showLEDMeter: Bool = false
 
     var body: some View {
         let contentSize = context.contentSize
@@ -82,7 +82,7 @@ private struct ClassicLEDArtwork: View {
 }
 
 private struct ClassicLEDSkinSettingsView: View {
-    @AppStorage("skin.classicLED.showLEDMeter") private var showLEDMeter: Bool = true
+    @AppStorage("skin.classicLED.showLEDMeter") private var showLEDMeter: Bool = false
 
     var body: some View {
         Toggle(

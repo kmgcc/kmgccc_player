@@ -68,7 +68,7 @@ private enum CassetteLayout {
 
 private struct CassetteArtwork: View {
     let context: SkinContext
-    @AppStorage("skin.kmgcccCassette.showLEDMeter") private var showLEDMeter: Bool = true
+    @AppStorage("skin.kmgcccCassette.showLEDMeter") private var showLEDMeter: Bool = false
     @AppStorage("skin.kmgcccCassette.showKmgLook") private var showKmgLook: Bool = false
     @State private var adjustedArtworkImage: NSImage?
     @State private var adjustedArtworkKey: String?
@@ -770,7 +770,7 @@ private struct HolesOverlay: View {
 
 private struct CassetteOverlay: View {
     let context: SkinContext
-    @AppStorage("skin.kmgcccCassette.showLEDMeter") private var showLEDMeter: Bool = true
+    @AppStorage("skin.kmgcccCassette.showLEDMeter") private var showLEDMeter: Bool = false
 
     var body: some View {
         let size = CassetteLayout.cassetteSize(for: context)
@@ -793,7 +793,7 @@ private struct CassetteOverlay: View {
 }
 
 private struct KmgcccCassetteSettingsView: View {
-    @AppStorage("skin.kmgcccCassette.showLEDMeter") private var showLEDMeter: Bool = true
+    @AppStorage("skin.kmgcccCassette.showLEDMeter") private var showLEDMeter: Bool = false
     @AppStorage("skin.kmgcccCassette.showKmgLook") private var showKmgLook: Bool = false
 
     var body: some View {
