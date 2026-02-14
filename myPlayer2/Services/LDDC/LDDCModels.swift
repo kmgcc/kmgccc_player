@@ -22,9 +22,9 @@ enum LDDCSource: String, CaseIterable, Identifiable, Codable {
     var displayName: String {
         switch self {
         case .LRCLIB: return "LRCLIB"
-        case .QM: return NSLocalizedString("search.lddc.qm", comment: "")
-        case .KG: return NSLocalizedString("search.lddc.kg", comment: "")
-        case .NE: return NSLocalizedString("search.lddc.ne", comment: "")
+        case .QM: return "QQ音乐"
+        case .KG: return "酷狗"
+        case .NE: return "网易云"
         }
     }
 }
@@ -38,8 +38,8 @@ enum LDDCMode: String, CaseIterable, Identifiable, Codable {
 
     var displayName: String {
         switch self {
-        case .line: return NSLocalizedString("search.lddc.mode_line", comment: "")
-        case .verbatim: return NSLocalizedString("search.lddc.mode_verbatim", comment: "")
+        case .line: return "逐行"
+        case .verbatim: return "逐字"
         }
     }
 }
@@ -122,7 +122,7 @@ enum LDDCError: LocalizedError {
         case .requestFailed(let msg):
             return String(format: NSLocalizedString("error.lddc.request_failed", comment: ""), msg)
         case .noResults:
-            return NSLocalizedString("search.lddc.not_found", comment: "")
+            return "未找到可用歌词"
         case .invalidResponse:
             return NSLocalizedString("error.lddc.invalid_resp", comment: "")
         }

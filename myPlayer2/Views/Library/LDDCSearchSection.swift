@@ -116,7 +116,7 @@ struct LDDCSearchSection: View {
     private var sectionHeader: some View {
         HStack {
             Label(
-                "search.lddc.title", systemImage: "magnifyingglass"
+                "LDDC 歌词搜索", systemImage: "magnifyingglass"
             )
             .font(.headline)
 
@@ -137,21 +137,21 @@ struct LDDCSearchSection: View {
             // Title & Artist
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("search.lddc.song")
+                    Text("歌曲名")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     TextField(
-                        "search.lddc.song", text: $searchTitle
+                        "歌曲名", text: $searchTitle
                     )
                     .textFieldStyle(.roundedBorder)
                 }
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("search.lddc.artist")
+                    Text("歌手")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     TextField(
-                        "search.lddc.artist", text: $searchArtist
+                        "歌手", text: $searchArtist
                     )
                     .textFieldStyle(.roundedBorder)
                 }
@@ -160,9 +160,9 @@ struct LDDCSearchSection: View {
             // Mode & Translation
             HStack(spacing: 16) {
                 // Mode Picker
-                Picker("search.lddc.mode", selection: $selectedMode) {
+                Picker("模式", selection: $selectedMode) {
                     ForEach(LDDCMode.allCases) { mode in
-                        Text(LocalizedStringKey(mode.displayName)).tag(mode)
+                        Text(mode.displayName).tag(mode)
                     }
                 }
                 .pickerStyle(.segmented)
@@ -170,7 +170,7 @@ struct LDDCSearchSection: View {
 
                 // Translation Toggle
                 Toggle(
-                    "search.lddc.translation",
+                    "翻译",
                     isOn: $includeTranslation
                 )
                 .toggleStyle(.switch)
@@ -181,7 +181,7 @@ struct LDDCSearchSection: View {
 
             // Platform Selection
             HStack(spacing: 8) {
-                Text("search.lddc.platform")
+                Text("平台")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -212,7 +212,7 @@ struct LDDCSearchSection: View {
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "magnifyingglass")
-                        Text("search.lddc.search")
+                        Text("搜索")
                     }
                 }
                 .buttonStyle(.borderedProminent)
@@ -225,7 +225,7 @@ struct LDDCSearchSection: View {
 
     private var resultsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("search.lddc.results_count \(searchResults.count)")
+            Text("搜索结果：\(searchResults.count)")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
@@ -246,16 +246,22 @@ struct LDDCSearchSection: View {
     }
 
     private var splitPanelSection: some View {
-        HStack(alignment: .top, spacing: 16) {
+        HSplitView {
             splitResultsSection
+                .frame(minWidth: 170, idealWidth: 240, maxWidth: 320)
+                .clipped()
             splitPreviewSection
+                .frame(minWidth: 300, idealWidth: 520, maxWidth: .infinity)
+                .clipped()
         }
         .frame(minHeight: 640)
+        .frame(maxWidth: .infinity)
+        .clipped()
     }
 
     private var splitResultsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("search.lddc.results_count \(searchResults.count)")
+            Text("搜索结果：\(searchResults.count)")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
@@ -263,7 +269,7 @@ struct LDDCSearchSection: View {
                 if isSearching {
                     VStack(spacing: 8) {
                         ProgressView()
-                        Text("search.lddc.search")
+                        Text("搜索中…")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -354,7 +360,7 @@ struct LDDCSearchSection: View {
     private var previewSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("search.lddc.preview")
+                Text("预览")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
 
@@ -371,7 +377,7 @@ struct LDDCSearchSection: View {
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "checkmark.circle")
-                        Text("search.lddc.apply")
+                        Text("应用")
                     }
                 }
                 .buttonStyle(.borderedProminent)
@@ -395,10 +401,10 @@ struct LDDCSearchSection: View {
             if includeTranslation && previewLrcTrans != nil {
                 TabView {
                     previewEditorView(text: $editableLrcOrig)
-                        .tabItem { Text("search.lddc.original") }
+                        .tabItem { Text("原文") }
 
                     previewEditorView(text: $editableLrcTrans)
-                        .tabItem { Text("search.lddc.translated") }
+                        .tabItem { Text("翻译") }
                 }
                 .frame(height: 320)
             } else {
@@ -414,7 +420,7 @@ struct LDDCSearchSection: View {
             if selectedCandidate != nil {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
-                        Text("search.lddc.preview")
+                        Text("预览")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
 
@@ -430,7 +436,7 @@ struct LDDCSearchSection: View {
                         } label: {
                             HStack(spacing: 4) {
                                 Image(systemName: "checkmark.circle")
-                                Text("search.lddc.apply")
+                                Text("应用")
                             }
                         }
                         .buttonStyle(.borderedProminent)
@@ -449,10 +455,10 @@ struct LDDCSearchSection: View {
                     if includeTranslation && previewLrcTrans != nil {
                         TabView {
                             previewEditorView(text: $editableLrcOrig)
-                                .tabItem { Text("search.lddc.original") }
+                                .tabItem { Text("原文") }
 
                             previewEditorView(text: $editableLrcTrans)
-                                .tabItem { Text("search.lddc.translated") }
+                                .tabItem { Text("翻译") }
                         }
                         .frame(minHeight: 560)
                     } else {
@@ -495,7 +501,7 @@ struct LDDCSearchSection: View {
             Text(message)
                 .font(.caption)
             Spacer()
-            Button("search.lddc.close") {
+            Button("关闭") {
                 searchError = nil
                 previewError = nil
                 applyError = nil
@@ -558,9 +564,9 @@ struct LDDCSearchSection: View {
 
             if let errors = response.errors, !errors.isEmpty {
                 // Keep results visible; surface partial failures (e.g. NE blocked) for debugging.
-                searchError = "search.lddc.partial_failed \(errors.joined(separator: "\n"))"
+                searchError = "部分平台搜索失败：\n\(errors.joined(separator: "\n"))"
             } else if response.results.isEmpty {
-                searchError = NSLocalizedString("search.lddc.not_found", comment: "")
+                searchError = "未找到可用歌词"
             }
         } catch {
             searchError = error.localizedDescription

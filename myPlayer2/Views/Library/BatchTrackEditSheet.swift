@@ -5,9 +5,11 @@
 //  Queue-based batch metadata + lyrics processing sheet.
 //
 
+import AppKit
 import SwiftData
 import SwiftUI
 import UniformTypeIdentifiers
+import WebKit
 
 struct BatchTrackEditSheet: View {
 
@@ -21,8 +23,10 @@ struct BatchTrackEditSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Environment(\.openURL) private var openURL
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(LyricsViewModel.self) private var lyricsVM
+    @Environment(UIStateViewModel.self) private var uiState
     @EnvironmentObject private var themeStore: ThemeStore
 
     let tracks: [Track]
@@ -43,6 +47,7 @@ struct BatchTrackEditSheet: View {
     @State private var isSavingCurrent = false
     @State private var isLoadingDraft = false
     @State private var processStateByTrackID: [UUID: ProcessState] = [:]
+    @State private var playbackSyncTask: Task<Void, Never>?
 
     private let amllDbURL = URL(string: "https://github.com/amll-dev/amll-ttml-db")!
     private let ttmlToolURL = URL(string: "https://amll-ttml-tool.stevexmh.net/")!
@@ -56,25 +61,57 @@ struct BatchTrackEditSheet: View {
             if tracks.isEmpty {
                 emptyView
             } else {
-                HStack(spacing: 0) {
+                HSplitView {
                     queuePanel
-                    Divider()
+                        .frame(minWidth: 160, idealWidth: 220, maxWidth: 300)
+                        .clipped()
                     editorPanel
-                    Divider()
+                        .frame(minWidth: 500, idealWidth: 720, maxWidth: .infinity)
+                        .layoutPriority(1)
+                        .clipped()
                     amllPreviewPanel
+                        .frame(minWidth: 280, idealWidth: 480, maxWidth: 640)
+                        .clipped()
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
             }
 
             Divider()
 
             footerView
         }
-        .frame(minWidth: 1320, minHeight: 880)
+        .frame(minWidth: 1120, minHeight: 780)
         .tint(themeStore.accentColor)
         .accentColor(themeStore.accentColor)
+        .background(
+            WindowToolbarAccessor { window in
+                window.styleMask.insert(.resizable)
+                let minSize = NSSize(width: 1120, height: 780)
+                if window.minSize.width < minSize.width || window.minSize.height < minSize.height {
+                    window.minSize = minSize
+                }
+            }
+        )
         .onAppear {
+            setupSeekCallback()
+            startPlaybackSyncTask()
+            uiState.lyricsPanelSuppressedByModal = true
             guard !tracks.isEmpty else { return }
             prepareTrack(at: 0, triggerAutoSearch: true)
+        }
+        .onDisappear {
+            playbackSyncTask?.cancel()
+            playbackSyncTask = nil
+            uiState.lyricsPanelSuppressedByModal = false
+            restoreAMLLDefaultQuality()
+            lyricsVM.ensureAMLLLoaded(
+                track: playerVM.currentTrack,
+                currentTime: playerVM.currentTime,
+                isPlaying: playerVM.isPlaying,
+                reason: "batch editor dismissed",
+                forceLyricsReload: true
+            )
         }
         .onChange(of: title) { _, _ in
             draftDidChange()
@@ -93,6 +130,13 @@ struct BatchTrackEditSheet: View {
         }
         .onChange(of: lyricsTimeOffsetMs) { _, _ in
             draftDidChange()
+        }
+        .onChange(of: playerVM.isPlaying) { _, newValue in
+            lyricsVM.setPlaying(newValue)
+        }
+        .onChange(of: playerVM.currentTrack?.id) { oldValue, newValue in
+            guard oldValue != newValue else { return }
+            handlePlaybackTrackChange(newValue)
         }
         .fileImporter(
             isPresented: $showingArtworkPicker,
@@ -178,7 +222,6 @@ struct BatchTrackEditSheet: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 10)
         }
-        .frame(width: 240)
         .frame(maxHeight: .infinity, alignment: .top)
     }
 
@@ -258,13 +301,15 @@ struct BatchTrackEditSheet: View {
     private var editorPanel: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                lyricsSection
                 metadataSection
+                lyricsSection
                 Color.clear.frame(height: 80)
             }
             .padding(18)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
     }
 
     private var metadataSection: some View {
@@ -410,7 +455,8 @@ struct BatchTrackEditSheet: View {
                         reason: "LDDC 应用歌词"
                     )
                 }
-                .frame(minHeight: 600)
+                .frame(maxWidth: .infinity, minHeight: 560)
+                .clipped()
             }
         }
         .padding(14)
@@ -429,14 +475,14 @@ struct BatchTrackEditSheet: View {
 
             ZStack {
                 RoundedRectangle(cornerRadius: 10)
-                    .fill(Color.black.opacity(0.82))
+                    .fill(batchAMLLBackgroundColor)
 
                 if currentTrack == nil {
                     Text("无可预览歌曲")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
-                    AMLLWebView()
+                    BatchAMLLPreviewWebView()
                         .padding(.horizontal, 8)
                         .padding(.vertical, 10)
                 }
@@ -445,7 +491,6 @@ struct BatchTrackEditSheet: View {
             .clipShape(RoundedRectangle(cornerRadius: 10))
         }
         .padding(14)
-        .frame(width: 360)
         .frame(maxHeight: .infinity, alignment: .top)
     }
 
@@ -714,6 +759,23 @@ struct BatchTrackEditSheet: View {
         playerVM.play(track: track)
     }
 
+    private func setupSeekCallback() {
+        lyricsVM.onSeekRequest = { seconds in
+            playerVM.seek(to: seconds)
+            lyricsVM.syncTime(seconds)
+        }
+    }
+
+    private func startPlaybackSyncTask() {
+        playbackSyncTask?.cancel()
+        playbackSyncTask = Task { @MainActor in
+            while !Task.isCancelled {
+                lyricsVM.syncTime(playerVM.currentTime)
+                try? await Task.sleep(nanoseconds: 250_000_000)
+            }
+        }
+    }
+
     private func syncAMLLPreview(reason: String, forceLyricsReload: Bool) {
         lyricsVM.ensureAMLLLoaded(
             track: currentTrack,
@@ -722,6 +784,11 @@ struct BatchTrackEditSheet: View {
             reason: reason,
             forceLyricsReload: forceLyricsReload
         )
+    }
+
+    private func handlePlaybackTrackChange(_ newTrackID: UUID?) {
+        guard let track = currentTrack, newTrackID == track.id else { return }
+        syncAMLLPreview(reason: "播放轨道更新", forceLyricsReload: false)
     }
 
     private func queueStatus(for state: ProcessState?, isCurrent: Bool) -> (text: String, color: Color) {
@@ -744,5 +811,69 @@ struct BatchTrackEditSheet: View {
 
     private func displayAlbum(_ raw: String) -> String {
         raw.isEmpty ? NSLocalizedString("library.unknown_album", comment: "") : raw
+    }
+
+    private var batchAMLLBackgroundColor: Color {
+        colorScheme == .dark
+            ? Color(nsColor: NSColor(calibratedWhite: 0.16, alpha: 1.0))
+            : Color(nsColor: NSColor(calibratedWhite: 0.94, alpha: 1.0))
+    }
+
+    private func restoreAMLLDefaultQuality() {
+        let webView = LyricsWebViewStore.shared.webView
+        webView.pageZoom = 1.0
+        let scale = NSScreen.main?.backingScaleFactor ?? 2.0
+        webView.layer?.contentsScale = scale
+        webView.evaluateJavaScript("window.AMLL && window.AMLL.setConfig({ renderScale: 0.75 });")
+    }
+}
+
+private struct BatchAMLLPreviewWebView: NSViewRepresentable {
+
+    func makeNSView(context: Context) -> WKWebView {
+        let store = LyricsWebViewStore.shared
+        let webView = store.webView
+
+        webView.navigationDelegate = context.coordinator
+        context.coordinator.attachmentID = store.attach()
+        context.coordinator.applyLowQualityMode(to: webView)
+
+        return webView
+    }
+
+    func updateNSView(_ nsView: WKWebView, context: Context) {
+        context.coordinator.applyLowQualityMode(to: nsView)
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    static func dismantleNSView(_ nsView: WKWebView, coordinator: Coordinator) {
+        coordinator.restoreDefaultQuality(for: nsView)
+        guard let attachmentID = coordinator.attachmentID else { return }
+        LyricsWebViewStore.shared.detach(requestingID: attachmentID)
+    }
+
+    final class Coordinator: NSObject, WKNavigationDelegate {
+        var attachmentID: UUID?
+        private var isLowQualityActive = false
+
+        func applyLowQualityMode(to webView: WKWebView) {
+            guard !isLowQualityActive else { return }
+            isLowQualityActive = true
+            webView.pageZoom = 1.0
+            let scale = NSScreen.main?.backingScaleFactor ?? 2.0
+            webView.layer?.contentsScale = scale
+            webView.evaluateJavaScript("window.AMLL && window.AMLL.setConfig({ renderScale: 0.5 });")
+        }
+
+        func restoreDefaultQuality(for webView: WKWebView) {
+            isLowQualityActive = false
+            webView.pageZoom = 1.0
+            let scale = NSScreen.main?.backingScaleFactor ?? 2.0
+            webView.layer?.contentsScale = scale
+            webView.evaluateJavaScript("window.AMLL && window.AMLL.setConfig({ renderScale: 0.75 });")
+        }
     }
 }
