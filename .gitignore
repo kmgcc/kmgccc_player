@@ -1,4 +1,5 @@
 # User requested exclusions
+BKThemes/
 apple-audio-visualization-main/
 applemusic-like-lyrics-full-refractor/
 LDDC-main/
@@ -26,11 +27,13 @@ build/
 *.moved-aside
 DerivedData
 .derivedData
+.derivedDataLocal/
+.derivedDataLocal2/
 *.hmap
 *.ipa
 *.xg
 
-# Python
+# Python / Build Artifacts
 __pycache__/
 *.py[cod]
 *.class
@@ -38,3 +41,14 @@ __pycache__/
 env/
 dist/
 *.spec
+
+# LDDC_Fetch_Core build artifacts
+LDDC_Fetch_Core/.venv*/
+LDDC_Fetch_Core/build_*/
+LDDC_Fetch_Core/dist*/
+LDDC_Fetch_Core/__pycache__/
+LDDC_Fetch_Core/examples/
+LDDC_Fetch_Core/batch_split_and_convert.py
+
+# Tools / Binary distributions
+Tools/lddc-server/
