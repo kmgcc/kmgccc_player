@@ -22,11 +22,14 @@ enum SkinRegistry {
         KmgcccCassetteSkin(),
     ]
 
-    static let defaultSkinID: String = ClassicLEDSkin.id
+    static let defaultSkinID: String = "kmgccc.cassette"
 
     static func skin(for id: String) -> any NowPlayingSkin {
         if let match = skins.first(where: { $0.id == id }) {
             return match
+        }
+        if let fallback = skins.first(where: { $0.id == defaultSkinID }) {
+            return fallback
         }
         return skins.first ?? ClassicLEDSkin()
     }

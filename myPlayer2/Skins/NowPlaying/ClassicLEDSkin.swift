@@ -22,10 +22,15 @@ struct ClassicLEDSkin: NowPlayingSkin {
     func makeArtwork(context: SkinContext) -> AnyView {
         AnyView(ClassicLEDArtwork(context: context))
     }
+
+    var settingsView: AnyView? {
+        AnyView(ClassicLEDSkinSettingsView())
+    }
 }
 
 private struct ClassicLEDArtwork: View {
     let context: SkinContext
+    @AppStorage("skin.classicLED.showLEDMeter") private var showLEDMeter: Bool = true
 
     var body: some View {
         let contentSize = context.contentSize
@@ -38,13 +43,15 @@ private struct ClassicLEDArtwork: View {
                 .frame(width: artworkSize, height: artworkSize)
                 .shadow(color: .black.opacity(0.35), radius: 20, x: 0, y: 10)
 
-            LedMeterView(
-                level: Double(context.audio.smoothedLevel),
-                ledValues: context.led.leds,
-                dotSize: 12,
-                spacing: 8,
-                pillTint: context.theme.artworkAccentColor
-            )
+            if showLEDMeter {
+                LedMeterView(
+                    level: Double(context.audio.smoothedLevel),
+                    ledValues: context.led.leds,
+                    dotSize: 12,
+                    spacing: 8,
+                    pillTint: context.theme.artworkAccentColor
+                )
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -71,5 +78,16 @@ private struct ClassicLEDArtwork: View {
                         .foregroundStyle(.white.opacity(0.35))
                 }
         }
+    }
+}
+
+private struct ClassicLEDSkinSettingsView: View {
+    @AppStorage("skin.classicLED.showLEDMeter") private var showLEDMeter: Bool = true
+
+    var body: some View {
+        Toggle(
+            NSLocalizedString("skin.classic_led.show_led", comment: ""), isOn: $showLEDMeter
+        )
+        .toggleStyle(.switch)
     }
 }

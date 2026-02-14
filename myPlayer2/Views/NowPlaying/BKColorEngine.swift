@@ -41,6 +41,7 @@ struct HarmonizedPalette {
     let isNearGray: Bool
     let coverLuma: CGFloat
     let imageCoverLuma: CGFloat
+    let coverAvgS: CGFloat
     let areaDominantS: CGFloat
     let areaDominantB: CGFloat
     let accentHue: CGFloat?
@@ -108,6 +109,7 @@ struct BKColorEngine {
             isNearGray: stats.isNearGray,
             lowSatColorCover: stats.lowSatColorCover,
             coverKind: stats.coverKind,
+            avgS: stats.avgS,
             coverLuma: stats.imageCoverLuma,
             veryDarkCover: stats.veryDarkCover,
             areaDominantS: stats.areaDominantS,
@@ -283,6 +285,17 @@ struct BKColorEngine {
             isDark: isDark,
             triggered: &globalTriggers
         )
+        enforceCoverSaturationMatch(
+            avgS: stats.avgS,
+            bgStops: &bgStopsHSB,
+            shapePool: &shapePoolHSB,
+            dotBase: &dotBaseHSB,
+            tier: tier,
+            complexity: stats.complexity,
+            isNearGray: stats.isNearGray,
+            isDark: isDark,
+            triggered: &globalTriggers
+        )
 
         let bgVariantsHSB = makeBackgroundVariants(
             candidates: paletteInput,
@@ -307,6 +320,7 @@ struct BKColorEngine {
             isNearGray: stats.isNearGray,
             coverLuma: stats.coverLuma,
             imageCoverLuma: stats.imageCoverLuma,
+            coverAvgS: stats.avgS,
             areaDominantS: stats.areaDominantS,
             areaDominantB: stats.areaDominantB,
             accentHue: stats.accentHue,
@@ -903,9 +917,10 @@ extension BKColorEngine {
         let satBoost: CGFloat
         let briBoost: CGFloat
         if lowSatColorCover {
-            let t = clamp((avgS - 0.06) / 0.16, min: 0, max: 1)
-            satBoost = lerp(1.50, 1.20, t: t)
-            briBoost = lerp(1.15, 1.05, t: t)
+            // Only mildly boost low-sat covers; ultra-low sat should not be pushed vivid.
+            let t = clamp((avgS - 0.06) / 0.20, min: 0, max: 1)
+            satBoost = lerp(0.88, 1.24, t: t)
+            briBoost = lerp(1.02, 1.10, t: t)
         } else if coverKind == .mostlyBWWithColor {
             satBoost = 1.35
             briBoost = 1.12
@@ -1093,6 +1108,7 @@ extension BKColorEngine {
         isNearGray: Bool,
         lowSatColorCover: Bool,
         coverKind: CoverKind,
+        avgS: CGFloat,
         coverLuma: CGFloat,
         veryDarkCover: Bool,
         areaDominantS: CGFloat,
@@ -1166,6 +1182,26 @@ extension BKColorEngine {
             dotB = makeRange(
                 lower: min(1, dotB.lowerBound * 1.05),
                 upper: min(1, dotB.upperBound * 1.12)
+            )
+        }
+
+        let ultraLowSatCover =
+            lowSatColorCover
+            && avgS < 0.10
+            && areaDominantS < 0.12
+            && coverKind != .mostlyBWWithColor
+        if ultraLowSatCover {
+            bgS = makeRange(
+                lower: max(bgS.lowerBound, isDark ? 0.04 : 0.03),
+                upper: min(bgS.upperBound, isDark ? 0.16 : 0.12)
+            )
+            fgS = makeRange(
+                lower: max(fgS.lowerBound, isDark ? 0.10 : 0.08),
+                upper: min(fgS.upperBound, isDark ? 0.30 : 0.24)
+            )
+            dotS = makeRange(
+                lower: max(dotS.lowerBound, isDark ? 0.12 : 0.09),
+                upper: min(dotS.upperBound, isDark ? 0.32 : 0.26)
             )
         }
 
@@ -1310,6 +1346,7 @@ extension BKColorEngine {
             isNearGray: false,
             coverLuma: stats.coverLuma,
             imageCoverLuma: stats.imageCoverLuma,
+            coverAvgS: stats.avgS,
             areaDominantS: stats.areaDominantS,
             areaDominantB: stats.areaDominantB,
             accentHue: nil,
@@ -1610,12 +1647,14 @@ extension BKColorEngine {
             for (idx, selectedColor) in selected.enumerated() {
                 let baseRef = baseBMids[min(idx, baseBMids.count - 1)]
                 let satScale: CGFloat
-                if avgS < 0.16 {
-                    satScale = 0.52
-                } else if avgS < 0.42 || isNearGray {
-                    satScale = 0.66
-                } else {
+                if avgS < 0.08 || (avgS < 0.12 && isNearGray) {
+                    satScale = 0.48
+                } else if avgS < 0.16 {
                     satScale = 0.78
+                } else if avgS < 0.42 || isNearGray {
+                    satScale = 0.82
+                } else {
+                    satScale = 0.86
                 }
                 let targetS = clamp(
                     selectedColor.s * satScale, min: variantSRange.lowerBound,
@@ -2007,6 +2046,85 @@ extension BKColorEngine {
                 triggered: &triggered
             )
         }
+    }
+
+    fileprivate nonisolated static func enforceCoverSaturationMatch(
+        avgS: CGFloat,
+        bgStops: inout [HSBColor],
+        shapePool: inout [HSBColor],
+        dotBase: inout HSBColor,
+        tier: TierRanges,
+        complexity: ColorComplexityLevel,
+        isNearGray: Bool,
+        isDark: Bool,
+        triggered: inout Set<RiskFlag>
+    ) {
+        let ultraLow = avgS < 0.085
+        let low = avgS < 0.18
+
+        guard ultraLow || low else { return }
+
+        let bgCap: CGFloat
+        let shapeCap: CGFloat
+        let dotCap: CGFloat
+        let bgFloor: CGFloat
+
+        if ultraLow {
+            bgCap = min(tier.bgS.upperBound, isDark ? 0.14 : 0.11)
+            shapeCap = min(tier.fgS.upperBound, isDark ? 0.24 : 0.20)
+            dotCap = min(tier.dotS.upperBound, isDark ? 0.26 : 0.22)
+            bgFloor = max(tier.bgS.lowerBound, isDark ? 0.03 : 0.02)
+        } else {
+            bgCap = min(tier.bgS.upperBound, isDark ? 0.28 : 0.24)
+            shapeCap = min(tier.fgS.upperBound, isDark ? 0.40 : 0.36)
+            dotCap = min(tier.dotS.upperBound, isDark ? 0.42 : 0.38)
+            bgFloor = max(
+                tier.bgS.lowerBound,
+                clamp(avgS * (isDark ? 0.95 : 0.85), min: 0.10, max: 0.18)
+            )
+        }
+
+        for index in bgStops.indices {
+            var c = bgStops[index]
+            c.s = clamp(c.s, min: bgFloor, max: bgCap)
+            bgStops[index] = sanitize(
+                c,
+                kind: .background,
+                bRange: tier.bgB,
+                sRange: tier.bgS,
+                complexity: complexity,
+                isNearGray: isNearGray,
+                isDark: isDark,
+                triggered: &triggered
+            )
+        }
+
+        for index in shapePool.indices {
+            var c = shapePool[index]
+            c.s = min(c.s, shapeCap)
+            shapePool[index] = sanitize(
+                c,
+                kind: .shape,
+                bRange: tier.fgB,
+                sRange: tier.fgS,
+                complexity: complexity,
+                isNearGray: isNearGray,
+                isDark: isDark,
+                triggered: &triggered
+            )
+        }
+
+        dotBase.s = min(dotBase.s, dotCap)
+        dotBase = sanitize(
+            dotBase,
+            kind: .dot,
+            bRange: tier.dotB,
+            sRange: tier.dotS,
+            complexity: complexity,
+            isNearGray: isNearGray,
+            isDark: isDark,
+            triggered: &triggered
+        )
     }
 
     fileprivate nonisolated static func enforceBrightnessHierarchy(

@@ -30,17 +30,10 @@ struct GlassIconButtonLabel: View {
             .foregroundStyle(iconForeground)
             .frame(width: size, height: size)
             .contentShape(Circle())
-            .background(glassBackground)
-    }
-
-    @ViewBuilder
-    private var glassBackground: some View {
-        Circle()
             .liquidGlassCircle(
                 colorScheme: colorScheme,
                 accentColor: nil as Color?
             )
-            .allowsHitTesting(false)
     }
 
     private var iconForeground: Color {

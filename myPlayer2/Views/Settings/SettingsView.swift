@@ -53,6 +53,7 @@ struct SettingsView: View {
     @State private var followSystemAppearance: Bool = AppSettings.shared.followSystemAppearance
     @State private var lyricsBackgroundMode: AppSettings.LyricsBackgroundMode = AppSettings.shared
         .lyricsBackgroundMode
+    @AppStorage("skin.classicLED.showLEDMeter") private var classicShowLEDMeter: Bool = true
     @AppStorage("skin.kmgcccCassette.showLEDMeter") private var cassetteShowLEDMeter: Bool = true
 
     // MARK: - LED Settings State
@@ -174,6 +175,9 @@ struct SettingsView: View {
             if SkinRegistry.options.contains(where: { $0.id == nowPlayingSkin }) == false {
                 nowPlayingSkin = SkinRegistry.defaultSkinID
             }
+            if ledMeterEnabled == false {
+                disableCurrentSkinLEDIfNeeded()
+            }
         }
         .background(settingsSyncLogic)  // Apply sync logic here
         .background(
@@ -220,8 +224,11 @@ struct SettingsView: View {
             .onChange(of: nowPlayingArtBackgroundEnabled) { _, val in
                 settings.nowPlayingArtBackgroundEnabled = val
             }
+            .onChange(of: classicShowLEDMeter) { _, isOn in
+                handleSkinLEDToggleChange(for: ClassicLEDSkin.id, isOn: isOn)
+            }
             .onChange(of: cassetteShowLEDMeter) { _, _ in
-                playerVM.refreshLedMeterStateFromSettings()
+                handleSkinLEDToggleChange(for: "kmgccc.cassette", isOn: cassetteShowLEDMeter)
             }
     }
 
@@ -320,6 +327,9 @@ struct SettingsView: View {
                 .onChange(of: ledMeterEnabled) { _, val in
                     settings.ledMeterEnabled = val
                     playerVM.setLedMeterEnabled(val)
+                    if val == false {
+                        disableCurrentSkinLEDIfNeeded()
+                    }
                 }
 
             Color.clear
@@ -329,6 +339,31 @@ struct SettingsView: View {
                 .onChange(of: transientIntensity) { _, _ in
                     applyLedConfig()
                 }
+        }
+    }
+
+    private func handleSkinLEDToggleChange(for skinID: String, isOn: Bool) {
+        guard nowPlayingSkin == skinID else { return }
+        if isOn && ledMeterEnabled == false {
+            ledMeterEnabled = true
+            return
+        }
+        playerVM.refreshLedMeterStateFromSettings()
+    }
+
+    private func disableCurrentSkinLEDIfNeeded() {
+        guard ledMeterEnabled == false else { return }
+        switch nowPlayingSkin {
+        case ClassicLEDSkin.id:
+            if classicShowLEDMeter {
+                classicShowLEDMeter = false
+            }
+        case "kmgccc.cassette":
+            if cassetteShowLEDMeter {
+                cassetteShowLEDMeter = false
+            }
+        default:
+            break
         }
     }
 

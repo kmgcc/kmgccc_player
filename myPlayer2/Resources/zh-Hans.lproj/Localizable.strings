@@ -37,6 +37,7 @@
 "settings.now_playing.skin_options" = "%@ 选项";
 "skin.classic_led.name" = "经典 LED";
 "skin.classic_led.detail" = "封面 + LED 电平表";
+"skin.classic_led.show_led" = "显示 LED";
 "skin.rotating_cover.name" = "旋转封面";
 "skin.rotating_cover.detail" = "黑胶风格旋转";
 "skin.kmgccc_cassette.name" = "kmgccc 磁带";
