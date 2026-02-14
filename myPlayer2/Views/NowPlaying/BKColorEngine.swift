@@ -1114,13 +1114,13 @@ extension BKColorEngine {
             dotS = 0.30...0.62
 
             if veryDarkCover || coverLuma < 0.22 {
-                bgB = 0.10...0.26
+                bgB = 0.08...0.22
                 fgB = 0.30...0.52
                 dotB = 0.46...0.70
                 bgS = 0.08...0.26
             }
             if coverLuma < 0.34 && areaDominantB < 0.30 {
-                bgB = 0.10...0.20
+                bgB = 0.08...0.18
                 fgB = 0.28...0.50
                 dotB = 0.42...0.66
                 bgS = makeRange(lower: 0.06, upper: min(bgS.upperBound, 0.20))
@@ -2293,7 +2293,12 @@ extension BKColorEngine {
                 c.s *= 0.6
             }
             c.h = lerpHue(c.h, to: 42, t: kind == .background ? 0.38 : 0.24)
-            let floor = max(bRange.lowerBound, kind == .background ? 0.30 : 0.38)
+            let floor = max(
+                bRange.lowerBound,
+                kind == .background
+                    ? 0.30
+                    : 0.38
+            )
             c.b = max(c.b, floor)
         }
 
