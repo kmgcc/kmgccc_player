@@ -457,7 +457,21 @@
 	        let nearSwitchWordLeadInRatio = 0.6;
 	        let timeOffsetMs = 0;
 	        let lastTTML = "";
+	        let lineTimingOnlyMode = false;
 	        let nearSwitchRetreatMeta = new Map(); // lineIndex -> { retreatStart, retreatEnd, maskFrom, maskTo, actualRetreatStart?, actualRetreatEnd? }
+	        const hasEffectiveWordTiming = (line) => {
+	            if (!line || !Array.isArray(line.words) || line.words.length < 2) return false;
+	            const pairs = new Set();
+	            for (const word of line.words) {
+	                if (!Number.isFinite(word?.startTime) || !Number.isFinite(word?.endTime)) continue;
+	                const s = Math.round(word.startTime);
+	                const e = Math.round(word.endTime);
+	                if (e < s) continue;
+	                pairs.add(`${s}:${e}`);
+	                if (pairs.size > 1) return true;
+	            }
+	            return false;
+	        };
 	        const hasTailHighlightOverflow = (line, newEnd) => {
 	            if (!line || !Array.isArray(line.words) || !Number.isFinite(newEnd)) return false;
 	            return line.words.some((word) => Number.isFinite(word?.endTime) && word.endTime > newEnd);
@@ -523,6 +537,37 @@
 	                const fade = 1 - progress * 0.45;
 	                mainElement.style.opacity = `${Math.max(0.35, Math.min(1, fade))}`;
 	            }
+	        };
+	        const normalizeMainLinesForLineTimingMode = (lines) => {
+	            if (!Array.isArray(lines) || lines.length === 0) return false;
+	            const mainIndexes = [];
+	            for (let i = 0; i < lines.length; i++) {
+	                if (lines[i] && !lines[i].isBG) mainIndexes.push(i);
+	            }
+	            if (mainIndexes.length === 0) return false;
+	            const allFlat = mainIndexes.every((idx) => !hasEffectiveWordTiming(lines[idx]));
+	            if (!allFlat) return false;
+	            for (const idx of mainIndexes) {
+	                const line = lines[idx];
+	                if (!line) continue;
+	                const text = Array.isArray(line.words)
+	                    ? line.words.map((w) => (typeof w?.word === "string" ? w.word : "")).join("")
+	                    : "";
+	                const lineStart = Number.isFinite(line.startTime) ? line.startTime : 0;
+	                const lineEnd = Number.isFinite(line.endTime)
+	                    ? Math.max(lineStart, line.endTime)
+	                    : lineStart;
+	                const firstWord = Array.isArray(line.words) && line.words.length > 0 ? line.words[0] : {};
+	                line.words = [{
+	                    ...firstWord,
+	                    word: text,
+	                    startTime: lineStart,
+	                    endTime: lineEnd,
+	                    obscene: false,
+	                    romanWord: "",
+	                }];
+	            }
+	            return true;
 	        };
 	        const shiftLineStartEarlier = (line, shift, wordShift = shift) => {
 	            if (!line || !Number.isFinite(shift) || shift <= 0) return;
@@ -604,7 +649,10 @@
 	            for (const [idx, shift] of startShiftByIndex.entries()) {
 	                const line = lines[idx];
 	                if (!line) continue;
-	                const wordShift = Math.max(0, Math.min(shift, startWordShiftByIndex.get(idx) ?? shift));
+	                const lineHasWordTiming = hasEffectiveWordTiming(line);
+	                const wordShift = lineHasWordTiming
+	                    ? Math.max(0, Math.min(shift, startWordShiftByIndex.get(idx) ?? shift))
+	                    : shift;
 	                shiftLineStartEarlier(line, shift, wordShift);
 	            }
 	
@@ -664,6 +712,7 @@
                 if (!ttml) {
                     lyricPlayer.setLyricLines([]);
                     bgActiveIndexes = new Set();
+                    lineTimingOnlyMode = false;
                     console.log("[LyricsRenderer] Cleared lyrics");
                     lastTTML = "";
                     return;
@@ -673,6 +722,8 @@
 		                    const result = parseTTML(ttml);
 		                    const lines = result.lines.map(mapTTMLLyric);
 		                    lines.forEach(applyTimeOffset);
+		                    lineTimingOnlyMode = normalizeMainLinesForLineTimingMode(lines);
+		                    console.log(`[LyricsRenderer] lineTimingOnlyMode=${lineTimingOnlyMode}`);
 		                    try {
 		                        applyNearSwitchLeadIn(lines);
 		                    } catch (e) {
@@ -681,6 +732,10 @@
 			                    const timingSnapshot = captureTimingSnapshot(lines);
 			                    // Preserve TTML intent (no mutation of duet/bg/ordering).
 			                    lyricPlayer.setLyricLines(lines);
+	                    if (lineTimingOnlyMode === true) {
+	                        // Force AMLL to use non-dynamic line opacity behavior for pure line-timing lyrics.
+	                        lyricPlayer.isNonDynamic = true;
+	                    }
 	                    const currentMs = Number.isFinite(lastKnownTimeMs)
 	                        ? lastKnownTimeMs
 	                        : (lyricPlayer.getCurrentTime ? lyricPlayer.getCurrentTime() : 0);

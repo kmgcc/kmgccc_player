@@ -250,6 +250,7 @@ struct LDDCSearchSection: View {
             splitResultsSection
             splitPreviewSection
         }
+        .frame(minHeight: 640)
     }
 
     private var splitResultsSection: some View {
@@ -266,7 +267,7 @@ struct LDDCSearchSection: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    .frame(maxWidth: .infinity, minHeight: 440)
+                    .frame(maxWidth: .infinity, minHeight: 560)
                 } else if searchResults.isEmpty {
                     VStack(spacing: 8) {
                         Image(systemName: "text.magnifyingglass")
@@ -276,7 +277,7 @@ struct LDDCSearchSection: View {
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
                     }
-                    .frame(maxWidth: .infinity, minHeight: 440)
+                    .frame(maxWidth: .infinity, minHeight: 560)
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 4) {
@@ -285,7 +286,7 @@ struct LDDCSearchSection: View {
                             }
                         }
                     }
-                    .frame(maxHeight: 460)
+                    .frame(minHeight: 560)
                 }
             }
             .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
@@ -453,10 +454,10 @@ struct LDDCSearchSection: View {
                             previewEditorView(text: $editableLrcTrans)
                                 .tabItem { Text("search.lddc.translated") }
                         }
-                        .frame(minHeight: 460)
+                        .frame(minHeight: 560)
                     } else {
                         previewEditorView(text: $editableLrcOrig)
-                            .frame(minHeight: 460)
+                            .frame(minHeight: 560)
                     }
                 }
             } else {
@@ -468,7 +469,7 @@ struct LDDCSearchSection: View {
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                 }
-                .frame(maxWidth: .infinity, minHeight: 520)
+                .frame(maxWidth: .infinity, minHeight: 560)
             }
         }
         .padding(10)

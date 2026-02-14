@@ -19,7 +19,6 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
     private struct BatchEditRequest: Identifiable {
         let id = UUID()
         let tracks: [Track]
-        let focus: BatchTrackEditSheet.EntryFocus
     }
 
     @Environment(LibraryViewModel.self) private var libraryVM
@@ -84,8 +83,7 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         }
         .sheet(item: $batchEditRequest) { request in
             BatchTrackEditSheet(
-                tracks: request.tracks,
-                entryFocus: request.focus
+                tracks: request.tracks
             )
         }
         .onAppear {
@@ -446,20 +444,10 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
 
             Divider()
 
-            Menu {
-                Button {
-                    openBatchEditor(focus: .metadata)
-                } label: {
-                    Label("批量编辑元数据…", systemImage: "slider.horizontal.3")
-                }
-
-                Button {
-                    openBatchEditor(focus: .lyrics)
-                } label: {
-                    Label("批量查找/导入歌词…", systemImage: "text.badge.magnifyingglass")
-                }
+            Button {
+                openBatchEditor()
             } label: {
-                Label("批量处理", systemImage: "square.stack.3d.forward.dottedline")
+                Label("批量编辑歌曲信息…", systemImage: "square.stack.3d.forward.dottedline")
             }
 
             Divider()
@@ -609,12 +597,11 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         sortedTracksCache.filter { selectedTrackIDs.contains($0.id) }
     }
 
-    private func openBatchEditor(focus: BatchTrackEditSheet.EntryFocus) {
+    private func openBatchEditor() {
         let selectedTracks = selectedTracksForBatchEditor()
         guard !selectedTracks.isEmpty else { return }
         batchEditRequest = BatchEditRequest(
-            tracks: selectedTracks,
-            focus: focus
+            tracks: selectedTracks
         )
     }
 
