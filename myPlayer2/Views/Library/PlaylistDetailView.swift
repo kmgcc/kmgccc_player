@@ -573,10 +573,10 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
                 .mask {
                     LinearGradient(
                         stops: [
-                            .init(color: .black, location: 0.0),   // Full blur
-                            .init(color: .black, location: 0.2),   // Hold full blur briefly
-                            .init(color: .black.opacity(0.5), location: 0.6), // Fade
-                            .init(color: .clear, location: 1.0)    // Gone
+                            .init(color: .black, location: 0.0),  // Full blur
+                            .init(color: .black, location: 0.2),  // Hold full blur briefly
+                            .init(color: .black.opacity(0.5), location: 0.6),  // Fade
+                            .init(color: .clear, location: 1.0),  // Gone
                         ],
                         startPoint: .top,
                         endPoint: .bottom
@@ -729,7 +729,7 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
 
 // MARK: - Preview
 
-#Preview("Playlist Detail") {
+#Preview("Playlist Detail") { @MainActor in
     let container = try! ModelContainer(
         for: Track.self, Playlist.self, configurations: .init(isStoredInMemoryOnly: true))
     let repository = SwiftDataLibraryRepository(modelContext: container.mainContext)

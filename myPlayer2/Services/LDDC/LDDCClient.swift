@@ -52,7 +52,9 @@ actor LDDCClient {
 
         let data = try await postJSON(url: url, body: body)
 
-        let response = try JSONDecoder().decode(LDDCSearchResponse.self, from: data)
+        let response = try await MainActor.run {
+            try JSONDecoder().decode(LDDCSearchResponse.self, from: data)
+        }
 
         // Log any errors from sources
         if let errors = response.errors, !errors.isEmpty {
@@ -102,7 +104,9 @@ actor LDDCClient {
 
         let data = try await postJSON(url: url, body: body)
 
-        let response = try JSONDecoder().decode(LDDCFetchResponse.self, from: data)
+        let response = try await MainActor.run {
+            try JSONDecoder().decode(LDDCFetchResponse.self, from: data)
+        }
 
         if let error = response.error {
             throw LDDCError.requestFailed(error)
@@ -154,7 +158,9 @@ actor LDDCClient {
 
         let data = try await postJSON(url: url, body: body)
 
-        let response = try JSONDecoder().decode(LDDCFetchSeparateResponse.self, from: data)
+        let response = try await MainActor.run {
+            try JSONDecoder().decode(LDDCFetchSeparateResponse.self, from: data)
+        }
 
         if let error = response.error {
             throw LDDCError.requestFailed(error)

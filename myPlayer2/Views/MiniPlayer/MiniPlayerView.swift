@@ -548,7 +548,7 @@ private struct PlaybackModeSlider: View {
 
 // MARK: - Preview
 
-#Preview("Mini Player") {
+#Preview("Mini Player") { @MainActor in
     let playbackService = StubAudioPlaybackService()
     let levelMeter = StubAudioLevelMeter()
     let playerVM = PlayerViewModel(playbackService: playbackService, levelMeter: levelMeter)

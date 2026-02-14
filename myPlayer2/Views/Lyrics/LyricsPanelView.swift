@@ -128,7 +128,7 @@ struct LyricsPanelView: View {
 
 // MARK: - Preview
 
-#Preview("Lyrics Panel") {
+#Preview("Lyrics Panel") { @MainActor in
     let playbackService = StubAudioPlaybackService()
     let levelMeter = StubAudioLevelMeter()
     let playerVM = PlayerViewModel(playbackService: playbackService, levelMeter: levelMeter)

@@ -10,7 +10,6 @@
 import AVFoundation
 import Accelerate
 import Foundation
-import Observation
 
 /// Raw FFT data provided to consumers.
 /// Raw FFT data provided to consumers.
@@ -23,9 +22,7 @@ public struct AudioAnalysisData: Sendable {
     public let peak: Float
 }
 
-@Observable
-@MainActor
-public final class AudioAnalysisHub {
+public final class AudioAnalysisHub: @unchecked Sendable {
 
     private let processingQueue = DispatchQueue(
         label: "AudioAnalysisHub.processing",
@@ -33,34 +30,34 @@ public final class AudioAnalysisHub {
     )
 
     private let fftSize: Int = 2048
-    private var window: [Float]
-    private var fftSetup: FFTSetup?
-    private var log2n: vDSP_Length = 0
-    private var isInstalled = false
-    private weak var mixerNode: AVAudioMixerNode?
+    private nonisolated(unsafe) var window: [Float]
+    private nonisolated(unsafe) var fftSetup: FFTSetup?
+    private nonisolated(unsafe) var log2n: vDSP_Length = 0
+    private nonisolated(unsafe) var isInstalled = false
+    private nonisolated(unsafe) weak var mixerNode: AVAudioMixerNode?
 
     // Ring buffer for input samples
-    private var ringBuffer: [Float]
-    private var writeIndex: Int = 0
+    private nonisolated(unsafe) var ringBuffer: [Float]
+    private nonisolated(unsafe) var writeIndex: Int = 0
     private let ringLock = NSLock()
 
     // Processing state
-    private var fftInput: [Float]
-    private var fftReal: [Float]
-    private var fftImag: [Float]
-    private var fftMagnitudes: [Float]
-    private var sampleRate: Float = 44100
+    private nonisolated(unsafe) var fftInput: [Float]
+    private nonisolated(unsafe) var fftReal: [Float]
+    private nonisolated(unsafe) var fftImag: [Float]
+    private nonisolated(unsafe) var fftMagnitudes: [Float]
+    private nonisolated(unsafe) var sampleRate: Float = 44100
 
     // Consumers
-    private var consumers: [UUID: (AudioAnalysisData) -> Void] = [:]
+    private nonisolated(unsafe) var consumers: [UUID: (AudioAnalysisData) -> Void] = [:]
     private let consumerLock = NSLock()
-    private var timer: DispatchSourceTimer?
-    private var activeClients: Int = 0
+    private nonisolated(unsafe) var timer: DispatchSourceTimer?
+    private nonisolated(unsafe) var activeClients: Int = 0
 
     // Config
-    var targetHz: Int = 60
+    nonisolated(unsafe) var targetHz: Int = 60
 
-    static let shared = AudioAnalysisHub()
+    public static let shared = AudioAnalysisHub()
 
     private init() {
         self.window = [Float](repeating: 0, count: fftSize)
@@ -128,7 +125,7 @@ public final class AudioAnalysisHub {
 
     // MARK: - Internal Processing
 
-    private func enqueue(_ buffer: AVAudioPCMBuffer) {
+    nonisolated private func enqueue(_ buffer: AVAudioPCMBuffer) {
         guard let channelData = buffer.floatChannelData else { return }
         let frameLength = Int(buffer.frameLength)
         guard frameLength > 0 else { return }
@@ -172,7 +169,7 @@ public final class AudioAnalysisHub {
         timer = nil
     }
 
-    private func process() {
+    nonisolated private func process() {
         // 1. Read latest window from ring buffer
         ringLock.lock()
         let capacity = ringBuffer.count
@@ -234,7 +231,7 @@ public final class AudioAnalysisHub {
         }
     }
 
-    private func rebuildFFT() {
+    private nonisolated func rebuildFFT() {
         vDSP_hann_window(&window, vDSP_Length(fftSize), Int32(vDSP_HANN_NORM))
         if let setup = fftSetup {
             vDSP_destroy_fftsetup(setup)

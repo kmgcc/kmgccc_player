@@ -85,11 +85,12 @@ final class LEDMeterService: AudioLevelMeterProtocol {
 
         let processor = self.processor
         // Subscribe to analysis data
-        consumerID = hub.addConsumer { [processor] data in
+        consumerID = hub.addConsumer { [weak self, processor] data in
             // Run processing on a background task
             let result = processor.process(data: data)
 
             Task { @MainActor in
+                guard let self else { return }
                 self.metrics = result.led
                 self.audioMetrics = result.audio
             }
@@ -213,7 +214,7 @@ private final class LEDMeterProcessor: @unchecked Sendable {
 
     func process() -> (led: LEDMeterMetrics, audio: AudioMetrics) {
         let currentConfig = withConfig()
-        let targetHz = max(1, currentConfig.targetHz)
+        _ = max(1, currentConfig.targetHz)
 
         guard ringBuffer.readLatest(into: &fftInput) else {
             return (lastLed, lastAudio)
@@ -224,8 +225,6 @@ private final class LEDMeterProcessor: @unchecked Sendable {
         vDSP_rmsqv(fftInput, 1, &rms, vDSP_Length(fftSize))
         var peak: Float = 0
         vDSP_maxmgv(fftInput, 1, &peak, vDSP_Length(fftSize))
-
-        let rmsDb = 20 * log10(max(rms, 1e-6))
 
         // Hann window
         vDSP_vmul(fftInput, 1, window, 1, &fftInput, 1, vDSP_Length(fftSize))
@@ -265,8 +264,8 @@ private final class LEDMeterProcessor: @unchecked Sendable {
         led: LEDMeterMetrics, audio: AudioMetrics
     ) {
         let currentConfig = withConfig()
-        let targetHz = max(1, currentConfig.targetHz)
-        let rmsDb = 20 * log10(max(rms, 1e-6))
+        _ = max(1, currentConfig.targetHz)
+        let rmsDb = 20.0 * log10f(max(rms, 1e-6))
 
         // Ensure magnitudes buffer is accessible as reference
         // (magnitudes passed in might be a copy, but we just need to read it)
@@ -280,7 +279,7 @@ private final class LEDMeterProcessor: @unchecked Sendable {
         // Define frequency bands (bin indices)
         let bin20 = min(max(1, Int(ceil(20.0 / binHz))), cutoffBin)
         let bin60 = min(max(1, Int(ceil(60.0 / binHz))), cutoffBin)
-        let bin100 = min(max(1, Int(ceil(100.0 / binHz))), cutoffBin)
+        _ = min(max(1, Int(ceil(100.0 / binHz))), cutoffBin)
         let bin200 = min(max(1, Int(ceil(200.0 / binHz))), cutoffBin)
         let binTransient = min(
             max(1, Int(ceil(currentConfig.transientCutoffHz / binHz))), cutoffBin)
@@ -341,9 +340,9 @@ private final class LEDMeterProcessor: @unchecked Sendable {
 
         let bassDiff = bassDb - avgBassDb
         if bassDiff > 0 {
-            avgBassDb += bassDiff * 0.005  // Very slow attack: let transients pop out above average
+            avgBassDb += bassDiff * 0.005  // Use Float literal implicitly or explicitly
         } else {
-            avgBassDb += bassDiff * 0.02  // Slow release: maintain baseline
+            avgBassDb += bassDiff * 0.02
         }
 
         // Standard overall volume tracking for context
@@ -361,7 +360,7 @@ private final class LEDMeterProcessor: @unchecked Sendable {
         // Context scaling: if the overall song volume is low, suppress transients.
         // If it's high (at climax), allow them to be very prominent.
         let volumeFactor = clamp((db - dbFloor) / (dbCeil - dbFloor))
-        let boostSensitivity = Float(pow(Double(volumeFactor), 2.5) * 4.0)  // Relaxed curve to allow punch at medium volumes
+        let boostSensitivity = powf(volumeFactor, 2.5 as Float) * 4.0 as Float  // Relaxed curve to allow punch at medium volumes
 
         // Soft noise gate: smoothly fade out transients in quiet passages.
         let gateStart: Float = -30
@@ -375,7 +374,7 @@ private final class LEDMeterProcessor: @unchecked Sendable {
         let t = clamp((boostedDb - dbFloor) / (dbCeil - dbFloor))
 
         let levelRaw = clamp(t * currentConfig.preGain)
-        var levelAdj = clamp(pow(levelRaw, gamma) * currentConfig.sensitivity)
+        var levelAdj = clamp(powf(levelRaw, gamma) * currentConfig.sensitivity)
 
         // Mid-range energy for quiet-passage detection (200Hz - 3000Hz)
         var midPower: Float = 0
@@ -398,7 +397,7 @@ private final class LEDMeterProcessor: @unchecked Sendable {
         }
 
         // Envelope smoothing
-        let dt = 1.0 / Double(targetHz)
+        let dt = 1.0 / Double(currentConfig.targetHz)
         let speed = max(0.1, Double(currentConfig.speed))
         let attackTime = baseAttack / speed
         let releaseTime = baseRelease / speed

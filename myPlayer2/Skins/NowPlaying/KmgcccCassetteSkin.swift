@@ -451,7 +451,7 @@ private enum CassetteArtworkToneMapper {
         return (pngData, before, after)
     }
 
-    private static func sampledLumaStats(
+    private nonisolated static func sampledLumaStats(
         from linearImage: CIImage,
         seed: UInt64,
         ciContext: CIContext,
@@ -512,7 +512,7 @@ private enum CassetteArtworkToneMapper {
         return CassetteLumaStats(low: low, high: high, mean: total / count)
     }
 
-    private static func nextRandom01(_ state: inout UInt64) -> Double {
+    private nonisolated static func nextRandom01(_ state: inout UInt64) -> Double {
         state = state &* 6_364_136_223_846_793_005 &+ 1
         let value = (state >> 11) & ((1 << 53) - 1)
         return Double(value) / Double((1 << 53) - 1)
