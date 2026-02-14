@@ -43,9 +43,9 @@
 **构建步骤：**
 
 1. 克隆本仓库代码  
-2. 使用 Xcode 打开 `myPlayer2.xcodeproj`  
+2. 使用 Xcode 打开 `kmgccc_player.xcodeproj`  
 3. 使用 pyinstaller 打包LDDC server，结果输出到`Tools/lddc-server`
-4. 选择 `myPlayer2` Scheme 并运行
+4. 选择 `kmgccc_player` Scheme 并运行
 
 ## 注意事项
 
