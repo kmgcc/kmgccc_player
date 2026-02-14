@@ -26,7 +26,7 @@ build/
 *.xccheckout
 *.moved-aside
 DerivedData
-.derivedData
+.derivedData/
 .derivedDataLocal/
 .derivedDataLocal2/
 *.hmap
