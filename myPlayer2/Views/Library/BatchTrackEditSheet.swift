@@ -11,11 +11,6 @@ import UniformTypeIdentifiers
 
 struct BatchTrackEditSheet: View {
 
-    enum EntryFocus {
-        case metadata
-        case lyrics
-    }
-
     private struct ProcessState {
         var edited = false
         var saved = false
@@ -31,11 +26,8 @@ struct BatchTrackEditSheet: View {
     @EnvironmentObject private var themeStore: ThemeStore
 
     let tracks: [Track]
-    let entryFocus: EntryFocus
 
     @State private var currentIndex = 0
-    @State private var prioritizeLyricsSection = false
-    @State private var autoSaveCurrent = true
     @State private var autoSearchToken = 0
 
     @State private var title = ""
@@ -51,7 +43,6 @@ struct BatchTrackEditSheet: View {
     @State private var isSavingCurrent = false
     @State private var isLoadingDraft = false
     @State private var processStateByTrackID: [UUID: ProcessState] = [:]
-    @State private var autoSaveTask: Task<Void, Never>?
 
     private let amllDbURL = URL(string: "https://github.com/amll-dev/amll-ttml-db")!
     private let ttmlToolURL = URL(string: "https://amll-ttml-tool.stevexmh.net/")!
@@ -68,22 +59,9 @@ struct BatchTrackEditSheet: View {
                 HStack(spacing: 0) {
                     queuePanel
                     Divider()
-
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 18) {
-                            if prioritizeLyricsSection {
-                                lyricsSection
-                                metadataSection
-                            } else {
-                                metadataSection
-                                lyricsSection
-                            }
-
-                            Color.clear.frame(height: 200)
-                        }
-                        .padding(20)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    editorPanel
+                    Divider()
+                    amllPreviewPanel
                 }
             }
 
@@ -91,20 +69,12 @@ struct BatchTrackEditSheet: View {
 
             footerView
         }
-        .frame(minWidth: 1180, minHeight: 860)
+        .frame(minWidth: 1320, minHeight: 880)
         .tint(themeStore.accentColor)
         .accentColor(themeStore.accentColor)
         .onAppear {
-            prioritizeLyricsSection = entryFocus == .lyrics
             guard !tracks.isEmpty else { return }
-            loadCurrentTrack()
-            if entryFocus == .lyrics {
-                autoSearchToken = 1
-            }
-        }
-        .onDisappear {
-            autoSaveTask?.cancel()
-            autoSaveTask = nil
+            prepareTrack(at: 0, triggerAutoSearch: true)
         }
         .onChange(of: title) { _, _ in
             draftDidChange()
@@ -123,11 +93,6 @@ struct BatchTrackEditSheet: View {
         }
         .onChange(of: lyricsTimeOffsetMs) { _, _ in
             draftDidChange()
-        }
-        .onChange(of: autoSaveCurrent) { _, enabled in
-            if enabled && hasDraftChangesComparedToCurrentTrack() {
-                scheduleAutoSave()
-            }
         }
         .fileImporter(
             isPresented: $showingArtworkPicker,
@@ -154,39 +119,19 @@ struct BatchTrackEditSheet: View {
         return tracks[currentIndex]
     }
 
-    private var editedCount: Int {
-        processStateByTrackID.values.filter { $0.edited }.count
-    }
-
-    private var savedCount: Int {
-        processStateByTrackID.values.filter { $0.saved }.count
-    }
-
-    private var skippedCount: Int {
-        processStateByTrackID.values.filter { $0.skipped }.count
-    }
-
-    private var remainingCount: Int {
-        tracks.count - (savedCount + skippedCount)
-    }
-
     private var headerView: some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("批量处理")
+                Text("批量编辑歌曲信息")
                     .font(.title2)
                     .fontWeight(.bold)
 
                 if let track = currentTrack {
                     Text(
-                        "当前：\(currentIndex + 1)/\(tracks.count) · \(track.title) · \(track.artist.isEmpty ? NSLocalizedString("library.unknown_artist", comment: "") : track.artist) · \(track.album.isEmpty ? NSLocalizedString("library.unknown_album", comment: "") : track.album)"
+                        "当前：\(currentIndex + 1)/\(tracks.count) · \(track.title) · \(displayArtist(track.artist)) · \(displayAlbum(track.album))"
                     )
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-                } else {
-                    Text("没有可处理的歌曲")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
                 }
             }
 
@@ -224,90 +169,110 @@ struct BatchTrackEditSheet: View {
     }
 
     private var queuePanel: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("待处理队列")
-                .font(.headline)
-                .padding(.horizontal, 14)
-                .padding(.top, 12)
-
-            ScrollView {
-                VStack(spacing: 6) {
-                    ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
-                        queueRow(track: track, index: index)
-                    }
+        ScrollView {
+            LazyVStack(spacing: 8) {
+                ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
+                    queueRow(track: track, index: index)
                 }
-                .padding(.horizontal, 10)
-                .padding(.bottom, 10)
             }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 10)
         }
-        .frame(width: 300)
+        .frame(width: 240)
         .frame(maxHeight: .infinity, alignment: .top)
     }
 
     private func queueRow(track: Track, index: Int) -> some View {
         let state = processStateByTrackID[track.id]
         let isCurrent = index == currentIndex
+        let status = queueStatus(for: state, isCurrent: isCurrent)
 
         return Button {
-            goToTrack(index)
+            selectTrack(index)
         } label: {
-            HStack(alignment: .top, spacing: 8) {
-                Text("\(index + 1)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 20, alignment: .leading)
+            HStack(alignment: .top, spacing: 10) {
+                queueArtwork(track: track, index: index)
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(track.title)
                         .font(.subheadline)
                         .lineLimit(1)
 
-                    Text(track.artist.isEmpty ? NSLocalizedString("library.unknown_artist", comment: "") : track.artist)
+                    Text(displayArtist(track.artist))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
 
-                    queueStatusLabel(for: state)
+                    Text(displayAlbum(track.album))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+
+                    Text(status.text)
+                        .font(.caption2)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2)
+                        .background(status.color.opacity(0.16))
+                        .foregroundStyle(status.color)
+                        .clipShape(Capsule())
                 }
-                Spacer()
+
+                Spacer(minLength: 0)
             }
-            .padding(8)
+            .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(isCurrent ? themeStore.selectionFill : Color.clear)
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(isCurrent ? themeStore.selectionFill : Color(nsColor: .controlBackgroundColor).opacity(0.22))
             )
+            .overlay {
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(isCurrent ? themeStore.accentColor.opacity(0.45) : .clear, lineWidth: 1)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 10))
         }
         .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func queueStatusLabel(for state: ProcessState?) -> some View {
-        let tuple: (String, Color) = {
-            guard let state else {
-                return ("待处理", .secondary)
-            }
-            if state.skipped { return ("已跳过", .orange) }
-            if state.saved { return ("已保存", .green) }
-            if state.saveError != nil { return ("保存失败", .red) }
-            if state.edited { return ("已编辑未保存", .yellow) }
-            return ("待处理", .secondary)
-        }()
+    private func queueArtwork(track: Track, index: Int) -> some View {
+        let rowArtworkData = index == currentIndex ? artworkData : track.artworkData
 
-        return Text(tuple.0)
-            .font(.caption2)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 2)
-            .background(tuple.1.opacity(0.16))
-            .foregroundStyle(tuple.1)
-            .clipShape(Capsule())
+        return Group {
+            if let data = rowArtworkData, let nsImage = NSImage(data: data) {
+                Image(nsImage: nsImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                Image(systemName: "music.note")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color(nsColor: .windowBackgroundColor).opacity(0.8))
+            }
+        }
+        .frame(width: 44, height: 44)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var editorPanel: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                lyricsSection
+                metadataSection
+                Color.clear.frame(height: 80)
+            }
+            .padding(18)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var metadataSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 12) {
             Label("元数据", systemImage: "info.circle")
                 .font(.headline)
 
-            HStack(spacing: 16) {
+            HStack(spacing: 14) {
                 Group {
                     if let data = artworkData, let nsImage = NSImage(data: data) {
                         Image(nsImage: nsImage)
@@ -315,11 +280,11 @@ struct BatchTrackEditSheet: View {
                             .aspectRatio(contentMode: .fill)
                     } else {
                         Image(systemName: "music.note")
-                            .font(.largeTitle)
+                            .font(.title2)
                             .foregroundStyle(.secondary)
                     }
                 }
-                .frame(width: 110, height: 110)
+                .frame(width: 84, height: 84)
                 .background(.ultraThinMaterial)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
 
@@ -340,7 +305,7 @@ struct BatchTrackEditSheet: View {
                 Spacer()
             }
 
-            HStack(spacing: 12) {
+            HStack(spacing: 10) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("标题")
                         .font(.caption)
@@ -366,16 +331,17 @@ struct BatchTrackEditSheet: View {
                 }
             }
         }
-        .padding(16)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.4))
+        .padding(14)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.36))
         .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
     private var lyricsSection: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Label("歌词导入 / 查找 / 预编辑", systemImage: "text.quote")
                     .font(.headline)
+
                 Spacer()
 
                 Button {
@@ -399,12 +365,16 @@ struct BatchTrackEditSheet: View {
             }
 
             TextEditor(text: $lyricsText)
-                .font(.system(.body, design: .monospaced))
-                .frame(minHeight: 260)
+                .font(.system(.caption, design: .monospaced))
+                .frame(height: 120)
                 .overlay {
                     RoundedRectangle(cornerRadius: 6)
                         .strokeBorder(Color.secondary.opacity(0.3), lineWidth: 1)
                 }
+
+            Text("TTML 文本区仅用于快速核对/微调；主要操作建议在下方 LDDC 区域完成。")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
@@ -434,37 +404,53 @@ struct BatchTrackEditSheet: View {
                     autoSearchToken: autoSearchToken
                 ) { ttml in
                     lyricsText = ttml
-                    if autoSaveCurrent {
-                        _ = saveCurrentTrack(showFailureMessage: false)
-                    }
+                    _ = saveCurrentTrack(
+                        showFailureMessage: true,
+                        markProcessedIfUnchanged: false,
+                        reason: "LDDC 应用歌词"
+                    )
                 }
+                .frame(minHeight: 600)
             }
         }
-        .padding(16)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.4))
+        .padding(14)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.36))
         .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var amllPreviewPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("AMLL 渲染预览")
+                .font(.headline)
+
+            Text("当前编辑歌曲的 AMLL 实际渲染效果")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            ZStack {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color.black.opacity(0.82))
+
+                if currentTrack == nil {
+                    Text("无可预览歌曲")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    AMLLWebView()
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 10)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+        }
+        .padding(14)
+        .frame(width: 360)
+        .frame(maxHeight: .infinity, alignment: .top)
     }
 
     private var footerView: some View {
         HStack(spacing: 12) {
-            Toggle("自动保存当前歌曲", isOn: $autoSaveCurrent)
-                .toggleStyle(.switch)
-
-            Divider()
-                .frame(height: 18)
-
-            Text("已编辑 \(editedCount)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text("已保存 \(savedCount)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text("剩余 \(remainingCount)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            Spacer()
-
             if let statusMessage {
                 Text(statusMessage)
                     .font(.caption)
@@ -472,23 +458,29 @@ struct BatchTrackEditSheet: View {
                     .lineLimit(1)
             }
 
-            Button("跳过") {
+            Spacer()
+
+            Button("跳过本首") {
                 skipCurrentTrack()
             }
             .buttonStyle(.bordered)
             .disabled(tracks.isEmpty)
 
             Button("保存当前") {
-                _ = saveCurrentTrack(showFailureMessage: true)
+                _ = saveCurrentTrack(
+                    showFailureMessage: true,
+                    markProcessedIfUnchanged: true,
+                    reason: "手动保存"
+                )
             }
             .buttonStyle(.bordered)
             .disabled(tracks.isEmpty || isSavingCurrent)
 
             Button(currentIndex >= tracks.count - 1 ? "完成" : "下一首") {
-                nextTrack()
+                goNextTrack()
             }
             .buttonStyle(.borderedProminent)
-            .disabled(tracks.isEmpty)
+            .disabled(tracks.isEmpty || isSavingCurrent)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
@@ -496,8 +488,20 @@ struct BatchTrackEditSheet: View {
 
     // MARK: - Actions
 
-    private func loadCurrentTrack() {
-        guard let track = currentTrack else { return }
+    private func prepareTrack(at index: Int, triggerAutoSearch: Bool) {
+        guard tracks.indices.contains(index) else { return }
+
+        currentIndex = index
+        loadTrackDraft(from: tracks[index])
+        playCurrentTrackForEditing(tracks[index])
+        syncAMLLPreview(reason: "切换编辑歌曲", forceLyricsReload: true)
+
+        if triggerAutoSearch {
+            autoSearchToken += 1
+        }
+    }
+
+    private func loadTrackDraft(from track: Track) {
         isLoadingDraft = true
         title = track.title
         artist = track.artist
@@ -511,84 +515,72 @@ struct BatchTrackEditSheet: View {
 
     private func draftDidChange() {
         guard !isLoadingDraft else { return }
+        guard let track = currentTrack else { return }
         guard hasDraftChangesComparedToCurrentTrack() else { return }
-        markCurrentEditedUnsaved()
-        scheduleAutoSave()
+
+        var state = processStateByTrackID[track.id] ?? ProcessState()
+        state.edited = true
+        state.saved = false
+        state.skipped = false
+        state.saveError = nil
+        processStateByTrackID[track.id] = state
     }
 
-    private func scheduleAutoSave() {
-        guard autoSaveCurrent else { return }
-        autoSaveTask?.cancel()
-        autoSaveTask = Task {
-            try? await Task.sleep(nanoseconds: 650_000_000)
-            guard !Task.isCancelled else { return }
-            await MainActor.run {
-                _ = saveCurrentTrack(showFailureMessage: false)
-            }
-        }
+    private func finalizeCurrentTrackBeforeSwitch() -> Bool {
+        saveCurrentTrack(
+            showFailureMessage: true,
+            markProcessedIfUnchanged: true,
+            reason: "切换到下一首前自动保存"
+        )
     }
 
-    private func goToTrack(_ index: Int) {
+    private func selectTrack(_ index: Int) {
         guard tracks.indices.contains(index), index != currentIndex else { return }
-        finalizeCurrentTrackBeforeSwitch()
-        currentIndex = index
-        prioritizeLyricsSection = true
-        autoSearchToken += 1
-        loadCurrentTrack()
+        guard finalizeCurrentTrackBeforeSwitch() else { return }
+        prepareTrack(at: index, triggerAutoSearch: true)
     }
 
-    private func nextTrack() {
+    private func goNextTrack() {
         if currentIndex >= tracks.count - 1 {
-            finalizeCurrentTrackBeforeSwitch()
+            guard finalizeCurrentTrackBeforeSwitch() else { return }
             dismiss()
             return
         }
 
-        finalizeCurrentTrackBeforeSwitch()
-        currentIndex += 1
-        prioritizeLyricsSection = true
-        autoSearchToken += 1
-        loadCurrentTrack()
+        guard finalizeCurrentTrackBeforeSwitch() else { return }
+        prepareTrack(at: currentIndex + 1, triggerAutoSearch: true)
     }
 
     private func skipCurrentTrack() {
         guard let track = currentTrack else { return }
-        autoSaveTask?.cancel()
-        autoSaveTask = nil
 
         var state = processStateByTrackID[track.id] ?? ProcessState()
         state.skipped = true
-        state.saveError = nil
         state.saved = false
+        state.saveError = nil
         processStateByTrackID[track.id] = state
         statusMessage = "已跳过：\(track.title)"
 
         if currentIndex < tracks.count - 1 {
-            currentIndex += 1
-            prioritizeLyricsSection = true
-            autoSearchToken += 1
-            loadCurrentTrack()
-        }
-    }
-
-    private func finalizeCurrentTrackBeforeSwitch() {
-        autoSaveTask?.cancel()
-        autoSaveTask = nil
-
-        if autoSaveCurrent {
-            _ = saveCurrentTrack(showFailureMessage: false)
-        } else if hasDraftChangesComparedToCurrentTrack() {
-            markCurrentEditedUnsaved()
+            prepareTrack(at: currentIndex + 1, triggerAutoSearch: true)
         }
     }
 
     @discardableResult
-    private func saveCurrentTrack(showFailureMessage: Bool) -> Bool {
+    private func saveCurrentTrack(
+        showFailureMessage: Bool,
+        markProcessedIfUnchanged: Bool,
+        reason: String
+    ) -> Bool {
         guard let track = currentTrack else { return false }
         guard !isSavingCurrent else { return false }
 
         let hasChanges = hasDraftChangesComparedToCurrentTrack()
         if !hasChanges {
+            if markProcessedIfUnchanged {
+                markTrackCompleted(track: track, edited: false)
+                statusMessage = "已完成：\(track.title)"
+            }
             return true
         }
 
@@ -616,24 +608,9 @@ struct BatchTrackEditSheet: View {
         do {
             try modelContext.save()
             LocalLibraryService.shared.writeSidecar(for: track)
-
-            if playerVM.currentTrack?.id == track.id {
-                lyricsVM.ensureAMLLLoaded(
-                    track: track,
-                    currentTime: playerVM.currentTime,
-                    isPlaying: playerVM.isPlaying,
-                    reason: "batch track saved",
-                    forceLyricsReload: true
-                )
-            }
-
-            var state = processStateByTrackID[track.id] ?? ProcessState()
-            state.edited = true
-            state.saved = true
-            state.skipped = false
-            state.saveError = nil
-            processStateByTrackID[track.id] = state
+            markTrackCompleted(track: track, edited: true)
             statusMessage = "已保存：\(track.title)"
+            syncAMLLPreview(reason: reason, forceLyricsReload: true)
             return true
         } catch {
             var state = processStateByTrackID[track.id] ?? ProcessState()
@@ -641,6 +618,7 @@ struct BatchTrackEditSheet: View {
             state.saved = false
             state.saveError = error.localizedDescription
             processStateByTrackID[track.id] = state
+
             if showFailureMessage {
                 statusMessage = "保存失败：\(error.localizedDescription)"
             }
@@ -648,11 +626,10 @@ struct BatchTrackEditSheet: View {
         }
     }
 
-    private func markCurrentEditedUnsaved() {
-        guard let track = currentTrack else { return }
+    private func markTrackCompleted(track: Track, edited: Bool) {
         var state = processStateByTrackID[track.id] ?? ProcessState()
-        state.edited = true
-        state.saved = false
+        state.edited = state.edited || edited
+        state.saved = true
         state.skipped = false
         state.saveError = nil
         processStateByTrackID[track.id] = state
@@ -701,10 +678,11 @@ struct BatchTrackEditSheet: View {
 
         do {
             artworkData = try Data(contentsOf: url)
-            statusMessage = "封面已导入"
-            if autoSaveCurrent {
-                _ = saveCurrentTrack(showFailureMessage: false)
-            }
+            _ = saveCurrentTrack(
+                showFailureMessage: true,
+                markProcessedIfUnchanged: false,
+                reason: "导入封面后保存"
+            )
         } catch {
             statusMessage = "导入封面失败：\(error.localizedDescription)"
         }
@@ -722,12 +700,49 @@ struct BatchTrackEditSheet: View {
 
         do {
             lyricsText = try String(contentsOf: url, encoding: .utf8)
-            statusMessage = "歌词已导入"
-            if autoSaveCurrent {
-                _ = saveCurrentTrack(showFailureMessage: false)
-            }
+            _ = saveCurrentTrack(
+                showFailureMessage: true,
+                markProcessedIfUnchanged: false,
+                reason: "导入歌词后保存"
+            )
         } catch {
             statusMessage = "导入歌词失败：\(error.localizedDescription)"
         }
+    }
+
+    private func playCurrentTrackForEditing(_ track: Track) {
+        playerVM.play(track: track)
+    }
+
+    private func syncAMLLPreview(reason: String, forceLyricsReload: Bool) {
+        lyricsVM.ensureAMLLLoaded(
+            track: currentTrack,
+            currentTime: playerVM.currentTime,
+            isPlaying: playerVM.isPlaying,
+            reason: reason,
+            forceLyricsReload: forceLyricsReload
+        )
+    }
+
+    private func queueStatus(for state: ProcessState?, isCurrent: Bool) -> (text: String, color: Color) {
+        if isCurrent {
+            return ("处理中", themeStore.accentColor)
+        }
+        guard let state else {
+            return ("未处理", .secondary)
+        }
+        if state.skipped { return ("已跳过", .orange) }
+        if state.saveError != nil { return ("保存失败", .red) }
+        if state.saved { return ("已完成", .green) }
+        if state.edited { return ("待保存", .yellow) }
+        return ("未处理", .secondary)
+    }
+
+    private func displayArtist(_ raw: String) -> String {
+        raw.isEmpty ? NSLocalizedString("library.unknown_artist", comment: "") : raw
+    }
+
+    private func displayAlbum(_ raw: String) -> String {
+        raw.isEmpty ? NSLocalizedString("library.unknown_album", comment: "") : raw
     }
 }
