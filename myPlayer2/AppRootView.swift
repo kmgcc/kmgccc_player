@@ -11,6 +11,7 @@ import SwiftUI
 
 /// Root view that sets up dependency injection.
 /// Creates real services for production, stubs for previews.
+@MainActor
 struct AppRootView: View {
 
     @Environment(\.modelContext) private var modelContext
@@ -136,6 +137,7 @@ struct AppRootView: View {
 
     // MARK: - Setup
 
+    @MainActor
     private func setupDependencies() {
         let libraryService = LocalLibraryService.shared
         libraryService.ensureLibraryFolders()
@@ -241,6 +243,6 @@ private struct ThemeTrackObserver: View {
 
 #Preview("App Root") {
     AppRootView()
-    .modelContainer(for: [Track.self, Playlist.self], inMemory: true)
-    .frame(width: 1200, height: 800)
+        .modelContainer(for: [Track.self, Playlist.self], inMemory: true)
+        .frame(width: 1200, height: 800)
 }

@@ -8,13 +8,14 @@
 
 import SwiftUI
 
+@MainActor
 struct NowPlayingView: View {
     var body: some View {
         NowPlayingHostView()
     }
 }
 
-#Preview("Now Playing") {
+#Preview("Now Playing") { @MainActor in
     let playbackService = StubAudioPlaybackService()
     let levelMeter = StubAudioLevelMeter()
     let playerVM = PlayerViewModel(playbackService: playbackService, levelMeter: levelMeter)

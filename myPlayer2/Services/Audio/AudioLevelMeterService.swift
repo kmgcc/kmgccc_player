@@ -14,6 +14,8 @@
 import AVFoundation
 import Accelerate
 import Foundation
+import Observation
+import SwiftUI
 
 /// Real audio level meter with RMS/peak energy detection.
 @Observable
@@ -47,7 +49,6 @@ final class AudioLevelMeterService: AudioLevelMeterProtocol {
 
     // MARK: - Timer for UI updates
 
-    private var updateTimer: Timer?
     private var smoothedLevel: Float = 0
 
     // MARK: - Initialization
@@ -114,22 +115,23 @@ final class AudioLevelMeterService: AudioLevelMeterProtocol {
 
     // MARK: - UI Update Timer
 
+    private var updateTask: Task<Void, Never>?
+
     private func startUpdateTimer() {
         stopUpdateTimer()
 
-        updateTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) {
-            [weak self] _ in
-            self?.updateSmoothedLevel()
-        }
-
-        if let timer = updateTimer {
-            RunLoop.main.add(timer, forMode: .common)
+        updateTask = Task { @MainActor in
+            while isInstalled {
+                updateSmoothedLevel()
+                try? await Task.sleep(nanoseconds: 33_333_333)  // ~30fps
+                if Task.isCancelled { break }
+            }
         }
     }
 
     private func stopUpdateTimer() {
-        updateTimer?.invalidate()
-        updateTimer = nil
+        updateTask?.cancel()
+        updateTask = nil
     }
 
     private func updateSmoothedLevel() {

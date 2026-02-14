@@ -8,6 +8,7 @@
 
 import SwiftUI
 
+@MainActor
 struct NowPlayingHostView: View {
 
     @Environment(PlayerViewModel.self) private var playerVM

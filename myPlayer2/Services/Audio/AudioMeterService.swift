@@ -53,7 +53,6 @@ final class AudioMeterService: AudioLevelMeterProtocol {
     private weak var mixerNode: AVAudioMixerNode?
     private var isInstalled = false
     private let processor: AudioMeterProcessor
-    private var updateTimer: Timer?
 
     init(config: AudioMeterConfig = AudioMeterConfig()) {
         self.config = config
@@ -98,15 +97,13 @@ final class AudioMeterService: AudioLevelMeterProtocol {
         }
     }
 
+    private var updateTask: Task<Void, Never>?
+
     private func startUpdateTimer() {
         stopUpdateTimer()
 
-        // Timer runs on main loop but we want to sync settings
-        updateTimer = Timer.scheduledTimer(withTimeInterval: config.updateRate, repeats: true) {
-            [weak self] _ in
-            Task { @MainActor in
-                guard let self = self else { return }
-
+        updateTask = Task { @MainActor in
+            while isInstalled {
                 // Sync dynamic settings from AppSettings
                 let settings = AppSettings.shared
                 var currentConfig = self.config
@@ -121,18 +118,18 @@ final class AudioMeterService: AudioLevelMeterProtocol {
 
                 // Update observable property
                 self.metrics = metrics
-            }
-        }
 
-        if let timer = updateTimer {
-            RunLoop.main.add(timer, forMode: .common)
+                try? await Task.sleep(nanoseconds: UInt64(config.updateRate * 1_000_000_000))
+                if Task.isCancelled { break }
+            }
         }
     }
 
     private func stopUpdateTimer() {
-        updateTimer?.invalidate()
-        updateTimer = nil
+        updateTask?.cancel()
+        updateTask = nil
     }
+
 }
 
 // MARK: - Audio Processor

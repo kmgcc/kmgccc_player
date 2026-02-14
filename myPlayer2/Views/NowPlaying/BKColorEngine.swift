@@ -64,10 +64,21 @@ struct HarmonizedPalette {
     let dotSRange: ClosedRange<CGFloat>
 }
 
-enum ElementKind {
+enum ElementKind: Sendable, Equatable {
     case background
     case shape
     case dot
+
+    nonisolated static func == (lhs: ElementKind, rhs: ElementKind) -> Bool {
+        switch (lhs, rhs) {
+        case (.background, .background),
+            (.shape, .shape),
+            (.dot, .dot):
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 struct BKColorEngine {
@@ -84,7 +95,9 @@ struct BKColorEngine {
         let diagnostics: ShapeSwatchDiagnostics
     }
 
-    static func make(extracted: [NSColor], fallback: [NSColor], isDark: Bool) -> HarmonizedPalette {
+    nonisolated static func make(extracted: [NSColor], fallback: [NSColor], isDark: Bool)
+        -> HarmonizedPalette
+    {
         let paletteInput = (extracted.isEmpty ? fallback : extracted)
             .compactMap(hsb(from:))
             .map(normalizeCandidateColor(_:))
@@ -108,7 +121,8 @@ struct BKColorEngine {
 
         if stats.coverKind == .grayscaleTrue {
             var triggered = Set<RiskFlag>()
-            let grayscalePalette = makeGrayscalePalette(stats: stats, isDark: isDark, triggered: &triggered)
+            let grayscalePalette = makeGrayscalePalette(
+                stats: stats, isDark: isDark, triggered: &triggered)
             logPalette(
                 primaryBefore: grayscalePalette.primaryHue,
                 primaryAfter: grayscalePalette.primaryHue,
@@ -119,7 +133,8 @@ struct BKColorEngine {
                 bgStops: grayscalePalette.bgStops.compactMap(hsb(from:)),
                 shapePool: grayscalePalette.shapePool.compactMap(hsb(from:)),
                 dotBase: hsb(from: grayscalePalette.dotBase)
-                    ?? HSBColor(h: grayscalePalette.primaryHue, s: 0.24, b: isDark ? 0.72 : 0.56, a: 1),
+                    ?? HSBColor(
+                        h: grayscalePalette.primaryHue, s: 0.24, b: isDark ? 0.72 : 0.56, a: 1),
                 injectedAccentCount: 0
             )
             return grayscalePalette
@@ -325,7 +340,7 @@ struct BKColorEngine {
         return harmonized
     }
 
-    static func makeShapeSwatches(
+    nonisolated static func makeShapeSwatches(
         seed: UInt64,
         extracted: [NSColor],
         fallback: [NSColor],
@@ -401,8 +416,10 @@ struct BKColorEngine {
             var picked: Candidate?
             var pickedComposite: CGFloat = -CGFloat.greatestFiniteMagnitude
 
-            for candidate in candidates where !selected.contains(where: { $0.index == candidate.index }) {
-                let minDistance = selected.map { hueDistance(candidate.color.h, $0.color.h) }.min() ?? 180
+            for candidate in candidates
+            where !selected.contains(where: { $0.index == candidate.index }) {
+                let minDistance =
+                    selected.map { hueDistance(candidate.color.h, $0.color.h) }.min() ?? 180
                 guard minDistance >= 18 else { continue }
                 let scoreNorm = candidate.score / maxScore
                 let composite = (minDistance / 180) * 0.65 + scoreNorm * 0.35
@@ -494,7 +511,7 @@ struct BKColorEngine {
         )
     }
 
-    static func stabilize(
+    nonisolated static func stabilize(
         color: CGColor,
         kind: ElementKind,
         palette: HarmonizedPalette,
@@ -534,8 +551,8 @@ struct BKColorEngine {
     }
 }
 
-private extension BKColorEngine {
-    enum RiskFlag: String, CaseIterable {
+extension BKColorEngine {
+    fileprivate enum RiskFlag: String, CaseIterable {
         case greenDanger = "green_danger"
         case hospitalGreen = "hospital_green"
         case muddyYellow = "muddy_yellow"
@@ -546,14 +563,14 @@ private extension BKColorEngine {
         case reverseHue = "reverse_hue"
     }
 
-    struct HSBColor {
+    fileprivate struct HSBColor {
         var h: CGFloat  // degrees: 0...360
         var s: CGFloat
         var b: CGFloat
         var a: CGFloat
     }
 
-    struct TierRanges {
+    fileprivate struct TierRanges {
         let bgB: ClosedRange<CGFloat>
         let fgB: ClosedRange<CGFloat>
         let dotB: ClosedRange<CGFloat>
@@ -562,13 +579,13 @@ private extension BKColorEngine {
         let dotS: ClosedRange<CGFloat>
     }
 
-    struct HueCluster {
+    fileprivate struct HueCluster {
         var sumX: CGFloat
         var sumY: CGFloat
         var count: Int
         var totalWeight: CGFloat
 
-        init(hue: CGFloat, weight: CGFloat = 1) {
+        nonisolated init(hue: CGFloat, weight: CGFloat = 1) {
             let radians = deg2rad(hue)
             sumX = cos(radians) * weight
             sumY = sin(radians) * weight
@@ -576,7 +593,7 @@ private extension BKColorEngine {
             totalWeight = weight
         }
 
-        mutating func add(hue: CGFloat, weight: CGFloat = 1) {
+        nonisolated mutating func add(hue: CGFloat, weight: CGFloat = 1) {
             let radians = deg2rad(hue)
             sumX += cos(radians) * weight
             sumY += sin(radians) * weight
@@ -584,12 +601,12 @@ private extension BKColorEngine {
             totalWeight += weight
         }
 
-        var centerHue: CGFloat {
+        nonisolated var centerHue: CGFloat {
             normalizeHue(rad2deg(atan2(sumY, sumX)))
         }
     }
 
-    struct PaletteStats {
+    fileprivate struct PaletteStats {
         struct SalientHue {
             let hue: CGFloat
             let weight: CGFloat
@@ -641,7 +658,7 @@ private extension BKColorEngine {
         let complexity: ColorComplexityLevel
     }
 
-    static func analyzePalette(_ colors: [HSBColor]) -> PaletteStats {
+    fileprivate nonisolated static func analyzePalette(_ colors: [HSBColor]) -> PaletteStats {
         guard !colors.isEmpty else {
             return PaletteStats(
                 avgS: 0.25,
@@ -796,7 +813,8 @@ private extension BKColorEngine {
                     clusterMaxMember[nearest] = candidate
                 }
             } else {
-                clusterCentersRaw.append(HueCluster(hue: candidate.color.h, weight: candidate.score))
+                clusterCentersRaw.append(
+                    HueCluster(hue: candidate.color.h, weight: candidate.score))
                 clusterScores.append(candidate.score)
                 clusterMaxMember.append(candidate)
             }
@@ -805,7 +823,8 @@ private extension BKColorEngine {
         let sortedClusterIndices = clusterScores.indices.sorted {
             clusterScores[$0] > clusterScores[$1]
         }
-        let topClusterRawTotal = max(0.0001, sortedClusterIndices.map { clusterScores[$0] }.reduce(0, +))
+        let topClusterRawTotal = max(
+            0.0001, sortedClusterIndices.map { clusterScores[$0] }.reduce(0, +))
         let topClusters = sortedClusterIndices.prefix(3).map { idx in
             PaletteStats.HueWeight(
                 hue: normalizeHue(clusterCentersRaw[idx].centerHue),
@@ -818,7 +837,9 @@ private extension BKColorEngine {
             sortedClusterIndices.map { clusterScores[$0] / topClusterRawTotal }
         )
 
-        let primaryClusterHue = sortedClusterIndices.first.map { normalizeHue(clusterCentersRaw[$0].centerHue) }
+        let primaryClusterHue = sortedClusterIndices.first.map {
+            normalizeHue(clusterCentersRaw[$0].centerHue)
+        }
         let accentClusterHue: CGFloat?
         let secondClusterHasVivid: Bool
         if sortedClusterIndices.count >= 2 {
@@ -840,7 +861,8 @@ private extension BKColorEngine {
         if salientRaw.isEmpty {
             salientRaw = colors.enumerated().map { index, color in
                 let s = saliencyScore(color)
-                return ScoredColor(index: index, color: color, score: shares[index] * (1 + 1.8 * s), saliency: s)
+                return ScoredColor(
+                    index: index, color: color, score: shares[index] * (1 + 1.8 * s), saliency: s)
             }.sorted(by: { $0.score > $1.score })
         }
         let salientTotal = max(0.0001, salientRaw.map(\.score).reduce(0, +))
@@ -908,7 +930,8 @@ private extension BKColorEngine {
         let dominantIndex = shares.indices.max(by: { shares[$0] < shares[$1] }) ?? 0
         let dominantColor = colors[dominantIndex]
         let dominantHue = primaryClusterHue ?? dominantColor.h
-        let dominantS = colorCandidates.first(where: { hueDistance($0.color.h, dominantHue) < 12 })?.color.s
+        let dominantS =
+            colorCandidates.first(where: { hueDistance($0.color.h, dominantHue) < 12 })?.color.s
             ?? dominantColor.s
         let dominantShare = shares[dominantIndex]
         let accentShare = (topClusters.count >= 2) ? topClusters[1].weight : 0
@@ -917,8 +940,11 @@ private extension BKColorEngine {
             min: 0,
             max: 1
         )
-        let forcedAccentInMostlyBW = coverKind == .mostlyBWWithColor
-            && colorCandidates.contains { $0.color.s >= 0.40 && hueDistance($0.color.h, dominantHue) > 12 }
+        let forcedAccentInMostlyBW =
+            coverKind == .mostlyBWWithColor
+            && colorCandidates.contains {
+                $0.color.s >= 0.40 && hueDistance($0.color.h, dominantHue) > 12
+            }
         let accentEnabled =
             (topClusters.count >= 2
                 && topClusters[1].weight >= 0.28 * max(0.0001, topClusters[0].weight)
@@ -991,7 +1017,9 @@ private extension BKColorEngine {
         )
     }
 
-    static func nearestClusterIndex(for hue: CGFloat, in clusters: [HueCluster]) -> Int? {
+    fileprivate nonisolated static func nearestClusterIndex(
+        for hue: CGFloat, in clusters: [HueCluster]
+    ) -> Int? {
         guard !clusters.isEmpty else { return nil }
         var bestIndex = 0
         var bestDistance = hueDistance(hue, clusters[0].centerHue)
@@ -1005,7 +1033,7 @@ private extension BKColorEngine {
         return bestIndex
     }
 
-    static func inferredShares(count: Int) -> [CGFloat] {
+    fileprivate nonisolated static func inferredShares(count: Int) -> [CGFloat] {
         guard count > 0 else { return [] }
         let raw: [CGFloat]
         if count <= 4 {
@@ -1027,12 +1055,12 @@ private extension BKColorEngine {
         return raw.map { $0 / total }
     }
 
-    static func saliencyScore(_ color: HSBColor) -> CGFloat {
+    fileprivate nonisolated static func saliencyScore(_ color: HSBColor) -> CGFloat {
         let midBBoost = clamp(1 - abs(color.b - 0.55) / 0.55, min: 0, max: 1)
         return pow(color.s, 1.2) * (0.6 + 0.4 * midBBoost)
     }
 
-    static func entropyNormalized(_ probabilities: [CGFloat]) -> CGFloat {
+    fileprivate nonisolated static func entropyNormalized(_ probabilities: [CGFloat]) -> CGFloat {
         let positive = probabilities.filter { $0 > 0.0001 }
         guard positive.count > 1 else { return 0 }
         let entropy = positive.reduce(CGFloat(0)) { partial, p in
@@ -1041,14 +1069,14 @@ private extension BKColorEngine {
         return entropy / log(CGFloat(positive.count))
     }
 
-    static func lumaTarget(coverLuma: CGFloat, isDark: Bool) -> CGFloat {
+    fileprivate nonisolated static func lumaTarget(coverLuma: CGFloat, isDark: Bool) -> CGFloat {
         if isDark {
             return clamp(0.18 + 0.70 * coverLuma, min: 0.10, max: 0.62)
         }
         return clamp(0.55 + 0.55 * coverLuma, min: 0.65, max: 0.90)
     }
 
-    static func lumaBlendK(coverKind: CoverKind) -> CGFloat {
+    fileprivate nonisolated static func lumaBlendK(coverKind: CoverKind) -> CGFloat {
         switch coverKind {
         case .mostlyBWWithColor:
             return 0.70
@@ -1059,7 +1087,7 @@ private extension BKColorEngine {
         }
     }
 
-    static func tierRanges(
+    fileprivate nonisolated static func tierRanges(
         isDark: Bool,
         complexity: ColorComplexityLevel,
         isNearGray: Bool,
@@ -1128,7 +1156,8 @@ private extension BKColorEngine {
         if lowSatColorCover {
             fgS = makeRange(lower: fgS.lowerBound, upper: min(0.66, fgS.upperBound * 1.20))
             dotS = makeRange(lower: dotS.lowerBound, upper: min(0.70, dotS.upperBound * 1.22))
-            bgS = makeRange(lower: bgS.lowerBound, upper: min(isDark ? 0.42 : 0.36, bgS.upperBound * 1.10))
+            bgS = makeRange(
+                lower: bgS.lowerBound, upper: min(isDark ? 0.42 : 0.36, bgS.upperBound * 1.10))
 
             fgB = makeRange(
                 lower: min(1, fgB.lowerBound * 1.05),
@@ -1149,14 +1178,16 @@ private extension BKColorEngine {
         return TierRanges(bgB: bgB, fgB: fgB, dotB: dotB, bgS: bgS, fgS: fgS, dotS: dotS)
     }
 
-    static func makeRange(lower: CGFloat, upper: CGFloat) -> ClosedRange<CGFloat> {
+    fileprivate nonisolated static func makeRange(lower: CGFloat, upper: CGFloat) -> ClosedRange<
+        CGFloat
+    > {
         if lower <= upper {
             return lower...upper
         }
         return upper...upper
     }
 
-    static func ranges(for kind: ElementKind, palette: HarmonizedPalette)
+    fileprivate nonisolated static func ranges(for kind: ElementKind, palette: HarmonizedPalette)
         -> (b: ClosedRange<CGFloat>, s: ClosedRange<CGFloat>)
     {
         switch kind {
@@ -1169,7 +1200,7 @@ private extension BKColorEngine {
         }
     }
 
-    static func makeGrayscalePalette(
+    fileprivate nonisolated static func makeGrayscalePalette(
         stats: PaletteStats,
         isDark: Bool,
         triggered: inout Set<RiskFlag>
@@ -1190,7 +1221,8 @@ private extension BKColorEngine {
                     h: normalizeHue(safeHueBase + offset),
                     s: bgSValues[index],
                     b: clamp(
-                        midpoint(tier.bgB) + (isDark ? bgBOffsetsDark[index] : bgBOffsetsLight[index]),
+                        midpoint(tier.bgB)
+                            + (isDark ? bgBOffsetsDark[index] : bgBOffsetsLight[index]),
                         min: tier.bgB.lowerBound,
                         max: tier.bgB.upperBound
                     ),
@@ -1211,7 +1243,9 @@ private extension BKColorEngine {
             let safe = sanitize(
                 HSBColor(
                     h: normalizeHue(safeHueBase + shapeOffsets[index]),
-                    s: clamp(CGFloat(0.06) + CGFloat(index) * 0.015, min: tier.fgS.lowerBound, max: tier.fgS.upperBound),
+                    s: clamp(
+                        CGFloat(0.06) + CGFloat(index) * 0.015, min: tier.fgS.lowerBound,
+                        max: tier.fgS.upperBound),
                     b: clamp(
                         midpoint(tier.fgB) + shapeBOffsets[index],
                         min: tier.fgB.lowerBound,
@@ -1294,7 +1328,7 @@ private extension BKColorEngine {
         )
     }
 
-    static func grayscaleTierRanges(isDark: Bool) -> TierRanges {
+    fileprivate nonisolated static func grayscaleTierRanges(isDark: Bool) -> TierRanges {
         if isDark {
             return TierRanges(
                 bgB: 0.24...0.36,
@@ -1315,7 +1349,7 @@ private extension BKColorEngine {
         )
     }
 
-    static func makeHueFamily(
+    fileprivate nonisolated static func makeHueFamily(
         primaryHue: CGFloat,
         complexity: ColorComplexityLevel,
         clusterCenters: [CGFloat],
@@ -1344,13 +1378,16 @@ private extension BKColorEngine {
 
         case .medium:
             family += [primaryHue - 12, primaryHue + 12, primaryHue - 22, primaryHue + 22]
-            let farCandidates = clusterCenters
+            let farCandidates =
+                clusterCenters
                 .map(normalizeHue)
                 .filter {
                     let d = hueDistance($0, primaryHue)
                     return d > 28 && d <= 70
                 }
-            if let far = farCandidates.max(by: { hueDistance($0, primaryHue) < hueDistance($1, primaryHue) }) {
+            if let far = farCandidates.max(by: {
+                hueDistance($0, primaryHue) < hueDistance($1, primaryHue)
+            }) {
                 family.append(far)
             }
 
@@ -1384,7 +1421,7 @@ private extension BKColorEngine {
         return unique
     }
 
-    static func makeBackgroundStops(
+    fileprivate nonisolated static func makeBackgroundStops(
         primaryHue: CGFloat,
         tier: TierRanges,
         complexity: ColorComplexityLevel,
@@ -1426,11 +1463,17 @@ private extension BKColorEngine {
 
         return hueOffsets.indices.map { index in
             let hue = normalizeHue(primaryHue + hueOffsets[index])
-            var targetB = clamp(bMid + bOffsets[index], min: tier.bgB.lowerBound, max: tier.bgB.upperBound)
-            var targetS = clamp(sMid + sOffsets[index], min: tier.bgS.lowerBound, max: tier.bgS.upperBound)
+            var targetB = clamp(
+                bMid + bOffsets[index], min: tier.bgB.lowerBound, max: tier.bgB.upperBound)
+            var targetS = clamp(
+                sMid + sOffsets[index], min: tier.bgS.lowerBound, max: tier.bgS.upperBound)
             if lowSatColorCover {
-                targetS = clamp(targetS * min(1.24, satBoost), min: tier.bgS.lowerBound, max: tier.bgS.upperBound)
-                targetB = clamp(targetB * min(1.08, briBoost), min: tier.bgB.lowerBound, max: tier.bgB.upperBound)
+                targetS = clamp(
+                    targetS * min(1.24, satBoost), min: tier.bgS.lowerBound,
+                    max: tier.bgS.upperBound)
+                targetB = clamp(
+                    targetB * min(1.08, briBoost), min: tier.bgB.lowerBound,
+                    max: tier.bgB.upperBound)
             } else if coverKind == .mostlyBWWithColor {
                 targetS = clamp(targetS * 1.10, min: tier.bgS.lowerBound, max: tier.bgS.upperBound)
             }
@@ -1447,7 +1490,7 @@ private extension BKColorEngine {
         }
     }
 
-    static func makeBackgroundVariants(
+    fileprivate nonisolated static func makeBackgroundVariants(
         candidates: [HSBColor],
         shapePool: [HSBColor],
         baseStops: [HSBColor],
@@ -1490,13 +1533,16 @@ private extension BKColorEngine {
             return [baseStops]
         }
 
-        let shapeMeanS = shapePool.isEmpty
+        let shapeMeanS =
+            shapePool.isEmpty
             ? midpoint(tier.fgS)
             : shapePool.map(\.s).reduce(0, +) / CGFloat(shapePool.count)
         let desiredGapMin: CGFloat = isNearGray ? 0.12 : 0.10
         let desiredGapMax: CGFloat = isNearGray ? 0.08 : 0.06
-        let desiredBgLower = clamp(shapeMeanS - desiredGapMin, min: tier.bgS.lowerBound, max: tier.bgS.upperBound)
-        let desiredBgUpper = clamp(shapeMeanS - desiredGapMax, min: desiredBgLower, max: tier.bgS.upperBound)
+        let desiredBgLower = clamp(
+            shapeMeanS - desiredGapMin, min: tier.bgS.lowerBound, max: tier.bgS.upperBound)
+        let desiredBgUpper = clamp(
+            shapeMeanS - desiredGapMax, min: desiredBgLower, max: tier.bgS.upperBound)
 
         let bgUpperCap = min(
             tier.bgS.upperBound,
@@ -1518,7 +1564,8 @@ private extension BKColorEngine {
                 var bestScore = -CGFloat.greatestFiniteMagnitude
                 for idx in weighted.indices where !selectedIndices.contains(idx) {
                     let hue = weighted[idx].color.h
-                    let minDist = selectedIndices.map { hueDistance(hue, weighted[$0].color.h) }.min() ?? 180
+                    let minDist =
+                        selectedIndices.map { hueDistance(hue, weighted[$0].color.h) }.min() ?? 180
                     guard minDist >= 18 else { continue }
                     let score = minDist * 0.72 + weighted[idx].weight * 120 * 0.28
                     if score > bestScore {
@@ -1528,7 +1575,9 @@ private extension BKColorEngine {
                 }
                 if let best {
                     selectedIndices.append(best)
-                } else if let fallback = weighted.indices.first(where: { !selectedIndices.contains($0) }) {
+                } else if let fallback = weighted.indices.first(where: {
+                    !selectedIndices.contains($0)
+                }) {
                     selectedIndices.append(fallback)
                 } else {
                     break
@@ -1536,7 +1585,8 @@ private extension BKColorEngine {
             }
 
             while selectedIndices.count < count {
-                selectedIndices.append(selectedIndices[selectedIndices.count % max(1, selectedIndices.count)])
+                selectedIndices.append(
+                    selectedIndices[selectedIndices.count % max(1, selectedIndices.count)])
             }
 
             return selectedIndices.map { weighted[$0].color }
@@ -1567,7 +1617,9 @@ private extension BKColorEngine {
                 } else {
                     satScale = 0.78
                 }
-                let targetS = clamp(selectedColor.s * satScale, min: variantSRange.lowerBound, max: variantSRange.upperBound)
+                let targetS = clamp(
+                    selectedColor.s * satScale, min: variantSRange.lowerBound,
+                    max: variantSRange.upperBound)
                 let targetB = clamp(
                     lerp(baseRef.b, selectedColor.b, t: 0.30),
                     min: tier.bgB.lowerBound,
@@ -1598,7 +1650,7 @@ private extension BKColorEngine {
         return variants
     }
 
-    static func makeShapePool(
+    fileprivate nonisolated static func makeShapePool(
         primaryHue: CGFloat,
         dominantHue: CGFloat,
         dominantS: CGFloat,
@@ -1701,7 +1753,9 @@ private extension BKColorEngine {
         var output: [HSBColor] = []
         for index in 0..<targetCount {
             let rawHue = hueQueue[index % hueQueue.count]
-            let isAccentSlot = index < injectCount || (index >= primaryCount && index < (primaryCount + accentCount))
+            let isAccentSlot =
+                index < injectCount
+                || (index >= primaryCount && index < (primaryCount + accentCount))
             let maxDistanceFromBg: CGFloat
             if isAccentSlot {
                 maxDistanceFromBg = 75
@@ -1716,12 +1770,16 @@ private extension BKColorEngine {
             if coverKind == .lowSatColor || coverKind == .mostlyBWWithColor {
                 hue = lerpHue(hue, to: primaryHue, t: 0.18)
             }
-            var targetB = clamp(bMid + bOffsets[index], min: tier.fgB.lowerBound, max: tier.fgB.upperBound)
+            var targetB = clamp(
+                bMid + bOffsets[index], min: tier.fgB.lowerBound, max: tier.fgB.upperBound)
 
-            var targetS = clamp(sMid + sOffsets[index], min: tier.fgS.lowerBound, max: tier.fgS.upperBound)
+            var targetS = clamp(
+                sMid + sOffsets[index], min: tier.fgS.lowerBound, max: tier.fgS.upperBound)
             if lowSatColorCover {
-                targetS = clamp(targetS * satBoost, min: tier.fgS.lowerBound, max: tier.fgS.upperBound)
-                targetB = clamp(targetB * briBoost, min: tier.fgB.lowerBound, max: tier.fgB.upperBound)
+                targetS = clamp(
+                    targetS * satBoost, min: tier.fgS.lowerBound, max: tier.fgS.upperBound)
+                targetB = clamp(
+                    targetB * briBoost, min: tier.fgB.lowerBound, max: tier.fgB.upperBound)
             } else if dominantS < 0.22 {
                 targetS = min(targetS, tier.fgS.upperBound * 0.78)
             }
@@ -1746,7 +1804,7 @@ private extension BKColorEngine {
         return output
     }
 
-    static func makeDotBase(
+    fileprivate nonisolated static func makeDotBase(
         primaryHue: CGFloat,
         dominantHue: CGFloat,
         dominantS: CGFloat,
@@ -1774,8 +1832,12 @@ private extension BKColorEngine {
         var s = clamp(midpoint(tier.dotS), min: tier.dotS.lowerBound, max: tier.dotS.upperBound)
 
         if lowSatColorCover {
-            s = clamp(s * max(1.20, satBoost * 0.92), min: tier.dotS.lowerBound, max: tier.dotS.upperBound)
-            b = clamp(b * max(1.05, briBoost * 0.95), min: tier.dotB.lowerBound, max: tier.dotB.upperBound)
+            s = clamp(
+                s * max(1.20, satBoost * 0.92), min: tier.dotS.lowerBound, max: tier.dotS.upperBound
+            )
+            b = clamp(
+                b * max(1.05, briBoost * 0.95), min: tier.dotB.lowerBound, max: tier.dotB.upperBound
+            )
         } else if coverKind == .mostlyBWWithColor {
             s = clamp(s * 1.12, min: tier.dotS.lowerBound, max: tier.dotS.upperBound)
         } else if dominantS < 0.22 {
@@ -1794,7 +1856,7 @@ private extension BKColorEngine {
         )
     }
 
-    static func enforceCandidateHueSource(
+    fileprivate nonisolated static func enforceCandidateHueSource(
         candidateHues: [CGFloat],
         bgStops: inout [HSBColor],
         shapePool: inout [HSBColor],
@@ -1837,15 +1899,17 @@ private extension BKColorEngine {
         }
 
         for i in bgStops.indices {
-            bgStops[i] = clampToCandidate(bgStops[i], kind: .background, bRange: tier.bgB, sRange: tier.bgS)
+            bgStops[i] = clampToCandidate(
+                bgStops[i], kind: .background, bRange: tier.bgB, sRange: tier.bgS)
         }
         for i in shapePool.indices {
-            shapePool[i] = clampToCandidate(shapePool[i], kind: .shape, bRange: tier.fgB, sRange: tier.fgS)
+            shapePool[i] = clampToCandidate(
+                shapePool[i], kind: .shape, bRange: tier.fgB, sRange: tier.fgS)
         }
         dotBase = clampToCandidate(dotBase, kind: .dot, bRange: tier.dotB, sRange: tier.dotS)
     }
 
-    static func enforceDominantHueAffinity(
+    fileprivate nonisolated static func enforceDominantHueAffinity(
         dominantHue: CGFloat,
         bgReferenceHue: CGFloat,
         bgStops: inout [HSBColor],
@@ -1875,7 +1939,8 @@ private extension BKColorEngine {
                 c.h = clampHueDistance(c.h, around: bgReferenceHue, maxDistance: 6)
             case .shape:
                 let shapeMax: CGFloat =
-                    (coverKind == .richDistributed) ? 75
+                    (coverKind == .richDistributed)
+                    ? 75
                     : ((coverKind == .lowSatColor || coverKind == .mostlyBWWithColor) ? 8 : 10)
                 c.h = clampHueDistance(c.h, around: dominantHue, maxDistance: shapeMax)
             case .dot:
@@ -1912,7 +1977,7 @@ private extension BKColorEngine {
         dotBase = clampReverse(dotBase, kind: .dot, bRange: tier.dotB, sRange: tier.dotS)
     }
 
-    static func enforceSaturationGap(
+    fileprivate nonisolated static func enforceSaturationGap(
         bgStops: inout [HSBColor],
         shapePool: inout [HSBColor],
         tier: TierRanges,
@@ -1921,7 +1986,9 @@ private extension BKColorEngine {
         isDark: Bool,
         triggered: inout Set<RiskFlag>
     ) {
-        guard let maxBg = bgStops.map(\.s).max(), let minFg = shapePool.map(\.s).min() else { return }
+        guard let maxBg = bgStops.map(\.s).max(), let minFg = shapePool.map(\.s).min() else {
+            return
+        }
         let requiredGap: CGFloat = 0.06
         guard maxBg >= (minFg - requiredGap) else { return }
 
@@ -1942,7 +2009,7 @@ private extension BKColorEngine {
         }
     }
 
-    static func enforceBrightnessHierarchy(
+    fileprivate nonisolated static func enforceBrightnessHierarchy(
         bgStops: inout [HSBColor],
         shapePool: inout [HSBColor],
         dotBase: inout HSBColor,
@@ -2031,7 +2098,7 @@ private extension BKColorEngine {
         }
     }
 
-    static func selectPrimaryHue(
+    fileprivate nonisolated static func selectPrimaryHue(
         from candidates: [HSBColor],
         isDark: Bool,
         complexity: ColorComplexityLevel,
@@ -2074,7 +2141,8 @@ private extension BKColorEngine {
             let salientBonus = salientHues.reduce(CGFloat(0)) { partial, salient in
                 let d = hueDistance(c.h, salient.hue)
                 let proximity = max(0, 1 - d / 60)
-                return partial + salient.weight * proximity * (coverKind == .richDistributed ? 0.85 : 0.55)
+                return partial + salient.weight * proximity
+                    * (coverKind == .richDistributed ? 0.85 : 0.55)
             }
             let score =
                 -abs(c.s - targetS) * 1.4
@@ -2093,14 +2161,14 @@ private extension BKColorEngine {
         return normalizeHue(bestHue)
     }
 
-    static func isValidPrimaryCandidate(_ c: HSBColor) -> Bool {
+    fileprivate nonisolated static func isValidPrimaryCandidate(_ c: HSBColor) -> Bool {
         if c.b < 0.10 { return false }
         if c.b > 0.96 && c.s < 0.22 { return false }
         if c.b > 0.20 && c.b < 0.85 && c.s < 0.10 { return false }
         return true
     }
 
-    static func adjustPrimaryHue(
+    fileprivate nonisolated static func adjustPrimaryHue(
         _ hue: CGFloat,
         source: PrimarySelectionSource,
         coverKind: CoverKind,
@@ -2136,7 +2204,7 @@ private extension BKColorEngine {
         return normalizeHue(h)
     }
 
-    static func sanitize(
+    fileprivate nonisolated static func sanitize(
         _ color: HSBColor,
         kind: ElementKind,
         bRange: ClosedRange<CGFloat>,
@@ -2199,7 +2267,7 @@ private extension BKColorEngine {
         return c
     }
 
-    static func applyRiskRules(
+    fileprivate nonisolated static func applyRiskRules(
         _ color: HSBColor,
         kind: ElementKind,
         bRange: ClosedRange<CGFloat>,
@@ -2281,7 +2349,7 @@ private extension BKColorEngine {
         return c
     }
 
-    static func avoidHospitalGreen(
+    fileprivate nonisolated static func avoidHospitalGreen(
         _ color: HSBColor,
         kind: ElementKind,
         bRange: ClosedRange<CGFloat>,
@@ -2388,7 +2456,7 @@ private extension BKColorEngine {
         return c
     }
 
-    static func riskPenalty(h: CGFloat, s: CGFloat, b: CGFloat) -> CGFloat {
+    fileprivate nonisolated static func riskPenalty(h: CGFloat, s: CGFloat, b: CGFloat) -> CGFloat {
         var penalty: CGFloat = 0
 
         if inRange(h, 118, 142), s >= 0.32, s <= 0.75, b >= 0.18, b <= 0.55 {
@@ -2423,7 +2491,7 @@ private extension BKColorEngine {
         return penalty
     }
 
-    static func saturationHardCap(
+    fileprivate nonisolated static func saturationHardCap(
         kind: ElementKind,
         isDark: Bool,
         complexity: ColorComplexityLevel,
@@ -2453,7 +2521,7 @@ private extension BKColorEngine {
         }
     }
 
-    static func normalizeCandidateColor(_ color: HSBColor) -> HSBColor {
+    fileprivate nonisolated static func normalizeCandidateColor(_ color: HSBColor) -> HSBColor {
         var c = color
         c.h = biasedBlueVioletHue(c.h, s: c.s, b: c.b)
         if let cap = darkShadowSaturationCap(forBrightness: c.b) {
@@ -2466,7 +2534,9 @@ private extension BKColorEngine {
         return c
     }
 
-    static func biasedBlueVioletHue(_ hue: CGFloat, s: CGFloat, b: CGFloat) -> CGFloat {
+    fileprivate nonisolated static func biasedBlueVioletHue(_ hue: CGFloat, s: CGFloat, b: CGFloat)
+        -> CGFloat
+    {
         let h = normalizeHue(hue)
         guard s >= 0.20, b >= 0.22, b <= 0.78, h >= 55, h <= 90 else { return h }
         let t = clamp((h - 55) / 35, min: 0, max: 1)
@@ -2475,7 +2545,9 @@ private extension BKColorEngine {
         return normalizeHue(h + delta)
     }
 
-    static func darkShadowSaturationCap(forBrightness b: CGFloat) -> CGFloat? {
+    fileprivate nonisolated static func darkShadowSaturationCap(forBrightness b: CGFloat)
+        -> CGFloat?
+    {
         if b < 0.18 {
             return lerp(0.10, 0.22, t: clamp(b / 0.18, min: 0, max: 1))
         }
@@ -2485,23 +2557,23 @@ private extension BKColorEngine {
         return nil
     }
 
-    static func isHospitalGreenPrimary(_ c: HSBColor) -> Bool {
+    fileprivate nonisolated static func isHospitalGreenPrimary(_ c: HSBColor) -> Bool {
         inRange(c.h, 118, 142)
             && c.s >= 0.32 && c.s <= 0.75
             && c.b >= 0.18 && c.b <= 0.55
     }
 
-    static func isHospitalGreenSecondaryA(_ c: HSBColor) -> Bool {
+    fileprivate nonisolated static func isHospitalGreenSecondaryA(_ c: HSBColor) -> Bool {
         inRange(c.h, 110, 150) && c.b < 0.22 && c.s > 0.22
     }
 
-    static func isHospitalGreenSecondaryB(_ c: HSBColor) -> Bool {
+    fileprivate nonisolated static func isHospitalGreenSecondaryB(_ c: HSBColor) -> Bool {
         inRange(c.h, 115, 145)
             && c.s >= 0.18 && c.s <= 0.35
             && c.b >= 0.35 && c.b <= 0.55
     }
 
-    static func avoidHospitalGreenCandidate(_ color: HSBColor) -> HSBColor {
+    fileprivate nonisolated static func avoidHospitalGreenCandidate(_ color: HSBColor) -> HSBColor {
         var c = color
         let before = c
         var action = "none"
@@ -2539,7 +2611,7 @@ private extension BKColorEngine {
         return c
     }
 
-    static func sMax(forBrightness b: CGFloat) -> CGFloat {
+    fileprivate nonisolated static func sMax(forBrightness b: CGFloat) -> CGFloat {
         if b < 0.22 { return 0.38 }
         if b < 0.40 { return lerp(0.38, 0.68, t: (b - 0.22) / (0.40 - 0.22)) }
         if b < 0.75 { return 0.68 }
@@ -2547,7 +2619,7 @@ private extension BKColorEngine {
         return 0.52
     }
 
-    static func sMin(forBrightness b: CGFloat) -> CGFloat {
+    fileprivate nonisolated static func sMin(forBrightness b: CGFloat) -> CGFloat {
         if b < 0.22 { return 0.08 }
         if b < 0.40 { return lerp(0.08, 0.12, t: (b - 0.22) / (0.40 - 0.22)) }
         if b < 0.75 { return 0.12 }
@@ -2555,7 +2627,7 @@ private extension BKColorEngine {
         return 0.10
     }
 
-    static func logPalette(
+    fileprivate nonisolated static func logPalette(
         primaryBefore: CGFloat,
         primaryAfter: CGFloat,
         primarySource: PrimarySelectionSource,
@@ -2567,13 +2639,15 @@ private extension BKColorEngine {
         dotBase: HSBColor,
         injectedAccentCount: Int
     ) {
-        let triggerText = triggered.isEmpty
+        let triggerText =
+            triggered.isEmpty
             ? "none"
             : triggered.map(\.rawValue).sorted().joined(separator: ", ")
 
         let shapeHues = shapePool.map { normalizeHue($0.h) }
         let hueSpan = hueSpanAround(reference: primaryAfter, hues: shapeHues)
-        let hueDist = shapeHues.map { Int(round($0)) }.sorted().map(String.init).joined(separator: ",")
+        let hueDist = shapeHues.map { Int(round($0)) }.sorted().map(String.init).joined(
+            separator: ",")
         let salientText = stats.topSalientHues.prefix(3).map {
             "\(f1($0.hue))@\(f3($0.weight))"
         }.joined(separator: " | ")
@@ -2599,19 +2673,24 @@ private extension BKColorEngine {
             )
         }
 
-        print("[BKColorEngine] shapePoolHueDist [\(hueDist)] maxHueDelta=\(f1(hueSpan)) secondAccentEnabled=\(stats.secondAccentHue != nil ? 1 : 0) injectedAccentColors=\(injectedAccentCount)")
+        print(
+            "[BKColorEngine] shapePoolHueDist [\(hueDist)] maxHueDelta=\(f1(hueSpan)) secondAccentEnabled=\(stats.secondAccentHue != nil ? 1 : 0) injectedAccentColors=\(injectedAccentCount)"
+        )
         if hueSpan > 90, stats.complexity != .high {
             print("[BKColorEngine][WARN] hue span exceeds 90 in non-high complexity")
         }
 
         let bgText = bgStops.enumerated().map { "\($0):{\(hsbString($1))}" }.joined(separator: " ")
-        let shapeText = shapePool.enumerated().map { "\($0):{\(hsbString($1))}" }.joined(separator: " ")
+        let shapeText = shapePool.enumerated().map { "\($0):{\(hsbString($1))}" }.joined(
+            separator: " ")
         print("[BKColorEngine] bgStopsHSB \(bgText)")
         print("[BKColorEngine] shapePoolHSB \(shapeText)")
         print("[BKColorEngine] dotBaseHSB \(hsbString(dotBase))")
     }
 
-    static func hueSpanAround(reference: CGFloat, hues: [CGFloat]) -> CGFloat {
+    fileprivate nonisolated static func hueSpanAround(reference: CGFloat, hues: [CGFloat])
+        -> CGFloat
+    {
         guard !hues.isEmpty else { return 0 }
         let offsets = hues.map { signedHueOffset(from: reference, to: $0) }
         let minOffset = offsets.min() ?? 0
@@ -2619,7 +2698,7 @@ private extension BKColorEngine {
         return maxOffset - minOffset
     }
 
-    static func maxHueSpread(_ hues: [CGFloat]) -> CGFloat {
+    fileprivate nonisolated static func maxHueSpread(_ hues: [CGFloat]) -> CGFloat {
         guard hues.count >= 2 else { return 0 }
         var maxDelta: CGFloat = 0
         for i in 0..<(hues.count - 1) {
@@ -2630,11 +2709,11 @@ private extension BKColorEngine {
         return maxDelta
     }
 
-    static func hsbString(_ c: HSBColor) -> String {
+    fileprivate nonisolated static func hsbString(_ c: HSBColor) -> String {
         "h=\(f1(c.h)) s=\(f3(c.s)) b=\(f3(c.b))"
     }
 
-    static func elementKindName(_ kind: ElementKind) -> String {
+    fileprivate nonisolated static func elementKindName(_ kind: ElementKind) -> String {
         switch kind {
         case .background: return "bg"
         case .shape: return "shape"
@@ -2642,7 +2721,7 @@ private extension BKColorEngine {
         }
     }
 
-    static func hsb(from color: NSColor) -> HSBColor? {
+    fileprivate nonisolated static func hsb(from color: NSColor) -> HSBColor? {
         guard let rgb = color.usingColorSpace(.deviceRGB) else { return nil }
         var h: CGFloat = 0
         var s: CGFloat = 0
@@ -2657,12 +2736,12 @@ private extension BKColorEngine {
         )
     }
 
-    static func hsb(from color: CGColor) -> HSBColor? {
+    fileprivate nonisolated static func hsb(from color: CGColor) -> HSBColor? {
         guard let ns = NSColor(cgColor: color)?.usingColorSpace(.deviceRGB) else { return nil }
         return hsb(from: ns)
     }
 
-    static func toCGColor(_ c: HSBColor) -> CGColor {
+    fileprivate nonisolated static func toCGColor(_ c: HSBColor) -> CGColor {
         let deviceColor = NSColor(
             deviceHue: normalizeHue(c.h) / 360,
             saturation: clamp01(c.s),
@@ -2672,11 +2751,13 @@ private extension BKColorEngine {
         return (deviceColor.usingColorSpace(.deviceRGB) ?? deviceColor).cgColor
     }
 
-    static func midpoint(_ range: ClosedRange<CGFloat>) -> CGFloat {
+    fileprivate nonisolated static func midpoint(_ range: ClosedRange<CGFloat>) -> CGFloat {
         (range.lowerBound + range.upperBound) * 0.5
     }
 
-    static func inRange(_ hue: CGFloat, _ minDeg: CGFloat, _ maxDeg: CGFloat) -> Bool {
+    fileprivate nonisolated static func inRange(
+        _ hue: CGFloat, _ minDeg: CGFloat, _ maxDeg: CGFloat
+    ) -> Bool {
         let h = normalizeHue(hue)
         let lo = normalizeHue(minDeg)
         let hi = normalizeHue(maxDeg)
@@ -2686,15 +2767,15 @@ private extension BKColorEngine {
         return h >= lo || h <= hi
     }
 
-    static func inRedZone(_ hue: CGFloat) -> Bool {
+    fileprivate nonisolated static func inRedZone(_ hue: CGFloat) -> Bool {
         inRange(hue, 350, 360) || inRange(hue, 0, 15)
     }
 
-    static func hueDistance(_ lhs: CGFloat, _ rhs: CGFloat) -> CGFloat {
+    fileprivate nonisolated static func hueDistance(_ lhs: CGFloat, _ rhs: CGFloat) -> CGFloat {
         abs(signedHueOffset(from: lhs, to: rhs))
     }
 
-    static func signedHueOffset(from: CGFloat, to: CGFloat) -> CGFloat {
+    fileprivate nonisolated static func signedHueOffset(from: CGFloat, to: CGFloat) -> CGFloat {
         let a = normalizeHue(from)
         let b = normalizeHue(to)
         var delta = b - a
@@ -2703,7 +2784,9 @@ private extension BKColorEngine {
         return delta
     }
 
-    static func clampHueDistance(_ hue: CGFloat, around center: CGFloat, maxDistance: CGFloat)
+    fileprivate nonisolated static func clampHueDistance(
+        _ hue: CGFloat, around center: CGFloat, maxDistance: CGFloat
+    )
         -> CGFloat
     {
         let delta = signedHueOffset(from: center, to: hue)
@@ -2711,18 +2794,19 @@ private extension BKColorEngine {
         return normalizeHue(center + clamped)
     }
 
-    static func lerpHue(_ from: CGFloat, to: CGFloat, t: CGFloat) -> CGFloat {
+    fileprivate nonisolated static func lerpHue(_ from: CGFloat, to: CGFloat, t: CGFloat) -> CGFloat
+    {
         let delta = signedHueOffset(from: from, to: to)
         return normalizeHue(from + delta * clamp(t, min: 0, max: 1))
     }
 
-    static func normalizeHue(_ hue: CGFloat) -> CGFloat {
+    fileprivate nonisolated static func normalizeHue(_ hue: CGFloat) -> CGFloat {
         var h = hue.truncatingRemainder(dividingBy: 360)
         if h < 0 { h += 360 }
         return h
     }
 
-    static func dedupeHues(_ hues: [CGFloat]) -> [CGFloat] {
+    fileprivate nonisolated static func dedupeHues(_ hues: [CGFloat]) -> [CGFloat] {
         var seen = Set<Int>()
         var output: [CGFloat] = []
         for raw in hues {
@@ -2736,37 +2820,41 @@ private extension BKColorEngine {
         return output
     }
 
-    static func deg2rad(_ value: CGFloat) -> CGFloat {
+    fileprivate nonisolated static func deg2rad(_ value: CGFloat) -> CGFloat {
         value * .pi / 180
     }
 
-    static func rad2deg(_ value: CGFloat) -> CGFloat {
+    fileprivate nonisolated static func rad2deg(_ value: CGFloat) -> CGFloat {
         value * 180 / .pi
     }
 
-    static func clamp01(_ value: CGFloat) -> CGFloat {
+    fileprivate nonisolated static func clamp01(_ value: CGFloat) -> CGFloat {
         clamp(value, min: 0, max: 1)
     }
 
-    static func clamp(_ value: CGFloat, min minValue: CGFloat, max maxValue: CGFloat) -> CGFloat {
+    fileprivate nonisolated static func clamp(
+        _ value: CGFloat, min minValue: CGFloat, max maxValue: CGFloat
+    )
+        -> CGFloat
+    {
         Swift.min(maxValue, Swift.max(minValue, value))
     }
 
-    static func lerp(_ a: CGFloat, _ b: CGFloat, t: CGFloat) -> CGFloat {
+    fileprivate nonisolated static func lerp(_ a: CGFloat, _ b: CGFloat, t: CGFloat) -> CGFloat {
         a + (b - a) * clamp(t, min: 0, max: 1)
     }
 
-    static func f1(_ value: CGFloat) -> String {
+    fileprivate nonisolated static func f1(_ value: CGFloat) -> String {
         String(format: "%.1f", Double(value))
     }
 
-    static func f3(_ value: CGFloat) -> String {
+    fileprivate nonisolated static func f3(_ value: CGFloat) -> String {
         String(format: "%.3f", Double(value))
     }
 }
 
-private extension Array {
-    func ifEmpty(_ fallback: @autoclosure () -> [Element]) -> [Element] {
+extension Array {
+    fileprivate nonisolated func ifEmpty(_ fallback: @autoclosure () -> [Element]) -> [Element] {
         isEmpty ? fallback() : self
     }
 }

@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import Observation
 
 /// Stub implementation for UI previews.
 /// Simulates playback state without actual audio.
@@ -24,7 +25,6 @@ final class StubAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     // MARK: - Private
 
-    private var timer: Timer?
     private var queue: [Track] = []
     private var currentIndex: Int = 0
 
@@ -100,20 +100,22 @@ final class StubAudioPlaybackService: AudioPlaybackServiceProtocol {
         print("⏩ [Stub] Seeked to \(String(format: "%.1f", seconds))s")
     }
 
-    // MARK: - Timer
+    private var tickTask: Task<Void, Never>?
 
     private func startTimer() {
-        stopTimer()
-        timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.tick()
+        tickTask?.cancel()
+        tickTask = Task { @MainActor in
+            while isPlaying {
+                tick()
+                try? await Task.sleep(nanoseconds: 100_000_000)  // 0.1s
+                if Task.isCancelled { break }
             }
         }
     }
 
     private func stopTimer() {
-        timer?.invalidate()
-        timer = nil
+        tickTask?.cancel()
+        tickTask = nil
     }
 
     private func tick() {

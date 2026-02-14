@@ -18,6 +18,7 @@ import SwiftUI
 /// - Sidebar: System-rendered glass (no custom blur/material)
 /// - Main area: Content + Lyrics + MiniPlayer overlay
 /// - MiniPlayer: Only covers right area, not sidebar
+@MainActor
 struct MainLayoutView: View {
 
     @Environment(UIStateViewModel.self) private var uiState
@@ -277,7 +278,7 @@ struct MainLayoutView: View {
 
 // MARK: - Preview
 
-#Preview("Main Layout") {
+#Preview("Main Layout") { @MainActor in
     let repository = StubLibraryRepository()
     let libraryVM = LibraryViewModel(repository: repository)
 
