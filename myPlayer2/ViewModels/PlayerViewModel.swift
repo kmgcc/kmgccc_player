@@ -178,13 +178,23 @@ final class PlayerViewModel {
     }
 
     private var isLedEnabledForCurrentSkin: Bool {
-        guard settings.selectedNowPlayingSkinID == "kmgccc.cassette" else {
+        guard let key = ledToggleStorageKey(for: settings.selectedNowPlayingSkinID) else {
             return true
         }
-        let key = "skin.kmgcccCassette.showLEDMeter"
         if UserDefaults.standard.object(forKey: key) == nil {
             return true
         }
         return UserDefaults.standard.bool(forKey: key)
+    }
+
+    private func ledToggleStorageKey(for skinID: String) -> String? {
+        switch skinID {
+        case ClassicLEDSkin.id:
+            return "skin.classicLED.showLEDMeter"
+        case "kmgccc.cassette":
+            return "skin.kmgcccCassette.showLEDMeter"
+        default:
+            return nil
+        }
     }
 }

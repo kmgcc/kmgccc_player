@@ -261,15 +261,6 @@
                     || expected.words[expected.words.length - 1].endTime === got.words[got.words.length - 1].endTime;
                 const ok = startOk && endOk && wordCountOk && firstWordStartOk && lastWordEndOk;
 
-                if (ok) {
-                    console.log(
-                        `[LyricsRenderer][x-bg][assert] #${i} PASS start=${got.startTime} end=${got.endTime} words=${got.words.length}`
-                    );
-                } else {
-                    console.error(
-                        `[LyricsRenderer][x-bg][assert] #${i} FAIL expected=${JSON.stringify(expected)} parsed=${JSON.stringify(got)}`
-                    );
-                }
             }
         };
 

@@ -63,8 +63,9 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .safeAreaInset(edge: .top, spacing: 0) {
+        .overlay(alignment: .top) {
             headerView
+                .ignoresSafeArea(.container, edges: .top)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .frame(minWidth: 400)
@@ -233,8 +234,9 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         }
         .cornerAvoidingHorizontalPadding(GlassStyleTokens.headerHorizontalPadding)
         .frame(height: GlassStyleTokens.headerBarHeight)
-        .background(headerBackground)
-        .clipped()
+        .background(alignment: .top) {
+            headerBackground
+        }
     }
 
     private var sortMenu: some View {
@@ -322,6 +324,7 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             }
         }
         .scrollPosition(id: $listScrollPositionID, anchor: .top)
+        .scrollEdgeEffectStyle(.soft, for: .top)
         .onChange(of: listScrollPositionID) { _, _ in
             scheduleSnapshotUpdate()
         }
@@ -559,32 +562,47 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         }
     }
 
-    private var listTopPadding: CGFloat { 12 }
+    private var listTopPadding: CGFloat { GlassStyleTokens.headerBarHeight + 16 }
 
     private var listBottomPadding: CGFloat { 16 }
 
     private var headerBackground: some View {
         // Progressive Blur (Variable Blur)
-        // Uses an UltraThinMaterial layer masked by a gradient to fade the blur out.
-        // We use UltraThinMaterial for a more distinct blur effect.
+        // Uses a Material layer masked by a gradient to fade the blur out from top to bottom.
+        // Important: .allowsHitTesting(false) ensures this layer is click-through.
         ZStack(alignment: .top) {
             Rectangle()
-                .fill(.ultraThinMaterial)
+                .fill(.regularMaterial)
                 .mask {
                     LinearGradient(
                         stops: [
-                            .init(color: .black, location: 0.0),  // Full blur
-                            .init(color: .black, location: 0.2),  // Hold full blur briefly
-                            .init(color: .black.opacity(0.5), location: 0.6),  // Fade
-                            .init(color: .clear, location: 1.0),  // Gone
+                            .init(color: .black, location: 0.0),  // Full blur at window edge
+                            .init(color: .black, location: 0.75),  // Tight range: hold blur longer
+                            .init(color: .clear, location: 1.0),  // Final fade out
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                }
+
+            // Subtle theme-tinted scrim to enhance contrast
+            Rectangle()
+                .fill(
+                    Color(nsColor: .windowBackgroundColor).opacity(colorScheme == .dark ? 0.3 : 0.1)
+                )
+                .mask {
+                    LinearGradient(
+                        stops: [
+                            .init(color: .black, location: 0.0),
+                            .init(color: .clear, location: 1.0),
                         ],
                         startPoint: .top,
                         endPoint: .bottom
                     )
                 }
         }
+        .frame(height: GlassStyleTokens.headerBarHeight + 20)
         .allowsHitTesting(false)
-        .ignoresSafeArea()
     }
 
     private func clearSearchFocus() {

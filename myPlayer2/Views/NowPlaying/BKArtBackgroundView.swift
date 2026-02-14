@@ -258,7 +258,7 @@ private final class BKArtBackgroundLayerView: NSView {
     private var didPauseBackgroundTimerForTransition = false
     private var didPauseDotTimerForTransition = false
     private var deferredPaletteUpdate: ([NSColor], Bool)?
-    private let ultraDarkOverlayOpacity: Float = 0.40
+    private let ultraDarkOverlayOpacity: Float = 0.50
 
     // Style Selector State
     private var lastStyle: BackgroundStyle?
@@ -1365,64 +1365,74 @@ private final class BKArtBackgroundLayerView: NSView {
     private func makeTintedBackgroundVariants(from source: [CGImage]) -> [[CGImage]] {
         guard !source.isEmpty else { return [] }
         let variants = backgroundToneVariants()
-        let toneStops = variants.first ?? [BKArtBackgroundView.fallbackPalette[0]]
         let outputSpace = CGColorSpace(name: CGColorSpace.sRGB)
-        guard let mapImage = makeColorMapImage(colors: toneStops) else { return [source] }
-        let tuning = imageVariantTuning(for: toneStops)
-        let variantImages = source.compactMap { image in
-            let input = CIImage(cgImage: image)
-            let grayscale = input.applyingFilter(
-                "CIColorControls",
-                parameters: [
-                    kCIInputSaturationKey: 0.0,
-                    kCIInputContrastKey: 1.08,
-                    kCIInputBrightnessKey: 0.0,
-                ]
-            )
+        var output: [[CGImage]] = []
+        output.reserveCapacity(max(1, variants.count))
 
-            let mapped = grayscale.applyingFilter(
-                "CIColorMap",
-                parameters: ["inputGradientImage": mapImage]
-            )
-            let mappedSoftAlpha = mapped.applyingFilter(
-                "CIColorMatrix",
-                parameters: [
-                    "inputAVector": CIVector(x: 0, y: 0, z: 0, w: tuning.mapAlpha)
-                ]
-            )
-            let desaturatedOriginal = input.applyingFilter(
-                "CIColorControls",
-                parameters: [
-                    kCIInputSaturationKey: tuning.originalSaturation,
-                    kCIInputContrastKey: 1.10,
-                    kCIInputBrightnessKey: 0.0,
-                ]
-            )
-            var composed = mappedSoftAlpha.applyingFilter(
-                "CISourceOverCompositing",
-                parameters: [kCIInputBackgroundImageKey: desaturatedOriginal]
-            )
-            if abs(tuning.composedSaturationBoost - 1.0) > 0.01 {
-                composed = composed.applyingFilter(
+        for (variantIndex, toneStops) in variants.enumerated() {
+            guard let mapImage = makeColorMapImage(colors: toneStops) else { continue }
+            let tuning = imageVariantTuning(for: toneStops)
+            let variantImages = source.compactMap { image in
+                let input = CIImage(cgImage: image)
+                let grayscale = input.applyingFilter(
                     "CIColorControls",
                     parameters: [
-                        kCIInputSaturationKey: tuning.composedSaturationBoost,
-                        kCIInputContrastKey: 1.02,
+                        kCIInputSaturationKey: 0.0,
+                        kCIInputContrastKey: 1.08,
                         kCIInputBrightnessKey: 0.0,
                     ]
                 )
-            }
-            let finalImage = toneMap(image: composed, isDark: harmonized.isDark)
 
-            let outSpace = outputSpace ?? CGColorSpaceCreateDeviceRGB()
-            return ciContext.createCGImage(
-                finalImage,
-                from: input.extent,
-                format: .RGBA8,
-                colorSpace: outSpace
+                let mapped = grayscale.applyingFilter(
+                    "CIColorMap",
+                    parameters: ["inputGradientImage": mapImage]
+                )
+                let mappedSoftAlpha = mapped.applyingFilter(
+                    "CIColorMatrix",
+                    parameters: [
+                        "inputAVector": CIVector(x: 0, y: 0, z: 0, w: tuning.mapAlpha)
+                    ]
+                )
+                let desaturatedOriginal = input.applyingFilter(
+                    "CIColorControls",
+                    parameters: [
+                        kCIInputSaturationKey: tuning.originalSaturation,
+                        kCIInputContrastKey: 1.10,
+                        kCIInputBrightnessKey: 0.0,
+                    ]
+                )
+                var composed = mappedSoftAlpha.applyingFilter(
+                    "CISourceOverCompositing",
+                    parameters: [kCIInputBackgroundImageKey: desaturatedOriginal]
+                )
+                if abs(tuning.composedSaturationBoost - 1.0) > 0.01 {
+                    composed = composed.applyingFilter(
+                        "CIColorControls",
+                        parameters: [
+                            kCIInputSaturationKey: tuning.composedSaturationBoost,
+                            kCIInputContrastKey: 1.02,
+                            kCIInputBrightnessKey: 0.0,
+                        ]
+                    )
+                }
+                let finalImage = toneMap(image: composed, isDark: harmonized.isDark)
+
+                let outSpace = outputSpace ?? CGColorSpaceCreateDeviceRGB()
+                return ciContext.createCGImage(
+                    finalImage,
+                    from: input.extent,
+                    format: .RGBA8,
+                    colorSpace: outSpace
+                )
+            }
+            if !variantImages.isEmpty {
+                output.append(variantImages)
+            }
+            print(
+                "[BKArtBackground] imageVariant#\(variantIndex) avgS=\(String(format: "%.3f", tuning.avgS)) hueSpread=\(String(format: "%.1f", tuning.hueSpread)) rich=\(String(format: "%.3f", tuning.richScore)) mapAlpha=\(String(format: "%.3f", tuning.mapAlpha)) origSat=\(String(format: "%.3f", tuning.originalSaturation)) boost=\(String(format: "%.3f", tuning.composedSaturationBoost))"
             )
         }
-        return variantImages.isEmpty ? [source] : [variantImages]
+        return output.isEmpty ? [source] : output
     }
 
     private func toneMap(image: CIImage, isDark: Bool) -> CIImage {
@@ -1471,9 +1481,18 @@ private final class BKArtBackgroundLayerView: NSView {
                 (avgS - 0.12) / 0.38 * 0.6 + (hueSpread / 90) * 0.4
             )
         )
-        let mapAlpha = lerp(0.62, 0.82, t: richScore)
-        let originalSaturation = lerp(0.18, 0.34, t: richScore)
-        let composedBoost = lerp(0.96, 1.12, t: richScore)
+        let coverAvgS = harmonized.coverAvgS
+        let lowSatLift = harmonized.isGrayscaleCover
+            ? 0
+            : max(0, min(1, (0.26 - max(avgS, coverAvgS)) / 0.18))
+        let mapAlpha = max(0.68, min(0.90, lerp(0.70, 0.86, t: richScore) + lowSatLift * 0.04))
+        let originalSaturation = max(
+            harmonized.isGrayscaleCover ? 0.02 : 0.08,
+            min(0.30, lerp(0.10, 0.24, t: richScore) - lowSatLift * 0.06)
+        )
+        let composedBoost: CGFloat = harmonized.isGrayscaleCover
+            ? lerp(0.90, 1.00, t: richScore)
+            : max(1.02, min(1.18, lerp(1.02, 1.14, t: richScore) + lowSatLift * 0.06))
 
         return ImageVariantTuning(
             avgS: avgS,
@@ -1512,9 +1531,26 @@ private final class BKArtBackgroundLayerView: NSView {
         var b: CGFloat = 0
         var a: CGFloat = 0
         rgb.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
-        let minS: CGFloat = harmonized.isDark
-            ? max(0.10, min(0.28, harmonized.fgSRange.lowerBound - 0.10))
-            : 0.18
+        let coverAvgS = harmonized.coverAvgS
+        let isUltraDesatCover =
+            harmonized.isGrayscaleCover
+            || (harmonized.grayScore >= 0.82 && coverAvgS < 0.08)
+        let minS: CGFloat
+        if harmonized.isDark {
+            if isUltraDesatCover {
+                minS = 0.04
+            } else {
+                let adaptive = max(0.14, min(0.34, 0.16 + coverAvgS * 0.85))
+                minS = max(adaptive, min(0.32, harmonized.bgSRange.lowerBound + 0.04))
+            }
+        } else {
+            if isUltraDesatCover {
+                minS = 0.03
+            } else {
+                let adaptive = max(0.16, min(0.32, 0.18 + coverAvgS * 0.70))
+                minS = max(adaptive, min(0.32, harmonized.bgSRange.lowerBound + 0.03))
+            }
+        }
         let minB: CGFloat = harmonized.isDark ? 0.10 : 0.22
         let clampedS = max(minS, min(1.0, s))
         let clampedB = max(minB, min(1.0, b))
