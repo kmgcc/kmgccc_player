@@ -15,12 +15,11 @@ struct KmgcccPlayerApp: App {
 
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
-            Track.self,
-            Playlist.self,
+            TrackIndexEntry.self
         ])
         let modelConfiguration = ModelConfiguration(
             schema: schema,
-            isStoredInMemoryOnly: false
+            url: TrackIndexStorePaths.storeURL
         )
 
         do {

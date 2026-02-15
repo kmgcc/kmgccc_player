@@ -6,7 +6,6 @@
 //  Embedded in TrackEditSheet for searching and applying lyrics.
 //
 
-import SwiftData
 import SwiftUI
 
 /// LDDC lyrics search section with Liquid Glass styling.

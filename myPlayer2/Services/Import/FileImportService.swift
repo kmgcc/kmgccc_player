@@ -9,12 +9,52 @@
 
 import AVFoundation
 import AppKit
+import Combine
+import CoreServices
 import Foundation
+import SwiftUI
+import UniformTypeIdentifiers
+
+// MARK: - Shared Types
+
+struct ImportPreview {
+    let title: String
+    let artist: String
+    let album: String
+    let duration: Double
+    let lyrics: String?
+    let artworkData: Data?
+}
+
+struct TrackPreview {
+    let title: String
+    let artist: String
+    let artworkData: Data?
+}
+
+struct DuplicatePairRow: Identifiable {
+    let id: String
+    let fileURL: URL
+    let incoming: ImportPreview
+    let existing: TrackPreview?
+    let existingCount: Int
+    let dedupKey: String
+}
+
+enum ArtworkExtractor {
+    // Removed
+}
+
+// MARK: - Service
 
 /// Service for importing audio files into a playlist.
 /// Supports mp3, m4a, aac, alac, flac, wav.
 @MainActor
 final class FileImportService: FileImportServiceProtocol {
+    private struct ImportCandidate {
+        let fileURL: URL
+        let metadata: ImportPreview
+    }
 
     // MARK: - Supported Types
 
@@ -126,35 +166,99 @@ final class FileImportService: FileImportServiceProtocol {
 
         print("📁 Found \(filesToImport.count) audio files to import to '\(playlist.name)'")
 
-        // Import each file
-        var importedTracks: [Track] = []
-        var skippedCount = 0
+        // Preflight by normalized title + artist (runtime dedup set semantics).
+        let libraryTracks = await repository.fetchTracks(in: nil)
+        let existingByDedupKey = Dictionary(grouping: libraryTracks) {
+            LibraryNormalization.normalizedDedupKey(title: $0.title, artist: $0.artist)
+        }
+
+        var uniqueCandidates: [ImportCandidate] = []
+        var duplicateRows: [DuplicatePairRow] = []
 
         for fileURL in filesToImport {
-            // Check if already exists in library
-            let exists = await repository.trackExists(filePath: fileURL.path)
-            if exists {
-                skippedCount += 1
-                continue
-            }
-
-            // De-dup by song identity (exact title + exact artist).
-            let metadata = await extractMetadata(from: fileURL)
-            let duplicateSong = await repository.trackExists(
-                title: metadata.title,
-                artist: metadata.artist
+            let raw = await extractMetadata(from: fileURL)
+            // Optimization: Do NOT load artwork here. Pass nil.
+            let preview = ImportPreview(
+                title: raw.title,
+                artist: raw.artist,
+                album: raw.album,
+                duration: raw.duration,
+                lyrics: raw.lyrics,
+                artworkData: nil  // Async load later
             )
-            if duplicateSong {
-                print(
-                    "⏭️ Skip duplicate song: '\(metadata.title)' - '\(metadata.artist)'"
-                )
-                skippedCount += 1
-                continue
-            }
+            let candidate = ImportCandidate(
+                fileURL: fileURL,
+                metadata: preview
+            )
 
-            // Import the file (bookmark creation now happens while we have access)
-            if let track = await importFile(url: fileURL, metadata: metadata) {
-                print("📀 Created Track: '\(track.title)'")
+            let dedupKey = LibraryNormalization.normalizedDedupKey(
+                title: preview.title,
+                artist: preview.artist
+            )
+            let matches = existingByDedupKey[dedupKey] ?? []
+            if matches.isEmpty {
+                uniqueCandidates.append(candidate)
+            } else {
+                let first = matches.first
+                duplicateRows.append(
+                    DuplicatePairRow(
+                        id: fileURL.path,
+                        fileURL: fileURL,
+                        incoming: preview,
+                        existing: first.map {
+                            TrackPreview(
+                                title: $0.title,
+                                artist: $0.artist,
+                                artworkData: $0.artworkData
+                            )
+                        },
+                        existingCount: matches.count,
+                        dedupKey: dedupKey
+                    )
+                )
+            }
+        }
+
+        var selectedDuplicates: [ImportCandidate] = []
+        if !duplicateRows.isEmpty {
+            print("🔍 Found \(duplicateRows.count) duplicates, presenting dialog...")
+            if let selectedRows = presentDuplicateSelectionDialog(duplicateRows) {
+                print("✅ Dialog confirmed. Selected duplicates to import: \(selectedRows.count)")
+                let selectedIDSet = Set(selectedRows.map(\.id))
+                selectedDuplicates = duplicateRows.compactMap { row in
+                    guard selectedIDSet.contains(row.id) else { return nil }
+                    return ImportCandidate(fileURL: row.fileURL, metadata: row.incoming)
+                }
+            } else {
+                print("📥 User cancelled import via duplicate dialog (result was nil)")
+                return 0
+            }
+        }
+
+        // Logic Verification Logs
+        print("--------------------------------------------------")
+        print("📊 Import Logic Verification:")
+        print("   Unique Candidates : \(uniqueCandidates.count)")
+        print("   Duplicate Rows    : \(duplicateRows.count)")
+        print("   Selected Dups     : \(selectedDuplicates.count)")
+
+        let finalCandidates = uniqueCandidates + selectedDuplicates
+        print("   -> FINAL Candidates: \(finalCandidates.count)")
+        print("--------------------------------------------------")
+
+        var importedTracks: [Track] = []
+        for candidate in finalCandidates {
+            if let track = await importFile(
+                url: candidate.fileURL,
+                metadata: (
+                    title: candidate.metadata.title,
+                    artist: candidate.metadata.artist,
+                    album: candidate.metadata.album,
+                    duration: candidate.metadata.duration,
+                    lyrics: candidate.metadata.lyrics
+                ),
+                preloadedArtworkData: candidate.metadata.artworkData  // This will be nil, triggering extraction
+            ) {
                 await repository.addTrack(track)
                 importedTracks.append(track)
             }
@@ -166,7 +270,7 @@ final class FileImportService: FileImportServiceProtocol {
             await repository.addTracks(importedTracks, to: playlist)
         }
 
-        print("✅ Import complete: \(importedTracks.count) imported, \(skippedCount) skipped")
+        print("✅ Import complete: \(importedTracks.count) imported")
         return importedTracks.count
     }
 
@@ -176,10 +280,15 @@ final class FileImportService: FileImportServiceProtocol {
     /// ASSUMES: Parent caller has already started accessing security-scoped resource.
     private func importFile(
         url: URL,
-        metadata: (title: String, artist: String, album: String, duration: Double, lyrics: String?)
+        metadata: (title: String, artist: String, album: String, duration: Double, lyrics: String?),
+        preloadedArtworkData: Data?
     ) async -> Track? {
-        // Extract artwork
-        let artworkData = await extractArtwork(from: url)
+        let artworkData: Data?
+        if let preloaded = preloadedArtworkData {
+            artworkData = preloaded
+        } else {
+            artworkData = await Self.extractArtwork(from: url)
+        }
 
         let trackId = UUID()
 
@@ -287,6 +396,35 @@ final class FileImportService: FileImportServiceProtocol {
             }
         }
 
+        // 4. Fallback: Try Spotlight Metadata (MDItem) if AVAsset failed
+        // This handles cases where file has atypical tags or is only recognized by system indexers
+        if title == nil || artist == nil {
+            if let mdItem = MDItemCreateWithURL(kCFAllocatorDefault, url as CFURL) {
+                // Title
+                if title == nil {
+                    if let mdTitle = MDItemCopyAttribute(mdItem, kMDItemTitle) as? String {
+                        title = mdTitle
+                    }
+                }
+
+                // Artist (Authors)
+                if artist == nil {
+                    if let mdAuthors = MDItemCopyAttribute(mdItem, kMDItemAuthors) as? [String],
+                        let firstAuthor = mdAuthors.first
+                    {
+                        artist = firstAuthor
+                    }
+                }
+
+                // Album
+                if album == nil {
+                    if let mdAlbum = MDItemCopyAttribute(mdItem, kMDItemAlbum) as? String {
+                        album = mdAlbum
+                    }
+                }
+            }
+        }
+
         // Apply defaults
         let finalTitle = title ?? url.deletingPathExtension().lastPathComponent
         let finalArtist = artist ?? NSLocalizedString("library.unknown_artist", comment: "")
@@ -296,7 +434,7 @@ final class FileImportService: FileImportServiceProtocol {
     }
 
     /// Extract artwork from audio file.
-    private func extractArtwork(from url: URL) async -> Data? {
+    nonisolated static func extractArtwork(from url: URL) async -> Data? {
         let asset = AVURLAsset(url: url)
 
         // Collect all metadata items
@@ -318,6 +456,8 @@ final class FileImportService: FileImportServiceProtocol {
 
         return nil
     }
+
+    /// Recursively find audio files in a directory.
 
     /// Recursively find audio files in a directory.
     private func findAudioFiles(in directory: URL) -> [URL] {
@@ -347,5 +487,401 @@ final class FileImportService: FileImportServiceProtocol {
     private func isAudioFile(_ url: URL) -> Bool {
         let ext = url.pathExtension.lowercased()
         return Self.supportedExtensions.contains(ext)
+    }
+
+    @MainActor
+    private func presentDuplicateSelectionDialog(_ duplicateRows: [DuplicatePairRow])
+        -> [DuplicatePairRow]?
+    {
+        return DuplicateImportDialogPresenter.present(
+            rows: duplicateRows
+        )
+    }
+}
+
+// MARK: - Presenter & UI Components
+
+final class DuplicateImportDialogPresenter: NSObject, NSWindowDelegate {
+    private var result: [DuplicatePairRow]?
+    private let panel: NSPanel
+
+    init(panel: NSPanel) {
+        self.panel = panel
+        super.init()
+    }
+
+    @MainActor
+    static func present(
+        rows: [DuplicatePairRow]
+    ) -> [DuplicatePairRow]? {
+        // Height Calculation Strategy (Compact Mode):
+        // Header: 20 (top) + 24 (title) + 4 (gap) + 14 (subtitle) + 8 (gap) + 16 (columns) + 12 (bottom) ≈ 98
+        // Footer: 20 (top) + 28 (button) + 20 (bottom) ≈ 68
+        // Row: 56 (height) + 4 (spacing) = 60
+
+        // Compact Layout Constants
+        let headerHeight: CGFloat = 98
+        let footerHeight: CGFloat = 68
+        let rowHeight: CGFloat = 48
+        let rowSpacing: CGFloat = 0
+
+        // Dynamic Height Logic:
+        // Rows take 48pt each.
+        // List padding: 12 (top) + 12 (bottom) = 24
+        // Chrome: 98 (header) + 68 (footer) = 166
+
+        let chromeHeight = headerHeight + footerHeight
+        let listPadding: CGFloat = 24
+        let visibleRows = CGFloat(rows.count)
+        let contentHeight = (visibleRows * rowHeight) + listPadding
+
+        let idealHeight = chromeHeight + contentHeight
+
+        // Clamp to Reasonable Limits
+        // Max: 680 (Trigger scroll if content exceeds this)
+        // Min: Chrome + Padding + 1 Row ~= 166 + 24 + 48 = 238
+        let clampedHeight = min(680, max(240, idealHeight))
+
+        // Width: 760 (Balanced)
+        let windowSize = NSSize(width: 760, height: clampedHeight)
+
+        // Create Panel
+        let panel = NSPanel(
+            contentRect: NSRect(origin: .zero, size: windowSize),
+            styleMask: [.titled, .closable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+
+        panel.title = ""
+        panel.titlebarAppearsTransparent = true
+        panel.titleVisibility = .hidden
+        panel.isMovableByWindowBackground = true
+        panel.isReleasedWhenClosed = false
+
+        // Visual Effect (Neutral Liquid Glass)
+        let visualEffect = NSVisualEffectView()
+        visualEffect.material = .popover
+        visualEffect.blendingMode = .behindWindow
+        visualEffect.state = .active
+        panel.contentView = visualEffect
+
+        let presenter = DuplicateImportDialogPresenter(panel: panel)
+        panel.delegate = presenter
+
+        // Setup View Model & View
+        let viewModel = DuplicateImportDialogViewModel(rows: rows)
+
+        let customAction: (Bool) -> Void = { shouldImport in
+            if shouldImport {
+                presenter.result = viewModel.selectedRows
+            } else {
+                presenter.result = nil
+            }
+            NSApp.stopModal()
+            panel.close()
+        }
+
+        let rootView = DuplicateImportDialogView(viewModel: viewModel, onFinish: customAction)
+            .environmentObject(ThemeStore.shared)
+
+        let hostingView = NSHostingView(rootView: rootView)
+        hostingView.autoresizingMask = [.width, .height]
+        hostingView.frame = NSRect(origin: .zero, size: windowSize)
+        hostingView.layer?.backgroundColor = NSColor.clear.cgColor
+
+        visualEffect.addSubview(hostingView)
+        panel.center()
+
+        NSApp.runModal(for: panel)
+        panel.orderOut(nil)
+
+        // Directly return the result.
+        // If result is nil, it means user Cancelled.
+        // If result is [], it means user Confirmed but selected nothing (which is valid).
+        return presenter.result
+    }
+
+    // MARK: - NSWindowDelegate
+
+    func windowWillClose(_ notification: Notification) {
+        NSApp.stopModal()
+    }
+}
+
+@MainActor
+final class DuplicateImportDialogViewModel: ObservableObject {
+    let rows: [DuplicatePairRow]
+
+    @Published var selectedIDs: Set<String>
+
+    init(rows: [DuplicatePairRow]) {
+        self.rows = rows
+        self.selectedIDs = []
+    }
+
+    func toggleSelection(_ id: String) {
+        if selectedIDs.contains(id) {
+            selectedIDs.remove(id)
+        } else {
+            selectedIDs.insert(id)
+        }
+    }
+
+    var buttonTitle: String {
+        if selectedIDs.isEmpty {
+            return "忽略重复项导入"
+        } else {
+            return "导入所选重复项"
+        }
+    }
+
+    var selectedRows: [DuplicatePairRow] {
+        rows.filter { selectedIDs.contains($0.id) }
+    }
+}
+
+struct DuplicateImportDialogView: View {
+    @ObservedObject var viewModel: DuplicateImportDialogViewModel
+    let onFinish: (Bool) -> Void
+    @EnvironmentObject var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+
+    // LAYOUT CONSTANTS (Width: 760)
+    // Padding: 20 -> Header Top moved up slightly
+    // Left: 306 (~43%) | Spacing: 12 | Right: 394 (~55%)
+    private let leftColumnWidth: CGFloat = 306
+    private let rightColumnWidth: CGFloat = 394
+    private let horizontalPadding: CGFloat = 24
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // MARK: Header
+            VStack(alignment: .leading, spacing: 10) {
+                // Title & Subtitle Group
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("发现重复歌曲")
+                        .font(.title3.bold())
+                        .foregroundStyle(.primary)
+                    Text("点击右侧条目选择是否重复导入")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                // Alignment Grid
+                HStack(spacing: 12) {
+                    Text("资料库中已存在")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: leftColumnWidth, alignment: .leading)
+
+                    Divider()
+                        .frame(height: 12)
+                        .overlay(Color.secondary.opacity(0.3))  // Softer divider
+
+                    Text("本次待导入")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: rightColumnWidth, alignment: .leading)
+                }
+            }
+            .padding(.horizontal, horizontalPadding)
+            .padding(.top, 20)  // Reduced top padding
+            .padding(.bottom, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.thinMaterial)
+            .overlay(alignment: .bottom) {
+                Divider().opacity(0.5)
+            }
+            .zIndex(1)
+
+            // MARK: List
+            ScrollView {
+                LazyVStack(spacing: 0) {  // Zero spacing between rows
+                    Color.clear.frame(height: 12)
+
+                    ForEach(viewModel.rows) { row in
+                        DuplicateRowView(
+                            row: row,
+                            isSelected: viewModel.selectedIDs.contains(row.id),
+                            leftWidth: leftColumnWidth,
+                            rightWidth: rightColumnWidth,
+                            themeAccent: themeStore.accentColor
+                        )
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                viewModel.toggleSelection(row.id)
+                            }
+                        }
+                    }
+
+                    Color.clear.frame(height: 12)
+                }
+                .padding(.horizontal, horizontalPadding)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            // MARK: Footer
+            HStack {
+                Button("取消") {
+                    onFinish(false)
+                }
+                .keyboardShortcut(.cancelAction)
+                .controlSize(.large)
+
+                Spacer()
+
+                Button(viewModel.buttonTitle) {
+                    onFinish(true)
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .tint(themeStore.accentColor)
+            }
+            .padding(.vertical, 20)
+            .padding(.horizontal, horizontalPadding)
+            .background(.thinMaterial)
+            .overlay(alignment: .top) {
+                Divider().opacity(0.5)
+            }
+        }
+        .task {
+            print("🎬 Duplicate Dialog Appeared. Total rows: \(viewModel.rows.count)")
+        }
+    }
+}
+
+struct DuplicateRowView: View {
+    let row: DuplicatePairRow
+    let isSelected: Bool
+    let leftWidth: CGFloat
+    let rightWidth: CGFloat
+    let themeAccent: Color
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        HStack(spacing: 8) {  // Tighter horizontal spacing
+            // Left Column (Existing)
+            columnView(
+                title: row.existing?.title ?? "未知标题",
+                artist: row.existing?.artist ?? "未知艺术家",
+                artworkData: row.existing?.artworkData,
+                badge: "库中",
+                isIncoming: false,
+                isSelected: false,
+                width: leftWidth
+            )
+
+            Divider()
+                .frame(height: 32)  // Shorter divider for compact row
+                .overlay(Color.secondary.opacity(0.1))
+
+            // Right Column (Incoming)
+            columnView(
+                title: row.incoming.title,
+                artist: row.incoming.artist,
+                artworkData: nil,
+                badge: isSelected ? "导入" : "跳过",
+                isIncoming: true,
+                isSelected: isSelected,
+                width: rightWidth
+            )
+        }
+        .frame(height: 48)  // Ultra Compact Row Height
+    }
+
+    private func columnView(
+        title: String,
+        artist: String,
+        artworkData: Data?,
+        badge: String,
+        isIncoming: Bool,
+        isSelected: Bool,
+        width: CGFloat
+    ) -> some View {
+        HStack(spacing: 12) {
+            // Artwork
+            if isIncoming {
+                // Simplified static icon for incoming files (Stable & Fast)
+                Image(systemName: "music.note")
+                    .font(.system(size: 18))
+                    .foregroundStyle(themeAccent)
+                    .frame(width: 36, height: 36)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(themeAccent.opacity(0.08))
+                    )
+            } else if let data = artworkData, let nsImage = NSImage(data: data) {
+                Image(nsImage: nsImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 36, height: 36)  // Compact artwork
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))  // Larger radius
+                    .shadow(color: .black.opacity(0.1), radius: 2, x: 0, y: 1)
+            } else {
+                Image(systemName: "music.note")
+                    .font(.system(size: 18))
+                    .foregroundStyle(.secondary.opacity(0.4))
+                    .frame(width: 36, height: 36)
+                    .background(Color.secondary.opacity(0.05))
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+
+            // Metadata
+            VStack(alignment: .leading, spacing: 1) {  // Tighter vertical text spacing
+                HStack {
+                    Text(title)
+                        .font(.body)  // Default size covers 13pt
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+
+                    Spacer(minLength: 4)
+
+                    if isSelected || !isIncoming {
+                        Text(badge)
+                            .font(.system(size: 9, weight: .semibold))  // Smaller badge text
+                            .foregroundStyle(isSelected ? themeAccent : .secondary)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1.5)
+                            .background(
+                                Capsule()
+                                    .fill(
+                                        isSelected
+                                            ? themeAccent.opacity(0.15)
+                                            : Color.primary.opacity(0.05))
+                            )
+                    }
+                }
+
+                Text(artist)
+                    .font(.caption)  // Smaller artist text
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.horizontal, 10)  // Slightly reduced internal padding
+        .padding(.vertical, 6)  // Tighter vertical padding
+        .frame(width: width, alignment: .leading)
+        .background {
+            // Background Logic
+            if isIncoming {
+                if isSelected {
+                    // Stronger highlight for selection
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(themeAccent.opacity(colorScheme == .dark ? 0.22 : 0.12))
+                } else {
+                    // Subtle background for incoming candidates
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.primary.opacity(0.03))
+                }
+            } else {
+                // Simple transparent for existing, or very subtle
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.primary.opacity(0.01))
+            }
+        }
     }
 }

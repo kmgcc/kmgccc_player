@@ -151,19 +151,19 @@ struct SidebarView: View {
                 // Artists Section
                 Section {
                     if isArtistsExpanded {
-                        ForEach(libraryVM.uniqueArtists, id: \.self) { artist in
+                        ForEach(libraryVM.runtimeArtists) { artist in
                             Button {
-                                handleSelection(.artist(artist))
+                                handleSelection(.artist(artist.key))
                             } label: {
                                 HStack {
-                                    Text(artist)
+                                    Text(artist.name)
                                     Spacer()
                                 }
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 6)
                                 .background(
                                     selectionFill(
-                                        isSelected: currentSelection == .artist(artist))
+                                        isSelected: currentSelection == .artist(artist.key))
                                 )
                                 .contentShape(Rectangle())
                             }
@@ -200,19 +200,19 @@ struct SidebarView: View {
                 // Albums Section
                 Section {
                     if isAlbumsExpanded {
-                        ForEach(libraryVM.uniqueAlbums, id: \.self) { album in
+                        ForEach(libraryVM.runtimeAlbums) { album in
                             Button {
-                                handleSelection(.album(album))
+                                handleSelection(.album(album.key))
                             } label: {
                                 HStack {
-                                    Text(album)
+                                    Text(album.name)
                                     Spacer()
                                 }
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 6)
                                 .background(
                                     selectionFill(
-                                        isSelected: currentSelection == .album(album))
+                                        isSelected: currentSelection == .album(album.key))
                                 )
                                 .contentShape(Rectangle())
                             }
@@ -360,10 +360,14 @@ struct SidebarView: View {
             if let playlist = libraryVM.playlists.first(where: { $0.id == id }) {
                 libraryVM.selectPlaylist(playlist)
             }
-        case .artist(let name):
-            libraryVM.selectArtist(name)
-        case .album(let name):
-            libraryVM.selectAlbum(name)
+        case .artist(let key):
+            if let section = libraryVM.runtimeArtists.first(where: { $0.key == key }) {
+                libraryVM.selectArtist(section)
+            }
+        case .album(let key):
+            if let section = libraryVM.runtimeAlbums.first(where: { $0.key == key }) {
+                libraryVM.selectAlbum(section)
+            }
         }
         uiState.showLibrary()
     }
@@ -371,10 +375,10 @@ struct SidebarView: View {
     private var currentSelection: SidebarSelection {
         if let id = libraryVM.selectedPlaylistId {
             return .playlist(id)
-        } else if let artist = libraryVM.selectedArtist {
-            return .artist(artist)
-        } else if let album = libraryVM.selectedAlbum {
-            return .album(album)
+        } else if let artistKey = libraryVM.selectedArtistKey {
+            return .artist(artistKey)
+        } else if let albumKey = libraryVM.selectedAlbumKey {
+            return .album(albumKey)
         }
         return .allSongs
     }
