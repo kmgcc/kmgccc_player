@@ -6,17 +6,15 @@
 //  Edit track title, artist, album, artwork, and lyrics.
 //
 
-import SwiftData
 import SwiftUI
 import UniformTypeIdentifiers
 
 /// Sheet for editing track metadata.
-/// Does NOT write back to audio file - only updates SwiftData model.
 struct TrackEditSheet: View {
 
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.modelContext) private var modelContext
     @Environment(\.openURL) private var openURL
+    @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(LyricsViewModel.self) private var lyricsVM
     @EnvironmentObject private var themeStore: ThemeStore
@@ -286,8 +284,8 @@ struct TrackEditSheet: View {
                 track.ttmlLyricText = ttml
                 track.lyricsText = nil
 
-                do {
-                    try modelContext.save()
+                Task {
+                    await libraryVM.saveTrackEdits(track)
                     print("[TrackEditSheet] Applied LDDC lyrics for: \(track.title)")
                     if playerVM.currentTrack?.id == track.id {
                         lyricsVM.ensureAMLLLoaded(
@@ -298,8 +296,6 @@ struct TrackEditSheet: View {
                             forceLyricsReload: true
                         )
                     }
-                } catch {
-                    print("[TrackEditSheet] Failed to save LDDC lyrics: \(error)")
                 }
             }
         }
@@ -369,9 +365,8 @@ struct TrackEditSheet: View {
         track.artworkData = artworkData
         track.lyricsTimeOffsetMs = lyricsTimeOffsetMs
 
-        do {
-            try modelContext.save()
-            LocalLibraryService.shared.writeSidecar(for: track)
+        Task {
+            await libraryVM.saveTrackEdits(track)
             print("[TrackEditSheet] Saved changes for: \(track.title)")
             if playerVM.currentTrack?.id == track.id {
                 lyricsVM.ensureAMLLLoaded(
@@ -382,8 +377,6 @@ struct TrackEditSheet: View {
                     forceLyricsReload: true
                 )
             }
-        } catch {
-            print("[TrackEditSheet] Failed to save: \(error)")
         }
     }
 

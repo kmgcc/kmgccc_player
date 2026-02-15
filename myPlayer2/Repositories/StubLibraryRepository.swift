@@ -24,6 +24,10 @@ final class StubLibraryRepository: LibraryRepositoryProtocol {
         setupFakeData()
     }
 
+    func reloadFromLibrary() async {
+        // No-op for stub
+    }
+
     // MARK: - Track Operations
 
     func fetchTracks(in playlist: Playlist?) async -> [Track] {
@@ -59,6 +63,13 @@ final class StubLibraryRepository: LibraryRepositoryProtocol {
 
     func trackExists(title: String, artist: String) async -> Bool {
         allTracks.contains { $0.title == title && $0.artist == artist }
+    }
+
+    func dedupMatchCount(title: String, artist: String) async -> Int {
+        allTracks.filter {
+            LibraryNormalization.normalizedDedupKey(title: $0.title, artist: $0.artist)
+                == LibraryNormalization.normalizedDedupKey(title: title, artist: artist)
+        }.count
     }
 
     // MARK: - Playlist Operations
@@ -106,6 +117,47 @@ final class StubLibraryRepository: LibraryRepositoryProtocol {
     func fetchUniqueAlbums() async -> [String] {
         let albums = Set(allTracks.map { $0.album }.filter { !$0.isEmpty })
         return Array(albums).sorted()
+    }
+
+    func fetchArtistSections() async -> [ArtistSection] {
+        Dictionary(grouping: allTracks, by: { LibraryNormalization.normalizeArtist($0.artist) })
+            .map { key, tracks in
+                ArtistSection(
+                    key: key,
+                    name: LibraryNormalization.displayArtist(tracks.first?.artist),
+                    trackCount: tracks.count
+                )
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    func fetchAlbumSections() async -> [AlbumSection] {
+        Dictionary(
+            grouping: allTracks,
+            by: { LibraryNormalization.normalizedAlbumKey(album: $0.album, artist: $0.artist) }
+        )
+        .map { key, tracks in
+            AlbumSection(
+                key: key,
+                name: LibraryNormalization.displayAlbum(tracks.first?.album),
+                artistName: LibraryNormalization.displayArtist(tracks.first?.artist),
+                trackCount: tracks.count
+            )
+        }
+        .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    func fetchPlaylistItemAddedAtMap() async -> [UUID: [UUID: Date]] {
+        Dictionary(uniqueKeysWithValues: playlists.map { playlist in
+            (
+                playlist.id,
+                Dictionary(uniqueKeysWithValues: playlist.tracks.map { ($0.id, $0.addedAt) })
+            )
+        })
+    }
+
+    func clearIndexCacheAndRebuild() async {
+        // No-op for stub
     }
 
     func save() async {

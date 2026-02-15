@@ -14,6 +14,7 @@ import SwiftUI
 struct SettingsView: View {
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(LEDMeterService.self) private var ledMeter
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(LyricsViewModel.self) private var lyricsVM
@@ -71,6 +72,7 @@ struct SettingsView: View {
     @State private var aboutEasterEggTracker = AboutEasterEggTapTracker()
     @State private var showEasterEggImage: Bool = false
     @State private var showResetDataAlert: Bool = false
+    @State private var showClearIndexCacheAlert: Bool = false
 
     private var fontFamilies: [String] {
         NSFontManager.shared.availableFontFamilies.sorted()
@@ -181,6 +183,16 @@ struct SettingsView: View {
             }
         } message: {
             Text("会重置应用设置与界面状态，不会修改音乐资料库内容。")
+        }
+        .alert("清除索引缓存？", isPresented: $showClearIndexCacheAlert) {
+            Button("取消", role: .cancel) {}
+            Button("清除", role: .destructive) {
+                Task {
+                    await libraryVM.clearIndexCacheAndRebuild()
+                }
+            }
+        } message: {
+            Text("将清空索引缓存并立即重新扫描音乐资料库，不会删除音频、meta.json 或播放列表。")
         }
     }
 
@@ -993,10 +1005,17 @@ struct SettingsView: View {
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
 
-                    Button("初始化应用数据（保留音乐资料库）", role: .destructive) {
-                        showResetDataAlert = true
+                    HStack(spacing: 10) {
+                        Button("初始化应用数据（保留音乐资料库）", role: .destructive) {
+                            showResetDataAlert = true
+                        }
+                        .buttonStyle(.borderedProminent)
+
+                        Button("清除索引缓存") {
+                            showClearIndexCacheAlert = true
+                        }
+                        .buttonStyle(.bordered)
                     }
-                    .buttonStyle(.borderedProminent)
                 }
                 .padding(12)
             }

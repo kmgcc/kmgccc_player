@@ -6,7 +6,6 @@
 //
 
 import AppKit
-import SwiftData
 import SwiftUI
 import UniformTypeIdentifiers
 import WebKit
@@ -21,9 +20,9 @@ struct BatchTrackEditSheet: View {
     }
 
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.modelContext) private var modelContext
     @Environment(\.openURL) private var openURL
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(LyricsViewModel.self) private var lyricsVM
     @Environment(UIStateViewModel.self) private var uiState
@@ -650,25 +649,11 @@ struct BatchTrackEditSheet: View {
             track.ttmlLyricText = nil
         }
 
-        do {
-            try modelContext.save()
-            LocalLibraryService.shared.writeSidecar(for: track)
-            markTrackCompleted(track: track, edited: true)
-            statusMessage = "已保存：\(track.title)"
-            syncAMLLPreview(reason: reason, forceLyricsReload: true)
-            return true
-        } catch {
-            var state = processStateByTrackID[track.id] ?? ProcessState()
-            state.edited = true
-            state.saved = false
-            state.saveError = error.localizedDescription
-            processStateByTrackID[track.id] = state
-
-            if showFailureMessage {
-                statusMessage = "保存失败：\(error.localizedDescription)"
-            }
-            return false
-        }
+        Task { await libraryVM.saveTrackEdits(track) }
+        markTrackCompleted(track: track, edited: true)
+        statusMessage = "已保存：\(track.title)"
+        syncAMLLPreview(reason: reason, forceLyricsReload: true)
+        return true
     }
 
     private func markTrackCompleted(track: Track, edited: Bool) {

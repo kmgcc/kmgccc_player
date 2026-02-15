@@ -12,6 +12,8 @@ import Foundation
 /// Implemented by SwiftDataLibraryRepository for persistence.
 @MainActor
 protocol LibraryRepositoryProtocol: AnyObject {
+    /// Reload repository state from authoritative Music Library on disk.
+    func reloadFromLibrary() async
 
     // MARK: - Track Operations
 
@@ -39,6 +41,9 @@ protocol LibraryRepositoryProtocol: AnyObject {
 
     /// Check if a track with the same title and artist already exists.
     func trackExists(title: String, artist: String) async -> Bool
+
+    /// Number of tracks matching normalized title+artist dedup key.
+    func dedupMatchCount(title: String, artist: String) async -> Int
 
     // MARK: - Playlist Operations
 
@@ -72,6 +77,18 @@ protocol LibraryRepositoryProtocol: AnyObject {
 
     /// Fetch all unique album names.
     func fetchUniqueAlbums() async -> [String]
+
+    /// Runtime-only artist sections (derived on each load).
+    func fetchArtistSections() async -> [ArtistSection]
+
+    /// Runtime-only album sections (derived on each load).
+    func fetchAlbumSections() async -> [AlbumSection]
+
+    /// Per-playlist track added-at map: [playlistID: [trackID: addedAt]].
+    func fetchPlaylistItemAddedAtMap() async -> [UUID: [UUID: Date]]
+
+    /// Clear index cache and rebuild runtime/index state from Music Library.
+    func clearIndexCacheAndRebuild() async
 
     // MARK: - Persistence
 
