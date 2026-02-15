@@ -5,15 +5,12 @@
 //  kmgccc_player - Playlist Detail View
 //  Displays tracks in a playlist or all songs.
 //
-//  Uses @Query for automatic SwiftData refresh (方案 A).
 //  Import button is HERE (per-playlist), NOT in main toolbar.
 //
 
-import SwiftData
 import SwiftUI
 
 /// View displaying tracks in the selected playlist or all songs.
-/// Uses @Query for automatic data refresh when tracks are added.
 struct PlaylistDetailView<HeaderAccessory: View>: View {
 
     private struct BatchEditRequest: Identifiable {
@@ -27,10 +24,6 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private let headerAccessory: HeaderAccessory
-
-    /// Query all tracks (sorted by addedAt, newest first).
-    /// This automatically updates when SwiftData changes.
-    @Query(sort: \Track.addedAt, order: .reverse) private var allTracks: [Track]
 
     // MARK: - State
 
@@ -63,7 +56,11 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
 
     var body: some View {
         Group {
-            if displayedTracksCache.isEmpty {
+            if libraryVM.state == .loading {
+                ProgressView()
+                    .controlSize(.large)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if displayedTracksCache.isEmpty {
                 emptyStateView
             } else if filteredTracksCache.isEmpty {
                 noResultsView
@@ -110,13 +107,13 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             updateLibrarySnapshot()
             playerVM.updateQueueTracks(parentSortedTracksCache)
         }
-        .onChange(of: libraryVM.selectedArtist) { _, _ in
+        .onChange(of: libraryVM.selectedArtistKey) { _, _ in
             rebuildTrackCaches(reason: "artist")
             restoreScrollIfNeeded()
             updateLibrarySnapshot()
             playerVM.updateQueueTracks(parentSortedTracksCache)
         }
-        .onChange(of: libraryVM.selectedAlbum) { _, _ in
+        .onChange(of: libraryVM.selectedAlbumKey) { _, _ in
             rebuildTrackCaches(reason: "album")
             restoreScrollIfNeeded()
             updateLibrarySnapshot()
@@ -139,7 +136,7 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             updateLibrarySnapshot()
             playerVM.updateQueueTracks(parentSortedTracksCache)
         }
-        .onChange(of: allTracks.count) { _, _ in
+        .onChange(of: libraryVM.totalTrackCount) { _, _ in
             rebuildTrackCaches(reason: "trackCount")
             restoreScrollIfNeeded()
             updateLibrarySnapshot()
@@ -718,12 +715,18 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         let displayedTracks: [Track] = {
             if let playlist = libraryVM.selectedPlaylist {
                 return playlist.tracks.filter { $0.availability != .missing }
-            } else if let artist = libraryVM.selectedArtist {
-                return allTracks.filter { $0.artist == artist && $0.availability != .missing }
-            } else if let album = libraryVM.selectedAlbum {
-                return allTracks.filter { $0.album == album && $0.availability != .missing }
+            } else if let artistKey = libraryVM.selectedArtistKey {
+                return libraryVM.allTracks.filter {
+                    LibraryNormalization.normalizeArtist($0.artist) == artistKey
+                        && $0.availability != .missing
+                }
+            } else if let albumKey = libraryVM.selectedAlbumKey {
+                return libraryVM.allTracks.filter {
+                    LibraryNormalization.normalizedAlbumKey(album: $0.album, artist: $0.artist)
+                        == albumKey && $0.availability != .missing
+                }
             }
-            return allTracks.filter { $0.availability != .missing }
+            return libraryVM.allTracks.filter { $0.availability != .missing }
         }()
 
         let trimmedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -812,9 +815,7 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
 // MARK: - Preview
 
 #Preview("Playlist Detail") { @MainActor in
-    let container = try! ModelContainer(
-        for: Track.self, Playlist.self, configurations: .init(isStoredInMemoryOnly: true))
-    let repository = SwiftDataLibraryRepository(modelContext: container.mainContext)
+    let repository = StubLibraryRepository()
     let libraryVM = LibraryViewModel(repository: repository)
     let playbackService = StubAudioPlaybackService()
     let levelMeter = StubAudioLevelMeter()
@@ -824,7 +825,6 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         .environment(libraryVM)
         .environment(playerVM)
         .environmentObject(ThemeStore.shared)
-        .modelContainer(container)
         .frame(width: 500, height: 400)
         .task {
             await libraryVM.load()

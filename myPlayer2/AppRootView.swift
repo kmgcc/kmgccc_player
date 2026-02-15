@@ -243,6 +243,6 @@ private struct ThemeTrackObserver: View {
 
 #Preview("App Root") {
     AppRootView()
-        .modelContainer(for: [Track.self, Playlist.self], inMemory: true)
+        .modelContainer(for: [TrackIndexEntry.self], inMemory: true)
         .frame(width: 1200, height: 800)
 }

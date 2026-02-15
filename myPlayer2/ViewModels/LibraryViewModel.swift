@@ -5,8 +5,7 @@
 //  kmgccc_player - Library ViewModel
 //  Manages playlists for the UI.
 //
-//  NOTE: Track display is handled by @Query in PlaylistDetailView.
-//  This ViewModel only manages playlist selection and import triggering.
+//  Tracks/sections are loaded from Music Library (disk truth), then kept in memory.
 //
 
 import Foundation
@@ -53,66 +52,82 @@ enum TrackSortOrder: String, CaseIterable, Identifiable {
     }
 }
 
+enum LibraryLoadState {
+    case loading
+    case loaded
+}
+
 /// Observable ViewModel for library content.
 /// Manages playlists and selected playlist state.
-/// Tracks are displayed via @Query in PlaylistDetailView (方案 A).
 @Observable
 @MainActor
 final class LibraryViewModel {
 
     // MARK: - Published State
 
+    /// Data loading state.
+    var state: LibraryLoadState = .loading
+
     /// All playlists in the library.
     private(set) var playlists: [Playlist] = []
 
-    /// Unique artists in the library.
-    private(set) var uniqueArtists: [String] = []
+    /// Runtime-only artists derived from disk scan.
+    private(set) var runtimeArtists: [ArtistSection] = []
 
-    /// Unique albums in the library.
-    private(set) var uniqueAlbums: [String] = []
+    /// Runtime-only albums derived from disk scan.
+    private(set) var runtimeAlbums: [AlbumSection] = []
+
+    /// All tracks loaded from Music Library (in-memory snapshot).
+    private(set) var allTracks: [Track] = []
+    private(set) var playlistItemAddedAtMap: [UUID: [UUID: Date]] = [:]
 
     /// Currently selected playlist (nil = All Songs, unless artist/album selected).
     /// Published so UI can react to changes.
     var selectedPlaylistId: UUID? {
         didSet {
             if selectedPlaylistId != nil {
-                selectedArtist = nil
-                selectedAlbum = nil
+                selectedArtistKey = nil
+                selectedAlbumKey = nil
+                selectedAlbumName = nil
                 applySortPreferenceForCurrentSelection()
-            } else if selectedArtist == nil && selectedAlbum == nil {
+            } else if selectedArtistKey == nil && selectedAlbumKey == nil {
                 // Only apply sort if we reverted to All Songs (no other selection active)
                 applySortPreferenceForCurrentSelection()
             }
         }
     }
 
-    /// Currently selected artist.
-    var selectedArtist: String? {
+    /// Currently selected artist key (normalized).
+    var selectedArtistKey: String? {
         didSet {
-            if selectedArtist != nil {
+            if selectedArtistKey != nil {
                 selectedPlaylistId = nil
-                selectedAlbum = nil
+                selectedAlbumKey = nil
+                selectedAlbumName = nil
             }
         }
     }
 
-    /// Currently selected album.
-    var selectedAlbum: String? {
+    /// Currently selected album key (normalized album + artist).
+    var selectedAlbumKey: String? {
         didSet {
-            if selectedAlbum != nil {
+            if selectedAlbumKey != nil {
                 selectedPlaylistId = nil
-                selectedArtist = nil
+                selectedArtistKey = nil
             }
         }
     }
+
+    /// Selected album display name for header.
+    var selectedAlbumName: String?
 
     /// Whether data is loading.
-    private(set) var isLoading: Bool = false
+    var isLoading: Bool { state == .loading }
 
     /// Total track count in library (for display).
     private(set) var totalTrackCount: Int = 0
 
-    /// Trigger for UI refresh (increment to force @Query update).
+    /// Trigger for UI refresh.
     private(set) var refreshTrigger: Int = 0
 
     /// Trigger to reset search text and focus in the UI (incremented on sidebar selection).
@@ -138,7 +153,6 @@ final class LibraryViewModel {
 
     private let repository: LibraryRepositoryProtocol
     private var importService: FileImportServiceProtocol?
-    private let libraryService: LocalLibraryService
     private var isApplyingSortPreference = false
 
     private struct SortPreference: Codable {
@@ -148,9 +162,8 @@ final class LibraryViewModel {
 
     // MARK: - Initialization
 
-    init(repository: LibraryRepositoryProtocol, libraryService: LocalLibraryService? = nil) {
+    init(repository: LibraryRepositoryProtocol, libraryService _: LocalLibraryService? = nil) {
         self.repository = repository
-        self.libraryService = libraryService ?? LocalLibraryService.shared
         self.trackSortKey =
             TrackSortKey(
                 rawValue: UserDefaults.standard.string(
@@ -192,18 +205,21 @@ final class LibraryViewModel {
     /// Load all library data.
     func load() async {
         print("📚 load() called")
-        isLoading = true
-        defer { isLoading = false }
+        state = .loading
 
-        await libraryService.bootstrapIfNeeded(repository: repository)
+        await repository.reloadFromLibrary()
         playlists = await repository.fetchPlaylists()
-        totalTrackCount = await repository.totalTrackCount()
-        uniqueArtists = await repository.fetchUniqueArtists()
-        uniqueAlbums = await repository.fetchUniqueAlbums()
+        allTracks = await repository.fetchTracks(in: nil)
+        playlistItemAddedAtMap = await repository.fetchPlaylistItemAddedAtMap()
+        totalTrackCount = allTracks.count
+        runtimeArtists = await repository.fetchArtistSections()
+        runtimeAlbums = await repository.fetchAlbumSections()
 
         print(
-            "📚 Loaded \(playlists.count) playlists, \(totalTrackCount) total tracks, \(uniqueArtists.count) artists, \(uniqueAlbums.count) albums"
+            "📚 Loaded \(playlists.count) playlists, \(totalTrackCount) total tracks, \(runtimeArtists.count) artists, \(runtimeAlbums.count) albums"
         )
+
+        state = .loaded
     }
 
     /// Refresh all data and trigger UI update.
@@ -306,8 +322,9 @@ final class LibraryViewModel {
     func selectPlaylist(_ playlist: Playlist?) {
         searchResetTrigger += 1
         selectedPlaylistId = playlist?.id
-        selectedArtist = nil
-        selectedAlbum = nil
+        selectedArtistKey = nil
+        selectedAlbumKey = nil
+        selectedAlbumName = nil
         if let id = playlist?.id {
             UserDefaults.standard.set(id.uuidString, forKey: "lastSelectedPlaylistId")
         }
@@ -315,22 +332,23 @@ final class LibraryViewModel {
     }
 
     /// Select an artist.
-    func selectArtist(_ artist: String) {
+    func selectArtist(_ artist: ArtistSection) {
         searchResetTrigger += 1
-        selectedArtist = artist
+        selectedArtistKey = artist.key
         // selectedPlaylistId handled by didSet
     }
 
     /// Select an album.
-    func selectAlbum(_ album: String) {
+    func selectAlbum(_ album: AlbumSection) {
         searchResetTrigger += 1
-        selectedAlbum = album
+        selectedAlbumKey = album.key
+        selectedAlbumName = album.name
         // selectedPlaylistId handled by didSet
     }
 
     func renamePlaylist(_ playlist: Playlist, name: String) async {
         await repository.renamePlaylist(playlist, name: name)
-        playlists = await repository.fetchPlaylists()
+        await refresh()
     }
 
     func deletePlaylist(_ playlist: Playlist) async {
@@ -338,25 +356,24 @@ final class LibraryViewModel {
         if selectedPlaylistId == playlist.id {
             selectedPlaylistId = nil
         }
-        playlists = await repository.fetchPlaylists()
+        await refresh()
     }
 
     func addTracksToPlaylist(_ tracks: [Track], playlist: Playlist) async {
         await repository.addTracks(tracks, to: playlist)
-        // Refresh handled by caller or automatic if needed
+        await refresh()
     }
 
     func removeTracksFromPlaylist(_ tracks: [Track], playlist: Playlist) async {
         await repository.removeTracks(tracks, from: playlist)
-        refreshTrigger += 1
+        await refresh()
     }
 
     // MARK: - Track Operations
 
     func deleteTrack(_ track: Track) async {
         await repository.deleteTrack(track)
-        totalTrackCount = await repository.totalTrackCount()
-        refreshTrigger += 1
+        await refresh()
     }
 
     /// Update track availability after bookmark resolution.
@@ -368,6 +385,17 @@ final class LibraryViewModel {
             track.fileBookmarkData = newBookmark
         }
         await repository.updateTrack(track)
+        await refresh()
+    }
+
+    func saveTrackEdits(_ track: Track) async {
+        await repository.updateTrack(track)
+        await refresh()
+    }
+
+    func clearIndexCacheAndRebuild() async {
+        await repository.clearIndexCacheAndRebuild()
+        await refresh()
     }
 
     // MARK: - Display Helpers
@@ -376,10 +404,11 @@ final class LibraryViewModel {
     var currentTitle: String {
         if let playlist = selectedPlaylist {
             return playlist.name
-        } else if let artist = selectedArtist {
-            return artist
-        } else if let album = selectedAlbum {
-            return album
+        } else if let artistKey = selectedArtistKey {
+            return runtimeArtists.first(where: { $0.key == artistKey })?.name
+                ?? LibraryNormalization.unknownArtist
+        } else if let albumName = selectedAlbumName {
+            return albumName
         }
         return NSLocalizedString("library.all_songs", comment: "")
     }
@@ -419,10 +448,10 @@ final class LibraryViewModel {
     private var sortContextKey: String {
         if let id = selectedPlaylistId {
             return id.uuidString
-        } else if let artist = selectedArtist {
-            return "ARTIST_\(artist)"
-        } else if let album = selectedAlbum {
-            return "ALBUM_\(album)"
+        } else if let artistKey = selectedArtistKey {
+            return "ARTIST_\(artistKey)"
+        } else if let albumKey = selectedAlbumKey {
+            return "ALBUM_\(albumKey)"
         }
         return "__all_songs__"
     }
@@ -493,7 +522,19 @@ final class LibraryViewModel {
                 rhs.importedAt ?? rhs.addedAt
             )
         case .addedAt:
-            result = compareDates(lhs.addedAt, rhs.addedAt)
+            if let playlistID = selectedPlaylistId {
+                let left =
+                    playlistItemAddedAtMap[playlistID]?[lhs.id]
+                    ?? lhs.importedAt
+                    ?? lhs.addedAt
+                let right =
+                    playlistItemAddedAtMap[playlistID]?[rhs.id]
+                    ?? rhs.importedAt
+                    ?? rhs.addedAt
+                result = compareDates(left, right)
+            } else {
+                result = compareDates(lhs.addedAt, rhs.addedAt)
+            }
         case .title:
             result = lhs.title.localizedCaseInsensitiveCompare(rhs.title)
         case .artist:
@@ -516,11 +557,6 @@ final class LibraryViewModel {
     }
 
     private func compareDates(_ lhs: Date, _ rhs: Date) -> ComparisonResult {
-        if lhs == rhs { return .orderedSame }
-        return lhs < rhs ? .orderedAscending : .orderedDescending
-    }
-
-    private func compareInts(_ lhs: Int, _ rhs: Int) -> ComparisonResult {
         if lhs == rhs { return .orderedSame }
         return lhs < rhs ? .orderedAscending : .orderedDescending
     }

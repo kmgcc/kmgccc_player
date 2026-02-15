@@ -33,7 +33,76 @@ struct PlaylistSidecar: Codable {
     let id: UUID
     let name: String
     let createdAt: Date
-    let trackIds: [UUID]
+    let items: [PlaylistItemSidecar]
+    let legacyTrackIDs: [UUID]?
+
+    var trackIDs: [UUID] {
+        if schemaVersion >= 2 {
+            return items.map(\.trackID)
+        }
+        return legacyTrackIDs ?? []
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case id
+        case name
+        case createdAt
+        case items
+        case trackIDs
+        case trackIds
+    }
+
+    init(
+        schemaVersion: Int = 2,
+        id: UUID,
+        name: String,
+        createdAt: Date,
+        items: [PlaylistItemSidecar]
+    ) {
+        self.schemaVersion = schemaVersion
+        self.id = id
+        self.name = name
+        self.createdAt = createdAt
+        self.items = items
+        self.legacyTrackIDs = nil
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let version = try c.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+
+        id = try c.decode(UUID.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        schemaVersion = version
+
+        if version >= 2 {
+            items = try c.decodeIfPresent([PlaylistItemSidecar].self, forKey: .items) ?? []
+            legacyTrackIDs = nil
+        } else {
+            let ids =
+                try c.decodeIfPresent([UUID].self, forKey: .trackIDs)
+                ?? c.decodeIfPresent([UUID].self, forKey: .trackIds)
+                ?? []
+            items = []
+            legacyTrackIDs = ids
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(2, forKey: .schemaVersion)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encode(createdAt, forKey: .createdAt)
+        try c.encode(items, forKey: .items)
+    }
+}
+
+struct PlaylistItemSidecar: Codable {
+    let trackID: UUID
+    let addedAt: Date
 }
 
 @MainActor
@@ -235,14 +304,19 @@ final class LocalLibraryService {
 
     // MARK: - Playlist Sidecars
 
-    func writePlaylist(_ playlist: Playlist) {
+    func writePlaylist(_ playlist: Playlist, itemAddedAt: [UUID: Date]? = nil) {
         ensureLibraryFolders()
+        let items = playlist.tracks.map { track in
+            PlaylistItemSidecar(
+                trackID: track.id,
+                addedAt: itemAddedAt?[track.id] ?? Date()
+            )
+        }
         let sidecar = PlaylistSidecar(
-            schemaVersion: 1,
             id: playlist.id,
             name: playlist.name,
             createdAt: playlist.createdAt,
-            trackIds: playlist.tracks.map { $0.id }
+            items: items
         )
 
         do {
@@ -338,7 +412,7 @@ final class LocalLibraryService {
         // 2. Add New (On Disk, not in DB)
         for sidecar in diskSidecars where !dbIds.contains(sidecar.id) {
             print("📥 Found new playlist on disk: \(sidecar.name)")
-            let resolvedTracks = sidecar.trackIds.compactMap { tracksById[$0] }
+            let resolvedTracks = sidecar.trackIDs.compactMap { tracksById[$0] }
             let playlist = Playlist(
                 id: sidecar.id,
                 name: sidecar.name,
@@ -369,11 +443,11 @@ final class LocalLibraryService {
 
                 // Sync Tracks — compare as Sets (order-insensitive)
                 let dbTrackIdSet = Set(dbPlaylist.tracks.map { $0.id })
-                let diskTrackIdSet = Set(sidecar.trackIds)
+                let diskTrackIdSet = Set(sidecar.trackIDs)
 
                 if dbTrackIdSet != diskTrackIdSet {
                     print("🔄 Syncing tracks for playlist: \(sidecar.name)")
-                    let resolvedTracks = sidecar.trackIds.compactMap { tracksById[$0] }
+                    let resolvedTracks = sidecar.trackIDs.compactMap { tracksById[$0] }
                     dbPlaylist.tracks = resolvedTracks
                     needsSave = true
                 }
@@ -532,7 +606,7 @@ final class LocalLibraryService {
                 continue
             }
 
-            let tracks = sidecar.trackIds.compactMap { tracksById[$0] }
+            let tracks = sidecar.trackIDs.compactMap { tracksById[$0] }
             let playlist = Playlist(
                 id: sidecar.id,
                 name: sidecar.name,
