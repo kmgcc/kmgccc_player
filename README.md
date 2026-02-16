@@ -5,6 +5,7 @@
 > [!WARNING]
 > kmgccc_player 当前仍处于 **Beta 阶段**，可能存在 Bug、未完成特性或行为变动。  
 > 不建议在重要环境中作为唯一播放器使用，欢迎通过 Issue 或 Pull Request 反馈问题。
+> 代码使用 AI 生成，暂未人工检查，可能存在潜在问题。
 
 ## 特性
 - **Liquid Glass 风格**  

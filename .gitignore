@@ -54,3 +54,4 @@ LDDC_Fetch_Core/batch_split_and_convert.py
 Tools/lddc-server/
 .derivedDataLocalBuild/
 *.flac
+LIQUID_GLASS_SPEC.md
