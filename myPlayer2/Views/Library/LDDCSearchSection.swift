@@ -48,7 +48,7 @@ struct LDDCSearchSection: View {
 
     @State private var isApplying = false
     @State private var applyError: String?
-    @State private var stripExtraInfo = true
+    @State private var stripExtraInfo = false
 
     private let client = LDDCClient()
     private let panelMaxWidth: CGFloat = 380
