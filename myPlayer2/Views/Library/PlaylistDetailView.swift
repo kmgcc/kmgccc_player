@@ -515,6 +515,17 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
 
         } else {
             // SINGLE TRACK ACTIONS (Keep existing)
+
+            // Enter multiselect mode
+            Button {
+                isMultiselectMode = true
+                selectedTrackIDs.insert(track.id)
+            } label: {
+                Label("选择歌曲…", systemImage: "checkmark.circle")
+            }
+
+            Divider()
+
             // Play
             Button {
                 let startIndex = parentSortedTrackIndexMapCache[track.id] ?? 0
