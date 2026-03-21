@@ -16,6 +16,7 @@
 "sidebar.appearance_system" = "外观：跟随系统";
 "sidebar.artists" = "歌手";
 "sidebar.albums" = "专辑";
+"sidebar.fullscreen" = "全屏播放";
 
 // MARK: - Settings General
 "settings.title" = "设置";
@@ -216,3 +217,6 @@
 "alert.play_pause" = "播放/暂停";
 "alert.next" = "下一首";
 "alert.previous" = "上一首";
+
+// MARK: - Fullscreen
+"fullscreen.exit" = "退出全屏";

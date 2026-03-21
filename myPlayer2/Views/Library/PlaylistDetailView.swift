@@ -521,7 +521,7 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
                 isMultiselectMode = true
                 selectedTrackIDs.insert(track.id)
             } label: {
-                Label("选择歌曲…", systemImage: "checkmark.circle")
+                Label("多选歌曲…", systemImage: "checkmark.circle")
             }
 
             Divider()
@@ -584,7 +584,7 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             Button {
                 trackToEdit = track
             } label: {
-                Label("显示简介", systemImage: "info.circle")
+                Label("编辑歌曲信息", systemImage: "info.circle")
             }
 
             Divider()
