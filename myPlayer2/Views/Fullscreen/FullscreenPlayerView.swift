@@ -419,6 +419,8 @@ struct FullscreenPlayerView: View {
             "alignPosition": fullscreenLyricsAlignPosition,
             "lineHeight": 1.8,
             "activeScale": 1.2,
+            "leadInMs": 180,
+            "nearSwitchGapMs": 120,
         ]
 
         if let data = try? JSONSerialization.data(withJSONObject: config),

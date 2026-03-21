@@ -78,6 +78,18 @@
         .amll-lyric-player.fs-color-dodge [class*="_lyricLine_"] {
             color: var(--amll-fs-main-inactive, var(--amll-inactive, rgba(130, 130, 130, 1))) !important;
         }
+        .amll-lyric-player.fs-color-dodge.fs-line-timing-only [class*="_lyricLine_"] {
+            /* Enable color transition for line-timing mode */
+            transition: color 0.15s ease-out !important;
+        }
+        .amll-lyric-player.fs-color-dodge.fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] {
+            /* Delay active state switch to midpoint of line animation (~180ms) */
+            transition-delay: 0.18s !important;
+        }
+        .amll-lyric-player.fs-color-dodge.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) {
+            /* When line becomes inactive, delay blur transition until highlight fades */
+            transition: color 0.15s ease-out, filter 0.15s ease-out 0.35s !important;
+        }
         .amll-lyric-player.fs-color-dodge [class*="_lyricLine_"][class*="_active_"] {
             color: var(--amll-fs-main-active, var(--amll-active, rgba(210, 210, 210, 1))) !important;
         }
@@ -572,32 +584,43 @@
 	                    continue;
 	                }
 
-	                if (timeMs < retreatStart) {
-	                    mainElement.style.opacity = "";
-	                    continue;
-	                }
+                if (timeMs < retreatStart) {
+                    mainElement.style.opacity = "";
+                    continue;
+                }
 
-	                const retreatDuration = Math.max(1, retreatEnd - retreatStart);
-	                if (!Number.isFinite(meta.actualRetreatStart) || !Number.isFinite(meta.actualRetreatEnd)) {
-	                    meta.actualRetreatStart = timeMs;
-	                    meta.actualRetreatEnd = timeMs + retreatDuration;
-	                }
+                const retreatDuration = Math.max(1, retreatEnd - retreatStart);
+                // For line-timing-only fullscreen mode, delay opacity fade until highlight transition completes
+                const isFullscreenLineTiming = lineTimingOnlyMode && lyricPlayer.getElement()?.classList.contains("fs-color-dodge");
+                const fadeDelayMs = isFullscreenLineTiming ? 350 : 0; // Wait for highlight fade (180ms delay + 150ms fade)
+                const adjustedTimeMs = timeMs - retreatStart > fadeDelayMs ? timeMs - fadeDelayMs : retreatStart;
+                
+                if (!Number.isFinite(meta.actualRetreatStart) || !Number.isFinite(meta.actualRetreatEnd)) {
+                    meta.actualRetreatStart = adjustedTimeMs;
+                    meta.actualRetreatEnd = adjustedTimeMs + retreatDuration;
+                }
 
-	                const actualRetreatStart = meta.actualRetreatStart;
-	                const actualRetreatEnd = meta.actualRetreatEnd;
+                const actualRetreatStart = meta.actualRetreatStart;
+                const actualRetreatEnd = meta.actualRetreatEnd;
 
-	                if (timeMs >= actualRetreatEnd) {
-	                    if (typeof obj?.setMaskAnimationState === "function") {
-	                        obj.setMaskAnimationState(maskTo);
-	                    }
-	                    mainElement.style.opacity = "";
-	                    if (timeMs > actualRetreatEnd + 150) {
-	                        nearSwitchRetreatMeta.delete(idx);
-	                    }
-	                    continue;
-	                }
+                if (timeMs >= actualRetreatEnd + fadeDelayMs) {
+                    if (typeof obj?.setMaskAnimationState === "function") {
+                        obj.setMaskAnimationState(maskTo);
+                    }
+                    mainElement.style.opacity = "";
+                    if (timeMs > actualRetreatEnd + 150 + fadeDelayMs) {
+                        nearSwitchRetreatMeta.delete(idx);
+                    }
+                    continue;
+                }
 
-	                const progress = Math.max(0, Math.min(1, (timeMs - actualRetreatStart) / (actualRetreatEnd - actualRetreatStart)));
+                // Skip opacity fade during delay period for fullscreen line-timing mode
+                if (isFullscreenLineTiming && (timeMs - retreatStart) < fadeDelayMs) {
+                    mainElement.style.opacity = "";
+                    continue;
+                }
+
+                const progress = Math.max(0, Math.min(1, (timeMs - actualRetreatStart) / (actualRetreatEnd - actualRetreatStart)));
 	                const virtualMaskTime = maskFrom + (maskTo - maskFrom) * progress;
 	                if (typeof obj?.setMaskAnimationState === "function") {
 	                    obj.setMaskAnimationState(virtualMaskTime);
