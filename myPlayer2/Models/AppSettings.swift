@@ -496,6 +496,171 @@ public final class AppSettings {
     @ObservationIgnored
     @AppStorage("stopAfterTrack") var stopAfterTrack: Bool = false
 
+    // MARK: - Fullscreen Player Settings
+
+    private enum FullscreenLyricsKeys {
+        static let fontNameZh = "fullscreenLyricsFontNameZh"
+        static let fontNameEn = "fullscreenLyricsFontNameEn"
+        static let translationFontName = "fullscreenLyricsTranslationFontName"
+        static let fontWeight = "fullscreenLyricsFontWeight"
+        static let translationFontWeight = "fullscreenLyricsTranslationFontWeight"
+        static let fontSize = "fullscreenLyricsFontSize"
+        static let translationFontSize = "fullscreenLyricsTranslationFontSize"
+    }
+
+    /// Fullscreen player artwork scale (0.8 to 1.5, default 1.15)
+    @ObservationIgnored
+    @AppStorage("fullscreenArtworkScale") var fullscreenArtworkScale: Double = 1.15
+
+    /// Fullscreen player lyrics font size multiplier (1.0 to 3.0, default 2.0)
+    @ObservationIgnored
+    @AppStorage("fullscreenLyricsFontScale") var fullscreenLyricsFontScale: Double = 2.0
+
+    /// Fullscreen player background dimming intensity (0.0 to 0.5, default 0.3 in dark, 0.15 in light)
+    @ObservationIgnored
+    @AppStorage("fullscreenDimmingIntensity") var fullscreenDimmingIntensity: Double = 0.25
+
+    /// Fullscreen player miniplayer bar height (40 to 80, default 60)
+    @ObservationIgnored
+    @AppStorage("fullscreenMiniplayerHeight") var fullscreenMiniplayerHeight: Double = 60
+
+    /// Fullscreen lyrics font name (Chinese/CJK).
+    /// Falls back to the main-window AMLL font until the user customizes fullscreen typography.
+    var fullscreenLyricsFontNameZh: String {
+        get {
+            access(keyPath: \.fullscreenLyricsFontNameZh)
+            return UserDefaults.standard.string(forKey: FullscreenLyricsKeys.fontNameZh)
+                ?? lyricsFontNameZh
+        }
+        set {
+            withMutation(keyPath: \.fullscreenLyricsFontNameZh) {
+                UserDefaults.standard.set(newValue, forKey: FullscreenLyricsKeys.fontNameZh)
+            }
+        }
+    }
+
+    /// Fullscreen lyrics font name (Latin/English).
+    var fullscreenLyricsFontNameEn: String {
+        get {
+            access(keyPath: \.fullscreenLyricsFontNameEn)
+            return UserDefaults.standard.string(forKey: FullscreenLyricsKeys.fontNameEn)
+                ?? lyricsFontNameEn
+        }
+        set {
+            withMutation(keyPath: \.fullscreenLyricsFontNameEn) {
+                UserDefaults.standard.set(newValue, forKey: FullscreenLyricsKeys.fontNameEn)
+            }
+        }
+    }
+
+    /// Fullscreen translation font name.
+    var fullscreenLyricsTranslationFontName: String {
+        get {
+            access(keyPath: \.fullscreenLyricsTranslationFontName)
+            return UserDefaults.standard.string(forKey: FullscreenLyricsKeys.translationFontName)
+                ?? lyricsTranslationFontName
+        }
+        set {
+            withMutation(keyPath: \.fullscreenLyricsTranslationFontName) {
+                UserDefaults.standard.set(
+                    newValue,
+                    forKey: FullscreenLyricsKeys.translationFontName
+                )
+            }
+        }
+    }
+
+    /// Fullscreen main lyrics font weight.
+    /// Falls back to the dark-mode main-window weight to preserve existing fullscreen behavior.
+    var fullscreenLyricsFontWeight: Int {
+        get {
+            access(keyPath: \.fullscreenLyricsFontWeight)
+            return (UserDefaults.standard.object(forKey: FullscreenLyricsKeys.fontWeight) as? NSNumber)?
+                .intValue ?? lyricsFontWeightDark
+        }
+        set {
+            withMutation(keyPath: \.fullscreenLyricsFontWeight) {
+                UserDefaults.standard.set(newValue, forKey: FullscreenLyricsKeys.fontWeight)
+            }
+        }
+    }
+
+    /// Fullscreen translation font weight.
+    var fullscreenLyricsTranslationFontWeight: Int {
+        get {
+            access(keyPath: \.fullscreenLyricsTranslationFontWeight)
+            return (UserDefaults.standard.object(
+                forKey: FullscreenLyricsKeys.translationFontWeight) as? NSNumber)?
+                .intValue ?? lyricsTranslationFontWeightDark
+        }
+        set {
+            withMutation(keyPath: \.fullscreenLyricsTranslationFontWeight) {
+                UserDefaults.standard.set(
+                    newValue,
+                    forKey: FullscreenLyricsKeys.translationFontWeight
+                )
+            }
+        }
+    }
+
+    /// Fullscreen main lyrics font size.
+    /// Falls back to the legacy main-size * fullscreen-scale behavior until customized.
+    var fullscreenLyricsFontSize: Double {
+        get {
+            access(keyPath: \.fullscreenLyricsFontSize)
+            return (UserDefaults.standard.object(forKey: FullscreenLyricsKeys.fontSize) as? NSNumber)?
+                .doubleValue ?? min(lyricsFontSize * fullscreenLyricsFontScale, 64.0)
+        }
+        set {
+            withMutation(keyPath: \.fullscreenLyricsFontSize) {
+                UserDefaults.standard.set(newValue, forKey: FullscreenLyricsKeys.fontSize)
+            }
+        }
+    }
+
+    /// Fullscreen translation lyrics font size.
+    var fullscreenLyricsTranslationFontSize: Double {
+        get {
+            access(keyPath: \.fullscreenLyricsTranslationFontSize)
+            return (UserDefaults.standard.object(
+                forKey: FullscreenLyricsKeys.translationFontSize) as? NSNumber)?
+                .doubleValue ?? min(lyricsTranslationFontSize * fullscreenLyricsFontScale * 0.9, 48.0)
+        }
+        set {
+            withMutation(keyPath: \.fullscreenLyricsTranslationFontSize) {
+                UserDefaults.standard.set(
+                    newValue,
+                    forKey: FullscreenLyricsKeys.translationFontSize
+                )
+            }
+        }
+    }
+
+    /// Removes fullscreen-only lyrics typography overrides and falls back to the inherited defaults.
+    func resetFullscreenLyricsTypographyOverrides() {
+        withMutation(keyPath: \.fullscreenLyricsFontNameZh) {
+            UserDefaults.standard.removeObject(forKey: FullscreenLyricsKeys.fontNameZh)
+        }
+        withMutation(keyPath: \.fullscreenLyricsFontNameEn) {
+            UserDefaults.standard.removeObject(forKey: FullscreenLyricsKeys.fontNameEn)
+        }
+        withMutation(keyPath: \.fullscreenLyricsTranslationFontName) {
+            UserDefaults.standard.removeObject(forKey: FullscreenLyricsKeys.translationFontName)
+        }
+        withMutation(keyPath: \.fullscreenLyricsFontWeight) {
+            UserDefaults.standard.removeObject(forKey: FullscreenLyricsKeys.fontWeight)
+        }
+        withMutation(keyPath: \.fullscreenLyricsTranslationFontWeight) {
+            UserDefaults.standard.removeObject(forKey: FullscreenLyricsKeys.translationFontWeight)
+        }
+        withMutation(keyPath: \.fullscreenLyricsFontSize) {
+            UserDefaults.standard.removeObject(forKey: FullscreenLyricsKeys.fontSize)
+        }
+        withMutation(keyPath: \.fullscreenLyricsTranslationFontSize) {
+            UserDefaults.standard.removeObject(forKey: FullscreenLyricsKeys.translationFontSize)
+        }
+    }
+
     // MARK: - Private Init
 
     private init() {

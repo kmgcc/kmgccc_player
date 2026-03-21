@@ -31,12 +31,15 @@ struct AppRootView: View {
     @State private var skinManager: SkinManager?
     @State private var easterEggSFX: EasterEggSFXService?
     @StateObject private var artBackgroundController = BKArtBackgroundController()
+    @StateObject private var fullscreenWindowManager = FullscreenWindowManager.shared
 
     var body: some View {
         Group {
             if let libraryVM, let playerVM, let lyricsVM, let ledMeter, let skinManager {
                 ZStack {
-                    if uiState.contentMode == .nowPlaying && settings.nowPlayingArtBackgroundEnabled
+                    if uiState.contentMode == .nowPlaying
+                        && settings.nowPlayingArtBackgroundEnabled
+                        && !fullscreenWindowManager.isFullscreenActive
                     {
                         BKArtBackgroundView(
                             controller: artBackgroundController,
@@ -73,6 +76,11 @@ struct AppRootView: View {
                 }
                 .onChange(of: settings.nowPlayingArtBackgroundEnabled) { _, enabled in
                     if enabled && uiState.contentMode == .nowPlaying {
+                        artBackgroundController.triggerTransition()
+                    }
+                }
+                .onChange(of: fullscreenWindowManager.isFullscreenActive) { _, isActive in
+                    if !isActive && uiState.contentMode == .nowPlaying && settings.nowPlayingArtBackgroundEnabled {
                         artBackgroundController.triggerTransition()
                     }
                 }
@@ -184,6 +192,15 @@ struct AppRootView: View {
         self.ledMeter = ledMeter
         skinManager = SkinManager()
         easterEggSFX = EasterEggSFXService()
+
+        // Configure fullscreen window manager with dependencies
+        FullscreenWindowManager.shared.configure(
+            playerVM: playerVM!,
+            lyricsVM: lyricsVM!,
+            ledMeter: ledMeter,
+            skinManager: skinManager!,
+            uiState: uiState
+        )
 
         libraryService.startMonitoring(repository: repository)
     }
