@@ -41,6 +41,9 @@ struct LyricsPanelView: View {
                 lyricsVM.setPlaying(newValue)
             }
             .onChange(of: playerVM.currentTrack?.id, handleTrackIdChange)
+            .onReceive(NotificationCenter.default.publisher(for: .playbackTrackDidChange)) { _ in
+                reloadLyricsSurface(reason: "playback track notification", forceLyricsReload: true)
+            }
             .onChange(of: themeStore.colorScheme) { _, _ in
                 // Theme mode switches must immediately re-push AMLL config,
                 // so light/dark dedicated font weights take effect without waiting for settings edits.

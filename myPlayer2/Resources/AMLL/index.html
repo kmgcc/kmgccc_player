@@ -23,6 +23,8 @@
         .amll-lyric-player {
             font-family: var(--amll-lp-main-font-family, -apple-system, "Helvetica Neue", sans-serif);
             font-weight: var(--amll-lp-main-font-weight, 600);
+            mix-blend-mode: var(--amll-lp-mix-blend-mode, plus-lighter) !important;
+            opacity: var(--amll-lp-mix-opacity, 1);
         }
         .amll-lyric-player.dom,
         .amll-lyric-player.dom-slim {
@@ -68,6 +70,61 @@
         }
         .amll-lyric-player [class*="_lyricBgLine_"][class*="_active_"] > * {
             transform: translateY(0);
+        }
+
+        .amll-lyric-player.fs-color-dodge {
+            mix-blend-mode: normal !important;
+        }
+        .amll-lyric-player.fs-color-dodge [class*="_lyricLine_"] {
+            color: var(--amll-fs-main-inactive, var(--amll-inactive, rgba(130, 130, 130, 1))) !important;
+        }
+        .amll-lyric-player.fs-color-dodge [class*="_lyricLine_"][class*="_active_"] {
+            color: var(--amll-fs-main-active, var(--amll-active, rgba(210, 210, 210, 1))) !important;
+        }
+        .amll-lyric-player.fs-color-dodge.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) {
+            color: var(--amll-fs-main-line-timing-inactive, var(--amll-fs-main-inactive, rgba(100, 100, 100, 1))) !important;
+        }
+        .amll-lyric-player.fs-color-dodge [class*="_lyricMainLine_"] {
+            color: inherit !important;
+            opacity: 1 !important;
+        }
+        .amll-lyric-player.fs-color-dodge [class*="_lyricMainLine_"],
+        .amll-lyric-player.fs-color-dodge [class*="_lyricMainLine_"] *,
+        .amll-lyric-player.fs-color-dodge [class*="_romanWord_"],
+        .amll-lyric-player.fs-color-dodge [class*="_emphasizeWrapper_"],
+        .amll-lyric-player.fs-color-dodge [class*="_emphasizeWrapper_"] *,
+        .amll-lyric-player.fs-color-dodge [class*="_emphasize_"],
+        .amll-lyric-player.fs-color-dodge [class*="_emphasize_"] *,
+        .amll-lyric-player.fs-color-dodge [class*="_interludeDots_"],
+        .amll-lyric-player.fs-color-dodge [class*="_interludeDots_"] > * {
+            mix-blend-mode: plus-lighter !important;
+        }
+        .amll-lyric-player.fs-color-dodge [class*="_lyricBgLine_"],
+        .amll-lyric-player.fs-color-dodge [class*="_lyricBgLine_"] > * {
+            mix-blend-mode: plus-lighter !important;
+        }
+        .amll-lyric-player.fs-color-dodge [class*="_lyricBgLine_"][class*="_active_"] {
+            opacity: 0.55 !important;
+        }
+        .amll-lyric-player.fs-color-dodge [class*="_lyricSubLine_"],
+        .amll-lyric-player.fs-color-dodge [class*="_lyricSubLine_"] * {
+            color: var(--amll-fs-sub-inactive, var(--amll-fs-main-inactive, rgba(105, 105, 105, 1))) !important;
+            opacity: 1 !important;
+            mix-blend-mode: screen !important;
+        }
+        .amll-lyric-player.fs-color-dodge.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) > [class*="_lyricSubLine_"],
+        .amll-lyric-player.fs-color-dodge.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) > [class*="_lyricSubLine_"] * {
+            color: var(--amll-fs-sub-line-timing-inactive, var(--amll-fs-sub-inactive, rgba(92, 92, 92, 1))) !important;
+            mix-blend-mode: screen !important;
+        }
+        .amll-lyric-player.fs-color-dodge [class*="_lyricLine_"][class*="_active_"] > [class*="_lyricSubLine_"],
+        .amll-lyric-player.fs-color-dodge [class*="_lyricLine_"][class*="_active_"] > [class*="_lyricSubLine_"] * {
+            color: var(--amll-fs-sub-active, var(--amll-fs-main-active, rgba(175, 175, 175, 1))) !important;
+            mix-blend-mode: screen !important;
+        }
+        .amll-lyric-player.fs-color-dodge [class*="_romanWord_"] {
+            color: inherit !important;
+            opacity: 1 !important;
         }
     </style>
 </head>
@@ -545,8 +602,8 @@
 	                if (typeof obj?.setMaskAnimationState === "function") {
 	                    obj.setMaskAnimationState(virtualMaskTime);
 	                }
-	                const fade = 1 - progress * 0.45;
-	                mainElement.style.opacity = `${Math.max(0.35, Math.min(1, fade))}`;
+	                const fade = 1 - progress * 0.55;
+	                mainElement.style.opacity = `${Math.max(0.18, Math.min(1, fade))}`;
 	            }
 	        };
 	        const normalizeMainLinesForLineTimingMode = (lines) => {
@@ -724,32 +781,35 @@
                     lyricPlayer.setLyricLines([]);
                     bgActiveIndexes = new Set();
                     lineTimingOnlyMode = false;
+                    lyricPlayer.isNonDynamic = false;
+                    lyricPlayer.getElement().classList.remove("fs-line-timing-only");
                     console.log("[LyricsRenderer] Cleared lyrics");
                     lastTTML = "";
                     return;
                 }
 	                try {
 		                    lastTTML = ttml;
-		                    const result = parseTTML(ttml);
-		                    const lines = result.lines.map(mapTTMLLyric);
-		                    lines.forEach(applyTimeOffset);
-		                    lineTimingOnlyMode = normalizeMainLinesForLineTimingMode(lines);
-		                    console.log(`[LyricsRenderer] lineTimingOnlyMode=${lineTimingOnlyMode}`);
-		                    try {
-		                        applyNearSwitchLeadIn(lines);
-		                    } catch (e) {
-		                        console.error("[LyricsRenderer] applyNearSwitchLeadIn error:", e);
-		                    }
+			                    const result = parseTTML(ttml);
+			                    const lines = result.lines.map(mapTTMLLyric);
+			                    lines.forEach(applyTimeOffset);
+			                    lineTimingOnlyMode = normalizeMainLinesForLineTimingMode(lines);
+			                    console.log(`[LyricsRenderer] lineTimingOnlyMode=${lineTimingOnlyMode}`);
+                                lyricPlayer.isNonDynamic = lineTimingOnlyMode === true;
+                                lyricPlayer.getElement().classList.toggle(
+                                    "fs-line-timing-only",
+                                    lineTimingOnlyMode === true
+                                );
+			                    try {
+			                        applyNearSwitchLeadIn(lines);
+			                    } catch (e) {
+			                        console.error("[LyricsRenderer] applyNearSwitchLeadIn error:", e);
+			                    }
 			                    const timingSnapshot = captureTimingSnapshot(lines);
 			                    // Preserve TTML intent (no mutation of duet/bg/ordering).
 			                    lyricPlayer.setLyricLines(lines);
-	                    if (lineTimingOnlyMode === true) {
-	                        // Force AMLL to use non-dynamic line opacity behavior for pure line-timing lyrics.
-	                        lyricPlayer.isNonDynamic = true;
-	                    }
-		                    const currentMs = Number.isFinite(lastKnownTimeMs)
-		                        ? lastKnownTimeMs
-		                        : (lyricPlayer.getCurrentTime ? lyricPlayer.getCurrentTime() : 0);
+			                    const currentMs = Number.isFinite(lastKnownTimeMs)
+			                        ? lastKnownTimeMs
+			                        : (lyricPlayer.getCurrentTime ? lyricPlayer.getCurrentTime() : 0);
 	                    // Undo core timing normalization so x-bg keeps original line/word timing.
 	                    restoreTimingSnapshot(timingSnapshot);
 	                    // Core may have already generated mask animations based on its normalized timing.
@@ -769,7 +829,13 @@
 		                    console.log("[LyricsRenderer] Loaded lines:", lines.length);
 		                } catch (e) {
                     console.error("[LyricsRenderer] TTML Parse Error:", e);
-                    // Optionally fallback to plain text parsing if you had that logic
+                    lyricPlayer.setLyricLines([]);
+                    bgActiveIndexes = new Set();
+                    lineTimingOnlyMode = false;
+                    lyricPlayer.isNonDynamic = false;
+                    lyricPlayer.getElement().classList.remove("fs-line-timing-only");
+                    lastTTML = "";
+                    console.log("[LyricsRenderer] Cleared lyrics due to parse error");
                 }
             },
             
@@ -832,6 +898,73 @@
 	                            "--amll-lp-translation-font-family",
 	                            config.fontFamilyTranslation
 	                        );
+	                    }
+                        const playerElement = lyricPlayer.getElement();
+                        const hasOwn = (key) => Object.prototype.hasOwnProperty.call(config, key);
+
+                        if (hasOwn("mixBlendMode")) {
+	                        if (typeof config.mixBlendMode === "string" && config.mixBlendMode.length > 0) {
+	                            document.documentElement.style.setProperty("--amll-lp-mix-blend-mode", config.mixBlendMode);
+	                            playerElement.style.setProperty("mix-blend-mode", config.mixBlendMode, "important");
+	                        } else {
+	                            document.documentElement.style.removeProperty("--amll-lp-mix-blend-mode");
+	                            playerElement.style.removeProperty("mix-blend-mode");
+	                        }
+                        }
+
+                        if (hasOwn("blendOpacity")) {
+	                        if (typeof config.blendOpacity === "number" && !Number.isNaN(config.blendOpacity)) {
+	                            const nextOpacity = Math.max(0, Math.min(1, config.blendOpacity));
+	                            document.documentElement.style.setProperty("--amll-lp-mix-opacity", `${nextOpacity}`);
+	                            playerElement.style.opacity = `${nextOpacity}`;
+	                        } else {
+	                            document.documentElement.style.removeProperty("--amll-lp-mix-opacity");
+	                            playerElement.style.removeProperty("opacity");
+	                        }
+                        }
+
+                        if (hasOwn("fullscreenLyricDodgeMode")) {
+                            const enableFullscreenLyricDodgeMode = config.fullscreenLyricDodgeMode === true;
+                            playerElement.classList.toggle("fs-color-dodge", enableFullscreenLyricDodgeMode);
+                            if (!enableFullscreenLyricDodgeMode) {
+                                playerElement.style.removeProperty("--amll-fs-main-active");
+                                playerElement.style.removeProperty("--amll-fs-main-inactive");
+                                playerElement.style.removeProperty("--amll-fs-sub-active");
+                                playerElement.style.removeProperty("--amll-fs-sub-inactive");
+                                playerElement.style.removeProperty("--amll-fs-main-line-timing-inactive");
+                                playerElement.style.removeProperty("--amll-fs-sub-line-timing-inactive");
+                                playerElement.classList.remove("fs-line-timing-only");
+                            }
+                        }
+
+                        const applyFullscreenColorVar = (key, cssVarName) => {
+                            if (!hasOwn(key)) return;
+                            if (typeof config[key] === "string" && config[key].length > 0) {
+                                playerElement.style.setProperty(cssVarName, config[key]);
+                            } else {
+                                playerElement.style.removeProperty(cssVarName);
+                            }
+                        };
+                        applyFullscreenColorVar("fullscreenActiveColor", "--amll-fs-main-active");
+                        applyFullscreenColorVar("fullscreenInactiveColor", "--amll-fs-main-inactive");
+                        applyFullscreenColorVar("fullscreenSubActiveColor", "--amll-fs-sub-active");
+                        applyFullscreenColorVar("fullscreenSubInactiveColor", "--amll-fs-sub-inactive");
+                        applyFullscreenColorVar(
+                            "fullscreenLineTimingInactiveColor",
+                            "--amll-fs-main-line-timing-inactive"
+                        );
+                        applyFullscreenColorVar(
+                            "fullscreenLineTimingSubInactiveColor",
+                            "--amll-fs-sub-line-timing-inactive"
+                        );
+	                    if (typeof config.alignAnchor === "string" && typeof lyricPlayer.setAlignAnchor === "function") {
+	                        lyricPlayer.setAlignAnchor(config.alignAnchor);
+	                    }
+	                    if (typeof config.alignPosition === "number" && !Number.isNaN(config.alignPosition)) {
+	                        const nextAlignPosition = Math.max(0, Math.min(1, config.alignPosition));
+	                        if (typeof lyricPlayer.setAlignPosition === "function") {
+	                            lyricPlayer.setAlignPosition(nextAlignPosition);
+	                        }
 	                    }
 	                    if (config.textColor) {
 	                        lyricPlayer.getElement().style.setProperty("--amll-lp-color", config.textColor);
