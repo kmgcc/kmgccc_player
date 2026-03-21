@@ -103,20 +103,24 @@
         .amll-lyric-player.fs-color-dodge [class*="_lyricMainLine_"],
         .amll-lyric-player.fs-color-dodge [class*="_lyricMainLine_"] *,
         .amll-lyric-player.fs-color-dodge [class*="_romanWord_"],
-        .amll-lyric-player.fs-color-dodge [class*="_emphasizeWrapper_"],
-        .amll-lyric-player.fs-color-dodge [class*="_emphasizeWrapper_"] *,
-        .amll-lyric-player.fs-color-dodge [class*="_emphasize_"],
-        .amll-lyric-player.fs-color-dodge [class*="_emphasize_"] *,
         .amll-lyric-player.fs-color-dodge [class*="_interludeDots_"],
         .amll-lyric-player.fs-color-dodge [class*="_interludeDots_"] > * {
             mix-blend-mode: plus-lighter !important;
+        }
+        /* Emphasize (glow) effect uses screen blend mode for softer highlight */
+        .amll-lyric-player.fs-color-dodge [class*="_emphasizeWrapper_"],
+        .amll-lyric-player.fs-color-dodge [class*="_emphasizeWrapper_"] *,
+        .amll-lyric-player.fs-color-dodge [class*="_emphasize_"],
+        .amll-lyric-player.fs-color-dodge [class*="_emphasize_"] * {
+            mix-blend-mode: screen !important;
         }
         .amll-lyric-player.fs-color-dodge [class*="_lyricBgLine_"],
         .amll-lyric-player.fs-color-dodge [class*="_lyricBgLine_"] > * {
             mix-blend-mode: plus-lighter !important;
         }
+        /* Background lyrics: slightly lower brightness than main lyrics */
         .amll-lyric-player.fs-color-dodge [class*="_lyricBgLine_"][class*="_active_"] {
-            opacity: 0.55 !important;
+            opacity: 0.48 !important;
         }
         .amll-lyric-player.fs-color-dodge [class*="_lyricSubLine_"],
         .amll-lyric-player.fs-color-dodge [class*="_lyricSubLine_"] * {
@@ -174,6 +178,21 @@
         // Align active line toward top (instead of center)
         lyricPlayer.setAlignAnchor("top");
         lyricPlayer.setAlignPosition(0.2);
+        
+        // Interlude dots: force left alignment in fullscreen mode
+        // AMLL core positions dots at right edge for duet mode (U = containerWidth - dotsWidth)
+        // We override this to always align left in fullscreen mode
+        // Dots have internal padding-left: .75em, so offset by -0.75em to align with lyric text
+        let fullscreenInterludeDotsAlignLeft = false;
+        const interludeDots = lyricPlayer.interludeDots;
+        if (interludeDots && typeof interludeDots.setTransform === 'function') {
+            const originalSetTransform = interludeDots.setTransform.bind(interludeDots);
+            interludeDots.setTransform = (left = 0, top = 0) => {
+                // In fullscreen mode, force left alignment and offset internal padding
+                const effectiveLeft = fullscreenInterludeDotsAlignLeft ? -12 : left;
+                originalSetTransform(effectiveLeft, top);
+            };
+        }
         
         // Helper to map TTML lines to AMLL LyricLine format
         const mapTTMLLyric = (line) => ({
@@ -949,6 +968,8 @@
                         if (hasOwn("fullscreenLyricDodgeMode")) {
                             const enableFullscreenLyricDodgeMode = config.fullscreenLyricDodgeMode === true;
                             playerElement.classList.toggle("fs-color-dodge", enableFullscreenLyricDodgeMode);
+                            // In fullscreen mode, align interlude dots to left edge
+                            fullscreenInterludeDotsAlignLeft = enableFullscreenLyricDodgeMode;
                             if (!enableFullscreenLyricDodgeMode) {
                                 playerElement.style.removeProperty("--amll-fs-main-active");
                                 playerElement.style.removeProperty("--amll-fs-main-inactive");
