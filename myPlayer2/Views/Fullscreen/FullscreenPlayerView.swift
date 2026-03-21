@@ -31,8 +31,8 @@ struct FullscreenPlayerView: View {
     private let lyricsViewportTopLift: CGFloat = 22
     private let fullscreenLyricsAlignPosition: Double = 0.28
     private let fixedMiniplayerHeight: CGFloat = 60
-    private let fullscreenLyricsMinimumActiveLightness: CGFloat = 0.80
-    private let fullscreenLyricsMaximumActiveLightness: CGFloat = 0.92
+    private let fullscreenLyricsMinimumActiveLightness: CGFloat = 0.70
+    private let fullscreenLyricsMaximumActiveLightness: CGFloat = 0.82
     private let fullscreenLyricsActiveToInactiveLightnessDelta: CGFloat = 0.24
     private let fullscreenLyricsLineTimingInactiveLightnessDelta: CGFloat = 0.22
     private let fullscreenLyricsSaturationFloor: CGFloat = 0.10
