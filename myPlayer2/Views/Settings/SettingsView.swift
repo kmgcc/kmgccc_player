@@ -69,14 +69,36 @@ struct SettingsView: View {
     @State private var brightnessLevels: Int = AppSettings.shared.ledBrightnessLevels
     @State private var lookaheadMs: Double = AppSettings.shared.lookaheadMs
     @State private var ledMeterEnabled: Bool = AppSettings.shared.ledMeterEnabled
+
+    // MARK: - Fullscreen Settings State
+
+    @State private var fullscreenArtworkScale: Double = AppSettings.shared.fullscreenArtworkScale
+    @State private var fullscreenLyricsFontScale: Double = AppSettings.shared.fullscreenLyricsFontScale
+    @State private var fullscreenDimmingIntensity: Double = AppSettings.shared.fullscreenDimmingIntensity
+    @State private var fullscreenLyricsFontNameZh: String = AppSettings.shared
+        .fullscreenLyricsFontNameZh
+    @State private var fullscreenLyricsFontNameEn: String = AppSettings.shared
+        .fullscreenLyricsFontNameEn
+    @State private var fullscreenLyricsTranslationFontName: String = AppSettings.shared
+        .fullscreenLyricsTranslationFontName
+    @State private var fullscreenLyricsFontWeight: Int = AppSettings.shared
+        .fullscreenLyricsFontWeight
+    @State private var fullscreenLyricsTranslationFontWeight: Int = AppSettings.shared
+        .fullscreenLyricsTranslationFontWeight
+    @State private var fullscreenLyricsFontSize: Double = AppSettings.shared.fullscreenLyricsFontSize
+    @State private var fullscreenLyricsTranslationFontSize: Double = AppSettings.shared
+        .fullscreenLyricsTranslationFontSize
     @State private var aboutEasterEggTracker = AboutEasterEggTapTracker()
     @State private var showEasterEggImage: Bool = false
     @State private var showResetDataAlert: Bool = false
     @State private var showClearIndexCacheAlert: Bool = false
 
     private var fontFamilies: [String] {
-        NSFontManager.shared.availableFontFamilies.sorted()
+        Self.cachedFontFamilies
     }
+
+    private static let cachedFontFamilies: [String] =
+        NSFontManager.shared.availableFontFamilies.sorted()
 
     private let fontWeights: [(label: LocalizedStringKey, value: Int)] = [
         ("settings.lyrics.weight_thin", 100),
@@ -161,6 +183,7 @@ struct SettingsView: View {
             followSystemAppearance = settings.followSystemAppearance
             lyricsBackgroundMode = settings.lyricsBackgroundMode
             ledMeterEnabled = settings.ledMeterEnabled
+            syncFullscreenLyricsStateFromSettings()
             if SkinRegistry.options.contains(where: { $0.id == nowPlayingSkin }) == false {
                 nowPlayingSkin = SkinRegistry.defaultSkinID
             }
@@ -202,6 +225,7 @@ struct SettingsView: View {
             appearanceSyncLogic
             skinSyncLogic
             lyricsSyncLogic
+            fullscreenSyncLogic
             ledSyncLogic
         }
     }
@@ -349,6 +373,28 @@ struct SettingsView: View {
         }
     }
 
+    private var fullscreenSyncLogic: some View {
+        Color.clear
+            .onChange(of: fullscreenLyricsFontScale) { _, val in
+                AppSettings.shared.fullscreenLyricsFontScale = val
+            }
+            .onChange(of: fullscreenLyricsFontNameZh) { _, val in
+                AppSettings.shared.fullscreenLyricsFontNameZh = val
+            }
+            .onChange(of: fullscreenLyricsFontNameEn) { _, val in
+                AppSettings.shared.fullscreenLyricsFontNameEn = val
+            }
+            .onChange(of: fullscreenLyricsTranslationFontName) { _, val in
+                AppSettings.shared.fullscreenLyricsTranslationFontName = val
+            }
+            .onChange(of: fullscreenLyricsFontWeight) { _, val in
+                AppSettings.shared.fullscreenLyricsFontWeight = val
+            }
+            .onChange(of: fullscreenLyricsTranslationFontWeight) { _, val in
+                AppSettings.shared.fullscreenLyricsTranslationFontWeight = val
+            }
+    }
+
     private func handleSkinLEDToggleChange(for skinID: String, isOn: Bool) {
         guard nowPlayingSkin == skinID else { return }
         if isOn && ledMeterEnabled == false {
@@ -384,6 +430,8 @@ struct SettingsView: View {
                     appearanceSection
                 case .nowPlaying:
                     nowPlayingSection
+                case .fullscreen:
+                    fullscreenSection
                 case .lyrics:
                     amllSection
                 case .led:
@@ -508,6 +556,219 @@ struct SettingsView: View {
                     }
                 }
             }
+        }
+    }
+
+    // MARK: - Fullscreen Section
+
+    private var fullscreenSection: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            headerLabel("全屏播放", systemImage: "arrow.up.left.and.arrow.down.right")
+
+            GroupBox {
+                VStack(alignment: .leading, spacing: 20) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("封面缩放")
+                            Spacer()
+                            Text(String(format: "%.2f", fullscreenArtworkScale))
+                                .foregroundStyle(themeStore.accentColor)
+                                .font(.system(.subheadline, design: .monospaced))
+                        }
+                        Slider(
+                            value: $fullscreenArtworkScale,
+                            in: 0.8...1.5,
+                            step: 0.05
+                        ) { editing in
+                            if editing == false {
+                                AppSettings.shared.fullscreenArtworkScale = fullscreenArtworkScale
+                            }
+                        }
+                        Text("调整全屏模式下歌曲封面的显示大小")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Divider()
+
+                    fullscreenLyricsTypographyConfig
+
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("背景压暗强度")
+                            Spacer()
+                            Text(String(format: "%.0f%%", fullscreenDimmingIntensity * 100))
+                                .foregroundStyle(themeStore.accentColor)
+                                .font(.system(.subheadline, design: .monospaced))
+                        }
+                        Slider(
+                            value: $fullscreenDimmingIntensity,
+                            in: 0.0...0.5,
+                            step: 0.05
+                        ) { editing in
+                            if editing == false {
+                                AppSettings.shared.fullscreenDimmingIntensity =
+                                    fullscreenDimmingIntensity
+                            }
+                        }
+                        Text("调整全屏模式下背景压暗程度，提高可读性")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                }
+                .padding(12)
+            }
+
+            fullscreenLyricsPreviewConfig
+
+            Button("恢复默认") {
+                fullscreenArtworkScale = 1.15
+                fullscreenLyricsFontScale = 2.0
+                fullscreenDimmingIntensity = 0.25
+                AppSettings.shared.fullscreenArtworkScale = 1.15
+                AppSettings.shared.fullscreenLyricsFontScale = 2.0
+                AppSettings.shared.fullscreenDimmingIntensity = 0.25
+                AppSettings.shared.fullscreenMiniplayerHeight = 60
+                AppSettings.shared.resetFullscreenLyricsTypographyOverrides()
+                syncFullscreenLyricsStateFromSettings()
+            }
+            .buttonStyle(.borderless)
+            .font(.caption)
+        }
+    }
+
+    private var fullscreenLyricsTypographyConfig: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("全屏歌词样式")
+                    .font(.subheadline.bold())
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("仅影响全屏 AMLL")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+
+            HStack {
+                Text("主歌词字号")
+                Spacer()
+                Text("\(Int(fullscreenLyricsFontSize)) px")
+                    .foregroundStyle(themeStore.accentColor)
+                    .monospacedDigit()
+            }
+            Slider(
+                value: $fullscreenLyricsFontSize,
+                in: 24...72,
+                step: 1
+            ) { editing in
+                if editing == false {
+                    AppSettings.shared.fullscreenLyricsFontSize = fullscreenLyricsFontSize
+                }
+            }
+
+            HStack {
+                Text("主歌词字重")
+                Spacer()
+                Picker("", selection: $fullscreenLyricsFontWeight) {
+                    ForEach(fontWeights, id: \.value) { weight in
+                        Text(weight.label).tag(weight.value)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 140)
+            }
+
+            Divider()
+
+            HStack {
+                Text("翻译字号")
+                Spacer()
+                Text("\(Int(fullscreenLyricsTranslationFontSize)) px")
+                    .foregroundStyle(themeStore.accentColor)
+                    .monospacedDigit()
+            }
+            Slider(
+                value: $fullscreenLyricsTranslationFontSize,
+                in: 14...40,
+                step: 1
+            ) { editing in
+                if editing == false {
+                    AppSettings.shared.fullscreenLyricsTranslationFontSize =
+                        fullscreenLyricsTranslationFontSize
+                }
+            }
+
+            HStack {
+                Text("翻译字重")
+                Spacer()
+                Picker("", selection: $fullscreenLyricsTranslationFontWeight) {
+                    ForEach(fontWeights, id: \.value) { weight in
+                        Text(weight.label).tag(weight.value)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 140)
+            }
+
+            Divider()
+
+            HStack {
+                Text("中文字体")
+                Spacer()
+                Picker("", selection: $fullscreenLyricsFontNameZh) {
+                    ForEach(fontFamilies, id: \.self) { family in
+                        Text(family).tag(family)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(width: 220)
+            }
+
+            HStack {
+                Text("英文字体")
+                Spacer()
+                Picker("", selection: $fullscreenLyricsFontNameEn) {
+                    ForEach(fontFamilies, id: \.self) { family in
+                        Text(family).tag(family)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(width: 220)
+            }
+
+            HStack {
+                Text("翻译字体")
+                Spacer()
+                Picker("", selection: $fullscreenLyricsTranslationFontName) {
+                    ForEach(fontFamilies, id: \.self) { family in
+                        Text(family).tag(family)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(width: 220)
+            }
+        }
+    }
+
+    private var fullscreenLyricsPreviewConfig: some View {
+        GroupBox("全屏歌词预览") {
+            lyricsPreviewCard(
+                title: "全屏深色预览",
+                isDarkCard: true,
+                mainWeight: fullscreenLyricsFontWeight,
+                translationWeight: fullscreenLyricsTranslationFontWeight,
+                mainFontNameZh: fullscreenLyricsFontNameZh,
+                mainFontNameEn: fullscreenLyricsFontNameEn,
+                translationFontName: fullscreenLyricsTranslationFontName,
+                mainFontSize: fullscreenLyricsFontSize,
+                translationFontSize: fullscreenLyricsTranslationFontSize
+            )
         }
     }
 
@@ -768,12 +1029,22 @@ struct SettingsView: View {
         title: String,
         isDarkCard: Bool,
         mainWeight: Int,
-        translationWeight: Int
+        translationWeight: Int,
+        mainFontNameZh: String? = nil,
+        mainFontNameEn: String? = nil,
+        translationFontName: String? = nil,
+        mainFontSize: Double? = nil,
+        translationFontSize: Double? = nil
     ) -> some View {
         let backgroundColor = isDarkCard ? Color(red: 0.18, green: 0.18, blue: 0.20) : .white
         let titleColor = isDarkCard ? Color.white.opacity(0.78) : Color.black.opacity(0.65)
         let mainTextColor = isDarkCard ? Color.white : Color.black
         let translationColor = isDarkCard ? Color.white.opacity(0.72) : Color.black.opacity(0.62)
+        let resolvedZhFont = mainFontNameZh ?? lyricsFontNameZh
+        let resolvedEnFont = mainFontNameEn ?? lyricsFontNameEn
+        let resolvedTranslationFont = translationFontName ?? lyricsTranslationFontName
+        let resolvedMainFontSize = CGFloat(mainFontSize ?? lyricsFontSize)
+        let resolvedTranslationFontSize = CGFloat(translationFontSize ?? lyricsTranslationFontSize)
 
         return VStack(alignment: .leading, spacing: 8) {
             Text(title)
@@ -782,17 +1053,17 @@ struct SettingsView: View {
 
             HStack(spacing: 12) {
                 Text("settings.lyrics.preview_zh")
-                    .font(.custom(lyricsFontNameZh, size: CGFloat(lyricsFontSize)))
+                    .font(.custom(resolvedZhFont, size: resolvedMainFontSize))
                     .fontWeight(fontWeight(mainWeight))
                     .foregroundStyle(mainTextColor)
                 Text("settings.lyrics.preview_en")
-                    .font(.custom(lyricsFontNameEn, size: CGFloat(lyricsFontSize)))
+                    .font(.custom(resolvedEnFont, size: resolvedMainFontSize))
                     .fontWeight(fontWeight(mainWeight))
                     .foregroundStyle(mainTextColor)
             }
 
             Text("settings.lyrics.preview_translation")
-                .font(.custom(lyricsTranslationFontName, size: CGFloat(lyricsTranslationFontSize)))
+                .font(.custom(resolvedTranslationFont, size: resolvedTranslationFontSize))
                 .fontWeight(fontWeight(translationWeight))
                 .foregroundStyle(translationColor)
         }
@@ -1068,6 +1339,10 @@ struct SettingsView: View {
         lyricsTranslationFontSize = AppSettings.shared.lyricsTranslationFontSize
         lyricsTranslationFontWeightLight = AppSettings.shared.lyricsTranslationFontWeightLight
         lyricsTranslationFontWeightDark = AppSettings.shared.lyricsTranslationFontWeightDark
+        fullscreenArtworkScale = AppSettings.shared.fullscreenArtworkScale
+        fullscreenLyricsFontScale = AppSettings.shared.fullscreenLyricsFontScale
+        fullscreenDimmingIntensity = AppSettings.shared.fullscreenDimmingIntensity
+        syncFullscreenLyricsStateFromSettings()
 
         applyLedConfig()
         lyricsVM.refreshConfigFromSettings()
@@ -1076,6 +1351,16 @@ struct SettingsView: View {
         Task { @MainActor in
             await themeStore.refreshPalette(reason: "settings_reset_defaults")
         }
+    }
+
+    private func syncFullscreenLyricsStateFromSettings() {
+        fullscreenLyricsFontNameZh = AppSettings.shared.fullscreenLyricsFontNameZh
+        fullscreenLyricsFontNameEn = AppSettings.shared.fullscreenLyricsFontNameEn
+        fullscreenLyricsTranslationFontName = AppSettings.shared.fullscreenLyricsTranslationFontName
+        fullscreenLyricsFontWeight = AppSettings.shared.fullscreenLyricsFontWeight
+        fullscreenLyricsTranslationFontWeight = AppSettings.shared.fullscreenLyricsTranslationFontWeight
+        fullscreenLyricsFontSize = AppSettings.shared.fullscreenLyricsFontSize
+        fullscreenLyricsTranslationFontSize = AppSettings.shared.fullscreenLyricsTranslationFontSize
     }
 
     // MARK: - About
@@ -1386,6 +1671,7 @@ private struct AboutEasterEggTapTracker {
 private enum SettingsCategory: String, CaseIterable, Identifiable {
     case appearance
     case nowPlaying
+    case fullscreen
     case lyrics
     case led
     case data
@@ -1397,6 +1683,7 @@ private enum SettingsCategory: String, CaseIterable, Identifiable {
         switch self {
         case .appearance: return "外观"
         case .nowPlaying: return "settings.section.now_playing"
+        case .fullscreen: return "全屏播放"
         case .lyrics: return "settings.section.lyrics"
         case .led: return "settings.section.led"
         case .data: return "数据"
@@ -1408,6 +1695,7 @@ private enum SettingsCategory: String, CaseIterable, Identifiable {
         switch self {
         case .appearance: return "paintpalette"
         case .nowPlaying: return "sparkles"
+        case .fullscreen: return "arrow.up.left.and.arrow.down.right"
         case .lyrics: return "text.quote"
         case .led: return "waveform.path.ecg"
         case .data: return "arrow.counterclockwise.circle"
