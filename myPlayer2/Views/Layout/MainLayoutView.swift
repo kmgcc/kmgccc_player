@@ -25,6 +25,7 @@ struct MainLayoutView: View {
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(LyricsViewModel.self) private var lyricsVM
+    @ObservedObject private var fullscreenWindowManager = FullscreenWindowManager.shared
 
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var dragStartLyricsWidth: CGFloat?
@@ -72,7 +73,6 @@ struct MainLayoutView: View {
                                         )
                                 }
                             }
-
                         }
                     }
                     .navigationTitle("")
@@ -236,7 +236,7 @@ struct MainLayoutView: View {
             .frame(maxWidth: .infinity)
             .layoutPriority(1)
 
-            if uiState.lyricsVisible && !uiState.lyricsPanelSuppressedByModal {
+            if shouldShowMainLyricsPanel {
                 lyricsPanelView
             }
         }
@@ -248,7 +248,7 @@ struct MainLayoutView: View {
             NowPlayingHostView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
-            if uiState.lyricsVisible && !uiState.lyricsPanelSuppressedByModal {
+            if shouldShowMainLyricsPanel {
                 lyricsPanelView
             }
         }
@@ -262,6 +262,12 @@ struct MainLayoutView: View {
             .overlay(alignment: .leading) {
                 lyricsResizeHandle
             }
+    }
+
+    private var shouldShowMainLyricsPanel: Bool {
+        uiState.lyricsVisible
+            && !uiState.lyricsPanelSuppressedByModal
+            && !fullscreenWindowManager.isFullscreenActive
     }
 
     private func updateWindowWidth(_ width: CGFloat) {

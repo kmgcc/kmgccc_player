@@ -257,6 +257,7 @@ struct SidebarView: View {
             HStack(spacing: 8) {
                 settingsButton
                 appearanceSwitchButton
+                fullscreenButton
                 Spacer(minLength: 0)
             }
             .tint(themeStore.accentColor)
@@ -331,6 +332,19 @@ struct SidebarView: View {
             .symbolEffect(.replace.magic(fallback: .offUp.byLayer), options: .nonRepeating)
         )
         .animation(.snappy(duration: 0.24), value: icon)
+    }
+
+    private var fullscreenButton: some View {
+        GlassIconButton(
+            systemImage: "arrow.up.left.and.arrow.down.right",
+            size: GlassStyleTokens.headerControlHeight,
+            iconSize: 14,
+            isPrimary: false,
+            help: LocalizedStringKey("sidebar.fullscreen"),
+            surfaceVariant: .sidebarBottom
+        ) {
+            FullscreenWindowManager.shared.showFullscreenWindow()
+        }
     }
 
     private func cycleAppearance(to target: AppSettings.ManualAppearance) {
