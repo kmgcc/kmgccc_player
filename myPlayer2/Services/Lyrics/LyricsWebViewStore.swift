@@ -2,8 +2,8 @@
 //  LyricsWebViewStore.swift
 //  myPlayer2
 //
-//  kmgccc_player - Singleton WebView Owner for AMLL Lyrics
-//  Ensures WKWebView instance is NEVER recreated by SwiftUI.
+//  kmgccc_player - WebView Owner for AMLL Lyrics
+//  Owns one WKWebView instance for a specific lyrics surface.
 //
 
 import Combine
@@ -12,7 +12,7 @@ import Foundation
 import SwiftUI
 import WebKit
 
-/// Singleton store that owns the single WKWebView instance for AMLL lyrics.
+/// Store that owns a single WKWebView instance for one AMLL surface.
 /// This prevents SwiftUI view lifecycle from destroying/recreating the WebView.
 @MainActor
 @Observable
@@ -23,6 +23,8 @@ final class LyricsWebViewStore: NSObject {
     static let shared = LyricsWebViewStore()
 
     // MARK: - WebView Identity
+
+    let role: String
 
     /// The single WKWebView instance (created once, reused forever).
     let webView: WKWebView
@@ -45,6 +47,8 @@ final class LyricsWebViewStore: NSObject {
     private var lastTime: Double?
     private var lastIsPlaying: Bool?
     private var lastConfigJSON: String?
+    private var baseThemePalette: ThemePalette?
+    private var overrideThemePalette: ThemePalette?
 
     /// Pending JS calls queue (flushed when ready).
     private var pendingCalls: [String] = []
@@ -57,6 +61,8 @@ final class LyricsWebViewStore: NSObject {
     /// Track change debounce (prevents transient nil clearing).
     private var pendingApplyTrack: DispatchWorkItem?
     private let applyTrackDebounceMs: Int = 50
+    private var didRegisterMessageHandlers = false
+    private var isShutDown = false
 
     // MARK: - Callbacks
 
@@ -64,7 +70,9 @@ final class LyricsWebViewStore: NSObject {
 
     // MARK: - Initialization
 
-    private override init() {
+    init(role: String = "main") {
+        self.role = role
+
         // Create WKWebView configuration
         let config = WKWebViewConfiguration()
         config.preferences.setValue(true, forKey: "developerExtrasEnabled")
@@ -78,13 +86,9 @@ final class LyricsWebViewStore: NSObject {
 
         super.init()
 
-        // Register message handlers
-        let contentController = webView.configuration.userContentController
-        contentController.add(self, name: "onReady")
-        contentController.add(self, name: "onUserSeek")
-        contentController.add(self, name: "log")
+        registerMessageHandlers()
 
-        print("[LyricsStore] ✅ Created WebView instance: objectID=\(webViewObjectID)")
+        print("[LyricsStore:\(role)] ✅ Created WebView instance: objectID=\(webViewObjectID)")
 
         // Load initial content
         loadAMLLContent()
@@ -93,6 +97,7 @@ final class LyricsWebViewStore: NSObject {
     // MARK: - Content Loading
 
     func loadAMLLContent() {
+        guard !isShutDown else { return }
         guard
             let indexURL = Bundle.main.url(
                 forResource: "index", withExtension: "html", subdirectory: "AMLL"
@@ -110,11 +115,48 @@ final class LyricsWebViewStore: NSObject {
         webView.loadFileURL(indexURL, allowingReadAccessTo: amllDir)
     }
 
+    func shutdown() {
+        guard !isShutDown else { return }
+        isShutDown = true
+
+        pendingApplyTrack?.cancel()
+        pendingApplyTrack = nil
+        pendingCalls.removeAll()
+        onUserSeek = nil
+        activeAttachmentID = nil
+        isAttached = false
+        isReady = false
+        isRecoveryInProgress = false
+        lastTTML = nil
+        lastTime = nil
+        lastIsPlaying = nil
+        lastConfigJSON = nil
+        baseThemePalette = nil
+        overrideThemePalette = nil
+
+        webView.stopLoading()
+        webView.navigationDelegate = nil
+        webView.removeFromSuperview()
+
+        if didRegisterMessageHandlers {
+            let contentController = webView.configuration.userContentController
+            contentController.removeScriptMessageHandler(forName: "onReady")
+            contentController.removeScriptMessageHandler(forName: "onUserSeek")
+            contentController.removeScriptMessageHandler(forName: "log")
+            didRegisterMessageHandlers = false
+        }
+
+        print("[LyricsStore:\(role)] Shutdown complete, objectID=\(webViewObjectID)")
+    }
+
     // MARK: - Attach/Detach (Instance-Aware + Dedup)
 
     /// Attach a new view to the store. Returns the attachment ID.
     /// This is idempotent - will return existing ID if already attached.
     func attach() -> UUID {
+        guard !isShutDown else {
+            return UUID()
+        }
         if isAttached, let existingID = activeAttachmentID {
             print(
                 "[LyricsStore] Attach (already attached): attachmentID=\(existingID.uuidString.prefix(8)), objectID=\(webViewObjectID)"
@@ -151,6 +193,7 @@ final class LyricsWebViewStore: NSObject {
     // MARK: - JS Calls (Queued + Snapshot Preserved)
 
     func setLyricsTTML(_ ttml: String) {
+        guard !isShutDown else { return }
         lastTTML = ttml
         print(
             "[LyricsStore] setLyricsTTML: len=\(ttml.count), objectID=\(webViewObjectID), isReady=\(isReady)"
@@ -164,6 +207,7 @@ final class LyricsWebViewStore: NSObject {
     }
 
     func setCurrentTime(_ seconds: Double) {
+        guard !isShutDown else { return }
         guard seconds.isFinite else { return }
         lastTime = seconds
         // Time updates are not queued (too frequent), only sent if ready
@@ -177,6 +221,7 @@ final class LyricsWebViewStore: NSObject {
     }
 
     func setPlaying(_ isPlaying: Bool) {
+        guard !isShutDown else { return }
         lastIsPlaying = isPlaying
         print(
             "[LyricsStore] setPlaying: \(isPlaying), objectID=\(webViewObjectID), isReady=\(isReady)"
@@ -186,12 +231,14 @@ final class LyricsWebViewStore: NSObject {
     }
 
     func setConfigJSON(_ json: String) {
+        guard !isShutDown else { return }
         lastConfigJSON = json
         callJS("window.AMLL.setConfig(\(json))")
     }
 
     /// Unified JS call entry point with queuing.
     private func callJS(_ script: String) {
+        guard !isShutDown else { return }
         if isReady {
             webView.evaluateJavaScript(script) { _, error in
                 if let error = error {
@@ -289,6 +336,7 @@ final class LyricsWebViewStore: NSObject {
 
     /// Called when web content process terminates.
     func handleWebContentTerminated() {
+        guard !isShutDown else { return }
         let now = Date()
         guard now.timeIntervalSince(lastRecoveryAttempt) > recoveryDebounceInterval else {
             print("[LyricsStore] Recovery debounced, objectID=\(webViewObjectID)")
@@ -313,6 +361,7 @@ final class LyricsWebViewStore: NSObject {
 
     /// Force reload (for manual recovery).
     func forceReload() {
+        guard !isShutDown else { return }
         isReady = false
         pendingCalls.removeAll()
         print("[LyricsStore] Force reload, objectID=\(webViewObjectID)")
@@ -322,21 +371,23 @@ final class LyricsWebViewStore: NSObject {
     // MARK: - Track Change (Task D: Race-safe)
 
     /// Apply a new track with debounce to prevent transient nil clearing.
+    /// - Note: `nil` means transition state and is debounced.
+    ///         Empty string means concrete "no lyrics" and should clear immediately.
     func applyTrack(ttml: String?, currentTime: Double, isPlaying: Bool) {
         // Cancel any pending apply
         pendingApplyTrack?.cancel()
 
-        // If ttml is nil/empty, debounce to avoid transient clearing
-        if ttml == nil || ttml?.isEmpty == true {
+        // Debounce only transitional nil (e.g. oldTrack -> nil -> newTrack)
+        if ttml == nil {
             let workItem = DispatchWorkItem { [weak self] in
                 self?.executeApplyTrack(ttml: ttml, currentTime: currentTime, isPlaying: isPlaying)
             }
             pendingApplyTrack = workItem
             DispatchQueue.main.asyncAfter(
                 deadline: .now() + .milliseconds(applyTrackDebounceMs), execute: workItem)
-            print("[LyricsStore] applyTrack: debounced nil/empty, objectID=\(webViewObjectID)")
+            print("[LyricsStore] applyTrack: debounced nil, objectID=\(webViewObjectID)")
         } else {
-            // Immediate apply for non-nil
+            // Immediate apply for concrete payload (including empty string clear)
             executeApplyTrack(ttml: ttml, currentTime: currentTime, isPlaying: isPlaying)
         }
     }
@@ -364,8 +415,26 @@ final class LyricsWebViewStore: NSObject {
     /// Apply a unified theme palette to the WebView.
     /// Sets config theme and injects CSS variables for deep styling.
     func applyTheme(_ palette: ThemePalette) {
+        baseThemePalette = palette
+        applyEffectiveTheme()
+    }
+
+    /// Override the palette used by AMLL without discarding the base theme.
+    /// This lets fullscreen keep a dark-style lyrics palette while the app theme continues updating.
+    func setThemePaletteOverride(_ palette: ThemePalette?) {
+        overrideThemePalette = palette
+        applyEffectiveTheme()
+    }
+
+    private func applyEffectiveTheme() {
+        guard let palette = overrideThemePalette ?? baseThemePalette else {
+            return
+        }
+
         let themeName = (palette.scheme == .dark) ? "dark" : "light"
-        print("[LyricsStore] applyTheme: theme=\(themeName), objectID=\(webViewObjectID)")
+        print(
+            "[LyricsStore] applyTheme: theme=\(themeName), override=\(overrideThemePalette != nil), objectID=\(webViewObjectID)"
+        )
 
         // 1. Update config JSON (bridge-level metadata)
         let config: [String: Any] = [
@@ -447,6 +516,15 @@ final class LyricsWebViewStore: NSObject {
         // dropFirst is '[', dropLast is ']'
         let trimmed = jsonArray.dropFirst().dropLast()
         return String(trimmed)
+    }
+
+    private func registerMessageHandlers() {
+        guard !didRegisterMessageHandlers else { return }
+        let contentController = webView.configuration.userContentController
+        contentController.add(self, name: "onReady")
+        contentController.add(self, name: "onUserSeek")
+        contentController.add(self, name: "log")
+        didRegisterMessageHandlers = true
     }
 }
 

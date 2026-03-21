@@ -28,16 +28,17 @@ final class LyricsViewModel {
 
     /// Whether lyrics are available.
     var hasLyrics: Bool {
-        if let track = currentTrack {
-            return (track.lyricsText != nil && !track.lyricsText!.isEmpty)
-                || (track.ttmlLyricText != nil && !track.ttmlLyricText!.isEmpty)
-        }
-        return false
+        guard let track = currentTrack else { return false }
+        return !getContentForTrack(track).isEmpty
     }
 
     /// Whether the WebView is ready.
     var isReady: Bool {
         store.isReady
+    }
+
+    var webViewStore: LyricsWebViewStore {
+        store
     }
 
     /// Callback for when user seeks via lyrics UI.
@@ -50,7 +51,15 @@ final class LyricsViewModel {
     // MARK: - Initialization
 
     init(settings: AppSettings? = nil) {
-        self.store = LyricsWebViewStore.shared
+        self.store = .shared
+        self.settings = settings ?? AppSettings.shared
+
+        // Apply initial config
+        refreshConfigFromSettings()
+    }
+
+    init(settings: AppSettings? = nil, store: LyricsWebViewStore) {
+        self.store = store
         self.settings = settings ?? AppSettings.shared
 
         // Apply initial config
@@ -74,8 +83,10 @@ final class LyricsViewModel {
         refreshConfigFromSettings()
 
         // Use store's sequenced apply
+        // Distinguish transition nil (debounced) from concrete "no lyrics" (clear immediately).
+        let ttmlForStore: String? = (track == nil) ? nil : lyricsText
         store.applyTrack(
-            ttml: lyricsText.isEmpty ? nil : lyricsText, currentTime: currentTime,
+            ttml: ttmlForStore, currentTime: currentTime,
             isPlaying: isPlaying)
     }
 
@@ -119,16 +130,22 @@ final class LyricsViewModel {
         guard let track = track else { return "" }
 
         // Priority 1: User imported text/file
-        if let t1 = track.lyricsText, !t1.isEmpty {
+        if let t1 = nonEmptyLyricsText(track.lyricsText) {
             return t1
         }
 
         // Priority 2: Embedded/pasted TTML
-        if let t2 = track.ttmlLyricText, !t2.isEmpty {
+        if let t2 = nonEmptyLyricsText(track.ttmlLyricText) {
             return t2
         }
 
         return ""
+    }
+
+    private func nonEmptyLyricsText(_ text: String?) -> String? {
+        guard let text else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : text
     }
 
     /// Clear current lyrics.
