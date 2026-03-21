@@ -3,39 +3,53 @@
 //  myPlayer2
 //
 //  kmgccc_player - AMLL WKWebView Wrapper
-//  NSViewRepresentable wrapper that returns the singleton WebView from LyricsWebViewStore.
-//  The WebView is NEVER recreated - only attached/detached.
+//  NSViewRepresentable wrapper that hosts a store-owned WebView inside per-view containers.
+//  The WebView is NEVER recreated - only reparented between containers.
 //
 
+import AppKit
 import SwiftUI
 import WebKit
 
 /// SwiftUI wrapper for AMLL lyrics WKWebView.
-/// Uses the singleton LyricsWebViewStore to prevent WebView recreation.
+/// Uses a LyricsWebViewStore to prevent WebView recreation.
 struct AMLLWebView: NSViewRepresentable {
 
+    let store: LyricsWebViewStore
     @Environment(AppSettings.self) private var settings
+    var forcedAppearanceMode: AppSettings.AppearanceMode?
 
-    func makeNSView(context: Context) -> WKWebView {
-        let store = LyricsWebViewStore.shared
-        let webView = store.webView
+    @MainActor
+    init(forcedAppearanceMode: AppSettings.AppearanceMode? = nil) {
+        self.store = .shared
+        self.forcedAppearanceMode = forcedAppearanceMode
+    }
 
-        // Set navigation delegate for crash handling
-        webView.navigationDelegate = context.coordinator
+    @MainActor
+    init(
+        store: LyricsWebViewStore,
+        forcedAppearanceMode: AppSettings.AppearanceMode? = nil
+    ) {
+        self.store = store
+        self.forcedAppearanceMode = forcedAppearanceMode
+    }
 
-        // Attach only if not already attached
-        context.coordinator.attachmentID = store.attach()
+    func makeNSView(context: Context) -> WebViewHostView {
+        let hostView = WebViewHostView()
+        context.coordinator.attachWebView(to: hostView)
 
         print(
             "[AMLLWebView] makeNSView: objectID=\(store.webViewObjectID), attachmentID=\(context.coordinator.attachmentID?.uuidString.prefix(8) ?? "nil")"
         )
 
-        return webView
+        return hostView
     }
 
-    func updateNSView(_ nsView: WKWebView, context: Context) {
+    func updateNSView(_ nsView: WebViewHostView, context: Context) {
+        context.coordinator.attachWebView(to: nsView)
+
         // Handle appearance sync for AppKit side
-        let mode = settings.appearanceMode
+        let mode = forcedAppearanceMode ?? settings.appearanceMode
         let appearanceIcon: NSAppearance? = {
             switch mode {
             case .light: return NSAppearance(named: .aqua)
@@ -44,15 +58,12 @@ struct AMLLWebView: NSViewRepresentable {
             }
         }()
 
-        if nsView.appearance != appearanceIcon {
-            nsView.appearance = appearanceIcon
+        let webView = store.webView
+        if webView.appearance != appearanceIcon {
+            webView.appearance = appearanceIcon
             print("[AMLLWebView] Updated nsView.appearance to match mode: \(mode)")
         }
 
-        // Do NOT re-attach here - attach only happens in makeNSView
-        // This prevents duplicate attaches from SwiftUI update cycles
-        let store = LyricsWebViewStore.shared
-        // Only log occasionally to avoid spam (check if ready state changed)
         if context.coordinator.lastLoggedReady != store.isReady {
             context.coordinator.lastLoggedReady = store.isReady
             print(
@@ -62,33 +73,70 @@ struct AMLLWebView: NSViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator()
+        Coordinator(store: store)
     }
 
-    static func dismantleNSView(_ nsView: WKWebView, coordinator: Coordinator) {
+    static func dismantleNSView(_ nsView: WebViewHostView, coordinator: Coordinator) {
         guard let attachmentID = coordinator.attachmentID else {
             print("[AMLLWebView] dismantleNSView: no attachmentID")
             return
         }
 
-        let store = LyricsWebViewStore.shared
+        let store = coordinator.store
         print(
             "[AMLLWebView] dismantleNSView: objectID=\(store.webViewObjectID), attachmentID=\(attachmentID.uuidString.prefix(8))"
         )
+        coordinator.detachWebView(from: nsView)
         store.detach(requestingID: attachmentID)
-
-        // Do NOT nil out navigationDelegate - WebView persists in store
     }
 
     // MARK: - Coordinator
 
     class Coordinator: NSObject, WKNavigationDelegate {
 
+        let store: LyricsWebViewStore
         var attachmentID: UUID?
         var lastLoggedReady: Bool = false
+        private weak var hostView: WebViewHostView?
+
+        init(store: LyricsWebViewStore) {
+            self.store = store
+        }
+
+        func attachWebView(to hostView: WebViewHostView) {
+            if attachmentID == nil || store.activeAttachmentID != attachmentID {
+                attachmentID = store.attach()
+            }
+
+            let webView = store.webView
+            webView.navigationDelegate = self
+
+            guard webView.superview !== hostView else {
+                self.hostView = hostView
+                return
+            }
+
+            webView.removeFromSuperview()
+            webView.frame = hostView.bounds
+            webView.autoresizingMask = [.width, .height]
+            hostView.addSubview(webView)
+            self.hostView = hostView
+
+            print(
+                "[AMLLWebView] Reparented WebView: objectID=\(store.webViewObjectID), attachmentID=\(attachmentID?.uuidString.prefix(8) ?? "nil")"
+            )
+        }
+
+        func detachWebView(from hostView: WebViewHostView) {
+            let webView = store.webView
+            guard webView.superview === hostView else { return }
+            webView.removeFromSuperview()
+            if self.hostView === hostView {
+                self.hostView = nil
+            }
+        }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            let store = LyricsWebViewStore.shared
             print("[AMLLWebView] Navigation finished: objectID=\(store.webViewObjectID)")
         }
 
@@ -106,7 +154,6 @@ struct AMLLWebView: NSViewRepresentable {
         }
 
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-            let store = LyricsWebViewStore.shared
             print(
                 "[AMLLWebView] ⚠️ Web Content Process Terminated! objectID=\(store.webViewObjectID)")
             store.handleWebContentTerminated()
@@ -126,6 +173,10 @@ struct AMLLWebView: NSViewRepresentable {
             decisionHandler(.allow)
         }
     }
+}
+
+final class WebViewHostView: NSView {
+    override var isFlipped: Bool { true }
 }
 
 // MARK: - Preview
