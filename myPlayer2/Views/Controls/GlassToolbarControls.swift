@@ -20,14 +20,44 @@ struct GlassIconButtonLabel: View {
     let iconSize: CGFloat
     let isPrimary: Bool
     let surfaceVariant: SurfaceVariant
+    let iconBlendMode: BlendMode?
+    let iconColorOverride: Color?
 
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
 
+    init(
+        systemImage: String,
+        size: CGFloat,
+        iconSize: CGFloat,
+        isPrimary: Bool,
+        surfaceVariant: SurfaceVariant,
+        iconBlendMode: BlendMode? = nil,
+        iconColorOverride: Color? = nil
+    ) {
+        self.systemImage = systemImage
+        self.size = size
+        self.iconSize = iconSize
+        self.isPrimary = isPrimary
+        self.surfaceVariant = surfaceVariant
+        self.iconBlendMode = iconBlendMode
+        self.iconColorOverride = iconColorOverride
+    }
+
     var body: some View {
-        Image(systemName: systemImage)
-            .font(.system(size: iconSize, weight: .semibold))
-            .foregroundStyle(iconForeground)
+        Group {
+            if let iconBlendMode {
+                Image(systemName: systemImage)
+                    .font(.system(size: iconSize, weight: .semibold))
+                    .foregroundStyle(iconColorOverride ?? iconForeground)
+                    .compositingGroup()
+                    .blendMode(iconBlendMode)
+            } else {
+                Image(systemName: systemImage)
+                    .font(.system(size: iconSize, weight: .semibold))
+                    .foregroundStyle(iconColorOverride ?? iconForeground)
+            }
+        }
             .frame(width: size, height: size)
             .contentShape(Circle())
             .liquidGlassCircle(
@@ -50,6 +80,8 @@ struct GlassIconButton: View {
     let size: CGFloat
     let iconSize: CGFloat
     let isPrimary: Bool
+    let iconBlendMode: BlendMode?
+    let iconColorOverride: Color?
     let help: LocalizedStringKey?
     let surfaceVariant: GlassIconButtonLabel.SurfaceVariant
     let action: () -> Void
@@ -59,6 +91,8 @@ struct GlassIconButton: View {
         size: CGFloat,
         iconSize: CGFloat,
         isPrimary: Bool,
+        iconBlendMode: BlendMode? = nil,
+        iconColorOverride: Color? = nil,
         help: LocalizedStringKey? = nil,
         surfaceVariant: GlassIconButtonLabel.SurfaceVariant = .defaultToolbar,
         action: @escaping () -> Void
@@ -67,6 +101,8 @@ struct GlassIconButton: View {
         self.size = size
         self.iconSize = iconSize
         self.isPrimary = isPrimary
+        self.iconBlendMode = iconBlendMode
+        self.iconColorOverride = iconColorOverride
         self.help = help
         self.surfaceVariant = surfaceVariant
         self.action = action
@@ -79,7 +115,9 @@ struct GlassIconButton: View {
                 size: size,
                 iconSize: iconSize,
                 isPrimary: isPrimary,
-                surfaceVariant: surfaceVariant
+                surfaceVariant: surfaceVariant,
+                iconBlendMode: iconBlendMode,
+                iconColorOverride: iconColorOverride
             )
         }
         .buttonStyle(.plain)
@@ -139,7 +177,8 @@ struct GlassToolbarMenuButton<Content: View>: View {
                     : GlassStyleTokens.headerControlHeight,
                 iconSize: GlassToolbarButton.iconSize(for: style),
                 isPrimary: style == .primary,
-                surfaceVariant: .defaultToolbar
+                surfaceVariant: .defaultToolbar,
+                iconBlendMode: nil
             )
         }
         .buttonStyle(.plain)

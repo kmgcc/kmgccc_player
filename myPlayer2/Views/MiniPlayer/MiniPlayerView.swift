@@ -8,7 +8,8 @@
 
 import SwiftUI
 
-private enum PlaybackMode {
+// Playback mode enum shared with FullscreenMiniPlayerView
+enum PlaybackMode {
     case sequence
     case shuffle
     case repeatOne
@@ -277,11 +278,6 @@ struct MiniPlayerView: View {
                     Capsule()
                         .fill(fill)
                         .frame(width: progressWidth(in: geometry.size.width), height: barHeight)
-
-                    Circle()
-                        .fill(Color.clear)
-                        .frame(width: 14, height: 14)
-                        .offset(x: progressWidth(in: geometry.size.width) - 7)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             }
@@ -494,10 +490,39 @@ struct MiniPlayerView: View {
     }
 }
 
-private struct PlaybackModeSlider: View {
+// Playback mode slider shared with FullscreenMiniPlayerView
+struct PlaybackModeSlider: View {
     let mode: PlaybackMode
     let isEnabled: Bool
+    let iconSize: CGFloat
+    let selectedColor: Color
+    let unselectedColor: Color
+    let useScreenBlend: Bool
+    let pillTintColor: Color?
+    let pillTintBlendMode: BlendMode?
     let onSelect: (PlaybackMode) -> Void
+
+    init(
+        mode: PlaybackMode,
+        isEnabled: Bool,
+        iconSize: CGFloat = 12,
+        selectedColor: Color = .primary,
+        unselectedColor: Color = .secondary,
+        useScreenBlend: Bool = false,
+        pillTintColor: Color? = nil,
+        pillTintBlendMode: BlendMode? = nil,
+        onSelect: @escaping (PlaybackMode) -> Void
+    ) {
+        self.mode = mode
+        self.isEnabled = isEnabled
+        self.iconSize = iconSize
+        self.selectedColor = selectedColor
+        self.unselectedColor = unselectedColor
+        self.useScreenBlend = useScreenBlend
+        self.pillTintColor = pillTintColor
+        self.pillTintBlendMode = pillTintBlendMode
+        self.onSelect = onSelect
+    }
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -539,11 +564,15 @@ private struct PlaybackModeSlider: View {
                 Capsule()
                     .fill(trackFill)
                     .overlay(Capsule().stroke(trackBorder, lineWidth: 1))
+                    .compositingGroup()
+                    .blendMode(pillTintBlendMode ?? .normal)
                     .allowsHitTesting(false)
 
                 Capsule()
                     .fill(knobFill)
                     .overlay(Capsule().stroke(knobBorder, lineWidth: 1))
+                    .compositingGroup()
+                    .blendMode(pillTintBlendMode ?? .normal)
                     .frame(width: segmentWidth, height: geometry.size.height - inset * 2)
                     .offset(x: knobOffset + inset)
                     .allowsHitTesting(false)
@@ -643,18 +672,34 @@ private struct PlaybackModeSlider: View {
     @ViewBuilder
     private func segmentIcon(systemImage: String, index: Int, isSelected: Bool) -> some View {
         let icon = Image(systemName: systemImage)
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(isSelected ? .primary : .secondary)
+            .font(.system(size: iconSize, weight: .semibold))
+            .foregroundStyle(isSelected ? selectedColor : unselectedColor)
 
         if isSelected, animatedModeIndex == index {
-            icon.symbolEffect(.bounce, value: modeAnimationTrigger)
+            if useScreenBlend {
+                icon
+                    .symbolEffect(.bounce, value: modeAnimationTrigger)
+                    .compositingGroup()
+                    .blendMode(.screen)
+            } else {
+                icon.symbolEffect(.bounce, value: modeAnimationTrigger)
+            }
         } else {
-            icon
+            if useScreenBlend {
+                icon
+                    .compositingGroup()
+                    .blendMode(.screen)
+            } else {
+                icon
+            }
         }
     }
 
     private var trackFill: Color {
-        Color.secondary.opacity(0.2)
+        if let pillTintColor {
+            return pillTintColor.opacity(0.18)
+        }
+        return Color.secondary.opacity(0.2)
     }
 
     private var trackBorder: Color {
@@ -662,7 +707,10 @@ private struct PlaybackModeSlider: View {
     }
 
     private var knobFill: Color {
-        Color.primary.opacity(0.2)
+        if let pillTintColor {
+            return pillTintColor.opacity(0.34)
+        }
+        return Color.primary.opacity(0.2)
     }
 
     private var knobBorder: Color {
