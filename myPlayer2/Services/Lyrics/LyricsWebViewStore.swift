@@ -77,6 +77,16 @@ final class LyricsWebViewStore: NSObject {
         let config = WKWebViewConfiguration()
         config.preferences.setValue(true, forKey: "developerExtrasEnabled")
         config.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
+        if let roleData = try? JSONEncoder().encode(role),
+            let roleJSONString = String(data: roleData, encoding: .utf8)
+        {
+            let roleUserScript = WKUserScript(
+                source: "window.__AMLL_SURFACE_ROLE = \(roleJSONString);",
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: true
+            )
+            config.userContentController.addUserScript(roleUserScript)
+        }
 
         // Create the single WebView instance
         let wv = WKWebView(frame: .zero, configuration: config)
@@ -109,10 +119,11 @@ final class LyricsWebViewStore: NSObject {
         }
 
         let amllDir = indexURL.deletingLastPathComponent()
+        let loadURL = indexURL
         print(
-            "[LyricsStore] Loading AMLL from: \(indexURL.lastPathComponent), objectID=\(webViewObjectID)"
+            "[LyricsStore] Loading AMLL from: \(loadURL.absoluteString) role=\(role), objectID=\(webViewObjectID)"
         )
-        webView.loadFileURL(indexURL, allowingReadAccessTo: amllDir)
+        webView.loadFileURL(loadURL, allowingReadAccessTo: amllDir)
     }
 
     func shutdown() {
@@ -543,7 +554,7 @@ extension LyricsWebViewStore: WKScriptMessageHandler {
             case "onUserSeek":
                 handleOnUserSeek(message.body)
             case "log":
-                print("[AMLLWeb] \(message.body)")
+                print("[AMLLWeb:\(role)] \(message.body)")
             default:
                 print("[LyricsStore] Unknown message: \(message.name)")
             }
