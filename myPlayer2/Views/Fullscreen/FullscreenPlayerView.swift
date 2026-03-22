@@ -107,7 +107,11 @@ struct FullscreenPlayerView: View {
         .onAppear {
             setupSeekCallback()
             syncLyricsColumnVisibility(animated: false)
-            reloadLyricsSurface(reason: "fullscreen appear", forceLyricsReload: true)
+            reloadLyricsSurface(
+                reason: "fullscreen appear",
+                forceWebReload: true,
+                forceLyricsReload: true
+            )
         }
         .onDisappear {
             lyricsVM.onSeekRequest = nil
@@ -258,7 +262,6 @@ struct FullscreenPlayerView: View {
                     )
                 )
                 .compositingGroup()
-                .blendMode(.plusLighter)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         }
     }
@@ -382,6 +385,19 @@ struct FullscreenPlayerView: View {
         let translationFontFamily = cssFontFamily([
             settings.fullscreenLyricsTranslationFontName
         ])
+        let mainActiveColor = ArtworkColorExtractor.cssRGBA(colorSet.mainActive, alpha: 1.0)
+        let mainInactiveColor = ArtworkColorExtractor.cssRGBA(colorSet.mainInactive, alpha: 1.0)
+        let subActiveColor = ArtworkColorExtractor.cssRGBA(colorSet.subActive, alpha: 1.0)
+        let subInactiveColor = ArtworkColorExtractor.cssRGBA(colorSet.subInactive, alpha: 1.0)
+        let lineTimingMainInactiveColor = ArtworkColorExtractor.cssRGBA(
+            colorSet.lineTimingMainInactive,
+            alpha: 1.0
+        )
+        let lineTimingSubInactiveColor = ArtworkColorExtractor.cssRGBA(
+            colorSet.lineTimingSubInactive,
+            alpha: 1.0
+        )
+        let backgroundColor = lineTimingMainInactiveColor
 
         let config: [String: Any] = [
             "fontSize": settings.fullscreenLyricsFontSize,
@@ -395,26 +411,14 @@ struct FullscreenPlayerView: View {
             ),
             "mixBlendMode": "normal",
             "blendOpacity": 1.0,
-            "renderScale": 1.0,
             "fullscreenLyricDodgeMode": true,
-            "fullscreenActiveColor": ArtworkColorExtractor.cssRGBA(colorSet.mainActive, alpha: 1.0),
-            "fullscreenInactiveColor": ArtworkColorExtractor.cssRGBA(
-                colorSet.mainInactive,
-                alpha: 1.0
-            ),
-            "fullscreenSubActiveColor": ArtworkColorExtractor.cssRGBA(colorSet.subActive, alpha: 1.0),
-            "fullscreenSubInactiveColor": ArtworkColorExtractor.cssRGBA(
-                colorSet.subInactive,
-                alpha: 1.0
-            ),
-            "fullscreenLineTimingInactiveColor": ArtworkColorExtractor.cssRGBA(
-                colorSet.lineTimingMainInactive,
-                alpha: 0.35
-            ),
-            "fullscreenLineTimingSubInactiveColor": ArtworkColorExtractor.cssRGBA(
-                colorSet.lineTimingSubInactive,
-                alpha: 0.30
-            ),
+            "fullscreenActiveColor": mainActiveColor,
+            "fullscreenInactiveColor": mainInactiveColor,
+            "fullscreenSubActiveColor": subActiveColor,
+            "fullscreenSubInactiveColor": subInactiveColor,
+            "fullscreenBackgroundColor": backgroundColor,
+            "fullscreenLineTimingInactiveColor": lineTimingMainInactiveColor,
+            "fullscreenLineTimingSubInactiveColor": lineTimingSubInactiveColor,
             "alignAnchor": "top",
             "alignPosition": fullscreenLyricsAlignPosition,
             "lineHeight": 1.8,
@@ -433,17 +437,6 @@ struct FullscreenPlayerView: View {
     private func clearFullscreenLyricsTheme() {
         let store = lyricsVM.webViewStore
         store.setThemePaletteOverride(nil)
-
-        let config: [String: Any] = [
-            "fullscreenLyricDodgeMode": false,
-            "mixBlendMode": "plus-lighter",
-            "blendOpacity": 1.0
-        ]
-        if let data = try? JSONSerialization.data(withJSONObject: config),
-            let json = String(data: data, encoding: .utf8)
-        {
-            store.setConfigJSON(json)
-        }
     }
 
     private func makeContext(windowSize: CGSize, artworkColumnWidth: CGFloat) -> SkinContext {
@@ -618,7 +611,36 @@ struct FullscreenPlayerView: View {
             saturation: clamp(tunedSaturation * 0.72, min: 0, max: 1),
             lightness: lineTimingInactiveLightness
         )
-        let lineTimingSubInactiveColor = lineTimingMainInactiveColor
+        let subActiveLightness = clamp(
+            inactiveLightness + 0.08,
+            min: 0.54,
+            max: 0.76
+        )
+        let subInactiveLightness = clamp(
+            inactiveLightness - 0.06,
+            min: 0.40,
+            max: 0.64
+        )
+        let lineTimingSubInactiveLightness = clamp(
+            subInactiveLightness - 0.12,
+            min: 0.30,
+            max: 0.52
+        )
+        let subActiveColor = colorFromHSL(
+            hue: hsl.hue,
+            saturation: clamp(tunedSaturation * 0.78, min: 0, max: 1),
+            lightness: subActiveLightness
+        )
+        let subInactiveColor = colorFromHSL(
+            hue: hsl.hue,
+            saturation: clamp(tunedSaturation * 0.68, min: 0, max: 1),
+            lightness: subInactiveLightness
+        )
+        let lineTimingSubInactiveColor = colorFromHSL(
+            hue: hsl.hue,
+            saturation: clamp(tunedSaturation * 0.62, min: 0, max: 1),
+            lightness: lineTimingSubInactiveLightness
+        )
 
         return FullscreenLyricsColorSet(
             mainActive: colorFromHSL(
@@ -628,9 +650,9 @@ struct FullscreenPlayerView: View {
             ),
             mainInactive: mainInactiveColor,
             lineTimingMainInactive: lineTimingMainInactiveColor,
-            // Translation lines follow the dimmer no-word-progress tier.
-            subActive: lineTimingMainInactiveColor,
-            subInactive: lineTimingMainInactiveColor,
+            // Translation lines stay in a readable light tier on fullscreen dark surface.
+            subActive: subActiveColor,
+            subInactive: subInactiveColor,
             lineTimingSubInactive: lineTimingSubInactiveColor
         )
     }
