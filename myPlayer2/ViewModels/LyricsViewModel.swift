@@ -229,6 +229,7 @@ final class LyricsViewModel {
             "leadInMs": leadInMs,
             "generalLeadInMs": generalLeadInMs,
             "nearSwitchGapMs": nearSwitchGapMs,
+            "interludeDotsOffsetX": 0,
             "timeOffsetMs": combinedOffsetMs,
             "theme": resolvedTheme,
             "lineHeight": 1.5,

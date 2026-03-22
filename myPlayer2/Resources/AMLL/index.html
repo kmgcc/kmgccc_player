@@ -1243,6 +1243,7 @@
 	        let generalLeadInMs = 0;
 	        let nearSwitchGapMs = 70;
 	        let nearSwitchWordLeadInRatio = 0.6;
+	        let interludeDotsOffsetX = 0;
 	        let timeOffsetMs = 0;
 	        let lastTTML = "";
 	        let lineTimingOnlyMode = false;
@@ -1724,7 +1725,16 @@
 	                            lyricPlayer.setAlignPosition(nextAlignPosition);
 	                        }
 	                    }
-                    if (hasOwn("textColor")) {
+	                    if (typeof config.interludeDotsOffsetX === "number" && !Number.isNaN(config.interludeDotsOffsetX)) {
+	                        const nextInterludeDotsOffsetX = Math.max(-80, Math.min(80, config.interludeDotsOffsetX));
+	                        if (nextInterludeDotsOffsetX !== interludeDotsOffsetX) {
+	                            interludeDotsOffsetX = nextInterludeDotsOffsetX;
+	                            if (typeof lyricPlayer.setInterludeDotsOffsetX === "function") {
+	                                lyricPlayer.setInterludeDotsOffsetX(nextInterludeDotsOffsetX);
+	                            }
+	                        }
+	                    }
+	                    if (hasOwn("textColor")) {
                         if (typeof config.textColor === "string" && config.textColor.length > 0) {
                             const resolvedTextColor = fullscreenOpaqueLyricsMode
                                 ? toOpaqueColor(config.textColor)
