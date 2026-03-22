@@ -19305,7 +19305,7 @@ class JQ extends EventTarget {
     const Q = this.scrollToIndex;
     let E = !1;
     g ? E = g[3] : this.interludeDots.setInterlude(void 0);
-    const o = (this.baseFontSize || 24) * 0.4, D = this.interludeDotsSize[1] + o * 2;
+    const o = (this.baseFontSize || 24) * 0.4, D = this.interludeDotsSize[1] + o * 2, k = Math.min(10, Math.max(4, o * 0.35));
     g && g[2] !== -1 && (C -= D);
     const c = this.size[1] / 5, t = this.currentLyricLineObjects.slice(0, Q).reduce(
       (Y, l) => Y + (l.getLine().isBG && this.isPlaying ? 0 : this.lyricLinesSize.get(l)?.[1] ?? c),
@@ -19331,7 +19331,7 @@ class JQ extends EventTarget {
       if (!h && O) {
         h = !0, C += o;
         let U = 0;
-        g && E && (U = this.size[0] - this.interludeDotsSize[0]), this.interludeDots.setTransform(U, C), g && this.interludeDots.setInterlude([g[0], g[1]]), C += this.interludeDotsSize[1], C += o;
+        g && E && (U = this.size[0] - this.interludeDotsSize[0] - k), this.interludeDots.setTransform(U, C), g && this.interludeDots.setInterlude([g[0], g[1]]), C += this.interludeDotsSize[1], C += o;
       }
       let G;
       this.hidePassedLines ? l < (g ? g[2] + 1 : this.scrollToIndex) && this.isPlaying ? G = 1e-5 : m ? G = 0.85 : G = this.isNonDynamic ? 0.2 : 1 : m ? G = 0.85 : G = this.isNonDynamic ? 0.2 : 1;
