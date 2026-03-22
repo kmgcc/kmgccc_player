@@ -17,9 +17,36 @@ import SwiftUI
 @MainActor
 final class BKArtBackgroundController: ObservableObject {
     @Published private(set) var transitionID: Int = 0
+    @Published private(set) var primaryBackgroundColor: NSColor?
+    @Published private(set) var currentSurfaceBackgroundColor: NSColor?
+    @Published private(set) var currentSurfaceUsesDotBackground: Bool = false
+    @Published private(set) var currentSurfaceVariantIndex: Int?
+    @Published private(set) var isUltraDarkActive: Bool = false
+    @Published private(set) var lyricsColorSampleRevision: Int = 0
 
     func triggerTransition() {
         transitionID &+= 1
+    }
+
+    func setPrimaryBackgroundColor(_ color: NSColor?) {
+        primaryBackgroundColor = color
+    }
+
+    func setCurrentSurfaceBackgroundColor(_ color: NSColor?) {
+        currentSurfaceBackgroundColor = color
+    }
+
+    func setCurrentSurfaceDescriptor(usesDotBackground: Bool, variantIndex: Int?) {
+        currentSurfaceUsesDotBackground = usesDotBackground
+        currentSurfaceVariantIndex = variantIndex
+    }
+
+    func setUltraDarkActive(_ isActive: Bool) {
+        isUltraDarkActive = isActive
+    }
+
+    func markLyricsColorSampleReady() {
+        lyricsColorSampleRevision &+= 1
     }
 }
 
@@ -34,6 +61,7 @@ struct BKArtBackgroundView: View {
 
     var body: some View {
         BKArtBackgroundRepresentable(
+            controller: controller,
             transitionID: controller.transitionID,
             seed: seedValue,
             palette: palette,
@@ -64,12 +92,60 @@ struct BKArtBackgroundView: View {
     private func refreshPalette() {
         guard let data = artworkData else {
             palette = Self.fallbackPalette
+            controller.setPrimaryBackgroundColor(Self.fallbackPalette.first)
+            controller.setCurrentSurfaceBackgroundColor(nil)
+            controller.setCurrentSurfaceDescriptor(usesDotBackground: false, variantIndex: nil)
+            controller.setUltraDarkActive(false)
             return
         }
         let base = ArtworkColorExtractor.uiThemePalette(from: data, maxColors: 4)
         let rich = ArtworkColorExtractor.uiThemePaletteRich(from: data, desiredCount: 8)
         let chosen = rich.isEmpty ? base : rich
-        palette = chosen.isEmpty ? Self.fallbackPalette : chosen
+        let resolvedPalette = chosen.isEmpty ? Self.fallbackPalette : chosen
+        controller.setCurrentSurfaceBackgroundColor(nil)
+        palette = resolvedPalette
+        let harmonized = BKColorEngine.make(
+            extracted: resolvedPalette,
+            fallback: Self.fallbackPalette,
+            isDark: colorScheme == .dark
+        )
+        let primaryBackgroundColor = stableLyricsBackgroundColor(from: harmonized)
+            ?? predictedInitialBackgroundColor(from: harmonized)
+            ?? resolvedPalette.first
+            ?? Self.fallbackPalette.first
+        controller.setPrimaryBackgroundColor(primaryBackgroundColor)
+        controller.setUltraDarkActive(isUltraDarkPalette(harmonized))
+        controller.markLyricsColorSampleReady()
+    }
+
+    private func predictedInitialBackgroundColor(from harmonized: HarmonizedPalette) -> NSColor? {
+        let variantCount = max(1, harmonized.bgVariants.isEmpty ? 1 : harmonized.bgVariants.count)
+        let variantIndex = Int((seedValue ^ 0x7A6C_2E43_5B91_F0D3) % UInt64(variantCount))
+        let toneVariant = !harmonized.bgVariants.isEmpty
+            ? harmonized.bgVariants[min(max(0, variantIndex), harmonized.bgVariants.count - 1)]
+            : harmonized.bgStops
+        return toneVariant.first.flatMap { NSColor(cgColor: $0) }
+    }
+
+    private func stableLyricsBackgroundColor(from harmonized: HarmonizedPalette) -> NSColor? {
+        if controller.currentSurfaceUsesDotBackground {
+            return harmonized.bgStops.first.flatMap { NSColor(cgColor: $0) }
+        }
+
+        if let variantIndex = controller.currentSurfaceVariantIndex {
+            let toneVariant = !harmonized.bgVariants.isEmpty
+                ? harmonized.bgVariants[min(max(0, variantIndex), harmonized.bgVariants.count - 1)]
+                : harmonized.bgStops
+            return toneVariant.first.flatMap { NSColor(cgColor: $0) }
+        }
+
+        return nil
+    }
+
+    private func isUltraDarkPalette(_ harmonized: HarmonizedPalette) -> Bool {
+        let luma = harmonized.imageCoverLuma
+        return (luma < 0.36 && harmonized.areaDominantB < 0.30)
+            || (luma < 0.30 && harmonized.grayScore > 0.70)
     }
 
     fileprivate static let fallbackPalette: [NSColor] = [
@@ -80,6 +156,7 @@ struct BKArtBackgroundView: View {
 }
 
 private struct BKArtBackgroundRepresentable: NSViewRepresentable {
+    let controller: BKArtBackgroundController
     let transitionID: Int
     let seed: UInt64
     let palette: [NSColor]
@@ -88,6 +165,7 @@ private struct BKArtBackgroundRepresentable: NSViewRepresentable {
 
     func makeNSView(context: Context) -> BKArtBackgroundLayerView {
         let contentView = BKArtBackgroundLayerView()
+        contentView.backgroundController = controller
         contentView.updatePalette(palette, isDark: isDark)
         contentView.ensureBaseContainer(seed: seed)
         contentView.setPlayback(isPlaying: isPlaying)
@@ -96,6 +174,7 @@ private struct BKArtBackgroundRepresentable: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: BKArtBackgroundLayerView, context: Context) {
+        nsView.backgroundController = controller
         nsView.updatePalette(palette, isDark: isDark)
         nsView.ensureBaseContainer(seed: seed)
         nsView.setPlayback(isPlaying: isPlaying)
@@ -109,6 +188,8 @@ private struct BKArtBackgroundRepresentable: NSViewRepresentable {
 
 @MainActor
 private final class BKArtBackgroundLayerView: NSView {
+    weak var backgroundController: BKArtBackgroundController?
+
     private struct ShapeState {
         var basePosition: CGPoint
         var driftX: CGFloat
@@ -397,6 +478,7 @@ private final class BKArtBackgroundLayerView: NSView {
         applyTone(fromContainer)
         applyTone(toContainer)
         applyCurrentBackgroundPhase()
+        publishCurrentSurfaceBackgroundColor()
 
         if let from = fromContainer { updateDotGradient(from) }
         if let to = toContainer { updateDotGradient(to) }
@@ -421,6 +503,7 @@ private final class BKArtBackgroundLayerView: NSView {
         commitStyleHistory(container.style)
         layer?.addSublayer(container.layer)
         applyCurrentBackgroundPhase()
+        publishCurrentSurfaceBackgroundColor()
         startTimersIfNeeded()
     }
 
@@ -477,6 +560,7 @@ private final class BKArtBackgroundLayerView: NSView {
 
         layer?.addSublayer(replacement.layer)
         applyCurrentBackgroundPhase()
+        publishCurrentSurfaceBackgroundColor()
         startTimersIfNeeded()
     }
 
@@ -1223,6 +1307,7 @@ private final class BKArtBackgroundLayerView: NSView {
     private func applyCurrentBackgroundPhase() {
         applyBackgroundPhase(to: fromContainer)
         applyBackgroundPhase(to: toContainer)
+        publishCurrentSurfaceBackgroundColor()
     }
 
     private func applyBackgroundPhase(to container: Container?) {
@@ -1351,6 +1436,34 @@ private final class BKArtBackgroundLayerView: NSView {
         commitStyleHistory(next.style)
         stopTransitionTimer()
         exitTransitionPerformanceMode()
+        publishCurrentSurfaceBackgroundColor()
+    }
+
+    private func publishCurrentSurfaceBackgroundColor() {
+        backgroundController?.setCurrentSurfaceDescriptor(
+            usesDotBackground: fromContainer?.style == .dot,
+            variantIndex: fromContainer?.bgVariantIndex
+        )
+        backgroundController?.setCurrentSurfaceBackgroundColor(
+            resolvedDisplayedBackgroundColor(for: fromContainer)
+        )
+    }
+
+    private func resolvedDisplayedBackgroundColor(for container: Container?) -> NSColor? {
+        guard let container else { return nil }
+
+        if container.style == .dot {
+            if let cgColor = container.backgroundLayer.backgroundColor {
+                return NSColor(cgColor: cgColor)
+            }
+            return harmonized.bgStops.first.flatMap { NSColor(cgColor: $0) }
+        }
+
+        if let cgColor = container.backgroundToneLayer.backgroundColor {
+            return NSColor(cgColor: cgColor)
+        }
+
+        return harmonized.bgStops.first.flatMap { NSColor(cgColor: $0) }
     }
 
     private struct ImageVariantTuning {
