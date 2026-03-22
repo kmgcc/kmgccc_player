@@ -31,10 +31,12 @@ struct FullscreenPlayerView: View {
     private let lyricsViewportTopLift: CGFloat = 22
     private let fullscreenLyricsAlignPosition: Double = 0.28
     private let fixedMiniplayerHeight: CGFloat = 60
-    private let fullscreenLyricsMinimumActiveLightness: CGFloat = 0.70
-    private let fullscreenLyricsMaximumActiveLightness: CGFloat = 0.82
-    private let fullscreenLyricsActiveToInactiveLightnessDelta: CGFloat = 0.24
-    private let fullscreenLyricsLineTimingInactiveLightnessDelta: CGFloat = 0.22
+    private let fullscreenLyricsMinimumBaseLightness: CGFloat = 0.52
+    private let fullscreenLyricsMaximumBaseLightness: CGFloat = 0.66
+    private let fullscreenLyricsMinimumSubActiveLightness: CGFloat = 0.88
+    private let fullscreenLyricsMaximumSubActiveLightness: CGFloat = 0.94
+    private let fullscreenLyricsMinimumMainActiveLightness: CGFloat = 0.95
+    private let fullscreenLyricsMaximumMainActiveLightness: CGFloat = 0.98
     private let fullscreenLyricsSaturationFloor: CGFloat = 0.10
     private let fullscreenLyricsSaturationCeiling: CGFloat = 0.58
 
@@ -47,9 +49,12 @@ struct FullscreenPlayerView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @EnvironmentObject private var themeStore: ThemeStore
-    @State private var bkController = BKArtBackgroundController()
+    @StateObject private var bkController = BKArtBackgroundController()
     @State private var skinRevision = 0
     @State private var lyricsColumnVisible: Bool?
+    @State private var lockedFullscreenLyricsBackgroundColor: NSColor?
+    @State private var lockedFullscreenLyricsUltraDark: Bool = false
+    @State private var pendingFullscreenLyricsBackgroundCapture: Bool = false
     @Namespace private var fullscreenLayoutNamespace
 
     var onExitFullscreen: (() -> Void)?
@@ -104,7 +109,23 @@ struct FullscreenPlayerView: View {
             .id("fullscreen_\(selectedSkinID)_\(skinRevision)")
             .frame(width: proxy.size.width, height: proxy.size.height)
         }
+        .contentShape(Rectangle())
+        .contextMenu {
+            Button {
+                refreshFullscreenLyricsColors()
+            } label: {
+                Label(
+                    NSLocalizedString(
+                        "fullscreen.refresh_lyrics_colors",
+                        comment: "Refresh fullscreen lyrics color sampling"
+                    ),
+                    systemImage: "arrow.clockwise"
+                )
+            }
+        }
         .onAppear {
+            resetFullscreenLyricsBackgroundSnapshot()
+            scheduleFullscreenLyricsBackgroundCapture()
             setupSeekCallback()
             syncLyricsColumnVisibility(animated: false)
             reloadLyricsSurface(
@@ -127,12 +148,16 @@ struct FullscreenPlayerView: View {
         .onChange(of: playerVM.currentTrack?.id, handleTrackIdChange)
         .onReceive(NotificationCenter.default.publisher(for: .playbackTrackDidChange)) { _ in
             syncLyricsColumnVisibility(animated: true)
-            reloadLyricsSurface(reason: "fullscreen playback track notification", forceLyricsReload: true)
         }
         .onChange(of: hasLyricsForCurrentTrack) { _, _ in
             syncLyricsColumnVisibility(animated: true)
         }
         .onChange(of: fullscreenLyricsConfigSignature) { _, _ in
+            applyFullscreenLyricsTheme()
+        }
+        .onChange(of: bkController.lyricsColorSampleRevision) { _, _ in
+            guard pendingFullscreenLyricsBackgroundCapture else { return }
+            captureFullscreenLyricsBackgroundSnapshot()
             applyFullscreenLyricsTheme()
         }
     }
@@ -333,6 +358,8 @@ struct FullscreenPlayerView: View {
 
     private func handleTrackIdChange(_ oldId: UUID?, _ newId: UUID?) {
         guard oldId != newId else { return }
+        resetFullscreenLyricsBackgroundSnapshot()
+        scheduleFullscreenLyricsBackgroundCapture()
         syncLyricsColumnVisibility(animated: true)
         reloadLyricsSurface(reason: "fullscreen track changed", forceLyricsReload: true)
     }
@@ -350,6 +377,9 @@ struct FullscreenPlayerView: View {
             forceWebReload: forceWebReload,
             forceLyricsReload: forceLyricsReload
         )
+        if !pendingFullscreenLyricsBackgroundCapture {
+            captureFullscreenLyricsBackgroundSnapshot()
+        }
         applyFullscreenLyricsTheme()
     }
 
@@ -397,7 +427,7 @@ struct FullscreenPlayerView: View {
             colorSet.lineTimingSubInactive,
             alpha: 1.0
         )
-        let backgroundColor = lineTimingMainInactiveColor
+        let backgroundColor = subActiveColor
 
         let config: [String: Any] = [
             "fontSize": settings.fullscreenLyricsFontSize,
@@ -437,6 +467,40 @@ struct FullscreenPlayerView: View {
     private func clearFullscreenLyricsTheme() {
         let store = lyricsVM.webViewStore
         store.setThemePaletteOverride(nil)
+    }
+
+    private func resetFullscreenLyricsBackgroundSnapshot() {
+        lockedFullscreenLyricsBackgroundColor = nil
+        lockedFullscreenLyricsUltraDark = false
+        pendingFullscreenLyricsBackgroundCapture = false
+    }
+
+    private func scheduleFullscreenLyricsBackgroundCapture() {
+        pendingFullscreenLyricsBackgroundCapture =
+            settings.nowPlayingArtBackgroundEnabled && playerVM.currentTrack != nil
+    }
+
+    private func captureFullscreenLyricsBackgroundSnapshot(preferLiveSurface: Bool = false) {
+        guard settings.nowPlayingArtBackgroundEnabled else {
+            resetFullscreenLyricsBackgroundSnapshot()
+            return
+        }
+
+        if preferLiveSurface {
+            lockedFullscreenLyricsBackgroundColor =
+                bkController.currentSurfaceBackgroundColor ?? bkController.primaryBackgroundColor
+        } else {
+            lockedFullscreenLyricsBackgroundColor =
+                bkController.primaryBackgroundColor ?? bkController.currentSurfaceBackgroundColor
+        }
+        lockedFullscreenLyricsUltraDark = bkController.isUltraDarkActive
+        pendingFullscreenLyricsBackgroundCapture = false
+    }
+
+    private func refreshFullscreenLyricsColors() {
+        resetFullscreenLyricsBackgroundSnapshot()
+        captureFullscreenLyricsBackgroundSnapshot(preferLiveSurface: true)
+        applyFullscreenLyricsTheme()
     }
 
     private func makeContext(windowSize: CGSize, artworkColumnWidth: CGFloat) -> SkinContext {
@@ -578,74 +642,87 @@ struct FullscreenPlayerView: View {
     }
 
     private func makeFullscreenLyricsColorSet(for track: Track?) -> FullscreenLyricsColorSet {
-        let baseColor = resolveFullscreenLyricsBaseColor(for: track)
-        let hsl = hslComponents(from: baseColor)
-        // Compress artwork saturation toward a stable lyric range instead of forcing a vivid floor.
+        let highlightBaseColor = resolveFullscreenLyricsBaseColor(for: track)
+        let highlightHSL = hslComponents(from: highlightBaseColor)
+        let inactiveBaseColor = resolveFullscreenLyricsInactiveBaseColor(for: track)
+        let inactiveHSL = hslComponents(from: inactiveBaseColor)
+        let inactiveDarkModeShift: CGFloat = colorScheme == .dark ? 0.08 : 0
+        let inactiveUltraDarkShift: CGFloat = lockedFullscreenLyricsUltraDark
+            ? (colorScheme == .dark ? 0.22 : 0.17)
+            : 0
+        let totalInactiveShift = inactiveDarkModeShift + inactiveUltraDarkShift
+        let activeLightnessShift: CGFloat = lockedFullscreenLyricsUltraDark
+            ? (colorScheme == .dark ? 0.10 : 0.06)
+            : (colorScheme == .dark ? 0.02 : 0)
+        let inactiveSaturationScale: CGFloat = lockedFullscreenLyricsUltraDark
+            ? (colorScheme == .dark ? 0.34 : 0.40)
+            : (colorScheme == .dark ? 0.42 : 0.48)
+        let inactiveSaturationBias: CGFloat = colorScheme == .dark ? 0.015 : 0.02
         let tunedSaturation = clamp(
-            hsl.saturation * 0.70 + 0.06,
+            highlightHSL.saturation * 0.70 + 0.06,
             min: fullscreenLyricsSaturationFloor,
             max: fullscreenLyricsSaturationCeiling
         )
-        let activeLightness = clamp(
-            max(hsl.lightness, fullscreenLyricsMinimumActiveLightness),
-            min: fullscreenLyricsMinimumActiveLightness,
-            max: fullscreenLyricsMaximumActiveLightness
-        )
-        let inactiveLightness = clamp(
-            activeLightness - fullscreenLyricsActiveToInactiveLightnessDelta,
-            min: 0.36,
-            max: 0.58
-        )
-        let lineTimingInactiveLightness = clamp(
-            inactiveLightness - fullscreenLyricsLineTimingInactiveLightnessDelta,
-            min: 0.14,
-            max: 0.26
-        )
-        let mainInactiveColor = colorFromHSL(
-            hue: hsl.hue,
-            saturation: clamp(tunedSaturation * 0.88, min: 0, max: 1),
-            lightness: inactiveLightness
-        )
-        let lineTimingMainInactiveColor = colorFromHSL(
-            hue: hsl.hue,
-            saturation: clamp(tunedSaturation * 0.72, min: 0, max: 1),
-            lightness: lineTimingInactiveLightness
+        let baseLightness = clamp(
+            max(
+                inactiveHSL.lightness - 0.02 - totalInactiveShift,
+                fullscreenLyricsMinimumBaseLightness - totalInactiveShift * 0.55
+            ),
+            min: max(0.24, fullscreenLyricsMinimumBaseLightness - totalInactiveShift),
+            max: max(0.40, fullscreenLyricsMaximumBaseLightness - totalInactiveShift * 0.95)
         )
         let subActiveLightness = clamp(
-            inactiveLightness + 0.08,
-            min: 0.54,
-            max: 0.76
+            max(highlightHSL.lightness + 0.12 - activeLightnessShift * 0.75, baseLightness + 0.12),
+            min: max(0.72, fullscreenLyricsMinimumSubActiveLightness - activeLightnessShift * 0.9),
+            max: max(0.82, fullscreenLyricsMaximumSubActiveLightness - activeLightnessShift * 0.75)
         )
-        let subInactiveLightness = clamp(
-            inactiveLightness - 0.06,
-            min: 0.40,
-            max: 0.64
+        let activeLightness = clamp(
+            max(highlightHSL.lightness + 0.18 - activeLightnessShift * 0.6, subActiveLightness + 0.08),
+            min: max(0.84, fullscreenLyricsMinimumMainActiveLightness - activeLightnessShift * 0.55),
+            max: max(0.90, fullscreenLyricsMaximumMainActiveLightness - activeLightnessShift * 0.45)
         )
-        let lineTimingSubInactiveLightness = clamp(
-            subInactiveLightness - 0.12,
-            min: 0.30,
-            max: 0.52
+        let mainInactiveColor = colorFromHSL(
+            hue: inactiveHSL.hue,
+            saturation: clamp(inactiveHSL.saturation * inactiveSaturationScale + inactiveSaturationBias, min: 0, max: 1),
+            lightness: baseLightness
+        )
+        let lineTimingMainInactiveColor = colorFromHSL(
+            hue: inactiveHSL.hue,
+            saturation: clamp(
+                inactiveHSL.saturation * max(0.28, inactiveSaturationScale - 0.03) + max(0.01, inactiveSaturationBias - 0.005),
+                min: 0,
+                max: 1
+            ),
+            lightness: baseLightness
         )
         let subActiveColor = colorFromHSL(
-            hue: hsl.hue,
+            hue: highlightHSL.hue,
             saturation: clamp(tunedSaturation * 0.78, min: 0, max: 1),
             lightness: subActiveLightness
         )
         let subInactiveColor = colorFromHSL(
-            hue: hsl.hue,
-            saturation: clamp(tunedSaturation * 0.68, min: 0, max: 1),
-            lightness: subInactiveLightness
+            hue: inactiveHSL.hue,
+            saturation: clamp(
+                inactiveHSL.saturation * max(0.26, inactiveSaturationScale - 0.05) + max(0.01, inactiveSaturationBias - 0.005),
+                min: 0,
+                max: 1
+            ),
+            lightness: baseLightness
         )
         let lineTimingSubInactiveColor = colorFromHSL(
-            hue: hsl.hue,
-            saturation: clamp(tunedSaturation * 0.62, min: 0, max: 1),
-            lightness: lineTimingSubInactiveLightness
+            hue: inactiveHSL.hue,
+            saturation: clamp(
+                inactiveHSL.saturation * max(0.24, inactiveSaturationScale - 0.08) + max(0.008, inactiveSaturationBias - 0.008),
+                min: 0,
+                max: 1
+            ),
+            lightness: baseLightness
         )
 
         return FullscreenLyricsColorSet(
             mainActive: colorFromHSL(
-                hue: hsl.hue,
-                saturation: clamp(tunedSaturation * 0.96, min: 0, max: 1),
+                hue: highlightHSL.hue,
+                saturation: clamp(tunedSaturation * 1.12 + 0.02, min: 0, max: 1),
                 lightness: activeLightness
             ),
             mainInactive: mainInactiveColor,
@@ -668,6 +745,30 @@ struct FullscreenPlayerView: View {
         }
 
         return NSColor(AppSettings.shared.accentColor)
+    }
+
+    private func resolveFullscreenLyricsInactiveBaseColor(for track: Track?) -> NSColor {
+        if let backgroundColor = lockedFullscreenLyricsBackgroundColor {
+            return backgroundColor
+        }
+
+        if settings.nowPlayingArtBackgroundEnabled {
+            if pendingFullscreenLyricsBackgroundCapture,
+                let backgroundColor = bkController.primaryBackgroundColor
+            {
+                return backgroundColor
+            }
+
+            if let backgroundColor = bkController.currentSurfaceBackgroundColor {
+                return backgroundColor
+            }
+
+            if let backgroundColor = bkController.primaryBackgroundColor {
+                return backgroundColor
+            }
+        }
+
+        return resolveFullscreenLyricsBaseColor(for: track)
     }
 
     private func hslComponents(from color: NSColor) -> (hue: CGFloat, saturation: CGFloat, lightness: CGFloat)
