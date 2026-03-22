@@ -18880,7 +18880,6 @@ class JQ extends EventTarget {
   lastCurrentTime = 0;
   alignAnchor = "center";
   alignPosition = 0.35;
-  interludeDotsOffsetX = 0;
   scrollOffset = 0;
   size = [0, 0];
   allowScroll = !0;
@@ -19115,10 +19114,6 @@ class JQ extends EventTarget {
   setAlignPosition(A) {
     this.alignPosition = A;
   }
-  setInterludeDotsOffsetX(A = 0) {
-    const I = Number.isFinite(A) ? A : 0;
-    this.interludeDotsOffsetX = I, this.calcLayout(!0);
-  }
   /**
    * 设置 overscan（视图上下额外缓冲渲染区）距离，单位：像素。
    * @param px 像素值，默认 300
@@ -19310,7 +19305,7 @@ class JQ extends EventTarget {
     const Q = this.scrollToIndex;
     let E = !1;
     g ? E = g[3] : this.interludeDots.setInterlude(void 0);
-    const o = (this.baseFontSize || 24) * 0.4, D = this.interludeDotsSize[1] + o * 2;
+    const o = (this.baseFontSize || 24) * 0.4, D = this.interludeDotsSize[1] + o * 2, k = Math.min(16, Math.max(10, o * 0.35));
     g && g[2] !== -1 && (C -= D);
     const c = this.size[1] / 5, t = this.currentLyricLineObjects.slice(0, Q).reduce(
       (Y, l) => Y + (l.getLine().isBG && this.isPlaying ? 0 : this.lyricLinesSize.get(l)?.[1] ?? c),
@@ -19335,8 +19330,8 @@ class JQ extends EventTarget {
       const m = this.bufferedLines.has(l), j = m || l >= this.scrollToIndex && l < s, M = Y.getLine(), O = g && l === g[2] + 1;
       if (!h && O) {
         h = !0, C += o;
-        let U = this.interludeDotsOffsetX;
-        g && E && (U = this.size[0] - this.interludeDotsSize[0] + this.interludeDotsOffsetX), this.interludeDots.setTransform(U, C), g && this.interludeDots.setInterlude([g[0], g[1]]), C += this.interludeDotsSize[1], C += o;
+        let U = -k;
+        g && E && (U = this.size[0] - this.interludeDotsSize[0] - k), this.interludeDots.setTransform(U, C), g && this.interludeDots.setInterlude([g[0], g[1]]), C += this.interludeDotsSize[1], C += o;
       }
       let G;
       this.hidePassedLines ? l < (g ? g[2] + 1 : this.scrollToIndex) && this.isPlaying ? G = 1e-5 : m ? G = 0.85 : G = this.isNonDynamic ? 0.2 : 1 : m ? G = 0.85 : G = this.isNonDynamic ? 0.2 : 1;

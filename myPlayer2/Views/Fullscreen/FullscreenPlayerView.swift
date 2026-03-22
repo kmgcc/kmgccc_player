@@ -34,7 +34,6 @@ struct FullscreenPlayerView: View {
     private let fullscreenBackgroundLyricsAvoidanceBottomInset: CGFloat = 146
     private let fullscreenLyricsAlignPosition: Double = 0.28
     private let fixedMiniplayerHeight: CGFloat = 60
-    private let fullscreenInterludeDotsOffsetX: Double = -12
     private let fullscreenLyricsMinimumBaseLightness: CGFloat = 0.52
     private let fullscreenLyricsMaximumBaseLightness: CGFloat = 0.66
     private let fullscreenLyricsMinimumSubActiveLightness: CGFloat = 0.88
@@ -456,7 +455,6 @@ struct FullscreenPlayerView: View {
             "fullscreenLineTimingSubInactiveColor": lineTimingSubInactiveColor,
             "alignAnchor": "top",
             "alignPosition": fullscreenLyricsAlignPosition,
-            "interludeDotsOffsetX": fullscreenInterludeDotsOffsetX,
             "lineHeight": 1.8,
             "activeScale": 1.2,
             "leadInMs": 180,
