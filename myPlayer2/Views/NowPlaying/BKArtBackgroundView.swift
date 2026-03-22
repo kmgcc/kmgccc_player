@@ -55,6 +55,7 @@ struct BKArtBackgroundView: View {
     let trackID: UUID?
     let artworkData: Data?
     let isPlaying: Bool
+    var avoidanceRect: CGRect? = nil
     @Environment(\.colorScheme) private var colorScheme
 
     @State private var palette: [NSColor] = Self.fallbackPalette
@@ -66,7 +67,8 @@ struct BKArtBackgroundView: View {
             seed: seedValue,
             palette: palette,
             isDark: colorScheme == .dark,
-            isPlaying: isPlaying
+            isPlaying: isPlaying,
+            avoidanceRect: avoidanceRect
         )
         .allowsHitTesting(false)
         .onAppear {
@@ -162,11 +164,13 @@ private struct BKArtBackgroundRepresentable: NSViewRepresentable {
     let palette: [NSColor]
     let isDark: Bool
     let isPlaying: Bool
+    let avoidanceRect: CGRect?
 
     func makeNSView(context: Context) -> BKArtBackgroundLayerView {
         let contentView = BKArtBackgroundLayerView()
         contentView.backgroundController = controller
         contentView.updatePalette(palette, isDark: isDark)
+        contentView.updateAvoidanceRect(avoidanceRect)
         contentView.ensureBaseContainer(seed: seed)
         contentView.setPlayback(isPlaying: isPlaying)
         contentView.currentTransitionID = transitionID
@@ -176,6 +180,7 @@ private struct BKArtBackgroundRepresentable: NSViewRepresentable {
     func updateNSView(_ nsView: BKArtBackgroundLayerView, context: Context) {
         nsView.backgroundController = controller
         nsView.updatePalette(palette, isDark: isDark)
+        nsView.updateAvoidanceRect(avoidanceRect)
         nsView.ensureBaseContainer(seed: seed)
         nsView.setPlayback(isPlaying: isPlaying)
 
@@ -340,6 +345,7 @@ private final class BKArtBackgroundLayerView: NSView {
     private var didPauseDotTimerForTransition = false
     private var deferredPaletteUpdate: ([NSColor], Bool)?
     private let ultraDarkOverlayOpacity: Float = 0.50
+    private var activeAvoidanceRect: CGRect?
 
     // Style Selector State
     private var lastStyle: BackgroundStyle?
@@ -413,6 +419,15 @@ private final class BKArtBackgroundLayerView: NSView {
             return
         }
         applyPalette(converted, isDark: isDark)
+    }
+
+    func updateAvoidanceRect(_ rect: CGRect?) {
+        let normalized = rect?.standardized
+        guard activeAvoidanceRect != normalized else { return }
+        activeAvoidanceRect = normalized
+
+        guard !bounds.isEmpty else { return }
+        rebuildForCurrentBounds()
     }
 
     func setPlayback(isPlaying: Bool) {
@@ -653,12 +668,7 @@ private final class BKArtBackgroundLayerView: NSView {
         )
         container.shapeTints = plannedTints
 
-        let forbiddenRect = CGRect(
-            x: bounds.width * 0.28,
-            y: bounds.height * 0.22,
-            width: bounds.width * 0.44,
-            height: bounds.height * 0.50
-        )
+        let shapeAvoidanceRect = activeAvoidanceRect?.insetBy(dx: -18, dy: -22)
 
         for (shapeIndex, selectedShape) in chosenShapes.enumerated() {
             let base = min(bounds.width, bounds.height)
@@ -673,7 +683,7 @@ private final class BKArtBackgroundLayerView: NSView {
                 : baseSide
             let point = selectedShape.isEdgePinned
                 ? randomPinnedEdgePoint(side: side, rng: &rng)
-                : randomEdgePoint(side: side, forbiddenRect: forbiddenRect, rng: &rng)
+                : randomEdgePoint(side: side, centerAvoidanceRect: shapeAvoidanceRect, rng: &rng)
 
             let size = CGSize(width: side, height: side)
             let finalTint = plannedTints[shapeIndex]
@@ -684,17 +694,11 @@ private final class BKArtBackgroundLayerView: NSView {
             container.shapesRoot.addSublayer(shape)
             container.shapeLayers.append(shape)
 
-            let driftX = selectedShape.isEdgePinned ? CGFloat(0) : CGFloat(rng.next(in: -12...12))
-            let driftY = selectedShape.isEdgePinned ? CGFloat(0) : CGFloat(rng.next(in: -16...16))
-            let phaseSpeed = selectedShape.isEdgePinned ? CGFloat(0) : CGFloat(rng.next(in: 0.35...0.95))
-            let state = ShapeState(
+            let state = makeShapeState(
                 basePosition: point,
-                driftX: driftX,
-                driftY: driftY,
-                phase: CGFloat(rng.next(in: 0...(Double.pi * 2))),
-                phaseSpeed: phaseSpeed,
-                angle: CGFloat(rng.next(in: 0...(Double.pi * 2))),
-                angularSpeed: CGFloat(rng.next(in: -0.22...0.22))
+                isEdgePinned: selectedShape.isEdgePinned,
+                centerAvoidanceRect: shapeAvoidanceRect,
+                rng: &rng
             )
             container.shapeStates.append(state)
         }
@@ -945,7 +949,7 @@ private final class BKArtBackgroundLayerView: NSView {
 
     private func randomEdgePoint(
         side: CGFloat,
-        forbiddenRect: CGRect,
+        centerAvoidanceRect: CGRect?,
         rng: inout BKSeededRandom
     ) -> CGPoint {
         let minDimension = max(1, min(bounds.width, bounds.height))
@@ -966,47 +970,166 @@ private final class BKArtBackgroundLayerView: NSView {
             return CGFloat(rng.next(in: Double(lo)...Double(hi)))
         }
 
+        func biasedSpanPoint(
+            lower: CGFloat,
+            upper: CGFloat,
+            centerAvoidanceRange: ClosedRange<CGFloat>?
+        ) -> CGFloat {
+            let span = max(0, upper - lower)
+            guard span > 1 else { return lower }
+
+            let edgeSegment = max(56, span * 0.22)
+            let nearLeadingUpper = min(upper, lower + edgeSegment)
+            let nearTrailingLower = max(lower, upper - edgeSegment)
+
+            let farLeadingUpper: CGFloat
+            let farTrailingLower: CGFloat
+            if let centerAvoidanceRange {
+                farLeadingUpper = max(lower, min(nearLeadingUpper, centerAvoidanceRange.lowerBound - 18))
+                farTrailingLower = min(upper, max(nearTrailingLower, centerAvoidanceRange.upperBound + 18))
+            } else {
+                farLeadingUpper = nearLeadingUpper
+                farTrailingLower = nearTrailingLower
+            }
+
+            let roll = rng.next(in: 0.0...1.0)
+            if roll < 0.44, farLeadingUpper > lower + 1 {
+                return randomBetween(lower, farLeadingUpper)
+            }
+            if roll < 0.88, upper > farTrailingLower + 1 {
+                return randomBetween(farTrailingLower, upper)
+            }
+            if roll < 0.95 {
+                return randomBetween(lower, upper)
+            }
+
+            let centerWidth = max(18, span * 0.12)
+            let mid = (lower + upper) * 0.5
+            return randomBetween(max(lower, mid - centerWidth * 0.5), min(upper, mid + centerWidth * 0.5))
+        }
+
+        let avoidanceXRange =
+            centerAvoidanceRect.map { $0.minX...$0.maxX }
+        let avoidanceYRange =
+            centerAvoidanceRect.map { $0.minY...$0.maxY }
+
         for _ in 0..<28 {
             let sidePick = rng.next(in: 0.0..<1.0)
             let point: CGPoint
             if sidePick < 0.30 {
                 point = CGPoint(
-                    x: randomBetween(xLower, xUpper),
+                    x: biasedSpanPoint(
+                        lower: xLower,
+                        upper: xUpper,
+                        centerAvoidanceRange: avoidanceXRange
+                    ),
                     y: randomBetween(yUpper - edgeBandY, yUpper)
                 )
             } else if sidePick < 0.60 {
                 point = CGPoint(
-                    x: randomBetween(xLower, xUpper),
+                    x: biasedSpanPoint(
+                        lower: xLower,
+                        upper: xUpper,
+                        centerAvoidanceRange: avoidanceXRange
+                    ),
                     y: randomBetween(yLower, yLower + edgeBandY)
                 )
             } else if sidePick < 0.80 {
                 point = CGPoint(
                     x: randomBetween(xLower, xLower + edgeBandX),
-                    y: randomBetween(yLower, yUpper)
+                    y: biasedSpanPoint(
+                        lower: yLower,
+                        upper: yUpper,
+                        centerAvoidanceRange: avoidanceYRange
+                    )
                 )
             } else {
                 point = CGPoint(
                     x: randomBetween(xUpper - edgeBandX, xUpper),
-                    y: randomBetween(yLower, yUpper)
+                    y: biasedSpanPoint(
+                        lower: yLower,
+                        upper: yUpper,
+                        centerAvoidanceRange: avoidanceYRange
+                    )
                 )
             }
 
-            let frame = CGRect(
-                x: point.x - half,
-                y: point.y - half,
-                width: safeSide,
-                height: safeSide
-            )
-            if !frame.intersects(forbiddenRect) {
+            let centerIsClear = centerAvoidanceRect?.contains(point) != true
+            if centerIsClear {
                 return point
             }
         }
 
-        let fallbackX = min(max(half + 16, xLower), xUpper)
+        let fallbackX: CGFloat
+        if let centerAvoidanceRect {
+            fallbackX = min(
+                max(half + 16, xLower),
+                max(xLower, min(xUpper, centerAvoidanceRect.minX - 18))
+            )
+        } else {
+            fallbackX = min(max(half + 16, xLower), xUpper)
+        }
         let fallbackY = min(max(bounds.height - half - 16, yLower), yUpper)
         return CGPoint(
             x: fallbackX,
             y: fallbackY
+        )
+    }
+
+    private func makeShapeState(
+        basePosition: CGPoint,
+        isEdgePinned: Bool,
+        centerAvoidanceRect: CGRect?,
+        rng: inout BKSeededRandom
+    ) -> ShapeState {
+        let phase = CGFloat(rng.next(in: 0...(Double.pi * 2)))
+        let angle = CGFloat(rng.next(in: 0...(Double.pi * 2)))
+        let angularSpeed = CGFloat(rng.next(in: -0.22...0.22))
+
+        guard !isEdgePinned else {
+            return ShapeState(
+                basePosition: basePosition,
+                driftX: 0,
+                driftY: 0,
+                phase: phase,
+                phaseSpeed: 0,
+                angle: angle,
+                angularSpeed: angularSpeed
+            )
+        }
+
+        for _ in 0..<10 {
+            let driftX = CGFloat(rng.next(in: -12...12))
+            let driftY = CGFloat(rng.next(in: -16...16))
+            let motionRect = CGRect(
+                x: basePosition.x - abs(driftX),
+                y: basePosition.y - abs(driftY),
+                width: abs(driftX) * 2,
+                height: abs(driftY) * 2
+            )
+            if centerAvoidanceRect?.intersects(motionRect) == true {
+                continue
+            }
+
+            return ShapeState(
+                basePosition: basePosition,
+                driftX: driftX,
+                driftY: driftY,
+                phase: phase,
+                phaseSpeed: CGFloat(rng.next(in: 0.35...0.95)),
+                angle: angle,
+                angularSpeed: angularSpeed
+            )
+        }
+
+        return ShapeState(
+            basePosition: basePosition,
+            driftX: 0,
+            driftY: 0,
+            phase: phase,
+            phaseSpeed: 0,
+            angle: angle,
+            angularSpeed: angularSpeed
         )
     }
 
@@ -1813,37 +1936,12 @@ private final class BKArtBackgroundLayerView: NSView {
     ) {
         guard let root = container.dotRoot else { return }
 
-        // 1. Random Parameters
         let baseSize = max(bounds.width, bounds.height)
-        let r = baseSize * 0.30
-        // Use marginMul 1.05 for start (closer/faster entry), 1.45 for end
-        let start = randomOffscreenPoint(radius: r, rng: &rng, marginMul: 1.05)
-        let end = randomOffscreenPoint(radius: r, rng: &rng, marginMul: 1.45)
-
-        let cp1 = CGPoint(
-            x: rng.next(in: Double(bounds.minX)...Double(bounds.maxX)),
-            y: rng.next(in: Double(bounds.minY)...Double(bounds.maxY))
-        )
-        let cp2 = CGPoint(
-            x: rng.next(in: Double(bounds.minX)...Double(bounds.maxX)),
-            y: rng.next(in: Double(bounds.minY)...Double(bounds.maxY))
-        )
-        // Slower duration: 12.0 ... 17.0 (Don't go too slow)
-        let duration = rng.next(in: 12.0...17.0)
-
-        // Lead-in overlap: 0.55 ... 0.75 (Earlier spawn)
-        var leadIn = overlapT ?? rng.next(in: 0.55...0.75)
-        // If really slow, pull lead-in even earlier
-        if duration > 16.0 {
-            leadIn = max(0.50, leadIn - 0.05)
-        }
-
-        let idleDelay = max(0, initialIdleDelay ?? rng.next(in: 0.10...0.45))
-        let anim = DotAnimState(
-            motion: .idle(idleDelay),
-            start: start, cp1: cp1, cp2: cp2, end: end,
-            duration: duration,
-            leadInOverlapT: leadIn
+        let anim = makeDotAnimState(
+            baseSize: baseSize,
+            rng: &rng,
+            overlapT: overlapT,
+            initialIdleDelay: initialIdleDelay
         )
 
         // 2. Create Slot
@@ -1880,7 +1978,7 @@ private final class BKArtBackgroundLayerView: NSView {
             height: slot.maskBaseRadiusBig * 2
         )
         mask1.path = CGPath(ellipseIn: mask1.bounds, transform: nil)
-        mask1.position = start
+        mask1.position = anim.start
         mask1.anchorPoint = CGPoint(x: 0.5, y: 0.5)
         grid1.mask = mask1
         slot.maskBig = mask1
@@ -1903,7 +2001,7 @@ private final class BKArtBackgroundLayerView: NSView {
             height: slot.maskBaseRadiusSmall * 2
         )
         mask2.path = CGPath(ellipseIn: mask2.bounds, transform: nil)
-        mask2.position = start
+        mask2.position = anim.start
         mask2.anchorPoint = CGPoint(x: 0.5, y: 0.5)
         grid2.mask = mask2
         slot.maskSmall = mask2
@@ -1911,6 +2009,144 @@ private final class BKArtBackgroundLayerView: NSView {
         // 4. Add to container. Tint is assigned when this slot enters moving.
         root.addSublayer(slot.rootLayer)
         container.dotSlots.append(slot)
+    }
+
+    private func makeDotAnimState(
+        baseSize: CGFloat,
+        rng: inout BKSeededRandom,
+        overlapT: Double?,
+        initialIdleDelay: TimeInterval?
+    ) -> DotAnimState {
+        let dotAvoidanceRect = activeAvoidanceRect?.insetBy(dx: -34, dy: -24)
+        let radius = baseSize * 0.30
+
+        for _ in 0..<18 {
+            let start = randomOffscreenPoint(radius: radius, rng: &rng, marginMul: 1.05)
+            let end = randomOffscreenPoint(radius: radius, rng: &rng, marginMul: 1.45)
+            let cp1 = randomControlPoint(avoidanceRect: dotAvoidanceRect, rng: &rng)
+            let cp2 = randomControlPoint(avoidanceRect: dotAvoidanceRect, rng: &rng)
+            let duration = rng.next(in: 12.0...17.0)
+            var leadIn = overlapT ?? rng.next(in: 0.55...0.75)
+            if duration > 16.0 {
+                leadIn = max(0.50, leadIn - 0.05)
+            }
+
+            if pathAvoidsAvoidanceRect(
+                start: start,
+                cp1: cp1,
+                cp2: cp2,
+                end: end,
+                avoidanceRect: dotAvoidanceRect
+            ) {
+                let idleDelay = max(0, initialIdleDelay ?? rng.next(in: 0.10...0.45))
+                return DotAnimState(
+                    motion: .idle(idleDelay),
+                    start: start,
+                    cp1: cp1,
+                    cp2: cp2,
+                    end: end,
+                    duration: duration,
+                    leadInOverlapT: leadIn
+                )
+            }
+        }
+
+        return fallbackDotAnimState(
+            baseSize: baseSize,
+            avoidanceRect: dotAvoidanceRect,
+            rng: &rng,
+            overlapT: overlapT,
+            initialIdleDelay: initialIdleDelay
+        )
+    }
+
+    private func fallbackDotAnimState(
+        baseSize: CGFloat,
+        avoidanceRect: CGRect?,
+        rng: inout BKSeededRandom,
+        overlapT: Double?,
+        initialIdleDelay: TimeInterval?
+    ) -> DotAnimState {
+        let radius = baseSize * 0.30
+        let leftLaneMaxX = avoidanceRect.map { max(bounds.minX + 120, $0.minX - 56) }
+            ?? (bounds.width * 0.40)
+        let laneX = min(max(bounds.width * 0.18, CGFloat(120)), leftLaneMaxX)
+        let topY = bounds.maxY + radius * 1.1
+        let bottomY = bounds.minY - radius * 1.3
+        let startFromTop = rng.next(in: 0.0...1.0) >= 0.5
+        let start = CGPoint(x: laneX, y: startFromTop ? topY : bottomY)
+        let end = CGPoint(
+            x: min(bounds.maxX - 80, laneX + CGFloat(rng.next(in: -60...90))),
+            y: startFromTop ? bottomY : topY
+        )
+        let cpInset = max(140, bounds.width * 0.12)
+        let cp1 = CGPoint(
+            x: min(leftLaneMaxX, laneX + cpInset * 0.35),
+            y: startFromTop ? bounds.maxY * 0.78 : bounds.maxY * 0.22
+        )
+        let cp2 = CGPoint(
+            x: min(leftLaneMaxX, laneX + cpInset),
+            y: startFromTop ? bounds.maxY * 0.26 : bounds.maxY * 0.74
+        )
+        let duration = rng.next(in: 12.0...16.0)
+        let idleDelay = max(0, initialIdleDelay ?? rng.next(in: 0.10...0.30))
+        let leadIn = overlapT ?? rng.next(in: 0.55...0.70)
+        return DotAnimState(
+            motion: .idle(idleDelay),
+            start: start,
+            cp1: cp1,
+            cp2: cp2,
+            end: end,
+            duration: duration,
+            leadInOverlapT: leadIn
+        )
+    }
+
+    private func randomControlPoint(
+        avoidanceRect: CGRect?,
+        rng: inout BKSeededRandom
+    ) -> CGPoint {
+        for _ in 0..<16 {
+            let point = CGPoint(
+                x: CGFloat(rng.next(in: Double(bounds.minX)...Double(bounds.maxX))),
+                y: CGFloat(rng.next(in: Double(bounds.minY)...Double(bounds.maxY)))
+            )
+            if avoidanceRect?.contains(point) != true {
+                return point
+            }
+        }
+
+        if let avoidanceRect {
+            return CGPoint(
+                x: max(bounds.minX + 80, avoidanceRect.minX - 80),
+                y: bounds.midY
+            )
+        }
+
+        return CGPoint(x: bounds.midX, y: bounds.midY)
+    }
+
+    private func pathAvoidsAvoidanceRect(
+        start: CGPoint,
+        cp1: CGPoint,
+        cp2: CGPoint,
+        end: CGPoint,
+        avoidanceRect: CGRect?
+    ) -> Bool {
+        guard let avoidanceRect else { return true }
+        if avoidanceRect.contains(cp1) || avoidanceRect.contains(cp2) {
+            return false
+        }
+
+        for sampleIndex in 1...20 {
+            let t = Double(sampleIndex) / 20.0
+            let point = cubicBezier(t: t, p0: start, p1: cp1, p2: cp2, p3: end)
+            if avoidanceRect.contains(point) {
+                return false
+            }
+        }
+
+        return true
     }
 
     private struct JitterBudget {

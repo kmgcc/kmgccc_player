@@ -29,8 +29,12 @@ struct FullscreenPlayerView: View {
     private let lyricsColumnLeftNudge: CGFloat = 46
     private let lyricsRightMarginReserve: CGFloat = 88
     private let lyricsViewportTopLift: CGFloat = 22
+    private let fullscreenBackgroundLyricsAvoidanceHorizontalInset: CGFloat = 28
+    private let fullscreenBackgroundLyricsAvoidanceTopInset: CGFloat = 36
+    private let fullscreenBackgroundLyricsAvoidanceBottomInset: CGFloat = 146
     private let fullscreenLyricsAlignPosition: Double = 0.28
     private let fixedMiniplayerHeight: CGFloat = 60
+    private let fullscreenInterludeDotsOffsetX: Double = -12
     private let fullscreenLyricsMinimumBaseLightness: CGFloat = 0.52
     private let fullscreenLyricsMaximumBaseLightness: CGFloat = 0.66
     private let fullscreenLyricsMinimumSubActiveLightness: CGFloat = 0.88
@@ -71,7 +75,8 @@ struct FullscreenPlayerView: View {
                         controller: bkController,
                         trackID: playerVM.currentTrack?.id,
                         artworkData: playerVM.currentTrack?.artworkData,
-                        isPlaying: playerVM.isPlaying
+                        isPlaying: playerVM.isPlaying,
+                        avoidanceRect: fullscreenBackgroundAvoidanceRect(in: proxy.size)
                     )
                     .ignoresSafeArea()
                     
@@ -451,6 +456,7 @@ struct FullscreenPlayerView: View {
             "fullscreenLineTimingSubInactiveColor": lineTimingSubInactiveColor,
             "alignAnchor": "top",
             "alignPosition": fullscreenLyricsAlignPosition,
+            "interludeDotsOffsetX": fullscreenInterludeDotsOffsetX,
             "lineHeight": 1.8,
             "activeScale": 1.2,
             "leadInMs": 180,
@@ -624,6 +630,32 @@ struct FullscreenPlayerView: View {
         let lyricsWidth = min(max(availableWidth * 0.35, 340), 580)
         let centeredArtworkWidth = min(max(availableWidth * 0.78, 420), availableWidth)
         return (centeredArtworkWidth, lyricsWidth)
+    }
+
+    private func fullscreenBackgroundAvoidanceRect(in windowSize: CGSize) -> CGRect? {
+        guard shouldShowLyricsColumn else { return nil }
+
+        let metrics = layoutMetrics(for: windowSize)
+        let rectX =
+            metrics.artworkWidth
+            + artworkLyricsColumnSpacing
+            - lyricsColumnLeftNudge
+            - topContentLeftShift
+            + fullscreenBackgroundLyricsAvoidanceHorizontalInset
+        let rectY = fullscreenBackgroundLyricsAvoidanceTopInset
+        let rectWidth = max(
+            0,
+            metrics.lyricsWidth - fullscreenBackgroundLyricsAvoidanceHorizontalInset * 2
+        )
+        let rectHeight = max(
+            0,
+            windowSize.height
+                - fullscreenBackgroundLyricsAvoidanceTopInset
+                - fullscreenBackgroundLyricsAvoidanceBottomInset
+        )
+
+        guard rectWidth > 1, rectHeight > 1 else { return nil }
+        return CGRect(x: rectX, y: rectY, width: rectWidth, height: rectHeight)
     }
 
     private func makeFullscreenLyricsPalette(from colors: FullscreenLyricsColorSet) -> ThemePalette {
