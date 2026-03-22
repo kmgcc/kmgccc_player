@@ -96,6 +96,20 @@
                 var(--amll-fs-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
             ) !important;
         }
+        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only {
+            --amll-fs-line-switch-highlight-delay: 0.05s;
+            --amll-fs-line-switch-highlight-in-duration: 0.20s;
+            --amll-fs-line-switch-highlight-out-duration: 0.50s;
+            --amll-fs-line-switch-highlight-out-delay: 0.00s;
+        }
+        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] {
+            transition:
+                color var(--amll-fs-line-switch-highlight-in-duration) linear var(--amll-fs-line-switch-highlight-delay) !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) {
+            transition:
+                color var(--amll-fs-line-switch-highlight-out-duration) ease-out var(--amll-fs-line-switch-highlight-out-delay) !important;
+        }
         .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"] > *,
         .amll-lyric-player.amll-surface-fullscreen [class*="_lyricMainLine_"],
         .amll-lyric-player.amll-surface-fullscreen [class*="_lyricMainLine_"] *,
@@ -222,12 +236,34 @@
                 var(--amll-fs-main-active, var(--amll-active, var(--amll-lp-color, white)))
             ) !important;
         }
+        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] > [class*="_lyricSubLine_"],
+        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] > [class*="_lyricSubLine_"] * {
+            transition:
+                color var(--amll-fs-line-switch-highlight-in-duration) linear var(--amll-fs-line-switch-highlight-delay) !important;
+        }
         .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) > [class*="_lyricSubLine_"],
         .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) > [class*="_lyricSubLine_"] * {
             color: var(
                 --amll-fs-sub-line-timing-inactive,
                 var(--amll-fs-sub-inactive, var(--amll-fs-main-line-timing-inactive, var(--amll-lp-color, white)))
             ) !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) > [class*="_lyricSubLine_"],
+        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) > [class*="_lyricSubLine_"] * {
+            transition:
+                color var(--amll-fs-line-switch-highlight-out-duration) ease-out var(--amll-fs-line-switch-highlight-out-delay) !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] .amll-fs-word-active,
+        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] .amll-fs-char-active {
+            transition:
+                opacity var(--amll-fs-line-switch-highlight-in-duration) linear var(--amll-fs-line-switch-highlight-delay),
+                color var(--amll-fs-line-switch-highlight-in-duration) linear var(--amll-fs-line-switch-highlight-delay) !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) .amll-fs-word-active,
+        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) .amll-fs-char-active {
+            transition:
+                opacity var(--amll-fs-line-switch-highlight-out-duration) ease-out var(--amll-fs-line-switch-highlight-out-delay),
+                color var(--amll-fs-line-switch-highlight-out-duration) ease-out var(--amll-fs-line-switch-highlight-out-delay) !important;
         }
         .amll-lyric-player.amll-surface-fullscreen [class*="_lyricBgLine_"] {
             visibility: hidden !important;
@@ -1243,7 +1279,7 @@
 	        let generalLeadInMs = 0;
 	        let nearSwitchGapMs = 70;
 	        let nearSwitchWordLeadInRatio = 0.6;
-	        let interludeDotsOffsetX = 0;
+	        let fullscreenLineSwitchAdvanceMs = 80;
 	        let timeOffsetMs = 0;
 	        let lastTTML = "";
 	        let lineTimingOnlyMode = false;
@@ -1392,6 +1428,48 @@
 	                }
 	            }
 	        };
+	        const applyFullscreenLineSwitchAdvance = (lines) => {
+	            if (!Array.isArray(lines) || lines.length === 0) return;
+	            if (!isFullscreenSurface || !fullscreenOpaqueLyricsMode || !lineTimingOnlyMode) return;
+	            if (!Number.isFinite(fullscreenLineSwitchAdvanceMs) || fullscreenLineSwitchAdvanceMs <= 0) return;
+	            const mainIndexes = [];
+	            for (let i = 0; i < lines.length; i++) {
+	                const line = lines[i];
+	                if (line && !line.isBG) mainIndexes.push(i);
+	            }
+	            if (mainIndexes.length === 0) return;
+
+	            for (const idx of mainIndexes) {
+	                const line = lines[idx];
+	                if (!Number.isFinite(line?.startTime)) continue;
+	                const newStart = Math.max(0, line.startTime - fullscreenLineSwitchAdvanceMs);
+	                line.startTime = newStart;
+	                if (Number.isFinite(line.endTime)) {
+	                    line.endTime = Math.max(newStart + 1, line.endTime);
+	                }
+	            }
+
+	            // Prevent overlap after advancing starts: ensure previous main line ends
+	            // before the next main line starts.
+	            for (let i = 0; i < mainIndexes.length - 1; i++) {
+	                const current = lines[mainIndexes[i]];
+	                const next = lines[mainIndexes[i + 1]];
+	                if (!current || !next) continue;
+	                if (!Number.isFinite(current.endTime) || !Number.isFinite(next.startTime)) continue;
+	                const currentStart = Number.isFinite(current.startTime) ? current.startTime : 0;
+	                const maxEnd = Math.max(currentStart + 1, next.startTime - 1);
+	                if (current.endTime > maxEnd) {
+	                    current.endTime = maxEnd;
+	                    if (Array.isArray(current.words)) {
+	                        for (const word of current.words) {
+	                            if (!Number.isFinite(word?.endTime)) continue;
+	                            const wordStart = Number.isFinite(word?.startTime) ? word.startTime : 0;
+	                            word.endTime = Math.max(wordStart, Math.min(word.endTime, current.endTime));
+	                        }
+	                    }
+	                }
+	            }
+	        };
 	        const applyNearSwitchLeadIn = (lines) => {
 	            if (!Array.isArray(lines) || lines.length === 0) return;
 	            const hasNearLeadIn = Number.isFinite(leadInMs) && leadInMs > 0 && Number.isFinite(nearSwitchGapMs) && nearSwitchGapMs > 0;
@@ -1532,12 +1610,13 @@
                                     "fs-line-timing-only",
                                     lineTimingOnlyMode === true
                                 );
-			                    try {
-			                        applyNearSwitchLeadIn(lines);
-			                    } catch (e) {
-			                        console.error("[LyricsRenderer] applyNearSwitchLeadIn error:", e);
-			                    }
-				                    const timingSnapshot = captureTimingSnapshot(lines);
+	                    try {
+	                        applyNearSwitchLeadIn(lines);
+	                    } catch (e) {
+	                        console.error("[LyricsRenderer] applyNearSwitchLeadIn error:", e);
+	                    }
+	                    applyFullscreenLineSwitchAdvance(lines);
+	                    const timingSnapshot = captureTimingSnapshot(lines);
 				                    // Preserve TTML intent (no mutation of duet/bg/ordering).
 				                    lyricPlayer.setLyricLines(lines);
                                     enforceFullscreenNormalCompositing();
@@ -1725,16 +1804,7 @@
 	                            lyricPlayer.setAlignPosition(nextAlignPosition);
 	                        }
 	                    }
-	                    if (typeof config.interludeDotsOffsetX === "number" && !Number.isNaN(config.interludeDotsOffsetX)) {
-	                        const nextInterludeDotsOffsetX = Math.max(-80, Math.min(80, config.interludeDotsOffsetX));
-	                        if (nextInterludeDotsOffsetX !== interludeDotsOffsetX) {
-	                            interludeDotsOffsetX = nextInterludeDotsOffsetX;
-	                            if (typeof lyricPlayer.setInterludeDotsOffsetX === "function") {
-	                                lyricPlayer.setInterludeDotsOffsetX(nextInterludeDotsOffsetX);
-	                            }
-	                        }
-	                    }
-	                    if (hasOwn("textColor")) {
+                    if (hasOwn("textColor")) {
                         if (typeof config.textColor === "string" && config.textColor.length > 0) {
                             const resolvedTextColor = fullscreenOpaqueLyricsMode
                                 ? toOpaqueColor(config.textColor)
