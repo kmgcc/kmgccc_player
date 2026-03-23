@@ -69,7 +69,7 @@ final class NCMImportProgressViewModel {
         displayProgress = 0.0
         targetProgress = 0.0
         
-        progressTimer = Timer.scheduledTimer(withTimeInterval: 0.03, repeats: true) { [weak self] timer in
+        progressTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] timer in
             Task { @MainActor [weak self] in
                 guard let self = self else {
                     timer.invalidate()
@@ -77,7 +77,7 @@ final class NCMImportProgressViewModel {
                 }
                 
                 if self.displayProgress < self.targetProgress {
-                    self.displayProgress += 0.015
+                    self.displayProgress += 0.02
                     if self.displayProgress > self.targetProgress {
                         self.displayProgress = self.targetProgress
                     }
@@ -264,71 +264,126 @@ final class NCMImportProgressDialogPresenter: NSObject, NSWindowDelegate {
     }
     
     private func startConversionAsync(ncmFiles: [URL], viewModel: NCMImportProgressViewModel) {
-        // Use DispatchQueue.global to run completely off the main thread
-        DispatchQueue.global(qos: .userInitiated).async {
+        conversionTask = Task.detached(priority: .userInitiated) {
             let totalCount = ncmFiles.count
-            var completedCount = 0
             
-            // Use a DispatchGroup for parallel conversion
-            let group = DispatchGroup()
-            let lock = NSLock()
-            
-            for (index, ncmFile) in ncmFiles.enumerated() {
-                group.enter()
+            actor ConversionState {
+                var completedCount = 0
+                var pendingUpdates: [(id: String, title: String, artist: String, step: NCMConversionStep, result: NCMConversionResult?)] = []
+                var lastUpdateTime = Date()
+                let updateInterval: TimeInterval = 0.5
                 
-                Task.detached(priority: .userInitiated) {
-                    defer { group.leave() }
-                    
-                    let itemId = ncmFile.path
-                    var conversionResult: NCMConversionResult?
-                    var error: Error?
-                    
-                    do {
-                        let converter = NCMConverter()
-                        conversionResult = try await converter.convert(
-                            from: ncmFile,
-                            fetchCover: true,
-                            progressHandler: nil
-                        )
-                    } catch let err {
-                        error = err
-                    }
-                    
-                    // Update progress counter
-                    lock.lock()
+                func addCompleted(id: String, result: NCMConversionResult?) -> Bool {
                     completedCount += 1
-                    let progress = Double(completedCount) / Double(totalCount)
-                    lock.unlock()
-                    
-                    // Update UI on main thread - use Task instead of MainActor.run
-                    await MainActor.run {
-                        if viewModel.isCancelled { return }
-                        
-                        if let result = conversionResult {
-                            viewModel.updateItem(
-                                id: itemId,
-                                title: result.metadata.title,
-                                artist: result.metadata.artistName,
-                                step: .completed
-                            )
-                            viewModel.addResult(result)
-                        } else if let err = error {
-                            viewModel.markFailed(id: itemId, error: err.localizedDescription)
-                        }
-                        
-                        viewModel.setProgress(progress * 0.95)
+                    if let result = result {
+                        pendingUpdates.append((id: id, title: "", artist: "", step: .completed, result: result))
+                    } else {
+                        pendingUpdates.append((id: id, title: "", artist: "", step: .failed, result: nil))
                     }
+                    
+                    let now = Date()
+                    let shouldFlush = now.timeIntervalSince(lastUpdateTime) >= updateInterval
+                    if shouldFlush {
+                        lastUpdateTime = now
+                    }
+                    return shouldFlush
+                }
+                
+                func getAndClearPendingUpdates() -> [(id: String, title: String, artist: String, step: NCMConversionStep, result: NCMConversionResult?)] {
+                    let updates = pendingUpdates
+                    pendingUpdates.removeAll()
+                    return updates
+                }
+                
+                func getProgress(totalCount: Int) -> Double {
+                    return Double(completedCount) / Double(totalCount)
                 }
             }
             
-            // Wait for all conversions to complete
-            group.wait()
+            let state = ConversionState()
+            let maxConcurrent = min(4, ProcessInfo.processInfo.processorCount)
             
-            // Complete on main thread
-            Task { @MainActor in
-                if !viewModel.isCancelled {
-                    viewModel.complete()
+            await withTaskGroup(of: Void.self) { group in
+                var activeCount = 0
+                
+                for ncmFile in ncmFiles {
+                    if Task.isCancelled { break }
+                    
+                    while activeCount >= maxConcurrent {
+                        await group.next()
+                        activeCount -= 1
+                    }
+                    
+                    if Task.isCancelled { break }
+                    
+                    activeCount += 1
+                    group.addTask {
+                        let itemId = ncmFile.path
+                        var conversionResult: NCMConversionResult?
+                        
+                        do {
+                            let converter = NCMConverter()
+                            conversionResult = try await converter.convert(
+                                from: ncmFile,
+                                fetchCover: true,
+                                progressHandler: nil
+                            )
+                        } catch {
+                            print("❌ NCM conversion failed: \(error.localizedDescription)")
+                        }
+                        
+                        let shouldFlush = await state.addCompleted(id: itemId, result: conversionResult)
+                        
+                        if shouldFlush {
+                            let updates = await state.getAndClearPendingUpdates()
+                            let progress = await state.getProgress(totalCount: totalCount)
+                            
+                            await MainActor.run {
+                                for update in updates {
+                                    if let result = update.result {
+                                        viewModel.updateItem(
+                                            id: update.id,
+                                            title: result.metadata.title,
+                                            artist: result.metadata.artistName,
+                                            step: .completed
+                                        )
+                                        viewModel.addResult(result)
+                                    } else {
+                                        viewModel.updateItem(
+                                            id: update.id,
+                                            title: update.title,
+                                            artist: update.artist,
+                                            step: .failed
+                                        )
+                                    }
+                                }
+                                viewModel.setProgress(progress * 0.95)
+                            }
+                        }
+                    }
                 }
+                
+                await group.waitForAll()
+            }
+            
+            // Final flush
+            let updates = await state.getAndClearPendingUpdates()
+            let progress = await state.getProgress(totalCount: totalCount)
+            
+            await MainActor.run {
+                for update in updates {
+                    if let result = update.result {
+                        viewModel.updateItem(
+                            id: update.id,
+                            title: result.metadata.title,
+                            artist: result.metadata.artistName,
+                            step: .completed
+                        )
+                        viewModel.addResult(result)
+                    }
+                }
+                viewModel.setProgress(progress * 0.95)
+                viewModel.complete()
             }
         }
     }
@@ -504,10 +559,8 @@ struct NCMProgressRowView: View {
                 Image(systemName: "circle")
                     .foregroundStyle(.secondary)
             case .decrypting, .downloadingCover:
-                ProgressView()
-                    .progressViewStyle(.circular)
-                    .scaleEffect(0.6)
-                    .frame(width: 16, height: 16)
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .foregroundStyle(.blue)
             case .completed:
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundStyle(.green)

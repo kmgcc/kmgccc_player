@@ -302,6 +302,8 @@ final class NCMConverter {
             processedSize += UInt64(chunk.count)
             let totalProgress = Double(processedSize) / Double(fileSize)
             progressHandler?(min(totalProgress, 1.0))
+            
+            await Task.yield()
         }
         
         progressHandler?(1.0)
