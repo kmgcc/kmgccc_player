@@ -63,10 +63,10 @@ final class LyricsSurfaceManager {
         }
     }
     
-    /// Apply theme to all active surfaces.
+    /// Apply theme to all surfaces (active and pre-created).
     func applyTheme(_ palette: ThemePalette) {
-        for role in activeRoles {
-            guard let store = stores[role] else { continue }
+        // Apply to all stores, not just active ones
+        for (_, store) in stores {
             store.applyTheme(palette)
         }
     }

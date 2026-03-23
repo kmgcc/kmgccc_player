@@ -57,14 +57,17 @@ struct AppRootView: View {
                     }
 
                     MainLayoutView()
-
-                    ThemeTrackObserver()
-                        .allowsHitTesting(false)
                 }
                 .onAppear {
                     if uiState.contentMode == .nowPlaying && settings.nowPlayingArtBackgroundEnabled
                     {
                         artBackgroundController.triggerTransition()
+                    }
+                }
+                .onReceive(NotificationCenter.default.publisher(for: .playbackTrackDidChange)) { _ in
+                    print("[AppRoot] Track changed notification received")
+                    Task { @MainActor in
+                        await themeStore.updateTheme(for: playerVM.currentTrack)
                     }
                 }
                 .onChange(of: uiState.contentMode) { _, newValue in
@@ -240,20 +243,6 @@ struct AppRootView: View {
         Task { @MainActor in
             await themeStore.refreshPalette(reason: "swiftui_colorScheme_changed")
         }
-    }
-}
-
-private struct ThemeTrackObserver: View {
-    @Environment(PlayerViewModel.self) private var playerVM
-    @EnvironmentObject private var themeStore: ThemeStore
-
-    var body: some View {
-        Color.clear
-            .onReceive(NotificationCenter.default.publisher(for: .playbackTrackDidChange)) { _ in
-                Task { @MainActor in
-                    await themeStore.updateTheme(for: playerVM.currentTrack)
-                }
-            }
     }
 }
 
