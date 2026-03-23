@@ -105,6 +105,89 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
         // Prepare engine
         engine.prepare()
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleEngineConfigurationChange),
+            name: .AVAudioEngineConfigurationChange,
+            object: engine
+        )
+    }
+
+    /// Handles audio output device changes.
+    /// The engine is stopped by the system when device changes; this reconnects and resumes.
+    @objc private func handleEngineConfigurationChange(_ notification: Notification) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.reconnectEngineAndResume()
+        }
+    }
+
+    private func reconnectEngineAndResume() async {
+        let wasPlaying = isPlaying
+        let savedTime = currentTime
+        let savedTrack = currentTrack
+        let savedVolume = volume
+
+        print("🔄 Audio device changed. Was playing: \(wasPlaying), position: \(String(format: "%.1f", savedTime))s")
+
+        playerNode.stop()
+        stopProgressTimer()
+        reconnectAudioGraph()
+
+        do {
+            if !engine.isRunning {
+                try engine.start()
+                print("✅ Engine restarted after device change")
+            }
+        } catch {
+            print("❌ Failed to restart engine after device change: \(error)")
+            isPlaying = false
+            return
+        }
+
+        if wasPlaying, let track = savedTrack, let file = audioFile {
+            let targetFrame = AVAudioFramePosition(savedTime * sampleRate)
+            let totalFrames = file.length
+
+            guard targetFrame >= 0, targetFrame < totalFrames else {
+                print("⚠️ Cannot resume: invalid position")
+                isPlaying = false
+                return
+            }
+
+            let frameCount = AVAudioFrameCount(totalFrames - targetFrame)
+            startingFramePosition = targetFrame
+
+            engine.disconnectNodeOutput(playerNode)
+            engine.connect(playerNode, to: engine.mainMixerNode, format: file.processingFormat)
+            scheduleSegment(file, startingFrame: targetFrame, frameCount: frameCount)
+            playerNode.play()
+            isPlaying = true
+            startProgressTimer()
+            playerNode.volume = Float(savedVolume)
+
+            print("▶️ Resumed playback at \(String(format: "%.1f", savedTime))s after device change")
+        } else {
+            isPlaying = false
+        }
+    }
+
+    private func reconnectAudioGraph() {
+        let mainMixer = engine.mainMixerNode
+
+        engine.disconnectNodeOutput(playerNode)
+        engine.disconnectNodeOutput(mainMixer)
+        engine.disconnectNodeOutput(delayNode)
+
+        if let file = audioFile {
+            engine.connect(playerNode, to: mainMixer, format: file.processingFormat)
+        } else {
+            engine.connect(playerNode, to: mainMixer, format: nil)
+        }
+        engine.connect(mainMixer, to: delayNode, format: nil)
+        engine.connect(delayNode, to: engine.outputNode, format: nil)
+        configureDelay()
     }
 
     private func applyVolume() {
