@@ -29,23 +29,10 @@ struct ExpandableVolumeControl: View {
             // Background pill/glass effect - anchored to trailing (right)
             containerBackground
                 .frame(width: isExpanded ? expandedWidth : buttonSize, height: buttonSize)
-                .animation(.spring(response: 0.35, dampingFraction: 0.85), value: isExpanded)
 
-            // Content: slider + icon (icon always on the right)
+            // Content: icon on left, slider on right (when expanded)
             HStack(spacing: 0) {
-                // Volume slider (visible on hover) - on the LEFT side
-                if isExpanded {
-                    Slider(value: $volume, in: 0...1)
-                        .controlSize(.regular)
-                        .tint(controlPrimaryColor)
-                        .compositingGroup()
-                        .blendMode(.screen)
-                        .frame(width: expandedWidth - buttonSize - 16)
-                        .padding(.leading, 12)
-                        .transition(.opacity)
-                }
-
-                // Volume icon button (always visible, always on the RIGHT)
+                // Volume icon button (always visible, on the LEFT)
                 Button(action: toggleMute) {
                     Image(systemName: volumeIcon)
                         .font(.system(size: iconSize, weight: .semibold))
@@ -57,10 +44,21 @@ struct ExpandableVolumeControl: View {
                 }
                 .buttonStyle(.plain)
                 .help("volume")
+
+                // Volume slider (visible when expanded) - on the RIGHT side
+                if isExpanded {
+                    Slider(value: $volume, in: 0...1)
+                        .controlSize(.regular)
+                        .tint(controlPrimaryColor)
+                        .compositingGroup()
+                        .blendMode(.screen)
+                        .frame(width: expandedWidth - buttonSize - 16)
+                        .padding(.trailing, 12)
+                        .transition(.opacity)
+                }
             }
-            // Keep content at trailing edge
+            // Keep content at trailing edge so icon stays left when expanded
             .frame(width: isExpanded ? expandedWidth : buttonSize, alignment: .trailing)
-            .animation(.spring(response: 0.35, dampingFraction: 0.85), value: isExpanded)
         }
         .frame(width: isExpanded ? expandedWidth : buttonSize, height: buttonSize)
         .contentShape(Rectangle())
