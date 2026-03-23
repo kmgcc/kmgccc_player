@@ -17,6 +17,7 @@ struct SkinContext {
         let artist: String
         let album: String
         let duration: Double
+        let artworkChecksum: UInt64
         let artworkData: Data?
         let artworkImage: NSImage?
     }
@@ -48,6 +49,9 @@ struct SkinContext {
         let meshBassImpact: Double
         /// Accent derived from artwork for UI tint usage.
         let artworkAccentColor: Color?
+        let artworkPalette: [NSColor]
+        let artworkRichPalette: [NSColor]
+        let artworkAverageColor: NSColor?
         /// Background dynamics (transient overlays).
         let kickToBrightnessMix: Double
         let kickDisplaceAmount: Double

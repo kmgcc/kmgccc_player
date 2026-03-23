@@ -68,6 +68,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
 
         if let window = fullscreenWindow {
             suspendMainLyricsIfNeeded()
+            LyricsSurfaceManager.shared.activate(role: .fullscreen)
             previousKeyWindow = NSApp.keyWindow === window ? previousKeyWindow : NSApp.keyWindow
             isFullscreenActive = true
             installEscapeMonitorIfNeeded()
@@ -85,6 +86,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
 
         let targetScreen = NSScreen.main ?? NSScreen.screens.first
         let fullscreenLyricsVM = makeFullscreenLyricsViewModel()
+        LyricsSurfaceManager.shared.activate(role: .fullscreen)
 
         let window = FullscreenPlayerWindow(
             contentRect: targetScreen?.frame ?? NSRect(x: 0, y: 0, width: 1440, height: 900),
@@ -248,7 +250,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
             return fullscreenLyricsVM
         }
 
-        let store = LyricsWebViewStore(role: "fullscreen")
+        let store = LyricsSurfaceManager.shared.fullscreenStore
         let viewModel = LyricsViewModel(settings: AppSettings.shared, store: store)
         fullscreenLyricsVM = viewModel
         return viewModel
@@ -257,7 +259,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
     private func teardownFullscreenLyricsIfNeeded() {
         guard let fullscreenLyricsVM else { return }
         fullscreenLyricsVM.onSeekRequest = nil
-        fullscreenLyricsVM.webViewStore.shutdown()
+        LyricsSurfaceManager.shared.deactivate(role: .fullscreen)
         self.fullscreenLyricsVM = nil
     }
 }

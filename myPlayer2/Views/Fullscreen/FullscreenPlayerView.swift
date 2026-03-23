@@ -58,6 +58,7 @@ struct FullscreenPlayerView: View {
     @State private var lockedFullscreenLyricsBackgroundColor: NSColor?
     @State private var lockedFullscreenLyricsUltraDark: Bool = false
     @State private var pendingFullscreenLyricsBackgroundCapture: Bool = false
+    @State private var artworkSnapshot: ArtworkAssetSnapshot?
     @Namespace private var fullscreenLayoutNamespace
 
     var onExitFullscreen: (() -> Void)?
@@ -163,6 +164,9 @@ struct FullscreenPlayerView: View {
             guard pendingFullscreenLyricsBackgroundCapture else { return }
             captureFullscreenLyricsBackgroundSnapshot()
             applyFullscreenLyricsTheme()
+        }
+        .task(id: currentArtworkTaskKey) {
+            await loadArtworkSnapshot()
         }
     }
 
@@ -517,8 +521,9 @@ struct FullscreenPlayerView: View {
                 artist: $0.artist,
                 album: $0.album,
                 duration: $0.duration,
+                artworkChecksum: artworkSnapshot?.artworkChecksum ?? 0,
                 artworkData: $0.artworkData,
-                artworkImage: $0.artworkData.flatMap(NSImage.init(data:))
+                artworkImage: artworkSnapshot?.fullImage
             )
         }
 
@@ -545,7 +550,10 @@ struct FullscreenPlayerView: View {
             meshColorBoost: AppSettings.shared.nowPlayingMeshColorBoost,
             meshContrast: AppSettings.shared.nowPlayingMeshContrast,
             meshBassImpact: AppSettings.shared.nowPlayingMeshBassImpact,
-            artworkAccentColor: resolveArtworkAccent(for: track),
+            artworkAccentColor: artworkSnapshot?.accentColor.map { Color(nsColor: $0) },
+            artworkPalette: artworkSnapshot?.palette ?? [],
+            artworkRichPalette: artworkSnapshot?.richPalette ?? [],
+            artworkAverageColor: artworkSnapshot?.averageColor,
             kickToBrightnessMix: AppSettings.shared.bgKickToBrightnessMix,
             kickDisplaceAmount: AppSettings.shared.bgKickDisplaceAmount,
             kickScaleAmount: AppSettings.shared.bgKickScaleAmount
@@ -565,12 +573,6 @@ struct FullscreenPlayerView: View {
             windowSize: windowSize,
             contentBounds: contentBounds
         )
-    }
-
-    private func resolveArtworkAccent(for track: Track?) -> Color? {
-        guard let artwork = track?.artworkData else { return nil }
-        guard let accent = ArtworkColorExtractor.uiAccentColor(from: artwork) else { return nil }
-        return Color(nsColor: accent)
     }
 
     private func fullscreenLyricsMask(
@@ -765,13 +767,11 @@ struct FullscreenPlayerView: View {
     }
 
     private func resolveFullscreenLyricsBaseColor(for track: Track?) -> NSColor {
-        if let artworkData = track?.artworkData {
-            if let accent = ArtworkColorExtractor.uiAccentColor(from: artworkData) {
-                return accent
-            }
-            if let base = ArtworkColorExtractor.averageColor(from: artworkData) {
-                return base
-            }
+        if let accent = artworkSnapshot?.accentColor {
+            return accent
+        }
+        if let base = artworkSnapshot?.averageColor {
+            return base
         }
 
         return NSColor(AppSettings.shared.accentColor)
@@ -799,6 +799,24 @@ struct FullscreenPlayerView: View {
         }
 
         return resolveFullscreenLyricsBaseColor(for: track)
+    }
+    
+    private var currentArtworkTaskKey: String {
+        guard let track = playerVM.currentTrack else { return "none" }
+        let checksum = ArtworkAssetStore.checksum(for: track.artworkData)
+        return "\(track.id.uuidString)-\(checksum)"
+    }
+    
+    private func loadArtworkSnapshot() async {
+        guard let track = playerVM.currentTrack, let artworkData = track.artworkData, !artworkData.isEmpty
+        else {
+            artworkSnapshot = nil
+            return
+        }
+        
+        let snapshot = await ArtworkAssetStore.shared.snapshot(trackID: track.id, artworkData: artworkData)
+        guard !Task.isCancelled else { return }
+        artworkSnapshot = snapshot
     }
 
     private func hslComponents(from color: NSColor) -> (hue: CGFloat, saturation: CGFloat, lightness: CGFloat)

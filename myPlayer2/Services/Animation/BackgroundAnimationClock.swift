@@ -6,8 +6,8 @@
 //  Consolidates 6 separate timers into one 60Hz timer with phase gates.
 //
 
-import Foundation
 import Combine
+import Foundation
 
 /// Master clock for background animations.
 /// Replaces 6 separate timers in BKArtBackgroundView with a single 60Hz timer
@@ -39,6 +39,8 @@ final class BackgroundAnimationClock: ObservableObject {
     private var timer: Timer?
     private var tickCount: UInt64 = 0
     private var isRunning = false
+    private var isPaused = false
+    private var activeClientCount: Int = 0
     
     /// Publishers for each phase
     let backgroundPublisher = PassthroughSubject<Void, Never>()
@@ -55,43 +57,91 @@ final class BackgroundAnimationClock: ObservableObject {
     
     /// Start the master clock.
     func start() {
-        guard !isRunning else { return }
-        isRunning = true
-        
-        // Single 60Hz timer (16.67ms interval)
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0/60.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.tick()
+        if isRunning {
+            if isPaused {
+                resume()
             }
+            return
         }
+
+        isRunning = true
+        isPaused = false
+        tickCount = 0
+        resetGates()
+        scheduleTimer()
         
         print("[BackgroundAnimationClock] Started at 60Hz")
+    }
+
+    /// Acquire a shared clock lease.
+    /// The timer runs while at least one client is active.
+    func acquire() {
+        activeClientCount += 1
+        if activeClientCount == 1 {
+            start()
+        }
+    }
+
+    /// Release a shared clock lease.
+    func release() {
+        guard activeClientCount > 0 else { return }
+        activeClientCount -= 1
+        if activeClientCount == 0 {
+            stop()
+        }
     }
     
     /// Stop the master clock.
     func stop() {
-        timer?.invalidate()
-        timer = nil
+        invalidateTimer()
         isRunning = false
+        isPaused = false
         tickCount = 0
+        activeClientCount = 0
+        resetGates()
         print("[BackgroundAnimationClock] Stopped")
     }
     
     /// Pause when app is backgrounded.
     func pause() {
-        timer?.invalidate()
-        timer = nil
+        guard isRunning, !isPaused else { return }
+        invalidateTimer()
+        isPaused = true
         print("[BackgroundAnimationClock] Paused")
     }
     
     /// Resume after pause.
     func resume() {
-        guard isRunning else { return }
-        start()
+        guard isRunning, isPaused else { return }
+        isPaused = false
+        scheduleTimer()
+        print("[BackgroundAnimationClock] Resumed")
     }
     
     // MARK: - Private
-    
+
+    private func scheduleTimer() {
+        invalidateTimer()
+
+        // Single 60Hz timer (16.67ms interval).
+        timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            self?.tick()
+        }
+    }
+
+    private func invalidateTimer() {
+        timer?.invalidate()
+        timer = nil
+    }
+
+    private func resetGates() {
+        backgroundGate.reset()
+        shapeGate.reset()
+        dotGate.reset()
+        transitionGate.reset()
+        speedRampGate.reset()
+    }
+
     private func tick() {
         tickCount += 1
         

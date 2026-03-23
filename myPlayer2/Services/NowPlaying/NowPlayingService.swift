@@ -18,6 +18,8 @@ final class NowPlayingService {
     private var isRegistered = false
     private var lastUpdateTime: TimeInterval = 0
     private let progressInterval: TimeInterval = 0.5
+    private var cachedArtworkKey: String?
+    private var cachedArtwork: MPMediaItemArtwork?
 
     private init() {}
 
@@ -55,8 +57,7 @@ final class NowPlayingService {
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = player.currentTime
         info[MPNowPlayingInfoPropertyPlaybackRate] = player.isPlaying ? 1.0 : 0.0
 
-        if let data = track.artworkData, let image = NSImage(data: data) {
-            let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+        if let artwork = mediaArtwork(for: track) {
             info[MPMediaItemPropertyArtwork] = artwork
         } else {
             info.removeValue(forKey: MPMediaItemPropertyArtwork)
@@ -165,5 +166,25 @@ final class NowPlayingService {
 
     @objc private func handleProgressTimer() {
         updateNowPlaying(force: false)
+    }
+    
+    private func mediaArtwork(for track: Track) -> MPMediaItemArtwork? {
+        let checksum = ArtworkAssetStore.checksum(for: track.artworkData)
+        let cacheKey = "\(track.id.uuidString)-\(checksum)"
+        
+        if cachedArtworkKey == cacheKey {
+            return cachedArtwork
+        }
+        
+        cachedArtworkKey = cacheKey
+        cachedArtwork = nil
+        
+        guard let data = track.artworkData, !data.isEmpty, let image = NSImage(data: data) else {
+            return nil
+        }
+        
+        let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+        cachedArtwork = artwork
+        return artwork
     }
 }

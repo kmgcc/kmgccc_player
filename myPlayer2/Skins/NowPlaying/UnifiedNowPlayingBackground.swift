@@ -72,13 +72,7 @@ struct UnifiedNowPlayingBackground: View {
             return
         }
         cachedTrackID = trackID
-
-        guard let data = context.track?.artworkData else {
-            artworkPalette = []
-            return
-        }
-        // Keep using the existing extractor algorithm unchanged.
-        artworkPalette = ArtworkColorExtractor.uiThemePalette(from: data, maxColors: 4)
+        artworkPalette = context.theme.artworkPalette
     }
 
     private func styledPalette() -> [Color] {

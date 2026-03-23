@@ -29,12 +29,16 @@ struct LyricsPanelView: View {
                 backgroundColor: themeStore.backgroundColor
             )
             .onAppear {
+                LyricsSurfaceManager.shared.activate(role: .main)
                 setupSeekCallback()
                 reloadLyricsSurface(
                     reason: "lyrics panel appear",
                     forceWebReload: false,
                     forceLyricsReload: false
                 )
+            }
+            .onDisappear {
+                LyricsSurfaceManager.shared.deactivate(role: .main)
             }
             .onChange(of: playerVM.currentTime, handleCurrentTimeChange)
             .onChange(of: playerVM.isPlaying) { _, newValue in
@@ -63,7 +67,7 @@ struct LyricsPanelView: View {
 
             // WebView is ALWAYS present, just hidden when no track
             // This prevents SwiftUI from destroying/recreating the representable
-            AMLLWebView()
+            AMLLWebView(store: lyricsVM.webViewStore)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(.horizontal, 24)
                 .padding(.bottom, 12)

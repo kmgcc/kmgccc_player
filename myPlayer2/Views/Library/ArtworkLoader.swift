@@ -143,7 +143,7 @@ enum ArtworkLoader {
     static let cache = ArtworkImageCache()
     private static let decodeGate = ArtworkDecodeGate(maxConcurrent: 3)
 
-    static func checksum(for data: Data?) -> UInt64 {
+    nonisolated static func checksum(for data: Data?) -> UInt64 {
         guard let data else { return 0 }
         var hash: UInt64 = 1_469_598_103_934_665_603
         data.withUnsafeBytes { rawBuffer in
@@ -155,7 +155,9 @@ enum ArtworkLoader {
         return hash
     }
 
-    static func cacheKey(trackID: UUID, checksum: UInt64, targetPixelSize: CGSize) -> String {
+    nonisolated static func cacheKey(trackID: UUID, checksum: UInt64, targetPixelSize: CGSize)
+        -> String
+    {
         "\(trackID.uuidString)-\(checksum)-\(Int(targetPixelSize.width))x\(Int(targetPixelSize.height))"
     }
 

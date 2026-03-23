@@ -21,11 +21,11 @@ final class ArtworkAssetSnapshot: NSObject, Sendable {
     let averageColor: NSColor?
     let extractedAt: Date
     
-    var cacheKey: String {
+    nonisolated var cacheKey: String {
         "\(trackID.uuidString)-\(artworkChecksum)"
     }
     
-    init(
+    nonisolated init(
         trackID: UUID,
         artworkChecksum: UInt64,
         thumbnailImage: NSImage? = nil,
@@ -49,5 +49,3 @@ final class ArtworkAssetSnapshot: NSObject, Sendable {
         super.init()
     }
 }
-
-extension NSColor: @unchecked Sendable {}

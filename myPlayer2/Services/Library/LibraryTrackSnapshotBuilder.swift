@@ -6,102 +6,95 @@
 //  Offloads track row computation from main thread.
 //
 
+import CoreGraphics
 import Foundation
+
+struct TrackRowBuildInput: Sendable {
+    let trackID: UUID
+    let title: String
+    let artist: String
+    let album: String
+    let duration: Double
+    let artworkData: Data?
+    let isMissing: Bool
+}
 
 /// Actor-isolated builder for creating playlist view snapshots.
 /// Processes track data in background to keep UI responsive.
 actor LibraryTrackSnapshotBuilder {
-    
+
     static let shared = LibraryTrackSnapshotBuilder()
-    
-    private var buildTask: Task<PlaylistViewSnapshot, Error>?
-    private var lastBuildID: UUID?
-    
+
+    private var buildGeneration: UInt64 = 0
+
     private init() {}
-    
+
     /// Build a snapshot for a playlist asynchronously.
     func buildSnapshot(
         playlistID: UUID,
-        tracks: [Track],
-        sortOrder: SortOrder
+        tracks: [TrackRowBuildInput],
+        targetPixelSize: CGSize
     ) async -> PlaylistViewSnapshot {
-        // Process tracks in batches for cancellation responsiveness
+        let generation = buildGeneration
         let batchSize = 50
         var trackIDs: [UUID] = []
         var trackSnapshots: [UUID: TrackRowSnapshot] = [:]
         var totalDuration: Double = 0
-        
-        // Process in batches
+
         for (index, track) in tracks.enumerated() {
-            if Task.isCancelled {
-                return await MainActor.run { PlaylistViewSnapshot.empty }
+            if Task.isCancelled || generation != buildGeneration {
+                return PlaylistViewSnapshot.empty
             }
-            
-            let snapshot = await MainActor.run {
-                TrackRowSnapshot(
-                    trackID: track.id,
-                    title: track.title,
-                    artist: track.artist,
-                    album: track.album,
-                    duration: track.duration,
-                    durationText: Self.formatDuration(track.duration),
-                    artworkChecksum: track.artworkData?.checksum ?? 0,
-                    sortIndex: index + 1
-                )
-            }
-            
-            trackSnapshots[track.id] = snapshot
-            trackIDs.append(track.id)
+
+            let checksum = ArtworkLoader.checksum(for: track.artworkData)
+            let cacheKey = ArtworkLoader.cacheKey(
+                trackID: track.trackID,
+                checksum: checksum,
+                targetPixelSize: targetPixelSize
+            )
+            let snapshot = TrackRowSnapshot(
+                trackID: track.trackID,
+                title: track.title,
+                artist: track.artist,
+                album: track.album,
+                duration: track.duration,
+                durationText: Self.formatDuration(track.duration),
+                artworkChecksum: checksum,
+                artworkData: track.artworkData,
+                artworkCacheKey: cacheKey,
+                isMissing: track.isMissing,
+                sortIndex: index + 1
+            )
+
+            trackSnapshots[track.trackID] = snapshot
+            trackIDs.append(track.trackID)
             totalDuration += track.duration
-            
-            // Yield every batch
-            if index % batchSize == 0 {
+
+            if (index + 1).isMultiple(of: batchSize) {
                 await Task.yield()
             }
         }
-        
-        return await MainActor.run {
-            PlaylistViewSnapshot(
-                playlistID: playlistID,
-                trackIDs: trackIDs,
-                trackSnapshots: trackSnapshots,
-                totalDuration: totalDuration
-            )
+
+        if generation != buildGeneration {
+            return PlaylistViewSnapshot.empty
         }
+
+        return PlaylistViewSnapshot(
+            playlistID: playlistID,
+            trackIDs: trackIDs,
+            trackSnapshots: trackSnapshots,
+            totalDuration: totalDuration
+        )
     }
-    
+
     /// Cancel current build if any.
     func cancelBuild() {
+        buildGeneration &+= 1
     }
-    
+
     private static func formatDuration(_ duration: Double) -> String {
         let minutes = Int(duration) / 60
         let seconds = Int(duration) % 60
         return String(format: "%d:%02d", minutes, seconds)
-    }
-}
-
-// MARK: - Sort Order
-
-enum SortOrder: String, CaseIterable, Sendable {
-    case manual = "manual"
-    case title = "title"
-    case artist = "artist"
-    case album = "album"
-    case duration = "duration"
-    case dateAdded = "dateAdded"
-}
-
-// MARK: - Data Extensions
-
-extension Data {
-    /// Simple checksum for artwork deduplication.
-    var checksum: UInt64 {
-        guard count >= 8 else {
-            var padded = self
-            while padded.count < 8 { padded.append(0) }
-            return padded.withUnsafeBytes { $0.load(as: UInt64.self) }
-        }
-        return withUnsafeBytes { $0.load(as: UInt64.self) }
     }
 }
