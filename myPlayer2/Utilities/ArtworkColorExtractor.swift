@@ -32,13 +32,15 @@ public enum ArtworkColorExtractor {
         }
     }
     
-    private static func computeChecksum(_ data: Data) -> UInt64 {
-        guard data.count >= 8 else {
-            var padded = data
-            while padded.count < 8 { padded.append(0) }
-            return padded.withUnsafeBytes { $0.load(as: UInt64.self) }
+    private nonisolated static func computeChecksum(_ data: Data) -> UInt64 {
+        var hash: UInt64 = 1_469_598_103_934_665_603
+        data.withUnsafeBytes { rawBuffer in
+            for byte in rawBuffer {
+                hash ^= UInt64(byte)
+                hash &*= 1_099_511_628_211
+            }
         }
-        return data.withUnsafeBytes { $0.load(as: UInt64.self) }
+        return hash
     }
     
     private static func cacheKey(for checksum: UInt64, side: Int) -> NSString {
