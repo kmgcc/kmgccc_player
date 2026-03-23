@@ -7,6 +7,7 @@
 
 import AppKit
 import Foundation
+import ImageIO
 
 actor ArtworkAssetStore {
     static let shared = ArtworkAssetStore()
@@ -20,9 +21,25 @@ actor ArtworkAssetStore {
         cache.totalCostLimit = 50 * 1024 * 1024
     }
     
+    nonisolated static func checksum(for data: Data?) -> UInt64 {
+        guard let data, !data.isEmpty else { return 0 }
+        return computeChecksum(data)
+    }
+    
     func get(trackID: UUID, artworkChecksum: UInt64) -> ArtworkAssetSnapshot? {
         let key = "\(trackID.uuidString)-\(artworkChecksum)"
         return cache.object(forKey: key as NSString)
+    }
+    
+    func snapshot(trackID: UUID, artworkData: Data) async -> ArtworkAssetSnapshot? {
+        let checksum = Self.computeChecksum(artworkData)
+        return await getOrCreate(
+            trackID: trackID,
+            artworkData: artworkData,
+            artworkChecksum: checksum
+        ) { data, checksum in
+            Self.makeSnapshot(trackID: trackID, artworkData: data, checksum: checksum)
+        }
     }
     
     func cache(_ snapshot: ArtworkAssetSnapshot) {
@@ -35,10 +52,10 @@ actor ArtworkAssetStore {
     func getOrCreate(
         trackID: UUID,
         artworkData: Data,
-        extract: @Sendable @escaping (Data) async -> ArtworkAssetSnapshot?
+        artworkChecksum: UInt64,
+        extract: @Sendable @escaping (Data, UInt64) async -> ArtworkAssetSnapshot?
     ) async -> ArtworkAssetSnapshot? {
-        let checksum = computeChecksum(artworkData)
-        let key = "\(trackID.uuidString)-\(checksum)"
+        let key = "\(trackID.uuidString)-\(artworkChecksum)"
         
         if let cached = cache.object(forKey: key as NSString) {
             return cached
@@ -51,7 +68,7 @@ actor ArtworkAssetStore {
         }
         
         inProgressKeys.insert(key)
-        let result = await extract(artworkData)
+        let result = await extract(artworkData, artworkChecksum)
         
         if let snapshot = result {
             cache(snapshot)
@@ -68,12 +85,63 @@ actor ArtworkAssetStore {
         return result
     }
     
-    private func computeChecksum(_ data: Data) -> UInt64 {
-        guard data.count >= 8 else {
-            var padded = data
-            while padded.count < 8 { padded.append(0) }
-            return padded.withUnsafeBytes { $0.load(as: UInt64.self) }
+    private nonisolated static func makeSnapshot(
+        trackID: UUID,
+        artworkData: Data,
+        checksum: UInt64
+    ) -> ArtworkAssetSnapshot? {
+        guard !artworkData.isEmpty else { return nil }
+        
+        let thumbnailImage = downsampledImage(data: artworkData, maxPixelSize: 160)
+        let fullImage = downsampledImage(data: artworkData, maxPixelSize: 1400)
+        let palette = ArtworkColorExtractor.uiThemePalette(from: artworkData, maxColors: 4)
+        let richPalette = ArtworkColorExtractor.uiThemePaletteRich(from: artworkData, desiredCount: 6)
+        let accentColor = palette.first
+        let averageColor = ArtworkColorExtractor.averageColor(from: artworkData)
+        let dominantColor = accentColor ?? averageColor
+        
+        return ArtworkAssetSnapshot(
+            trackID: trackID,
+            artworkChecksum: checksum,
+            thumbnailImage: thumbnailImage,
+            fullImage: fullImage,
+            dominantColor: dominantColor,
+            accentColor: accentColor,
+            palette: palette,
+            richPalette: richPalette,
+            averageColor: averageColor
+        )
+    }
+    
+    private nonisolated static func downsampledImage(data: Data, maxPixelSize: Int) -> NSImage? {
+        guard
+            let source = CGImageSourceCreateWithData(data as CFData, nil)
+        else { return nil }
+        
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: max(1, maxPixelSize),
+        ]
+        
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        else { return nil }
+        
+        return NSImage(
+            cgImage: cgImage,
+            size: CGSize(width: cgImage.width, height: cgImage.height)
+        )
+    }
+    
+    private nonisolated static func computeChecksum(_ data: Data) -> UInt64 {
+        var hash: UInt64 = 1_469_598_103_934_665_603
+        data.withUnsafeBytes { rawBuffer in
+            for byte in rawBuffer {
+                hash ^= UInt64(byte)
+                hash &*= 1_099_511_628_211
+            }
         }
-        return data.withUnsafeBytes { $0.load(as: UInt64.self) }
+        return hash
     }
 }

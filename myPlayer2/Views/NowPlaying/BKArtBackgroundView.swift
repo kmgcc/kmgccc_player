@@ -337,13 +337,15 @@ private final class BKArtBackgroundLayerView: NSView {
     private var maskFrameProgress: Double = 0
     private var lastLayoutSize: CGSize = .zero
     private var rebuildSeed: UInt64 = 0
+    private let animationClock = BackgroundAnimationClock.shared
+    private var holdsClockLease = false
 
-    private var backgroundTimer: DispatchSourceTimer?
-    private var shapeTimer: DispatchSourceTimer?
-    private var dotTimer: DispatchSourceTimer?
-    private var transitionTimer: DispatchSourceTimer?
+    private var backgroundClockSubscription: AnyCancellable?
+    private var shapeClockSubscription: AnyCancellable?
+    private var dotClockSubscription: AnyCancellable?
+    private var transitionClockSubscription: AnyCancellable?
     private var autoTransitionTimer: DispatchSourceTimer?
-    private var speedRampTimer: DispatchSourceTimer?
+    private var speedRampClockSubscription: AnyCancellable?
     private var transitionSeedCounter: UInt64 = 0
     private var speedCurrent: Double = 1.0
     private var speedTarget: Double = 1.0
@@ -374,12 +376,12 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     deinit {
-        backgroundTimer?.cancel()
-        shapeTimer?.cancel()
-        dotTimer?.cancel()
-        transitionTimer?.cancel()
+        backgroundClockSubscription?.cancel()
+        shapeClockSubscription?.cancel()
+        dotClockSubscription?.cancel()
+        transitionClockSubscription?.cancel()
         autoTransitionTimer?.cancel()
-        speedRampTimer?.cancel()
+        speedRampClockSubscription?.cancel()
     }
 
     override func viewDidMoveToWindow() {
@@ -1177,75 +1179,68 @@ private final class BKArtBackgroundLayerView: NSView {
         if autoTransitionTimer == nil && speedTarget > 0.01 {
             scheduleNextAutoTransition()
         }
-        if isTransitionInFlight && transitionTimer == nil && speedTarget > 0.01 {
+        if isTransitionInFlight && transitionClockSubscription == nil && speedTarget > 0.01 {
             startTransitionTimer()
         }
+        updateClockActivity()
     }
 
     private func startBackgroundTimerIfNeeded() {
-        guard backgroundTimer == nil else { return }
-        let timer = DispatchSource.makeTimerSource(queue: .main)
-        timer.schedule(deadline: .now(), repeating: 1.0 / 0.7)
-        timer.setEventHandler { [weak self] in
-            self?.tickBackground()
-        }
-        timer.resume()
-        backgroundTimer = timer
+        guard backgroundClockSubscription == nil else { return }
+        backgroundClockSubscription = animationClock.backgroundPublisher
+            .sink { [weak self] in
+                self?.tickBackground()
+            }
     }
 
     private func startDotTimerIfNeeded() {
-        guard dotTimer == nil else { return }
-        let timer = DispatchSource.makeTimerSource(queue: .main)
-        timer.schedule(deadline: .now(), repeating: 1.0 / 15.0)
-        timer.setEventHandler { [weak self] in
-            self?.tickDotAnimation()
-        }
-        timer.resume()
-        dotTimer = timer
+        guard dotClockSubscription == nil else { return }
+        dotClockSubscription = animationClock.dotPublisher
+            .sink { [weak self] in
+                self?.tickDotAnimation()
+            }
     }
 
     private func startShapeTimerIfNeeded() {
-        guard shapeTimer == nil else { return }
-        let timer = DispatchSource.makeTimerSource(queue: .main)
-        timer.schedule(deadline: .now(), repeating: 1.0 / 12.0)
-        timer.setEventHandler { [weak self] in
-            self?.tickShapes()
-        }
-        timer.resume()
-        shapeTimer = timer
+        guard shapeClockSubscription == nil else { return }
+        shapeClockSubscription = animationClock.shapePublisher
+            .sink { [weak self] in
+                self?.tickShapes()
+            }
     }
 
     private func stopTimers() {
-        backgroundTimer?.cancel()
-        backgroundTimer = nil
-        shapeTimer?.cancel()
-        shapeTimer = nil
-        dotTimer?.cancel()
-        dotTimer = nil
+        backgroundClockSubscription?.cancel()
+        backgroundClockSubscription = nil
+        shapeClockSubscription?.cancel()
+        shapeClockSubscription = nil
+        dotClockSubscription?.cancel()
+        dotClockSubscription = nil
         autoTransitionTimer?.cancel()
         autoTransitionTimer = nil
         stopTransitionTimer()
-        speedRampTimer?.cancel()
-        speedRampTimer = nil
+        speedRampClockSubscription?.cancel()
+        speedRampClockSubscription = nil
         isTransitionInFlight = false
         didPauseBackgroundTimerForTransition = false
         didPauseDotTimerForTransition = false
         isPausedFrozen = false
+        updateClockActivity()
     }
 
     private func startTransitionTimer() {
-        let timer = DispatchSource.makeTimerSource(queue: .main)
-        timer.schedule(deadline: .now() + (1.0 / 6.0), repeating: 1.0 / 6.0)
-        timer.setEventHandler { [weak self] in
-            self?.tickTransitionMask()
-        }
-        timer.resume()
-        transitionTimer = timer
+        guard transitionClockSubscription == nil else { return }
+        transitionClockSubscription = animationClock.transitionPublisher
+            .sink { [weak self] in
+                self?.tickTransitionMask()
+            }
+        updateClockActivity()
     }
 
     private func stopTransitionTimer() {
-        transitionTimer?.cancel()
-        transitionTimer = nil
+        transitionClockSubscription?.cancel()
+        transitionClockSubscription = nil
+        updateClockActivity()
     }
 
     private var shouldFreezeVisualUpdates: Bool {
@@ -1253,19 +1248,18 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     private func startSpeedRampTimerIfNeeded() {
-        guard speedRampTimer == nil else { return }
-        let timer = DispatchSource.makeTimerSource(queue: .main)
-        timer.schedule(deadline: .now(), repeating: 1.0 / 60.0)
-        timer.setEventHandler { [weak self] in
-            self?.tickSpeedRamp()
-        }
-        timer.resume()
-        speedRampTimer = timer
+        guard speedRampClockSubscription == nil else { return }
+        speedRampClockSubscription = animationClock.speedRampPublisher
+            .sink { [weak self] in
+                self?.tickSpeedRamp()
+            }
+        updateClockActivity()
     }
 
     private func stopSpeedRampTimer() {
-        speedRampTimer?.cancel()
-        speedRampTimer = nil
+        speedRampClockSubscription?.cancel()
+        speedRampClockSubscription = nil
+        updateClockActivity()
     }
 
     private func tickSpeedRamp() {
@@ -1294,41 +1288,47 @@ private final class BKArtBackgroundLayerView: NSView {
     private func freezeAnimationTimers() {
         guard !isPausedFrozen else { return }
         isPausedFrozen = true
-        backgroundTimer?.cancel()
-        backgroundTimer = nil
-        shapeTimer?.cancel()
-        shapeTimer = nil
-        dotTimer?.cancel()
-        dotTimer = nil
+        backgroundClockSubscription?.cancel()
+        backgroundClockSubscription = nil
+        shapeClockSubscription?.cancel()
+        shapeClockSubscription = nil
+        dotClockSubscription?.cancel()
+        dotClockSubscription = nil
         autoTransitionTimer?.cancel()
         autoTransitionTimer = nil
         stopTransitionTimer()
+        updateClockActivity()
     }
 
     private func resumeAnimationTimersAfterFreeze() {
         guard isPausedFrozen else { return }
         isPausedFrozen = false
+        startBackgroundTimerIfNeeded()
+        startShapeTimerIfNeeded()
+        startDotTimerIfNeeded()
         startTimersIfNeeded()
     }
 
     private func enterTransitionPerformanceMode(currentStyle: BackgroundStyle) {
         isTransitionInFlight = true
 
-        if backgroundTimer != nil {
-            backgroundTimer?.cancel()
-            backgroundTimer = nil
+        if backgroundClockSubscription != nil {
+            backgroundClockSubscription?.cancel()
+            backgroundClockSubscription = nil
             didPauseBackgroundTimerForTransition = true
         } else {
             didPauseBackgroundTimerForTransition = false
         }
 
-        if currentStyle != .dot, dotTimer != nil {
-            dotTimer?.cancel()
-            dotTimer = nil
+        if currentStyle != .dot, dotClockSubscription != nil {
+            dotClockSubscription?.cancel()
+            dotClockSubscription = nil
             didPauseDotTimerForTransition = true
         } else {
             didPauseDotTimerForTransition = false
         }
+
+        updateClockActivity()
     }
 
     private func exitTransitionPerformanceMode() {
@@ -1336,25 +1336,24 @@ private final class BKArtBackgroundLayerView: NSView {
 
         if didPauseBackgroundTimerForTransition {
             didPauseBackgroundTimerForTransition = false
-            if speedTarget > 0.01 {
-                startBackgroundTimerIfNeeded()
-            }
+            startBackgroundTimerIfNeeded()
         }
 
         if didPauseDotTimerForTransition {
             didPauseDotTimerForTransition = false
-            if speedTarget > 0.01 {
-                startDotTimerIfNeeded()
-            }
+            startDotTimerIfNeeded()
         }
 
         if pendingBoundsRebuild {
             pendingBoundsRebuild = false
             rebuildForCurrentBounds()
         }
+
+        updateClockActivity()
     }
 
     private func tickBackground() {
+        guard backgroundClockSubscription != nil else { return }
         let hasBackgrounds = tintedBackgroundVariants.contains { !$0.isEmpty } || !assets.backgrounds.isEmpty
         guard hasBackgrounds else { return }
         let phaseStep = speedCurrent
@@ -1490,6 +1489,7 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     private func tickShapes() {
+        guard shapeClockSubscription != nil else { return }
         let dt = CGFloat((1.0 / 12.0) * speedCurrent)
         guard dt > 0.0001 else { return }
         updateShapes(for: fromContainer, dt: dt)
@@ -1497,6 +1497,7 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     private func tickDotAnimation() {
+        guard dotClockSubscription != nil else { return }
         let dt = (1.0 / 15.0) * speedCurrent
         guard dt > 0.0001 else { return }
         tickDotBackground(for: fromContainer, dt: dt)
@@ -1530,6 +1531,7 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     private func tickTransitionMask() {
+        guard transitionClockSubscription != nil else { return }
         guard let toContainer, let maskLayer = transitionMaskLayer else { return }
         let maskFrames = resolvedMaskFrames()
         guard !maskFrames.isEmpty else {
@@ -1573,14 +1575,38 @@ private final class BKArtBackgroundLayerView: NSView {
         publishCurrentSurfaceBackgroundColor()
     }
 
+    private func updateClockActivity() {
+        let hasActiveSubscriptions =
+            backgroundClockSubscription != nil
+            || shapeClockSubscription != nil
+            || dotClockSubscription != nil
+            || transitionClockSubscription != nil
+            || speedRampClockSubscription != nil
+
+        if hasActiveSubscriptions {
+            if !holdsClockLease {
+                animationClock.acquire()
+                holdsClockLease = true
+            }
+        } else if holdsClockLease {
+            animationClock.release()
+            holdsClockLease = false
+        }
+    }
+
     private func publishCurrentSurfaceBackgroundColor() {
-        backgroundController?.setCurrentSurfaceDescriptor(
-            usesDotBackground: fromContainer?.style == .dot,
-            variantIndex: fromContainer?.bgVariantIndex
-        )
-        backgroundController?.setCurrentSurfaceBackgroundColor(
-            resolvedDisplayedBackgroundColor(for: fromContainer)
-        )
+        // Defer publishing to avoid "Publishing changes from within view updates" warnings
+        // This method is called from layout(), updateNSView(), and animation callbacks
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.backgroundController?.setCurrentSurfaceDescriptor(
+                usesDotBackground: self.fromContainer?.style == .dot,
+                variantIndex: self.fromContainer?.bgVariantIndex
+            )
+            self.backgroundController?.setCurrentSurfaceBackgroundColor(
+                self.resolvedDisplayedBackgroundColor(for: self.fromContainer)
+            )
+        }
     }
 
     private func resolvedDisplayedBackgroundColor(for container: Container?) -> NSColor? {

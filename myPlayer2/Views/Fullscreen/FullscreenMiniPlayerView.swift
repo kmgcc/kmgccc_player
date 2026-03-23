@@ -31,6 +31,7 @@ struct FullscreenMiniPlayerView: View {
     @State private var previousSymbolEffectTrigger = 0
     @State private var playPauseSymbolEffectTrigger = 0
     @State private var nextSymbolEffectTrigger = 0
+    @State private var artworkImage: NSImage?
 
     // Computed properties based on settings
     private var barHeight: CGFloat { fixedBarHeight }
@@ -70,6 +71,9 @@ struct FullscreenMiniPlayerView: View {
             prominence: .prominent,
             isFloating: true
         )
+        .task(id: currentArtworkTaskKey) {
+            await loadArtworkThumbnail()
+        }
     }
 
     // MARK: - Subviews
@@ -103,9 +107,8 @@ struct FullscreenMiniPlayerView: View {
 
     @ViewBuilder
     private var artworkView: some View {
-        if let artworkData = playerVM.currentTrack?.artworkData,
-           let nsImage = NSImage(data: artworkData) {
-            Image(nsImage: nsImage)
+        if let artworkImage {
+            Image(nsImage: artworkImage)
                 .resizable()
                 .aspectRatio(contentMode: .fill)
                 .frame(width: artworkSize, height: artworkSize)
@@ -286,6 +289,24 @@ struct FullscreenMiniPlayerView: View {
                     }
             )
         }
+    }
+    
+    private var currentArtworkTaskKey: String {
+        guard let track = playerVM.currentTrack else { return "none" }
+        let checksum = ArtworkAssetStore.checksum(for: track.artworkData)
+        return "\(track.id.uuidString)-\(checksum)"
+    }
+    
+    private func loadArtworkThumbnail() async {
+        guard let track = playerVM.currentTrack, let artworkData = track.artworkData, !artworkData.isEmpty
+        else {
+            artworkImage = nil
+            return
+        }
+        
+        let snapshot = await ArtworkAssetStore.shared.snapshot(trackID: track.id, artworkData: artworkData)
+        guard !Task.isCancelled else { return }
+        artworkImage = snapshot?.thumbnailImage ?? snapshot?.fullImage
     }
 
     private var progressDisplayTime: Double {

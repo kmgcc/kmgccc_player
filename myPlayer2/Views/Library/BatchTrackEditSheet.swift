@@ -51,6 +51,7 @@ struct BatchTrackEditSheet: View {
     @State private var playbackSyncTask: Task<Void, Never>?
     @State private var isFetchingCover = false
     @State private var coverFetchTask: Task<Void, Never>?
+    @State private var previewLyricsVM: LyricsViewModel?
 
     private let amllDbURL = URL(string: "https://github.com/amll-dev/amll-ttml-db")!
     private let ttmlToolURL = URL(string: "https://amll-ttml-tool.stevexmh.net/")!
@@ -97,7 +98,7 @@ struct BatchTrackEditSheet: View {
             }
         )
         .onAppear {
-            setupSeekCallback()
+            ensurePreviewLyricsViewModel()
             startPlaybackSyncTask()
             uiState.lyricsPanelSuppressedByModal = true
             guard !tracks.isEmpty else { return }
@@ -110,6 +111,8 @@ struct BatchTrackEditSheet: View {
             coverFetchTask = nil
             uiState.lyricsPanelSuppressedByModal = false
             restoreAMLLDefaultQuality()
+            LyricsSurfaceManager.shared.deactivate(role: .batchPreview)
+            previewLyricsVM = nil
             lyricsVM.ensureAMLLLoaded(
                 track: playerVM.currentTrack,
                 currentTime: playerVM.currentTime,
@@ -137,7 +140,7 @@ struct BatchTrackEditSheet: View {
             draftDidChange()
         }
         .onChange(of: playerVM.isPlaying) { _, newValue in
-            lyricsVM.setPlaying(newValue)
+            previewLyricsVM?.setPlaying(newValue)
         }
         .onChange(of: playerVM.currentTrack?.id) { oldValue, newValue in
             guard oldValue != newValue else { return }
@@ -500,9 +503,11 @@ struct BatchTrackEditSheet: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
-                    BatchAMLLPreviewWebView()
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 10)
+                    if let previewLyricsVM {
+                        BatchAMLLPreviewWebView(store: previewLyricsVM.webViewStore)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 10)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -815,25 +820,18 @@ struct BatchTrackEditSheet: View {
         playerVM.play(track: track)
     }
 
-    private func setupSeekCallback() {
-        lyricsVM.onSeekRequest = { seconds in
-            playerVM.seek(to: seconds)
-            lyricsVM.syncTime(seconds)
-        }
-    }
-
     private func startPlaybackSyncTask() {
         playbackSyncTask?.cancel()
         playbackSyncTask = Task { @MainActor in
             while !Task.isCancelled {
-                lyricsVM.syncTime(playerVM.currentTime)
+                previewLyricsVM?.syncTime(playerVM.currentTime)
                 try? await Task.sleep(nanoseconds: 250_000_000)
             }
         }
     }
 
     private func syncAMLLPreview(reason: String, forceLyricsReload: Bool) {
-        lyricsVM.ensureAMLLLoaded(
+        previewLyricsVM?.ensureAMLLLoaded(
             track: currentTrack,
             currentTime: playerVM.currentTime,
             isPlaying: playerVM.isPlaying,
@@ -876,18 +874,29 @@ struct BatchTrackEditSheet: View {
     }
 
     private func restoreAMLLDefaultQuality() {
-        let webView = LyricsWebViewStore.shared.webView
+        guard let webView = previewLyricsVM?.webViewStore.webView else { return }
         webView.pageZoom = 1.0
         let scale = NSScreen.main?.backingScaleFactor ?? 2.0
         webView.layer?.contentsScale = scale
         webView.evaluateJavaScript("window.AMLL && window.AMLL.setConfig({ renderScale: 0.75 });")
     }
+    
+    private func ensurePreviewLyricsViewModel() {
+        if previewLyricsVM == nil {
+            previewLyricsVM = LyricsViewModel(
+                settings: AppSettings.shared,
+                store: LyricsSurfaceManager.shared.store(for: .batchPreview)
+            )
+        }
+        previewLyricsVM?.onSeekRequest = nil
+        LyricsSurfaceManager.shared.activate(role: .batchPreview)
+    }
 }
 
 private struct BatchAMLLPreviewWebView: NSViewRepresentable {
+    let store: LyricsWebViewStore
 
     func makeNSView(context: Context) -> WKWebView {
-        let store = LyricsWebViewStore.shared
         let webView = store.webView
 
         webView.navigationDelegate = context.coordinator
@@ -901,19 +910,20 @@ private struct BatchAMLLPreviewWebView: NSViewRepresentable {
         context.coordinator.applyLowQualityMode(to: nsView)
     }
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator()
-    }
-
     static func dismantleNSView(_ nsView: WKWebView, coordinator: Coordinator) {
         coordinator.restoreDefaultQuality(for: nsView)
         guard let attachmentID = coordinator.attachmentID else { return }
-        LyricsWebViewStore.shared.detach(requestingID: attachmentID)
+        coordinator.store.detach(requestingID: attachmentID)
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate {
+        let store: LyricsWebViewStore
         var attachmentID: UUID?
         private var isLowQualityActive = false
+
+        init(store: LyricsWebViewStore) {
+            self.store = store
+        }
 
         func applyLowQualityMode(to webView: WKWebView) {
             guard !isLowQualityActive else { return }
@@ -931,5 +941,9 @@ private struct BatchAMLLPreviewWebView: NSViewRepresentable {
             webView.layer?.contentsScale = scale
             webView.evaluateJavaScript("window.AMLL && window.AMLL.setConfig({ renderScale: 0.75 });")
         }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(store: store)
     }
 }

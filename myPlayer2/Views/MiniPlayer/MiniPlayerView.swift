@@ -6,6 +6,7 @@
 //  Uses native SwiftUI .glassEffect() for true macOS 26 Liquid Glass capsule.
 //
 
+import AppKit
 import SwiftUI
 
 // Playback mode enum shared with FullscreenMiniPlayerView
@@ -37,6 +38,7 @@ struct MiniPlayerView: View {
     @State private var previousSymbolEffectTrigger = 0
     @State private var playPauseSymbolEffectTrigger = 0
     @State private var nextSymbolEffectTrigger = 0
+    @State private var artworkImage: NSImage?
 
     var body: some View {
         return HStack(spacing: 12) {
@@ -113,6 +115,9 @@ struct MiniPlayerView: View {
         .sheet(item: $trackToEdit) { track in
             TrackEditSheet(track: track)
                 .environmentObject(themeStore)
+        }
+        .task(id: currentArtworkTaskKey) {
+            await loadArtworkThumbnail()
         }
     }
 
@@ -237,10 +242,8 @@ struct MiniPlayerView: View {
 
     @ViewBuilder
     private var artworkView: some View {
-        if let artworkData = playerVM.currentTrack?.artworkData,
-            let nsImage = NSImage(data: artworkData)
-        {
-            Image(nsImage: nsImage)
+        if let artworkImage {
+            Image(nsImage: artworkImage)
                 .resizable()
                 .aspectRatio(contentMode: .fill)
                 .frame(width: 36, height: 36)
@@ -337,6 +340,24 @@ struct MiniPlayerView: View {
         let minutes = total / 60
         let seconds = total % 60
         return String(format: "%d:%02d", minutes, seconds)
+    }
+    
+    private var currentArtworkTaskKey: String {
+        guard let track = playerVM.currentTrack else { return "none" }
+        let checksum = ArtworkAssetStore.checksum(for: track.artworkData)
+        return "\(track.id.uuidString)-\(checksum)"
+    }
+    
+    private func loadArtworkThumbnail() async {
+        guard let track = playerVM.currentTrack, let artworkData = track.artworkData, !artworkData.isEmpty
+        else {
+            artworkImage = nil
+            return
+        }
+        
+        let snapshot = await ArtworkAssetStore.shared.snapshot(trackID: track.id, artworkData: artworkData)
+        guard !Task.isCancelled else { return }
+        artworkImage = snapshot?.thumbnailImage ?? snapshot?.fullImage
     }
 
     private var progressFillColor: Color {

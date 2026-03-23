@@ -129,7 +129,7 @@ private struct CassetteArtwork: View {
         .onChange(of: context.track?.id) { _, _ in
             scheduleAdjustedArtworkProcessing()
         }
-        .onChange(of: context.track?.artworkData?.count) { _, _ in
+        .onChange(of: context.track?.artworkChecksum) { _, _ in
             scheduleAdjustedArtworkProcessing()
         }
         .onChange(of: context.theme.colorScheme) { _, _ in
@@ -209,7 +209,7 @@ private struct CassetteArtwork: View {
             lo: lo,
             hi: hi,
             mid: midAnchor,
-            checksum: fastChecksum(data)
+            checksum: track.artworkChecksum
         )
         renderKey = key
         adjustedVisible = false
@@ -585,15 +585,20 @@ private struct WaveformCapsulesLayer: View {
         .onChange(of: context.track?.id) { _, _ in
             updateArtworkColors()
         }
+        .onChange(of: context.theme.artworkPalette) { _, _ in
+            updateArtworkColors()
+        }
+        .onChange(of: context.theme.artworkAccentColor) { _, _ in
+            updateArtworkColors()
+        }
         .onChange(of: context.playback.isPlaying) { _, isPlaying in
             vm.updatePlaybackState(isPlaying: isPlaying)
         }
     }
 
     private func updateArtworkColors() {
-        if let data = context.track?.artworkData {
-            // Reusing uiThemePalette (palettePrimary/Secondary) logic
-            artworkPalette = ArtworkColorExtractor.uiThemePalette(from: data, maxColors: 2)
+        if context.theme.artworkPalette.isEmpty == false {
+            artworkPalette = Array(context.theme.artworkPalette.prefix(2))
         } else {
             artworkPalette = []
         }

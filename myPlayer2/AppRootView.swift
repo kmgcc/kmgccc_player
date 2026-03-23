@@ -195,7 +195,10 @@ struct AppRootView: View {
 
         libraryVM = libVM
         playerVM = PlayerViewModel(playbackService: playbackService, levelMeter: ledMeter)
-        lyricsVM = LyricsViewModel()
+        lyricsVM = LyricsViewModel(
+            settings: AppSettings.shared,
+            store: LyricsSurfaceManager.shared.mainStore
+        )
         self.ledMeter = ledMeter
         skinManager = SkinManager()
         easterEggSFX = EasterEggSFXService()

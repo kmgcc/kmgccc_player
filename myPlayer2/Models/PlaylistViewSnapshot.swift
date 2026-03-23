@@ -18,7 +18,7 @@ struct PlaylistViewSnapshot: Sendable {
     let trackCount: Int
     let createdAt: Date
     
-    init(
+    nonisolated init(
         playlistID: UUID,
         trackIDs: [UUID],
         trackSnapshots: [UUID: TrackRowSnapshot],
@@ -33,7 +33,7 @@ struct PlaylistViewSnapshot: Sendable {
     }
     
     /// Empty snapshot for loading states.
-    static var empty: PlaylistViewSnapshot {
+    nonisolated static var empty: PlaylistViewSnapshot {
         PlaylistViewSnapshot(
             playlistID: UUID(),
             trackIDs: [],
@@ -52,13 +52,16 @@ struct TrackRowSnapshot: Sendable {
     let duration: Double
     let durationText: String
     let artworkChecksum: UInt64
+    let artworkData: Data?
+    let artworkCacheKey: String
+    let isMissing: Bool
     let sortIndex: Int
     
-    var displayTitle: String {
+    nonisolated var displayTitle: String {
         title.isEmpty ? "Unknown Title" : title
     }
     
-    var displayArtist: String {
+    nonisolated var displayArtist: String {
         artist.isEmpty ? "Unknown Artist" : artist
     }
 }
@@ -67,12 +70,12 @@ struct TrackRowSnapshot: Sendable {
 
 extension PlaylistViewSnapshot {
     /// Get snapshot for a specific track.
-    func snapshot(for trackID: UUID) -> TrackRowSnapshot? {
+    nonisolated func snapshot(for trackID: UUID) -> TrackRowSnapshot? {
         trackSnapshots[trackID]
     }
     
     /// Formatted total duration.
-    var totalDurationText: String {
+    nonisolated var totalDurationText: String {
         let hours = Int(totalDuration) / 3600
         let minutes = (Int(totalDuration) % 3600) / 60
         
@@ -84,7 +87,7 @@ extension PlaylistViewSnapshot {
     }
     
     /// Whether this snapshot contains any tracks.
-    var isEmpty: Bool {
+    nonisolated var isEmpty: Bool {
         trackIDs.isEmpty
     }
 }

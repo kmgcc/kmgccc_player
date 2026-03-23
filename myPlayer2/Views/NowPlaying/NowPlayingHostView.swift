@@ -22,6 +22,8 @@ struct NowPlayingHostView: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @EnvironmentObject private var themeStore: ThemeStore
     @State private var skinRevision = 0
+    @State private var artworkSnapshot: ArtworkAssetSnapshot?
+
     var body: some View {
         let selectedSkinID = settings.selectedNowPlayingSkinID
         let selectedSkin = skinManager.skin(for: selectedSkinID)
@@ -60,6 +62,9 @@ struct NowPlayingHostView: View {
         .onChange(of: selectedSkinID) { _, _ in
             skinRevision &+= 1
         }
+        .task(id: currentArtworkTaskKey) {
+            await loadArtworkSnapshot()
+        }
     }
 
     private func makeContext(windowSize: CGSize, contentBounds: CGRect) -> SkinContext {
@@ -72,8 +77,9 @@ struct NowPlayingHostView: View {
                 artist: $0.artist,
                 album: $0.album,
                 duration: $0.duration,
+                artworkChecksum: artworkSnapshot?.artworkChecksum ?? 0,
                 artworkData: $0.artworkData,
-                artworkImage: $0.artworkData.flatMap(NSImage.init(data:))
+                artworkImage: artworkSnapshot?.fullImage
             )
         }
 
@@ -100,7 +106,10 @@ struct NowPlayingHostView: View {
             meshColorBoost: AppSettings.shared.nowPlayingMeshColorBoost,
             meshContrast: AppSettings.shared.nowPlayingMeshContrast,
             meshBassImpact: AppSettings.shared.nowPlayingMeshBassImpact,
-            artworkAccentColor: resolveArtworkAccent(for: track),
+            artworkAccentColor: artworkSnapshot?.accentColor.map { Color(nsColor: $0) },
+            artworkPalette: artworkSnapshot?.palette ?? [],
+            artworkRichPalette: artworkSnapshot?.richPalette ?? [],
+            artworkAverageColor: artworkSnapshot?.averageColor,
             kickToBrightnessMix: AppSettings.shared.bgKickToBrightnessMix,
             kickDisplaceAmount: AppSettings.shared.bgKickDisplaceAmount,
             kickScaleAmount: AppSettings.shared.bgKickScaleAmount
@@ -116,10 +125,22 @@ struct NowPlayingHostView: View {
             contentBounds: contentBounds
         )
     }
-
-    private func resolveArtworkAccent(for track: Track?) -> Color? {
-        guard let artwork = track?.artworkData else { return nil }
-        guard let accent = ArtworkColorExtractor.uiAccentColor(from: artwork) else { return nil }
-        return Color(nsColor: accent)
+    
+    private var currentArtworkTaskKey: String {
+        guard let track = playerVM.currentTrack else { return "none" }
+        let checksum = ArtworkAssetStore.checksum(for: track.artworkData)
+        return "\(track.id.uuidString)-\(checksum)"
+    }
+    
+    private func loadArtworkSnapshot() async {
+        guard let track = playerVM.currentTrack, let artworkData = track.artworkData, !artworkData.isEmpty
+        else {
+            artworkSnapshot = nil
+            return
+        }
+        
+        let snapshot = await ArtworkAssetStore.shared.snapshot(trackID: track.id, artworkData: artworkData)
+        guard !Task.isCancelled else { return }
+        artworkSnapshot = snapshot
     }
 }

@@ -70,7 +70,8 @@ struct TrackRowView<MenuContent: View>: View {
                     text: model.title,
                     style: .body,
                     fontWeight: isPlaying ? .semibold : .regular,
-                    color: textPrimaryColor
+                    color: textPrimaryColor,
+                    shouldAnimate: isPlaying || isHovering
                 )
                 .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -78,7 +79,8 @@ struct TrackRowView<MenuContent: View>: View {
                     text: artistText,
                     style: .subheadline,
                     fontWeight: .regular,
-                    color: textSecondaryColor
+                    color: textSecondaryColor,
+                    shouldAnimate: isPlaying || isHovering
                 )
                 .frame(width: 220, alignment: .leading)
             }

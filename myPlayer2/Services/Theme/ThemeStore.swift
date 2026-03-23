@@ -43,7 +43,7 @@ final class ThemeStore: ObservableObject {
 
     private let defaultBlueNS: NSColor
     private var rawDominantColor: NSColor
-    private var dominantColorCache: [UUID: NSColor] = [:]
+    private var dominantColorCache: [String: NSColor] = [:]
     private var activeTrackID: UUID?
     private var extractionToken = UUID()
     private let extractionQueue = DispatchQueue(
@@ -95,15 +95,6 @@ final class ThemeStore: ObservableObject {
 
     private func updateThemeFromArtworkData(_ data: Data?, trackID: UUID?) async {
         print("[Theme] updateThemeFromArtworkData called - trackID: \(trackID?.uuidString.prefix(8) ?? "nil"), dataSize: \(data?.count ?? 0)")
-        
-        if trackID == activeTrackID && trackID != nil {
-            print("[Theme] Already processing track \(trackID!.uuidString.prefix(8)), skipping duplicate call")
-            return
-        }
-        
-        activeTrackID = trackID
-        extractionToken = UUID()
-        let token = extractionToken
 
         guard let data, data.isEmpty == false else {
             print("[Theme] No artwork data, resetting to default")
@@ -120,6 +111,16 @@ final class ThemeStore: ObservableObject {
 
         // Compute checksum for deduplication using FNV-1a hash
         let checksum = computeChecksum(data)
+        let cacheKey = makeCacheKey(trackID: trackID, checksum: checksum)
+
+        if trackID == activeTrackID, checksum == currentArtworkChecksum, checksum != 0 {
+            print("[Theme] Already processing artwork checksum \(checksum), skipping duplicate in-flight call")
+            return
+        }
+
+        activeTrackID = trackID
+        extractionToken = UUID()
+        let token = extractionToken
 
         print("[Theme] checksum: \(checksum), lastProcessedChecksum: \(lastProcessedChecksum), lastProcessedTrackID: \(lastProcessedTrackID?.uuidString.prefix(8) ?? "nil")")
 
@@ -136,12 +137,17 @@ final class ThemeStore: ObservableObject {
         
         print("[Theme] Cleared averageColorCache for new track")
 
-        if let trackID, let cached = dominantColorCache[trackID] {
-            print("[Theme] Using cached dominant color for track \(trackID.uuidString.prefix(8))")
+        if let cacheKey, let cached = dominantColorCache[cacheKey] {
+            print("[Theme] Using cached dominant color for cache key \(cacheKey)")
             rawDominantColor = cached
             usesFallbackThemeColor = false
             lastProcessedChecksum = checksum
             lastProcessedTrackID = trackID
+            if let trackID {
+                averageColorCache = await ArtworkAssetStore.shared
+                    .get(trackID: trackID, artworkChecksum: checksum)?
+                    .averageColor
+            }
             await refreshPalette(reason: "track_artwork_cached")
             return
         }
@@ -150,7 +156,10 @@ final class ThemeStore: ObservableObject {
 
         // Quick color for immediate UI feedback, then full extraction
         async let quick = extractQuickColor(from: data)
-        async let extracted = extractDominantColor(from: data)
+        async let cachedArtworkSnapshot: ArtworkAssetSnapshot? = {
+            guard let trackID else { return nil }
+            return await ArtworkAssetStore.shared.snapshot(trackID: trackID, artworkData: data)
+        }()
 
         // Apply quick color first for immediate feedback
         if let quickColor = await quick, token == extractionToken, activeTrackID == trackID {
@@ -161,7 +170,13 @@ final class ThemeStore: ObservableObject {
         }
 
         // Then apply full extraction
-        let extractedColor = await extracted
+        let artworkSnapshot = await cachedArtworkSnapshot
+        let extractedColor: NSColor?
+        if let snapshotColor = artworkSnapshot?.accentColor ?? artworkSnapshot?.dominantColor {
+            extractedColor = snapshotColor
+        } else {
+            extractedColor = await extractDominantColor(from: data)
+        }
 
         guard token == extractionToken, activeTrackID == trackID else {
             print("[Theme] Token/trackID mismatch, aborting. token match: \(token == extractionToken), activeTrackID match: \(activeTrackID == trackID), currentActiveTrackID: \(activeTrackID?.uuidString.prefix(8) ?? "nil"), expectedTrackID: \(trackID?.uuidString.prefix(8) ?? "nil")")
@@ -171,8 +186,8 @@ final class ThemeStore: ObservableObject {
         print("[Theme] Applying extracted color")
         
         let resolved = extractedColor ?? rawDominantColor
-        if let trackID {
-            dominantColorCache[trackID] = resolved
+        if let cacheKey {
+            dominantColorCache[cacheKey] = resolved
         }
         rawDominantColor = resolved
         usesFallbackThemeColor = extractedColor == nil
@@ -181,7 +196,11 @@ final class ThemeStore: ObservableObject {
         
         // Pre-extract and cache averageColor
         if extractedColor != nil {
-            averageColorCache = await extractAverageColor(from: data)
+            if let cachedAverageColor = artworkSnapshot?.averageColor {
+                averageColorCache = cachedAverageColor
+            } else {
+                averageColorCache = await extractAverageColor(from: data)
+            }
         }
         
         await refreshPalette(reason: "track_artwork_extracted")
@@ -410,6 +429,11 @@ final class ThemeStore: ObservableObject {
             }
         }
         return hash
+    }
+    
+    private func makeCacheKey(trackID: UUID?, checksum: UInt64) -> String? {
+        guard let trackID, checksum != 0 else { return nil }
+        return "\(trackID.uuidString)-\(checksum)"
     }
 }
 

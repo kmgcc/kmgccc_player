@@ -16,7 +16,11 @@ public enum ArtworkColorExtractor {
     ])
     
     // Pixel data cache to avoid repeated CGContext creation
-    private static let pixelCache = NSCache<NSString, PixelDataCacheEntry>()
+    private final class PixelCacheBox: @unchecked Sendable {
+        nonisolated(unsafe) let cache = NSCache<NSString, PixelDataCacheEntry>()
+    }
+
+    private nonisolated static let pixelCache = PixelCacheBox()
     private static let pixelCacheLock = NSLock()
     
     private final class PixelDataCacheEntry: NSObject {
@@ -24,7 +28,7 @@ public enum ArtworkColorExtractor {
         let side: Int
         let checksum: UInt64
         
-        init(pixels: [UInt8], side: Int, checksum: UInt64) {
+        nonisolated init(pixels: [UInt8], side: Int, checksum: UInt64) {
             self.pixels = pixels
             self.side = side
             self.checksum = checksum
@@ -43,7 +47,7 @@ public enum ArtworkColorExtractor {
         return hash
     }
     
-    private static func cacheKey(for checksum: UInt64, side: Int) -> NSString {
+    private nonisolated static func cacheKey(for checksum: UInt64, side: Int) -> NSString {
         "\(checksum)-\(side)" as NSString
     }
 
@@ -78,7 +82,8 @@ public enum ArtworkColorExtractor {
         )
     }
 
-    public static func adjustedAccent(from color: NSColor, isDarkMode: Bool) -> NSColor {
+    public nonisolated static func adjustedAccent(from color: NSColor, isDarkMode: Bool) -> NSColor
+    {
         guard let rgb = color.usingColorSpace(.deviceRGB) else { return color }
 
         var hue: CGFloat = 0
@@ -104,7 +109,8 @@ public enum ArtworkColorExtractor {
     }
 
     /// Theme palette for UI backgrounds. Returns 2-3 distinct artwork colors by default.
-    public static func uiThemePalette(from data: Data, maxColors: Int = 3) -> [NSColor] {
+    public nonisolated static func uiThemePalette(from data: Data, maxColors: Int = 3) -> [NSColor]
+    {
         let targetCount = min(max(2, maxColors), 4)
         guard let pixels = resizedPixels(from: data, side: 56) else {
             return []
@@ -228,7 +234,7 @@ public enum ArtworkColorExtractor {
     /// Accent for UI tinting (skins/components), decoupled from lyrics text color.
     /// Keeps color close to artwork dominant hue and slightly richer, while avoiding
     /// dead-black / near-white extremes.
-    public static func uiAccentColor(from data: Data) -> NSColor? {
+    public nonisolated static func uiAccentColor(from data: Data) -> NSColor? {
         uiThemePalette(from: data, maxColors: 3).first
     }
 
@@ -406,7 +412,7 @@ extension ArtworkColorExtractor {
         let key = cacheKey(for: checksum, side: side)
         
         // Check cache first
-        if let cached = pixelCache.object(forKey: key) {
+        if let cached = pixelCache.cache.object(forKey: key) {
             return cached.pixels
         }
         
@@ -440,7 +446,7 @@ extension ArtworkColorExtractor {
         
         // Cache the result
         let entry = PixelDataCacheEntry(pixels: pixels, side: side, checksum: checksum)
-        pixelCache.setObject(entry, forKey: key)
+        pixelCache.cache.setObject(entry, forKey: key)
         
         return pixels
     }

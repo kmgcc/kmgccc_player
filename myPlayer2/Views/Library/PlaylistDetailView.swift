@@ -34,12 +34,17 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
     @State private var filteredTracksCache: [Track] = []
     @State private var sortedTracksCache: [Track] = []
     @State private var parentSortedTracksCache: [Track] = []
-    @State private var rowModelsCache: [TrackRowModel] = []
+    @State private var viewSnapshot: PlaylistViewSnapshot = .empty
     @State private var sortedTrackIndexMapCache: [UUID: Int] = [:]
     @State private var parentSortedTrackIndexMapCache: [UUID: Int] = [:]
     @State private var trackByIDCache: [UUID: Track] = [:]
     @State private var prefetchTask: Task<Void, Never>?
+    @State private var rebuildTask: Task<Void, Never>?
     @State private var snapshotUpdateTask: Task<Void, Never>?
+    @State private var activeRebuildToken = UUID()
+    @State private var isRebuilding = false
+    @State private var lastQueueTrackIDs: [UUID] = []
+    @State private var lastPrefetchBucket: Int?
     @FocusState private var isSearchFocused: Bool
     @State private var isMultiselectMode = false
     @State private var selectedTrackIDs: Set<UUID> = []
@@ -56,7 +61,9 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
 
     var body: some View {
         Group {
-            if libraryVM.state == .loading {
+            if libraryVM.state == .loading
+                || (isRebuilding && displayedTracksCache.isEmpty && viewSnapshot.isEmpty)
+            {
                 ProgressView()
                     .controlSize(.large)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -90,63 +97,44 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             .presentationSizing(.page)
         }
         .onAppear {
-            rebuildTrackCaches(reason: "appear")
-            restoreScrollIfNeeded()
-            updateLibrarySnapshot()
-            playerVM.updateQueueTracks(parentSortedTracksCache)
+            scheduleRebuild(reason: "appear", restoreScroll: true)
         }
         .onDisappear {
             prefetchTask?.cancel()
             prefetchTask = nil
+            rebuildTask?.cancel()
+            rebuildTask = nil
             snapshotUpdateTask?.cancel()
             snapshotUpdateTask = nil
+            Task {
+                await LibraryTrackSnapshotBuilder.shared.cancelBuild()
+            }
         }
         .onChange(of: libraryVM.selectedPlaylist?.id) { _, _ in
-            rebuildTrackCaches(reason: "playlist")
-            restoreScrollIfNeeded()
-            updateLibrarySnapshot()
-            playerVM.updateQueueTracks(parentSortedTracksCache)
+            scheduleRebuild(reason: "playlist", restoreScroll: true)
         }
         .onChange(of: libraryVM.selectedArtistKey) { _, _ in
-            rebuildTrackCaches(reason: "artist")
-            restoreScrollIfNeeded()
-            updateLibrarySnapshot()
-            playerVM.updateQueueTracks(parentSortedTracksCache)
+            scheduleRebuild(reason: "artist", restoreScroll: true)
         }
         .onChange(of: libraryVM.selectedAlbumKey) { _, _ in
-            rebuildTrackCaches(reason: "album")
-            restoreScrollIfNeeded()
-            updateLibrarySnapshot()
-            playerVM.updateQueueTracks(parentSortedTracksCache)
+            scheduleRebuild(reason: "album", restoreScroll: true)
         }
         .onChange(of: searchText) { _, _ in
-            rebuildTrackCaches(reason: "search")
-            updateLibrarySnapshot()
-            playerVM.updateQueueTracks(parentSortedTracksCache)
+            scheduleRebuild(reason: "search", debounceNanoseconds: 150_000_000)
         }
         .onChange(of: libraryVM.trackSortKey) { _, _ in
             sortSymbolEffectTrigger += 1
-            rebuildTrackCaches(reason: "sortKey")
-            updateLibrarySnapshot()
-            playerVM.updateQueueTracks(parentSortedTracksCache)
+            scheduleRebuild(reason: "sortKey")
         }
         .onChange(of: libraryVM.trackSortOrder) { _, _ in
             sortSymbolEffectTrigger += 1
-            rebuildTrackCaches(reason: "sortOrder")
-            updateLibrarySnapshot()
-            playerVM.updateQueueTracks(parentSortedTracksCache)
+            scheduleRebuild(reason: "sortOrder")
         }
         .onChange(of: libraryVM.totalTrackCount) { _, _ in
-            rebuildTrackCaches(reason: "trackCount")
-            restoreScrollIfNeeded()
-            updateLibrarySnapshot()
-            playerVM.updateQueueTracks(parentSortedTracksCache)
+            scheduleRebuild(reason: "trackCount", restoreScroll: true)
         }
         .onChange(of: libraryVM.refreshTrigger) { _, _ in
-            rebuildTrackCaches(reason: "refresh")
-            restoreScrollIfNeeded()
-            updateLibrarySnapshot()
-            playerVM.updateQueueTracks(parentSortedTracksCache)
+            scheduleRebuild(reason: "refresh", restoreScroll: true)
         }
         .onChange(of: libraryVM.searchResetTrigger) { _, _ in
             searchText = ""
@@ -307,22 +295,25 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
     private var trackListView: some View {
         ScrollView(.vertical) {
             LazyVStack(spacing: 0) {
-                ForEach(rowModelsCache, id: \.id) { rowModel in
-                    if let track = trackByIDCache[rowModel.id] {
+                ForEach(viewSnapshot.trackIDs, id: \.self) { trackID in
+                    if
+                        let rowSnapshot = viewSnapshot.snapshot(for: trackID),
+                        let track = trackByIDCache[trackID]
+                    {
                         TrackRowView(
-                            model: rowModel,
-                            isPlaying: playerVM.currentTrack?.id == rowModel.id,
-                            isSelected: isMultiselectMode && selectedTrackIDs.contains(rowModel.id),
+                            model: trackRowModel(for: rowSnapshot),
+                            isPlaying: playerVM.currentTrack?.id == trackID,
+                            isSelected: isMultiselectMode && selectedTrackIDs.contains(trackID),
                             onTap: {
                                 if isMultiselectMode {
-                                    if selectedTrackIDs.contains(rowModel.id) {
-                                        selectedTrackIDs.remove(rowModel.id)
+                                    if selectedTrackIDs.contains(trackID) {
+                                        selectedTrackIDs.remove(trackID)
                                     } else {
-                                        selectedTrackIDs.insert(rowModel.id)
+                                        selectedTrackIDs.insert(trackID)
                                     }
                                 } else {
                                     let startIndex =
-                                        parentSortedTrackIndexMapCache[rowModel.id] ?? 0
+                                        parentSortedTrackIndexMapCache[trackID] ?? 0
                                     playerVM.playTracks(
                                         parentSortedTracksCache,
                                         startingAt: startIndex
@@ -330,7 +321,7 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
                                 }
                             },
                             onRowAppear: {
-                                prefetchAroundTrackID(rowModel.id)
+                                prefetchAroundTrackID(trackID)
                             }
                         ) {
                             trackMenu(track: track)
@@ -720,26 +711,35 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         }
     }
 
-    private func rebuildTrackCaches(reason: String) {
-        let rebuildStart = ProcessInfo.processInfo.systemUptime
-
-        let displayedTracks: [Track] = {
-            if let playlist = libraryVM.selectedPlaylist {
-                return playlist.tracks.filter { $0.availability != .missing }
-            } else if let artistKey = libraryVM.selectedArtistKey {
-                return libraryVM.allTracks.filter {
-                    LibraryNormalization.normalizeArtist($0.artist) == artistKey
-                        && $0.availability != .missing
-                }
-            } else if let albumKey = libraryVM.selectedAlbumKey {
-                return libraryVM.allTracks.filter {
-                    LibraryNormalization.normalizedAlbumKey(album: $0.album, artist: $0.artist)
-                        == albumKey && $0.availability != .missing
-                }
+    private func scheduleRebuild(
+        reason: String,
+        debounceNanoseconds: UInt64 = 0,
+        restoreScroll: Bool = false
+    ) {
+        rebuildTask?.cancel()
+        let token = UUID()
+        activeRebuildToken = token
+        rebuildTask = Task { @MainActor in
+            if debounceNanoseconds > 0 {
+                try? await Task.sleep(nanoseconds: debounceNanoseconds)
             }
-            return libraryVM.allTracks.filter { $0.availability != .missing }
-        }()
+            guard !Task.isCancelled else { return }
+            isRebuilding = true
+            await performRebuild(
+                reason: reason,
+                restoreScroll: restoreScroll,
+                token: token
+            )
+        }
+    }
 
+    private func performRebuild(
+        reason: String,
+        restoreScroll: Bool,
+        token: UUID
+    ) async {
+        let rebuildStart = ProcessInfo.processInfo.systemUptime
+        let displayedTracks = currentDisplayedTracks()
         let trimmedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let filteredTracks: [Track] = {
             guard !trimmedSearch.isEmpty else { return displayedTracks }
@@ -755,58 +755,115 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             width: Constants.Layout.artworkSmallSize * rowScale,
             height: Constants.Layout.artworkSmallSize * rowScale
         )
+        let inputs = sortedTracks.map {
+            TrackRowBuildInput(
+                trackID: $0.id,
+                title: $0.title,
+                artist: $0.artist,
+                album: $0.album,
+                duration: $0.duration,
+                artworkData: $0.artworkData,
+                isMissing: $0.availability == .missing
+            )
+        }
+        let snapshot = await LibraryTrackSnapshotBuilder.shared.buildSnapshot(
+            playlistID: libraryVM.selectedPlaylist?.id ?? UUID(),
+            tracks: inputs,
+            targetPixelSize: rowPixels
+        )
 
+        guard !Task.isCancelled, activeRebuildToken == token else {
+            if activeRebuildToken == token {
+                isRebuilding = false
+            }
+            return
+        }
+
+        prefetchTask?.cancel()
+        prefetchTask = nil
+        lastPrefetchBucket = nil
         displayedTracksCache = displayedTracks
         filteredTracksCache = filteredTracks
         sortedTracksCache = sortedTracks
         parentSortedTracksCache = parentSortedTracks
         sortedTrackIndexMapCache = Dictionary(
-            uniqueKeysWithValues: sortedTracks.enumerated().map { ($0.element.id, $0.offset) })
+            uniqueKeysWithValues: snapshot.trackIDs.enumerated().map { ($0.element, $0.offset) })
         parentSortedTrackIndexMapCache = Dictionary(
             uniqueKeysWithValues: parentSortedTracks.enumerated().map { ($0.element.id, $0.offset) }
         )
         trackByIDCache = Dictionary(uniqueKeysWithValues: sortedTracks.map { ($0.id, $0) })
-        rowModelsCache = sortedTracks.map { track in
-            let checksum = ArtworkLoader.checksum(for: track.artworkData)
-            let cacheKey = ArtworkLoader.cacheKey(
-                trackID: track.id,
-                checksum: checksum,
-                targetPixelSize: rowPixels
-            )
-            return TrackRowModel(
-                id: track.id,
-                title: track.title,
-                artist: track.artist,
-                durationText: formatDuration(track.duration),
-                artworkData: track.artworkData,
-                artworkCacheKey: cacheKey,
-                isMissing: track.availability == .missing
-            )
+        viewSnapshot = snapshot
+        selectedTrackIDs.formIntersection(Set(sortedTracks.map(\.id)))
+        if restoreScroll {
+            restoreScrollIfNeeded()
         }
+        updateLibrarySnapshot()
+        syncPlayerQueueIfNeeded(with: parentSortedTracks)
+        isRebuilding = false
         let rebuildDurationMs = (ProcessInfo.processInfo.systemUptime - rebuildStart) * 1000
         PlaylistPerfDiagnostics.markListRebuild(
             reason: reason,
-            trackCount: rowModelsCache.count,
+            trackCount: snapshot.trackCount,
             durationMs: rebuildDurationMs
+        )
+    }
+
+    private func currentDisplayedTracks() -> [Track] {
+        if let playlist = libraryVM.selectedPlaylist {
+            return playlist.tracks.filter { $0.availability != .missing }
+        } else if let artistKey = libraryVM.selectedArtistKey {
+            return libraryVM.allTracks.filter {
+                LibraryNormalization.normalizeArtist($0.artist) == artistKey
+                    && $0.availability != .missing
+            }
+        } else if let albumKey = libraryVM.selectedAlbumKey {
+            return libraryVM.allTracks.filter {
+                LibraryNormalization.normalizedAlbumKey(album: $0.album, artist: $0.artist)
+                    == albumKey && $0.availability != .missing
+            }
+        }
+        return libraryVM.allTracks.filter { $0.availability != .missing }
+    }
+
+    private func syncPlayerQueueIfNeeded(with tracks: [Track]) {
+        let trackIDs = tracks.map(\.id)
+        guard trackIDs != lastQueueTrackIDs else { return }
+        lastQueueTrackIDs = trackIDs
+        playerVM.updateQueueTracks(tracks)
+    }
+
+    private func trackRowModel(for snapshot: TrackRowSnapshot) -> TrackRowModel {
+        TrackRowModel(
+            id: snapshot.trackID,
+            title: snapshot.title,
+            artist: snapshot.artist,
+            durationText: snapshot.durationText,
+            artworkData: snapshot.artworkData,
+            artworkCacheKey: snapshot.artworkCacheKey,
+            isMissing: snapshot.isMissing
         )
     }
 
     private func prefetchAroundTrackID(_ trackID: UUID) {
         guard let startIndex = sortedTrackIndexMapCache[trackID] else { return }
-        guard startIndex % 3 == 0 else { return }
+        let bucket = startIndex / 3
+        guard bucket != lastPrefetchBucket else { return }
+        lastPrefetchBucket = bucket
         let rowScale = NSScreen.main?.backingScaleFactor ?? 2.0
         let rowPixels = CGSize(
             width: Constants.Layout.artworkSmallSize * rowScale,
             height: Constants.Layout.artworkSmallSize * rowScale
         )
-        let start = min(startIndex + 1, rowModelsCache.count)
-        let end = min(rowModelsCache.count, startIndex + 9)
+        let start = min(startIndex + 1, viewSnapshot.trackIDs.count)
+        let end = min(viewSnapshot.trackIDs.count, startIndex + 9)
         guard start < end else { return }
 
-        let requests = rowModelsCache[start..<end].map { model in
-            ArtworkPrefetchRequest(
-                cacheKey: model.artworkCacheKey,
-                artworkData: model.artworkData,
+        let requests: [ArtworkPrefetchRequest] = Array(viewSnapshot.trackIDs[start..<end]).compactMap {
+            trackID in
+            guard let snapshot = viewSnapshot.snapshot(for: trackID) else { return nil }
+            return ArtworkPrefetchRequest(
+                cacheKey: snapshot.artworkCacheKey,
+                artworkData: snapshot.artworkData,
                 targetPixelSize: rowPixels
             )
         }
