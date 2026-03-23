@@ -9,7 +9,7 @@
 import CommonCrypto
 import Foundation
 
-final class NCMConverter {
+final class NCMConverter: @unchecked Sendable {
     
     private let coreKey: [UInt8] = [
         0x68, 0x7A, 0x48, 0x52, 0x41, 0x6D, 0x73, 0x6F,
@@ -28,6 +28,8 @@ final class NCMConverter {
     private var imageData: Data?
     private var format: NCMFormat = .mp3
     private var filePath: String = ""
+    
+    nonisolated init() {}
     
     func convert(
         from sourceURL: URL,
@@ -53,21 +55,21 @@ final class NCMConverter {
         
         progressHandler?(.decrypting, 0.05)
         
-        try await validateMagicHeader()
+        try validateMagicHeader()
         progressHandler?(.decrypting, 0.1)
         
-        let currentOffset = try fileHandle.offsetInFile
-        _ = try fileHandle.seek(toOffset: currentOffset + 2)
+        let currentOffset = fileHandle.offsetInFile
+        try fileHandle.seek(toOffset: currentOffset + 2)
         progressHandler?(.decrypting, 0.15)
         
-        let keyData = try await decryptKey()
+        let keyData = try decryptKey()
         self.keyBox = buildKeyBox(key: keyData)
         progressHandler?(.decrypting, 0.2)
         
-        try await decryptMetadata()
+        try decryptMetadata()
         progressHandler?(.decrypting, 0.25)
         
-        try await readCoverData()
+        try readCoverData()
         progressHandler?(.decrypting, 0.3)
         
         if fetchCover && imageData == nil && !albumPicUrl.isEmpty {
@@ -219,8 +221,8 @@ final class NCMConverter {
             throw NCMConverterError.fileReadError
         }
         
-        let gapOffset = try fileHandle.offsetInFile
-        _ = try fileHandle.seek(toOffset: gapOffset + 5)
+        let gapOffset = fileHandle.offsetInFile
+        try fileHandle.seek(toOffset: gapOffset + 5)
         
         guard let coverFrameLenData = try fileHandle.read(upToCount: 4) else {
             throw NCMConverterError.fileReadError
@@ -241,8 +243,8 @@ final class NCMConverter {
         
         let remainingSkip = Int(coverFrameLen) - Int(coverDataLen)
         if remainingSkip > 0 {
-            let currentOffset = try fileHandle.offsetInFile
-            _ = try fileHandle.seek(toOffset: currentOffset + UInt64(remainingSkip))
+            let currentOffset = fileHandle.offsetInFile
+            try fileHandle.seek(toOffset: currentOffset + UInt64(remainingSkip))
         }
     }
     

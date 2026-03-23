@@ -92,6 +92,7 @@ struct SettingsView: View {
     @State private var showEasterEggImage: Bool = false
     @State private var showResetDataAlert: Bool = false
     @State private var showClearIndexCacheAlert: Bool = false
+    @State private var showClearArtworkColorCacheAlert: Bool = false
 
     private var fontFamilies: [String] {
         Self.cachedFontFamilies
@@ -216,6 +217,16 @@ struct SettingsView: View {
             }
         } message: {
             Text("将清空索引缓存并立即重新扫描音乐资料库，不会删除音频、meta.json 或播放列表。")
+        }
+        .alert("清除取色缓存？", isPresented: $showClearArtworkColorCacheAlert) {
+            Button("取消", role: .cancel) {}
+            Button("清除", role: .destructive) {
+                Task {
+                    await ArtworkAssetStore.shared.clearCache()
+                }
+            }
+        } message: {
+            Text("将清空歌曲封面取色缓存，下次播放时会重新提取颜色。")
         }
     }
 
@@ -625,13 +636,13 @@ struct SettingsView: View {
             fullscreenLyricsPreviewConfig
 
             Button("恢复默认") {
-                fullscreenArtworkScale = 1.15
-                fullscreenLyricsFontScale = 2.0
-                fullscreenDimmingIntensity = 0.25
-                AppSettings.shared.fullscreenArtworkScale = 1.15
-                AppSettings.shared.fullscreenLyricsFontScale = 2.0
-                AppSettings.shared.fullscreenDimmingIntensity = 0.25
-                AppSettings.shared.fullscreenMiniplayerHeight = 60
+                fullscreenArtworkScale = AppSettings.FullscreenDefaults.artworkScale
+                fullscreenLyricsFontScale = AppSettings.FullscreenDefaults.lyricsFontScale
+                fullscreenDimmingIntensity = AppSettings.FullscreenDefaults.dimmingIntensity
+                AppSettings.shared.fullscreenArtworkScale = AppSettings.FullscreenDefaults.artworkScale
+                AppSettings.shared.fullscreenLyricsFontScale = AppSettings.FullscreenDefaults.lyricsFontScale
+                AppSettings.shared.fullscreenDimmingIntensity = AppSettings.FullscreenDefaults.dimmingIntensity
+                AppSettings.shared.fullscreenMiniplayerHeight = AppSettings.FullscreenDefaults.miniplayerHeight
                 AppSettings.shared.resetFullscreenLyricsTypographyOverrides()
                 syncFullscreenLyricsStateFromSettings()
             }
@@ -1287,6 +1298,20 @@ struct SettingsView: View {
                         }
                         .buttonStyle(.bordered)
                     }
+                }
+                .padding(12)
+            }
+
+            GroupBox {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("清除歌曲封面取色缓存。若遇到取色异常、颜色显示不正确，可尝试清除缓存。")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+
+                    Button("清除取色缓存") {
+                        showClearArtworkColorCacheAlert = true
+                    }
+                    .buttonStyle(.bordered)
                 }
                 .padding(12)
             }

@@ -125,7 +125,9 @@ final class BackgroundAnimationClock: ObservableObject {
 
         // Single 60Hz timer (16.67ms interval).
         timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
-            self?.tick()
+            Task { @MainActor [weak self] in
+                self?.tick()
+            }
         }
     }
 
@@ -171,7 +173,7 @@ final class BackgroundAnimationClock: ObservableObject {
 // MARK: - Phase Gate
 
 /// Tracks when a specific animation phase should fire.
-struct AnimationPhaseGate {
+final class AnimationPhaseGate {
     let interval: UInt64  // Number of master clock ticks between fires
     private var counter: UInt64 = 0
     
@@ -180,7 +182,7 @@ struct AnimationPhaseGate {
     }
     
     /// Returns true if this phase should fire on this tick.
-    mutating func tick() -> Bool {
+    func tick() -> Bool {
         counter += 1
         if counter >= interval {
             counter = 0
@@ -190,7 +192,7 @@ struct AnimationPhaseGate {
     }
     
     /// Reset the gate.
-    mutating func reset() {
+    func reset() {
         counter = 0
     }
 }

@@ -79,8 +79,8 @@ final class LyricsSyncDriver {
         let delay = max(0, (1.0 / timeUpdateThrottleHz) - Date().timeIntervalSince(lastTimeUpdate))
         
         throttleTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
-            Task { @MainActor in
-                guard let self = self, let pending = self.pendingTime else { return }
+            Task { @MainActor [weak self] in
+                guard let self, let pending = self.pendingTime else { return }
                 self.sendTimeUpdate(pending)
                 self.throttleTimer = nil
             }

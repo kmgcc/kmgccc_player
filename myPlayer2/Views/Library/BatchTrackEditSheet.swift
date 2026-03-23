@@ -48,7 +48,6 @@ struct BatchTrackEditSheet: View {
     @State private var isSavingCurrent = false
     @State private var isLoadingDraft = false
     @State private var processStateByTrackID: [UUID: ProcessState] = [:]
-    @State private var playbackSyncTask: Task<Void, Never>?
     @State private var isFetchingCover = false
     @State private var coverFetchTask: Task<Void, Never>?
     @State private var previewLyricsVM: LyricsViewModel?
@@ -99,16 +98,11 @@ struct BatchTrackEditSheet: View {
         )
         .onAppear {
             ensurePreviewLyricsViewModel()
-            startPlaybackSyncTask()
             uiState.lyricsPanelSuppressedByModal = true
             guard !tracks.isEmpty else { return }
             prepareTrack(at: 0, triggerAutoSearch: true)
         }
         .onDisappear {
-            playbackSyncTask?.cancel()
-            playbackSyncTask = nil
-            coverFetchTask?.cancel()
-            coverFetchTask = nil
             uiState.lyricsPanelSuppressedByModal = false
             restoreAMLLDefaultQuality()
             LyricsSurfaceManager.shared.deactivate(role: .batchPreview)
@@ -121,23 +115,8 @@ struct BatchTrackEditSheet: View {
                 forceLyricsReload: true
             )
         }
-        .onChange(of: title) { _, _ in
-            draftDidChange()
-        }
-        .onChange(of: artist) { _, _ in
-            draftDidChange()
-        }
-        .onChange(of: album) { _, _ in
-            draftDidChange()
-        }
-        .onChange(of: lyricsText) { _, _ in
-            draftDidChange()
-        }
-        .onChange(of: artworkData) { _, _ in
-            draftDidChange()
-        }
-        .onChange(of: lyricsTimeOffsetMs) { _, _ in
-            draftDidChange()
+        .onChange(of: playerVM.currentTime) { _, newTime in
+            previewLyricsVM?.syncTime(newTime)
         }
         .onChange(of: playerVM.isPlaying) { _, newValue in
             previewLyricsVM?.setPlaying(newValue)
@@ -146,6 +125,12 @@ struct BatchTrackEditSheet: View {
             guard oldValue != newValue else { return }
             handlePlaybackTrackChange(newValue)
         }
+        .onChange(of: title) { _, _ in draftDidChange() }
+        .onChange(of: artist) { _, _ in draftDidChange() }
+        .onChange(of: album) { _, _ in draftDidChange() }
+        .onChange(of: lyricsText) { _, _ in draftDidChange() }
+        .onChange(of: artworkData) { _, _ in draftDidChange() }
+        .onChange(of: lyricsTimeOffsetMs) { _, _ in draftDidChange() }
         .fileImporter(
             isPresented: $showingArtworkPicker,
             allowedContentTypes: [.image],
@@ -820,16 +805,6 @@ struct BatchTrackEditSheet: View {
         playerVM.play(track: track)
     }
 
-    private func startPlaybackSyncTask() {
-        playbackSyncTask?.cancel()
-        playbackSyncTask = Task { @MainActor in
-            while !Task.isCancelled {
-                previewLyricsVM?.syncTime(playerVM.currentTime)
-                try? await Task.sleep(nanoseconds: 250_000_000)
-            }
-        }
-    }
-
     private func syncAMLLPreview(reason: String, forceLyricsReload: Bool) {
         previewLyricsVM?.ensureAMLLLoaded(
             track: currentTrack,
@@ -888,7 +863,9 @@ struct BatchTrackEditSheet: View {
                 store: LyricsSurfaceManager.shared.store(for: .batchPreview)
             )
         }
-        previewLyricsVM?.onSeekRequest = nil
+        previewLyricsVM?.onSeekRequest = { [weak playerVM] seconds in
+            playerVM?.seek(to: seconds)
+        }
         LyricsSurfaceManager.shared.activate(role: .batchPreview)
     }
 }
