@@ -174,22 +174,43 @@ struct FullscreenPlayerView: View {
 
     private func bottomControlsRow(windowSize: CGSize) -> some View {
         let horizontalPadding: CGFloat = 40
-        let spacing: CGFloat = 74
+        let exitButtonSpacing: CGFloat = 74
+        let volumeButtonSpacing: CGFloat = 16
+        let volumeButtonSize: CGFloat = max(44, fixedMiniplayerHeight)
         let buttonSize = max(44, fixedMiniplayerHeight)
-        let availableWidth = max(760, windowSize.width - horizontalPadding * 2 - buttonSize - spacing)
+        let availableWidth = max(760, windowSize.width - horizontalPadding * 2 - buttonSize - exitButtonSpacing - volumeButtonSize - volumeButtonSpacing)
         let preferredBarWidth = min(max(availableWidth * 0.80, 700), 1100)
         let barWidth = min(preferredBarWidth, availableWidth)
-        let groupWidth = buttonSize + spacing + barWidth
+        let groupWidth = buttonSize + exitButtonSpacing + barWidth + volumeButtonSpacing + volumeButtonSize
 
-        return HStack(spacing: spacing) {
+        return HStack(spacing: 0) {
             exitFullscreenButtonBottom(size: buttonSize)
+                .frame(width: buttonSize)
+
+            Spacer()
+                .frame(width: exitButtonSpacing)
+
             FullscreenMiniPlayerView()
                 .frame(width: barWidth)
+
+            Spacer()
+                .frame(width: volumeButtonSpacing)
+
+            // Expandable volume control
+            ExpandableVolumeControl(volume: volumeBinding)
+                .frame(width: volumeButtonSize)
         }
         .frame(width: groupWidth, alignment: .center)
         .frame(maxWidth: .infinity, alignment: .center)
         .padding(.horizontal, horizontalPadding)
         .padding(.bottom, 72)
+    }
+
+    private var volumeBinding: Binding<Double> {
+        Binding(
+            get: { playerVM.volume },
+            set: { playerVM.setVolume($0) }
+        )
     }
 
     // MARK: - Skin Artwork Area
