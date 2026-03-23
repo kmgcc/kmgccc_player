@@ -55,7 +55,7 @@ public final class AudioAnalysisHub: @unchecked Sendable {
     private nonisolated(unsafe) var activeClients: Int = 0
 
     // Config
-    nonisolated(unsafe) var targetHz: Int = 60
+    nonisolated(unsafe) var targetHz: Int = 30
 
     public static let shared = AudioAnalysisHub()
 

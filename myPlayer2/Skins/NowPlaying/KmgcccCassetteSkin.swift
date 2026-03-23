@@ -8,6 +8,7 @@
 import AppKit
 import Combine
 import CoreImage
+import QuartzCore
 import SwiftUI
 
 struct KmgcccCassetteSkin: NowPlayingSkin {
@@ -520,146 +521,303 @@ private enum CassetteArtworkToneMapper {
     }
 }
 
+private enum WaveformCapsulesConstants {
+    static let cx: CGFloat = 0.501
+    static let cy: CGFloat = 0.542
+    static let capsuleCount = 9
+    static let capsuleWidthRatio: CGFloat = 0.01
+    static let spacingRatio: CGFloat = 0.017
+    static let maxBarHeightRatio: CGFloat = 0.14
+    static let heightBoost: CGFloat = 1.0
+    static let darkBrightnessMin: CGFloat = 0.10
+    static let darkBrightnessMax: CGFloat = 0.14
+    static let lightBrightnessMax: CGFloat = 0.55
+}
+
 private struct WaveformCapsulesLayer: View {
     let context: SkinContext
-    @State private var vm = AudioVisualizationService.shared
-
-    // MARK: - Constants (Manual Tuning)
-    private enum Constants {
-        // Position
-        static let cx: CGFloat = 0.501
-        static let cy: CGFloat = 0.542
-
-        // Layout
-        static let capsuleCount = 9
-        static let capsuleWidthRatio: CGFloat = 0.01  // Width relative to container width
-        static let spacingRatio: CGFloat = 0.017  // Spacing relative to container width
-
-        // Height Scaling
-        static let maxBarHeightRatio: CGFloat = 0.14
-        static let heightBoost: CGFloat = 1.0
-
-        // Color Tuning (Dark/Light Mode Clamps)
-        static let darkBrightnessMin: CGFloat = 0.10
-        static let darkBrightnessMax: CGFloat = 0.14
-        static let lightBrightnessMax: CGFloat = 0.55
-    }
-
-    @State private var artworkPalette: [NSColor] = []
 
     var body: some View {
-        GeometryReader { geo in
-            let w = geo.size.width
-            let h = geo.size.height
-
-            let barWidth = w * Constants.capsuleWidthRatio
-            let minH = barWidth
-            let maxH = h * Constants.maxBarHeightRatio
-
-            let spacing = w * Constants.spacingRatio
-            let totalWidth =
-                (CGFloat(Constants.capsuleCount) * barWidth)
-                + (CGFloat(Constants.capsuleCount - 1) * spacing)
-
-            HStack(alignment: .center, spacing: spacing) {
-                ForEach(0..<Constants.capsuleCount, id: \.self) { i in
-                    let val = CGFloat(vm.wave9[i])
-                    let dynamicH = minH + (maxH - minH) * val
-
-                    Capsule()
-                        .fill(capsuleColor(at: i, total: Constants.capsuleCount))
-                        .frame(width: barWidth, height: dynamicH)
-                }
-            }
-            .frame(width: totalWidth, height: maxH * 2.5, alignment: .center)
-            .position(x: w * Constants.cx, y: h * Constants.cy)
-        }
+        WaveformCapsulesRepresentable(
+            isPlaying: context.playback.isPlaying,
+            isDark: context.theme.colorScheme == .dark,
+            artworkPalette: Array(context.theme.artworkPalette.prefix(2)),
+            artworkAccentColor: NSColor(context.theme.artworkAccentColor ?? .white)
+        )
         .allowsHitTesting(false)
-        .onAppear {
-            vm.start()
-            vm.updatePlaybackState(isPlaying: context.playback.isPlaying)
-            updateArtworkColors()
-        }
-        .onDisappear {
-            vm.stop()
-        }
-        .onChange(of: context.track?.id) { _, _ in
-            updateArtworkColors()
-        }
-        .onChange(of: context.theme.artworkPalette) { _, _ in
-            updateArtworkColors()
-        }
-        .onChange(of: context.theme.artworkAccentColor) { _, _ in
-            updateArtworkColors()
-        }
-        .onChange(of: context.playback.isPlaying) { _, isPlaying in
-            vm.updatePlaybackState(isPlaying: isPlaying)
+    }
+}
+
+private struct WaveformCapsulesRepresentable: NSViewRepresentable {
+    let isPlaying: Bool
+    let isDark: Bool
+    let artworkPalette: [NSColor]
+    let artworkAccentColor: NSColor
+
+    func makeNSView(context: Context) -> WaveformCapsulesHostView {
+        let view = WaveformCapsulesHostView()
+        view.updatePalette(artworkPalette, accentColor: artworkAccentColor, isDark: isDark)
+        view.start()
+        view.setPlayback(isPlaying: isPlaying)
+        return view
+    }
+
+    func updateNSView(_ nsView: WaveformCapsulesHostView, context: Context) {
+        nsView.updatePalette(artworkPalette, accentColor: artworkAccentColor, isDark: isDark)
+        nsView.setPlayback(isPlaying: isPlaying)
+    }
+
+    static func dismantleNSView(_ nsView: WaveformCapsulesHostView, coordinator: ()) {
+        nsView.stop()
+    }
+}
+
+@MainActor
+private final class WaveformCapsulesHostView: NSView {
+
+    private let service = AudioVisualizationService.shared
+    private let rootLayer = CALayer()
+    private var capsuleLayers: [CALayer] = []
+    private var consumerID: UUID?
+
+    private var currentWave = Array(
+        repeating: Float(0),
+        count: WaveformCapsulesConstants.capsuleCount
+    )
+    private var cachedColors: [CGColor] = []
+    private var paletteSignature: Int = 0
+    private var lastPlaybackState: Bool?
+    private var lastLayoutSize: CGSize = .zero
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer = CALayer()
+        layer?.masksToBounds = false
+
+        rootLayer.masksToBounds = false
+        layer?.addSublayer(rootLayer)
+        setupCapsuleLayers()
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layout() {
+        super.layout()
+        guard bounds.size != lastLayoutSize else { return }
+        lastLayoutSize = bounds.size
+        layoutCapsules()
+    }
+
+    func start() {
+        guard consumerID == nil else { return }
+        service.start()
+        consumerID = service.addConsumer { [weak self] wave in
+            self?.applyWave(wave)
         }
     }
 
-    private func updateArtworkColors() {
-        if context.theme.artworkPalette.isEmpty == false {
-            artworkPalette = Array(context.theme.artworkPalette.prefix(2))
-        } else {
-            artworkPalette = []
+    func stop() {
+        if let consumerID {
+            service.removeConsumer(consumerID)
+            self.consumerID = nil
+        }
+        service.stop()
+        currentWave = Array(repeating: 0, count: WaveformCapsulesConstants.capsuleCount)
+        layoutCapsules()
+    }
+
+    func setPlayback(isPlaying: Bool) {
+        guard lastPlaybackState != isPlaying else { return }
+        lastPlaybackState = isPlaying
+        service.updatePlaybackState(isPlaying: isPlaying)
+    }
+
+    func updatePalette(_ palette: [NSColor], accentColor: NSColor, isDark: Bool) {
+        let signature = Self.paletteSignature(
+            palette: palette,
+            accentColor: accentColor,
+            isDark: isDark
+        )
+        guard signature != paletteSignature else { return }
+
+        paletteSignature = signature
+        cachedColors = Self.makeCapsuleColors(
+            palette: palette,
+            accentColor: accentColor,
+            isDark: isDark
+        )
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for (index, layer) in capsuleLayers.enumerated() where index < cachedColors.count {
+            layer.backgroundColor = cachedColors[index]
+        }
+        CATransaction.commit()
+    }
+
+    private func setupCapsuleLayers() {
+        capsuleLayers = (0..<WaveformCapsulesConstants.capsuleCount).map { _ in
+            let layer = CALayer()
+            layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+            layer.actions = [
+                "bounds": NSNull(),
+                "position": NSNull(),
+                "frame": NSNull(),
+                "backgroundColor": NSNull(),
+                "cornerRadius": NSNull(),
+            ]
+            rootLayer.addSublayer(layer)
+            return layer
         }
     }
 
-    private func capsuleColor(at index: Int, total: Int) -> Color {
-        let t = total > 1 ? CGFloat(index) / CGFloat(total - 1) : 0
-
-        // Use artworkAccentColor as fallback if palette extraction fails
-        let leftBase: NSColor
-        let rightBase: NSColor
-
-        if artworkPalette.count >= 2 {
-            leftBase = artworkPalette[0]
-            rightBase = artworkPalette[1]
-        } else {
-            let accent = NSColor(context.theme.artworkAccentColor ?? .white)
-            leftBase = accent
-            rightBase = accent.withAlphaComponent(0.7)
+    private func applyWave(_ wave: [Float]) {
+        var normalized = Array(repeating: Float(0), count: WaveformCapsulesConstants.capsuleCount)
+        for index in 0..<WaveformCapsulesConstants.capsuleCount {
+            if index < wave.count {
+                normalized[index] = min(1, max(0, wave[index]))
+            }
         }
 
-        // RGB interpolation
-        guard let c1 = leftBase.usingColorSpace(.deviceRGB),
+        let maxDelta = zip(currentWave, normalized).reduce(Float.zero) { partial, pair in
+            max(partial, abs(pair.0 - pair.1))
+        }
+        guard maxDelta >= 0.002 else { return }
+
+        currentWave = normalized
+        layoutCapsules()
+    }
+
+    private func layoutCapsules() {
+        guard bounds.width > 0, bounds.height > 0 else { return }
+
+        let width = bounds.width
+        let height = bounds.height
+        let barWidth = width * WaveformCapsulesConstants.capsuleWidthRatio
+        let minHeight = barWidth
+        let maxBarHeight = height * WaveformCapsulesConstants.maxBarHeightRatio
+        let spacing = width * WaveformCapsulesConstants.spacingRatio
+        let totalWidth =
+            (CGFloat(WaveformCapsulesConstants.capsuleCount) * barWidth)
+            + (CGFloat(WaveformCapsulesConstants.capsuleCount - 1) * spacing)
+        let originX = (width * WaveformCapsulesConstants.cx) - (totalWidth * 0.5)
+        let centerY = height * (1.0 - WaveformCapsulesConstants.cy)
+
+        rootLayer.frame = bounds
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for index in 0..<WaveformCapsulesConstants.capsuleCount {
+            let value = CGFloat(currentWave[index]) * WaveformCapsulesConstants.heightBoost
+            let dynamicHeight = minHeight + (maxBarHeight - minHeight) * min(1, max(0, value))
+            let x = originX + CGFloat(index) * (barWidth + spacing)
+            let y = centerY - (dynamicHeight * 0.5)
+
+            let layer = capsuleLayers[index]
+            layer.frame = CGRect(x: x, y: y, width: barWidth, height: dynamicHeight)
+            layer.cornerRadius = barWidth * 0.5
+        }
+        CATransaction.commit()
+    }
+
+    private static func paletteSignature(palette: [NSColor], accentColor: NSColor, isDark: Bool) -> Int {
+        var hasher = Hasher()
+        hasher.combine(isDark)
+        for color in palette.prefix(2) {
+            append(color: color, to: &hasher)
+        }
+        append(color: accentColor, to: &hasher)
+        return hasher.finalize()
+    }
+
+    private static func append(color: NSColor, to hasher: inout Hasher) {
+        let resolved = color.usingColorSpace(.deviceRGB) ?? color
+        hasher.combine(Int(resolved.redComponent * 1_000))
+        hasher.combine(Int(resolved.greenComponent * 1_000))
+        hasher.combine(Int(resolved.blueComponent * 1_000))
+        hasher.combine(Int(resolved.alphaComponent * 1_000))
+    }
+
+    private static func makeCapsuleColors(
+        palette: [NSColor],
+        accentColor: NSColor,
+        isDark: Bool
+    ) -> [CGColor] {
+        let colors: [NSColor]
+        if palette.count >= 2 {
+            colors = Array(palette.prefix(2))
+        } else {
+            colors = [accentColor, accentColor.withAlphaComponent(0.7)]
+        }
+
+        let leftBase = colors[0]
+        let rightBase = colors[min(1, colors.count - 1)]
+        let total = max(1, WaveformCapsulesConstants.capsuleCount - 1)
+
+        return (0..<WaveformCapsulesConstants.capsuleCount).map { index in
+            let t = CGFloat(index) / CGFloat(total)
+            return makeInterpolatedColor(
+                leftBase: leftBase,
+                rightBase: rightBase,
+                t: t,
+                isDark: isDark
+            ).cgColor
+        }
+    }
+
+    private static func makeInterpolatedColor(
+        leftBase: NSColor,
+        rightBase: NSColor,
+        t: CGFloat,
+        isDark: Bool
+    ) -> NSColor {
+        guard
+            let c1 = leftBase.usingColorSpace(.deviceRGB),
             let c2 = rightBase.usingColorSpace(.deviceRGB)
         else {
-            return Color(nsColor: leftBase)
+            return leftBase
         }
 
-        let r = c1.redComponent + (c2.redComponent - c1.redComponent) * t
-        let g = c1.greenComponent + (c2.greenComponent - c1.greenComponent) * t
-        let b = c1.blueComponent + (c2.blueComponent - c1.blueComponent) * t
+        let red = c1.redComponent + (c2.redComponent - c1.redComponent) * t
+        let green = c1.greenComponent + (c2.greenComponent - c1.greenComponent) * t
+        let blue = c1.blueComponent + (c2.blueComponent - c1.blueComponent) * t
+        let interpolated = NSColor(calibratedRed: red, green: green, blue: blue, alpha: 1)
 
-        let interpolated = NSColor(calibratedRed: r, green: g, blue: b, alpha: 1.0)
-
-        var h: CGFloat = 0
-        var s: CGFloat = 0
-        var bri: CGFloat = 0
-        var a: CGFloat = 0
-        interpolated.getHue(&h, saturation: &s, brightness: &bri, alpha: &a)
+        var hue: CGFloat = 0
+        var saturation: CGFloat = 0
+        var brightness: CGFloat = 0
+        var alpha: CGFloat = 0
+        interpolated.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
 
         let targetBrightness: CGFloat
         let targetAlpha: CGFloat
 
-        if context.theme.colorScheme == .dark {
-            // Apply strict brightness clamp (0.11 - 0.17)
-            // Scaling the original brightness down before clamping to keep relative tones
+        if isDark {
             targetBrightness = max(
-                Constants.darkBrightnessMin, min(Constants.darkBrightnessMax, bri * 0.4))
+                WaveformCapsulesConstants.darkBrightnessMin,
+                min(WaveformCapsulesConstants.darkBrightnessMax, brightness * 0.4)
+            )
             targetAlpha = 0.8
-            s *= 0.9  // Slightly desaturate for heavy dark feel
+            saturation *= 0.9
         } else {
-            // Light mode: moderately dark for contrast on light tape, capped at lightBrightnessMax
-            targetBrightness = min(max(0.1, bri * 0.7), Constants.lightBrightnessMax)
+            targetBrightness = min(
+                max(0.1, brightness * 0.7),
+                WaveformCapsulesConstants.lightBrightnessMax
+            )
             targetAlpha = 0.85
         }
 
-        return Color(
-            nsColor: NSColor(
-                hue: h, saturation: s, brightness: targetBrightness, alpha: targetAlpha))
+        return NSColor(
+            hue: hue,
+            saturation: saturation,
+            brightness: targetBrightness,
+            alpha: targetAlpha
+        )
     }
+
 }
 
 // MARK: - Physics Engine

@@ -9,141 +9,254 @@
 
 import Accelerate
 import Foundation
-import Observation
 
-@Observable
-@MainActor
 final class AudioVisualizationService {
 
-    // MARK: - Published State
+    typealias Consumer = @MainActor ([Float]) -> Void
 
-    /// 9-band smoothed energetic levels (0...1)
-    private(set) var wave9: [Float] = Array(repeating: 0, count: 9)
-
-    // MARK: - Internals
+    private enum Constants {
+        static let bandCount = 9
+        static let uiUpdateHz: Double = 30
+        static let staleDataThreshold: TimeInterval = 0.12
+        static let publishEpsilon: Float = 0.015
+        static let forcePublishInterval: TimeInterval = 0.25
+        static let defaultFFTSize = 1024
+        static let defaultSampleRate: Float = 44_100
+    }
 
     private let processor = SpectrumProcessor()
-    private var consumerId: UUID?
     private let hub = AudioAnalysisHub.shared
+    private let processingQueue = DispatchQueue(
+        label: "AudioVisualizationService.processing",
+        qos: .userInitiated
+    )
+    private let consumerLock = NSLock()
 
-    // State Tracking
+    private var consumers: [UUID: Consumer] = [:]
+    private var hubConsumerId: UUID?
+    private var timer: DispatchSourceTimer?
+    private var activeRefs = 0
+    private var isRunning = false
+
     private var isPlaying: Bool = false
     private var pauseStartTime: TimeInterval?
 
-    // The "live" data directly from processor
-    private var liveWave: [Float] = Array(repeating: 0, count: 9)
+    private var liveWave: [Float] = Array(repeating: 0, count: Constants.bandCount)
+    private var outputWave: [Float] = Array(repeating: 0, count: Constants.bandCount)
+    private var lastPublishedWave: [Float] = Array(repeating: 0, count: Constants.bandCount)
 
-    // Scaling and Blending
-    private var poseBlend: Float = 0.0  // 0.0 = Live, 1.0 = Idle Pose
+    private var pendingMagnitudes: [Float] = []
+    private var pendingFFTSize: Int = Constants.defaultFFTSize
+    private var pendingSampleRate: Float = Constants.defaultSampleRate
+    private var hasPendingFFT = false
+
+    private var poseBlend: Float = 0.0
     private let idlePattern: [Float] = [0.37, 0.20, 0.40, 0.20, 0.65, 0.20, 0.40, 0.20, 0.37]
 
-    // Timers & Blending
-    private var silenceTimer: Timer?
     private var lastDataTime: TimeInterval = 0
-    private var lastUpdateTime: TimeInterval = 0
+    private var lastTickTime: TimeInterval = 0
+    private var lastPublishTime: TimeInterval = 0
 
     static let shared = AudioVisualizationService()
-    private var activeRefs = 0
 
     private init() {}
 
-    func updatePlaybackState(isPlaying: Bool) {
-        self.isPlaying = isPlaying
-        if isPlaying {
-            pauseStartTime = nil
-        } else if pauseStartTime == nil {
-            pauseStartTime = Date().timeIntervalSinceReferenceDate
-        }
-    }
-
     func start() {
-        activeRefs += 1
-        guard activeRefs == 1 else { return }
-
-        lastUpdateTime = Date().timeIntervalSinceReferenceDate
-        hub.start()
-
-        stopTimer()
-        silenceTimer = Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) {
-            [weak self] _ in
+        processingQueue.async { [weak self] in
             guard let self else { return }
-            Task { @MainActor in
-                let now = Date().timeIntervalSinceReferenceDate
-                if now - self.lastDataTime > 0.12 {
-                    // Feed empty to processor to let it decay naturally to 0 (for the 2s pause window)
-                    let decayed = self.processor.process(
-                        magnitudes: [], fftSize: 1024, sampleRate: 44100)
-                    self.blendAndUpdate(newLiveLevels: decayed)
-                } else {
-                    // Just tick the blending logic
-                    self.blendAndUpdate(newLiveLevels: nil)
-                }
-            }
-        }
-
-        consumerId = hub.addConsumer { [weak self] data in
-            guard let self else { return }
-            let levels = self.processor.process(
-                magnitudes: data.magnitudes, fftSize: data.fftSize, sampleRate: data.sampleRate)
-
-            Task { @MainActor in
-                self.lastDataTime = Date().timeIntervalSinceReferenceDate
-                self.blendAndUpdate(newLiveLevels: levels)
-            }
-        }
-    }
-
-    private func blendAndUpdate(newLiveLevels: [Float]?) {
-        let now = Date().timeIntervalSinceReferenceDate
-        let dt = Float(max(0.001, min(0.1, now - lastUpdateTime)))
-        lastUpdateTime = now
-
-        // 1. Update Live Wave if new data arrives
-        if let newLive = newLiveLevels {
-            liveWave = newLive
-        }
-
-        // 2. Idle Pose Trigger Logic (2 seconds threshold)
-        var targetBlend: Float = 0.0
-        if !isPlaying, let start = pauseStartTime, now - start >= 0.05 {
-            targetBlend = 1.0
-        }
-
-        // 3. Pose Blend Smoothing (Fast transitions)
-        // Transitions: 0 -> 1 (In) approx 0.3s, 1 -> 0 (Out) approx 0.2s
-        let tau: Float = targetBlend > poseBlend ? 0.10 : 0.10
-        let factor = 1.0 - exp(-dt / tau)
-        poseBlend += (targetBlend - poseBlend) * factor
-
-        // 4. Final Output Construction (LERP)
-        for i in 0..<9 {
-            let live = liveWave[i]
-            let pose = idlePattern[i]
-            wave9[i] = live + (pose - live) * poseBlend
+            self.activeRefs += 1
+            guard self.activeRefs == 1 else { return }
+            self.startLocked()
         }
     }
 
     func stop() {
-        activeRefs -= 1
-        if activeRefs < 0 { activeRefs = 0 }
-
-        guard activeRefs == 0 else { return }
-
-        if let id = consumerId {
-            hub.removeConsumer(id)
+        processingQueue.async { [weak self] in
+            guard let self else { return }
+            self.activeRefs = max(0, self.activeRefs - 1)
+            guard self.activeRefs == 0, self.isRunning else { return }
+            self.stopLocked()
         }
-        consumerId = nil
-        hub.stop()
-        stopTimer()
-        wave9 = Array(repeating: 0, count: 9)
-        liveWave = Array(repeating: 0, count: 9)
-        poseBlend = 0.0
-        pauseStartTime = nil
     }
 
-    private func stopTimer() {
-        silenceTimer?.invalidate()
-        silenceTimer = nil
+    func updatePlaybackState(isPlaying: Bool) {
+        processingQueue.async { [weak self] in
+            guard let self else { return }
+            guard self.isPlaying != isPlaying else { return }
+
+            self.isPlaying = isPlaying
+            if isPlaying {
+                self.pauseStartTime = nil
+            } else if self.pauseStartTime == nil {
+                self.pauseStartTime = Date().timeIntervalSinceReferenceDate
+            }
+        }
+    }
+
+    func addConsumer(_ callback: @escaping Consumer) -> UUID {
+        let id = UUID()
+
+        consumerLock.lock()
+        consumers[id] = callback
+        consumerLock.unlock()
+
+        let initialWave = processingQueue.sync { lastPublishedWave }
+        Task { @MainActor in
+            callback(initialWave)
+        }
+
+        return id
+    }
+
+    func removeConsumer(_ id: UUID) {
+        consumerLock.lock()
+        consumers.removeValue(forKey: id)
+        consumerLock.unlock()
+    }
+
+    private func startLocked() {
+        let now = Date().timeIntervalSinceReferenceDate
+        isRunning = true
+        isPlaying = false
+        pauseStartTime = nil
+        processor.reset()
+        liveWave = Array(repeating: 0, count: Constants.bandCount)
+        outputWave = Array(repeating: 0, count: Constants.bandCount)
+        lastPublishedWave = Array(repeating: 0, count: Constants.bandCount)
+        pendingMagnitudes = []
+        pendingFFTSize = Constants.defaultFFTSize
+        pendingSampleRate = Constants.defaultSampleRate
+        hasPendingFFT = false
+        poseBlend = 0
+        lastDataTime = now
+        lastTickTime = now
+        lastPublishTime = 0
+
+        hub.start()
+        hubConsumerId = hub.addConsumer { [weak self] data in
+            self?.enqueue(data)
+        }
+        startTimerLocked()
+    }
+
+    private func stopLocked() {
+        if let id = hubConsumerId {
+            hub.removeConsumer(id)
+        }
+        hubConsumerId = nil
+        hub.stop()
+        stopTimerLocked()
+
+        let zeroWave = Array(repeating: Float(0), count: Constants.bandCount)
+        let shouldPublishZero = lastPublishedWave.contains(where: { $0 > 0.001 })
+
+        isRunning = false
+        processor.reset()
+        liveWave = zeroWave
+        outputWave = zeroWave
+        lastPublishedWave = zeroWave
+        pendingMagnitudes = []
+        hasPendingFFT = false
+        poseBlend = 0
+        pauseStartTime = nil
+        lastPublishTime = 0
+
+        if shouldPublishZero {
+            publish(zeroWave)
+        }
+    }
+
+    private func enqueue(_ data: AudioAnalysisData) {
+        processingQueue.async { [weak self] in
+            guard let self, self.isRunning else { return }
+            self.pendingMagnitudes = data.magnitudes
+            self.pendingFFTSize = data.fftSize
+            self.pendingSampleRate = data.sampleRate
+            self.hasPendingFFT = true
+            self.lastDataTime = Date().timeIntervalSinceReferenceDate
+        }
+    }
+
+    private func startTimerLocked() {
+        stopTimerLocked()
+
+        let interval = 1.0 / Constants.uiUpdateHz
+        let timer = DispatchSource.makeTimerSource(queue: processingQueue)
+        timer.schedule(deadline: .now(), repeating: interval, leeway: .milliseconds(4))
+        timer.setEventHandler { [weak self] in
+            self?.tick()
+        }
+        timer.resume()
+        self.timer = timer
+    }
+
+    private func stopTimerLocked() {
+        timer?.cancel()
+        timer = nil
+    }
+
+    private func tick() {
+        guard isRunning else { return }
+
+        let now = Date().timeIntervalSinceReferenceDate
+        let dt = Float(max(0.001, min(0.1, now - lastTickTime)))
+        lastTickTime = now
+
+        if hasPendingFFT {
+            liveWave = processor.process(
+                magnitudes: pendingMagnitudes,
+                fftSize: pendingFFTSize,
+                sampleRate: pendingSampleRate
+            )
+            hasPendingFFT = false
+        } else if now - lastDataTime > Constants.staleDataThreshold {
+            liveWave = processor.process(
+                magnitudes: [],
+                fftSize: pendingFFTSize,
+                sampleRate: pendingSampleRate
+            )
+        }
+
+        var targetBlend: Float = 0
+        if !isPlaying, let start = pauseStartTime, now - start >= 0.05 {
+            targetBlend = 1
+        }
+
+        let tau: Float = 0.10
+        let factor = 1.0 - exp(-dt / tau)
+        poseBlend += (targetBlend - poseBlend) * factor
+
+        for index in 0..<Constants.bandCount {
+            let live = liveWave[index]
+            let pose = idlePattern[index]
+            outputWave[index] = live + (pose - live) * poseBlend
+        }
+
+        let maxDelta = zip(outputWave, lastPublishedWave).reduce(Float.zero) { partial, pair in
+            max(partial, abs(pair.0 - pair.1))
+        }
+        let shouldPublish =
+            maxDelta >= Constants.publishEpsilon
+            || (now - lastPublishTime) >= Constants.forcePublishInterval
+
+        guard shouldPublish else { return }
+        lastPublishTime = now
+        lastPublishedWave = outputWave
+        publish(outputWave)
+    }
+
+    private func publish(_ wave: [Float]) {
+        consumerLock.lock()
+        let callbacks = Array(consumers.values)
+        consumerLock.unlock()
+
+        guard callbacks.isEmpty == false else { return }
+
+        for callback in callbacks {
+            Task { @MainActor in
+                callback(wave)
+            }
+        }
     }
 }
 
