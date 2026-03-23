@@ -14,6 +14,36 @@ public enum ArtworkColorExtractor {
     private nonisolated static let ciContext = CIContext(options: [
         .workingColorSpace: NSNull()
     ])
+    
+    // Pixel data cache to avoid repeated CGContext creation
+    private static let pixelCache = NSCache<NSString, PixelDataCacheEntry>()
+    private static let pixelCacheLock = NSLock()
+    
+    private final class PixelDataCacheEntry: NSObject {
+        let pixels: [UInt8]
+        let side: Int
+        let checksum: UInt64
+        
+        init(pixels: [UInt8], side: Int, checksum: UInt64) {
+            self.pixels = pixels
+            self.side = side
+            self.checksum = checksum
+            super.init()
+        }
+    }
+    
+    private static func computeChecksum(_ data: Data) -> UInt64 {
+        guard data.count >= 8 else {
+            var padded = data
+            while padded.count < 8 { padded.append(0) }
+            return padded.withUnsafeBytes { $0.load(as: UInt64.self) }
+        }
+        return data.withUnsafeBytes { $0.load(as: UInt64.self) }
+    }
+    
+    private static func cacheKey(for checksum: UInt64, side: Int) -> NSString {
+        "\(checksum)-\(side)" as NSString
+    }
 
     public nonisolated static func averageColor(from data: Data) -> NSColor? {
         guard let image = NSImage(data: data),
@@ -370,6 +400,15 @@ extension ArtworkColorExtractor {
     }
 
     fileprivate nonisolated static func resizedPixels(from data: Data, side: Int) -> [UInt8]? {
+        let checksum = computeChecksum(data)
+        let key = cacheKey(for: checksum, side: side)
+        
+        // Check cache first
+        if let cached = pixelCache.object(forKey: key) {
+            return cached.pixels
+        }
+        
+        // Generate pixels
         guard let image = NSImage(data: data) else { return nil }
         var rect = CGRect(origin: .zero, size: image.size)
         guard let cgImage = image.cgImage(forProposedRect: &rect, context: nil, hints: nil) else {
@@ -396,6 +435,11 @@ extension ArtworkColorExtractor {
 
         context.interpolationQuality = .high
         context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        
+        // Cache the result
+        let entry = PixelDataCacheEntry(pixels: pixels, side: side, checksum: checksum)
+        pixelCache.setObject(entry, forKey: key)
+        
         return pixels
     }
 

@@ -205,6 +205,12 @@ final class LyricsWebViewStore: NSObject {
 
     func setLyricsTTML(_ ttml: String) {
         guard !isShutDown else { return }
+        
+        // Deduplication: skip if same TTML
+        if ttml == lastTTML && ttml.count > 0 {
+            return
+        }
+        
         lastTTML = ttml
         print(
             "[LyricsStore] setLyricsTTML: len=\(ttml.count), objectID=\(webViewObjectID), isReady=\(isReady)"
@@ -220,6 +226,12 @@ final class LyricsWebViewStore: NSObject {
     func setCurrentTime(_ seconds: Double) {
         guard !isShutDown else { return }
         guard seconds.isFinite else { return }
+        
+        // Deduplication: skip if time hasn't changed meaningfully
+        if let last = lastTime, abs(seconds - last) < 0.01 {
+            return
+        }
+        
         lastTime = seconds
         // Time updates are not queued (too frequent), only sent if ready
         guard isReady else { return }
@@ -233,6 +245,12 @@ final class LyricsWebViewStore: NSObject {
 
     func setPlaying(_ isPlaying: Bool) {
         guard !isShutDown else { return }
+        
+        // Deduplication: skip if same state
+        if isPlaying == lastIsPlaying {
+            return
+        }
+        
         lastIsPlaying = isPlaying
         print(
             "[LyricsStore] setPlaying: \(isPlaying), objectID=\(webViewObjectID), isReady=\(isReady)"
@@ -243,6 +261,12 @@ final class LyricsWebViewStore: NSObject {
 
     func setConfigJSON(_ json: String) {
         guard !isShutDown else { return }
+        
+        // Deduplication: skip if same config
+        if json == lastConfigJSON {
+            return
+        }
+        
         lastConfigJSON = json
         callJS("window.AMLL.setConfig(\(json))")
     }
