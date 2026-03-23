@@ -83,6 +83,9 @@
             text-shadow: none !important;
             --amll-lp-mix-opacity: 1;
             --amll-lp-mix-blend-mode: normal;
+            /* Allow glow effects to extend beyond container */
+            contain: none !important;
+            overflow: visible !important;
         }
         .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"] {
             color: var(--amll-fs-main-inactive, var(--amll-inactive, var(--amll-lp-color, white))) !important;
@@ -119,9 +122,7 @@
         .amll-lyric-player.amll-surface-fullscreen [class*="_emphasize_"] *,
         .amll-lyric-player.amll-surface-fullscreen [class*="_romanWord_"],
         .amll-lyric-player.amll-surface-fullscreen [class*="_lyricSubLine_"],
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricSubLine_"] *,
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricBgLine_"],
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricBgLine_"] > * {
+        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricSubLine_"] * {
             opacity: 1 !important;
         }
         .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"] > [class*="_lyricSubLine_"],
@@ -265,27 +266,144 @@
                 opacity var(--amll-fs-line-switch-highlight-out-duration) ease-out var(--amll-fs-line-switch-highlight-out-delay),
                 color var(--amll-fs-line-switch-highlight-out-duration) ease-out var(--amll-fs-line-switch-highlight-out-delay) !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricBgLine_"] {
+.amll-lyric-player.amll-surface-fullscreen [class*="_lyricBgLine_"] {
             visibility: hidden !important;
+            opacity: 0 !important;
             color: var(
                 --amll-fs-main-line-timing-inactive,
                 var(--amll-fs-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
             ) !important;
-            transition: color .18s ease, visibility 0s linear .18s !important;
-            will-change: transform !important;
+            transition: 
+                color .18s ease,
+                opacity .35s ease-out,
+                visibility 0s linear .35s !important;
+            will-change: transform, opacity !important;
         }
         .amll-lyric-player.amll-surface-fullscreen [class*="_lyricBgLine_"][class*="_active_"] {
             visibility: visible !important;
+            opacity: 1 !important;
             color: var(
                 --amll-fs-bg-active,
-                var(--amll-fs-main-line-timing-inactive, var(--amll-fs-main-inactive, var(--amll-lp-color, white)))
+                var(--amll-fs-main-line-timing-inactive, var(--amll-fs-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
             ) !important;
             transition-delay: 0s !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricBgLine_"] > *,
+/* Background line content: slide up + fade out when disappearing in fullscreen */
+        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricBgLine_"] > * {
+            transform: translateY(-0.5em) !important;
+            opacity: 0 !important;
+            transition: transform .35s ease-out, opacity .35s ease-out !important;
+        }
         .amll-lyric-player.amll-surface-fullscreen [class*="_lyricBgLine_"][class*="_active_"] > * {
-            transform: none !important;
-            transition: none !important;
+            transform: translateY(0) !important;
+            opacity: 1 !important;
+        }
+
+        /* === Task 1: Fullscreen emphasis glow above text layer === */
+        /* Create a glow overlay that renders on top of the text in fullscreen mode */
+        .amll-lyric-player.amll-surface-fullscreen .amll-fs-glow-layer {
+            position: absolute !important;
+            top: 0 !important;
+            left: 0 !important;
+            pointer-events: none !important;
+            user-select: none !important;
+            z-index: 10 !important;
+            color: transparent !important;
+            -webkit-text-stroke: 0 transparent !important;
+            overflow: visible !important;
+            contain: none !important;
+            clip-path: none !important;
+            white-space: nowrap !important;
+            width: max-content !important;
+        }
+
+        /* Use drop-shadow filter for glow - it extends beyond element boundaries */
+        .amll-lyric-player.amll-surface-fullscreen .amll-fs-glow-layer.active-glow {
+            filter: drop-shadow(0 0 0.15em rgba(255, 255, 255, 0.8));
+        }
+
+        /* Ensure word stack allows overflow for glow effect */
+        .amll-lyric-player.amll-surface-fullscreen .amll-fs-word-stack {
+            overflow: visible !important;
+            contain: none !important;
+        }
+
+        /* Glow layer should not be constrained by grid layout */
+        .amll-lyric-player.amll-surface-fullscreen .amll-fs-word-stack > .amll-fs-glow-layer {
+            grid-area: auto !important;
+            position: absolute !important;
+        }
+
+        /* Ensure char stack also allows overflow */
+        .amll-lyric-player.amll-surface-fullscreen .amll-fs-char-stack {
+            overflow: visible !important;
+        }
+
+        /* Ensure lyric main line allows overflow for glow */
+        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricMainLine_"] {
+            overflow: visible !important;
+            contain: none !important;
+        }
+
+        /* Ensure sub line also allows overflow */
+        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricSubLine_"] {
+            overflow: visible !important;
+            contain: none !important;
+        }
+
+        /* Ensure the lyric line container allows overflow */
+        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"] {
+            overflow: visible !important;
+            contain: none !important;
+        }
+
+        /* Ensure emphasize wrapper allows overflow */
+        .amll-lyric-player.amll-surface-fullscreen [class*="_emphasizeWrapper_"] {
+            position: relative !important;
+            overflow: visible !important;
+        }
+
+        /* Ensure emphasize element allows overflow */
+        .amll-lyric-player.amll-surface-fullscreen [class*="_emphasize_"] {
+            overflow: visible !important;
+        }
+
+        .amll-lyric-player.amll-surface-fullscreen [class*="_emphasizeWrapper_"]::after,
+        .amll-lyric-player.amll-surface-fullscreen [class*="_emphasize_"]::after {
+            content: attr(data-text) !important;
+            position: absolute !important;
+            top: 0 !important;
+            left: 0 !important;
+            pointer-events: none !important;
+            user-select: none !important;
+            z-index: 10 !important;
+            color: transparent !important;
+            -webkit-text-stroke: 0 transparent !important;
+            opacity: 0 !important;
+            transition: opacity 0.15s ease-out !important;
+        }
+
+        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][class*="_active_"] [class*="_emphasizeWrapper_"]::after,
+        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][class*="_active_"] [class*="_emphasize_"]::after {
+            opacity: 1 !important;
+        }
+
+        /* === Task 2: Fullscreen translation line highlight fade-in === */
+        /* Add smooth fade-in transition for translation lines becoming active in fullscreen mode only */
+        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricSubLine_"] {
+            transition: 
+                color var(--amll-fs-line-switch-highlight-in-duration, 0.20s) linear var(--amll-fs-line-switch-highlight-delay, 0.05s),
+                opacity 0.28s ease-out 0.05s !important;
+        }
+
+        /* Inactive translation lines in fullscreen - slightly dimmed */
+        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"]:not([class*="_active_"]) > [class*="_lyricSubLine_"] {
+            opacity: 0.65 !important;
+        }
+
+        /* Active translation lines in fullscreen - slightly dimmed highlight */
+        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][class*="_active_"] > [class*="_lyricSubLine_"] {
+            opacity: 0.70 !important;
         }
 
     </style>
@@ -785,6 +903,74 @@
             splitWord.__fsInstalledMaskAnimations = nextMaskAnimations;
         };
 
+        /**
+         * Create and install a glow layer that renders ABOVE the text for emphasized words.
+         * This separates the text-shadow glow from the text content, allowing the glow
+         * to appear on top of the text layer in fullscreen mode.
+         */
+        const installFullscreenEmphasizedGlowLayer = (splitWord) => {
+            if (!splitWord) return;
+            const activeWordElement = splitWord?.__fsActiveWordElement;
+            const stackElement = splitWord?.__fsWordStackElement;
+            if (!(activeWordElement instanceof HTMLElement)) return;
+            if (!(stackElement instanceof HTMLElement)) return;
+
+            // Check if glow layer already exists
+            if (splitWord.__fsGlowLayer instanceof HTMLElement) {
+                return;
+            }
+
+            // Find emphasize-word animations (these contain text-shadow)
+            const sourceAnimations = captureFullscreenSourceElementAnimations(splitWord);
+            const emphasisAnimations = sourceAnimations.filter((animation) => {
+                if (!(animation instanceof Animation)) return false;
+                const id = typeof animation.id === "string" ? animation.id : "";
+                return id.includes("emphasize-word-") && !id.includes("float");
+            });
+
+            if (emphasisAnimations.length === 0) return;
+
+            // Create glow layer - a clone of the word that only shows text-shadow
+            const glowLayer = activeWordElement.cloneNode(false);
+            if (!(glowLayer instanceof HTMLElement)) return;
+
+            glowLayer.className = "amll-fs-glow-layer";
+            glowLayer.setAttribute("aria-hidden", "true");
+            // Simple positioning: overlap with original, let overflow:visible handle glow
+            glowLayer.style.position = "absolute";
+            glowLayer.style.top = "0";
+            glowLayer.style.left = "0";
+            glowLayer.style.pointerEvents = "none";
+            glowLayer.style.userSelect = "none";
+            glowLayer.style.zIndex = "10";
+            glowLayer.style.color = "transparent";
+            glowLayer.style.webkitTextStroke = "0 transparent";
+            glowLayer.style.overflow = "visible";
+            glowLayer.style.contain = "none";
+            glowLayer.style.whiteSpace = "nowrap";
+
+            // Clone text content
+            glowLayer.textContent = activeWordElement.textContent;
+
+            // Insert glow layer at the end of stack (top of stacking context)
+            stackElement.appendChild(glowLayer);
+            splitWord.__fsGlowLayer = glowLayer;
+
+            // Clone emphasis animations to glow layer (text-shadow animations)
+            const glowAnimations = [];
+            for (const sourceAnimation of emphasisAnimations) {
+                const cloned = cloneAnimationToElement(sourceAnimation, glowLayer);
+                if (cloned instanceof Animation) {
+                    glowAnimations.push(cloned);
+                }
+            }
+
+            splitWord.__fsGlowAnimations = glowAnimations;
+
+            // Remove text-shadow from original element (it will render on glow layer instead)
+            activeWordElement.style.textShadow = "none";
+        };
+
         const createFullscreenPackedWordAnimation = (stackElement, splitWord, lineObj, sourceAnimations) => {
             if (!(stackElement instanceof HTMLElement) || typeof stackElement.animate !== "function") return null;
             const existingAnimations = Array.isArray(sourceAnimations)
@@ -916,6 +1102,7 @@
                             if (isEmphasizedWord) {
                                 ensureFullscreenEmphasizedCharStacks(splitWord);
                                 installFullscreenEmphasizedMaskAnimations(splitWord);
+                                installFullscreenEmphasizedGlowLayer(splitWord);
                             }
                             installFullscreenPackedElementAnimations(splitWord, lineObj);
                         }
@@ -936,6 +1123,7 @@
                     if (isEmphasizedWord) {
                         ensureFullscreenEmphasizedCharStacks(splitWord);
                         installFullscreenEmphasizedMaskAnimations(splitWord);
+                        installFullscreenEmphasizedGlowLayer(splitWord);
                     } else {
                         const baseWordElement = activeWordElement.cloneNode(true);
                         if (!(baseWordElement instanceof HTMLElement)) continue;
