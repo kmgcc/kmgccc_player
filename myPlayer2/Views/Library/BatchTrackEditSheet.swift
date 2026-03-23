@@ -25,6 +25,8 @@ struct BatchTrackEditSheet: View {
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(LyricsViewModel.self) private var lyricsVM
+    @Environment(CoverDownloadService.self) private var coverDownloadService
+    @Environment(NetEaseCoverService.self) private var netEaseCoverService
     @Environment(UIStateViewModel.self) private var uiState
     @EnvironmentObject private var themeStore: ThemeStore
 
@@ -47,6 +49,8 @@ struct BatchTrackEditSheet: View {
     @State private var isLoadingDraft = false
     @State private var processStateByTrackID: [UUID: ProcessState] = [:]
     @State private var playbackSyncTask: Task<Void, Never>?
+    @State private var isFetchingCover = false
+    @State private var coverFetchTask: Task<Void, Never>?
 
     private let amllDbURL = URL(string: "https://github.com/amll-dev/amll-ttml-db")!
     private let ttmlToolURL = URL(string: "https://amll-ttml-tool.stevexmh.net/")!
@@ -102,6 +106,8 @@ struct BatchTrackEditSheet: View {
         .onDisappear {
             playbackSyncTask?.cancel()
             playbackSyncTask = nil
+            coverFetchTask?.cancel()
+            coverFetchTask = nil
             uiState.lyricsPanelSuppressedByModal = false
             restoreAMLLDefaultQuality()
             lyricsVM.ensureAMLLLoaded(
@@ -337,6 +343,19 @@ struct BatchTrackEditSheet: View {
                         showingArtworkPicker = true
                     }
                     .buttonStyle(.bordered)
+
+                    HStack(spacing: 8) {
+                        Button("查找封面") {
+                            fetchCover()
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(isFetchingCover)
+
+                        if isFetchingCover {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                    }
 
                     if artworkData != nil {
                         Button("移除封面", role: .destructive) {
@@ -715,6 +734,58 @@ struct BatchTrackEditSheet: View {
             )
         } catch {
             statusMessage = "导入封面失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func fetchCover() {
+        coverFetchTask?.cancel()
+        isFetchingCover = true
+
+        let currentArtist = artist
+        let currentAlbum = album
+
+        coverFetchTask = Task {
+            defer {
+                Task { @MainActor in
+                    isFetchingCover = false
+                    coverFetchTask = nil
+                }
+            }
+
+            do {
+                let downloadedData: Data
+
+                do {
+                    downloadedData = try await coverDownloadService.downloadCover(
+                        artist: currentArtist,
+                        album: currentAlbum,
+                        size: 1200
+                    )
+                } catch {
+                    downloadedData = try await netEaseCoverService.searchAndDownloadCover(
+                        artist: currentArtist,
+                        album: currentAlbum
+                    )
+                }
+
+                try Task.checkCancellation()
+
+                await MainActor.run {
+                    artworkData = downloadedData
+                    statusMessage = "封面已更新"
+                    _ = saveCurrentTrack(
+                        showFailureMessage: true,
+                        markProcessedIfUnchanged: false,
+                        reason: "查找封面后保存"
+                    )
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                await MainActor.run {
+                    statusMessage = "查找封面失败: \(error.localizedDescription)"
+                }
+            }
         }
     }
 

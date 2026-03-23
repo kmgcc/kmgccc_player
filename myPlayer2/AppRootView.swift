@@ -32,6 +32,10 @@ struct AppRootView: View {
     @State private var easterEggSFX: EasterEggSFXService?
     @StateObject private var artBackgroundController = BKArtBackgroundController()
     @StateObject private var fullscreenWindowManager = FullscreenWindowManager.shared
+    
+    // MARK: - Cover Services
+    @State private var coverDownloadService = CoverDownloadService()
+    @State private var netEaseCoverService = NetEaseCoverService()
 
     var body: some View {
         Group {
