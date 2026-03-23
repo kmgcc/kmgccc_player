@@ -3,6 +3,7 @@
 //  myPlayer2
 //
 //  Scrolls only when text overflows current available width.
+//  OPTIMIZED: Only animates when shouldAnimate is true (playing/hovered rows).
 //
 
 import AppKit
@@ -19,10 +20,25 @@ struct MarqueeText: View {
     let style: Style
     let fontWeight: Font.Weight
     let color: Color
+    let shouldAnimate: Bool  // NEW: Only animate when true (playing/hovered)
 
     var pauseAtStart: TimeInterval = 3.0
     var pointsPerSecond: CGFloat = 28.0
     var minOverflowToScroll: CGFloat = 2.0
+
+    init(
+        text: String,
+        style: Style = .body,
+        fontWeight: Font.Weight = .regular,
+        color: Color = .primary,
+        shouldAnimate: Bool = true  // Default to animate for backward compatibility
+    ) {
+        self.text = text
+        self.style = style
+        self.fontWeight = fontWeight
+        self.color = color
+        self.shouldAnimate = shouldAnimate
+    }
 
     @State private var availableWidth: CGFloat = 0
     @State private var textWidth: CGFloat = 0
@@ -35,11 +51,16 @@ struct MarqueeText: View {
             let shouldScroll = overflow > minOverflowToScroll
 
             ZStack(alignment: .leading) {
-                if shouldScroll {
+                // OPTIMIZED: Only use TimelineView when shouldAnimate is true
+                if shouldScroll && shouldAnimate {
                     TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: false)) { timeline in
                         scrollingLabel
                             .offset(x: offset(at: timeline.date, overflow: overflow))
                     }
+                } else if shouldScroll {
+                    // Show static truncated text when not animating
+                    staticLabel
+                        .truncationMode(.tail)
                 } else {
                     staticLabel
                 }
@@ -69,7 +90,6 @@ struct MarqueeText: View {
             .fontWeight(fontWeight)
             .foregroundStyle(color)
             .lineLimit(1)
-            .truncationMode(.tail)
     }
 
     private var scrollingLabel: some View {

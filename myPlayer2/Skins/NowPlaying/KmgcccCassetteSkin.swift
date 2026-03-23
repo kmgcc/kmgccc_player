@@ -728,7 +728,7 @@ private struct HolesOverlay: View {
             // Using `TimelineView(.animation(minimumInterval:paused:))` directly.
 
             TimelineView(
-                .animation(minimumInterval: isStationary ? 1.0 : 1.0 / 120.0, paused: isStationary)
+                .animation(minimumInterval: isStationary ? 1.0 : 1.0 / 60.0, paused: isStationary)
             ) { timeline in
                 Canvas { ctx, size in
                     // 1. Resolve image
@@ -763,7 +763,6 @@ private struct HolesOverlay: View {
             }
         }
         // Isolate compositing to avoid redrawing parent cassette layers
-        .drawingGroup()
         .allowsHitTesting(false)
     }
 }
