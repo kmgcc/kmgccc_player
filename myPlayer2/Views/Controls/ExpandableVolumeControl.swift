@@ -24,43 +24,52 @@ struct ExpandableVolumeControl: View {
     private let animationDuration: Double = 0.25
 
     var body: some View {
-        // Container with fixed right edge, expands to the left
         ZStack(alignment: .trailing) {
-            // Background pill/glass effect - anchored to trailing (right)
             containerBackground
                 .frame(width: isExpanded ? expandedWidth : buttonSize, height: buttonSize)
-
-            // Content: icon on left, slider on right (when expanded)
+            
             HStack(spacing: 0) {
-                // Volume icon button (always visible, on the LEFT)
-                Button(action: toggleMute) {
-                    Image(systemName: volumeIcon)
-                        .font(.system(size: iconSize, weight: .semibold))
-                        .foregroundStyle(controlPrimaryColor)
-                        .compositingGroup()
-                        .blendMode(.screen)
-                        .frame(width: buttonSize, height: buttonSize)
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .help("volume")
-
-                // Volume slider (visible when expanded) - on the RIGHT side
                 if isExpanded {
-                    Slider(value: $volume, in: 0...1)
-                        .controlSize(.regular)
-                        .tint(controlPrimaryColor)
-                        .compositingGroup()
-                        .blendMode(.screen)
-                        .frame(width: expandedWidth - buttonSize - 16)
-                        .padding(.trailing, 12)
-                        .transition(.opacity)
+                    HStack(spacing: 8) {
+                        Button(action: toggleMute) {
+                            Image(systemName: volumeIcon)
+                                .font(.system(size: iconSize, weight: .semibold))
+                                .foregroundStyle(controlPrimaryColor)
+                                .compositingGroup()
+                                .blendMode(.screen)
+                                .frame(width: buttonSize, height: buttonSize)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("volume")
+                        
+                        Slider(value: $volume, in: 0...1)
+                            .controlSize(.regular)
+                            .tint(controlPrimaryColor)
+                            .compositingGroup()
+                            .blendMode(.screen)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .frame(width: expandedWidth - 16, height: buttonSize)
+                    .padding(.horizontal, 8)
+                } else {
+                    Button(action: toggleMute) {
+                        Image(systemName: volumeIcon)
+                            .font(.system(size: iconSize, weight: .semibold))
+                            .foregroundStyle(controlPrimaryColor)
+                            .compositingGroup()
+                            .blendMode(.screen)
+                            .frame(width: buttonSize, height: buttonSize)
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("volume")
+                    .frame(width: buttonSize, height: buttonSize)
                 }
             }
-            // Keep content at trailing edge so icon stays left when expanded
-            .frame(width: isExpanded ? expandedWidth : buttonSize, alignment: .trailing)
+            .frame(width: isExpanded ? expandedWidth : buttonSize, height: buttonSize, alignment: .trailing)
         }
-        .frame(width: isExpanded ? expandedWidth : buttonSize, height: buttonSize)
+        .frame(width: isExpanded ? expandedWidth : buttonSize, height: buttonSize, alignment: .trailing)
         .contentShape(Rectangle())
         .onHover { hovering in
             isExpanded = hovering

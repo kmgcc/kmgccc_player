@@ -10,7 +10,7 @@
 import SwiftUI
 
 /// Right-side lyrics panel with AMLL WebView.
-/// The WebView is ALWAYS present (controlled via opacity, not conditionally removed).
+/// The WebView is attached only when a track exists, to avoid eager WebKit startup.
 struct LyricsPanelView: View {
 
     @Environment(PlayerViewModel.self) private var playerVM
@@ -60,18 +60,16 @@ struct LyricsPanelView: View {
     @ViewBuilder
     private var panelContent: some View {
         ZStack {
-            // Empty state overlay (shown when no track)
             if playerVM.currentTrack == nil {
                 emptyStateView
             }
 
-            // WebView is ALWAYS present, just hidden when no track
-            // This prevents SwiftUI from destroying/recreating the representable
-            AMLLWebView(store: lyricsVM.webViewStore)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(.horizontal, 24)
-                .padding(.bottom, 12)
-                .opacity(playerVM.currentTrack != nil ? 1 : 0)
+            if playerVM.currentTrack != nil {
+                AMLLWebView(store: lyricsVM.webViewStore)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 12)
+            }
         }
     }
 

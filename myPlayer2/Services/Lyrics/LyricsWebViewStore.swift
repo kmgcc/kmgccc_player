@@ -26,11 +26,27 @@ final class LyricsWebViewStore: NSObject {
 
     let role: String
 
-    /// The single WKWebView instance (created once, reused forever).
-    let webView: WKWebView
+    /// The single WKWebView instance, created lazily on first visible attachment.
+    private var retainedWebView: WKWebView?
 
     /// Unique identifier for the WebView instance (for logging).
-    let webViewObjectID: Int
+    private let fallbackObjectID: Int
+    
+    var webView: WKWebView {
+        ensureWebView()
+    }
+    
+    var preparedWebView: WKWebView? {
+        retainedWebView
+    }
+    
+    var hasPreparedWebView: Bool {
+        retainedWebView != nil
+    }
+    
+    var webViewObjectID: Int {
+        retainedWebView.map { ObjectIdentifier($0).hashValue } ?? fallbackObjectID
+    }
 
     /// Current active attachment ID (for instance-aware detach).
     private(set) var activeAttachmentID: UUID?
@@ -72,42 +88,17 @@ final class LyricsWebViewStore: NSObject {
 
     init(role: String = "main") {
         self.role = role
-
-        // Create WKWebView configuration
-        let config = WKWebViewConfiguration()
-        config.preferences.setValue(true, forKey: "developerExtrasEnabled")
-        config.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
-        if let roleData = try? JSONEncoder().encode(role),
-            let roleJSONString = String(data: roleData, encoding: .utf8)
-        {
-            let roleUserScript = WKUserScript(
-                source: "window.__AMLL_SURFACE_ROLE = \(roleJSONString);",
-                injectionTime: .atDocumentStart,
-                forMainFrameOnly: true
-            )
-            config.userContentController.addUserScript(roleUserScript)
-        }
-
-        // Create the single WebView instance
-        let wv = WKWebView(frame: .zero, configuration: config)
-        wv.setValue(false, forKey: "drawsBackground")
-        self.webView = wv
-        self.webViewObjectID = ObjectIdentifier(wv).hashValue
+        self.fallbackObjectID = role.hashValue
 
         super.init()
-
-        registerMessageHandlers()
-
-        print("[LyricsStore:\(role)] ✅ Created WebView instance: objectID=\(webViewObjectID)")
-
-        // Load initial content
-        loadAMLLContent()
+        print("[LyricsStore:\(role)] Prepared store (WebView deferred)")
     }
 
     // MARK: - Content Loading
 
     func loadAMLLContent() {
         guard !isShutDown else { return }
+        let webView = ensureWebView()
         guard
             let indexURL = Bundle.main.url(
                 forResource: "index", withExtension: "html", subdirectory: "AMLL"
@@ -145,17 +136,20 @@ final class LyricsWebViewStore: NSObject {
         baseThemePalette = nil
         overrideThemePalette = nil
 
-        webView.stopLoading()
-        webView.navigationDelegate = nil
-        webView.removeFromSuperview()
+        if let webView = retainedWebView {
+            webView.stopLoading()
+            webView.navigationDelegate = nil
+            webView.removeFromSuperview()
 
-        if didRegisterMessageHandlers {
-            let contentController = webView.configuration.userContentController
-            contentController.removeScriptMessageHandler(forName: "onReady")
-            contentController.removeScriptMessageHandler(forName: "onUserSeek")
-            contentController.removeScriptMessageHandler(forName: "log")
-            didRegisterMessageHandlers = false
+            if didRegisterMessageHandlers {
+                let contentController = webView.configuration.userContentController
+                contentController.removeScriptMessageHandler(forName: "onReady")
+                contentController.removeScriptMessageHandler(forName: "onUserSeek")
+                contentController.removeScriptMessageHandler(forName: "log")
+                didRegisterMessageHandlers = false
+            }
         }
+        retainedWebView = nil
 
         print("[LyricsStore:\(role)] Shutdown complete, objectID=\(webViewObjectID)")
     }
@@ -168,6 +162,7 @@ final class LyricsWebViewStore: NSObject {
         guard !isShutDown else {
             return UUID()
         }
+        _ = ensureWebView()
         if isAttached, let existingID = activeAttachmentID {
             print(
                 "[LyricsStore] Attach (already attached): attachmentID=\(existingID.uuidString.prefix(8)), objectID=\(webViewObjectID)"
@@ -555,11 +550,39 @@ final class LyricsWebViewStore: NSObject {
 
     private func registerMessageHandlers() {
         guard !didRegisterMessageHandlers else { return }
-        let contentController = webView.configuration.userContentController
+        let contentController = ensureWebView().configuration.userContentController
         contentController.add(self, name: "onReady")
         contentController.add(self, name: "onUserSeek")
         contentController.add(self, name: "log")
         didRegisterMessageHandlers = true
+    }
+
+    private func ensureWebView() -> WKWebView {
+        if let retainedWebView {
+            return retainedWebView
+        }
+
+        let config = WKWebViewConfiguration()
+        config.preferences.setValue(true, forKey: "developerExtrasEnabled")
+        config.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
+        if let roleData = try? JSONEncoder().encode(role),
+            let roleJSONString = String(data: roleData, encoding: .utf8)
+        {
+            let roleUserScript = WKUserScript(
+                source: "window.__AMLL_SURFACE_ROLE = \(roleJSONString);",
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: true
+            )
+            config.userContentController.addUserScript(roleUserScript)
+        }
+
+        let webView = WKWebView(frame: .zero, configuration: config)
+        webView.setValue(false, forKey: "drawsBackground")
+        retainedWebView = webView
+        registerMessageHandlers()
+        print("[LyricsStore:\(role)] ✅ Created WebView instance: objectID=\(webViewObjectID)")
+        loadAMLLContent()
+        return webView
     }
 }
 
