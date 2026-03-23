@@ -20,12 +20,7 @@ final class LyricsSurfaceManager {
     private var stores: [LyricsSurfaceRole: LyricsWebViewStore] = [:]
     private var activeRoles: Set<LyricsSurfaceRole> = []
     
-    private init() {
-        // Pre-create stores for independent roles
-        for role in LyricsSurfaceRole.independentRoles {
-            stores[role] = LyricsWebViewStore(role: role.rawValue)
-        }
-    }
+    private init() {}
     
     /// Get or create a WebView store for the given role.
     func store(for role: LyricsSurfaceRole) -> LyricsWebViewStore {

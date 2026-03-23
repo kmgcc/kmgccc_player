@@ -849,7 +849,7 @@ struct BatchTrackEditSheet: View {
     }
 
     private func restoreAMLLDefaultQuality() {
-        guard let webView = previewLyricsVM?.webViewStore.webView else { return }
+        guard let webView = previewLyricsVM?.webViewStore.preparedWebView else { return }
         webView.pageZoom = 1.0
         let scale = NSScreen.main?.backingScaleFactor ?? 2.0
         webView.layer?.contentsScale = scale
