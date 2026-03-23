@@ -178,35 +178,38 @@ struct FullscreenPlayerView: View {
 
     private func bottomControlsRow(windowSize: CGSize) -> some View {
         let horizontalPadding: CGFloat = 40
-        let spacing: CGFloat = 74
+        let spacing: CGFloat = 48
         let buttonSize = max(44, fixedMiniplayerHeight)
-        // When volume expands, it takes extra space from the mini player bar
-        let volumeExtraWidth = isVolumeExpanded ? (volumeExpandedWidth - volumeCollapsedWidth) : 0
-        let availableWidth = max(760, windowSize.width - horizontalPadding * 2 - buttonSize * 2 - spacing * 2)
-        let preferredBarWidth = min(max(availableWidth * 0.80, 700), 1100)
-        // Mini player width shrinks when volume expands
-        let barWidth = min(preferredBarWidth, availableWidth) - volumeExtraWidth
-        let groupWidth = buttonSize + spacing + (barWidth + volumeExtraWidth) + spacing + buttonSize
+        // Fixed total width for the control group
+        let volumeExtraWidth = volumeExpandedWidth - volumeCollapsedWidth
+        let baseAvailableWidth = max(760, windowSize.width - horizontalPadding * 2 - buttonSize * 2 - spacing * 2)
+        let baseBarWidth = min(max(baseAvailableWidth * 0.80, 700), 1100)
+        // Total width stays constant
+        let totalWidth = buttonSize + spacing + baseBarWidth + spacing + buttonSize
 
-        return HStack(spacing: spacing) {
-            // Exit button (left)
+        return ZStack(alignment: .leading) {
+            // Exit button - fixed on the left
             exitFullscreenButtonBottom(size: buttonSize)
+                .frame(width: buttonSize)
 
-            // Mini player (center, shrinks when volume expands)
+            // Mini player - shrinks from right when volume expands
             FullscreenMiniPlayerView()
-                .frame(width: barWidth)
+                .frame(width: baseBarWidth - (isVolumeExpanded ? volumeExtraWidth : 0))
+                .offset(x: buttonSize + spacing)
 
-            // Volume control (right, expands to the left)
+            // Volume control - fixed on the right, expands to the left
             ExpandableVolumeControl(
                 volume: volumeBinding,
                 isExpanded: $isVolumeExpanded
             )
-            .frame(width: isVolumeExpanded ? volumeExpandedWidth : volumeCollapsedWidth)
+            .frame(width: isVolumeExpanded ? volumeExpandedWidth : volumeCollapsedWidth, height: buttonSize)
+            .offset(x: totalWidth - (isVolumeExpanded ? volumeExpandedWidth : volumeCollapsedWidth))
         }
-        .frame(width: groupWidth, alignment: .center)
+        .frame(width: totalWidth, height: buttonSize)
         .frame(maxWidth: .infinity, alignment: .center)
         .padding(.horizontal, horizontalPadding)
         .padding(.bottom, 72)
+        .animation(.spring(response: 0.38, dampingFraction: 0.82, blendDuration: 0.1), value: isVolumeExpanded)
     }
 
     private var volumeBinding: Binding<Double> {
