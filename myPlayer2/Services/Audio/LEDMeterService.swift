@@ -66,10 +66,11 @@ final class LEDMeterService: AudioLevelMeterProtocol {
         metrics.level
     }
 
-    init(config: LEDMeterConfig = LEDMeterConfig()) {
-        self.config = config
-        self.metrics = LEDMeterMetrics.zero(count: config.ledCount)
-        self.processor = LEDMeterProcessor(config: config)
+    init(config: LEDMeterConfig? = nil) {
+        let resolvedConfig = config ?? LEDMeterConfig()
+        self.config = resolvedConfig
+        self.metrics = LEDMeterMetrics.zero(count: resolvedConfig.ledCount)
+        self.processor = LEDMeterProcessor(config: resolvedConfig)
     }
 
     func attachToMixer(_ mixer: AVAudioMixerNode) {

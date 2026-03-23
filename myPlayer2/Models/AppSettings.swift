@@ -508,29 +508,47 @@ public final class AppSettings {
         static let translationFontSize = "fullscreenLyricsTranslationFontSize"
     }
 
-    /// Fullscreen player artwork scale (0.8 to 1.5, default 1.15)
+    enum FullscreenDefaults {
+        static let artworkScale: Double = 1.20
+        static let lyricsFontScale: Double = 2.0
+        static let dimmingIntensity: Double = 0.15
+        static let miniplayerHeight: Double = 60
+
+        static let lyricsFontNameZh = "PingFang SC"
+        static let lyricsFontNameEn = "SF Pro Text"
+        static let lyricsTranslationFontName = "SF Pro Text"
+        static let lyricsFontWeight = 600
+        static let lyricsTranslationFontWeight = 400
+        static let lyricsFontSize: Double = 34
+        static let lyricsTranslationFontSize: Double = 18
+    }
+
+    /// Fullscreen player artwork scale (0.8 to 1.5, default 1.20)
     @ObservationIgnored
-    @AppStorage("fullscreenArtworkScale") var fullscreenArtworkScale: Double = 1.15
+    @AppStorage("fullscreenArtworkScale") var fullscreenArtworkScale: Double =
+        FullscreenDefaults.artworkScale
 
     /// Fullscreen player lyrics font size multiplier (1.0 to 3.0, default 2.0)
     @ObservationIgnored
-    @AppStorage("fullscreenLyricsFontScale") var fullscreenLyricsFontScale: Double = 2.0
+    @AppStorage("fullscreenLyricsFontScale") var fullscreenLyricsFontScale: Double =
+        FullscreenDefaults.lyricsFontScale
 
-    /// Fullscreen player background dimming intensity (0.0 to 0.5, default 0.3 in dark, 0.15 in light)
+    /// Fullscreen player background dimming intensity (0.0 to 0.5, default 0.15)
     @ObservationIgnored
-    @AppStorage("fullscreenDimmingIntensity") var fullscreenDimmingIntensity: Double = 0.25
+    @AppStorage("fullscreenDimmingIntensity") var fullscreenDimmingIntensity: Double =
+        FullscreenDefaults.dimmingIntensity
 
     /// Fullscreen player miniplayer bar height (40 to 80, default 60)
     @ObservationIgnored
-    @AppStorage("fullscreenMiniplayerHeight") var fullscreenMiniplayerHeight: Double = 60
+    @AppStorage("fullscreenMiniplayerHeight") var fullscreenMiniplayerHeight: Double =
+        FullscreenDefaults.miniplayerHeight
 
     /// Fullscreen lyrics font name (Chinese/CJK).
-    /// Falls back to the main-window AMLL font until the user customizes fullscreen typography.
     var fullscreenLyricsFontNameZh: String {
         get {
             access(keyPath: \.fullscreenLyricsFontNameZh)
             return UserDefaults.standard.string(forKey: FullscreenLyricsKeys.fontNameZh)
-                ?? lyricsFontNameZh
+                ?? FullscreenDefaults.lyricsFontNameZh
         }
         set {
             withMutation(keyPath: \.fullscreenLyricsFontNameZh) {
@@ -544,7 +562,7 @@ public final class AppSettings {
         get {
             access(keyPath: \.fullscreenLyricsFontNameEn)
             return UserDefaults.standard.string(forKey: FullscreenLyricsKeys.fontNameEn)
-                ?? lyricsFontNameEn
+                ?? FullscreenDefaults.lyricsFontNameEn
         }
         set {
             withMutation(keyPath: \.fullscreenLyricsFontNameEn) {
@@ -558,7 +576,7 @@ public final class AppSettings {
         get {
             access(keyPath: \.fullscreenLyricsTranslationFontName)
             return UserDefaults.standard.string(forKey: FullscreenLyricsKeys.translationFontName)
-                ?? lyricsTranslationFontName
+                ?? FullscreenDefaults.lyricsTranslationFontName
         }
         set {
             withMutation(keyPath: \.fullscreenLyricsTranslationFontName) {
@@ -571,12 +589,11 @@ public final class AppSettings {
     }
 
     /// Fullscreen main lyrics font weight.
-    /// Falls back to the dark-mode main-window weight to preserve existing fullscreen behavior.
     var fullscreenLyricsFontWeight: Int {
         get {
             access(keyPath: \.fullscreenLyricsFontWeight)
             return (UserDefaults.standard.object(forKey: FullscreenLyricsKeys.fontWeight) as? NSNumber)?
-                .intValue ?? lyricsFontWeightDark
+                .intValue ?? FullscreenDefaults.lyricsFontWeight
         }
         set {
             withMutation(keyPath: \.fullscreenLyricsFontWeight) {
@@ -591,7 +608,7 @@ public final class AppSettings {
             access(keyPath: \.fullscreenLyricsTranslationFontWeight)
             return (UserDefaults.standard.object(
                 forKey: FullscreenLyricsKeys.translationFontWeight) as? NSNumber)?
-                .intValue ?? lyricsTranslationFontWeightDark
+                .intValue ?? FullscreenDefaults.lyricsTranslationFontWeight
         }
         set {
             withMutation(keyPath: \.fullscreenLyricsTranslationFontWeight) {
@@ -604,12 +621,11 @@ public final class AppSettings {
     }
 
     /// Fullscreen main lyrics font size.
-    /// Falls back to the legacy main-size * fullscreen-scale behavior until customized.
     var fullscreenLyricsFontSize: Double {
         get {
             access(keyPath: \.fullscreenLyricsFontSize)
             return (UserDefaults.standard.object(forKey: FullscreenLyricsKeys.fontSize) as? NSNumber)?
-                .doubleValue ?? min(lyricsFontSize * fullscreenLyricsFontScale, 64.0)
+                .doubleValue ?? FullscreenDefaults.lyricsFontSize
         }
         set {
             withMutation(keyPath: \.fullscreenLyricsFontSize) {
@@ -624,7 +640,7 @@ public final class AppSettings {
             access(keyPath: \.fullscreenLyricsTranslationFontSize)
             return (UserDefaults.standard.object(
                 forKey: FullscreenLyricsKeys.translationFontSize) as? NSNumber)?
-                .doubleValue ?? min(lyricsTranslationFontSize * fullscreenLyricsFontScale * 0.9, 48.0)
+                .doubleValue ?? FullscreenDefaults.lyricsTranslationFontSize
         }
         set {
             withMutation(keyPath: \.fullscreenLyricsTranslationFontSize) {

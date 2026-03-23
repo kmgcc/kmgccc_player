@@ -16,9 +16,10 @@ actor ArtworkAssetStore {
     private var inProgressKeys: Set<String> = []
     private var waitingContinuations: [String: [CheckedContinuation<ArtworkAssetSnapshot?, Never>]] = [:]
     
-    private init() {
-        cache.countLimit = 100
-        cache.totalCostLimit = 50 * 1024 * 1024
+    func clearCache() {
+        cache.removeAllObjects()
+        inProgressKeys.removeAll()
+        waitingContinuations.removeAll()
     }
     
     nonisolated static func checksum(for data: Data?) -> UInt64 {

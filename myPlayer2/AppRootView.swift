@@ -98,6 +98,8 @@ struct AppRootView: View {
                 .environment(lyricsVM)
                 .environment(ledMeter)
                 .environment(skinManager)
+                .environment(coverDownloadService)
+                .environment(netEaseCoverService)
                 .environmentObject(themeStore)
             } else {
                 ProgressView(NSLocalizedString("alert.loading", comment: ""))

@@ -69,12 +69,11 @@ final class NCMImportProgressViewModel {
         displayProgress = 0.0
         targetProgress = 0.0
         
-        progressTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] timer in
+        progressTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            
             Task { @MainActor [weak self] in
-                guard let self = self else {
-                    timer.invalidate()
-                    return
-                }
+                guard let self else { return }
                 
                 if self.displayProgress < self.targetProgress {
                     self.displayProgress += 0.02
@@ -156,6 +155,7 @@ final class NCMImportProgressDialogPresenter: NSObject, NSWindowDelegate {
         Self.activePresenter = nil
     }
     
+    @MainActor
     static func present(
         ncmFiles: [URL],
         completion: @escaping ([NCMConversionResult]?) -> Void

@@ -78,7 +78,8 @@ private struct CassetteArtwork: View {
 
     var body: some View {
         let size = CassetteLayout.cassetteSize(for: context)
-        let centeredYOffset: CGFloat = showLEDMeter ? 0 : max(10, min(24, size.height * 0.07))
+        let centeredYOffset: CGFloat = showLEDMeter ? 12 : max(22, min(36, size.height * 0.07))
+        let horizontalOffset: CGFloat = -12
 
         ZStack {
             Image(tapeAssetName)
@@ -122,7 +123,7 @@ private struct CassetteArtwork: View {
         .overlay(WaveformCapsulesLayer(context: context).zIndex(999))
         .frame(width: size.width, height: size.height)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-        .offset(y: centeredYOffset)
+        .offset(x: horizontalOffset, y: centeredYOffset)
         .onAppear {
             scheduleAdjustedArtworkProcessing()
         }
