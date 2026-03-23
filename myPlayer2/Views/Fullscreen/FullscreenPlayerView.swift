@@ -70,7 +70,7 @@ struct FullscreenPlayerView: View {
         GeometryReader { proxy in
             ZStack {
                 // Background: artbk
-                if settings.nowPlayingArtBackgroundEnabled {
+                if settings.nowPlayingArtBackgroundEnabled && playerVM.currentTrack != nil {
                     BKArtBackgroundView(
                         controller: bkController,
                         trackID: playerVM.currentTrack?.id,
@@ -172,33 +172,36 @@ struct FullscreenPlayerView: View {
 
     // MARK: - Bottom Controls
 
+    @State private var isVolumeExpanded = false
+    private let volumeExpandedWidth: CGFloat = 180
+    private let volumeCollapsedWidth: CGFloat = 60
+
     private func bottomControlsRow(windowSize: CGSize) -> some View {
         let horizontalPadding: CGFloat = 40
-        let exitButtonSpacing: CGFloat = 74
-        let volumeButtonSpacing: CGFloat = 16
-        let volumeButtonSize: CGFloat = max(44, fixedMiniplayerHeight)
+        let spacing: CGFloat = 74
         let buttonSize = max(44, fixedMiniplayerHeight)
-        let availableWidth = max(760, windowSize.width - horizontalPadding * 2 - buttonSize - exitButtonSpacing - volumeButtonSize - volumeButtonSpacing)
+        // When volume expands, it takes extra space from the mini player bar
+        let volumeExtraWidth = isVolumeExpanded ? (volumeExpandedWidth - volumeCollapsedWidth) : 0
+        let availableWidth = max(760, windowSize.width - horizontalPadding * 2 - buttonSize * 2 - spacing * 2)
         let preferredBarWidth = min(max(availableWidth * 0.80, 700), 1100)
-        let barWidth = min(preferredBarWidth, availableWidth)
-        let groupWidth = buttonSize + exitButtonSpacing + barWidth + volumeButtonSpacing + volumeButtonSize
+        // Mini player width shrinks when volume expands
+        let barWidth = min(preferredBarWidth, availableWidth) - volumeExtraWidth
+        let groupWidth = buttonSize + spacing + (barWidth + volumeExtraWidth) + spacing + buttonSize
 
-        return HStack(spacing: 0) {
+        return HStack(spacing: spacing) {
+            // Exit button (left)
             exitFullscreenButtonBottom(size: buttonSize)
-                .frame(width: buttonSize)
 
-            Spacer()
-                .frame(width: exitButtonSpacing)
-
+            // Mini player (center, shrinks when volume expands)
             FullscreenMiniPlayerView()
                 .frame(width: barWidth)
 
-            Spacer()
-                .frame(width: volumeButtonSpacing)
-
-            // Expandable volume control
-            ExpandableVolumeControl(volume: volumeBinding)
-                .frame(width: volumeButtonSize)
+            // Volume control (right, expands to the left)
+            ExpandableVolumeControl(
+                volume: volumeBinding,
+                isExpanded: $isVolumeExpanded
+            )
+            .frame(width: isVolumeExpanded ? volumeExpandedWidth : volumeCollapsedWidth)
         }
         .frame(width: groupWidth, alignment: .center)
         .frame(maxWidth: .infinity, alignment: .center)

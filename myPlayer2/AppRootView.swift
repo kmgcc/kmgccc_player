@@ -43,6 +43,7 @@ struct AppRootView: View {
                 ZStack {
                     if uiState.contentMode == .nowPlaying
                         && settings.nowPlayingArtBackgroundEnabled
+                        && playerVM.currentTrack != nil
                         && !fullscreenWindowManager.isFullscreenActive
                     {
                         BKArtBackgroundView(
@@ -59,7 +60,9 @@ struct AppRootView: View {
                     MainLayoutView()
                 }
                 .onAppear {
-                    if uiState.contentMode == .nowPlaying && settings.nowPlayingArtBackgroundEnabled
+                    if uiState.contentMode == .nowPlaying
+                        && settings.nowPlayingArtBackgroundEnabled
+                        && playerVM.currentTrack != nil
                     {
                         artBackgroundController.triggerTransition()
                     }
@@ -71,7 +74,10 @@ struct AppRootView: View {
                     }
                 }
                 .onChange(of: uiState.contentMode) { _, newValue in
-                    if newValue == .nowPlaying && settings.nowPlayingArtBackgroundEnabled {
+                    if newValue == .nowPlaying
+                        && settings.nowPlayingArtBackgroundEnabled
+                        && playerVM.currentTrack != nil
+                    {
                         artBackgroundController.triggerTransition()
                     }
                 }
@@ -82,12 +88,16 @@ struct AppRootView: View {
                     }
                 }
                 .onChange(of: settings.nowPlayingArtBackgroundEnabled) { _, enabled in
-                    if enabled && uiState.contentMode == .nowPlaying {
+                    if enabled && uiState.contentMode == .nowPlaying && playerVM.currentTrack != nil {
                         artBackgroundController.triggerTransition()
                     }
                 }
                 .onChange(of: fullscreenWindowManager.isFullscreenActive) { _, isActive in
-                    if !isActive && uiState.contentMode == .nowPlaying && settings.nowPlayingArtBackgroundEnabled {
+                    if !isActive
+                        && uiState.contentMode == .nowPlaying
+                        && settings.nowPlayingArtBackgroundEnabled
+                        && playerVM.currentTrack != nil
+                    {
                         artBackgroundController.triggerTransition()
                     }
                 }

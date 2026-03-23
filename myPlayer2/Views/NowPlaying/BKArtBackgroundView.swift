@@ -206,6 +206,14 @@ private struct BKArtBackgroundRepresentable: NSViewRepresentable {
 private final class BKArtBackgroundLayerView: NSView {
     weak var backgroundController: BKArtBackgroundController?
 
+    private final class CGImageBox: NSObject {
+        let image: CGImage
+
+        init(image: CGImage) {
+            self.image = image
+        }
+    }
+
     private struct ShapeState {
         var basePosition: CGPoint
         var driftX: CGFloat
@@ -325,8 +333,17 @@ private final class BKArtBackgroundLayerView: NSView {
     )
     private var extractedPaletteForSwatches: [NSColor] = BKArtBackgroundView.fallbackPalette
     private let ciContext = CIContext(options: [.cacheIntermediates: false])
-    private var tintedBackgroundVariants: [[CGImage]] = []
     private var paletteSignature: String = ""
+    private var loadedBackgrounds: [CGImage] = []
+    private var loadedShapes = BKThemeAssets.ShapeLoadResult(
+        images: [],
+        scaleByIndex: [:],
+        edgePinnedIndices: []
+    )
+    private var loadedMaskFrames: [CGImage] = []
+    private var loadedBudget = BKThemeAssets.PixelBudget(background: 0, shape: 0, mask: 0)
+    private let tintedBackgroundCache = NSCache<NSString, CGImageBox>()
+    private var gradientImageCache: [Int: CIImage] = [:]
     private var fromContainer: Container?
     private var toContainer: Container?
     private var transitionMaskLayer: CALayer?
@@ -351,7 +368,6 @@ private final class BKArtBackgroundLayerView: NSView {
     private var speedTarget: Double = 1.0
     private var lastTickTime: CFTimeInterval = CACurrentMediaTime()
     private var isPausedFrozen = false
-    private var didPrewarmMaskFrames = false
     private var pendingBoundsRebuild = false
     private var isTransitionInFlight = false
     private var didPauseBackgroundTimerForTransition = false
@@ -369,6 +385,8 @@ private final class BKArtBackgroundLayerView: NSView {
         wantsLayer = true
         layer = CALayer()
         layer?.masksToBounds = true
+        tintedBackgroundCache.countLimit = 6
+        tintedBackgroundCache.totalCostLimit = 48 * 1024 * 1024
     }
 
     required init?(coder: NSCoder) {
@@ -388,6 +406,7 @@ private final class BKArtBackgroundLayerView: NSView {
         super.viewDidMoveToWindow()
         if window == nil {
             stopTimers()
+            releaseHeavyResources()
         } else {
             startTimersIfNeeded()
         }
@@ -481,7 +500,8 @@ private final class BKArtBackgroundLayerView: NSView {
             isDark: isDark
         )
         paletteSignature = signature
-        tintedBackgroundVariants = makeTintedBackgroundVariants(from: assets.backgrounds)
+        tintedBackgroundCache.removeAllObjects()
+        gradientImageCache.removeAll(keepingCapacity: false)
         let toneColorForVariant: (Int) -> CGColor = { index in
             let stops = !self.harmonized.bgVariants.isEmpty
                 ? self.harmonized.bgVariants[min(max(0, index), self.harmonized.bgVariants.count - 1)]
@@ -518,15 +538,8 @@ private final class BKArtBackgroundLayerView: NSView {
     func ensureBaseContainer(seed: UInt64) {
         rebuildSeed = seed
         guard fromContainer == nil, !bounds.isEmpty else { return }
-        if tintedBackgroundVariants.isEmpty {
-            tintedBackgroundVariants = makeTintedBackgroundVariants(from: assets.backgrounds)
-        }
-        prewarmTransitionAssetsIfNeeded()
+        syncLoadedAssetsIfNeeded()
         let container = buildContainer(seed: seed)
-        // Ensure initial container respects style choice
-        if container.style == .image && tintedBackgroundVariants.isEmpty {
-            // Fallback or retry? Should be fine as applyBackgroundPhase handles empty.
-        }
         fromContainer = container
         commitStyleHistory(container.style)
         layer?.addSublayer(container.layer)
@@ -578,6 +591,8 @@ private final class BKArtBackgroundLayerView: NSView {
         }
         pendingBoundsRebuild = false
         stopTransitionTimer()
+        transitionMaskLayer?.contents = nil
+        transitionMaskLayer?.removeFromSuperlayer()
         let replacement = buildContainer(seed: rebuildSeed)
         fromContainer?.layer.removeFromSuperlayer()
         toContainer?.layer.removeFromSuperlayer()
@@ -621,14 +636,12 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     private func buildContainer(seed: UInt64) -> Container {
+        syncLoadedAssetsIfNeeded()
         let container = Container(frame: bounds)
         let normalizedSeed = seed == 0 ? 0xA17D_4C59_10F3_778D : seed
         container.seed = normalizedSeed
         var rng = BKSeededRandom(seed: normalizedSeed)
-        let preferredImageSources = !tintedBackgroundVariants.isEmpty
-            ? tintedBackgroundVariants
-            : [assets.backgrounds]
-        let hasImageBackgrounds = preferredImageSources.contains { !$0.isEmpty }
+        let hasImageBackgrounds = !loadedBackgrounds.isEmpty
 
         // 1) 50/50 choose + anti-streak breaker.
         let bit = ((normalizedSeed >> 17) ^ (normalizedSeed >> 41) ^ normalizedSeed) & 1
@@ -643,7 +656,7 @@ private final class BKArtBackgroundLayerView: NSView {
             proposedStyle = (last == .dot) ? .image : .dot
         }
         container.style = proposedStyle
-        let variantCount = max(1, tintedBackgroundVariants.count)
+        let variantCount = max(1, backgroundToneVariants().count)
         container.bgVariantIndex = Int((normalizedSeed ^ 0x7A6C_2E43_5B91_F0D3) % UInt64(variantCount))
 
         container.backgroundToneLayer.frame = expandedBounds
@@ -720,7 +733,7 @@ private final class BKArtBackgroundLayerView: NSView {
         updateUltraDarkOverlay(for: container)
 
 #if DEBUG
-        let minExpectedShapeCount = assets.shapes.isEmpty ? 0 : 10
+        let minExpectedShapeCount = loadedShapes.images.isEmpty ? 0 : 10
         assert(container.shapeLayers.count >= minExpectedShapeCount)
         assert(container.shapesRoot.sublayers?.count ?? 0 >= minExpectedShapeCount)
 #endif
@@ -821,32 +834,33 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     private func chooseShapeImages(count: Int, rng: inout BKSeededRandom) -> [SelectedShape] {
-        guard !assets.shapes.isEmpty else { return [] }
-        var indexed = Array(assets.shapes.enumerated())
+        syncLoadedAssetsIfNeeded()
+        guard !loadedShapes.images.isEmpty else { return [] }
+        var indexed = Array(loadedShapes.images.enumerated())
         indexed.shuffle(using: &rng)
         if indexed.count >= count {
             return Array(indexed.prefix(count)).map { pair in
                 SelectedShape(
                     image: pair.element,
-                    scaleMultiplier: assets.specialShapeScaleByIndex[pair.offset] ?? 1.0,
-                    isEdgePinned: assets.edgePinnedShapeIndices.contains(pair.offset)
+                    scaleMultiplier: loadedShapes.scaleByIndex[pair.offset] ?? 1.0,
+                    isEdgePinned: loadedShapes.edgePinnedIndices.contains(pair.offset)
                 )
             }
         }
         var output = indexed.map { pair in
             SelectedShape(
                 image: pair.element,
-                scaleMultiplier: assets.specialShapeScaleByIndex[pair.offset] ?? 1.0,
-                isEdgePinned: assets.edgePinnedShapeIndices.contains(pair.offset)
+                scaleMultiplier: loadedShapes.scaleByIndex[pair.offset] ?? 1.0,
+                isEdgePinned: loadedShapes.edgePinnedIndices.contains(pair.offset)
             )
         }
         while output.count < count {
-            let randomIndex = Int(rng.next(in: 0..<Double(assets.shapes.count)))
+            let randomIndex = Int(rng.next(in: 0..<Double(loadedShapes.images.count)))
             output.append(
                 SelectedShape(
-                    image: assets.shapes[randomIndex],
-                    scaleMultiplier: assets.specialShapeScaleByIndex[randomIndex] ?? 1.0,
-                    isEdgePinned: assets.edgePinnedShapeIndices.contains(randomIndex)
+                    image: loadedShapes.images[randomIndex],
+                    scaleMultiplier: loadedShapes.scaleByIndex[randomIndex] ?? 1.0,
+                    isEdgePinned: loadedShapes.edgePinnedIndices.contains(randomIndex)
                 )
             )
         }
@@ -1172,7 +1186,6 @@ private final class BKArtBackgroundLayerView: NSView {
 
     private func startTimersIfNeeded() {
         guard window != nil, !isPausedFrozen else { return }
-        prewarmTransitionAssetsIfNeeded()
         startBackgroundTimerIfNeeded()
         startShapeTimerIfNeeded()
         startDotTimerIfNeeded()
@@ -1354,7 +1367,8 @@ private final class BKArtBackgroundLayerView: NSView {
 
     private func tickBackground() {
         guard backgroundClockSubscription != nil else { return }
-        let hasBackgrounds = tintedBackgroundVariants.contains { !$0.isEmpty } || !assets.backgrounds.isEmpty
+        syncLoadedAssetsIfNeeded()
+        let hasBackgrounds = !loadedBackgrounds.isEmpty
         guard hasBackgrounds else { return }
         let phaseStep = speedCurrent
         guard phaseStep > 0.0001 else { return }
@@ -1445,6 +1459,7 @@ private final class BKArtBackgroundLayerView: NSView {
 
     private func applyBackgroundPhase(to container: Container?) {
         guard let container else { return }
+        syncLoadedAssetsIfNeeded()
 
         var styleRng = BKSeededRandom(
             seed: rebuildSeed
@@ -1461,18 +1476,16 @@ private final class BKArtBackgroundLayerView: NSView {
             return
         }
 
-        let variantSources = !tintedBackgroundVariants.isEmpty
-            ? tintedBackgroundVariants
-            : [assets.backgrounds]
-        guard !variantSources.isEmpty else { return }
-        let variantIndex = min(max(0, container.bgVariantIndex), variantSources.count - 1)
-        var source = variantSources[variantIndex]
-        if source.isEmpty {
-            source = assets.backgrounds
+        guard !loadedBackgrounds.isEmpty else { return }
+        let sourceIndex = backgroundPhase % loadedBackgrounds.count
+        guard
+            let image = resolvedBackgroundImage(
+                sourceIndex: sourceIndex,
+                variantIndex: container.bgVariantIndex
+            )
+        else {
+            return
         }
-        guard !source.isEmpty else { return }
-        let sourceIndex = backgroundPhase % source.count
-        let image = source[sourceIndex]
         container.backgroundLayer.contentsGravity = .resizeAspectFill
         container.backgroundLayer.contentsScale =
             window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
@@ -1483,7 +1496,7 @@ private final class BKArtBackgroundLayerView: NSView {
 #if DEBUG
         assert(container.dotRoot == nil || container.dotRoot?.isHidden == true)
         assert(container.backgroundLayer.contents != nil)
-        let minExpectedShapeCount = assets.shapes.isEmpty ? 0 : 10
+        let minExpectedShapeCount = loadedShapes.images.isEmpty ? 0 : 10
         assert(container.shapesRoot.sublayers?.count ?? 0 >= minExpectedShapeCount)
 #endif
     }
@@ -1565,6 +1578,7 @@ private final class BKArtBackgroundLayerView: NSView {
             return
         }
         next.layer.mask = nil
+        transitionMaskLayer?.contents = nil
         transitionMaskLayer = nil
         fromContainer?.layer.removeFromSuperlayer()
         fromContainer = next
@@ -1635,77 +1649,105 @@ private final class BKArtBackgroundLayerView: NSView {
         let composedSaturationBoost: CGFloat
     }
 
-    private func makeTintedBackgroundVariants(from source: [CGImage]) -> [[CGImage]] {
-        guard !source.isEmpty else { return [] }
-        let variants = backgroundToneVariants()
-        let outputSpace = CGColorSpace(name: CGColorSpace.sRGB)
-        var output: [[CGImage]] = []
-        output.reserveCapacity(max(1, variants.count))
+    private func resolvedBackgroundImage(sourceIndex: Int, variantIndex: Int) -> CGImage? {
+        guard sourceIndex >= 0, sourceIndex < loadedBackgrounds.count else { return nil }
+        let toneVariants = backgroundToneVariants()
+        let safeVariantIndex = min(max(0, variantIndex), max(0, toneVariants.count - 1))
+        let cacheKey =
+            "\(paletteSignature)|bg:\(loadedBudget.background)|variant:\(safeVariantIndex)|source:\(sourceIndex)"
+            as NSString
 
-        for (variantIndex, toneStops) in variants.enumerated() {
-            guard let mapImage = makeColorMapImage(colors: toneStops) else { continue }
-            let tuning = imageVariantTuning(for: toneStops)
-            let variantImages = source.compactMap { image in
-                let input = CIImage(cgImage: image)
-                let grayscale = input.applyingFilter(
-                    "CIColorControls",
-                    parameters: [
-                        kCIInputSaturationKey: 0.0,
-                        kCIInputContrastKey: 1.08,
-                        kCIInputBrightnessKey: 0.0,
-                    ]
-                )
+        if let cached = tintedBackgroundCache.object(forKey: cacheKey) {
+            return cached.image
+        }
 
-                let mapped = grayscale.applyingFilter(
-                    "CIColorMap",
-                    parameters: ["inputGradientImage": mapImage]
-                )
-                let mappedSoftAlpha = mapped.applyingFilter(
-                    "CIColorMatrix",
-                    parameters: [
-                        "inputAVector": CIVector(x: 0, y: 0, z: 0, w: tuning.mapAlpha)
-                    ]
-                )
-                let desaturatedOriginal = input.applyingFilter(
-                    "CIColorControls",
-                    parameters: [
-                        kCIInputSaturationKey: tuning.originalSaturation,
-                        kCIInputContrastKey: 1.10,
-                        kCIInputBrightnessKey: 0.0,
-                    ]
-                )
-                var composed = mappedSoftAlpha.applyingFilter(
-                    "CISourceOverCompositing",
-                    parameters: [kCIInputBackgroundImageKey: desaturatedOriginal]
-                )
-                if abs(tuning.composedSaturationBoost - 1.0) > 0.01 {
-                    composed = composed.applyingFilter(
-                        "CIColorControls",
-                        parameters: [
-                            kCIInputSaturationKey: tuning.composedSaturationBoost,
-                            kCIInputContrastKey: 1.02,
-                            kCIInputBrightnessKey: 0.0,
-                        ]
-                    )
-                }
-                let finalImage = toneMap(image: composed, isDark: harmonized.isDark)
+        let sourceImage = loadedBackgrounds[sourceIndex]
+        let toneStops = toneVariants.isEmpty ? BKArtBackgroundView.fallbackPalette : toneVariants[safeVariantIndex]
+        guard
+            let resolved = makeTintedBackgroundImage(
+                from: sourceImage,
+                toneStops: toneStops,
+                variantIndex: safeVariantIndex
+            )
+        else {
+            return sourceImage
+        }
 
-                let outSpace = outputSpace ?? CGColorSpaceCreateDeviceRGB()
-                return ciContext.createCGImage(
-                    finalImage,
-                    from: input.extent,
-                    format: .RGBA8,
-                    colorSpace: outSpace
-                )
-            }
-            if !variantImages.isEmpty {
-                output.append(variantImages)
-            }
-            print(
-                "[BKArtBackground] imageVariant#\(variantIndex) avgS=\(String(format: "%.3f", tuning.avgS)) hueSpread=\(String(format: "%.1f", tuning.hueSpread)) rich=\(String(format: "%.3f", tuning.richScore)) mapAlpha=\(String(format: "%.3f", tuning.mapAlpha)) origSat=\(String(format: "%.3f", tuning.originalSaturation)) boost=\(String(format: "%.3f", tuning.composedSaturationBoost))"
+        tintedBackgroundCache.setObject(
+            CGImageBox(image: resolved),
+            forKey: cacheKey,
+            cost: max(1, resolved.bytesPerRow * resolved.height)
+        )
+        return resolved
+    }
+
+    private func makeTintedBackgroundImage(
+        from image: CGImage,
+        toneStops: [NSColor],
+        variantIndex: Int
+    ) -> CGImage? {
+        guard let mapImage = gradientImage(for: toneStops, variantIndex: variantIndex) else { return nil }
+
+        let tuning = imageVariantTuning(for: toneStops)
+        let input = CIImage(cgImage: image)
+        let grayscale = input.applyingFilter(
+            "CIColorControls",
+            parameters: [
+                kCIInputSaturationKey: 0.0,
+                kCIInputContrastKey: 1.08,
+                kCIInputBrightnessKey: 0.0,
+            ]
+        )
+
+        let mapped = grayscale.applyingFilter(
+            "CIColorMap",
+            parameters: ["inputGradientImage": mapImage]
+        )
+        let mappedSoftAlpha = mapped.applyingFilter(
+            "CIColorMatrix",
+            parameters: [
+                "inputAVector": CIVector(x: 0, y: 0, z: 0, w: tuning.mapAlpha)
+            ]
+        )
+        let desaturatedOriginal = input.applyingFilter(
+            "CIColorControls",
+            parameters: [
+                kCIInputSaturationKey: tuning.originalSaturation,
+                kCIInputContrastKey: 1.10,
+                kCIInputBrightnessKey: 0.0,
+            ]
+        )
+        var composed = mappedSoftAlpha.applyingFilter(
+            "CISourceOverCompositing",
+            parameters: [kCIInputBackgroundImageKey: desaturatedOriginal]
+        )
+        if abs(tuning.composedSaturationBoost - 1.0) > 0.01 {
+            composed = composed.applyingFilter(
+                "CIColorControls",
+                parameters: [
+                    kCIInputSaturationKey: tuning.composedSaturationBoost,
+                    kCIInputContrastKey: 1.02,
+                    kCIInputBrightnessKey: 0.0,
+                ]
             )
         }
-        return output.isEmpty ? [source] : output
+        let finalImage = toneMap(image: composed, isDark: harmonized.isDark)
+        let outputSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        return ciContext.createCGImage(
+            finalImage,
+            from: input.extent,
+            format: .RGBA8,
+            colorSpace: outputSpace
+        )
+    }
+
+    private func gradientImage(for toneStops: [NSColor], variantIndex: Int) -> CIImage? {
+        if let cached = gradientImageCache[variantIndex] {
+            return cached
+        }
+        let image = makeColorMapImage(colors: toneStops)
+        gradientImageCache[variantIndex] = image
+        return image
     }
 
     private func toneMap(image: CIImage, isDark: Bool) -> CIImage {
@@ -1916,15 +1958,93 @@ private final class BKArtBackgroundLayerView: NSView {
         bounds.insetBy(dx: -1.0, dy: -1.0)
     }
 
-    private func prewarmTransitionAssetsIfNeeded() {
-        guard !didPrewarmMaskFrames else { return }
-        guard !assets.maskFrames.isEmpty else { return }
-        didPrewarmMaskFrames = true
-        _ = resolvedMaskFrames()
+    private func syncLoadedAssetsIfNeeded() {
+        let budget = currentAssetBudget()
+        guard budget != loadedBudget else { return }
+
+        loadedBudget = budget
+        loadedBackgrounds = assets.backgrounds(maxPixel: budget.background)
+        loadedShapes = assets.shapes(maxPixel: budget.shape)
+        loadedMaskFrames = []
+        tintedBackgroundCache.removeAllObjects()
+        gradientImageCache.removeAll(keepingCapacity: false)
     }
 
     private func resolvedMaskFrames() -> [CGImage] {
-        assets.maskFrames
+        syncLoadedAssetsIfNeeded()
+        if loadedMaskFrames.isEmpty {
+            loadedMaskFrames = assets.maskFrames(maxPixel: loadedBudget.mask)
+        }
+        return loadedMaskFrames
+    }
+
+    private func currentAssetBudget() -> BKThemeAssets.PixelBudget {
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
+        let longestEdge = max(bounds.width, bounds.height)
+        let nativePixel = Int(max(1, (longestEdge * scale).rounded()))
+        let background = min(max(nativePixel, 960), 1536)
+        let shape = min(max(background / 3, 256), 512)
+        let mask = min(max(background / 2, 640), 1024)
+        return BKThemeAssets.PixelBudget(background: background, shape: shape, mask: mask)
+    }
+
+    private func releaseHeavyResources() {
+        release(container: fromContainer)
+        release(container: toContainer)
+        fromContainer = nil
+        toContainer = nil
+        transitionMaskLayer?.contents = nil
+        transitionMaskLayer?.removeFromSuperlayer()
+        transitionMaskLayer = nil
+        loadedBackgrounds.removeAll(keepingCapacity: false)
+        loadedShapes = BKThemeAssets.ShapeLoadResult(images: [], scaleByIndex: [:], edgePinnedIndices: [])
+        loadedMaskFrames.removeAll(keepingCapacity: false)
+        loadedBudget = BKThemeAssets.PixelBudget(background: 0, shape: 0, mask: 0)
+        tintedBackgroundCache.removeAllObjects()
+        gradientImageCache.removeAll(keepingCapacity: false)
+        assets.purgeTransientCaches()
+    }
+
+    private func release(container: Container?) {
+        guard let container else { return }
+        container.layer.mask = nil
+        container.backgroundLayer.contents = nil
+        container.backgroundToneLayer.contents = nil
+        container.shapeLayers.forEach { shape in
+            shape.sublayers?.forEach { sublayer in
+                sublayer.mask = nil
+                sublayer.contents = nil
+            }
+            shape.contents = nil
+            shape.removeFromSuperlayer()
+        }
+        container.dotSlots.forEach { slot in
+            slot.cellBig = nil
+            slot.cellSmall = nil
+            slot.maskBig = nil
+            slot.maskSmall = nil
+            slot.rootLayer.sublayers?.forEach { sublayer in
+                sublayer.mask = nil
+                sublayer.contents = nil
+            }
+            slot.rootLayer.removeFromSuperlayer()
+        }
+        container.dotSlots.removeAll(keepingCapacity: false)
+        container.dotRoot?.sublayers?.forEach { sublayer in
+            sublayer.mask = nil
+            sublayer.contents = nil
+        }
+        container.dotRoot?.removeFromSuperlayer()
+        container.dotRoot = nil
+        container.dotGradient = nil
+        container.ultraDarkOverlay?.contents = nil
+        container.ultraDarkOverlay?.removeFromSuperlayer()
+        container.ultraDarkOverlay = nil
+        container.layer.sublayers?.forEach { sublayer in
+            sublayer.mask = nil
+            sublayer.contents = nil
+        }
+        container.layer.removeFromSuperlayer()
     }
 
     private static func paletteSignature(for colors: [CGColor]) -> String {
