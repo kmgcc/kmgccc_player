@@ -254,9 +254,6 @@ private struct ThemeTrackObserver: View {
                     await themeStore.updateTheme(for: playerVM.currentTrack)
                 }
             }
-            .task(id: playerVM.currentTrack?.id) {
-                await themeStore.updateTheme(for: playerVM.currentTrack)
-            }
     }
 }
 

@@ -52,6 +52,9 @@ final class ThemeStore: ObservableObject {
     )
 
     private var currentArtworkData: Data?
+    private var currentArtworkChecksum: UInt64 = 0
+    private var lastProcessedChecksum: UInt64 = 0
+    private var averageColorCache: NSColor?
 
     private init() {
         // Default theme color: light orange-red.
@@ -96,31 +99,40 @@ final class ThemeStore: ObservableObject {
 
         guard let data, data.isEmpty == false else {
             currentArtworkData = nil
+            currentArtworkChecksum = 0
+            lastProcessedChecksum = 0
+            averageColorCache = nil
             rawDominantColor = defaultBlueNS
             usesFallbackThemeColor = true
             await refreshPalette(reason: "track_missing_artwork")
             return
         }
 
+        // Compute checksum for deduplication
+        let checksum = data.withUnsafeBytes { bytes -> UInt64 in
+            guard bytes.count >= 8 else { return 0 }
+            return bytes.bindMemory(to: UInt64.self)[0]
+        }
+
+        // Deduplication: Skip if same artwork already processed
+        if checksum == lastProcessedChecksum, checksum != 0 {
+            print("[Theme] Skipping duplicate artwork (checksum match: \(checksum))")
+            return
+        }
+
         currentArtworkData = data
+        currentArtworkChecksum = checksum
 
         if let trackID, let cached = dominantColorCache[trackID] {
             rawDominantColor = cached
             usesFallbackThemeColor = false
+            lastProcessedChecksum = checksum
             await refreshPalette(reason: "track_artwork_cached")
             return
         }
 
-        async let quick = extractQuickColor(from: data)
-        async let extracted = extractDominantColor(from: data)
-
-        if let quickColor = await quick, token == extractionToken, activeTrackID == trackID {
-            rawDominantColor = quickColor
-            usesFallbackThemeColor = false
-            await refreshPalette(reason: "track_artwork_quick")
-        }
-
-        let extractedColor = await extracted
+        // Single extraction pass - no dual quick/extracted
+        let extractedColor = await extractDominantColor(from: data)
 
         guard token == extractionToken, activeTrackID == trackID else {
             return
@@ -132,6 +144,13 @@ final class ThemeStore: ObservableObject {
         }
         rawDominantColor = resolved
         usesFallbackThemeColor = extractedColor == nil
+        lastProcessedChecksum = checksum
+        
+        // Pre-extract and cache averageColor to avoid re-extraction in refreshPalette
+        if extractedColor != nil {
+            averageColorCache = await extractAverageColor(from: data)
+        }
+        
         await refreshPalette(reason: "track_artwork_extracted")
     }
 
@@ -150,6 +169,14 @@ final class ThemeStore: ObservableObject {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 continuation.resume(returning: ArtworkColorExtractor.quickAccentSample(from: data))
+            }
+        }
+    }
+
+    private func extractAverageColor(from data: Data) async -> NSColor? {
+        await withCheckedContinuation { continuation in
+            extractionQueue.async {
+                continuation.resume(returning: ArtworkColorExtractor.averageColor(from: data))
             }
         }
     }
@@ -181,7 +208,10 @@ final class ThemeStore: ObservableObject {
 
         // If we have artwork, perform adaptive extraction
         if let data = currentArtworkData {
-            if let rawColor = ArtworkColorExtractor.averageColor(from: data) {
+            // Use cached averageColor if available, otherwise compute it
+            let avgColor = averageColorCache ?? ArtworkColorExtractor.averageColor(from: data)
+            
+            if let rawColor = avgColor {
                 // Adjusted for readability in current scheme
                 let adjusted = ArtworkColorExtractor.adjustedAccent(
                     from: rawColor, isDarkMode: isDark)
@@ -191,8 +221,6 @@ final class ThemeStore: ObservableObject {
                 inactive = ArtworkColorExtractor.cssRGBA(adjusted, alpha: 0.35)
                 accent = ArtworkColorExtractor.cssRGBA(resolvedAccentNS, alpha: 1.0)
 
-                // Deepen/Brighten background based on adjusted color if needed,
-                // but usually we keep it neutral glass for now.
                 if isDark {
                     bg = "rgba(15, 15, 15, 0.7)"
                     shadow = "rgba(0, 0, 0, 0.5)"

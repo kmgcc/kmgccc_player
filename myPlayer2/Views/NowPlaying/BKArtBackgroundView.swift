@@ -59,6 +59,9 @@ struct BKArtBackgroundView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     @State private var palette: [NSColor] = Self.fallbackPalette
+    @State private var lastArtworkSignature: Int = 0
+    @State private var cachedBasePalette: [NSColor] = []
+    @State private var cachedRichPalette: [NSColor] = []
 
     var body: some View {
         BKArtBackgroundRepresentable(
@@ -100,9 +103,17 @@ struct BKArtBackgroundView: View {
             controller.setUltraDarkActive(false)
             return
         }
-        let base = ArtworkColorExtractor.uiThemePalette(from: data, maxColors: 4)
-        let rich = ArtworkColorExtractor.uiThemePaletteRich(from: data, desiredCount: 8)
-        let chosen = rich.isEmpty ? base : rich
+        
+        let currentSignature = artworkSignature
+        
+        // Only re-extract if artwork changed
+        if currentSignature != lastArtworkSignature {
+            cachedBasePalette = ArtworkColorExtractor.uiThemePalette(from: data, maxColors: 4)
+            cachedRichPalette = ArtworkColorExtractor.uiThemePaletteRich(from: data, desiredCount: 8)
+            lastArtworkSignature = currentSignature
+        }
+        
+        let chosen = cachedRichPalette.isEmpty ? cachedBasePalette : cachedRichPalette
         let resolvedPalette = chosen.isEmpty ? Self.fallbackPalette : chosen
         controller.setCurrentSurfaceBackgroundColor(nil)
         palette = resolvedPalette
