@@ -26,7 +26,7 @@ struct FullscreenPlayerView: View {
     private let topContentHorizontalPadding: CGFloat = 0
     private let topContentLeftShift: CGFloat = 44
     private let artworkLyricsColumnSpacing: CGFloat = -58
-    private let lyricsColumnLeftNudge: CGFloat = 20
+    private let lyricsColumnLeftNudge: CGFloat = 80
     private let lyricsRightMarginReserve: CGFloat = 88
     private let lyricsViewportTopLift: CGFloat = 22
     private let fullscreenBackgroundLyricsAvoidanceHorizontalInset: CGFloat = 28
@@ -622,7 +622,7 @@ struct FullscreenPlayerView: View {
 
         if shouldShowLyricsColumn {
             let constrainedWidth = max(0, availableWidth - lyricsRightMarginReserve)
-            let lyricsWidth = min(max(constrainedWidth * 0.30, 320), 470)
+            let lyricsWidth = min(max(constrainedWidth * 0.30, 320), 560)
             let artworkWidth = max(constrainedWidth - lyricsWidth - artworkLyricsColumnSpacing, 360)
             return (artworkWidth, lyricsWidth)
         }

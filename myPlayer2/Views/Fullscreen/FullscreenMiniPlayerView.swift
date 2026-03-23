@@ -58,9 +58,7 @@ struct FullscreenMiniPlayerView: View {
             progressArea
                 .frame(minWidth: 320, maxWidth: .infinity)
 
-            // Volume
-            volumeView
-                .frame(width: 142)
+            // Volume removed - now external component
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 8)
