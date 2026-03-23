@@ -58,8 +58,8 @@ final class FileImportService: FileImportServiceProtocol {
 
     // MARK: - Supported Types
 
-    static let supportedExtensions: Set<String> = [
-        "mp3", "m4a", "aac", "alac", "flac", "wav", "aiff", "aif",
+    nonisolated static let supportedExtensions: Set<String> = [
+        "mp3", "m4a", "aac", "alac", "flac", "wav", "aiff", "aif", "ncm",
     ]
 
     static let supportedUTTypes: [UTType] = [
@@ -70,18 +70,28 @@ final class FileImportService: FileImportServiceProtocol {
         UTType(filenameExtension: "flac") ?? .audio,
         UTType(filenameExtension: "m4a") ?? .mpeg4Audio,
         UTType(filenameExtension: "alac") ?? .audio,
+        UTType(filenameExtension: "ncm") ?? .audio,
     ].compactMap { $0 }
 
     // MARK: - Properties
 
     private let repository: LibraryRepositoryProtocol
     private let libraryService: LocalLibraryService
+    private let coverDownloadService: CoverDownloadServiceProtocol
+    private let netEaseCoverService: NetEaseCoverServiceProtocol
 
     // MARK: - Initialization
 
-    init(repository: LibraryRepositoryProtocol, libraryService: LocalLibraryService? = nil) {
+    init(
+        repository: LibraryRepositoryProtocol,
+        libraryService: LocalLibraryService? = nil,
+        coverDownloadService: CoverDownloadServiceProtocol? = nil,
+        netEaseCoverService: NetEaseCoverServiceProtocol? = nil
+    ) {
         self.repository = repository
         self.libraryService = libraryService ?? LocalLibraryService.shared
+        self.coverDownloadService = coverDownloadService ?? CoverDownloadService()
+        self.netEaseCoverService = netEaseCoverService ?? NetEaseCoverService()
         print("📂 FileImportService initialized")
     }
 
@@ -151,20 +161,47 @@ final class FileImportService: FileImportServiceProtocol {
             }
         }
 
-        // Collect all audio files (including from directories)
-        var filesToImport: [URL] = []
+        // Collect all audio files (including from directories) - OFF MAIN THREAD
+        // Capture panel URLs first since panel is MainActor-isolated
+        let panelURLs = panel.urls
+        let (filesToImport, ncmFiles) = await Task.detached(priority: .userInitiated) { 
+            var filesToImport: [URL] = []
+            var ncmFiles: [URL] = []
 
-        for url in panel.urls {
-            if url.hasDirectoryPath {
-                // Recursively find audio files in directory
-                let audioFiles = findAudioFiles(in: url)
-                filesToImport.append(contentsOf: audioFiles)
-            } else if isAudioFile(url) {
-                filesToImport.append(url)
+            for url in panelURLs {
+                if url.hasDirectoryPath {
+                    let audioFiles = FileImportService.findAudioFiles(in: url)
+                    for file in audioFiles {
+                        if FileImportService.isNCMFile(file) {
+                            ncmFiles.append(file)
+                        } else {
+                            filesToImport.append(file)
+                        }
+                    }
+                } else if FileImportService.isAudioFile(url) {
+                    if FileImportService.isNCMFile(url) {
+                        ncmFiles.append(url)
+                    } else {
+                        filesToImport.append(url)
+                    }
+                }
+            }
+            return (filesToImport, ncmFiles)
+        }.value
+        var ncmResults: [String: NCMConversionResult] = [:]
+        var mutableFilesToImport = filesToImport
+
+        // Process NCM files if any
+        if !ncmFiles.isEmpty {
+            print("🎵 Found \(ncmFiles.count) NCM files to convert")
+            let results = await convertNCMFiles(ncmFiles)
+            for result in results {
+                mutableFilesToImport.append(result.audioFileURL)
+                ncmResults[result.audioFileURL.path] = result
             }
         }
 
-        print("📁 Found \(filesToImport.count) audio files to import to '\(playlist.name)'")
+        print("📁 Found \(mutableFilesToImport.count) audio files to import to '\(playlist.name)'")
 
         // Preflight by normalized title + artist (runtime dedup set semantics).
         let libraryTracks = await repository.fetchTracks(in: nil)
@@ -175,17 +212,32 @@ final class FileImportService: FileImportServiceProtocol {
         var uniqueCandidates: [ImportCandidate] = []
         var duplicateRows: [DuplicatePairRow] = []
 
-        for fileURL in filesToImport {
-            let raw = await extractMetadata(from: fileURL)
-            // Optimization: Do NOT load artwork here. Pass nil.
-            let preview = ImportPreview(
-                title: raw.title,
-                artist: raw.artist,
-                album: raw.album,
-                duration: raw.duration,
-                lyrics: raw.lyrics,
-                artworkData: nil  // Async load later
-            )
+        for fileURL in mutableFilesToImport {
+            // Check if this is a converted NCM file
+            let preview: ImportPreview
+            if let ncmResult = ncmResults[fileURL.path] {
+                // Use NCM metadata
+                preview = ImportPreview(
+                    title: ncmResult.metadata.title,
+                    artist: ncmResult.metadata.artistName,
+                    album: ncmResult.metadata.album,
+                    duration: ncmResult.metadata.durationSeconds,
+                    lyrics: nil,
+                    artworkData: ncmResult.coverData
+                )
+            } else {
+                // Extract metadata from audio file - now runs nonisolated
+                let raw = await extractMetadata(from: fileURL)
+                preview = ImportPreview(
+                    title: raw.title,
+                    artist: raw.artist,
+                    album: raw.album,
+                    duration: raw.duration,
+                    lyrics: raw.lyrics,
+                    artworkData: nil
+                )
+            }
+            
             let candidate = ImportCandidate(
                 fileURL: fileURL,
                 metadata: preview
@@ -286,8 +338,10 @@ final class FileImportService: FileImportServiceProtocol {
         let artworkData: Data?
         if let preloaded = preloadedArtworkData {
             artworkData = preloaded
+        } else if let embedded = await Self.extractArtwork(from: url) {
+            artworkData = embedded
         } else {
-            artworkData = await Self.extractArtwork(from: url)
+            artworkData = await fetchCoverForImport(artist: metadata.artist, album: metadata.album)
         }
 
         let trackId = UUID()
@@ -322,7 +376,8 @@ final class FileImportService: FileImportServiceProtocol {
     }
 
     /// Extract metadata from audio file using AVAsset.
-    private func extractMetadata(from url: URL) async -> (
+    /// Made nonisolated to allow concurrent execution from TaskGroup.
+    nonisolated private func extractMetadata(from url: URL) async -> (
         title: String, artist: String, album: String, duration: Double, lyrics: String?
     ) {
         let asset = AVURLAsset(url: url)
@@ -458,9 +513,8 @@ final class FileImportService: FileImportServiceProtocol {
     }
 
     /// Recursively find audio files in a directory.
-
-    /// Recursively find audio files in a directory.
-    private func findAudioFiles(in directory: URL) -> [URL] {
+    /// Made nonisolated static to allow calling from background tasks.
+    nonisolated private static func findAudioFiles(in directory: URL) -> [URL] {
         var audioFiles: [URL] = []
 
         let fileManager = FileManager.default
@@ -475,7 +529,7 @@ final class FileImportService: FileImportServiceProtocol {
         }
 
         for case let fileURL as URL in enumerator {
-            if isAudioFile(fileURL) {
+            if Self.isAudioFile(fileURL) {
                 audioFiles.append(fileURL)
             }
         }
@@ -484,9 +538,64 @@ final class FileImportService: FileImportServiceProtocol {
     }
 
     /// Check if a URL is a supported audio file.
-    private func isAudioFile(_ url: URL) -> Bool {
+    /// Made nonisolated static to allow calling from background tasks.
+    nonisolated private static func isAudioFile(_ url: URL) -> Bool {
         let ext = url.pathExtension.lowercased()
         return Self.supportedExtensions.contains(ext)
+    }
+
+    /// Check if a URL is an NCM file.
+    /// Made nonisolated static to allow calling from background tasks.
+    nonisolated private static func isNCMFile(_ url: URL) -> Bool {
+        return url.pathExtension.lowercased() == "ncm"
+    }
+
+    /// Convert NCM files and return conversion results with metadata.
+    /// Runs nonisolated to avoid blocking MainActor during the conversion process.
+    nonisolated private func convertNCMFiles(_ ncmFiles: [URL]) async -> [NCMConversionResult] {
+        await withCheckedContinuation { continuation in
+            // Use a class wrapper for thread-safe mutable state
+            final class ResumptionState: @unchecked Sendable {
+                var hasResumed = false
+            }
+            let state = ResumptionState()
+            
+            // Present dialog on MainActor but keep this method nonisolated
+            Task { @MainActor in
+                NCMImportProgressDialogPresenter.present(ncmFiles: ncmFiles) { results in
+                    guard !state.hasResumed else { return }
+                    state.hasResumed = true
+                    
+                    continuation.resume(returning: results ?? [])
+                }
+            }
+        }
+    }
+
+    private func fetchCoverForImport(artist: String, album: String) async -> Data? {
+        do {
+            let coverData = try await coverDownloadService.downloadCover(
+                artist: artist,
+                album: album,
+                size: 1200
+            )
+            print("✅ Cover fetch success via sacad: \(artist) - \(album)")
+            return coverData
+        } catch {
+            print("⚠️ sacad cover fetch failed, trying NetEase fallback: \(error)")
+        }
+
+        do {
+            let coverData = try await netEaseCoverService.searchAndDownloadCover(
+                artist: artist,
+                album: album
+            )
+            print("✅ Cover fetch success via NetEase fallback: \(artist) - \(album)")
+            return coverData
+        } catch {
+            print("❌ Cover fetch failed after fallback (sacad -> NetEase): \(error)")
+            return nil
+        }
     }
 
     @MainActor
@@ -523,24 +632,14 @@ final class DuplicateImportDialogPresenter: NSObject, NSWindowDelegate {
         let headerHeight: CGFloat = 98
         let footerHeight: CGFloat = 68
         let rowHeight: CGFloat = 48
-        let rowSpacing: CGFloat = 0
+        let listVerticalPadding: CGFloat = 16
+        let maxItemsWithoutScroll = 9
 
-        // Dynamic Height Logic:
-        // Rows take 48pt each.
-        // List padding: 12 (top) + 12 (bottom) = 24
-        // Chrome: 98 (header) + 68 (footer) = 166
-
-        let chromeHeight = headerHeight + footerHeight
-        let listPadding: CGFloat = 24
-        let visibleRows = CGFloat(rows.count)
-        let contentHeight = (visibleRows * rowHeight) + listPadding
-
-        let idealHeight = chromeHeight + contentHeight
-
-        // Clamp to Reasonable Limits
-        // Max: 680 (Trigger scroll if content exceeds this)
-        // Min: Chrome + Padding + 1 Row ~= 166 + 24 + 48 = 238
-        let clampedHeight = min(680, max(240, idealHeight))
+        let visibleRows = CGFloat(min(rows.count, maxItemsWithoutScroll))
+        let contentHeight = (visibleRows * rowHeight) + (listVerticalPadding * 2)
+        let idealHeight = headerHeight + contentHeight + footerHeight
+        
+        let clampedHeight = idealHeight
 
         // Width: 760 (Balanced)
         let windowSize = NSSize(width: 760, height: clampedHeight)
@@ -564,12 +663,13 @@ final class DuplicateImportDialogPresenter: NSObject, NSWindowDelegate {
         visualEffect.material = .popover
         visualEffect.blendingMode = .behindWindow
         visualEffect.state = .active
+        visualEffect.frame = NSRect(origin: .zero, size: windowSize)
+        visualEffect.autoresizingMask = [.width, .height]
         panel.contentView = visualEffect
 
         let presenter = DuplicateImportDialogPresenter(panel: panel)
         panel.delegate = presenter
 
-        // Setup View Model & View
         let viewModel = DuplicateImportDialogViewModel(rows: rows)
 
         let customAction: (Bool) -> Void = { shouldImport in
@@ -584,11 +684,11 @@ final class DuplicateImportDialogPresenter: NSObject, NSWindowDelegate {
 
         let rootView = DuplicateImportDialogView(viewModel: viewModel, onFinish: customAction)
             .environmentObject(ThemeStore.shared)
+            .frame(width: 760, height: clampedHeight)
 
         let hostingView = NSHostingView(rootView: rootView)
-        hostingView.autoresizingMask = [.width, .height]
         hostingView.frame = NSRect(origin: .zero, size: windowSize)
-        hostingView.layer?.backgroundColor = NSColor.clear.cgColor
+        hostingView.autoresizingMask = [.width, .height]
 
         visualEffect.addSubview(hostingView)
         panel.center()
@@ -646,6 +746,7 @@ struct DuplicateImportDialogView: View {
     let onFinish: (Bool) -> Void
     @EnvironmentObject var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
+    private let maxItemsWithoutScroll = 9
 
     // LAYOUT CONSTANTS (Width: 760)
     // Padding: 20 -> Header Top moved up slightly
@@ -656,99 +757,114 @@ struct DuplicateImportDialogView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // MARK: Header
-            VStack(alignment: .leading, spacing: 10) {
-                // Title & Subtitle Group
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("发现重复歌曲")
-                        .font(.title3.bold())
-                        .foregroundStyle(.primary)
-                    Text("点击右侧条目选择是否重复导入")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                // Alignment Grid
-                HStack(spacing: 12) {
-                    Text("资料库中已存在")
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .frame(width: leftColumnWidth, alignment: .leading)
-
-                    Divider()
-                        .frame(height: 12)
-                        .overlay(Color.secondary.opacity(0.3))  // Softer divider
-
-                    Text("本次待导入")
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .frame(width: rightColumnWidth, alignment: .leading)
-                }
-            }
-            .padding(.horizontal, horizontalPadding)
-            .padding(.top, 20)  // Reduced top padding
-            .padding(.bottom, 12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.thinMaterial)
-            .overlay(alignment: .bottom) {
-                Divider().opacity(0.5)
-            }
-            .zIndex(1)
-
-            // MARK: List
-            ScrollView {
-                LazyVStack(spacing: 0) {  // Zero spacing between rows
-                    Color.clear.frame(height: 12)
-
-                    ForEach(viewModel.rows) { row in
-                        DuplicateRowView(
-                            row: row,
-                            isSelected: viewModel.selectedIDs.contains(row.id),
-                            leftWidth: leftColumnWidth,
-                            rightWidth: rightColumnWidth,
-                            themeAccent: themeStore.accentColor
-                        )
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            withAnimation(.easeInOut(duration: 0.15)) {
-                                viewModel.toggleSelection(row.id)
-                            }
-                        }
-                    }
-
-                    Color.clear.frame(height: 12)
-                }
-                .padding(.horizontal, horizontalPadding)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            // MARK: Footer
-            HStack {
-                Button("取消") {
-                    onFinish(false)
-                }
-                .keyboardShortcut(.cancelAction)
-                .controlSize(.large)
-
-                Spacer()
-
-                Button(viewModel.buttonTitle) {
-                    onFinish(true)
-                }
-                .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .tint(themeStore.accentColor)
-            }
-            .padding(.vertical, 20)
-            .padding(.horizontal, horizontalPadding)
-            .background(.thinMaterial)
-            .overlay(alignment: .top) {
-                Divider().opacity(0.5)
-            }
+            headerView
+            listContent
+            footerView
         }
         .task {
             print("🎬 Duplicate Dialog Appeared. Total rows: \(viewModel.rows.count)")
+        }
+    }
+    
+    private var listContent: some View {
+        let rowsView = VStack(spacing: 0) {
+            ForEach(viewModel.rows) { row in
+                DuplicateRowView(
+                    row: row,
+                    isSelected: viewModel.selectedIDs.contains(row.id),
+                    leftWidth: leftColumnWidth,
+                    rightWidth: rightColumnWidth,
+                    themeAccent: themeStore.accentColor
+                )
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        viewModel.toggleSelection(row.id)
+                    }
+                }
+            }
+        }
+        
+        let paddedView = rowsView
+            .padding(.horizontal, horizontalPadding)
+            .padding(.vertical, 16)
+        
+        if viewModel.rows.count > maxItemsWithoutScroll {
+            return AnyView(
+                ScrollView {
+                    paddedView
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            )
+        } else {
+            return AnyView(
+                paddedView
+                    .frame(maxWidth: .infinity)
+            )
+        }
+    }
+    
+    private var headerView: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("发现重复歌曲")
+                    .font(.title3.bold())
+                    .foregroundStyle(.primary)
+                Text("点击右侧条目选择是否重复导入")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            
+            HStack(spacing: 12) {
+                Text("资料库中已存在")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: leftColumnWidth, alignment: .leading)
+                
+                Divider()
+                    .frame(height: 12)
+                    .overlay(Color.secondary.opacity(0.3))
+                
+                Text("本次待导入")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: rightColumnWidth, alignment: .leading)
+            }
+        }
+        .padding(.horizontal, horizontalPadding)
+        .padding(.top, 20)
+        .padding(.bottom, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.thinMaterial)
+        .overlay(alignment: .bottom) {
+            Divider().opacity(0.5)
+        }
+        .zIndex(1)
+    }
+    
+    private var footerView: some View {
+        HStack {
+            Button("取消") {
+                onFinish(false)
+            }
+            .keyboardShortcut(.cancelAction)
+            .controlSize(.large)
+            
+            Spacer()
+            
+            Button(viewModel.buttonTitle) {
+                onFinish(true)
+            }
+            .keyboardShortcut(.defaultAction)
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .tint(themeStore.accentColor)
+        }
+        .padding(.vertical, 20)
+        .padding(.horizontal, horizontalPadding)
+        .background(.thinMaterial)
+        .overlay(alignment: .top) {
+            Divider().opacity(0.5)
         }
     }
 }

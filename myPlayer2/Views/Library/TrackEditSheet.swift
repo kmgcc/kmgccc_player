@@ -17,6 +17,8 @@ struct TrackEditSheet: View {
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(LyricsViewModel.self) private var lyricsVM
+    @Environment(CoverDownloadService.self) private var coverDownloadService
+    @Environment(NetEaseCoverService.self) private var netEaseCoverService
     @EnvironmentObject private var themeStore: ThemeStore
 
     let track: Track
@@ -34,6 +36,9 @@ struct TrackEditSheet: View {
 
     @State private var showingArtworkPicker = false
     @State private var showingLyricsPicker = false
+    @State private var isFetchingCover = false
+    @State private var coverFetchError: String?
+    @State private var coverFetchTask: Task<Void, Never>?
 
     private let amllDbURL = URL(string: "https://github.com/amll-dev/amll-ttml-db")!
     private let ttmlToolURL = URL(string: "https://amll-ttml-tool.stevexmh.net/")!
@@ -78,6 +83,10 @@ struct TrackEditSheet: View {
         .accentColor(themeStore.accentColor)
         .onAppear {
             loadTrackData()
+        }
+        .onDisappear {
+            coverFetchTask?.cancel()
+            coverFetchTask = nil
         }
     }
 
@@ -132,11 +141,28 @@ struct TrackEditSheet: View {
                         showingArtworkPicker = true
                     }
 
+                    Button(LocalizedStringKey("查找封面")) {
+                        fetchCover()
+                    }
+                    .disabled(isFetchingCover)
+
+                    if isFetchingCover {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+
                     if artworkData != nil {
                         Button(LocalizedStringKey("edit.track.remove_artwork")) {
                             artworkData = nil
                         }
                         .foregroundStyle(.red)
+                    }
+
+                    if let coverFetchError {
+                        Text(coverFetchError)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
@@ -392,6 +418,50 @@ struct TrackEditSheet: View {
             print("[TrackEditSheet] Imported artwork: \(data.count) bytes")
         } catch {
             print("[TrackEditSheet] Failed to import artwork: \(error)")
+        }
+    }
+
+    private func fetchCover() {
+        coverFetchTask?.cancel()
+        isFetchingCover = true
+        coverFetchError = nil
+
+        coverFetchTask = Task {
+            defer {
+                Task { @MainActor in
+                    isFetchingCover = false
+                    coverFetchTask = nil
+                }
+            }
+
+            do {
+                let downloadedData: Data
+
+                do {
+                    downloadedData = try await coverDownloadService.downloadCover(
+                        artist: artist,
+                        album: album,
+                        size: 1200
+                    )
+                } catch {
+                    downloadedData = try await netEaseCoverService.searchAndDownloadCover(
+                        artist: artist,
+                        album: album
+                    )
+                }
+
+                try Task.checkCancellation()
+
+                await MainActor.run {
+                    artworkData = downloadedData
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                await MainActor.run {
+                    coverFetchError = error.localizedDescription
+                }
+            }
         }
     }
 

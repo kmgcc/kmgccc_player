@@ -26,6 +26,7 @@ struct TrackSidecar: Codable {
     let artworkFileName: String?
     let lyricsFileName: String?
     let lyricsType: String?
+    let ncmSourcePath: String?
 }
 
 struct PlaylistSidecar: Codable {
@@ -198,7 +199,8 @@ final class LocalLibraryService {
                 audioFileName: audioFileName.isEmpty ? nil : audioFileName,
                 artworkFileName: artworkFileName,
                 lyricsFileName: lyricsInfo.fileName,
-                lyricsType: lyricsInfo.type
+                lyricsType: lyricsInfo.type,
+                ncmSourcePath: nil
             )
 
             let data = try encoder.encode(sidecar)
