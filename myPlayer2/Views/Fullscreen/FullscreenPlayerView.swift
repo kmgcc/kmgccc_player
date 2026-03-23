@@ -26,12 +26,12 @@ struct FullscreenPlayerView: View {
     private let topContentHorizontalPadding: CGFloat = 0
     private let topContentLeftShift: CGFloat = 44
     private let artworkLyricsColumnSpacing: CGFloat = -58
-    private let lyricsColumnLeftNudge: CGFloat = 46
+    private let lyricsColumnLeftNudge: CGFloat = 20
     private let lyricsRightMarginReserve: CGFloat = 88
     private let lyricsViewportTopLift: CGFloat = 22
     private let fullscreenBackgroundLyricsAvoidanceHorizontalInset: CGFloat = 28
     private let fullscreenBackgroundLyricsAvoidanceTopInset: CGFloat = 36
-    private let fullscreenBackgroundLyricsAvoidanceBottomInset: CGFloat = 146
+    private let fullscreenBackgroundLyricsAvoidanceBottomInset: CGFloat = 60
     private let fullscreenLyricsAlignPosition: Double = 0.28
     private let fixedMiniplayerHeight: CGFloat = 60
     private let fullscreenLyricsMinimumBaseLightness: CGFloat = 0.52

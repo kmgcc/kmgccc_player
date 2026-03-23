@@ -19,7 +19,7 @@ struct LEDMeterConfig: Sendable {
     var preGain: Float = 1.0
     var sensitivity: Float = 1.0
     var speed: Float = 1.0
-    var targetHz: Int = 60
+    var targetHz: Int = 30
     var transientThreshold: Float = 1.5
     var transientIntensity: Float = 2.5
     var transientCutoffHz: Float = 60.0
@@ -81,6 +81,7 @@ final class LEDMeterService: AudioLevelMeterProtocol {
     func start() {
         guard !isInstalled else { return }
 
+        hub.targetHz = config.targetHz
         // Start Hub
         hub.start()
 
