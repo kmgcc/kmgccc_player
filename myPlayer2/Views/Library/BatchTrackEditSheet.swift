@@ -441,8 +441,9 @@ struct BatchTrackEditSheet: View {
                     layoutStyle: .split,
                     includeTranslationDefault: true,
                     autoSearchToken: autoSearchToken
-                ) { ttml in
+                ) { ttml, lrc in
                     lyricsText = ttml
+                    track.lrcLyricText = lrc
                     _ = saveCurrentTrack(
                         showFailureMessage: true,
                         markProcessedIfUnchanged: false,

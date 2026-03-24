@@ -42,6 +42,14 @@ enum LocalLibraryPaths {
         trackFolderURL(for: id).appendingPathComponent("lyrics.\(ext)")
     }
 
+    static func trackLRCLyricsURL(for id: UUID) -> URL {
+        trackFolderURL(for: id).appendingPathComponent("lyrics_raw.lrc")
+    }
+
+    static func trackTTMLLyricsURL(for id: UUID) -> URL {
+        trackFolderURL(for: id).appendingPathComponent("lyrics.ttml")
+    }
+
     static func playlistURL(for id: UUID) -> URL {
         playlistsRootURL.appendingPathComponent("\(id.uuidString).json")
     }

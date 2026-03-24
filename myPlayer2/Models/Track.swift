@@ -74,7 +74,12 @@ final class Track {
     /// Directly pasted or imported TTML lyrics text (embedded).
     var ttmlLyricText: String?
 
+    /// Original LRC lyrics text (raw format from LDDC or external file).
+    /// Stored separately from converted TTML for future PV-specific LRC features.
+    var lrcLyricText: String?
+
     /// Imported lyrics text (LRC/TTML from external file).
+    /// Deprecated: Use ttmlLyricText or lrcLyricText instead.
     var lyricsText: String?
 
     // MARK: - Initializer
@@ -94,6 +99,7 @@ final class Track {
         availability: TrackAvailability = .available,
         artworkData: Data? = nil,
         ttmlLyricText: String? = nil,
+        lrcLyricText: String? = nil,
         lyricsText: String? = nil
     ) {
         self.id = id
@@ -110,6 +116,7 @@ final class Track {
         self.availabilityRaw = availability.rawValue
         self.artworkData = artworkData
         self.ttmlLyricText = ttmlLyricText
+        self.lrcLyricText = lrcLyricText
         self.lyricsText = lyricsText
     }
 

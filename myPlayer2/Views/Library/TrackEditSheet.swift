@@ -304,15 +304,16 @@ struct TrackEditSheet: View {
                 .padding(.vertical, 8)
 
             // LDDC Lyrics Search
-            LDDCSearchSection(track: track) { ttml in
-                // Update lyrics text and save
+            LDDCSearchSection(track: track) { ttml, lrc in
+                // Update lyrics text and save both formats
                 lyricsText = ttml
                 track.ttmlLyricText = ttml
+                track.lrcLyricText = lrc
                 track.lyricsText = nil
 
                 Task {
                     await libraryVM.saveTrackEdits(track)
-                    print("[TrackEditSheet] Applied LDDC lyrics for: \(track.title)")
+                    print("[TrackEditSheet] Applied LDDC lyrics (TTML + LRC) for: \(track.title)")
                     if playerVM.currentTrack?.id == track.id {
                         lyricsVM.ensureAMLLLoaded(
                             track: track,

@@ -1,0 +1,673 @@
+//
+//  LyricsFetchProgressDialog.swift
+//  myPlayer2
+//
+//  kmgccc_player - Lyrics Fetch Progress Dialog
+//  Shows lyrics search and save progress during import.
+//
+
+import AppKit
+import Combine
+import SwiftUI
+
+// MARK: - Lyrics Fetch Step
+
+enum LyricsFetchStep {
+    case waiting
+    case searching
+    case found
+    case savingLRC
+    case converting
+    case savingTTML
+    case completed
+    case noResults
+    case failed
+    
+    var description: String {
+        switch self {
+        case .waiting: return "等待中..."
+        case .searching: return "正在搜索歌词..."
+        case .found: return "找到歌词"
+        case .savingLRC: return "保存 LRC..."
+        case .converting: return "转换为 TTML..."
+        case .savingTTML: return "保存 TTML..."
+        case .completed: return "完成"
+        case .noResults: return "未找到歌词"
+        case .failed: return "失败"
+        }
+    }
+}
+
+// MARK: - Individual Item Model
+
+@MainActor
+@Observable
+final class LyricsFetchProgressItemModel: Identifiable {
+    let id: String
+    let fileName: String
+    var title: String
+    var artist: String
+    var step: LyricsFetchStep
+    var errorMessage: String?
+    
+    init(
+        id: String,
+        fileName: String,
+        title: String = "",
+        artist: String = "",
+        step: LyricsFetchStep = .waiting,
+        errorMessage: String? = nil
+    ) {
+        self.id = id
+        self.fileName = fileName
+        self.title = title
+        self.artist = artist
+        self.step = step
+        self.errorMessage = errorMessage
+    }
+}
+
+// MARK: - View Model
+
+@MainActor
+@Observable
+final class LyricsFetchProgressViewModel {
+    var items: [LyricsFetchProgressItemModel]
+    var isCancelled = false
+    var displayProgress: Double = 0.0
+    
+    private let onComplete: (() -> Void)?
+    private let onCancel: (() -> Void)?
+    private var progressTimer: Timer?
+    private var targetProgress: Double = 0.0
+    
+    init(
+        items: [LyricsFetchProgressItemModel],
+        onComplete: (() -> Void)? = nil,
+        onCancel: (() -> Void)? = nil
+    ) {
+        self.items = items
+        self.onComplete = onComplete
+        self.onCancel = onCancel
+        startSmoothProgress()
+    }
+    
+    private func startSmoothProgress() {
+        displayProgress = 0.0
+        targetProgress = 0.0
+        
+        progressTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                
+                if self.displayProgress < self.targetProgress {
+                    self.displayProgress += 0.02
+                    if self.displayProgress > self.targetProgress {
+                        self.displayProgress = self.targetProgress
+                    }
+                }
+            }
+        }
+    }
+    
+    func setProgress(_ progress: Double) {
+        targetProgress = min(progress, 0.95)
+    }
+    
+    func updateItem(id: String, title: String, artist: String, step: LyricsFetchStep) {
+        guard let item = items.first(where: { $0.id == id }) else { return }
+        item.title = title.isEmpty ? item.fileName : title
+        item.artist = artist
+        item.step = step
+    }
+    
+    func markFailed(id: String, error: String) {
+        guard let item = items.first(where: { $0.id == id }) else { return }
+        item.step = .failed
+        item.errorMessage = error
+    }
+    
+    func markNoResults(id: String) {
+        guard let item = items.first(where: { $0.id == id }) else { return }
+        item.step = .noResults
+    }
+    
+    func cancel() {
+        isCancelled = true
+        progressTimer?.invalidate()
+        progressTimer = nil
+        onCancel?()
+    }
+    
+    func complete() {
+        targetProgress = 1.0
+        progressTimer?.invalidate()
+        progressTimer = nil
+        displayProgress = 1.0
+        onComplete?()
+    }
+    
+    var isAllCompleted: Bool {
+        items.allSatisfy { $0.step == .completed || $0.step == .noResults || $0.step == .failed }
+    }
+    
+    var completedItemsCount: Int {
+        items.filter { $0.step == .completed }.count
+    }
+    
+    var noResultsCount: Int {
+        items.filter { $0.step == .noResults }.count
+    }
+    
+    var failedCount: Int {
+        items.filter { $0.step == .failed }.count
+    }
+    
+    var hasAnyIssues: Bool {
+        items.contains { $0.step == .noResults || $0.step == .failed }
+    }
+}
+
+// MARK: - Presenter
+
+@MainActor
+final class LyricsFetchProgressDialogPresenter: NSObject, NSWindowDelegate {
+    private var panel: NSPanel?
+    private var viewModel: LyricsFetchProgressViewModel?
+    private var completionHandler: (() -> Void)?
+    private var hasCompleted = false
+    private var startTime: Date?
+    private var fetchTask: Task<Void, Never>?
+    private var resultTracks: [Track] = []
+    
+    private static var activePresenter: LyricsFetchProgressDialogPresenter?
+    
+    private func complete() {
+        guard !hasCompleted else { return }
+        hasCompleted = true
+        completionHandler?()
+        Self.activePresenter = nil
+    }
+    
+    @MainActor
+    static func presentAndFetch(
+        tracks: [Track],
+        completion: @escaping ([Track]) -> Void
+    ) {
+        guard !tracks.isEmpty else {
+            completion([])
+            return
+        }
+        
+        let items = tracks.map { track in
+            LyricsFetchProgressItemModel(
+                id: track.id.uuidString,
+                fileName: track.title,
+                title: track.title,
+                artist: track.artist
+            )
+        }
+        
+        let presenter = LyricsFetchProgressDialogPresenter()
+        presenter.resultTracks = tracks
+        presenter.startTime = Date()
+        
+        Self.activePresenter = presenter
+        
+        let rowTotalHeight: CGFloat = 52
+        let headerHeight: CGFloat = 80
+        let footerHeight: CGFloat = 60
+        let listVerticalPadding: CGFloat = 8
+        let maxItemsWithoutScroll = 9
+        
+        let itemCount = items.count
+        let shouldScroll = itemCount > maxItemsWithoutScroll
+        
+        let windowHeight: CGFloat
+        if shouldScroll {
+            let visibleRowsHeight = CGFloat(maxItemsWithoutScroll) * rowTotalHeight
+            windowHeight = headerHeight + visibleRowsHeight + listVerticalPadding + footerHeight
+        } else {
+            let rowsHeight = CGFloat(itemCount) * rowTotalHeight
+            windowHeight = headerHeight + rowsHeight + listVerticalPadding + footerHeight
+        }
+        
+        let windowSize = NSSize(width: 580, height: windowHeight)
+        
+        let panel = NSPanel(
+            contentRect: NSRect(origin: .zero, size: windowSize),
+            styleMask: [.titled, .closable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        
+        panel.title = ""
+        panel.titlebarAppearsTransparent = true
+        panel.titleVisibility = .hidden
+        panel.isMovableByWindowBackground = true
+        panel.isReleasedWhenClosed = false
+        panel.delegate = presenter
+        
+        let visualEffect = NSVisualEffectView()
+        visualEffect.material = .popover
+        visualEffect.blendingMode = .behindWindow
+        visualEffect.state = .active
+        visualEffect.frame = NSRect(origin: .zero, size: windowSize)
+        visualEffect.autoresizingMask = [.width, .height]
+        panel.contentView = visualEffect
+        
+        presenter.panel = panel
+        
+        let viewModel = LyricsFetchProgressViewModel(
+            items: items,
+            onComplete: { [weak presenter] in
+                presenter?.finishWithMinimumDelay(completion: completion)
+            },
+            onCancel: { [weak presenter] in
+                presenter?.complete(with: [], completion: completion)
+                panel.close()
+            }
+        )
+        presenter.viewModel = viewModel
+        
+        let rootView = LyricsFetchProgressDialogView(
+            viewModel: viewModel,
+            shouldScroll: shouldScroll,
+            visibleRowsHeight: shouldScroll ? CGFloat(maxItemsWithoutScroll) * rowTotalHeight : nil
+        )
+        .frame(width: 580, height: windowHeight)
+        
+        let hostingView = NSHostingView(rootView: rootView)
+        hostingView.frame = NSRect(origin: .zero, size: windowSize)
+        hostingView.autoresizingMask = [.width, .height]
+        
+        visualEffect.addSubview(hostingView)
+        panel.center()
+        panel.makeKeyAndOrderFront(nil)
+        
+        presenter.startFetchAsync(tracks: tracks, viewModel: viewModel)
+    }
+    
+    private func finishWithMinimumDelay(completion: @escaping ([Track]) -> Void) {
+        let minDisplayTime: TimeInterval = 1.5
+        let elapsed = Date().timeIntervalSince(startTime ?? Date())
+        let remaining = max(0, minDisplayTime - elapsed)
+        
+        Task { @MainActor in
+            if remaining > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
+            }
+            complete(with: resultTracks, completion: completion)
+            panel?.close()
+        }
+    }
+    
+    private func complete(with tracks: [Track], completion: @escaping ([Track]) -> Void) {
+        guard !hasCompleted else { return }
+        hasCompleted = true
+        completion(tracks)
+        Self.activePresenter = nil
+    }
+    
+    private func startFetchAsync(tracks: [Track], viewModel: LyricsFetchProgressViewModel) {
+        fetchTask = Task.detached(priority: .userInitiated) {
+            let client = LDDCClient()
+            let totalCount = tracks.count
+            
+            actor ProgressState {
+                var completedCount = 0
+                var pendingUpdates: [(id: String, title: String, artist: String, step: LyricsFetchStep, trackIndex: Int, lrc: String?, ttml: String?)] = []
+                
+                func addCompleted(id: String, title: String, artist: String, step: LyricsFetchStep, trackIndex: Int, lrc: String?, ttml: String?) {
+                    completedCount += 1
+                    pendingUpdates.append((id: id, title: title, artist: artist, step: step, trackIndex: trackIndex, lrc: lrc, ttml: ttml))
+                }
+                
+                func getAndClearPendingUpdates() -> [(id: String, title: String, artist: String, step: LyricsFetchStep, trackIndex: Int, lrc: String?, ttml: String?)] {
+                    let updates = pendingUpdates
+                    pendingUpdates.removeAll()
+                    return updates
+                }
+                
+                func getProgress(totalCount: Int) -> Double {
+                    return Double(completedCount) / Double(totalCount)
+                }
+            }
+            
+            let state = ProgressState()
+            
+            await withTaskGroup(of: Void.self) { group in
+                for (index, track) in tracks.enumerated() {
+                    group.addTask {
+                        let itemId = track.id.uuidString
+                        
+                        do {
+                            await MainActor.run {
+                                viewModel.updateItem(id: itemId, title: track.title, artist: track.artist, step: .searching)
+                            }
+                            
+                            let response = try await client.search(
+                                title: track.title,
+                                artist: track.artist.isEmpty ? nil : track.artist,
+                                sources: [.QM, .KG, .NE],
+                                mode: .verbatim,
+                                translation: true,
+                                limitPerSource: 5
+                            )
+                            
+                            guard let firstCandidate = response.results.first else {
+                                print("⚠️ [LRCStorage] No lyrics found for: \(track.title)")
+                                await state.addCompleted(id: itemId, title: track.title, artist: track.artist, step: .noResults, trackIndex: index, lrc: nil, ttml: nil)
+                                return
+                            }
+                            
+                            await MainActor.run {
+                                viewModel.updateItem(id: itemId, title: track.title, artist: track.artist, step: .found)
+                            }
+                            
+                            let (origLrc, transLrc) = try await client.fetchByIdSeparate(
+                                candidate: firstCandidate,
+                                mode: .verbatim
+                            )
+                            
+                            await MainActor.run {
+                                viewModel.updateItem(id: itemId, title: track.title, artist: track.artist, step: .savingLRC)
+                            }
+                            
+                            print("✅ [LRCStorage] Fetched LRC for: \(track.title)\(transLrc != nil ? " (with translation)" : "")")
+                            
+                            await MainActor.run {
+                                viewModel.updateItem(id: itemId, title: track.title, artist: track.artist, step: .converting)
+                            }
+                            
+                            let ttml: String
+                            if let transLrc = transLrc, !transLrc.isEmpty {
+                                ttml = try await TTMLConverter.shared.convertToTTMLWithTranslation(
+                                    origLrc: origLrc,
+                                    transLrc: transLrc,
+                                    stripMetadata: false
+                                )
+                                print("✅ [LRCStorage] Converted TTML with translation for: \(track.title)")
+                            } else {
+                                ttml = try await TTMLConverter.shared.convertToTTML(
+                                    lrc: origLrc,
+                                    stripMetadata: false
+                                )
+                                print("✅ [LRCStorage] Converted TTML for: \(track.title)")
+                            }
+                            
+                            await MainActor.run {
+                                viewModel.updateItem(id: itemId, title: track.title, artist: track.artist, step: .savingTTML)
+                            }
+                            
+                            await MainActor.run {
+                                track.lrcLyricText = origLrc
+                                track.ttmlLyricText = ttml
+                            }
+                            
+                            print("✅ [LRCStorage] Saved lyrics for: \(track.title)")
+                            
+                            await state.addCompleted(id: itemId, title: track.title, artist: track.artist, step: .completed, trackIndex: index, lrc: origLrc, ttml: ttml)
+                            
+                        } catch {
+                            print("⚠️ [LRCStorage] Failed to fetch lyrics for \(track.title): \(error)")
+                            await state.addCompleted(id: itemId, title: track.title, artist: track.artist, step: .failed, trackIndex: index, lrc: nil, ttml: nil)
+                        }
+                    }
+                }
+                
+                await group.waitForAll()
+            }
+            
+            let progress = await state.getProgress(totalCount: totalCount)
+            
+            await MainActor.run {
+                viewModel.setProgress(progress * 0.95)
+                viewModel.complete()
+            }
+        }
+    }
+    
+    func windowWillClose(_ notification: Notification) {
+        if !hasCompleted {
+            viewModel?.cancel()
+        }
+        fetchTask?.cancel()
+    }
+}
+
+// MARK: - Dialog View
+
+struct LyricsFetchProgressDialogView: View {
+    @Bindable var viewModel: LyricsFetchProgressViewModel
+    var shouldScroll: Bool
+    var visibleRowsHeight: CGFloat?
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            headerView
+            
+            if shouldScroll {
+                ScrollView(.vertical, showsIndicators: true) {
+                    VStack(spacing: 0) {
+                        ForEach(viewModel.items) { item in
+                            LyricsFetchProgressRowView(item: item)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 4)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+                .frame(height: visibleRowsHeight)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(viewModel.items) { item in
+                        LyricsFetchProgressRowView(item: item)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 4)
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+            
+            Divider()
+                .opacity(0.5)
+            
+            footerView
+        }
+    }
+    
+    private var headerView: some View {
+        VStack(spacing: 8) {
+            HStack {
+                Text("正在获取歌词")
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                
+                Spacer()
+                
+                Text("\(viewModel.completedItemsCount)/\(viewModel.items.count)")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            
+            ProgressView(value: viewModel.displayProgress)
+                .progressViewStyle(.linear)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 16)
+        .background(.thinMaterial)
+    }
+    
+    private var footerView: some View {
+        HStack {
+            if viewModel.isAllCompleted {
+                if viewModel.hasAnyIssues {
+                    VStack(alignment: .leading, spacing: 2) {
+                        if viewModel.noResultsCount > 0 {
+                            Text("\(viewModel.noResultsCount) 首未找到歌词")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
+                        if viewModel.failedCount > 0 {
+                            Text("\(viewModel.failedCount) 首获取失败")
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        }
+                    }
+                } else {
+                    Text("歌词获取完成")
+                        .font(.subheadline)
+                        .foregroundStyle(.green)
+                }
+            } else {
+                Text("处理中...")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            
+            Spacer()
+            
+            Button(viewModel.isAllCompleted ? "完成" : "取消") {
+                if viewModel.isAllCompleted {
+                    viewModel.complete()
+                } else {
+                    viewModel.cancel()
+                }
+            }
+            .keyboardShortcut(viewModel.isAllCompleted ? .defaultAction : .cancelAction)
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
+        .background(.thinMaterial)
+    }
+}
+
+// MARK: - Progress Row View
+
+struct LyricsFetchProgressRowView: View {
+    @Bindable var item: LyricsFetchProgressItemModel
+    @Environment(\.colorScheme) private var colorScheme
+    
+    var body: some View {
+        HStack(spacing: 12) {
+            statusIcon
+            
+            VStack(alignment: .leading, spacing: 2) {
+                HStack {
+                    Text(item.title.isEmpty ? item.fileName : item.title)
+                        .font(.system(size: 13, weight: .medium))
+                        .lineLimit(1)
+                    
+                    if !item.artist.isEmpty {
+                        Text("- \(item.artist)")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                
+                Text(item.step.description)
+                    .font(.caption2)
+                    .foregroundStyle(stepColor)
+                
+                if let error = item.errorMessage {
+                    Text(error)
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                        .lineLimit(1)
+                }
+            }
+            
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(colorScheme == .dark ? Color.white.opacity(0.05) : Color.black.opacity(0.03))
+        )
+    }
+    
+    private var stepColor: Color {
+        switch item.step {
+        case .waiting: return .secondary
+        case .searching: return .blue
+        case .found: return .cyan
+        case .savingLRC: return .purple
+        case .converting: return .orange
+        case .savingTTML: return .indigo
+        case .completed: return .green
+        case .noResults: return .orange
+        case .failed: return .red
+        }
+    }
+    
+    private var statusIcon: some View {
+        Group {
+            switch item.step {
+            case .waiting:
+                Image(systemName: "circle")
+                    .foregroundStyle(.secondary)
+            case .searching, .savingLRC, .converting, .savingTTML:
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .foregroundStyle(.blue)
+            case .found:
+                Image(systemName: "checkmark.circle")
+                    .foregroundStyle(.cyan)
+            case .completed:
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            case .noResults:
+                Image(systemName: "questionmark.circle.fill")
+                    .foregroundStyle(.orange)
+            case .failed:
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.red)
+            }
+        }
+        .font(.system(size: 16))
+        .frame(width: 20, height: 20)
+    }
+}
+
+// MARK: - Preview
+
+#Preview {
+    let items = [
+        LyricsFetchProgressItemModel(
+            id: "1",
+            fileName: "song1.mp3",
+            title: "歌曲名称",
+            artist: "艺术家",
+            step: .searching
+        ),
+        LyricsFetchProgressItemModel(
+            id: "2",
+            fileName: "song2.mp3",
+            title: "歌曲名称 2",
+            artist: "艺术家 2",
+            step: .completed
+        ),
+        LyricsFetchProgressItemModel(
+            id: "3",
+            fileName: "song3.mp3",
+            title: "歌曲名称 3",
+            artist: "艺术家 3",
+            step: .noResults
+        )
+    ]
+    
+    let viewModel = LyricsFetchProgressViewModel(
+        items: items,
+        onComplete: {},
+        onCancel: nil
+    )
+    
+    LyricsFetchProgressDialogView(viewModel: viewModel, shouldScroll: false, visibleRowsHeight: nil)
+        .frame(width: 580, height: 300)
+}

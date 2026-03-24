@@ -20,7 +20,7 @@ struct LDDCSearchSection: View {
     let layoutStyle: LayoutStyle
     let includeTranslationDefault: Bool
     let autoSearchToken: Int
-    let onApplyTTML: (String) -> Void
+    let onApplyLyrics: (String, String) -> Void
 
     @EnvironmentObject private var themeStore: ThemeStore
 
@@ -59,13 +59,13 @@ struct LDDCSearchSection: View {
         layoutStyle: LayoutStyle = .stacked,
         includeTranslationDefault: Bool = false,
         autoSearchToken: Int = 0,
-        onApplyTTML: @escaping (String) -> Void
+        onApplyLyrics: @escaping (String, String) -> Void
     ) {
         self.track = track
         self.layoutStyle = layoutStyle
         self.includeTranslationDefault = includeTranslationDefault
         self.autoSearchToken = autoSearchToken
-        self.onApplyTTML = onApplyTTML
+        self.onApplyLyrics = onApplyLyrics
         _includeTranslation = State(initialValue: includeTranslationDefault)
     }
 
@@ -632,8 +632,8 @@ struct LDDCSearchSection: View {
                 )
             }
 
-            // Callback to parent to update track and UI
-            onApplyTTML(ttml)
+            print("✅ [LRCStorage] Applying lyrics - TTML: \(ttml.prefix(50))..., LRC: \(origLrc.prefix(50))...")
+            onApplyLyrics(ttml, origLrc)
 
         } catch {
             applyError = error.localizedDescription
@@ -666,8 +666,9 @@ struct LDDCSearchSection: View {
     )
 
     ScrollView {
-        LDDCSearchSection(track: track) { ttml in
+        LDDCSearchSection(track: track) { ttml, lrc in
             print("TTML applied: \(ttml.prefix(100))...")
+            print("LRC saved: \(lrc.prefix(100))...")
         }
         .padding()
     }

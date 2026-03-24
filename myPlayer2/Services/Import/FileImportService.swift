@@ -309,14 +309,27 @@ final class FileImportService: FileImportServiceProtocol {
                     duration: candidate.metadata.duration,
                     lyrics: candidate.metadata.lyrics
                 ),
-                preloadedArtworkData: candidate.metadata.artworkData  // This will be nil, triggering extraction
+                preloadedArtworkData: candidate.metadata.artworkData
             ) {
-                await repository.addTrack(track)
                 importedTracks.append(track)
             }
         }
 
-        // Add all imported tracks to the playlist
+        guard !importedTracks.isEmpty else {
+            print("⚠️ No tracks to import")
+            return 0
+        }
+
+        let tracksNeedingLyrics = importedTracks.filter { $0.ttmlLyricText == nil && $0.lrcLyricText == nil }
+        if !tracksNeedingLyrics.isEmpty {
+            print("🎤 Fetching lyrics for \(tracksNeedingLyrics.count) tracks...")
+            _ = await fetchLyricsWithProgress(tracks: tracksNeedingLyrics)
+        }
+
+        for track in importedTracks {
+            await repository.addTrack(track)
+        }
+
         if !importedTracks.isEmpty {
             print("🔗 Adding \(importedTracks.count) tracks to playlist '\(playlist.name)'")
             await repository.addTracks(importedTracks, to: playlist)
@@ -354,8 +367,24 @@ final class FileImportService: FileImportServiceProtocol {
             return nil
         }
 
-        let lyricsText = metadata.lyrics
-        let isTTML = lyricsText?.lowercased().contains("<tt") ?? false
+        let embeddedLyrics = metadata.lyrics
+        let isTTML = embeddedLyrics?.lowercased().contains("<tt") ?? false
+        let isLRC = embeddedLyrics?.contains("[") ?? false && embeddedLyrics?.contains("]") ?? false
+
+        var ttmlLyricText: String?
+        var lrcLyricText: String?
+        var genericLyricsText: String?
+
+        if isTTML {
+            ttmlLyricText = embeddedLyrics
+        } else if isLRC {
+            lrcLyricText = embeddedLyrics
+            if let lrc = embeddedLyrics {
+                ttmlLyricText = try? await TTMLConverter.shared.convertToTTML(lrc: lrc, stripMetadata: true)
+            }
+        } else {
+            genericLyricsText = embeddedLyrics
+        }
 
         let track = Track(
             id: trackId,
@@ -368,11 +397,24 @@ final class FileImportService: FileImportServiceProtocol {
             originalFilePath: url.path,
             libraryRelativePath: libraryRelativePath,
             artworkData: artworkData,
-            ttmlLyricText: isTTML ? lyricsText : nil,
-            lyricsText: isTTML ? nil : lyricsText
+            ttmlLyricText: ttmlLyricText,
+            lrcLyricText: lrcLyricText,
+            lyricsText: genericLyricsText
         )
 
         return track
+    }
+    
+    // MARK: - Lyrics Fetch with Progress
+    
+    func fetchLyricsWithProgress(tracks: [Track]) async -> [Track] {
+        guard !tracks.isEmpty else { return tracks }
+        
+        return await withCheckedContinuation { continuation in
+            LyricsFetchProgressDialogPresenter.presentAndFetch(tracks: tracks) { updatedTracks in
+                continuation.resume(returning: updatedTracks)
+            }
+        }
     }
 
     /// Extract metadata from audio file using AVAsset.
