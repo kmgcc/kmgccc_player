@@ -21,6 +21,8 @@ final class LyricsWebViewStore: NSObject {
     // MARK: - Singleton
 
     static let shared = LyricsWebViewStore()
+    private nonisolated static let ttmlDiagnosticsEnabled =
+        ProcessInfo.processInfo.environment["AMLL_TTML_DIAGNOSTICS"] == "1"
 
     // MARK: - WebView Identity
 
@@ -63,8 +65,13 @@ final class LyricsWebViewStore: NSObject {
     private var lastTime: Double?
     private var lastIsPlaying: Bool?
     private var lastConfigJSON: String?
+    private var lastThemeConfigPatchJSON: String?
+    private var lastThemeCSSScript: String?
     private var baseThemePalette: ThemePalette?
     private var overrideThemePalette: ThemePalette?
+    private var lastDeliveredTime: Double?
+    private var queuedTimeSync: Double?
+    private var isTimeSyncInFlight: Bool = false
 
     /// Pending JS calls queue (flushed when ready).
     private var pendingCalls: [String] = []
@@ -133,8 +140,13 @@ final class LyricsWebViewStore: NSObject {
         lastTime = nil
         lastIsPlaying = nil
         lastConfigJSON = nil
+        lastThemeConfigPatchJSON = nil
+        lastThemeCSSScript = nil
         baseThemePalette = nil
         overrideThemePalette = nil
+        lastDeliveredTime = nil
+        queuedTimeSync = nil
+        isTimeSyncInFlight = false
 
         if let webView = retainedWebView {
             webView.stopLoading()
@@ -230,12 +242,7 @@ final class LyricsWebViewStore: NSObject {
         lastTime = seconds
         // Time updates are not queued (too frequent), only sent if ready
         guard isReady else { return }
-        let js = "window.AMLL.setCurrentTime(\(seconds))"
-        webView.evaluateJavaScript(js) { _, error in
-            if let error = error {
-                print("[LyricsStore] setCurrentTime error: \(error.localizedDescription)")
-            }
-        }
+        scheduleTimeSync(seconds)
     }
 
     func setPlaying(_ isPlaying: Bool) {
@@ -340,6 +347,15 @@ final class LyricsWebViewStore: NSObject {
             webView.evaluateJavaScript(js, completionHandler: nil)
         }
 
+        if let themeConfig = lastThemeConfigPatchJSON {
+            let js = "window.AMLL.setConfig(\(themeConfig))"
+            webView.evaluateJavaScript(js, completionHandler: nil)
+        }
+
+        if let themeCSS = lastThemeCSSScript {
+            webView.evaluateJavaScript(themeCSS, completionHandler: nil)
+        }
+
         // Step 2: TTML
         if let ttml = lastTTML, let jsonArg = encodeJSONString(ttml) {
             logTTMLDiagnostics(ttml, stage: "replayStateSnapshot")
@@ -355,8 +371,10 @@ final class LyricsWebViewStore: NSObject {
 
         // Step 4: Time
         if let time = lastTime {
-            let js = "window.AMLL.setCurrentTime(\(time))"
-            webView.evaluateJavaScript(js, completionHandler: nil)
+            queuedTimeSync = nil
+            isTimeSyncInFlight = false
+            lastDeliveredTime = nil
+            dispatchTimeSync(time)
         }
 
         print("[LyricsStore] Replay complete, objectID=\(webViewObjectID)")
@@ -379,6 +397,9 @@ final class LyricsWebViewStore: NSObject {
 
         // Clear pending queue but PRESERVE snapshot (lastTTML/lastTime/lastPlaying/lastConfig)
         pendingCalls.removeAll()
+        queuedTimeSync = nil
+        isTimeSyncInFlight = false
+        lastDeliveredTime = nil
 
         print(
             "[LyricsStore] ⚠️ Terminated: objectID=\(webViewObjectID), snapshot preserved (ttml=\(lastTTML != nil), time=\(lastTime ?? -1), playing=\(lastIsPlaying ?? false))"
@@ -394,6 +415,9 @@ final class LyricsWebViewStore: NSObject {
         guard !isShutDown else { return }
         isReady = false
         pendingCalls.removeAll()
+        queuedTimeSync = nil
+        isTimeSyncInFlight = false
+        lastDeliveredTime = nil
         print("[LyricsStore] Force reload, objectID=\(webViewObjectID)")
         loadAMLLContent()
     }
@@ -476,7 +500,7 @@ final class LyricsWebViewStore: NSObject {
         if let data = try? JSONSerialization.data(withJSONObject: config),
             let json = String(data: data, encoding: .utf8)
         {
-            setConfigJSON(json)
+            lastThemeConfigPatchJSON = json
         }
 
         // 2. Inject CSS Variables (renderer-level styles)
@@ -491,17 +515,18 @@ final class LyricsWebViewStore: NSObject {
                 root.style.setProperty('--amll-shadow', '\(palette.shadow)');
             })();
             """
-        callJS(css)
+        lastThemeCSSScript = css
 
-        // 3. Replay state to ensure immediate visual refresh if already ready
-        if isReady {
-            replayStateSnapshot()
+        if let themeConfig = lastThemeConfigPatchJSON {
+            callJS("window.AMLL.setConfig(\(themeConfig))")
         }
+        callJS(css)
     }
 
     // MARK: - Helpers
 
     private func logTTMLDiagnostics(_ ttml: String, stage: String) {
+        guard Self.ttmlDiagnosticsEnabled else { return }
         let sha = sha256Hex(ttml)
         print(
             "[LyricsStore][TTML][\(stage)] sha256=\(sha), utf8=\(ttml.utf8.count), chars=\(ttml.count)"
@@ -583,6 +608,44 @@ final class LyricsWebViewStore: NSObject {
         print("[LyricsStore:\(role)] ✅ Created WebView instance: objectID=\(webViewObjectID)")
         loadAMLLContent()
         return webView
+    }
+
+    private func scheduleTimeSync(_ seconds: Double) {
+        if isTimeSyncInFlight {
+            queuedTimeSync = seconds
+            return
+        }
+        dispatchTimeSync(seconds)
+    }
+
+    private func dispatchTimeSync(_ seconds: Double) {
+        guard isReady else { return }
+        if let lastDeliveredTime, abs(seconds - lastDeliveredTime) < 0.01 {
+            return
+        }
+
+        isTimeSyncInFlight = true
+        lastDeliveredTime = seconds
+        let js = "window.AMLL.setCurrentTime(\(seconds))"
+        webView.evaluateJavaScript(js) { [weak self] _, error in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if let error {
+                    print("[LyricsStore] setCurrentTime error: \(error.localizedDescription)")
+                }
+
+                self.isTimeSyncInFlight = false
+
+                guard let nextTime = self.queuedTimeSync else { return }
+                self.queuedTimeSync = nil
+
+                if let delivered = self.lastDeliveredTime, abs(nextTime - delivered) < 0.01 {
+                    return
+                }
+
+                self.dispatchTimeSync(nextTime)
+            }
+        }
     }
 }
 

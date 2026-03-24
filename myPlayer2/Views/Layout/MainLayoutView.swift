@@ -238,6 +238,7 @@ struct MainLayoutView: View {
 
             if shouldShowMainLyricsPanel {
                 lyricsPanelView
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -250,13 +251,15 @@ struct MainLayoutView: View {
 
             if shouldShowMainLyricsPanel {
                 lyricsPanelView
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     private var lyricsPanelView: some View {
-        LyricsPanelView()
+        MainLyricsPanelShell(width: uiState.lyricsWidth)
+            .equatable()
             .frame(width: uiState.lyricsWidth)
             .frame(maxHeight: .infinity, alignment: .top)
             .overlay(alignment: .leading) {
@@ -297,6 +300,19 @@ struct MainLayoutView: View {
         return min(defaultMax, compactMax)
     }
 
+}
+
+private struct MainLyricsPanelShell: View, Equatable {
+    let width: CGFloat
+
+    static func == (lhs: MainLyricsPanelShell, rhs: MainLyricsPanelShell) -> Bool {
+        abs(lhs.width - rhs.width) < 0.5
+    }
+
+    var body: some View {
+        LyricsPanelView()
+            .frame(width: width)
+    }
 }
 
 // MARK: - Preview

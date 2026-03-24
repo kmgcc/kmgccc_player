@@ -58,7 +58,7 @@ struct AMLLWebView: NSViewRepresentable {
             }
         }()
 
-        let webView = store.webView
+        guard let webView = store.preparedWebView else { return }
         if webView.appearance != appearanceIcon {
             webView.appearance = appearanceIcon
             print("[AMLLWebView] Updated nsView.appearance to match mode: \(mode)")
@@ -109,7 +109,9 @@ struct AMLLWebView: NSViewRepresentable {
             }
 
             let webView = store.webView
-            webView.navigationDelegate = self
+            if webView.navigationDelegate !== self {
+                webView.navigationDelegate = self
+            }
 
             guard webView.superview !== hostView else {
                 self.hostView = hostView
