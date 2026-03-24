@@ -54,8 +54,8 @@ struct SettingsView: View {
     @State private var followSystemAppearance: Bool = AppSettings.shared.followSystemAppearance
     @State private var lyricsBackgroundMode: AppSettings.LyricsBackgroundMode = AppSettings.shared
         .lyricsBackgroundMode
-    @AppStorage("skin.classicLED.showLEDMeter") private var classicShowLEDMeter: Bool = false
-    @AppStorage("skin.kmgcccCassette.showLEDMeter") private var cassetteShowLEDMeter: Bool = false
+    @AppStorage("skin.classicLED.visualizerMode") private var classicVisualizerMode: String = "off"
+    @AppStorage("skin.kmgcccCassette.visualizerMode") private var cassetteVisualizerMode: String = "off"
     @AppStorage("skin.kmgcccCassette.showKmgLook") private var cassetteShowKmgLook: Bool = false
 
     // MARK: - LED Settings State
@@ -68,13 +68,13 @@ struct SettingsView: View {
     @State private var ledCount: Int = AppSettings.shared.ledCount
     @State private var brightnessLevels: Int = AppSettings.shared.ledBrightnessLevels
     @State private var lookaheadMs: Double = AppSettings.shared.lookaheadMs
-    @State private var ledMeterEnabled: Bool = AppSettings.shared.ledMeterEnabled
 
     // MARK: - Fullscreen Settings State
 
     @State private var fullscreenArtworkScale: Double = AppSettings.shared.fullscreenArtworkScale
     @State private var fullscreenLyricsFontScale: Double = AppSettings.shared.fullscreenLyricsFontScale
     @State private var fullscreenDimmingIntensity: Double = AppSettings.shared.fullscreenDimmingIntensity
+    @State private var fullscreenSkin: String = AppSettings.shared.selectedFullscreenSkinID
     @State private var fullscreenLyricsFontNameZh: String = AppSettings.shared
         .fullscreenLyricsFontNameZh
     @State private var fullscreenLyricsFontNameEn: String = AppSettings.shared
@@ -183,13 +183,10 @@ struct SettingsView: View {
             globalArtworkTintEnabled = settings.globalArtworkTintEnabled
             followSystemAppearance = settings.followSystemAppearance
             lyricsBackgroundMode = settings.lyricsBackgroundMode
-            ledMeterEnabled = settings.ledMeterEnabled
+            fullscreenSkin = AppSettings.shared.selectedFullscreenSkinID
             syncFullscreenLyricsStateFromSettings()
             if SkinRegistry.options.contains(where: { $0.id == nowPlayingSkin }) == false {
                 nowPlayingSkin = SkinRegistry.defaultSkinID
-            }
-            if ledMeterEnabled == false {
-                disableCurrentSkinLEDIfNeeded()
             }
         }
         .background(settingsSyncLogic)  // Apply sync logic here
@@ -265,12 +262,6 @@ struct SettingsView: View {
             }
             .onChange(of: nowPlayingArtBackgroundEnabled) { _, val in
                 settings.nowPlayingArtBackgroundEnabled = val
-            }
-            .onChange(of: classicShowLEDMeter) { _, isOn in
-                handleSkinLEDToggleChange(for: ClassicLEDSkin.id, isOn: isOn)
-            }
-            .onChange(of: cassetteShowLEDMeter) { _, _ in
-                handleSkinLEDToggleChange(for: "kmgccc.cassette", isOn: cassetteShowLEDMeter)
             }
     }
 
@@ -366,13 +357,6 @@ struct SettingsView: View {
                 .onChange(of: lookaheadMs) { _, val in
                     AppSettings.shared.lookaheadMs = val
                 }
-                .onChange(of: ledMeterEnabled) { _, val in
-                    settings.ledMeterEnabled = val
-                    playerVM.setLedMeterEnabled(val)
-                    if val == false {
-                        disableCurrentSkinLEDIfNeeded()
-                    }
-                }
 
             Color.clear
                 .onChange(of: transientThreshold) { _, _ in
@@ -386,6 +370,9 @@ struct SettingsView: View {
 
     private var fullscreenSyncLogic: some View {
         Color.clear
+            .onChange(of: fullscreenSkin) { _, newValue in
+                AppSettings.shared.selectedFullscreenSkinID = newValue
+            }
             .onChange(of: fullscreenLyricsFontScale) { _, val in
                 AppSettings.shared.fullscreenLyricsFontScale = val
             }
@@ -408,27 +395,7 @@ struct SettingsView: View {
 
     private func handleSkinLEDToggleChange(for skinID: String, isOn: Bool) {
         guard nowPlayingSkin == skinID else { return }
-        if isOn && ledMeterEnabled == false {
-            ledMeterEnabled = true
-            return
-        }
         playerVM.refreshLedMeterStateFromSettings()
-    }
-
-    private func disableCurrentSkinLEDIfNeeded() {
-        guard ledMeterEnabled == false else { return }
-        switch nowPlayingSkin {
-        case ClassicLEDSkin.id:
-            if classicShowLEDMeter {
-                classicShowLEDMeter = false
-            }
-        case "kmgccc.cassette":
-            if cassetteShowLEDMeter {
-                cassetteShowLEDMeter = false
-            }
-        default:
-            break
-        }
     }
 
     // MARK: - Appearance Section
@@ -575,6 +542,34 @@ struct SettingsView: View {
     private var fullscreenSection: some View {
         VStack(alignment: .leading, spacing: 20) {
             headerLabel("全屏播放", systemImage: "arrow.up.left.and.arrow.down.right")
+
+            GroupBox {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("全屏皮肤")
+                        .font(.headline)
+
+                    Picker("", selection: $fullscreenSkin) {
+                        ForEach(SkinRegistry.fullscreenOptions) { skin in
+                            Label(skin.name, systemImage: skin.systemImage)
+                                .tag(skin.id)
+                        }
+                    }
+                    .pickerStyle(.radioGroup)
+                }
+                .padding(12)
+            }
+
+            if let selected = SkinRegistry.fullscreenOptions.first(where: { $0.id == fullscreenSkin }),
+               let optionsView = SkinRegistry.fullscreenSkin(for: fullscreenSkin).fullscreenSettingsView {
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("皮肤选项")
+                            .font(.headline)
+                        optionsView
+                    }
+                    .padding(12)
+                }
+            }
 
             GroupBox {
                 VStack(alignment: .leading, spacing: 20) {
@@ -1102,20 +1097,14 @@ struct SettingsView: View {
 
             // Live Preview
             VStack(alignment: .leading, spacing: 12) {
-                Toggle("启用 LED Meter 采样", isOn: $ledMeterEnabled)
-                    .toggleStyle(.switch)
-                Text("关闭后会停止 LED 相关音频分析，减少 CPU 占用。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
                 Text("settings.led.live_preview")
                     .font(.subheadline.bold())
                     .foregroundStyle(.secondary)
 
                 VStack(spacing: 8) {
                     LedMeterView(
-                        level: ledMeterEnabled ? Double(ledMeter.normalizedLevel) : 0,
-                        ledValues: ledMeterEnabled ? ledMeter.metrics.leds : nil,
+                        level: Double(ledMeter.normalizedLevel),
+                        ledValues: ledMeter.metrics.leds,
                         dotSize: 14,
                         spacing: 7
                     )
@@ -1334,10 +1323,9 @@ struct SettingsView: View {
         globalArtworkTintEnabled = AppSettings.shared.globalArtworkTintEnabled
         followSystemAppearance = AppSettings.shared.followSystemAppearance
         lyricsBackgroundMode = AppSettings.shared.lyricsBackgroundMode
-        ledMeterEnabled = AppSettings.shared.ledMeterEnabled
 
-        classicShowLEDMeter = false
-        cassetteShowLEDMeter = false
+        classicVisualizerMode = "off"
+        cassetteVisualizerMode = "off"
         cassetteShowKmgLook = false
 
         sensitivity = AppSettings.shared.ledSensitivity
@@ -1371,7 +1359,6 @@ struct SettingsView: View {
 
         applyLedConfig()
         lyricsVM.refreshConfigFromSettings()
-        playerVM.setLedMeterEnabled(ledMeterEnabled)
         playerVM.refreshLedMeterStateFromSettings()
         Task { @MainActor in
             await themeStore.refreshPalette(reason: "settings_reset_defaults")

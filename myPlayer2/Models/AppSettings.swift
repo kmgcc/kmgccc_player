@@ -116,9 +116,7 @@ public final class AppSettings {
     @ObservationIgnored
     @AppStorage("ledTransientCutoffHz") var ledTransientCutoffHz: Double = 60.0
 
-    /// Master switch for LED meter sampling/analysis.
-    @ObservationIgnored
-    @AppStorage("ledMeterEnabled") var ledMeterEnabled: Bool = false
+    
 
     // MARK: - Appearance Settings
 
@@ -335,6 +333,9 @@ public final class AppSettings {
             }
         }
     }
+
+    @ObservationIgnored
+    @AppStorage("fullscreenSkin") var selectedFullscreenSkinID: String = "kmgccc.cassette"
 
     // MARK: - Playback Settings
 

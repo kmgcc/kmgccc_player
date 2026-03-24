@@ -144,10 +144,7 @@ final class PlayerViewModel {
         stopLevelMeterIfRunning()
     }
 
-    func setLedMeterEnabled(_ enabled: Bool) {
-        settings.ledMeterEnabled = enabled
-        refreshLedMeterStateFromSettings()
-    }
+    
 
     func refreshLedMeterStateFromSettings() {
         if shouldRunLevelMeter, currentTrack != nil {
@@ -174,27 +171,17 @@ final class PlayerViewModel {
     }
 
     private var shouldRunLevelMeter: Bool {
-        settings.ledMeterEnabled && isLedEnabledForCurrentSkin
+        isLedEnabledForCurrentSkin
     }
 
     private var isLedEnabledForCurrentSkin: Bool {
-        guard let key = ledToggleStorageKey(for: settings.selectedNowPlayingSkinID) else {
-            return true
-        }
-        if UserDefaults.standard.object(forKey: key) == nil {
-            return true
-        }
-        return UserDefaults.standard.bool(forKey: key)
-    }
-
-    private func ledToggleStorageKey(for skinID: String) -> String? {
-        switch skinID {
+        switch settings.selectedNowPlayingSkinID {
         case ClassicLEDSkin.id:
-            return "skin.classicLED.showLEDMeter"
+            return UserDefaults.standard.string(forKey: "skin.classicLED.visualizerMode") == "led"
         case "kmgccc.cassette":
-            return "skin.kmgcccCassette.showLEDMeter"
+            return UserDefaults.standard.string(forKey: "skin.kmgcccCassette.visualizerMode") == "led"
         default:
-            return nil
+            return false
         }
     }
 }

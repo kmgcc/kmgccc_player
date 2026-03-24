@@ -14,6 +14,8 @@ struct ClassicLEDSkin: NowPlayingSkin {
     let name: String = NSLocalizedString("skin.classic_led.name", comment: "")
     let detail: String = NSLocalizedString("skin.classic_led.detail", comment: "")
     let systemImage: String = "dot.radiowaves.left.and.right"
+    var isFullscreenCompatible: Bool { true }
+    var isNowPlayingCompatible: Bool { true }
 
     func makeBackground(context: SkinContext) -> AnyView {
         AnyView(UnifiedNowPlayingBackground(context: context))
@@ -24,15 +26,20 @@ struct ClassicLEDSkin: NowPlayingSkin {
     }
 
     var settingsView: AnyView? {
-        AnyView(ClassicLEDSkinSettingsView())
+        AnyView(ClassicLEDSkinNormalSettingsView())
+    }
+
+    var fullscreenSettingsView: AnyView? {
+        AnyView(ClassicLEDSkinFullscreenSettingsView())
     }
 }
 
 private struct ClassicLEDArtwork: View {
     let context: SkinContext
-    @AppStorage("skin.classicLED.showLEDMeter") private var showLEDMeter: Bool = false
-    @AppStorage("skin.classicLED.showPillSpectrum") private var showPillSpectrum: Bool = false
     @StateObject private var fullscreenManager = FullscreenWindowManager.shared
+
+    @AppStorage("skin.classicLED.visualizerMode") private var normalVisualizerMode: String = "off"
+    @AppStorage("skin.classicLED.fullscreen.visualizerMode") private var fullscreenVisualizerMode: String = "off"
 
     var body: some View {
         let contentSize = context.contentSize
@@ -43,13 +50,15 @@ private struct ClassicLEDArtwork: View {
         let artworkSize = max(180, maxArtwork)
         let effectSpacing: CGFloat = 32
         let yOffset: CGFloat = isFullscreen ? 32 : 18
+        
+        let visualizerMode = isFullscreen ? fullscreenVisualizerMode : normalVisualizerMode
 
         VStack(spacing: effectSpacing) {
             artworkView
                 .frame(width: artworkSize, height: artworkSize)
                 .shadow(color: .black.opacity(0.35), radius: 20, x: 0, y: 10)
 
-            if showLEDMeter && !showPillSpectrum {
+            if visualizerMode == "led" {
                 LedMeterView(
                     level: Double(context.audio.smoothedLevel),
                     ledValues: context.led.leds,
@@ -57,7 +66,7 @@ private struct ClassicLEDArtwork: View {
                     spacing: 8,
                     pillTint: context.theme.artworkAccentColor
                 )
-            } else if showPillSpectrum && !showLEDMeter {
+            } else if visualizerMode == "spectrum" {
                 PillSpectrumView(
                     context: context,
                     dotSize: 12,
@@ -95,31 +104,71 @@ private struct ClassicLEDArtwork: View {
     }
 }
 
-private struct ClassicLEDSkinSettingsView: View {
-    @AppStorage("skin.classicLED.showLEDMeter") private var showLEDMeter: Bool = false
-    @AppStorage("skin.classicLED.showPillSpectrum") private var showPillSpectrum: Bool = false
+private struct ClassicLEDSkinNormalSettingsView: View {
+    @AppStorage("skin.classicLED.visualizerMode") private var visualizerMode: String = "off"
+    @Environment(LEDMeterService.self) private var ledMeter
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Toggle(
-                NSLocalizedString("skin.classic_led.show_led", comment: ""), isOn: $showLEDMeter
-            )
-            .toggleStyle(.switch)
-            .onChange(of: showLEDMeter) { _, newValue in
-                if newValue {
-                    showPillSpectrum = false
+            Toggle("LED 电平表", isOn: Binding(
+                get: { visualizerMode == "led" },
+                set: { isOn in
+                    if isOn {
+                        visualizerMode = "led"
+                        ledMeter.start()
+                    } else if visualizerMode == "led" {
+                        visualizerMode = "off"
+                        ledMeter.stop()
+                    }
                 }
-            }
+            ))
+            .toggleStyle(.switch)
 
-            Toggle(
-                NSLocalizedString("skin.classic_led.show_spectrum", comment: ""), isOn: $showPillSpectrum
-            )
-            .toggleStyle(.switch)
-            .onChange(of: showPillSpectrum) { _, newValue in
-                if newValue {
-                    showLEDMeter = false
+            Toggle("频谱动画", isOn: Binding(
+                get: { visualizerMode == "spectrum" },
+                set: { isOn in
+                    if isOn {
+                        visualizerMode = "spectrum"
+                        ledMeter.stop()
+                    } else if visualizerMode == "spectrum" {
+                        visualizerMode = "off"
+                    }
                 }
-            }
+            ))
+            .toggleStyle(.switch)
+        }
+    }
+}
+
+private struct ClassicLEDSkinFullscreenSettingsView: View {
+    @AppStorage("skin.classicLED.fullscreen.visualizerMode") private var visualizerMode: String = "off"
+    @Environment(LEDMeterService.self) private var ledMeter
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Toggle("LED 电平表", isOn: Binding(
+                get: { visualizerMode == "led" },
+                set: { isOn in
+                    if isOn {
+                        visualizerMode = "led"
+                    } else if visualizerMode == "led" {
+                        visualizerMode = "off"
+                    }
+                }
+            ))
+            .toggleStyle(.switch)
+
+            Toggle("频谱动画", isOn: Binding(
+                get: { visualizerMode == "spectrum" },
+                set: { isOn in
+                    if isOn {
+                        visualizerMode = "spectrum"
+                    } else if visualizerMode == "spectrum" {
+                        visualizerMode = "off"
+                    }
+                }
+            ))
+            .toggleStyle(.switch)
         }
     }
 }
