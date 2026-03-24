@@ -2,15 +2,17 @@
 
 ## TL;DR
 
-> **Goal**: Enable independent skin selection for fullscreen mode, decoupling it from Now Playing skin choice while preserving fullscreen-specific configurations.
+> **Goal**: Enable independent skin selection for fullscreen mode, decoupling it from Now Playing skin choice while preserving fullscreen-specific configurations, and supporting future fullscreen-only skins.
 >
 > **Deliverables**:
+> - Dual compatibility markers in protocol (`isFullscreenCompatible` + `isNowPlayingCompatible`)
+> - All 3 existing skins set to both compatible
 > - New `selectedFullscreenSkinID` configuration in AppSettings
-> - Fullscreen-compatible skin filtering via protocol extension
+> - SkinRegistry filtering for both contexts (supports fullscreen-only skins)
 > - Skin picker UI in SettingsView's fullscreen section
-> - FullscreenPlayerView updated to use independent skin selection
+> - FullscreenPlayerView updated with independent selection + preserved configs
 >
-> **Estimated Effort**: Medium (5-7 tasks, ~2-3 hours)
+> **Estimated Effort**: Medium (7 tasks, ~2-3 hours)
 > **Parallel Execution**: YES - Tasks 1-3 can run in parallel
 > **Critical Path**: Protocol Extension → Configuration → Settings UI → Fullscreen View Update
 
@@ -37,8 +39,10 @@
 1. **Default Behavior**: Independent skin selection (not following Now Playing)
 2. **Default Skin**: `kmgccc.cassette` as fullscreen default
 3. **Settings Location**: `SettingsCategory.fullscreen` section
-4. **Skin Compatibility**: Add `isFullscreenCompatible` marker to protocol
-5. **Future Extensibility**: Support adding fullscreen-only skins later
+4. **Skin Compatibility**: Add `isFullscreenCompatible` and `isNowPlayingCompatible` markers to protocol
+5. **Existing Skins**: All 3 existing skins (Cassette, RotatingCover, ClassicLED) set to both compatible
+6. **Future Extensibility**: Support adding fullscreen-only skins (isFullscreenCompatible=true, isNowPlayingCompatible=false)
+7. **Fullscreen Configs**: All existing fullscreen-specific configurations (artworkScale, lyricsMode, etc.) preserved
 
 ---
 
@@ -48,12 +52,18 @@
 Implement independent skin selection for fullscreen mode, allowing users to choose a different skin for fullscreen than for Now Playing view, while maintaining fullscreen-specific configuration options.
 
 ### Concrete Deliverables
-- Extended `NowPlayingSkin` protocol with `isFullscreenCompatible` property
+- Extended `NowPlayingSkin` protocol with **dual compatibility markers**:
+  - `isFullscreenCompatible: Bool` - For fullscreen mode
+  - `isNowPlayingCompatible: Bool` - For Now Playing (prevents fullscreen-only skins appearing there)
+- All 3 existing skin implementations set to **both compatible** (`true`)
 - New `selectedFullscreenSkinID` configuration property in AppSettings
-- `SkinRegistry` method to filter fullscreen-compatible skins
+- `SkinRegistry` methods:
+  - `fullscreenSkins` - Filter by isFullscreenCompatible
+  - `nowPlayingSkins` - Filter by isNowPlayingCompatible (for future)
+  - `fullscreenSkin(for:)` - Lookup by ID
 - Skin picker UI in SettingsView's fullscreen section
 - Updated FullscreenPlayerView using independent skin selection
-- Fullscreen-specific skin options support (similar to Now Playing)
+- **Preserved fullscreen-specific configurations** (scale, lyrics, dimming, etc.)
 
 ### Definition of Done
 - [ ] User can select different skin for fullscreen vs Now Playing in Settings
@@ -61,19 +71,30 @@ Implement independent skin selection for fullscreen mode, allowing users to choo
 - [ ] Default fullscreen skin is Cassette on first launch
 - [ ] Existing users' settings remain valid (backward compatible)
 - [ ] Skin-specific options (if any) appear in fullscreen settings
-- [ ] All 3 existing skins work in fullscreen mode
+- [ ] **All 3 existing skins work in fullscreen mode** (all set to both compatible)
+- [ ] **All fullscreen-specific configurations preserved**:
+  - [ ] `fullscreenArtworkScale` - Cover scaling works correctly
+  - [ ] `fullscreenLyricsMode` - Lyrics display mode preserved
+  - [ ] `fullscreenDimmingIntensity` - Background dimming functional
+  - [ ] `fullscreenShowLyrics` - Lyrics visibility toggle works
+  - [ ] `fullscreenLyricsFontSize` - Font sizing applies correctly
+- [ ] **Future extensibility**: Protocol supports fullscreen-only skins (isNowPlayingCompatible=false)
 
 ### Must Have
-- Independent skin configuration storage
+- Dual compatibility markers (`isFullscreenCompatible` + `isNowPlayingCompatible`)
+- All 3 existing skins set to both compatible
+- Independent skin configuration storage (`selectedFullscreenSkinID`)
 - UI for selecting fullscreen skin in Settings
 - FullscreenPlayerView using the new configuration
-- Protocol extension for compatibility marking
+- **All fullscreen-specific configurations preserved**
+- SkinRegistry filtering methods for both contexts
 
 ### Must NOT Have (Guardrails)
 - No breaking changes to Now Playing skin system
-- No modification of existing skin implementations beyond protocol conformance
+- No modification of existing skin implementations beyond adding properties
 - No removal of fullscreen-specific configuration options
 - No changes to skin rendering logic beyond ID selection
+- No loss of fullscreen-specific configuration functionality
 
 ---
 
@@ -137,16 +158,18 @@ Wave 4 (Verification):
 
 ## TODOs
 
-- [ ] 1. Extend NowPlayingSkin Protocol with Compatibility Marker
+- [ ] 1. Extend NowPlayingSkin Protocol with Dual Compatibility Markers
 
   **What to do**:
   - Add `isFullscreenCompatible: Bool` property to `NowPlayingSkin` protocol
-  - Update all 3 existing skin implementations to return `true`
-  - Ensure protocol maintains backward compatibility
+  - Add `isNowPlayingCompatible: Bool` property to `NowPlayingSkin` protocol  
+  - Update all 3 existing skin implementations to return `true` for BOTH properties
+  - This enables fullscreen-only skins in the future (isFullscreenCompatible=true, isNowPlayingCompatible=false)
 
   **Must NOT do**:
   - Do not change existing skin behavior or rendering
   - Do not remove any existing protocol methods
+  - Do not set any skin to only fullscreen compatible yet (keep all dual-compatible for now)
 
   **Recommended Agent Profile**:
   - **Category**: `quick`
@@ -165,7 +188,8 @@ Wave 4 (Verification):
 
   **Acceptance Criteria**:
   - [ ] `NowPlayingSkin` protocol has `isFullscreenCompatible` property
-  - [ ] All 3 skin implementations compile and return `true`
+  - [ ] `NowPlayingSkin` protocol has `isNowPlayingCompatible` property
+  - [ ] All 3 skin implementations return `true` for BOTH properties
   - [ ] No breaking changes to existing code
 
   **QA Scenarios**:
@@ -177,12 +201,13 @@ Wave 4 (Verification):
     Expected Result: Build succeeds with no errors
     Evidence: .sisyphus/evidence/task-1-build-success.log
 
-  Scenario: All Skins Return True
+  Scenario: Both Compatibility Markers Present
     Tool: Read (verify code)
     Steps:
-      1. Read each skin file and verify isFullscreenCompatible returns true
-    Expected Result: All 3 skins have the property returning true
-    Evidence: .sisyphus/evidence/task-1-skins-compatible.md
+      1. Read NowPlayingSkin.swift and verify both properties exist
+      2. Read each skin file and verify both return true
+    Expected Result: Protocol has dual markers, all skins dual-compatible
+    Evidence: .sisyphus/evidence/task-1-dual-markers.md
   ```
 
   **Commit**: YES
@@ -244,17 +269,20 @@ Wave 4 (Verification):
   - Message: `feat(settings): add selectedFullscreenSkinID configuration`
   - Files: `Models/AppSettings.swift`
 
-- [ ] 3. Add Fullscreen Skin Filtering to SkinRegistry
+- [ ] 3. Add Dual Skin Filtering to SkinRegistry
 
   **What to do**:
-  - Add `fullscreenSkins: [any NowPlayingSkin]` computed property
+  - Add `fullscreenSkins: [any NowPlayingSkin]` computed property (filter by isFullscreenCompatible)
+  - Add `nowPlayingSkins: [any NowPlayingSkin]` computed property (filter by isNowPlayingCompatible)
   - Add `defaultFullscreenSkinID: String` constant
   - Add `fullscreenSkin(for id: String) -> any NowPlayingSkin` method
   - Add `fullscreenOptions: [SkinOption]` for UI picker
+  - Ensure existing `skins` property continues to work for backward compatibility
 
   **Must NOT do**:
   - Do not remove existing skin registration methods
-  - Do not hardcode skin list - use isFullscreenCompatible filter
+  - Do not hardcode skin lists - use compatibility filters
+  - Do not break Now Playing skin selection (ensure it uses isNowPlayingCompatible filter)
 
   **Recommended Agent Profile**:
   - **Category**: `quick`
@@ -273,19 +301,22 @@ Wave 4 (Verification):
 
   **Acceptance Criteria**:
   - [ ] `fullscreenSkins` property returns all compatible skins
+  - [ ] `nowPlayingSkins` property returns all compatible skins (for future filtering)
   - [ ] `defaultFullscreenSkinID` set to "kmgccc.cassette"
   - [ ] `fullscreenSkin(for:)` method works like existing `skin(for:)`
   - [ ] `fullscreenOptions` computed property for UI
+  - [ ] Both filters use correct compatibility properties
 
   **QA Scenarios**:
   ```
-  Scenario: Fullscreen Skin Filtering
+  Scenario: Dual Skin Filtering
     Tool: Read (code verification)
     Steps:
       1. Read SkinRegistry.swift changes
-      2. Verify filter uses isFullscreenCompatible
-    Expected Result: Methods correctly filter skins
-    Evidence: .sisyphus/evidence/task-3-registry-methods.md
+      2. Verify fullscreenSkins uses isFullscreenCompatible
+      3. Verify nowPlayingSkins uses isNowPlayingCompatible
+    Expected Result: Both filters correctly separate skin contexts
+    Evidence: .sisyphus/evidence/task-3-dual-filters.md
   ```
 
   **Commit**: YES
@@ -398,11 +429,17 @@ Wave 4 (Verification):
   - Replace `selectedNowPlayingSkinID` usage with `selectedFullscreenSkinID`
   - Update `skinArtworkArea()` method to use fullscreen skin registry
   - Ensure `makeContext()` uses correct skin selection
-  - Verify fullscreen-specific configurations still work
+  - **PRESERVE all fullscreen-specific configurations**:
+    - `fullscreenArtworkScale` - Cover scale factor (0.8-1.5)
+    - `fullscreenLyricsMode` - Lyrics display mode
+    - `fullscreenDimmingIntensity` - Background dimming
+    - `fullscreenShowLyrics` - Show/hide lyrics
+    - `fullscreenLyricsFontSize` - Lyrics font size
+  - Ensure these configs continue to work with new skin selection
 
   **Must NOT do**:
-  - Do not remove support for Now Playing skin (keep as fallback for migration?)
-  - Do not break fullscreen-specific configs (scale, lyrics, etc.)
+  - Do not remove or modify fullscreen-specific configuration options
+  - Do not break existing fullscreen behavior beyond skin selection change
 
   **Recommended Agent Profile**:
   - **Category**: `unspecified-high`
@@ -439,7 +476,7 @@ Wave 4 (Verification):
     Expected Result: Different skins display correctly
     Evidence: .sisyphus/evidence/task-6-independent-skins.png
 
-  Scenario: Fullscreen Configs Preserved
+  Scenario: Fullscreen Artwork Scale Preserved
     Tool: Manual app testing
     Steps:
       1. Set fullscreenArtworkScale to 1.2
@@ -447,8 +484,28 @@ Wave 4 (Verification):
       3. Verify artwork scales correctly
       4. Change to different skin
       5. Verify scale still applies
-    Expected Result: Configurations work with independent skin
-    Evidence: .sisyphus/evidence/task-6-configs-preserved.png
+    Expected Result: Artwork scaling works with independent skin
+    Evidence: .sisyphus/evidence/task-6-scale-preserved.png
+
+  Scenario: Fullscreen Lyrics Config Preserved
+    Tool: Manual app testing
+    Steps:
+      1. Set fullscreenShowLyrics to true
+      2. Set fullscreenLyricsFontSize to 32
+      3. Enter fullscreen mode
+      4. Verify lyrics visible with correct font size
+      5. Change skin and verify settings persist
+    Expected Result: Lyrics configuration preserved across skin changes
+    Evidence: .sisyphus/evidence/task-6-lyrics-preserved.png
+
+  Scenario: Fullscreen Dimming Preserved
+    Tool: Manual app testing
+    Steps:
+      1. Set fullscreenDimmingIntensity to 0.5
+      2. Enter fullscreen mode
+      3. Verify background dimming applies correctly
+    Expected Result: Dimming works with all skins
+    Evidence: .sisyphus/evidence/task-6-dimming-preserved.png
   ```
 
   **Commit**: YES
@@ -484,12 +541,16 @@ Wave 4 (Verification):
   3. Skin with no settingsView - should not crash
   4. Rapid skin switching - should handle gracefully
   5. Enter fullscreen while track changes - should remain stable
+  6. **Future extensibility** - Test that protocol supports fullscreen-only skins
+  7. All fullscreen-specific configs work with each of the 3 skins
 
   **Acceptance Criteria**:
   - [ ] All 3 skins work correctly in fullscreen
+  - [ ] All fullscreen-specific configs preserved and functional
   - [ ] Edge cases handled gracefully
   - [ ] No crashes or visual glitches
   - [ ] Settings persist across app restarts
+  - [ ] Dual compatibility system ready for future fullscreen-only skins
 
   **QA Scenarios**:
   ```
@@ -523,11 +584,20 @@ Wave 4 (Verification):
 
 - [ ] F1. **Plan Compliance Audit** — `oracle`
   Read the plan end-to-end. Verify:
-  - Must Have: All 4 items present (protocol, config, registry, UI, fullscreen)
-  - Must NOT Have: No breaking changes to Now Playing
+  - Must Have: 
+    - Dual compatibility markers in protocol (isFullscreenCompatible + isNowPlayingCompatible)
+    - All 3 skins set to both compatible
+    - Independent fullscreen skin configuration
+    - Fullscreen skin picker UI
+    - FullscreenPlayerView integration
+    - All fullscreen-specific configs preserved
+  - Must NOT Have: 
+    - No breaking changes to Now Playing
+    - No loss of fullscreen-specific configurations
+    - No hardcoded skin lists
   - Tasks: All 7 tasks completed
   - Evidence: All QA evidence files exist
-  Output: `Must Have [4/4] | Must NOT Have [4/4] | Tasks [7/7] | VERDICT`
+  Output: `Must Have [6/6] | Must NOT Have [3/3] | Tasks [7/7] | VERDICT`
 
 - [ ] F2. **Code Quality Review** — `unspecified-high`
   Run `xcodebuild` to verify compilation. Check for:
@@ -544,15 +614,17 @@ Wave 4 (Verification):
   3. Verify different from Now Playing skin
   4. Enter fullscreen - verify correct skin displays
   5. Test all 3 skins
-  6. Verify fullscreen configs still work
-  Output: `Scenarios [6/6 pass] | VERDICT`
+  6. Verify fullscreen configs (scale, lyrics, dimming) work with all skins
+  7. Verify protocol supports future fullscreen-only skins
+  Output: `Scenarios [7/7 pass] | VERDICT`
 
 - [ ] F4. **Scope Fidelity Check** — `deep`
-  Verify no scope creep:
+  Verify no scope creep and future extensibility:
   - Check no Now Playing code modified unnecessarily
   - Verify only specified files changed
   - Confirm no additional features added
-  Output: `Scope [COMPLIANT/ISSUES] | VERDICT`
+  - Verify dual compatibility system ready for fullscreen-only skins
+  Output: `Scope [COMPLIANT/ISSUES] | Future Ready [YES/NO] | VERDICT`
 
 ---
 
@@ -560,12 +632,12 @@ Wave 4 (Verification):
 
 | Task | Commit Message | Files |
 |------|----------------|-------|
-| 1 | `feat(skin): add isFullscreenCompatible to NowPlayingSkin protocol` | `Skins/NowPlaying/NowPlayingSkin.swift`, `*Skin.swift` |
-| 2 | `feat(settings): add selectedFullscreenSkinID configuration` | `Models/AppSettings.swift` |
-| 3 | `feat(skin): add fullscreen skin registry methods` | `Skins/NowPlaying/SkinRegistry.swift` |
-| 4 | `feat(settings): add fullscreen skin picker UI` | `Views/Settings/SettingsView.swift` |
-| 5 | `feat(settings): add fullscreen skin options UI` | `Views/Settings/SettingsView.swift` |
-| 6 | `feat(fullscreen): use independent skin selection` | `Views/Fullscreen/FullscreenPlayerView.swift` |
+| 1 | `feat(skin): add dual compatibility markers to NowPlayingSkin protocol` | `NowPlayingSkin.swift`, `ClassicLEDSkin.swift`, `RotatingCoverSkin.swift`, `KmgcccCassetteSkin.swift` |
+| 2 | `feat(settings): add selectedFullscreenSkinID configuration` | `AppSettings.swift` |
+| 3 | `feat(skin): add fullscreen and nowPlaying skin registry filters` | `SkinRegistry.swift` |
+| 4 | `feat(settings): add fullscreen skin picker UI` | `SettingsView.swift` |
+| 5 | `feat(settings): add fullscreen skin options UI` | `SettingsView.swift` |
+| 6 | `feat(fullscreen): use independent skin selection with preserved configs` | `FullscreenPlayerView.swift` |
 | 7 | — | — |
 
 ---
@@ -582,15 +654,22 @@ xcodebuild -project kmgccc_player.xcodeproj -scheme myPlayer2 -configuration Deb
 
 ### Final Checklist
 - [ ] `isFullscreenCompatible` added to NowPlayingSkin protocol
-- [ ] All 3 skin implementations return `true`
+- [ ] `isNowPlayingCompatible` added to NowPlayingSkin protocol
+- [ ] All 3 skin implementations return `true` for BOTH properties
+- [ ] SkinRegistry has `nowPlayingSkins` filter (for future fullscreen-only skins)
 - [ ] `selectedFullscreenSkinID` configuration added to AppSettings
 - [ ] `SkinRegistry` has fullscreen filtering methods
 - [ ] SettingsView shows fullscreen skin picker
 - [ ] SettingsView shows fullscreen skin options (when applicable)
 - [ ] FullscreenPlayerView uses independent skin selection
+- [ ] **All fullscreen-specific configs preserved and working**:
+  - [ ] `fullscreenArtworkScale` - Cover scale works with all skins
+  - [ ] `fullscreenLyricsMode` - Lyrics mode preserved
+  - [ ] `fullscreenDimmingIntensity` - Dimming works correctly
+  - [ ] `fullscreenShowLyrics` - Lyrics visibility toggle works
+  - [ ] `fullscreenLyricsFontSize` - Font size applies correctly
 - [ ] Default fullscreen skin is Cassette
-- [ ] Fullscreen-specific configs (scale, lyrics) still work
-- [ ] All skins work correctly in fullscreen mode
+- [ ] All 3 skins work correctly in fullscreen mode
 - [ ] Build succeeds with no errors
 - [ ] No breaking changes to Now Playing skin system
 
@@ -599,14 +678,24 @@ xcodebuild -project kmgccc_player.xcodeproj -scheme myPlayer2 -configuration Deb
 ## File References
 
 **Key Files to Modify**:
-1. `myPlayer2/Skins/NowPlaying/NowPlayingSkin.swift` - Protocol extension
-2. `myPlayer2/Skins/NowPlaying/SkinRegistry.swift` - Registry methods
-3. `myPlayer2/Skins/NowPlaying/*Skin.swift` - Conformance updates
-4. `myPlayer2/Models/AppSettings.swift` - Configuration storage
-5. `myPlayer2/Views/Settings/SettingsView.swift` - UI additions
-6. `myPlayer2/Views/Fullscreen/FullscreenPlayerView.swift` - Integration
+1. `myPlayer2/Skins/NowPlaying/NowPlayingSkin.swift` - Protocol extension (add dual compatibility markers)
+2. `myPlayer2/Skins/NowPlaying/SkinRegistry.swift` - Registry methods (fullscreen + nowPlaying filters)
+3. `myPlayer2/Skins/NowPlaying/ClassicLEDSkin.swift` - Set both compatible=true
+4. `myPlayer2/Skins/NowPlaying/RotatingCoverSkin.swift` - Set both compatible=true
+5. `myPlayer2/Skins/NowPlaying/KmgcccCassetteSkin.swift` - Set both compatible=true
+6. `myPlayer2/Models/AppSettings.swift` - Configuration storage (fullscreenSkin)
+7. `myPlayer2/Views/Settings/SettingsView.swift` - UI additions (fullscreen skin picker)
+8. `myPlayer2/Views/Fullscreen/FullscreenPlayerView.swift` - Integration (use fullscreen skin + preserve configs)
 
-**No Changes Needed**:
-- NowPlayingHostView (uses existing skin system)
-- SkinManager (can remain focused on Now Playing)
-- ThemeStore (unchanged)
+**Key Behaviors to Preserve**:
+- Fullscreen-specific configurations remain functional:
+  - `fullscreenArtworkScale` (0.8-1.5 range)
+  - `fullscreenLyricsMode` (lyrics display style)
+  - `fullscreenDimmingIntensity` (background dimming)
+  - `fullscreenShowLyrics` (toggle visibility)
+  - `fullscreenLyricsFontSize` (font sizing)
+
+**Future Extensibility**:
+- Fullscreen-only skins: Set `isFullscreenCompatible=true`, `isNowPlayingCompatible=false`
+- NowPlaying-only skins: Set `isFullscreenCompatible=false`, `isNowPlayingCompatible=true`
+- Dual-compatible skins: Set both to `true` (current 3 skins)

@@ -129,7 +129,7 @@
         </div>
     </div>
 
-    <script type="module" crossorigin src="./assets/index-DOKJqRnI.js"></script>
+    <script type="module" crossorigin src="./assets/index-B1h101_-.js"></script>
     <link rel="stylesheet" crossorigin href="./assets/index-BjnNwW8h.css">
     
     <script>
@@ -146,7 +146,7 @@
         var speedIdx = 1;
         var speeds = [0.5, 1, 2, 3];
         
-        var sampleLRC = '[ti:Fireworks]\n[ar:Nanxi Kenen]\n[00:00.00]Fireworks - Nanxi Kenen\n[00:04.00]This is not what you imagined, right\n[00:08.00]Although I was prepared, I still cried\n[00:12.00]This is not what I wanted, saying it does not matter\n[00:16.00]Just to make myself feel a bit better\n[00:22.00]Brilliant fireworks will eventually fall\n[00:26.00]Innocence and kindness will eventually grow up\n[00:30.00]To become a beam of light, you must bloom with intense heat\n[00:34.00]Even if the road is long, even if you suffer more injuries\n[00:38.00]Even if there are obstacles ahead, you must illuminate\n[00:44.00]Brilliant fireworks will eventually forget\n[00:48.00]Strong alone, covering the scars\n[00:52.00]Your steps are full of hope and strength\n[00:56.00]Even if the night is long, it will sprout with dreams\n[01:00.00]Believe in your direction and you will arrive\n[01:06.00]We were all lost people\n[01:10.00]Pursuing the happiness we wanted\n[01:14.00]But in the end we became confused people\n[01:18.00]Forgetting the process\n[01:22.00]Brilliant fireworks will eventually fall\n[01:26.00]Innocence and kindness will eventually grow up\n[01:30.00]Fireworks, do not fall\n[01:34.00]Fireworks, do not forget';
+        var sampleLRC = '[ti:Fireworks]\n[ar:Nanxi Kenen]\n[00:00.00]Fireworks - Nanxi Kenen\n[00:04.00]This is not what you imagined, right\n[00:08.00]Although I was prepared, I still cried\n[00:12.00]This is not what I wanted, saying it does not matter\n[00:16.00]Just to make myself feel a bit better\n[00:22.00]Brilliant fireworks will eventually fall\n[00:26.00]Innocence and kindness will eventually grow up\n[00:30.00]To become a beam of light, you must bloom with intense heat\n[00:34.00]Even if the road is long, even if you suffer more injuries\n[00:38.00]Even if there are obstacles ahead, you must illuminate\n[00:44.00]Brilliant fireworks will eventually forget\n[00:48.00]Strong alone, covering the scars\n[00:52.00]Your steps are full of hope and strength\n[00:56.00]Even if the night is long, it will sprout with dreams\n[01:00.00]Believe in your direction and you will arrive\n[01:06.00]We were all lost people\n[01:10.00]Pursuing the happiness we wanted\n[01:14.00]But in the end we became confused people\n[01:18.00]Forgetting the process\n[01:22.00]Brilliant fireworks will eventually fall\n[01:26.00]Innocence and kindness will eventually grow up';
         
         document.getElementById('lrc-input').value = sampleLRC;
         
@@ -160,20 +160,22 @@
         
         function applyLRCFromTextarea() {
             var text = document.getElementById('lrc-input').value.trim();
-            if (!text) return;
+            if (!text) { console.log('[PV Demo] No text input'); return; }
             
             var hasTimestamps = /\[\d{1,2}:\d{2}/.test(text);
+            console.log('[PV Demo] Checking LRC - hasTimestamps:', hasTimestamps, 'PVParseLrc:', !!window.PVParseLrc, 'PVEngine:', !!window.PVEngine);
             
             if (hasTimestamps && window.PVParseLrc) {
                 var parsed = window.PVParseLrc(text);
-                console.log('[PV Demo] Parsed LRC:', parsed.length, 'lines');
+                console.log('[PV Demo] Parsed LRC:', parsed.length, 'lines', parsed.slice(0,3));
                 if (parsed.length > 0 && window.PVEngine) {
                     window.PVEngine.setLyricTimeline(parsed);
-                    console.log('[PV Demo] Applied LRC. State:', window.PVApi.debug());
+                    console.log('[PV Demo] Applied LRC to engine. Debug:', window.PVApi?.debug());
                     return;
                 }
             }
             
+            console.log('[PV Demo] Falling back to setText');
             if (window.PVApi) {
                 window.PVApi.setText(text.replace(/\r?\n/g, '/'));
             }
