@@ -47,6 +47,9 @@ final class LDDCServerManager: ObservableObject {
     private let healthCheckTimeout: TimeInterval = 60
     private let healthCheckInterval: TimeInterval = 0.5
     private let idleTimeout: TimeInterval = 60  // 1 minute
+    private let captureStdout = ProcessInfo.processInfo.environment["LDDC_CAPTURE_STDOUT"] == "1"
+    private let mirrorServerLogsToConsole =
+        ProcessInfo.processInfo.environment["LDDC_VERBOSE_SERVER_LOGS"] == "1"
 
     // MARK: - Private State
 
@@ -82,6 +85,8 @@ final class LDDCServerManager: ObservableObject {
         if let process = serverProcess, process.isRunning {
             process.terminate()
             print("[LDDCServerManager] Server terminated")
+        } else {
+            teardownLogPipes()
         }
 
         serverProcess = nil
@@ -382,41 +387,54 @@ final class LDDCServerManager: ObservableObject {
         recentStderr = ""
 
         let weakSelf = WeakBox(self)
-        let stdout = Pipe()
         let stderr = Pipe()
-        process.standardOutput = stdout
-        process.standardError = stderr
-        stdoutPipe = stdout
-        stderrPipe = stderr
+        if captureStdout {
+            let stdout = Pipe()
+            process.standardOutput = stdout
+            stdoutPipe = stdout
+            stdout.fileHandleForReading.readabilityHandler = { handle in
+                let data = handle.availableData
+                guard !data.isEmpty else {
+                    handle.readabilityHandler = nil
+                    try? handle.close()
+                    return
+                }
+                guard let str = String(data: data, encoding: .utf8), !str.isEmpty else { return }
 
-        stdout.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            if let str = String(data: data, encoding: .utf8), !str.isEmpty {
                 Task { @MainActor in
                     weakSelf.value?.appendRecentLog(str, isStdout: true)
                 }
-                print("[LDDC stdout] \(str)", terminator: "")
+                if weakSelf.value?.mirrorServerLogsToConsole == true {
+                    print("[LDDC stdout] \(str)", terminator: "")
+                }
             }
+        } else {
+            process.standardOutput = FileHandle.nullDevice
+            stdoutPipe = nil
         }
+        process.standardError = stderr
+        stderrPipe = stderr
+
         stderr.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                try? handle.close()
+                return
+            }
             if let str = String(data: data, encoding: .utf8), !str.isEmpty {
                 Task { @MainActor in
                     weakSelf.value?.appendRecentLog(str, isStdout: false)
                 }
-                print("[LDDC stderr] \(str)", terminator: "")
+                if weakSelf.value?.mirrorServerLogsToConsole == true {
+                    print("[LDDC stderr] \(str)", terminator: "")
+                }
             }
         }
 
         process.terminationHandler = { proc in
             Task { @MainActor in
-                print(
-                    "[LDDCServerManager] Server exited reason=\(proc.terminationReason) code=\(proc.terminationStatus)"
-                )
-                if weakSelf.value?.serverProcess === proc {
-                    weakSelf.value?.serverProcess = nil
-                    weakSelf.value?.isRunning = false
-                }
+                weakSelf.value?.handleProcessTermination(proc)
             }
         }
 
@@ -425,6 +443,7 @@ final class LDDCServerManager: ObservableObject {
             serverProcess = process
             print("[LDDCServerManager] Started server (\(candidate.name)) on port \(currentPort)")
         } catch {
+            teardownLogPipes()
             let startError = LDDCError.startupFailed(error.localizedDescription)
             lastError = startError
             throw startError
@@ -449,6 +468,32 @@ final class LDDCServerManager: ObservableObject {
                 recentStderr = String(recentStderr.suffix(recentLogLimit))
             }
         }
+    }
+
+    private func handleProcessTermination(_ process: Process) {
+        print(
+            "[LDDCServerManager] Server exited reason=\(process.terminationReason) code=\(process.terminationStatus)"
+        )
+        teardownLogPipes()
+        if serverProcess === process {
+            serverProcess = nil
+            isRunning = false
+        }
+    }
+
+    private func teardownLogPipes() {
+        if let stdoutPipe {
+            let handle = stdoutPipe.fileHandleForReading
+            handle.readabilityHandler = nil
+            try? handle.close()
+        }
+        if let stderrPipe {
+            let handle = stderrPipe.fileHandleForReading
+            handle.readabilityHandler = nil
+            try? handle.close()
+        }
+        stdoutPipe = nil
+        stderrPipe = nil
     }
 
     private func findAvailablePort() async throws -> Int {

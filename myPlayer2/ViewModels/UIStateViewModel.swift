@@ -27,6 +27,7 @@ final class UIStateViewModel {
     private enum StorageKey {
         static let sidebarVisible = "ui.sidebarVisible"
         static let sidebarLastWidth = "ui.sidebarLastWidth"
+        static let lyricsVisible = "ui.lyricsVisible"
     }
 
     private let defaults = UserDefaults.standard
@@ -48,7 +49,11 @@ final class UIStateViewModel {
     }
 
     /// Whether the lyrics panel is visible (toggleable).
-    var lyricsVisible: Bool = true
+    var lyricsVisible: Bool = false {
+        didSet {
+            defaults.set(lyricsVisible, forKey: StorageKey.lyricsVisible)
+        }
+    }
 
     /// Temporarily hide the main lyrics panel when another lyrics surface
     /// (e.g. batch editor preview) is actively displayed.
@@ -91,6 +96,10 @@ final class UIStateViewModel {
             && savedWidth <= Double(Constants.Layout.sidebarMaxWidth)
         {
             sidebarLastWidth = CGFloat(savedWidth)
+        }
+
+        if defaults.object(forKey: StorageKey.lyricsVisible) != nil {
+            lyricsVisible = defaults.bool(forKey: StorageKey.lyricsVisible)
         }
     }
 
