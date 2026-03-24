@@ -292,8 +292,8 @@ private final class SpectrumProcessor: @unchecked Sendable {
         static let knee: Float = 0.68 // Knee point for transition to compression
         static let hard: Float = 0.33  // Compression strength for high-level signals
         static let cubicPower: Float = 3.0
-        static let attack: Float = 0.35
-        static let release: Float = 0.45
+        static let attack: Float = 0.47
+        static let release: Float = 0.35
         // 4. Per-band Small Gates
         static let bandGates: [Float] = [
             0.01, 0.01, 0.01, 0.008, 0.008, 0.005, 0.005, 0.003, 0.003,
