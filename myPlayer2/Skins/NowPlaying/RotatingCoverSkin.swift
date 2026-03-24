@@ -14,6 +14,8 @@ struct RotatingCoverSkin: NowPlayingSkin {
     let name: String = NSLocalizedString("skin.rotating_cover.name", comment: "")
     let detail: String = NSLocalizedString("skin.rotating_cover.detail", comment: "")
     let systemImage: String = "record.circle"
+    var isFullscreenCompatible: Bool { true }
+    var isNowPlayingCompatible: Bool { true }
 
     func makeBackground(context: SkinContext) -> AnyView {
         AnyView(UnifiedNowPlayingBackground(context: context))
@@ -24,14 +26,20 @@ struct RotatingCoverSkin: NowPlayingSkin {
     }
 
     var settingsView: AnyView? {
-        AnyView(RotatingCoverSkinSettingsView())
+        AnyView(RotatingCoverSkinNormalSettingsView())
+    }
+
+    var fullscreenSettingsView: AnyView? {
+        AnyView(RotatingCoverSkinFullscreenSettingsView())
     }
 }
 
 private struct RotatingCoverArtwork: View {
     let context: SkinContext
-    @AppStorage("skin.rotatingCover.showPillSpectrum") private var showPillSpectrum: Bool = false
     @StateObject private var fullscreenManager = FullscreenWindowManager.shared
+
+    @AppStorage("skin.rotatingCover.visualizerMode") private var normalVisualizerMode: String = "off"
+    @AppStorage("skin.rotatingCover.fullscreen.visualizerMode") private var fullscreenVisualizerMode: String = "off"
 
     @State private var rotationBase: Double = 0
     @State private var rotationStart: Date? = nil
@@ -45,6 +53,8 @@ private struct RotatingCoverArtwork: View {
         let maxDisc = min(contentSize.width * scaleFactor, contentSize.height * scaleFactor, maxSize)
         let discSize = max(200, maxDisc)
         let yOffset: CGFloat = isFullscreen ? 32 : 18
+        
+        let visualizerMode = isFullscreen ? fullscreenVisualizerMode : normalVisualizerMode
 
         VStack(spacing: 32) {
             TimelineView(.animation) { timeline in
@@ -61,7 +71,7 @@ private struct RotatingCoverArtwork: View {
                     .shadow(color: .black.opacity(0.4), radius: 24, x: 0, y: 12)
             }
 
-            if showPillSpectrum {
+            if visualizerMode == "spectrum" {
                 PillSpectrumView(
                     context: context,
                     dotSize: 12,
@@ -128,14 +138,35 @@ private struct RotatingCoverArtwork: View {
     }
 }
 
-private struct RotatingCoverSkinSettingsView: View {
-    @AppStorage("skin.rotatingCover.showPillSpectrum") private var showPillSpectrum: Bool = false
+private struct RotatingCoverSkinNormalSettingsView: View {
+    @AppStorage("skin.rotatingCover.visualizerMode") private var visualizerMode: String = "off"
 
     var body: some View {
-        Toggle(
-            NSLocalizedString("skin.classic_led.show_spectrum", comment: ""), isOn: $showPillSpectrum
-        )
-        .toggleStyle(.switch)
+        VStack(alignment: .leading, spacing: 12) {
+            Toggle("频谱动画", isOn: Binding(
+                get: { visualizerMode == "spectrum" },
+                set: { isOn in
+                    visualizerMode = isOn ? "spectrum" : "off"
+                }
+            ))
+            .toggleStyle(.switch)
+        }
+    }
+}
+
+private struct RotatingCoverSkinFullscreenSettingsView: View {
+    @AppStorage("skin.rotatingCover.fullscreen.visualizerMode") private var visualizerMode: String = "off"
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Toggle("频谱动画", isOn: Binding(
+                get: { visualizerMode == "spectrum" },
+                set: { isOn in
+                    visualizerMode = isOn ? "spectrum" : "off"
+                }
+            ))
+            .toggleStyle(.switch)
+        }
     }
 }
 

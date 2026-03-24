@@ -61,6 +61,19 @@ struct NowPlayingHostView: View {
         }
         .onChange(of: selectedSkinID) { _, _ in
             skinRevision &+= 1
+            if isLedEnabledForCurrentSkin() {
+                ledMeter.start()
+            } else {
+                ledMeter.stop()
+            }
+        }
+        .onAppear {
+            if isLedEnabledForCurrentSkin() {
+                ledMeter.start()
+            }
+        }
+        .onDisappear {
+            ledMeter.stop()
         }
         .task(id: currentArtworkTaskKey) {
             await loadArtworkSnapshot()
@@ -142,5 +155,17 @@ struct NowPlayingHostView: View {
         let snapshot = await ArtworkAssetStore.shared.snapshot(trackID: track.id, artworkData: artworkData)
         guard !Task.isCancelled else { return }
         artworkSnapshot = snapshot
+    }
+
+    private func isLedEnabledForCurrentSkin() -> Bool {
+        let skinID = settings.selectedNowPlayingSkinID
+        switch skinID {
+        case "coverLed":
+            return UserDefaults.standard.string(forKey: "skin.classicLED.visualizerMode") == "led"
+        case "kmgccc.cassette":
+            return UserDefaults.standard.string(forKey: "skin.kmgcccCassette.visualizerMode") == "led"
+        default:
+            return false
+        }
     }
 }

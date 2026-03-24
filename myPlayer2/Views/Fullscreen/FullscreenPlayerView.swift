@@ -47,7 +47,6 @@ struct FullscreenPlayerView: View {
     @Environment(LyricsViewModel.self) private var lyricsVM
     @Environment(LEDMeterService.self) private var ledMeter
     @Environment(AppSettings.self) private var settings
-    @Environment(SkinManager.self) private var skinManager
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -83,8 +82,8 @@ struct FullscreenPlayerView: View {
     }
 
     var body: some View {
-        let selectedSkinID = settings.selectedNowPlayingSkinID
-        let selectedSkin = skinManager.skin(for: selectedSkinID)
+        let selectedSkinID = settings.selectedFullscreenSkinID
+        let selectedSkin = SkinRegistry.fullscreenSkin(for: selectedSkinID)
 
         GeometryReader { proxy in
             ZStack {
@@ -155,8 +154,12 @@ struct FullscreenPlayerView: View {
                 forceWebReload: true,
                 forceLyricsReload: true
             )
+            if isLedEnabledForFullscreenSkin() {
+                ledMeter.start()
+            }
         }
         .onDisappear {
+            ledMeter.stop()
             lyricsVM.onSeekRequest = nil
             pendingFullscreenLyricsRefresh?.cancel()
             pendingFullscreenLyricsRefresh = nil
@@ -170,6 +173,13 @@ struct FullscreenPlayerView: View {
         }
         .onChange(of: selectedSkinID) { _, _ in
             skinRevision &+= 1
+        }
+        .onChange(of: settings.selectedFullscreenSkinID) { _, _ in
+            if isLedEnabledForFullscreenSkin() {
+                ledMeter.start()
+            } else {
+                ledMeter.stop()
+            }
         }
         .onChange(of: playerVM.currentTime, handleCurrentTimeChange)
         .onChange(of: playerVM.isPlaying) { _, newValue in
@@ -516,6 +526,20 @@ struct FullscreenPlayerView: View {
     private func setupSeekCallback() {
         lyricsVM.onSeekRequest = { seconds in
             playerVM.seek(to: seconds)
+        }
+    }
+
+    private func isLedEnabledForFullscreenSkin() -> Bool {
+        let skinID = settings.selectedFullscreenSkinID
+        switch skinID {
+        case "coverLed":
+            return UserDefaults.standard.string(forKey: "skin.classicLED.fullscreen.visualizerMode") == "led"
+        case "kmgccc.cassette":
+            return UserDefaults.standard.string(forKey: "skin.kmgcccCassette.fullscreen.visualizerMode") == "led"
+        case "rotatingCover":
+            return false // RotatingCover doesn't have LED
+        default:
+            return false
         }
     }
 

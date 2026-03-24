@@ -16,6 +16,8 @@ struct KmgcccCassetteSkin: NowPlayingSkin {
     let name: String = NSLocalizedString("skin.kmgccc_cassette.name", comment: "")
     let detail: String = NSLocalizedString("skin.kmgccc_cassette.detail", comment: "")
     let systemImage: String = "music.note.list"
+    var isFullscreenCompatible: Bool { true }
+    var isNowPlayingCompatible: Bool { true }
 
     func makeBackground(context: SkinContext) -> AnyView {
         AnyView(UnifiedNowPlayingBackground(context: context))
@@ -30,7 +32,11 @@ struct KmgcccCassetteSkin: NowPlayingSkin {
     }
 
     var settingsView: AnyView? {
-        AnyView(KmgcccCassetteSettingsView())
+        AnyView(KmgcccCassetteNormalSettingsView())
+    }
+
+    var fullscreenSettingsView: AnyView? {
+        AnyView(KmgcccCassetteFullscreenSettingsView())
     }
 }
 
@@ -69,17 +75,22 @@ private enum CassetteLayout {
 
 private struct CassetteArtwork: View {
     let context: SkinContext
-    @AppStorage("skin.kmgcccCassette.showLEDMeter") private var showLEDMeter: Bool = false
     @AppStorage("skin.kmgcccCassette.showKmgLook") private var showKmgLook: Bool = false
+    @StateObject private var fullscreenManager = FullscreenWindowManager.shared
     @State private var adjustedArtworkImage: NSImage?
     @State private var adjustedArtworkKey: String?
     @State private var renderKey: String = ""
     @State private var adjustedVisible: Bool = false
     @State private var processingTask: Task<Void, Never>?
 
+    @AppStorage("skin.kmgcccCassette.visualizerMode") private var normalVisualizerMode: String = "off"
+    @AppStorage("skin.kmgcccCassette.fullscreen.visualizerMode") private var fullscreenVisualizerMode: String = "off"
+
     var body: some View {
         let size = CassetteLayout.cassetteSize(for: context)
-        let centeredYOffset: CGFloat = showLEDMeter ? 12 : max(22, min(36, size.height * 0.07))
+        let isFullscreen = fullscreenManager.isFullscreenActive
+        let visualizerMode = isFullscreen ? fullscreenVisualizerMode : normalVisualizerMode
+        let centeredYOffset: CGFloat = visualizerMode == "led" ? 12 : max(22, min(36, size.height * 0.07))
         let horizontalOffset: CGFloat = -12
 
         ZStack {
@@ -933,14 +944,18 @@ private struct HolesOverlay: View {
 
 private struct CassetteOverlay: View {
     let context: SkinContext
-    @AppStorage("skin.kmgcccCassette.showLEDMeter") private var showLEDMeter: Bool = false
+    @StateObject private var fullscreenManager = FullscreenWindowManager.shared
+    @AppStorage("skin.kmgcccCassette.visualizerMode") private var normalVisualizerMode: String = "off"
+    @AppStorage("skin.kmgcccCassette.fullscreen.visualizerMode") private var fullscreenVisualizerMode: String = "off"
 
     var body: some View {
         let size = CassetteLayout.cassetteSize(for: context)
         let yOffset = size.height / 2 + CassetteLayout.ledGap
+        let isFullscreen = fullscreenManager.isFullscreenActive
+        let visualizerMode = isFullscreen ? fullscreenVisualizerMode : normalVisualizerMode
 
         Group {
-            if showLEDMeter {
+            if visualizerMode == "led" {
                 LedMeterView(
                     level: Double(context.audio.smoothedLevel),
                     ledValues: context.led.leds,
@@ -955,19 +970,53 @@ private struct CassetteOverlay: View {
     }
 }
 
-private struct KmgcccCassetteSettingsView: View {
-    @AppStorage("skin.kmgcccCassette.showLEDMeter") private var showLEDMeter: Bool = false
+private struct KmgcccCassetteNormalSettingsView: View {
+    @AppStorage("skin.kmgcccCassette.visualizerMode") private var visualizerMode: String = "off"
+    @AppStorage("skin.kmgcccCassette.showKmgLook") private var showKmgLook: Bool = false
+    @Environment(LEDMeterService.self) private var ledMeter
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Toggle("LED 电平表", isOn: Binding(
+                get: { visualizerMode == "led" },
+                set: { isOn in
+                    if isOn {
+                        visualizerMode = "led"
+                        ledMeter.start()
+                    } else if visualizerMode == "led" {
+                        visualizerMode = "off"
+                        ledMeter.stop()
+                    }
+                }
+            ))
+            .toggleStyle(.switch)
+
+            Toggle(
+                NSLocalizedString("skin.kmgccc_cassette.show_kmg", comment: ""),
+                isOn: $showKmgLook
+            )
+            .toggleStyle(.switch)
+        }
+    }
+}
+
+private struct KmgcccCassetteFullscreenSettingsView: View {
+    @AppStorage("skin.kmgcccCassette.fullscreen.visualizerMode") private var visualizerMode: String = "off"
     @AppStorage("skin.kmgcccCassette.showKmgLook") private var showKmgLook: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Toggle(
-                NSLocalizedString("skin.kmgccc_cassette.show_led", comment: ""), isOn: $showLEDMeter
-            )
+            Toggle("LED 电平表", isOn: Binding(
+                get: { visualizerMode == "led" },
+                set: { isOn in
+                    visualizerMode = isOn ? "led" : "off"
+                }
+            ))
             .toggleStyle(.switch)
 
             Toggle(
-                NSLocalizedString("skin.kmgccc_cassette.show_kmg", comment: ""), isOn: $showKmgLook
+                NSLocalizedString("skin.kmgccc_cassette.show_kmg", comment: ""),
+                isOn: $showKmgLook
             )
             .toggleStyle(.switch)
         }
