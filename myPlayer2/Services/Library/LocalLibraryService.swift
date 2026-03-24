@@ -26,6 +26,8 @@ struct TrackSidecar: Codable {
     let artworkFileName: String?
     let lyricsFileName: String?
     let lyricsType: String?
+    let lrcLyricsFileName: String?
+    let ttmlLyricsFileName: String?
     let ncmSourcePath: String?
 }
 
@@ -186,7 +188,7 @@ final class LocalLibraryService {
             let lyricsInfo = try writeLyricsIfNeeded(track: track, folder: trackFolder)
 
             let sidecar = TrackSidecar(
-                schemaVersion: 1,
+                schemaVersion: 2,
                 id: track.id,
                 title: track.title,
                 artist: track.artist,
@@ -198,8 +200,10 @@ final class LocalLibraryService {
                 originalFilePath: track.originalFilePath.isEmpty ? nil : track.originalFilePath,
                 audioFileName: audioFileName.isEmpty ? nil : audioFileName,
                 artworkFileName: artworkFileName,
-                lyricsFileName: lyricsInfo.fileName,
-                lyricsType: lyricsInfo.type,
+                lyricsFileName: nil,
+                lyricsType: nil,
+                lrcLyricsFileName: lyricsInfo.lrcFileName,
+                ttmlLyricsFileName: lyricsInfo.ttmlFileName,
                 ncmSourcePath: nil
             )
 
@@ -231,53 +235,43 @@ final class LocalLibraryService {
     }
 
     private func writeLyricsIfNeeded(track: Track, folder: URL) throws -> (
-        fileName: String?, type: String?
+        lrcFileName: String?, ttmlFileName: String?
     ) {
-        let text = preferredLyricsText(for: track)
+        var lrcFileName: String?
+        var ttmlFileName: String?
 
-        let existing = try? fileManager.contentsOfDirectory(
-            at: folder,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        )
-        let existingLyrics = (existing ?? []).filter {
-            $0.lastPathComponent.lowercased().hasPrefix("lyrics.")
+        let ttmlText = track.ttmlLyricText?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lrcText = track.lrcLyricText?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let legacyText = track.lyricsText?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if let ttml = ttmlText, !ttml.isEmpty {
+            let ttmlURL = folder.appendingPathComponent("lyrics.ttml")
+            try ttml.write(to: ttmlURL, atomically: true, encoding: .utf8)
+            ttmlFileName = "lyrics.ttml"
+            print("✅ [LRCStorage] Saved TTML lyrics: \(ttmlURL.path)")
         }
 
-        guard let lyrics = text else {
-            for url in existingLyrics {
-                try? fileManager.removeItem(at: url)
+        if let lrc = lrcText, !lrc.isEmpty {
+            let lrcURL = folder.appendingPathComponent("lyrics_raw.lrc")
+            try lrc.write(to: lrcURL, atomically: true, encoding: .utf8)
+            lrcFileName = "lyrics_raw.lrc"
+            print("✅ [LRCStorage] Saved LRC lyrics: \(lrcURL.path)")
+        }
+
+        if ttmlFileName == nil && lrcFileName == nil, let legacy = legacyText, !legacy.isEmpty {
+            let ext = detectLyricsExtension(for: legacy)
+            let fileName = "lyrics.\(ext)"
+            let lyricsURL = folder.appendingPathComponent(fileName)
+            try legacy.write(to: lyricsURL, atomically: true, encoding: .utf8)
+            if ext == "ttml" {
+                ttmlFileName = fileName
+            } else {
+                lrcFileName = fileName
             }
-            return (nil, nil)
+            print("✅ [LRCStorage] Saved legacy lyrics (\(ext)): \(lyricsURL.path)")
         }
 
-        let ext = detectLyricsExtension(for: lyrics)
-        let fileName = "lyrics.\(ext)"
-        let lyricsURL = folder.appendingPathComponent(fileName)
-
-        try lyrics.write(to: lyricsURL, atomically: true, encoding: .utf8)
-
-        for url in existingLyrics where url.lastPathComponent != fileName {
-            try? fileManager.removeItem(at: url)
-        }
-
-        return (fileName, ext)
-    }
-
-    private func preferredLyricsText(for track: Track) -> String? {
-        if let ttml = track.ttmlLyricText?.trimmingCharacters(in: .whitespacesAndNewlines),
-            !ttml.isEmpty
-        {
-            return ttml
-        }
-
-        if let text = track.lyricsText?.trimmingCharacters(in: .whitespacesAndNewlines),
-            !text.isEmpty
-        {
-            return text
-        }
-
-        return nil
+        return (lrcFileName, ttmlFileName)
     }
 
     private func detectLyricsExtension(for text: String) -> String {
