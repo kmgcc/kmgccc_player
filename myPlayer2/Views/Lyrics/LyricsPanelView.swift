@@ -15,19 +15,15 @@ struct LyricsPanelView: View {
 
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(LyricsViewModel.self) private var lyricsVM
-    @Environment(UIStateViewModel.self) private var uiState
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var themeStore: ThemeStore
 
     var body: some View {
-        panelContent
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .applyLyricsBackground(
-                mode: settings.lyricsBackgroundMode,
-                colorScheme: themeStore.colorScheme,
-                accentColor: themeStore.accentColor,
-                backgroundColor: themeStore.backgroundColor
-            )
+        ZStack(alignment: .top) {
+            lyricsBackgroundLayer
+            panelContent
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
             .onAppear {
                 LyricsSurfaceManager.shared.activate(role: .main)
                 setupSeekCallback()
@@ -40,10 +36,6 @@ struct LyricsPanelView: View {
             .onDisappear {
                 LyricsSurfaceManager.shared.deactivate(role: .main)
             }
-            .onChange(of: playerVM.currentTime, handleCurrentTimeChange)
-            .onChange(of: playerVM.isPlaying) { _, newValue in
-                lyricsVM.setPlaying(newValue)
-            }
             .onChange(of: playerVM.currentTrack?.id, handleTrackIdChange)
             .onReceive(NotificationCenter.default.publisher(for: .playbackTrackDidChange)) { _ in
                 reloadLyricsSurface(reason: "playback track notification", forceLyricsReload: true)
@@ -55,6 +47,52 @@ struct LyricsPanelView: View {
             }
             // Settings observation moved to modifier to reduce compiler complexity
             .modifier(LyricsSettingsObserver(lyricsVM: lyricsVM))
+            .overlay {
+                LyricsRealtimeSyncObserver {
+                    reloadLyricsSurface(reason: "playback restarted", forceLyricsReload: true)
+                }
+                .allowsHitTesting(false)
+            }
+    }
+
+    @ViewBuilder
+    private var lyricsBackgroundLayer: some View {
+        switch settings.lyricsBackgroundMode {
+        case .sidebar:
+            ZStack(alignment: .leading) {
+                // Liquid Glass base layer
+                Color.clear
+                    .glassEffect(.regular, in: .rect(cornerRadius: 0))
+                // Theme tint overlay
+                themeStore.backgroundColor.opacity(0.10)
+                // Accent gradient sweep
+                LinearGradient(
+                    colors: [
+                        themeStore.accentColor.opacity(themeStore.colorScheme == .dark ? 0.08 : 0.05),
+                        themeStore.backgroundColor.opacity(0.0),
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+                // Separator line
+                Rectangle()
+                    .fill(themeStore.secondaryTextColor.opacity(0.14))
+                    .frame(width: 1)
+            }
+            .allowsHitTesting(false)
+        case .clear:
+            ZStack {
+                Rectangle()
+                    .fill(.ultraThinMaterial)
+
+                if themeStore.colorScheme == .dark {
+                    Color.black.opacity(0.3)
+                } else {
+                    Color.white.opacity(0.3)
+                }
+            }
+            .allowsHitTesting(false)
+        }
     }
 
     @ViewBuilder
@@ -78,15 +116,6 @@ struct LyricsPanelView: View {
     private func setupSeekCallback() {
         lyricsVM.onSeekRequest = { seconds in
             playerVM.seek(to: seconds)
-        }
-    }
-
-    private func handleCurrentTimeChange(_ oldTime: Double, _ newTime: Double) {
-        lyricsVM.syncTime(newTime)
-
-        // Detect playback restart (seeking to beginning)
-        if oldTime > 1.0, newTime < 0.2 {
-            reloadLyricsSurface(reason: "playback restarted", forceLyricsReload: true)
         }
     }
 
@@ -151,41 +180,23 @@ struct LyricsPanelView: View {
     .preferredColorScheme(.dark)
 }
 
-// MARK: - Background Modifier extension
+private struct LyricsRealtimeSyncObserver: View {
+    @Environment(PlayerViewModel.self) private var playerVM
+    @Environment(LyricsViewModel.self) private var lyricsVM
 
-extension View {
-    @ViewBuilder
-    func applyLyricsBackground(
-        mode: AppSettings.LyricsBackgroundMode,
-        colorScheme: ColorScheme,
-        accentColor: Color,
-        backgroundColor: Color
-    ) -> some View {
-        switch mode {
-        case .sidebar:
-            self.glassEffect(.regular, in: .rect(cornerRadius: 0))
-                .overlay {
-                    backgroundColor.opacity(0.10)
-                        .allowsHitTesting(false)
+    let onPlaybackRestart: () -> Void
+
+    var body: some View {
+        Color.clear
+            .onChange(of: playerVM.currentTime) { oldTime, newTime in
+                lyricsVM.syncTime(newTime)
+                if oldTime > 1.0, newTime < 0.2 {
+                    onPlaybackRestart()
                 }
-        case .clear:
-            // "Frosted Glass" (磨砂玻璃) mode as requested:
-            // Regular Material (blur) + higher opacity dimming/brightening layer
-            self
-                .background(
-                    ZStack {
-                        Rectangle()
-                            .fill(.ultraThinMaterial)
-
-                        if colorScheme == .dark {
-                            Color.black.opacity(0.3)  // Darken in dark mode
-                        } else {
-                            Color.white.opacity(0.3)  // Brighten in light mode
-                        }
-                    }
-                    .allowsHitTesting(false)
-                )
-        }
+            }
+            .onChange(of: playerVM.isPlaying) { _, newValue in
+                lyricsVM.setPlaying(newValue)
+            }
     }
 }
 

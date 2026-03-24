@@ -62,6 +62,8 @@ struct BKArtBackgroundView: View {
     @State private var lastArtworkSignature: Int = 0
     @State private var cachedBasePalette: [NSColor] = []
     @State private var cachedRichPalette: [NSColor] = []
+    @State private var paletteRefreshTask: Task<Void, Never>?
+    @State private var paletteRefreshToken = UUID()
 
     var body: some View {
         BKArtBackgroundRepresentable(
@@ -83,6 +85,10 @@ struct BKArtBackgroundView: View {
         .onChange(of: artworkSignature) { _, _ in
             refreshPalette()
         }
+        .onDisappear {
+            paletteRefreshTask?.cancel()
+            paletteRefreshTask = nil
+        }
     }
 
     private var seedValue: UInt64 {
@@ -95,6 +101,8 @@ struct BKArtBackgroundView: View {
     }
 
     private func refreshPalette() {
+        paletteRefreshTask?.cancel()
+
         guard let data = artworkData else {
             palette = Self.fallbackPalette
             controller.setPrimaryBackgroundColor(Self.fallbackPalette.first)
@@ -103,17 +111,67 @@ struct BKArtBackgroundView: View {
             controller.setUltraDarkActive(false)
             return
         }
-        
+
         let currentSignature = artworkSignature
-        
-        // Only re-extract if artwork changed
-        if currentSignature != lastArtworkSignature {
-            cachedBasePalette = ArtworkColorExtractor.uiThemePalette(from: data, maxColors: 4)
-            cachedRichPalette = ArtworkColorExtractor.uiThemePaletteRich(from: data, desiredCount: 8)
-            lastArtworkSignature = currentSignature
+
+        if currentSignature == lastArtworkSignature, !cachedBasePalette.isEmpty || !cachedRichPalette.isEmpty
+        {
+            applyResolvedPalette(
+                basePalette: cachedBasePalette,
+                richPalette: cachedRichPalette,
+                signature: currentSignature
+            )
+            return
         }
-        
-        let chosen = cachedRichPalette.isEmpty ? cachedBasePalette : cachedRichPalette
+
+        let token = UUID()
+        paletteRefreshToken = token
+        let currentTrackID = trackID
+
+        paletteRefreshTask = Task(priority: .userInitiated) {
+            let extracted: (base: [NSColor], rich: [NSColor])
+
+            if let currentTrackID,
+                let snapshot = await ArtworkAssetStore.shared.snapshot(
+                    trackID: currentTrackID,
+                    artworkData: data
+                )
+            {
+                extracted = (snapshot.palette, snapshot.richPalette)
+            } else {
+                async let basePalette = Task.detached(priority: .userInitiated) {
+                    ArtworkColorExtractor.uiThemePalette(from: data, maxColors: 4)
+                }.value
+                async let richPalette = Task.detached(priority: .userInitiated) {
+                    ArtworkColorExtractor.uiThemePaletteRich(from: data, desiredCount: 8)
+                }.value
+                extracted = await (basePalette, richPalette)
+            }
+
+            guard !Task.isCancelled else { return }
+
+            await MainActor.run {
+                guard paletteRefreshToken == token else { return }
+                applyResolvedPalette(
+                    basePalette: extracted.base,
+                    richPalette: extracted.rich,
+                    signature: currentSignature
+                )
+                paletteRefreshTask = nil
+            }
+        }
+    }
+
+    private func applyResolvedPalette(
+        basePalette: [NSColor],
+        richPalette: [NSColor],
+        signature: Int
+    ) {
+        cachedBasePalette = basePalette
+        cachedRichPalette = richPalette
+        lastArtworkSignature = signature
+
+        let chosen = richPalette.isEmpty ? basePalette : richPalette
         let resolvedPalette = chosen.isEmpty ? Self.fallbackPalette : chosen
         controller.setCurrentSurfaceBackgroundColor(nil)
         palette = resolvedPalette

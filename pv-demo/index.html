@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>PV Lyrics Demo</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700&family=Noto+Serif+JP:wght@400;700;900&display=swap" rel="stylesheet">
+    <script type="module" crossorigin src="./assets/index-C93-cIGi.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-BjnNwW8h.css">
+    <style>
+        .panels-wrapper { display: none !important; }
+        .mobile-toggle { display: none !important; }
+        
+        #custom-controls {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 1000;
+            background: rgba(0, 0, 0, 0.9);
+            backdrop-filter: blur(10px);
+            border-top: 1px solid rgba(255,255,255,0.1);
+            padding: 12px;
+            display: flex;
+            gap: 12px;
+            align-items: flex-end;
+        }
+        
+        .btn-row { display: flex; gap: 8px; flex-shrink: 0; flex-wrap: wrap; }
+        
+        .btn {
+            padding: 8px 16px;
+            background: rgba(255,255,255,0.1);
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 6px;
+            color: #fff;
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.15s;
+            white-space: nowrap;
+        }
+        .btn:hover { background: rgba(255,255,255,0.2); }
+        .btn:active { transform: scale(0.95); }
+        .btn-primary { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border: none; }
+        .btn-accent { background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); border: none; }
+        
+        #lrc-input-wrapper { flex: 1; display: flex; flex-direction: column; gap: 4px; min-width: 200px; }
+        #lrc-input-wrapper label { font-size: 11px; color: rgba(255,255,255,0.5); }
+        
+        #lrc-input {
+            width: 100%;
+            height: 50px;
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 6px;
+            color: #fff;
+            padding: 8px;
+            font-family: 'SF Mono', Monaco, monospace;
+            font-size: 11px;
+            resize: none;
+            outline: none;
+        }
+        #lrc-input:focus { border-color: rgba(100, 120, 255, 0.5); }
+        
+        #template-name {
+            position: fixed;
+            top: 16px;
+            left: 16px;
+            padding: 8px 16px;
+            background: rgba(0,0,0,0.7);
+            backdrop-filter: blur(10px);
+            border-radius: 8px;
+            color: #fff;
+            font-size: 14px;
+            z-index: 1000;
+        }
+        
+        #status {
+            position: fixed;
+            bottom: 120px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 8px 16px;
+            background: rgba(0,0,0,0.6);
+            backdrop-filter: blur(10px);
+            border-radius: 6px;
+            color: rgba(255,255,255,0.8);
+            font-size: 13px;
+        }
+    </style>
+</head>
+<body>
+    <div id="app"></div>
+    <div id="template-name">加载中...</div>
+    <div id="status">-</div>
+    
+    <div id="custom-controls">
+        <div class="btn-row">
+            <button class="btn btn-primary" id="btn-template">随机模板</button>
+            <button class="btn btn-accent" id="btn-fx">随机特效</button>
+            <button class="btn" id="btn-auto">自动: 开</button>
+            <button class="btn" id="btn-speed">速度</button>
+            <button class="btn" id="btn-apply" style="background:#2a6;">应用歌词</button>
+        </div>
+        <div id="lrc-input-wrapper">
+            <label>LRC 歌词</label>
+            <textarea id="lrc-input" placeholder="粘贴 LRC 歌词..."></textarea>
+        </div>
+    </div>
+
+    <script>
+var TEMPLATE_NAMES = [
+    '蓝色冲击', '斩击', '蓝色构成', '赛博废墟', '几何',
+    '黑客帝国', '夜之城监控', '情绪电影', '歇斯底里之夜', '蛛网',
+    '错落文字', '冷静的反派', '少女云朵', '格子花边', 'Fly Me to the Moon', 'Kawaii像素'
+];
+
+var currentTemplate = 0;
+var autoSwitch = true;
+var autoTimer = null;
+var speedIdx = 1;
+var speeds = [0.5, 1, 2, 3];
+
+function init() {
+    if (!window.PVApi) { setTimeout(init, 100); return; }
+    console.log('PV API ready', Object.keys(window.PVApi));
+    
+    document.getElementById('btn-template').onclick = randomTemplate;
+    document.getElementById('btn-fx').onclick = randomFX;
+    document.getElementById('btn-auto').onclick = toggleAuto;
+    document.getElementById('btn-speed').onclick = cycleSpeed;
+    document.getElementById('btn-apply').onclick = applyLRC;
+    
+    startAuto();
+    setInterval(updateStatus, 200);
+    
+    var lrc = '[ti:烟花]\n[ar:南西肯恩]\n[00:00.00]烟花 - 南西肯恩\n[00:04.00]这不是你想像的 对吧\n[00:08.00]虽然早有准备 却还是流泪\n[00:12.00]这不是我想要的 说什么无所谓\n[00:16.00]还不是让自己好过一点\n[00:22.00]绚烂烟花 总会落下\n[00:26.00]天真善良 终究要长大\n[00:30.00]成一道光 就得要炽热的绽放\n[00:34.00]哪怕路再长 哪怕受再多的伤\n[00:38.00]哪怕前方有阻挡 也要照亮\n[00:44.00]绚烂烟花 总会忘了啊\n[00:48.00]独自坚强 掩盖著伤疤\n[00:52.00]你的步伐 满载着希望和力量\n[00:56.00]哪怕夜漫长 也会随着梦想发芽\n[01:00.00]坚信自己的方向 就能到达\n[01:06.00]我们都曾经是迷路的人\n[01:10.00]追求自己想要的快乐\n[01:14.00]然而最后却成为了迷惘的人\n[01:18.00]忘记过程\n[01:22.00]绚烂烟花 总会落下\n[01:26.00]天真善良 终究要长大\n[01:30.00]烟花 你不要落下\n[01:34.00]烟花 你不要忘了啊';
+    
+    document.getElementById('lrc-input').value = lrc;
+    
+    setTimeout(function() {
+        console.log('Applying default LRC...');
+        window.PVApi.setLRC(lrc);
+        console.log('LRC applied, hasLyricTimeline:', window.PVEngine.hasLyricTimeline);
+        console.log('lyricLineCount:', window.PVEngine.lyricLineCount);
+        randomTemplate();
+    }, 800);
+}
+
+function randomTemplate() {
+    currentTemplate = window.PVApi.randomTemplate();
+    document.getElementById('template-name').textContent = TEMPLATE_NAMES[currentTemplate] || '模板 ' + currentTemplate;
+}
+
+function randomFX() {
+    window.PVApi.randomizePostFX();
+}
+
+function toggleAuto() {
+    autoSwitch = !autoSwitch;
+    document.getElementById('btn-auto').textContent = autoSwitch ? '自动: 开' : '自动: 关';
+    autoSwitch ? startAuto() : stopAuto();
+}
+
+function startAuto() {
+    stopAuto();
+    autoTimer = setInterval(function() {
+        randomTemplate();
+        randomFX();
+    }, 12000 + Math.random() * 18000);
+}
+
+function stopAuto() {
+    if (autoTimer) clearInterval(autoTimer);
+    autoTimer = null;
+}
+
+function cycleSpeed() {
+    speedIdx = (speedIdx + 1) % speeds.length;
+    window.PVApi.setSpeed(speeds[speedIdx]);
+    document.getElementById('btn-speed').textContent = '速度 ' + speeds[speedIdx] + 'x';
+}
+
+function applyLRC() {
+    var t = document.getElementById('lrc-input').value.trim();
+    if (!t) return;
+    
+    console.log('Applying LRC manually...');
+    window.PVApi.setLRC(t);
+    console.log('After apply, hasLyricTimeline:', window.PVEngine.hasLyricTimeline);
+    console.log('lyricLineCount:', window.PVEngine.lyricLineCount);
+    
+    var btn = document.getElementById('btn-apply');
+    btn.textContent = '已应用 ✓';
+    btn.style.background = '#4a8';
+    setTimeout(function() {
+        btn.textContent = '应用歌词';
+        btn.style.background = '#2a6';
+    }, 1500);
+}
+
+function updateStatus() {
+    if (!window.PVEngine) return;
+    var t = window.PVEngine.playbackTime;
+    var d = window.PVEngine.timelineDuration;
+    if (t > 0 && d > 0) {
+        document.getElementById('status').textContent = fmt(t) + ' / ' + fmt(d);
+    }
+}
+
+function fmt(s) {
+    return Math.floor(s/60) + ':' + String(Math.floor(s%60)).padStart(2,'0');
+}
+
+setTimeout(init, 500);
+    </script>
+</body>
+</html>

@@ -423,6 +423,15 @@
             ? window.__AMLL_SURFACE_ROLE
             : "main";
         const isFullscreenSurface = surfaceRole === "fullscreen";
+        const isBatchPreviewSurface = surfaceRole === "batchPreview";
+        const isMainSurface = surfaceRole === "main";
+        const useFullscreenQualityProfile = isFullscreenSurface || isMainSurface;
+        const defaultEnableSpring = useFullscreenQualityProfile;
+        const defaultEnableBlur = useFullscreenQualityProfile;
+        const defaultRenderScale = isBatchPreviewSurface ? 0.45 : 0.75;
+        const defaultOverscanPx = useFullscreenQualityProfile ? 260 : 96;
+        const defaultFPSCap = isBatchPreviewSurface ? 45 : 60;
+        const defaultWordFadeWidth = isBatchPreviewSurface ? 0.3 : 0.7;
         // Fullscreen-specific compositing fallback is disabled.
         // Fullscreen AMLL now follows the same renderer path as main window.
         const fullscreenForcedByHost = false;
@@ -439,18 +448,25 @@
         }
         
         // Initial config defaults
-        lyricPlayer.setEnableSpring(true);
-        lyricPlayer.setEnableBlur(true);
-        const defaultWordFadeWidth = 0.7;
+        lyricPlayer.setEnableSpring(defaultEnableSpring);
+        lyricPlayer.setEnableBlur(defaultEnableBlur);
         lyricPlayer.setWordFadeWidth(defaultWordFadeWidth);
-        let renderScale = 0.75;
+        if (typeof lyricPlayer.setOverscanPx === "function") {
+            lyricPlayer.setOverscanPx(defaultOverscanPx);
+        }
+        let renderScale = defaultRenderScale;
+        let blurEnabled = defaultEnableBlur;
+        let springEnabled = defaultEnableSpring;
+        let overscanPx = defaultOverscanPx;
+        let fpsCap = defaultFPSCap;
+        let wordFadeWidth = defaultWordFadeWidth;
         let fullscreenOpaqueLyricsMode = isFullscreenSurface || fullscreenForcedByHost;
         if (typeof lyricPlayer.setRenderScale === "function") {
             lyricPlayer.setRenderScale(renderScale);
         }
-        // Remove core's default 30fps ticker cap if API is available.
+        // Use a stable FPS cap per surface instead of leaving the ticker uncapped.
         if (typeof lyricPlayer.setFPS === "function") {
-            lyricPlayer.setFPS(0);
+            lyricPlayer.setFPS(defaultFPSCap);
         }
         let externalTimeMs = 0;
         let externalTimeAnchorPerfMs = performance.now();
@@ -1863,14 +1879,47 @@
                     }
 	            },
             
-		            setConfig: (config) => {
+	            setConfig: (config) => {
 		                try {
 		                    let needsLyricsReload = false;
+		                    if (typeof config.enableBlur === "boolean" && config.enableBlur !== blurEnabled) {
+		                        blurEnabled = config.enableBlur;
+		                        if (typeof lyricPlayer.setEnableBlur === "function") {
+		                            lyricPlayer.setEnableBlur(blurEnabled);
+		                        }
+		                    }
+		                    if (typeof config.enableSpring === "boolean" && config.enableSpring !== springEnabled) {
+		                        springEnabled = config.enableSpring;
+		                        if (typeof lyricPlayer.setEnableSpring === "function") {
+		                            lyricPlayer.setEnableSpring(springEnabled);
+		                        }
+		                    }
 		                    if (typeof config.renderScale === "number" && !Number.isNaN(config.renderScale)) {
 		                        const nextRenderScale = Math.max(0.35, Math.min(1.0, config.renderScale));
 		                        if (nextRenderScale !== renderScale && typeof lyricPlayer.setRenderScale === "function") {
 		                            renderScale = nextRenderScale;
 		                            lyricPlayer.setRenderScale(renderScale);
+		                        }
+		                    }
+		                    if (typeof config.fpsCap === "number" && !Number.isNaN(config.fpsCap)) {
+		                        const nextFPSCap = Math.max(0, Math.min(120, Math.round(config.fpsCap)));
+		                        if (nextFPSCap !== fpsCap && typeof lyricPlayer.setFPS === "function") {
+		                            fpsCap = nextFPSCap;
+		                            lyricPlayer.setFPS(fpsCap);
+		                        }
+		                    }
+		                    if (typeof config.overscanPx === "number" && !Number.isNaN(config.overscanPx)) {
+		                        const nextOverscanPx = Math.max(0, Math.min(600, Math.round(config.overscanPx)));
+		                        if (nextOverscanPx !== overscanPx && typeof lyricPlayer.setOverscanPx === "function") {
+		                            overscanPx = nextOverscanPx;
+		                            lyricPlayer.setOverscanPx(overscanPx);
+		                        }
+		                    }
+		                    if (typeof config.wordFadeWidth === "number" && !Number.isNaN(config.wordFadeWidth)) {
+		                        const nextWordFadeWidth = Math.max(0.0001, Math.min(1.5, config.wordFadeWidth));
+		                        if (nextWordFadeWidth !== wordFadeWidth && typeof lyricPlayer.setWordFadeWidth === "function") {
+		                            wordFadeWidth = nextWordFadeWidth;
+		                            lyricPlayer.setWordFadeWidth(wordFadeWidth);
 		                        }
 		                    }
 		                    // Apply config to lyricPlayer

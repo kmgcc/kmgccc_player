@@ -66,6 +66,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
             return
         }
 
+        // If window already exists, just bring it to front and ensure fullscreen
         if let window = fullscreenWindow {
             suspendMainLyricsIfNeeded()
             LyricsSurfaceManager.shared.activate(role: .fullscreen)
@@ -88,20 +89,35 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         let fullscreenLyricsVM = makeFullscreenLyricsViewModel()
         LyricsSurfaceManager.shared.activate(role: .fullscreen)
 
+        // Use a smaller initial frame so toggleFullScreen animates from current size to fullscreen
+        let sourceWindow = NSApp.keyWindow
+        let initialFrame: NSRect
+        if let sourceWindow = sourceWindow, !sourceWindow.styleMask.contains(.fullScreen) {
+            initialFrame = sourceWindow.frame
+        } else if let screen = targetScreen {
+            let width: CGFloat = min(900, screen.frame.width * 0.5)
+            let height: CGFloat = min(700, screen.frame.height * 0.5)
+            let x = screen.frame.midX - width / 2
+            let y = screen.frame.midY - height / 2
+            initialFrame = NSRect(x: x, y: y, width: width, height: height)
+        } else {
+            initialFrame = NSRect(x: 100, y: 100, width: 900, height: 700)
+        }
+
         let window = FullscreenPlayerWindow(
-            contentRect: targetScreen?.frame ?? NSRect(x: 0, y: 0, width: 1440, height: 900),
-            styleMask: [.borderless, .fullSizeContentView],
+            contentRect: initialFrame,
+            styleMask: [.borderless, .fullSizeContentView, .resizable],
             backing: .buffered,
             defer: false
         )
 
         window.title = "kmgccc_player - Fullscreen"
         window.backgroundColor = .black
-        window.isOpaque = false
+        window.isOpaque = true
         window.hasShadow = false
-        window.level = .normal
+        window.level = .floating
         window.delegate = self
-        window.collectionBehavior = [.fullScreenPrimary, .canJoinAllSpaces]
+        window.collectionBehavior = [.fullScreenPrimary, .canJoinAllSpaces, .fullScreenAllowsTiling]
 
         // Create the content view with all necessary environment injected
         let contentView = FullscreenPlayerView {
@@ -113,7 +129,6 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         .environment(AppSettings.shared)
         .environment(skinManager)
         .environmentObject(ThemeStore.shared)
-        .environment(\.colorScheme, ThemeStore.shared.colorScheme)
 
         let hostingView = NSHostingView(rootView: contentView)
         window.contentView = hostingView
@@ -123,12 +138,9 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         previousKeyWindow = NSApp.keyWindow
         fullscreenWindow = window
         installEscapeMonitorIfNeeded()
-        window.makeKeyAndOrderFront(nil)
-        window.orderFrontRegardless()
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            self.enterFullscreen()
-        }
+        window.makeKeyAndOrderFront(nil)
+        window.toggleFullScreen(nil)
     }
 
     /// Close the fullscreen window safely.
@@ -139,6 +151,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
 
         if window.styleMask.contains(.fullScreen) {
             isTransitioning = true
+            // First exit fullscreen, then order out in delegate callback
             window.toggleFullScreen(nil)
         } else {
             dismissFullscreenWindow(window)
@@ -241,7 +254,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         didFailToEnterFullScreenWithError error: Error
     ) {
         guard window === fullscreenWindow else { return }
-        print("[FullscreenWindowManager] ❌ Failed to enter fullscreen: \(error)")
+        print("[FullscreenWindowManager] Failed to enter fullscreen: \(error)")
         dismissFullscreenWindow(window)
     }
 

@@ -192,6 +192,7 @@ final class LyricsViewModel {
 
     /// Update AMLL configuration based on AppSettings.
     func refreshConfigFromSettings() {
+        let surfaceRole = LyricsSurfaceRole(rawValue: store.role) ?? .main
         let resolvedScheme = ThemeStore.shared.colorScheme
         let resolvedTheme = resolvedScheme == .dark ? "dark" : "light"
         let isDarkMode = resolvedScheme == .dark
@@ -231,8 +232,14 @@ final class LyricsViewModel {
             "nearSwitchGapMs": nearSwitchGapMs,
             "timeOffsetMs": combinedOffsetMs,
             "theme": resolvedTheme,
+            "renderScale": surfaceRole.renderScale,
+            "enableBlur": surfaceRole.enableBlur,
+            "enableSpring": surfaceRole.enableSpring,
+            "fpsCap": surfaceRole.fpsCap,
+            "overscanPx": surfaceRole.overscanPx,
+            "wordFadeWidth": surfaceRole.wordFadeWidth,
             "lineHeight": 1.5,
-            "activeScale": 1.1,
+            "activeScale": surfaceRole.activeScale,
             "textColor": (paletteMatchesScheme ? palette?.text : nil)
                 ?? (isDarkMode ? "rgba(255,255,255,0.98)" : "rgba(0,0,0,0.9)"),
             "shadowColor": "rgba(0,0,0,0)",

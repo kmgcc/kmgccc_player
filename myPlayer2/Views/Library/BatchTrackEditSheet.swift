@@ -8,7 +8,6 @@
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
-import WebKit
 
 struct BatchTrackEditSheet: View {
 
@@ -104,7 +103,6 @@ struct BatchTrackEditSheet: View {
         }
         .onDisappear {
             uiState.lyricsPanelSuppressedByModal = false
-            restoreAMLLDefaultQuality()
             LyricsSurfaceManager.shared.deactivate(role: .batchPreview)
             previewLyricsVM = nil
             lyricsVM.ensureAMLLLoaded(
@@ -114,16 +112,6 @@ struct BatchTrackEditSheet: View {
                 reason: "batch editor dismissed",
                 forceLyricsReload: true
             )
-        }
-        .onChange(of: playerVM.currentTime) { _, newTime in
-            previewLyricsVM?.syncTime(newTime)
-        }
-        .onChange(of: playerVM.isPlaying) { _, newValue in
-            previewLyricsVM?.setPlaying(newValue)
-        }
-        .onChange(of: playerVM.currentTrack?.id) { oldValue, newValue in
-            guard oldValue != newValue else { return }
-            handlePlaybackTrackChange(newValue)
         }
         .onChange(of: title) { _, _ in draftDidChange() }
         .onChange(of: artist) { _, _ in draftDidChange() }
@@ -471,33 +459,12 @@ struct BatchTrackEditSheet: View {
     }
 
     private var amllPreviewPanel: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("AMLL 渲染预览")
-                .font(.headline)
-
-            Text("当前编辑歌曲的 AMLL 实际渲染效果")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            ZStack {
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(batchAMLLBackgroundColor)
-
-                if currentTrack == nil {
-                    Text("无可预览歌曲")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    if let previewLyricsVM {
-                        BatchAMLLPreviewWebView(store: previewLyricsVM.webViewStore)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 10)
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-        }
+        BatchAMLLPreviewPanel(
+            previewLyricsVM: previewLyricsVM,
+            editedTrack: currentTrack,
+            isDarkMode: colorScheme == .dark
+        )
+        .equatable()
         .padding(14)
         .frame(maxHeight: .infinity, alignment: .top)
     }
@@ -842,20 +809,6 @@ struct BatchTrackEditSheet: View {
         raw.isEmpty ? NSLocalizedString("library.unknown_album", comment: "") : raw
     }
 
-    private var batchAMLLBackgroundColor: Color {
-        colorScheme == .dark
-            ? Color(nsColor: NSColor(calibratedWhite: 0.16, alpha: 1.0))
-            : Color(nsColor: NSColor(calibratedWhite: 0.94, alpha: 1.0))
-    }
-
-    private func restoreAMLLDefaultQuality() {
-        guard let webView = previewLyricsVM?.webViewStore.preparedWebView else { return }
-        webView.pageZoom = 1.0
-        let scale = NSScreen.main?.backingScaleFactor ?? 2.0
-        webView.layer?.contentsScale = scale
-        webView.evaluateJavaScript("window.AMLL && window.AMLL.setConfig({ renderScale: 0.75 });")
-    }
-    
     private func ensurePreviewLyricsViewModel() {
         if previewLyricsVM == nil {
             previewLyricsVM = LyricsViewModel(
@@ -870,57 +823,88 @@ struct BatchTrackEditSheet: View {
     }
 }
 
-private struct BatchAMLLPreviewWebView: NSViewRepresentable {
-    let store: LyricsWebViewStore
+private struct BatchPreviewPlaybackObserver: View {
+    @Environment(PlayerViewModel.self) private var playerVM
 
-    func makeNSView(context: Context) -> WKWebView {
-        let webView = store.webView
+    let previewLyricsVM: LyricsViewModel
+    let editedTrack: Track?
 
-        webView.navigationDelegate = context.coordinator
-        context.coordinator.attachmentID = store.attach()
-        context.coordinator.applyLowQualityMode(to: webView)
+    var body: some View {
+        Color.clear
+            .onChange(of: playerVM.currentTime) { _, newTime in
+                previewLyricsVM.syncTime(newTime)
+            }
+            .onChange(of: playerVM.isPlaying) { _, newValue in
+                previewLyricsVM.setPlaying(newValue)
+            }
+            .onChange(of: playerVM.currentTrack?.id) { oldValue, newValue in
+                guard oldValue != newValue, let editedTrack, newValue == editedTrack.id else { return }
+                previewLyricsVM.ensureAMLLLoaded(
+                    track: editedTrack,
+                    currentTime: playerVM.currentTime,
+                    isPlaying: playerVM.isPlaying,
+                    reason: "播放轨道更新",
+                    forceLyricsReload: false
+                )
+            }
+    }
+}
 
-        return webView
+private struct BatchAMLLPreviewPanel: View, Equatable {
+    let previewLyricsVM: LyricsViewModel?
+    let editedTrack: Track?
+    let isDarkMode: Bool
+
+    static func == (lhs: BatchAMLLPreviewPanel, rhs: BatchAMLLPreviewPanel) -> Bool {
+        lhs.previewIdentity == rhs.previewIdentity
+            && lhs.editedTrack?.id == rhs.editedTrack?.id
+            && lhs.isDarkMode == rhs.isDarkMode
     }
 
-    func updateNSView(_ nsView: WKWebView, context: Context) {
-        context.coordinator.applyLowQualityMode(to: nsView)
+    private var previewIdentity: Int {
+        previewLyricsVM.map { ObjectIdentifier($0).hashValue } ?? 0
     }
 
-    static func dismantleNSView(_ nsView: WKWebView, coordinator: Coordinator) {
-        coordinator.restoreDefaultQuality(for: nsView)
-        guard let attachmentID = coordinator.attachmentID else { return }
-        coordinator.store.detach(requestingID: attachmentID)
+    private var backgroundColor: Color {
+        isDarkMode
+            ? Color(nsColor: NSColor(calibratedWhite: 0.16, alpha: 1.0))
+            : Color(nsColor: NSColor(calibratedWhite: 0.94, alpha: 1.0))
     }
 
-    final class Coordinator: NSObject, WKNavigationDelegate {
-        let store: LyricsWebViewStore
-        var attachmentID: UUID?
-        private var isLowQualityActive = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("AMLL 渲染预览")
+                .font(.headline)
 
-        init(store: LyricsWebViewStore) {
-            self.store = store
+            Text("当前编辑歌曲的 AMLL 实际渲染效果")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            ZStack {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(backgroundColor)
+
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
+
+                if editedTrack == nil {
+                    Text("无可预览歌曲")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if let previewLyricsVM {
+                    AMLLWebView(store: previewLyricsVM.webViewStore)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 10)
+                        .overlay {
+                            BatchPreviewPlaybackObserver(
+                                previewLyricsVM: previewLyricsVM,
+                                editedTrack: editedTrack
+                            )
+                            .allowsHitTesting(false)
+                        }
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-
-        func applyLowQualityMode(to webView: WKWebView) {
-            guard !isLowQualityActive else { return }
-            isLowQualityActive = true
-            webView.pageZoom = 1.0
-            let scale = NSScreen.main?.backingScaleFactor ?? 2.0
-            webView.layer?.contentsScale = scale
-            webView.evaluateJavaScript("window.AMLL && window.AMLL.setConfig({ renderScale: 0.5 });")
-        }
-
-        func restoreDefaultQuality(for webView: WKWebView) {
-            isLowQualityActive = false
-            webView.pageZoom = 1.0
-            let scale = NSScreen.main?.backingScaleFactor ?? 2.0
-            webView.layer?.contentsScale = scale
-            webView.evaluateJavaScript("window.AMLL && window.AMLL.setConfig({ renderScale: 0.75 });")
-        }
-    }
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(store: store)
     }
 }

@@ -42,13 +42,83 @@ enum LyricsSurfaceRole: String, CaseIterable, Sendable {
     var renderScale: Double {
         switch self {
         case .main:
-            return 1.0
+            return 0.75
         case .fullscreen:
-            return 1.0
+            return 0.75
         case .batchPreview:
-            return 0.5  // Lower quality for preview
+            return 0.45
         case .standalone:
-            return 1.0
+            return 0.75
+        }
+    }
+
+    /// Whether the renderer should keep blur enabled for this role.
+    var enableBlur: Bool {
+        switch self {
+        case .main, .fullscreen:
+            return true
+        case .batchPreview, .standalone:
+            return false
+        }
+    }
+
+    /// Whether the renderer should use spring-based animation.
+    var enableSpring: Bool {
+        switch self {
+        case .batchPreview:
+            return false
+        case .main, .fullscreen, .standalone:
+            return true
+        }
+    }
+
+    /// Target AMLL FPS cap for this role. `0` means uncapped.
+    var fpsCap: Int {
+        switch self {
+        case .batchPreview:
+            return 45
+        case .main, .fullscreen, .standalone:
+            return 60
+        }
+    }
+
+    /// Overscan budget in pixels. Lower values reduce work for small embedded surfaces.
+    var overscanPx: Int {
+        switch self {
+        case .batchPreview:
+            return 96
+        case .main:
+            return 260
+        case .fullscreen:
+            return 260
+        case .standalone:
+            return 180
+        }
+    }
+
+    /// Per-word fade width. Smaller values reduce mask work.
+    var wordFadeWidth: Double {
+        switch self {
+        case .batchPreview:
+            return 0.3
+        case .main:
+            return 0.7
+        case .fullscreen, .standalone:
+            return 0.7
+        }
+    }
+
+    /// Active line scale multiplier.
+    var activeScale: Double {
+        switch self {
+        case .main:
+            return 1.2
+        case .batchPreview:
+            return 1.04
+        case .fullscreen:
+            return 1.2
+        case .standalone:
+            return 1.1
         }
     }
     
