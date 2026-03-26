@@ -45,13 +45,25 @@ private struct RotatingCoverArtwork: View {
     @State private var rotationStart: Date? = nil
     @State private var lastTrackID: UUID? = nil
 
+    // MARK: - Fullscreen Fine-tuning Constants
+    /// Slight boost to artwork size in fullscreen (1.0 = no change)
+    private let fullscreenArtworkBoost: CGFloat = 1.22
+    /// Horizontal shift for artwork in fullscreen (negative = left)
+    private let fullscreenLeftShift: CGFloat = -40
+
     var body: some View {
         let contentSize = context.contentSize
         let isFullscreen = fullscreenManager.isFullscreenActive
+
+        // Apply fullscreen boost and left shift only in fullscreen mode
+        // Only shift left when lyrics are visible; when no lyrics, artwork should center
+        let artworkBoost = isFullscreen ? fullscreenArtworkBoost : 1.0
+        let leftShift = (isFullscreen && context.lyricsVisible) ? fullscreenLeftShift : 0
+
         let scaleFactor: CGFloat = isFullscreen ? 0.6 : 0.55
         let maxSize: CGFloat = isFullscreen ? 500 : 380
-        let maxDisc = min(contentSize.width * scaleFactor, contentSize.height * scaleFactor, maxSize)
-        let discSize = max(200, maxDisc)
+        let maxDisc = min(contentSize.width * scaleFactor, contentSize.height * scaleFactor, maxSize * artworkBoost)
+        let discSize = max(200 * artworkBoost, maxDisc)
         let yOffset: CGFloat = isFullscreen ? 32 : 18
         
         let visualizerMode = isFullscreen ? fullscreenVisualizerMode : normalVisualizerMode
@@ -76,12 +88,13 @@ private struct RotatingCoverArtwork: View {
                     context: context,
                     dotSize: 12,
                     spacing: 8,
-                    pillTint: context.theme.artworkAccentColor
+                    pillTint: context.theme.artworkAccentColor,
+                    isFullscreen: isFullscreen
                 )
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .offset(y: yOffset)
+        .offset(x: leftShift, y: yOffset)
         .onAppear {
             lastTrackID = context.track?.id
             if context.playback.isPlaying {
@@ -175,13 +188,17 @@ private struct PillSpectrumView: View {
     let dotSize: CGFloat
     let spacing: CGFloat
     let pillTint: Color?
+    let isFullscreen: Bool
     @Environment(\.colorScheme) private var colorScheme
 
     private let capsuleCount: CGFloat = 9
     private let capsuleWidth: CGFloat = 7
     private let capsuleSpacing: CGFloat = 10
     private let horizontalPadding: CGFloat = 28
-    private let verticalPadding: CGFloat = 8
+    private let contentHeight: CGFloat = 52  // Spectrum bars height (increased from 48)
+    private var verticalPadding: CGFloat {
+        isFullscreen ? 5 : 8  // Slightly shorter background pill in fullscreen
+    }
 
     private var contentWidth: CGFloat {
         capsuleCount * capsuleWidth + (capsuleCount - 1) * capsuleSpacing
@@ -192,7 +209,7 @@ private struct PillSpectrumView: View {
     }
 
     private var backgroundHeight: CGFloat {
-        48 + verticalPadding * 2
+        contentHeight + verticalPadding * 2
     }
 
     var body: some View {
@@ -204,7 +221,7 @@ private struct PillSpectrumView: View {
             capsuleWidth: capsuleWidth,
             capsuleSpacing: capsuleSpacing
         )
-        .frame(width: contentWidth, height: 48)
+        .frame(width: contentWidth, height: contentHeight)
         .background(
             Capsule()
                 .fill(Color.clear)

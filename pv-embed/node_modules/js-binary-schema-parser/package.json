@@ -1,0 +1,35 @@
+{
+  "name": "js-binary-schema-parser",
+  "version": "2.0.3",
+  "description": "Parse binary files with a schema into nicely readable objects",
+  "dependencies": {},
+  "devDependencies": {
+    "@babel/cli": "^7.8.4",
+    "@babel/core": "^7.8.4",
+    "@babel/node": "^7.8.4",
+    "@babel/preset-env": "^7.8.4"
+  },
+  "main": "lib/index.js",
+  "scripts": {
+    "example": "babel-node ./example/index.js",
+    "example-debug": "babel-node --inspect-brk ./example/index.js",
+    "build": "babel src --out-dir lib"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/matt-way/jsBinarySchemaParser.git"
+  },
+  "keywords": [
+    "javascript",
+    "binary",
+    "file",
+    "parser",
+    "schema"
+  ],
+  "author": "Matt Way",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/matt-way/jsBinarySchemaParser/issues"
+  },
+  "homepage": "https://github.com/matt-way/jsBinarySchemaParser"
+}

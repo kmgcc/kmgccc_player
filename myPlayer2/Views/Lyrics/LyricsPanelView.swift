@@ -60,20 +60,11 @@ struct LyricsPanelView: View {
         switch settings.lyricsBackgroundMode {
         case .sidebar:
             ZStack(alignment: .leading) {
-                // Liquid Glass base layer
+                // Liquid Glass base layer - .regular to match sidebar
                 Color.clear
                     .glassEffect(.regular, in: .rect(cornerRadius: 0))
                 // Theme tint overlay
                 themeStore.backgroundColor.opacity(0.10)
-                // Accent gradient sweep
-                LinearGradient(
-                    colors: [
-                        themeStore.accentColor.opacity(themeStore.colorScheme == .dark ? 0.08 : 0.05),
-                        themeStore.backgroundColor.opacity(0.0),
-                    ],
-                    startPoint: .leading,
-                    endPoint: .trailing
-                )
                 // Separator line
                 Rectangle()
                     .fill(themeStore.secondaryTextColor.opacity(0.14))

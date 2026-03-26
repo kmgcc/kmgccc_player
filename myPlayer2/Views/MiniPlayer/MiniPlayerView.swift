@@ -522,6 +522,7 @@ struct PlaybackModeSlider: View {
     let pillTintColor: Color?
     let pillTintBlendMode: BlendMode?
     let onSelect: (PlaybackMode) -> Void
+    let scale: CGFloat
 
     init(
         mode: PlaybackMode,
@@ -532,6 +533,7 @@ struct PlaybackModeSlider: View {
         useScreenBlend: Bool = false,
         pillTintColor: Color? = nil,
         pillTintBlendMode: BlendMode? = nil,
+        scale: CGFloat = 1.0,
         onSelect: @escaping (PlaybackMode) -> Void
     ) {
         self.mode = mode
@@ -542,6 +544,7 @@ struct PlaybackModeSlider: View {
         self.useScreenBlend = useScreenBlend
         self.pillTintColor = pillTintColor
         self.pillTintBlendMode = pillTintBlendMode
+        self.scale = scale
         self.onSelect = onSelect
     }
 
@@ -572,7 +575,7 @@ struct PlaybackModeSlider: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let inset: CGFloat = 2
+            let inset: CGFloat = 2 * scale
             let totalWidth = geometry.size.width - inset * 2
             let segmentWidth = max(1, totalWidth / 4)
             let baseOffset = CGFloat(modeIndex) * segmentWidth
@@ -584,14 +587,14 @@ struct PlaybackModeSlider: View {
             ZStack(alignment: .leading) {
                 Capsule()
                     .fill(trackFill)
-                    .overlay(Capsule().stroke(trackBorder, lineWidth: 1))
+                    .overlay(Capsule().stroke(trackBorder, lineWidth: 1 * scale))
                     .compositingGroup()
                     .blendMode(pillTintBlendMode ?? .normal)
                     .allowsHitTesting(false)
 
                 Capsule()
                     .fill(knobFill)
-                    .overlay(Capsule().stroke(knobBorder, lineWidth: 1))
+                    .overlay(Capsule().stroke(knobBorder, lineWidth: 1 * scale))
                     .compositingGroup()
                     .blendMode(pillTintBlendMode ?? .normal)
                     .frame(width: segmentWidth, height: geometry.size.height - inset * 2)
@@ -682,11 +685,11 @@ struct PlaybackModeSlider: View {
                     .fill(Color.clear)
                 segmentIcon(systemImage: systemImage, index: index, isSelected: isSelected)
             }
-            .frame(width: width, height: 28)
+            .frame(width: width, height: 28 * scale)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .frame(width: width, height: 28)
+        .frame(width: width, height: 28 * scale)
         .contentShape(Rectangle())
     }
 

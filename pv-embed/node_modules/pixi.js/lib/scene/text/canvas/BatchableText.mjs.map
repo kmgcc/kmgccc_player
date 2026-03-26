@@ -1,0 +1,1 @@
+{"version":3,"file":"BatchableText.mjs","sources":["../../../../src/scene/text/canvas/BatchableText.ts"],"sourcesContent":["import { BatchableSprite } from '../../sprite/BatchableSprite';\n\n/** @internal */\nexport class BatchableText extends BatchableSprite\n{\n    public currentKey: string;\n}\n"],"names":[],"mappings":";;;AAGO,MAAM,sBAAsB,eAAA,CACnC;AAEA;;;;"}

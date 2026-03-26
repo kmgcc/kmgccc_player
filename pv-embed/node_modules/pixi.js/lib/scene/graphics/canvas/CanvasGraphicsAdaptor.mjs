@@ -1,0 +1,332 @@
+import { ExtensionType } from '../../../extensions/Extensions.mjs';
+import { groupD8 } from '../../../maths/matrix/groupD8.mjs';
+import { Matrix } from '../../../maths/matrix/Matrix.mjs';
+import { canvasUtils } from '../../../rendering/renderers/canvas/utils/canvasUtils.mjs';
+import { Texture } from '../../../rendering/renderers/shared/texture/Texture.mjs';
+import { bgr2rgb } from '../../container/container-mixins/getGlobalMixin.mjs';
+import { multiplyHexColors } from '../../container/utils/multiplyHexColors.mjs';
+import { buildLine } from '../shared/buildCommands/buildLine.mjs';
+import { FillGradient } from '../shared/fill/FillGradient.mjs';
+import { FillPattern } from '../shared/fill/FillPattern.mjs';
+import { shapeBuilders } from '../shared/utils/buildContextBatches.mjs';
+import { generateTextureMatrix } from '../shared/utils/generateTextureFillMatrix.mjs';
+
+"use strict";
+const emptyCanvasStyle = "#808080";
+const tempMatrix = new Matrix();
+const tempTextureMatrix = new Matrix();
+const tempGradientMatrix = new Matrix();
+const tempPatternMatrix = new Matrix();
+function fillTriangles(context, vertices, indices) {
+  context.beginPath();
+  for (let i = 0; i < indices.length; i += 3) {
+    const i0 = indices[i] * 2;
+    const i1 = indices[i + 1] * 2;
+    const i2 = indices[i + 2] * 2;
+    context.moveTo(vertices[i0], vertices[i0 + 1]);
+    context.lineTo(vertices[i1], vertices[i1 + 1]);
+    context.lineTo(vertices[i2], vertices[i2 + 1]);
+    context.closePath();
+  }
+  context.fill();
+}
+function colorToHex(color) {
+  const clamped = color & 16777215;
+  return `#${clamped.toString(16).padStart(6, "0")}`;
+}
+function buildRoundedRectPath(context, x, y, width, height, radius) {
+  radius = Math.max(0, Math.min(radius, Math.min(width, height) / 2));
+  context.moveTo(x + radius, y);
+  context.lineTo(x + width - radius, y);
+  context.quadraticCurveTo(x + width, y, x + width, y + radius);
+  context.lineTo(x + width, y + height - radius);
+  context.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+  context.lineTo(x + radius, y + height);
+  context.quadraticCurveTo(x, y + height, x, y + height - radius);
+  context.lineTo(x, y + radius);
+  context.quadraticCurveTo(x, y, x + radius, y);
+}
+function buildShapePath(context, shape) {
+  switch (shape.type) {
+    case "rectangle": {
+      const rect = shape;
+      context.rect(rect.x, rect.y, rect.width, rect.height);
+      break;
+    }
+    case "roundedRectangle": {
+      const rect = shape;
+      buildRoundedRectPath(context, rect.x, rect.y, rect.width, rect.height, rect.radius);
+      break;
+    }
+    case "circle": {
+      const circle = shape;
+      context.arc(circle.x, circle.y, circle.radius, 0, Math.PI * 2);
+      break;
+    }
+    case "ellipse": {
+      const ellipse = shape;
+      if (context.ellipse) {
+        context.ellipse(ellipse.x, ellipse.y, ellipse.halfWidth, ellipse.halfHeight, 0, 0, Math.PI * 2);
+      } else {
+        context.save();
+        context.translate(ellipse.x, ellipse.y);
+        context.scale(ellipse.halfWidth, ellipse.halfHeight);
+        context.arc(0, 0, 1, 0, Math.PI * 2);
+        context.restore();
+      }
+      break;
+    }
+    case "triangle": {
+      const tri = shape;
+      context.moveTo(tri.x, tri.y);
+      context.lineTo(tri.x2, tri.y2);
+      context.lineTo(tri.x3, tri.y3);
+      context.closePath();
+      break;
+    }
+    case "polygon":
+    default: {
+      const poly = shape;
+      const points = poly.points;
+      if (!points?.length) break;
+      context.moveTo(points[0], points[1]);
+      for (let i = 2; i < points.length; i += 2) {
+        context.lineTo(points[i], points[i + 1]);
+      }
+      if (poly.closePath) {
+        context.closePath();
+      }
+      break;
+    }
+  }
+}
+function addHolePaths(context, holes) {
+  if (!holes?.length) return false;
+  for (let i = 0; i < holes.length; i++) {
+    const hole = holes[i];
+    if (!hole?.shape) continue;
+    const transform = hole.transform;
+    const hasTransform = transform && !transform.isIdentity();
+    if (hasTransform) {
+      context.save();
+      context.transform(transform.a, transform.b, transform.c, transform.d, transform.tx, transform.ty);
+    }
+    buildShapePath(context, hole.shape);
+    if (hasTransform) {
+      context.restore();
+    }
+  }
+  return true;
+}
+function getCanvasStyle(style, tint, textureMatrix, currentTransform) {
+  const fill = style.fill;
+  if (fill instanceof FillGradient) {
+    fill.buildGradient();
+    const gradientTexture = fill.texture;
+    if (gradientTexture) {
+      const pattern = canvasUtils.getTintedPattern(gradientTexture, tint);
+      const patternMatrix = textureMatrix ? tempPatternMatrix.copyFrom(textureMatrix).scale(gradientTexture.source.pixelWidth, gradientTexture.source.pixelHeight) : tempPatternMatrix.copyFrom(fill.transform);
+      if (currentTransform && !style.textureSpace) {
+        patternMatrix.append(currentTransform);
+      }
+      canvasUtils.applyPatternTransform(pattern, patternMatrix);
+      return pattern;
+    }
+  }
+  if (fill instanceof FillPattern) {
+    const pattern = canvasUtils.getTintedPattern(fill.texture, tint);
+    canvasUtils.applyPatternTransform(pattern, fill.transform);
+    return pattern;
+  }
+  const texture = style.texture;
+  if (texture && texture !== Texture.WHITE) {
+    if (!texture.source.resource) {
+      return emptyCanvasStyle;
+    }
+    const pattern = canvasUtils.getTintedPattern(texture, tint);
+    const patternMatrix = textureMatrix ? tempPatternMatrix.copyFrom(textureMatrix).scale(texture.source.pixelWidth, texture.source.pixelHeight) : style.matrix;
+    canvasUtils.applyPatternTransform(pattern, patternMatrix);
+    return pattern;
+  }
+  return colorToHex(tint);
+}
+class CanvasGraphicsAdaptor {
+  constructor() {
+    this.shader = null;
+  }
+  contextChange(renderer) {
+    void renderer;
+  }
+  execute(graphicsPipe, renderable) {
+    const renderer = graphicsPipe.renderer;
+    const contextSystem = renderer.canvasContext;
+    const context = contextSystem.activeContext;
+    const baseTransform = renderable.groupTransform;
+    const globalColor = renderer.globalUniforms.globalUniformData?.worldColor ?? 4294967295;
+    const groupColorAlpha = renderable.groupColorAlpha;
+    const globalAlpha = (globalColor >>> 24 & 255) / 255;
+    const groupAlphaValue = (groupColorAlpha >>> 24 & 255) / 255;
+    const filterAlpha = renderer.filter?.alphaMultiplier ?? 1;
+    const groupAlpha = globalAlpha * groupAlphaValue * filterAlpha;
+    if (groupAlpha <= 0) return;
+    const globalTint = globalColor & 16777215;
+    const groupTintBGR = groupColorAlpha & 16777215;
+    const groupTint = bgr2rgb(multiplyHexColors(groupTintBGR, globalTint));
+    const roundPixels = renderer._roundPixels | renderable._roundPixels;
+    context.save();
+    contextSystem.setContextTransform(baseTransform, roundPixels === 1);
+    contextSystem.setBlendMode(renderable.groupBlendMode);
+    const instructions = renderable.context.instructions;
+    for (let i = 0; i < instructions.length; i++) {
+      const instruction = instructions[i];
+      if (instruction.action === "texture") {
+        const data2 = instruction.data;
+        const texture = data2.image;
+        const source = texture ? canvasUtils.getCanvasSource(texture) : null;
+        if (!source) continue;
+        const alpha2 = data2.alpha * groupAlpha;
+        if (alpha2 <= 0) continue;
+        const tint2 = multiplyHexColors(data2.style, groupTint);
+        context.globalAlpha = alpha2;
+        let drawSource = source;
+        if (tint2 !== 16777215) {
+          drawSource = canvasUtils.getTintedCanvas({ texture }, tint2);
+        }
+        const frame = texture.frame;
+        const resolution = texture.source._resolution ?? texture.source.resolution ?? 1;
+        let sx = frame.x * resolution;
+        let sy = frame.y * resolution;
+        const sw = frame.width * resolution;
+        const sh = frame.height * resolution;
+        if (drawSource !== source) {
+          sx = 0;
+          sy = 0;
+        }
+        const transform = data2.transform;
+        const hasTransform = transform && !transform.isIdentity();
+        const rotate = texture.rotate;
+        if (hasTransform || rotate) {
+          tempMatrix.copyFrom(baseTransform);
+          if (hasTransform) {
+            tempMatrix.append(transform);
+          }
+          if (rotate) {
+            groupD8.matrixAppendRotationInv(tempMatrix, rotate, data2.dx, data2.dy, data2.dw, data2.dh);
+          }
+          contextSystem.setContextTransform(tempMatrix, roundPixels === 1);
+        } else {
+          contextSystem.setContextTransform(baseTransform, roundPixels === 1);
+        }
+        context.drawImage(
+          drawSource,
+          sx,
+          sy,
+          drawSource === source ? sw : drawSource.width,
+          drawSource === source ? sh : drawSource.height,
+          rotate ? 0 : data2.dx,
+          rotate ? 0 : data2.dy,
+          data2.dw,
+          data2.dh
+        );
+        if (hasTransform || rotate) {
+          contextSystem.setContextTransform(baseTransform, roundPixels === 1);
+        }
+        continue;
+      }
+      const data = instruction.data;
+      const shapePath = data?.path?.shapePath;
+      if (!shapePath?.shapePrimitives?.length) continue;
+      const style = data.style;
+      const tint = multiplyHexColors(style.color, groupTint);
+      const alpha = style.alpha * groupAlpha;
+      if (alpha <= 0) continue;
+      const isStroke = instruction.action === "stroke";
+      context.globalAlpha = alpha;
+      if (isStroke) {
+        const strokeStyle = style;
+        context.lineWidth = strokeStyle.width;
+        context.lineCap = strokeStyle.cap;
+        context.lineJoin = strokeStyle.join;
+        context.miterLimit = strokeStyle.miterLimit;
+      }
+      const shapePrimitives = shapePath.shapePrimitives;
+      if (!isStroke && data.hole?.shapePath?.shapePrimitives?.length) {
+        const lastShape = shapePrimitives[shapePrimitives.length - 1];
+        lastShape.holes = data.hole.shapePath.shapePrimitives;
+      }
+      for (let j = 0; j < shapePrimitives.length; j++) {
+        const primitive = shapePrimitives[j];
+        if (!primitive?.shape) continue;
+        const transform = primitive.transform;
+        const hasTransform = transform && !transform.isIdentity();
+        const hasTexture = style.texture && style.texture !== Texture.WHITE;
+        const textureTransform = style.textureSpace === "global" ? transform : null;
+        const textureMatrix = hasTexture ? generateTextureMatrix(tempTextureMatrix, style, primitive.shape, textureTransform) : null;
+        const currentTransform = hasTransform ? tempGradientMatrix.copyFrom(baseTransform).append(transform) : baseTransform;
+        const canvasStyle = getCanvasStyle(
+          style,
+          tint,
+          textureMatrix,
+          currentTransform
+        );
+        if (hasTransform) {
+          context.save();
+          context.transform(transform.a, transform.b, transform.c, transform.d, transform.tx, transform.ty);
+        }
+        if (isStroke) {
+          const strokeStyle = style;
+          const useStrokeGeometry = strokeStyle.alignment !== 0.5 && !strokeStyle.pixelLine;
+          if (useStrokeGeometry) {
+            const points = [];
+            const vertices = [];
+            const indices = [];
+            const shapeBuilder = shapeBuilders[primitive.shape.type];
+            if (shapeBuilder?.build(primitive.shape, points)) {
+              const close = primitive.shape.closePath ?? true;
+              buildLine(points, strokeStyle, false, close, vertices, indices);
+              context.fillStyle = canvasStyle;
+              fillTriangles(context, vertices, indices);
+            } else {
+              context.strokeStyle = canvasStyle;
+              context.beginPath();
+              buildShapePath(context, primitive.shape);
+              context.stroke();
+            }
+          } else {
+            context.strokeStyle = canvasStyle;
+            context.beginPath();
+            buildShapePath(context, primitive.shape);
+            context.stroke();
+          }
+        } else {
+          context.fillStyle = canvasStyle;
+          context.beginPath();
+          buildShapePath(context, primitive.shape);
+          const hasHoles = addHolePaths(context, primitive.holes);
+          if (hasHoles) {
+            context.fill("evenodd");
+          } else {
+            context.fill();
+          }
+        }
+        if (hasTransform) {
+          context.restore();
+        }
+      }
+    }
+    context.restore();
+  }
+  destroy() {
+    this.shader = null;
+  }
+}
+/** @ignore */
+CanvasGraphicsAdaptor.extension = {
+  type: [
+    ExtensionType.CanvasPipesAdaptor
+  ],
+  name: "graphics"
+};
+
+export { CanvasGraphicsAdaptor };
+//# sourceMappingURL=CanvasGraphicsAdaptor.mjs.map

@@ -1,0 +1,1 @@
+{"version":3,"file":"init.mjs","sources":["../../../src/compressed-textures/basis/init.ts"],"sourcesContent":["import { extensions } from '../../extensions/Extensions';\nimport { detectBasis } from './detectBasis';\nimport { loadBasis } from './loadBasis';\n\nextensions.add(loadBasis, detectBasis);\n\n"],"names":[],"mappings":";;;;;AAIA,UAAA,CAAW,GAAA,CAAI,WAAW,WAAW,CAAA"}

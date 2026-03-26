@@ -71,7 +71,41 @@ struct SkinContext {
     /// Coordinate space is local to the content container (origin at top-left).
     let contentBounds: CGRect
 
+    /// Scale factor for fullscreen responsive layout.
+    /// Base size: 1470 x 923, scale = min(width/1470, height/923).
+    /// For normal (non-fullscreen) mode, this is 1.0.
+    let fullscreenScale: CGFloat
+
+    /// Whether lyrics column is visible (for artwork positioning decisions).
+    /// When false, artwork should center itself; when true, artwork should leave room for lyrics.
+    let lyricsVisible: Bool
+
     var contentSize: CGSize {
         contentBounds.size
+    }
+}
+
+// MARK: - Fullscreen Fine-tuning Helpers
+extension SkinContext {
+    /// Returns a new SkinContext with adjusted content size for fullscreen scaling.
+    /// Used by skins that need additional scale adjustments beyond the global fullscreenScale.
+    func withContentSizeAdjustment(_ adjustment: CGFloat) -> SkinContext {
+        SkinContext(
+            track: track,
+            playback: playback,
+            audio: audio,
+            led: led,
+            theme: theme,
+            windowSize: windowSize,
+            contentBounds: CGRect(
+                origin: contentBounds.origin,
+                size: CGSize(
+                    width: contentBounds.width * adjustment,
+                    height: contentBounds.height * adjustment
+                )
+            ),
+            fullscreenScale: fullscreenScale,
+            lyricsVisible: lyricsVisible
+        )
     }
 }

@@ -520,7 +520,7 @@ public final class AppSettings {
         static let lyricsTranslationFontName = "SF Pro Text"
         static let lyricsFontWeight = 600
         static let lyricsTranslationFontWeight = 400
-        static let lyricsFontSize: Double = 34
+        static let lyricsFontSize: Double = 36
         static let lyricsTranslationFontSize: Double = 18
     }
 

@@ -135,7 +135,9 @@ struct NowPlayingHostView: View {
             led: ledMeter.metrics,
             theme: theme,
             windowSize: windowSize,
-            contentBounds: contentBounds
+            contentBounds: contentBounds,
+            fullscreenScale: 1.0,
+            lyricsVisible: false  // Normal mode handles lyrics separately
         )
     }
     

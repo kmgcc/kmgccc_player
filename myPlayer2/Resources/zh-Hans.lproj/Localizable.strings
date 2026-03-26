@@ -221,4 +221,4 @@
 
 // MARK: - Fullscreen
 "fullscreen.exit" = "退出全屏";
-"fullscreen.refresh_lyrics_colors" = "刷新并重新取歌词色";
+"fullscreen.refresh_lyrics_colors" = "刷新歌词";

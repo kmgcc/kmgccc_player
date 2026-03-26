@@ -1,0 +1,1 @@
+{"version":3,"file":"init.js","sources":["../../src/gif/init.ts"],"sourcesContent":["import { extensions } from '../extensions/Extensions';\nimport { GifAsset } from './GifAsset';\n\nexport * from './index';\n\nextensions.add(GifAsset);\n"],"names":["extensions","GifAsset"],"mappings":";;;;;;;;;AAKAA,qBAAA,CAAW,IAAIC,iBAAQ,CAAA;;;;;;"}

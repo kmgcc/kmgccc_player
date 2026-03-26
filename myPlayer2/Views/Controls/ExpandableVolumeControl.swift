@@ -14,6 +14,8 @@ import SwiftUI
 struct ExpandableVolumeControl: View {
     @Binding var volume: Double
     @Binding var isExpanded: Bool
+    var scale: CGFloat = 1.0
+    
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
@@ -23,6 +25,14 @@ struct ExpandableVolumeControl: View {
     private let controlHeight: CGFloat = 60
     private let iconAreaWidth: CGFloat = 60
     private let iconSize: CGFloat = 20
+    
+    // Scaled dimensions
+    private var scaledCollapsedWidth: CGFloat { collapsedWidth * scale }
+    private var scaledExpandedWidth: CGFloat { expandedWidth * scale }
+    private var scaledControlHeight: CGFloat { controlHeight * scale }
+    private var scaledIconAreaWidth: CGFloat { iconAreaWidth * scale }
+    private var scaledIconSize: CGFloat { iconSize * scale }
+    private var sliderTrailingPadding: CGFloat { 18 * scale }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -30,7 +40,7 @@ struct ExpandableVolumeControl: View {
 
             sliderView
         }
-        .frame(width: currentWidth, height: controlHeight, alignment: .leading)
+        .frame(width: currentWidth, height: scaledControlHeight, alignment: .leading)
         .contentShape(Capsule())
         .liquidGlassPill(
             colorScheme: colorScheme,
@@ -47,11 +57,11 @@ struct ExpandableVolumeControl: View {
     private var volumeIconButton: some View {
         Button(action: toggleMute) {
             Image(systemName: volumeIcon)
-                .font(.system(size: iconSize, weight: .semibold))
+                .font(.system(size: scaledIconSize, weight: .semibold))
                 .foregroundStyle(controlPrimaryColor)
                 .compositingGroup()
                 .blendMode(.screen)
-                .frame(width: iconAreaWidth, height: controlHeight)
+                .frame(width: scaledIconAreaWidth, height: scaledControlHeight)
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
@@ -65,14 +75,14 @@ struct ExpandableVolumeControl: View {
             .compositingGroup()
             .blendMode(.screen)
             .frame(maxWidth: .infinity)
-            .padding(.trailing, 18)
+            .padding(.trailing, sliderTrailingPadding)
             .opacity(isExpanded ? 1 : 0)
             .allowsHitTesting(isExpanded)
             .accessibilityHidden(!isExpanded)
     }
 
     private var currentWidth: CGFloat {
-        isExpanded ? expandedWidth : collapsedWidth
+        isExpanded ? scaledExpandedWidth : scaledCollapsedWidth
     }
 
     private var expandAnimation: Animation {

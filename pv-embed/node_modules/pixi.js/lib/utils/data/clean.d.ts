@@ -1,0 +1,28 @@
+/**
+ * Takes a hash and removes all the `undefined`/`null` values from it.
+ * In PixiJS, we tend to null properties instead of using 'delete' for performance reasons.
+ * However, in some cases, this could be a problem if the hash grows too large over time,
+ * this function can be used to clean a hash.
+ * @param hash - The hash to clean.
+ * @returns A new hash with all the `undefined`/`null` values removed.
+ * @category utils
+ * @internal
+ */
+export declare function cleanHash<T>(hash: Record<string, T>): Record<string, T>;
+/**
+ * Removes all `undefined`/`null` elements from the given array and compacts the array.
+ *
+ * This function iterates through the array, shifting non-undefined elements to the left
+ * to fill gaps created by `undefined` elements. The length of the array is then adjusted
+ * to remove the trailing `undefined` elements.
+ * @param arr - The array to be cleaned.
+ * @returns The cleaned array with all `undefined` elements removed.
+ * @example
+ * // Example usage:
+ * const arr = [1, undefined, 2, undefined, 3];
+ * const cleanedArr = cleanArray(arr);
+ * console.log(cleanedArr); // Output: [1, 2, 3]
+ * @category utils
+ * @internal
+ */
+export declare function cleanArray<T>(arr: T[]): T[];

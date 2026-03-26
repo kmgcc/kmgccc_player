@@ -1,0 +1,592 @@
+/**
+ * A callback which can be added to a ticker.
+ * The callback receives the Ticker instance as its parameter, providing access to timing properties.
+ * @example
+ * ```ts
+ * ticker.add((ticker) => {
+ *    // Access deltaTime (dimensionless scalar ~1.0 at 60fps)
+ *    sprite.rotation += 0.1 * ticker.deltaTime;
+ *
+ *    // Access deltaMS (milliseconds elapsed)
+ *    const progress = ticker.deltaMS / animationDuration;
+ * });
+ * ```
+ * @category ticker
+ * @standard
+ */
+export type TickerCallback<T> = (this: T, ticker: Ticker) => any;
+/**
+ * A Ticker class that runs an update loop that other objects listen to.
+ * Used for managing animation frames and timing in a PixiJS application.
+ *
+ * It provides a way to add listeners that will be called on each frame,
+ * allowing for smooth animations and updates.
+ *
+ * ## Time Units
+ * - `deltaTime`: Dimensionless scalar (typically ~1.0 at 60 FPS) for frame-independent animations
+ * - `deltaMS`: Milliseconds elapsed (capped and speed-scaled) for time-based calculations
+ * - `elapsedMS`: Raw milliseconds elapsed (uncapped, unscaled) for measurements
+ * - `lastTime`: Timestamp in milliseconds since epoch (performance.now() format)
+ *
+ * Animation frames are requested
+ * only when necessary, e.g., when the ticker is started and the emitter has listeners.
+ * @example
+ * ```ts
+ * // Basic ticker usage with different time units
+ * const ticker = new Ticker();
+ * ticker.add((ticker) => {
+ *     // Frame-independent animation using dimensionless deltaTime
+ *     sprite.rotation += 0.1 * ticker.deltaTime;
+ *
+ *     // Time-based animation using deltaMS (milliseconds)
+ *     sprite.x += (100 / 1000) * ticker.deltaMS; // 100 pixels per second
+ * });
+ * ticker.start();
+ *
+ * // Control update priority
+ * ticker.add(
+ *     (ticker) => {
+ *         // High priority updates run first
+ *         physics.update(ticker.deltaTime);
+ *     },
+ *     undefined,
+ *     UPDATE_PRIORITY.HIGH
+ * );
+ *
+ * // One-time updates
+ * ticker.addOnce(() => {
+ *     console.log('Runs on next frame only');
+ * });
+ * ```
+ * @see {@link TickerPlugin} For use with Application
+ * @see {@link UPDATE_PRIORITY} For priority constants
+ * @see {@link TickerCallback} For listener function type
+ * @category ticker
+ * @standard
+ */
+export declare class Ticker {
+    /**
+     * Target frame rate in frames per millisecond.
+     * Used for converting deltaTime to a scalar time delta.
+     * @example
+     * ```ts
+     * // Default is 0.06 (60 FPS)
+     * console.log(Ticker.targetFPMS); // 0.06
+     *
+     * // Calculate target frame duration
+     * const frameDuration = 1 / Ticker.targetFPMS; // ≈ 16.67ms
+     *
+     * // Use in custom timing calculations
+     * const deltaTime = elapsedMS * Ticker.targetFPMS;
+     * ```
+     * @remarks
+     * - Default is 0.06 (equivalent to 60 FPS)
+     * - Used in deltaTime calculations
+     * - Affects all ticker instances
+     * @default 0.06
+     * @see {@link Ticker#deltaTime} For time scaling
+     * @see {@link Ticker#FPS} For actual frame rate
+     */
+    static targetFPMS: number;
+    /** The private shared ticker instance */
+    private static _shared;
+    /** The private system ticker instance  */
+    private static _system;
+    /**
+     * Whether or not this ticker should invoke the method {@link Ticker#start|start}
+     * automatically when a listener is added.
+     * @example
+     * ```ts
+     * // Default behavior (manual start)
+     * const ticker = new Ticker();
+     * ticker.autoStart = false;
+     * ticker.add(() => {
+     *     // Won't run until ticker.start() is called
+     * });
+     *
+     * // Auto-start behavior
+     * const autoTicker = new Ticker();
+     * autoTicker.autoStart = true;
+     * autoTicker.add(() => {
+     *     // Runs immediately when added
+     * });
+     * ```
+     * @default false
+     * @see {@link Ticker#start} For manually starting the ticker
+     * @see {@link Ticker#stop} For manually stopping the ticker
+     */
+    autoStart: boolean;
+    /**
+     * Scalar representing the delta time factor.
+     * This is a dimensionless value representing the fraction of a frame at the target framerate.
+     * At 60 FPS, this value is typically around 1.0.
+     *
+     * This is NOT in milliseconds - it's a scalar multiplier for frame-independent animations.
+     * For actual milliseconds, use {@link Ticker#deltaMS}.
+     * @example
+     * ```ts
+     * // Frame-independent animation using deltaTime scalar
+     * ticker.add((ticker) => {
+     *     // Rotate sprite by 0.1 radians per frame, scaled by deltaTime
+     *     sprite.rotation += 0.1 * ticker.deltaTime;
+     * });
+     * ```
+     */
+    deltaTime: number;
+    /**
+     * Scalar time elapsed in milliseconds from last frame to this frame.
+     * Provides precise timing for animations and updates.
+     *
+     * This value is capped by setting {@link Ticker#minFPS|minFPS}
+     * and is scaled with {@link Ticker#speed|speed}.
+     *
+     * If the platform supports DOMHighResTimeStamp,
+     * this value will have a precision of 1 µs.
+     *
+     * Defaults to target frame time
+     *
+     * > [!NOTE] The cap may be exceeded by scaling.
+     * @example
+     * ```ts
+     * // Animation timing
+     * ticker.add((ticker) => {
+     *     // Use millisecond timing for precise animations
+     *     const progress = (ticker.deltaMS / animationDuration);
+     *     sprite.alpha = Math.min(1, progress);
+     * });
+     * ```
+     * @default 16.66
+     */
+    deltaMS: number;
+    /**
+     * Time elapsed in milliseconds from the last frame to this frame.
+     * This value is not capped or scaled and provides raw timing information.
+     *
+     * Unlike {@link Ticker#deltaMS}, this value is unmodified by speed scaling or FPS capping.
+     * @example
+     * ```ts
+     * ticker.add((ticker) => {
+     *     console.log(`Raw frame time: ${ticker.elapsedMS}ms`);
+     * });
+     * ```
+     */
+    elapsedMS: number;
+    /**
+     * The last time update was invoked, in milliseconds since epoch.
+     * Similar to performance.now() timestamp format.
+     *
+     * Used internally for calculating time deltas between frames.
+     * @example
+     * ```ts
+     * ticker.add((ticker) => {
+     *     const currentTime = performance.now();
+     *     const timeSinceLastFrame = currentTime - ticker.lastTime;
+     *     console.log(`Time since last frame: ${timeSinceLastFrame}ms`);
+     * });
+     * ```
+     */
+    lastTime: number;
+    /**
+     * Factor of current {@link Ticker#deltaTime|deltaTime}.
+     * Used to scale time for slow motion or fast-forward effects.
+     * @example
+     * ```ts
+     * // Basic speed adjustment
+     * ticker.speed = 0.5; // Half speed (slow motion)
+     * ticker.speed = 2.0; // Double speed (fast forward)
+     *
+     * // Temporary speed changes
+     * function slowMotion() {
+     *     const normalSpeed = ticker.speed;
+     *     ticker.speed = 0.2;
+     *     setTimeout(() => {
+     *         ticker.speed = normalSpeed;
+     *     }, 1000);
+     * }
+     * ```
+     */
+    speed: number;
+    /**
+     * Whether or not this ticker has been started.
+     *
+     * `true` if {@link Ticker#start|start} has been called.
+     * `false` if {@link Ticker#stop|Stop} has been called.
+     *
+     * While `false`, this value may change to `true` in the
+     * event of {@link Ticker#autoStart|autoStart} being `true`
+     * and a listener is added.
+     * @example
+     * ```ts
+     * // Check ticker state
+     * const ticker = new Ticker();
+     * console.log(ticker.started); // false
+     *
+     * // Start and verify
+     * ticker.start();
+     * console.log(ticker.started); // true
+     * ```
+     */
+    started: boolean;
+    /** The first listener. All new listeners added are chained on this. */
+    private _head;
+    /** Internal current frame request ID */
+    private _requestId;
+    /**
+     * Internal value managed by minFPS property setter and getter.
+     * This is the maximum allowed milliseconds between updates.
+     */
+    private _maxElapsedMS;
+    /**
+     * Internal value managed by maxFPS property setter and getter.
+     * This is the minimum allowed milliseconds between updates.
+     */
+    private _minElapsedMS;
+    /** If enabled, deleting is disabled.*/
+    private _protected;
+    /** The last time keyframe was executed. Maintains a relatively fixed interval with the previous value. */
+    private _lastFrame;
+    /**
+     * Internal tick method bound to ticker instance.
+     * This is because in early 2015, Function.bind
+     * is still 60% slower in high performance scenarios.
+     * Also separating frame requests from update method
+     * so listeners may be called at any time and with
+     * any animation API, just invoke ticker.update(time).
+     * @param time - Time since last tick.
+     */
+    private readonly _tick;
+    constructor();
+    /**
+     * Conditionally requests a new animation frame.
+     * If a frame has not already been requested, and if the internal
+     * emitter has listeners, a new frame is requested.
+     */
+    private _requestIfNeeded;
+    /** Conditionally cancels a pending animation frame. */
+    private _cancelIfNeeded;
+    /**
+     * Conditionally requests a new animation frame.
+     * If the ticker has been started it checks if a frame has not already
+     * been requested, and if the internal emitter has listeners. If these
+     * conditions are met, a new frame is requested. If the ticker has not
+     * been started, but autoStart is `true`, then the ticker starts now,
+     * and continues with the previous conditions to request a new frame.
+     */
+    private _startIfPossible;
+    /**
+     * Register a handler for tick events.
+     * @param fn - The listener function to add. Receives the Ticker instance as parameter
+     * @param context - The context for the listener
+     * @param priority - The priority of the listener
+     * @example
+     * ```ts
+     * // Access time properties through the ticker parameter
+     * ticker.add((ticker) => {
+     *     // Use deltaTime (dimensionless scalar) for frame-independent animations
+     *     sprite.rotation += 0.1 * ticker.deltaTime;
+     *
+     *     // Use deltaMS (milliseconds) for time-based calculations
+     *     const progress = ticker.deltaMS / animationDuration;
+     *
+     *     // Use elapsedMS for raw timing measurements
+     *     console.log(`Raw frame time: ${ticker.elapsedMS}ms`);
+     * });
+     * ```
+     */
+    add<T = any>(fn: TickerCallback<T>, context?: T, priority?: number): this;
+    /**
+     * Add a handler for the tick event which is only executed once on the next frame.
+     * @example
+     * ```ts
+     * // Basic one-time update
+     * ticker.addOnce(() => {
+     *     console.log('Runs next frame only');
+     * });
+     *
+     * // With specific context
+     * const game = {
+     *     init(ticker) {
+     *         this.loadResources();
+     *         console.log('Game initialized');
+     *     }
+     * };
+     * ticker.addOnce(game.init, game);
+     *
+     * // With priority
+     * ticker.addOnce(
+     *     () => {
+     *         // High priority one-time setup
+     *         physics.init();
+     *     },
+     *     undefined,
+     *     UPDATE_PRIORITY.HIGH
+     * );
+     * ```
+     * @param fn - The listener function to be added for one update
+     * @param context - The listener context
+     * @param priority - The priority for emitting (default: UPDATE_PRIORITY.NORMAL)
+     * @returns This instance of a ticker
+     * @see {@link Ticker#add} For continuous updates
+     * @see {@link Ticker#remove} For removing handlers
+     */
+    addOnce<T = any>(fn: TickerCallback<T>, context?: T, priority?: number): this;
+    /**
+     * Internally adds the event handler so that it can be sorted by priority.
+     * Priority allows certain handler (user, AnimatedSprite, Interaction) to be run
+     * before the rendering.
+     * @private
+     * @param listener - Current listener being added.
+     * @returns This instance of a ticker
+     */
+    private _addListener;
+    /**
+     * Removes any handlers matching the function and context parameters.
+     * If no handlers are left after removing, then it cancels the animation frame.
+     * @example
+     * ```ts
+     * // Basic removal
+     * const onTick = () => {
+     *     sprite.rotation += 0.1;
+     * };
+     * ticker.add(onTick);
+     * ticker.remove(onTick);
+     *
+     * // Remove with context
+     * const game = {
+     *     update(ticker) {
+     *         this.physics.update(ticker.deltaTime);
+     *     }
+     * };
+     * ticker.add(game.update, game);
+     * ticker.remove(game.update, game);
+     *
+     * // Remove all matching handlers
+     * // (if same function was added multiple times)
+     * ticker.add(onTick);
+     * ticker.add(onTick);
+     * ticker.remove(onTick); // Removes all instances
+     * ```
+     * @param fn - The listener function to be removed
+     * @param context - The listener context to be removed
+     * @returns This instance of a ticker
+     * @see {@link Ticker#add} For adding handlers
+     * @see {@link Ticker#addOnce} For one-time handlers
+     */
+    remove<T = any>(fn: TickerCallback<T>, context?: T): this;
+    /**
+     * The number of listeners on this ticker, calculated by walking through linked list.
+     * @example
+     * ```ts
+     * // Check number of active listeners
+     * const ticker = new Ticker();
+     * console.log(ticker.count); // 0
+     *
+     * // Add some listeners
+     * ticker.add(() => {});
+     * ticker.add(() => {});
+     * console.log(ticker.count); // 2
+     *
+     * // Check after cleanup
+     * ticker.destroy();
+     * console.log(ticker.count); // 0
+     * ```
+     * @readonly
+     * @see {@link Ticker#add} For adding listeners
+     * @see {@link Ticker#remove} For removing listeners
+     */
+    get count(): number;
+    /**
+     * Starts the ticker. If the ticker has listeners a new animation frame is requested at this point.
+     * @example
+     * ```ts
+     * // Basic manual start
+     * const ticker = new Ticker();
+     * ticker.add(() => {
+     *     // Animation code here
+     * });
+     * ticker.start();
+     * ```
+     * @see {@link Ticker#stop} For stopping the ticker
+     * @see {@link Ticker#autoStart} For automatic starting
+     * @see {@link Ticker#started} For checking ticker state
+     */
+    start(): void;
+    /**
+     * Stops the ticker. If the ticker has requested an animation frame it is canceled at this point.
+     * @example
+     * ```ts
+     * // Basic stop
+     * const ticker = new Ticker();
+     * ticker.stop();
+     * ```
+     * @see {@link Ticker#start} For starting the ticker
+     * @see {@link Ticker#started} For checking ticker state
+     * @see {@link Ticker#destroy} For cleaning up the ticker
+     */
+    stop(): void;
+    /**
+     * Destroy the ticker and don't use after this. Calling this method removes all references to internal events.
+     * @example
+     * ```ts
+     * // Clean up with active listeners
+     * const ticker = new Ticker();
+     * ticker.add(() => {});
+     * ticker.destroy(); // Removes all listeners
+     * ```
+     * @see {@link Ticker#stop} For stopping without destroying
+     * @see {@link Ticker#remove} For removing specific listeners
+     */
+    destroy(): void;
+    /**
+     * Triggers an update.
+     *
+     * An update entails setting the
+     * current {@link Ticker#elapsedMS|elapsedMS},
+     * the current {@link Ticker#deltaTime|deltaTime},
+     * invoking all listeners with current deltaTime,
+     * and then finally setting {@link Ticker#lastTime|lastTime}
+     * with the value of currentTime that was provided.
+     *
+     * This method will be called automatically by animation
+     * frame callbacks if the ticker instance has been started
+     * and listeners are added.
+     * @example
+     * ```ts
+     * // Basic manual update
+     * const ticker = new Ticker();
+     * ticker.update(performance.now());
+     * ```
+     * @param currentTime - The current time of execution (defaults to performance.now())
+     * @see {@link Ticker#deltaTime} For frame delta value
+     * @see {@link Ticker#elapsedMS} For raw elapsed time
+     */
+    update(currentTime?: number): void;
+    /**
+     * The frames per second at which this ticker is running.
+     * The default is approximately 60 in most modern browsers.
+     * > [!NOTE] This does not factor in the value of
+     * > {@link Ticker#speed|speed}, which is specific
+     * > to scaling {@link Ticker#deltaTime|deltaTime}.
+     * @example
+     * ```ts
+     * // Basic FPS monitoring
+     * ticker.add(() => {
+     *     console.log(`Current FPS: ${Math.round(ticker.FPS)}`);
+     * });
+     * ```
+     * @readonly
+     */
+    get FPS(): number;
+    /**
+     * Manages the maximum amount of milliseconds allowed to
+     * elapse between invoking {@link Ticker#update|update}.
+     *
+     * This value is used to cap {@link Ticker#deltaTime|deltaTime},
+     * but does not effect the measured value of {@link Ticker#FPS|FPS}.
+     *
+     * When setting this property it is clamped to a value between
+     * `0` and `Ticker.targetFPMS * 1000` (typically 60).
+     *
+     * If `maxFPS` is currently set (non-zero) and `minFPS` is set above it,
+     * `maxFPS` is automatically raised to match. This keeps the two limits consistent.
+     * @example
+     * ```ts
+     * // Set minimum acceptable frame rate
+     * const ticker = new Ticker();
+     * ticker.minFPS = 30; // Never go below 30 FPS
+     *
+     * // Use with maxFPS for frame rate clamping
+     * ticker.minFPS = 30;
+     * ticker.maxFPS = 60;
+     *
+     * // minFPS above maxFPS pushes maxFPS up
+     * ticker.minFPS = 50; // maxFPS is raised to 50
+     * ```
+     * @default 10
+     */
+    get minFPS(): number;
+    set minFPS(fps: number);
+    /**
+     * Manages the minimum amount of milliseconds required to
+     * elapse between invoking {@link Ticker#update|update}.
+     *
+     * This will effect the measured value of {@link Ticker#FPS|FPS}.
+     *
+     * If it is set to `0`, then there is no limit; PixiJS will render as many frames as it can.
+     * Otherwise it will be at least `minFPS`.
+     *
+     * If `maxFPS` is set below the current `minFPS`, `minFPS` is automatically lowered to match.
+     * This keeps the two limits consistent.
+     * @example
+     * ```ts
+     * // Cap the frame rate
+     * const ticker = new Ticker();
+     * ticker.maxFPS = 60; // Never go above 60 FPS
+     *
+     * // Use with minFPS for frame rate clamping
+     * ticker.minFPS = 30;
+     * ticker.maxFPS = 60;
+     *
+     * // maxFPS below minFPS pushes minFPS down
+     * ticker.maxFPS = 20; // minFPS is now also 20
+     * ```
+     * @default 0
+     */
+    get maxFPS(): number;
+    set maxFPS(fps: number);
+    /**
+     * The shared ticker instance used by {@link AnimatedSprite} and by
+     * {@link VideoSource} to update animation frames / video textures.
+     *
+     * It may also be used by {@link Application} if created with the `sharedTicker` option property set to true.
+     *
+     * The property {@link Ticker#autoStart|autoStart} is set to `true` for this instance.
+     * Please follow the examples for usage, including how to opt-out of auto-starting the shared ticker.
+     * @example
+     * import { Ticker } from 'pixi.js';
+     *
+     * const ticker = Ticker.shared;
+     * // Set this to prevent starting this ticker when listeners are added.
+     * // By default this is true only for the Ticker.shared instance.
+     * ticker.autoStart = false;
+     *
+     * // FYI, call this to ensure the ticker is stopped. It should be stopped
+     * // if you have not attempted to render anything yet.
+     * ticker.stop();
+     *
+     * // Call this when you are ready for a running shared ticker.
+     * ticker.start();
+     * @example
+     * import { autoDetectRenderer, Container } from 'pixi.js';
+     *
+     * // You may use the shared ticker to render...
+     * const renderer = autoDetectRenderer();
+     * const stage = new Container();
+     * document.body.appendChild(renderer.view);
+     * ticker.add((time) => renderer.render(stage));
+     *
+     * // Or you can just update it manually.
+     * ticker.autoStart = false;
+     * ticker.stop();
+     * const animate = (time) => {
+     *     ticker.update(time);
+     *     renderer.render(stage);
+     *     requestAnimationFrame(animate);
+     * };
+     * animate(performance.now());
+     * @type {Ticker}
+     * @readonly
+     */
+    static get shared(): Ticker;
+    /**
+     * The system ticker instance used by {@link PrepareBase} for core timing
+     * functionality that shouldn't usually need to be paused, unlike the `shared`
+     * ticker which drives visual animations and rendering which may want to be paused.
+     *
+     * The property {@link Ticker#autoStart|autoStart} is set to `true` for this instance.
+     * @type {Ticker}
+     * @readonly
+     * @advanced
+     */
+    static get system(): Ticker;
+}
