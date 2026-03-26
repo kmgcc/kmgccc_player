@@ -1,0 +1,21 @@
+import { BlendModeFilter } from '../filters/blend-modes/BlendModeFilter';
+import type { ExtensionMetadata } from '../extensions/Extensions';
+/**
+ * The final color is the result of multiply if the bottom color is darker, or screen if the bottom color is lighter.
+ * This blend mode is equivalent to hard-light but with the layers swapped.
+ *
+ * Available as `container.blendMode = 'overlay'` after importing `pixi.js/advanced-blend-modes`.
+ * @example
+ * import 'pixi.js/advanced-blend-modes';
+ * import { Sprite } from 'pixi.js';
+ *
+ * const sprite = Sprite.from('something.png');
+ * sprite.blendMode = 'overlay'
+ * @category filters
+ * @noInheritDoc
+ */
+export declare class OverlayBlend extends BlendModeFilter {
+    /** @ignore */
+    static extension: ExtensionMetadata;
+    constructor();
+}

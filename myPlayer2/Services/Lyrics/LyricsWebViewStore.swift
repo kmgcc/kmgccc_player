@@ -272,6 +272,17 @@ final class LyricsWebViewStore: NSObject {
         lastConfigJSON = json
         callJS("window.AMLL.setConfig(\(json))")
     }
+    
+    /// Force set config JSON bypassing deduplication.
+    /// Use when appearance/colorScheme changes require guaranteed delivery.
+    func forceSetConfigJSON(_ json: String, reason: String) {
+        guard !isShutDown else { return }
+        
+        print("[LyricsStore] forceSetConfigJSON: reason=\(reason), webViewObjectID=\(webViewObjectID), jsonChanged=\(json != lastConfigJSON)")
+        
+        lastConfigJSON = json
+        callJS("window.AMLL.setConfig(\(json))")
+    }
 
     /// Unified JS call entry point with queuing.
     private func callJS(_ script: String) {

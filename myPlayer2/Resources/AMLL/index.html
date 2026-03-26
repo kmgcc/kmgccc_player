@@ -230,29 +230,33 @@
             ) !important;
             opacity: 0 !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][class*="_active_"] > [class*="_lyricSubLine_"],
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][class*="_active_"] > [class*="_lyricSubLine_"] * {
+        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][class*="_active_"] > [class*="_lyricSubLine_"] {
             color: var(
                 --amll-fs-sub-active,
                 var(--amll-fs-main-active, var(--amll-active, var(--amll-lp-color, white)))
             ) !important;
+            transition: color 0.5s ease-out 0.05s !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] > [class*="_lyricSubLine_"],
-        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] > [class*="_lyricSubLine_"] * {
-            transition:
-                color var(--amll-fs-line-switch-highlight-in-duration) linear var(--amll-fs-line-switch-highlight-delay) !important;
+        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"]:not([class*="_active_"]) > [class*="_lyricSubLine_"] {
+            color: var(
+                --amll-fs-sub-inactive,
+                var(--amll-fs-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
+            ) !important;
+            transition: color 0.5s ease-out 0s !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) > [class*="_lyricSubLine_"],
-        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) > [class*="_lyricSubLine_"] * {
+        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] > [class*="_lyricSubLine_"] {
+            color: var(
+                --amll-fs-sub-active,
+                var(--amll-fs-main-active, var(--amll-active, var(--amll-lp-color, white)))
+            ) !important;
+            transition: color 0.5s ease-out 0.05s !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) > [class*="_lyricSubLine_"] {
             color: var(
                 --amll-fs-sub-line-timing-inactive,
                 var(--amll-fs-sub-inactive, var(--amll-fs-main-line-timing-inactive, var(--amll-lp-color, white)))
             ) !important;
-        }
-        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) > [class*="_lyricSubLine_"],
-        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) > [class*="_lyricSubLine_"] * {
-            transition:
-                color var(--amll-fs-line-switch-highlight-out-duration) ease-out var(--amll-fs-line-switch-highlight-out-delay) !important;
+            transition: color 0.5s ease-out 0s !important;
         }
         .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] .amll-fs-word-active,
         .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] .amll-fs-char-active {
@@ -386,24 +390,6 @@
         .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][class*="_active_"] [class*="_emphasizeWrapper_"]::after,
         .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][class*="_active_"] [class*="_emphasize_"]::after {
             opacity: 1 !important;
-        }
-
-        /* === Task 2: Fullscreen translation line highlight fade-in === */
-        /* Add smooth fade-in transition for translation lines becoming active in fullscreen mode only */
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricSubLine_"] {
-            transition: 
-                color var(--amll-fs-line-switch-highlight-in-duration, 0.20s) linear var(--amll-fs-line-switch-highlight-delay, 0.05s),
-                opacity 0.28s ease-out 0.05s !important;
-        }
-
-        /* Inactive translation lines in fullscreen - slightly dimmed */
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"]:not([class*="_active_"]) > [class*="_lyricSubLine_"] {
-            opacity: 0.65 !important;
-        }
-
-        /* Active translation lines in fullscreen - slightly dimmed highlight */
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][class*="_active_"] > [class*="_lyricSubLine_"] {
-            opacity: 0.70 !important;
         }
 
     </style>

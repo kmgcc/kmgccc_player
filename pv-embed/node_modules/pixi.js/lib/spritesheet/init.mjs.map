@@ -1,0 +1,1 @@
+{"version":3,"file":"init.mjs","sources":["../../src/spritesheet/init.ts"],"sourcesContent":["import { extensions } from '../extensions/Extensions';\nimport { spritesheetAsset } from './spritesheetAsset';\n\nextensions.add(spritesheetAsset);\n"],"names":[],"mappings":";;;;AAGA,UAAA,CAAW,IAAI,gBAAgB,CAAA"}

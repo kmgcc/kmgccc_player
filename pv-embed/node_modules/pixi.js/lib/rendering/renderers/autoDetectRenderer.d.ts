@@ -1,0 +1,59 @@
+import type { CanvasOptions } from './canvas/CanvasRenderer';
+import type { WebGLOptions } from './gl/WebGLRenderer';
+import type { WebGPUOptions } from './gpu/WebGPURenderer';
+import type { Renderer, RendererOptions } from './types';
+/**
+ * Options for {@link autoDetectRenderer}.
+ * @category rendering
+ * @advanced
+ */
+export interface AutoDetectOptions extends RendererOptions {
+    /** The preferred renderer type. WebGPU is recommended as its generally faster than WebGL. */
+    preference?: 'webgl' | 'webgpu' | 'canvas';
+    /** Optional WebGPUOptions to pass only to WebGPU renderer. */
+    webgpu?: Partial<WebGPUOptions>;
+    /** Optional WebGLOptions to pass only to the WebGL renderer */
+    webgl?: Partial<WebGLOptions>;
+    /** Optional CanvasOptions to pass only to the Canvas renderer */
+    canvasOptions?: Partial<CanvasOptions>;
+}
+/**
+ * Automatically determines the most appropriate renderer for the current environment.
+ *
+ * The function will prioritize the WebGL renderer as it is the most tested safe API to use.
+ * In the near future as WebGPU becomes more stable and ubiquitous, it will be prioritized over WebGL.
+ *
+ * The selected renderer's code is then dynamically imported to optimize
+ * performance and minimize the initial bundle size.
+ *
+ * To maximize the benefits of dynamic imports, it's recommended to use a modern bundler
+ * that supports code splitting. This will place the renderer code in a separate chunk,
+ * which is loaded only when needed.
+ * @example
+ *
+ * // create a renderer
+ * const renderer = await autoDetectRenderer({
+ *   width: 800,
+ *   height: 600,
+ *   antialias: true,
+ * });
+ *
+ * // custom for each renderer
+ * const renderer = await autoDetectRenderer({
+ *   width: 800,
+ *   height: 600,
+ *   webgpu:{
+ *     antialias: true,
+ *     backgroundColor: 'red'
+ *   },
+ *   webgl:{
+ *     antialias: true,
+ *     backgroundColor: 'green'
+ *   }
+ *  });
+ * @param options - A partial configuration object based on the `AutoDetectOptions` type.
+ * @returns A Promise that resolves to an instance of the selected renderer.
+ * @category rendering
+ * @standard
+ */
+export declare function autoDetectRenderer(options: Partial<AutoDetectOptions>): Promise<Renderer>;

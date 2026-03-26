@@ -1,0 +1,428 @@
+import { ObservablePoint } from '../../maths/point/ObservablePoint.mjs';
+import { Texture } from '../../rendering/renderers/shared/texture/Texture.mjs';
+import { deprecation, v8_0_0 } from '../../utils/logging/deprecation.mjs';
+import { ViewContainer } from '../view/ViewContainer.mjs';
+import { NineSliceGeometry } from './NineSliceGeometry.mjs';
+import './init.mjs';
+
+"use strict";
+const _NineSliceSprite = class _NineSliceSprite extends ViewContainer {
+  constructor(options) {
+    if (options instanceof Texture) {
+      options = { texture: options };
+    }
+    const {
+      width,
+      height,
+      anchor,
+      leftWidth,
+      rightWidth,
+      topHeight,
+      bottomHeight,
+      texture,
+      roundPixels,
+      ...rest
+    } = options;
+    super({
+      label: "NineSliceSprite",
+      ...rest
+    });
+    /** @internal */
+    this.renderPipeId = "nineSliceSprite";
+    /** @internal */
+    this.batched = true;
+    this._leftWidth = leftWidth ?? texture?.defaultBorders?.left ?? NineSliceGeometry.defaultOptions.leftWidth;
+    this._topHeight = topHeight ?? texture?.defaultBorders?.top ?? NineSliceGeometry.defaultOptions.topHeight;
+    this._rightWidth = rightWidth ?? texture?.defaultBorders?.right ?? NineSliceGeometry.defaultOptions.rightWidth;
+    this._bottomHeight = bottomHeight ?? texture?.defaultBorders?.bottom ?? NineSliceGeometry.defaultOptions.bottomHeight;
+    this._width = width ?? texture.width ?? NineSliceGeometry.defaultOptions.width;
+    this._height = height ?? texture.height ?? NineSliceGeometry.defaultOptions.height;
+    this.allowChildren = false;
+    this.texture = texture ?? _NineSliceSprite.defaultOptions.texture;
+    this.roundPixels = roundPixels ?? false;
+    this._anchor = new ObservablePoint(
+      {
+        _onUpdate: () => {
+          this.onViewUpdate();
+        }
+      }
+    );
+    if (anchor) {
+      this.anchor = anchor;
+    } else if (this.texture.defaultAnchor) {
+      this.anchor = this.texture.defaultAnchor;
+    }
+  }
+  /**
+   * The anchor sets the origin point of the sprite. The default value is taken from the {@link Texture}
+   * and passed to the constructor.
+   *
+   * - The default is `(0,0)`, this means the sprite's origin is the top left.
+   * - Setting the anchor to `(0.5,0.5)` means the sprite's origin is centered.
+   * - Setting the anchor to `(1,1)` would mean the sprite's origin point will be the bottom right corner.
+   *
+   * If you pass only single parameter, it will set both x and y to the same value as shown in the example below.
+   * @example
+   * ```ts
+   * // Center the anchor point
+   * sprite.anchor = 0.5; // Sets both x and y to 0.5
+   * sprite.position.set(400, 300); // Sprite will be centered at this position
+   *
+   * // Set specific x/y anchor points
+   * sprite.anchor = {
+   *     x: 1, // Right edge
+   *     y: 0  // Top edge
+   * };
+   *
+   * // Using individual coordinates
+   * sprite.anchor.set(0.5, 1); // Center-bottom
+   *
+   * // For rotation around center
+   * sprite.anchor.set(0.5);
+   * sprite.rotation = Math.PI / 4; // 45 degrees around center
+   *
+   * // For scaling from center
+   * sprite.anchor.set(0.5);
+   * sprite.scale.set(2); // Scales from center point
+   * ```
+   */
+  get anchor() {
+    return this._anchor;
+  }
+  set anchor(value) {
+    typeof value === "number" ? this._anchor.set(value) : this._anchor.copyFrom(value);
+  }
+  /**
+   * The width of the NineSliceSprite, setting this will actually modify the vertices and UV's of this plane.
+   * The width affects how the middle sections are scaled.
+   * @example
+   * ```ts
+   * // Create a nine-slice sprite with fixed width
+   * const panel = new NineSliceSprite({
+   *     texture: Texture.from('panel.png'),
+   *     width: 200  // Sets initial width
+   * });
+   *
+   * // Adjust width dynamically
+   * panel.width = 300;  // Stretches middle sections
+   * ```
+   * @see {@link NineSliceSprite#setSize} For setting both width and height efficiently
+   * @see {@link NineSliceSprite#height} For setting height
+   */
+  get width() {
+    return this._width;
+  }
+  set width(value) {
+    this._width = value;
+    this.onViewUpdate();
+  }
+  /**
+   * The height of the NineSliceSprite, setting this will actually modify the vertices and UV's of this plane.
+   * The height affects how the middle sections are scaled.
+   * @example
+   * ```ts
+   * // Create a nine-slice sprite with fixed height
+   * const panel = new NineSliceSprite({
+   *     texture: Texture.from('panel.png'),
+   *     height: 150  // Sets initial height
+   * });
+   *
+   * // Adjust height dynamically
+   * panel.height = 200;  // Stretches middle sections
+   *
+   * // Create responsive UI element
+   * const dialog = new NineSliceSprite({
+   *     texture: Texture.from('dialog.png'),
+   *     topHeight: 30,
+   *     bottomHeight: 30,
+   *     height: parent.height * 0.5  // 50% of parent height
+   * });
+   * ```
+   * @see {@link NineSliceSprite#setSize} For setting both width and height efficiently
+   * @see {@link NineSliceSprite#width} For setting width
+   */
+  get height() {
+    return this._height;
+  }
+  set height(value) {
+    this._height = value;
+    this.onViewUpdate();
+  }
+  /**
+   * Sets the size of the NineSliceSprite to the specified width and height.
+   * This method directly modifies the vertices and UV coordinates of the sprite.
+   *
+   * Using this is more efficient than setting width and height separately as it only triggers one update.
+   * @example
+   * ```ts
+   * // Set to specific dimensions
+   * panel.setSize(300, 200); // Width: 300, Height: 200
+   *
+   * // Set uniform size
+   * panel.setSize(200); // Makes a square 200x200
+   *
+   * // Set size using object
+   * panel.setSize({
+   *     width: 400,
+   *     height: 300
+   * });
+   * ```
+   * @param value - This can be either a number or a Size object with width/height properties
+   * @param height - The height to set. Defaults to the value of `width` if not provided
+   * @see {@link NineSliceSprite#width} For setting width only
+   * @see {@link NineSliceSprite#height} For setting height only
+   */
+  setSize(value, height) {
+    if (typeof value === "object") {
+      height = value.height ?? value.width;
+      value = value.width;
+    }
+    this._width = value;
+    this._height = height ?? value;
+    this.onViewUpdate();
+  }
+  /**
+   * Retrieves the size of the NineSliceSprite as a [Size]{@link Size} object.
+   * This method is more efficient than getting width and height separately.
+   * @example
+   * ```ts
+   * // Get basic size
+   * const size = panel.getSize();
+   * console.log(`Size: ${size.width}x${size.height}`);
+   *
+   * // Reuse existing size object
+   * const reuseSize = { width: 0, height: 0 };
+   * panel.getSize(reuseSize);
+   * ```
+   * @param out - Optional object to store the size in, to avoid allocating a new object
+   * @returns The size of the NineSliceSprite
+   * @see {@link NineSliceSprite#width} For getting just the width
+   * @see {@link NineSliceSprite#height} For getting just the height
+   * @see {@link NineSliceSprite#setSize} For setting both width and height efficiently
+   */
+  getSize(out) {
+    out || (out = {});
+    out.width = this._width;
+    out.height = this._height;
+    return out;
+  }
+  /**
+   * Width of the left vertical bar (A).
+   * Controls the size of the left edge that remains unscaled
+   * @example
+   * ```ts
+   * const sprite = new NineSliceSprite({ ..., leftWidth: 20 });
+   * sprite.leftWidth = 20; // Set left border width
+   * ```
+   * @default 10
+   */
+  get leftWidth() {
+    return this._leftWidth;
+  }
+  set leftWidth(value) {
+    this._leftWidth = value;
+    this.onViewUpdate();
+  }
+  /**
+   * Height of the top horizontal bar (C).
+   * Controls the size of the top edge that remains unscaled
+   * @example
+   * ```ts
+   * const sprite = new NineSliceSprite({ ..., topHeight: 20 });
+   * sprite.topHeight = 20; // Set top border height
+   * ```
+   * @default 10
+   */
+  get topHeight() {
+    return this._topHeight;
+  }
+  set topHeight(value) {
+    this._topHeight = value;
+    this.onViewUpdate();
+  }
+  /**
+   * Width of the right vertical bar (B).
+   * Controls the size of the right edge that remains unscaled
+   * @example
+   * ```ts
+   * const sprite = new NineSliceSprite({ ..., rightWidth: 20 });
+   * sprite.rightWidth = 20; // Set right border width
+   * ```
+   * @default 10
+   */
+  get rightWidth() {
+    return this._rightWidth;
+  }
+  set rightWidth(value) {
+    this._rightWidth = value;
+    this.onViewUpdate();
+  }
+  /**
+   * Height of the bottom horizontal bar (D).
+   * Controls the size of the bottom edge that remains unscaled
+   * @example
+   * ```ts
+   * const sprite = new NineSliceSprite({ ..., bottomHeight: 20 });
+   * sprite.bottomHeight = 20; // Set bottom border height
+   * ```
+   * @default 10
+   */
+  get bottomHeight() {
+    return this._bottomHeight;
+  }
+  set bottomHeight(value) {
+    this._bottomHeight = value;
+    this.onViewUpdate();
+  }
+  /**
+   * The texture to use on the NineSliceSprite.
+   * ```ts
+   * // Create a sprite with a texture
+   * const sprite = new NineSliceSprite({
+   *     texture: Texture.from('path/to/image.png')
+   * });
+   * // Update the texture later
+   * sprite.texture = Texture.from('path/to/another-image.png');
+   * ```
+   * @default Texture.EMPTY
+   */
+  get texture() {
+    return this._texture;
+  }
+  set texture(value) {
+    value || (value = Texture.EMPTY);
+    const currentTexture = this._texture;
+    if (currentTexture === value) return;
+    if (currentTexture && currentTexture.dynamic) currentTexture.off("update", this.onViewUpdate, this);
+    if (value.dynamic) value.on("update", this.onViewUpdate, this);
+    this._texture = value;
+    this.onViewUpdate();
+  }
+  /**
+   * The original width of the texture before any nine-slice scaling.
+   * This is the width of the source texture used to create the nine-slice sprite.
+   * @example
+   * ```ts
+   * // Get original dimensions
+   * console.log(`Original size: ${sprite.originalWidth}x${sprite.originalHeight}`);
+   *
+   * // Use for relative scaling
+   * sprite.width = sprite.originalWidth * 2; // Double the original width
+   *
+   * // Reset to original size
+   * sprite.setSize(sprite.originalWidth, sprite.originalHeight);
+   * ```
+   * @readonly
+   * @see {@link NineSliceSprite#width} For the current displayed width
+   * @see {@link Texture#width} For direct texture width access
+   * @returns The original width of the texture
+   */
+  get originalWidth() {
+    return this._texture.width;
+  }
+  /**
+   * The original height of the texture before any nine-slice scaling.
+   * This is the height of the source texture used to create the nine-slice sprite.
+   * @example
+   * ```ts
+   * // Get original dimensions
+   * console.log(`Original size: ${sprite.originalWidth}x${sprite.originalHeight}`);
+   *
+   * // Use for relative scaling
+   * sprite.height = sprite.originalHeight * 2; // Double the original height
+   *
+   * // Reset to original size
+   * sprite.setSize(sprite.originalWidth, sprite.originalHeight);
+   * ```
+   * @readonly
+   * @see {@link NineSliceSprite#height} For the current displayed height
+   * @see {@link Texture#height} For direct texture height access
+   * @returns The original height of the texture
+   */
+  get originalHeight() {
+    return this._texture.height;
+  }
+  /**
+   * The trim rectangle of the underlying texture, or `null` if the texture is not trimmed.
+   * This is forwarded to the {@link NineSliceGeometry} so that UV coordinates are clamped
+   * to the visible pixel region, preventing transparent atlas padding from bleeding into
+   * the rendered sprite corners.
+   * @readonly
+   * @internal
+   */
+  get trim() {
+    return this._texture.trim ?? null;
+  }
+  /**
+   * Destroys this sprite renderable and optionally its texture.
+   * @param options - Options parameter. A boolean will act as if all options
+   *  have been set to that value
+   * @example
+   * nineSliceSprite.destroy();
+   * nineSliceSprite.destroy(true);
+   * nineSliceSprite.destroy({ texture: true, textureSource: true });
+   */
+  destroy(options) {
+    super.destroy(options);
+    const destroyTexture = typeof options === "boolean" ? options : options?.texture;
+    if (destroyTexture) {
+      const destroyTextureSource = typeof options === "boolean" ? options : options?.textureSource;
+      this._texture.destroy(destroyTextureSource);
+    }
+    this._texture = null;
+  }
+  /** @private */
+  updateBounds() {
+    const bounds = this._bounds;
+    const anchor = this._anchor;
+    const width = this._width;
+    const height = this._height;
+    bounds.minX = -anchor._x * width;
+    bounds.maxX = bounds.minX + width;
+    bounds.minY = -anchor._y * height;
+    bounds.maxY = bounds.minY + height;
+  }
+};
+/**
+ * The default options used to override initial values of any options passed in the constructor.
+ * These values are used as fallbacks when specific options are not provided.
+ * @example
+ * ```ts
+ * // Override default options globally
+ * NineSliceSprite.defaultOptions.texture = Texture.from('defaultButton.png');
+ * // Create sprite with default texture
+ * const sprite = new NineSliceSprite({...});
+ * // sprite will use 'defaultButton.png' as its texture
+ *
+ * // Reset to empty texture
+ * NineSliceSprite.defaultOptions.texture = Texture.EMPTY;
+ * ```
+ * @type {NineSliceSpriteOptions}
+ * @see {@link NineSliceSpriteOptions} For all available options
+ * @see {@link Texture#defaultBorders} For texture-level border settings
+ */
+_NineSliceSprite.defaultOptions = {
+  /** @default Texture.EMPTY */
+  texture: Texture.EMPTY
+};
+let NineSliceSprite = _NineSliceSprite;
+class NineSlicePlane extends NineSliceSprite {
+  constructor(...args) {
+    let options = args[0];
+    if (options instanceof Texture) {
+      deprecation(v8_0_0, "NineSlicePlane now uses the options object {texture, leftWidth, rightWidth, topHeight, bottomHeight}");
+      options = {
+        texture: options,
+        leftWidth: args[1],
+        topHeight: args[2],
+        rightWidth: args[3],
+        bottomHeight: args[4]
+      };
+    }
+    deprecation(v8_0_0, "NineSlicePlane is deprecated. Use NineSliceSprite instead.");
+    super(options);
+  }
+}
+
+export { NineSlicePlane, NineSliceSprite };
+//# sourceMappingURL=NineSliceSprite.mjs.map

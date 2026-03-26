@@ -12,6 +12,9 @@ import SwiftUI
 /// Enlarged mini player bar for fullscreen mode.
 /// Layout: Cover+Title | Controls | Playback Mode | Progress | Volume
 struct FullscreenMiniPlayerView: View {
+    // Scale factor for responsive sizing at different resolutions
+    var scale: CGFloat = 1.0
+    
     private let fixedBarHeight: CGFloat = 60
     private static let fullscreenThemeMinLightness: CGFloat = 0.90
     private static let fullscreenThemeMaxLightness: CGFloat = 0.98
@@ -33,35 +36,55 @@ struct FullscreenMiniPlayerView: View {
     @State private var nextSymbolEffectTrigger = 0
     @State private var artworkImage: NSImage?
 
-    // Computed properties based on settings
-    private var barHeight: CGFloat { fixedBarHeight }
+    // Computed properties based on settings and scale
+    private var barHeight: CGFloat { fixedBarHeight * scale }
     private var artworkSize: CGFloat { barHeight * 0.73 }
     private var controlSize: CGFloat { barHeight * 0.6 }
     private var iconSize: CGFloat { barHeight * 0.27 }
     private var primaryIconSize: CGFloat { barHeight * 0.33 }
+    
+    // Layout constants scaled
+    private var trackInfoWidth: CGFloat { 196 * scale }
+    private var controlsWidth: CGFloat { 174 * scale }
+    private var playbackModeWidth: CGFloat { 178 * scale }
+    private var minProgressWidth: CGFloat { 320 * scale }
+    private var hStackSpacing: CGFloat { 18 * scale }
+    private var hPadding: CGFloat { 20 * scale }
+    private var vPadding: CGFloat { 8 * scale }
+    private var trackInfoHSpacing: CGFloat { 16 * scale }
+    private var trackInfoVSpacing: CGFloat { 6 * scale }
+    private var titleFontSize: CGFloat { 15 * scale }
+    private var artistFontSize: CGFloat { 12.5 * scale }
+    private var artworkCornerRadius: CGFloat { 12 * scale }
+    private var musicNoteIconSize: CGFloat { 22 * scale }
+    private var controlsHSpacing: CGFloat { 20 * scale }
+    private var timeFontSize: CGFloat { 10.5 * scale }
+    private var progressAreaHPadding: CGFloat { 8 * scale }
+    private var progressTimeSpacing: CGFloat { 10 * scale }
+    private var progressYOffset: CGFloat { 13 * scale }
 
     var body: some View {
-        HStack(spacing: 18) {
+        HStack(spacing: hStackSpacing) {
             // Left: Cover + Title/Artist
             trackInfoView
-                .frame(width: 196, alignment: .leading)
+                .frame(width: trackInfoWidth, alignment: .leading)
 
             // Center: Playback Controls
             controlsView
-                .frame(width: 174)
+                .frame(width: controlsWidth)
 
             // Playback Mode
             playbackModeView
-                .frame(width: 178)
+                .frame(width: playbackModeWidth)
 
             // Progress bar
             progressArea
-                .frame(minWidth: 320, maxWidth: .infinity)
+                .frame(minWidth: minProgressWidth, maxWidth: .infinity)
 
             // Volume removed - now external component
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 8)
+        .padding(.horizontal, hPadding)
+        .padding(.vertical, vPadding)
         .frame(height: barHeight)
         .liquidGlassPill(
             colorScheme: colorScheme,
@@ -77,25 +100,25 @@ struct FullscreenMiniPlayerView: View {
     // MARK: - Subviews
 
     private var trackInfoView: some View {
-        HStack(spacing: 16) {
+        HStack(spacing: trackInfoHSpacing) {
             artworkView
 
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: trackInfoVSpacing) {
                 if let track = playerVM.currentTrack {
                     Text(track.title)
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.system(size: titleFontSize, weight: .semibold))
                         .lineLimit(1)
                         .foregroundStyle(lyricsDynamicPrimaryColor)
 
                     Text(track.artist.isEmpty
                         ? NSLocalizedString("library.unknown_artist", comment: "")
                         : track.artist)
-                        .font(.system(size: 12.5, weight: .medium))
+                        .font(.system(size: artistFontSize, weight: .medium))
                         .lineLimit(1)
                         .foregroundStyle(lyricsDynamicSecondaryColor)
                 } else {
                     Text("mini.not_playing")
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.system(size: titleFontSize, weight: .semibold))
                         .foregroundStyle(lyricsDynamicSecondaryColor)
                 }
             }
@@ -110,9 +133,9 @@ struct FullscreenMiniPlayerView: View {
                 .resizable()
                 .aspectRatio(contentMode: .fill)
                 .frame(width: artworkSize, height: artworkSize)
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: artworkCornerRadius, style: .continuous))
         } else {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: artworkCornerRadius, style: .continuous)
                 .fill(
                     LinearGradient(
                         colors: [.purple.opacity(0.4), .blue.opacity(0.4)],
@@ -123,7 +146,7 @@ struct FullscreenMiniPlayerView: View {
                 .frame(width: artworkSize, height: artworkSize)
                 .overlay {
                     Image(systemName: "music.note")
-                        .font(.system(size: 22))
+                        .font(.system(size: musicNoteIconSize))
                         .foregroundStyle(.white.opacity(0.6))
                 }
         }
@@ -131,7 +154,7 @@ struct FullscreenMiniPlayerView: View {
 
     private var controlsView: some View {
         let isEnabled = playerVM.currentTrack != nil
-        return HStack(spacing: 20) {
+        return HStack(spacing: controlsHSpacing) {
             // Previous
             Button {
                 previousSymbolEffectTrigger += 1
@@ -193,12 +216,13 @@ struct FullscreenMiniPlayerView: View {
         PlaybackModeSlider(
             mode: currentPlaybackMode,
             isEnabled: playerVM.currentTrack != nil,
-            iconSize: 16,
+            iconSize: 16 * scale,
             selectedColor: controlPrimaryColor,
             unselectedColor: controlPrimaryColor.opacity(0.62),
             useScreenBlend: true,
             pillTintColor: themeStore.accentColor,
             pillTintBlendMode: .normal,
+            scale: scale,
             onSelect: { mode in
                 switch mode {
                 case .sequence:
@@ -220,34 +244,34 @@ struct FullscreenMiniPlayerView: View {
                 }
             }
         )
-        .frame(height: 36)
+        .frame(height: 36 * scale)
     }
 
     private var progressArea: some View {
         ZStack {
             progressBar
-                .frame(height: 12)
+                .frame(height: 12 * scale)
 
-            HStack(spacing: 10) {
+            HStack(spacing: progressTimeSpacing) {
                 Text(formattedTime(progressDisplayTime))
-                    .font(.system(size: 10.5, weight: .medium, design: .rounded))
+                    .font(.system(size: timeFontSize, weight: .medium, design: .rounded))
                     .monospacedDigit()
                     .foregroundStyle(lyricsDynamicSecondaryColor)
                     .opacity(isProgressHovering ? 1 : 0.72)
 
-                Spacer(minLength: 18)
+                Spacer(minLength: 18 * scale)
 
                 Text(formattedTime(playerVM.duration))
-                    .font(.system(size: 10.5, weight: .medium, design: .rounded))
+                    .font(.system(size: timeFontSize, weight: .medium, design: .rounded))
                     .monospacedDigit()
                     .foregroundStyle(lyricsDynamicSecondaryColor)
                     .opacity(isProgressHovering ? 1 : 0.72)
             }
-            .padding(.horizontal, 8)
-            .offset(y: 13)
+            .padding(.horizontal, progressAreaHPadding)
+            .offset(y: progressYOffset)
         }
         .frame(maxHeight: .infinity)
-        .padding(.horizontal, 8)
+        .padding(.horizontal, progressAreaHPadding)
         .onHover { hovering in
             isProgressHovering = hovering
         }
@@ -255,7 +279,7 @@ struct FullscreenMiniPlayerView: View {
 
     private var progressBar: some View {
         GeometryReader { geometry in
-            let barHeight: CGFloat = 6
+            let barHeight: CGFloat = 6 * scale
             let filledWidth = progressWidth(in: geometry.size.width)
             let fill = progressFillColor
             let track = progressTrackColor
@@ -270,7 +294,7 @@ struct FullscreenMiniPlayerView: View {
                     .frame(width: filledWidth, height: barHeight)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-            .padding(.horizontal, 2)
+            .padding(.horizontal, 2 * scale)
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0)

@@ -1,0 +1,17 @@
+'use strict';
+
+"use strict";
+var CLEAR = /* @__PURE__ */ ((CLEAR2) => {
+  CLEAR2[CLEAR2["NONE"] = 0] = "NONE";
+  CLEAR2[CLEAR2["COLOR"] = 16384] = "COLOR";
+  CLEAR2[CLEAR2["STENCIL"] = 1024] = "STENCIL";
+  CLEAR2[CLEAR2["DEPTH"] = 256] = "DEPTH";
+  CLEAR2[CLEAR2["COLOR_DEPTH"] = 16640] = "COLOR_DEPTH";
+  CLEAR2[CLEAR2["COLOR_STENCIL"] = 17408] = "COLOR_STENCIL";
+  CLEAR2[CLEAR2["DEPTH_STENCIL"] = 1280] = "DEPTH_STENCIL";
+  CLEAR2[CLEAR2["ALL"] = 17664] = "ALL";
+  return CLEAR2;
+})(CLEAR || {});
+
+exports.CLEAR = CLEAR;
+//# sourceMappingURL=const.js.map

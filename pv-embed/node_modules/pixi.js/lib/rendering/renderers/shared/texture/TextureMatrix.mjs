@@ -1,0 +1,93 @@
+import { Matrix } from '../../../../maths/matrix/Matrix.mjs';
+
+"use strict";
+const tempMat = new Matrix();
+class TextureMatrix {
+  /**
+   * @param texture - observed texture
+   * @param clampMargin - Changes frame clamping, 0.5 by default. Use -0.5 for extra border.
+   */
+  constructor(texture, clampMargin) {
+    this.mapCoord = new Matrix();
+    this.uClampFrame = new Float32Array(4);
+    this.uClampOffset = new Float32Array(2);
+    this._textureID = -1;
+    this._updateID = 0;
+    this.clampOffset = 0;
+    if (typeof clampMargin === "undefined") {
+      this.clampMargin = texture.width < 10 ? 0 : 0.5;
+    } else {
+      this.clampMargin = clampMargin;
+    }
+    this.isSimple = false;
+    this.texture = texture;
+  }
+  /** Texture property. */
+  get texture() {
+    return this._texture;
+  }
+  set texture(value) {
+    if (this.texture === value) return;
+    this._texture?.removeListener("update", this.update, this);
+    this._texture = value;
+    this._texture.addListener("update", this.update, this);
+    this.update();
+  }
+  /**
+   * Multiplies uvs array to transform
+   * @param uvs - mesh uvs
+   * @param [out=uvs] - output
+   * @returns - output
+   */
+  multiplyUvs(uvs, out) {
+    if (out === void 0) {
+      out = uvs;
+    }
+    const mat = this.mapCoord;
+    for (let i = 0; i < uvs.length; i += 2) {
+      const x = uvs[i];
+      const y = uvs[i + 1];
+      out[i] = x * mat.a + y * mat.c + mat.tx;
+      out[i + 1] = x * mat.b + y * mat.d + mat.ty;
+    }
+    return out;
+  }
+  /**
+   * Updates matrices if texture was changed
+   * @returns - whether or not it was updated
+   */
+  update() {
+    const tex = this._texture;
+    this._updateID++;
+    const uvs = tex.uvs;
+    this.mapCoord.set(uvs.x1 - uvs.x0, uvs.y1 - uvs.y0, uvs.x3 - uvs.x0, uvs.y3 - uvs.y0, uvs.x0, uvs.y0);
+    const orig = tex.orig;
+    const trim = tex.trim;
+    if (trim) {
+      tempMat.set(
+        orig.width / trim.width,
+        0,
+        0,
+        orig.height / trim.height,
+        -trim.x / trim.width,
+        -trim.y / trim.height
+      );
+      this.mapCoord.append(tempMat);
+    }
+    const texBase = tex.source;
+    const frame = this.uClampFrame;
+    const margin = this.clampMargin / texBase._resolution;
+    const offset = this.clampOffset / texBase._resolution;
+    frame[0] = (tex.frame.x + margin + offset) / texBase.width;
+    frame[1] = (tex.frame.y + margin + offset) / texBase.height;
+    frame[2] = (tex.frame.x + tex.frame.width - margin + offset) / texBase.width;
+    frame[3] = (tex.frame.y + tex.frame.height - margin + offset) / texBase.height;
+    this.uClampOffset[0] = this.clampOffset / texBase.pixelWidth;
+    this.uClampOffset[1] = this.clampOffset / texBase.pixelHeight;
+    this.isSimple = tex.frame.width === texBase.width && tex.frame.height === texBase.height && tex.rotate === 0;
+    return true;
+  }
+}
+
+export { TextureMatrix };
+//# sourceMappingURL=TextureMatrix.mjs.map

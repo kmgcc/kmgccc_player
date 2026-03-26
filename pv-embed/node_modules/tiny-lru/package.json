@@ -1,0 +1,73 @@
+{
+  "name": "tiny-lru",
+  "description": "A high-performance, lightweight LRU cache. Built for developers who need fast caching without compromising on features.",
+  "version": "11.4.7",
+  "homepage": "https://github.com/avoidwork/tiny-lru",
+  "author": "Jason Mulligan <jason.mulligan@avoidwork.com>",
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/avoidwork/tiny-lru.git"
+  },
+  "bugs": {
+    "url": "https://github.com/avoidwork/tiny-lru/issues"
+  },
+  "files": [
+    "dist/tiny-lru.cjs",
+    "dist/tiny-lru.js",
+    "types/*.d.ts"
+  ],
+  "license": "BSD-3-Clause",
+  "source": "src/lru.js",
+  "main": "dist/tiny-lru.cjs",
+  "exports": {
+    "types": "./types/lru.d.ts",
+    "import": "./dist/tiny-lru.js",
+    "require": "./dist/tiny-lru.cjs"
+  },
+  "type": "module",
+  "types": "types/lru.d.ts",
+  "engines": {
+    "node": ">=12"
+  },
+  "engineStrict": true,
+  "scripts": {
+    "build": "npm run lint && npm run rollup",
+    "benchmark:modern": "node benchmarks/modern-benchmark.js",
+    "benchmark:perf": "node benchmarks/performance-observer-benchmark.js",
+    "benchmark:comparison": "npm run benchmark:install-deps && node benchmarks/comparison-benchmark.js",
+    "benchmark:install-deps": "npm install --no-save lru-cache quick-lru mnemonist",
+    "benchmark:all": "npm run benchmark:modern && npm run benchmark:perf && npm run benchmark:comparison",
+    "changelog": "auto-changelog -p",
+    "lint": "eslint --fix *.js src/*.js tests/**/*.js benchmarks/*.js",
+    "mocha": "c8 mocha \"tests/**/*.js\"",
+    "rollup": "rollup --config",
+    "test": "npm run lint && npm run mocha",
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "@rollup/plugin-terser": "^0.4.4",
+    "auto-changelog": "^2.5.0",
+    "c8": "^10.1.3",
+    "eslint": "^9.29.0",
+    "husky": "^9.1.7",
+    "mocha": "^11.7.0",
+    "rollup": "^4.43.0",
+    "tinybench": "^6.0.0"
+  },
+  "keywords": [
+    "LRU",
+    "cache",
+    "caching",
+    "performance",
+    "memory",
+    "TTL",
+    "expiration",
+    "memoization",
+    "typescript",
+    "browser",
+    "nodejs",
+    "lightweight",
+    "fast",
+    "least-recently-used"
+  ]
+}

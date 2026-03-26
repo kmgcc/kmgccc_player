@@ -41,53 +41,74 @@ private struct ClassicLEDArtwork: View {
     @AppStorage("skin.classicLED.visualizerMode") private var normalVisualizerMode: String = "off"
     @AppStorage("skin.classicLED.fullscreen.visualizerMode") private var fullscreenVisualizerMode: String = "off"
 
+    // MARK: - Fullscreen Fine-tuning Constants
+    /// Slight boost to artwork size in fullscreen (1.0 = no change)
+    private let fullscreenArtworkBoost: CGFloat = 1.22
+    /// Horizontal shift for artwork in fullscreen (negative = left)
+    private let fullscreenLeftShift: CGFloat = -40
+
     var body: some View {
         let contentSize = context.contentSize
         let isFullscreen = fullscreenManager.isFullscreenActive
+
+        // Apply fullscreen boost and left shift only in fullscreen mode
+        // Only shift left when lyrics are visible; when no lyrics, artwork should center
+        let artworkBoost = isFullscreen ? fullscreenArtworkBoost : 1.0
+        let leftShift = (isFullscreen && context.lyricsVisible) ? fullscreenLeftShift : 0
+
         let scaleFactor: CGFloat = isFullscreen ? 0.6 : 0.5
-        let maxSize: CGFloat = isFullscreen ? 480 : 360
+        let maxSizeBase: CGFloat = isFullscreen ? 480 : 360
+        // Calculate base canvas size with boost, parent container handles the fullscreenScale
+        let maxSize = maxSizeBase * artworkBoost
         let maxArtwork = min(contentSize.width * scaleFactor, contentSize.height * scaleFactor, maxSize)
-        let artworkSize = max(180, maxArtwork)
-        let effectSpacing: CGFloat = 32
+        let artworkSize = max(180 * artworkBoost, maxArtwork)
+        let effectSpacing: CGFloat = isFullscreen ? 32 : 24
+        // yOffset should be fixed in base canvas coordinates, not scaled
         let yOffset: CGFloat = isFullscreen ? 32 : 18
-        
+
         let visualizerMode = isFullscreen ? fullscreenVisualizerMode : normalVisualizerMode
+        let dotSize: CGFloat = isFullscreen ? 12 : 10
+        let spacing: CGFloat = isFullscreen ? 8 : 6
 
         VStack(spacing: effectSpacing) {
             artworkView
                 .frame(width: artworkSize, height: artworkSize)
+                // Shadow in base canvas coordinates - parent scaleEffect handles scaling
                 .shadow(color: .black.opacity(0.35), radius: 20, x: 0, y: 10)
 
             if visualizerMode == "led" {
                 LedMeterView(
                     level: Double(context.audio.smoothedLevel),
                     ledValues: context.led.leds,
-                    dotSize: 12,
-                    spacing: 8,
+                    dotSize: dotSize,
+                    spacing: spacing,
                     pillTint: context.theme.artworkAccentColor
                 )
             } else if visualizerMode == "spectrum" {
                 PillSpectrumView(
                     context: context,
-                    dotSize: 12,
-                    spacing: 8,
-                    pillTint: context.theme.artworkAccentColor
+                    dotSize: dotSize,
+                    spacing: spacing,
+                    pillTint: context.theme.artworkAccentColor,
+                    isFullscreen: isFullscreen
                 )
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .offset(y: yOffset)
+        .offset(x: leftShift, y: yOffset)
     }
 
     @ViewBuilder
     private var artworkView: some View {
+        // Corner radius in base canvas coordinates
+        let cornerRadius: CGFloat = 12
         if let image = context.track?.artworkImage {
             Image(nsImage: image)
                 .resizable()
                 .aspectRatio(contentMode: .fill)
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         } else {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .fill(
                     LinearGradient(
                         colors: [Color.purple.opacity(0.5), Color.blue.opacity(0.5)],
@@ -178,13 +199,17 @@ private struct PillSpectrumView: View {
     let dotSize: CGFloat
     let spacing: CGFloat
     let pillTint: Color?
+    let isFullscreen: Bool
     @Environment(\.colorScheme) private var colorScheme
 
     private let capsuleCount: CGFloat = 9
     private let capsuleWidth: CGFloat = 7
     private let capsuleSpacing: CGFloat = 10
     private let horizontalPadding: CGFloat = 28
-    private let verticalPadding: CGFloat = 8
+    private let contentHeight: CGFloat = 52  // Spectrum bars height (increased from 48)
+    private var verticalPadding: CGFloat {
+        isFullscreen ? 5 : 8  // Slightly shorter background pill in fullscreen
+    }
 
     private var contentWidth: CGFloat {
         capsuleCount * capsuleWidth + (capsuleCount - 1) * capsuleSpacing
@@ -195,7 +220,7 @@ private struct PillSpectrumView: View {
     }
 
     private var backgroundHeight: CGFloat {
-        48 + verticalPadding * 2
+        contentHeight + verticalPadding * 2
     }
 
     var body: some View {
@@ -207,7 +232,7 @@ private struct PillSpectrumView: View {
             capsuleWidth: capsuleWidth,
             capsuleSpacing: capsuleSpacing
         )
-        .frame(width: contentWidth, height: 48)
+        .frame(width: contentWidth, height: contentHeight)
         .background(
             Capsule()
                 .fill(Color.clear)

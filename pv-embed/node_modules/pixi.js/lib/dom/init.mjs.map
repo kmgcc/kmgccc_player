@@ -1,0 +1,1 @@
+{"version":3,"file":"init.mjs","sources":["../../src/dom/init.ts"],"sourcesContent":["import { extensions } from '../extensions/Extensions';\nimport { DOMPipe } from './DOMPipe';\n\nexport * from './index';\n\nextensions.add(DOMPipe);\n"],"names":[],"mappings":";;;;;;;AAKA,UAAA,CAAW,IAAI,OAAO,CAAA;;;;"}
