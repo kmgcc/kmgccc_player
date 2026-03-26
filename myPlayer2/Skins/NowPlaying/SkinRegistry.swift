@@ -21,6 +21,7 @@ enum SkinRegistry {
         ClassicLEDSkin(),
         RotatingCoverSkin(),
         KmgcccCassetteSkin(),
+        FullscreenCoverGradientBlurSkin(),
     ]
 
     static let defaultSkinID: String = "kmgccc.cassette"
@@ -62,6 +63,17 @@ enum SkinRegistry {
 
     static var fullscreenOptions: [SkinOption] {
         fullscreenSkins.map {
+            SkinOption(
+                id: $0.id,
+                name: $0.name,
+                detail: $0.detail,
+                systemImage: $0.systemImage
+            )
+        }
+    }
+
+    static var nowPlayingOptions: [SkinOption] {
+        nowPlayingSkins.map {
             SkinOption(
                 id: $0.id,
                 name: $0.name,
