@@ -19330,7 +19330,10 @@ class JQ extends EventTarget {
       const m = this.bufferedLines.has(l), j = m || l >= this.scrollToIndex && l < s, M = Y.getLine(), O = g && l === g[2] + 1;
       if (!h && O) {
         h = !0, C += o;
-        let U = -k;
+        const lyricTextPaddingLeft = this.baseFontSize || 24;
+        const dotsPaddingLeft = o * 0.75;
+        const leftFineTune = o * 1.5;
+        let U = lyricTextPaddingLeft - dotsPaddingLeft - leftFineTune;
         g && E && (U = this.size[0] - this.interludeDotsSize[0] - k), this.interludeDots.setTransform(U, C), g && this.interludeDots.setInterlude([g[0], g[1]]), C += this.interludeDotsSize[1], C += o;
       }
       let G;
