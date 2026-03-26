@@ -493,7 +493,7 @@ struct SettingsView: View {
                 GroupBox {
                     VStack(alignment: .leading, spacing: 20) {
                         Picker("", selection: $nowPlayingSkin) {
-                            ForEach(SkinRegistry.options) { skin in
+                            ForEach(SkinRegistry.nowPlayingOptions) { skin in
                                 Label(skin.name, systemImage: skin.systemImage)
                                     .tag(skin.id)
                             }
@@ -501,7 +501,7 @@ struct SettingsView: View {
                         .pickerStyle(.radioGroup)
                         .frame(maxWidth: .infinity, alignment: .leading)
 
-                        if let selected = SkinRegistry.options.first(where: {
+                        if let selected = SkinRegistry.nowPlayingOptions.first(where: {
                             $0.id == nowPlayingSkin
                         }) {
                             Text(LocalizedStringKey(selected.detail))

@@ -40,6 +40,7 @@ struct FullscreenPlayerView: View {
     private let fullscreenBackgroundLyricsAvoidanceTopInset: CGFloat = 36
     private let fullscreenBackgroundLyricsAvoidanceBottomInset: CGFloat = 60
     private let fullscreenLyricsAlignPosition: Double = 0.28
+    private let coverSkinLyricsRightShift: CGFloat = 30
     private let fullscreenLyricsMinimumBaseLightness: CGFloat = 0.52
     private let fullscreenLyricsMaximumBaseLightness: CGFloat = 0.66
     private let fullscreenLyricsMinimumSubActiveLightness: CGFloat = 0.88
@@ -91,9 +92,11 @@ struct FullscreenPlayerView: View {
     var body: some View {
         let selectedSkinID = settings.selectedFullscreenSkinID
         let selectedSkin = SkinRegistry.fullscreenSkin(for: selectedSkinID)
+        let usesCustomBg = selectedSkinID == "fullscreen.coverGradientBlur"
+        let _ = print("[FullscreenSkin] id=\(selectedSkinID), usesCustomBackground=\(usesCustomBg)")
 
         GeometryReader { proxy in
-            fullscreenContent(for: proxy, selectedSkin: selectedSkin)
+            fullscreenContent(for: proxy, selectedSkin: selectedSkin, skinUsesCustomBackground: usesCustomBg)
         }
         .contentShape(Rectangle())
         .contextMenu {
@@ -175,17 +178,26 @@ struct FullscreenPlayerView: View {
     // MARK: - Fullscreen Content (Extracted to simplify body type checking)
     
     @ViewBuilder
-    private func fullscreenContent(for proxy: GeometryProxy, selectedSkin: any NowPlayingSkin) -> some View {
+    private func fullscreenContent(for proxy: GeometryProxy, selectedSkin: any NowPlayingSkin, skinUsesCustomBackground: Bool) -> some View {
         let scaleX = proxy.size.width / Self.baseCanvasWidth
         let scaleY = proxy.size.height / Self.baseCanvasHeight
         let scale = min(scaleX, scaleY)
-        
-        // FIX: Immediately update scale on every render, not just on change
-        let _ = currentFullscreenScale = scale
 
         ZStack {
-            // Background fills the entire screen (not scaled)
-            if settings.nowPlayingArtBackgroundEnabled && playerVM.currentTrack != nil {
+            if skinUsesCustomBackground {
+                selectedSkin.makeBackground(
+                    context: makeContext(
+                        windowSize: CGSize(width: Self.baseCanvasWidth, height: Self.baseCanvasHeight),
+                        artworkColumnWidth: layoutMetrics.artworkWidth
+                    )
+                )
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+
+                Color.black.opacity(effectiveDimmingIntensity * 0.7)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+            } else if settings.nowPlayingArtBackgroundEnabled && playerVM.currentTrack != nil {
                 BKArtBackgroundView(
                     controller: bkController,
                     trackID: playerVM.currentTrack?.id,
@@ -271,11 +283,13 @@ struct FullscreenPlayerView: View {
         
         // FIX: Expand left by 60pt and right by 100pt for wider lyrics area
         // Left edge moves left to overlap artwork area more
+        // Skin-specific right shift for fullscreen cover skin
         let leftExpansion: CGFloat = 60
         let rightExpansion: CGFloat = 100
-        let finalLyricsX = baseLyricsX - leftExpansion
+        let coverSkinOffset: CGFloat = settings.selectedFullscreenSkinID == "fullscreen.coverGradientBlur" ? coverSkinLyricsRightShift : 0
+        let finalLyricsX = baseLyricsX - leftExpansion + coverSkinOffset
         let finalLyricsWidth = baseLyricsWidth + leftExpansion + rightExpansion
-        
+
         // Convert to actual screen coordinates
         let actualLyricsX = finalLyricsX * scale
         let actualLyricsWidth = finalLyricsWidth * scale
@@ -820,6 +834,14 @@ struct FullscreenPlayerView: View {
 
     private func handleTrackIdChange(_ oldId: UUID?, _ newId: UUID?) {
         guard oldId != newId else { return }
+        
+        NSLog("[LyricsColor] track changed: \(oldId?.uuidString.prefix(8) ?? "nil") -> \(newId?.uuidString.prefix(8) ?? "nil")")
+        
+        // Immediately clear old artwork snapshot to prevent stale colors
+        // from being used for the new track's background/overlay
+        artworkSnapshot = nil
+        NSLog("[LyricsColor] dominantColor reset (artworkSnapshot = nil)")
+        
         let targetVisible = desiredLyricsColumnVisibility
         let currentVisible = lyricsColumnVisible ?? targetVisible
         let layoutWillChange = currentVisible != targetVisible
@@ -1409,7 +1431,15 @@ struct FullscreenPlayerView: View {
             try? await Task.sleep(nanoseconds: UInt64(deferral * 1_000_000_000))
         }
         guard !Task.isCancelled else { return }
+        
+        NSLog("[LyricsColor] artworkSnapshot ready for track \(track.id.uuidString.prefix(8))")
         artworkSnapshot = snapshot
+        
+        // CRITICAL: Trigger AMLL theme refresh after artwork colors are loaded
+        // Without this, fullscreen lyrics colors would not update when track changes
+        NSLog("[LyricsColor] AMLL theme refresh triggered (artworkSnapshot loaded)")
+        applyFullscreenLyricsTheme(reason: "artworkSnapshot-loaded")
+        NSLog("[LyricsColor] AMLL theme applied with new colors")
     }
 
     private func hslComponents(from color: NSColor) -> (hue: CGFloat, saturation: CGFloat, lightness: CGFloat)

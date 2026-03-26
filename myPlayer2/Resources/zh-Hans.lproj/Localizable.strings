@@ -46,6 +46,8 @@
 "skin.kmgccc_cassette.detail" = "磁带卡座";
 "skin.kmgccc_cassette.show_led" = "显示 LED";
 "skin.kmgccc_cassette.show_kmg" = "显示 kmg";
+"skin.cover_gradient_blur.name" = "封面渐变模糊";
+"skin.cover_gradient_blur.detail" = "封面铺满 + 渐进模糊 + 主色渐变背景（全屏专用）";
 
 // MARK: - Settings Lyrics
 "settings.lyrics.timing" = "时间轴";
