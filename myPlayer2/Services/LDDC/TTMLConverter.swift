@@ -2,13 +2,13 @@
 //  TTMLConverter.swift
 //  myPlayer2
 //
-//  kmgccc_player - LRC to TTML Converter
-//  Calls Python scripts to convert LRC lyrics to TTML format.
+//  kmgccc_player - Raw Lyrics to TTML Converter
+//  Calls Python scripts to convert raw lyrics to TTML format.
 //
 
 import Foundation
 
-/// Converts LRC lyrics to TTML format using bundled Python scripts.
+/// Converts raw lyrics to TTML format using bundled Python scripts.
 @MainActor
 final class TTMLConverter {
 
@@ -16,19 +16,19 @@ final class TTMLConverter {
 
     private init() {}
 
-    /// Convert LRC to TTML (without translation).
-    func convertToTTML(lrc: String, stripMetadata: Bool = true) async throws -> String {
+    /// Convert raw lyrics to TTML (without translation).
+    func convertToTTML(rawLyrics: String, stripMetadata: Bool = true) async throws -> String {
         let tempDir = FileManager.default.temporaryDirectory
-        let lrcFile = tempDir.appendingPathComponent("input_\(UUID().uuidString).lrc")
+        let inputFile = tempDir.appendingPathComponent("input_\(UUID().uuidString).lrc")
         let ttmlFile = tempDir.appendingPathComponent("output_\(UUID().uuidString).ttml")
 
         defer {
-            try? FileManager.default.removeItem(at: lrcFile)
+            try? FileManager.default.removeItem(at: inputFile)
             try? FileManager.default.removeItem(at: ttmlFile)
         }
 
-        // Write LRC to temp file
-        try lrc.write(to: lrcFile, atomically: true, encoding: .utf8)
+        // Write raw lyrics to temp file
+        try rawLyrics.write(to: inputFile, atomically: true, encoding: .utf8)
 
         // Find script
         guard let scriptURL = findScript(name: "lrc_to_ttml.py") else {
@@ -36,7 +36,7 @@ final class TTMLConverter {
         }
 
         // Run conversion
-        var args = ["-i", lrcFile.path, "-o", ttmlFile.path]
+        var args = ["-i", inputFile.path, "-o", ttmlFile.path]
         if !stripMetadata {
             args.append("--no-strip-metadata")
         }
@@ -54,10 +54,10 @@ final class TTMLConverter {
         return try String(contentsOf: ttmlFile, encoding: .utf8)
     }
 
-    /// Convert LRC with translation to TTML.
+    /// Convert raw lyrics with translation to TTML.
     func convertToTTMLWithTranslation(
-        origLrc: String,
-        transLrc: String,
+        origLyrics: String,
+        transLyrics: String,
         stripMetadata: Bool = true
     ) async throws -> String {
         let tempDir = FileManager.default.temporaryDirectory
@@ -71,9 +71,9 @@ final class TTMLConverter {
             try? FileManager.default.removeItem(at: ttmlFile)
         }
 
-        // Write LRC files
-        try origLrc.write(to: origFile, atomically: true, encoding: .utf8)
-        try transLrc.write(to: transFile, atomically: true, encoding: .utf8)
+        // Write lyrics files
+        try origLyrics.write(to: origFile, atomically: true, encoding: .utf8)
+        try transLyrics.write(to: transFile, atomically: true, encoding: .utf8)
 
         // Find script
         guard let scriptURL = findScript(name: "lrc_to_ttml_with_translation.py") else {

@@ -20,7 +20,7 @@ struct LDDCSearchSection: View {
     let layoutStyle: LayoutStyle
     let includeTranslationDefault: Bool
     let autoSearchToken: Int
-    let onApplyLyrics: (String, String) -> Void
+    let onApplyLyrics: (String) -> Void
 
     @EnvironmentObject private var themeStore: ThemeStore
 
@@ -40,10 +40,10 @@ struct LDDCSearchSection: View {
 
     @State private var selectedCandidate: LDDCCandidate?
     @State private var isFetchingPreview = false
-    @State private var previewLrcOrig: String?
-    @State private var previewLrcTrans: String?
-    @State private var editableLrcOrig = ""
-    @State private var editableLrcTrans = ""
+    @State private var previewOrig: String?
+    @State private var previewTrans: String?
+    @State private var editableOrig = ""
+    @State private var editableTrans = ""
     @State private var previewError: String?
 
     @State private var isApplying = false
@@ -59,7 +59,7 @@ struct LDDCSearchSection: View {
         layoutStyle: LayoutStyle = .stacked,
         includeTranslationDefault: Bool = false,
         autoSearchToken: Int = 0,
-        onApplyLyrics: @escaping (String, String) -> Void
+        onApplyLyrics: @escaping (String) -> Void
     ) {
         self.track = track
         self.layoutStyle = layoutStyle
@@ -308,8 +308,8 @@ struct LDDCSearchSection: View {
                 .fontWeight(.medium)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
-                .background(platformColor(candidate.sourceEnum ?? .LRCLIB).opacity(0.2))
-                .foregroundStyle(platformColor(candidate.sourceEnum ?? .LRCLIB))
+                .background(platformColor(candidate.sourceEnum ?? .QM).opacity(0.2))
+                .foregroundStyle(platformColor(candidate.sourceEnum ?? .QM))
                 .clipShape(Capsule())
 
             // Score
@@ -380,7 +380,7 @@ struct LDDCSearchSection: View {
                     }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(editableLrcOrig.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isApplying)
+                .disabled(editableOrig.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isApplying)
             }
 
             Toggle("转换时去除多余信息", isOn: $stripExtraInfo)
@@ -397,17 +397,17 @@ struct LDDCSearchSection: View {
                 .foregroundStyle(.secondary)
 
             // Preview Tabs or single editor
-            if includeTranslation && previewLrcTrans != nil {
+            if includeTranslation && previewTrans != nil {
                 TabView {
-                    previewEditorView(text: $editableLrcOrig)
+                    previewEditorView(text: $editableOrig)
                         .tabItem { Text("原文") }
 
-                    previewEditorView(text: $editableLrcTrans)
+                    previewEditorView(text: $editableTrans)
                         .tabItem { Text("翻译") }
                 }
                 .frame(height: 320)
             } else {
-                previewEditorView(text: $editableLrcOrig)
+                previewEditorView(text: $editableOrig)
                     .frame(height: 320)
             }
         }
@@ -440,7 +440,7 @@ struct LDDCSearchSection: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(
-                            editableLrcOrig.trimmingCharacters(
+                            editableOrig.trimmingCharacters(
                                 in: .whitespacesAndNewlines
                             ).isEmpty || isApplying
                         )
@@ -451,17 +451,17 @@ struct LDDCSearchSection: View {
                         .tint(themeStore.accentColor)
                         .font(.caption)
 
-                    if includeTranslation && previewLrcTrans != nil {
+                    if includeTranslation && previewTrans != nil {
                         TabView {
-                            previewEditorView(text: $editableLrcOrig)
+                            previewEditorView(text: $editableOrig)
                                 .tabItem { Text("原文") }
 
-                            previewEditorView(text: $editableLrcTrans)
+                            previewEditorView(text: $editableTrans)
                                 .tabItem { Text("翻译") }
                         }
                         .frame(minHeight: 560)
                     } else {
-                        previewEditorView(text: $editableLrcOrig)
+                        previewEditorView(text: $editableOrig)
                             .frame(minHeight: 560)
                     }
                 }
@@ -518,10 +518,10 @@ struct LDDCSearchSection: View {
         searchTitle = track.title
         searchArtist = track.artist
         selectedCandidate = nil
-        previewLrcOrig = nil
-        previewLrcTrans = nil
-        editableLrcOrig = ""
-        editableLrcTrans = ""
+        previewOrig = nil
+        previewTrans = nil
+        editableOrig = ""
+        editableTrans = ""
         searchError = nil
         previewError = nil
         applyError = nil
@@ -546,10 +546,10 @@ struct LDDCSearchSection: View {
         searchError = nil
         searchResults = []
         selectedCandidate = nil
-        previewLrcOrig = nil
-        previewLrcTrans = nil
-        editableLrcOrig = ""
-        editableLrcTrans = ""
+        previewOrig = nil
+        previewTrans = nil
+        editableOrig = ""
+        editableTrans = ""
 
         do {
             let response = try await client.search(
@@ -578,8 +578,8 @@ struct LDDCSearchSection: View {
         selectedCandidate = candidate
         isFetchingPreview = true
         previewError = nil
-        previewLrcOrig = nil
-        previewLrcTrans = nil
+        previewOrig = nil
+        previewTrans = nil
 
         do {
             if includeTranslation {
@@ -587,20 +587,20 @@ struct LDDCSearchSection: View {
                     candidate: candidate,
                     mode: selectedMode
                 )
-                previewLrcOrig = orig
-                previewLrcTrans = trans
-                editableLrcOrig = orig
-                editableLrcTrans = trans ?? ""
+                previewOrig = orig
+                previewTrans = trans
+                editableOrig = orig
+                editableTrans = trans ?? ""
             } else {
-                let lrc = try await client.fetchById(
+                let lyrics = try await client.fetchById(
                     candidate: candidate,
                     mode: selectedMode,
                     translation: false
                 )
-                previewLrcOrig = lrc
-                previewLrcTrans = nil
-                editableLrcOrig = lrc
-                editableLrcTrans = ""
+                previewOrig = lyrics
+                previewTrans = nil
+                editableOrig = lyrics
+                editableTrans = ""
             }
         } catch {
             previewError = error.localizedDescription
@@ -610,8 +610,8 @@ struct LDDCSearchSection: View {
     }
 
     private func applyLyrics() async {
-        let origLrc = editableLrcOrig.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !origLrc.isEmpty else { return }
+        let origLyrics = editableOrig.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !origLyrics.isEmpty else { return }
 
         isApplying = true
         applyError = nil
@@ -619,21 +619,20 @@ struct LDDCSearchSection: View {
         do {
             let ttml: String
 
-            if includeTranslation, previewLrcTrans != nil {
+            if includeTranslation, previewTrans != nil {
                 ttml = try await TTMLConverter.shared.convertToTTMLWithTranslation(
-                    origLrc: origLrc,
-                    transLrc: editableLrcTrans,
+                    origLyrics: origLyrics,
+                    transLyrics: editableTrans,
                     stripMetadata: stripExtraInfo
                 )
             } else {
                 ttml = try await TTMLConverter.shared.convertToTTML(
-                    lrc: origLrc,
+                    rawLyrics: origLyrics,
                     stripMetadata: stripExtraInfo
                 )
             }
 
-            print("✅ [LRCStorage] Applying lyrics - TTML: \(ttml.prefix(50))..., LRC: \(origLrc.prefix(50))...")
-            onApplyLyrics(ttml, origLrc)
+            onApplyLyrics(ttml)
 
         } catch {
             applyError = error.localizedDescription
@@ -646,10 +645,10 @@ struct LDDCSearchSection: View {
 
     private func platformColor(_ source: LDDCSource) -> Color {
         switch source {
-        case .LRCLIB: return .blue
         case .QM: return .green
         case .KG: return .orange
         case .NE: return .red
+        case .LRCLIB: return .blue
         }
     }
 }
@@ -666,9 +665,8 @@ struct LDDCSearchSection: View {
     )
 
     ScrollView {
-        LDDCSearchSection(track: track) { ttml, lrc in
+        LDDCSearchSection(track: track) { ttml in
             print("TTML applied: \(ttml.prefix(100))...")
-            print("LRC saved: \(lrc.prefix(100))...")
         }
         .padding()
     }
