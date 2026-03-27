@@ -67,6 +67,6 @@ enum Constants {
 
     enum FileTypes {
         static let supportedAudioExtensions = ["mp3", "m4a", "flac", "wav", "aiff", "aac", "ogg"]
-        static let lyricsExtensions = ["ttml", "lrc"]
+        static let lyricsExtensions = ["ttml"]
     }
 }

@@ -129,7 +129,6 @@ struct BatchTrackEditSheet: View {
         .fileImporter(
             isPresented: $showingLyricsPicker,
             allowedContentTypes: [
-                UTType(filenameExtension: "lrc") ?? .plainText,
                 UTType(filenameExtension: "ttml") ?? .xml,
                 .plainText,
             ],
@@ -441,9 +440,8 @@ struct BatchTrackEditSheet: View {
                     layoutStyle: .split,
                     includeTranslationDefault: true,
                     autoSearchToken: autoSearchToken
-                ) { ttml, lrc in
+                ) { ttml in
                     lyricsText = ttml
-                    track.lrcLyricText = lrc
                     _ = saveCurrentTrack(
                         showFailureMessage: true,
                         markProcessedIfUnchanged: false,

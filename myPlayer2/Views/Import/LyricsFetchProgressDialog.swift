@@ -16,7 +16,6 @@ enum LyricsFetchStep {
     case waiting
     case searching
     case found
-    case savingLRC
     case converting
     case savingTTML
     case completed
@@ -28,7 +27,6 @@ enum LyricsFetchStep {
         case .waiting: return "等待中..."
         case .searching: return "正在搜索歌词..."
         case .found: return "找到歌词"
-        case .savingLRC: return "保存 LRC..."
         case .converting: return "转换为 TTML..."
         case .savingTTML: return "保存 TTML..."
         case .completed: return "完成"
@@ -318,14 +316,14 @@ final class LyricsFetchProgressDialogPresenter: NSObject, NSWindowDelegate {
             
             actor ProgressState {
                 var completedCount = 0
-                var pendingUpdates: [(id: String, title: String, artist: String, step: LyricsFetchStep, trackIndex: Int, lrc: String?, ttml: String?)] = []
+                var pendingUpdates: [(id: String, title: String, artist: String, step: LyricsFetchStep, trackIndex: Int, ttml: String?)] = []
                 
-                func addCompleted(id: String, title: String, artist: String, step: LyricsFetchStep, trackIndex: Int, lrc: String?, ttml: String?) {
+                func addCompleted(id: String, title: String, artist: String, step: LyricsFetchStep, trackIndex: Int, ttml: String?) {
                     completedCount += 1
-                    pendingUpdates.append((id: id, title: title, artist: artist, step: step, trackIndex: trackIndex, lrc: lrc, ttml: ttml))
+                    pendingUpdates.append((id: id, title: title, artist: artist, step: step, trackIndex: trackIndex, ttml: ttml))
                 }
                 
-                func getAndClearPendingUpdates() -> [(id: String, title: String, artist: String, step: LyricsFetchStep, trackIndex: Int, lrc: String?, ttml: String?)] {
+                func getAndClearPendingUpdates() -> [(id: String, title: String, artist: String, step: LyricsFetchStep, trackIndex: Int, ttml: String?)] {
                     let updates = pendingUpdates
                     pendingUpdates.removeAll()
                     return updates
@@ -358,8 +356,7 @@ final class LyricsFetchProgressDialogPresenter: NSObject, NSWindowDelegate {
                             )
                             
                             guard let firstCandidate = response.results.first else {
-                                print("⚠️ [LRCStorage] No lyrics found for: \(track.title)")
-                                await state.addCompleted(id: itemId, title: track.title, artist: track.artist, step: .noResults, trackIndex: index, lrc: nil, ttml: nil)
+                                await state.addCompleted(id: itemId, title: track.title, artist: track.artist, step: .noResults, trackIndex: index, ttml: nil)
                                 return
                             }
                             
@@ -367,35 +364,27 @@ final class LyricsFetchProgressDialogPresenter: NSObject, NSWindowDelegate {
                                 viewModel.updateItem(id: itemId, title: track.title, artist: track.artist, step: .found)
                             }
                             
-                            let (origLrc, transLrc) = try await client.fetchByIdSeparate(
+                            let (origLyrics, transLyrics) = try await client.fetchByIdSeparate(
                                 candidate: firstCandidate,
                                 mode: .verbatim
                             )
-                            
-                            await MainActor.run {
-                                viewModel.updateItem(id: itemId, title: track.title, artist: track.artist, step: .savingLRC)
-                            }
-                            
-                            print("✅ [LRCStorage] Fetched LRC for: \(track.title)\(transLrc != nil ? " (with translation)" : "")")
                             
                             await MainActor.run {
                                 viewModel.updateItem(id: itemId, title: track.title, artist: track.artist, step: .converting)
                             }
                             
                             let ttml: String
-                            if let transLrc = transLrc, !transLrc.isEmpty {
+                            if let transLyrics = transLyrics, !transLyrics.isEmpty {
                                 ttml = try await TTMLConverter.shared.convertToTTMLWithTranslation(
-                                    origLrc: origLrc,
-                                    transLrc: transLrc,
+                                    origLyrics: origLyrics,
+                                    transLyrics: transLyrics,
                                     stripMetadata: false
                                 )
-                                print("✅ [LRCStorage] Converted TTML with translation for: \(track.title)")
                             } else {
                                 ttml = try await TTMLConverter.shared.convertToTTML(
-                                    lrc: origLrc,
+                                    rawLyrics: origLyrics,
                                     stripMetadata: false
                                 )
-                                print("✅ [LRCStorage] Converted TTML for: \(track.title)")
                             }
                             
                             await MainActor.run {
@@ -403,17 +392,13 @@ final class LyricsFetchProgressDialogPresenter: NSObject, NSWindowDelegate {
                             }
                             
                             await MainActor.run {
-                                track.lrcLyricText = origLrc
                                 track.ttmlLyricText = ttml
                             }
                             
-                            print("✅ [LRCStorage] Saved lyrics for: \(track.title)")
-                            
-                            await state.addCompleted(id: itemId, title: track.title, artist: track.artist, step: .completed, trackIndex: index, lrc: origLrc, ttml: ttml)
+                            await state.addCompleted(id: itemId, title: track.title, artist: track.artist, step: .completed, trackIndex: index, ttml: ttml)
                             
                         } catch {
-                            print("⚠️ [LRCStorage] Failed to fetch lyrics for \(track.title): \(error)")
-                            await state.addCompleted(id: itemId, title: track.title, artist: track.artist, step: .failed, trackIndex: index, lrc: nil, ttml: nil)
+                            await state.addCompleted(id: itemId, title: track.title, artist: track.artist, step: .failed, trackIndex: index, ttml: nil)
                         }
                     }
                 }
@@ -598,7 +583,6 @@ struct LyricsFetchProgressRowView: View {
         case .waiting: return .secondary
         case .searching: return .blue
         case .found: return .cyan
-        case .savingLRC: return .purple
         case .converting: return .orange
         case .savingTTML: return .indigo
         case .completed: return .green
@@ -613,7 +597,7 @@ struct LyricsFetchProgressRowView: View {
             case .waiting:
                 Image(systemName: "circle")
                     .foregroundStyle(.secondary)
-            case .searching, .savingLRC, .converting, .savingTTML:
+            case .searching, .converting, .savingTTML:
                 Image(systemName: "arrow.triangle.2.circlepath")
                     .foregroundStyle(.blue)
             case .found:

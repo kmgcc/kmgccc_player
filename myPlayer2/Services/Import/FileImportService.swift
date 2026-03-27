@@ -320,7 +320,7 @@ final class FileImportService: FileImportServiceProtocol {
             return 0
         }
 
-        let tracksNeedingLyrics = importedTracks.filter { $0.ttmlLyricText == nil && $0.lrcLyricText == nil }
+        let tracksNeedingLyrics = importedTracks.filter { $0.ttmlLyricText == nil }
         if !tracksNeedingLyrics.isEmpty {
             print("🎤 Fetching lyrics for \(tracksNeedingLyrics.count) tracks...")
             _ = await fetchLyricsWithProgress(tracks: tracksNeedingLyrics)
@@ -369,21 +369,14 @@ final class FileImportService: FileImportServiceProtocol {
 
         let embeddedLyrics = metadata.lyrics
         let isTTML = embeddedLyrics?.lowercased().contains("<tt") ?? false
-        let isLRC = embeddedLyrics?.contains("[") ?? false && embeddedLyrics?.contains("]") ?? false
 
         var ttmlLyricText: String?
-        var lrcLyricText: String?
         var genericLyricsText: String?
 
         if isTTML {
             ttmlLyricText = embeddedLyrics
-        } else if isLRC {
-            lrcLyricText = embeddedLyrics
-            if let lrc = embeddedLyrics {
-                ttmlLyricText = try? await TTMLConverter.shared.convertToTTML(lrc: lrc, stripMetadata: true)
-            }
-        } else {
-            genericLyricsText = embeddedLyrics
+        } else if let lyrics = embeddedLyrics, !lyrics.isEmpty {
+            ttmlLyricText = try? await TTMLConverter.shared.convertToTTML(rawLyrics: lyrics, stripMetadata: true)
         }
 
         let track = Track(
@@ -398,7 +391,6 @@ final class FileImportService: FileImportServiceProtocol {
             libraryRelativePath: libraryRelativePath,
             artworkData: artworkData,
             ttmlLyricText: ttmlLyricText,
-            lrcLyricText: lrcLyricText,
             lyricsText: genericLyricsText
         )
 

@@ -26,7 +26,6 @@ struct TrackSidecar: Codable {
     let artworkFileName: String?
     let lyricsFileName: String?
     let lyricsType: String?
-    let lrcLyricsFileName: String?
     let ttmlLyricsFileName: String?
     let ncmSourcePath: String?
 }
@@ -185,7 +184,7 @@ final class LocalLibraryService {
             let audioFileName = URL(fileURLWithPath: track.libraryRelativePath).lastPathComponent
 
             let artworkFileName = try writeArtworkIfNeeded(track: track, folder: trackFolder)
-            let lyricsInfo = try writeLyricsIfNeeded(track: track, folder: trackFolder)
+            let ttmlFileName = try writeLyricsIfNeeded(track: track, folder: trackFolder)
 
             let sidecar = TrackSidecar(
                 schemaVersion: 2,
@@ -202,8 +201,7 @@ final class LocalLibraryService {
                 artworkFileName: artworkFileName,
                 lyricsFileName: nil,
                 lyricsType: nil,
-                lrcLyricsFileName: lyricsInfo.lrcFileName,
-                ttmlLyricsFileName: lyricsInfo.ttmlFileName,
+                ttmlLyricsFileName: ttmlFileName,
                 ncmSourcePath: nil
             )
 
@@ -234,55 +232,29 @@ final class LocalLibraryService {
         return artworkURL.lastPathComponent
     }
 
-    private func writeLyricsIfNeeded(track: Track, folder: URL) throws -> (
-        lrcFileName: String?, ttmlFileName: String?
-    ) {
-        var lrcFileName: String?
+    private func writeLyricsIfNeeded(track: Track, folder: URL) throws -> String? {
         var ttmlFileName: String?
 
         let ttmlText = track.ttmlLyricText?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let lrcText = track.lrcLyricText?.trimmingCharacters(in: .whitespacesAndNewlines)
         let legacyText = track.lyricsText?.trimmingCharacters(in: .whitespacesAndNewlines)
 
         if let ttml = ttmlText, !ttml.isEmpty {
             let ttmlURL = folder.appendingPathComponent("lyrics.ttml")
             try ttml.write(to: ttmlURL, atomically: true, encoding: .utf8)
             ttmlFileName = "lyrics.ttml"
-            print("✅ [LRCStorage] Saved TTML lyrics: \(ttmlURL.path)")
         }
 
-        if let lrc = lrcText, !lrc.isEmpty {
-            let lrcURL = folder.appendingPathComponent("lyrics_raw.lrc")
-            try lrc.write(to: lrcURL, atomically: true, encoding: .utf8)
-            lrcFileName = "lyrics_raw.lrc"
-            print("✅ [LRCStorage] Saved LRC lyrics: \(lrcURL.path)")
-        }
-
-        if ttmlFileName == nil && lrcFileName == nil, let legacy = legacyText, !legacy.isEmpty {
-            let ext = detectLyricsExtension(for: legacy)
-            let fileName = "lyrics.\(ext)"
-            let lyricsURL = folder.appendingPathComponent(fileName)
-            try legacy.write(to: lyricsURL, atomically: true, encoding: .utf8)
-            if ext == "ttml" {
+        if ttmlFileName == nil, let legacy = legacyText, !legacy.isEmpty {
+            let isTTML = legacy.lowercased().contains("<tt") && legacy.contains("</")
+            if isTTML {
+                let fileName = "lyrics.ttml"
+                let lyricsURL = folder.appendingPathComponent(fileName)
+                try legacy.write(to: lyricsURL, atomically: true, encoding: .utf8)
                 ttmlFileName = fileName
-            } else {
-                lrcFileName = fileName
             }
-            print("✅ [LRCStorage] Saved legacy lyrics (\(ext)): \(lyricsURL.path)")
         }
 
-        return (lrcFileName, ttmlFileName)
-    }
-
-    private func detectLyricsExtension(for text: String) -> String {
-        let lower = text.lowercased()
-        if lower.contains("<tt") && lower.contains("</") {
-            return "ttml"
-        }
-        if lower.contains("[") && lower.contains("]") && lower.contains(":") {
-            return "lrc"
-        }
-        return "txt"
+        return ttmlFileName
     }
 
     // MARK: - Track Deletion

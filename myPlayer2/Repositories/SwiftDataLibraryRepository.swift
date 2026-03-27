@@ -241,26 +241,16 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         }
 
         var ttmlText: String?
-        var lrcText: String?
         var lyricsText: String?
 
         if let ttmlFileName = meta.ttmlLyricsFileName {
             let ttmlURL = meta.folderURL.appendingPathComponent(ttmlFileName)
             if let text = try? String(contentsOf: ttmlURL, encoding: .utf8), !text.isEmpty {
                 ttmlText = text
-                print("✅ [LRCStorage] Loaded TTML from \(ttmlFileName)")
             }
         }
 
-        if let lrcFileName = meta.lrcLyricsFileName {
-            let lrcURL = meta.folderURL.appendingPathComponent(lrcFileName)
-            if let text = try? String(contentsOf: lrcURL, encoding: .utf8), !text.isEmpty {
-                lrcText = text
-                print("✅ [LRCStorage] Loaded LRC from \(lrcFileName)")
-            }
-        }
-
-        if ttmlText == nil && lrcText == nil, let lyricsFileName = meta.lyricsFileName {
+        if ttmlText == nil, let lyricsFileName = meta.lyricsFileName {
             let lyricsURL = meta.folderURL.appendingPathComponent(lyricsFileName)
             if let text = try? String(contentsOf: lyricsURL, encoding: .utf8) {
                 if lyricsFileName.lowercased().hasSuffix(".ttml") {
@@ -268,7 +258,6 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
                 } else {
                     lyricsText = text
                 }
-                print("✅ [LRCStorage] Loaded legacy lyrics from \(lyricsFileName)")
             }
         }
 
@@ -287,7 +276,6 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             availability: isAvailable ? .available : .missing,
             artworkData: artworkData,
             ttmlLyricText: ttmlText,
-            lrcLyricText: lrcText,
             lyricsText: lyricsText
         )
     }

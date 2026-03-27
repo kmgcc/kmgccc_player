@@ -21,7 +21,6 @@ struct ScannedTrackMeta {
     let audioFileName: String
     let artworkFileName: String?
     let lyricsFileName: String?
-    let lrcLyricsFileName: String?
     let ttmlLyricsFileName: String?
     let folderURL: URL
 
@@ -99,8 +98,6 @@ final class MusicLibraryScanner {
         let lyricsFileName = (json["lyricsFileName"] as? String)?.trimmingCharacters(
             in: .whitespacesAndNewlines)
 
-        let lrcLyricsFileName = (json["lrcLyricsFileName"] as? String)?.trimmingCharacters(
-            in: .whitespacesAndNewlines)
         let ttmlLyricsFileName = (json["ttmlLyricsFileName"] as? String)?.trimmingCharacters(
             in: .whitespacesAndNewlines)
 
@@ -118,7 +115,6 @@ final class MusicLibraryScanner {
             audioFileName: unwrappedAudioFileName,
             artworkFileName: (artworkFileName?.isEmpty ?? true) ? nil : artworkFileName,
             lyricsFileName: (lyricsFileName?.isEmpty ?? true) ? nil : lyricsFileName,
-            lrcLyricsFileName: (lrcLyricsFileName?.isEmpty ?? true) ? nil : lrcLyricsFileName,
             ttmlLyricsFileName: (ttmlLyricsFileName?.isEmpty ?? true) ? nil : ttmlLyricsFileName,
             folderURL: folderURL
         )
