@@ -9,8 +9,7 @@ import AppKit
 import CoreImage
 import ImageIO
 
-@MainActor
-final class BKThemeAssets {
+final class BKThemeAssets: @unchecked Sendable {
     static let shared = BKThemeAssets()
 
     struct PixelBudget: Equatable {
@@ -134,6 +133,11 @@ final class BKThemeAssets {
         let box = ImageArrayBox(images: frames)
         maskCache.setObject(box, forKey: key, cost: Self.byteCost(for: frames))
         return frames
+    }
+
+    func cachedMaskFrames(maxPixel: Int) -> [CGImage]? {
+        let key = "mask-\(maxPixel)" as NSString
+        return maskCache.object(forKey: key)?.images
     }
 
     func purgeTransientCaches() {

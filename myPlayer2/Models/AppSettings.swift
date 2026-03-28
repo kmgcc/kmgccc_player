@@ -278,7 +278,7 @@ public final class AppSettings {
 
     /// Translation font size
     @ObservationIgnored
-    @AppStorage("lyricsTranslationFontSize") var lyricsTranslationFontSize: Double = 12.0
+    @AppStorage("lyricsTranslationFontSize") var lyricsTranslationFontSize: Double = 14.0
 
     /// Translation font weight in light mode (100~900)
     @ObservationIgnored
@@ -335,7 +335,7 @@ public final class AppSettings {
     }
 
     @ObservationIgnored
-    @AppStorage("fullscreenSkin") var selectedFullscreenSkinID: String = "kmgccc.cassette"
+    @AppStorage("fullscreenSkin") var selectedFullscreenSkinID: String = "fullscreen.coverGradientBlur"
 
     // MARK: - Playback Settings
 

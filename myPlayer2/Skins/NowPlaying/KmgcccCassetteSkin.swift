@@ -350,6 +350,7 @@ private enum CassetteArtworkToneMapper {
     ) -> (data: Data, before: CassetteLumaStats, after: CassetteLumaStats)? {
         let ciContext = CIContext(options: [.cacheIntermediates: false])
         guard let linearSpace = CGColorSpace(name: CGColorSpace.linearSRGB) else { return nil }
+        guard let outputSpace = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
         guard let input = CIImage(data: data), !input.extent.isEmpty else { return nil }
 
         let linearInput = input.applyingFilter("CISRGBToneCurveToLinear")
@@ -444,11 +445,10 @@ private enum CassetteArtworkToneMapper {
 
         let outputImage = clampedLinear.applyingFilter("CILinearToSRGBToneCurve")
         guard
-            let cgImage = ciContext.createCGImage(outputImage, from: outputImage.extent),
             let pngData = ciContext.pngRepresentation(
-                of: CIImage(cgImage: cgImage),
+                of: outputImage,
                 format: .RGBA8,
-                colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!,
+                colorSpace: outputSpace,
                 options: [:]
             ),
             let after = sampledLumaStats(
@@ -458,6 +458,8 @@ private enum CassetteArtworkToneMapper {
                 linearSpace: linearSpace
             )
         else { return nil }
+
+        ciContext.clearCaches()
 
         #if DEBUG
             let overflow = after.high > hi + 1e-4

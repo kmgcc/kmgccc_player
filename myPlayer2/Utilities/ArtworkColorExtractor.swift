@@ -7,21 +7,26 @@
 //
 
 import AppKit
-import CoreImage
+import ImageIO
 
 public enum ArtworkColorExtractor {
 
-    private nonisolated static let ciContext = CIContext(options: [
-        .workingColorSpace: NSNull()
-    ])
-    
-    // Pixel data cache to avoid repeated CGContext creation
+    // Pixel data cache to avoid repeated decode + CGContext creation.
     private final class PixelCacheBox: @unchecked Sendable {
-        nonisolated(unsafe) let cache = NSCache<NSString, PixelDataCacheEntry>()
+        nonisolated(unsafe) let cache: NSCache<NSString, PixelDataCacheEntry> = {
+            let cache = NSCache<NSString, PixelDataCacheEntry>()
+            cache.countLimit = 256
+            cache.totalCostLimit = 8 * 1024 * 1024
+            return cache
+        }()
+    }
+
+    struct ArtworkBitmapSample: Sendable {
+        let pixels: [UInt8]
+        let side: Int
     }
 
     private nonisolated static let pixelCache = PixelCacheBox()
-    private static let pixelCacheLock = NSLock()
     
     private final class PixelDataCacheEntry: NSObject {
         let pixels: [UInt8]
@@ -52,34 +57,8 @@ public enum ArtworkColorExtractor {
     }
 
     public nonisolated static func averageColor(from data: Data) -> NSColor? {
-        guard let image = NSImage(data: data),
-            let tiff = image.tiffRepresentation,
-            let ciImage = CIImage(data: tiff)
-        else { return nil }
-
-        let extent = ciImage.extent
-        guard let filter = CIFilter(name: "CIAreaAverage") else { return nil }
-        filter.setValue(ciImage, forKey: kCIInputImageKey)
-        filter.setValue(CIVector(cgRect: extent), forKey: kCIInputExtentKey)
-
-        guard let output = filter.outputImage else { return nil }
-
-        var pixel = [UInt8](repeating: 0, count: 4)
-        ciContext.render(
-            output,
-            toBitmap: &pixel,
-            rowBytes: 4,
-            bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
-            format: .RGBA8,
-            colorSpace: nil
-        )
-
-        return NSColor(
-            calibratedRed: CGFloat(pixel[0]) / 255.0,
-            green: CGFloat(pixel[1]) / 255.0,
-            blue: CGFloat(pixel[2]) / 255.0,
-            alpha: 1.0
-        )
+        guard let sample = sampledBitmap(from: data, side: 48) else { return nil }
+        return averageColor(from: sample)
     }
 
     public nonisolated static func adjustedAccent(from color: NSColor, isDarkMode: Bool) -> NSColor
@@ -112,9 +91,108 @@ public enum ArtworkColorExtractor {
     public nonisolated static func uiThemePalette(from data: Data, maxColors: Int = 3) -> [NSColor]
     {
         let targetCount = min(max(2, maxColors), 4)
-        guard let pixels = resizedPixels(from: data, side: 56) else {
-            return []
+        guard let sample = sampledBitmap(from: data, side: 56) else { return [] }
+        return uiThemePalette(from: sample, targetCount: targetCount)
+    }
+
+    /// Accent for UI tinting (skins/components), decoupled from lyrics text color.
+    /// Keeps color close to artwork dominant hue and slightly richer, while avoiding
+    /// dead-black / near-white extremes.
+    public nonisolated static func uiAccentColor(from data: Data) -> NSColor? {
+        uiThemePalette(from: data, maxColors: 3).first
+    }
+
+    /// Rich palette for artistic backgrounds.
+    /// Unlike uiThemePalette, this does not synthesize variants; it returns
+    /// distinct colors that already exist in the artwork.
+    public nonisolated static func uiThemePaletteRich(from data: Data, desiredCount: Int = 6)
+        -> [NSColor]
+    {
+        let targetCount = min(max(3, desiredCount), 8)
+        guard let sample = sampledBitmap(from: data, side: 72) else { return [] }
+        return uiThemePaletteRich(from: sample, targetCount: targetCount)
+    }
+
+    public static func cssRGBA(_ color: NSColor, alpha: CGFloat) -> String {
+        guard let rgb = color.usingColorSpace(.deviceRGB) else {
+            return "rgba(255,255,255,\(alpha))"
         }
+
+        let r = Int(round(rgb.redComponent * 255))
+        let g = Int(round(rgb.greenComponent * 255))
+        let b = Int(round(rgb.blueComponent * 255))
+        return "rgba(\(r),\(g),\(b),\(alpha))"
+    }
+
+    /// Very fast accent estimate used to avoid "one-track-behind" tinting while
+    /// the full dominant-color extraction runs.
+    public static func quickAccentSample(from data: Data, side: Int = 18) -> NSColor? {
+        let s = max(8, min(32, side))
+        guard let pixels = resizedPixels(from: data, side: s) else { return nil }
+
+        var rSum: CGFloat = 0
+        var gSum: CGFloat = 0
+        var bSum: CGFloat = 0
+        var weightSum: CGFloat = 0
+
+        for i in stride(from: 0, to: pixels.count, by: 4) {
+            let a = CGFloat(pixels[i + 3]) / 255.0
+            if a < 0.10 { continue }
+
+            let w = a
+            rSum += (CGFloat(pixels[i]) / 255.0) * w
+            gSum += (CGFloat(pixels[i + 1]) / 255.0) * w
+            bSum += (CGFloat(pixels[i + 2]) / 255.0) * w
+            weightSum += w
+        }
+
+        guard weightSum > 0 else { return nil }
+        return NSColor(
+            calibratedRed: rSum / weightSum,
+            green: gSum / weightSum,
+            blue: bSum / weightSum,
+            alpha: 1.0
+        )
+    }
+}
+
+extension ArtworkColorExtractor {
+    nonisolated static func sampledBitmap(from data: Data, side: Int) -> ArtworkBitmapSample? {
+        guard let pixels = resizedPixels(from: data, side: side) else { return nil }
+        return ArtworkBitmapSample(pixels: pixels, side: side)
+    }
+
+    nonisolated static func averageColor(from sample: ArtworkBitmapSample) -> NSColor? {
+        guard !sample.pixels.isEmpty else { return nil }
+
+        var weightedR: CGFloat = 0
+        var weightedG: CGFloat = 0
+        var weightedB: CGFloat = 0
+        var totalWeight: CGFloat = 0
+
+        for i in stride(from: 0, to: sample.pixels.count, by: 4) {
+            let alpha = CGFloat(sample.pixels[i + 3]) / 255.0
+            if alpha <= 0.001 { continue }
+
+            weightedR += (CGFloat(sample.pixels[i]) / 255.0) * alpha
+            weightedG += (CGFloat(sample.pixels[i + 1]) / 255.0) * alpha
+            weightedB += (CGFloat(sample.pixels[i + 2]) / 255.0) * alpha
+            totalWeight += alpha
+        }
+
+        guard totalWeight > 0 else { return nil }
+        return NSColor(
+            calibratedRed: weightedR / totalWeight,
+            green: weightedG / totalWeight,
+            blue: weightedB / totalWeight,
+            alpha: 1.0
+        )
+    }
+
+    nonisolated static func uiThemePalette(from sample: ArtworkBitmapSample, targetCount: Int)
+        -> [NSColor]
+    {
+        let pixels = sample.pixels
 
         let bucketCount = 48
         var buckets = [HueBucket](repeating: .zero, count: bucketCount)
@@ -231,22 +309,10 @@ public enum ArtworkColorExtractor {
         return Array(selected.prefix(targetCount))
     }
 
-    /// Accent for UI tinting (skins/components), decoupled from lyrics text color.
-    /// Keeps color close to artwork dominant hue and slightly richer, while avoiding
-    /// dead-black / near-white extremes.
-    public nonisolated static func uiAccentColor(from data: Data) -> NSColor? {
-        uiThemePalette(from: data, maxColors: 3).first
-    }
-
-    /// Rich palette for artistic backgrounds.
-    /// Unlike uiThemePalette, this does not synthesize variants; it returns
-    /// distinct colors that already exist in the artwork.
-    public nonisolated static func uiThemePaletteRich(from data: Data, desiredCount: Int = 6)
+    nonisolated static func uiThemePaletteRich(from sample: ArtworkBitmapSample, targetCount: Int)
         -> [NSColor]
     {
-        let targetCount = min(max(3, desiredCount), 8)
-        guard let pixels = resizedPixels(from: data, side: 72) else { return [] }
-
+        let pixels = sample.pixels
         let bucketCount = 72
         var buckets = [HueBucket](repeating: .zero, count: bucketCount)
 
@@ -341,48 +407,6 @@ public enum ArtworkColorExtractor {
 
         return Array(selected.prefix(targetCount))
     }
-
-    public static func cssRGBA(_ color: NSColor, alpha: CGFloat) -> String {
-        guard let rgb = color.usingColorSpace(.deviceRGB) else {
-            return "rgba(255,255,255,\(alpha))"
-        }
-
-        let r = Int(round(rgb.redComponent * 255))
-        let g = Int(round(rgb.greenComponent * 255))
-        let b = Int(round(rgb.blueComponent * 255))
-        return "rgba(\(r),\(g),\(b),\(alpha))"
-    }
-
-    /// Very fast accent estimate used to avoid "one-track-behind" tinting while
-    /// the full dominant-color extraction runs.
-    public static func quickAccentSample(from data: Data, side: Int = 18) -> NSColor? {
-        let s = max(8, min(32, side))
-        guard let pixels = resizedPixels(from: data, side: s) else { return nil }
-
-        var rSum: CGFloat = 0
-        var gSum: CGFloat = 0
-        var bSum: CGFloat = 0
-        var weightSum: CGFloat = 0
-
-        for i in stride(from: 0, to: pixels.count, by: 4) {
-            let a = CGFloat(pixels[i + 3]) / 255.0
-            if a < 0.10 { continue }
-
-            let w = a
-            rSum += (CGFloat(pixels[i]) / 255.0) * w
-            gSum += (CGFloat(pixels[i + 1]) / 255.0) * w
-            bSum += (CGFloat(pixels[i + 2]) / 255.0) * w
-            weightSum += w
-        }
-
-        guard weightSum > 0 else { return nil }
-        return NSColor(
-            calibratedRed: rSum / weightSum,
-            green: gSum / weightSum,
-            blue: bSum / weightSum,
-            alpha: 1.0
-        )
-    }
 }
 
 extension ArtworkColorExtractor {
@@ -410,18 +434,32 @@ extension ArtworkColorExtractor {
     fileprivate nonisolated static func resizedPixels(from data: Data, side: Int) -> [UInt8]? {
         let checksum = computeChecksum(data)
         let key = cacheKey(for: checksum, side: side)
-        
-        // Check cache first
+
         if let cached = pixelCache.cache.object(forKey: key) {
             return cached.pixels
         }
-        
-        // Generate pixels
-        guard let image = NSImage(data: data) else { return nil }
-        var rect = CGRect(origin: .zero, size: image.size)
-        guard let cgImage = image.cgImage(forProposedRect: &rect, context: nil, hints: nil) else {
-            return nil
-        }
+
+        guard
+            let source = CGImageSourceCreateWithData(
+                data as CFData,
+                [kCGImageSourceShouldCache: false] as CFDictionary
+            )
+        else { return nil }
+
+        let thumbnailOptions: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: max(1, side),
+        ]
+
+        guard
+            let cgImage = CGImageSourceCreateThumbnailAtIndex(
+                source,
+                0,
+                thumbnailOptions as CFDictionary
+            )
+        else { return nil }
 
         let width = side
         let height = side
@@ -443,11 +481,10 @@ extension ArtworkColorExtractor {
 
         context.interpolationQuality = .high
         context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
-        
-        // Cache the result
+
         let entry = PixelDataCacheEntry(pixels: pixels, side: side, checksum: checksum)
-        pixelCache.cache.setObject(entry, forKey: key)
-        
+        pixelCache.cache.setObject(entry, forKey: key, cost: pixels.count)
+
         return pixels
     }
 

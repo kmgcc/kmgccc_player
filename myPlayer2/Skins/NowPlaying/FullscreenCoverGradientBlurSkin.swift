@@ -20,8 +20,9 @@ struct FullscreenCoverGradientBlurSkin: NowPlayingSkin {
         AnyView(
             CoverGradientBlurBackgroundView(
                 artworkData: context.track?.artworkData,
+                artworkImage: context.track?.artworkImage,
+                artworkChecksum: context.track?.artworkChecksum ?? 0,
                 dominantColor: context.theme.artworkAverageColor ?? context.theme.artworkPalette.first,
-                trackID: context.track?.id,
                 config: makeConfigFromSettings()
             )
         )
@@ -75,7 +76,7 @@ struct FullscreenCoverGradientBlurSkin: NowPlayingSkin {
 private struct CoverGradientBlurSkinBackground: View {
     let context: SkinContext
 
-    @AppStorage("skin.coverGradientBlur.maxBlurRadius") private var maxBlurRadius: Double = 200
+    @AppStorage("skin.coverGradientBlur.maxBlurRadius") private var maxBlurRadius: Double = 1600
 
     private var config: CoverGradientBlurConfig {
         // Fixed values
@@ -99,8 +100,9 @@ private struct CoverGradientBlurSkinBackground: View {
     var body: some View {
         CoverGradientBlurBackgroundView(
             artworkData: context.track?.artworkData,
+            artworkImage: context.track?.artworkImage,
+            artworkChecksum: context.track?.artworkChecksum ?? 0,
             dominantColor: context.theme.artworkAverageColor,
-            trackID: context.track?.id,
             config: config
         )
         .ignoresSafeArea()
@@ -183,7 +185,7 @@ private struct CoverGradientBlurSettingsView: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
 
-    @AppStorage("skin.coverGradientBlur.maxBlurRadius") private var maxBlurRadius: Double = 200
+    @AppStorage("skin.coverGradientBlur.maxBlurRadius") private var maxBlurRadius: Double = 1600
     @AppStorage("skin.coverGradientBlur.edgeFillMode") private var edgeFillMode: String = CoverEdgeFillMode.pixelStretch.rawValue
 
     private var currentEdgeFillMode: CoverEdgeFillMode {
@@ -247,14 +249,15 @@ private struct CoverGradientBlurSettingsView: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 56, alignment: .leading)
 
-            Slider(value: $maxBlurRadius, in: 100...2500, step: 50)
+            Slider(value: $maxBlurRadius, in: 100...2500, step: 100)
                 .tint(themeStore.accentColor)
                 .frame(maxWidth: .infinity)
 
             Text("\(Int(maxBlurRadius))")
                 .font(.system(size: 11, weight: .medium).monospacedDigit())
                 .foregroundStyle(themeStore.accentColor)
-                .frame(width: 32, alignment: .trailing)
+                .lineLimit(1)
+                .frame(width: 40, alignment: .trailing)
         }
     }
 }
