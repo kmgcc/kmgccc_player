@@ -97,14 +97,15 @@ final class LyricsViewModel {
         isPlaying: Bool,
         reason: String,
         forceWebReload: Bool = false,
-        forceLyricsReload: Bool = false
+        forceLyricsReload: Bool = false,
+        recreateWebViewOnForceReload: Bool = false
     ) {
         print(
             "[LyricsVM] ensureAMLLLoaded: reason=\(reason), trackId=\(track?.id.uuidString.prefix(8) ?? "nil"), isReady=\(store.isReady), webViewObjectID=\(store.webViewObjectID)"
         )
 
         if forceWebReload {
-            store.forceReload()
+            store.forceReload(recreateWebView: recreateWebViewOnForceReload)
         }
 
         if shouldApplyTrack(track, forceLyricsReload: forceLyricsReload) {
@@ -249,6 +250,9 @@ final class LyricsViewModel {
             let json = String(data: data, encoding: .utf8)
         {
             store.setConfigJSON(json)
+            if surfaceRole == .main {
+                store.scheduleDebugVisibleLayerProbe(label: "main-config", delay: 0.75)
+            }
         }
     }
 

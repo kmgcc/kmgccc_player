@@ -30,6 +30,33 @@ struct FullscreenPlayerView: View {
         let lineTimingSubInactive: NSColor
     }
 
+    private enum FullscreenCoverBlurBlendProfile: String {
+        case lighter
+        case darker
+
+        var paletteScheme: ColorScheme {
+            switch self {
+            case .lighter:
+                return .dark
+            case .darker:
+                return .light
+            }
+        }
+    }
+
+    private struct FullscreenCoverBlurLyricsTheme {
+        let trackID: UUID
+        let themeColor: NSColor
+        let themeLightness: CGFloat
+        let profile: FullscreenCoverBlurBlendProfile
+        let colors: FullscreenLyricsColorSet
+    }
+
+    private enum FullscreenCoverBlurRenderLayer: String {
+        case base
+        case highlight
+    }
+
     private let topContentHorizontalPadding: CGFloat = 0
     private let topContentLeftShift: CGFloat = 44
     private let artworkLyricsColumnSpacing: CGFloat = -58
@@ -68,15 +95,35 @@ struct FullscreenPlayerView: View {
     @State private var pendingFullscreenLyricsReveal: DispatchWorkItem?
     @State private var pendingFullscreenTrackRefresh: DispatchWorkItem?
     @State private var artworkSnapshot: ArtworkAssetSnapshot?
+    @State private var coverBlurLyricsTheme: FullscreenCoverBlurLyricsTheme?
     @State private var deferredTrackUpdateDeadline: Date?
     @State private var suppressFullscreenLyricsViewport = false
     @State private var isLeadingControlsExpanded = false
     @State private var isLyricsManuallyHidden = false
     @State private var appearanceRotateTrigger = 0
     @State private var currentFullscreenScale: CGFloat = 1.0
+    @State private var didHandleFullscreenAppear = false
     @Namespace private var fullscreenLayoutNamespace
 
     var onExitFullscreen: (() -> Void)?
+
+    private var isCoverBlurFullscreenSkin: Bool {
+        settings.selectedFullscreenSkinID == "fullscreen.coverGradientBlur"
+    }
+
+    private var coverBlurHighlightStore: LyricsWebViewStore {
+        LyricsSurfaceManager.shared.store(for: .fullscreenCoverBlurHighlight)
+    }
+
+    private var existingCoverBlurHighlightStore: LyricsWebViewStore? {
+        LyricsSurfaceManager.shared.existingStore(for: .fullscreenCoverBlurHighlight)
+    }
+
+    private var shouldRenderCoverBlurHighlightOverlay: Bool {
+        // A second AMLL surface introduces timing drift and visible ghosting.
+        // Keep cover-blur fullscreen on a single AMLL surface only.
+        false
+    }
 
     /// Effective dimming intensity adjusted for color scheme.
     /// Light mode requires stronger dimming for readability.
@@ -93,7 +140,6 @@ struct FullscreenPlayerView: View {
         let selectedSkinID = settings.selectedFullscreenSkinID
         let selectedSkin = SkinRegistry.fullscreenSkin(for: selectedSkinID)
         let usesCustomBg = selectedSkinID == "fullscreen.coverGradientBlur"
-        let _ = print("[FullscreenSkin] id=\(selectedSkinID), usesCustomBackground=\(usesCustomBg)")
 
         GeometryReader { proxy in
             fullscreenContent(for: proxy, selectedSkin: selectedSkin, skinUsesCustomBackground: usesCustomBg)
@@ -113,20 +159,25 @@ struct FullscreenPlayerView: View {
             }
         }
         .onAppear {
+            guard !didHandleFullscreenAppear else { return }
+            didHandleFullscreenAppear = true
+            syncCoverBlurHighlightActivation()
             resetFullscreenLyricsBackgroundSnapshot()
             scheduleFullscreenLyricsBackgroundCapture()
             setupSeekCallback()
             syncLyricsColumnVisibility(animated: false)
             reloadLyricsSurface(
                 reason: "fullscreen appear",
-                forceWebReload: true,
-                forceLyricsReload: true
+                forceWebReload: false,
+                forceLyricsReload: true,
+                recreateWebViewOnForceReload: false
             )
             if isLedEnabledForFullscreenSkin() {
                 ledMeter.start()
             }
         }
         .onDisappear {
+            didHandleFullscreenAppear = false
             ledMeter.stop()
             lyricsVM.onSeekRequest = nil
             pendingFullscreenLyricsRefresh?.cancel()
@@ -137,10 +188,16 @@ struct FullscreenPlayerView: View {
             pendingFullscreenTrackRefresh = nil
             deferredTrackUpdateDeadline = nil
             suppressFullscreenLyricsViewport = false
+            deactivateCoverBlurHighlightSurface()
             clearFullscreenLyricsTheme()
         }
-        .onChange(of: selectedSkinID) { _, _ in
+        .onChange(of: selectedSkinID) { oldValue, newValue in
             skinRevision &+= 1
+            let coverBlurTransition = oldValue == "fullscreen.coverGradientBlur"
+                || newValue == "fullscreen.coverGradientBlur"
+            syncCoverBlurHighlightActivation()
+            guard coverBlurTransition else { return }
+            reloadLyricsSurface(reason: "fullscreen skin changed", forceLyricsReload: true)
         }
         .onChange(of: settings.selectedFullscreenSkinID) { _, _ in
             if isLedEnabledForFullscreenSkin() {
@@ -152,6 +209,9 @@ struct FullscreenPlayerView: View {
         .onChange(of: playerVM.currentTime, handleCurrentTimeChange)
         .onChange(of: playerVM.isPlaying) { _, newValue in
             lyricsVM.setPlaying(newValue)
+            if LyricsSurfaceManager.shared.isActive(.fullscreenCoverBlurHighlight) {
+                coverBlurHighlightStore.setPlaying(newValue)
+            }
         }
         .onChange(of: playerVM.currentTrack?.id, handleTrackIdChange)
         .onChange(of: hasLyricsForCurrentTrack) { _, _ in
@@ -162,8 +222,7 @@ struct FullscreenPlayerView: View {
         .onChange(of: fullscreenLyricsConfigSignature) { _, _ in
             applyFullscreenLyricsTheme()
         }
-        .onChange(of: colorScheme) { oldScheme, newScheme in
-            print("[FullscreenLyrics] colorScheme CHANGED: \(oldScheme) -> \(newScheme)")
+        .onChange(of: colorScheme) { _, _ in
             forceRefreshFullscreenLyricsColors(reason: "colorScheme-change")
         }
         .onChange(of: bkController.lyricsColorSampleRevision) { _, _ in
@@ -237,6 +296,9 @@ struct FullscreenPlayerView: View {
         }
         .id("fullscreen_\(settings.selectedFullscreenSkinID)_\(skinRevision)")
         .frame(width: proxy.size.width, height: proxy.size.height)
+        .onAppear {
+            currentFullscreenScale = scale
+        }
         .onChange(of: scale) { _, newScale in
             currentFullscreenScale = newScale
         }
@@ -309,6 +371,8 @@ struct FullscreenPlayerView: View {
                         x: actualLyricsX + actualLyricsWidth / 2,
                         y: actualLyricsHeight / 2
                     )
+            } else {
+                Color.clear
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -322,23 +386,93 @@ struct FullscreenPlayerView: View {
             let bottomFade = min(90 * scale, max(52 * scale, proxy.size.height * 0.12))
             let horizontalInset: CGFloat = 10 * scale
             let expandedHeight = proxy.size.height + topFade + bottomFade + 6 * scale
+            ZStack {
+                let webViewWidth = max(0, proxy.size.width - horizontalInset * 2)
 
-            AMLLWebView(store: lyricsVM.webViewStore, forcedAppearanceMode: .dark)
-                .frame(
-                    width: max(0, proxy.size.width - horizontalInset * 2),
-                    height: expandedHeight
-                )
-                .offset(y: -lyricsViewportTopLift * scale)
-                .opacity(fullscreenLyricsViewportOpacity)
-                .environment(\.colorScheme, .dark)
-                .mask(
-                    fullscreenLyricsMask(
+                if shouldRenderCoverBlurHighlightOverlay {
+                    fullscreenMaskedLyricsSurface(
+                        scale: scale,
+                        width: webViewWidth,
+                        height: expandedHeight,
                         visibleHeight: proxy.size.height,
                         topFade: topFade,
-                        bottomFade: bottomFade
-                    )
+                        bottomFade: bottomFade,
+                        blendMode: coverBlurBaseBlendMode,
+                        useCompositingGroup: false
+                    ) {
+                        AMLLWebView(
+                            store: lyricsVM.webViewStore,
+                            forcedAppearanceMode: .dark
+                        )
+                    }
+
+                    fullscreenMaskedLyricsSurface(
+                        scale: scale,
+                        width: webViewWidth,
+                        height: expandedHeight,
+                        visibleHeight: proxy.size.height,
+                        topFade: topFade,
+                        bottomFade: bottomFade,
+                        blendMode: coverBlurHighlightBlendMode,
+                        useCompositingGroup: false
+                    ) {
+                        AMLLWebView(
+                            store: coverBlurHighlightStore,
+                            forcedAppearanceMode: .dark
+                        )
+                    }
+                    .allowsHitTesting(false)
+                } else {
+                    fullscreenMaskedLyricsSurface(
+                        scale: scale,
+                        width: webViewWidth,
+                        height: expandedHeight,
+                        visibleHeight: proxy.size.height,
+                        topFade: topFade,
+                        bottomFade: bottomFade,
+                        blendMode: isCoverBlurFullscreenSkin ? coverBlurBaseBlendMode : .normal,
+                        useCompositingGroup: !isCoverBlurFullscreenSkin
+                    ) {
+                        AMLLWebView(store: lyricsVM.webViewStore, forcedAppearanceMode: .dark)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        }
+    }
+
+    @ViewBuilder
+    private func fullscreenMaskedLyricsSurface<Content: View>(
+        scale: CGFloat,
+        width: CGFloat,
+        height: CGFloat,
+        visibleHeight: CGFloat,
+        topFade: CGFloat,
+        bottomFade: CGFloat,
+        blendMode: BlendMode,
+        useCompositingGroup: Bool,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        let maskedContent = content()
+            .frame(width: width, height: height)
+            .offset(y: -lyricsViewportTopLift * scale)
+            .opacity(fullscreenLyricsViewportOpacity)
+            .environment(\.colorScheme, .dark)
+            .mask(
+                fullscreenLyricsMask(
+                    visibleHeight: visibleHeight,
+                    topFade: topFade,
+                    bottomFade: bottomFade
                 )
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            )
+
+        if useCompositingGroup {
+            maskedContent
+                .compositingGroup()
+                .blendMode(blendMode)
+        } else {
+            maskedContent
+                .blendMode(blendMode)
         }
     }
 
@@ -407,6 +541,7 @@ struct FullscreenPlayerView: View {
 
             FullscreenMiniPlayerView()
                 .frame(width: currentMiniPlayerWidth, height: buttonSize)
+                .environment(\.colorScheme, fullscreenControlsColorScheme)
                 .offset(x: miniPlayerOriginX)
 
             ExpandableVolumeControl(
@@ -414,6 +549,7 @@ struct FullscreenPlayerView: View {
                 isExpanded: $isVolumeExpanded
             )
             .frame(width: volumeWidth, height: buttonSize)
+            .environment(\.colorScheme, fullscreenControlsColorScheme)
             .offset(x: volumeOriginX)
         }
         .frame(width: windowWidth, height: buttonSize, alignment: .leading)
@@ -490,6 +626,7 @@ struct FullscreenPlayerView: View {
                 
                 FullscreenMiniPlayerView(scale: scale)
                     .frame(width: scaledMiniPlayerWidth, height: scaledButtonSize)
+                    .environment(\.colorScheme, fullscreenControlsColorScheme)
                     .position(
                         x: scaledMiniPlayerOriginX + scaledMiniPlayerWidth / 2,
                         y: scaledButtonSize / 2
@@ -501,6 +638,7 @@ struct FullscreenPlayerView: View {
                     scale: scale
                 )
                 .frame(width: scaledVolumeWidth, height: scaledButtonSize)
+                .environment(\.colorScheme, fullscreenControlsColorScheme)
                 .position(
                     x: scaledVolumeOriginX + scaledVolumeWidth / 2,
                     y: scaledButtonSize / 2
@@ -642,7 +780,7 @@ struct FullscreenPlayerView: View {
         )
         .contentShape(Capsule())
         .liquidGlassPill(
-            colorScheme: colorScheme,
+            colorScheme: fullscreenControlsColorScheme,
             accentColor: nil as Color?,
             prominence: .standard,
             isFloating: true
@@ -742,6 +880,35 @@ struct FullscreenPlayerView: View {
         FullscreenMiniPlayerView.resolveControlPrimaryColor(from: themeStore.accentNSColor)
     }
 
+    private var fullscreenControlsColorScheme: ColorScheme {
+        isCoverBlurFullscreenSkin ? .dark : colorScheme
+    }
+
+    private var coverBlurBaseBlendMode: BlendMode {
+        guard isCoverBlurFullscreenSkin else { return .normal }
+        guard coverBlurLyricsTheme?.trackID == playerVM.currentTrack?.id else { return .normal }
+        switch coverBlurLyricsTheme?.profile {
+        case .lighter:
+            return .plusLighter
+        case .darker:
+            return .plusDarker
+        case .none:
+            return .normal
+        }
+    }
+
+    private var coverBlurHighlightBlendMode: BlendMode {
+        guard shouldRenderCoverBlurHighlightOverlay else { return .normal }
+        switch coverBlurLyricsTheme?.profile {
+        case .lighter:
+            return .normal
+        case .darker:
+            return .plusDarker
+        case .none:
+            return .normal
+        }
+    }
+
     private var effectiveFullscreenAppearance: AppSettings.ManualAppearance {
         if settings.followSystemAppearance {
             return colorScheme == .dark ? .dark : .light
@@ -826,6 +993,9 @@ struct FullscreenPlayerView: View {
 
     private func handleCurrentTimeChange(_ oldTime: Double, _ newTime: Double) {
         lyricsVM.syncTime(newTime)
+        if LyricsSurfaceManager.shared.isActive(.fullscreenCoverBlurHighlight) {
+            coverBlurHighlightStore.setCurrentTime(newTime)
+        }
 
         if oldTime > 1.0, newTime < 0.2 {
             reloadLyricsSurface(reason: "fullscreen playback restarted", forceLyricsReload: true)
@@ -834,13 +1004,10 @@ struct FullscreenPlayerView: View {
 
     private func handleTrackIdChange(_ oldId: UUID?, _ newId: UUID?) {
         guard oldId != newId else { return }
-        
-        NSLog("[LyricsColor] track changed: \(oldId?.uuidString.prefix(8) ?? "nil") -> \(newId?.uuidString.prefix(8) ?? "nil")")
-        
+
         // Immediately clear old artwork snapshot to prevent stale colors
         // from being used for the new track's background/overlay
         artworkSnapshot = nil
-        NSLog("[LyricsColor] dominantColor reset (artworkSnapshot = nil)")
         
         let targetVisible = desiredLyricsColumnVisibility
         let currentVisible = lyricsColumnVisible ?? targetVisible
@@ -859,20 +1026,85 @@ struct FullscreenPlayerView: View {
     private func reloadLyricsSurface(
         reason: String,
         forceWebReload: Bool = false,
-        forceLyricsReload: Bool = false
+        forceLyricsReload: Bool = false,
+        recreateWebViewOnForceReload: Bool = false
     ) {
+        syncCoverBlurHighlightActivation()
+
         lyricsVM.ensureAMLLLoaded(
             track: playerVM.currentTrack,
             currentTime: playerVM.currentTime,
             isPlaying: playerVM.isPlaying,
             reason: reason,
             forceWebReload: forceWebReload,
-            forceLyricsReload: forceLyricsReload
+            forceLyricsReload: forceLyricsReload,
+            recreateWebViewOnForceReload: recreateWebViewOnForceReload
+        )
+        syncCoverBlurHighlightSurface(
+            forceWebReload: forceWebReload,
+            recreateWebViewOnForceReload: recreateWebViewOnForceReload
         )
         if !pendingFullscreenLyricsBackgroundCapture {
             captureFullscreenLyricsBackgroundSnapshot()
         }
         applyFullscreenLyricsTheme()
+    }
+
+    private func resolvedFullscreenLyricsText(for track: Track?) -> String {
+        guard let track else { return "" }
+
+        let userText = track.lyricsText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !userText.isEmpty, let original = track.lyricsText {
+            return original
+        }
+
+        let ttmlText = track.ttmlLyricText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !ttmlText.isEmpty, let original = track.ttmlLyricText {
+            return original
+        }
+
+        return ""
+    }
+
+    private func activateCoverBlurHighlightSurface() {
+        LyricsSurfaceManager.shared.activate(role: .fullscreenCoverBlurHighlight)
+    }
+
+    private func deactivateCoverBlurHighlightSurface() {
+        LyricsSurfaceManager.shared.deactivate(role: .fullscreenCoverBlurHighlight)
+    }
+
+    private func syncCoverBlurHighlightActivation() {
+        if shouldRenderCoverBlurHighlightOverlay {
+            activateCoverBlurHighlightSurface()
+        } else {
+            deactivateCoverBlurHighlightSurface()
+        }
+    }
+
+    private func syncCoverBlurHighlightSurface(
+        forceWebReload: Bool = false,
+        recreateWebViewOnForceReload: Bool = false
+    ) {
+        guard shouldRenderCoverBlurHighlightOverlay else { return }
+
+        let store = coverBlurHighlightStore
+        if forceWebReload {
+            store.forceReload(recreateWebView: recreateWebViewOnForceReload)
+        }
+
+        if let palette = ThemeStore.shared.palette {
+            store.applyTheme(palette)
+        }
+
+        let track = playerVM.currentTrack
+        let lyricsText = resolvedFullscreenLyricsText(for: track)
+        let ttmlForStore: String? = track == nil ? nil : lyricsText
+        store.applyTrack(
+            ttml: ttmlForStore,
+            currentTime: playerVM.currentTime,
+            isPlaying: playerVM.isPlaying
+        )
     }
 
     @discardableResult
@@ -913,6 +1145,9 @@ struct FullscreenPlayerView: View {
 
     private var fullscreenLyricsViewportOpacity: Double {
         guard playerVM.currentTrack != nil else { return 0 }
+        if isCoverBlurFullscreenSkin && coverBlurLyricsTheme?.trackID != playerVM.currentTrack?.id {
+            return 0
+        }
         return suppressFullscreenLyricsViewport ? 0 : 1
     }
 
@@ -958,13 +1193,42 @@ struct FullscreenPlayerView: View {
     }
 
     private func applyFullscreenLyricsTheme(force: Bool = false, reason: String = "") {
-        let store = lyricsVM.webViewStore
+        let baseStore = lyricsVM.webViewStore
         let surfaceRole = LyricsSurfaceRole.fullscreen
-        let colorSet = makeFullscreenLyricsColorSet(for: playerVM.currentTrack)
-        
-        print("[FullscreenLyrics] applyFullscreenLyricsTheme: force=\(force), reason=\(reason), colorScheme=\(colorScheme), webViewObjectID=\(store.webViewObjectID)")
-        
-        store.setThemePaletteOverride(makeFullscreenLyricsPalette(from: colorSet))
+        let currentTrack = playerVM.currentTrack
+        let readyCoverBlurTheme = isCoverBlurFullscreenSkin
+            ? updateCoverBlurLyricsThemeIfReady(for: currentTrack)
+            : nil
+        let heldCoverBlurTheme = coverBlurLyricsTheme
+        let activeCoverBlurTheme: FullscreenCoverBlurLyricsTheme? = {
+            guard isCoverBlurFullscreenSkin else { return nil }
+            if let readyCoverBlurTheme {
+                return readyCoverBlurTheme
+            }
+            guard heldCoverBlurTheme?.trackID == currentTrack?.id else {
+                return nil
+            }
+            return heldCoverBlurTheme
+        }()
+        let colorSet = activeCoverBlurTheme?.colors ?? makeFullscreenLyricsColorSet(for: currentTrack)
+
+        if isCoverBlurFullscreenSkin, readyCoverBlurTheme == nil {
+            if activeCoverBlurTheme == nil {
+                baseStore.setThemePaletteOverride(nil)
+                deactivateCoverBlurHighlightSurface()
+                if let highlightStore = existingCoverBlurHighlightStore {
+                    highlightStore.setThemePaletteOverride(nil)
+                }
+                return
+            }
+        }
+
+        let activePalette = activeCoverBlurTheme.map { makeCoverBlurLyricsPalette(from: $0) }
+            ?? makeFullscreenLyricsPalette(from: colorSet)
+        baseStore.setThemePaletteOverride(activePalette)
+        if shouldRenderCoverBlurHighlightOverlay, let highlightStore = existingCoverBlurHighlightStore {
+            highlightStore.setThemePaletteOverride(activePalette)
+        }
         let mainFontFamily = cssFontFamily([
             settings.fullscreenLyricsFontNameEn,
             settings.fullscreenLyricsFontNameZh,
@@ -972,10 +1236,22 @@ struct FullscreenPlayerView: View {
         let translationFontFamily = cssFontFamily([
             settings.fullscreenLyricsTranslationFontName
         ])
-        let mainActiveColor = ArtworkColorExtractor.cssRGBA(colorSet.mainActive, alpha: 1.0)
-        let mainInactiveColor = ArtworkColorExtractor.cssRGBA(colorSet.mainInactive, alpha: 1.0)
-        let subActiveColor = ArtworkColorExtractor.cssRGBA(colorSet.subActive, alpha: 1.0)
-        let subInactiveColor = ArtworkColorExtractor.cssRGBA(colorSet.subInactive, alpha: 1.0)
+        let mainActiveColor = ArtworkColorExtractor.cssRGBA(
+            colorSet.mainActive,
+            alpha: 1.0
+        )
+        let mainInactiveColor = ArtworkColorExtractor.cssRGBA(
+            colorSet.mainInactive,
+            alpha: 1.0
+        )
+        let subActiveColor = ArtworkColorExtractor.cssRGBA(
+            colorSet.subActive,
+            alpha: 1.0
+        )
+        let subInactiveColor = ArtworkColorExtractor.cssRGBA(
+            colorSet.subInactive,
+            alpha: 1.0
+        )
         let lineTimingMainInactiveColor = ArtworkColorExtractor.cssRGBA(
             colorSet.lineTimingMainInactive,
             alpha: 1.0
@@ -984,15 +1260,21 @@ struct FullscreenPlayerView: View {
             colorSet.lineTimingSubInactive,
             alpha: 1.0
         )
-        let backgroundColor = subActiveColor
+        let backgroundColor = ArtworkColorExtractor.cssRGBA(
+            colorSet.subActive,
+            alpha: 1.0
+        )
+        let coverBlurThemeColor = activeCoverBlurTheme.map {
+            ArtworkColorExtractor.cssRGBA($0.themeColor, alpha: 1.0)
+        }
 
-        print("[FullscreenLyrics] Colors: mainActive=\(mainActiveColor), mainInactive=\(mainInactiveColor), subActive=\(subActiveColor)")
+        
 
         // Scale font sizes based on fullscreen scale for crisp rendering at all resolutions
         let scaledFontSize = settings.fullscreenLyricsFontSize * currentFullscreenScale
         let scaledTranslationFontSize = settings.fullscreenLyricsTranslationFontSize * currentFullscreenScale
 
-        let config: [String: Any] = [
+        var config: [String: Any] = [
             "fontSize": scaledFontSize,
             "fontWeight": max(100, min(900, settings.fullscreenLyricsFontWeight)),
             "fontFamilyMain": mainFontFamily,
@@ -1010,7 +1292,6 @@ struct FullscreenPlayerView: View {
             "wordFadeWidth": surfaceRole.wordFadeWidth,
             "mixBlendMode": "normal",
             "blendOpacity": 1.0,
-            "fullscreenLyricDodgeMode": true,
             "fullscreenActiveColor": mainActiveColor,
             "fullscreenInactiveColor": mainInactiveColor,
             "fullscreenSubActiveColor": subActiveColor,
@@ -1026,6 +1307,65 @@ struct FullscreenPlayerView: View {
             "nearSwitchGapMs": 120,
         ]
 
+        config["fullscreenLyricDodgeMode"] = true
+        config["fullscreenCoverBlurMode"] = false
+        config["coverBlurFullscreenGenericMode"] = isCoverBlurFullscreenSkin && activeCoverBlurTheme != nil
+        config["coverBlurFullscreenGenericProfile"] = activeCoverBlurTheme?.profile.rawValue ?? NSNull()
+        config["coverBlurFullscreenThemeColor"] = coverBlurThemeColor ?? NSNull()
+
+        let shouldUseHighlightOverlay = shouldRenderCoverBlurHighlightOverlay
+        if shouldUseHighlightOverlay {
+            activateCoverBlurHighlightSurface()
+            syncCoverBlurHighlightSurface()
+            coverBlurHighlightStore.setThemePaletteOverride(activePalette)
+        } else {
+            deactivateCoverBlurHighlightSurface()
+        }
+
+        let probeMode = activeCoverBlurTheme?.profile.rawValue
+            ?? (isCoverBlurFullscreenSkin ? "coverBlurPending" : "generic")
+        let probeReason = reason.isEmpty ? "config" : reason
+        let probeDelay: TimeInterval
+        if isCoverBlurFullscreenSkin {
+            probeDelay = activeCoverBlurTheme == nil ? 1.1 : 2.25
+        } else {
+            probeDelay = 0.9
+        }
+
+        var baseConfig = config
+        if shouldUseHighlightOverlay {
+            baseConfig["coverBlurSuppressEmphasisGlow"] = true
+        }
+        pushFullscreenLyricsConfig(
+            baseConfig,
+            to: baseStore,
+            force: force,
+            reason: reason,
+            probeLabel: "fullscreen-\(probeMode)-base-\(probeReason)",
+            probeDelay: probeDelay
+        )
+
+        guard shouldUseHighlightOverlay else { return }
+
+        config["coverBlurSuppressEmphasisGlow"] = false
+        pushFullscreenLyricsConfig(
+            config,
+            to: coverBlurHighlightStore,
+            force: force,
+            reason: reason,
+            probeLabel: "fullscreen-\(probeMode)-highlight-\(probeReason)",
+            probeDelay: probeDelay
+        )
+    }
+
+    private func pushFullscreenLyricsConfig(
+        _ config: [String: Any],
+        to store: LyricsWebViewStore,
+        force: Bool,
+        reason: String,
+        probeLabel: String,
+        probeDelay: TimeInterval
+    ) {
         if let data = try? JSONSerialization.data(withJSONObject: config),
             let json = String(data: data, encoding: .utf8)
         {
@@ -1034,12 +1374,15 @@ struct FullscreenPlayerView: View {
             } else {
                 store.setConfigJSON(json)
             }
+            store.scheduleDebugVisibleLayerProbe(label: probeLabel, delay: probeDelay)
         }
     }
 
     private func clearFullscreenLyricsTheme() {
-        let store = lyricsVM.webViewStore
-        store.setThemePaletteOverride(nil)
+        lyricsVM.webViewStore.setThemePaletteOverride(nil)
+        if let highlightStore = existingCoverBlurHighlightStore {
+            highlightStore.setThemePaletteOverride(nil)
+        }
     }
 
     private func resetFullscreenLyricsBackgroundSnapshot() {
@@ -1079,27 +1422,21 @@ struct FullscreenPlayerView: View {
     }
 
     private func forceRefreshFullscreenLyricsColors(reason: String) {
-        print("[FullscreenLyrics] forceRefreshFullscreenLyricsColors START: reason=\(reason), colorScheme=\(colorScheme), hasTrack=\(playerVM.currentTrack != nil), webViewObjectID=\(lyricsVM.webViewStore.webViewObjectID)")
-        
         pendingFullscreenLyricsRefresh?.cancel()
         pendingFullscreenLyricsRefresh = nil
-        
+
         resetFullscreenLyricsBackgroundSnapshot()
         captureFullscreenLyricsBackgroundSnapshot(preferLiveSurface: true)
         applyFullscreenLyricsTheme(force: true, reason: reason)
-        
-        print("[FullscreenLyrics] forceRefreshFullscreenLyricsColors IMMEDIATE DONE: lockedBgColor=\(lockedFullscreenLyricsBackgroundColor ?? .clear), ultraDark=\(lockedFullscreenLyricsUltraDark)")
-        
+
         let delayedReason = reason
         let delayedWorkItem = DispatchWorkItem {
-            print("[FullscreenLyrics] forceRefreshFullscreenLyricsColors DELAYED EXECUTION: reason=\(delayedReason)")
             resetFullscreenLyricsBackgroundSnapshot()
             captureFullscreenLyricsBackgroundSnapshot(preferLiveSurface: true)
             applyFullscreenLyricsTheme(force: true, reason: "\(delayedReason)-delayed")
-            print("[FullscreenLyrics] forceRefreshFullscreenLyricsColors DELAYED DONE: lockedBgColor=\(lockedFullscreenLyricsBackgroundColor ?? .clear), ultraDark=\(lockedFullscreenLyricsUltraDark)")
             pendingFullscreenLyricsRefresh = nil
         }
-        
+
         pendingFullscreenLyricsRefresh = delayedWorkItem
         let delay: TimeInterval = 0.22
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: delayedWorkItem)
@@ -1268,12 +1605,36 @@ struct FullscreenPlayerView: View {
         return CGRect(x: rectX, y: rectY, width: rectWidth, height: rectHeight)
     }
 
-    private func makeFullscreenLyricsPalette(from colors: FullscreenLyricsColorSet) -> ThemePalette {
+    private func makeLyricsPalette(
+        from colors: FullscreenLyricsColorSet,
+        scheme: ColorScheme
+    ) -> ThemePalette {
         let active = ArtworkColorExtractor.cssRGBA(colors.mainActive, alpha: 1.0)
         let inactive = ArtworkColorExtractor.cssRGBA(colors.mainInactive, alpha: 1.0)
 
         return ThemePalette(
-            scheme: .dark,
+            scheme: scheme,
+            background: "rgba(0,0,0,0)",
+            text: active,
+            activeLine: active,
+            inactiveLine: inactive,
+            accent: active,
+            shadow: "rgba(0,0,0,0)"
+        )
+    }
+
+    private func makeFullscreenLyricsPalette(from colors: FullscreenLyricsColorSet) -> ThemePalette {
+        makeLyricsPalette(from: colors, scheme: .dark)
+    }
+
+    private func makeCoverBlurLyricsPalette(from theme: FullscreenCoverBlurLyricsTheme) -> ThemePalette {
+        let active = ArtworkColorExtractor.cssRGBA(theme.colors.mainActive, alpha: 1.0)
+        let inactive = ArtworkColorExtractor.cssRGBA(
+            theme.colors.mainInactive,
+            alpha: 1.0
+        )
+        return ThemePalette(
+            scheme: theme.profile.paletteScheme,
             background: "rgba(0,0,0,0)",
             text: active,
             activeLine: active,
@@ -1376,6 +1737,248 @@ struct FullscreenPlayerView: View {
         )
     }
 
+    private func makeCoverBlurLyricsColorSet(
+        from themeColor: NSColor,
+        profile: FullscreenCoverBlurBlendProfile
+    ) -> FullscreenLyricsColorSet {
+        let themeHSL = hslComponents(from: themeColor)
+
+        switch profile {
+        case .lighter:
+            let inputLightness = themeHSL.lightness
+            let nonHighlightMaxLightness: CGFloat = 0.20
+            let isVeryDarkTheme = inputLightness < 0.05
+            let isVeryBrightButStillLighter = inputLightness > 0.70
+            let activeSaturation: CGFloat
+            let activeLightness: CGFloat
+
+            if inputLightness >= 0.64 {
+                // Bright lighter-profile artwork should stay bright, but a step below the
+                // previous cap so the plus-lighter result does not wash out.
+                activeLightness = clamp(
+                    max(inputLightness + 0.01, 0.90),
+                    min: 0.90,
+                    max: 0.935
+                )
+                activeSaturation = clamp(
+                    themeHSL.saturation * 0.70 + 0.04,
+                    min: 0.06,
+                    max: 0.48
+                )
+            } else if inputLightness >= 0.46 {
+                // Slightly bright input still needs a visible lift, but one notch lower
+                // than the bright branch above.
+                activeLightness = clamp(
+                    max(inputLightness + 0.08, 0.85),
+                    min: 0.85,
+                    max: 0.89
+                )
+                activeSaturation = clamp(
+                    themeHSL.saturation * 0.54 + 0.04,
+                    min: 0.06,
+                    max: 0.38
+                )
+            } else if inputLightness >= 0.18 {
+                // Neutral input remains clearly highlighted, but another step down from
+                // the brighter bands above.
+                activeLightness = clamp(
+                    max(inputLightness + 0.06, 0.80),
+                    min: 0.80,
+                    max: 0.84
+                )
+                activeSaturation = clamp(
+                    themeHSL.saturation * 0.48 + 0.04,
+                    min: 0.05,
+                    max: 0.34
+                )
+            } else {
+                // Very dark inputs must still render as a visible plus-lighter highlight.
+                activeLightness = clamp(
+                    max(inputLightness + 0.38, 0.67),
+                    min: 0.67,
+                    max: 0.78
+                )
+                activeSaturation = clamp(
+                    themeHSL.saturation * 0.14 + 0.06,
+                    min: 0.05,
+                    max: 0.18
+                )
+            }
+
+            let veryDarkInactiveBoost: CGFloat = isVeryDarkTheme ? 0.090 : 0
+            let brightInactiveTrim: CGFloat = isVeryBrightButStillLighter ? 0.015 : 0
+            let inactiveSaturation = clamp(
+                themeHSL.saturation * 0.34 + 0.03,
+                min: 0.03,
+                max: 0.18
+            )
+            let subInactiveSaturation = clamp(
+                themeHSL.saturation * 0.28 + 0.03,
+                min: 0.02,
+                max: 0.14
+            )
+            let baseLightness = clamp(
+                inputLightness * 0.08 + 0.09 + veryDarkInactiveBoost - brightInactiveTrim,
+                min: isVeryDarkTheme ? 0.13 : 0.08,
+                max: nonHighlightMaxLightness
+            )
+            let lineTimingBaseLightness = clamp(
+                baseLightness - (isVeryDarkTheme ? 0.025 : 0.04),
+                min: isVeryDarkTheme ? 0.10 : 0.05,
+                max: nonHighlightMaxLightness
+            )
+            let subActiveLightness = clamp(
+                baseLightness + (isVeryDarkTheme ? 0.035 : 0.045),
+                min: isVeryDarkTheme ? 0.15 : 0.13,
+                max: 0.24
+            )
+
+            return FullscreenLyricsColorSet(
+                mainActive: colorFromHSL(
+                    hue: themeHSL.hue,
+                    saturation: activeSaturation,
+                    lightness: activeLightness
+                ),
+                mainInactive: colorFromHSL(
+                    hue: themeHSL.hue,
+                    saturation: inactiveSaturation,
+                    lightness: baseLightness
+                ),
+                lineTimingMainInactive: colorFromHSL(
+                    hue: themeHSL.hue,
+                    saturation: clamp(inactiveSaturation * 0.92, min: 0.02, max: 0.24),
+                    lightness: lineTimingBaseLightness
+                ),
+                subActive: colorFromHSL(
+                    hue: themeHSL.hue,
+                    saturation: clamp(activeSaturation * 0.82, min: 0.08, max: 0.52),
+                    lightness: subActiveLightness
+                ),
+                subInactive: colorFromHSL(
+                    hue: themeHSL.hue,
+                    saturation: subInactiveSaturation,
+                    lightness: clamp(baseLightness - 0.02, min: isVeryDarkTheme ? 0.09 : 0.07, max: 0.18)
+                ),
+                lineTimingSubInactive: colorFromHSL(
+                    hue: themeHSL.hue,
+                    saturation: clamp(subInactiveSaturation * 0.92, min: 0.02, max: 0.12),
+                    lightness: clamp(lineTimingBaseLightness - 0.01, min: isVeryDarkTheme ? 0.07 : 0.04, max: 0.14)
+                )
+            )
+        case .darker:
+            // In darker mode the active layer stays in a darker band, but not so low that
+            // the highlight disappears entirely.
+            let highlightSaturation = clamp(
+                themeHSL.saturation * 0.34 + 0.08,
+                min: 0.05,
+                max: 0.24
+            )
+            let inactiveSaturation = clamp(
+                themeHSL.saturation * 0.18 + 0.02,
+                min: 0.01,
+                max: 0.10
+            )
+            let subInactiveSaturation = clamp(
+                inactiveSaturation * 0.90,
+                min: 0.01,
+                max: 0.09
+            )
+            let baseLightness = clamp(
+                0.82 - (1 - themeHSL.lightness) * 0.18,
+                min: 0.76,
+                max: 0.88
+            )
+            let lineTimingBaseLightness = clamp(baseLightness - 0.05, min: 0.70, max: 0.82)
+            let subActiveLightness = clamp(baseLightness - 0.10, min: 0.62, max: 0.76)
+            let highlightLightness = clamp(
+                themeHSL.lightness * 0.14 + 0.32,
+                min: 0.34,
+                max: 0.50
+            )
+
+            return FullscreenLyricsColorSet(
+                mainActive: colorFromHSL(
+                    hue: themeHSL.hue,
+                    saturation: highlightSaturation,
+                    lightness: highlightLightness
+                ),
+                mainInactive: colorFromHSL(
+                    hue: themeHSL.hue,
+                    saturation: inactiveSaturation,
+                    lightness: baseLightness
+                ),
+                lineTimingMainInactive: colorFromHSL(
+                    hue: themeHSL.hue,
+                    saturation: clamp(inactiveSaturation * 0.9, min: 0.06, max: 0.30),
+                    lightness: lineTimingBaseLightness
+                ),
+                subActive: colorFromHSL(
+                    hue: themeHSL.hue,
+                    saturation: clamp(highlightSaturation * 0.78, min: 0.04, max: 0.18),
+                    lightness: subActiveLightness
+                ),
+                subInactive: colorFromHSL(
+                    hue: themeHSL.hue,
+                    saturation: subInactiveSaturation,
+                    lightness: clamp(baseLightness - 0.02, min: 0.74, max: 0.88)
+                ),
+                lineTimingSubInactive: colorFromHSL(
+                    hue: themeHSL.hue,
+                    saturation: clamp(subInactiveSaturation * 0.95, min: 0.01, max: 0.08),
+                    lightness: clamp(lineTimingBaseLightness - 0.01, min: 0.68, max: 0.82)
+                )
+            )
+        }
+    }
+
+    private func resolveCoverBlurThemeColor(for track: Track?) -> NSColor? {
+        guard let track, let snapshot = artworkSnapshot, snapshot.trackID == track.id else {
+            return nil
+        }
+
+        return snapshot.averageColor ?? snapshot.dominantColor ?? snapshot.accentColor
+    }
+
+    private func makeCoverBlurLyricsTheme(for track: Track?) -> FullscreenCoverBlurLyricsTheme? {
+        guard let track, let themeColor = resolveCoverBlurThemeColor(for: track) else {
+            return nil
+        }
+
+        let themeHSL = hslComponents(from: themeColor)
+        let profile: FullscreenCoverBlurBlendProfile = themeHSL.lightness > 0.82
+            ? .darker
+            : .lighter
+
+        return FullscreenCoverBlurLyricsTheme(
+            trackID: track.id,
+            themeColor: themeColor,
+            themeLightness: themeHSL.lightness,
+            profile: profile,
+            colors: makeCoverBlurLyricsColorSet(from: themeColor, profile: profile)
+        )
+    }
+
+    private func updateCoverBlurLyricsThemeIfReady(
+        for track: Track?
+    ) -> FullscreenCoverBlurLyricsTheme? {
+        guard let resolvedTheme = makeCoverBlurLyricsTheme(for: track) else {
+            return nil
+        }
+
+        let previousTrackID = coverBlurLyricsTheme?.trackID
+        let previousProfile = coverBlurLyricsTheme?.profile
+        let previousLightness = coverBlurLyricsTheme?.themeLightness ?? -1
+        let themeChanged = previousTrackID != resolvedTheme.trackID
+            || previousProfile != resolvedTheme.profile
+            || abs(previousLightness - resolvedTheme.themeLightness) > 0.000_1
+
+        if themeChanged {
+            coverBlurLyricsTheme = resolvedTheme
+        }
+
+        return resolvedTheme
+    }
+
     private func resolveFullscreenLyricsBaseColor(for track: Track?) -> NSColor {
         if let accent = artworkSnapshot?.accentColor {
             return accent
@@ -1431,15 +2034,12 @@ struct FullscreenPlayerView: View {
             try? await Task.sleep(nanoseconds: UInt64(deferral * 1_000_000_000))
         }
         guard !Task.isCancelled else { return }
-        
-        NSLog("[LyricsColor] artworkSnapshot ready for track \(track.id.uuidString.prefix(8))")
+
         artworkSnapshot = snapshot
-        
+
         // CRITICAL: Trigger AMLL theme refresh after artwork colors are loaded
         // Without this, fullscreen lyrics colors would not update when track changes
-        NSLog("[LyricsColor] AMLL theme refresh triggered (artworkSnapshot loaded)")
         applyFullscreenLyricsTheme(reason: "artworkSnapshot-loaded")
-        NSLog("[LyricsColor] AMLL theme applied with new colors")
     }
 
     private func hslComponents(from color: NSColor) -> (hue: CGFloat, saturation: CGFloat, lightness: CGFloat)

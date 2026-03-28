@@ -15,6 +15,9 @@ enum LyricsSurfaceRole: String, CaseIterable, Sendable {
     
     /// Fullscreen player lyrics - separate instance for isolation.
     case fullscreen = "fullscreen"
+
+    /// Fullscreen cover-blur highlight overlay - transparent auxiliary layer.
+    case fullscreenCoverBlurHighlight = "fullscreenCoverBlurHighlight"
     
     /// Batch editing preview - low quality mode, separate instance.
     case batchPreview = "batchPreview"
@@ -29,7 +32,7 @@ enum LyricsSurfaceRole: String, CaseIterable, Sendable {
         switch self {
         case .main:
             return false  // Shared with batch preview
-        case .fullscreen:
+        case .fullscreen, .fullscreenCoverBlurHighlight:
             return true   // Isolated for fullscreen
         case .batchPreview:
             return true   // Isolated for preview independence
@@ -43,7 +46,7 @@ enum LyricsSurfaceRole: String, CaseIterable, Sendable {
         switch self {
         case .main:
             return 0.75
-        case .fullscreen:
+        case .fullscreen, .fullscreenCoverBlurHighlight:
             return 0.75
         case .batchPreview:
             return 0.45
@@ -55,7 +58,7 @@ enum LyricsSurfaceRole: String, CaseIterable, Sendable {
     /// Whether the renderer should keep blur enabled for this role.
     var enableBlur: Bool {
         switch self {
-        case .main, .fullscreen:
+        case .main, .fullscreen, .fullscreenCoverBlurHighlight:
             return true
         case .batchPreview, .standalone:
             return false
@@ -67,7 +70,7 @@ enum LyricsSurfaceRole: String, CaseIterable, Sendable {
         switch self {
         case .batchPreview:
             return false
-        case .main, .fullscreen, .standalone:
+        case .main, .fullscreen, .fullscreenCoverBlurHighlight, .standalone:
             return true
         }
     }
@@ -77,7 +80,7 @@ enum LyricsSurfaceRole: String, CaseIterable, Sendable {
         switch self {
         case .batchPreview:
             return 45
-        case .main, .fullscreen, .standalone:
+        case .main, .fullscreen, .fullscreenCoverBlurHighlight, .standalone:
             return 60
         }
     }
@@ -89,7 +92,7 @@ enum LyricsSurfaceRole: String, CaseIterable, Sendable {
             return 96
         case .main:
             return 260
-        case .fullscreen:
+        case .fullscreen, .fullscreenCoverBlurHighlight:
             return 260
         case .standalone:
             return 180
@@ -103,7 +106,7 @@ enum LyricsSurfaceRole: String, CaseIterable, Sendable {
             return 0.3
         case .main:
             return 0.7
-        case .fullscreen, .standalone:
+        case .fullscreen, .fullscreenCoverBlurHighlight, .standalone:
             return 0.7
         }
     }
@@ -115,7 +118,7 @@ enum LyricsSurfaceRole: String, CaseIterable, Sendable {
             return 1.2
         case .batchPreview:
             return 1.04
-        case .fullscreen:
+        case .fullscreen, .fullscreenCoverBlurHighlight:
             return 1.2
         case .standalone:
             return 1.1
@@ -129,6 +132,8 @@ enum LyricsSurfaceRole: String, CaseIterable, Sendable {
             return true   // Keep lyrics loaded
         case .fullscreen:
             return true   // Keep lyrics loaded
+        case .fullscreenCoverBlurHighlight:
+            return false  // Auxiliary overlay only exists while cover-blur fullscreen is active
         case .batchPreview:
             return false  // Can be recreated
         case .standalone:
@@ -143,6 +148,8 @@ enum LyricsSurfaceRole: String, CaseIterable, Sendable {
             return true
         case .fullscreen:
             return true
+        case .fullscreenCoverBlurHighlight:
+            return false  // Overlay is passthrough only
         case .batchPreview:
             return false  // Preview doesn't control playback
         case .standalone:
@@ -159,6 +166,8 @@ enum LyricsSurfaceRole: String, CaseIterable, Sendable {
             return "Main Lyrics"
         case .fullscreen:
             return "Fullscreen Lyrics"
+        case .fullscreenCoverBlurHighlight:
+            return "Fullscreen Cover Blur Highlight"
         case .batchPreview:
             return "Preview Lyrics"
         case .standalone:
@@ -179,6 +188,7 @@ extension LyricsSurfaceRole: Comparable {
         switch self {
         case .main: return 3
         case .fullscreen: return 4
+        case .fullscreenCoverBlurHighlight: return 4
         case .batchPreview: return 1
         case .standalone: return 2
         }

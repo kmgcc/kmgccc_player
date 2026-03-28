@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AMLL Lyrics</title>
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="style.css?v=cover-blur-rewrite-20260328-v14">
     <style>
         body, html {
             margin: 0;
@@ -70,6 +70,283 @@
         }
         .amll-lyric-player [class*="_lyricBgLine_"][class*="_active_"] > * {
             transform: translateY(0);
+        }
+
+        /* Cover-blur fullscreen surface: dedicated final-layer compositing path. */
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur {
+            mix-blend-mode: normal !important;
+            opacity: 1 !important;
+            text-shadow: none !important;
+            contain: none !important;
+            overflow: visible !important;
+            --amll-lp-mix-opacity: 1;
+            --amll-lp-mix-blend-mode: normal;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-profile="lighter"] {
+            --amll-cb-main-blend: plus-lighter;
+            --amll-cb-highlight-blend: normal;
+            --amll-cb-main-glow: rgba(255, 255, 255, 0.24);
+            --amll-cb-sub-glow: rgba(255, 255, 255, 0.16);
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-profile="darker"] {
+            --amll-cb-main-blend: plus-darker;
+            --amll-cb-highlight-blend: normal;
+            --amll-cb-main-glow: rgba(0, 0, 0, 0.20);
+            --amll-cb-sub-glow: rgba(0, 0, 0, 0.14);
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"] {
+            color: var(--amll-cb-main-inactive, var(--amll-inactive, var(--amll-lp-color, white))) !important;
+            mix-blend-mode: var(--amll-cb-main-blend, plus-lighter) !important;
+            filter: none !important;
+            overflow: visible !important;
+            contain: none !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"][class*="_active_"] {
+            color: var(--amll-cb-main-active, var(--amll-active, var(--amll-lp-color, white))) !important;
+            mix-blend-mode: var(--amll-cb-main-blend, plus-lighter) !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) {
+            color: var(
+                --amll-cb-main-line-timing-inactive,
+                var(--amll-cb-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
+            ) !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"] > *,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricMainLine_"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricMainLine_"] *,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_emphasizeWrapper_"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_emphasizeWrapper_"] *,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_emphasize_"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_emphasize_"] *,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_romanWord_"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricSubLine_"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricSubLine_"] * {
+            opacity: 1 !important;
+            overflow: visible !important;
+            contain: none !important;
+            mix-blend-mode: var(--amll-cb-main-blend, plus-lighter) !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricMainLine_"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricMainLine_"] * {
+            text-shadow:
+                0 0 0.04em var(--amll-cb-main-glow, rgba(255, 255, 255, 0.2)),
+                0 0 0.10em var(--amll-cb-main-glow, rgba(255, 255, 255, 0.2)) !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricSubLine_"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricSubLine_"] * {
+            text-shadow: 0 0 0.035em var(--amll-cb-sub-glow, rgba(255, 255, 255, 0.16)) !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"] > [class*="_lyricSubLine_"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"] > [class*="_lyricSubLine_"] * {
+            color: var(
+                --amll-cb-sub-inactive,
+                var(--amll-cb-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
+            ) !important;
+            mix-blend-mode: var(--amll-cb-main-blend, plus-lighter) !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"][class*="_active_"] > [class*="_lyricSubLine_"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"][class*="_active_"] > [class*="_lyricSubLine_"] * {
+            color: var(
+                --amll-cb-sub-active,
+                var(--amll-cb-main-active, var(--amll-active, var(--amll-lp-color, white)))
+            ) !important;
+            mix-blend-mode: var(--amll-cb-main-blend, plus-lighter) !important;
+            transition: color 0.5s ease-out 0.05s !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-profile="darker"] [class*="_lyricLine_"][class*="_active_"] [class*="_lyricMainLine_"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-profile="darker"] [class*="_lyricLine_"][class*="_active_"] [class*="_lyricMainLine_"] *,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-profile="darker"] [class*="_lyricLine_"][class*="_active_"] [class*="_emphasizeWrapper_"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-profile="darker"] [class*="_lyricLine_"][class*="_active_"] [class*="_emphasize_"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-profile="darker"] [class*="_lyricLine_"][class*="_active_"] [class*="_romanWord_"] {
+            mix-blend-mode: normal !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="base"] [class*="_lyricLine_"][class*="_active_"] {
+            color: var(
+                --amll-cb-main-inactive,
+                var(--amll-inactive, var(--amll-lp-color, white))
+            ) !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="base"] [class*="_lyricLine_"][class*="_active_"] > [class*="_lyricSubLine_"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="base"] [class*="_lyricLine_"][class*="_active_"] > [class*="_lyricSubLine_"] * {
+            color: var(
+                --amll-cb-sub-inactive,
+                var(--amll-cb-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
+            ) !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="base"] .amll-cb-word-active,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="base"] .amll-cb-char-active {
+            visibility: hidden !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="_lyricLine_"]:not([class*="_active_"]),
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="_lyricLine_"]:not([class*="_active_"]) *,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="_lyricSubLine_"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="_lyricSubLine_"] *,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="_lyricBgLine_"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="_lyricBgLine_"] *,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="_interludeDots_"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="_interludeDots_"] *,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] .amll-cb-word-base,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] .amll-cb-char-base,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] .amll-cb-glow-layer {
+            visibility: hidden !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="_lyricLine_"][class*="_active_"] {
+            color: var(
+                --amll-cb-main-active,
+                var(--amll-active, var(--amll-lp-color, white))
+            ) !important;
+            mix-blend-mode: var(--amll-cb-highlight-blend, plus-lighter) !important;
+            text-shadow: none !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="_lyricLine_"][class*="_active_"] > *,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="_lyricMainLine_"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="_lyricMainLine_"] *,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="_romanWord_"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="_emphasizeWrapper_"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="_emphasizeWrapper_"] *,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="_emphasize_"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="_emphasize_"] * {
+            mix-blend-mode: var(--amll-cb-highlight-blend, plus-lighter) !important;
+            text-shadow: none !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) > [class*="_lyricSubLine_"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) > [class*="_lyricSubLine_"] * {
+            color: var(
+                --amll-cb-sub-line-timing-inactive,
+                var(--amll-cb-sub-inactive, var(--amll-cb-main-line-timing-inactive, var(--amll-lp-color, white)))
+            ) !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur .amll-cb-word-stack,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur .amll-cb-char-stack {
+            display: inline-grid !important;
+            position: relative !important;
+            vertical-align: baseline !important;
+            transform-origin: 50% 82% !important;
+            will-change: transform !important;
+            overflow: visible !important;
+            contain: none !important;
+            mix-blend-mode: var(--amll-cb-main-blend, plus-lighter) !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur .amll-cb-word-stack > *,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur .amll-cb-char-stack > * {
+            grid-area: 1 / 1 !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur .amll-cb-word-base,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur .amll-cb-char-base {
+            color: var(
+                --amll-cb-main-inactive,
+                var(--amll-inactive, var(--amll-lp-color, white))
+            ) !important;
+            mix-blend-mode: var(--amll-cb-main-blend, plus-lighter) !important;
+            opacity: 1 !important;
+            mask: none !important;
+            -webkit-mask: none !important;
+            mask-image: none !important;
+            -webkit-mask-image: none !important;
+            pointer-events: none !important;
+            user-select: none !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) .amll-cb-word-base,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) .amll-cb-char-base {
+            color: var(
+                --amll-cb-main-line-timing-inactive,
+                var(--amll-cb-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
+            ) !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur .amll-cb-word-active,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur .amll-cb-char-active {
+            color: var(
+                --amll-cb-main-active,
+                var(--amll-active, var(--amll-lp-color, white))
+            ) !important;
+            mix-blend-mode: var(--amll-cb-highlight-blend, plus-lighter) !important;
+            visibility: visible !important;
+            transition: color .14s ease-out !important;
+            --bright-mask-alpha: 1 !important;
+            --dark-mask-alpha: 0 !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"]:not([class*="_active_"]) .amll-cb-word-active,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"]:not([class*="_active_"]) .amll-cb-char-active {
+            color: var(
+                --amll-cb-main-inactive,
+                var(--amll-inactive, var(--amll-lp-color, white))
+            ) !important;
+            visibility: hidden !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] .amll-cb-word-active,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] .amll-cb-char-active {
+            transition: color 0.20s linear 0.05s !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) .amll-cb-word-active,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) .amll-cb-char-active {
+            transition: color 0.50s ease-out 0s !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricBgLine_"] {
+            visibility: hidden !important;
+            opacity: 1 !important;
+            color: var(
+                --amll-cb-main-line-timing-inactive,
+                var(--amll-cb-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
+            ) !important;
+            mix-blend-mode: var(--amll-cb-main-blend, plus-lighter) !important;
+            transition:
+                color .18s ease,
+                visibility 0s linear 0s !important;
+            will-change: transform !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricBgLine_"][class*="_active_"] {
+            visibility: visible !important;
+            color: var(
+                --amll-cb-bg-active,
+                var(--amll-cb-main-line-timing-inactive, var(--amll-cb-main-inactive, var(--amll-inactive, var(--amll-lp-color, white))))
+            ) !important;
+            transition-delay: 0s !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricBgLine_"] > * {
+            transform: translateY(-0.5em) !important;
+            mix-blend-mode: var(--amll-cb-main-blend, plus-lighter) !important;
+            transition: transform .35s ease-out !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricBgLine_"][class*="_active_"] > * {
+            transform: translateY(0) !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur .amll-cb-glow-layer {
+            position: absolute !important;
+            top: 0 !important;
+            left: 0 !important;
+            pointer-events: none !important;
+            user-select: none !important;
+            z-index: 10 !important;
+            color: transparent !important;
+            -webkit-text-stroke: 0 transparent !important;
+            overflow: visible !important;
+            contain: none !important;
+            clip-path: none !important;
+            white-space: nowrap !important;
+            width: max-content !important;
+            mix-blend-mode: var(--amll-cb-main-blend, plus-lighter) !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur .amll-cb-glow-layer.active-glow {
+            filter: drop-shadow(0 0 0.15em rgba(255, 255, 255, 0.8));
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-profile="darker"] .amll-cb-glow-layer.active-glow {
+            filter: drop-shadow(0 0 0.12em rgba(0, 0, 0, 0.55));
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_interludeDots_"] {
+            visibility: hidden !important;
+            opacity: 1 !important;
+            transition: none !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_interludeDots_"][class*="_enabled_"] {
+            visibility: visible !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_interludeDots_"] > * {
+            background-color: var(
+                --amll-cb-main-active,
+                var(--amll-active, var(--amll-lp-color, white))
+            ) !important;
+            mix-blend-mode: var(--amll-cb-main-blend, plus-lighter) !important;
+            opacity: 1 !important;
         }
 
         /* Fullscreen surface: no additive compositing, no semi-transparent lyric states. */
@@ -326,6 +603,27 @@
             filter: drop-shadow(0 0 0.15em rgba(255, 255, 255, 0.8));
         }
 
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-generic .amll-fs-glow-layer.amll-fs-cover-blur-glow-layer {
+            color: transparent !important;
+            -webkit-text-stroke: 0 transparent !important;
+            filter: none !important;
+            opacity: 1 !important;
+        }
+
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-generic[data-amll-cover-blur-profile="lighter"] .amll-fs-glow-layer.amll-fs-cover-blur-glow-layer {
+            mix-blend-mode: normal !important;
+        }
+
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-generic[data-amll-cover-blur-profile="darker"] .amll-fs-glow-layer.amll-fs-cover-blur-glow-layer {
+            mix-blend-mode: normal !important;
+        }
+
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-suppress-glow .amll-fs-glow-layer {
+            visibility: hidden !important;
+            opacity: 0 !important;
+            filter: none !important;
+        }
+
         /* Ensure word stack allows overflow for glow effect */
         .amll-lyric-player.amll-surface-fullscreen .amll-fs-word-stack {
             overflow: visible !important;
@@ -400,23 +698,102 @@
             ) !important;
         }
 
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_lyricLine_"]:not([class*="_active_"]),
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_lyricLine_"]:not([class*="_active_"]) *,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_lyricBgLine_"],
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_lyricBgLine_"] *,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_interludeDots_"],
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_interludeDots_"] * {
+            visibility: hidden !important;
+            opacity: 0 !important;
+        }
+
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_lyricLine_"][class*="_active_"],
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_lyricLine_"][class*="_active_"] > *,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_lyricMainLine_"],
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_lyricMainLine_"] *,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_lyricSubLine_"],
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_lyricSubLine_"] *,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_romanWord_"],
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_emphasizeWrapper_"],
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_emphasizeWrapper_"] *,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_emphasize_"],
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_emphasize_"] * {
+            color: transparent !important;
+            -webkit-text-fill-color: transparent !important;
+            text-shadow: none !important;
+        }
+
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only .amll-fs-word-base,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only .amll-fs-char-base,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only .amll-fs-word-active,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only .amll-fs-char-active {
+            visibility: hidden !important;
+            opacity: 0 !important;
+        }
+
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only .amll-fs-word-stack > :not(.amll-fs-glow-layer) {
+            visibility: hidden !important;
+            opacity: 0 !important;
+            text-shadow: none !important;
+            filter: none !important;
+        }
+
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only .amll-fs-glow-layer {
+            visibility: visible !important;
+            opacity: 1 !important;
+            mix-blend-mode: normal !important;
+            filter: none !important;
+        }
+
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_emphasizeWrapper_"]::after,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_emphasize_"]::after {
+            content: none !important;
+            opacity: 0 !important;
+        }
+
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="_lyricLine_"][class*="_active_"] [class*="_lyricMainLine_"],
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="_lyricLine_"][class*="_active_"] [class*="_lyricMainLine_"] *,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="_lyricLine_"][class*="_active_"] [class*="_romanWord_"],
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="_lyricLine_"][class*="_active_"] [class*="_emphasizeWrapper_"],
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="_lyricLine_"][class*="_active_"] [class*="_emphasizeWrapper_"] *,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="_lyricLine_"][class*="_active_"] [class*="_emphasize_"],
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="_lyricLine_"][class*="_active_"] [class*="_emphasize_"] * {
+            color: transparent !important;
+            -webkit-text-fill-color: transparent !important;
+            text-shadow: none !important;
+        }
+
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="_lyricLine_"][class*="_active_"] .amll-fs-word-base,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="_lyricLine_"][class*="_active_"] .amll-fs-word-active,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="_lyricLine_"][class*="_active_"] .amll-fs-char-base,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="_lyricLine_"][class*="_active_"] .amll-fs-char-active,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="_lyricLine_"][class*="_active_"] .amll-fs-glow-layer {
+            visibility: hidden !important;
+            opacity: 0 !important;
+        }
+
     </style>
 </head>
 <body>
     <div id="player"></div>
 
     <!-- Load Bridge first so logs & AMLL namespace are available -->
-    <script src="bridge.js"></script>
+    <script src="bridge.js?v=cover-blur-rewrite-20260328-v21"></script>
 
     <script type="module">
-        import { LyricPlayer, parseTTML } from "./amll-core.js";
+        import { LyricPlayer, parseTTML } from "./amll-core.js?v=cover-blur-rewrite-20260328-v21";
 
+        const AMLL_BUNDLE_VERSION = "cover-blur-rewrite-20260328-v21";
         console.log("[LyricsRenderer] Module script loaded");
+        console.log(`[LyricsRenderer] Bundle version=${AMLL_BUNDLE_VERSION}`);
 
         const surfaceRole = typeof window.__AMLL_SURFACE_ROLE === "string"
             ? window.__AMLL_SURFACE_ROLE
             : "main";
-        const isFullscreenSurface = surfaceRole === "fullscreen";
+        const isCoverBlurHighlightSurface = surfaceRole === "fullscreenCoverBlurHighlight";
+        const isFullscreenSurface =
+            surfaceRole === "fullscreen" || surfaceRole === "fullscreenCoverBlurHighlight";
         const isBatchPreviewSurface = surfaceRole === "batchPreview";
         const isMainSurface = surfaceRole === "main";
         const useFullscreenQualityProfile = isFullscreenSurface || isMainSurface;
@@ -430,16 +807,17 @@
         // Fullscreen AMLL now follows the same renderer path as main window.
         const fullscreenForcedByHost = false;
         console.log(
-            `[LyricsRenderer] Boot: role=${surfaceRole}, href=${window.location.href}, fullscreenFallback=${fullscreenForcedByHost}`
+            `[LyricsRenderer] Boot: role=${surfaceRole}, href=${window.location.href}, fullscreenFallback=${fullscreenForcedByHost}, bundle=${AMLL_BUNDLE_VERSION}`
         );
 
         // Initialize Player
         const playerContainer = document.getElementById('player');
         const lyricPlayer = new LyricPlayer();
         playerContainer.appendChild(lyricPlayer.getElement());
-        if (isFullscreenSurface) {
-            lyricPlayer.getElement().classList.add("amll-surface-fullscreen");
-        }
+        lyricPlayer.getElement().classList.toggle(
+            "amll-surface-fullscreen-cover-blur-highlight-only",
+            isCoverBlurHighlightSurface
+        );
         
         // Initial config defaults
         lyricPlayer.setEnableSpring(defaultEnableSpring);
@@ -454,7 +832,17 @@
         let overscanPx = defaultOverscanPx;
         let fpsCap = defaultFPSCap;
         let wordFadeWidth = defaultWordFadeWidth;
-        let fullscreenOpaqueLyricsMode = isFullscreenSurface || fullscreenForcedByHost;
+        let fullscreenOpaqueLyricsMode = fullscreenForcedByHost;
+        let fullscreenCoverBlurMode = false;
+        let fullscreenCoverBlurProfile = null;
+        let fullscreenCoverBlurRenderLayer = "full";
+        let fullscreenCoverBlurBaseHideActive = false;
+        let fullscreenCoverBlurSuppressEmphasisGlow = false;
+        const fullscreenCoverBlurGenericState = {
+            enabled: false,
+            profile: null,
+            themeColor: null,
+        };
         if (typeof lyricPlayer.setRenderScale === "function") {
             lyricPlayer.setRenderScale(renderScale);
         }
@@ -591,6 +979,126 @@
             }
         };
 
+        const coverBlurColorVarNames = [
+            "--amll-cb-main-active",
+            "--amll-cb-main-inactive",
+            "--amll-cb-sub-active",
+            "--amll-cb-sub-inactive",
+            "--amll-cb-main-line-timing-inactive",
+            "--amll-cb-sub-line-timing-inactive",
+            "--amll-cb-bg-active",
+        ];
+
+        const isValidCoverBlurProfile = (value) => value === "lighter" || value === "darker";
+        const isValidCoverBlurRenderLayer = (value) =>
+            value === "base" || value === "highlight" || value === "full";
+
+        const getCoverBlurMainBlendMode = () => (
+            fullscreenCoverBlurProfile === "darker" ? "plus-darker" : "plus-lighter"
+        );
+
+        const getCoverBlurHighlightBlendMode = () => (
+            "normal"
+        );
+
+        const applyExplicitCoverBlurBlend = (element, blendMode) => {
+            if (!(element instanceof HTMLElement) || typeof blendMode !== "string" || blendMode.length === 0) {
+                return;
+            }
+            element.style.setProperty("mix-blend-mode", blendMode, "important");
+            element.dataset.amllCoverBlurBlend = blendMode;
+        };
+
+        const getFullscreenCoverBlurGenericProfile = () => (
+            isValidCoverBlurProfile(fullscreenCoverBlurGenericState.profile)
+                ? fullscreenCoverBlurGenericState.profile
+                : null
+        );
+
+        const getFullscreenCoverBlurGenericThemeColor = () => {
+            const value = fullscreenCoverBlurGenericState.themeColor;
+            return typeof value === "string" && value.length > 0 ? value : null;
+        };
+
+        const isFullscreenCoverBlurGenericMode = () => (
+            isFullscreenSurface
+            && fullscreenOpaqueLyricsMode === true
+            && fullscreenCoverBlurMode !== true
+            && fullscreenCoverBlurGenericState.enabled === true
+            && getFullscreenCoverBlurGenericProfile() !== null
+        );
+
+        const syncFullscreenCoverBlurGenericRootState = () => {
+            const playerElement = lyricPlayer.getElement();
+            if (!(playerElement instanceof HTMLElement)) return;
+
+            const genericMode = isFullscreenCoverBlurGenericMode();
+            const profile = getFullscreenCoverBlurGenericProfile();
+            playerElement.classList.toggle("amll-surface-fullscreen-cover-blur-generic", genericMode);
+            playerElement.classList.toggle(
+                "amll-surface-fullscreen-cover-blur-suppress-glow",
+                fullscreenCoverBlurSuppressEmphasisGlow === true
+            );
+
+            if (genericMode && profile) {
+                playerElement.dataset.amllCoverBlurProfile = profile;
+                const themeColor = getFullscreenCoverBlurGenericThemeColor();
+                if (themeColor) {
+                    playerElement.style.setProperty("--amll-fs-cover-blur-theme-color", themeColor);
+                } else {
+                    playerElement.style.removeProperty("--amll-fs-cover-blur-theme-color");
+                }
+            } else if (!fullscreenCoverBlurMode) {
+                delete playerElement.dataset.amllCoverBlurProfile;
+                playerElement.style.removeProperty("--amll-fs-cover-blur-theme-color");
+            }
+        };
+
+        const syncCoverBlurRootState = () => {
+            const playerElement = lyricPlayer.getElement();
+            if (!(playerElement instanceof HTMLElement)) return;
+
+            playerElement.classList.toggle("amll-surface-fullscreen-cover-blur", fullscreenCoverBlurMode);
+            playerElement.classList.toggle(
+                "amll-surface-fullscreen-cover-blur-base-hide-active",
+                fullscreenCoverBlurBaseHideActive === true
+            );
+            if (fullscreenCoverBlurMode) {
+                playerElement.classList.remove("amll-surface-fullscreen");
+                playerElement.classList.remove("fs-color-dodge");
+                playerElement.dataset.amllCoverBlurProfile = isValidCoverBlurProfile(fullscreenCoverBlurProfile)
+                    ? fullscreenCoverBlurProfile
+                    : "lighter";
+                playerElement.dataset.amllCoverBlurRenderLayer = isValidCoverBlurRenderLayer(
+                    fullscreenCoverBlurRenderLayer
+                ) ? fullscreenCoverBlurRenderLayer : "full";
+                document.documentElement.style.setProperty("--amll-lp-mix-blend-mode", "normal");
+                document.documentElement.style.setProperty("--amll-lp-mix-opacity", "1");
+                playerElement.style.setProperty("mix-blend-mode", "normal", "important");
+                playerElement.style.setProperty("opacity", "1", "important");
+                playerElement.style.textShadow = "none";
+                playerElement.style.setProperty("--amll-cb-main-blend", getCoverBlurMainBlendMode());
+                playerElement.style.setProperty("--amll-cb-highlight-blend", getCoverBlurHighlightBlendMode());
+                playerElement.style.backgroundImage = "none";
+                playerElement.style.backgroundColor = "transparent";
+            } else {
+                playerElement.classList.remove("amll-surface-fullscreen-cover-blur");
+                delete playerElement.dataset.amllCoverBlurProfile;
+                delete playerElement.dataset.amllCoverBlurRenderLayer;
+                document.documentElement.style.removeProperty("--amll-lp-mix-blend-mode");
+                document.documentElement.style.removeProperty("--amll-lp-mix-opacity");
+                playerElement.style.removeProperty("mix-blend-mode");
+                playerElement.style.removeProperty("opacity");
+                playerElement.style.removeProperty("--amll-cb-main-blend");
+                playerElement.style.removeProperty("--amll-cb-highlight-blend");
+                for (const name of coverBlurColorVarNames) {
+                    playerElement.style.removeProperty(name);
+                }
+                playerElement.style.removeProperty("background-image");
+                playerElement.style.removeProperty("background-color");
+            }
+        };
+
         const startFullscreenCompositingGuard = () => {};
 
         const stopFullscreenCompositingGuard = () => {
@@ -602,6 +1110,7 @@
         const enforceFullscreenNormalCompositing = () => {
             if (!fullscreenOpaqueLyricsMode) return;
             const playerElement = lyricPlayer.getElement();
+            playerElement.classList.remove("amll-surface-fullscreen-cover-blur");
             playerElement.classList.add("amll-surface-fullscreen");
             document.documentElement.style.setProperty("--amll-lp-mix-blend-mode", "normal");
             document.documentElement.style.setProperty("--amll-lp-mix-opacity", "1");
@@ -611,7 +1120,124 @@
             enforceFullscreenOpaqueColorVars();
         };
 
-        const cloneAnimationToElement = (sourceAnimation, targetElement) => {
+        const parseRGBAColor = (value) => {
+            if (typeof value !== "string") return null;
+            const match = value.trim().match(/^rgba?\(([^)]+)\)$/i);
+            if (!match) return null;
+            const parts = match[1].split(",").map((part) => Number.parseFloat(part.trim()));
+            if (parts.length < 3 || parts.some((part, index) => index < 3 && !Number.isFinite(part))) {
+                return null;
+            }
+            const alpha = parts.length >= 4 && Number.isFinite(parts[3]) ? parts[3] : 1;
+            return {
+                r: Math.max(0, Math.min(255, parts[0])),
+                g: Math.max(0, Math.min(255, parts[1])),
+                b: Math.max(0, Math.min(255, parts[2])),
+                a: Math.max(0, Math.min(1, alpha)),
+            };
+        };
+
+        const formatRGBAColor = (color) => {
+            if (!color) return null;
+            return `rgba(${Math.round(color.r)}, ${Math.round(color.g)}, ${Math.round(color.b)}, ${Math.max(0, Math.min(1, color.a))})`;
+        };
+
+        const scaleRGBAColor = (color, options = {}) => {
+            if (!color) return null;
+            const brightnessMultiplier = Number.isFinite(options.brightnessMultiplier)
+                ? options.brightnessMultiplier
+                : 1;
+            const alphaMultiplier = Number.isFinite(options.alphaMultiplier)
+                ? options.alphaMultiplier
+                : 1;
+            return {
+                r: Math.max(0, Math.min(255, color.r * brightnessMultiplier)),
+                g: Math.max(0, Math.min(255, color.g * brightnessMultiplier)),
+                b: Math.max(0, Math.min(255, color.b * brightnessMultiplier)),
+                a: Math.max(0, Math.min(1, color.a * alphaMultiplier)),
+            };
+        };
+
+        const estimateColorLightness = (color) => {
+            if (!color) return null;
+            const r = Math.max(0, Math.min(255, color.r)) / 255;
+            const g = Math.max(0, Math.min(255, color.g)) / 255;
+            const b = Math.max(0, Math.min(255, color.b)) / 255;
+            return (Math.max(r, g, b) + Math.min(r, g, b)) / 2;
+        };
+
+        const resolveFullscreenCoverBlurGlowColor = (profile, activeWordElement) => {
+            if (profile !== "lighter" && profile !== "darker") return null;
+
+            const themeColor = parseRGBAColor(getFullscreenCoverBlurGenericThemeColor());
+            const activeColor = activeWordElement instanceof HTMLElement
+                ? parseRGBAColor(window.getComputedStyle(activeWordElement).color)
+                : null;
+            const baseColor = themeColor ?? activeColor;
+            if (!baseColor) return null;
+
+            if (profile === "lighter") {
+                return formatRGBAColor(
+                    scaleRGBAColor(baseColor, {
+                        brightnessMultiplier: 0.18,
+                        alphaMultiplier: 0.12,
+                    })
+                );
+            }
+
+            const darkerBaseColor = activeColor ?? themeColor ?? baseColor;
+            const baseLightness = estimateColorLightness(darkerBaseColor);
+            const brightnessMultiplier = baseLightness !== null && baseLightness > 0.62
+                ? 0.72
+                : 0.88;
+            return formatRGBAColor(
+                scaleRGBAColor(darkerBaseColor, {
+                    brightnessMultiplier,
+                    alphaMultiplier: 0.88,
+                })
+            );
+        };
+
+        const recolorTextShadow = (textShadow, colorValue) => {
+            if (typeof textShadow !== "string" || textShadow.length === 0) return textShadow;
+            const targetColor = parseRGBAColor(colorValue);
+            if (!targetColor) return textShadow;
+            return textShadow.replace(/rgba?\(([^)]+)\)/gi, (match) => {
+                const sourceColor = parseRGBAColor(match);
+                const alpha = sourceColor ? sourceColor.a * targetColor.a : targetColor.a;
+                return formatRGBAColor({
+                    r: targetColor.r,
+                    g: targetColor.g,
+                    b: targetColor.b,
+                    a: alpha,
+                }) ?? match;
+            });
+        };
+
+        const retintGlowKeyframes = (keyframes, colorValue) => {
+            if (!Array.isArray(keyframes) || typeof colorValue !== "string" || colorValue.length === 0) {
+                return keyframes;
+            }
+            return keyframes.map((keyframe) => {
+                if (!keyframe || typeof keyframe !== "object") return keyframe;
+                const nextKeyframe = { ...keyframe };
+                if (typeof nextKeyframe.textShadow === "string" && nextKeyframe.textShadow.length > 0) {
+                    nextKeyframe.textShadow = recolorTextShadow(nextKeyframe.textShadow, colorValue);
+                }
+                // Glow clones must never inherit the source word's visible fill/stroke/filter.
+                // Keep only the shadow animation so the overlay cannot render as a white solid glyph.
+                nextKeyframe.color = "transparent";
+                nextKeyframe.webkitTextFillColor = "transparent";
+                nextKeyframe.webkitTextStrokeColor = "transparent";
+                nextKeyframe.webkitTextStrokeWidth = "0px";
+                nextKeyframe.webkitTextStroke = "0 transparent";
+                nextKeyframe.backgroundColor = "transparent";
+                nextKeyframe.filter = "none";
+                return nextKeyframe;
+            });
+        };
+
+        const cloneAnimationToElement = (sourceAnimation, targetElement, options = {}) => {
             if (!(sourceAnimation instanceof Animation)) return null;
             if (!(targetElement instanceof Element) || typeof targetElement.animate !== "function") return null;
             const sourceEffect = sourceAnimation.effect;
@@ -622,7 +1248,11 @@
             ) {
                 return null;
             }
-            const keyframes = sourceEffect.getKeyframes();
+            const sourceKeyframes = sourceEffect.getKeyframes();
+            if (!Array.isArray(sourceKeyframes) || sourceKeyframes.length === 0) return null;
+            const keyframes = typeof options.transformKeyframes === "function"
+                ? options.transformKeyframes(sourceKeyframes.map((keyframe) => ({ ...keyframe })))
+                : sourceKeyframes;
             if (!Array.isArray(keyframes) || keyframes.length === 0) return null;
             const timing = sourceEffect.getTiming();
             let clonedAnimation = null;
@@ -913,6 +1543,67 @@
             splitWord.__fsInstalledMaskAnimations = nextMaskAnimations;
         };
 
+        const ensureFullscreenGlowLayerElement = (
+            splitWord,
+            className = "amll-fs-glow-layer"
+        ) => {
+            if (!splitWord) return null;
+            const activeWordElement = splitWord?.__fsActiveWordElement;
+            const stackElement = splitWord?.__fsWordStackElement;
+            if (!(activeWordElement instanceof HTMLElement)) return null;
+            if (!(stackElement instanceof HTMLElement)) return null;
+
+            let glowLayer = splitWord.__fsGlowLayer;
+            if (!(glowLayer instanceof HTMLElement)) {
+                glowLayer = activeWordElement.cloneNode(false);
+                if (!(glowLayer instanceof HTMLElement)) return null;
+                stackElement.appendChild(glowLayer);
+                splitWord.__fsGlowLayer = glowLayer;
+            }
+
+            glowLayer.className = className;
+            glowLayer.setAttribute("aria-hidden", "true");
+            glowLayer.style.position = "absolute";
+            glowLayer.style.top = "0";
+            glowLayer.style.left = "0";
+            glowLayer.style.pointerEvents = "none";
+            glowLayer.style.userSelect = "none";
+            glowLayer.style.zIndex = "10";
+            glowLayer.style.color = "transparent";
+            glowLayer.style.webkitTextFillColor = "transparent";
+            glowLayer.style.webkitTextStroke = "0 transparent";
+            glowLayer.style.overflow = "visible";
+            glowLayer.style.contain = "none";
+            glowLayer.style.whiteSpace = "nowrap";
+            glowLayer.style.removeProperty("mix-blend-mode");
+            glowLayer.style.removeProperty("text-shadow");
+            glowLayer.style.removeProperty("filter");
+            glowLayer.textContent = activeWordElement.textContent;
+            return glowLayer;
+        };
+
+        const teardownFullscreenGlowLayer = (splitWord) => {
+            if (!splitWord) return;
+            const previousGlowAnimations = Array.isArray(splitWord?.__fsGlowAnimations)
+                ? splitWord.__fsGlowAnimations
+                : [];
+            for (const animation of previousGlowAnimations) {
+                cancelAnimationSafely(animation);
+            }
+            splitWord.__fsGlowAnimations = [];
+
+            const glowLayer = splitWord?.__fsGlowLayer;
+            if (glowLayer instanceof HTMLElement) {
+                glowLayer.remove();
+            }
+            splitWord.__fsGlowLayer = null;
+
+            const activeWordElement = splitWord?.__fsActiveWordElement;
+            if (activeWordElement instanceof HTMLElement) {
+                activeWordElement.style.removeProperty("text-shadow");
+            }
+        };
+
         /**
          * Create and install a glow layer that renders ABOVE the text for emphasized words.
          * This separates the text-shadow glow from the text content, allowing the glow
@@ -925,11 +1616,6 @@
             if (!(activeWordElement instanceof HTMLElement)) return;
             if (!(stackElement instanceof HTMLElement)) return;
 
-            // Check if glow layer already exists
-            if (splitWord.__fsGlowLayer instanceof HTMLElement) {
-                return;
-            }
-
             // Find emphasize-word animations (these contain text-shadow)
             const sourceAnimations = captureFullscreenSourceElementAnimations(splitWord);
             const emphasisAnimations = sourceAnimations.filter((animation) => {
@@ -940,36 +1626,60 @@
 
             if (emphasisAnimations.length === 0) return;
 
-            // Create glow layer - a clone of the word that only shows text-shadow
-            const glowLayer = activeWordElement.cloneNode(false);
+            const isCoverBlurGenericGlow = isFullscreenCoverBlurGenericMode();
+            const profile = isCoverBlurGenericGlow
+                ? getFullscreenCoverBlurGenericProfile()
+                : null;
+            if (
+                isCoverBlurGenericGlow
+                && fullscreenCoverBlurSuppressEmphasisGlow === true
+            ) {
+                teardownFullscreenGlowLayer(splitWord);
+                activeWordElement.style.textShadow = "none";
+                return;
+            }
+            const glowLayer = ensureFullscreenGlowLayerElement(
+                splitWord,
+                isCoverBlurGenericGlow
+                    ? "amll-fs-glow-layer amll-fs-cover-blur-glow-layer"
+                    : "amll-fs-glow-layer"
+            );
             if (!(glowLayer instanceof HTMLElement)) return;
-
-            glowLayer.className = "amll-fs-glow-layer";
-            glowLayer.setAttribute("aria-hidden", "true");
-            // Simple positioning: overlap with original, let overflow:visible handle glow
-            glowLayer.style.position = "absolute";
-            glowLayer.style.top = "0";
-            glowLayer.style.left = "0";
-            glowLayer.style.pointerEvents = "none";
-            glowLayer.style.userSelect = "none";
-            glowLayer.style.zIndex = "10";
-            glowLayer.style.color = "transparent";
-            glowLayer.style.webkitTextStroke = "0 transparent";
-            glowLayer.style.overflow = "visible";
-            glowLayer.style.contain = "none";
-            glowLayer.style.whiteSpace = "nowrap";
-
-            // Clone text content
-            glowLayer.textContent = activeWordElement.textContent;
-
-            // Insert glow layer at the end of stack (top of stacking context)
-            stackElement.appendChild(glowLayer);
-            splitWord.__fsGlowLayer = glowLayer;
+            if (isCoverBlurGenericGlow) {
+                if (profile) {
+                    glowLayer.dataset.amllCoverBlurGlowProfile = profile;
+                    glowLayer.style.setProperty(
+                        "mix-blend-mode",
+                        "normal",
+                        "important"
+                    );
+                } else {
+                    delete glowLayer.dataset.amllCoverBlurGlowProfile;
+                    glowLayer.style.removeProperty("mix-blend-mode");
+                }
+                glowLayer.style.setProperty("filter", "none", "important");
+            } else {
+                delete glowLayer.dataset.amllCoverBlurGlowProfile;
+                glowLayer.style.removeProperty("mix-blend-mode");
+            }
 
             // Clone emphasis animations to glow layer (text-shadow animations)
+            const previousGlowAnimations = Array.isArray(splitWord?.__fsGlowAnimations)
+                ? splitWord.__fsGlowAnimations
+                : [];
+            for (const animation of previousGlowAnimations) {
+                cancelAnimationSafely(animation);
+            }
             const glowAnimations = [];
+            const glowThemeColor = isCoverBlurGenericGlow
+                ? resolveFullscreenCoverBlurGlowColor(profile, activeWordElement)
+                : null;
             for (const sourceAnimation of emphasisAnimations) {
-                const cloned = cloneAnimationToElement(sourceAnimation, glowLayer);
+                const cloned = cloneAnimationToElement(sourceAnimation, glowLayer, {
+                    transformKeyframes: glowThemeColor
+                        ? (keyframes) => retintGlowKeyframes(keyframes, glowThemeColor)
+                        : undefined,
+                });
                 if (cloned instanceof Animation) {
                     glowAnimations.push(cloned);
                 }
@@ -977,8 +1687,31 @@
 
             splitWord.__fsGlowAnimations = glowAnimations;
 
-            // Remove text-shadow from original element (it will render on glow layer instead)
-            activeWordElement.style.textShadow = "none";
+            if (isCoverBlurGenericGlow) {
+                // Cover-blur generic mode must not keep the original emphasis glow running
+                // on the source word, otherwise the untouched AMLL glow stacks underneath
+                // our retinted clone and still blows out visually.
+                for (const animation of emphasisAnimations) {
+                    cancelAnimationSafely(animation);
+                }
+                activeWordElement.style.setProperty("text-shadow", "none", "important");
+            } else {
+                activeWordElement.style.textShadow = "none";
+            }
+        };
+
+        const refreshFullscreenCoverBlurGenericGlowLayers = () => {
+            if (!isFullscreenCoverBlurGenericMode()) return;
+            if (!Array.isArray(lyricPlayer.currentLyricLineObjects)) return;
+
+            for (const lineObj of lyricPlayer.currentLyricLineObjects) {
+                const splitWords = Array.isArray(lineObj?.splittedWords) ? lineObj.splittedWords : [];
+                for (const splitWord of splitWords) {
+                    if (!isFullscreenEmphasizedWord(splitWord)) continue;
+                    if (!(splitWord?.__fsWordStackElement instanceof HTMLElement)) continue;
+                    installFullscreenEmphasizedGlowLayer(splitWord);
+                }
+            }
         };
 
         const createFullscreenPackedWordAnimation = (stackElement, splitWord, lineObj, sourceAnimations) => {
@@ -1152,6 +1885,392 @@
                 }
             }
         };
+        const coverBlurPackedAnimationTargetMap = new WeakMap();
+
+        const registerCoverBlurPackedAnimationTarget = (sourceNode, targetElement) => {
+            if (!(sourceNode instanceof Node) || !(targetElement instanceof Element)) return;
+            coverBlurPackedAnimationTargetMap.set(sourceNode, targetElement);
+        };
+
+        const ensureCoverBlurEmphasizedCharStacks = (splitWord) => {
+            const activeWordElement = splitWord?.__cbActiveWordElement;
+            if (!(activeWordElement instanceof HTMLElement)) return [];
+
+            const activeChars = Array.isArray(splitWord?.subElements)
+                ? splitWord.subElements.filter((element) => element instanceof HTMLElement)
+                : [];
+            const charRecords = [];
+
+            for (const activeChar of activeChars) {
+                let charStack = activeChar.parentElement;
+                if (!(charStack instanceof HTMLElement) || !charStack.classList.contains("amll-cb-char-stack")) {
+                    const baseChar = activeChar.cloneNode(true);
+                    if (!(baseChar instanceof HTMLElement)) continue;
+                    charStack = document.createElement("span");
+                    charStack.className = "amll-cb-char-stack";
+                    baseChar.classList.add("amll-cb-char-base");
+                    baseChar.setAttribute("aria-hidden", "true");
+                    activeChar.classList.add("amll-cb-char-active");
+                    activeWordElement.insertBefore(charStack, activeChar);
+                    charStack.appendChild(baseChar);
+                    charStack.appendChild(activeChar);
+                }
+
+                const [baseCharElement, activeCharElement] = Array.from(charStack.children);
+                if (!(baseCharElement instanceof HTMLElement) || !(activeCharElement instanceof HTMLElement)) {
+                    continue;
+                }
+
+                baseCharElement.classList.add("amll-cb-char-base");
+                baseCharElement.setAttribute("aria-hidden", "true");
+                activeCharElement.classList.add("amll-cb-char-active");
+                registerCoverBlurPackedAnimationTarget(activeCharElement, charStack);
+                charRecords.push({
+                    stack: charStack,
+                    base: baseCharElement,
+                    active: activeCharElement,
+                });
+            }
+
+            splitWord.__cbCharRecords = charRecords;
+            return charRecords;
+        };
+
+        const installCoverBlurEmphasizedMaskAnimations = (splitWord) => {
+            const activeWordElement = splitWord?.__cbActiveWordElement;
+            const charRecords = Array.isArray(splitWord?.__cbCharRecords) ? splitWord.__cbCharRecords : [];
+            if (!(activeWordElement instanceof HTMLElement) || charRecords.length === 0) return;
+
+            const sourceMaskAnimations = Array.isArray(splitWord?.maskAnimations)
+                ? splitWord.maskAnimations.filter(
+                    (animation) => animation instanceof Animation && animation?.effect?.target === activeWordElement
+                )
+                : [];
+            if (sourceMaskAnimations.length === 0) return;
+
+            const rootRect = activeWordElement.getBoundingClientRect();
+            const rootWidth = Math.max(
+                1,
+                activeWordElement.clientWidth,
+                rootRect.width,
+                Number.isFinite(splitWord?.width) ? splitWord.width : 0
+            );
+            const resolvedMaskSize = resolveAbsoluteMaskSize(activeWordElement.style.maskSize, rootWidth);
+            const resolvedWebkitMaskSize = resolveAbsoluteMaskSize(
+                activeWordElement.style.webkitMaskSize,
+                rootWidth
+            );
+            const nextMaskAnimations = [];
+
+            for (const record of charRecords) {
+                const activeChar = record?.active;
+                if (!(activeChar instanceof HTMLElement)) continue;
+
+                if (activeWordElement.style.maskImage) {
+                    activeChar.style.maskImage = activeWordElement.style.maskImage;
+                }
+                if (activeWordElement.style.webkitMaskImage) {
+                    activeChar.style.webkitMaskImage = activeWordElement.style.webkitMaskImage;
+                }
+                if (activeWordElement.style.maskRepeat) {
+                    activeChar.style.maskRepeat = activeWordElement.style.maskRepeat;
+                }
+                if (activeWordElement.style.webkitMaskRepeat) {
+                    activeChar.style.webkitMaskRepeat = activeWordElement.style.webkitMaskRepeat;
+                }
+                if (activeWordElement.style.maskOrigin) {
+                    activeChar.style.maskOrigin = activeWordElement.style.maskOrigin;
+                }
+                if (activeWordElement.style.webkitMaskOrigin) {
+                    activeChar.style.webkitMaskOrigin = activeWordElement.style.webkitMaskOrigin;
+                }
+                if (resolvedMaskSize) {
+                    activeChar.style.maskSize = resolvedMaskSize;
+                }
+                if (resolvedWebkitMaskSize) {
+                    activeChar.style.webkitMaskSize = resolvedWebkitMaskSize;
+                }
+
+                const activeRect = activeChar.getBoundingClientRect();
+                const deltaX = activeRect.left - rootRect.left;
+                for (const sourceMaskAnimation of sourceMaskAnimations) {
+                    const clone = cloneMaskAnimationToElement(sourceMaskAnimation, activeChar, deltaX);
+                    if (clone instanceof Animation) {
+                        nextMaskAnimations.push(clone);
+                    }
+                }
+            }
+
+            if (nextMaskAnimations.length === 0) return;
+
+            for (const animation of sourceMaskAnimations) {
+                cancelAnimationSafely(animation);
+            }
+
+            activeWordElement.style.maskImage = "none";
+            activeWordElement.style.webkitMaskImage = "none";
+            activeWordElement.style.maskPosition = "0 0";
+            activeWordElement.style.webkitMaskPosition = "0 0";
+            activeWordElement.style.maskSize = "auto";
+            activeWordElement.style.webkitMaskSize = "auto";
+
+            splitWord.maskAnimations = nextMaskAnimations;
+            splitWord.__cbInstalledMaskAnimations = nextMaskAnimations;
+        };
+
+        const installCoverBlurEmphasizedGlowLayer = (splitWord) => {
+            if (!splitWord) return;
+            const activeWordElement = splitWord?.__cbActiveWordElement;
+            const stackElement = splitWord?.__cbWordStackElement;
+            if (!(activeWordElement instanceof HTMLElement)) return;
+            if (!(stackElement instanceof HTMLElement)) return;
+            if (splitWord.__cbGlowLayer instanceof HTMLElement) {
+                return;
+            }
+
+            const sourceAnimations = captureFullscreenSourceElementAnimations(splitWord);
+            const emphasisAnimations = sourceAnimations.filter((animation) => {
+                if (!(animation instanceof Animation)) return false;
+                const id = typeof animation.id === "string" ? animation.id : "";
+                return id.includes("emphasize-word-") && !id.includes("float");
+            });
+            if (emphasisAnimations.length === 0) return;
+
+            const glowLayer = activeWordElement.cloneNode(false);
+            if (!(glowLayer instanceof HTMLElement)) return;
+
+            glowLayer.className = "amll-cb-glow-layer";
+            glowLayer.setAttribute("aria-hidden", "true");
+            glowLayer.style.position = "absolute";
+            glowLayer.style.top = "0";
+            glowLayer.style.left = "0";
+            glowLayer.style.pointerEvents = "none";
+            glowLayer.style.userSelect = "none";
+            glowLayer.style.zIndex = "10";
+            glowLayer.style.color = "transparent";
+            glowLayer.style.webkitTextStroke = "0 transparent";
+            glowLayer.style.overflow = "visible";
+            glowLayer.style.contain = "none";
+            glowLayer.style.whiteSpace = "nowrap";
+            glowLayer.textContent = activeWordElement.textContent;
+
+            stackElement.appendChild(glowLayer);
+            splitWord.__cbGlowLayer = glowLayer;
+
+            const glowAnimations = [];
+            for (const sourceAnimation of emphasisAnimations) {
+                const cloned = cloneAnimationToElement(sourceAnimation, glowLayer);
+                if (cloned instanceof Animation) {
+                    glowAnimations.push(cloned);
+                }
+            }
+
+            splitWord.__cbGlowAnimations = glowAnimations;
+            activeWordElement.style.textShadow = "none";
+        };
+
+        const createCoverBlurPackedWordAnimation = (stackElement, splitWord, lineObj, sourceAnimations) => {
+            if (!(stackElement instanceof HTMLElement) || typeof stackElement.animate !== "function") return null;
+            const existingAnimations = Array.isArray(sourceAnimations)
+                ? sourceAnimations
+                : captureFullscreenSourceElementAnimations(splitWord);
+            const sourceFloatAnimation = existingAnimations.find((animation) => {
+                if (!(animation instanceof Animation)) return false;
+                const id = typeof animation.id === "string" ? animation.id : "";
+                return id === "float-word" || id.includes("emphasize-word-float-only");
+            });
+            if (sourceFloatAnimation) {
+                const cloned = cloneAnimationToElement(sourceFloatAnimation, stackElement);
+                if (cloned) {
+                    return {
+                        animation: cloned,
+                        sourceFloatAnimation,
+                    };
+                }
+            }
+
+            const line = lineObj?.getLine?.() ?? lineObj?.lyricLine;
+            const lineStart = Number.isFinite(line?.startTime) ? line.startTime : 0;
+            const wordStart = Number.isFinite(splitWord?.startTime) ? splitWord.startTime : lineStart;
+            const wordEndRaw = Number.isFinite(splitWord?.endTime) ? splitWord.endTime : (wordStart + 1);
+            const wordEnd = Math.max(wordStart + 1, wordEndRaw);
+            const duration = Math.max(220, wordEnd - wordStart);
+            const delay = Math.max(0, wordStart - lineStart);
+
+            let animation = null;
+            try {
+                animation = stackElement.animate(
+                    [
+                        { transform: "translateY(0em) scale(1)" },
+                        { transform: "translateY(-0.05em) scale(1.03)" }
+                    ],
+                    {
+                        duration,
+                        delay,
+                        id: "float-word",
+                        composite: "add",
+                        fill: "both",
+                        easing: "ease-out",
+                        iterations: 1
+                    }
+                );
+            } catch (_) {
+                return null;
+            }
+            if (!(animation instanceof Animation)) return null;
+            animation.pause();
+            try {
+                const currentAbsTime = typeof lyricPlayer.getCurrentTime === "function"
+                    ? lyricPlayer.getCurrentTime()
+                    : lineStart;
+                const lineRelativeTime = Math.max(0, currentAbsTime - lineStart);
+                animation.currentTime = Math.max(0, Math.min(delay + duration, lineRelativeTime));
+            } catch (_) {}
+            return {
+                animation,
+                sourceFloatAnimation: null,
+            };
+        };
+
+        const installCoverBlurPackedElementAnimations = (splitWord, lineObj) => {
+            if (!splitWord) return;
+            if (splitWord.__cbElementAnimationsInstalled === true) return;
+
+            const stackElement = splitWord?.__cbWordStackElement;
+            if (!(stackElement instanceof HTMLElement)) return;
+            const sourceAnimations = captureFullscreenSourceElementAnimations(splitWord);
+
+            const previousAnimations = Array.isArray(splitWord?.__cbInstalledElementAnimations)
+                ? splitWord.__cbInstalledElementAnimations
+                : [];
+            for (const animation of previousAnimations) {
+                cancelAnimationSafely(animation);
+            }
+
+            const packedResult = createCoverBlurPackedWordAnimation(stackElement, splitWord, lineObj, sourceAnimations);
+            const packedAnimation = packedResult?.animation ?? null;
+            const sourceFloatAnimation = packedResult?.sourceFloatAnimation ?? null;
+            const clonedAnimations = packedAnimation instanceof Animation ? [packedAnimation] : [];
+
+            for (const sourceAnimation of sourceAnimations) {
+                if (!(sourceAnimation instanceof Animation) || sourceAnimation === sourceFloatAnimation) continue;
+                const sourceTarget = sourceAnimation?.effect?.target;
+                if (!(sourceTarget instanceof Node)) continue;
+                const packedTarget = coverBlurPackedAnimationTargetMap.get(sourceTarget);
+                if (!(packedTarget instanceof Element)) continue;
+                const clone = cloneAnimationToElement(sourceAnimation, packedTarget);
+                if (clone instanceof Animation) {
+                    clonedAnimations.push(clone);
+                }
+            }
+
+            for (const sourceAnimation of sourceAnimations) {
+                cancelAnimationSafely(sourceAnimation);
+            }
+
+            if (sourceAnimations.length > 0 && clonedAnimations.length === 0) return;
+
+            splitWord.elementAnimations = clonedAnimations;
+            splitWord.__cbInstalledElementAnimations = clonedAnimations;
+            splitWord.__cbPackedAnimation = packedAnimation instanceof Animation ? packedAnimation : null;
+            splitWord.__cbElementAnimationsInstalled = true;
+        };
+
+        const applyCoverBlurFinalLayerStyles = () => {
+            if (!fullscreenCoverBlurMode) return;
+            const playerElement = lyricPlayer.getElement();
+            const mainBlendMode = getCoverBlurMainBlendMode();
+            const highlightBlendMode = getCoverBlurHighlightBlendMode();
+
+            const applyBlendToNodeList = (selector, blendMode, root = playerElement) => {
+                if (!(root instanceof HTMLElement || root instanceof Document || root instanceof Element)) return;
+                for (const node of root.querySelectorAll(selector)) {
+                    applyExplicitCoverBlurBlend(node, blendMode);
+                }
+            };
+            applyBlendToNodeList('[class*="_lyricLine_"]', mainBlendMode);
+            applyBlendToNodeList('[class*="_lyricMainLine_"]', mainBlendMode);
+            applyBlendToNodeList('[class*="_lyricMainLine_"] *', mainBlendMode);
+            applyBlendToNodeList('[class*="_lyricSubLine_"]', mainBlendMode);
+            applyBlendToNodeList('[class*="_lyricSubLine_"] *', mainBlendMode);
+            applyBlendToNodeList('[class*="_emphasizeWrapper_"], [class*="_emphasize_"], [class*="_romanWord_"]', mainBlendMode);
+            applyBlendToNodeList(".amll-cb-word-stack, .amll-cb-char-stack", mainBlendMode);
+            applyBlendToNodeList(".amll-cb-word-base, .amll-cb-char-base", mainBlendMode);
+            applyBlendToNodeList(".amll-cb-word-active, .amll-cb-char-active", highlightBlendMode);
+            applyBlendToNodeList(".amll-cb-glow-layer", mainBlendMode);
+            applyBlendToNodeList('[class*="_lyricLine_"][class*="_active_"] [class*="_lyricMainLine_"]', highlightBlendMode);
+            applyBlendToNodeList('[class*="_lyricBgLine_"]', mainBlendMode);
+            applyBlendToNodeList('[class*="_lyricBgLine_"] > *', mainBlendMode);
+            applyBlendToNodeList('[class*="_interludeDots_"] > *', mainBlendMode);
+        };
+
+        const patchCoverBlurLineBehavior = () => {
+            if (!fullscreenCoverBlurMode) return;
+            syncCoverBlurRootState();
+            if (!Array.isArray(lyricPlayer.currentLyricLineObjects)) return;
+            for (const lineObj of lyricPlayer.currentLyricLineObjects) {
+                const lineElement = lineObj?.element;
+                if (!(lineElement instanceof HTMLElement)) continue;
+                if (lineElement.dataset.amllCbPatchedLine === "1") continue;
+                lineElement.dataset.amllCbPatchedLine = "1";
+                lineElement.style.setProperty("opacity", "1", "important");
+                const splitWords = Array.isArray(lineObj?.splittedWords) ? lineObj.splittedWords : [];
+                for (const splitWord of splitWords) {
+                    const activeWordElement = splitWord?.mainElement;
+                    if (!(activeWordElement instanceof HTMLElement)) continue;
+                    const isEmphasizedWord = isFullscreenEmphasizedWord(splitWord);
+                    if (activeWordElement.dataset.cbLayeredWord === "1") {
+                        const stack = splitWord?.__cbWordStackElement instanceof HTMLElement
+                            ? splitWord.__cbWordStackElement
+                            : activeWordElement.parentElement;
+                        if (stack instanceof HTMLElement && stack.classList.contains("amll-cb-word-stack")) {
+                            splitWord.__cbWordStackElement = stack;
+                            if (isEmphasizedWord) {
+                                ensureCoverBlurEmphasizedCharStacks(splitWord);
+                                installCoverBlurEmphasizedMaskAnimations(splitWord);
+                                installCoverBlurEmphasizedGlowLayer(splitWord);
+                            }
+                            installCoverBlurPackedElementAnimations(splitWord, lineObj);
+                        }
+                        continue;
+                    }
+
+                    const parent = activeWordElement.parentElement;
+                    if (!parent) continue;
+
+                    const stack = document.createElement("span");
+                    stack.className = "amll-cb-word-stack";
+                    activeWordElement.dataset.cbLayeredWord = "1";
+                    splitWord.__cbActiveWordElement = activeWordElement;
+                    splitWord.__cbWordStackElement = stack;
+                    registerCoverBlurPackedAnimationTarget(activeWordElement, stack);
+
+                    parent.insertBefore(stack, activeWordElement);
+                    stack.appendChild(activeWordElement);
+                    if (isEmphasizedWord) {
+                        ensureCoverBlurEmphasizedCharStacks(splitWord);
+                        installCoverBlurEmphasizedMaskAnimations(splitWord);
+                        installCoverBlurEmphasizedGlowLayer(splitWord);
+                    } else {
+                        const baseWordElement = activeWordElement.cloneNode(true);
+                        if (!(baseWordElement instanceof HTMLElement)) continue;
+                        baseWordElement.classList.add("amll-cb-word-base");
+                        baseWordElement.setAttribute("aria-hidden", "true");
+                        activeWordElement.classList.add("amll-cb-word-active");
+                        stack.insertBefore(baseWordElement, activeWordElement);
+                        splitWord.__cbBaseWordElement = baseWordElement;
+                    }
+                    installCoverBlurPackedElementAnimations(splitWord, lineObj);
+                }
+                for (const child of Array.from(lineElement.children ?? [])) {
+                    if (!(child instanceof HTMLElement)) continue;
+                    child.style.setProperty("opacity", "1", "important");
+                }
+            }
+            applyCoverBlurFinalLayerStyles();
+        };
+
+        syncCoverBlurRootState();
         if (fullscreenOpaqueLyricsMode) {
             enforceFullscreenNormalCompositing();
         }
@@ -1465,6 +2584,8 @@
             if (fullscreenOpaqueLyricsMode) {
                 enforceFullscreenNormalCompositing();
                 patchFullscreenLineOpacityBehavior();
+            } else if (fullscreenCoverBlurMode) {
+                syncCoverBlurRootState();
             }
             const layoutDirty = enforceBGTimingWindows(timeMs, force || delta > 500);
             applyNearSwitchRetreatVisual(timeMs);
@@ -1512,7 +2633,7 @@
                 const retreatEnd = Number.isFinite(meta.retreatEnd) ? meta.retreatEnd : null;
                 const maskFrom = Number.isFinite(meta.maskFrom) ? meta.maskFrom : null;
                 const maskTo = Number.isFinite(meta.maskTo) ? meta.maskTo : null;
-                const disableOpacityFade = fullscreenOpaqueLyricsMode === true;
+                const disableOpacityFade = fullscreenOpaqueLyricsMode === true || fullscreenCoverBlurMode === true;
                 if (
                     retreatStart === null || retreatEnd === null || retreatEnd <= retreatStart
                     || maskFrom === null || maskTo === null || maskTo <= maskFrom
@@ -1535,7 +2656,7 @@
 
                 const retreatDuration = Math.max(1, retreatEnd - retreatStart);
                 // For line-timing-only fullscreen mode, delay opacity fade until highlight transition completes
-                const isFullscreenLineTiming = lineTimingOnlyMode && fullscreenOpaqueLyricsMode;
+                const isFullscreenLineTiming = lineTimingOnlyMode && (fullscreenOpaqueLyricsMode || fullscreenCoverBlurMode);
                 const fadeDelayMs = isFullscreenLineTiming ? 350 : 0; // Wait for highlight fade (180ms delay + 150ms fade)
                 const adjustedTimeMs = timeMs - retreatStart > fadeDelayMs ? timeMs - fadeDelayMs : retreatStart;
                 
@@ -1753,7 +2874,7 @@
 	                }
 	            }
 	        };
-	        const applyTimeOffset = (line) => {
+        const applyTimeOffset = (line) => {
 	            if (!line) return;
 	            const offset = Number.isFinite(timeOffsetMs) ? timeOffsetMs : 0;
 	            if (!offset) return;
@@ -1782,6 +2903,154 @@
                 });
             }
         };
+
+        const isProbeVisibleElement = (element) => {
+            if (!(element instanceof HTMLElement)) return false;
+            const style = window.getComputedStyle(element);
+            if (style.display === "none" || style.visibility === "hidden") return false;
+            const opacity = Number.parseFloat(style.opacity || "1");
+            if (Number.isFinite(opacity) && opacity <= 0.001) return false;
+            return element.getClientRects().length > 0;
+        };
+
+        const snapshotLayer = (selector, scope = lyricPlayer.getElement()) => {
+            const matches = Array.from(scope?.querySelectorAll?.(selector) ?? []).filter(
+                (element) => element instanceof HTMLElement
+            );
+            const element = matches.find((candidate) => isProbeVisibleElement(candidate))
+                || matches[0];
+            if (!(element instanceof HTMLElement)) return null;
+            const style = window.getComputedStyle(element);
+            return {
+                selector,
+                matchCount: matches.length,
+                className: element.className,
+                text: (element.textContent || "").trim().slice(0, 80),
+                mixBlendMode: style.mixBlendMode,
+                color: style.color,
+                opacity: style.opacity,
+                visibility: style.visibility,
+                filter: style.filter,
+                textShadow: style.textShadow,
+                contain: style.contain,
+            };
+        };
+
+        const hitTestVisibleLayer = (selector, scope = lyricPlayer.getElement()) => {
+            if (!(scope instanceof HTMLElement || scope instanceof Document || scope instanceof Element)) {
+                return null;
+            }
+            const candidates = Array.from(scope.querySelectorAll(selector)).filter(
+                (element) => element instanceof HTMLElement && isProbeVisibleElement(element)
+            );
+            const candidate = candidates[0];
+            if (!(candidate instanceof HTMLElement)) return null;
+            const rect = candidate.getBoundingClientRect();
+            if (!(rect.width > 0 && rect.height > 0)) return null;
+
+            const x = Math.max(0, Math.min(window.innerWidth - 1, Math.floor(rect.left + rect.width * 0.5)));
+            const y = Math.max(0, Math.min(window.innerHeight - 1, Math.floor(rect.top + rect.height * 0.5)));
+            const hit = document.elementFromPoint(x, y);
+            const hitElement = hit instanceof HTMLElement ? hit : null;
+            const hitStyle = hitElement ? window.getComputedStyle(hitElement) : null;
+            const candidateStyle = window.getComputedStyle(candidate);
+
+            return {
+                selector,
+                point: { x, y },
+                candidateClassName: candidate.className,
+                candidateMixBlendMode: candidateStyle.mixBlendMode,
+                hitClassName: hitElement?.className ?? null,
+                hitMixBlendMode: hitStyle?.mixBlendMode ?? null,
+                hitColor: hitStyle?.color ?? null,
+                hitOpacity: hitStyle?.opacity ?? null,
+                hitFilter: hitStyle?.filter ?? null,
+                hitContain: hitStyle?.contain ?? null,
+            };
+        };
+
+        const debugDumpVisibleLayers = (label = "") => {
+            const playerElement = lyricPlayer.getElement();
+            const rootStyle = window.getComputedStyle(playerElement);
+            const countMatches = (selector, scope = playerElement) =>
+                scope?.querySelectorAll?.(selector)?.length ?? 0;
+            const payload = {
+                label,
+                bundleVersion: AMLL_BUNDLE_VERSION,
+                locationHref: window.location.href,
+                role: surfaceRole,
+                fullscreenOpaqueLyricsMode,
+                fullscreenCoverBlurMode,
+                fullscreenCoverBlurProfile,
+                root: {
+                    className: playerElement.className,
+                    mixBlendMode: rootStyle.mixBlendMode,
+                    opacity: rootStyle.opacity,
+                    coverBlurProfile: playerElement.dataset.amllCoverBlurProfile || null,
+                    coverBlurRenderLayer:
+                        playerElement.dataset.amllCoverBlurRenderLayer || null,
+                    coverBlurMainBlendVar:
+                        playerElement.style.getPropertyValue("--amll-cb-main-blend") || null,
+                    coverBlurHighlightBlendVar:
+                        playerElement.style.getPropertyValue("--amll-cb-highlight-blend") || null,
+                },
+                counts: {
+                    currentLyricLineObjects: Array.isArray(lyricPlayer.currentLyricLineObjects)
+                        ? lyricPlayer.currentLyricLineObjects.length
+                        : null,
+                    coverBlurWordBase: countMatches(".amll-cb-word-base"),
+                    coverBlurWordActive: countMatches(".amll-cb-word-active"),
+                    coverBlurCharBase: countMatches(".amll-cb-char-base"),
+                    coverBlurCharActive: countMatches(".amll-cb-char-active"),
+                    coverBlurGlow: countMatches(".amll-cb-glow-layer"),
+                    genericFullscreenWordBase: countMatches(".amll-fs-word-base"),
+                    genericFullscreenWordActive: countMatches(".amll-fs-word-active"),
+                    lyricMainLines: countMatches('[class*="_lyricMainLine_"]'),
+                    lyricSubLines: countMatches('[class*="_lyricSubLine_"]'),
+                    lyricBgLines: countMatches('[class*="_lyricBgLine_"]'),
+                    interludeDots: countMatches('[class*="_interludeDots_"] > *'),
+                },
+                layers: {
+                    mainNonHighlight: snapshotLayer(".amll-cb-word-base, .amll-cb-char-base")
+                        || snapshotLayer(".amll-fs-word-base, .amll-fs-char-base")
+                        || snapshotLayer('[class*="_lyricMainLine_"]'),
+                    inactiveLyric: snapshotLayer('[class*="_lyricLine_"]:not([class*="_active_"]) .amll-cb-word-base, [class*="_lyricLine_"]:not([class*="_active_"]) .amll-cb-char-base')
+                        || snapshotLayer('[class*="_lyricLine_"]:not([class*="_active_"]) .amll-fs-word-base, [class*="_lyricLine_"]:not([class*="_active_"]) .amll-fs-char-base')
+                        || snapshotLayer('[class*="_lyricLine_"]:not([class*="_active_"]) [class*="_lyricMainLine_"]'),
+                    translation: snapshotLayer('[class*="_lyricLine_"][class*="_active_"] > [class*="_lyricSubLine_"]')
+                        || snapshotLayer('[class*="_lyricSubLine_"]'),
+                    backgroundLyric: snapshotLayer('[class*="_lyricBgLine_"][class*="_active_"] > *')
+                        || snapshotLayer('[class*="_lyricBgLine_"] > *')
+                        || snapshotLayer('[class*="_lyricBgLine_"]'),
+                    interludeDots: snapshotLayer('[class*="_interludeDots_"] > *'),
+                    glow: snapshotLayer('.amll-cb-glow-layer')
+                        || snapshotLayer('.amll-fs-glow-layer'),
+                    wordHighlight: snapshotLayer('.amll-cb-word-active')
+                        || snapshotLayer('.amll-fs-word-active'),
+                    charHighlight: snapshotLayer('.amll-cb-char-active')
+                        || snapshotLayer('.amll-fs-char-active'),
+                    lineHighlight: snapshotLayer('[class*="_lyricLine_"][class*="_active_"] [class*="_lyricMainLine_"]')
+                        || snapshotLayer('[class*="_lyricLine_"][class*="_active_"]'),
+                },
+                hitTests: {
+                    activeMainLine: hitTestVisibleLayer('[class*="_lyricLine_"][class*="_active_"] [class*="_lyricMainLine_"]'),
+                    inactiveMainLine: hitTestVisibleLayer('[class*="_lyricLine_"]:not([class*="_active_"]) [class*="_lyricMainLine_"]'),
+                    activeSubLine: hitTestVisibleLayer('[class*="_lyricLine_"][class*="_active_"] > [class*="_lyricSubLine_"]'),
+                    interludeDots: hitTestVisibleLayer('[class*="_interludeDots_"] > *'),
+                    activeWord: hitTestVisibleLayer('.amll-cb-word-active, .amll-fs-word-active'),
+                    inactiveWordBase: hitTestVisibleLayer(
+                        '[class*="_lyricLine_"]:not([class*="_active_"]) .amll-cb-word-base, [class*="_lyricLine_"]:not([class*="_active_"]) .amll-fs-word-base'
+                    ),
+                },
+            };
+            console.log(`[LyricsRenderer][Probe] ${label} ${JSON.stringify(payload)}`);
+            return payload;
+        };
+
+        if (window.AMLL) {
+            window.AMLL.version = AMLL_BUNDLE_VERSION;
+            window.AMLL.debugDumpVisibleLayers = debugDumpVisibleLayers;
+        }
 
         // Define the Renderer Implementation for Bridge
         window.LyricsRenderer = {
@@ -1817,8 +3086,13 @@
 	                    const timingSnapshot = captureTimingSnapshot(lines);
 				                    // Preserve TTML intent (no mutation of duet/bg/ordering).
 				                    lyricPlayer.setLyricLines(lines);
-                                    enforceFullscreenNormalCompositing();
-                                    patchFullscreenLineOpacityBehavior();
+                                    if (fullscreenOpaqueLyricsMode) {
+                                        enforceFullscreenNormalCompositing();
+                                        patchFullscreenLineOpacityBehavior();
+                                    } else if (fullscreenCoverBlurMode) {
+                                        syncCoverBlurRootState();
+                                        patchCoverBlurLineBehavior();
+                                    }
 				                    const currentMs = Number.isFinite(lastKnownTimeMs)
 				                        ? lastKnownTimeMs
 				                        : (lyricPlayer.getCurrentTime ? lyricPlayer.getCurrentTime() : 0);
@@ -1946,10 +3220,55 @@
 	                    }
                         const playerElement = lyricPlayer.getElement();
                         const hasOwn = (key) => Object.prototype.hasOwnProperty.call(config, key);
+                        const previousFullscreenOpaqueLyricsMode = fullscreenOpaqueLyricsMode;
+                        const previousCoverBlurMode = fullscreenCoverBlurMode;
+                        const previousCoverBlurProfile = fullscreenCoverBlurProfile;
+                        const previousCoverBlurRenderLayer = fullscreenCoverBlurRenderLayer;
+                        const previousCoverBlurBaseHideActive = fullscreenCoverBlurBaseHideActive;
+                        const previousCoverBlurSuppressEmphasisGlow = fullscreenCoverBlurSuppressEmphasisGlow;
+                        const previousGenericCoverBlurEnabled = fullscreenCoverBlurGenericState.enabled;
+                        const previousGenericCoverBlurProfile = fullscreenCoverBlurGenericState.profile;
+                        const previousGenericCoverBlurThemeColor = fullscreenCoverBlurGenericState.themeColor;
+
+                        if (hasOwn("fullscreenCoverBlurMode")) {
+                            fullscreenCoverBlurMode = isFullscreenSurface && config.fullscreenCoverBlurMode === true;
+                        }
+                        if (hasOwn("fullscreenCoverBlurProfile") && isValidCoverBlurProfile(config.fullscreenCoverBlurProfile)) {
+                            fullscreenCoverBlurProfile = config.fullscreenCoverBlurProfile;
+                        }
+                        if (hasOwn("coverBlurRenderLayer") && isValidCoverBlurRenderLayer(config.coverBlurRenderLayer)) {
+                            fullscreenCoverBlurRenderLayer = config.coverBlurRenderLayer;
+                        }
+                        if (hasOwn("coverBlurHideActiveMainLine")) {
+                            fullscreenCoverBlurBaseHideActive =
+                                surfaceRole === "fullscreen"
+                                && config.coverBlurHideActiveMainLine === true;
+                        }
+                        if (hasOwn("coverBlurSuppressEmphasisGlow")) {
+                            fullscreenCoverBlurSuppressEmphasisGlow =
+                                isFullscreenSurface
+                                && config.coverBlurSuppressEmphasisGlow === true;
+                        }
+                        if (hasOwn("coverBlurFullscreenGenericMode")) {
+                            fullscreenCoverBlurGenericState.enabled =
+                                isFullscreenSurface && config.coverBlurFullscreenGenericMode === true;
+                        }
+                        if (hasOwn("coverBlurFullscreenGenericProfile")) {
+                            fullscreenCoverBlurGenericState.profile = isValidCoverBlurProfile(
+                                config.coverBlurFullscreenGenericProfile
+                            ) ? config.coverBlurFullscreenGenericProfile : null;
+                        }
+                        if (hasOwn("coverBlurFullscreenThemeColor")) {
+                            fullscreenCoverBlurGenericState.themeColor =
+                                typeof config.coverBlurFullscreenThemeColor === "string"
+                                && config.coverBlurFullscreenThemeColor.length > 0
+                                    ? config.coverBlurFullscreenThemeColor
+                                    : null;
+                        }
 
                         if (hasOwn("fullscreenLyricDodgeMode")) {
                             const requestedOpaque = config.fullscreenLyricDodgeMode === true;
-                            fullscreenOpaqueLyricsMode = isFullscreenSurface || requestedOpaque;
+                            fullscreenOpaqueLyricsMode = !fullscreenCoverBlurMode && requestedOpaque;
                             if (fullscreenOpaqueLyricsMode) {
                                 startFullscreenCompositingGuard();
                                 syncWordFadeWidth();
@@ -1961,7 +3280,9 @@
                                 stopFullscreenCompositingGuard();
                                 playerElement.classList.remove("amll-surface-fullscreen");
                                 playerElement.classList.remove("fs-color-dodge");
-                                playerElement.classList.remove("fs-line-timing-only");
+                                if (!fullscreenCoverBlurMode) {
+                                    playerElement.classList.remove("fs-line-timing-only");
+                                }
                                 playerElement.style.removeProperty("--amll-fs-main-active");
                                 playerElement.style.removeProperty("--amll-fs-main-inactive");
                                 playerElement.style.removeProperty("--amll-fs-sub-active");
@@ -1971,9 +3292,13 @@
                                 playerElement.style.removeProperty("--amll-fs-bg-active");
                             }
                         }
+                        syncCoverBlurRootState();
+                        syncFullscreenCoverBlurGenericRootState();
 	                        if (hasOwn("mixBlendMode")) {
 	                            if (fullscreenOpaqueLyricsMode) {
 	                                enforceFullscreenNormalCompositing();
+	                            } else if (fullscreenCoverBlurMode) {
+	                                syncCoverBlurRootState();
 	                            } else if (typeof config.mixBlendMode === "string" && config.mixBlendMode.length > 0) {
 	                                document.documentElement.style.setProperty("--amll-lp-mix-blend-mode", config.mixBlendMode);
 	                                playerElement.style.setProperty("mix-blend-mode", config.mixBlendMode, "important");
@@ -1986,6 +3311,8 @@
 	                        if (hasOwn("blendOpacity")) {
 	                            if (fullscreenOpaqueLyricsMode) {
 	                                enforceFullscreenNormalCompositing();
+	                            } else if (fullscreenCoverBlurMode) {
+	                                syncCoverBlurRootState();
 	                            } else if (typeof config.blendOpacity === "number" && !Number.isNaN(config.blendOpacity)) {
 	                                const nextOpacity = Math.max(0, Math.min(1, config.blendOpacity));
 	                                document.documentElement.style.setProperty("--amll-lp-mix-opacity", `${nextOpacity}`);
@@ -2000,6 +3327,8 @@
                             enforceFullscreenNormalCompositing();
                             patchFullscreenLineOpacityBehavior();
                             enforceFullscreenOpaqueColorVars();
+                        } else if (fullscreenCoverBlurMode) {
+                            syncCoverBlurRootState();
                         }
 
                         const applyFullscreenColorVar = (key, cssVarName) => {
@@ -2009,6 +3338,14 @@
                                     ? toOpaqueColor(config[key])
                                     : config[key];
                                 playerElement.style.setProperty(cssVarName, resolved);
+                            } else {
+                                playerElement.style.removeProperty(cssVarName);
+                            }
+                        };
+                        const applyCoverBlurColorVar = (key, cssVarName) => {
+                            if (!hasOwn(key)) return;
+                            if (typeof config[key] === "string" && config[key].length > 0) {
+                                playerElement.style.setProperty(cssVarName, config[key]);
                             } else {
                                 playerElement.style.removeProperty(cssVarName);
                             }
@@ -2026,6 +3363,20 @@
                             "fullscreenLineTimingSubInactiveColor",
                             "--amll-fs-sub-line-timing-inactive"
                         );
+                        applyCoverBlurColorVar("coverBlurMainActiveColor", "--amll-cb-main-active");
+                        applyCoverBlurColorVar("coverBlurMainInactiveColor", "--amll-cb-main-inactive");
+                        applyCoverBlurColorVar("coverBlurSubActiveColor", "--amll-cb-sub-active");
+                        applyCoverBlurColorVar("coverBlurSubInactiveColor", "--amll-cb-sub-inactive");
+                        applyCoverBlurColorVar("coverBlurBackgroundColor", "--amll-cb-bg-active");
+                        applyCoverBlurColorVar(
+                            "coverBlurLineTimingInactiveColor",
+                            "--amll-cb-main-line-timing-inactive"
+                        );
+                        applyCoverBlurColorVar(
+                            "coverBlurLineTimingSubInactiveColor",
+                            "--amll-cb-sub-line-timing-inactive"
+                        );
+                        syncFullscreenCoverBlurGenericRootState();
 	                    if (typeof config.alignAnchor === "string" && typeof lyricPlayer.setAlignAnchor === "function") {
 	                        lyricPlayer.setAlignAnchor(config.alignAnchor);
 	                    }
@@ -2046,7 +3397,7 @@
                         }
                     }
                     if (hasOwn("shadowColor")) {
-                        if (fullscreenOpaqueLyricsMode) {
+                        if (fullscreenOpaqueLyricsMode || fullscreenCoverBlurMode) {
                             lyricPlayer.getElement().style.textShadow = "none";
                         } else if (typeof config.shadowColor === "string" && config.shadowColor.length > 0) {
                             lyricPlayer.getElement().style.textShadow = `0 1px 2px ${config.shadowColor}`;
@@ -2089,6 +3440,38 @@
 	                            needsLyricsReload = true;
 	                        }
 	                    }
+                        const switchedIntoCoverBlur = fullscreenCoverBlurMode && !previousCoverBlurMode;
+                        const switchedOutOfCoverBlur = previousCoverBlurMode && !fullscreenCoverBlurMode;
+                        const switchedBetweenFullscreenModes =
+                            previousFullscreenOpaqueLyricsMode !== fullscreenOpaqueLyricsMode;
+                        const coverBlurProfileChanged = previousCoverBlurProfile !== fullscreenCoverBlurProfile;
+                        const coverBlurRenderLayerChanged =
+                            previousCoverBlurRenderLayer !== fullscreenCoverBlurRenderLayer;
+                        const coverBlurBaseHideActiveChanged =
+                            previousCoverBlurBaseHideActive !== fullscreenCoverBlurBaseHideActive;
+                        const coverBlurSuppressEmphasisGlowChanged =
+                            previousCoverBlurSuppressEmphasisGlow !== fullscreenCoverBlurSuppressEmphasisGlow;
+                        const genericCoverBlurChanged =
+                            previousGenericCoverBlurEnabled !== fullscreenCoverBlurGenericState.enabled
+                            || previousGenericCoverBlurProfile !== fullscreenCoverBlurGenericState.profile
+                            || previousGenericCoverBlurThemeColor !== fullscreenCoverBlurGenericState.themeColor;
+                        if ((switchedIntoCoverBlur || switchedOutOfCoverBlur || switchedBetweenFullscreenModes) && lastTTML) {
+                            needsLyricsReload = true;
+                        }
+                        if (fullscreenCoverBlurMode && !needsLyricsReload) {
+                            patchCoverBlurLineBehavior();
+                            if (coverBlurProfileChanged || coverBlurRenderLayerChanged) {
+                                applyCoverBlurFinalLayerStyles();
+                            }
+                        } else if (genericCoverBlurChanged && fullscreenOpaqueLyricsMode) {
+                            refreshFullscreenCoverBlurGenericGlowLayers();
+                        } else if (coverBlurSuppressEmphasisGlowChanged && fullscreenOpaqueLyricsMode) {
+                            refreshFullscreenCoverBlurGenericGlowLayers();
+                        } else if (coverBlurSuppressEmphasisGlowChanged) {
+                            syncFullscreenCoverBlurGenericRootState();
+                        } else if (coverBlurBaseHideActiveChanged) {
+                            syncCoverBlurRootState();
+                        }
 	                    if (needsLyricsReload && lastTTML) {
 	                        window.LyricsRenderer.setLyrics(lastTTML);
 	                    }

@@ -224,3 +224,8 @@
 // MARK: - Fullscreen
 "fullscreen.exit" = "退出全屏";
 "fullscreen.refresh_lyrics_colors" = "刷新歌词";
+
+// MARK: - Cover Gradient Blur Skin
+"skin.cover_gradient_blur.edge_fill_pixel" = "拉伸";
+"skin.cover_gradient_blur.edge_fill_mirror" = "镜像";
+"skin.cover_gradient_blur.edge_fill_mode" = "右侧填充";
