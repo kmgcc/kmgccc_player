@@ -766,9 +766,9 @@ struct FullscreenPlayerView: View {
                 onExitFullscreen?()
             }
 
-            appearanceSwitchButton(size: size)
-
             lyricsVisibilityButton(size: size)
+
+            appearanceSwitchButton(size: size)
                 .opacity(isLeadingControlsExpanded ? 1 : 0)
                 .allowsHitTesting(isLeadingControlsExpanded)
                 .accessibilityHidden(!isLeadingControlsExpanded)

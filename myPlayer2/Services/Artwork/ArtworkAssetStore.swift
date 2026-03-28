@@ -11,15 +11,31 @@ import ImageIO
 
 actor ArtworkAssetStore {
     static let shared = ArtworkAssetStore()
-    
-    private let cache = NSCache<NSString, ArtworkAssetSnapshot>()
+
+    private let cache: NSCache<NSString, ArtworkAssetSnapshot> = {
+        let cache = NSCache<NSString, ArtworkAssetSnapshot>()
+        cache.countLimit = 96
+        cache.totalCostLimit = 64 * 1024 * 1024
+        return cache
+    }()
+    private let fullImageCache: NSCache<NSString, NSImage> = {
+        let cache = NSCache<NSString, NSImage>()
+        cache.countLimit = 2
+        cache.totalCostLimit = 24 * 1024 * 1024
+        return cache
+    }()
     private var inProgressKeys: Set<String> = []
     private var waitingContinuations: [String: [CheckedContinuation<ArtworkAssetSnapshot?, Never>]] = [:]
+    private var fullImageInProgressKeys: Set<String> = []
+    private var fullImageWaitingContinuations: [String: [CheckedContinuation<NSImage?, Never>]] = [:]
     
     func clearCache() {
         cache.removeAllObjects()
+        fullImageCache.removeAllObjects()
         inProgressKeys.removeAll()
         waitingContinuations.removeAll()
+        fullImageInProgressKeys.removeAll()
+        fullImageWaitingContinuations.removeAll()
     }
     
     nonisolated static func checksum(for data: Data?) -> UInt64 {
@@ -34,20 +50,41 @@ actor ArtworkAssetStore {
     
     func snapshot(trackID: UUID, artworkData: Data) async -> ArtworkAssetSnapshot? {
         let checksum = Self.computeChecksum(artworkData)
-        return await getOrCreate(
+        let snapshot = await snapshotMetadata(
             trackID: trackID,
             artworkData: artworkData,
             artworkChecksum: checksum
-        ) { data, checksum in
-            Self.makeSnapshot(trackID: trackID, artworkData: data, checksum: checksum)
-        }
+        )
+
+        return await hydrateSnapshot(
+            snapshot,
+            artworkData: artworkData
+        )
+    }
+
+    func snapshotMetadata(trackID: UUID, artworkData: Data) async -> ArtworkAssetSnapshot? {
+        let checksum = Self.computeChecksum(artworkData)
+        return await snapshotMetadata(
+            trackID: trackID,
+            artworkData: artworkData,
+            artworkChecksum: checksum
+        )
     }
     
     func cache(_ snapshot: ArtworkAssetSnapshot) {
-        var cost = 0
-        if snapshot.thumbnailImage != nil { cost += 50 * 1024 }
-        if snapshot.fullImage != nil { cost += 200 * 1024 }
-        cache.setObject(snapshot, forKey: snapshot.cacheKey as NSString, cost: cost)
+        let metadataSnapshot = snapshot.replacing(fullImage: nil)
+        let thumbnailCost = metadataSnapshot.thumbnailImage.flatMap(Self.estimatedCost(for:)) ?? 0
+        let paletteCost = (snapshot.palette.count + snapshot.richPalette.count) * 64
+        let cost = thumbnailCost + paletteCost
+        cache.setObject(metadataSnapshot, forKey: metadataSnapshot.cacheKey as NSString, cost: cost)
+
+        if let fullImage = snapshot.fullImage {
+            fullImageCache.setObject(
+                fullImage,
+                forKey: snapshot.cacheKey as NSString,
+                cost: Self.estimatedCost(for: fullImage)
+            )
+        }
     }
     
     func getOrCreate(
@@ -85,6 +122,64 @@ actor ArtworkAssetStore {
         
         return result
     }
+
+    private func hydrateSnapshot(
+        _ snapshot: ArtworkAssetSnapshot?,
+        artworkData: Data
+    ) async -> ArtworkAssetSnapshot? {
+        guard let snapshot else { return nil }
+        if snapshot.fullImage != nil { return snapshot }
+
+        let key = snapshot.cacheKey as NSString
+        if let cachedFullImage = fullImageCache.object(forKey: key) {
+            return snapshot.replacing(fullImage: cachedFullImage)
+        }
+
+        if fullImageInProgressKeys.contains(snapshot.cacheKey) {
+            let image = await withCheckedContinuation { continuation in
+                fullImageWaitingContinuations[snapshot.cacheKey, default: []].append(continuation)
+            }
+            return snapshot.replacing(fullImage: image)
+        }
+
+        fullImageInProgressKeys.insert(snapshot.cacheKey)
+        let fullImage = await Task.detached(priority: .utility) {
+            Self.downsampledImage(data: artworkData, maxPixelSize: 1400)
+        }.value
+
+        if let fullImage {
+            fullImageCache.setObject(
+                fullImage,
+                forKey: key,
+                cost: Self.estimatedCost(for: fullImage)
+            )
+        }
+
+        fullImageInProgressKeys.remove(snapshot.cacheKey)
+        if let waiters = fullImageWaitingContinuations.removeValue(forKey: snapshot.cacheKey) {
+            for continuation in waiters {
+                continuation.resume(returning: fullImage)
+            }
+        }
+
+        return snapshot.replacing(fullImage: fullImage)
+    }
+
+    private func snapshotMetadata(
+        trackID: UUID,
+        artworkData: Data,
+        artworkChecksum: UInt64
+    ) async -> ArtworkAssetSnapshot? {
+        await getOrCreate(
+            trackID: trackID,
+            artworkData: artworkData,
+            artworkChecksum: artworkChecksum
+        ) { data, checksum in
+            await Task.detached(priority: .utility) {
+                Self.makeSnapshot(trackID: trackID, artworkData: data, checksum: checksum)
+            }.value
+        }
+    }
     
     private nonisolated static func makeSnapshot(
         trackID: UUID,
@@ -92,20 +187,33 @@ actor ArtworkAssetStore {
         checksum: UInt64
     ) -> ArtworkAssetSnapshot? {
         guard !artworkData.isEmpty else { return nil }
-        
-        let thumbnailImage = downsampledImage(data: artworkData, maxPixelSize: 160)
-        let fullImage = downsampledImage(data: artworkData, maxPixelSize: 1400)
-        let palette = ArtworkColorExtractor.uiThemePalette(from: artworkData, maxColors: 4)
-        let richPalette = ArtworkColorExtractor.uiThemePaletteRich(from: artworkData, desiredCount: 6)
+
+        guard
+            let imageSource = CGImageSourceCreateWithData(
+                artworkData as CFData,
+                [kCGImageSourceShouldCache: false] as CFDictionary
+            )
+        else { return nil }
+
+        let thumbnailImage = downsampledImage(source: imageSource, maxPixelSize: 160)
+        let analysisSample = ArtworkColorExtractor.sampledBitmap(from: artworkData, side: 72)
+        let palette =
+            analysisSample.map { ArtworkColorExtractor.uiThemePalette(from: $0, targetCount: 4) }
+            ?? []
+        let richPalette =
+            analysisSample.map { ArtworkColorExtractor.uiThemePaletteRich(from: $0, targetCount: 6) }
+            ?? []
         let accentColor = palette.first
-        let averageColor = ArtworkColorExtractor.averageColor(from: artworkData)
+        let averageColor =
+            analysisSample.flatMap { ArtworkColorExtractor.averageColor(from: $0) }
+            ?? ArtworkColorExtractor.averageColor(from: artworkData)
         let dominantColor = accentColor ?? averageColor
-        
+
         return ArtworkAssetSnapshot(
             trackID: trackID,
             artworkChecksum: checksum,
             thumbnailImage: thumbnailImage,
-            fullImage: fullImage,
+            fullImage: nil,
             dominantColor: dominantColor,
             accentColor: accentColor,
             palette: palette,
@@ -116,9 +224,19 @@ actor ArtworkAssetStore {
     
     private nonisolated static func downsampledImage(data: Data, maxPixelSize: Int) -> NSImage? {
         guard
-            let source = CGImageSourceCreateWithData(data as CFData, nil)
+            let source = CGImageSourceCreateWithData(
+                data as CFData,
+                [kCGImageSourceShouldCache: false] as CFDictionary
+            )
         else { return nil }
-        
+
+        return downsampledImage(source: source, maxPixelSize: maxPixelSize)
+    }
+
+    private nonisolated static func downsampledImage(
+        source: CGImageSource,
+        maxPixelSize: Int
+    ) -> NSImage? {
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceShouldCacheImmediately: true,
@@ -133,6 +251,15 @@ actor ArtworkAssetStore {
             cgImage: cgImage,
             size: CGSize(width: cgImage.width, height: cgImage.height)
         )
+    }
+
+    private nonisolated static func estimatedCost(for image: NSImage) -> Int {
+        var proposedRect = CGRect(origin: .zero, size: image.size)
+        if let cgImage = image.cgImage(forProposedRect: &proposedRect, context: nil, hints: nil) {
+            return cgImage.bytesPerRow * cgImage.height
+        }
+
+        return Int(image.size.width * image.size.height * 4)
     }
     
     private nonisolated static func computeChecksum(_ data: Data) -> UInt64 {

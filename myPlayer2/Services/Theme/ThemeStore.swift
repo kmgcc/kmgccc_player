@@ -158,7 +158,7 @@ final class ThemeStore: ObservableObject {
         async let quick = extractQuickColor(from: data)
         async let cachedArtworkSnapshot: ArtworkAssetSnapshot? = {
             guard let trackID else { return nil }
-            return await ArtworkAssetStore.shared.snapshot(trackID: trackID, artworkData: data)
+            return await ArtworkAssetStore.shared.snapshotMetadata(trackID: trackID, artworkData: data)
         }()
 
         // Apply quick color first for immediate feedback

@@ -89,7 +89,7 @@
 "settings.led.speed" = "响应速度";
 "settings.led.publish_rate" = "刷新率";
 "settings.led.lookahead" = "提前量";
-"settings.led.lookahead_desc" = "延迟音频输出，使 LED 和歌词能够领先同步。";
+"settings.led.lookahead_desc" = "延迟音频输出，使音频采样相关动画和歌词能够领先同步。";
 
 // MARK: - Settings About
 "settings.about.version" = "版本 %@";

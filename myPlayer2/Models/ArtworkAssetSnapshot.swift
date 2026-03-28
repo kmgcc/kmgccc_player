@@ -48,4 +48,18 @@ final class ArtworkAssetSnapshot: NSObject, Sendable {
         self.extractedAt = Date()
         super.init()
     }
+
+    nonisolated func replacing(fullImage: NSImage?) -> ArtworkAssetSnapshot {
+        ArtworkAssetSnapshot(
+            trackID: trackID,
+            artworkChecksum: artworkChecksum,
+            thumbnailImage: thumbnailImage,
+            fullImage: fullImage,
+            dominantColor: dominantColor,
+            accentColor: accentColor,
+            palette: palette,
+            richPalette: richPalette,
+            averageColor: averageColor
+        )
+    }
 }

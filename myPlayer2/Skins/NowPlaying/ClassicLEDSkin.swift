@@ -39,7 +39,7 @@ private struct ClassicLEDArtwork: View {
     @StateObject private var fullscreenManager = FullscreenWindowManager.shared
 
     @AppStorage("skin.classicLED.visualizerMode") private var normalVisualizerMode: String = "off"
-    @AppStorage("skin.classicLED.fullscreen.visualizerMode") private var fullscreenVisualizerMode: String = "off"
+    @AppStorage("skin.classicLED.fullscreen.visualizerMode") private var fullscreenVisualizerMode: String = "led"
 
     // MARK: - Fullscreen Fine-tuning Constants
     /// Slight boost to artwork size in fullscreen (1.0 = no change)

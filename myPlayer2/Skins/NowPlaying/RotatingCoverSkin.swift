@@ -39,7 +39,7 @@ private struct RotatingCoverArtwork: View {
     @StateObject private var fullscreenManager = FullscreenWindowManager.shared
 
     @AppStorage("skin.rotatingCover.visualizerMode") private var normalVisualizerMode: String = "off"
-    @AppStorage("skin.rotatingCover.fullscreen.visualizerMode") private var fullscreenVisualizerMode: String = "off"
+    @AppStorage("skin.rotatingCover.fullscreen.visualizerMode") private var fullscreenVisualizerMode: String = "led"
 
     @State private var rotationBase: Double = 0
     @State private var rotationStart: Date? = nil

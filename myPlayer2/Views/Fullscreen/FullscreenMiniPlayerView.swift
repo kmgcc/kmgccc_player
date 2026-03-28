@@ -326,7 +326,10 @@ struct FullscreenMiniPlayerView: View {
             return
         }
         
-        let snapshot = await ArtworkAssetStore.shared.snapshot(trackID: track.id, artworkData: artworkData)
+        let snapshot = await ArtworkAssetStore.shared.snapshotMetadata(
+            trackID: track.id,
+            artworkData: artworkData
+        )
         guard !Task.isCancelled else { return }
         artworkImage = snapshot?.thumbnailImage ?? snapshot?.fullImage
     }

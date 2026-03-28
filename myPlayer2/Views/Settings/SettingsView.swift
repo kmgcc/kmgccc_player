@@ -450,16 +450,38 @@ struct SettingsView: View {
 
                     Divider()
 
-                    HStack {
+                    // Lyrics Background Mode - Capsule Picker Style
+                    HStack(spacing: 8) {
                         Text("歌词背景")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+
                         Spacer()
-                        Picker("", selection: $lyricsBackgroundMode) {
+
+                        HStack(spacing: 4) {
                             ForEach(AppSettings.LyricsBackgroundMode.allCases) { mode in
-                                Text(mode.title).tag(mode)
+                                Button {
+                                    lyricsBackgroundMode = mode
+                                } label: {
+                                    Text(mode.title)
+                                        .font(.system(size: 11, weight: lyricsBackgroundMode == mode ? .medium : .regular))
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 4)
+                                }
+                                .buttonStyle(.plain)
+                                .background(
+                                    Capsule()
+                                        .fill(lyricsBackgroundMode == mode ? themeStore.accentColor.opacity(0.18) : Color.clear)
+                                )
+                                .foregroundStyle(lyricsBackgroundMode == mode ? themeStore.accentColor : .secondary)
                             }
                         }
-                        .labelsHidden()
-                        .frame(width: 140)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 3)
+                        .background(
+                            Capsule()
+                                .fill(Color.secondary.opacity(0.08))
+                        )
                     }
                 }
                 .toggleStyle(.switch)
@@ -629,20 +651,6 @@ struct SettingsView: View {
             }
 
             fullscreenLyricsPreviewConfig
-
-            Button("恢复默认") {
-                fullscreenArtworkScale = AppSettings.FullscreenDefaults.artworkScale
-                fullscreenLyricsFontScale = AppSettings.FullscreenDefaults.lyricsFontScale
-                fullscreenDimmingIntensity = AppSettings.FullscreenDefaults.dimmingIntensity
-                AppSettings.shared.fullscreenArtworkScale = AppSettings.FullscreenDefaults.artworkScale
-                AppSettings.shared.fullscreenLyricsFontScale = AppSettings.FullscreenDefaults.lyricsFontScale
-                AppSettings.shared.fullscreenDimmingIntensity = AppSettings.FullscreenDefaults.dimmingIntensity
-                AppSettings.shared.fullscreenMiniplayerHeight = AppSettings.FullscreenDefaults.miniplayerHeight
-                AppSettings.shared.resetFullscreenLyricsTypographyOverrides()
-                syncFullscreenLyricsStateFromSettings()
-            }
-            .buttonStyle(.borderless)
-            .font(.caption)
         }
     }
 
@@ -1126,28 +1134,72 @@ struct SettingsView: View {
 
                 GroupBox {
                     VStack(spacing: 16) {
-                        Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 16) {
-                            GridRow {
-                                Text("settings.led.count")
-                                    .foregroundStyle(.secondary)
-                                Picker("", selection: $ledCount) {
-                                    Text("9").tag(9)
-                                    Text("11").tag(11)
-                                    Text("13").tag(13)
-                                    Text("15").tag(15)
+                        // LED Count - Capsule Picker Style
+                        HStack(spacing: 8) {
+                            Text("settings.led.count")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+
+                            Spacer()
+
+                            HStack(spacing: 4) {
+                                ForEach([9, 11, 13, 15], id: \.self) { count in
+                                    Button {
+                                        ledCount = count
+                                    } label: {
+                                        Text("\(count)")
+                                            .font(.system(size: 11, weight: ledCount == count ? .medium : .regular))
+                                            .padding(.horizontal, 10)
+                                            .padding(.vertical, 4)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .background(
+                                        Capsule()
+                                            .fill(ledCount == count ? themeStore.accentColor.opacity(0.18) : Color.clear)
+                                    )
+                                    .foregroundStyle(ledCount == count ? themeStore.accentColor : .secondary)
                                 }
-                                .labelsHidden()
                             }
-                            GridRow {
-                                Text("settings.led.brightness")
-                                    .foregroundStyle(.secondary)
-                                Picker("", selection: $brightnessLevels) {
-                                    Text("3").tag(3)
-                                    Text("5").tag(5)
-                                    Text("7").tag(7)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 3)
+                            .background(
+                                Capsule()
+                                    .fill(Color.secondary.opacity(0.08))
+                            )
+                        }
+
+                        // Brightness Levels - Capsule Picker Style
+                        HStack(spacing: 8) {
+                            Text("settings.led.brightness")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+
+                            Spacer()
+
+                            HStack(spacing: 4) {
+                                ForEach([3, 5, 7], id: \.self) { level in
+                                    Button {
+                                        brightnessLevels = level
+                                    } label: {
+                                        Text("\(level)")
+                                            .font(.system(size: 11, weight: brightnessLevels == level ? .medium : .regular))
+                                            .padding(.horizontal, 10)
+                                            .padding(.vertical, 4)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .background(
+                                        Capsule()
+                                            .fill(brightnessLevels == level ? themeStore.accentColor.opacity(0.18) : Color.clear)
+                                    )
+                                    .foregroundStyle(brightnessLevels == level ? themeStore.accentColor : .secondary)
                                 }
-                                .labelsHidden()
                             }
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 3)
+                            .background(
+                                Capsule()
+                                    .fill(Color.secondary.opacity(0.08))
+                            )
                         }
 
                         Divider()
@@ -1233,18 +1285,38 @@ struct SettingsView: View {
                 Slider(value: $speed, in: 0.5...2.0, step: 0.05)
             }
 
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text("settings.led.publish_rate")
-                    Spacer()
-                    Text("\(targetHz) Hz")
-                        .foregroundStyle(.secondary)
+            // Refresh Rate - Capsule Picker Style
+            HStack(spacing: 8) {
+                Text("settings.led.publish_rate")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                HStack(spacing: 4) {
+                    ForEach([30, 60], id: \.self) { hz in
+                        Button {
+                            targetHz = hz
+                        } label: {
+                            Text("\(hz) Hz")
+                                .font(.system(size: 11, weight: targetHz == hz ? .medium : .regular))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 4)
+                        }
+                        .buttonStyle(.plain)
+                        .background(
+                            Capsule()
+                                .fill(targetHz == hz ? themeStore.accentColor.opacity(0.18) : Color.clear)
+                        )
+                        .foregroundStyle(targetHz == hz ? themeStore.accentColor : .secondary)
+                    }
                 }
-                Picker("", selection: $targetHz) {
-                    Text("30 Hz").tag(30)
-                    Text("60 Hz").tag(60)
-                }
-                .pickerStyle(.segmented)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 3)
+                .background(
+                    Capsule()
+                        .fill(Color.secondary.opacity(0.08))
+                )
             }
 
             VStack(alignment: .leading, spacing: 4) {
@@ -1277,7 +1349,7 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
 
                     HStack(spacing: 10) {
-                        Button("初始化应用数据（保留音乐资料库）", role: .destructive) {
+                        Button("初始化应用设置", role: .destructive) {
                             showResetDataAlert = true
                         }
                         .buttonStyle(.borderedProminent)
@@ -1677,6 +1749,69 @@ private struct AboutEasterEggTapTracker {
         lastSide = nil
         lastTapTime = nil
         tapCount = 0
+    }
+}
+
+// MARK: - Capsule Picker Component
+
+/// A reusable capsule-style picker with buttons inside a capsule container.
+/// Matches the Liquid Glass aesthetic used throughout the app.
+struct CapsulePicker<T: Hashable & Identifiable>: View where T.ID: Hashable {
+    let label: String
+    let options: [T]
+    let displayName: (T) -> String
+    @Binding var selection: T.ID
+    let accentColor: Color
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(label)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+
+            Spacer()
+
+            HStack(spacing: 4) {
+                ForEach(options) { option in
+                    CapsulePickerButton(
+                        title: displayName(option),
+                        isSelected: selection == option.id,
+                        accentColor: accentColor
+                    ) {
+                        selection = option.id
+                    }
+                }
+            }
+            .padding(.horizontal, 4)
+            .padding(.vertical, 3)
+            .background(
+                Capsule()
+                    .fill(Color.secondary.opacity(0.08))
+            )
+        }
+    }
+}
+
+/// Individual button inside CapsulePicker.
+struct CapsulePickerButton: View {
+    let title: String
+    let isSelected: Bool
+    let accentColor: Color
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 11, weight: isSelected ? .medium : .regular))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+        }
+        .buttonStyle(.plain)
+        .background(
+            Capsule()
+                .fill(isSelected ? accentColor.opacity(0.18) : Color.clear)
+        )
+        .foregroundStyle(isSelected ? accentColor : .secondary)
     }
 }
 
