@@ -9,6 +9,45 @@
 import SwiftData
 import SwiftUI
 
+private struct DebugLaunchScenario {
+    let trackID: UUID?
+    let fullscreenSkinID: String?
+    let showFullscreen: Bool
+    let quitAfterSeconds: TimeInterval?
+
+    var isEnabled: Bool {
+        trackID != nil || fullscreenSkinID != nil || showFullscreen || quitAfterSeconds != nil
+    }
+
+    static var current: DebugLaunchScenario? {
+        let environment = ProcessInfo.processInfo.environment
+        let trackID = environment["KMGCCC_DEBUG_PROOF_TRACK_ID"].flatMap(UUID.init(uuidString:))
+        let fullscreenSkinID = environment["KMGCCC_DEBUG_PROOF_FULLSCREEN_SKIN"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
+        let showFullscreen = environment["KMGCCC_DEBUG_PROOF_SHOW_FULLSCREEN"].map {
+            ["1", "true", "yes", "on"].contains($0.lowercased())
+        } ?? false
+        let quitAfterSeconds = environment["KMGCCC_DEBUG_PROOF_QUIT_AFTER_SECONDS"].flatMap {
+            Double($0)
+        }
+
+        let scenario = DebugLaunchScenario(
+            trackID: trackID,
+            fullscreenSkinID: fullscreenSkinID,
+            showFullscreen: showFullscreen,
+            quitAfterSeconds: quitAfterSeconds
+        )
+        return scenario.isEnabled ? scenario : nil
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
+    }
+}
+
 /// Root view that sets up dependency injection.
 /// Creates real services for production, stubs for previews.
 @MainActor
@@ -225,6 +264,16 @@ struct AppRootView: View {
         )
 
         libraryService.startMonitoring(repository: repository)
+
+        if let scenario = DebugLaunchScenario.current {
+            Task { @MainActor in
+                await runDebugLaunchScenarioIfNeeded(
+                    scenario,
+                    repository: repository,
+                    playerVM: playerVM!
+                )
+            }
+        }
     }
 
     // MARK: - Appearance Helpers
@@ -257,6 +306,54 @@ struct AppRootView: View {
         themeStore.colorScheme = newScheme
         Task { @MainActor in
             await themeStore.refreshPalette(reason: "swiftui_colorScheme_changed")
+        }
+    }
+
+    @MainActor
+    private func runDebugLaunchScenarioIfNeeded(
+        _ scenario: DebugLaunchScenario,
+        repository: LibraryRepositoryProtocol,
+        playerVM: PlayerViewModel
+    ) async {
+        print(
+            "[DebugLaunch] scenario trackID=\(scenario.trackID?.uuidString ?? "nil") fullscreenSkin=\(scenario.fullscreenSkinID ?? "nil") showFullscreen=\(scenario.showFullscreen) quitAfter=\(scenario.quitAfterSeconds ?? -1)"
+        )
+
+        if let fullscreenSkinID = scenario.fullscreenSkinID {
+            AppSettings.shared.selectedFullscreenSkinID = fullscreenSkinID
+        }
+
+        if let trackID = scenario.trackID {
+            await repository.reloadFromLibrary()
+            let tracks = await repository.fetchTracks(in: nil)
+            guard let track = tracks.first(where: { $0.id == trackID }) else {
+                print("[DebugLaunch] track not found: \(trackID.uuidString)")
+                scheduleDebugTerminationIfNeeded(after: scenario.quitAfterSeconds)
+                return
+            }
+
+            uiState.showNowPlaying()
+            playerVM.play(track: track)
+            await themeStore.updateTheme(for: track)
+            print("[DebugLaunch] playing track \(track.title) (\(track.id.uuidString))")
+        }
+
+        if scenario.showFullscreen {
+            let openDelay: TimeInterval = scenario.trackID == nil ? 0.25 : 0.9
+            DispatchQueue.main.asyncAfter(deadline: .now() + openDelay) {
+                print("[DebugLaunch] opening fullscreen window")
+                FullscreenWindowManager.shared.showFullscreenWindow()
+            }
+        }
+
+        scheduleDebugTerminationIfNeeded(after: scenario.quitAfterSeconds)
+    }
+
+    private func scheduleDebugTerminationIfNeeded(after seconds: TimeInterval?) {
+        guard let seconds, seconds > 0 else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
+            print("[DebugLaunch] terminating app after \(seconds)s")
+            NSApp.terminate(nil)
         }
     }
 }

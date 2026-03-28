@@ -23,6 +23,8 @@ final class LyricsWebViewStore: NSObject {
     static let shared = LyricsWebViewStore()
     private nonisolated static let ttmlDiagnosticsEnabled =
         ProcessInfo.processInfo.environment["AMLL_TTML_DIAGNOSTICS"] == "1"
+    private nonisolated static let visibleLayerProbeEnabled =
+        ProcessInfo.processInfo.environment["KMGCCC_AMLL_VISIBLE_LAYER_PROBE"] == "1"
 
     // MARK: - WebView Identity
 
@@ -80,9 +82,11 @@ final class LyricsWebViewStore: NSObject {
     private var isRecoveryInProgress: Bool = false
     private var lastRecoveryAttempt: Date = .distantPast
     private let recoveryDebounceInterval: TimeInterval = 1.0
+    private var contentLoadRevision: Int = 0
 
     /// Track change debounce (prevents transient nil clearing).
     private var pendingApplyTrack: DispatchWorkItem?
+    private var pendingVisibleLayerProbe: DispatchWorkItem?
     private let applyTrackDebounceMs: Int = 50
     private var didRegisterMessageHandlers = false
     private var isShutDown = false
@@ -103,7 +107,7 @@ final class LyricsWebViewStore: NSObject {
 
     // MARK: - Content Loading
 
-    func loadAMLLContent() {
+    func loadAMLLContent(cacheBust: Bool = false) {
         guard !isShutDown else { return }
         let webView = ensureWebView()
         guard
@@ -116,8 +120,12 @@ final class LyricsWebViewStore: NSObject {
             return
         }
 
+        if cacheBust {
+            contentLoadRevision &+= 1
+        }
+
         let amllDir = indexURL.deletingLastPathComponent()
-        let loadURL = indexURL
+        let loadURL = resolvedAMLLLoadURL(from: indexURL)
         print(
             "[LyricsStore] Loading AMLL from: \(loadURL.absoluteString) role=\(role), objectID=\(webViewObjectID)"
         )
@@ -130,6 +138,8 @@ final class LyricsWebViewStore: NSObject {
 
         pendingApplyTrack?.cancel()
         pendingApplyTrack = nil
+        pendingVisibleLayerProbe?.cancel()
+        pendingVisibleLayerProbe = nil
         pendingCalls.removeAll()
         onUserSeek = nil
         activeAttachmentID = nil
@@ -147,6 +157,7 @@ final class LyricsWebViewStore: NSObject {
         lastDeliveredTime = nil
         queuedTimeSync = nil
         isTimeSyncInFlight = false
+        contentLoadRevision = 0
 
         if let webView = retainedWebView {
             webView.stopLoading()
@@ -284,6 +295,22 @@ final class LyricsWebViewStore: NSObject {
         callJS("window.AMLL.setConfig(\(json))")
     }
 
+    func scheduleDebugVisibleLayerProbe(label: String, delay: TimeInterval = 0.18) {
+        guard !isShutDown else { return }
+        guard role == "fullscreen" || role == "main" || role == "fullscreenCoverBlurHighlight" else {
+            return
+        }
+        guard Self.visibleLayerProbeEnabled else { return }
+
+        pendingVisibleLayerProbe?.cancel()
+
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.runDebugVisibleLayerProbe(label: label)
+        }
+        pendingVisibleLayerProbe = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+    }
+
     /// Unified JS call entry point with queuing.
     private func callJS(_ script: String) {
         guard !isShutDown else { return }
@@ -301,6 +328,35 @@ final class LyricsWebViewStore: NSObject {
             pendingCalls.append(script)
             print(
                 "[LyricsStore] Queued (pending=\(pendingCalls.count)), objectID=\(webViewObjectID)")
+        }
+    }
+
+    private func runDebugVisibleLayerProbe(label: String) {
+        guard !isShutDown, isReady else { return }
+        guard let labelJSON = encodeJSONString(label) else { return }
+
+        let js = """
+            (function() {
+                if (!window.AMLL || typeof window.AMLL.debugDumpVisibleLayers !== "function") {
+                    return JSON.stringify({
+                        role: "\(role)",
+                        error: "debugDumpVisibleLayers unavailable"
+                    });
+                }
+                return JSON.stringify(window.AMLL.debugDumpVisibleLayers(\(labelJSON)));
+            })();
+            """
+
+        webView.evaluateJavaScript(js) { [weak self] result, error in
+            guard let self else { return }
+            if let error {
+                print(
+                    "[LyricsStore][Probe] role=\(self.role) label=\(label) error=\(error.localizedDescription)"
+                )
+                return
+            }
+            let payload = result as? String ?? String(describing: result ?? "nil")
+            print("[LyricsStore][Probe] role=\(self.role) label=\(label) payload=\(payload)")
         }
     }
 
@@ -324,6 +380,7 @@ final class LyricsWebViewStore: NSObject {
 
         // Replay last state snapshot (strict order)
         replayStateSnapshot()
+        scheduleDebugVisibleLayerProbe(label: "\(role)-ready", delay: 0.75)
     }
 
     private func flushPendingCalls() {
@@ -418,19 +475,25 @@ final class LyricsWebViewStore: NSObject {
 
         // Reload AMLL content - state will be replayed when onReady fires
         print("[LyricsStore] Reload: objectID=\(webViewObjectID)")
-        loadAMLLContent()
+        loadAMLLContent(cacheBust: role == LyricsSurfaceRole.fullscreen.rawValue)
     }
 
     /// Force reload (for manual recovery).
-    func forceReload() {
+    func forceReload(recreateWebView: Bool = false) {
         guard !isShutDown else { return }
         isReady = false
         pendingCalls.removeAll()
         queuedTimeSync = nil
         isTimeSyncInFlight = false
         lastDeliveredTime = nil
-        print("[LyricsStore] Force reload, objectID=\(webViewObjectID)")
-        loadAMLLContent()
+        print(
+            "[LyricsStore] Force reload, objectID=\(webViewObjectID), recreateWebView=\(recreateWebView)"
+        )
+        if recreateWebView {
+            rebuildWebViewForFreshContent()
+        } else {
+            loadAMLLContent(cacheBust: true)
+        }
     }
 
     // MARK: - Track Change (Task D: Race-safe)
@@ -619,6 +682,64 @@ final class LyricsWebViewStore: NSObject {
         print("[LyricsStore:\(role)] ✅ Created WebView instance: objectID=\(webViewObjectID)")
         loadAMLLContent()
         return webView
+    }
+
+    private func resolvedAMLLLoadURL(from indexURL: URL) -> URL {
+        guard var components = URLComponents(url: indexURL, resolvingAgainstBaseURL: false) else {
+            return indexURL
+        }
+
+        components.queryItems = [
+            URLQueryItem(name: "surface", value: role),
+            URLQueryItem(name: "rev", value: "\(contentLoadRevision)"),
+        ]
+        return components.url ?? indexURL
+    }
+
+    private func rebuildWebViewForFreshContent() {
+        contentLoadRevision &+= 1
+
+        guard let oldWebView = retainedWebView else {
+            loadAMLLContent()
+            return
+        }
+
+        let hostView = oldWebView.superview
+        let frame = oldWebView.frame
+        let autoresizingMask = oldWebView.autoresizingMask
+        let appearance = oldWebView.appearance
+        let navigationDelegate = oldWebView.navigationDelegate
+        let isHidden = oldWebView.isHidden
+
+        if didRegisterMessageHandlers {
+            let contentController = oldWebView.configuration.userContentController
+            contentController.removeScriptMessageHandler(forName: "onReady")
+            contentController.removeScriptMessageHandler(forName: "onUserSeek")
+            contentController.removeScriptMessageHandler(forName: "log")
+            didRegisterMessageHandlers = false
+        }
+
+        oldWebView.stopLoading()
+        oldWebView.navigationDelegate = nil
+        oldWebView.removeFromSuperview()
+        retainedWebView = nil
+
+        let newWebView = ensureWebView()
+        newWebView.frame = frame
+        newWebView.autoresizingMask = autoresizingMask
+        newWebView.appearance = appearance
+        newWebView.isHidden = isHidden
+        if let navigationDelegate {
+            newWebView.navigationDelegate = navigationDelegate
+        }
+
+        if let hostView {
+            hostView.addSubview(newWebView)
+        }
+
+        print(
+            "[LyricsStore] Recreated WebView for fresh AMLL bundle: role=\(role), objectID=\(webViewObjectID), rev=\(contentLoadRevision)"
+        )
     }
 
     private func scheduleTimeSync(_ seconds: Double) {

@@ -9,6 +9,22 @@ import AppKit
 import CoreImage
 import SwiftUI
 
+// MARK: - Edge Fill Mode
+
+enum CoverEdgeFillMode: String, Sendable, CaseIterable {
+    case pixelStretch = "pixelStretch"
+    case mirroredCover = "mirroredCover"
+
+    var displayName: String {
+        switch self {
+        case .pixelStretch:
+            return NSLocalizedString("skin.cover_gradient_blur.edge_fill_pixel", comment: "")
+        case .mirroredCover:
+            return NSLocalizedString("skin.cover_gradient_blur.edge_fill_mirror", comment: "")
+        }
+    }
+}
+
 // MARK: - Configuration
 
 struct CoverGradientBlurConfig: Sendable {
@@ -21,6 +37,7 @@ struct CoverGradientBlurConfig: Sendable {
     var overlayOffsetRatio: CGFloat = 0.0
     var blurCurveGamma: CGFloat = 16.0
     var overlayCurveGamma: CGFloat = 3.0
+    var edgeFillMode: CoverEdgeFillMode = .pixelStretch
 
     static let `default` = CoverGradientBlurConfig()
     static let fullscreen = CoverGradientBlurConfig(
@@ -32,7 +49,8 @@ struct CoverGradientBlurConfig: Sendable {
         blurEndRatio: 0.95,
         overlayOffsetRatio: 0.0,
         blurCurveGamma: 16.0,
-        overlayCurveGamma: 3.0
+        overlayCurveGamma: 3.0,
+        edgeFillMode: .pixelStretch
     )
 }
 
@@ -66,8 +84,6 @@ struct CoverGradientBlurBackgroundView: View {
     @State private var visibleRenderedImage: Bool = false
     @State private var lastRenderKey: RenderKey?
 
-    private var logPrefix: String { "[CoverGradientBlur]" }
-    
     private var renderKey: RenderKey {
         RenderKey(trackID: trackID, size: currentSize, config: config, dominantColor: dominantColor)
     }
@@ -152,9 +168,7 @@ struct CoverGradientBlurBackgroundView: View {
             await updateRenderedImage(nil, forKey: key)
             return
         }
-        
-        let startTime = CFAbsoluteTimeGetCurrent()
-        
+
         if let result = CoverGradientBlurRenderer.render(
             artworkData: data,
             targetSize: key.size,
@@ -162,11 +176,8 @@ struct CoverGradientBlurBackgroundView: View {
             config: config,
             trackID: trackID
         ) {
-            let elapsed = CFAbsoluteTimeGetCurrent() - startTime
-            NSLog("\(logPrefix) Render SUCCESS in \(elapsed * 1000)ms for trackID: \(trackID?.uuidString.prefix(8) ?? "nil")")
             await updateRenderedImage(result, forKey: key)
         } else {
-            NSLog("\(logPrefix) Render FAILED")
             await updateRenderedImage(nil, forKey: key)
         }
     }
@@ -229,47 +240,35 @@ enum CoverGradientBlurRenderer {
             artworkRightEdgePixel: artworkRightEdgePixel,
             config: config
         ) else {
-            NSLog("[BlurFinal] ERROR: Failed to render base image")
             return nil
         }
 
         let visibleArtworkWidth = artworkRightEdgeX
-        let blurStartRatioFromEdge: CGFloat = 0.42
-        let overlayStartRatioFromEdge: CGFloat = 0.28
-        let blurStartX = artworkRightEdgeX - (visibleArtworkWidth * blurStartRatioFromEdge)
-        let blurEndX = canvasLogicalWidth
-        let blurRegionWidth = blurEndX - blurStartX
 
-        NSLog("[Tune] artworkRightEdgeX = \(artworkRightEdgeX)")
-        NSLog("[Tune] blurStartX = \(blurStartX) (\(Int(blurStartRatioFromEdge * 100))% from edge)")
-        NSLog("[Tune] blurEndX = \(blurEndX)")
-        NSLog("[Tune] blur region width = \(blurRegionWidth)")
+        let blurStartRatioFromEdge: CGFloat = 0.42
+        let blurStartX = artworkRightEdgeX - (visibleArtworkWidth * blurStartRatioFromEdge)
+        let blurEndMarginRatio: CGFloat = 0.08
+        let blurEndX = canvasLogicalWidth * (1.0 - blurEndMarginRatio)
 
         let ciContext = CIContext(options: [
             .cacheIntermediates: false,
             .useSoftwareRenderer: false
         ])
-        
+
         let baseCIImage = CIImage(cgImage: baseImage)
-        
+
         // Clamp the image to extend edge pixels infinitely - prevents blur from sampling transparent/black at boundaries
         guard let clampFilter = CIFilter(name: "CIAffineClamp") else {
-            NSLog("[BlurClamp] ERROR: Failed to create CIAffineClamp filter")
             return nil
         }
         clampFilter.setValue(baseCIImage, forKey: kCIInputImageKey)
         clampFilter.setValue(CGAffineTransform.identity, forKey: kCIInputTransformKey)
-        
+
         guard let clampedImage = clampFilter.outputImage else {
-            NSLog("[BlurClamp] ERROR: Clamped image is nil")
             return nil
         }
-        
-        NSLog("[BlurClamp] baseImage extent = \(baseCIImage.extent)")
-        NSLog("[BlurClamp] clampedImage extent = \(clampedImage.extent) (infinite)")
-        
+
         guard let linearGradientFilter = CIFilter(name: "CILinearGradient") else {
-            NSLog("[BlurCurve] ERROR: Failed to create gradient filter")
             return nil
         }
 
@@ -284,20 +283,17 @@ enum CoverGradientBlurRenderer {
         linearGradientFilter.setValue(color1, forKey: "inputColor1")
 
         guard let linearMask = linearGradientFilter.outputImage?.cropped(to: canvasRect) else {
-            NSLog("[BlurCurve] ERROR: Linear gradient mask is nil")
             return nil
         }
-        
-        // CIColorPolynomial: t' = a + b*t + c*t² + d*t³, using 0.5*t² + 0.5*t³ for alpha gives moderate ease-in curve
+
         guard let polynomialFilter = CIFilter(name: "CIColorPolynomial") else {
-            NSLog("[BlurCurve] ERROR: Failed to create polynomial filter")
             return nil
         }
-        
+
         let rCoeff = CIVector(x: 0, y: 0, z: 0, w: 1)
         let gCoeff = CIVector(x: 0, y: 0, z: 0, w: 1)
         let bCoeff = CIVector(x: 0, y: 0, z: 0, w: 1)
-        let aCoeff = CIVector(x: 0, y: 0, z: 0.5, w: 0.5)
+        let aCoeff = CIVector(x: 0, y: 0, z: 0.3, w: 0.7)
         
         polynomialFilter.setValue(linearMask, forKey: kCIInputImageKey)
         polynomialFilter.setValue(rCoeff, forKey: "inputRedCoefficients")
@@ -306,17 +302,11 @@ enum CoverGradientBlurRenderer {
         polynomialFilter.setValue(aCoeff, forKey: "inputAlphaCoefficients")
         
         guard let nonLinearMask = polynomialFilter.outputImage?.cropped(to: canvasRect) else {
-            NSLog("[BlurCurve] ERROR: Non-linear mask is nil")
             return nil
         }
-        
-        NSLog("[BlurCurve] blurStartX = \(blurStartX)")
-        NSLog("[BlurCurve] blurEndX = \(blurEndX)")
-        NSLog("[BlurCurve] blurProgress curve type = 0.5t² + 0.5t³ - moderate ease-in")
 
         // Apply variable blur with non-linear mask
         guard let blurFilter = CIFilter(name: "CIMaskedVariableBlur") else {
-            NSLog("[BlurCurve] ERROR: Failed to create blur filter")
             return nil
         }
 
@@ -325,22 +315,14 @@ enum CoverGradientBlurRenderer {
         blurFilter.setValue(nonLinearMask, forKey: "inputMask")
 
         guard let blurredImage = blurFilter.outputImage?.cropped(to: canvasRect) else {
-            NSLog("[BlurCurve] ERROR: Blur output is nil")
             return nil
         }
-        
-        NSLog("[BlurEdge] blurred extent before crop = \(blurFilter.outputImage?.extent ?? .null)")
-        NSLog("[BlurEdge] final cropped extent = \(blurredImage.extent)")
 
+        let overlayStartRatioFromEdge: CGFloat = 0.28
         let overlayStartX = artworkRightEdgeX - (visibleArtworkWidth * overlayStartRatioFromEdge)
         let overlayEndX = canvasLogicalWidth
         let overlayAlphaMax = config.colorOverlayOpacity
         let overlayRegionWidth = overlayEndX - overlayStartX
-
-        NSLog("[Tune] overlayStartX = \(overlayStartX) (\(Int(overlayStartRatioFromEdge * 100))% from artwork edge)")
-        NSLog("[Tune] overlayEndX = \(overlayEndX)")
-        NSLog("[Tune] overlayGamma = \(config.overlayCurveGamma)")
-        NSLog("[Tune] overlay region width = \(overlayRegionWidth)")
 
         let overlayColor: CIColor
         if let dominant = dominantColor {
@@ -350,7 +332,6 @@ enum CoverGradientBlurRenderer {
         }
 
         guard let overlayGradientFilter = CIFilter(name: "CILinearGradient") else {
-            NSLog("[BlurFinal] ERROR: Failed to create overlay gradient filter")
             return nil
         }
 
@@ -375,7 +356,6 @@ enum CoverGradientBlurRenderer {
         overlayGradientFilter.setValue(overlayColor1, forKey: "inputColor1")
 
         guard let linearOverlay = overlayGradientFilter.outputImage?.cropped(to: canvasRect) else {
-            NSLog("[BlurFinal] ERROR: Overlay gradient is nil")
             return nil
         }
 
@@ -389,7 +369,6 @@ enum CoverGradientBlurRenderer {
         }
 
         guard let compositeFilter = CIFilter(name: "CISourceOverCompositing") else {
-            NSLog("[BlurFinal] ERROR: Failed to create composite filter")
             return nil
         }
 
@@ -397,33 +376,17 @@ enum CoverGradientBlurRenderer {
         compositeFilter.setValue(overlayImage, forKey: kCIInputImageKey)
 
         guard let finalImage = compositeFilter.outputImage?.cropped(to: canvasRect) else {
-            NSLog("[BlurFinal] ERROR: Final composite is nil")
             return nil
         }
-
-        // Log Parameters
-        NSLog("[BlurFinal] trackID = \(trackID?.uuidString.prefix(8) ?? "nil")")
-        NSLog("[BlurFinal] canvas logical size = \(canvasLogicalWidth)x\(canvasLogicalHeight)")
-        NSLog("[BlurFinal] canvas bitmap pixels = \(canvasPixelWidth)x\(canvasPixelHeight)")
-        NSLog("[BlurFinal] artworkRect = \(artworkRect)")
-        NSLog("[BlurFinal] artworkRightEdgeX = \(artworkRightEdgeX)")
-        NSLog("[BlurFinal] blurStartX = \(blurStartX)")
-        NSLog("[BlurFinal] blurEndX = \(blurEndX)")
-        NSLog("[BlurFinal] overlayStartX = \(overlayStartX) (linked to blur)")
-        NSLog("[BlurFinal] overlayEndX = \(overlayEndX)")
-        NSLog("[BlurFinal] overlayAlphaMax = \(overlayAlphaMax)")
-        NSLog("[BlurFinal] dominantColor = \(dominantColor?.hexString ?? "nil")")
 
         guard let cgImage = ciContext.createCGImage(finalImage, from: canvasRect) else {
-            NSLog("[BlurFinal] ERROR: createCGImage returned nil")
             return nil
         }
 
-        NSLog("[BlurFinal] output pixel size: \(cgImage.width)x\(cgImage.height)")
         return cgImage
     }
 
-    // MARK: - Render Base Image (Pixel-Perfect Extension)
+    // MARK: - Render Base Image
 
     private static func renderBaseImage(
         artworkCGImage: CGImage,
@@ -433,10 +396,10 @@ enum CoverGradientBlurRenderer {
         artworkRightEdgePixel: Int,
         config: CoverGradientBlurConfig
     ) -> CGImage? {
-        
+
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
-        
+
         guard let context = CGContext(
             data: nil,
             width: canvasPixelWidth,
@@ -446,66 +409,132 @@ enum CoverGradientBlurRenderer {
             space: colorSpace,
             bitmapInfo: bitmapInfo.rawValue
         ) else {
-            NSLog("[BlurFinal] ERROR: Failed to create CGContext")
             return nil
         }
-        
-        // DO NOT FLIP: CGImage pixel order (top-to-bottom) matches CG context
-        // Flipping Y would rotate image 180°
-        
+
         context.interpolationQuality = .high
         context.draw(artworkCGImage, in: artworkRect)
-        
+
         guard artworkRightEdgePixel < canvasPixelWidth else {
-            let result = context.makeImage()
-            NSLog("[BlurFinal] No extension needed. artworkRightEdgePixel=\(artworkRightEdgePixel), canvasPixelWidth=\(canvasPixelWidth)")
-            return result
+            return context.makeImage()
         }
-        
+
+        switch config.edgeFillMode {
+        case .pixelStretch:
+            return renderPixelStretchExtension(
+                context: context,
+                artworkCGImage: artworkCGImage,
+                artworkRect: artworkRect,
+                artworkRightEdgePixel: artworkRightEdgePixel,
+                canvasPixelWidth: canvasPixelWidth,
+                canvasPixelHeight: canvasPixelHeight,
+                config: config
+            )
+        case .mirroredCover:
+            return renderMirroredCoverExtension(
+                context: context,
+                artworkCGImage: artworkCGImage,
+                artworkRect: artworkRect,
+                artworkRightEdgePixel: artworkRightEdgePixel,
+                canvasPixelWidth: canvasPixelWidth,
+                canvasPixelHeight: canvasPixelHeight
+            )
+        }
+    }
+
+    // MARK: - Pixel Stretch Extension (Original Method)
+
+    private static func renderPixelStretchExtension(
+        context: CGContext,
+        artworkCGImage: CGImage,
+        artworkRect: CGRect,
+        artworkRightEdgePixel: Int,
+        canvasPixelWidth: Int,
+        canvasPixelHeight: Int,
+        config: CoverGradientBlurConfig
+    ) -> CGImage? {
+
         let extensionPixelStart = artworkRightEdgePixel
         let extensionPixelWidth = canvasPixelWidth - extensionPixelStart
-        
+
         let stripPixelWidth = Int(min(config.edgeStripWidth, artworkRect.width)) + 1
         let stripPixelStart = max(0, artworkRightEdgePixel - stripPixelWidth)
         let actualStripPixelWidth = artworkRightEdgePixel - stripPixelStart
-        
+
         let stripSourceRect = CGRect(
             x: CGFloat(stripPixelStart),
             y: 0,
             width: CGFloat(actualStripPixelWidth),
             height: CGFloat(canvasPixelHeight)
         )
-        
+
         let extensionRect = CGRect(
             x: CGFloat(extensionPixelStart),
             y: 0,
             width: CGFloat(extensionPixelWidth),
             height: CGFloat(canvasPixelHeight)
         )
-        
-        NSLog("[BlurFinal] Extension: startPixel=\(extensionPixelStart), widthPixels=\(extensionPixelWidth)")
-        
+
         guard let fullBitmap = context.makeImage(),
               let stripCGImage = fullBitmap.cropping(to: stripSourceRect) else {
-            NSLog("[BlurFinal] ERROR: Failed to crop strip for extension")
             return context.makeImage()
         }
-        
+
         context.interpolationQuality = .none
         context.draw(stripCGImage, in: extensionRect)
-        
-        guard let result = context.makeImage() else {
-            NSLog("[BlurFinal] ERROR: Failed to create result image")
-            return nil
+
+        return context.makeImage()
+    }
+
+    // MARK: - Mirrored Cover Extension
+
+    private static func renderMirroredCoverExtension(
+        context: CGContext,
+        artworkCGImage: CGImage,
+        artworkRect: CGRect,
+        artworkRightEdgePixel: Int,
+        canvasPixelWidth: Int,
+        canvasPixelHeight: Int
+    ) -> CGImage? {
+
+        let extensionPixelStart = artworkRightEdgePixel
+        let extensionPixelWidth = canvasPixelWidth - extensionPixelStart
+
+        guard extensionPixelWidth > 0 else {
+            return context.makeImage()
         }
-        
-        NSLog("[BlurFinal] Base image result: \(result.width)x\(result.height) pixels")
-        
-        if result.width != canvasPixelWidth {
-            NSLog("[BlurFinal] WARNING: Result width \(result.width) != canvasPixelWidth \(canvasPixelWidth)")
-        }
-        
-        return result
+
+        // Mirror the displayed artwork horizontally, then stretch it to 2x width.
+        // The mirrored copy's left edge must sit exactly on the artwork's right edge,
+        // while the canvas clips any overflow beyond the available right-side region.
+        let artworkHeight = artworkRect.height
+        let stretchRatio: CGFloat = 2.0
+        let stretchedWidth = artworkRect.width * stretchRatio
+        let targetRect = CGRect(
+            x: CGFloat(extensionPixelStart),
+            y: 0,
+            width: stretchedWidth,
+            height: artworkHeight
+        )
+        let extensionClipRect = CGRect(
+            x: CGFloat(extensionPixelStart),
+            y: 0,
+            width: CGFloat(extensionPixelWidth),
+            height: CGFloat(canvasPixelHeight)
+        )
+
+        context.interpolationQuality = .high
+        context.saveGState()
+        context.clip(to: extensionClipRect)
+        context.translateBy(x: targetRect.minX + targetRect.width, y: targetRect.minY)
+        context.scaleBy(x: -1, y: 1)
+        context.draw(
+            artworkCGImage,
+            in: CGRect(x: 0, y: 0, width: targetRect.width, height: targetRect.height)
+        )
+        context.restoreGState()
+
+        return context.makeImage()
     }
 }
 

@@ -33,6 +33,11 @@ final class LyricsSurfaceManager {
         stores[role] = newStore
         return newStore
     }
+
+    /// Return an existing store without creating a new WebView surface.
+    func existingStore(for role: LyricsSurfaceRole) -> LyricsWebViewStore? {
+        stores[role]
+    }
     
     /// Mark a role as active (has a visible surface).
     func activate(role: LyricsSurfaceRole) {
