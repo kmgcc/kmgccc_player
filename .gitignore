@@ -49,14 +49,8 @@ env/
 dist/
 *.spec
 
-# LDDC_Fetch_Core build artifacts
-LDDC_Fetch_Core/.venv*/
-LDDC_Fetch_Core/build_*/
-LDDC_Fetch_Core/dist*/
-LDDC_Fetch_Core/__pycache__/
-LDDC_Fetch_Core/examples/
-LDDC_Fetch_Core/test_convert/
-LDDC_Fetch_Core/batch_split_and_convert.py
+# LDDC_Fetch_Core - use zip archive instead
+LDDC_Fetch_Core/
 
 # Tools / Binary distributions
 Tools/lddc-server/
