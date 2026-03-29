@@ -10,6 +10,13 @@ ui_candidates.txt
 myPlayer2/scan_ui.py
 myPlayer2/ui_candidates.txt
 myPlayer2/Assets.xcassets/
+pv-tool
+pv-demo/
+pv-embed/
+
+# Tool working directories
+.opencode/
+.sisyphus/
 
 
 # macOS
@@ -48,6 +55,7 @@ LDDC_Fetch_Core/build_*/
 LDDC_Fetch_Core/dist*/
 LDDC_Fetch_Core/__pycache__/
 LDDC_Fetch_Core/examples/
+LDDC_Fetch_Core/test_convert/
 LDDC_Fetch_Core/batch_split_and_convert.py
 
 # Tools / Binary distributions
