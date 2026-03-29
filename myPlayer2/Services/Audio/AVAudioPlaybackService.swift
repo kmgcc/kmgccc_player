@@ -82,7 +82,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         // Restore volume from settings
         self.volume = AppSettings.shared.volume
         setupEngine()
-        print("🎵 AVAudioPlaybackService initialized")
+        Log.debug("AVAudioPlaybackService initialized", category: .audio)
     }
 
     // MARK: - Engine Setup
@@ -133,7 +133,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         let savedTrack = currentTrack
         let savedVolume = volume
 
-        print("🔄 Audio device changed. Was playing: \(wasPlaying), position: \(String(format: "%.1f", savedTime))s")
+        Log.debug("Audio device changed. Was playing: \(wasPlaying), position: \(String(format: "%.1f", savedTime))s", category: .audio)
 
         playerNode.stop()
         stopProgressTimer()
@@ -142,10 +142,10 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         do {
             if !engine.isRunning {
                 try engine.start()
-                print("✅ Engine restarted after device change")
+                Log.info("Engine restarted after device change", category: .audio)
             }
         } catch {
-            print("❌ Failed to restart engine after device change: \(error)")
+            Log.error("Failed to restart engine after device change: \(error)", category: .audio)
             isPlaying = false
             return
         }
@@ -155,7 +155,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             let totalFrames = file.length
 
             guard targetFrame >= 0, targetFrame < totalFrames else {
-                print("⚠️ Cannot resume: invalid position")
+                Log.warning("Cannot resume: invalid position", category: .audio)
                 isPlaying = false
                 return
             }
@@ -171,7 +171,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             startProgressTimer()
             playerNode.volume = Float(savedVolume)
 
-            print("▶️ Resumed playback at \(String(format: "%.1f", savedTime))s after device change")
+            Log.info("Resumed playback at \(String(format: "%.1f", savedTime))s after device change", category: .playback)
         } else {
             isPlaying = false
         }
@@ -270,7 +270,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     // MARK: - Playback Control
 
     func play(track: Track) {
-        print("🎵 play(track:) called for: \(track.title)")
+        Log.debug("play(track:) called for: \(track.title)", category: .audio)
         // Single-track play resets queue to just this track.
         queue = [track]
         queueIndex = 0

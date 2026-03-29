@@ -166,14 +166,16 @@ struct BatchTrackEditSheet: View {
                     .controlSize(.small)
             }
 
-            Button {
+            GlassIconButton(
+                systemImage: "xmark",
+                size: GlassStyleTokens.headerControlHeight,
+                iconSize: GlassStyleTokens.headerStandardIconSize,
+                isPrimary: false,
+                help: "关闭",
+                surfaceVariant: .defaultToolbar
+            ) {
                 dismiss()
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.title2)
-                    .foregroundStyle(.secondary)
             }
-            .buttonStyle(.plain)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 14)
@@ -318,12 +320,14 @@ struct BatchTrackEditSheet: View {
                         showingArtworkPicker = true
                     }
                     .buttonStyle(.bordered)
+                    .clipShape(Capsule())
 
                     HStack(spacing: 8) {
                         Button("查找封面") {
                             fetchCover()
                         }
                         .buttonStyle(.bordered)
+                        .clipShape(Capsule())
                         .disabled(isFetchingCover)
 
                         if isFetchingCover {
@@ -337,6 +341,8 @@ struct BatchTrackEditSheet: View {
                             artworkData = nil
                         }
                         .buttonStyle(.bordered)
+                        .tint(.red)
+                        .clipShape(Capsule())
                     }
                 }
 
@@ -387,6 +393,8 @@ struct BatchTrackEditSheet: View {
                 } label: {
                     Label("AMLL DB", systemImage: "arrow.up.right.square")
                 }
+                .buttonStyle(.bordered)
+                .clipShape(Capsule())
                 .font(.caption)
 
                 Button {
@@ -394,11 +402,15 @@ struct BatchTrackEditSheet: View {
                 } label: {
                     Label("TTML Tool", systemImage: "hammer.fill")
                 }
+                .buttonStyle(.bordered)
+                .clipShape(Capsule())
                 .font(.caption)
 
                 Button("导入歌词文件") {
                     showingLyricsPicker = true
                 }
+                .buttonStyle(.bordered)
+                .clipShape(Capsule())
                 .font(.caption)
             }
 
@@ -426,6 +438,8 @@ struct BatchTrackEditSheet: View {
                     Button("重置") {
                         lyricsTimeOffsetMs = 0
                     }
+                    .buttonStyle(.bordered)
+                    .clipShape(Capsule())
                     .font(.caption)
                 }
 
@@ -483,6 +497,7 @@ struct BatchTrackEditSheet: View {
                 skipCurrentTrack()
             }
             .buttonStyle(.bordered)
+            .clipShape(Capsule())
             .disabled(tracks.isEmpty)
 
             Button("保存当前") {
@@ -493,12 +508,14 @@ struct BatchTrackEditSheet: View {
                 )
             }
             .buttonStyle(.bordered)
+            .clipShape(Capsule())
             .disabled(tracks.isEmpty || isSavingCurrent)
 
             Button(currentIndex >= tracks.count - 1 ? "完成" : "下一首") {
                 goNextTrack()
             }
             .buttonStyle(.borderedProminent)
+            .clipShape(Capsule())
             .disabled(tracks.isEmpty || isSavingCurrent)
         }
         .padding(.horizontal, 20)

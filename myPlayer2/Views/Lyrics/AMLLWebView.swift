@@ -38,8 +38,9 @@ struct AMLLWebView: NSViewRepresentable {
         let hostView = WebViewHostView()
         context.coordinator.attachWebView(to: hostView)
 
-        print(
-            "[AMLLWebView] makeNSView: objectID=\(store.webViewObjectID), attachmentID=\(context.coordinator.attachmentID?.uuidString.prefix(8) ?? "nil")"
+        Log.debug(
+            "makeNSView: objectID=\(store.webViewObjectID), attachmentID=\(context.coordinator.attachmentID?.uuidString.prefix(8) ?? "nil")",
+            category: .webview
         )
 
         return hostView
@@ -61,13 +62,21 @@ struct AMLLWebView: NSViewRepresentable {
         guard let webView = store.preparedWebView else { return }
         if webView.appearance != appearanceIcon {
             webView.appearance = appearanceIcon
-            print("[AMLLWebView] Updated nsView.appearance to match mode: \(mode)")
+        }
+
+        if context.coordinator.lastLoggedAppearanceMode != mode {
+            context.coordinator.lastLoggedAppearanceMode = mode
+            Log.debug(
+                "updateNSView: appearanceMode=\(mode), objectID=\(store.webViewObjectID)",
+                category: .webview
+            )
         }
 
         if context.coordinator.lastLoggedReady != store.isReady {
             context.coordinator.lastLoggedReady = store.isReady
-            print(
-                "[AMLLWebView] updateNSView: objectID=\(store.webViewObjectID), isReady=\(store.isReady)"
+            Log.debug(
+                "updateNSView: objectID=\(store.webViewObjectID), isReady=\(store.isReady)",
+                category: .webview
             )
         }
     }
@@ -78,13 +87,14 @@ struct AMLLWebView: NSViewRepresentable {
 
     static func dismantleNSView(_ nsView: WebViewHostView, coordinator: Coordinator) {
         guard let attachmentID = coordinator.attachmentID else {
-            print("[AMLLWebView] dismantleNSView: no attachmentID")
+            Log.debug("dismantleNSView: no attachmentID", category: .webview)
             return
         }
 
         let store = coordinator.store
-        print(
-            "[AMLLWebView] dismantleNSView: objectID=\(store.webViewObjectID), attachmentID=\(attachmentID.uuidString.prefix(8))"
+        Log.debug(
+            "dismantleNSView: objectID=\(store.webViewObjectID), attachmentID=\(attachmentID.uuidString.prefix(8))",
+            category: .webview
         )
         coordinator.detachWebView(from: nsView)
         store.detach(requestingID: attachmentID)
@@ -97,6 +107,7 @@ struct AMLLWebView: NSViewRepresentable {
         let store: LyricsWebViewStore
         var attachmentID: UUID?
         var lastLoggedReady: Bool = false
+        var lastLoggedAppearanceMode: AppSettings.AppearanceMode?
         private weak var hostView: WebViewHostView?
 
         init(store: LyricsWebViewStore) {
@@ -124,8 +135,9 @@ struct AMLLWebView: NSViewRepresentable {
             hostView.addSubview(webView)
             self.hostView = hostView
 
-            print(
-                "[AMLLWebView] Reparented WebView: objectID=\(store.webViewObjectID), attachmentID=\(attachmentID?.uuidString.prefix(8) ?? "nil")"
+            Log.debug(
+                "Reparented WebView: objectID=\(store.webViewObjectID), attachmentID=\(attachmentID?.uuidString.prefix(8) ?? "nil")",
+                category: .webview
             )
         }
 
@@ -139,25 +151,27 @@ struct AMLLWebView: NSViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            print("[AMLLWebView] Navigation finished: objectID=\(store.webViewObjectID)")
+            Log.debug("Navigation finished: objectID=\(store.webViewObjectID)", category: .webview)
         }
 
         func webView(
             _ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error
         ) {
-            print("[AMLLWebView] Navigation failed: \(error.localizedDescription)")
+            Log.error("Navigation failed: \(error.localizedDescription)", category: .webview)
         }
 
         func webView(
             _ webView: WKWebView, didFailProvisionalNavigation: WKNavigation!,
             withError error: Error
         ) {
-            print("[AMLLWebView] Provisional navigation failed: \(error.localizedDescription)")
+            Log.error("Provisional navigation failed: \(error.localizedDescription)", category: .webview)
         }
 
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-            print(
-                "[AMLLWebView] ⚠️ Web Content Process Terminated! objectID=\(store.webViewObjectID)")
+            Log.warning(
+                "Web content process terminated: objectID=\(store.webViewObjectID)",
+                category: .webview
+            )
             store.handleWebContentTerminated()
         }
 
@@ -168,7 +182,7 @@ struct AMLLWebView: NSViewRepresentable {
             if let url = navigationAction.request.url,
                 url.scheme == "http" || url.scheme == "https"
             {
-                print("[AMLLWebView] Blocked external navigation: \(url)")
+                Log.warning("Blocked external navigation: \(url)", category: .webview)
                 decisionHandler(.cancel)
                 return
             }

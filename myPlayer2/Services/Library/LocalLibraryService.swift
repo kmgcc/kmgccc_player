@@ -251,7 +251,7 @@ final class LocalLibraryService {
                 withIntermediateDirectories: true
             )
         } catch {
-            print("❌ Failed to create library folders: \(error)")
+            Log.error("Failed to create library folders: \(error)", category: .library)
         }
     }
 
@@ -315,7 +315,7 @@ final class LocalLibraryService {
             let metaURL = LocalLibraryPaths.trackMetaURL(for: track.id)
             try data.write(to: metaURL, options: .atomic)
         } catch {
-            print("❌ Failed to write sidecar for \(track.title): \(error)")
+            Log.error("Failed to write sidecar for \(track.title): \(error)", category: .library)
         }
     }
 
@@ -371,7 +371,7 @@ final class LocalLibraryService {
             do {
                 try fileManager.removeItem(at: folder)
             } catch {
-                print("❌ Failed to delete track folder \(folder.lastPathComponent): \(error)")
+                Log.error("Failed to delete track folder \(folder.lastPathComponent): \(error)", category: .library)
             }
         }
     }
@@ -398,7 +398,7 @@ final class LocalLibraryService {
             let url = LocalLibraryPaths.playlistURL(for: playlist.id)
             try data.write(to: url, options: .atomic)
         } catch {
-            print("❌ Failed to write playlist sidecar '\(playlist.name)': \(error)")
+            Log.error("Failed to write playlist sidecar '\(playlist.name)': \(error)", category: .library)
         }
     }
 
@@ -414,7 +414,7 @@ final class LocalLibraryService {
             do {
                 try fileManager.removeItem(at: url)
             } catch {
-                print("❌ Failed to delete playlist sidecar '\(playlist.name)': \(error)")
+                Log.error("Failed to delete playlist sidecar '\(playlist.name)': \(error)", category: .library)
             }
         }
     }
@@ -485,7 +485,7 @@ final class LocalLibraryService {
 
         // 2. Add New (On Disk, not in DB)
         for sidecar in diskSidecars where !dbIds.contains(sidecar.id) {
-            print("📥 Found new playlist on disk: \(sidecar.name)")
+            Log.debug("Found new playlist on disk: \(sidecar.name)", category: .library)
             let resolvedTracks = sidecar.trackIDs.compactMap { tracksById[$0] }
             let playlist = Playlist(
                 id: sidecar.id,
@@ -498,7 +498,7 @@ final class LocalLibraryService {
 
         // 3. Delete Stale (In DB, not on Disk)
         for playlist in dbPlaylists where !diskIds.contains(playlist.id) {
-            print("🗑️ Removing stale playlist from DB: \(playlist.name)")
+            Log.debug("Removing stale playlist from DB: \(playlist.name)", category: .library)
             await repository.deletePlaylist(playlist)
         }
 
@@ -520,7 +520,7 @@ final class LocalLibraryService {
                 let diskTrackIdSet = Set(sidecar.trackIDs)
 
                 if dbTrackIdSet != diskTrackIdSet {
-                    print("🔄 Syncing tracks for playlist: \(sidecar.name)")
+                    Log.debug("Syncing tracks for playlist: \(sidecar.name)", category: .library)
                     let resolvedTracks = sidecar.trackIDs.compactMap { tracksById[$0] }
                     dbPlaylist.tracks = resolvedTracks
                     needsSave = true
@@ -578,7 +578,7 @@ final class LocalLibraryService {
                 track.availability = .available
                 await repository.updateTrack(track)
             } catch {
-                print("❌ Failed to migrate track \(track.title): \(error)")
+                Log.error("Failed to migrate track \(track.title): \(error)", category: .library)
             }
 
             track.stopAccessingFile(url: sourceURL)
@@ -729,7 +729,7 @@ final class LocalLibraryService {
         for (name, path) in pathsToMonitor {
             let fd = open(path, O_EVTONLY)
             guard fd >= 0 else {
-                print("⚠️ Failed to open \(name) path for monitoring: \(path)")
+                Log.warning("Failed to open \(name) path for monitoring: \(path)", category: .library)
                 continue
             }
 

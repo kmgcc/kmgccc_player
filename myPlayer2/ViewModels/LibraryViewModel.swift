@@ -178,13 +178,13 @@ final class LibraryViewModel {
             ) ?? .descending
         migrateLegacySortPreferenceIfNeeded()
         applySortPreferenceForCurrentSelection()
-        print("📚 LibraryViewModel initialized")
+        Log.debug("LibraryViewModel initialized", category: .library)
     }
 
     /// Set the import service (called after initialization).
     func setImportService(_ service: FileImportServiceProtocol) {
         self.importService = service
-        print("📚 Import service set")
+        Log.debug("Import service set", category: .library)
     }
 
     // MARK: - Computed Properties
@@ -204,7 +204,7 @@ final class LibraryViewModel {
 
     /// Load all library data.
     func load() async {
-        print("📚 load() called")
+        Log.debug("load() called", category: .library)
         state = .loading
 
         await repository.reloadFromLibrary()
@@ -215,9 +215,7 @@ final class LibraryViewModel {
         runtimeArtists = await repository.fetchArtistSections()
         runtimeAlbums = await repository.fetchAlbumSections()
 
-        print(
-            "📚 Loaded \(playlists.count) playlists, \(totalTrackCount) total tracks, \(runtimeArtists.count) artists, \(runtimeAlbums.count) albums"
-        )
+        Log.info("Loaded \(playlists.count) playlists, \(totalTrackCount) total tracks, \(runtimeArtists.count) artists, \(runtimeAlbums.count) albums", category: .library)
 
         state = .loaded
     }
@@ -226,7 +224,7 @@ final class LibraryViewModel {
     func refresh() async {
         await load()
         refreshTrigger += 1
-        print("📚 Refresh triggered, refreshTrigger=\(refreshTrigger)")
+        Log.debug("Refresh triggered, refreshTrigger=\(refreshTrigger)", category: .library)
     }
 
     // MARK: - Import (Per-Playlist)
@@ -235,49 +233,49 @@ final class LibraryViewModel {
     /// If no playlist is selected, imports to the most recently selected playlist (if any),
     /// otherwise the first available playlist. Only creates a playlist if none exist.
     func importToCurrentPlaylist() async {
-        print("📥 importToCurrentPlaylist() called")
-        print("   ↳ selectedPlaylistId = \(selectedPlaylistId?.uuidString ?? "nil")")
-        print("   ↳ importService = \(importService != nil ? "available" : "nil")")
+        Log.info("importToCurrentPlaylist() called", category: .import)
+        Log.debug("   ↳ selectedPlaylistId = \(selectedPlaylistId?.uuidString ?? "nil")", category: .import)
+        Log.debug("   ↳ importService = \(importService != nil ? "available" : "nil")", category: .import)
 
         guard let service = importService else {
-            print("⚠️ Import service not available")
+            Log.warning("Import service not available", category: .import)
             return
         }
 
         // Resolve target playlist
         let targetPlaylist: Playlist
         if let selected = selectedPlaylist {
-            print("   ↳ Using existing playlist: '\(selected.name)'")
+            Log.debug("   ↳ Using existing playlist: '\(selected.name)'", category: .import)
             targetPlaylist = selected
         } else {
             if playlists.isEmpty {
-                print("   ↳ No playlists exist, creating one for import...")
+                Log.debug("   ↳ No playlists exist, creating one for import...", category: .import)
                 targetPlaylist = await repository.createPlaylist(
                     name: String(
                         format: NSLocalizedString("library.imported_playlist_name", comment: ""),
                         formattedDate))
                 playlists = await repository.fetchPlaylists()
                 selectedPlaylistId = targetPlaylist.id
-                print("   ↳ Created playlist: '\(targetPlaylist.name)' (id=\(targetPlaylist.id))")
+                Log.debug("   ↳ Created playlist: '\(targetPlaylist.name)' (id=\(targetPlaylist.id))", category: .import)
             } else if let lastId = UserDefaults.standard.string(forKey: "lastSelectedPlaylistId"),
                 let uuid = UUID(uuidString: lastId),
                 let last = playlists.first(where: { $0.id == uuid })
             {
-                print("   ↳ No playlist selected, using last selected: '\(last.name)'")
+                Log.debug("   ↳ No playlist selected, using last selected: '\(last.name)'", category: .import)
                 targetPlaylist = last
                 selectedPlaylistId = last.id
             } else {
                 let fallback = playlists[0]
-                print("   ↳ No playlist selected, using first playlist: '\(fallback.name)'")
+                Log.debug("   ↳ No playlist selected, using first playlist: '\(fallback.name)'", category: .import)
                 targetPlaylist = fallback
                 selectedPlaylistId = fallback.id
             }
         }
 
         // Perform import
-        print("📥 Calling pickAndImport...")
+        Log.info("Calling pickAndImport...", category: .import)
         let count = await service.pickAndImport(to: targetPlaylist)
-        print("📥 pickAndImport returned: \(count) tracks imported")
+        Log.info("pickAndImport returned: \(count) tracks imported", category: .import)
 
         // Only refresh if tracks were actually imported
         if count > 0 {
@@ -288,7 +286,7 @@ final class LibraryViewModel {
     /// Import to a specific playlist.
     func importToPlaylist(_ playlist: Playlist) async {
         guard let service = importService else {
-            print("⚠️ Import service not available")
+            Log.warning("Import service not available", category: .import)
             return
         }
 
@@ -303,7 +301,7 @@ final class LibraryViewModel {
 
     /// Create a new playlist and select it.
     func createPlaylist(name: String) async -> Playlist {
-        print("📚 createPlaylist: '\(name)'")
+        Log.debug("createPlaylist: '\(name)'", category: .library)
         let playlist = await repository.createPlaylist(name: name)
         playlists = await repository.fetchPlaylists()
         selectedPlaylistId = playlist.id
@@ -328,7 +326,7 @@ final class LibraryViewModel {
         if let id = playlist?.id {
             UserDefaults.standard.set(id.uuidString, forKey: "lastSelectedPlaylistId")
         }
-        print("📚 Selected playlist: \(playlist?.name ?? "All Songs")")
+        Log.debug("Selected playlist: \(playlist?.name ?? "All Songs")", category: .library)
     }
 
     /// Select an artist.

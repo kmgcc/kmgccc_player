@@ -75,9 +75,8 @@ final class LyricsViewModel {
 
         let lyricsText = getContentForTrack(track)
 
-        print(
-            "[LyricsVM] applyTrack: \(track?.title ?? "nil"), lyricsLen: \(lyricsText.count), webViewObjectID=\(store.webViewObjectID)"
-        )
+        // 使用统一日志系统，LyricsWebViewStore 也会打印 applyTrack 日志
+        Log.debug("[LyricsVM] applyTrack: \(track?.title ?? "nil"), lyricsLen: \(lyricsText.count), webViewObjectID=\(store.webViewObjectID)", category: .lyrics)
 
         // Update config
         refreshConfigFromSettings()
@@ -100,9 +99,22 @@ final class LyricsViewModel {
         forceLyricsReload: Bool = false,
         recreateWebViewOnForceReload: Bool = false
     ) {
-        print(
-            "[LyricsVM] ensureAMLLLoaded: reason=\(reason), trackId=\(track?.id.uuidString.prefix(8) ?? "nil"), isReady=\(store.isReady), webViewObjectID=\(store.webViewObjectID)"
-        )
+        // 短路：如果 track 为 nil 且已经处理过 nil，避免重复空转
+        if track == nil && lastAppliedTrackId == nil && !forceLyricsReload {
+            // 仅同步必要的播放状态，不做重复歌词应用
+            store.setPlaying(isPlaying)
+            store.setCurrentTime(currentTime)
+            return
+        }
+        
+        // 对相同状态的调用来做去重，避免同一阶段连续打印相同 debug 日志
+        let trackIdStr = track?.id.uuidString.prefix(8) ?? "nil"
+        let logKey = "ensureAMLLLoaded.\(reason).\(trackIdStr)"
+        let shouldLog = LogStateTrackerSync.shared.checkStateChanged(key: logKey, value: "\(isPlaying).\(currentTime)")
+        
+        if shouldLog {
+            Log.debug("[LyricsVM] ensureAMLLLoaded: reason=\(reason), trackId=\(trackIdStr), isReady=\(store.isReady), webViewObjectID=\(store.webViewObjectID)", category: .lyrics)
+        }
 
         if forceWebReload {
             store.forceReload(recreateWebView: recreateWebViewOnForceReload)

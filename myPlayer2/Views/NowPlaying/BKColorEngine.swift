@@ -8,6 +8,7 @@
 
 import AppKit
 import Foundation
+import OSLog
 
 enum ColorComplexityLevel: String {
     case monochrome
@@ -1726,8 +1727,9 @@ extension BKColorEngine {
             return [baseStops]
         }
         let stopCountsLog = variants.map { String($0.count) }.joined(separator: ",")
-        print(
-            "[BKColorEngine] bgVariants count=\(variants.count) stops=[\(stopCountsLog)] avgS=\(f3(avgS)) hueSpread=\(f1(hueSpread)) bgSRange=\(f3(variantSRange.lowerBound))...\(f3(variantSRange.upperBound)) shapeMeanS=\(f3(shapeMeanS))"
+        Log.trace(
+            "[BKColorEngine] bgVariants count=\(variants.count) stops=[\(stopCountsLog)] avgS=\(f3(avgS)) hueSpread=\(f1(hueSpread)) bgSRange=\(f3(variantSRange.lowerBound))...\(f3(variantSRange.upperBound)) shapeMeanS=\(f3(shapeMeanS))",
+            category: .theme
         )
         return variants
     }
@@ -2615,8 +2617,9 @@ extension BKColorEngine {
 
         if action != "none" {
             triggered.insert(.hospitalGreen)
-            print(
-                "[BKColorEngine] avoid_hospital_green kind=\(elementKindName(kind)) hsb before={\(hsbString(before))} after={\(hsbString(c))} action=\(action)"
+            Log.warning(
+                "[BKColorEngine] avoid_hospital_green kind=\(elementKindName(kind)) hsb before={\(hsbString(before))} after={\(hsbString(c))} action=\(action)",
+                category: .theme
             )
         }
         return c
@@ -2770,8 +2773,9 @@ extension BKColorEngine {
         }
 
         if action != "none" {
-            print(
-                "[BKColorEngine] avoid_hospital_green kind=candidate hsb before={\(hsbString(before))} after={\(hsbString(c))} action=\(action)"
+            Log.warning(
+                "[BKColorEngine] avoid_hospital_green kind=candidate hsb before={\(hsbString(before))} after={\(hsbString(c))} action=\(action)",
+                category: .theme
             )
         }
         return c
@@ -2821,37 +2825,42 @@ extension BKColorEngine {
             "\(f1($0.hue))@\(f3($0.weight))"
         }.joined(separator: " | ")
 
-        print(
-            "[BKColorEngine] coverKind=\(stats.coverKind.rawValue) complexity=\(stats.complexity.rawValue) avgS=\(f3(stats.avgS)) matchedAvgS=\(f3(stats.matchedAvgS)) grayScore=\(f3(stats.grayScore)) wBlack=\(f3(stats.wBlack)) wWhite=\(f3(stats.wWhite)) wColor=\(f3(stats.wColor)) coverLuma=\(f3(stats.coverLuma)) imageLuma=\(f3(stats.imageCoverLuma)) areaB=\(f3(stats.areaDominantB)) areaS=\(f3(stats.areaDominantS)) veryDark=\(stats.veryDarkCover ? 1 : 0) accentEnabled=\(stats.accentEnabled ? 1 : 0) accentStrength=\(f3(stats.accentStrength)) maxColorScore=\(f3(stats.maxColorCandidateScore)) evenness=\(f3(stats.evenness)) gray=\(stats.isGrayscaleCover ? 1 : 0) nearGray=\(stats.isNearGray ? 1 : 0) lowSatColor=\(stats.lowSatColorCover ? 1 : 0)"
+        Log.trace(
+            "[BKColorEngine] coverKind=\(stats.coverKind.rawValue) complexity=\(stats.complexity.rawValue) avgS=\(f3(stats.avgS)) matchedAvgS=\(f3(stats.matchedAvgS)) grayScore=\(f3(stats.grayScore)) wBlack=\(f3(stats.wBlack)) wWhite=\(f3(stats.wWhite)) wColor=\(f3(stats.wColor)) coverLuma=\(f3(stats.coverLuma)) imageLuma=\(f3(stats.imageCoverLuma)) areaB=\(f3(stats.areaDominantB)) areaS=\(f3(stats.areaDominantS)) veryDark=\(stats.veryDarkCover ? 1 : 0) accentEnabled=\(stats.accentEnabled ? 1 : 0) accentStrength=\(f3(stats.accentStrength)) maxColorScore=\(f3(stats.maxColorCandidateScore)) evenness=\(f3(stats.evenness)) gray=\(stats.isGrayscaleCover ? 1 : 0) nearGray=\(stats.isNearGray ? 1 : 0) lowSatColor=\(stats.lowSatColorCover ? 1 : 0)",
+            category: .theme
         )
-        print(
-            "[BKColorEngine] primary selected from=\(primarySource.rawValue) primaryHue before=\(f1(primaryBefore)) after=\(f1(primaryAfter)) imageHue=\(f1(stats.areaDominantHue)) dominantHue=\(f1(stats.dominantHue)) dominantShare=\(f3(stats.dominantShare)) accentHue=\(stats.accentHue.map(f1) ?? "none") secondAccent=\(stats.secondAccentHue.map(f1) ?? "none") triggers=\(triggerText)"
+        Log.trace(
+            "[BKColorEngine] primary selected from=\(primarySource.rawValue) primaryHue before=\(f1(primaryBefore)) after=\(f1(primaryAfter)) imageHue=\(f1(stats.areaDominantHue)) dominantHue=\(f1(stats.dominantHue)) dominantShare=\(f3(stats.dominantShare)) accentHue=\(stats.accentHue.map(f1) ?? "none") secondAccent=\(stats.secondAccentHue.map(f1) ?? "none") triggers=\(triggerText)",
+            category: .theme
         )
-        print(
-            "[BKColorEngine] ranges bgB=\(f3(tier.bgB.lowerBound))...\(f3(tier.bgB.upperBound)) bgS=\(f3(tier.bgS.lowerBound))...\(f3(tier.bgS.upperBound)) fgB=\(f3(tier.fgB.lowerBound))...\(f3(tier.fgB.upperBound)) fgS=\(f3(tier.fgS.lowerBound))...\(f3(tier.fgS.upperBound)) dotB=\(f3(tier.dotB.lowerBound))...\(f3(tier.dotB.upperBound)) dotS=\(f3(tier.dotS.lowerBound))...\(f3(tier.dotS.upperBound))"
+        Log.trace(
+            "[BKColorEngine] ranges bgB=\(f3(tier.bgB.lowerBound))...\(f3(tier.bgB.upperBound)) bgS=\(f3(tier.bgS.lowerBound))...\(f3(tier.bgS.upperBound)) fgB=\(f3(tier.fgB.lowerBound))...\(f3(tier.fgB.upperBound)) fgS=\(f3(tier.fgS.lowerBound))...\(f3(tier.fgS.upperBound)) dotB=\(f3(tier.dotB.lowerBound))...\(f3(tier.dotB.upperBound)) dotS=\(f3(tier.dotS.lowerBound))...\(f3(tier.dotS.upperBound))",
+            category: .theme
         )
-        print("[BKColorEngine] topSalientHues \(salientText)")
-        print("[BKColorEngine] topClusters \(clusterText)")
+        Log.trace("[BKColorEngine] topSalientHues \(salientText)", category: .theme)
+        Log.trace("[BKColorEngine] topClusters \(clusterText)", category: .theme)
 
         if let bg0 = bgStops.first, let shape0 = shapePool.first {
-            print(
-                "[BKColorEngine] sample bgStop0{b=\(f3(bg0.b)) s=\(f3(bg0.s))} shape0{b=\(f3(shape0.b)) s=\(f3(shape0.s))} dotBase{b=\(f3(dotBase.b)) s=\(f3(dotBase.s))}"
+            Log.trace(
+                "[BKColorEngine] sample bgStop0{b=\(f3(bg0.b)) s=\(f3(bg0.s))} shape0{b=\(f3(shape0.b)) s=\(f3(shape0.s))} dotBase{b=\(f3(dotBase.b)) s=\(f3(dotBase.s))}",
+                category: .theme
             )
         }
 
-        print(
-            "[BKColorEngine] shapePoolHueDist [\(hueDist)] maxHueDelta=\(f1(hueSpan)) secondAccentEnabled=\(stats.secondAccentHue != nil ? 1 : 0) injectedAccentColors=\(injectedAccentCount)"
+        Log.trace(
+            "[BKColorEngine] shapePoolHueDist [\(hueDist)] maxHueDelta=\(f1(hueSpan)) secondAccentEnabled=\(stats.secondAccentHue != nil ? 1 : 0) injectedAccentColors=\(injectedAccentCount)",
+            category: .theme
         )
         if hueSpan > 90, stats.complexity != .high {
-            print("[BKColorEngine][WARN] hue span exceeds 90 in non-high complexity")
+            Log.warning("[BKColorEngine] hue span exceeds 90 in non-high complexity", category: .theme)
         }
 
         let bgText = bgStops.enumerated().map { "\($0):{\(hsbString($1))}" }.joined(separator: " ")
         let shapeText = shapePool.enumerated().map { "\($0):{\(hsbString($1))}" }.joined(
             separator: " ")
-        print("[BKColorEngine] bgStopsHSB \(bgText)")
-        print("[BKColorEngine] shapePoolHSB \(shapeText)")
-        print("[BKColorEngine] dotBaseHSB \(hsbString(dotBase))")
+        Log.trace("[BKColorEngine] bgStopsHSB \(bgText)", category: .theme)
+        Log.trace("[BKColorEngine] shapePoolHSB \(shapeText)", category: .theme)
+        Log.trace("[BKColorEngine] dotBaseHSB \(hsbString(dotBase))", category: .theme)
     }
 
     fileprivate nonisolated static func hueSpanAround(reference: CGFloat, hues: [CGFloat])

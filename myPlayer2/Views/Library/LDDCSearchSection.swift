@@ -57,7 +57,7 @@ struct LDDCSearchSection: View {
     init(
         track: Track,
         layoutStyle: LayoutStyle = .stacked,
-        includeTranslationDefault: Bool = false,
+        includeTranslationDefault: Bool = true,
         autoSearchToken: Int = 0,
         onApplyLyrics: @escaping (String) -> Void
     ) {
@@ -157,50 +157,100 @@ struct LDDCSearchSection: View {
             }
 
             // Mode & Translation
-            HStack(spacing: 16) {
-                // Mode Picker
-                Picker("模式", selection: $selectedMode) {
-                    ForEach(LDDCMode.allCases) { mode in
-                        Text(mode.displayName).tag(mode)
+            HStack(spacing: 12) {
+                // Mode Picker - Pill Style
+                HStack(spacing: 4) {
+                    Text("模式")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    
+                    HStack(spacing: 4) {
+                        ForEach(LDDCMode.allCases) { mode in
+                            Button {
+                                selectedMode = mode
+                            } label: {
+                                Text(mode.displayName)
+                                    .font(.system(size: 11, weight: selectedMode == mode ? .medium : .regular))
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 4)
+                            }
+                            .buttonStyle(.plain)
+                            .background(
+                                Capsule()
+                                    .fill(selectedMode == mode ? themeStore.accentColor.opacity(0.18) : Color.clear)
+                            )
+                            .foregroundStyle(selectedMode == mode ? themeStore.accentColor : .secondary)
+                        }
                     }
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 3)
+                    .background(
+                        Capsule()
+                            .fill(Color.secondary.opacity(0.08))
+                    )
                 }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 150)
 
-                // Translation Toggle
-                Toggle(
-                    "翻译",
-                    isOn: $includeTranslation
-                )
-                .toggleStyle(.switch)
-                .tint(themeStore.accentColor)
+                // Translation Toggle - Pill Style
+                HStack(spacing: 4) {
+                    Text("翻译")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    
+                    HStack(spacing: 4) {
+                        ForEach([true, false], id: \.self) { enabled in
+                            Button {
+                                includeTranslation = enabled
+                            } label: {
+                                Text(enabled ? "开" : "关")
+                                    .font(.system(size: 11, weight: includeTranslation == enabled ? .medium : .regular))
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 4)
+                            }
+                            .buttonStyle(.plain)
+                            .background(
+                                Capsule()
+                                    .fill(includeTranslation == enabled ? themeStore.accentColor.opacity(0.18) : Color.clear)
+                            )
+                            .foregroundStyle(includeTranslation == enabled ? themeStore.accentColor : .secondary)
+                        }
+                    }
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 3)
+                    .background(
+                        Capsule()
+                            .fill(Color.secondary.opacity(0.08))
+                    )
+                }
 
                 Spacer()
             }
 
             // Platform Selection
-            HStack(spacing: 8) {
+            HStack(spacing: 12) {
                 Text("平台")
-                    .font(.caption)
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
 
-                ForEach(visibleSources) { source in
-                    Toggle(
-                        source.displayName,
-                        isOn: Binding(
-                            get: { selectedSources.contains(source) },
-                            set: { isOn in
-                                if isOn {
-                                    selectedSources.insert(source)
-                                } else if selectedSources.count > 1 {
-                                    selectedSources.remove(source)
+                HStack(spacing: 8) {
+                    ForEach(visibleSources) { source in
+                        Toggle(
+                            source.displayName,
+                            isOn: Binding(
+                                get: { selectedSources.contains(source) },
+                                set: { isOn in
+                                    if isOn {
+                                        selectedSources.insert(source)
+                                    } else if selectedSources.count > 1 {
+                                        selectedSources.remove(source)
+                                    }
                                 }
-                            }
+                            )
                         )
-                    )
-                    .toggleStyle(.button)
-                    .buttonStyle(.bordered)
-                    .tint(platformColor(source))
+                        .toggleStyle(.button)
+                        .buttonStyle(.bordered)
+                        .tint(platformColor(source))
+                        .clipShape(Capsule())
+                    }
                 }
 
                 Spacer()
@@ -216,6 +266,7 @@ struct LDDCSearchSection: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(searchTitle.isEmpty || isSearching)
+                .clipShape(Capsule())
             }
         }
     }
@@ -381,6 +432,7 @@ struct LDDCSearchSection: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(editableOrig.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isApplying)
+                .clipShape(Capsule())
             }
 
             Toggle("转换时去除多余信息", isOn: $stripExtraInfo)
@@ -444,6 +496,7 @@ struct LDDCSearchSection: View {
                                 in: .whitespacesAndNewlines
                             ).isEmpty || isApplying
                         )
+                        .clipShape(Capsule())
                     }
 
                     Toggle("转换时去除多余信息", isOn: $stripExtraInfo)

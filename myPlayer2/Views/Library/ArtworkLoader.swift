@@ -125,8 +125,9 @@ enum PlaylistPerfDiagnostics {
         let avgDecode = decodeCount > 0 ? (accumulatedDecodeMs / Double(decodeCount)) : 0
         let avgRebuild =
             listRebuildCount > 0 ? (accumulatedListRebuildMs / Double(listRebuildCount)) : 0
-        print(
-            "[PlaylistPerf] rowBody/s=\(rowBodyRecomputeCount), decode/s=\(decodeCount), decodeAvgMs=\(String(format: "%.2f", avgDecode)), decodeOnMain=\(decodeMainThreadWarnings), listRebuild/s=\(listRebuildCount), listRebuildAvgMs=\(String(format: "%.2f", avgRebuild)), last=\(lastRebuildReason)"
+        Log.debug(
+            "rowBody/s=\(rowBodyRecomputeCount), decode/s=\(decodeCount), decodeAvgMs=\(String(format: "%.2f", avgDecode)), decodeOnMain=\(decodeMainThreadWarnings), listRebuild/s=\(listRebuildCount), listRebuildAvgMs=\(String(format: "%.2f", avgRebuild)), last=\(lastRebuildReason)",
+            category: .perf
         )
         rowBodyRecomputeCount = 0
         decodeCount = 0
