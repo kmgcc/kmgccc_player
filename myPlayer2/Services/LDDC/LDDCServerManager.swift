@@ -84,7 +84,7 @@ final class LDDCServerManager: ObservableObject {
 
         if let process = serverProcess, process.isRunning {
             process.terminate()
-            print("[LDDCServerManager] Server terminated")
+            Log.debug("Server terminate requested", category: .lddc)
         } else {
             teardownLogPipes()
         }
@@ -113,6 +113,7 @@ final class LDDCServerManager: ObservableObject {
 
         let candidates = buildLaunchCandidates(port: port)
         guard !candidates.isEmpty else {
+            Log.error("No launch candidates found", category: .lddc)
             let error = LDDCError.startupFailed(
                 NSLocalizedString("error.lddc.no_candidates", comment: ""))
             lastError = error
@@ -126,7 +127,7 @@ final class LDDCServerManager: ObservableObject {
                 return
             } catch {
                 lastLaunchError = error
-                print("[LDDCServerManager] Launch failed for \(candidate.name): \(error)")
+                Log.error("Startup failed for candidate \(candidate.name): \(error)", category: .lddc)
                 stop()
             }
         }
@@ -135,6 +136,7 @@ final class LDDCServerManager: ObservableObject {
             (lastLaunchError as? LDDCError)
             ?? LDDCError.startupFailed(
                 NSLocalizedString("error.lddc.all_candidates_failed", comment: ""))
+        Log.error("Startup failed for all launch candidates: \(error)", category: .lddc)
         lastError = error
         throw error
     }
@@ -152,9 +154,9 @@ final class LDDCServerManager: ObservableObject {
     }
 
     private func findBundledBinaryCandidates(port: Int) -> [LaunchCandidate] {
-        print("[LDDCServerManager] Searching for lddc-server binary...")
-        print("[LDDCServerManager] Bundle path: \(Bundle.main.bundlePath)")
-        print("[LDDCServerManager] Resource path: \(Bundle.main.resourcePath ?? "nil")")
+        Log.debug("Searching for lddc-server binary", category: .lddc)
+        Log.debug("Bundle path: \(Bundle.main.bundlePath)", category: .lddc)
+        Log.debug("Resource path: \(Bundle.main.resourcePath ?? "nil")", category: .lddc)
 
         var urls: [URL] = []
 
@@ -257,10 +259,10 @@ final class LDDCServerManager: ObservableObject {
         }
 
         if launchCandidates.isEmpty, let resourcePath = Bundle.main.resourcePath {
-            print("[LDDCServerManager] ✗ Binary not found. Listing Resources directory:")
+            Log.debug("Binary not found; listing Resources directory", category: .lddc)
             if let contents = try? FileManager.default.contentsOfDirectory(atPath: resourcePath) {
                 for item in contents.prefix(20) {
-                    print("[LDDCServerManager]   - \(item)")
+                    Log.debug("Resource item: \(item)", category: .lddc)
                 }
             }
         }
@@ -270,7 +272,7 @@ final class LDDCServerManager: ObservableObject {
 
     private func findPythonCandidate(port: Int) -> LaunchCandidate? {
         guard let coreRoot = locateLDDCCoreRoot() else {
-            print("[LDDCServerManager] Python fallback: could not locate LDDC_Fetch_Core on disk")
+            Log.debug("Python fallback could not locate LDDC_Fetch_Core on disk", category: .lddc)
             return nil
         }
 
@@ -285,9 +287,9 @@ final class LDDCServerManager: ObservableObject {
             existing.isEmpty ? pythonPathRoot.path : "\(pythonPathRoot.path):\(existing)"
         environment["PYTHONUNBUFFERED"] = "1"
         let pythonPathValue = environment["PYTHONPATH"] ?? ""
-        print("[LDDCServerManager] Python fallback: coreRoot=\(coreRoot.path)")
-        print("[LDDCServerManager] Python fallback: python=\(pythonURL.path)")
-        print("[LDDCServerManager] Python fallback: PYTHONPATH=\(pythonPathValue)")
+        Log.debug("Python fallback coreRoot=\(coreRoot.path)", category: .lddc)
+        Log.debug("Python fallback python=\(pythonURL.path)", category: .lddc)
+        Log.debug("Python fallback PYTHONPATH=\(pythonPathValue)", category: .lddc)
 
         return LaunchCandidate(
             name: "python -m lddc_fetch_core.server",
@@ -371,7 +373,7 @@ final class LDDCServerManager: ObservableObject {
         guard !FileManager.default.isExecutableFile(atPath: url.path) else {
             return
         }
-        print("[LDDCServerManager] ⚠️ File exists but not executable, trying chmod: \(url.path)")
+        Log.warning("Binary exists but is not executable, attempting chmod: \(url.path)", category: .lddc)
         try? FileManager.default.setAttributes(
             [.posixPermissions: 0o755], ofItemAtPath: url.path)
     }
@@ -405,7 +407,7 @@ final class LDDCServerManager: ObservableObject {
                     weakSelf.value?.appendRecentLog(str, isStdout: true)
                 }
                 if weakSelf.value?.mirrorServerLogsToConsole == true {
-                    print("[LDDC stdout] \(str)", terminator: "")
+                    Log.debug("[LDDC stdout] \(str)", category: .lddc)
                 }
             }
         } else {
@@ -427,7 +429,7 @@ final class LDDCServerManager: ObservableObject {
                     weakSelf.value?.appendRecentLog(str, isStdout: false)
                 }
                 if weakSelf.value?.mirrorServerLogsToConsole == true {
-                    print("[LDDC stderr] \(str)", terminator: "")
+                    Log.debug("[LDDC stderr] \(str)", category: .lddc)
                 }
             }
         }
@@ -441,7 +443,7 @@ final class LDDCServerManager: ObservableObject {
         do {
             try process.run()
             serverProcess = process
-            print("[LDDCServerManager] Started server (\(candidate.name)) on port \(currentPort)")
+            Log.info("Server started (\(candidate.name)) on port \(currentPort)", category: .lddc)
         } catch {
             teardownLogPipes()
             let startError = LDDCError.startupFailed(error.localizedDescription)
@@ -471,8 +473,9 @@ final class LDDCServerManager: ObservableObject {
     }
 
     private func handleProcessTermination(_ process: Process) {
-        print(
-            "[LDDCServerManager] Server exited reason=\(process.terminationReason) code=\(process.terminationStatus)"
+        Log.warning(
+            "Server terminated reason=\(process.terminationReason) code=\(process.terminationStatus)",
+            category: .lddc
         )
         teardownLogPipes()
         if serverProcess === process {
@@ -499,21 +502,22 @@ final class LDDCServerManager: ObservableObject {
     private func findAvailablePort() async throws -> Int {
         // Try preferred port first
         if isPortAvailable(preferredPort) {
-            print("[LDDCServerManager] Port \(preferredPort) is available")
+            Log.debug("Port \(preferredPort) is available", category: .lddc)
             return preferredPort
         }
-        print(
-            "[LDDCServerManager] Preferred port \(preferredPort) not available, scanning range...")
+        Log.debug(
+            "Preferred port \(preferredPort) not available; scanning range",
+            category: .lddc)
 
         // Scan port range
         for port in portRange {
             if isPortAvailable(port) {
-                print("[LDDCServerManager] Found available port: \(port)")
+                Log.debug("Found available port: \(port)", category: .lddc)
                 return port
             }
         }
 
-        print("[LDDCServerManager] No available port found in range \(portRange)")
+        Log.error("No available port found in range \(portRange)", category: .lddc)
         throw LDDCError.portUnavailable
     }
 
@@ -521,7 +525,7 @@ final class LDDCServerManager: ObservableObject {
         // Create socket
         let sockFd = Darwin.socket(AF_INET, SOCK_STREAM, 0)
         guard sockFd >= 0 else {
-            print("[LDDCServerManager] Failed to create socket for check: \(getPortErrorString())")
+            Log.debug("Failed to create socket for port check: \(getPortErrorString())", category: .lddc)
             return false
         }
         defer { Darwin.close(sockFd) }
@@ -544,7 +548,6 @@ final class LDDCServerManager: ObservableObject {
 
         if result != 0 {
             // Uncomment for verbose debugging if needed, but reducing noise for standard failures
-            // print("[LDDCServerManager] Port \(port) unavailable: \(getPortErrorString())")
             return false
         }
 
@@ -561,6 +564,7 @@ final class LDDCServerManager: ObservableObject {
 
         while Date() < deadline {
             if let process = serverProcess, !process.isRunning {
+                Log.error("Health check failed because server process exited", category: .lddc)
                 dumpRecentLogs()
                 stop()
                 throw LDDCError.healthCheckFailed
@@ -573,6 +577,7 @@ final class LDDCServerManager: ObservableObject {
         }
 
         // Cleanup on failure
+        Log.error("Health check failed due to timeout", category: .lddc)
         dumpRecentLogs()
         stop()
         throw LDDCError.healthCheckFailed
@@ -580,12 +585,12 @@ final class LDDCServerManager: ObservableObject {
 
     private func dumpRecentLogs() {
         if !recentStderr.isEmpty {
-            print("[LDDCServerManager] Recent stderr (tail):")
-            print(recentStderr)
+            Log.debug("Recent stderr (tail):", category: .lddc)
+            Log.debug(recentStderr, category: .lddc)
         }
         if !recentStdout.isEmpty {
-            print("[LDDCServerManager] Recent stdout (tail):")
-            print(recentStdout)
+            Log.debug("Recent stdout (tail):", category: .lddc)
+            Log.debug(recentStdout, category: .lddc)
         }
     }
 
@@ -676,7 +681,7 @@ final class LDDCServerManager: ObservableObject {
     private func handleIdleTimeout() {
         let idleTime = Date().timeIntervalSince(lastRequestTime)
         if idleTime >= idleTimeout {
-            print("[LDDCServerManager] Idle timeout reached, stopping server")
+            Log.info("Idle timeout reached; stopping server", category: .lddc)
             stop()
         }
     }

@@ -92,7 +92,7 @@ final class FileImportService: FileImportServiceProtocol {
         self.libraryService = libraryService ?? LocalLibraryService.shared
         self.coverDownloadService = coverDownloadService ?? CoverDownloadService()
         self.netEaseCoverService = netEaseCoverService ?? NetEaseCoverService()
-        print("📂 FileImportService initialized")
+        Log.debug("FileImportService initialized", category: .import)
     }
 
     // MARK: - Public Methods
@@ -102,7 +102,7 @@ final class FileImportService: FileImportServiceProtocol {
     /// - Returns: Number of tracks successfully imported.
     @discardableResult
     func pickAndImport(to playlist: Playlist) async -> Int {
-        print("🎯 pickAndImport called for playlist: '\(playlist.name)' (id=\(playlist.id))")
+        Log.debug("pickAndImport called for playlist: '\(playlist.name)' (id=\(playlist.id))", category: .import)
 
         // Configure open panel
         let panel = NSOpenPanel()
@@ -117,18 +117,18 @@ final class FileImportService: FileImportServiceProtocol {
         // Show panel
         // Use app-modal panel (instead of sheet) so NSOpenPanel uses full system styling
         // and does not inherit custom host window chrome tweaks.
-        print("📂 Showing NSOpenPanel...")
+        Log.debug("Showing NSOpenPanel...", category: .import)
         panel.appearance = NSApp.appearance
         let response = panel.runModal()
 
         guard response == .OK else {
-            print("📂 NSOpenPanel cancelled by user")
+            Log.debug("NSOpenPanel cancelled by user", category: .import)
             return 0
         }
 
-        print("📂 NSOpenPanel returned \(panel.urls.count) URLs")
+        Log.debug("NSOpenPanel returned \(panel.urls.count) URLs", category: .import)
         if let first = panel.urls.first {
-            print("   ↳ First URL: \(first.lastPathComponent)")
+            Log.debug("   ↳ First URL: \(first.lastPathComponent)", category: .import)
         }
 
         // CRITICAL: Start accessing security-scoped resources IMMEDIATELY
@@ -136,20 +136,18 @@ final class FileImportService: FileImportServiceProtocol {
         var accessingURLs: [URL] = []
         for url in panel.urls {
             let didStart = url.startAccessingSecurityScopedResource()
-            print(
-                "🔐 startAccessingSecurityScopedResource for '\(url.lastPathComponent)': \(didStart)"
-            )
+            Log.trace("startAccessingSecurityScopedResource for '\(url.lastPathComponent)': \(didStart)", category: .import)
 
             // Additional diagnostics
-            print("   ↳ URL.isFileURL: \(url.isFileURL)")
-            print("   ↳ URL.path: \(url.path)")
+            Log.trace("   ↳ URL.isFileURL: \(url.isFileURL)", category: .import)
+            Log.trace("   ↳ URL.path: \(url.path)", category: .import)
             let isReadable = FileManager.default.isReadableFile(atPath: url.path)
-            print("   ↳ FileManager.isReadableFile: \(isReadable)")
+            Log.trace("   ↳ FileManager.isReadableFile: \(isReadable)", category: .import)
 
             if didStart {
                 accessingURLs.append(url)
             } else {
-                print("   ⚠️ Failed to start accessing security-scoped resource!")
+                Log.warning("Failed to start accessing security-scoped resource!", category: .import)
             }
         }
 
@@ -157,7 +155,7 @@ final class FileImportService: FileImportServiceProtocol {
         defer {
             for url in accessingURLs {
                 url.stopAccessingSecurityScopedResource()
-                print("🔓 stopAccessingSecurityScopedResource for '\(url.lastPathComponent)'")
+                Log.trace("stopAccessingSecurityScopedResource for '\(url.lastPathComponent)'", category: .import)
             }
         }
 
@@ -193,7 +191,7 @@ final class FileImportService: FileImportServiceProtocol {
 
         // Process NCM files if any
         if !ncmFiles.isEmpty {
-            print("🎵 Found \(ncmFiles.count) NCM files to convert")
+            Log.debug("Found \(ncmFiles.count) NCM files to convert", category: .import)
             let results = await convertNCMFiles(ncmFiles)
             for result in results {
                 mutableFilesToImport.append(result.audioFileURL)
@@ -201,7 +199,7 @@ final class FileImportService: FileImportServiceProtocol {
             }
         }
 
-        print("📁 Found \(mutableFilesToImport.count) audio files to import to '\(playlist.name)'")
+        Log.debug("Found \(mutableFilesToImport.count) audio files to import to '\(playlist.name)'", category: .import)
 
         // Preflight by normalized title + artist (runtime dedup set semantics).
         let libraryTracks = await repository.fetchTracks(in: nil)
@@ -273,30 +271,30 @@ final class FileImportService: FileImportServiceProtocol {
 
         var selectedDuplicates: [ImportCandidate] = []
         if !duplicateRows.isEmpty {
-            print("🔍 Found \(duplicateRows.count) duplicates, presenting dialog...")
+            Log.debug("Found \(duplicateRows.count) duplicates, presenting dialog...", category: .import)
             if let selectedRows = presentDuplicateSelectionDialog(duplicateRows) {
-                print("✅ Dialog confirmed. Selected duplicates to import: \(selectedRows.count)")
+                Log.info("Dialog confirmed. Selected duplicates to import: \(selectedRows.count)", category: .import)
                 let selectedIDSet = Set(selectedRows.map(\.id))
                 selectedDuplicates = duplicateRows.compactMap { row in
                     guard selectedIDSet.contains(row.id) else { return nil }
                     return ImportCandidate(fileURL: row.fileURL, metadata: row.incoming)
                 }
             } else {
-                print("📥 User cancelled import via duplicate dialog (result was nil)")
+                Log.debug("User cancelled import via duplicate dialog (result was nil)", category: .import)
                 return 0
             }
         }
 
         // Logic Verification Logs
-        print("--------------------------------------------------")
-        print("📊 Import Logic Verification:")
-        print("   Unique Candidates : \(uniqueCandidates.count)")
-        print("   Duplicate Rows    : \(duplicateRows.count)")
-        print("   Selected Dups     : \(selectedDuplicates.count)")
+        Log.debug("--------------------------------------------------", category: .import)
+        Log.debug("Import Logic Verification:", category: .import)
+        Log.debug("   Unique Candidates : \(uniqueCandidates.count)", category: .import)
+        Log.debug("   Duplicate Rows    : \(duplicateRows.count)", category: .import)
+        Log.debug("   Selected Dups     : \(selectedDuplicates.count)", category: .import)
 
         let finalCandidates = uniqueCandidates + selectedDuplicates
-        print("   -> FINAL Candidates: \(finalCandidates.count)")
-        print("--------------------------------------------------")
+        Log.debug("   -> FINAL Candidates: \(finalCandidates.count)", category: .import)
+        Log.debug("--------------------------------------------------", category: .import)
 
         var importedTracks: [Track] = []
         for candidate in finalCandidates {

@@ -111,43 +111,49 @@ struct SettingsView: View {
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            List(SettingsCategory.allCases) { category in
-                Button {
-                    selection = category
-                } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: category.systemImage)
-                            .font(.system(size: 15, weight: .medium))
-                            .frame(width: 20)
-                            .foregroundStyle(
-                                selection == category ? themeStore.accentColor : .primary)
+            VStack(spacing: 0) {
+                // Sidebar Header
+                Text("设置")
+                    .font(.title)
+                    .fontWeight(.bold)
+                    .foregroundStyle(.primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 24)
+                    .padding(.bottom, 12)
 
-                        Text(category.title)
-                            .font(.body)
-                            .fontWeight(selection == category ? .medium : .regular)
-                            .foregroundStyle(.primary)
+                List(SettingsCategory.allCases) { category in
+                    Button {
+                        selection = category
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: category.systemImage)
+                                .font(.system(size: 15, weight: .medium))
+                                .frame(width: 20)
+                                .foregroundStyle(
+                                    selection == category ? themeStore.accentColor : .primary)
 
-                        Spacer()
+                            Text(category.title)
+                                .font(.body)
+                                .fontWeight(selection == category ? .medium : .regular)
+                                .foregroundStyle(.primary)
+
+                            Spacer()
+                        }
+                        .padding(.vertical, 8)
+                        .padding(.horizontal, 6)
+                        .contentShape(Rectangle())
                     }
-                    .padding(.vertical, 8)
-                    .padding(.horizontal, 6)  // Reverted to original 6
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .listRowInsets(EdgeInsets(top: 1, leading: 4, bottom: 1, trailing: 4))  // Reverted to original 4
-                .listRowBackground(
-                    RoundedRectangle(
-                        cornerRadius: GlassStyleTokens.sidebarSelectionCornerRadius,
-                        style: .continuous
+                    .buttonStyle(.plain)
+                    .listRowInsets(EdgeInsets(top: 1, leading: 4, bottom: 1, trailing: 4))
+                    .listRowBackground(
+                        Capsule()
+                            .fill(selection == category ? themeStore.selectionFill : Color.clear)
+                            .padding(.horizontal, 14)
                     )
-                    .fill(selection == category ? themeStore.selectionFill : Color.clear)
-                    .padding(.horizontal, 14)
-                )
+                }
+                .listStyle(.sidebar)
             }
-            .listStyle(.sidebar)
-            // Manual Adjustment: Sidebar top padding (clearance for traffic lights)
-            .padding(.top, 24)
-            // Explicitly define sidebar container shape and material
             .background(Material.regularMaterial)
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             .navigationSplitViewColumnWidth(
@@ -580,15 +586,15 @@ struct SettingsView: View {
 
                     Divider()
 
-                    Toggle("在 MiniPlayer 显示 Spectrum", isOn: Binding(
+                    Toggle("底栏频谱动画", isOn: Binding(
                         get: { settings.fullscreen.isMiniPlayerSpectrumEnabled },
                         set: { _ in settings.fullscreen.toggleMiniPlayerSpectrum() }
                     ))
                     .toggleStyle(.switch)
 
-                    Text("开启后，全屏 MiniPlayer 右侧会显示频谱可视化。与皮肤自带的频谱/LED电平表互斥。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+//                    Text("开启后，全屏 MiniPlayer 右侧会显示频谱可视化。与皮肤自带的频谱/LED电平表互斥。")
+//                        .font(.caption)
+//                        .foregroundStyle(.secondary)
                 }
                 .padding(12)
             }
@@ -785,7 +791,7 @@ struct SettingsView: View {
     private var fullscreenLyricsPreviewConfig: some View {
         GroupBox("全屏歌词预览") {
             lyricsPreviewCard(
-                title: "全屏深色预览",
+                title: "",
                 isDarkCard: true,
                 mainWeight: fullscreenLyricsFontWeight,
                 translationWeight: fullscreenLyricsTranslationFontWeight,
@@ -1365,11 +1371,13 @@ struct SettingsView: View {
                             showResetDataAlert = true
                         }
                         .buttonStyle(.borderedProminent)
+                        .clipShape(Capsule())
 
                         Button("清除索引缓存") {
                             showClearIndexCacheAlert = true
                         }
                         .buttonStyle(.bordered)
+                        .clipShape(Capsule())
                     }
                 }
                 .padding(12)
@@ -1385,6 +1393,7 @@ struct SettingsView: View {
                         showClearArtworkColorCacheAlert = true
                     }
                     .buttonStyle(.bordered)
+                    .clipShape(Capsule())
                 }
                 .padding(12)
             }
@@ -1519,6 +1528,7 @@ struct SettingsView: View {
                 )
                 .font(.subheadline.weight(.semibold))
                 .buttonStyle(.bordered)
+                .clipShape(Capsule())
             }
             .padding(.bottom, 34)
 

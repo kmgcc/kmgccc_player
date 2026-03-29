@@ -476,6 +476,7 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             } label: {
                 Label("添加到播放列表...", systemImage: "plus.circle")
             }
+            .id("batch_add_to_playlist_\(libraryVM.playlists.count)")
 
             if let currentPlaylist = libraryVM.selectedPlaylist {
                 Button {
@@ -556,6 +557,7 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             } label: {
                 Label("添加到播放列表...", systemImage: "plus.circle")
             }
+            .id("single_add_to_playlist_\(libraryVM.playlists.count)")
 
             // Remove from Playlist (if in one)
             if let currentPlaylist = libraryVM.selectedPlaylist {

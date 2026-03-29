@@ -100,14 +100,16 @@ struct TrackEditSheet: View {
 
             Spacer()
 
-            Button {
+            GlassIconButton(
+                systemImage: "xmark",
+                size: GlassStyleTokens.headerControlHeight,
+                iconSize: GlassStyleTokens.headerStandardIconSize,
+                isPrimary: false,
+                help: "关闭",
+                surfaceVariant: .defaultToolbar
+            ) {
                 dismiss()
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.title2)
-                    .foregroundStyle(.secondary)
             }
-            .buttonStyle(.plain)
         }
         .padding()
     }
@@ -140,10 +142,14 @@ struct TrackEditSheet: View {
                     Button(LocalizedStringKey("edit.track.choose_image")) {
                         showingArtworkPicker = true
                     }
+                    .buttonStyle(.bordered)
+                    .clipShape(Capsule())
 
                     Button(LocalizedStringKey("查找封面")) {
                         fetchCover()
                     }
+                    .buttonStyle(.bordered)
+                    .clipShape(Capsule())
                     .disabled(isFetchingCover)
 
                     if isFetchingCover {
@@ -155,7 +161,9 @@ struct TrackEditSheet: View {
                         Button(LocalizedStringKey("edit.track.remove_artwork")) {
                             artworkData = nil
                         }
-                        .foregroundStyle(.red)
+                        .buttonStyle(.bordered)
+                        .tint(.red)
+                        .clipShape(Capsule())
                     }
 
                     if let coverFetchError {
@@ -244,6 +252,8 @@ struct TrackEditSheet: View {
                 } label: {
                     Label("AMLL DB", systemImage: "arrow.up.right.square")
                 }
+                .buttonStyle(.bordered)
+                .clipShape(Capsule())
                 .font(.caption)
 
                 Button {
@@ -251,11 +261,15 @@ struct TrackEditSheet: View {
                 } label: {
                     Label("TTML Tool", systemImage: "hammer.fill")
                 }
+                .buttonStyle(.bordered)
+                .clipShape(Capsule())
                 .font(.caption)
 
                 Button(LocalizedStringKey("edit.track.import_lyrics")) {
                     showingLyricsPicker = true
                 }
+                .buttonStyle(.bordered)
+                .clipShape(Capsule())
                 .font(.caption)
             }
 
@@ -290,6 +304,8 @@ struct TrackEditSheet: View {
                     Button(LocalizedStringKey("edit.track.reset")) {
                         lyricsTimeOffsetMs = 0
                     }
+                    .buttonStyle(.bordered)
+                    .clipShape(Capsule())
                     .font(.caption)
                 }
 
@@ -343,6 +359,8 @@ struct TrackEditSheet: View {
             Button(LocalizedStringKey("edit.track.cancel")) {
                 dismiss()
             }
+            .buttonStyle(.bordered)
+            .clipShape(Capsule())
             .keyboardShortcut(.escape)
 
             Spacer()
@@ -352,6 +370,7 @@ struct TrackEditSheet: View {
                 dismiss()
             }
             .buttonStyle(.borderedProminent)
+            .clipShape(Capsule())
             .keyboardShortcut(.return)
         }
         .padding()

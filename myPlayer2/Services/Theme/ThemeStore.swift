@@ -11,7 +11,7 @@ import Combine
 import SwiftUI
 
 /// Final computed colors for the application theme.
-struct ThemePalette {
+struct ThemePalette: Equatable {
     let scheme: ColorScheme
     let background: String
     let text: String
@@ -94,10 +94,30 @@ final class ThemeStore: ObservableObject {
     }
 
     private func updateThemeFromArtworkData(_ data: Data?, trackID: UUID?) async {
-        print("[Theme] updateThemeFromArtworkData called - trackID: \(trackID?.uuidString.prefix(8) ?? "nil"), dataSize: \(data?.count ?? 0)")
+        let checksum = data.map(computeChecksum) ?? 0
+        let updateState = "track=\(trackID?.uuidString ?? "nil")|checksum=\(checksum)"
+        if await LogStateTracker.shared.checkStateChanged(
+            key: "theme.updateThemeFromArtworkData",
+            value: updateState
+        ) {
+            Log.debug(
+                "updateThemeFromArtworkData called - trackID: \(trackID?.uuidString.prefix(8) ?? "nil"), dataSize: \(data?.count ?? 0)",
+                category: .theme
+            )
+        }
+
+        if await LogStateTracker.shared.checkStateChanged(
+            key: "theme.checksumComputation",
+            value: updateState
+        ) {
+            Log.debug(
+                "checksum computed: \(checksum), lastProcessedChecksum: \(lastProcessedChecksum), lastProcessedTrackID: \(lastProcessedTrackID?.uuidString.prefix(8) ?? "nil")",
+                category: .theme
+            )
+        }
 
         guard let data, data.isEmpty == false else {
-            print("[Theme] No artwork data, resetting to default")
+            Log.debug("No artwork data, resetting to default", category: .theme)
             currentArtworkData = nil
             currentArtworkChecksum = 0
             lastProcessedChecksum = 0
@@ -109,12 +129,13 @@ final class ThemeStore: ObservableObject {
             return
         }
 
-        // Compute checksum for deduplication using FNV-1a hash
-        let checksum = computeChecksum(data)
         let cacheKey = makeCacheKey(trackID: trackID, checksum: checksum)
 
         if trackID == activeTrackID, checksum == currentArtworkChecksum, checksum != 0 {
-            print("[Theme] Already processing artwork checksum \(checksum), skipping duplicate in-flight call")
+            Log.trace(
+                "Already processing artwork checksum \(checksum), skipping duplicate in-flight call",
+                category: .theme
+            )
             return
         }
 
@@ -122,12 +143,13 @@ final class ThemeStore: ObservableObject {
         extractionToken = UUID()
         let token = extractionToken
 
-        print("[Theme] checksum: \(checksum), lastProcessedChecksum: \(lastProcessedChecksum), lastProcessedTrackID: \(lastProcessedTrackID?.uuidString.prefix(8) ?? "nil")")
-
         // Deduplication: Skip if same artwork AND same track already processed
         // This prevents re-extraction on same song but allows theme updates on track change
         if checksum == lastProcessedChecksum, checksum != 0, trackID == lastProcessedTrackID {
-            print("[Theme] Skipping duplicate artwork (same track, checksum match: \(checksum))")
+            Log.trace(
+                "Skipping duplicate artwork (same track, checksum match: \(checksum))",
+                category: .theme
+            )
             return
         }
 
@@ -135,10 +157,10 @@ final class ThemeStore: ObservableObject {
         currentArtworkChecksum = checksum
         averageColorCache = nil
         
-        print("[Theme] Cleared averageColorCache for new track")
+        Log.trace("Cleared averageColorCache for new track", category: .theme)
 
         if let cacheKey, let cached = dominantColorCache[cacheKey] {
-            print("[Theme] Using cached dominant color for cache key \(cacheKey)")
+            Log.debug("Cache hit for dominant color cache key \(cacheKey)", category: .theme)
             rawDominantColor = cached
             usesFallbackThemeColor = false
             lastProcessedChecksum = checksum
@@ -152,7 +174,10 @@ final class ThemeStore: ObservableObject {
             return
         }
 
-        print("[Theme] Extracting colors for track \(trackID?.uuidString.prefix(8) ?? "nil")")
+        Log.debug(
+            "Extraction started for track \(trackID?.uuidString.prefix(8) ?? "nil")",
+            category: .theme
+        )
 
         // Quick color for immediate UI feedback, then full extraction
         async let quick = extractQuickColor(from: data)
@@ -163,7 +188,7 @@ final class ThemeStore: ObservableObject {
 
         // Apply quick color first for immediate feedback
         if let quickColor = await quick, token == extractionToken, activeTrackID == trackID {
-            print("[Theme] Applying quick color")
+            Log.trace("Applying quick color", category: .theme)
             rawDominantColor = quickColor
             usesFallbackThemeColor = false
             await refreshPalette(reason: "track_artwork_quick")
@@ -179,11 +204,14 @@ final class ThemeStore: ObservableObject {
         }
 
         guard token == extractionToken, activeTrackID == trackID else {
-            print("[Theme] Token/trackID mismatch, aborting. token match: \(token == extractionToken), activeTrackID match: \(activeTrackID == trackID), currentActiveTrackID: \(activeTrackID?.uuidString.prefix(8) ?? "nil"), expectedTrackID: \(trackID?.uuidString.prefix(8) ?? "nil")")
+            Log.trace(
+                "Token/trackID mismatch, aborting. token match: \(token == extractionToken), activeTrackID match: \(activeTrackID == trackID), currentActiveTrackID: \(activeTrackID?.uuidString.prefix(8) ?? "nil"), expectedTrackID: \(trackID?.uuidString.prefix(8) ?? "nil")",
+                category: .theme
+            )
             return
         }
 
-        print("[Theme] Applying extracted color")
+        Log.trace("Applying extracted color", category: .theme)
         
         let resolved = extractedColor ?? rawDominantColor
         if let cacheKey {
@@ -236,7 +264,17 @@ final class ThemeStore: ObservableObject {
     /// Re-calculate the palette based on scheme and artwork.
     func refreshPalette(reason: String) async {
         let isDark = colorScheme == .dark
-        print("[Theme] schemeChanged -> refreshPalette (reason=\(reason), isDark=\(isDark))")
+        let schemeState = isDark ? "dark" : "light"
+        let shouldLogRefresh = await LogStateTracker.shared.checkStateChanged(
+            key: "theme.refreshPalette.scheme",
+            value: schemeState
+        )
+        if shouldLogRefresh {
+            Log.trace(
+                "schemeChanged -> refreshPalette (reason=\(reason), isDark=\(isDark))",
+                category: .theme
+            )
+        }
 
         let optimizedArtworkAccent = optimizeAccentColor(rawDominantColor, scheme: colorScheme)
         let defaultAccentNS = NSColor(AppSettings.shared.accentColor)
@@ -293,10 +331,41 @@ final class ThemeStore: ObservableObject {
             shadow: shadow
         )
 
+        let paletteChanged = palette != newPalette
+        let paletteSignature = [
+            newPalette.scheme == .dark ? "dark" : "light",
+            newPalette.background,
+            newPalette.text,
+            newPalette.activeLine,
+            newPalette.inactiveLine,
+            newPalette.accent,
+            newPalette.shadow,
+        ].joined(separator: "|")
+        let shouldLogApplyTheme = await LogStateTracker.shared.checkStateChanged(
+            key: "theme.applyTheme.palette",
+            value: paletteSignature
+        )
         self.palette = newPalette
 
+        if shouldLogRefresh {
+            Log.trace(
+                "refreshPalette details: reason=\(reason), accent=\(accent), background=\(bg), text=\(text)",
+                category: .theme
+            )
+        }
+
+        if paletteChanged {
+            Log.info(
+                "Theme applied (reason=\(reason), scheme=\(schemeState), fallback=\(usesFallbackThemeColor))",
+                category: .theme
+            )
+        }
+
+        if shouldLogApplyTheme {
+            Log.debug("applyTheme -> all surfaces", category: .theme)
+        }
+
         // Push to AMLL via surface manager
-        print("[Theme] applyTheme -> all surfaces")
         LyricsSurfaceManager.shared.applyTheme(newPalette)
     }
 

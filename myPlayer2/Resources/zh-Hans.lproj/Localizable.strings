@@ -20,7 +20,7 @@
 
 // MARK: - Settings General
 "settings.title" = "设置";
-"settings.section.now_playing" = "正在播放";
+"settings.section.now_playing" = "窗口播放";
 "settings.section.lyrics" = "歌词";
 "settings.section.led" = "LED 电平表";
 "settings.section.language" = "语言";
@@ -36,17 +36,17 @@
 // MARK: - Settings Now Playing
 "settings.now_playing.select_skin" = "选择皮肤";
 "settings.now_playing.skin_options" = "%@ 选项";
-"skin.classic_led.name" = "经典封面";
-"skin.classic_led.detail" = "封面 + 频谱效果";
+"skin.classic_led.name" = "经典";
+"skin.classic_led.detail" = "封面";
 "skin.classic_led.show_led" = "显示 LED 电平表";
-"skin.classic_led.show_spectrum" = "显示胶囊频谱";
-"skin.rotating_cover.name" = "旋转封面";
-"skin.rotating_cover.detail" = "黑胶风格旋转 + 频谱效果";
+"skin.classic_led.show_spectrum" = "显示频谱";
+"skin.rotating_cover.name" = "旋转";
+"skin.rotating_cover.detail" = "黑胶风格旋转";
 "skin.kmgccc_cassette.name" = "kmgccc 磁带";
 "skin.kmgccc_cassette.detail" = "磁带卡座";
 "skin.kmgccc_cassette.show_led" = "显示 LED";
 "skin.kmgccc_cassette.show_kmg" = "显示 kmg";
-"skin.cover_gradient_blur.name" = "封面渐变模糊";
+"skin.cover_gradient_blur.name" = "大封面";
 "skin.cover_gradient_blur.detail" = "封面铺满 + 渐进模糊 + 主色渐变背景（全屏专用）";
 
 // MARK: - Settings Lyrics

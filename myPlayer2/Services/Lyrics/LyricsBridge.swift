@@ -55,14 +55,14 @@ final class LyricsBridge: NSObject, LyricsBridgeServiceProtocol {
         needsReplayOnReady = true
         pendingCalls.removeAll()
         lastTimeUpdate = .distantPast
-        print("[LyricsBridge] Web content invalidated: \(reason)")
+        Log.warning("Web content invalidated: \(reason)", category: .webview)
     }
 
     // MARK: - Initialization
 
     override init() {
         super.init()
-        print("[LyricsBridge] initialized")
+        Log.debug("initialized", category: .lyrics)
     }
 
     // MARK: - Configuration
@@ -94,7 +94,7 @@ final class LyricsBridge: NSObject, LyricsBridgeServiceProtocol {
         contentController.add(self, name: "onUserSeek")
         contentController.add(self, name: "log")  // Added logging
 
-        print("[LyricsBridge] attached to WebView")
+        Log.debug("attached to WebView", category: .webview)
     }
 
     var hasAttachedWebView: Bool {
@@ -130,7 +130,7 @@ final class LyricsBridge: NSObject, LyricsBridgeServiceProtocol {
         capabilities = []
         pendingCalls.removeAll()
         isReloadInFlight = false
-        print("[LyricsBridge] detached")
+        Log.debug("detached", category: .webview)
     }
 
     // MARK: - LyricsBridgeServiceProtocol
@@ -139,11 +139,12 @@ final class LyricsBridge: NSObject, LyricsBridgeServiceProtocol {
 
     func setLyricsTTML(_ ttmlText: String) {
         lastLyricsTTML = ttmlText
+        Log.debug("setLyricsTTML called", category: .webview)
         // Enforce JSON serialization for safe string passing
         if let jsonArg = toJSONArg(ttmlText) {
             callJS("window.AMLL.setLyricsTTML(\(jsonArg))")
         } else {
-            print("[LyricsBridge] Failed to encode TTML text")
+            Log.error("Failed to encode TTML text", category: .lyrics)
         }
     }
 
@@ -164,7 +165,7 @@ final class LyricsBridge: NSObject, LyricsBridgeServiceProtocol {
         let js = "window.AMLL.setCurrentTime(\(seconds))"
         webView.evaluateJavaScript(js) { _, error in
             if let error = error {
-                print("[LyricsBridge] setCurrentTime error: \(error.localizedDescription)")
+                Log.debug("setCurrentTime error: \(error.localizedDescription)", category: .webview)
             }
         }
     }
@@ -177,6 +178,7 @@ final class LyricsBridge: NSObject, LyricsBridgeServiceProtocol {
 
     func setConfigJSON(_ json: String) {
         lastConfigJSON = json
+        Log.debug("setConfigJSON called", category: .webview)
         // 'json' is already a JSON string representation of an object, e.g. {"fontSize": 12}
         // We pass it directly to the JS function which expects an object.
         // HOWEVER, if the JS function expects an OBJECT, we should parse this JSON string
@@ -207,11 +209,11 @@ final class LyricsBridge: NSObject, LyricsBridgeServiceProtocol {
         if isReady, let webView = webView {
             webView.evaluateJavaScript(script) { _, error in
                 if let error = error {
-                    print("[LyricsBridge] JS error: \(error)")
+                    Log.error("JS error: \(error)", category: .webview)
                     // Log prefix for debugging
                     let debugScript =
                         script.count > 180 ? String(script.prefix(180)) + "..." : script
-                    print("[LyricsBridge] Failed script (prefix): \(debugScript)")
+                    Log.error("Failed script (prefix): \(debugScript)", category: .webview)
                 }
             }
         } else {
@@ -224,15 +226,15 @@ final class LyricsBridge: NSObject, LyricsBridgeServiceProtocol {
     private func flushPendingCalls() {
         guard isReady, let webView = webView else { return }
 
-        print("[LyricsBridge] Flushing \(pendingCalls.count) pending calls")
+        Log.debug("Flushing \(pendingCalls.count) pending calls", category: .webview)
 
         for (script, _) in pendingCalls {
             webView.evaluateJavaScript(script) { _, error in
                 if let error = error {
-                    print("[LyricsBridge] Flush error: \(error.localizedDescription)")
+                    Log.error("JS error: \(error.localizedDescription)", category: .webview)
                     let debugScript =
                         script.count > 180 ? String(script.prefix(180)) + "..." : script
-                    print("[LyricsBridge] Failed script (prefix): \(debugScript)")
+                    Log.error("Failed script (prefix): \(debugScript)", category: .webview)
                 }
             }
         }
@@ -263,10 +265,10 @@ extension LyricsBridge: WKScriptMessageHandler {
             handleOnUserSeek(body)
 
         case "log":
-            print("[AMLLWeb] \(body)")
+            Log.debug("AMLLWeb: \(body)", category: .webview)
 
         default:
-            print("[LyricsBridge] Unknown message: \(name)")
+            Log.warning("Unknown message: \(name)", category: .webview)
         }
     }
 
@@ -278,7 +280,7 @@ extension LyricsBridge: WKScriptMessageHandler {
         isReady = true
         isReloadInFlight = false
 
-        print("[LyricsBridge] Ready - version: \(version), capabilities: \(capabilities)")
+        Log.info("Ready with version: \(version)", category: .webview)
 
         if needsReplayOnReady {
             needsReplayOnReady = false
@@ -292,17 +294,17 @@ extension LyricsBridge: WKScriptMessageHandler {
         guard let dict = body as? [String: Any],
             let seconds = dict["seconds"] as? Double
         else {
-            print("[LyricsBridge] Invalid onUserSeek payload: \(body)")
+            Log.warning("Invalid onUserSeek payload: \(body)", category: .webview)
             return
         }
 
         // Validate
         guard seconds >= 0 else {
-            print("[LyricsBridge] Invalid seek time: \(seconds)")
+            Log.warning("Invalid seek time: \(seconds)", category: .lyrics)
             return
         }
 
-        print("[LyricsBridge] User seek to \(String(format: "%.2f", seconds))s")
+        Log.info("User seek to \(String(format: "%.2f", seconds))s", category: .lyrics)
         onUserSeek?(seconds)
     }
 

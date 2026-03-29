@@ -102,7 +102,7 @@ final class LyricsWebViewStore: NSObject {
         self.fallbackObjectID = role.hashValue
 
         super.init()
-        print("[LyricsStore:\(role)] Prepared store (WebView deferred)")
+        Log.debug("Prepared store (WebView deferred), role=\(role)", category: .webview)
     }
 
     // MARK: - Content Loading
@@ -115,8 +115,7 @@ final class LyricsWebViewStore: NSObject {
                 forResource: "index", withExtension: "html", subdirectory: "AMLL"
             )
         else {
-            print(
-                "[LyricsStore] ❌ AMLL/index.html not found in bundle, objectID=\(webViewObjectID)")
+            Log.error("AMLL/index.html not found in bundle, objectID=\(webViewObjectID)", category: .webview)
             return
         }
 
@@ -126,9 +125,7 @@ final class LyricsWebViewStore: NSObject {
 
         let amllDir = indexURL.deletingLastPathComponent()
         let loadURL = resolvedAMLLLoadURL(from: indexURL)
-        print(
-            "[LyricsStore] Loading AMLL from: \(loadURL.absoluteString) role=\(role), objectID=\(webViewObjectID)"
-        )
+        Log.debug("Loading AMLL from: \(loadURL.absoluteString) role=\(role), objectID=\(webViewObjectID)", category: .webview)
         webView.loadFileURL(loadURL, allowingReadAccessTo: amllDir)
     }
 
@@ -174,7 +171,7 @@ final class LyricsWebViewStore: NSObject {
         }
         retainedWebView = nil
 
-        print("[LyricsStore:\(role)] Shutdown complete, objectID=\(webViewObjectID)")
+        Log.info("Shutdown complete, objectID=\(webViewObjectID)", category: .webview)
     }
 
     // MARK: - Attach/Detach (Instance-Aware + Dedup)
@@ -187,33 +184,25 @@ final class LyricsWebViewStore: NSObject {
         }
         _ = ensureWebView()
         if isAttached, let existingID = activeAttachmentID {
-            print(
-                "[LyricsStore] Attach (already attached): attachmentID=\(existingID.uuidString.prefix(8)), objectID=\(webViewObjectID)"
-            )
+            Log.debug("Attach (already attached): attachmentID=\(existingID.uuidString.prefix(8)), objectID=\(webViewObjectID)", category: .webview)
             return existingID
         }
 
         let attachmentID = UUID()
         activeAttachmentID = attachmentID
         isAttached = true
-        print(
-            "[LyricsStore] Attach (new): attachmentID=\(attachmentID.uuidString.prefix(8)), objectID=\(webViewObjectID)"
-        )
+        Log.debug("Attach (new): attachmentID=\(attachmentID.uuidString.prefix(8)), objectID=\(webViewObjectID)", category: .webview)
         return attachmentID
     }
 
     /// Detach from the store. Only succeeds if the requesting ID matches the active one.
     func detach(requestingID: UUID) {
         guard requestingID == activeAttachmentID else {
-            print(
-                "[LyricsStore] ⚠️ Ignoring detach: requestingID=\(requestingID.uuidString.prefix(8)), activeID=\(activeAttachmentID?.uuidString.prefix(8) ?? "nil"), objectID=\(webViewObjectID)"
-            )
+            Log.warning("Ignoring detach: requestingID=\(requestingID.uuidString.prefix(8)), activeID=\(activeAttachmentID?.uuidString.prefix(8) ?? "nil"), objectID=\(webViewObjectID)", category: .webview)
             return
         }
 
-        print(
-            "[LyricsStore] Detach: attachmentID=\(requestingID.uuidString.prefix(8)), objectID=\(webViewObjectID)"
-        )
+        Log.debug("Detach: attachmentID=\(requestingID.uuidString.prefix(8)), objectID=\(webViewObjectID)", category: .webview)
         activeAttachmentID = nil
         isAttached = false
         // Note: We do NOT clear isReady or state here. The WebView persists.
@@ -223,19 +212,17 @@ final class LyricsWebViewStore: NSObject {
 
     func setLyricsTTML(_ ttml: String) {
         guard !isShutDown else { return }
-        
+
         // Deduplication: skip if same TTML
         if ttml == lastTTML && ttml.count > 0 {
             return
         }
-        
+
         lastTTML = ttml
-        print(
-            "[LyricsStore] setLyricsTTML: len=\(ttml.count), objectID=\(webViewObjectID), isReady=\(isReady)"
-        )
+        Log.debug("setLyricsTTML: len=\(ttml.count), objectID=\(webViewObjectID), isReady=\(isReady)", category: .webview)
         logTTMLDiagnostics(ttml, stage: "setLyricsTTML")
         guard let jsonArg = encodeJSONString(ttml) else {
-            print("[LyricsStore] Failed to encode TTML")
+            Log.error("Failed to encode TTML", category: .webview)
             return
         }
         callJS("window.AMLL.setLyricsTTML(\(jsonArg))")
@@ -258,16 +245,14 @@ final class LyricsWebViewStore: NSObject {
 
     func setPlaying(_ isPlaying: Bool) {
         guard !isShutDown else { return }
-        
+
         // Deduplication: skip if same state
         if isPlaying == lastIsPlaying {
             return
         }
-        
+
         lastIsPlaying = isPlaying
-        print(
-            "[LyricsStore] setPlaying: \(isPlaying), objectID=\(webViewObjectID), isReady=\(isReady)"
-        )
+        Log.debug("setPlaying: \(isPlaying)", category: .webview)
         let boolStr = isPlaying ? "true" : "false"
         callJS("window.AMLL.setPlaying(\(boolStr))")
     }
@@ -289,7 +274,7 @@ final class LyricsWebViewStore: NSObject {
     func forceSetConfigJSON(_ json: String, reason: String) {
         guard !isShutDown else { return }
         
-        print("[LyricsStore] forceSetConfigJSON: reason=\(reason), webViewObjectID=\(webViewObjectID), jsonChanged=\(json != lastConfigJSON)")
+        Log.debug("forceSetConfigJSON: reason=\(reason), webViewObjectID=\(webViewObjectID), jsonChanged=\(json != lastConfigJSON)", category: .webview)
         
         lastConfigJSON = json
         callJS("window.AMLL.setConfig(\(json))")
@@ -319,15 +304,12 @@ final class LyricsWebViewStore: NSObject {
                 if let error = error {
                     let debugScript =
                         script.count > 100 ? String(script.prefix(100)) + "..." : script
-                    print(
-                        "[LyricsStore] JS error: \(error.localizedDescription), script: \(debugScript)"
-                    )
+                    Log.debug("JS error: \(error.localizedDescription), script: \(debugScript)", category: .webview)
                 }
             }
         } else {
             pendingCalls.append(script)
-            print(
-                "[LyricsStore] Queued (pending=\(pendingCalls.count)), objectID=\(webViewObjectID)")
+            Log.debug("Queued (pending=\(pendingCalls.count)), objectID=\(webViewObjectID)", category: .webview)
         }
     }
 
@@ -350,13 +332,11 @@ final class LyricsWebViewStore: NSObject {
         webView.evaluateJavaScript(js) { [weak self] result, error in
             guard let self else { return }
             if let error {
-                print(
-                    "[LyricsStore][Probe] role=\(self.role) label=\(label) error=\(error.localizedDescription)"
-                )
+                Log.debug("[Probe] role=\(self.role) label=\(label) error=\(error.localizedDescription)", category: .webview)
                 return
             }
             let payload = result as? String ?? String(describing: result ?? "nil")
-            print("[LyricsStore][Probe] role=\(self.role) label=\(label) payload=\(payload)")
+            Log.debug("[Probe] role=\(self.role) label=\(label) payload=\(payload)", category: .webview)
         }
     }
 
@@ -371,9 +351,7 @@ final class LyricsWebViewStore: NSObject {
         isReady = true
         isRecoveryInProgress = false
 
-        print(
-            "[LyricsStore] ✅ Ready: version=\(version), caps=\(capabilities.count), objectID=\(webViewObjectID)"
-        )
+        Log.info("✅ Ready: version=\(version), caps=\(capabilities.count), objectID=\(webViewObjectID)", category: .webview)
 
         // Flush pending calls
         flushPendingCalls()
@@ -386,28 +364,26 @@ final class LyricsWebViewStore: NSObject {
     private func flushPendingCalls() {
         let queuedCount = pendingCalls.count
         guard queuedCount > 0 else {
-            print("[LyricsStore] Flush: 0 queued, objectID=\(webViewObjectID)")
+            Log.debug("Flush: 0 queued, objectID=\(webViewObjectID)", category: .webview)
             return
         }
 
-        print("[LyricsStore] Flush: \(queuedCount) queued, objectID=\(webViewObjectID)")
+        Log.debug("Flush: \(queuedCount) queued, objectID=\(webViewObjectID)", category: .webview)
         for script in pendingCalls {
             webView.evaluateJavaScript(script) { _, error in
                 if let error = error {
-                    print("[LyricsStore] Flush error: \(error.localizedDescription)")
+                    Log.debug("Flush error: \(error.localizedDescription)", category: .webview)
                 }
             }
         }
         pendingCalls.removeAll()
-        print("[LyricsStore] Flushed: \(queuedCount), objectID=\(webViewObjectID)")
+        Log.debug("Flushed: \(queuedCount), objectID=\(webViewObjectID)", category: .webview)
     }
 
     /// Replay the last known state after recovery.
     /// Order: Config -> TTML -> Playing -> Time
     private func replayStateSnapshot() {
-        print(
-            "[LyricsStore] Replay: ttml=\(lastTTML != nil), time=\(lastTime ?? -1), playing=\(lastIsPlaying ?? false), objectID=\(webViewObjectID)"
-        )
+        Log.debug("Replay: ttml=\(lastTTML != nil), time=\(lastTime ?? -1), playing=\(lastIsPlaying ?? false), objectID=\(webViewObjectID)", category: .webview)
 
         // Step 1: Config
         if let config = lastConfigJSON {
@@ -445,7 +421,7 @@ final class LyricsWebViewStore: NSObject {
             dispatchTimeSync(time)
         }
 
-        print("[LyricsStore] Replay complete, objectID=\(webViewObjectID)")
+        Log.debug("Replay complete, objectID=\(webViewObjectID)", category: .webview)
     }
 
     // MARK: - Recovery (Task B: Closed-loop)
@@ -455,7 +431,7 @@ final class LyricsWebViewStore: NSObject {
         guard !isShutDown else { return }
         let now = Date()
         guard now.timeIntervalSince(lastRecoveryAttempt) > recoveryDebounceInterval else {
-            print("[LyricsStore] Recovery debounced, objectID=\(webViewObjectID)")
+            Log.debug("Recovery debounced, objectID=\(webViewObjectID)", category: .webview)
             return
         }
 
@@ -469,12 +445,10 @@ final class LyricsWebViewStore: NSObject {
         isTimeSyncInFlight = false
         lastDeliveredTime = nil
 
-        print(
-            "[LyricsStore] ⚠️ Terminated: objectID=\(webViewObjectID), snapshot preserved (ttml=\(lastTTML != nil), time=\(lastTime ?? -1), playing=\(lastIsPlaying ?? false))"
-        )
+        Log.warning("⚠️ Terminated: objectID=\(webViewObjectID), snapshot preserved (ttml=\(lastTTML != nil), time=\(lastTime ?? -1), playing=\(lastIsPlaying ?? false))", category: .webview)
 
         // Reload AMLL content - state will be replayed when onReady fires
-        print("[LyricsStore] Reload: objectID=\(webViewObjectID)")
+        Log.debug("Reload: objectID=\(webViewObjectID)", category: .webview)
         loadAMLLContent(cacheBust: role == LyricsSurfaceRole.fullscreen.rawValue)
     }
 
@@ -486,9 +460,7 @@ final class LyricsWebViewStore: NSObject {
         queuedTimeSync = nil
         isTimeSyncInFlight = false
         lastDeliveredTime = nil
-        print(
-            "[LyricsStore] Force reload, objectID=\(webViewObjectID), recreateWebView=\(recreateWebView)"
-        )
+        Log.debug("Force reload, objectID=\(webViewObjectID), recreateWebView=\(recreateWebView)", category: .webview)
         if recreateWebView {
             rebuildWebViewForFreshContent()
         } else {
@@ -513,7 +485,7 @@ final class LyricsWebViewStore: NSObject {
             pendingApplyTrack = workItem
             DispatchQueue.main.asyncAfter(
                 deadline: .now() + .milliseconds(applyTrackDebounceMs), execute: workItem)
-            print("[LyricsStore] applyTrack: debounced nil, objectID=\(webViewObjectID)")
+            Log.debug("applyTrack: debounced nil, objectID=\(webViewObjectID)", category: .webview)
         } else {
             // Immediate apply for concrete payload (including empty string clear)
             executeApplyTrack(ttml: ttml, currentTime: currentTime, isPlaying: isPlaying)
@@ -521,9 +493,7 @@ final class LyricsWebViewStore: NSObject {
     }
 
     private func executeApplyTrack(ttml: String?, currentTime: Double, isPlaying: Bool) {
-        print(
-            "[LyricsStore] applyTrack: ttmlLen=\(ttml?.count ?? 0), time=\(currentTime), playing=\(isPlaying), objectID=\(webViewObjectID)"
-        )
+        Log.debug("applyTrack: ttmlLen=\(ttml?.count ?? 0), time=\(currentTime), playing=\(isPlaying), objectID=\(webViewObjectID)", category: .webview)
 
         // Step 1: Pause
         setPlaying(false)
@@ -560,9 +530,7 @@ final class LyricsWebViewStore: NSObject {
         }
 
         let themeName = (palette.scheme == .dark) ? "dark" : "light"
-        print(
-            "[LyricsStore] applyTheme: theme=\(themeName), override=\(overrideThemePalette != nil), objectID=\(webViewObjectID)"
-        )
+        Log.debug("applyTheme: theme=\(themeName), override=\(overrideThemePalette != nil), objectID=\(webViewObjectID)", category: .webview)
 
         // 1. Update config JSON (bridge-level metadata)
         let config: [String: Any] = [
@@ -602,15 +570,13 @@ final class LyricsWebViewStore: NSObject {
     private func logTTMLDiagnostics(_ ttml: String, stage: String) {
         guard Self.ttmlDiagnosticsEnabled else { return }
         let sha = sha256Hex(ttml)
-        print(
-            "[LyricsStore][TTML][\(stage)] sha256=\(sha), utf8=\(ttml.utf8.count), chars=\(ttml.count)"
-        )
-        print("[LyricsStore][TTML][\(stage)] head200=\(escapedLogSnippet(String(ttml.prefix(200))))")
-        print("[LyricsStore][TTML][\(stage)] tail200=\(escapedLogSnippet(String(ttml.suffix(200))))")
+        Log.trace("[TTML][\(stage)] sha256=\(sha), utf8=\(ttml.utf8.count), chars=\(ttml.count)", category: .webview)
+        Log.trace("[TTML][\(stage)] head200=\(escapedLogSnippet(String(ttml.prefix(200))))", category: .webview)
+        Log.trace("[TTML][\(stage)] tail200=\(escapedLogSnippet(String(ttml.suffix(200))))", category: .webview)
 
         let xbgPattern = "ttm:role=\"x-bg\""
         guard let roleRange = ttml.range(of: xbgPattern) ?? ttml.range(of: "role=\"x-bg\"") else {
-            print("[LyricsStore][TTML][\(stage)] x-bg not found")
+            Log.trace("[TTML][\(stage)] x-bg not found", category: .webview)
             return
         }
         let start = ttml.index(roleRange.lowerBound, offsetBy: -200, limitedBy: ttml.startIndex)
@@ -618,7 +584,7 @@ final class LyricsWebViewStore: NSObject {
         let end = ttml.index(roleRange.upperBound, offsetBy: 200, limitedBy: ttml.endIndex)
             ?? ttml.endIndex
         let slice = String(ttml[start..<end])
-        print("[LyricsStore][TTML][\(stage)] xbgWindow=\(escapedLogSnippet(slice))")
+        Log.trace("[TTML][\(stage)] xbgWindow=\(escapedLogSnippet(slice))", category: .webview)
     }
 
     private func sha256Hex(_ text: String) -> String {
@@ -737,9 +703,7 @@ final class LyricsWebViewStore: NSObject {
             hostView.addSubview(newWebView)
         }
 
-        print(
-            "[LyricsStore] Recreated WebView for fresh AMLL bundle: role=\(role), objectID=\(webViewObjectID), rev=\(contentLoadRevision)"
-        )
+        Log.debug("Recreated WebView for fresh AMLL bundle: role=\(role), objectID=\(webViewObjectID), rev=\(contentLoadRevision)", category: .webview)
     }
 
     private func scheduleTimeSync(_ seconds: Double) {
@@ -763,7 +727,7 @@ final class LyricsWebViewStore: NSObject {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 if let error {
-                    print("[LyricsStore] setCurrentTime error: \(error.localizedDescription)")
+                    Log.debug("setCurrentTime error: \(error.localizedDescription)", category: .webview)
                 }
 
                 self.isTimeSyncInFlight = false
@@ -798,7 +762,7 @@ extension LyricsWebViewStore: WKScriptMessageHandler {
             case "log":
                 print("[AMLLWeb:\(role)] \(message.body)")
             default:
-                print("[LyricsStore] Unknown message: \(message.name)")
+                Log.debug("Unknown message: \(message.name)", category: .webview)
             }
         }
     }

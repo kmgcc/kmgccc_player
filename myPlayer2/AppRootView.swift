@@ -76,6 +76,9 @@ struct AppRootView: View {
     @State private var coverDownloadService = CoverDownloadService()
     @State private var netEaseCoverService = NetEaseCoverService()
 
+    // MARK: - What's New (debug: always show on launch)
+    @State private var showWhatsNew = false
+
     var body: some View {
         Group {
             if let libraryVM, let playerVM, let lyricsVM, let ledMeter, let skinManager {
@@ -107,7 +110,7 @@ struct AppRootView: View {
                     }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: .playbackTrackDidChange)) { _ in
-                    print("[AppRoot] Track changed notification received")
+                    Log.debug("Track changed notification received", category: .ui)
                     Task { @MainActor in
                         await themeStore.updateTheme(for: playerVM.currentTrack)
                     }
@@ -158,6 +161,10 @@ struct AppRootView: View {
         .environment(\.locale, Locale(identifier: "zh-Hans"))
         .onAppear {
             setupDependencies()
+            showWhatsNew = true
+        }
+        .sheet(isPresented: $showWhatsNew) {
+            WhatsNewView()
         }
         // Appearance
         .preferredColorScheme(currentColorScheme)
@@ -200,21 +207,20 @@ struct AppRootView: View {
             easterEggSFX?.playRandomIfAllowed()
         }
         .onReceive(NotificationCenter.default.publisher(for: .enterFullscreen)) { _ in
-            print("[F-Key] 📬 Notification received in AppRootView")
+            Log.debug("F-Key: Notification received", category: .fullscreen)
             let manager = FullscreenWindowManager.shared
-            print("[F-Key] isFullscreenActive = \(manager.isFullscreenActive)")
-            print("[F-Key] isTransitioning = \(manager.isTransitioning)")
+            Log.trace("F-Key: isFullscreenActive=\(manager.isFullscreenActive), isTransitioning=\(manager.isTransitioning)", category: .fullscreen)
             guard !manager.isFullscreenActive else {
-                print("[F-Key] ❌ Already in fullscreen, ignoring")
+                Log.debug("F-Key: Already in fullscreen, ignoring", category: .fullscreen)
                 return
             }
             guard !manager.isTransitioning else {
-                print("[F-Key] ❌ Transition in progress, ignoring")
+                Log.debug("F-Key: Transition in progress, ignoring", category: .fullscreen)
                 return
             }
-            print("[F-Key] ⏳ Dispatching fullscreen request to next runloop")
+            Log.debug("F-Key: Dispatching to next runloop", category: .fullscreen)
             DispatchQueue.main.async {
-                print("[F-Key] ✅ Executing showFullscreenWindow() on next runloop")
+                Log.info("F-Key: Executing showFullscreenWindow()", category: .fullscreen)
                 manager.showFullscreenWindow()
             }
         }
@@ -303,14 +309,14 @@ struct AppRootView: View {
 
     private func applyAppearanceToWindows() {
         if settings.followSystemAppearance {
-            print("[Appearance] Apply mode: system")
+            Log.trace("Apply appearance mode: system", category: .ui)
             NSApp.appearance = nil
             for window in NSApp.windows {
                 window.appearance = nil
             }
         } else {
             let mode = settings.manualAppearance
-            print("[Appearance] Apply mode: \(mode.rawValue)")
+            Log.trace("Apply appearance mode: \(mode.rawValue)", category: .ui)
             let appearanceName: NSAppearance.Name = mode == .dark ? .darkAqua : .aqua
             let appearance = NSAppearance(named: appearanceName)
             NSApp.appearance = appearance
@@ -321,7 +327,7 @@ struct AppRootView: View {
     }
 
     private func syncThemeStoreWithSwiftUIColorScheme(_ newScheme: ColorScheme) {
-        print("[AppRoot] swiftUIColorScheme changed to \(newScheme)")
+        Log.debug("swiftUIColorScheme changed to \(newScheme)", category: .ui)
         themeStore.colorScheme = newScheme
         Task { @MainActor in
             await themeStore.refreshPalette(reason: "swiftui_colorScheme_changed")
@@ -334,8 +340,9 @@ struct AppRootView: View {
         repository: LibraryRepositoryProtocol,
         playerVM: PlayerViewModel
     ) async {
-        print(
-            "[DebugLaunch] scenario trackID=\(scenario.trackID?.uuidString ?? "nil") fullscreenSkin=\(scenario.fullscreenSkinID ?? "nil") showFullscreen=\(scenario.showFullscreen) quitAfter=\(scenario.quitAfterSeconds ?? -1)"
+        Log.debug(
+            "DebugLaunch scenario: trackID=\(scenario.trackID?.uuidString ?? "nil"), fullscreenSkin=\(scenario.fullscreenSkinID ?? "nil"), showFullscreen=\(scenario.showFullscreen), quitAfter=\(scenario.quitAfterSeconds ?? -1)",
+            category: .ui
         )
 
         if let fullscreenSkinID = scenario.fullscreenSkinID {
@@ -346,7 +353,7 @@ struct AppRootView: View {
             await repository.reloadFromLibrary()
             let tracks = await repository.fetchTracks(in: nil)
             guard let track = tracks.first(where: { $0.id == trackID }) else {
-                print("[DebugLaunch] track not found: \(trackID.uuidString)")
+                Log.warning("DebugLaunch: track not found: \(trackID.uuidString)", category: .ui)
                 scheduleDebugTerminationIfNeeded(after: scenario.quitAfterSeconds)
                 return
             }
@@ -354,13 +361,13 @@ struct AppRootView: View {
             uiState.showNowPlaying()
             playerVM.play(track: track)
             await themeStore.updateTheme(for: track)
-            print("[DebugLaunch] playing track \(track.title) (\(track.id.uuidString))")
+            Log.debug("DebugLaunch: playing track \(track.title) (\(track.id.uuidString))", category: .ui)
         }
 
         if scenario.showFullscreen {
             let openDelay: TimeInterval = scenario.trackID == nil ? 0.25 : 0.9
             DispatchQueue.main.asyncAfter(deadline: .now() + openDelay) {
-                print("[DebugLaunch] opening fullscreen window")
+                Log.debug("DebugLaunch: opening fullscreen window", category: .ui)
                 FullscreenWindowManager.shared.showFullscreenWindow()
             }
         }
@@ -371,7 +378,7 @@ struct AppRootView: View {
     private func scheduleDebugTerminationIfNeeded(after seconds: TimeInterval?) {
         guard let seconds, seconds > 0 else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
-            print("[DebugLaunch] terminating app after \(seconds)s")
+            Log.debug("DebugLaunch: terminating app after \(seconds)s", category: .ui)
             NSApp.terminate(nil)
         }
     }
