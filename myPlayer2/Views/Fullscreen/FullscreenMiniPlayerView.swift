@@ -21,6 +21,7 @@ struct FullscreenMiniPlayerView: View {
     private static let fullscreenThemeMinSaturation: CGFloat = 0.88
 
     @Environment(PlayerViewModel.self) private var playerVM
+    @Environment(AppSettings.self) private var settings
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
 
@@ -30,7 +31,6 @@ struct FullscreenMiniPlayerView: View {
 
     @State private var isDragging = false
     @State private var dragProgress: Double = 0
-    @State private var isProgressHovering = false
     @State private var previousSymbolEffectTrigger = 0
     @State private var playPauseSymbolEffectTrigger = 0
     @State private var nextSymbolEffectTrigger = 0
@@ -248,69 +248,36 @@ struct FullscreenMiniPlayerView: View {
     }
 
     private var progressArea: some View {
-        ZStack {
-            progressBar
-                .frame(height: 12 * scale)
-
-            HStack(spacing: progressTimeSpacing) {
-                Text(formattedTime(progressDisplayTime))
-                    .font(.system(size: timeFontSize, weight: .medium, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(lyricsDynamicSecondaryColor)
-                    .opacity(isProgressHovering ? 1 : 0.72)
-
-                Spacer(minLength: 18 * scale)
-
-                Text(formattedTime(playerVM.duration))
-                    .font(.system(size: timeFontSize, weight: .medium, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(lyricsDynamicSecondaryColor)
-                    .opacity(isProgressHovering ? 1 : 0.72)
+        MiniPlayerProgressSpectrumRow(
+            scale: scale,
+            isSpectrumEnabled: settings.fullscreen.isMiniPlayerSpectrumEnabled,
+            isPlaying: playerVM.isPlaying,
+            accentColor: themeStore.usesFallbackThemeColor ? nil : themeStore.accentColor,
+            progress: progressDisplayTime,
+            duration: playerVM.duration,
+            onSeek: { seekTime in
+                dragProgress = seekTime
+            },
+            onDragStart: {
+                isDragging = true
+            },
+            onDragEnd: {
+                playerVM.seek(to: dragProgress)
+                isDragging = false
             }
-            .padding(.horizontal, progressAreaHPadding)
-            .offset(y: progressYOffset)
-        }
-        .frame(maxHeight: .infinity)
-        .padding(.horizontal, progressAreaHPadding)
-        .onHover { hovering in
-            isProgressHovering = hovering
-        }
+        )
     }
 
+    // MARK: - Legacy Progress Views (kept for reference, no longer used)
+    
+    @available(*, deprecated, message: "Replaced by MiniPlayerProgressSpectrumRow")
+    private var progressBarWithSpectrum: some View {
+        EmptyView()
+    }
+    
+    @available(*, deprecated, message: "Replaced by MiniPlayerProgressSpectrumRow")
     private var progressBar: some View {
-        GeometryReader { geometry in
-            let barHeight: CGFloat = 6 * scale
-            let filledWidth = progressWidth(in: geometry.size.width)
-            let fill = progressFillColor
-            let track = progressTrackColor
-
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(track)
-                    .frame(height: barHeight)
-
-                Capsule()
-                    .fill(fill)
-                    .frame(width: filledWidth, height: barHeight)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-            .padding(.horizontal, 2 * scale)
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { value in
-                        isDragging = true
-                        let progress = max(0, min(1, value.location.x / geometry.size.width))
-                        dragProgress = progress * playerVM.duration
-                    }
-                    .onEnded { value in
-                        let progress = max(0, min(1, value.location.x / geometry.size.width))
-                        let seekTime = progress * playerVM.duration
-                        playerVM.seek(to: seekTime)
-                        isDragging = false
-                    }
-            )
-        }
+        EmptyView()
     }
     
     private var currentArtworkTaskKey: String {

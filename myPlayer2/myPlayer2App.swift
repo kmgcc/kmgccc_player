@@ -66,6 +66,12 @@ struct KmgcccPlayerApp: App {
                     NotificationCenter.default.post(name: .toggleLyrics, object: nil)
                 }
                 .keyboardShortcut("l", modifiers: [.command, .option])
+
+                Button(NSLocalizedString("alert.enter_fullscreen", comment: "")) {
+                    print("[F-Key] ⚡️ Button action triggered in commands")
+                    NotificationCenter.default.post(name: .enterFullscreen, object: nil)
+                }
+                .keyboardShortcut("f", modifiers: [])
             }
         }
     }
@@ -80,4 +86,5 @@ extension Notification.Name {
     static let toggleLyrics = Notification.Name("kmgccc_player.toggleLyrics")
     static let playbackTrackDidChange = Notification.Name("kmgccc_player.playbackTrackDidChange")
     static let aboutEasterEggTriggered = Notification.Name("kmgccc_player.aboutEasterEggTriggered")
+    static let enterFullscreen = Notification.Name("kmgccc_player.enterFullscreen")
 }

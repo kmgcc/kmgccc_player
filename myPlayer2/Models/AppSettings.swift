@@ -334,8 +334,12 @@ public final class AppSettings {
         }
     }
 
-    @ObservationIgnored
-    @AppStorage("fullscreenSkin") var selectedFullscreenSkinID: String = "fullscreen.coverGradientBlur"
+    /// Fullscreen skin selection - now managed by FullscreenPresentationCoordinator.
+    /// This property is kept for backward compatibility but delegates to the coordinator.
+    var selectedFullscreenSkinID: String {
+        get { fullscreen.skinID }
+        set { fullscreen.setSkinID(newValue) }
+    }
 
     // MARK: - Playback Settings
 
@@ -496,6 +500,12 @@ public final class AppSettings {
     /// Pause playback after current song finishes (single-cycle stop mode).
     @ObservationIgnored
     @AppStorage("stopAfterTrack") var stopAfterTrack: Bool = false
+
+    // MARK: - Fullscreen Presentation Coordinator
+
+    /// Access the fullscreen presentation coordinator for managing visualizer/skin state.
+    /// This is the single entry point for all fullscreen presentation configuration.
+    public var fullscreen: FullscreenPresentationCoordinator { FullscreenPresentationCoordinator.shared }
 
     // MARK: - Fullscreen Player Settings
 

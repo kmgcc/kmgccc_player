@@ -74,7 +74,6 @@ struct SettingsView: View {
     @State private var fullscreenArtworkScale: Double = AppSettings.shared.fullscreenArtworkScale
     @State private var fullscreenLyricsFontScale: Double = AppSettings.shared.fullscreenLyricsFontScale
     @State private var fullscreenDimmingIntensity: Double = AppSettings.shared.fullscreenDimmingIntensity
-    @State private var fullscreenSkin: String = AppSettings.shared.selectedFullscreenSkinID
     @State private var fullscreenLyricsFontNameZh: String = AppSettings.shared
         .fullscreenLyricsFontNameZh
     @State private var fullscreenLyricsFontNameEn: String = AppSettings.shared
@@ -183,7 +182,8 @@ struct SettingsView: View {
             globalArtworkTintEnabled = settings.globalArtworkTintEnabled
             followSystemAppearance = settings.followSystemAppearance
             lyricsBackgroundMode = settings.lyricsBackgroundMode
-            fullscreenSkin = AppSettings.shared.selectedFullscreenSkinID
+            // Coordinator handles skin state - no manual sync needed
+            settings.fullscreen.normalizeConfiguration()
             syncFullscreenLyricsStateFromSettings()
             if SkinRegistry.options.contains(where: { $0.id == nowPlayingSkin }) == false {
                 nowPlayingSkin = SkinRegistry.defaultSkinID
@@ -370,9 +370,6 @@ struct SettingsView: View {
 
     private var fullscreenSyncLogic: some View {
         Color.clear
-            .onChange(of: fullscreenSkin) { _, newValue in
-                AppSettings.shared.selectedFullscreenSkinID = newValue
-            }
             .onChange(of: fullscreenLyricsFontScale) { _, val in
                 AppSettings.shared.fullscreenLyricsFontScale = val
             }
@@ -570,19 +567,34 @@ struct SettingsView: View {
                     Text("全屏皮肤")
                         .font(.headline)
 
-                    Picker("", selection: $fullscreenSkin) {
+                    Picker("", selection: Binding(
+                        get: { settings.fullscreen.skinID },
+                        set: { settings.fullscreen.setSkinID($0) }
+                    )) {
                         ForEach(SkinRegistry.fullscreenOptions) { skin in
                             Label(skin.name, systemImage: skin.systemImage)
                                 .tag(skin.id)
                         }
                     }
                     .pickerStyle(.radioGroup)
+
+                    Divider()
+
+                    Toggle("在 MiniPlayer 显示 Spectrum", isOn: Binding(
+                        get: { settings.fullscreen.isMiniPlayerSpectrumEnabled },
+                        set: { _ in settings.fullscreen.toggleMiniPlayerSpectrum() }
+                    ))
+                    .toggleStyle(.switch)
+
+                    Text("开启后，全屏 MiniPlayer 右侧会显示频谱可视化。与皮肤自带的频谱/LED电平表互斥。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 .padding(12)
             }
 
-            if let selected = SkinRegistry.fullscreenOptions.first(where: { $0.id == fullscreenSkin }),
-               let optionsView = SkinRegistry.fullscreenSkin(for: fullscreenSkin).fullscreenSettingsView {
+            if let _ = SkinRegistry.fullscreenOptions.first(where: { $0.id == settings.fullscreen.skinID }),
+               let optionsView = SkinRegistry.fullscreenSkin(for: settings.fullscreen.skinID).fullscreenSettingsView {
                 GroupBox {
                     VStack(alignment: .leading, spacing: 16) {
                         Text("皮肤选项")
@@ -1530,6 +1542,14 @@ struct SettingsView: View {
                     complianceItem(
                         name: "LDDC",
                         url: "https://github.com/chenmozhijin/LDDC"
+                    )
+                    complianceItem(
+                        name: "sacad",
+                        url: "https://github.com/desbma/sacad"
+                    )
+                    complianceItem(
+                        name: "ncmdump",
+                        url: "https://github.com/taurusxin/ncmdump"
                     )
                 }
 

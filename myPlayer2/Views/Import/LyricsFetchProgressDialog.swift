@@ -310,9 +310,24 @@ final class LyricsFetchProgressDialogPresenter: NSObject, NSWindowDelegate {
     }
     
     private func startFetchAsync(tracks: [Track], viewModel: LyricsFetchProgressViewModel) {
+        // Extract Sendable snapshots before entering detached task
+        // (Track is a SwiftData @Model class, not Sendable)
+        struct TrackSnapshot: Sendable {
+            let id: String
+            let title: String
+            let artist: String
+        }
+        let snapshots: [TrackSnapshot] = tracks.map { track in
+            TrackSnapshot(
+                id: track.id.uuidString,
+                title: track.title,
+                artist: track.artist
+            )
+        }
+        
         fetchTask = Task.detached(priority: .userInitiated) {
             let client = LDDCClient()
-            let totalCount = tracks.count
+            let totalCount = snapshots.count
             
             actor ProgressState {
                 var completedCount = 0
@@ -337,18 +352,18 @@ final class LyricsFetchProgressDialogPresenter: NSObject, NSWindowDelegate {
             let state = ProgressState()
             
             await withTaskGroup(of: Void.self) { group in
-                for (index, track) in tracks.enumerated() {
+                for (index, snapshot) in snapshots.enumerated() {
                     group.addTask {
-                        let itemId = track.id.uuidString
+                        let itemId = snapshot.id
                         
                         do {
                             await MainActor.run {
-                                viewModel.updateItem(id: itemId, title: track.title, artist: track.artist, step: .searching)
+                                viewModel.updateItem(id: itemId, title: snapshot.title, artist: snapshot.artist, step: .searching)
                             }
                             
                             let response = try await client.search(
-                                title: track.title,
-                                artist: track.artist.isEmpty ? nil : track.artist,
+                                title: snapshot.title,
+                                artist: snapshot.artist.isEmpty ? nil : snapshot.artist,
                                 sources: [.QM, .KG, .NE],
                                 mode: .verbatim,
                                 translation: true,
@@ -356,12 +371,12 @@ final class LyricsFetchProgressDialogPresenter: NSObject, NSWindowDelegate {
                             )
                             
                             guard let firstCandidate = response.results.first else {
-                                await state.addCompleted(id: itemId, title: track.title, artist: track.artist, step: .noResults, trackIndex: index, ttml: nil)
+                                await state.addCompleted(id: itemId, title: snapshot.title, artist: snapshot.artist, step: .noResults, trackIndex: index, ttml: nil)
                                 return
                             }
                             
                             await MainActor.run {
-                                viewModel.updateItem(id: itemId, title: track.title, artist: track.artist, step: .found)
+                                viewModel.updateItem(id: itemId, title: snapshot.title, artist: snapshot.artist, step: .found)
                             }
                             
                             let (origLyrics, transLyrics) = try await client.fetchByIdSeparate(
@@ -370,7 +385,7 @@ final class LyricsFetchProgressDialogPresenter: NSObject, NSWindowDelegate {
                             )
                             
                             await MainActor.run {
-                                viewModel.updateItem(id: itemId, title: track.title, artist: track.artist, step: .converting)
+                                viewModel.updateItem(id: itemId, title: snapshot.title, artist: snapshot.artist, step: .converting)
                             }
                             
                             let ttml: String
@@ -388,17 +403,19 @@ final class LyricsFetchProgressDialogPresenter: NSObject, NSWindowDelegate {
                             }
                             
                             await MainActor.run {
-                                viewModel.updateItem(id: itemId, title: track.title, artist: track.artist, step: .savingTTML)
+                                viewModel.updateItem(id: itemId, title: snapshot.title, artist: snapshot.artist, step: .savingTTML)
                             }
                             
                             await MainActor.run {
-                                track.ttmlLyricText = ttml
+                                if let track = tracks.first(where: { $0.id.uuidString == itemId }) {
+                                    track.ttmlLyricText = ttml
+                                }
                             }
                             
-                            await state.addCompleted(id: itemId, title: track.title, artist: track.artist, step: .completed, trackIndex: index, ttml: ttml)
+                            await state.addCompleted(id: itemId, title: snapshot.title, artist: snapshot.artist, step: .completed, trackIndex: index, ttml: ttml)
                             
                         } catch {
-                            await state.addCompleted(id: itemId, title: track.title, artist: track.artist, step: .failed, trackIndex: index, ttml: nil)
+                            await state.addCompleted(id: itemId, title: snapshot.title, artist: snapshot.artist, step: .failed, trackIndex: index, ttml: nil)
                         }
                     }
                 }

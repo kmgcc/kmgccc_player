@@ -22,6 +22,7 @@ struct ScannedTrackMeta {
     let artworkFileName: String?
     let lyricsFileName: String?
     let ttmlLyricsFileName: String?
+    let playCount: Int
     let folderURL: URL
 
     var libraryRelativePath: String {
@@ -101,6 +102,14 @@ final class MusicLibraryScanner {
         let ttmlLyricsFileName = (json["ttmlLyricsFileName"] as? String)?.trimmingCharacters(
             in: .whitespacesAndNewlines)
 
+        // Parse playCount with default 0 for backward compatibility
+        let playCount: Int
+        if let playCountValue = json["playCount"] {
+            playCount = (playCountValue as? Int) ?? 0
+        } else {
+            playCount = 0
+        }
+
         return ScannedTrackMeta(
             schemaVersion: schemaVersion,
             id: id,
@@ -116,6 +125,7 @@ final class MusicLibraryScanner {
             artworkFileName: (artworkFileName?.isEmpty ?? true) ? nil : artworkFileName,
             lyricsFileName: (lyricsFileName?.isEmpty ?? true) ? nil : lyricsFileName,
             ttmlLyricsFileName: (ttmlLyricsFileName?.isEmpty ?? true) ? nil : ttmlLyricsFileName,
+            playCount: playCount,
             folderURL: folderURL
         )
     }

@@ -162,30 +162,37 @@ private struct ClassicLEDSkinNormalSettingsView: View {
 }
 
 private struct ClassicLEDSkinFullscreenSettingsView: View {
-    @AppStorage("skin.classicLED.fullscreen.visualizerMode") private var visualizerMode: String = "off"
     @Environment(LEDMeterService.self) private var ledMeter
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Toggle("LED 电平表", isOn: Binding(
-                get: { visualizerMode == "led" },
+                get: {
+                    FullscreenPresentationCoordinator.shared.isSkinVisualizerEnabled
+                    && UserDefaults.standard.string(forKey: "skin.classicLED.fullscreen.visualizerMode") == "led"
+                },
                 set: { isOn in
                     if isOn {
-                        visualizerMode = "led"
-                    } else if visualizerMode == "led" {
-                        visualizerMode = "off"
+                        UserDefaults.standard.set("led", forKey: "skin.classicLED.fullscreen.visualizerMode")
+                        FullscreenPresentationCoordinator.shared.setVisualizerMode(.skinVisualizer)
+                    } else {
+                        FullscreenPresentationCoordinator.shared.setVisualizerMode(.off)
                     }
                 }
             ))
             .toggleStyle(.switch)
 
             Toggle("频谱动画", isOn: Binding(
-                get: { visualizerMode == "spectrum" },
+                get: {
+                    FullscreenPresentationCoordinator.shared.isSkinVisualizerEnabled
+                    && UserDefaults.standard.string(forKey: "skin.classicLED.fullscreen.visualizerMode") == "spectrum"
+                },
                 set: { isOn in
                     if isOn {
-                        visualizerMode = "spectrum"
-                    } else if visualizerMode == "spectrum" {
-                        visualizerMode = "off"
+                        UserDefaults.standard.set("spectrum", forKey: "skin.classicLED.fullscreen.visualizerMode")
+                        FullscreenPresentationCoordinator.shared.setVisualizerMode(.skinVisualizer)
+                    } else {
+                        FullscreenPresentationCoordinator.shared.setVisualizerMode(.off)
                     }
                 }
             ))
