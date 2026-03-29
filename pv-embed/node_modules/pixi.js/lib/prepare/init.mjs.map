@@ -1,1 +1,0 @@
-{"version":3,"file":"init.mjs","sources":["../../src/prepare/init.ts"],"sourcesContent":["import { extensions } from '../extensions/Extensions';\nimport { PrepareSystem } from './PrepareSystem';\n\nextensions.add(PrepareSystem);\n"],"names":[],"mappings":";;;;AAGA,UAAA,CAAW,IAAI,aAAa,CAAA"}
