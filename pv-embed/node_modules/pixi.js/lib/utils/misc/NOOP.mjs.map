@@ -1,1 +1,0 @@
-{"version":3,"file":"NOOP.mjs","sources":["../../../src/utils/misc/NOOP.ts"],"sourcesContent":["/** @internal */\nexport const NOOP = () =>\n{\n    // empty!\n};\n"],"names":[],"mappings":";AACO,MAAM,OAAO,MACpB;AAEA;;;;"}
