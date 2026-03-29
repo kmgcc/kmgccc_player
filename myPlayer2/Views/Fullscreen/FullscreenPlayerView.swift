@@ -108,7 +108,7 @@ struct FullscreenPlayerView: View {
     var onExitFullscreen: (() -> Void)?
 
     private var isCoverBlurFullscreenSkin: Bool {
-        settings.selectedFullscreenSkinID == "fullscreen.coverGradientBlur"
+        settings.fullscreen.skinID == "fullscreen.coverGradientBlur"
     }
 
     private var coverBlurHighlightStore: LyricsWebViewStore {
@@ -137,7 +137,7 @@ struct FullscreenPlayerView: View {
     }
 
     var body: some View {
-        let selectedSkinID = settings.selectedFullscreenSkinID
+        let selectedSkinID = settings.fullscreen.skinID
         let selectedSkin = SkinRegistry.fullscreenSkin(for: selectedSkinID)
         let usesCustomBg = selectedSkinID == "fullscreen.coverGradientBlur"
 
@@ -199,12 +199,15 @@ struct FullscreenPlayerView: View {
             guard coverBlurTransition else { return }
             reloadLyricsSurface(reason: "fullscreen skin changed", forceLyricsReload: true)
         }
-        .onChange(of: settings.selectedFullscreenSkinID) { _, _ in
+        .onChange(of: settings.fullscreen.skinID) { _, newValue in
             if isLedEnabledForFullscreenSkin() {
                 ledMeter.start()
             } else {
                 ledMeter.stop()
             }
+
+            // Note: Mutual exclusivity is now handled by FullscreenPresentationCoordinator
+            // When skin is set to kmgccc.cassette, Coordinator automatically disables MiniPlayer spectrum
         }
         .onChange(of: playerVM.currentTime, handleCurrentTimeChange)
         .onChange(of: playerVM.isPlaying) { _, newValue in
@@ -294,7 +297,7 @@ struct FullscreenPlayerView: View {
             fullscreenBottomBarLayer(scale: scale)
                 .frame(width: proxy.size.width, height: proxy.size.height)
         }
-        .id("fullscreen_\(settings.selectedFullscreenSkinID)_\(skinRevision)")
+        .id("fullscreen_\(settings.fullscreen.skinID)_\(skinRevision)")
         .frame(width: proxy.size.width, height: proxy.size.height)
         .onAppear {
             currentFullscreenScale = scale
@@ -348,7 +351,7 @@ struct FullscreenPlayerView: View {
         // Skin-specific right shift for fullscreen cover skin
         let leftExpansion: CGFloat = 60
         let rightExpansion: CGFloat = 100
-        let coverSkinOffset: CGFloat = settings.selectedFullscreenSkinID == "fullscreen.coverGradientBlur" ? coverSkinLyricsRightShift : 0
+        let coverSkinOffset: CGFloat = settings.fullscreen.skinID == "fullscreen.coverGradientBlur" ? coverSkinLyricsRightShift : 0
         let finalLyricsX = baseLyricsX - leftExpansion + coverSkinOffset
         let finalLyricsWidth = baseLyricsWidth + leftExpansion + rightExpansion
 
@@ -935,14 +938,16 @@ struct FullscreenPlayerView: View {
     }
 
     private func isLedEnabledForFullscreenSkin() -> Bool {
-        let skinID = settings.selectedFullscreenSkinID
+        // Note: LED state is now managed by FullscreenPresentationCoordinator
+        // This method checks if the current configuration has skin visualizer enabled
+        guard settings.fullscreen.isSkinVisualizerEnabled else { return false }
+
+        let skinID = settings.fullscreen.skinID
         switch skinID {
-        case "coverLed":
-            return UserDefaults.standard.string(forKey: "skin.classicLED.fullscreen.visualizerMode") == "led"
+        case "coverLed", "rotatingCover":
+            return true
         case "kmgccc.cassette":
-            return UserDefaults.standard.string(forKey: "skin.kmgcccCassette.fullscreen.visualizerMode") == "led"
-        case "rotatingCover":
-            return false // RotatingCover doesn't have LED
+            return false // Cassette doesn't support visualizer
         default:
             return false
         }

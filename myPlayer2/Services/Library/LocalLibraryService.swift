@@ -28,6 +28,111 @@ struct TrackSidecar: Codable {
     let lyricsType: String?
     let ttmlLyricsFileName: String?
     let ncmSourcePath: String?
+    let playCount: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case id
+        case title
+        case artist
+        case album
+        case duration
+        case addedAt
+        case importedAt
+        case lyricsTimeOffsetMs
+        case originalFilePath
+        case audioFileName
+        case artworkFileName
+        case lyricsFileName
+        case lyricsType
+        case ttmlLyricsFileName
+        case ncmSourcePath
+        case playCount
+    }
+
+    init(
+        schemaVersion: Int = 2,
+        id: UUID,
+        title: String,
+        artist: String,
+        album: String,
+        duration: Double,
+        addedAt: Date,
+        importedAt: Date?,
+        lyricsTimeOffsetMs: Double?,
+        originalFilePath: String?,
+        audioFileName: String?,
+        artworkFileName: String?,
+        lyricsFileName: String?,
+        lyricsType: String?,
+        ttmlLyricsFileName: String?,
+        ncmSourcePath: String?,
+        playCount: Int? = 0
+    ) {
+        self.schemaVersion = schemaVersion
+        self.id = id
+        self.title = title
+        self.artist = artist
+        self.album = album
+        self.duration = duration
+        self.addedAt = addedAt
+        self.importedAt = importedAt
+        self.lyricsTimeOffsetMs = lyricsTimeOffsetMs
+        self.originalFilePath = originalFilePath
+        self.audioFileName = audioFileName
+        self.artworkFileName = artworkFileName
+        self.lyricsFileName = lyricsFileName
+        self.lyricsType = lyricsType
+        self.ttmlLyricsFileName = ttmlLyricsFileName
+        self.ncmSourcePath = ncmSourcePath
+        self.playCount = playCount
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        // schemaVersion defaults to 1 for backward compatibility
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+
+        id = try container.decode(UUID.self, forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        artist = try container.decode(String.self, forKey: .artist)
+        album = try container.decode(String.self, forKey: .album)
+        duration = try container.decode(Double.self, forKey: .duration)
+        addedAt = try container.decode(Date.self, forKey: .addedAt)
+        importedAt = try container.decodeIfPresent(Date.self, forKey: .importedAt)
+        lyricsTimeOffsetMs = try container.decodeIfPresent(Double.self, forKey: .lyricsTimeOffsetMs)
+        originalFilePath = try container.decodeIfPresent(String.self, forKey: .originalFilePath)
+        audioFileName = try container.decodeIfPresent(String.self, forKey: .audioFileName)
+        artworkFileName = try container.decodeIfPresent(String.self, forKey: .artworkFileName)
+        lyricsFileName = try container.decodeIfPresent(String.self, forKey: .lyricsFileName)
+        lyricsType = try container.decodeIfPresent(String.self, forKey: .lyricsType)
+        ttmlLyricsFileName = try container.decodeIfPresent(String.self, forKey: .ttmlLyricsFileName)
+        ncmSourcePath = try container.decodeIfPresent(String.self, forKey: .ncmSourcePath)
+        // playCount defaults to 0 for backward compatibility (schemaVersion 1 doesn't have this field)
+        playCount = try container.decodeIfPresent(Int.self, forKey: .playCount) ?? 0
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(2, forKey: .schemaVersion)
+        try container.encode(id, forKey: .id)
+        try container.encode(title, forKey: .title)
+        try container.encode(artist, forKey: .artist)
+        try container.encode(album, forKey: .album)
+        try container.encode(duration, forKey: .duration)
+        try container.encode(addedAt, forKey: .addedAt)
+        try container.encodeIfPresent(importedAt, forKey: .importedAt)
+        try container.encodeIfPresent(lyricsTimeOffsetMs, forKey: .lyricsTimeOffsetMs)
+        try container.encodeIfPresent(originalFilePath, forKey: .originalFilePath)
+        try container.encodeIfPresent(audioFileName, forKey: .audioFileName)
+        try container.encodeIfPresent(artworkFileName, forKey: .artworkFileName)
+        try container.encodeIfPresent(lyricsFileName, forKey: .lyricsFileName)
+        try container.encodeIfPresent(lyricsType, forKey: .lyricsType)
+        try container.encodeIfPresent(ttmlLyricsFileName, forKey: .ttmlLyricsFileName)
+        try container.encodeIfPresent(ncmSourcePath, forKey: .ncmSourcePath)
+        try container.encodeIfPresent(playCount, forKey: .playCount)
+    }
 }
 
 struct PlaylistSidecar: Codable {
@@ -202,7 +307,8 @@ final class LocalLibraryService {
                 lyricsFileName: nil,
                 lyricsType: nil,
                 ttmlLyricsFileName: ttmlFileName,
-                ncmSourcePath: nil
+                ncmSourcePath: nil,
+                playCount: track.playCount
             )
 
             let data = try encoder.encode(sidecar)
@@ -547,7 +653,8 @@ final class LocalLibraryService {
                 availability: isAvailable ? .available : .missing,
                 artworkData: artworkData,
                 ttmlLyricText: ttmlText,
-                lyricsText: lyricsText
+                lyricsText: lyricsText,
+                playCount: sidecar.playCount ?? 0
             )
 
             tracks.append(track)

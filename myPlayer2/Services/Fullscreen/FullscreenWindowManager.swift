@@ -20,7 +20,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
     @Published private(set) var isFullscreenActive = false
 
     private var fullscreenWindow: NSWindow?
-    private var isTransitioning = false
+    private(set) var isTransitioning = false
     private weak var previousKeyWindow: NSWindow?
     private var escapeEventMonitor: Any?
     private var fullscreenLyricsVM: LyricsViewModel?

@@ -199,6 +199,25 @@ struct AppRootView: View {
         .onReceive(NotificationCenter.default.publisher(for: .aboutEasterEggTriggered)) { _ in
             easterEggSFX?.playRandomIfAllowed()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .enterFullscreen)) { _ in
+            print("[F-Key] 📬 Notification received in AppRootView")
+            let manager = FullscreenWindowManager.shared
+            print("[F-Key] isFullscreenActive = \(manager.isFullscreenActive)")
+            print("[F-Key] isTransitioning = \(manager.isTransitioning)")
+            guard !manager.isFullscreenActive else {
+                print("[F-Key] ❌ Already in fullscreen, ignoring")
+                return
+            }
+            guard !manager.isTransitioning else {
+                print("[F-Key] ❌ Transition in progress, ignoring")
+                return
+            }
+            print("[F-Key] ⏳ Dispatching fullscreen request to next runloop")
+            DispatchQueue.main.async {
+                print("[F-Key] ✅ Executing showFullscreenWindow() on next runloop")
+                manager.showFullscreenWindow()
+            }
+        }
     }
 
     // MARK: - Setup

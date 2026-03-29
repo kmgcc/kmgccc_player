@@ -57,6 +57,10 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     private var drainStartTime: Double = 0
     private var lastLookaheadMs: Double = AppSettings.shared.lookaheadMs
 
+    // MARK: - Play Count Service
+
+    private let playCountService: PlayCountServiceProtocol = PlayCountService.shared
+
     // MARK: - Timer
 
     private var progressTimer: Timer?
@@ -311,6 +315,9 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             duration = fileDuration
             currentTime = 0
             startingFramePosition = 0
+
+            // Start play count session
+            playCountService.startPlaybackSession(for: track)
 
             // Reconnect player with correct format
             engine.disconnectNodeOutput(playerNode)
@@ -618,6 +625,10 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         // Apply lookahead delay so UI/lyrics match audible output
         let audibleTime = newTime - lookaheadSeconds
         currentTime = max(0, min(audibleTime, duration))
+
+        if duration > 0 {
+            playCountService.updatePlaybackProgress(currentTime: currentTime, duration: duration)
+        }
     }
 
     // MARK: - Playback Completion

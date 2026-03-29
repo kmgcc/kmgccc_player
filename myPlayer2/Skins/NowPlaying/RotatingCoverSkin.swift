@@ -168,14 +168,20 @@ private struct RotatingCoverSkinNormalSettingsView: View {
 }
 
 private struct RotatingCoverSkinFullscreenSettingsView: View {
-    @AppStorage("skin.rotatingCover.fullscreen.visualizerMode") private var visualizerMode: String = "off"
-
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Toggle("频谱动画", isOn: Binding(
-                get: { visualizerMode == "spectrum" },
+                get: {
+                    FullscreenPresentationCoordinator.shared.isSkinVisualizerEnabled
+                    && UserDefaults.standard.string(forKey: "skin.rotatingCover.fullscreen.visualizerMode") == "spectrum"
+                },
                 set: { isOn in
-                    visualizerMode = isOn ? "spectrum" : "off"
+                    if isOn {
+                        UserDefaults.standard.set("spectrum", forKey: "skin.rotatingCover.fullscreen.visualizerMode")
+                        FullscreenPresentationCoordinator.shared.setVisualizerMode(.skinVisualizer)
+                    } else {
+                        FullscreenPresentationCoordinator.shared.setVisualizerMode(.off)
+                    }
                 }
             ))
             .toggleStyle(.switch)

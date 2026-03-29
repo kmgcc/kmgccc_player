@@ -69,6 +69,12 @@ final class Track {
     @Attribute(.externalStorage)
     var artworkData: Data?
 
+    // MARK: - Playback Stats
+
+    /// Play count - how many times this track has been played.
+    /// Incremented when user listens to >=50% of track or >=30 seconds.
+    var playCount: Int = 0
+
     // MARK: - Lyrics
 
     /// Directly pasted or imported TTML lyrics text (embedded).
@@ -95,7 +101,8 @@ final class Track {
         availability: TrackAvailability = .available,
         artworkData: Data? = nil,
         ttmlLyricText: String? = nil,
-        lyricsText: String? = nil
+        lyricsText: String? = nil,
+        playCount: Int = 0
     ) {
         self.id = id
         self.title = title
@@ -112,6 +119,7 @@ final class Track {
         self.artworkData = artworkData
         self.ttmlLyricText = ttmlLyricText
         self.lyricsText = lyricsText
+        self.playCount = playCount
     }
 
     // MARK: - Bookmark Resolution
