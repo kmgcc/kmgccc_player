@@ -42,7 +42,7 @@ struct MiniPlayerProgressSpectrumRow: View {
     
     var body: some View {
         // Single unified hover region covering the entire progress+spectrum area
-        HStack(spacing: 8 * scale) {
+        HStack(spacing: 2 * scale) {
             // Progress bar section - expands when spectrum collapses
             progressBarSection
                 .layoutPriority(isRowHovered && isSpectrumEnabled ? 1 : 0)

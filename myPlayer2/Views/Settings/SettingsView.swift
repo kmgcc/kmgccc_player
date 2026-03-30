@@ -1543,23 +1543,33 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     complianceItem(
                         name: "applemusic-like-lyrics",
-                        url: "https://github.com/amll-dev/applemusic-like-lyrics"
+                        url: "https://github.com/amll-dev/applemusic-like-lyrics",
+                        license: "AGPL-3.0"
                     )
                     complianceItem(
                         name: "apple-audio-visualization",
-                        url: "https://github.com/taterboom/apple-audio-visualization"
+                        url: "https://github.com/taterboom/apple-audio-visualization",
+                        license: nil
                     )
                     complianceItem(
                         name: "LDDC",
-                        url: "https://github.com/chenmozhijin/LDDC"
+                        url: "https://github.com/chenmozhijin/LDDC",
+                        license: "GPL-3.0"
                     )
                     complianceItem(
                         name: "sacad",
-                        url: "https://github.com/desbma/sacad"
+                        url: "https://github.com/desbma/sacad",
+                        license: "MPL-2.0"
                     )
                     complianceItem(
                         name: "ncmdump",
-                        url: "https://github.com/taurusxin/ncmdump"
+                        url: "https://github.com/taurusxin/ncmdump",
+                        license: "MIT"
+                    )
+                    complianceItem(
+                        name: "WhatsNewKit",
+                        url: "https://github.com/SvenTiigi/WhatsNewKit",
+                        license: "MIT"
                     )
                 }
 
@@ -1657,15 +1667,45 @@ struct SettingsView: View {
         }
     }
 
-    private func complianceItem(name: String, url: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(name)
-                .font(.subheadline.bold())
-            Link(url, destination: URL(string: url)!)
-                .font(.caption)
-            //            Text("Modified source code is used in this application.")
-            //                .font(.caption2)
-            //                .foregroundStyle(.secondary)
+    private func complianceItem(name: String, url: String, license: String?) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(name)
+                    .font(.subheadline.bold())
+                Link(url, destination: URL(string: url)!)
+                    .font(.caption)
+            }
+            
+            Spacer()
+            
+            if let license = license {
+                HStack(spacing: 4) {
+                    Image(systemName: "doc.text")
+                        .font(.system(size: 10))
+                    Text(license)
+                        .font(.system(size: 10, weight: .medium))
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(
+                    Capsule()
+                        .fill(licenseColor(for: license).opacity(0.15))
+                )
+                .foregroundStyle(licenseColor(for: license))
+            } else {
+                
+            }
+        }
+    }
+    
+    private func licenseColor(for license: String) -> Color {
+        switch license {
+        case "MIT": return .green
+        case "GPL-3.0", "AGPL-3.0": return .blue
+        case "MPL-2.0": return .purple
+        case "Apache-2.0": return .teal
+        case "BSD": return .cyan
+        default: return .secondary
         }
     }
 

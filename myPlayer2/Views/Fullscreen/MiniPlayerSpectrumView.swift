@@ -30,7 +30,7 @@ struct MiniPlayerSpectrumView: View {
     let pausedBehavior: MiniPlayerSpectrumPausedBehavior
 
     // Layout constants (scaled)
-    private let baseDotSize: CGFloat = 6.5
+    private let baseDotSize: CGFloat = 5.8
     private let baseSpacing: CGFloat = 4
     private let baseHeight: CGFloat = 52
     private let baseWidth: CGFloat = 100

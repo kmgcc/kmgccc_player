@@ -219,11 +219,11 @@ struct BKArtBackgroundView: View {
             || (luma < 0.30 && harmonized.grayScore > 0.70)
     }
 
-    fileprivate static let fallbackPalette: [NSColor] = [
+    fileprivate static var fallbackPalette: [NSColor] { [
         NSColor(calibratedRed: 0.50, green: 0.62, blue: 0.76, alpha: 1.0),
         NSColor(calibratedRed: 0.76, green: 0.54, blue: 0.52, alpha: 1.0),
         NSColor(calibratedRed: 0.56, green: 0.72, blue: 0.46, alpha: 1.0),
-    ]
+    ] }
 }
 
 private struct BKArtBackgroundRepresentable: NSViewRepresentable {
@@ -264,7 +264,7 @@ private struct BKArtBackgroundRepresentable: NSViewRepresentable {
 private final class BKArtBackgroundLayerView: NSView {
     weak var backgroundController: BKArtBackgroundController?
 
-    private final class CGImageBox: NSObject, @unchecked Sendable {
+    private final class CGImageBox: @unchecked Sendable {
         let image: CGImage
 
         init(image: CGImage) {
@@ -295,10 +295,12 @@ private final class BKArtBackgroundLayerView: NSView {
 
         init(color: NSColor) {
             let rgb = color.usingColorSpace(.deviceRGB) ?? color
-            red = rgb.redComponent
-            green = rgb.greenComponent
-            blue = rgb.blueComponent
-            alpha = rgb.alphaComponent
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            rgb.getRed(&r, green: &g, blue: &b, alpha: &a)
+            red = r
+            green = g
+            blue = b
+            alpha = a
         }
     }
 

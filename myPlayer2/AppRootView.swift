@@ -76,8 +76,7 @@ struct AppRootView: View {
     @State private var coverDownloadService = CoverDownloadService()
     @State private var netEaseCoverService = NetEaseCoverService()
 
-    // MARK: - What's New (debug: always show on launch)
-    @State private var showWhatsNew = false
+    @State private var hasSetupDependencies = false
 
     var body: some View {
         Group {
@@ -101,6 +100,7 @@ struct AppRootView: View {
 
                     MainLayoutView()
                 }
+                .id("app-main-content")
                 .onAppear {
                     if uiState.contentMode == .nowPlaying
                         && settings.nowPlayingArtBackgroundEnabled
@@ -159,12 +159,8 @@ struct AppRootView: View {
             }
         }
         .environment(\.locale, Locale(identifier: "zh-Hans"))
-        .onAppear {
-            setupDependencies()
-            showWhatsNew = true
-        }
-        .sheet(isPresented: $showWhatsNew) {
-            WhatsNewView()
+        .task {
+            await setupAppOnLaunch()
         }
         // Appearance
         .preferredColorScheme(currentColorScheme)
@@ -229,6 +225,17 @@ struct AppRootView: View {
     // MARK: - Setup
 
     @MainActor
+    private func setupAppOnLaunch() async {
+        guard !hasSetupDependencies else { return }
+        hasSetupDependencies = true
+        print("[Lifecycle] AppRootView initial setup")
+        setupDependencies()
+        
+        WhatsNewWindowManager.shared.showIfNeeded()
+        print("[Lifecycle] WhatsNew window check completed")
+    }
+
+    @MainActor
     private func setupDependencies() {
         let libraryService = LocalLibraryService.shared
         libraryService.ensureLibraryFolders()
@@ -269,7 +276,9 @@ struct AppRootView: View {
         )
         libVM.setImportService(fileImportService)
 
+        print("[Lifecycle] setupDependencies: libraryVM created, id: \(ObjectIdentifier(libVM))")
         libraryVM = libVM
+        print("[Lifecycle] setupDependencies: libraryVM assigned, id: \(libraryVM.map { String(describing: ObjectIdentifier($0)) } ?? "nil")")
         playerVM = PlayerViewModel(playbackService: playbackService, levelMeter: ledMeter)
         lyricsVM = LyricsViewModel(
             settings: AppSettings.shared,

@@ -273,6 +273,15 @@
             ) !important;
             visibility: hidden !important;
         }
+        /* Keep cover-blur highlight visible when line is in foreground completed state */
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"][data-fs-completed-highlight="1"] .amll-cb-word-active,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"][data-fs-completed-highlight="1"] .amll-cb-char-active {
+            color: var(
+                --amll-cb-main-active,
+                var(--amll-active, var(--amll-lp-color, white))
+            ) !important;
+            visibility: visible !important;
+        }
         .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] .amll-cb-word-active,
         .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] .amll-cb-char-active {
             transition: color 0.20s linear 0.05s !important;
@@ -506,6 +515,22 @@
                 var(--amll-inactive, var(--amll-lp-color, white))
             ) !important;
             opacity: 0 !important;
+        }
+        /* Keep fullscreen highlight visible when line is in foreground completed state
+           (line lost _active_ but is still in visible range due to parallel display) */
+        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][data-fs-completed-highlight="1"] .amll-fs-word-active {
+            color: var(
+                --amll-fs-main-active,
+                var(--amll-active, var(--amll-lp-color, white))
+            ) !important;
+            opacity: 1 !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][data-fs-completed-highlight="1"] .amll-fs-char-active {
+            color: var(
+                --amll-fs-main-active,
+                var(--amll-active, var(--amll-lp-color, white))
+            ) !important;
+            opacity: 1 !important;
         }
         .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][class*="_active_"] > [class*="_lyricSubLine_"] {
             color: var(
@@ -1824,7 +1849,8 @@
         const patchFullscreenLineOpacityBehavior = () => {
             if (!fullscreenOpaqueLyricsMode) return;
             if (!Array.isArray(lyricPlayer.currentLyricLineObjects)) return;
-            for (const lineObj of lyricPlayer.currentLyricLineObjects) {
+            for (let lineIdx = 0; lineIdx < lyricPlayer.currentLyricLineObjects.length; lineIdx++) {
+                const lineObj = lyricPlayer.currentLyricLineObjects[lineIdx];
                 const lineElement = lineObj?.element;
                 if (!lineElement || !lineElement.style) continue;
                 lineElement.style.setProperty("mix-blend-mode", "normal", "important");
@@ -2208,7 +2234,8 @@
             if (!fullscreenCoverBlurMode) return;
             syncCoverBlurRootState();
             if (!Array.isArray(lyricPlayer.currentLyricLineObjects)) return;
-            for (const lineObj of lyricPlayer.currentLyricLineObjects) {
+            for (let lineIdx = 0; lineIdx < lyricPlayer.currentLyricLineObjects.length; lineIdx++) {
+                const lineObj = lyricPlayer.currentLyricLineObjects[lineIdx];
                 const lineElement = lineObj?.element;
                 if (!(lineElement instanceof HTMLElement)) continue;
                 if (lineElement.dataset.amllCbPatchedLine === "1") continue;
@@ -2309,99 +2336,10 @@
             return Number.isFinite(raw) ? Math.round(raw * 1000) : null;
         };
 
-        const collectXBgFromTTML = (ttml) => {
-            if (typeof ttml !== "string" || ttml.trim().length === 0) return [];
-            const xml = new DOMParser().parseFromString(ttml, "application/xml");
-            if (xml.querySelector("parsererror")) {
-                return [];
-            }
-
-            const nodes = Array.from(xml.getElementsByTagName("*")).filter((el) => {
-                if (el.localName !== "span") return false;
-                const role =
-                    el.getAttribute("ttm:role")
-                    || el.getAttributeNS("http://www.w3.org/ns/ttml#metadata", "role")
-                    || el.getAttribute("role");
-                return role === "x-bg";
-            });
-
-            return nodes.map((node) => {
-                const words = Array.from(node.children)
-                    .filter((child) => child.localName === "span")
-                    .map((child) => ({
-                        startTime: parseTTMLTimeToMs(child.getAttribute("begin")),
-                        endTime: parseTTMLTimeToMs(child.getAttribute("end")),
-                        text: (child.textContent || "").trim(),
-                    }));
-                return {
-                    startTime: parseTTMLTimeToMs(node.getAttribute("begin")),
-                    endTime: parseTTMLTimeToMs(node.getAttribute("end")),
-                    words,
-                };
-            });
-        };
-
-        const assertXBgTiming = (ttml, parsedLines) => {
-            const source = collectXBgFromTTML(ttml);
-            if (source.length === 0) return;
-
-            const parsed = (Array.isArray(parsedLines) ? parsedLines : [])
-                .filter((line) => line?.isBG)
-                .map((line) => ({
-                    startTime: Number.isFinite(line.startTime) ? line.startTime : null,
-                    endTime: Number.isFinite(line.endTime) ? line.endTime : null,
-                    words: Array.isArray(line.words)
-                        ? line.words.map((word) => ({
-                            startTime: Number.isFinite(word.startTime) ? word.startTime : null,
-                            endTime: Number.isFinite(word.endTime) ? word.endTime : null,
-                            text: (word.word || "").trim(),
-                        }))
-                        : [],
-                }));
-
-            console.log(
-                `[LyricsRenderer][x-bg][assert] source=${source.length}, parsed=${parsed.length}`
-            );
-            if (source.length !== parsed.length) {
-                console.error("[LyricsRenderer][x-bg][assert] line count mismatch");
-            }
-
-            const n = Math.min(source.length, parsed.length);
-            for (let i = 0; i < n; i++) {
-                const src = source[i];
-                const expected = {
-                    startTime: Number.isFinite(src.startTime) ? Math.max(0, src.startTime + timeOffsetMs) : null,
-                    endTime: Number.isFinite(src.endTime) ? Math.max(0, src.endTime + timeOffsetMs) : null,
-                    words: src.words.map((word) => ({
-                        startTime: Number.isFinite(word.startTime)
-                            ? Math.max(0, word.startTime + timeOffsetMs)
-                            : null,
-                        endTime: Number.isFinite(word.endTime)
-                            ? Math.max(0, word.endTime + timeOffsetMs)
-                            : null,
-                        text: word.text,
-                    })),
-                };
-                const got = parsed[i];
-                const startOk = expected.startTime === got.startTime;
-                const endOk = expected.endTime === got.endTime;
-                const wordCountOk = expected.words.length === got.words.length;
-                const firstWordStartOk =
-                    expected.words.length === 0
-                    || got.words.length === 0
-                    || expected.words[0].startTime === got.words[0].startTime;
-                const lastWordEndOk =
-                    expected.words.length === 0
-                    || got.words.length === 0
-                    || expected.words[expected.words.length - 1].endTime === got.words[got.words.length - 1].endTime;
-                const ok = startOk && endOk && wordCountOk && firstWordStartOk && lastWordEndOk;
-
-            }
-        };
-
         const captureTimingSnapshot = (lines) => {
             if (!Array.isArray(lines)) return [];
             return lines.map((line) => ({
+                isBG: line?.isBG === true,
                 startTime: Number.isFinite(line?.startTime) ? line.startTime : null,
                 endTime: Number.isFinite(line?.endTime) ? line.endTime : null,
                 words: Array.isArray(line?.words)
@@ -2447,162 +2385,114 @@
             return didProcessed || didCurrent || didObjects;
         };
 
+	        // Simplified time management - let AMLL core handle parallel lyrics via isBG/hotLines/bufferedLines
+	        // Update data-fs-completed-highlight for lines that have lost _active_ but are still in foreground
+	        // (i.e., parallel display completed state where line is still in visible range but _active_ was removed)
+	        // CRITICAL: Only apply this to WORD-LEVEL skins, NOT line-timing-only skins
+	        // Line-timing-only skins should follow normal behavior: highlight fades immediately when entering retreat
+	        
+	        // One-way dismissed state to prevent highlight resurrection
+	        // Once a line's highlight has been dismissed (faded out), it can never be re-enabled
+	        // This is cleared only on setLyrics or seek
+	        const fsHighlightDismissed = new Set();
+	        
+	        const updateFullscreenParallelHighlightState = () => {
+	            if (!Array.isArray(lyricPlayer.currentLyricLineObjects)) return;
+	            
+	            // Skip entirely for line-timing-only mode (逐行皮肤)
+	            // In line-timing-only mode, there's no word-level highlight to preserve
+	            if (lineTimingOnlyMode === true) {
+	                // Clear any existing markers for line-timing-only mode
+	                for (const lineObj of lyricPlayer.currentLyricLineObjects) {
+	                    const lineElement = lineObj?.element;
+	                    if (lineElement instanceof HTMLElement) {
+	                        delete lineElement.dataset.fsCompletedHighlight;
+	                    }
+	                }
+	                return;
+	            }
+	            
+	            // Get hotLines and bufferedLines from core
+	            const hotLines = lyricPlayer.hotLines;
+	            
+	            // For each line, determine if it should have completed-highlight
+	            for (let lineIdx = 0; lineIdx < lyricPlayer.currentLyricLineObjects.length; lineIdx++) {
+	                const lineObj = lyricPlayer.currentLyricLineObjects[lineIdx];
+	                const lineElement = lineObj?.element;
+	                if (!(lineElement instanceof HTMLElement)) continue;
+	                
+	                // Check if line has _active_ class
+	                const hasActiveClass = lineElement.className.includes("_active_");
+	                
+	                if (hasActiveClass) {
+	                    // Line is active - no special handling needed
+	                    delete lineElement.dataset.fsCompletedHighlight;
+	                    // Also clear dismissed state when line becomes active again
+	                    fsHighlightDismissed.delete(lineIdx);
+	                } else {
+	                    // Line doesn't have _active_ - check if it should keep highlight
+	                    
+	                    // CRITICAL: Once dismissed, never re-enable
+	                    if (fsHighlightDismissed.has(lineIdx)) {
+	                        delete lineElement.dataset.fsCompletedHighlight;
+	                        continue;
+	                    }
+	                    
+	                    // Keep highlight ONLY if:
+	                    // 1. Line is still in hotLines (currently playing)
+	                    // 2. OR next line is in hotLines AND this line just exited hotLines (parallel display)
+	                    //    The "just exited" check is: this line was in hotLines before, OR next line is in hotLines now
+	                    
+	                    const isInHotLines = hotLines instanceof Set && hotLines.has(lineIdx);
+	                    const nextLineIdx = lineIdx + 1;
+	                    const isNextLineInHotLines = hotLines instanceof Set && hotLines.has(nextLineIdx);
+	                    
+	                    // Parallel display: current line is NOT in hotLines but next line IS in hotLines
+	                    // AND this line has never been dismissed (first time seeing this state)
+	                    const isParallelDisplay = !isInHotLines && isNextLineInHotLines;
+	                    
+	                    if (isInHotLines) {
+	                        // Line is still active - keep highlight
+	                        lineElement.dataset.fsCompletedHighlight = "1";
+	                    } else if (isParallelDisplay && !fsHighlightDismissed.has(lineIdx)) {
+	                        // Parallel display: line exited hotLines but next line is still playing
+	                        // Keep highlight ONLY if we haven't already dismissed this line
+	                        lineElement.dataset.fsCompletedHighlight = "1";
+	                    } else {
+	                        // Line has entered retreat phase - fade highlight immediately
+	                        // Mark as dismissed to prevent future resurrection
+	                        delete lineElement.dataset.fsCompletedHighlight;
+	                        fsHighlightDismissed.add(lineIdx);
+	                    }
+	                }
+	            }
+	        };
+	        
+	        // Clear dismissed state on new lyrics or seek
+	        const clearFullscreenDismissedState = () => {
+	            fsHighlightDismissed.clear();
+	        };
 	        let lastKnownTimeMs = 0;
-	        let bgActiveIndexes = new Set();
-	        // Main-line indexes that were force-hidden by runtime logic.
-	        // Kept for BG visibility sync.
-	        let forcedExitedMainLines = new Set();
-        const getPairedMainLineIndex = (index) => {
-            if (!Array.isArray(lyricPlayer.processedLines)) return -1;
-            if (index > 0 && lyricPlayer.processedLines[index - 1] && !lyricPlayer.processedLines[index - 1].isBG) {
-                return index - 1;
-            }
-            if (
-                index + 1 < lyricPlayer.processedLines.length
-                && lyricPlayer.processedLines[index + 1]
-                && !lyricPlayer.processedLines[index + 1].isBG
-            ) {
-                return index + 1;
-            }
-            return -1;
-        };
-	        const isMainLineStillVisible = (index) => {
-	            if (index < 0) return false;
-	            if (forcedExitedMainLines.has(index)) return false;
-	            if (lyricPlayer.hotLines?.has(index) || lyricPlayer.bufferedLines?.has(index)) {
-	                return true;
-	            }
-	            const mainObj = lyricPlayer.currentLyricLineObjects?.[index];
-	            return mainObj?.isEnabled === true;
-	        };
-        const enforceBGTimingWindows = (timeMs, force = false) => {
-            if (!Array.isArray(lyricPlayer.currentLyricLineObjects)) {
-                bgActiveIndexes = new Set();
-                return false;
-            }
-
-            const lines = lyricPlayer.processedLines;
-            const nextActive = new Set();
-            let layoutChanged = false;
-            const isPlaying = typeof lyricPlayer.getIsPlaying === "function"
-                ? lyricPlayer.getIsPlaying()
-                : true;
-
-            // Only consider BG lines that are relevant right now:
-            // - previously active BG lines
-            // - BG lines already in hot/buffered sets
-            // - BG lines paired with currently-hot main lines (core may have enabled them early)
-            const candidateIndexes = new Set();
-            const addIndex = (idx) => {
-                if (!Number.isInteger(idx) || idx < 0) return;
-                candidateIndexes.add(idx);
-            };
-            for (const idx of bgActiveIndexes) addIndex(idx);
-            for (const idx of (lyricPlayer.hotLines ?? [])) {
-                addIndex(idx);
-                const maybeMain = lines?.[idx];
-                if (maybeMain && !maybeMain.isBG) {
-                    const bgIdx = findPairedBgIndex(idx);
-                    if (bgIdx !== -1) addIndex(bgIdx);
-                }
-            }
-            for (const idx of (lyricPlayer.bufferedLines ?? [])) addIndex(idx);
-
-            for (const idx of candidateIndexes) {
-                const lineObj = lyricPlayer.currentLyricLineObjects[idx];
-                const line = lineObj?.getLine?.() ?? lineObj?.lyricLine;
-                if (!line?.isBG) continue;
-
-                const pairedMainIndex = getPairedMainLineIndex(idx);
-                const mainStillVisible =
-                    isMainLineStillVisible(pairedMainIndex)
-                    || nearSwitchRetreatMeta.has(pairedMainIndex);
-                const inOwnTimeWindow =
-                    Number.isFinite(line.startTime)
-                    && Number.isFinite(line.endTime)
-                    && timeMs >= line.startTime
-                    && timeMs < line.endTime;
-                const started = Number.isFinite(line.startTime) && timeMs >= line.startTime;
-                const mainForcedExit = forcedExitedMainLines.has(pairedMainIndex);
-                const shouldBeActive = !mainForcedExit && (inOwnTimeWindow || (started && mainStillVisible));
-                const wasActive = bgActiveIndexes.has(idx);
-                const isEnabled = lineObj?.isEnabled === true;
-
-                if (shouldBeActive) {
-                    nextActive.add(idx);
-                    if (!lyricPlayer.hotLines?.has(idx)) {
-                        lyricPlayer.hotLines?.add(idx);
-                        layoutChanged = true;
-                    }
-                    if (!lyricPlayer.bufferedLines?.has(idx)) {
-                        lyricPlayer.bufferedLines?.add(idx);
-                        layoutChanged = true;
-                    }
-                    if (!isEnabled && typeof lineObj?.enable === "function") {
-                        lineObj.enable(timeMs, isPlaying);
-                    }
-                    if ((force || !wasActive) && typeof lineObj?.setMaskAnimationState === "function") {
-                        lineObj.setMaskAnimationState(timeMs);
-                    }
-                } else {
-                    if (lyricPlayer.hotLines?.has(idx)) {
-                        lyricPlayer.hotLines.delete(idx);
-                        layoutChanged = true;
-                    }
-                    if (lyricPlayer.bufferedLines?.has(idx)) {
-                        lyricPlayer.bufferedLines.delete(idx);
-                        layoutChanged = true;
-                    }
-                    // Core can enable BG lines early when a main line becomes hot. Always disable if it's enabled
-                    // but not within its own timing window (prevents "plays twice" and early animation).
-                    if ((wasActive || isEnabled) && typeof lineObj?.disable === "function") {
-                        lineObj.disable();
-                    }
-                }
-            }
-
-            bgActiveIndexes = nextActive;
-            return layoutChanged;
-        };
-
-	        // Ensure time is integer ms and keep x-bg activation tied to its own begin/end.
 	        const coreSetCurrentTime = lyricPlayer.setCurrentTime.bind(lyricPlayer);
-	        const findPairedBgIndex = (mainIndex) => {
-	            if (!Array.isArray(lyricPlayer.processedLines)) return -1;
-	            const bgIndex = mainIndex + 1;
-	            if (bgIndex >= 0 && bgIndex < lyricPlayer.processedLines.length && lyricPlayer.processedLines[bgIndex]?.isBG) {
-	                return bgIndex;
+	        const originalSetCurrentTime = (ms, force = false) => {
+	            const timeMs = Math.max(0, Math.floor(ms));
+	            lastKnownTimeMs = timeMs;
+	            coreSetCurrentTime(timeMs, force);
+	            if (fullscreenOpaqueLyricsMode) {
+	                enforceFullscreenNormalCompositing();
+	                patchFullscreenLineOpacityBehavior();
+	            } else if (fullscreenCoverBlurMode) {
+	                syncCoverBlurRootState();
 	            }
-	            return -1;
-	        };
-        const originalSetCurrentTime = (ms, force = false) => {
-            const timeMs = Math.max(0, Math.floor(ms));
-            const delta = Math.abs(timeMs - lastKnownTimeMs);
-            lastKnownTimeMs = timeMs;
-            forcedExitedMainLines = new Set();
-            coreSetCurrentTime(timeMs, force);
-            if (fullscreenOpaqueLyricsMode) {
-                enforceFullscreenNormalCompositing();
-                patchFullscreenLineOpacityBehavior();
-            } else if (fullscreenCoverBlurMode) {
-                syncCoverBlurRootState();
-            }
-            const layoutDirty = enforceBGTimingWindows(timeMs, force || delta > 500);
-            applyNearSwitchRetreatVisual(timeMs);
-            if (layoutDirty && typeof lyricPlayer.calcLayout === "function") {
-                lyricPlayer.calcLayout();
-            }
+	            // Always update parallel highlight tracking for fullscreen modes
+	            if (fullscreenOpaqueLyricsMode || fullscreenCoverBlurMode) {
+	                updateFullscreenParallelHighlightState();
+	            }
 	        };
 	        lyricPlayer.setCurrentTime = originalSetCurrentTime;
-	        let leadInMs = 300;
-	        let generalLeadInMs = 0;
-	        let nearSwitchGapMs = 70;
-	        let nearSwitchWordLeadInRatio = 0.6;
-	        let fullscreenLineSwitchAdvanceMs = 80;
 	        let timeOffsetMs = 0;
 	        let lastTTML = "";
 	        let lineTimingOnlyMode = false;
-	        let nearSwitchRetreatMeta = new Map(); // lineIndex -> { retreatStart, retreatEnd, maskFrom, maskTo, actualRetreatStart?, actualRetreatEnd? }
 	        const hasEffectiveWordTiming = (line) => {
 	            if (!line || !Array.isArray(line.words) || line.words.length < 2) return false;
 	            const pairs = new Set();
@@ -2615,88 +2505,6 @@
 	                if (pairs.size > 1) return true;
 	            }
 	            return false;
-	        };
-	        const hasTailHighlightOverflow = (line, newEnd) => {
-	            if (!line || !Array.isArray(line.words) || !Number.isFinite(newEnd)) return false;
-	            return line.words.some((word) => Number.isFinite(word?.endTime) && word.endTime > newEnd);
-	        };
-        const applyNearSwitchRetreatVisual = (timeMs) => {
-            if (!Array.isArray(lyricPlayer.currentLyricLineObjects) || nearSwitchRetreatMeta.size === 0) {
-                return;
-            }
-            for (const [idx, meta] of nearSwitchRetreatMeta.entries()) {
-	                const obj = lyricPlayer.currentLyricLineObjects[idx];
-	                const mainElement = obj?.element?.children?.[0];
-	                if (!obj || !mainElement || !meta) continue;
-	
-                const retreatStart = Number.isFinite(meta.retreatStart) ? meta.retreatStart : null;
-                const retreatEnd = Number.isFinite(meta.retreatEnd) ? meta.retreatEnd : null;
-                const maskFrom = Number.isFinite(meta.maskFrom) ? meta.maskFrom : null;
-                const maskTo = Number.isFinite(meta.maskTo) ? meta.maskTo : null;
-                const disableOpacityFade = fullscreenOpaqueLyricsMode === true || fullscreenCoverBlurMode === true;
-                if (
-                    retreatStart === null || retreatEnd === null || retreatEnd <= retreatStart
-                    || maskFrom === null || maskTo === null || maskTo <= maskFrom
-                ) {
-                    mainElement.style.opacity = "";
-	                    nearSwitchRetreatMeta.delete(idx);
-	                    continue;
-	                }
-	
-	                // Strict rule: do not compress while line is still in normal (enabled) display state.
-	                if (obj.isEnabled === true) {
-	                    mainElement.style.opacity = "";
-	                    continue;
-	                }
-
-                if (timeMs < retreatStart) {
-                    mainElement.style.opacity = "";
-                    continue;
-                }
-
-                const retreatDuration = Math.max(1, retreatEnd - retreatStart);
-                // For line-timing-only fullscreen mode, delay opacity fade until highlight transition completes
-                const isFullscreenLineTiming = lineTimingOnlyMode && (fullscreenOpaqueLyricsMode || fullscreenCoverBlurMode);
-                const fadeDelayMs = isFullscreenLineTiming ? 350 : 0; // Wait for highlight fade (180ms delay + 150ms fade)
-                const adjustedTimeMs = timeMs - retreatStart > fadeDelayMs ? timeMs - fadeDelayMs : retreatStart;
-                
-                if (!Number.isFinite(meta.actualRetreatStart) || !Number.isFinite(meta.actualRetreatEnd)) {
-                    meta.actualRetreatStart = adjustedTimeMs;
-                    meta.actualRetreatEnd = adjustedTimeMs + retreatDuration;
-                }
-
-                const actualRetreatStart = meta.actualRetreatStart;
-                const actualRetreatEnd = meta.actualRetreatEnd;
-
-                if (timeMs >= actualRetreatEnd + fadeDelayMs) {
-                    if (typeof obj?.setMaskAnimationState === "function") {
-                        obj.setMaskAnimationState(maskTo);
-                    }
-                    mainElement.style.opacity = "";
-                    if (timeMs > actualRetreatEnd + 150 + fadeDelayMs) {
-                        nearSwitchRetreatMeta.delete(idx);
-                    }
-                    continue;
-                }
-
-                // Skip opacity fade during delay period for fullscreen line-timing mode
-                if (isFullscreenLineTiming && (timeMs - retreatStart) < fadeDelayMs) {
-                    mainElement.style.opacity = "";
-                    continue;
-                }
-
-                const progress = Math.max(0, Math.min(1, (timeMs - actualRetreatStart) / (actualRetreatEnd - actualRetreatStart)));
-	                const virtualMaskTime = maskFrom + (maskTo - maskFrom) * progress;
-	                if (typeof obj?.setMaskAnimationState === "function") {
-	                    obj.setMaskAnimationState(virtualMaskTime);
-	                }
-                    if (disableOpacityFade) {
-                        mainElement.style.opacity = "";
-                        continue;
-                    }
-	                const fade = 1 - progress * 0.55;
-	                mainElement.style.opacity = `${Math.max(0.18, Math.min(1, fade))}`;
-	            }
 	        };
 	        const normalizeMainLinesForLineTimingMode = (lines) => {
 	            if (!Array.isArray(lines) || lines.length === 0) return false;
@@ -2728,151 +2536,6 @@
 	                }];
 	            }
 	            return true;
-	        };
-	        const shiftLineStartEarlier = (line, shift, wordShift = shift) => {
-	            if (!line || !Number.isFinite(shift) || shift <= 0) return;
-	            const oldStart = Number.isFinite(line.startTime) ? line.startTime : 0;
-	            const newStart = Math.max(0, oldStart - shift);
-	            line.startTime = newStart;
-	            if (!Array.isArray(line.words) || !Number.isFinite(wordShift) || wordShift <= 0) return;
-	            for (const word of line.words) {
-	                if (Number.isFinite(word.startTime)) {
-	                    word.startTime = Math.max(0, word.startTime - wordShift);
-	                }
-	                if (Number.isFinite(word.endTime)) {
-	                    word.endTime = Math.max(
-	                        Number.isFinite(word.startTime) ? word.startTime : 0,
-	                        word.endTime - wordShift
-	                    );
-	                }
-	            }
-	        };
-	        const applyFullscreenLineSwitchAdvance = (lines) => {
-	            if (!Array.isArray(lines) || lines.length === 0) return;
-	            if (!isFullscreenSurface || !fullscreenOpaqueLyricsMode || !lineTimingOnlyMode) return;
-	            if (!Number.isFinite(fullscreenLineSwitchAdvanceMs) || fullscreenLineSwitchAdvanceMs <= 0) return;
-	            const mainIndexes = [];
-	            for (let i = 0; i < lines.length; i++) {
-	                const line = lines[i];
-	                if (line && !line.isBG) mainIndexes.push(i);
-	            }
-	            if (mainIndexes.length === 0) return;
-
-	            for (const idx of mainIndexes) {
-	                const line = lines[idx];
-	                if (!Number.isFinite(line?.startTime)) continue;
-	                const newStart = Math.max(0, line.startTime - fullscreenLineSwitchAdvanceMs);
-	                line.startTime = newStart;
-	                if (Number.isFinite(line.endTime)) {
-	                    line.endTime = Math.max(newStart + 1, line.endTime);
-	                }
-	            }
-
-	            // Prevent overlap after advancing starts: ensure previous main line ends
-	            // before the next main line starts.
-	            for (let i = 0; i < mainIndexes.length - 1; i++) {
-	                const current = lines[mainIndexes[i]];
-	                const next = lines[mainIndexes[i + 1]];
-	                if (!current || !next) continue;
-	                if (!Number.isFinite(current.endTime) || !Number.isFinite(next.startTime)) continue;
-	                const currentStart = Number.isFinite(current.startTime) ? current.startTime : 0;
-	                const maxEnd = Math.max(currentStart + 1, next.startTime - 1);
-	                if (current.endTime > maxEnd) {
-	                    current.endTime = maxEnd;
-	                    if (Array.isArray(current.words)) {
-	                        for (const word of current.words) {
-	                            if (!Number.isFinite(word?.endTime)) continue;
-	                            const wordStart = Number.isFinite(word?.startTime) ? word.startTime : 0;
-	                            word.endTime = Math.max(wordStart, Math.min(word.endTime, current.endTime));
-	                        }
-	                    }
-	                }
-	            }
-	        };
-	        const applyNearSwitchLeadIn = (lines) => {
-	            if (!Array.isArray(lines) || lines.length === 0) return;
-	            const hasNearLeadIn = Number.isFinite(leadInMs) && leadInMs > 0 && Number.isFinite(nearSwitchGapMs) && nearSwitchGapMs > 0;
-	            const hasGeneralLeadIn = Number.isFinite(generalLeadInMs) && generalLeadInMs > 0;
-	            if (!hasNearLeadIn && !hasGeneralLeadIn) return;
-	
-	            const mainIndexes = [];
-	            for (let i = 0; i < lines.length; i++) {
-	                const line = lines[i];
-	                if (line && !line.isBG) mainIndexes.push(i);
-	            }
-	            if (mainIndexes.length < 2) return;
-	
-	            const startShiftByIndex = new Map();
-	            const startWordShiftByIndex = new Map();
-	            const endShiftByIndex = new Map();
-	            nearSwitchRetreatMeta = new Map();
-	            const getPairedBg = (mainIdx) => {
-	                const bgIdx = mainIdx + 1;
-	                return lines[bgIdx]?.isBG ? bgIdx : -1;
-	            };
-	
-	            for (let i = 0; i < mainIndexes.length - 1; i++) {
-	                const currentIndex = mainIndexes[i];
-	                const nextIndex = mainIndexes[i + 1];
-	                const currentLine = lines[currentIndex];
-	                const nextLine = lines[nextIndex];
-	                if (!currentLine || !nextLine) continue;
-	
-	                const currentStart = Number.isFinite(currentLine.startTime) ? currentLine.startTime : 0;
-	                const currentEnd = Number.isFinite(currentLine.endTime) ? currentLine.endTime : currentStart;
-	                const nextStart = Number.isFinite(nextLine.startTime) ? nextLine.startTime : currentEnd;
-	                const currentDuration = Math.max(0, currentEnd - currentStart);
-	                const nextHeadroom = Math.max(0, nextStart);
-	                const budget = Math.min(currentDuration, nextHeadroom);
-	                if (!(budget > 0)) continue;
-	                const gap = nextStart - currentEnd;
-	                const baseShift = hasGeneralLeadIn ? Math.min(generalLeadInMs, budget) : 0;
-	                const nearEligible = hasNearLeadIn && gap >= 0 && gap < nearSwitchGapMs;
-	                const nearExtra = nearEligible ? Math.min(leadInMs, Math.max(0, budget - baseShift)) : 0;
-	                const shift = baseShift + nearExtra;
-	                if (!(shift > 0)) continue;
-	
-	                endShiftByIndex.set(currentIndex, Math.max(endShiftByIndex.get(currentIndex) ?? 0, shift));
-	                startShiftByIndex.set(nextIndex, Math.max(startShiftByIndex.get(nextIndex) ?? 0, shift));
-	                const mainWordShift = Math.max(0, Math.min(shift, shift * nearSwitchWordLeadInRatio));
-	                startWordShiftByIndex.set(nextIndex, Math.max(startWordShiftByIndex.get(nextIndex) ?? 0, mainWordShift));
-                const nextBgIndex = getPairedBg(nextIndex);
-                if (nextBgIndex !== -1) {
-                    // BG under an early-switched main line must receive the same lead-in.
-                    startShiftByIndex.set(nextBgIndex, Math.max(startShiftByIndex.get(nextBgIndex) ?? 0, shift));
-                    startWordShiftByIndex.set(nextBgIndex, Math.max(startWordShiftByIndex.get(nextBgIndex) ?? 0, mainWordShift));
-	                }
-	            }
-
-	            for (const [idx, shift] of startShiftByIndex.entries()) {
-	                const line = lines[idx];
-	                if (!line) continue;
-	                const lineHasWordTiming = hasEffectiveWordTiming(line);
-	                const wordShift = lineHasWordTiming
-	                    ? Math.max(0, Math.min(shift, startWordShiftByIndex.get(idx) ?? shift))
-	                    : shift;
-	                shiftLineStartEarlier(line, shift, wordShift);
-	            }
-	
-	            for (const [idx, shift] of endShiftByIndex.entries()) {
-	                const line = lines[idx];
-	                if (!line) continue;
-	                const oldEnd = Number.isFinite(line.endTime) ? line.endTime : line.startTime;
-	                const lineStart = Number.isFinite(line.startTime) ? line.startTime : 0;
-	                const newEnd = Math.max(lineStart + 1, oldEnd - shift);
-	                const needsRetreatCompression = hasTailHighlightOverflow(line, newEnd);
-	                line.endTime = newEnd;
-	                if (!line.isBG && needsRetreatCompression) {
-	                    const retreatWindow = Math.max(60, Math.min(220, oldEnd - newEnd));
-	                    nearSwitchRetreatMeta.set(idx, {
-	                        // Strict rule: no compression while line is still in normal display.
-	                        retreatStart: newEnd,
-	                        retreatEnd: newEnd + retreatWindow,
-	                        maskFrom: newEnd,
-	                        maskTo: oldEnd,
-	                    });
-	                }
-	            }
 	        };
         const applyTimeOffset = (line) => {
 	            if (!line) return;
@@ -3057,12 +2720,12 @@
             setLyrics: (ttml) => {
                 if (!ttml) {
                     lyricPlayer.setLyricLines([]);
-                    bgActiveIndexes = new Set();
                     lineTimingOnlyMode = false;
                     lyricPlayer.isNonDynamic = false;
                     lyricPlayer.getElement().classList.remove("fs-line-timing-only");
                     console.log("[LyricsRenderer] Cleared lyrics");
                     lastTTML = "";
+                    clearFullscreenDismissedState();
                     return;
                 }
 	                try {
@@ -3077,29 +2740,14 @@
                                     "fs-line-timing-only",
                                     lineTimingOnlyMode === true
                                 );
-	                    try {
-	                        applyNearSwitchLeadIn(lines);
-	                    } catch (e) {
-	                        console.error("[LyricsRenderer] applyNearSwitchLeadIn error:", e);
-	                    }
-	                    applyFullscreenLineSwitchAdvance(lines);
+	                    // Capture original timing before core modifies it
 	                    const timingSnapshot = captureTimingSnapshot(lines);
-				                    // Preserve TTML intent (no mutation of duet/bg/ordering).
-				                    lyricPlayer.setLyricLines(lines);
-                                    if (fullscreenOpaqueLyricsMode) {
-                                        enforceFullscreenNormalCompositing();
-                                        patchFullscreenLineOpacityBehavior();
-                                    } else if (fullscreenCoverBlurMode) {
-                                        syncCoverBlurRootState();
-                                        patchCoverBlurLineBehavior();
-                                    }
-				                    const currentMs = Number.isFinite(lastKnownTimeMs)
-				                        ? lastKnownTimeMs
-				                        : (lyricPlayer.getCurrentTime ? lyricPlayer.getCurrentTime() : 0);
-	                    // Undo core timing normalization so x-bg keeps original line/word timing.
+	                    // Let AMLL core process the lyrics (it will normalize BG/main line timing)
+	                    lyricPlayer.setLyricLines(lines);
+	                    // Restore original TTML timing so core's hotLines/bufferedLines
+	                    // can handle parallel lyrics based on actual overlap
 	                    restoreTimingSnapshot(timingSnapshot);
-	                    // Core may have already generated mask animations based on its normalized timing.
-	                    // Rebuild masks for currently-built lines so per-word highlight uses restored TTML timing.
+	                    // Rebuild masks for currently-built lines so per-word highlight uses restored timing
 	                    if (Array.isArray(lyricPlayer.currentLyricLineObjects)) {
 	                        for (const obj of lyricPlayer.currentLyricLineObjects) {
 	                            if (obj?.built && typeof obj.updateMaskImageSync === "function") {
@@ -3107,20 +2755,29 @@
 	                            }
 	                        }
 	                    }
-	                    assertXBgTiming(ttml, lines);
-		                    // Re-align playback position after (re)loading lyrics.
-		                    originalSetCurrentTime(currentMs, true);
-                            externalTimeMs = currentMs;
-                            externalTimeAnchorPerfMs = performance.now();
-		                    console.log("[LyricsRenderer] Loaded lines:", lines.length);
-		                } catch (e) {
+	                    if (fullscreenOpaqueLyricsMode) {
+	                        enforceFullscreenNormalCompositing();
+	                        patchFullscreenLineOpacityBehavior();
+	                    } else if (fullscreenCoverBlurMode) {
+	                        syncCoverBlurRootState();
+	                        patchCoverBlurLineBehavior();
+	                    }
+	                    const currentMs = Number.isFinite(lastKnownTimeMs)
+	                        ? lastKnownTimeMs
+	                        : (lyricPlayer.getCurrentTime ? lyricPlayer.getCurrentTime() : 0);
+	                    originalSetCurrentTime(currentMs, true);
+	                    externalTimeMs = currentMs;
+	                    externalTimeAnchorPerfMs = performance.now();
+	                    clearFullscreenDismissedState();
+	                    console.log("[LyricsRenderer] Loaded lines:", lines.length);
+                } catch (e) {
                     console.error("[LyricsRenderer] TTML Parse Error:", e);
                     lyricPlayer.setLyricLines([]);
-                    bgActiveIndexes = new Set();
                     lineTimingOnlyMode = false;
                     lyricPlayer.isNonDynamic = false;
                     lyricPlayer.getElement().classList.remove("fs-line-timing-only");
                     lastTTML = "";
+                    clearFullscreenDismissedState();
                     console.log("[LyricsRenderer] Cleared lyrics due to parse error");
                 }
             },
@@ -3129,6 +2786,13 @@
 	                const timeInMs = Math.max(0, Math.floor(seconds * 1000));
 	                // If AMLL hasn't finished its first layout yet, non-forced setCurrentTime is ignored.
 	                const needsForce = lyricPlayer.initialLayoutFinished === false;
+	                
+	                // Detect seek: significant time jump (> 500ms)
+	                const timeDelta = Math.abs(timeInMs - lastKnownTimeMs);
+	                if (timeDelta > 500) {
+	                    clearFullscreenDismissedState();
+	                }
+	                
 	                originalSetCurrentTime(timeInMs, needsForce);
                     externalTimeMs = timeInMs;
                     externalTimeAnchorPerfMs = performance.now();
@@ -3405,34 +3069,6 @@
                             lyricPlayer.getElement().style.textShadow = "";
                         }
                     }
-	                    if (typeof config.leadInMs === "number" && !Number.isNaN(config.leadInMs)) {
-	                        const nextLeadInMs = Math.max(0, Math.min(1200, config.leadInMs));
-	                        if (nextLeadInMs !== leadInMs) {
-	                            leadInMs = nextLeadInMs;
-	                            needsLyricsReload = true;
-	                        }
-	                    }
-	                    if (typeof config.generalLeadInMs === "number" && !Number.isNaN(config.generalLeadInMs)) {
-	                        const nextGeneralLeadInMs = Math.max(0, Math.min(1200, config.generalLeadInMs));
-	                        if (nextGeneralLeadInMs !== generalLeadInMs) {
-	                            generalLeadInMs = nextGeneralLeadInMs;
-	                            needsLyricsReload = true;
-	                        }
-	                    }
-	                    if (typeof config.nearSwitchGapMs === "number" && !Number.isNaN(config.nearSwitchGapMs)) {
-	                        const nextNearSwitchGapMs = Math.max(0, Math.min(300, config.nearSwitchGapMs));
-	                        if (nextNearSwitchGapMs !== nearSwitchGapMs) {
-	                            nearSwitchGapMs = nextNearSwitchGapMs;
-	                            needsLyricsReload = true;
-	                        }
-	                    }
-	                    if (typeof config.nearSwitchWordLeadInRatio === "number" && !Number.isNaN(config.nearSwitchWordLeadInRatio)) {
-	                        const nextRatio = Math.max(0, Math.min(1, config.nearSwitchWordLeadInRatio));
-	                        if (nextRatio !== nearSwitchWordLeadInRatio) {
-	                            nearSwitchWordLeadInRatio = nextRatio;
-	                            needsLyricsReload = true;
-	                        }
-	                    }
 	                    if (typeof config.timeOffsetMs === "number" && !Number.isNaN(config.timeOffsetMs)) {
 	                        const nextTimeOffsetMs = Math.max(-15000, Math.min(15000, config.timeOffsetMs));
 	                        if (nextTimeOffsetMs !== timeOffsetMs) {
