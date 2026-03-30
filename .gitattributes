@@ -1,0 +1,8 @@
+# GitHub Linguist - Exclude AMLL directories from language statistics
+# Documentation: https://github.com/github/linguist/blob/master/docs/overrides.md
+
+# AMLL runtime resources
+myPlayer2/Resources/AMLL/** linguist-vendored
+
+# AMLL full source project
+applemusic-like-lyrics-full-refractor/** linguist-vendored
