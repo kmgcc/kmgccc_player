@@ -76,7 +76,9 @@ struct MainLayoutView: View {
                         }
                     }
                     .navigationTitle("")
+                    .id("main-detail-content")
                 }
+                .id("main-split-view")
                 .navigationSplitViewStyle(.balanced)
                 .ignoresSafeArea(.container, edges: [.top, .bottom])
             }
@@ -94,10 +96,19 @@ struct MainLayoutView: View {
                     window.titleVisibility = .hidden
                 }
             )
-            .task {
+            .task(id: libraryVM.state) {
+                // Only load when state is .loading (initial or refresh).
+                // This prevents re-execution when view re-appears due to sheet dismiss.
+                guard libraryVM.state == .loading else {
+                    print("[Lifecycle] MainLayoutView.task - skipped (already loaded)")
+                    return
+                }
+                print("[Lifecycle] MainLayoutView.task - libraryVM id: \(ObjectIdentifier(libraryVM)), state: \(libraryVM.state)")
                 await libraryVM.load()
+                print("[Lifecycle] MainLayoutView.task - libraryVM.load() DONE, playlists count: \(libraryVM.playlists.count)")
             }
             .onAppear {
+                print("[Lifecycle] MainLayoutView.onAppear")
                 columnVisibility = uiState.sidebarVisible ? .all : .detailOnly
                 updateWindowWidth(proxy.size.width)
             }
@@ -242,6 +253,7 @@ struct MainLayoutView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .id("library-layout")
     }
 
     private var nowPlayingLayout: some View {

@@ -30,11 +30,13 @@ actor LibraryTrackSnapshotBuilder {
     private init() {}
 
     /// Build a snapshot for a playlist asynchronously.
+    /// Returns nil when the build was cancelled or superseded, so callers can
+    /// keep the current UI instead of replacing it with an empty snapshot.
     func buildSnapshot(
         playlistID: UUID,
         tracks: [TrackRowBuildInput],
         targetPixelSize: CGSize
-    ) async -> PlaylistViewSnapshot {
+    ) async -> PlaylistViewSnapshot? {
         let generation = buildGeneration
         let batchSize = 50
         var trackIDs: [UUID] = []
@@ -43,7 +45,7 @@ actor LibraryTrackSnapshotBuilder {
 
         for (index, track) in tracks.enumerated() {
             if Task.isCancelled || generation != buildGeneration {
-                return PlaylistViewSnapshot.empty
+                return nil
             }
 
             let checksum = ArtworkLoader.checksum(for: track.artworkData)
@@ -76,7 +78,7 @@ actor LibraryTrackSnapshotBuilder {
         }
 
         if generation != buildGeneration {
-            return PlaylistViewSnapshot.empty
+            return nil
         }
 
         return PlaylistViewSnapshot(

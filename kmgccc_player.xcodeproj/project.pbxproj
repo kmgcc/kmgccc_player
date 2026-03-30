@@ -10,6 +10,7 @@
 		933AAE3F2F3CCBBB0081B59C /* BKArt.bundle in Resources */ = {isa = PBXBuildFile; fileRef = 933AADFD2F3CC8D40081B59C /* BKArt.bundle */; };
 		933AAE422F3CCCDF0081B59C /* BKThemes in Resources */ = {isa = PBXBuildFile; fileRef = 933AAE412F3CCCDF0081B59C /* BKThemes */; };
 		9351198E2F33149A00766A5F /* AMLL in Resources */ = {isa = PBXBuildFile; fileRef = 9351198D2F33149A00766A5F /* AMLL */; };
+		938818D32F7925E800880C23 /* WhatsNewKit in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000002 /* WhatsNewKit */; };
 		93CF3F832F344E9F0004C8E3 /* lddc-server in Resources */ = {isa = PBXBuildFile; fileRef = 93CF3F822F344E9F0004C8E3 /* lddc-server */; };
 /* End PBXBuildFile section */
 
@@ -110,6 +111,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				938818D32F7925E800880C23 /* WhatsNewKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -180,6 +182,7 @@
 			);
 			name = kmgccc_player;
 			packageProductDependencies = (
+				AA0000000000000000000002 /* WhatsNewKit */,
 			);
 			productName = myPlayer2;
 			productReference = 935118922F3231C500766A5F /* kmgccc_player.app */;
@@ -213,6 +216,9 @@
 			);
 			mainGroup = 935118892F3231C500766A5F;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				AA0000000000000000000001 /* XCRemoteSwiftPackageReference "WhatsNewKit" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 935118932F3231C500766A5F /* Products */;
 			projectDirPath = "";
@@ -580,6 +586,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		AA0000000000000000000001 /* XCRemoteSwiftPackageReference "WhatsNewKit" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/SvenTiigi/WhatsNewKit.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.0.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		AA0000000000000000000002 /* WhatsNewKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA0000000000000000000001 /* XCRemoteSwiftPackageReference "WhatsNewKit" */;
+			productName = WhatsNewKit;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 9351188A2F3231C500766A5F /* Project object */;
 }

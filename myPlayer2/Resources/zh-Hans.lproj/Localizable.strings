@@ -94,8 +94,8 @@
 // MARK: - Settings About
 "settings.about.version" = "版本 %@";
 "settings.about.quote" = "“Where words fail, music speaks.”";
-"settings.about.compliance" = "开源与合规";
-"settings.about.compliance_desc" = "本程序包含并修改了受 AGPL-3.0 和 GPL-3.0 许可的开源软件。";
+"settings.about.compliance" = "开源与鸣谢";
+"settings.about.compliance_desc" = "本程序包含并修改了以下开源软件。";
 "settings.about.source_code" = "源代码";
 "settings.about.source_code_desc" = "本程序为开源软件。此版本的完整相应源代码可在以下地址获得：";
 "settings.about.license" = "根据 GNU Affero General Public License v3.0 (AGPL-3.0) 授权。";

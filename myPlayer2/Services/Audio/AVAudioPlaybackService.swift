@@ -150,7 +150,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             return
         }
 
-        if wasPlaying, let track = savedTrack, let file = audioFile {
+        if wasPlaying, let _ = savedTrack, let file = audioFile {
             let targetFrame = AVAudioFramePosition(savedTime * sampleRate)
             let totalFrames = file.length
 

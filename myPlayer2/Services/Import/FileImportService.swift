@@ -369,7 +369,7 @@ final class FileImportService: FileImportServiceProtocol {
         let isTTML = embeddedLyrics?.lowercased().contains("<tt") ?? false
 
         var ttmlLyricText: String?
-        var genericLyricsText: String?
+        let genericLyricsText: String? = nil
 
         if isTTML {
             ttmlLyricText = embeddedLyrics

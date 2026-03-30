@@ -97,9 +97,11 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             .presentationSizing(.page)
         }
         .onAppear {
+            print("[PlaylistDetail] onAppear - currentSelection: \(libraryVM.currentSelection), allTracks count: \(libraryVM.allTracks.count), totalTrackCount: \(libraryVM.totalTrackCount)")
             scheduleRebuild(reason: "appear", restoreScroll: true)
         }
         .onDisappear {
+            print("[PlaylistDetail] onDisappear")
             prefetchTask?.cancel()
             prefetchTask = nil
             rebuildTask?.cancel()
@@ -110,13 +112,16 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
                 await LibraryTrackSnapshotBuilder.shared.cancelBuild()
             }
         }
-        .onChange(of: libraryVM.selectedPlaylist?.id) { _, _ in
+        .onChange(of: libraryVM.selectedPlaylist?.id) { oldVal, newVal in
+            print("[PlaylistDetail] selectedPlaylist changed from \(oldVal?.uuidString ?? "nil") to \(newVal?.uuidString ?? "nil")")
             scheduleRebuild(reason: "playlist", restoreScroll: true)
         }
-        .onChange(of: libraryVM.selectedArtistKey) { _, _ in
+        .onChange(of: libraryVM.selectedArtistKey) { oldVal, newVal in
+            print("[PlaylistDetail] selectedArtistKey changed from \(oldVal ?? "nil") to \(newVal ?? "nil")")
             scheduleRebuild(reason: "artist", restoreScroll: true)
         }
-        .onChange(of: libraryVM.selectedAlbumKey) { _, _ in
+        .onChange(of: libraryVM.selectedAlbumKey) { oldVal, newVal in
+            print("[PlaylistDetail] selectedAlbumKey changed from \(oldVal ?? "nil") to \(newVal ?? "nil")")
             scheduleRebuild(reason: "album", restoreScroll: true)
         }
         .onChange(of: searchText) { _, _ in
@@ -130,7 +135,8 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             sortSymbolEffectTrigger += 1
             scheduleRebuild(reason: "sortOrder")
         }
-        .onChange(of: libraryVM.totalTrackCount) { _, _ in
+        .onChange(of: libraryVM.totalTrackCount) { oldVal, newVal in
+            print("[PlaylistDetail] totalTrackCount changed from \(oldVal) to \(newVal)")
             scheduleRebuild(reason: "trackCount", restoreScroll: true)
         }
         .onChange(of: libraryVM.refreshTrigger) { _, _ in
@@ -139,6 +145,16 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         .onChange(of: libraryVM.searchResetTrigger) { _, _ in
             searchText = ""
             isSearchFocused = false
+        }
+        .onChange(of: libraryVM.state) { oldVal, newVal in
+            print("[PlaylistDetail] libraryVM.state changed from \(oldVal) to \(newVal)")
+            if newVal == .loaded {
+                scheduleRebuild(reason: "state_loaded", restoreScroll: true)
+            }
+        }
+        .onChange(of: libraryVM.currentSelection) { oldVal, newVal in
+            print("[PlaylistDetail] currentSelection changed from \(oldVal) to \(newVal)")
+            scheduleRebuild(reason: "selection", restoreScroll: true)
         }
     }
 
@@ -718,6 +734,7 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         debounceNanoseconds: UInt64 = 0,
         restoreScroll: Bool = false
     ) {
+        print("[PlaylistDetail] scheduleRebuild called: reason=\(reason), debounce=\(debounceNanoseconds), currentSelection=\(libraryVM.currentSelection), allTracks.count=\(libraryVM.allTracks.count)")
         rebuildTask?.cancel()
         let token = UUID()
         activeRebuildToken = token
@@ -725,7 +742,10 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             if debounceNanoseconds > 0 {
                 try? await Task.sleep(nanoseconds: debounceNanoseconds)
             }
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else { 
+                print("[PlaylistDetail] scheduleRebuild cancelled")
+                return 
+            }
             isRebuilding = true
             await performRebuild(
                 reason: reason,
@@ -768,11 +788,16 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
                 isMissing: $0.availability == .missing
             )
         }
-        let snapshot = await LibraryTrackSnapshotBuilder.shared.buildSnapshot(
+        guard let snapshot = await LibraryTrackSnapshotBuilder.shared.buildSnapshot(
             playlistID: libraryVM.selectedPlaylist?.id ?? UUID(),
             tracks: inputs,
             targetPixelSize: rowPixels
-        )
+        ) else {
+            if activeRebuildToken == token {
+                isRebuilding = false
+            }
+            return
+        }
 
         guard !Task.isCancelled, activeRebuildToken == token else {
             if activeRebuildToken == token {
@@ -803,6 +828,7 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         syncPlayerQueueIfNeeded(with: parentSortedTracks)
         isRebuilding = false
         let rebuildDurationMs = (ProcessInfo.processInfo.systemUptime - rebuildStart) * 1000
+        print("[PlaylistDetail] performRebuild completed: reason=\(reason), displayedTracksCount=\(displayedTracks.count), filteredTracksCount=\(filteredTracks.count), sortedTracksCount=\(sortedTracks.count), durationMs=\(rebuildDurationMs)")
         PlaylistPerfDiagnostics.markListRebuild(
             reason: reason,
             trackCount: snapshot.trackCount,
@@ -811,20 +837,25 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
     }
 
     private func currentDisplayedTracks() -> [Track] {
-        if let playlist = libraryVM.selectedPlaylist {
-            return playlist.tracks.filter { $0.availability != .missing }
-        } else if let artistKey = libraryVM.selectedArtistKey {
+        switch libraryVM.currentSelection {
+        case .allSongs:
+            return libraryVM.allTracks.filter { $0.availability != .missing }
+        case .playlist(let id):
+            if let playlist = libraryVM.playlists.first(where: { $0.id == id }) {
+                return playlist.tracks.filter { $0.availability != .missing }
+            }
+            return []
+        case .artist(let key):
             return libraryVM.allTracks.filter {
-                LibraryNormalization.normalizeArtist($0.artist) == artistKey
+                LibraryNormalization.normalizeArtist($0.artist) == key
                     && $0.availability != .missing
             }
-        } else if let albumKey = libraryVM.selectedAlbumKey {
+        case .album(let key):
             return libraryVM.allTracks.filter {
                 LibraryNormalization.normalizedAlbumKey(album: $0.album, artist: $0.artist)
-                    == albumKey && $0.availability != .missing
+                    == key && $0.availability != .missing
             }
         }
-        return libraryVM.allTracks.filter { $0.availability != .missing }
     }
 
     private func syncPlayerQueueIfNeeded(with tracks: [Track]) {

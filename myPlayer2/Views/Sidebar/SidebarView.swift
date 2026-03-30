@@ -58,7 +58,7 @@ struct SidebarView: View {
 
             // Main Library Link
             Button {
-                libraryVM.selectPlaylist(nil)
+                libraryVM.currentSelection = .allSongs
                 uiState.showLibrary()
             } label: {
                 HStack {
@@ -82,6 +82,7 @@ struct SidebarView: View {
             // Playlists List
             List {
                 Section {
+                    let _ = print("[Lifecycle] SidebarView body, libraryVM id: \(ObjectIdentifier(libraryVM)), playlists count: \(libraryVM.playlists.count)")
                     ForEach(libraryVM.playlists) { playlist in
                         Button {
                             handleSelection(.playlist(playlist.id))
@@ -369,32 +370,29 @@ struct SidebarView: View {
     private func handleSelection(_ item: SidebarSelection) {
         switch item {
         case .allSongs:
-            libraryVM.selectPlaylist(nil)
+            libraryVM.currentSelection = .allSongs
         case .playlist(let id):
-            if let playlist = libraryVM.playlists.first(where: { $0.id == id }) {
-                libraryVM.selectPlaylist(playlist)
-            }
+            libraryVM.currentSelection = .playlist(id)
         case .artist(let key):
-            if let section = libraryVM.runtimeArtists.first(where: { $0.key == key }) {
-                libraryVM.selectArtist(section)
-            }
+            libraryVM.currentSelection = .artist(key)
         case .album(let key):
-            if let section = libraryVM.runtimeAlbums.first(where: { $0.key == key }) {
-                libraryVM.selectAlbum(section)
-            }
+            libraryVM.currentSelection = .album(key)
         }
         uiState.showLibrary()
     }
 
     private var currentSelection: SidebarSelection {
-        if let id = libraryVM.selectedPlaylistId {
+        // Use the explicit currentSelection from LibraryViewModel
+        switch libraryVM.currentSelection {
+        case .allSongs:
+            return .allSongs
+        case .playlist(let id):
             return .playlist(id)
-        } else if let artistKey = libraryVM.selectedArtistKey {
-            return .artist(artistKey)
-        } else if let albumKey = libraryVM.selectedAlbumKey {
-            return .album(albumKey)
+        case .artist(let key):
+            return .artist(key)
+        case .album(let key):
+            return .album(key)
         }
-        return .allSongs
     }
 
     @ViewBuilder

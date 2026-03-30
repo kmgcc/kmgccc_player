@@ -57,6 +57,15 @@ enum LibraryLoadState {
     case loaded
 }
 
+/// Explicit selection type for library content.
+/// Replaces the ambiguous nil-based selection with explicit cases.
+enum LibrarySelection: Hashable {
+    case allSongs
+    case playlist(UUID)
+    case artist(String)
+    case album(String)
+}
+
 /// Observable ViewModel for library content.
 /// Manages playlists and selected playlist state.
 @Observable
@@ -120,6 +129,35 @@ final class LibraryViewModel {
 
     /// Selected album display name for header.
     var selectedAlbumName: String?
+    
+    /// Explicit current selection (replaces ambiguous nil-based selection).
+    /// Default is .allSongs, never nil.
+    var currentSelection: LibrarySelection = .allSongs {
+        didSet {
+            print("[LibraryViewModel] currentSelection changed from \(oldValue) to \(currentSelection)")
+            // Sync legacy properties for backward compatibility during transition
+            switch currentSelection {
+            case .allSongs:
+                selectedPlaylistId = nil
+                selectedArtistKey = nil
+                selectedAlbumKey = nil
+            case .playlist(let id):
+                selectedPlaylistId = id
+                selectedArtistKey = nil
+                selectedAlbumKey = nil
+            case .artist(let key):
+                selectedPlaylistId = nil
+                selectedArtistKey = key
+                selectedAlbumKey = nil
+            case .album(let key):
+                selectedPlaylistId = nil
+                selectedArtistKey = nil
+                selectedAlbumKey = key
+            }
+            selectedAlbumName = nil
+            applySortPreferenceForCurrentSelection()
+        }
+    }
 
     /// Whether data is loading.
     var isLoading: Bool { state == .loading }
@@ -178,7 +216,12 @@ final class LibraryViewModel {
             ) ?? .descending
         migrateLegacySortPreferenceIfNeeded()
         applySortPreferenceForCurrentSelection()
+        print("[Lifecycle] LibraryViewModel.init, id: \(ObjectIdentifier(self))")
         Log.debug("LibraryViewModel initialized", category: .library)
+    }
+
+    deinit {
+        print("[Lifecycle] LibraryViewModel.deinit, id: \(ObjectIdentifier(self))")
     }
 
     /// Set the import service (called after initialization).
@@ -218,6 +261,14 @@ final class LibraryViewModel {
         Log.info("Loaded \(playlists.count) playlists, \(totalTrackCount) total tracks, \(runtimeArtists.count) artists, \(runtimeAlbums.count) albums", category: .library)
 
         state = .loaded
+        
+        // Explicitly set default selection to All Songs after load completes
+        // This ensures the main content area shows All Songs by default
+        if currentSelection == .allSongs {
+            // Trigger selection change to force content refresh even if already .allSongs
+            print("[LibraryViewModel] load() completed - explicitly triggering .allSongs selection")
+            currentSelection = .allSongs
+        }
     }
 
     /// Refresh all data and trigger UI update.
