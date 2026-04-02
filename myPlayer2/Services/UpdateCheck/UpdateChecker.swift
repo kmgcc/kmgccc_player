@@ -40,7 +40,13 @@ final class UpdateChecker: ObservableObject {
         error = nil
         
         do {
-            let (data, response) = try await URLSession.shared.data(from: versionURL)
+            // Add timestamp to bypass GitHub Pages cache
+            let timestamp = Int(Date().timeIntervalSince1970)
+            let urlWithCache = versionURL.appending(queryItems: [
+                URLQueryItem(name: "t", value: String(timestamp))
+            ])
+            
+            let (data, response) = try await URLSession.shared.data(from: urlWithCache)
             
             guard let httpResponse = response as? HTTPURLResponse,
                   httpResponse.statusCode == 200 else {

@@ -18,7 +18,7 @@ final class UpdateWindowManager: NSObject, NSWindowDelegate, ObservableObject {
     private var versionInfo: RemoteVersionInfo?
     private var error: Error?
     
-    var forceShowForTesting: Bool = true
+    var forceShowForTesting: Bool = false
     
     private override init() {
         super.init()
@@ -136,7 +136,7 @@ final class UpdateWindowManager: NSObject, NSWindowDelegate, ObservableObject {
     }
     
     private func openReleasePage() {
-        let urlString = versionInfo?.releaseURL ?? "https://github.com/kmgcc/kmgccc_player/releases"
+        let urlString = "https://github.com/kmgcc/kmgccc_player/releases/latest"
         if let url = URL(string: urlString) {
             NSWorkspace.shared.open(url)
         }
