@@ -35,19 +35,19 @@ final class LyricsWebViewStore: NSObject {
 
     /// Unique identifier for the WebView instance (for logging).
     private let fallbackObjectID: Int
-    
+
     var webView: WKWebView {
         ensureWebView()
     }
-    
+
     var preparedWebView: WKWebView? {
         retainedWebView
     }
-    
+
     var hasPreparedWebView: Bool {
         retainedWebView != nil
     }
-    
+
     var webViewObjectID: Int {
         retainedWebView.map { ObjectIdentifier($0).hashValue } ?? fallbackObjectID
     }
@@ -133,12 +133,15 @@ final class LyricsWebViewStore: NSObject {
         guard !isShutDown else { return }
         isShutDown = true
 
+        // Cancel all pending operations
         pendingApplyTrack?.cancel()
         pendingApplyTrack = nil
         pendingVisibleLayerProbe?.cancel()
         pendingVisibleLayerProbe = nil
         pendingCalls.removeAll()
         onUserSeek = nil
+
+        // Clear all state
         activeAttachmentID = nil
         isAttached = false
         isReady = false
@@ -155,20 +158,40 @@ final class LyricsWebViewStore: NSObject {
         queuedTimeSync = nil
         isTimeSyncInFlight = false
         contentLoadRevision = 0
+        didRegisterMessageHandlers = false
 
+        // Clean up WebView
         if let webView = retainedWebView {
+            // Stop any ongoing loading
             webView.stopLoading()
-            webView.navigationDelegate = nil
+
+            // Clear the web view content to free memory
+            webView.evaluateJavaScript("window.location.href = 'about:blank'") { _, _ in
+                // Ignore errors
+            }
+
+            // Remove from view hierarchy
             webView.removeFromSuperview()
 
-            if didRegisterMessageHandlers {
-                let contentController = webView.configuration.userContentController
-                contentController.removeScriptMessageHandler(forName: "onReady")
-                contentController.removeScriptMessageHandler(forName: "onUserSeek")
-                contentController.removeScriptMessageHandler(forName: "log")
-                didRegisterMessageHandlers = false
-            }
+            // Clear delegates and handlers
+            webView.navigationDelegate = nil
+            webView.uiDelegate = nil
+
+            // Remove all script message handlers
+            let contentController = webView.configuration.userContentController
+            contentController.removeScriptMessageHandler(forName: "onReady")
+            contentController.removeScriptMessageHandler(forName: "onUserSeek")
+            contentController.removeScriptMessageHandler(forName: "log")
+
+            // Remove all user scripts
+            contentController.removeAllUserScripts()
+
+            // Clear caches
+            WKWebsiteDataStore.default().removeData(ofTypes: [WKWebsiteDataTypeMemoryCache],
+                                                    modifiedSince: Date(timeIntervalSince1970: 0)) { }
         }
+
+        // Release the WebView reference
         retainedWebView = nil
 
         Log.info("Shutdown complete, objectID=\(webViewObjectID)", category: .webview)
@@ -231,12 +254,12 @@ final class LyricsWebViewStore: NSObject {
     func setCurrentTime(_ seconds: Double) {
         guard !isShutDown else { return }
         guard seconds.isFinite else { return }
-        
+
         // Deduplication: skip if time hasn't changed meaningfully
         if let last = lastTime, abs(seconds - last) < 0.01 {
             return
         }
-        
+
         lastTime = seconds
         // Time updates are not queued (too frequent), only sent if ready
         guard isReady else { return }
@@ -259,23 +282,23 @@ final class LyricsWebViewStore: NSObject {
 
     func setConfigJSON(_ json: String) {
         guard !isShutDown else { return }
-        
+
         // Deduplication: skip if same config
         if json == lastConfigJSON {
             return
         }
-        
+
         lastConfigJSON = json
         callJS("window.AMLL.setConfig(\(json))")
     }
-    
+
     /// Force set config JSON bypassing deduplication.
     /// Use when appearance/colorScheme changes require guaranteed delivery.
     func forceSetConfigJSON(_ json: String, reason: String) {
         guard !isShutDown else { return }
-        
+
         Log.debug("forceSetConfigJSON: reason=\(reason), webViewObjectID=\(webViewObjectID), jsonChanged=\(json != lastConfigJSON)", category: .webview)
-        
+
         lastConfigJSON = json
         callJS("window.AMLL.setConfig(\(json))")
     }
@@ -351,7 +374,7 @@ final class LyricsWebViewStore: NSObject {
         isReady = true
         isRecoveryInProgress = false
 
-        Log.info("✅ Ready: version=\(version), caps=\(capabilities.count), objectID=\(webViewObjectID)", category: .webview)
+        Log.info("Ready: version=\(version), caps=\(capabilities.count), objectID=\(webViewObjectID)", category: .webview)
 
         // Flush pending calls
         flushPendingCalls()
@@ -359,6 +382,11 @@ final class LyricsWebViewStore: NSObject {
         // Replay last state snapshot (strict order)
         replayStateSnapshot()
         scheduleDebugVisibleLayerProbe(label: "\(role)-ready", delay: 0.75)
+
+        // Notify LyricsSurfaceManager that this store is ready
+        if let surfaceRole = LyricsSurfaceRole(rawValue: role) {
+            LyricsSurfaceManager.shared.notifyStoreReady(surfaceRole, store: self)
+        }
     }
 
     private func flushPendingCalls() {
@@ -445,7 +473,7 @@ final class LyricsWebViewStore: NSObject {
         isTimeSyncInFlight = false
         lastDeliveredTime = nil
 
-        Log.warning("⚠️ Terminated: objectID=\(webViewObjectID), snapshot preserved (ttml=\(lastTTML != nil), time=\(lastTime ?? -1), playing=\(lastIsPlaying ?? false))", category: .webview)
+        Log.warning("Terminated: objectID=\(webViewObjectID), snapshot preserved (ttml=\(lastTTML != nil), time=\(lastTime ?? -1), playing=\(lastIsPlaying ?? false))", category: .webview)
 
         // Reload AMLL content - state will be replayed when onReady fires
         Log.debug("Reload: objectID=\(webViewObjectID)", category: .webview)
@@ -495,17 +523,125 @@ final class LyricsWebViewStore: NSObject {
     private func executeApplyTrack(ttml: String?, currentTime: Double, isPlaying: Bool) {
         Log.debug("applyTrack: ttmlLen=\(ttml?.count ?? 0), time=\(currentTime), playing=\(isPlaying), objectID=\(webViewObjectID)", category: .webview)
 
-        // Step 1: Pause
+        // Step 1: Clear previous lyrics state to free memory
+        clearLyricsState()
+
+        // Step 2: Pause
         setPlaying(false)
 
-        // Step 2: Set lyrics
+        // Step 3: Set lyrics
         setLyricsTTML(ttml ?? "")
 
-        // Step 3: Set time
+        // Step 4: Set time
         setCurrentTime(currentTime)
 
-        // Step 4: Resume playing state
+        // Step 5: Resume playing state
         setPlaying(isPlaying)
+    }
+
+    // MARK: - Memory Cleanup
+
+    /// Clears lyrics-related state to prevent memory accumulation on track change.
+    /// This explicitly notifies JS to clean up DOM, animations, and cached data.
+    func clearLyricsState() {
+        guard !isShutDown, let webView = retainedWebView else { return }
+
+        Log.debug("clearLyricsState: objectID=\(webViewObjectID)", category: .webview)
+
+        // Clear Swift-side state
+        lastTTML = nil
+        lastTime = nil
+        lastIsPlaying = nil
+        queuedTimeSync = nil
+        isTimeSyncInFlight = false
+        lastDeliveredTime = nil
+
+        // Notify JS to clean up internal state
+        let jsCleanup = """
+            (function() {
+                if (window.AMLL && typeof window.AMLL.clearState === 'function') {
+                    window.AMLL.clearState();
+                    return 'cleared';
+                }
+                if (window.AMLL && typeof window.AMLL.destroy === 'function') {
+                    window.AMLL.destroy();
+                    return 'destroyed';
+                }
+                return 'no-cleanup';
+            })()
+            """
+        webView.evaluateJavaScript(jsCleanup) { result, error in
+            if let error = error {
+                Log.debug("JS cleanup warning: \(error.localizedDescription)", category: .webview)
+            } else if let result = result as? String {
+                Log.debug("JS cleanup result: \(result)", category: .webview)
+            }
+        }
+
+        // Force a layout flush to release any pending layer operations
+        webView.setNeedsDisplay(webView.bounds)
+    }
+
+    /// Performs full teardown of this WebView instance.
+    /// Called when the surface is no longer needed (e.g., exiting fullscreen).
+    func teardown() {
+        Log.info("teardown: objectID=\(webViewObjectID), role=\(role)", category: .webview)
+
+        // Cancel pending operations
+        pendingApplyTrack?.cancel()
+        pendingApplyTrack = nil
+        pendingVisibleLayerProbe?.cancel()
+        pendingVisibleLayerProbe = nil
+        pendingCalls.removeAll()
+
+        // Clear all state
+        lastTTML = nil
+        lastTime = nil
+        lastIsPlaying = nil
+        lastConfigJSON = nil
+        lastThemeConfigPatchJSON = nil
+        lastThemeCSSScript = nil
+        baseThemePalette = nil
+        overrideThemePalette = nil
+        lastDeliveredTime = nil
+        queuedTimeSync = nil
+        isTimeSyncInFlight = false
+        contentLoadRevision = 0
+        onUserSeek = nil
+
+        // Detach from view hierarchy
+        activeAttachmentID = nil
+        isAttached = false
+        isReady = false
+
+        // Notify JS to clean up with more thorough cleanup
+        if let webView = retainedWebView {
+            let jsTeardown = """
+                (function() {
+                    // Stop any ongoing animations
+                    if (window.AMLL && typeof window.AMLL.setPlaying === 'function') {
+                        window.AMLL.setPlaying(false);
+                    }
+                    // Clear lyrics
+                    if (window.AMLL && typeof window.AMLL.setLyricsTTML === 'function') {
+                        window.AMLL.setLyricsTTML('');
+                    }
+                    // Call destroy if available
+                    if (window.AMLL && typeof window.AMLL.destroy === 'function') {
+                        window.AMLL.destroy();
+                        return 'destroyed';
+                    }
+                    return 'no-destroy';
+                })()
+                """
+            webView.evaluateJavaScript(jsTeardown) { result, error in
+                if let error = error {
+                    Log.debug("JS teardown warning: \(error.localizedDescription)", category: .webview)
+                } else if let result = result as? String {
+                    Log.debug("JS teardown result: \(result)", category: .webview)
+                }
+            }
+        }
     }
 
     // MARK: - Theme Application
@@ -645,7 +781,7 @@ final class LyricsWebViewStore: NSObject {
         webView.setValue(false, forKey: "drawsBackground")
         retainedWebView = webView
         registerMessageHandlers()
-        print("[LyricsStore:\(role)] ✅ Created WebView instance: objectID=\(webViewObjectID)")
+        print("[LyricsStore:\(role)] Created WebView instance: objectID=\(webViewObjectID)")
         loadAMLLContent()
         return webView
     }

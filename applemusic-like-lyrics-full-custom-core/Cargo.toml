@@ -1,0 +1,25 @@
+[workspace]
+resolver = "3"
+members = [
+    "./packages/lyric",
+    # "./packages/fft",
+    # "./packages/ws-protocol",
+    # "./packages/player-core",
+]
+exclude = ["./packages/player/src-tauri", "./packages/skia-player"]
+
+[patch.crates-io]
+ffmpeg-sys-next = { git = "https://github.com/apoint123/rust-ffmpeg-sys" }
+
+# [profile.dev]
+# opt-level = 1
+
+# [profile.dev.package."*"]
+# opt-level = 3
+
+[profile.release]
+# Tell `rustc` to optimize for small code size.
+opt-level = 3
+codegen-units = 1
+lto = true
+panic = "abort"

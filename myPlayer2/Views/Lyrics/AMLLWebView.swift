@@ -36,18 +36,21 @@ struct AMLLWebView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> WebViewHostView {
         let hostView = WebViewHostView()
-        context.coordinator.attachWebView(to: hostView)
 
         Log.debug(
-            "makeNSView: objectID=\(store.webViewObjectID), attachmentID=\(context.coordinator.attachmentID?.uuidString.prefix(8) ?? "nil")",
+            "makeNSView: objectID=\(store.webViewObjectID)",
             category: .webview
         )
+
+        // Try initial attach - may be deferred if frame is zero
+        context.coordinator.tryAttach(to: hostView, context: "makeNSView")
 
         return hostView
     }
 
     func updateNSView(_ nsView: WebViewHostView, context: Context) {
-        context.coordinator.attachWebView(to: nsView)
+        // Always try to ensure WebView is attached with correct frame
+        context.coordinator.tryAttach(to: nsView, context: "updateNSView")
 
         // Handle appearance sync for AppKit side
         let mode = forcedAppearanceMode ?? settings.appearanceMode
@@ -109,14 +112,41 @@ struct AMLLWebView: NSViewRepresentable {
         var lastLoggedReady: Bool = false
         var lastLoggedAppearanceMode: AppSettings.AppearanceMode?
         private weak var hostView: WebViewHostView?
+        private var hasAttemptedAttach = false
 
         init(store: LyricsWebViewStore) {
             self.store = store
         }
 
+        /// Try to attach WebView to host, with detailed logging
+        func tryAttach(to hostView: WebViewHostView, context: String) {
+            // Check conditions but don't block - just log
+            let hasWindow = hostView.window != nil
+            let hasFrame = hostView.frame.size.width > 0 && hostView.frame.size.height > 0
+            let isAttached = store.preparedWebView?.superview === hostView
+
+            Log.debug("tryAttach [\(context)]: hasWindow=\(hasWindow), hasFrame=\(hasFrame), isAttached=\(isAttached), hostFrame=\(hostView.bounds)", category: .webview)
+
+            // If already attached to this host, just ensure frame is correct
+            if isAttached {
+                if let webView = store.preparedWebView, webView.frame != hostView.bounds {
+                    webView.frame = hostView.bounds
+                    Log.debug("Updated WebView frame: \(webView.frame)", category: .webview)
+                }
+                self.hostView = hostView
+                return
+            }
+
+            // Proceed with attach regardless of window/frame state
+            // The WebView will be attached, and frame will be updated later when layout happens
+            attachWebView(to: hostView)
+            hasAttemptedAttach = true
+        }
+
         func attachWebView(to hostView: WebViewHostView) {
             if attachmentID == nil || store.activeAttachmentID != attachmentID {
                 attachmentID = store.attach()
+                Log.debug("Attached store, attachmentID=\(attachmentID?.uuidString.prefix(8) ?? "nil")", category: .webview)
             }
 
             let webView = store.webView
@@ -124,19 +154,20 @@ struct AMLLWebView: NSViewRepresentable {
                 webView.navigationDelegate = self
             }
 
-            guard webView.superview !== hostView else {
-                self.hostView = hostView
-                return
+            // Remove from old superview if different
+            if let superview = webView.superview, superview !== hostView {
+                Log.debug("Removing WebView from old superview", category: .webview)
+                webView.removeFromSuperview()
             }
 
-            webView.removeFromSuperview()
+            // Add to new host
             webView.frame = hostView.bounds
             webView.autoresizingMask = [.width, .height]
             hostView.addSubview(webView)
             self.hostView = hostView
 
             Log.debug(
-                "Reparented WebView: objectID=\(store.webViewObjectID), attachmentID=\(attachmentID?.uuidString.prefix(8) ?? "nil")",
+                "Reparented WebView: objectID=\(store.webViewObjectID), attachmentID=\(attachmentID?.uuidString.prefix(8) ?? "nil"), frame=\(webView.frame), window=\(webView.window != nil)",
                 category: .webview
             )
         }

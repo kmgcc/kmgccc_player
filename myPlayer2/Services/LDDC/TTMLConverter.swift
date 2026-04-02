@@ -9,8 +9,7 @@
 import Foundation
 
 /// Converts raw lyrics to TTML format using bundled Python scripts.
-@MainActor
-final class TTMLConverter {
+nonisolated final class TTMLConverter: @unchecked Sendable {
 
     static let shared = TTMLConverter()
 
@@ -167,15 +166,29 @@ final class TTMLConverter {
         process.standardError = stderr
         process.standardOutput = FileHandle.nullDevice
 
-        try process.run()
-        process.waitUntilExit()
+        try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<Void, Error>) in
+            process.terminationHandler = { process in
+                let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
 
-        if process.terminationStatus != 0 {
-            let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
-            let errorMessage =
-                String(data: errorData, encoding: .utf8)
-                ?? NSLocalizedString("error.ttml.unknown", comment: "")
-            throw TTMLConversionError.conversionFailed(errorMessage)
+                guard process.terminationStatus == 0 else {
+                    let errorMessage =
+                        String(data: errorData, encoding: .utf8)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                        ?? NSLocalizedString("error.ttml.unknown", comment: "")
+                    continuation.resume(
+                        throwing: TTMLConversionError.conversionFailed(errorMessage))
+                    return
+                }
+
+                continuation.resume()
+            }
+
+            do {
+                try process.run()
+            } catch {
+                continuation.resume(throwing: error)
+            }
         }
     }
 

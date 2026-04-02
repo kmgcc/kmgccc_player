@@ -233,6 +233,10 @@ struct AppRootView: View {
         
         WhatsNewWindowManager.shared.showIfNeeded()
         print("[Lifecycle] WhatsNew window check completed")
+        
+        Task {
+            await UpdateWindowManager.shared.checkAndShowIfNeeded()
+        }
     }
 
     @MainActor
@@ -280,10 +284,7 @@ struct AppRootView: View {
         libraryVM = libVM
         print("[Lifecycle] setupDependencies: libraryVM assigned, id: \(libraryVM.map { String(describing: ObjectIdentifier($0)) } ?? "nil")")
         playerVM = PlayerViewModel(playbackService: playbackService, levelMeter: ledMeter)
-        lyricsVM = LyricsViewModel(
-            settings: AppSettings.shared,
-            store: LyricsSurfaceManager.shared.mainStore
-        )
+        lyricsVM = LyricsViewModel(settings: AppSettings.shared)
         self.ledMeter = ledMeter
         skinManager = SkinManager()
         easterEggSFX = EasterEggSFXService()

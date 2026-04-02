@@ -17,8 +17,13 @@ final class LyricsViewModel {
 
     // MARK: - Dependencies
 
-    private let store: LyricsWebViewStore
     private let settings: AppSettings
+
+    // Don't cache store reference - always get from LyricsSurfaceManager
+    // This ensures we always use the current active store after surface switches
+    private var store: LyricsWebViewStore {
+        LyricsSurfaceManager.shared.mainStore
+    }
 
     // MARK: - State
 
@@ -38,7 +43,9 @@ final class LyricsViewModel {
     }
 
     var webViewStore: LyricsWebViewStore {
-        store
+        // Always get the current store from LyricsSurfaceManager
+        // This ensures we get the correct store even after surface switches
+        LyricsSurfaceManager.shared.mainStore
     }
 
     /// Callback for when user seeks via lyrics UI.
@@ -51,15 +58,6 @@ final class LyricsViewModel {
     // MARK: - Initialization
 
     init(settings: AppSettings? = nil) {
-        self.store = .shared
-        self.settings = settings ?? AppSettings.shared
-
-        // Apply initial config
-        refreshConfigFromSettings()
-    }
-
-    init(settings: AppSettings? = nil, store: LyricsWebViewStore) {
-        self.store = store
         self.settings = settings ?? AppSettings.shared
 
         // Apply initial config
@@ -74,6 +72,13 @@ final class LyricsViewModel {
         lastAppliedTrackId = track?.id
 
         let lyricsText = getContentForTrack(track)
+        let snapshotTTML = track == nil ? "" : lyricsText
+        LyricsSurfaceManager.shared.updatePlaybackSnapshot(
+            trackID: track?.id,
+            lyricsTTML: snapshotTTML,
+            currentTime: currentTime,
+            isPlaying: isPlaying
+        )
 
         // 使用统一日志系统，LyricsWebViewStore 也会打印 applyTrack 日志
         Log.debug("[LyricsVM] applyTrack: \(track?.title ?? "nil"), lyricsLen: \(lyricsText.count), webViewObjectID=\(store.webViewObjectID)", category: .lyrics)
@@ -102,6 +107,8 @@ final class LyricsViewModel {
         // 短路：如果 track 为 nil 且已经处理过 nil，避免重复空转
         if track == nil && lastAppliedTrackId == nil && !forceLyricsReload {
             // 仅同步必要的播放状态，不做重复歌词应用
+            LyricsSurfaceManager.shared.updatePlaybackTime(currentTime)
+            LyricsSurfaceManager.shared.updatePlayingState(isPlaying)
             store.setPlaying(isPlaying)
             store.setCurrentTime(currentTime)
             return
@@ -129,6 +136,8 @@ final class LyricsViewModel {
             }
 
             // Just sync state
+            LyricsSurfaceManager.shared.updatePlaybackTime(currentTime)
+            LyricsSurfaceManager.shared.updatePlayingState(isPlaying)
             store.setPlaying(isPlaying)
             store.setCurrentTime(currentTime)
         }
@@ -165,6 +174,12 @@ final class LyricsViewModel {
     func clearLyrics() {
         currentTrack = nil
         lastAppliedTrackId = nil
+        LyricsSurfaceManager.shared.updatePlaybackSnapshot(
+            trackID: nil,
+            lyricsTTML: "",
+            currentTime: 0,
+            isPlaying: false
+        )
         store.setLyricsTTML("")
     }
 
@@ -193,11 +208,13 @@ final class LyricsViewModel {
 
     /// Sync current playback time to lyrics.
     func syncTime(_ seconds: TimeInterval) {
+        LyricsSurfaceManager.shared.updatePlaybackTime(seconds)
         store.setCurrentTime(seconds)
     }
 
     /// Set playback state.
     func setPlaying(_ isPlaying: Bool) {
+        LyricsSurfaceManager.shared.updatePlayingState(isPlaying)
         store.setPlaying(isPlaying)
     }
 
@@ -261,6 +278,7 @@ final class LyricsViewModel {
         if let data = try? JSONSerialization.data(withJSONObject: config),
             let json = String(data: data, encoding: .utf8)
         {
+            LyricsSurfaceManager.shared.updateSurfaceConfigSnapshot(json, for: surfaceRole)
             store.setConfigJSON(json)
             if surfaceRole == .main {
                 store.scheduleDebugVisibleLayerProbe(label: "main-config", delay: 0.75)

@@ -25,7 +25,11 @@ struct LyricsPanelView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
             .onAppear {
-                LyricsSurfaceManager.shared.activate(role: .main)
+                Log.info("LyricsPanelView appeared", category: .webview)
+
+                // Report visibility to manager - let manager decide if switch is needed
+                LyricsSurfaceManager.shared.reportMainVisible(true)
+
                 setupSeekCallback()
                 reloadLyricsSurface(
                     reason: "lyrics panel appear",
@@ -34,7 +38,9 @@ struct LyricsPanelView: View {
                 )
             }
             .onDisappear {
-                LyricsSurfaceManager.shared.deactivate(role: .main)
+                Log.info("LyricsPanelView disappeared", category: .webview)
+                // Report visibility to manager - manager will debounce/handle transient states
+                LyricsSurfaceManager.shared.reportMainVisible(false)
             }
             .onChange(of: playerVM.currentTrack?.id, handleTrackIdChange)
             .onReceive(NotificationCenter.default.publisher(for: .playbackTrackDidChange)) { _ in

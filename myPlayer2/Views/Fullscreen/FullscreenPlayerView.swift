@@ -78,7 +78,6 @@ struct FullscreenPlayerView: View {
     private let fullscreenLyricsSaturationCeiling: CGFloat = 0.58
 
     @Environment(PlayerViewModel.self) private var playerVM
-    @Environment(LyricsViewModel.self) private var lyricsVM
     @Environment(LEDMeterService.self) private var ledMeter
     @Environment(AppSettings.self) private var settings
     @Environment(\.colorScheme) private var colorScheme
@@ -109,6 +108,10 @@ struct FullscreenPlayerView: View {
 
     private var isCoverBlurFullscreenSkin: Bool {
         settings.fullscreen.skinID == "fullscreen.coverGradientBlur"
+    }
+
+    private var fullscreenStore: LyricsWebViewStore {
+        LyricsSurfaceManager.shared.store(for: .fullscreen)
     }
 
     private var coverBlurHighlightStore: LyricsWebViewStore {
@@ -161,25 +164,33 @@ struct FullscreenPlayerView: View {
         .onAppear {
             guard !didHandleFullscreenAppear else { return }
             didHandleFullscreenAppear = true
+            Log.info("FullscreenPlayerView appeared", category: .webview)
+
+            // Report visibility to manager - manager handles the switch with debouncing
+            LyricsSurfaceManager.shared.reportFullscreenVisible(true)
+
+            // Initialize lyrics visibility before other operations
+            if lyricsColumnVisible == nil {
+                lyricsColumnVisible = desiredLyricsColumnVisibility
+                Log.debug("Initialized lyricsColumnVisible to \(lyricsColumnVisible ?? false)", category: .webview)
+            }
+
             syncCoverBlurHighlightActivation()
             resetFullscreenLyricsBackgroundSnapshot()
             scheduleFullscreenLyricsBackgroundCapture()
             setupSeekCallback()
+            reloadLyricsSurface(reason: "fullscreen appear", forceLyricsReload: true)
             syncLyricsColumnVisibility(animated: false)
-            reloadLyricsSurface(
-                reason: "fullscreen appear",
-                forceWebReload: false,
-                forceLyricsReload: true,
-                recreateWebViewOnForceReload: false
-            )
+
             if isLedEnabledForFullscreenSkin() {
                 ledMeter.start()
             }
         }
         .onDisappear {
+            Log.info("FullscreenPlayerView disappeared", category: .webview)
             didHandleFullscreenAppear = false
             ledMeter.stop()
-            lyricsVM.onSeekRequest = nil
+            fullscreenStore.onUserSeek = nil
             pendingFullscreenLyricsRefresh?.cancel()
             pendingFullscreenLyricsRefresh = nil
             pendingFullscreenLyricsReveal?.cancel()
@@ -190,6 +201,9 @@ struct FullscreenPlayerView: View {
             suppressFullscreenLyricsViewport = false
             deactivateCoverBlurHighlightSurface()
             clearFullscreenLyricsTheme()
+
+            // Report visibility to manager - manager will debounce to handle transient disappears
+            LyricsSurfaceManager.shared.reportFullscreenVisible(false)
         }
         .onChange(of: selectedSkinID) { oldValue, newValue in
             skinRevision &+= 1
@@ -211,7 +225,8 @@ struct FullscreenPlayerView: View {
         }
         .onChange(of: playerVM.currentTime, handleCurrentTimeChange)
         .onChange(of: playerVM.isPlaying) { _, newValue in
-            lyricsVM.setPlaying(newValue)
+            LyricsSurfaceManager.shared.updatePlayingState(newValue)
+            fullscreenStore.setPlaying(newValue)
             if LyricsSurfaceManager.shared.isActive(.fullscreenCoverBlurHighlight) {
                 coverBlurHighlightStore.setPlaying(newValue)
             }
@@ -345,7 +360,7 @@ struct FullscreenPlayerView: View {
         let artworkX = baseContentOffsetX
         let baseLyricsX = artworkX + metrics.artworkWidth + columnSpacing - (lyricsVisible ? lyricsColumnLeftNudge : 0)
         let baseLyricsWidth = lyricsVisible ? metrics.lyricsWidth : 0
-        
+
         // FIX: Expand left by 60pt and right by 100pt for wider lyrics area
         // Left edge moves left to overlap artwork area more
         // Skin-specific right shift for fullscreen cover skin
@@ -357,13 +372,20 @@ struct FullscreenPlayerView: View {
 
         // Convert to actual screen coordinates
         let actualLyricsX = finalLyricsX * scale
-        let actualLyricsWidth = finalLyricsWidth * scale
-        
+        let actualLyricsWidth = max(100, finalLyricsWidth * scale)  // Ensure minimum width
+
         // FIX: Reduce reserved space at bottom so lyrics extend lower
         let miniplayerTotalHeight = fullscreenControlButtonSize + fullscreenControlsBottomPadding
         let bottomReservedHeight = miniplayerTotalHeight + 10
         let availableHeight = Self.baseCanvasHeight - bottomReservedHeight
-        let actualLyricsHeight = availableHeight * scale
+        let actualLyricsHeight = max(100, availableHeight * scale)  // Ensure minimum height
+
+        // Debug logging for first layout
+        let _ = {
+            if lyricsVisible && hasLyricsForCurrentTrack {
+                Log.debug("fullscreenLyricsLayer: scale=\(scale), width=\(actualLyricsWidth), height=\(actualLyricsHeight), visible=\(lyricsVisible)", category: .webview)
+            }
+        }()
 
         ZStack {
             if lyricsVisible && hasLyricsForCurrentTrack {
@@ -404,7 +426,7 @@ struct FullscreenPlayerView: View {
                         useCompositingGroup: false
                     ) {
                         AMLLWebView(
-                            store: lyricsVM.webViewStore,
+                            store: fullscreenStore,
                             forcedAppearanceMode: .dark
                         )
                     }
@@ -436,7 +458,7 @@ struct FullscreenPlayerView: View {
                         blendMode: isCoverBlurFullscreenSkin ? coverBlurBaseBlendMode : .normal,
                         useCompositingGroup: !isCoverBlurFullscreenSkin
                     ) {
-                        AMLLWebView(store: lyricsVM.webViewStore, forcedAppearanceMode: .dark)
+                        AMLLWebView(store: fullscreenStore, forcedAppearanceMode: .dark)
                     }
                 }
             }
@@ -733,7 +755,7 @@ struct FullscreenPlayerView: View {
             let horizontalInset: CGFloat = 10
             let expandedHeight = proxy.size.height + topFade + bottomFade + 6
 
-            AMLLWebView(store: lyricsVM.webViewStore, forcedAppearanceMode: .dark)
+            AMLLWebView(store: fullscreenStore, forcedAppearanceMode: .dark)
                 .frame(
                     width: max(0, proxy.size.width - horizontalInset * 2),
                     height: expandedHeight
@@ -932,7 +954,7 @@ struct FullscreenPlayerView: View {
     }
 
     private func setupSeekCallback() {
-        lyricsVM.onSeekRequest = { seconds in
+        fullscreenStore.onUserSeek = { seconds in
             playerVM.seek(to: seconds)
         }
     }
@@ -997,7 +1019,8 @@ struct FullscreenPlayerView: View {
     }
 
     private func handleCurrentTimeChange(_ oldTime: Double, _ newTime: Double) {
-        lyricsVM.syncTime(newTime)
+        LyricsSurfaceManager.shared.updatePlaybackTime(newTime)
+        fullscreenStore.setCurrentTime(newTime)
         if LyricsSurfaceManager.shared.isActive(.fullscreenCoverBlurHighlight) {
             coverBlurHighlightStore.setCurrentTime(newTime)
         }
@@ -1036,15 +1059,31 @@ struct FullscreenPlayerView: View {
     ) {
         syncCoverBlurHighlightActivation()
 
-        lyricsVM.ensureAMLLLoaded(
-            track: playerVM.currentTrack,
+        // Apply to fullscreen store directly
+        let store = fullscreenStore
+        if forceWebReload {
+            store.forceReload(recreateWebView: recreateWebViewOnForceReload)
+        }
+
+        let track = playerVM.currentTrack
+        let lyricsText = resolvedFullscreenLyricsText(for: track)
+        let ttmlForStore: String? = track == nil ? nil : lyricsText
+        LyricsSurfaceManager.shared.updatePlaybackSnapshot(
+            trackID: track?.id,
+            lyricsTTML: ttmlForStore ?? "",
             currentTime: playerVM.currentTime,
-            isPlaying: playerVM.isPlaying,
-            reason: reason,
-            forceWebReload: forceWebReload,
-            forceLyricsReload: forceLyricsReload,
-            recreateWebViewOnForceReload: recreateWebViewOnForceReload
+            isPlaying: playerVM.isPlaying
         )
+        store.applyTrack(
+            ttml: ttmlForStore,
+            currentTime: playerVM.currentTime,
+            isPlaying: playerVM.isPlaying
+        )
+
+        if let palette = ThemeStore.shared.palette {
+            store.applyTheme(palette)
+        }
+
         syncCoverBlurHighlightSurface(
             forceWebReload: forceWebReload,
             recreateWebViewOnForceReload: recreateWebViewOnForceReload
@@ -1198,7 +1237,7 @@ struct FullscreenPlayerView: View {
     }
 
     private func applyFullscreenLyricsTheme(force: Bool = false, reason: String = "") {
-        let baseStore = lyricsVM.webViewStore
+        let baseStore = fullscreenStore
         let surfaceRole = LyricsSurfaceRole.fullscreen
         let currentTrack = playerVM.currentTrack
         let readyCoverBlurTheme = isCoverBlurFullscreenSkin
@@ -1219,9 +1258,14 @@ struct FullscreenPlayerView: View {
 
         if isCoverBlurFullscreenSkin, readyCoverBlurTheme == nil {
             if activeCoverBlurTheme == nil {
+                LyricsSurfaceManager.shared.updateThemeOverrideSnapshot(nil, for: .fullscreen)
                 baseStore.setThemePaletteOverride(nil)
                 deactivateCoverBlurHighlightSurface()
                 if let highlightStore = existingCoverBlurHighlightStore {
+                    LyricsSurfaceManager.shared.updateThemeOverrideSnapshot(
+                        nil,
+                        for: .fullscreenCoverBlurHighlight
+                    )
                     highlightStore.setThemePaletteOverride(nil)
                 }
                 return
@@ -1230,8 +1274,13 @@ struct FullscreenPlayerView: View {
 
         let activePalette = activeCoverBlurTheme.map { makeCoverBlurLyricsPalette(from: $0) }
             ?? makeFullscreenLyricsPalette(from: colorSet)
+        LyricsSurfaceManager.shared.updateThemeOverrideSnapshot(activePalette, for: .fullscreen)
         baseStore.setThemePaletteOverride(activePalette)
         if shouldRenderCoverBlurHighlightOverlay, let highlightStore = existingCoverBlurHighlightStore {
+            LyricsSurfaceManager.shared.updateThemeOverrideSnapshot(
+                activePalette,
+                for: .fullscreenCoverBlurHighlight
+            )
             highlightStore.setThemePaletteOverride(activePalette)
         }
         let mainFontFamily = cssFontFamily([
@@ -1322,8 +1371,16 @@ struct FullscreenPlayerView: View {
         if shouldUseHighlightOverlay {
             activateCoverBlurHighlightSurface()
             syncCoverBlurHighlightSurface()
+            LyricsSurfaceManager.shared.updateThemeOverrideSnapshot(
+                activePalette,
+                for: .fullscreenCoverBlurHighlight
+            )
             coverBlurHighlightStore.setThemePaletteOverride(activePalette)
         } else {
+            LyricsSurfaceManager.shared.updateThemeOverrideSnapshot(
+                nil,
+                for: .fullscreenCoverBlurHighlight
+            )
             deactivateCoverBlurHighlightSurface()
         }
 
@@ -1374,6 +1431,9 @@ struct FullscreenPlayerView: View {
         if let data = try? JSONSerialization.data(withJSONObject: config),
             let json = String(data: data, encoding: .utf8)
         {
+            if let role = LyricsSurfaceRole(rawValue: store.role) {
+                LyricsSurfaceManager.shared.updateSurfaceConfigSnapshot(json, for: role)
+            }
             if force {
                 store.forceSetConfigJSON(json, reason: reason)
             } else {
@@ -1384,8 +1444,13 @@ struct FullscreenPlayerView: View {
     }
 
     private func clearFullscreenLyricsTheme() {
-        lyricsVM.webViewStore.setThemePaletteOverride(nil)
+        LyricsSurfaceManager.shared.updateThemeOverrideSnapshot(nil, for: .fullscreen)
+        fullscreenStore.setThemePaletteOverride(nil)
         if let highlightStore = existingCoverBlurHighlightStore {
+            LyricsSurfaceManager.shared.updateThemeOverrideSnapshot(
+                nil,
+                for: .fullscreenCoverBlurHighlight
+            )
             highlightStore.setThemePaletteOverride(nil)
         }
     }

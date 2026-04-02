@@ -827,10 +827,7 @@ struct BatchTrackEditSheet: View {
 
     private func ensurePreviewLyricsViewModel() {
         if previewLyricsVM == nil {
-            previewLyricsVM = LyricsViewModel(
-                settings: AppSettings.shared,
-                store: LyricsSurfaceManager.shared.store(for: .batchPreview)
-            )
+            previewLyricsVM = LyricsViewModel(settings: AppSettings.shared)
         }
         previewLyricsVM?.onSeekRequest = { [weak playerVM] seconds in
             playerVM?.seek(to: seconds)

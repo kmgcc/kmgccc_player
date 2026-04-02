@@ -7,7 +7,7 @@
 
 import Foundation
 
-enum LibraryNormalization {
+nonisolated enum LibraryNormalization {
     static let unknownTitle = "未知歌曲"
     static let unknownArtist = "未知歌手"
     static let unknownAlbum = "未知专辑"

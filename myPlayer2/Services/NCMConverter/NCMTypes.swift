@@ -9,7 +9,7 @@ import Foundation
 
 // MARK: - Conversion Step
 
-enum NCMConversionStep {
+nonisolated enum NCMConversionStep: Sendable {
     case waiting
     case decrypting
     case downloadingCover
@@ -39,21 +39,21 @@ enum NCMConversionStep {
 
 // MARK: - Conversion Result
 
-struct NCMConversionResult {
+nonisolated struct NCMConversionResult: Sendable {
     let audioFileURL: URL
     let format: NCMFormat
     let metadata: NCMMetadata
     let coverData: Data?
 }
 
-enum NCMFormat: String {
+nonisolated enum NCMFormat: String, Sendable {
     case mp3 = "mp3"
     case flac = "flac"
 }
 
 // MARK: - Metadata
 
-struct NCMMetadata: Codable {
+nonisolated struct NCMMetadata: Codable, Sendable {
     let musicName: String
     let artist: [[String]]
     let album: String
