@@ -1,5 +1,5 @@
 {
   "latestVersion": "1.2.2",
-  "releaseURL": "https://github.com/kmgccc/player/releases/latest",
-  "notes": "重要修复，解决全屏内存泄露问题，建议更新"
+  "releaseURL": "https://github.com/kmgcc/kmgccc_player/releases/latest",
+  "notes": "修复全屏模式下 AMLL 歌词组件的内存泄漏问题，修复部分显示错误，修复批量导入歌曲时缺少进度指示、导入过慢且可能跳过歌词查找的问题"
 }
