@@ -141,6 +141,16 @@ enum LyricsSurfaceRole: String, CaseIterable, Sendable {
         }
     }
     
+    /// Whether this role is a fullscreen role.
+    var isFullscreen: Bool {
+        switch self {
+        case .fullscreen, .fullscreenCoverBlurHighlight:
+            return true
+        case .main, .batchPreview, .standalone:
+            return false
+        }
+    }
+
     /// Whether this role supports user seek callbacks.
     var supportsSeekCallback: Bool {
         switch self {

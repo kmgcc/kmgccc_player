@@ -8,7 +8,7 @@
 
 import Foundation
 
-enum LocalLibraryPaths {
+nonisolated enum LocalLibraryPaths {
 
     static let libraryRootName = "kmgccc_player Library"
 

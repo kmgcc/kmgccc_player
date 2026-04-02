@@ -49,26 +49,26 @@
             line-height: 1.42em;
         }
 
-        /* Background (small) lyric lines:
-           hidden by default, fade in only when active, fade out after active ends. */
-        .amll-lyric-player [class*="_lyricBgLine_"] {
-            opacity: 0 !important;
+        /* Background (small) lyric lines - FULLSCREEN ONLY:
+           keep AMLL timing gate on the root; visual fade/blur handled by later surface-specific rules. */
+        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricBgLine_"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricBgLine_"] {
             padding-top: 0.2em !important;
             padding-bottom: 0.2em !important;
             scale: 1 !important;
-            transition: opacity .32s ease !important;
         }
-        .amll-lyric-player [class*="_lyricBgLine_"][class*="_active_"] {
-            opacity: 0.4 !important;
+        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricBgLine_"][class*="_active_"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricBgLine_"][class*="_active_"] {
             scale: 1 !important;
         }
 
-        /* Animate text inside bg-line so we don't override AMLL line positioning transform. */
-        .amll-lyric-player [class*="_lyricBgLine_"] > * {
-            transform: translateY(10px);
-            transition: transform .42s ease, opacity .32s ease;
+        /* Keep exit translation on content while root handles fade/blur timing. */
+        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricBgLine_"] > *,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricBgLine_"] > * {
+            transition: transform .35s ease-out !important;
         }
-        .amll-lyric-player [class*="_lyricBgLine_"][class*="_active_"] > * {
+        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricBgLine_"][class*="_active_"] > *,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricBgLine_"][class*="_active_"] > * {
             transform: translateY(0);
         }
 
@@ -85,14 +85,16 @@
         .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-profile="lighter"] {
             --amll-cb-main-blend: plus-lighter;
             --amll-cb-highlight-blend: normal;
-            --amll-cb-main-glow: rgba(255, 255, 255, 0.24);
-            --amll-cb-sub-glow: rgba(255, 255, 255, 0.16);
+            /* Use solid colors instead of rgba for glow */
+            --amll-cb-main-glow: rgb(255, 255, 255);
+            --amll-cb-sub-glow: rgb(200, 200, 200);
         }
         .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-profile="darker"] {
             --amll-cb-main-blend: plus-darker;
             --amll-cb-highlight-blend: normal;
-            --amll-cb-main-glow: rgba(0, 0, 0, 0.20);
-            --amll-cb-sub-glow: rgba(0, 0, 0, 0.14);
+            /* Use solid colors instead of rgba for glow */
+            --amll-cb-main-glow: rgb(0, 0, 0);
+            --amll-cb-sub-glow: rgb(50, 50, 50);
         }
         .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"] {
             color: var(--amll-cb-main-inactive, var(--amll-inactive, var(--amll-lp-color, white))) !important;
@@ -102,13 +104,24 @@
             contain: none !important;
         }
         .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"][class*="_active_"] {
-            color: var(--amll-cb-main-active, var(--amll-active, var(--amll-lp-color, white))) !important;
+            color: var(
+                --amll-cb-main-inactive,
+                var(--amll-inactive, var(--amll-lp-color, white))
+            ) !important;
             mix-blend-mode: var(--amll-cb-main-blend, plus-lighter) !important;
         }
         .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) {
             color: var(
                 --amll-cb-main-line-timing-inactive,
                 var(--amll-cb-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
+            ) !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="_lyricLine_"][class*="_active_"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] [class*="_lyricMainLine_"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] [class*="_lyricMainLine_"] * {
+            color: var(
+                --amll-cb-main-active,
+                var(--amll-active, var(--amll-lp-color, white))
             ) !important;
         }
         .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"] > *,
@@ -129,17 +142,17 @@
         .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricMainLine_"],
         .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricMainLine_"] * {
             text-shadow:
-                0 0 0.04em var(--amll-cb-main-glow, rgba(255, 255, 255, 0.2)),
-                0 0 0.10em var(--amll-cb-main-glow, rgba(255, 255, 255, 0.2)) !important;
+                0 0 0.04em var(--amll-cb-main-glow, rgb(255, 255, 255)),
+                0 0 0.10em var(--amll-cb-main-glow, rgb(255, 255, 255)) !important;
         }
         .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricSubLine_"],
         .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricSubLine_"] * {
-            text-shadow: 0 0 0.035em var(--amll-cb-sub-glow, rgba(255, 255, 255, 0.16)) !important;
+            text-shadow: 0 0 0.035em var(--amll-cb-sub-glow, rgb(200, 200, 200)) !important;
         }
         .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"] > [class*="_lyricSubLine_"],
         .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"] > [class*="_lyricSubLine_"] * {
             color: var(
-                --amll-cb-sub-inactive,
+                --amll-cb-sub-color,
                 var(--amll-cb-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
             ) !important;
             mix-blend-mode: var(--amll-cb-main-blend, plus-lighter) !important;
@@ -147,11 +160,11 @@
         .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"][class*="_active_"] > [class*="_lyricSubLine_"],
         .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"][class*="_active_"] > [class*="_lyricSubLine_"] * {
             color: var(
-                --amll-cb-sub-active,
-                var(--amll-cb-main-active, var(--amll-active, var(--amll-lp-color, white)))
+                --amll-cb-sub-color,
+                var(--amll-cb-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
             ) !important;
             mix-blend-mode: var(--amll-cb-main-blend, plus-lighter) !important;
-            transition: color 0.5s ease-out 0.05s !important;
+            transition: none !important;
         }
         .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-profile="darker"] [class*="_lyricLine_"][class*="_active_"] [class*="_lyricMainLine_"],
         .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-profile="darker"] [class*="_lyricLine_"][class*="_active_"] [class*="_lyricMainLine_"] *,
@@ -169,7 +182,7 @@
         .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="base"] [class*="_lyricLine_"][class*="_active_"] > [class*="_lyricSubLine_"],
         .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="base"] [class*="_lyricLine_"][class*="_active_"] > [class*="_lyricSubLine_"] * {
             color: var(
-                --amll-cb-sub-inactive,
+                --amll-cb-sub-color,
                 var(--amll-cb-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
             ) !important;
         }
@@ -192,8 +205,8 @@
         }
         .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="_lyricLine_"][class*="_active_"] {
             color: var(
-                --amll-cb-main-active,
-                var(--amll-active, var(--amll-lp-color, white))
+                --amll-cb-main-inactive,
+                var(--amll-inactive, var(--amll-lp-color, white))
             ) !important;
             mix-blend-mode: var(--amll-cb-highlight-blend, plus-lighter) !important;
             text-shadow: none !important;
@@ -209,11 +222,27 @@
             mix-blend-mode: var(--amll-cb-highlight-blend, plus-lighter) !important;
             text-shadow: none !important;
         }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="base"].fs-line-timing-only [class*="_lyricLine_"][class*="_active_"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="base"].fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] [class*="_lyricMainLine_"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="base"].fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] [class*="_lyricMainLine_"] * {
+            color: var(
+                --amll-cb-main-inactive,
+                var(--amll-inactive, var(--amll-lp-color, white))
+            ) !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"].fs-line-timing-only [class*="_lyricLine_"][class*="_active_"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"].fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] [class*="_lyricMainLine_"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"].fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] [class*="_lyricMainLine_"] * {
+            color: var(
+                --amll-cb-main-active,
+                var(--amll-active, var(--amll-lp-color, white))
+            ) !important;
+        }
         .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) > [class*="_lyricSubLine_"],
         .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) > [class*="_lyricSubLine_"] * {
             color: var(
-                --amll-cb-sub-line-timing-inactive,
-                var(--amll-cb-sub-inactive, var(--amll-cb-main-line-timing-inactive, var(--amll-lp-color, white)))
+                --amll-cb-sub-color,
+                var(--amll-cb-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
             ) !important;
         }
         .amll-lyric-player.amll-surface-fullscreen-cover-blur .amll-cb-word-stack,
@@ -292,32 +321,51 @@
         }
         .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricBgLine_"] {
             visibility: hidden !important;
-            opacity: 1 !important;
+            opacity: 0 !important;
             color: var(
-                --amll-cb-main-line-timing-inactive,
+                --amll-cb-bg-inactive,
                 var(--amll-cb-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
             ) !important;
             mix-blend-mode: var(--amll-cb-main-blend, plus-lighter) !important;
+            filter: blur(5px) !important;
             transition:
-                color .18s ease,
-                visibility 0s linear 0s !important;
-            will-change: transform !important;
+                visibility 0s linear 0.25s,
+                opacity 0.25s,
+                scale 0.5s,
+                filter 0.2s,
+                color .18s ease !important;
+            will-change: opacity, filter, transform !important;
         }
         .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricBgLine_"][class*="_active_"] {
             visibility: visible !important;
+            opacity: 0.4 !important;
             color: var(
-                --amll-cb-bg-active,
-                var(--amll-cb-main-line-timing-inactive, var(--amll-cb-main-inactive, var(--amll-inactive, var(--amll-lp-color, white))))
+                --amll-cb-bg-inactive,
+                var(--amll-cb-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
             ) !important;
-            transition-delay: 0s !important;
+            filter: blur(0px) !important;
+            transition:
+                visibility 0s linear 0s,
+                opacity 0.5s 0.25s,
+                scale 1.5s cubic-bezier(0, 1, 0, 1) 0.25s,
+                filter 0.2s,
+                color .18s ease !important;
         }
         .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricBgLine_"] > * {
             transform: translateY(-0.5em) !important;
             mix-blend-mode: var(--amll-cb-main-blend, plus-lighter) !important;
-            transition: transform .35s ease-out !important;
+            transition: transform .35s ease-out, color .18s ease !important;
         }
         .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricBgLine_"][class*="_active_"] > * {
             transform: translateY(0) !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricBgLine_"] .amll-cb-word-active,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricBgLine_"] .amll-cb-char-active {
+            color: var(
+                --amll-cb-bg-active,
+                var(--amll-cb-main-active, var(--amll-active, var(--amll-lp-color, white)))
+            ) !important;
+            visibility: visible !important;
         }
         .amll-lyric-player.amll-surface-fullscreen-cover-blur .amll-cb-glow-layer {
             position: absolute !important;
@@ -336,10 +384,12 @@
             mix-blend-mode: var(--amll-cb-main-blend, plus-lighter) !important;
         }
         .amll-lyric-player.amll-surface-fullscreen-cover-blur .amll-cb-glow-layer.active-glow {
-            filter: drop-shadow(0 0 0.15em rgba(255, 255, 255, 0.8));
+            /* Use solid color instead of rgba for glow */
+            filter: drop-shadow(0 0 0.15em rgb(255, 255, 255));
         }
         .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-profile="darker"] .amll-cb-glow-layer.active-glow {
-            filter: drop-shadow(0 0 0.12em rgba(0, 0, 0, 0.55));
+            /* Use solid color instead of rgba for glow */
+            filter: drop-shadow(0 0 0.12em rgb(0, 0, 0));
         }
         .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_interludeDots_"] {
             visibility: hidden !important;
@@ -377,7 +427,10 @@
             color: var(--amll-fs-main-inactive, var(--amll-inactive, var(--amll-lp-color, white))) !important;
         }
         .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][class*="_active_"] {
-            color: var(--amll-fs-main-active, var(--amll-active, var(--amll-lp-color, white))) !important;
+            color: var(
+                --amll-fs-main-inactive,
+                var(--amll-inactive, var(--amll-lp-color, white))
+            ) !important;
         }
         .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) {
             color: var(
@@ -392,8 +445,16 @@
             --amll-fs-line-switch-highlight-out-delay: 0.00s;
         }
         .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] {
+            color: var(
+                --amll-fs-main-active,
+                var(--amll-active, var(--amll-lp-color, white))
+            ) !important;
             transition:
                 color var(--amll-fs-line-switch-highlight-in-duration) linear var(--amll-fs-line-switch-highlight-delay) !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] [class*="_lyricMainLine_"],
+        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] [class*="_lyricMainLine_"] * {
+            color: inherit !important;
         }
         .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) {
             transition:
@@ -414,7 +475,7 @@
         .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"] > [class*="_lyricSubLine_"],
         .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"] > [class*="_lyricSubLine_"] * {
             color: var(
-                --amll-fs-sub-inactive,
+                --amll-fs-sub-color,
                 var(--amll-fs-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
             ) !important;
         }
@@ -485,7 +546,7 @@
             ) !important;
             mix-blend-mode: normal !important;
             opacity: 1 !important;
-            transition: opacity .16s ease-out, color .14s ease-out !important;
+            transition: color .14s ease-out !important;
             /* Keep per-word sweep animation, but make non-highlighted area fully transparent
                so the opaque base layer stays identical to inactive line color. */
             --bright-mask-alpha: 1 !important;
@@ -498,7 +559,7 @@
             ) !important;
             mix-blend-mode: normal !important;
             opacity: 1 !important;
-            transition: opacity .16s ease-out, color .14s ease-out !important;
+            transition: color .14s ease-out !important;
             --bright-mask-alpha: 1 !important;
             --dark-mask-alpha: 0 !important;
         }
@@ -507,14 +568,16 @@
                 --amll-fs-main-inactive,
                 var(--amll-inactive, var(--amll-lp-color, white))
             ) !important;
-            opacity: 0 !important;
+            /* Use color instead of opacity - hide by making same as inactive color */
+            visibility: hidden !important;
         }
         .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"]:not([class*="_active_"]) .amll-fs-char-active {
             color: var(
                 --amll-fs-main-inactive,
                 var(--amll-inactive, var(--amll-lp-color, white))
             ) !important;
-            opacity: 0 !important;
+            /* Use color instead of opacity - hide by making same as inactive color */
+            visibility: hidden !important;
         }
         /* Keep fullscreen highlight visible when line is in foreground completed state
            (line lost _active_ but is still in visible range due to parallel display) */
@@ -523,6 +586,7 @@
                 --amll-fs-main-active,
                 var(--amll-active, var(--amll-lp-color, white))
             ) !important;
+            visibility: visible !important;
             opacity: 1 !important;
         }
         .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][data-fs-completed-highlight="1"] .amll-fs-char-active {
@@ -530,35 +594,41 @@
                 --amll-fs-main-active,
                 var(--amll-active, var(--amll-lp-color, white))
             ) !important;
+            visibility: visible !important;
             opacity: 1 !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][class*="_active_"] > [class*="_lyricSubLine_"] {
+        /* 全屏翻译行配色 - 统一使用非高亮主歌词颜色，不跟随主行高亮 */
+        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"] > [class*="_lyricSubLine_"],
+        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"] > [class*="_lyricSubLine_"] * {
             color: var(
-                --amll-fs-sub-active,
-                var(--amll-fs-main-active, var(--amll-active, var(--amll-lp-color, white)))
-            ) !important;
-            transition: color 0.5s ease-out 0.05s !important;
-        }
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"]:not([class*="_active_"]) > [class*="_lyricSubLine_"] {
-            color: var(
-                --amll-fs-sub-inactive,
+                --amll-fs-sub-color,
                 var(--amll-fs-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
             ) !important;
-            transition: color 0.5s ease-out 0s !important;
+            transition: none !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] > [class*="_lyricSubLine_"] {
-            color: var(
-                --amll-fs-sub-active,
-                var(--amll-fs-main-active, var(--amll-active, var(--amll-lp-color, white)))
-            ) !important;
-            transition: color 0.5s ease-out 0.05s !important;
-        }
+        /* 移除激活/非激活状态的颜色差异，翻译行统一使用非高亮色 */
+        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][class*="_active_"] > [class*="_lyricSubLine_"],
+        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"]:not([class*="_active_"]) > [class*="_lyricSubLine_"],
+        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] > [class*="_lyricSubLine_"],
         .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) > [class*="_lyricSubLine_"] {
             color: var(
-                --amll-fs-sub-line-timing-inactive,
-                var(--amll-fs-sub-inactive, var(--amll-fs-main-line-timing-inactive, var(--amll-lp-color, white)))
+                --amll-fs-sub-color,
+                var(--amll-fs-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
             ) !important;
-            transition: color 0.5s ease-out 0s !important;
+        }
+
+        /* BG lines in fullscreen: use brightness filter instead of opacity */
+        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricBgLine_"] {
+            opacity: 1 !important;
+            filter: none !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricBgLine_"][class*="_active_"] {
+            opacity: 1 !important;
+            filter: none !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricBgLine_"] > * {
+            opacity: 1 !important;
+            transform: translateY(0) !important;
         }
         .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] .amll-fs-word-active,
         .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] .amll-fs-char-active {
@@ -572,37 +642,57 @@
                 opacity var(--amll-fs-line-switch-highlight-out-duration) ease-out var(--amll-fs-line-switch-highlight-out-delay),
                 color var(--amll-fs-line-switch-highlight-out-duration) ease-out var(--amll-fs-line-switch-highlight-out-delay) !important;
         }
+        /* 全屏 BG line 配色 - 使用主歌词色系，层级稍弱 */
+        /* 非高亮状态：使用主歌词非高亮色 */
 .amll-lyric-player.amll-surface-fullscreen [class*="_lyricBgLine_"] {
             visibility: hidden !important;
             opacity: 0 !important;
             color: var(
-                --amll-fs-main-line-timing-inactive,
+                --amll-fs-bg-inactive,
                 var(--amll-fs-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
             ) !important;
-            transition: 
-                color .18s ease,
-                opacity .35s ease-out,
-                visibility 0s linear .35s !important;
-            will-change: transform, opacity !important;
+            filter: blur(5px) !important;
+            transition:
+                visibility 0s linear 0.25s,
+                opacity 0.25s,
+                scale 0.5s,
+                filter 0.2s,
+                color .35s ease-out !important;
+            will-change: opacity, filter, transform, color !important;
         }
+        /* 高亮状态：使用主歌词高亮色的较暗版本（通过 brightness 实现） */
         .amll-lyric-player.amll-surface-fullscreen [class*="_lyricBgLine_"][class*="_active_"] {
             visibility: visible !important;
-            opacity: 1 !important;
+            opacity: 0.4 !important;
             color: var(
-                --amll-fs-bg-active,
-                var(--amll-fs-main-line-timing-inactive, var(--amll-fs-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
+                --amll-fs-bg-inactive,
+                var(--amll-fs-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
             ) !important;
-            transition-delay: 0s !important;
+            filter: blur(0px) !important;
+            transition:
+                visibility 0s linear 0s,
+                opacity 0.5s 0.25s,
+                scale 1.5s cubic-bezier(0, 1, 0, 1) 0.25s,
+                filter 0.2s,
+                color .35s ease-out !important;
         }
-/* Background line content: slide up + fade out when disappearing in fullscreen */
+/* Background line content: keep the fullscreen exit translation while root handles fade/blur timing. */
         .amll-lyric-player.amll-surface-fullscreen [class*="_lyricBgLine_"] > * {
             transform: translateY(-0.5em) !important;
-            opacity: 0 !important;
-            transition: transform .35s ease-out, opacity .35s ease-out !important;
+            color: inherit !important;
+            transition: transform .35s ease-out, color .35s ease-out !important;
         }
         .amll-lyric-player.amll-surface-fullscreen [class*="_lyricBgLine_"][class*="_active_"] > * {
             transform: translateY(0) !important;
-            opacity: 1 !important;
+            color: inherit !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricBgLine_"] .amll-fs-word-active,
+        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricBgLine_"] .amll-fs-char-active {
+            color: var(
+                --amll-fs-bg-active,
+                var(--amll-fs-main-active, var(--amll-active, var(--amll-lp-color, white)))
+            ) !important;
+            visibility: visible !important;
         }
 
         /* === Task 1: Fullscreen emphasis glow above text layer === */
@@ -625,7 +715,8 @@
 
         /* Use drop-shadow filter for glow - it extends beyond element boundaries */
         .amll-lyric-player.amll-surface-fullscreen .amll-fs-glow-layer.active-glow {
-            filter: drop-shadow(0 0 0.15em rgba(255, 255, 255, 0.8));
+            /* Use solid color instead of rgba for glow */
+            filter: drop-shadow(0 0 0.15em rgb(255, 255, 255));
         }
 
         .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-generic .amll-fs-glow-layer.amll-fs-cover-blur-glow-layer {
@@ -645,7 +736,8 @@
 
         .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-suppress-glow .amll-fs-glow-layer {
             visibility: hidden !important;
-            opacity: 0 !important;
+            /* Use color instead of opacity - hide by making transparent */
+            color: transparent !important;
             filter: none !important;
         }
 
@@ -697,22 +789,8 @@
 
         .amll-lyric-player.amll-surface-fullscreen [class*="_emphasizeWrapper_"]::after,
         .amll-lyric-player.amll-surface-fullscreen [class*="_emphasize_"]::after {
-            content: attr(data-text) !important;
-            position: absolute !important;
-            top: 0 !important;
-            left: 0 !important;
-            pointer-events: none !important;
-            user-select: none !important;
-            z-index: 10 !important;
-            color: transparent !important;
-            -webkit-text-stroke: 0 transparent !important;
-            opacity: 0 !important;
-            transition: opacity 0.15s ease-out !important;
-        }
-
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][class*="_active_"] [class*="_emphasizeWrapper_"]::after,
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][class*="_active_"] [class*="_emphasize_"]::after {
-            opacity: 1 !important;
+            content: none !important;
+            display: none !important;
         }
 
         /* === Interlude Dots (间奏等待点) - Fullscreen Theme Colors === */
@@ -730,7 +808,8 @@
         .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_interludeDots_"],
         .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_interludeDots_"] * {
             visibility: hidden !important;
-            opacity: 0 !important;
+            /* Use color instead of opacity - hide by making transparent */
+            color: transparent !important;
         }
 
         .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_lyricLine_"][class*="_active_"],
@@ -753,20 +832,23 @@
         .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only .amll-fs-char-base,
         .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only .amll-fs-word-active,
         .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only .amll-fs-char-active {
+            /* Use color instead of opacity - hide by making same as inactive color */
             visibility: hidden !important;
-            opacity: 0 !important;
+            color: transparent !important;
         }
 
         .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only .amll-fs-word-stack > :not(.amll-fs-glow-layer) {
+            /* Use color instead of opacity - hide by making same as inactive color */
             visibility: hidden !important;
-            opacity: 0 !important;
+            color: transparent !important;
             text-shadow: none !important;
             filter: none !important;
         }
 
         .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only .amll-fs-glow-layer {
             visibility: visible !important;
-            opacity: 1 !important;
+            /* Use color instead of opacity */
+            color: var(--amll-fs-main-active, var(--amll-active, var(--amll-lp-color, white))) !important;
             mix-blend-mode: normal !important;
             filter: none !important;
         }
@@ -774,7 +856,8 @@
         .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_emphasizeWrapper_"]::after,
         .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_emphasize_"]::after {
             content: none !important;
-            opacity: 0 !important;
+            /* Use color instead of opacity */
+            color: transparent !important;
         }
 
         .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="_lyricLine_"][class*="_active_"] [class*="_lyricMainLine_"],
@@ -795,7 +878,8 @@
         .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="_lyricLine_"][class*="_active_"] .amll-fs-char-active,
         .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="_lyricLine_"][class*="_active_"] .amll-fs-glow-layer {
             visibility: hidden !important;
-            opacity: 0 !important;
+            /* Use color instead of opacity - hide by making transparent */
+            color: transparent !important;
         }
 
     </style>
@@ -827,7 +911,7 @@
         const defaultRenderScale = isBatchPreviewSurface ? 0.45 : 0.75;
         const defaultOverscanPx = useFullscreenQualityProfile ? 260 : 96;
         const defaultFPSCap = isBatchPreviewSurface ? 45 : 60;
-        const defaultWordFadeWidth = isBatchPreviewSurface ? 0.3 : 0.7;
+        const defaultWordFadeWidth = isBatchPreviewSurface ? 0.3 : (isFullscreenSurface ? 1.0 : 0.7);
         // Fullscreen-specific compositing fallback is disabled.
         // Fullscreen AMLL now follows the same renderer path as main window.
         const fullscreenForcedByHost = false;
@@ -984,17 +1068,36 @@
             return raw;
         };
 
+        const fullscreenColorVarNames = [
+            "--amll-fs-main-active",
+            "--amll-fs-main-inactive",
+            "--amll-fs-sub-active",
+            "--amll-fs-sub-inactive",
+            "--amll-fs-main-line-timing-inactive",
+            "--amll-fs-sub-line-timing-inactive",
+            "--amll-fs-bg-active",
+        ];
+        const fullscreenDerivedColorVarNames = [
+            "--amll-fs-sub-color",
+            "--amll-fs-bg-inactive",
+        ];
+        const coverBlurDerivedColorVarNames = [
+            "--amll-cb-sub-color",
+            "--amll-cb-bg-inactive",
+            "--amll-cb-bg-active",
+        ];
+        const removeStyleVars = (element, names) => {
+            if (!(element instanceof HTMLElement) || !Array.isArray(names)) return;
+            for (const name of names) {
+                element.style.removeProperty(name);
+            }
+        };
+
         const enforceFullscreenOpaqueColorVars = () => {
-            if (!fullscreenOpaqueLyricsMode) return;
+            if (!fullscreenOpaqueLyricsMode || !isFullscreenSurface) return;
             const playerElement = lyricPlayer.getElement();
             const vars = [
-                "--amll-fs-main-active",
-                "--amll-fs-main-inactive",
-                "--amll-fs-sub-active",
-                "--amll-fs-sub-inactive",
-                "--amll-fs-main-line-timing-inactive",
-                "--amll-fs-sub-line-timing-inactive",
-                "--amll-fs-bg-active",
+                ...fullscreenColorVarNames,
                 "--amll-lp-color",
             ];
             for (const name of vars) {
@@ -1116,12 +1219,12 @@
                 playerElement.style.removeProperty("opacity");
                 playerElement.style.removeProperty("--amll-cb-main-blend");
                 playerElement.style.removeProperty("--amll-cb-highlight-blend");
-                for (const name of coverBlurColorVarNames) {
-                    playerElement.style.removeProperty(name);
-                }
+                removeStyleVars(playerElement, coverBlurColorVarNames);
+                removeStyleVars(playerElement, coverBlurDerivedColorVarNames);
                 playerElement.style.removeProperty("background-image");
                 playerElement.style.removeProperty("background-color");
             }
+            syncFullscreenDerivedColors();
         };
 
         const startFullscreenCompositingGuard = () => {};
@@ -1143,6 +1246,7 @@
             playerElement.style.setProperty("opacity", "1", "important");
             playerElement.style.textShadow = "none";
             enforceFullscreenOpaqueColorVars();
+            syncFullscreenDerivedColors();
         };
 
         const parseRGBAColor = (value) => {
@@ -1181,6 +1285,88 @@
                 b: Math.max(0, Math.min(255, color.b * brightnessMultiplier)),
                 a: Math.max(0, Math.min(1, color.a * alphaMultiplier)),
             };
+        };
+
+        const deriveOpaqueColorFromMainColor = (value, brightnessMultiplier = 1) => {
+            const opaqueValue = toOpaqueColor(value);
+            const parsed = parseRGBAColor(opaqueValue);
+            if (!parsed) return opaqueValue;
+            const scaled = scaleRGBAColor(parsed, {
+                brightnessMultiplier,
+                alphaMultiplier: 1,
+            });
+            const formatted = formatRGBAColor(scaled);
+            return formatted ? toOpaqueColor(formatted) : opaqueValue;
+        };
+
+        const resolveComputedOpaqueColor = (computedStyle, ...candidates) => {
+            for (const candidate of candidates) {
+                if (typeof candidate !== "string") continue;
+                const raw = candidate.startsWith("--")
+                    ? computedStyle?.getPropertyValue?.(candidate)
+                    : candidate;
+                if (typeof raw !== "string") continue;
+                const trimmed = raw.trim();
+                if (trimmed.length === 0) continue;
+                return toOpaqueColor(trimmed);
+            }
+            return null;
+        };
+
+        const syncFullscreenDerivedColors = () => {
+            const playerElement = lyricPlayer.getElement();
+            if (!(playerElement instanceof HTMLElement) || !isFullscreenSurface) {
+                removeStyleVars(playerElement, fullscreenDerivedColorVarNames);
+                removeStyleVars(playerElement, coverBlurDerivedColorVarNames);
+                return;
+            }
+
+            const computedStyle = window.getComputedStyle(playerElement);
+            if (playerElement.classList.contains("amll-surface-fullscreen")) {
+                const fsMainInactive = resolveComputedOpaqueColor(
+                    computedStyle,
+                    "--amll-fs-main-inactive",
+                    "--amll-inactive",
+                    computedStyle.color
+                ) ?? "rgb(255, 255, 255)";
+                const fsMainActive = resolveComputedOpaqueColor(
+                    computedStyle,
+                    "--amll-fs-main-active",
+                    "--amll-active",
+                    computedStyle.color
+                ) ?? fsMainInactive;
+                playerElement.style.setProperty("--amll-fs-sub-color", fsMainInactive);
+                playerElement.style.setProperty("--amll-fs-bg-inactive", fsMainInactive);
+                playerElement.style.setProperty(
+                    "--amll-fs-bg-active",
+                    deriveOpaqueColorFromMainColor(fsMainActive, 0.84)
+                );
+            } else {
+                removeStyleVars(playerElement, fullscreenDerivedColorVarNames);
+            }
+
+            if (playerElement.classList.contains("amll-surface-fullscreen-cover-blur")) {
+                const cbMainInactive = resolveComputedOpaqueColor(
+                    computedStyle,
+                    "--amll-cb-main-inactive",
+                    "--amll-inactive",
+                    computedStyle.color
+                ) ?? "rgb(255, 255, 255)";
+                const cbMainActive = resolveComputedOpaqueColor(
+                    computedStyle,
+                    "--amll-cb-main-active",
+                    "--amll-active",
+                    computedStyle.color
+                ) ?? cbMainInactive;
+                playerElement.style.setProperty("--amll-cb-sub-color", cbMainInactive);
+                playerElement.style.setProperty("--amll-cb-bg-inactive", cbMainInactive);
+                playerElement.style.setProperty(
+                    "--amll-cb-bg-active",
+                    deriveOpaqueColorFromMainColor(cbMainActive, 0.84)
+                );
+            } else {
+                removeStyleVars(playerElement, coverBlurDerivedColorVarNames);
+            }
         };
 
         const estimateColorLightness = (color) => {
@@ -1481,6 +1667,62 @@
                 } catch (_) {}
             }
             return animation;
+        };
+
+        const getAnimationEffectTarget = (animation) => {
+            if (!(animation instanceof Animation)) return null;
+            const target = animation?.effect?.target;
+            return target instanceof Element ? target : null;
+        };
+
+        const maskAnimationsTargetElements = (animations, elements) => {
+            if (!Array.isArray(animations) || animations.length === 0) return false;
+            const expectedTargets = new Set(
+                (Array.isArray(elements) ? elements : []).filter((element) => element instanceof Element)
+            );
+            if (expectedTargets.size === 0) return false;
+            return animations.every((animation) => {
+                const target = getAnimationEffectTarget(animation);
+                return target instanceof Element && expectedTargets.has(target);
+            });
+        };
+
+        const shouldRefreshFullscreenEmphasizedMaskAnimations = (splitWord) => {
+            const activeWordElement = splitWord?.__fsActiveWordElement;
+            if (!(activeWordElement instanceof HTMLElement)) return false;
+            const charTargets = Array.isArray(splitWord?.__fsCharRecords)
+                ? splitWord.__fsCharRecords
+                    .map((record) => record?.active)
+                    .filter((element) => element instanceof HTMLElement)
+                : [];
+            if (maskAnimationsTargetElements(splitWord?.maskAnimations, charTargets)) {
+                return false;
+            }
+            if (!Array.isArray(splitWord?.maskAnimations)) {
+                return true;
+            }
+            return splitWord.maskAnimations.some(
+                (animation) => getAnimationEffectTarget(animation) === activeWordElement
+            );
+        };
+
+        const shouldRefreshCoverBlurEmphasizedMaskAnimations = (splitWord) => {
+            const activeWordElement = splitWord?.__cbActiveWordElement;
+            if (!(activeWordElement instanceof HTMLElement)) return false;
+            const charTargets = Array.isArray(splitWord?.__cbCharRecords)
+                ? splitWord.__cbCharRecords
+                    .map((record) => record?.active)
+                    .filter((element) => element instanceof HTMLElement)
+                : [];
+            if (maskAnimationsTargetElements(splitWord?.maskAnimations, charTargets)) {
+                return false;
+            }
+            if (!Array.isArray(splitWord?.maskAnimations)) {
+                return true;
+            }
+            return splitWord.maskAnimations.some(
+                (animation) => getAnimationEffectTarget(animation) === activeWordElement
+            );
         };
 
         const installFullscreenEmphasizedMaskAnimations = (splitWord) => {
@@ -1816,6 +2058,11 @@
             for (const animation of previousAnimations) {
                 cancelAnimationSafely(animation);
             }
+            
+            const previousPackedAnimation = splitWord?.__fsPackedAnimation;
+            if (previousPackedAnimation instanceof Animation) {
+                cancelAnimationSafely(previousPackedAnimation);
+            }
 
             const packedResult = createFullscreenPackedWordAnimation(stackElement, splitWord, lineObj, sourceAnimations);
             const packedAnimation = packedResult?.animation ?? null;
@@ -1846,68 +2093,72 @@
             splitWord.__fsElementAnimationsInstalled = true;
         };
 
+        let patchFullscreenLastProcessedTime = -1;
         const patchFullscreenLineOpacityBehavior = () => {
             if (!fullscreenOpaqueLyricsMode) return;
             if (!Array.isArray(lyricPlayer.currentLyricLineObjects)) return;
+
             for (let lineIdx = 0; lineIdx < lyricPlayer.currentLyricLineObjects.length; lineIdx++) {
                 const lineObj = lyricPlayer.currentLyricLineObjects[lineIdx];
                 const lineElement = lineObj?.element;
-                if (!lineElement || !lineElement.style) continue;
+                if (!(lineElement instanceof HTMLElement) || !lineElement.style) continue;
                 lineElement.style.setProperty("mix-blend-mode", "normal", "important");
+                lineElement.style.setProperty("opacity", "1", "important");
+                for (const child of Array.from(lineElement.children ?? [])) {
+                    if (!(child instanceof HTMLElement)) continue;
+                    child.style.setProperty("opacity", "1", "important");
+                    child.style.setProperty("mix-blend-mode", "normal", "important");
+                }
+
                 const splitWords = Array.isArray(lineObj?.splittedWords) ? lineObj.splittedWords : [];
                 for (const splitWord of splitWords) {
                     const activeWordElement = splitWord?.mainElement;
                     if (!(activeWordElement instanceof HTMLElement)) continue;
+
                     const isEmphasizedWord = isFullscreenEmphasizedWord(splitWord);
-                    if (activeWordElement.dataset.fsLayeredWord === "1") {
-                        const stack = splitWord?.__fsWordStackElement instanceof HTMLElement
-                            ? splitWord.__fsWordStackElement
-                            : activeWordElement.parentElement;
-                        if (
-                            stack instanceof HTMLElement
-                            && stack.classList.contains("amll-fs-word-stack")
-                        ) {
-                            splitWord.__fsWordStackElement = stack;
-                            if (isEmphasizedWord) {
-                                ensureFullscreenEmphasizedCharStacks(splitWord);
-                                installFullscreenEmphasizedMaskAnimations(splitWord);
-                                installFullscreenEmphasizedGlowLayer(splitWord);
-                            }
-                            installFullscreenPackedElementAnimations(splitWord, lineObj);
-                        }
-                        continue;
-                    }
-                    const parent = activeWordElement.parentElement;
-                    if (!parent) continue;
+                    let stackElement = splitWord?.__fsWordStackElement;
+                    if (!(stackElement instanceof HTMLElement) || !stackElement.classList.contains("amll-fs-word-stack")) {
+                        const parent = activeWordElement.parentElement;
+                        if (!(parent instanceof HTMLElement)) continue;
 
-                    const stack = document.createElement("span");
-                    stack.className = "amll-fs-word-stack";
-                    activeWordElement.dataset.fsLayeredWord = "1";
-                    splitWord.__fsActiveWordElement = activeWordElement;
-                    splitWord.__fsWordStackElement = stack;
-                    registerFullscreenPackedAnimationTarget(activeWordElement, stack);
+                        stackElement = document.createElement("span");
+                        stackElement.className = "amll-fs-word-stack";
+                        activeWordElement.dataset.fsLayeredWord = "1";
+                        splitWord.__fsActiveWordElement = activeWordElement;
+                        splitWord.__fsWordStackElement = stackElement;
+                        registerFullscreenPackedAnimationTarget(activeWordElement, stackElement);
 
-                    parent.insertBefore(stack, activeWordElement);
-                    stack.appendChild(activeWordElement);
-                    if (isEmphasizedWord) {
-                        ensureFullscreenEmphasizedCharStacks(splitWord);
-                        installFullscreenEmphasizedMaskAnimations(splitWord);
-                        installFullscreenEmphasizedGlowLayer(splitWord);
+                        parent.insertBefore(stackElement, activeWordElement);
+                        stackElement.appendChild(activeWordElement);
                     } else {
-                        const baseWordElement = activeWordElement.cloneNode(true);
-                        if (!(baseWordElement instanceof HTMLElement)) continue;
+                        activeWordElement.dataset.fsLayeredWord = "1";
+                        splitWord.__fsActiveWordElement = activeWordElement;
+                        splitWord.__fsWordStackElement = stackElement;
+                    }
+                    registerFullscreenPackedAnimationTarget(activeWordElement, stackElement);
+
+                    if (!isEmphasizedWord) {
+                        let baseWordElement = splitWord?.__fsBaseWordElement;
+                        if (!(baseWordElement instanceof HTMLElement) || baseWordElement.parentElement !== stackElement) {
+                            baseWordElement = activeWordElement.cloneNode(true);
+                            if (!(baseWordElement instanceof HTMLElement)) continue;
+                            stackElement.insertBefore(baseWordElement, activeWordElement);
+                            splitWord.__fsBaseWordElement = baseWordElement;
+                        }
                         baseWordElement.classList.add("amll-fs-word-base");
                         baseWordElement.setAttribute("aria-hidden", "true");
                         activeWordElement.classList.add("amll-fs-word-active");
-                        stack.insertBefore(baseWordElement, activeWordElement);
-                        splitWord.__fsBaseWordElement = baseWordElement;
+                    } else {
+                        ensureFullscreenEmphasizedCharStacks(splitWord);
+                        if (shouldRefreshFullscreenEmphasizedMaskAnimations(splitWord)) {
+                            installFullscreenEmphasizedMaskAnimations(splitWord);
+                        }
+                        if (!(splitWord?.__fsGlowLayer instanceof HTMLElement)) {
+                            installFullscreenEmphasizedGlowLayer(splitWord);
+                        }
                     }
+
                     installFullscreenPackedElementAnimations(splitWord, lineObj);
-                }
-                for (const child of Array.from(lineElement.children ?? [])) {
-                    if (!child || !child.style) continue;
-                    child.style.opacity = "1";
-                    child.style.setProperty("mix-blend-mode", "normal", "important");
                 }
             }
         };
@@ -2229,72 +2480,85 @@
             applyBlendToNodeList('[class*="_lyricBgLine_"] > *', mainBlendMode);
             applyBlendToNodeList('[class*="_interludeDots_"] > *', mainBlendMode);
         };
+        let lastCoverBlurBlendSignature = "";
 
         const patchCoverBlurLineBehavior = () => {
             if (!fullscreenCoverBlurMode) return;
             syncCoverBlurRootState();
             if (!Array.isArray(lyricPlayer.currentLyricLineObjects)) return;
+
+            let didMutate = false;
             for (let lineIdx = 0; lineIdx < lyricPlayer.currentLyricLineObjects.length; lineIdx++) {
                 const lineObj = lyricPlayer.currentLyricLineObjects[lineIdx];
                 const lineElement = lineObj?.element;
                 if (!(lineElement instanceof HTMLElement)) continue;
-                if (lineElement.dataset.amllCbPatchedLine === "1") continue;
-                lineElement.dataset.amllCbPatchedLine = "1";
+                lineElement.style.setProperty("mix-blend-mode", "normal", "important");
                 lineElement.style.setProperty("opacity", "1", "important");
-                const splitWords = Array.isArray(lineObj?.splittedWords) ? lineObj.splittedWords : [];
-                for (const splitWord of splitWords) {
-                    const activeWordElement = splitWord?.mainElement;
-                    if (!(activeWordElement instanceof HTMLElement)) continue;
-                    const isEmphasizedWord = isFullscreenEmphasizedWord(splitWord);
-                    if (activeWordElement.dataset.cbLayeredWord === "1") {
-                        const stack = splitWord?.__cbWordStackElement instanceof HTMLElement
-                            ? splitWord.__cbWordStackElement
-                            : activeWordElement.parentElement;
-                        if (stack instanceof HTMLElement && stack.classList.contains("amll-cb-word-stack")) {
-                            splitWord.__cbWordStackElement = stack;
-                            if (isEmphasizedWord) {
-                                ensureCoverBlurEmphasizedCharStacks(splitWord);
-                                installCoverBlurEmphasizedMaskAnimations(splitWord);
-                                installCoverBlurEmphasizedGlowLayer(splitWord);
-                            }
-                            installCoverBlurPackedElementAnimations(splitWord, lineObj);
-                        }
-                        continue;
-                    }
-
-                    const parent = activeWordElement.parentElement;
-                    if (!parent) continue;
-
-                    const stack = document.createElement("span");
-                    stack.className = "amll-cb-word-stack";
-                    activeWordElement.dataset.cbLayeredWord = "1";
-                    splitWord.__cbActiveWordElement = activeWordElement;
-                    splitWord.__cbWordStackElement = stack;
-                    registerCoverBlurPackedAnimationTarget(activeWordElement, stack);
-
-                    parent.insertBefore(stack, activeWordElement);
-                    stack.appendChild(activeWordElement);
-                    if (isEmphasizedWord) {
-                        ensureCoverBlurEmphasizedCharStacks(splitWord);
-                        installCoverBlurEmphasizedMaskAnimations(splitWord);
-                        installCoverBlurEmphasizedGlowLayer(splitWord);
-                    } else {
-                        const baseWordElement = activeWordElement.cloneNode(true);
-                        if (!(baseWordElement instanceof HTMLElement)) continue;
-                        baseWordElement.classList.add("amll-cb-word-base");
-                        baseWordElement.setAttribute("aria-hidden", "true");
-                        activeWordElement.classList.add("amll-cb-word-active");
-                        stack.insertBefore(baseWordElement, activeWordElement);
-                        splitWord.__cbBaseWordElement = baseWordElement;
-                    }
-                    installCoverBlurPackedElementAnimations(splitWord, lineObj);
-                }
                 for (const child of Array.from(lineElement.children ?? [])) {
                     if (!(child instanceof HTMLElement)) continue;
                     child.style.setProperty("opacity", "1", "important");
                 }
+
+                const splitWords = Array.isArray(lineObj?.splittedWords) ? lineObj.splittedWords : [];
+                for (const splitWord of splitWords) {
+                    const activeWordElement = splitWord?.mainElement;
+                    if (!(activeWordElement instanceof HTMLElement)) continue;
+
+                    const isEmphasizedWord = isFullscreenEmphasizedWord(splitWord);
+                    let stackElement = splitWord?.__cbWordStackElement;
+                    if (!(stackElement instanceof HTMLElement) || !stackElement.classList.contains("amll-cb-word-stack")) {
+                        const parent = activeWordElement.parentElement;
+                        if (!(parent instanceof HTMLElement)) continue;
+
+                        stackElement = document.createElement("span");
+                        stackElement.className = "amll-cb-word-stack";
+                        activeWordElement.dataset.cbLayeredWord = "1";
+                        splitWord.__cbActiveWordElement = activeWordElement;
+                        splitWord.__cbWordStackElement = stackElement;
+                        registerCoverBlurPackedAnimationTarget(activeWordElement, stackElement);
+
+                        parent.insertBefore(stackElement, activeWordElement);
+                        stackElement.appendChild(activeWordElement);
+                        didMutate = true;
+                    } else {
+                        activeWordElement.dataset.cbLayeredWord = "1";
+                        splitWord.__cbActiveWordElement = activeWordElement;
+                        splitWord.__cbWordStackElement = stackElement;
+                    }
+                    registerCoverBlurPackedAnimationTarget(activeWordElement, stackElement);
+
+                    if (!isEmphasizedWord) {
+                        let baseWordElement = splitWord?.__cbBaseWordElement;
+                        if (!(baseWordElement instanceof HTMLElement) || baseWordElement.parentElement !== stackElement) {
+                            baseWordElement = activeWordElement.cloneNode(true);
+                            if (!(baseWordElement instanceof HTMLElement)) continue;
+                            stackElement.insertBefore(baseWordElement, activeWordElement);
+                            splitWord.__cbBaseWordElement = baseWordElement;
+                            didMutate = true;
+                        }
+                        baseWordElement.classList.add("amll-cb-word-base");
+                        baseWordElement.setAttribute("aria-hidden", "true");
+                        activeWordElement.classList.add("amll-cb-word-active");
+                    } else {
+                        ensureCoverBlurEmphasizedCharStacks(splitWord);
+                        if (shouldRefreshCoverBlurEmphasizedMaskAnimations(splitWord)) {
+                            installCoverBlurEmphasizedMaskAnimations(splitWord);
+                            didMutate = true;
+                        }
+                        if (!(splitWord?.__cbGlowLayer instanceof HTMLElement)) {
+                            installCoverBlurEmphasizedGlowLayer(splitWord);
+                            didMutate = true;
+                        }
+                    }
+
+                    installCoverBlurPackedElementAnimations(splitWord, lineObj);
+                }
             }
-            applyCoverBlurFinalLayerStyles();
+            const nextBlendSignature = `${getCoverBlurMainBlendMode()}|${getCoverBlurHighlightBlendMode()}|${fullscreenCoverBlurProfile}`;
+            if (didMutate || nextBlendSignature !== lastCoverBlurBlendSignature) {
+                applyCoverBlurFinalLayerStyles();
+                lastCoverBlurBlendSignature = nextBlendSignature;
+            }
         };
 
         syncCoverBlurRootState();
@@ -2336,153 +2600,446 @@
             return Number.isFinite(raw) ? Math.round(raw * 1000) : null;
         };
 
-        const captureTimingSnapshot = (lines) => {
-            if (!Array.isArray(lines)) return [];
-            return lines.map((line) => ({
-                isBG: line?.isBG === true,
-                startTime: Number.isFinite(line?.startTime) ? line.startTime : null,
-                endTime: Number.isFinite(line?.endTime) ? line.endTime : null,
-                words: Array.isArray(line?.words)
-                    ? line.words.map((word) => ({
-                        startTime: Number.isFinite(word?.startTime) ? word.startTime : null,
-                        endTime: Number.isFinite(word?.endTime) ? word.endTime : null,
-                    }))
-                    : [],
-            }));
-        };
-
-        const applyTimingSnapshot = (lines, snapshot) => {
-            if (!Array.isArray(lines) || !Array.isArray(snapshot) || lines.length !== snapshot.length) {
-                return false;
-            }
-            lines.forEach((line, idx) => {
-                const snap = snapshot[idx];
-                if (!line || !snap) return;
-                if (Number.isFinite(snap.startTime)) line.startTime = snap.startTime;
-                if (Number.isFinite(snap.endTime)) line.endTime = snap.endTime;
-                if (!Array.isArray(line.words) || !Array.isArray(snap.words)) return;
-                const wordCount = Math.min(line.words.length, snap.words.length);
-                for (let wi = 0; wi < wordCount; wi++) {
-                    const word = line.words[wi];
-                    const wordSnap = snap.words[wi];
-                    if (!word || !wordSnap) continue;
-                    if (Number.isFinite(wordSnap.startTime)) word.startTime = wordSnap.startTime;
-                    if (Number.isFinite(wordSnap.endTime)) word.endTime = wordSnap.endTime;
-                }
-            });
-            return true;
-        };
-
-        const restoreTimingSnapshot = (snapshot) => {
-            const didProcessed = applyTimingSnapshot(lyricPlayer.processedLines, snapshot);
-            const didCurrent = applyTimingSnapshot(lyricPlayer.currentLyricLines, snapshot);
-            const objectLines = Array.isArray(lyricPlayer.currentLyricLineObjects)
-                ? lyricPlayer.currentLyricLineObjects
-                    .map((obj) => obj?.getLine?.() ?? obj?.lyricLine)
-                    .filter(Boolean)
-                : [];
-            const didObjects = applyTimingSnapshot(objectLines, snapshot);
-            return didProcessed || didCurrent || didObjects;
-        };
-
-	        // Simplified time management - let AMLL core handle parallel lyrics via isBG/hotLines/bufferedLines
-	        // Update data-fs-completed-highlight for lines that have lost _active_ but are still in foreground
-	        // (i.e., parallel display completed state where line is still in visible range but _active_ was removed)
-	        // CRITICAL: Only apply this to WORD-LEVEL skins, NOT line-timing-only skins
-	        // Line-timing-only skins should follow normal behavior: highlight fades immediately when entering retreat
-	        
-	        // One-way dismissed state to prevent highlight resurrection
-	        // Once a line's highlight has been dismissed (faded out), it can never be re-enabled
-	        // This is cleared only on setLyrics or seek
-	        const fsHighlightDismissed = new Set();
+	        // Simplified time management - let AMLL core handle parallel lyrics via hotLines/bufferedLines.
+	        // Fullscreen should only preserve completed word highlight while a line still belongs to
+	        // the same foreground group that window-mode calcLayout uses.
+	        const DEBUG_PARALLEL_EMPHASIS_TRACE = true;
+	        let parallelEmphasisDiagnosticsSourceLines = [];
+	        let parallelEmphasisDiagnosticPairs = [];
+	        const lastParallelEmphasisLineState = new Map();
+	        const lastParallelEmphasisPairState = new Map();
+	        const getLineTextForTrace = (line) => {
+	            if (!line || !Array.isArray(line.words)) return "";
+	            return line.words.map((word) => (typeof word?.word === "string" ? word.word : "")).join("")
+	                .replace(/\s+/g, " ")
+	                .trim()
+	                .slice(0, 72);
+	        };
+	        const wordShouldEmphasizeForTrace = (word) => {
+	            if (!word || typeof word.word !== "string") return false;
+	            const duration = (Number.isFinite(word.endTime) ? word.endTime : 0)
+	                - (Number.isFinite(word.startTime) ? word.startTime : 0);
+	            if (duration < 1000) return false;
+	            const trimmed = word.word.trim();
+	            if (!trimmed) return false;
+	            const isCJK = /^[\p{Unified_Ideograph}\u0800-\u9FFC]+$/u.test(trimmed);
+	            if (isCJK) return true;
+	            return trimmed.length <= 7 && trimmed.length > 1;
+	        };
+	        const lineShouldEmphasizeForTrace = (line) => {
+	            if (!line || !Array.isArray(line.words)) return false;
+	            return line.words.some(wordShouldEmphasizeForTrace);
+	        };
+	        const getLineEmphasisWindowForTrace = (line) => {
+	            if (!line || !Array.isArray(line.words)) return null;
+	            let start = Number.POSITIVE_INFINITY;
+	            let end = Number.NEGATIVE_INFINITY;
+	            for (const word of line.words) {
+	                if (!wordShouldEmphasizeForTrace(word)) continue;
+	                const wordStart = Number.isFinite(word.startTime) ? word.startTime : NaN;
+	                const wordEnd = Number.isFinite(word.endTime) ? word.endTime : NaN;
+	                if (!Number.isFinite(wordStart) || !Number.isFinite(wordEnd)) continue;
+	                start = Math.min(start, wordStart);
+	                end = Math.max(end, wordEnd);
+	            }
+	            if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+	            return { start, end };
+	        };
+	        const buildParallelEmphasisDiagnosticPairs = (lines) => {
+	            if (!Array.isArray(lines) || lines.length === 0) return [];
+	            const mainIndexes = [];
+	            for (let i = 0; i < lines.length; i++) {
+	                if (lines[i] && !lines[i].isBG) {
+	                    mainIndexes.push(i);
+	                }
+	            }
+	            const pairs = [];
+	            for (let i = 0; i < mainIndexes.length - 1; i++) {
+	                const aIdx = mainIndexes[i];
+	                const bIdx = mainIndexes[i + 1];
+	                const a = lines[aIdx];
+	                const b = lines[bIdx];
+	                if (!a || !b) continue;
+	                const rawOverlap = Math.min(a.endTime, b.endTime) - Math.max(a.startTime, b.startTime);
+	                if (!Number.isFinite(rawOverlap) || rawOverlap <= 0) continue;
+	                const aEmphasisWindow = getLineEmphasisWindowForTrace(a);
+	                const bEmphasisWindow = getLineEmphasisWindowForTrace(b);
+	                if (!aEmphasisWindow && !bEmphasisWindow) continue;
+	                pairs.push({
+	                    key: `${aIdx}:${bIdx}`,
+	                    aIdx,
+	                    bIdx,
+	                    rawOverlap,
+	                    aText: getLineTextForTrace(a),
+	                    bText: getLineTextForTrace(b),
+	                    aRawStart: Number.isFinite(a.startTime) ? a.startTime : 0,
+	                    aRawEnd: Number.isFinite(a.endTime) ? a.endTime : 0,
+	                    bRawStart: Number.isFinite(b.startTime) ? b.startTime : 0,
+	                    bRawEnd: Number.isFinite(b.endTime) ? b.endTime : 0,
+	                    windowStart: Math.max(
+	                        0,
+	                        Math.min(
+	                            aEmphasisWindow?.start ?? a.startTime ?? 0,
+	                            bEmphasisWindow?.start ?? b.startTime ?? 0,
+	                            b.startTime ?? 0
+	                        ) - 600
+	                    ),
+	                    windowEnd: Math.max(
+	                        aEmphasisWindow?.end ?? a.endTime ?? 0,
+	                        bEmphasisWindow?.end ?? b.endTime ?? 0,
+	                        (b.startTime ?? 0) + 900
+	                    ) + 600,
+	                });
+	            }
+	            return pairs;
+	        };
+	        const collectEmphasisStateForTrace = (lineObj) => {
+	            const splitWords = Array.isArray(lineObj?.splittedWords) ? lineObj.splittedWords : [];
+	            let running = 0;
+	            let finished = 0;
+	            let total = 0;
+	            for (const splitWord of splitWords) {
+	                const animations = Array.isArray(splitWord?.elementAnimations)
+	                    ? splitWord.elementAnimations
+	                    : [];
+	                for (const animation of animations) {
+	                    const id = typeof animation?.id === "string" ? animation.id : "";
+	                    if (!id.includes("emphasize-word-") || id.includes("float")) continue;
+	                    total += 1;
+	                    if (animation.playState === "running") {
+	                        running += 1;
+	                        continue;
+	                    }
+	                    const currentTime = Number.isFinite(animation.currentTime) ? animation.currentTime : 0;
+	                    const effectTiming = animation.effect?.getTiming?.();
+	                    const duration = Number.isFinite(effectTiming?.duration) ? effectTiming.duration : 0;
+	                    if (duration > 0 && currentTime >= duration - 1) {
+	                        finished += 1;
+	                    }
+	                }
+	            }
+	            return { total, running, finished };
+	        };
+	        const emitParallelEmphasisTrace = (tag, payload) => {
+	            console.log(`[LyricsRenderer][ParallelEmphasisTrace][${tag}] ${JSON.stringify(payload)}`);
+	        };
+	        const getProcessedMainLineInfoForTrace = (lineIdx) => {
+	            if (!Array.isArray(lyricPlayer.currentLyricLineObjects)) return null;
+	            const lineObj = lyricPlayer.currentLyricLineObjects[lineIdx];
+	            const processedLine = lineObj?.getLine?.() ?? lineObj?.lyricLine ?? null;
+	            if (!processedLine) return null;
+	            return {
+	                idx: lineIdx,
+	                line: processedLine,
+	                text: getLineTextForTrace(
+	                    parallelEmphasisDiagnosticsSourceLines[lineIdx] ?? processedLine
+	                ),
+	            };
+	        };
+	        const findPreviousProcessedMainLineForTrace = (lineIdx) => {
+	            for (let i = lineIdx - 1; i >= 0; i--) {
+	                const info = getProcessedMainLineInfoForTrace(i);
+	                if (info && info.line?.isBG !== true) return info;
+	            }
+	            return null;
+	        };
+	        const emitParallelEmphasisNormalizationTrace = () => {
+	            try {
+	                if (!DEBUG_PARALLEL_EMPHASIS_TRACE) return;
+	                if (!Array.isArray(parallelEmphasisDiagnosticPairs) || parallelEmphasisDiagnosticPairs.length === 0) return;
+	                const trackedLineIndexes = new Set();
+	                for (const pair of parallelEmphasisDiagnosticPairs) {
+	                    trackedLineIndexes.add(pair.aIdx);
+	                    trackedLineIndexes.add(pair.bIdx);
+	                }
+	                for (const lineIdx of Array.from(trackedLineIndexes).sort((a, b) => a - b)) {
+	                    const sourceLine = parallelEmphasisDiagnosticsSourceLines[lineIdx] ?? null;
+	                    const processedInfo = getProcessedMainLineInfoForTrace(lineIdx);
+	                    const processedLine = processedInfo?.line ?? null;
+	                    if (!sourceLine || !processedLine || sourceLine.isBG === true || processedLine.isBG === true) continue;
+	                    const prevMainInfo = findPreviousProcessedMainLineForTrace(lineIdx);
+	                    const rawStart = Number.isFinite(sourceLine.startTime) ? sourceLine.startTime : null;
+	                    const processedStart = Number.isFinite(processedLine.startTime) ? processedLine.startTime : null;
+	                    const startShiftMs = rawStart !== null && processedStart !== null
+	                        ? processedStart - rawStart
+	                        : null;
+	                    const prevProcessedEnd = Number.isFinite(prevMainInfo?.line?.endTime)
+	                        ? prevMainInfo.line.endTime
+	                        : null;
+	                    const startClampedByPrevEnd = rawStart !== null
+	                        && processedStart !== null
+	                        && prevProcessedEnd !== null
+	                        && processedStart > rawStart
+	                        && Math.abs(processedStart - prevProcessedEnd) <= 1;
+	                    emitParallelEmphasisTrace("Normalize", {
+	                        idx: lineIdx,
+	                        text: getLineTextForTrace(sourceLine),
+	                        isBG: sourceLine.isBG === true,
+	                        isDuet: sourceLine.isDuet === true,
+	                        rawStart,
+	                        rawEnd: Number.isFinite(sourceLine.endTime) ? sourceLine.endTime : null,
+	                        processedStart,
+	                        processedEnd: Number.isFinite(processedLine.endTime) ? processedLine.endTime : null,
+	                        startShiftMs,
+	                        prevMainIdx: prevMainInfo?.idx ?? null,
+	                        prevMainText: prevMainInfo?.text ?? "",
+	                        prevMainProcessedEnd: prevProcessedEnd,
+	                        startClampedByPrevEnd,
+	                    });
+	                }
+	            } catch (error) {
+	                console.warn("[LyricsRenderer][ParallelEmphasisTrace][InternalError]", error);
+	            }
+	        };
+	        const buildLineTraceSnapshot = (lineIdx, hotLines, bufferedLines) => {
+	            const lineObj = lyricPlayer.currentLyricLineObjects?.[lineIdx];
+	            const processedLine = lineObj?.getLine?.() ?? lineObj?.lyricLine ?? null;
+	            const sourceLine = parallelEmphasisDiagnosticsSourceLines[lineIdx] ?? processedLine;
+	            if (!processedLine && !sourceLine) return null;
+	            const element = typeof lineObj?.getElement === "function"
+	                ? lineObj.getElement()
+	                : lineObj?.element;
+	            const emphasisState = collectEmphasisStateForTrace(lineObj);
+	            return {
+	                idx: lineIdx,
+	                text: getLineTextForTrace(sourceLine ?? processedLine),
+	                isBG: sourceLine?.isBG === true || processedLine?.isBG === true,
+	                isDuet: sourceLine?.isDuet === true || processedLine?.isDuet === true,
+	                rawStart: Number.isFinite(sourceLine?.startTime) ? sourceLine.startTime : null,
+	                rawEnd: Number.isFinite(sourceLine?.endTime) ? sourceLine.endTime : null,
+	                processedStart: Number.isFinite(processedLine?.startTime) ? processedLine.startTime : null,
+	                processedEnd: Number.isFinite(processedLine?.endTime) ? processedLine.endTime : null,
+	                hot: hotLines.has(lineIdx),
+	                buffered: bufferedLines.has(lineIdx),
+	                enabled: lineObj?.isEnabled === true,
+	                activeClass: typeof element?.className === "string" && element.className.includes("_active_"),
+	                emphasisRunning: emphasisState.running,
+	                emphasisFinished: emphasisState.finished,
+	                emphasisTotal: emphasisState.total,
+	            };
+	        };
+	        const traceParallelEmphasisState = (timeMs) => {
+	            if (!DEBUG_PARALLEL_EMPHASIS_TRACE) return;
+	            if (!Array.isArray(parallelEmphasisDiagnosticPairs) || parallelEmphasisDiagnosticPairs.length === 0) return;
+	            const hotLines = lyricPlayer.hotLines instanceof Set ? lyricPlayer.hotLines : new Set();
+	            const bufferedLines = lyricPlayer.bufferedLines instanceof Set ? lyricPlayer.bufferedLines : new Set();
+	            const activePairs = parallelEmphasisDiagnosticPairs.filter(
+	                (pair) => timeMs >= pair.windowStart && timeMs <= pair.windowEnd
+	            );
+	            if (activePairs.length === 0) return;
+	            const trackedLineIndexes = new Set();
+	            for (const pair of activePairs) {
+	                trackedLineIndexes.add(pair.aIdx);
+	                trackedLineIndexes.add(pair.bIdx);
+	            }
+	            const snapshots = new Map();
+	            for (const lineIdx of trackedLineIndexes) {
+	                const snapshot = buildLineTraceSnapshot(lineIdx, hotLines, bufferedLines);
+	                if (!snapshot || snapshot.isBG) continue;
+	                snapshots.set(lineIdx, snapshot);
+	                const nextSignature = JSON.stringify({
+	                    hot: snapshot.hot,
+	                    buffered: snapshot.buffered,
+	                    enabled: snapshot.enabled,
+	                    activeClass: snapshot.activeClass,
+	                    emphasisRunning: snapshot.emphasisRunning,
+	                });
+	                const previous = lastParallelEmphasisLineState.get(lineIdx);
+	                if (!previous || previous.signature !== nextSignature) {
+	                    emitParallelEmphasisTrace("Line", {
+		                        timeMs,
+		                        scrollToIndex: Number.isFinite(lyricPlayer.scrollToIndex)
+		                            ? lyricPlayer.scrollToIndex
+		                            : null,
+	                        ...snapshot,
+	                    });
+	                }
+	                if ((!previous || previous.snapshot.emphasisRunning <= 0) && snapshot.emphasisRunning > 0) {
+	                    emitParallelEmphasisTrace("Emphasis", {
+	                        event: "start",
+	                        timeMs,
+	                        idx: snapshot.idx,
+	                        text: snapshot.text,
+	                        rawStart: snapshot.rawStart,
+	                        rawEnd: snapshot.rawEnd,
+	                        processedStart: snapshot.processedStart,
+	                        processedEnd: snapshot.processedEnd,
+	                        emphasisRunning: snapshot.emphasisRunning,
+	                        emphasisTotal: snapshot.emphasisTotal,
+	                    });
+	                }
+	                if (previous && previous.snapshot.emphasisRunning > 0 && snapshot.emphasisRunning <= 0) {
+	                    emitParallelEmphasisTrace("Emphasis", {
+	                        event: "stop",
+	                        timeMs,
+	                        idx: snapshot.idx,
+	                        text: snapshot.text,
+	                        emphasisRunning: snapshot.emphasisRunning,
+	                        emphasisFinished: snapshot.emphasisFinished,
+	                        emphasisTotal: snapshot.emphasisTotal,
+	                        enabled: snapshot.enabled,
+	                    });
+	                }
+	                if (previous && previous.snapshot.enabled === true && snapshot.enabled === false) {
+	                    emitParallelEmphasisTrace("Emphasis", {
+	                        event: "disable",
+	                        timeMs,
+	                        idx: snapshot.idx,
+	                        text: snapshot.text,
+	                        hot: snapshot.hot,
+	                        buffered: snapshot.buffered,
+	                        activeClass: snapshot.activeClass,
+	                        emphasisStillRunningAfterDisable: snapshot.emphasisRunning > 0,
+	                        emphasisRunning: snapshot.emphasisRunning,
+	                        emphasisFinished: snapshot.emphasisFinished,
+	                        emphasisTotal: snapshot.emphasisTotal,
+	                    });
+	                }
+	                lastParallelEmphasisLineState.set(lineIdx, {
+	                    signature: nextSignature,
+	                    snapshot,
+	                });
+	            }
+	            for (const pair of activePairs) {
+	                const aState = snapshots.get(pair.aIdx) ?? buildLineTraceSnapshot(pair.aIdx, hotLines, bufferedLines);
+	                const bState = snapshots.get(pair.bIdx) ?? buildLineTraceSnapshot(pair.bIdx, hotLines, bufferedLines);
+	                if (!aState || !bState) continue;
+	                const pairReason = !bState.hot
+	                    ? (Number.isFinite(bState.processedStart) && bState.processedStart > timeMs
+	                        ? "b_not_hot_processed_start_not_reached"
+	                        : (!bState.enabled ? "b_not_hot_not_enabled" : "b_not_hot_unknown"))
+	                    : (aState.emphasisRunning > 0 ? "b_hot_while_a_emphasis_running" : "b_hot");
+	                const pairSignature = JSON.stringify({
+	                    aHot: aState.hot,
+	                    aBuffered: aState.buffered,
+	                    aEnabled: aState.enabled,
+	                    aEmphasisRunning: aState.emphasisRunning,
+	                    bHot: bState.hot,
+	                    bBuffered: bState.buffered,
+	                    bEnabled: bState.enabled,
+	                    reason: pairReason,
+	                });
+	                const nearConflictBoundary = timeMs >= pair.bRawStart - 150 && timeMs <= pair.bRawStart + 1200;
+	                if (!nearConflictBoundary) continue;
+	                if (lastParallelEmphasisPairState.get(pair.key) === pairSignature) continue;
+	                lastParallelEmphasisPairState.set(pair.key, pairSignature);
+	                emitParallelEmphasisTrace("Pair", {
+	                    timeMs,
+	                    rawOverlap: pair.rawOverlap,
+		                    a: {
+		                        idx: pair.aIdx,
+		                        text: pair.aText,
+		                        isDuet: aState.isDuet,
+		                        rawStart: pair.aRawStart,
+		                        rawEnd: pair.aRawEnd,
+		                        processedStart: aState.processedStart,
+	                        processedEnd: aState.processedEnd,
+	                        hot: aState.hot,
+	                        buffered: aState.buffered,
+	                        enabled: aState.enabled,
+	                        activeClass: aState.activeClass,
+	                        emphasisRunning: aState.emphasisRunning,
+	                    },
+		                    b: {
+		                        idx: pair.bIdx,
+		                        text: pair.bText,
+		                        isDuet: bState.isDuet,
+		                        rawStart: pair.bRawStart,
+		                        rawEnd: pair.bRawEnd,
+		                        processedStart: bState.processedStart,
+	                        processedEnd: bState.processedEnd,
+	                        hot: bState.hot,
+	                        buffered: bState.buffered,
+	                        enabled: bState.enabled,
+	                        activeClass: bState.activeClass,
+	                        emphasisRunning: bState.emphasisRunning,
+	                    },
+	                    reason: pairReason,
+	                });
+	            }
+	        };
+	        const clearFullscreenCompletedHighlightState = () => {
+	            if (!Array.isArray(lyricPlayer.currentLyricLineObjects)) return;
+	            for (const lineObj of lyricPlayer.currentLyricLineObjects) {
+	                const lineElement = lineObj?.element;
+	                if (lineElement instanceof HTMLElement) {
+	                    delete lineElement.dataset.fsCompletedHighlight;
+	                }
+	            }
+	        };
 	        
 	        const updateFullscreenParallelHighlightState = () => {
 	            if (!Array.isArray(lyricPlayer.currentLyricLineObjects)) return;
 	            
-	            // Skip entirely for line-timing-only mode (逐行皮肤)
-	            // In line-timing-only mode, there's no word-level highlight to preserve
+	            // Skip entirely for line-timing-only mode (逐行皮肤):
+	            // line highlight lifetime already follows the root active color path.
 	            if (lineTimingOnlyMode === true) {
-	                // Clear any existing markers for line-timing-only mode
-	                for (const lineObj of lyricPlayer.currentLyricLineObjects) {
-	                    const lineElement = lineObj?.element;
-	                    if (lineElement instanceof HTMLElement) {
-	                        delete lineElement.dataset.fsCompletedHighlight;
-	                    }
-	                }
+	                clearFullscreenCompletedHighlightState();
 	                return;
 	            }
 	            
-	            // Get hotLines and bufferedLines from core
-	            const hotLines = lyricPlayer.hotLines;
+	            const bufferedLines = lyricPlayer.bufferedLines;
+	            const bufferedIndexes = bufferedLines instanceof Set
+	                ? Array.from(bufferedLines).filter((lineIdx) => Number.isFinite(lineIdx))
+	                : [];
 	            
-	            // For each line, determine if it should have completed-highlight
+	            if (bufferedIndexes.length === 0) {
+	                clearFullscreenCompletedHighlightState();
+	                return;
+	            }
+	            
+	            const latestBufferedIndex = Math.max(...bufferedIndexes);
+	            const earliestBufferedIndex = Math.min(...bufferedIndexes);
+	            const foregroundStart = Number.isFinite(lyricPlayer.scrollToIndex)
+	                ? lyricPlayer.scrollToIndex
+	                : earliestBufferedIndex;
+	            
+	            // Match AMLL window-mode calcLayout:
+	            // hasBuffered || (i >= scrollToIndex && i < latestIndex)
 	            for (let lineIdx = 0; lineIdx < lyricPlayer.currentLyricLineObjects.length; lineIdx++) {
 	                const lineObj = lyricPlayer.currentLyricLineObjects[lineIdx];
 	                const lineElement = lineObj?.element;
 	                if (!(lineElement instanceof HTMLElement)) continue;
 	                
-	                // Check if line has _active_ class
-	                const hasActiveClass = lineElement.className.includes("_active_");
-	                
-	                if (hasActiveClass) {
-	                    // Line is active - no special handling needed
+	                const line = typeof lineObj?.getLine === "function"
+	                    ? lineObj.getLine()
+	                    : lineObj?.lyricLine;
+	                if (line?.isBG) {
 	                    delete lineElement.dataset.fsCompletedHighlight;
-	                    // Also clear dismissed state when line becomes active again
-	                    fsHighlightDismissed.delete(lineIdx);
+	                    continue;
+	                }
+	                
+	                const hasActiveClass = lineElement.className.includes("_active_");
+	                if (hasActiveClass) {
+	                    delete lineElement.dataset.fsCompletedHighlight;
+	                    continue;
+	                }
+	                
+	                const hasBuffered = bufferedLines.has(lineIdx);
+	                const isInForegroundGroup =
+	                    hasBuffered ||
+	                    (lineIdx >= foregroundStart && lineIdx < latestBufferedIndex);
+	                
+	                if (isInForegroundGroup) {
+	                    lineElement.dataset.fsCompletedHighlight = "1";
 	                } else {
-	                    // Line doesn't have _active_ - check if it should keep highlight
-	                    
-	                    // CRITICAL: Once dismissed, never re-enable
-	                    if (fsHighlightDismissed.has(lineIdx)) {
-	                        delete lineElement.dataset.fsCompletedHighlight;
-	                        continue;
-	                    }
-	                    
-	                    // Keep highlight ONLY if:
-	                    // 1. Line is still in hotLines (currently playing)
-	                    // 2. OR next line is in hotLines AND this line just exited hotLines (parallel display)
-	                    //    The "just exited" check is: this line was in hotLines before, OR next line is in hotLines now
-	                    
-	                    const isInHotLines = hotLines instanceof Set && hotLines.has(lineIdx);
-	                    const nextLineIdx = lineIdx + 1;
-	                    const isNextLineInHotLines = hotLines instanceof Set && hotLines.has(nextLineIdx);
-	                    
-	                    // Parallel display: current line is NOT in hotLines but next line IS in hotLines
-	                    // AND this line has never been dismissed (first time seeing this state)
-	                    const isParallelDisplay = !isInHotLines && isNextLineInHotLines;
-	                    
-	                    if (isInHotLines) {
-	                        // Line is still active - keep highlight
-	                        lineElement.dataset.fsCompletedHighlight = "1";
-	                    } else if (isParallelDisplay && !fsHighlightDismissed.has(lineIdx)) {
-	                        // Parallel display: line exited hotLines but next line is still playing
-	                        // Keep highlight ONLY if we haven't already dismissed this line
-	                        lineElement.dataset.fsCompletedHighlight = "1";
-	                    } else {
-	                        // Line has entered retreat phase - fade highlight immediately
-	                        // Mark as dismissed to prevent future resurrection
-	                        delete lineElement.dataset.fsCompletedHighlight;
-	                        fsHighlightDismissed.add(lineIdx);
-	                    }
+	                    delete lineElement.dataset.fsCompletedHighlight;
 	                }
 	            }
 	        };
 	        
-	        // Clear dismissed state on new lyrics or seek
-	        const clearFullscreenDismissedState = () => {
-	            fsHighlightDismissed.clear();
-	        };
 	        let lastKnownTimeMs = 0;
 	        const coreSetCurrentTime = lyricPlayer.setCurrentTime.bind(lyricPlayer);
 	        const originalSetCurrentTime = (ms, force = false) => {
 	            const timeMs = Math.max(0, Math.floor(ms));
 	            lastKnownTimeMs = timeMs;
 	            coreSetCurrentTime(timeMs, force);
+	            traceParallelEmphasisState(timeMs);
 	            if (fullscreenOpaqueLyricsMode) {
 	                enforceFullscreenNormalCompositing();
 	                patchFullscreenLineOpacityBehavior();
 	            } else if (fullscreenCoverBlurMode) {
-	                syncCoverBlurRootState();
+	                patchCoverBlurLineBehavior();
 	            }
 	            // Always update parallel highlight tracking for fullscreen modes
 	            if (fullscreenOpaqueLyricsMode || fullscreenCoverBlurMode) {
@@ -2725,7 +3282,11 @@
                     lyricPlayer.getElement().classList.remove("fs-line-timing-only");
                     console.log("[LyricsRenderer] Cleared lyrics");
                     lastTTML = "";
-                    clearFullscreenDismissedState();
+                    parallelEmphasisDiagnosticsSourceLines = [];
+                    parallelEmphasisDiagnosticPairs = [];
+                    lastParallelEmphasisLineState.clear();
+                    lastParallelEmphasisPairState.clear();
+                    clearFullscreenCompletedHighlightState();
                     return;
                 }
 	                try {
@@ -2734,30 +3295,23 @@
 			                    const lines = result.lines.map(mapTTMLLyric);
 			                    lines.forEach(applyTimeOffset);
 			                    lineTimingOnlyMode = normalizeMainLinesForLineTimingMode(lines);
+			                    parallelEmphasisDiagnosticsSourceLines = structuredClone(lines);
+			                    parallelEmphasisDiagnosticPairs = buildParallelEmphasisDiagnosticPairs(
+			                        parallelEmphasisDiagnosticsSourceLines
+			                    );
+			                    lastParallelEmphasisLineState.clear();
+			                    lastParallelEmphasisPairState.clear();
 			                    console.log(`[LyricsRenderer] lineTimingOnlyMode=${lineTimingOnlyMode}`);
                                 lyricPlayer.isNonDynamic = lineTimingOnlyMode === true;
                                 lyricPlayer.getElement().classList.toggle(
                                     "fs-line-timing-only",
                                     lineTimingOnlyMode === true
                                 );
-	                    // Capture original timing before core modifies it
-	                    const timingSnapshot = captureTimingSnapshot(lines);
-	                    // Let AMLL core process the lyrics (it will normalize BG/main line timing)
-	                    lyricPlayer.setLyricLines(lines);
-	                    // Restore original TTML timing so core's hotLines/bufferedLines
-	                    // can handle parallel lyrics based on actual overlap
-	                    restoreTimingSnapshot(timingSnapshot);
-	                    // Rebuild masks for currently-built lines so per-word highlight uses restored timing
-	                    if (Array.isArray(lyricPlayer.currentLyricLineObjects)) {
-	                        for (const obj of lyricPlayer.currentLyricLineObjects) {
-	                            if (obj?.built && typeof obj.updateMaskImageSync === "function") {
-	                                obj.updateMaskImageSync();
-	                            }
-	                        }
-	                    }
-	                    if (fullscreenOpaqueLyricsMode) {
-	                        enforceFullscreenNormalCompositing();
-	                        patchFullscreenLineOpacityBehavior();
+		                    lyricPlayer.setLyricLines(lines);
+		                    emitParallelEmphasisNormalizationTrace();
+		                    if (fullscreenOpaqueLyricsMode) {
+		                        enforceFullscreenNormalCompositing();
+		                        patchFullscreenLineOpacityBehavior();
 	                    } else if (fullscreenCoverBlurMode) {
 	                        syncCoverBlurRootState();
 	                        patchCoverBlurLineBehavior();
@@ -2768,7 +3322,6 @@
 	                    originalSetCurrentTime(currentMs, true);
 	                    externalTimeMs = currentMs;
 	                    externalTimeAnchorPerfMs = performance.now();
-	                    clearFullscreenDismissedState();
 	                    console.log("[LyricsRenderer] Loaded lines:", lines.length);
                 } catch (e) {
                     console.error("[LyricsRenderer] TTML Parse Error:", e);
@@ -2777,7 +3330,11 @@
                     lyricPlayer.isNonDynamic = false;
                     lyricPlayer.getElement().classList.remove("fs-line-timing-only");
                     lastTTML = "";
-                    clearFullscreenDismissedState();
+                    parallelEmphasisDiagnosticsSourceLines = [];
+                    parallelEmphasisDiagnosticPairs = [];
+                    lastParallelEmphasisLineState.clear();
+                    lastParallelEmphasisPairState.clear();
+                    clearFullscreenCompletedHighlightState();
                     console.log("[LyricsRenderer] Cleared lyrics due to parse error");
                 }
             },
@@ -2790,7 +3347,7 @@
 	                // Detect seek: significant time jump (> 500ms)
 	                const timeDelta = Math.abs(timeInMs - lastKnownTimeMs);
 	                if (timeDelta > 500) {
-	                    clearFullscreenDismissedState();
+	                    clearFullscreenCompletedHighlightState();
 	                }
 	                
 	                originalSetCurrentTime(timeInMs, needsForce);
@@ -2931,7 +3488,8 @@
                         }
 
                         if (hasOwn("fullscreenLyricDodgeMode")) {
-                            const requestedOpaque = config.fullscreenLyricDodgeMode === true;
+                            const requestedOpaque =
+                                isFullscreenSurface && config.fullscreenLyricDodgeMode === true;
                             fullscreenOpaqueLyricsMode = !fullscreenCoverBlurMode && requestedOpaque;
                             if (fullscreenOpaqueLyricsMode) {
                                 startFullscreenCompositingGuard();
@@ -2947,13 +3505,8 @@
                                 if (!fullscreenCoverBlurMode) {
                                     playerElement.classList.remove("fs-line-timing-only");
                                 }
-                                playerElement.style.removeProperty("--amll-fs-main-active");
-                                playerElement.style.removeProperty("--amll-fs-main-inactive");
-                                playerElement.style.removeProperty("--amll-fs-sub-active");
-                                playerElement.style.removeProperty("--amll-fs-sub-inactive");
-                                playerElement.style.removeProperty("--amll-fs-main-line-timing-inactive");
-                                playerElement.style.removeProperty("--amll-fs-sub-line-timing-inactive");
-                                playerElement.style.removeProperty("--amll-fs-bg-active");
+                                removeStyleVars(playerElement, fullscreenColorVarNames);
+                                removeStyleVars(playerElement, fullscreenDerivedColorVarNames);
                             }
                         }
                         syncCoverBlurRootState();
@@ -2997,6 +3550,10 @@
 
                         const applyFullscreenColorVar = (key, cssVarName) => {
                             if (!hasOwn(key)) return;
+                            if (!isFullscreenSurface) {
+                                playerElement.style.removeProperty(cssVarName);
+                                return;
+                            }
                             if (typeof config[key] === "string" && config[key].length > 0) {
                                 const resolved = fullscreenOpaqueLyricsMode
                                     ? toOpaqueColor(config[key])
@@ -3008,6 +3565,10 @@
                         };
                         const applyCoverBlurColorVar = (key, cssVarName) => {
                             if (!hasOwn(key)) return;
+                            if (!isFullscreenSurface) {
+                                playerElement.style.removeProperty(cssVarName);
+                                return;
+                            }
                             if (typeof config[key] === "string" && config[key].length > 0) {
                                 playerElement.style.setProperty(cssVarName, config[key]);
                             } else {
@@ -3040,6 +3601,7 @@
                             "coverBlurLineTimingSubInactiveColor",
                             "--amll-cb-sub-line-timing-inactive"
                         );
+                        syncFullscreenDerivedColors();
                         syncFullscreenCoverBlurGenericRootState();
 	                    if (typeof config.alignAnchor === "string" && typeof lyricPlayer.setAlignAnchor === "function") {
 	                        lyricPlayer.setAlignAnchor(config.alignAnchor);

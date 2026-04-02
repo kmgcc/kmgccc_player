@@ -1,0 +1,13 @@
+:root[data-theme="light"] {
+	--sl-color-accent-high: #f96868;
+	--sl-color-text-invert: #fee;
+	--sl-color-accent: #ff4040;
+}
+
+:root[data-theme="dark"] {
+	--sl-color-accent-high: #f96868;
+	--sl-color-text-invert: #fffefe;
+	--sl-color-accent: #ff4040;
+	--sl-color-bg: #111111;
+	--sl-color-bg-nav: #111111;
+}

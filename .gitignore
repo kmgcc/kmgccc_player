@@ -6,6 +6,8 @@ LDDC-main/
 skills/
 ARCHITECTURE.md
 AGENTS.md
+CLAUDE.md
+kmgccc_player_demo.pptx
 scan_ui.py
 ui_candidates.txt
 myPlayer2/scan_ui.py
@@ -58,3 +60,4 @@ Tools/lddc-server/
 .derivedDataLocalBuild/
 *.flac
 LIQUID_GLASS_SPEC.md
+*.bak

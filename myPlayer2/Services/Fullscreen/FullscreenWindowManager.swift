@@ -66,10 +66,12 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
             return
         }
 
+        // Request fullscreen mode - this is the single source of truth for surface switching
+        LyricsSurfaceManager.shared.requestMode(.fullscreen)
+
         // If window already exists, just bring it to front and ensure fullscreen
         if let window = fullscreenWindow {
             suspendMainLyricsIfNeeded()
-            LyricsSurfaceManager.shared.activate(role: .fullscreen)
             previousKeyWindow = NSApp.keyWindow === window ? previousKeyWindow : NSApp.keyWindow
             isFullscreenActive = true
             installEscapeMonitorIfNeeded()
@@ -87,7 +89,6 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
 
         let targetScreen = NSScreen.main ?? NSScreen.screens.first
         let fullscreenLyricsVM = makeFullscreenLyricsViewModel()
-        LyricsSurfaceManager.shared.activate(role: .fullscreen)
 
         // Use a smaller initial frame so toggleFullScreen animates from current size to fullscreen
         let sourceWindow = NSApp.keyWindow
@@ -163,6 +164,9 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
             isTransitioning = false
             return
         }
+
+        // Request main mode before dismissing - this is the single source of truth
+        LyricsSurfaceManager.shared.requestMode(.main)
 
         window.orderOut(nil)
         window.contentView = nil
@@ -263,8 +267,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
             return fullscreenLyricsVM
         }
 
-        let store = LyricsSurfaceManager.shared.fullscreenStore
-        let viewModel = LyricsViewModel(settings: AppSettings.shared, store: store)
+        let viewModel = LyricsViewModel(settings: AppSettings.shared)
         fullscreenLyricsVM = viewModel
         return viewModel
     }
@@ -272,7 +275,8 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
     private func teardownFullscreenLyricsIfNeeded() {
         guard let fullscreenLyricsVM else { return }
         fullscreenLyricsVM.onSeekRequest = nil
-        LyricsSurfaceManager.shared.deactivate(role: .fullscreen)
+        // Note: Surface switching is now handled by LyricsSurfaceManager.requestMode()
+        // We just clean up the local ViewModel here
         self.fullscreenLyricsVM = nil
     }
 }

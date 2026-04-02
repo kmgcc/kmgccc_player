@@ -114,8 +114,8 @@
     // AMLL namespace
     window.AMLL = {
         version: '1.0.0',
-        capabilities: ['ttml', 'lrc', 'seek'],
-        
+        capabilities: ['ttml', 'lrc', 'seek', 'clearState', 'destroy'],
+
         /**
          * Set TTML lyrics text
          * @param {string} ttmlText - Raw TTML/LRC content
@@ -124,13 +124,13 @@
             try {
                 if (window.updateDebugTTML) window.updateDebugTTML(ttmlText ? ttmlText.length : 0);
                 logTTMLDiagnostics(ttmlText, 'setLyricsTTML');
-                
+
                 if (!isReady) {
                     pendingCalls.push({ method: 'setLyricsTTML', args: [ttmlText] });
                     return;
                 }
                 console.log("[Bridge] setLyricsTTML, length:", ttmlText ? ttmlText.length : 0);
-                
+
                 if (window.LyricsRenderer && typeof window.LyricsRenderer.setLyrics === 'function') {
                     window.LyricsRenderer.setLyrics(ttmlText);
                 } else {
@@ -144,7 +144,7 @@
                 }
             }
         },
-        
+
         setCurrentTime: function(seconds) {
             try {
                 if (window.updateDebugTime) window.updateDebugTime(seconds);
@@ -159,7 +159,7 @@
                 console.error("[Bridge-Crash] setCurrentTime:", e);
             }
         },
-        
+
         setPlaying: function(isPlaying) {
             try {
                 if (!isReady) {
@@ -173,7 +173,7 @@
                  console.error("[Bridge-Crash] setPlaying:", e);
             }
         },
-        
+
         setConfig: function(config) {
             try {
                 if (!isReady) {
@@ -187,14 +187,44 @@
                  console.error("[Bridge-Crash] setConfig:", e);
             }
         },
-        
+
+        /**
+         * Clear internal state to free memory on track change.
+         * Called by native before applying new track.
+         */
+        clearState: function() {
+            console.log("[Bridge] clearState called");
+            // Clear pending calls that might reference old state
+            pendingCalls.length = 0;
+
+            // Notify renderer to clear its state if available
+            if (window.LyricsRenderer && typeof window.LyricsRenderer.clearState === 'function') {
+                window.LyricsRenderer.clearState();
+            }
+        },
+
+        /**
+         * Destroy this WebView instance.
+         * Called by native when the surface is being torn down.
+         */
+        destroy: function() {
+            console.log("[Bridge] destroy called");
+            isReady = false;
+            pendingCalls.length = 0;
+
+            // Notify renderer to destroy if available
+            if (window.LyricsRenderer && typeof window.LyricsRenderer.destroy === 'function') {
+                window.LyricsRenderer.destroy();
+            }
+        },
+
         /**
          * Called internally when renderer is ready
          */
         _onRendererReady: function() {
             isReady = true;
             if (window.updateDebugStatus) window.updateDebugStatus("Renderer Ready");
-            
+
             // Notify Swift that we're ready
             if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.onReady) {
                 window.webkit.messageHandlers.onReady.postMessage({
@@ -204,20 +234,20 @@
             } else {
                 console.warn("[Bridge] Cannot Notify Swift (onReady handler missing)");
             }
-            
+
             // Flush pending calls
             console.log('[Bridge] Flushing ' + pendingCalls.length + ' calls');
-            
+
             const callsToFlush = pendingCalls.slice();
             pendingCalls.length = 0;
-            
+
             callsToFlush.forEach(function(call) {
                 window.AMLL[call.method].apply(window.AMLL, call.args);
             });
-            
+
             console.log('[Bridge] Ready and flushed');
         },
-        
+
         /**
          * Called by renderer when user seeks
          * @param {number} seconds - Seek target time
