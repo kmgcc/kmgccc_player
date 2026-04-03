@@ -18,6 +18,16 @@ import WebKit
 @Observable
 final class LyricsWebViewStore: NSObject {
 
+    private enum JavaScriptCall {
+        case script(String)
+        case function(body: String, arguments: [String: Any])
+    }
+
+    private struct PendingJavaScriptCall {
+        let debugDescription: String
+        let call: JavaScriptCall
+    }
+
     // MARK: - Singleton
 
     static let shared = LyricsWebViewStore()
@@ -25,6 +35,16 @@ final class LyricsWebViewStore: NSObject {
         ProcessInfo.processInfo.environment["AMLL_TTML_DIAGNOSTICS"] == "1"
     private nonisolated static let visibleLayerProbeEnabled =
         ProcessInfo.processInfo.environment["KMGCCC_AMLL_VISIBLE_LAYER_PROBE"] == "1"
+    private nonisolated static let automaticRecycleTrackThreshold: Int = {
+        guard
+            let rawValue = ProcessInfo.processInfo.environment["KMGCCC_AMLL_WEBVIEW_RECYCLE_TRACKS"],
+            let parsedValue = Int(rawValue),
+            parsedValue > 0
+        else {
+            return 10
+        }
+        return parsedValue
+    }()
 
     // MARK: - WebView Identity
 
@@ -64,6 +84,7 @@ final class LyricsWebViewStore: NSObject {
 
     /// Last known state for replay after recovery (NEVER cleared on terminate).
     private var lastTTML: String?
+    private var lastTrackID: UUID?
     private var lastTime: Double?
     private var lastIsPlaying: Bool?
     private var lastConfigJSON: String?
@@ -76,17 +97,19 @@ final class LyricsWebViewStore: NSObject {
     private var isTimeSyncInFlight: Bool = false
 
     /// Pending JS calls queue (flushed when ready).
-    private var pendingCalls: [String] = []
+    private var pendingCalls: [PendingJavaScriptCall] = []
 
     /// Recovery state.
     private var isRecoveryInProgress: Bool = false
     private var lastRecoveryAttempt: Date = .distantPast
     private let recoveryDebounceInterval: TimeInterval = 1.0
     private var contentLoadRevision: Int = 0
+    private var trackSwitchesSinceLastWebViewRecycle: Int = 0
 
     /// Track change debounce (prevents transient nil clearing).
     private var pendingApplyTrack: DispatchWorkItem?
     private var pendingVisibleLayerProbe: DispatchWorkItem?
+    private var pendingTrackDiagnosticsProbe: DispatchWorkItem?
     private let applyTrackDebounceMs: Int = 50
     private var didRegisterMessageHandlers = false
     private var isShutDown = false
@@ -129,6 +152,12 @@ final class LyricsWebViewStore: NSObject {
         webView.loadFileURL(loadURL, allowingReadAccessTo: amllDir)
     }
 
+    /// Eagerly materialize the WKWebView so surface switching can wait on a real ready event.
+    func prepareWebViewIfNeeded() {
+        guard !isShutDown else { return }
+        _ = ensureWebView()
+    }
+
     func shutdown() {
         guard !isShutDown else { return }
         isShutDown = true
@@ -138,6 +167,8 @@ final class LyricsWebViewStore: NSObject {
         pendingApplyTrack = nil
         pendingVisibleLayerProbe?.cancel()
         pendingVisibleLayerProbe = nil
+        pendingTrackDiagnosticsProbe?.cancel()
+        pendingTrackDiagnosticsProbe = nil
         pendingCalls.removeAll()
         onUserSeek = nil
 
@@ -147,6 +178,7 @@ final class LyricsWebViewStore: NSObject {
         isReady = false
         isRecoveryInProgress = false
         lastTTML = nil
+        lastTrackID = nil
         lastTime = nil
         lastIsPlaying = nil
         lastConfigJSON = nil
@@ -158,6 +190,7 @@ final class LyricsWebViewStore: NSObject {
         queuedTimeSync = nil
         isTimeSyncInFlight = false
         contentLoadRevision = 0
+        trackSwitchesSinceLastWebViewRecycle = 0
         didRegisterMessageHandlers = false
 
         // Clean up WebView
@@ -244,11 +277,11 @@ final class LyricsWebViewStore: NSObject {
         lastTTML = ttml
         Log.debug("setLyricsTTML: len=\(ttml.count), objectID=\(webViewObjectID), isReady=\(isReady)", category: .webview)
         logTTMLDiagnostics(ttml, stage: "setLyricsTTML")
-        guard let jsonArg = encodeJSONString(ttml) else {
-            Log.error("Failed to encode TTML", category: .webview)
-            return
-        }
-        callJS("window.AMLL.setLyricsTTML(\(jsonArg))")
+        callJSFunction(
+            body: "window.AMLL.setLyricsTTML(ttmlText)",
+            arguments: ["ttmlText": ttml],
+            debugDescription: "window.AMLL.setLyricsTTML(len=\(ttml.count))"
+        )
     }
 
     func setCurrentTime(_ seconds: Double) {
@@ -277,7 +310,7 @@ final class LyricsWebViewStore: NSObject {
         lastIsPlaying = isPlaying
         Log.debug("setPlaying: \(isPlaying)", category: .webview)
         let boolStr = isPlaying ? "true" : "false"
-        callJS("window.AMLL.setPlaying(\(boolStr))")
+        callJS("window.AMLL.setPlaying(\(boolStr))", debugDescription: "window.AMLL.setPlaying")
     }
 
     func setConfigJSON(_ json: String) {
@@ -289,7 +322,7 @@ final class LyricsWebViewStore: NSObject {
         }
 
         lastConfigJSON = json
-        callJS("window.AMLL.setConfig(\(json))")
+        callConfigJSON(json, reason: "setConfigJSON")
     }
 
     /// Force set config JSON bypassing deduplication.
@@ -300,7 +333,7 @@ final class LyricsWebViewStore: NSObject {
         Log.debug("forceSetConfigJSON: reason=\(reason), webViewObjectID=\(webViewObjectID), jsonChanged=\(json != lastConfigJSON)", category: .webview)
 
         lastConfigJSON = json
-        callJS("window.AMLL.setConfig(\(json))")
+        callConfigJSON(json, reason: "forceSetConfigJSON:\(reason)")
     }
 
     func scheduleDebugVisibleLayerProbe(label: String, delay: TimeInterval = 0.18) {
@@ -320,19 +353,92 @@ final class LyricsWebViewStore: NSObject {
     }
 
     /// Unified JS call entry point with queuing.
-    private func callJS(_ script: String) {
+    private func callJS(_ script: String, debugDescription: String? = nil) {
+        enqueueJavaScriptCall(
+            .script(script),
+            debugDescription: debugDescription
+                ?? (script.count > 100 ? String(script.prefix(100)) + "..." : script)
+        )
+    }
+
+    private func callJSFunction(
+        body: String,
+        arguments: [String: Any],
+        debugDescription: String
+    ) {
+        enqueueJavaScriptCall(
+            .function(body: body, arguments: arguments),
+            debugDescription: debugDescription
+        )
+    }
+
+    private func callConfigJSON(_ json: String, reason: String) {
+        guard let object = decodeJSONObject(json) else {
+            Log.warning("Config JSON decode failed, falling back to script bridge, reason=\(reason)", category: .webview)
+            callJS("window.AMLL.setConfig(\(json))", debugDescription: "window.AMLL.setConfig(fallback)")
+            return
+        }
+        callJSFunction(
+            body: "window.AMLL.setConfig(config)",
+            arguments: ["config": object],
+            debugDescription: "window.AMLL.setConfig(\(reason))"
+        )
+    }
+
+    private func enqueueJavaScriptCall(
+        _ call: JavaScriptCall,
+        debugDescription: String
+    ) {
         guard !isShutDown else { return }
+        let pendingCall = PendingJavaScriptCall(
+            debugDescription: debugDescription,
+            call: call
+        )
         if isReady {
-            webView.evaluateJavaScript(script) { _, error in
-                if let error = error {
-                    let debugScript =
-                        script.count > 100 ? String(script.prefix(100)) + "..." : script
-                    Log.debug("JS error: \(error.localizedDescription), script: \(debugScript)", category: .webview)
-                }
-            }
+            executeJavaScriptCall(pendingCall)
         } else {
-            pendingCalls.append(script)
-            Log.debug("Queued (pending=\(pendingCalls.count)), objectID=\(webViewObjectID)", category: .webview)
+            pendingCalls.append(pendingCall)
+            Log.debug(
+                "Queued JS call: \(debugDescription), pending=\(pendingCalls.count), objectID=\(webViewObjectID)",
+                category: .webview
+            )
+        }
+    }
+
+    private func executeJavaScriptCall(
+        _ pendingCall: PendingJavaScriptCall,
+        completion: ((Any?, Error?) -> Void)? = nil
+    ) {
+        let finish: @MainActor @Sendable (Any?, Error?) -> Void = { result, error in
+            if let error {
+                Log.debug(
+                    "JS error: \(error.localizedDescription), call: \(pendingCall.debugDescription)",
+                    category: .webview
+                )
+            }
+            completion?(result, error)
+        }
+
+        switch pendingCall.call {
+        case .script(let script):
+            webView.evaluateJavaScript(script) { result, error in
+                finish(result, error)
+            }
+        case .function(let body, let arguments):
+            webView.callAsyncJavaScript(
+                body,
+                arguments: arguments,
+                in: nil,
+                in: .page,
+                completionHandler: { result in
+                    switch result {
+                    case .success(let value):
+                        finish(value, nil)
+                    case .failure(let error):
+                        finish(nil, error)
+                    }
+                }
+            )
         }
     }
 
@@ -382,6 +488,12 @@ final class LyricsWebViewStore: NSObject {
         // Replay last state snapshot (strict order)
         replayStateSnapshot()
         scheduleDebugVisibleLayerProbe(label: "\(role)-ready", delay: 0.75)
+        scheduleTrackDiagnostics(
+            stage: "onReady",
+            trackID: lastTrackID,
+            ttmlLength: lastTTML?.count ?? 0,
+            delay: 0.2
+        )
 
         // Notify LyricsSurfaceManager that this store is ready
         if let surfaceRole = LyricsSurfaceRole(rawValue: role) {
@@ -397,10 +509,13 @@ final class LyricsWebViewStore: NSObject {
         }
 
         Log.debug("Flush: \(queuedCount) queued, objectID=\(webViewObjectID)", category: .webview)
-        for script in pendingCalls {
-            webView.evaluateJavaScript(script) { _, error in
-                if let error = error {
-                    Log.debug("Flush error: \(error.localizedDescription)", category: .webview)
+        for pendingCall in pendingCalls {
+            executeJavaScriptCall(pendingCall) { _, error in
+                if let error {
+                    Log.debug(
+                        "Flush error: \(error.localizedDescription), call=\(pendingCall.debugDescription)",
+                        category: .webview
+                    )
                 }
             }
         }
@@ -415,13 +530,11 @@ final class LyricsWebViewStore: NSObject {
 
         // Step 1: Config
         if let config = lastConfigJSON {
-            let js = "window.AMLL.setConfig(\(config))"
-            webView.evaluateJavaScript(js, completionHandler: nil)
+            callConfigJSON(config, reason: "replayStateSnapshot.config")
         }
 
         if let themeConfig = lastThemeConfigPatchJSON {
-            let js = "window.AMLL.setConfig(\(themeConfig))"
-            webView.evaluateJavaScript(js, completionHandler: nil)
+            callConfigJSON(themeConfig, reason: "replayStateSnapshot.themeConfig")
         }
 
         if let themeCSS = lastThemeCSSScript {
@@ -429,10 +542,13 @@ final class LyricsWebViewStore: NSObject {
         }
 
         // Step 2: TTML
-        if let ttml = lastTTML, let jsonArg = encodeJSONString(ttml) {
+        if let ttml = lastTTML {
             logTTMLDiagnostics(ttml, stage: "replayStateSnapshot")
-            let js = "window.AMLL.setLyricsTTML(\(jsonArg))"
-            webView.evaluateJavaScript(js, completionHandler: nil)
+            callJSFunction(
+                body: "window.AMLL.setLyricsTTML(ttmlText)",
+                arguments: ["ttmlText": ttml],
+                debugDescription: "window.AMLL.setLyricsTTML(replay,len=\(ttml.count))"
+            )
         }
 
         // Step 3: Playing
@@ -501,14 +617,24 @@ final class LyricsWebViewStore: NSObject {
     /// Apply a new track with debounce to prevent transient nil clearing.
     /// - Note: `nil` means transition state and is debounced.
     ///         Empty string means concrete "no lyrics" and should clear immediately.
-    func applyTrack(ttml: String?, currentTime: Double, isPlaying: Bool) {
+    func applyTrack(
+        trackID: UUID? = nil,
+        ttml: String?,
+        currentTime: Double,
+        isPlaying: Bool
+    ) {
         // Cancel any pending apply
         pendingApplyTrack?.cancel()
 
         // Debounce only transitional nil (e.g. oldTrack -> nil -> newTrack)
         if ttml == nil {
             let workItem = DispatchWorkItem { [weak self] in
-                self?.executeApplyTrack(ttml: ttml, currentTime: currentTime, isPlaying: isPlaying)
+                self?.executeApplyTrack(
+                    trackID: trackID,
+                    ttml: ttml,
+                    currentTime: currentTime,
+                    isPlaying: isPlaying
+                )
             }
             pendingApplyTrack = workItem
             DispatchQueue.main.asyncAfter(
@@ -516,70 +642,170 @@ final class LyricsWebViewStore: NSObject {
             Log.debug("applyTrack: debounced nil, objectID=\(webViewObjectID)", category: .webview)
         } else {
             // Immediate apply for concrete payload (including empty string clear)
-            executeApplyTrack(ttml: ttml, currentTime: currentTime, isPlaying: isPlaying)
+            executeApplyTrack(
+                trackID: trackID,
+                ttml: ttml,
+                currentTime: currentTime,
+                isPlaying: isPlaying
+            )
         }
     }
 
-    private func executeApplyTrack(ttml: String?, currentTime: Double, isPlaying: Bool) {
-        Log.debug("applyTrack: ttmlLen=\(ttml?.count ?? 0), time=\(currentTime), playing=\(isPlaying), objectID=\(webViewObjectID)", category: .webview)
+    private func executeApplyTrack(
+        trackID: UUID?,
+        ttml: String?,
+        currentTime: Double,
+        isPlaying: Bool
+    ) {
+        let previousTrackID = lastTrackID
+        let didSwitchTracks =
+            previousTrackID != nil
+            && trackID != nil
+            && previousTrackID != trackID
+
+        if didSwitchTracks {
+            trackSwitchesSinceLastWebViewRecycle += 1
+        }
+
+        if shouldRecycleWebViewBeforeApplyingTrack(
+            previousTrackID: previousTrackID,
+            nextTrackID: trackID
+        ) {
+            prepareSnapshotForReload(
+                trackID: trackID,
+                ttml: ttml ?? "",
+                currentTime: currentTime,
+                isPlaying: isPlaying
+            )
+            Log.info(
+                "Auto recycling WebView before track apply: role=\(role), objectID=\(webViewObjectID), trackID=\(trackID?.uuidString.prefix(8) ?? "nil"), switchesSinceRecycle=\(trackSwitchesSinceLastWebViewRecycle), threshold=\(Self.automaticRecycleTrackThreshold)",
+                category: .webview
+            )
+            trackSwitchesSinceLastWebViewRecycle = 0
+            forceReload(recreateWebView: true)
+            scheduleTrackDiagnostics(
+                stage: "afterAutoRecycleRequest",
+                trackID: trackID,
+                ttmlLength: ttml?.count ?? 0,
+                delay: 0.45
+            )
+            return
+        }
+
+        lastTrackID = trackID
+        Log.debug(
+            "applyTrack: trackID=\(trackID?.uuidString.prefix(8) ?? "nil"), ttmlLen=\(ttml?.count ?? 0), time=\(currentTime), playing=\(isPlaying), objectID=\(webViewObjectID)",
+            category: .webview
+        )
+        logTrackDiagnostics(
+            stage: "beforeTrackTeardown",
+            trackID: trackID,
+            ttmlLength: ttml?.count ?? 0
+        )
 
         // Step 1: Clear previous lyrics state to free memory
-        clearLyricsState()
+        clearLyricsState(
+            trackID: trackID,
+            nextTTMLLength: ttml?.count ?? 0
+        ) { [weak self] in
+            guard let self else { return }
 
-        // Step 2: Pause
-        setPlaying(false)
+            // Step 2: Pause
+            self.setPlaying(false)
 
-        // Step 3: Set lyrics
-        setLyricsTTML(ttml ?? "")
+            // Step 3: Set lyrics
+            self.setLyricsTTML(ttml ?? "")
 
-        // Step 4: Set time
-        setCurrentTime(currentTime)
+            // Step 4: Set time
+            self.setCurrentTime(currentTime)
 
-        // Step 5: Resume playing state
-        setPlaying(isPlaying)
+            // Step 5: Resume playing state
+            self.setPlaying(isPlaying)
+            self.scheduleTrackDiagnostics(
+                stage: "afterTrackApply",
+                trackID: trackID,
+                ttmlLength: ttml?.count ?? 0,
+                delay: 0.35
+            )
+        }
     }
 
     // MARK: - Memory Cleanup
 
     /// Clears lyrics-related state to prevent memory accumulation on track change.
     /// This explicitly notifies JS to clean up DOM, animations, and cached data.
-    func clearLyricsState() {
-        guard !isShutDown, let webView = retainedWebView else { return }
+    func clearLyricsState(
+        trackID: UUID? = nil,
+        nextTTMLLength: Int = 0,
+        completion: (() -> Void)? = nil
+    ) {
+        guard !isShutDown else {
+            completion?()
+            return
+        }
 
-        Log.debug("clearLyricsState: objectID=\(webViewObjectID)", category: .webview)
+        Log.debug(
+            "clearLyricsState: trackID=\(trackID?.uuidString.prefix(8) ?? "nil"), nextTTMLLength=\(nextTTMLLength), objectID=\(webViewObjectID)",
+            category: .webview
+        )
+        logTrackDiagnostics(
+            stage: "clearLyricsState.beforeJS",
+            trackID: trackID,
+            ttmlLength: nextTTMLLength
+        )
 
         // Clear Swift-side state
         lastTTML = nil
+        lastTrackID = trackID
         lastTime = nil
         lastIsPlaying = nil
         queuedTimeSync = nil
         isTimeSyncInFlight = false
         lastDeliveredTime = nil
 
-        // Notify JS to clean up internal state
-        let jsCleanup = """
-            (function() {
-                if (window.AMLL && typeof window.AMLL.clearState === 'function') {
-                    window.AMLL.clearState();
-                    return 'cleared';
-                }
-                if (window.AMLL && typeof window.AMLL.destroy === 'function') {
-                    window.AMLL.destroy();
-                    return 'destroyed';
-                }
-                return 'no-cleanup';
-            })()
-            """
-        webView.evaluateJavaScript(jsCleanup) { result, error in
+        guard let webView = retainedWebView else {
+            completion?()
+            return
+        }
+
+        let jsCleanup = PendingJavaScriptCall(
+            debugDescription: "window.AMLL.clearState()",
+            call: .script(
+                """
+                (function() {
+                    if (window.AMLL && typeof window.AMLL.clearState === 'function') {
+                        return JSON.stringify(window.AMLL.clearState());
+                    }
+                    if (window.AMLL && typeof window.AMLL.destroy === 'function') {
+                        return JSON.stringify(window.AMLL.destroy());
+                    }
+                    return JSON.stringify({ status: 'no-cleanup' });
+                })()
+                """
+            )
+        )
+        executeJavaScriptCall(jsCleanup) { [weak self] result, error in
+            guard let self else { return }
             if let error = error {
                 Log.debug("JS cleanup warning: \(error.localizedDescription)", category: .webview)
-            } else if let result = result as? String {
-                Log.debug("JS cleanup result: \(result)", category: .webview)
+            } else {
+                let payload = result as? String ?? String(describing: result ?? "nil")
+                Log.info(
+                    "[AMLLDiag][JS-Cleanup] role=\(self.role) trackID=\(trackID?.uuidString.prefix(8) ?? "nil") payload=\(payload)",
+                    category: .webview
+                )
             }
+            completion?()
         }
 
         // Force a layout flush to release any pending layer operations
         webView.setNeedsDisplay(webView.bounds)
+        scheduleTrackDiagnostics(
+            stage: "clearLyricsState.afterJS",
+            trackID: trackID,
+            ttmlLength: nextTTMLLength,
+            delay: 0.1
+        )
     }
 
     /// Performs full teardown of this WebView instance.
@@ -592,10 +818,13 @@ final class LyricsWebViewStore: NSObject {
         pendingApplyTrack = nil
         pendingVisibleLayerProbe?.cancel()
         pendingVisibleLayerProbe = nil
+        pendingTrackDiagnosticsProbe?.cancel()
+        pendingTrackDiagnosticsProbe = nil
         pendingCalls.removeAll()
 
         // Clear all state
         lastTTML = nil
+        lastTrackID = nil
         lastTime = nil
         lastIsPlaying = nil
         lastConfigJSON = nil
@@ -607,6 +836,7 @@ final class LyricsWebViewStore: NSObject {
         queuedTimeSync = nil
         isTimeSyncInFlight = false
         contentLoadRevision = 0
+        trackSwitchesSinceLastWebViewRecycle = 0
         onUserSeek = nil
 
         // Detach from view hierarchy
@@ -696,9 +926,9 @@ final class LyricsWebViewStore: NSObject {
         lastThemeCSSScript = css
 
         if let themeConfig = lastThemeConfigPatchJSON {
-            callJS("window.AMLL.setConfig(\(themeConfig))")
+            callConfigJSON(themeConfig, reason: "applyEffectiveTheme")
         }
-        callJS(css)
+        callJS(css, debugDescription: "applyEffectiveTheme.css")
     }
 
     // MARK: - Helpers
@@ -747,6 +977,101 @@ final class LyricsWebViewStore: NSObject {
         // dropFirst is '[', dropLast is ']'
         let trimmed = jsonArray.dropFirst().dropLast()
         return String(trimmed)
+    }
+
+    private func decodeJSONObject(_ json: String) -> Any? {
+        guard let data = json.data(using: .utf8) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data)
+    }
+
+    private func compactJSONString(from object: Any) -> String {
+        guard JSONSerialization.isValidJSONObject(object),
+            let data = try? JSONSerialization.data(withJSONObject: object),
+            let string = String(data: data, encoding: .utf8)
+        else {
+            return String(describing: object)
+        }
+        return string
+    }
+
+    private func makeSwiftDiagnosticsPayload(
+        stage: String,
+        trackID: UUID?,
+        ttmlLength: Int
+    ) -> [String: Any] {
+        [
+            "stage": stage,
+            "role": role,
+            "trackID": trackID?.uuidString ?? "nil",
+            "ttmlLength": ttmlLength,
+            "webViewObjectID": webViewObjectID,
+            "isReady": isReady,
+            "isAttached": isAttached,
+            "hasPreparedWebView": retainedWebView != nil,
+            "pendingBridgeCalls": pendingCalls.count,
+            "lastTrackID": lastTrackID?.uuidString ?? "nil",
+            "lastTTMLLength": lastTTML?.count ?? 0,
+            "lastConfigLength": lastConfigJSON?.count ?? 0,
+            "lastThemeConfigPatchLength": lastThemeConfigPatchJSON?.count ?? 0,
+            "lastThemeCSSLength": lastThemeCSSScript?.count ?? 0,
+            "queuedTimeSync": queuedTimeSync.map { $0 as Any } ?? NSNull(),
+            "isTimeSyncInFlight": isTimeSyncInFlight,
+            "lastDeliveredTime": lastDeliveredTime.map { $0 as Any } ?? NSNull(),
+            "contentLoadRevision": contentLoadRevision,
+            "activeAttachmentID": activeAttachmentID?.uuidString ?? "nil",
+            "webViewURL": retainedWebView?.url?.absoluteString ?? "nil",
+        ]
+    }
+
+    private func scheduleTrackDiagnostics(
+        stage: String,
+        trackID: UUID?,
+        ttmlLength: Int,
+        delay: TimeInterval
+    ) {
+        pendingTrackDiagnosticsProbe?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.logTrackDiagnostics(stage: stage, trackID: trackID, ttmlLength: ttmlLength)
+        }
+        pendingTrackDiagnosticsProbe = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+    }
+
+    private func logTrackDiagnostics(
+        stage: String,
+        trackID: UUID?,
+        ttmlLength: Int
+    ) {
+        let swiftPayload = makeSwiftDiagnosticsPayload(
+            stage: stage,
+            trackID: trackID,
+            ttmlLength: ttmlLength
+        )
+        Log.info(
+            "[AMLLDiag][Swift] \(compactJSONString(from: swiftPayload))",
+            category: .webview
+        )
+
+        guard isReady, retainedWebView != nil else { return }
+        let label = "\(role).\(stage).\(trackID?.uuidString.prefix(8) ?? "nil")"
+        let diagnosticsCall = PendingJavaScriptCall(
+            debugDescription: "window.AMLL.collectDiagnostics(\(label))",
+            call: .function(
+                body: "JSON.stringify(window.AMLL.collectDiagnostics(label))",
+                arguments: ["label": label]
+            )
+        )
+        executeJavaScriptCall(diagnosticsCall) { result, error in
+            if let error {
+                Log.debug(
+                    "[AMLLDiag][JS] role=\(self.role) label=\(label) error=\(error.localizedDescription)",
+                    category: .webview
+                )
+                return
+            }
+            let payload = result as? String ?? String(describing: result ?? "nil")
+            Log.info("[AMLLDiag][JS] \(payload)", category: .webview)
+        }
     }
 
     private func registerMessageHandlers() {
@@ -840,6 +1165,33 @@ final class LyricsWebViewStore: NSObject {
         }
 
         Log.debug("Recreated WebView for fresh AMLL bundle: role=\(role), objectID=\(webViewObjectID), rev=\(contentLoadRevision)", category: .webview)
+    }
+
+    private func shouldRecycleWebViewBeforeApplyingTrack(
+        previousTrackID: UUID?,
+        nextTrackID: UUID?
+    ) -> Bool {
+        guard Self.automaticRecycleTrackThreshold > 0 else { return false }
+        guard previousTrackID != nil else { return false }
+        guard nextTrackID != nil else { return false }
+        guard previousTrackID != nextTrackID else { return false }
+        guard hasPreparedWebView else { return false }
+        return trackSwitchesSinceLastWebViewRecycle >= Self.automaticRecycleTrackThreshold
+    }
+
+    private func prepareSnapshotForReload(
+        trackID: UUID?,
+        ttml: String,
+        currentTime: Double,
+        isPlaying: Bool
+    ) {
+        lastTrackID = trackID
+        lastTTML = ttml
+        lastTime = currentTime.isFinite ? currentTime : nil
+        lastIsPlaying = isPlaying
+        queuedTimeSync = nil
+        isTimeSyncInFlight = false
+        lastDeliveredTime = nil
     }
 
     private func scheduleTimeSync(_ seconds: Double) {

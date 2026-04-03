@@ -14,9 +14,16 @@ private struct DebugLaunchScenario {
     let fullscreenSkinID: String?
     let showFullscreen: Bool
     let quitAfterSeconds: TimeInterval?
+    let autoNextInterval: TimeInterval?
+    let autoNextCount: Int?
 
     var isEnabled: Bool {
-        trackID != nil || fullscreenSkinID != nil || showFullscreen || quitAfterSeconds != nil
+        trackID != nil
+            || fullscreenSkinID != nil
+            || showFullscreen
+            || quitAfterSeconds != nil
+            || autoNextInterval != nil
+            || autoNextCount != nil
     }
 
     static var current: DebugLaunchScenario? {
@@ -31,12 +38,20 @@ private struct DebugLaunchScenario {
         let quitAfterSeconds = environment["KMGCCC_DEBUG_PROOF_QUIT_AFTER_SECONDS"].flatMap {
             Double($0)
         }
+        let autoNextInterval = environment["KMGCCC_DEBUG_PROOF_AUTO_NEXT_INTERVAL"].flatMap {
+            Double($0)
+        }
+        let autoNextCount = environment["KMGCCC_DEBUG_PROOF_AUTO_NEXT_COUNT"].flatMap {
+            Int($0)
+        }
 
         let scenario = DebugLaunchScenario(
             trackID: trackID,
             fullscreenSkinID: fullscreenSkinID,
             showFullscreen: showFullscreen,
-            quitAfterSeconds: quitAfterSeconds
+            quitAfterSeconds: quitAfterSeconds,
+            autoNextInterval: autoNextInterval,
+            autoNextCount: autoNextCount
         )
         return scenario.isEnabled ? scenario : nil
     }
@@ -351,7 +366,7 @@ struct AppRootView: View {
         playerVM: PlayerViewModel
     ) async {
         Log.debug(
-            "DebugLaunch scenario: trackID=\(scenario.trackID?.uuidString ?? "nil"), fullscreenSkin=\(scenario.fullscreenSkinID ?? "nil"), showFullscreen=\(scenario.showFullscreen), quitAfter=\(scenario.quitAfterSeconds ?? -1)",
+            "DebugLaunch scenario: trackID=\(scenario.trackID?.uuidString ?? "nil"), fullscreenSkin=\(scenario.fullscreenSkinID ?? "nil"), showFullscreen=\(scenario.showFullscreen), quitAfter=\(scenario.quitAfterSeconds ?? -1), autoNextInterval=\(scenario.autoNextInterval ?? -1), autoNextCount=\(scenario.autoNextCount ?? -1)",
             category: .ui
         )
 
@@ -382,7 +397,31 @@ struct AppRootView: View {
             }
         }
 
+        scheduleDebugAutoNextIfNeeded(scenario: scenario, playerVM: playerVM)
         scheduleDebugTerminationIfNeeded(after: scenario.quitAfterSeconds)
+    }
+
+    private func scheduleDebugAutoNextIfNeeded(
+        scenario: DebugLaunchScenario,
+        playerVM: PlayerViewModel
+    ) {
+        guard let autoNextCount = scenario.autoNextCount, autoNextCount > 0 else { return }
+
+        let interval = max(scenario.autoNextInterval ?? 1.5, 0.25)
+        let startDelay: TimeInterval = scenario.showFullscreen
+            ? (scenario.trackID == nil ? 1.0 : 1.8)
+            : (scenario.trackID == nil ? 0.6 : 1.0)
+
+        for step in 0..<autoNextCount {
+            let fireDelay = startDelay + (Double(step) * interval)
+            DispatchQueue.main.asyncAfter(deadline: .now() + fireDelay) {
+                Log.info(
+                    "DebugLaunch: auto next \(step + 1)/\(autoNextCount), interval=\(interval)",
+                    category: .ui
+                )
+                playerVM.next()
+            }
+        }
     }
 
     private func scheduleDebugTerminationIfNeeded(after seconds: TimeInterval?) {

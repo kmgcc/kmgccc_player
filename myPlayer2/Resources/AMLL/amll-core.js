@@ -19813,11 +19813,26 @@ let QN = class extends $A {
   // private _hide = true;
   _prevParentEl;
   lastStyle = "";
+  pauseWordAnimations() {
+    for (const A of this.splittedWords) {
+      for (const I of A.elementAnimations)
+        I.pause();
+      for (const I of A.maskAnimations)
+        I.pause();
+    }
+  }
   show() {
-    this.element.parentElement || (this._prevParentEl.appendChild(this.element), this.lyricPlayer.resizeObserver.observe(this.element)), this.built || (this.rebuildElement(), this.built = !0, this.updateMaskImageSync()), this.rebuildStyle();
+    const A = !this.element.parentElement;
+    if (A && (this._prevParentEl.appendChild(this.element), this.lyricPlayer.resizeObserver.observe(this.element)), !this.built)
+      this.rebuildElement(), this.built = !0, this.updateMaskImageSync();
+    else if (A && this.isEnabled) {
+      const I = this.lyricPlayer.getIsPlaying?.() ?? !0;
+      this.enable(this.lyricPlayer.getCurrentTime(), I);
+    }
+    this.rebuildStyle();
   }
   hide() {
-    this.element.parentElement && (this._prevParentEl.removeChild(this.element), this.lyricPlayer.resizeObserver.unobserve(this.element)), this.built && (this.disposeElements(), this.built = !1);
+    this.element.parentElement && (this._prevParentEl.removeChild(this.element), this.lyricPlayer.resizeObserver.unobserve(this.element)), this.pauseWordAnimations();
   }
   rebuildStyle() {
     let A = "";

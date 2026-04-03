@@ -90,7 +90,9 @@ final class LyricsViewModel {
         // Distinguish transition nil (debounced) from concrete "no lyrics" (clear immediately).
         let ttmlForStore: String? = (track == nil) ? nil : lyricsText
         store.applyTrack(
-            ttml: ttmlForStore, currentTime: currentTime,
+            trackID: track?.id,
+            ttml: ttmlForStore,
+            currentTime: currentTime,
             isPlaying: isPlaying)
     }
 
