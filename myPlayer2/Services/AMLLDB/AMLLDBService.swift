@@ -9,11 +9,15 @@
 import Foundation
 import SwiftData
 import Combine
+import os.log
 
 /// Manages the AMLLDB lyrics index and provides search functionality.
 /// Handles index updates, caching, and fuzzy searching.
 @MainActor
 final class AMLLDBService: ObservableObject {
+    
+    // MARK: - Logger
+    private static let logger = Logger(subsystem: "com.kmgccc.player", category: "AMLLDB")
     
     // MARK: - Singleton
     
@@ -46,15 +50,21 @@ final class AMLLDBService: ObservableObject {
     
     func setupModelContext(_ context: ModelContext) {
         self.modelContext = context
+        Self.logger.info("[AMLLDB] Model context initialized")
     }
     
     // MARK: - Index Availability
     
     /// Checks if the local index is available (has entries).
     func isIndexAvailable() -> Bool {
-        guard let context = modelContext else { return false }
+        guard let context = modelContext else {
+            Self.logger.warning("[AMLLDB] isIndexAvailable: modelContext is nil")
+            return false
+        }
         let descriptor = FetchDescriptor<AMLLDBIndexEntry>()
-        return (try? context.fetchCount(descriptor)) ?? 0 > 0
+        let count = (try? context.fetchCount(descriptor)) ?? 0
+        Self.logger.info("[AMLLDB] Index available: \(count > 0), entries: \(count)")
+        return count > 0
     }
     
     /// Returns the number of entries in the local index.
@@ -81,12 +91,17 @@ final class AMLLDBService: ObservableObject {
     /// - Returns: True if an update was performed
     @discardableResult
     func checkAndUpdateIfNeeded() async -> Bool {
-        guard shouldUpdateIndex() else { return false }
+        guard shouldUpdateIndex() else {
+            Self.logger.info("[AMLLDB] Index up to date, skipping update")
+            return false
+        }
         
         do {
+            Self.logger.info("[AMLLDB] Starting index update...")
             try await updateIndex()
             return true
         } catch {
+            Self.logger.error("[AMLLDB] Index update failed: \(error.localizedDescription)")
             return false
         }
     }
@@ -107,7 +122,9 @@ final class AMLLDBService: ObservableObject {
                 totalItems: 0
             )
             
+            Self.logger.info("[AMLLDB] Downloading index...")
             let indexData = try await client.downloadIndex()
+            Self.logger.info("[AMLLDB] Downloaded \(indexData.count) bytes")
             
             updateProgress = AMLLDBUpdateProgress(
                 state: .parsing,
@@ -125,12 +142,15 @@ final class AMLLDBService: ObservableObject {
                 totalItems: getIndexEntryCount()
             )
             
+            Self.logger.info("[AMLLDB] Index update completed, total entries: \(self.getIndexEntryCount())")
+            
         } catch {
             updateProgress = AMLLDBUpdateProgress(
                 state: .failed(error.localizedDescription),
                 currentItem: 0,
                 totalItems: 0
             )
+            Self.logger.error("[AMLLDB] Update failed: \(error.localizedDescription)")
             throw error
         }
     }
@@ -151,14 +171,17 @@ final class AMLLDBService: ObservableObject {
         
         let lines = text.components(separatedBy: .newlines).filter { !$0.isEmpty }
         let totalLines = lines.count
+        Self.logger.info("[AMLLDB] Parsing \(totalLines) index entries...")
         
         // Parse and insert in batches
         let batchSize = 1000
         var currentBatch: [AMLLDBIndexEntry] = []
+        var parsedCount = 0
         
         for (index, line) in lines.enumerated() {
             if let entry = try? parseIndexLine(line) {
                 currentBatch.append(entry)
+                parsedCount += 1
                 
                 if currentBatch.count >= batchSize {
                     try insertBatch(currentBatch, context: context)
@@ -180,6 +203,8 @@ final class AMLLDBService: ObservableObject {
         if !currentBatch.isEmpty {
             try insertBatch(currentBatch, context: context)
         }
+        
+        Self.logger.info("[AMLLDB] Parsed and stored \(parsedCount) entries")
     }
     
     /// Parses a single JSON line from the index file.
@@ -233,20 +258,41 @@ final class AMLLDBService: ObservableObject {
     /// - Parameters:
     ///   - title: Song title to search for
     ///   - artist: Artist name to search for (optional)
+    ///   - album: Album name to search for (optional, for better matching)
+    ///   - duration: Track duration in seconds (optional, for better matching)
     ///   - limit: Maximum number of results (default: 20)
     /// - Returns: Array of search results sorted by relevance
-    func search(title: String, artist: String? = nil, limit: Int = 20) -> [AMLLDBSearchResult] {
-        guard let context = modelContext else { return [] }
+    func search(
+        title: String,
+        artist: String? = nil,
+        album: String? = nil,
+        duration: Double? = nil,
+        limit: Int = 20
+    ) -> [AMLLDBSearchResult] {
+        Self.logger.info("[AMLLDB] Search starting - title: '\(title)', artist: '\(artist ?? "nil")'")
+        
+        guard let context = modelContext else {
+            Self.logger.error("[AMLLDB] Search failed: modelContext is nil")
+            return []
+        }
         
         let normalizedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let normalizedArtist = artist?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        let normalizedAlbum = album?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
         
-        guard !normalizedTitle.isEmpty else { return [] }
+        guard !normalizedTitle.isEmpty else {
+            Self.logger.warning("[AMLLDB] Search failed: empty title")
+            return []
+        }
         
-        // Fetch all entries (for small index, in-memory filtering is faster)
-        // For large indexes, use SwiftData predicates
+        // Fetch all entries
         let descriptor = FetchDescriptor<AMLLDBIndexEntry>()
-        guard let entries = try? context.fetch(descriptor) else { return [] }
+        guard let entries = try? context.fetch(descriptor) else {
+            Self.logger.error("[AMLLDB] Search failed: could not fetch from SwiftData")
+            return []
+        }
+        
+        Self.logger.info("[AMLLDB] Fetched \(entries.count) entries from local index")
         
         // Score and filter entries
         var results: [(entry: AMLLDBIndexEntry, score: Double)] = []
@@ -255,7 +301,9 @@ final class AMLLDBService: ObservableObject {
             let score = calculateMatchScore(
                 entry: entry,
                 queryTitle: normalizedTitle,
-                queryArtist: normalizedArtist
+                queryArtist: normalizedArtist,
+                queryAlbum: normalizedAlbum,
+                queryDuration: duration
             )
             
             if score > 0 {
@@ -263,10 +311,12 @@ final class AMLLDBService: ObservableObject {
             }
         }
         
+        Self.logger.info("[AMLLDB] Matched \(results.count) entries")
+        
         // Sort by score (descending) and limit results
         results.sort { $0.score > $1.score }
         
-        return results.prefix(limit).map { pair in
+        let limitedResults = results.prefix(limit).map { pair in
             AMLLDBSearchResult(
                 ncmMusicId: pair.entry.ncmMusicId,
                 musicName: pair.entry.musicName,
@@ -275,20 +325,26 @@ final class AMLLDBService: ObservableObject {
                 matchScore: pair.score
             )
         }
+        
+        Self.logger.info("[AMLLDB] Returning \(limitedResults.count) results")
+        return limitedResults
     }
     
     /// Calculates a match score for an entry against the query.
     private func calculateMatchScore(
         entry: AMLLDBIndexEntry,
         queryTitle: String,
-        queryArtist: String
+        queryArtist: String,
+        queryAlbum: String,
+        queryDuration: Double?
     ) -> Double {
         let entryTitle = entry.musicName.lowercased()
         let entryArtists = entry.artists.lowercased()
+        let entryAlbum = entry.album.lowercased()
         
         var score: Double = 0
         
-        // Title matching
+        // Title matching (most important)
         if entryTitle == queryTitle {
             score += 1.0 // Exact match
         } else if entryTitle.hasPrefix(queryTitle) {
@@ -306,6 +362,11 @@ final class AMLLDBService: ObservableObject {
             }
         }
         
+        // Album matching (if provided, bonus)
+        if !queryAlbum.isEmpty && entryAlbum.contains(queryAlbum) {
+            score += 0.1 // Album bonus
+        }
+        
         return score
     }
     
@@ -315,7 +376,10 @@ final class AMLLDBService: ObservableObject {
     /// - Parameter ncmMusicId: NetEase Cloud Music ID
     /// - Returns: TTML lyrics content
     func downloadLyrics(ncmMusicId: String) async throws -> String {
-        try await client.downloadLyrics(ncmMusicId: ncmMusicId)
+        Self.logger.info("[AMLLDB] Downloading lyrics for ID: \(ncmMusicId)")
+        let ttml = try await client.downloadLyrics(ncmMusicId: ncmMusicId)
+        Self.logger.info("[AMLLDB] Downloaded \(ttml.count) bytes of TTML")
+        return ttml
     }
     
     // MARK: - Cache Management
