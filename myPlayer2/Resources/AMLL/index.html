@@ -302,9 +302,11 @@
             ) !important;
             visibility: hidden !important;
         }
-        /* Keep cover-blur highlight visible when line is in foreground completed state */
+        /* Keep cover-blur highlight visible while completed or exiting highlight is still finishing */
         .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"][data-fs-completed-highlight="1"] .amll-cb-word-active,
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"][data-fs-completed-highlight="1"] .amll-cb-char-active {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"][data-fs-completed-highlight="1"] .amll-cb-char-active,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"][data-amll-exiting-highlight="1"] .amll-cb-word-active,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"][data-amll-exiting-highlight="1"] .amll-cb-char-active {
             color: var(
                 --amll-cb-main-active,
                 var(--amll-active, var(--amll-lp-color, white))
@@ -579,9 +581,9 @@
             /* Use color instead of opacity - hide by making same as inactive color */
             visibility: hidden !important;
         }
-        /* Keep fullscreen highlight visible when line is in foreground completed state
-           (line lost _active_ but is still in visible range due to parallel display) */
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][data-fs-completed-highlight="1"] .amll-fs-word-active {
+        /* Keep fullscreen highlight visible while completed or exiting highlight is still finishing. */
+        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][data-fs-completed-highlight="1"] .amll-fs-word-active,
+        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][data-amll-exiting-highlight="1"] .amll-fs-word-active {
             color: var(
                 --amll-fs-main-active,
                 var(--amll-active, var(--amll-lp-color, white))
@@ -589,7 +591,8 @@
             visibility: visible !important;
             opacity: 1 !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][data-fs-completed-highlight="1"] .amll-fs-char-active {
+        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][data-fs-completed-highlight="1"] .amll-fs-char-active,
+        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][data-amll-exiting-highlight="1"] .amll-fs-char-active {
             color: var(
                 --amll-fs-main-active,
                 var(--amll-active, var(--amll-lp-color, white))
@@ -941,6 +944,8 @@
         let overscanPx = defaultOverscanPx;
         let fpsCap = defaultFPSCap;
         let wordFadeWidth = defaultWordFadeWidth;
+        let leadInMs = 300;
+        let nearSwitchGapMs = 85;
         let fullscreenOpaqueLyricsMode = fullscreenForcedByHost;
         let fullscreenCoverBlurMode = false;
         let fullscreenCoverBlurProfile = null;
@@ -978,6 +983,16 @@
             words: line.words.map((word) => ({ obscene: false, romanWord: "", ...word })),
             romanLyric: "",
         });
+
+        const syncLeadTimingConfig = () => {
+            if (typeof lyricPlayer.setLyricAdvanceLeadInMs === "function") {
+                lyricPlayer.setLyricAdvanceLeadInMs(leadInMs);
+            }
+            if (typeof lyricPlayer.setLyricNearSwitchGapMs === "function") {
+                lyricPlayer.setLyricNearSwitchGapMs(nearSwitchGapMs);
+            }
+        };
+        syncLeadTimingConfig();
 
         let lastSeekAt = 0;
         let lastSeekSeconds = null;
@@ -3742,6 +3757,22 @@
 	            setConfig: (config) => {
 		                try {
 		                    let needsLyricsReload = false;
+		                    if (typeof config.leadInMs === "number" && !Number.isNaN(config.leadInMs)) {
+		                        const nextLeadInMs = Math.max(0, Math.min(1600, config.leadInMs));
+		                        if (nextLeadInMs !== leadInMs) {
+		                            leadInMs = nextLeadInMs;
+		                            syncLeadTimingConfig();
+		                            needsLyricsReload = true;
+		                        }
+		                    }
+		                    if (typeof config.nearSwitchGapMs === "number" && !Number.isNaN(config.nearSwitchGapMs)) {
+		                        const nextNearSwitchGapMs = Math.max(0, Math.min(800, config.nearSwitchGapMs));
+		                        if (nextNearSwitchGapMs !== nearSwitchGapMs) {
+		                            nearSwitchGapMs = nextNearSwitchGapMs;
+		                            syncLeadTimingConfig();
+		                            needsLyricsReload = true;
+		                        }
+		                    }
 		                    if (typeof config.enableBlur === "boolean" && config.enableBlur !== blurEnabled) {
 		                        blurEnabled = config.enableBlur;
 		                        if (typeof lyricPlayer.setEnableBlur === "function") {

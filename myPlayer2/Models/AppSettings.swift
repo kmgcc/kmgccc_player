@@ -300,13 +300,9 @@ public final class AppSettings {
     @ObservationIgnored
     @AppStorage("lyricsFontSize") var lyricsFontSize: Double = 24.0
 
-    /// Lead-in milliseconds for next line start/word timing
+    /// Lead-in milliseconds for near-switch lyric line advance
     @ObservationIgnored
     @AppStorage("lyricsLeadInMs") var lyricsLeadInMs: Double = 300
-
-    /// Lead-in milliseconds for all adjacent lyric lines (applies even when not near-switch).
-    @ObservationIgnored
-    @AppStorage("lyricsGeneralLeadInMs") var lyricsGeneralLeadInMs: Double = 205
 
     /// If the next main line begins within this gap (ms) after current main line ends,
     /// the lyrics renderer will early-switch to the next line using `lyricsLeadInMs`.

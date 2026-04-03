@@ -217,10 +217,87 @@ export class LyricLineEl extends LyricLineBase {
 	}
 
 	private isEnabled = false;
+	private isExitingHighlight = false;
+	private exitHighlightCleanupTimer: number | undefined;
+	private readonly exitHighlightMinDurationMs = 120;
+	private readonly exitHighlightMaxDurationMs = 280;
+	private clearExitHighlightCleanupTimer() {
+		if (this.exitHighlightCleanupTimer !== undefined) {
+			window.clearTimeout(this.exitHighlightCleanupTimer);
+			this.exitHighlightCleanupTimer = undefined;
+		}
+	}
+	private getMaskAnimationDuration(animation: Animation) {
+		const computedDuration = animation.effect?.getComputedTiming?.().duration;
+		return typeof computedDuration === "number" && Number.isFinite(computedDuration)
+			? computedDuration
+			: this.totalDuration;
+	}
+	private finishExitHighlightState() {
+		this.clearExitHighlightCleanupTimer();
+		this.isExitingHighlight = false;
+		delete this.element.dataset.amllExitingHighlight;
+		this.element.classList.remove(styles.active);
+		const main = this.element.children[0] as HTMLDivElement;
+		main.classList.remove(styles.active);
+		for (const word of this.splittedWords) {
+			for (const animation of word.maskAnimations) {
+				animation.pause();
+			}
+		}
+	}
+	private startExitHighlightCatchUp() {
+		if (!(this.lyricPlayer.getIsPlaying?.() ?? true)) {
+			return false;
+		}
+
+		let maxRemaining = 0;
+		for (const word of this.splittedWords) {
+			for (const animation of word.maskAnimations) {
+				const duration = Math.max(1, this.getMaskAnimationDuration(animation));
+				const currentTime =
+					typeof animation.currentTime === "number" ? animation.currentTime : 0;
+				maxRemaining = Math.max(0, Math.max(maxRemaining, duration - currentTime));
+			}
+		}
+
+		if (maxRemaining <= 16) {
+			return false;
+		}
+
+		this.clearExitHighlightCleanupTimer();
+		this.isExitingHighlight = true;
+		this.element.dataset.amllExitingHighlight = "1";
+		const catchUpDuration = Math.max(
+			this.exitHighlightMinDurationMs,
+			Math.min(this.exitHighlightMaxDurationMs, maxRemaining),
+		);
+		const playbackRate = Math.max(1, maxRemaining / catchUpDuration);
+
+		for (const word of this.splittedWords) {
+			for (const animation of word.maskAnimations) {
+				const duration = Math.max(1, this.getMaskAnimationDuration(animation));
+				const currentTime =
+					typeof animation.currentTime === "number" ? animation.currentTime : 0;
+				if (currentTime >= duration) continue;
+				animation.currentTime = Math.max(0, currentTime);
+				animation.playbackRate = playbackRate;
+				animation.play();
+			}
+		}
+
+		this.exitHighlightCleanupTimer = window.setTimeout(() => {
+			this.finishExitHighlightState();
+		}, catchUpDuration + 34);
+		return true;
+	}
 	async enable(
 		maskAnimationTime = this.lyricLine.startTime,
 		shouldPlay = true,
 	) {
+		this.clearExitHighlightCleanupTimer();
+		this.isExitingHighlight = false;
+		delete this.element.dataset.amllExitingHighlight;
 		this.isEnabled = true;
 		this.element.classList.add(styles.active);
 		const main = this.element.children[0] as HTMLDivElement;
@@ -266,6 +343,8 @@ export class LyricLineEl extends LyricLineBase {
 		this.isEnabled = false;
 		this.element.classList.remove(styles.active);
 		const main = this.element.children[0] as HTMLDivElement;
+		main.classList.remove(styles.active);
+		const keepHighlightDuringExit = this.startExitHighlightCatchUp();
 		for (const word of this.splittedWords) {
 			for (const a of word.elementAnimations) {
 				if (
@@ -278,14 +357,36 @@ export class LyricLineEl extends LyricLineBase {
 			}
 
 			for (const a of word.maskAnimations) {
-				a.pause();
+				if (!keepHighlightDuringExit) {
+					a.pause();
+				}
 			}
 		}
-		main.classList.remove(styles.active);
+		if (!keepHighlightDuringExit) {
+			this.finishExitHighlightState();
+		}
 	}
 	private lastWord?: RealWord;
 	async resume() {
-		if (!this.isEnabled) return;
+		if (!this.isEnabled && !this.isExitingHighlight) return;
+		if (this.isExitingHighlight && !this.isEnabled) {
+			for (const word of this.splittedWords) {
+				for (const a of word.elementAnimations) {
+					if (a.playState !== "finished") {
+						a.play();
+					}
+				}
+				for (const a of word.maskAnimations) {
+					const duration = Math.max(1, this.getMaskAnimationDuration(a));
+					const currentTime =
+						typeof a.currentTime === "number" ? a.currentTime : 0;
+					if (currentTime < duration) {
+						a.play();
+					}
+				}
+			}
+			return;
+		}
 		for (const word of this.splittedWords) {
 			for (const a of word.elementAnimations) {
 				if (
@@ -308,7 +409,7 @@ export class LyricLineEl extends LyricLineBase {
 		}
 	}
 	async pause() {
-		if (!this.isEnabled) return;
+		if (!this.isEnabled && !this.isExitingHighlight) return;
 		for (const word of this.splittedWords) {
 			for (const a of word.elementAnimations) {
 				a.pause();
@@ -337,6 +438,9 @@ export class LyricLineEl extends LyricLineBase {
 	private _prevParentEl: HTMLElement;
 	private lastStyle = "";
 	private pauseWordAnimations() {
+		this.clearExitHighlightCleanupTimer();
+		this.isExitingHighlight = false;
+		delete this.element.dataset.amllExitingHighlight;
 		for (const word of this.splittedWords) {
 			for (const animation of word.elementAnimations) {
 				animation.pause();
@@ -966,6 +1070,7 @@ export class LyricLineEl extends LyricLineBase {
 		return !(t > pb + h + ov || b < -h - ov);
 	}
 	private disposeElements() {
+		this.clearExitHighlightCleanupTimer();
 		for (const realWord of this.splittedWords) {
 			for (const a of realWord.elementAnimations) {
 				a.cancel();

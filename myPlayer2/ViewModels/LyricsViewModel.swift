@@ -249,8 +249,7 @@ final class LyricsViewModel {
             ? settings.lyricsTranslationFontWeightDark : settings.lyricsTranslationFontWeightLight
         let clampedTranslationWeight = max(100, min(900, translationWeight))
         let leadInMs = max(0, settings.lyricsLeadInMs)
-        let generalLeadInMs = max(0, min(1000, settings.lyricsGeneralLeadInMs))
-        let nearSwitchGapMs = max(0, min(300, settings.lyricsNearSwitchGapMs))
+        let nearSwitchGapMs = max(0, min(500, settings.lyricsNearSwitchGapMs))
 
         let config: [String: Any] = [
             "fontSize": settings.lyricsFontSize,
@@ -260,7 +259,6 @@ final class LyricsViewModel {
             "translationFontSize": settings.lyricsTranslationFontSize,
             "translationFontWeight": clampedTranslationWeight,
             "leadInMs": leadInMs,
-            "generalLeadInMs": generalLeadInMs,
             "nearSwitchGapMs": nearSwitchGapMs,
             "timeOffsetMs": combinedOffsetMs,
             "theme": resolvedTheme,
