@@ -16,6 +16,7 @@ enum LDDCSource: String, CaseIterable, Identifiable, Codable {
     case QM
     case KG
     case NE
+    case AMLLDB
 
     var id: String { rawValue }
 
@@ -25,6 +26,7 @@ enum LDDCSource: String, CaseIterable, Identifiable, Codable {
         case .QM: return "QQ音乐"
         case .KG: return "酷狗"
         case .NE: return "网易云"
+        case .AMLLDB: return "AMLL 歌词库"
         }
     }
 }
