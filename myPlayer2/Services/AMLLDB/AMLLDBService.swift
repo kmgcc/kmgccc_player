@@ -171,21 +171,37 @@ final class AMLLDBService: ObservableObject {
         
         let lines = text.components(separatedBy: .newlines).filter { !$0.isEmpty }
         let totalLines = lines.count
-        Self.logger.info("[AMLLDB] Parsing \(totalLines) index entries...")
+        Self.logger.info("[AMLLDB] Raw JSON lines count: \(totalLines)")
         
         // Parse and insert in batches
         let batchSize = 1000
         var currentBatch: [AMLLDBIndexEntry] = []
         var parsedCount = 0
+        var decodeErrorCount = 0
+        var missingFieldCount = 0
+        
+        // Log first line for debugging
+        if let firstLine = lines.first {
+            Self.logger.info("[AMLLDB] First line sample: \(firstLine.prefix(200))")
+        }
         
         for (index, line) in lines.enumerated() {
-            if let entry = try? parseIndexLine(line) {
-                currentBatch.append(entry)
-                parsedCount += 1
-                
-                if currentBatch.count >= batchSize {
-                    try insertBatch(currentBatch, context: context)
-                    currentBatch.removeAll(keepingCapacity: true)
+            do {
+                if let entry = try parseIndexLine(line) {
+                    currentBatch.append(entry)
+                    parsedCount += 1
+                    
+                    if currentBatch.count >= batchSize {
+                        try insertBatch(currentBatch, context: context)
+                        currentBatch.removeAll(keepingCapacity: true)
+                    }
+                } else {
+                    missingFieldCount += 1
+                }
+            } catch {
+                decodeErrorCount += 1
+                if decodeErrorCount <= 5 {
+                    Self.logger.warning("[AMLLDB] Decode error on line \(index + 1): \(error)")
                 }
             }
             
@@ -204,7 +220,9 @@ final class AMLLDBService: ObservableObject {
             try insertBatch(currentBatch, context: context)
         }
         
-        Self.logger.info("[AMLLDB] Parsed and stored \(parsedCount) entries")
+        // Verify storage
+        let finalCount = getIndexEntryCount()
+        Self.logger.info("[AMLLDB] Parsed: \(parsedCount), Missing fields: \(missingFieldCount), Decode errors: \(decodeErrorCount), Stored: \(finalCount)")
     }
     
     /// Parses a single JSON line from the index file.

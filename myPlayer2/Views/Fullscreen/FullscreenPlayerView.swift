@@ -954,6 +954,9 @@ struct FullscreenPlayerView: View {
             String(format: "%.2f", settings.fullscreenLyricsTranslationFontSize),
             String(settings.fullscreenLyricsFontWeight),
             String(settings.fullscreenLyricsTranslationFontWeight),
+            String(format: "%.0f", settings.lyricsLeadInMs),
+            String(format: "%.0f", settings.lyricsNearSwitchGapMs),
+            String(format: "%.0f", settings.lyricsGlobalAdvanceMs),
         ].joined(separator: "|")
     }
 
@@ -1327,6 +1330,9 @@ struct FullscreenPlayerView: View {
         let coverBlurThemeColor = activeCoverBlurTheme.map {
             ArtworkColorExtractor.cssRGBA($0.themeColor, alpha: 1.0)
         }
+        let trackOffsetMs = max(-15000, min(15000, currentTrack?.lyricsTimeOffsetMs ?? 0))
+        let globalAdvanceMs = max(-5000, min(5000, settings.lyricsGlobalAdvanceMs))
+        let combinedOffsetMs = max(-20000, min(20000, trackOffsetMs - globalAdvanceMs))
 
         
 
@@ -1363,8 +1369,9 @@ struct FullscreenPlayerView: View {
             "alignPosition": fullscreenLyricsAlignPosition,
             "lineHeight": 1.8,
             "activeScale": 1.2,
-            "leadInMs": 180,
-            "nearSwitchGapMs": 120,
+            "leadInMs": max(0, settings.lyricsLeadInMs),
+            "nearSwitchGapMs": max(0, min(500, settings.lyricsNearSwitchGapMs)),
+            "timeOffsetMs": combinedOffsetMs,
         ]
 
         config["fullscreenLyricDodgeMode"] = true

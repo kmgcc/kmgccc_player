@@ -31,7 +31,6 @@ struct SettingsView: View {
     // MARK: - AMLL Settings
 
     @State private var lyricsLeadInMs: Double = AppSettings.shared.lyricsLeadInMs
-    @State private var lyricsGeneralLeadInMs: Double = AppSettings.shared.lyricsGeneralLeadInMs
     @State private var lyricsNearSwitchGapMs: Double = AppSettings.shared.lyricsNearSwitchGapMs
     @State private var lyricsGlobalAdvanceMs: Double = AppSettings.shared.lyricsGlobalAdvanceMs
     @State private var lyricsFontNameZh: String = AppSettings.shared.lyricsFontNameZh
@@ -275,10 +274,6 @@ struct SettingsView: View {
         Color.clear
             .onChange(of: lyricsLeadInMs) { _, val in
                 AppSettings.shared.lyricsLeadInMs = val
-                lyricsVM.refreshConfigFromSettings()
-            }
-            .onChange(of: lyricsGeneralLeadInMs) { _, val in
-                AppSettings.shared.lyricsGeneralLeadInMs = val
                 lyricsVM.refreshConfigFromSettings()
             }
             .onChange(of: lyricsNearSwitchGapMs) { _, val in
@@ -827,11 +822,9 @@ struct SettingsView: View {
                 Spacer()
                 Button("恢复默认值") {
                     lyricsLeadInMs = 300
-                    lyricsGeneralLeadInMs = 205
                     lyricsNearSwitchGapMs = 85
                     lyricsGlobalAdvanceMs = 0
                     AppSettings.shared.lyricsLeadInMs = 300
-                    AppSettings.shared.lyricsGeneralLeadInMs = 205
                     AppSettings.shared.lyricsNearSwitchGapMs = 85
                     AppSettings.shared.lyricsGlobalAdvanceMs = 0
                     lyricsVM.refreshConfigFromSettings()
@@ -853,27 +846,10 @@ struct SettingsView: View {
                                 .foregroundStyle(themeStore.accentColor)
                                 .font(.system(.subheadline, design: .monospaced))
                         }
-                        Slider(value: $lyricsLeadInMs, in: 0...800, step: 20)
+                        Slider(value: $lyricsLeadInMs, in: 0...1200, step: 20)
                     }
 
                     Text("settings.lyrics.leadin_desc")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    Divider()
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text("常规提前量")
-                            Spacer()
-                            Text("\(Int(lyricsGeneralLeadInMs)) ms")
-                                .foregroundStyle(themeStore.accentColor)
-                                .font(.system(.subheadline, design: .monospaced))
-                        }
-                        Slider(value: $lyricsGeneralLeadInMs, in: 0...300, step: 5)
-                    }
-
-                    Text("未达到紧邻切行阈值时也生效：下一句提前 y ms 开始，上一句尾部提前 y ms 收束。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
@@ -887,7 +863,7 @@ struct SettingsView: View {
                                 .foregroundStyle(themeStore.accentColor)
                                 .font(.system(.subheadline, design: .monospaced))
                         }
-                        Slider(value: $lyricsNearSwitchGapMs, in: 0...200, step: 5)
+                        Slider(value: $lyricsNearSwitchGapMs, in: 0...500, step: 5)
                     }
 
                     Text("settings.lyrics.near_switch_gap_desc")
@@ -1433,7 +1409,6 @@ struct SettingsView: View {
         transientIntensity = AppSettings.shared.ledTransientIntensity
 
         lyricsLeadInMs = AppSettings.shared.lyricsLeadInMs
-        lyricsGeneralLeadInMs = AppSettings.shared.lyricsGeneralLeadInMs
         lyricsNearSwitchGapMs = AppSettings.shared.lyricsNearSwitchGapMs
         lyricsGlobalAdvanceMs = AppSettings.shared.lyricsGlobalAdvanceMs
         lyricsFontNameZh = AppSettings.shared.lyricsFontNameZh

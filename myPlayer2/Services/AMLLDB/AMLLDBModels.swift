@@ -114,13 +114,11 @@ struct AMLLDBRawIndexEntry: Codable {
 struct AMLMetadataPair: Codable {
     let key: String
     let values: [String]
-    
+
     init(from decoder: Decoder) throws {
         var container = try decoder.unkeyedContainer()
         key = try container.decode(String.self)
-        let valuesJson = try container.decode(String.self)
-        let valuesData = valuesJson.data(using: .utf8)!
-        values = try JSONDecoder().decode([String].self, from: valuesData)
+        values = try container.decode([String].self)
     }
 }
 

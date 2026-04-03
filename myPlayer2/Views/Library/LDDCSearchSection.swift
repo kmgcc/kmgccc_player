@@ -203,41 +203,69 @@ struct LDDCSearchSection: View {
                 }
             }
             
-            // Mode Selection (LDDC only)
             HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 4) {
                     Text("模式")
-                        .font(.caption)
+                        .font(.subheadline)
                         .foregroundStyle(.secondary)
-                    
-                    HStack(spacing: 8) {
+
+                    HStack(spacing: 4) {
                         ForEach(LDDCMode.allCases) { mode in
                             Button {
                                 selectedMode = mode
                             } label: {
                                 Text(mode.displayName)
-                                    .font(.caption)
+                                    .font(.system(size: 11, weight: selectedMode == mode ? .medium : .regular))
                                     .padding(.horizontal, 10)
                                     .padding(.vertical, 4)
                             }
-                            .buttonStyle(.bordered)
-                            .tint(selectedMode == mode ? .accentColor : .secondary)
-                            .clipShape(Capsule())
+                            .buttonStyle(.plain)
+                            .background(
+                                Capsule()
+                                    .fill(selectedMode == mode ? themeStore.accentColor.opacity(0.18) : Color.clear)
+                            )
+                            .foregroundStyle(selectedMode == mode ? themeStore.accentColor : .secondary)
                         }
                     }
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 3)
+                    .background(
+                        Capsule()
+                            .fill(Color.secondary.opacity(0.08))
+                    )
                 }
-                
-                // Translation Toggle (LDDC only)
-                VStack(alignment: .leading, spacing: 4) {
+
+                HStack(spacing: 4) {
                     Text("翻译")
-                        .font(.caption)
+                        .font(.subheadline)
                         .foregroundStyle(.secondary)
-                    
-                    Toggle("包含翻译", isOn: $includeTranslation)
-                        .toggleStyle(.switch)
-                        .labelsHidden()
+
+                    HStack(spacing: 4) {
+                        ForEach([true, false], id: \.self) { enabled in
+                            Button {
+                                includeTranslation = enabled
+                            } label: {
+                                Text(enabled ? "开" : "关")
+                                    .font(.system(size: 11, weight: includeTranslation == enabled ? .medium : .regular))
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 4)
+                            }
+                            .buttonStyle(.plain)
+                            .background(
+                                Capsule()
+                                    .fill(includeTranslation == enabled ? themeStore.accentColor.opacity(0.18) : Color.clear)
+                            )
+                            .foregroundStyle(includeTranslation == enabled ? themeStore.accentColor : .secondary)
+                        }
+                    }
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 3)
+                    .background(
+                        Capsule()
+                            .fill(Color.secondary.opacity(0.08))
+                    )
                 }
-                
+
                 Spacer()
             }
             

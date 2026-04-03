@@ -152,6 +152,12 @@ export abstract class LyricPlayerBase
 	}) as ResizeObserverCallback);
 	protected wordFadeWidth = 0.5;
 	protected targetAlignIndex = 0;
+	protected lyricAdvanceLeadInMs = 300;
+	protected lyricNearSwitchGapMs = 85;
+	private readonly fallbackLyricAdvanceLeadInMs = 1000;
+	private readonly maxNearWordLeadInMs = 260;
+	private readonly maxFarWordLeadInMs = 180;
+	private readonly earlyWordLeadInCount = 2;
 
 	constructor(element?: HTMLElement) {
 		super();
@@ -442,6 +448,22 @@ export abstract class LyricPlayerBase
 		this.alignPosition = alignPosition;
 	}
 
+	setLyricAdvanceLeadInMs(value = 300) {
+		this.lyricAdvanceLeadInMs = Math.max(0, Math.min(1600, value));
+	}
+
+	getLyricAdvanceLeadInMs() {
+		return this.lyricAdvanceLeadInMs;
+	}
+
+	setLyricNearSwitchGapMs(value = 85) {
+		this.lyricNearSwitchGapMs = Math.max(0, Math.min(800, value));
+	}
+
+	getLyricNearSwitchGapMs() {
+		return this.lyricNearSwitchGapMs;
+	}
+
 	/**
 	 * 设置 overscan（视图上下额外缓冲渲染区）距离，单位：像素。
 	 * @param px 像素值，默认 300
@@ -519,6 +541,108 @@ export abstract class LyricPlayerBase
 			checkGap(currentIndex + 1)
 		);
 	}
+
+	private resolveWordLeadInMs(isNearSwitch: boolean, appliedLeadInMs: number) {
+		if (!(appliedLeadInMs > 0)) return 0;
+
+		if (isNearSwitch) {
+			return Math.min(
+				appliedLeadInMs,
+				this.lyricAdvanceLeadInMs,
+				this.maxNearWordLeadInMs,
+			);
+		}
+
+		return Math.min(
+			appliedLeadInMs,
+			this.maxFarWordLeadInMs,
+			this.lyricAdvanceLeadInMs * 0.6,
+		);
+	}
+
+	private applyEarlyWordLeadIn(line: LyricLine, leadInMs: number) {
+		if (!(leadInMs > 0) || !Array.isArray(line.words) || line.words.length === 0) {
+			return;
+		}
+
+		const meaningfulIndexes: number[] = [];
+		for (let i = 0; i < line.words.length; i++) {
+			const word = line.words[i];
+			if (
+				word.word.trim().length > 0 &&
+				Number.isFinite(word.startTime) &&
+				Number.isFinite(word.endTime) &&
+				word.endTime >= word.startTime
+			) {
+				meaningfulIndexes.push(i);
+				if (meaningfulIndexes.length >= this.earlyWordLeadInCount) break;
+			}
+		}
+
+		if (meaningfulIndexes.length === 0) return;
+
+		const lastIndex = meaningfulIndexes[meaningfulIndexes.length - 1];
+		const frontWords = line.words
+			.slice(0, lastIndex + 1)
+			.filter(
+				(word) =>
+					Number.isFinite(word.startTime) &&
+					Number.isFinite(word.endTime) &&
+					word.endTime >= word.startTime,
+			);
+
+		if (frontWords.length === 0) return;
+
+		const segmentStart = frontWords[0].startTime;
+		const segmentEnd = Math.max(
+			segmentStart + 1,
+			frontWords.reduce((pv, word) => Math.max(pv, word.endTime), segmentStart),
+		);
+		const availableLeadIn = Math.max(0, segmentStart - line.startTime);
+		const effectiveLeadIn = Math.min(leadInMs, availableLeadIn);
+
+		if (!(effectiveLeadIn > 0)) return;
+
+		const segmentDuration = Math.max(1, segmentEnd - segmentStart);
+		for (let i = 0; i <= lastIndex; i++) {
+			const word = line.words[i];
+			if (
+				!Number.isFinite(word.startTime) ||
+				!Number.isFinite(word.endTime) ||
+				word.endTime < word.startTime
+			) {
+				continue;
+			}
+
+			const startProgress = Math.max(
+				0,
+				Math.min(1, (word.startTime - segmentStart) / segmentDuration),
+			);
+			const endProgress = Math.max(
+				startProgress,
+				Math.min(1, (word.endTime - segmentStart) / segmentDuration),
+			);
+			const nextStartTime = Math.max(
+				line.startTime,
+				word.startTime - effectiveLeadIn * (1 - startProgress),
+			);
+			const nextEndTime = Math.max(
+				nextStartTime,
+				word.endTime - effectiveLeadIn * (1 - endProgress),
+			);
+
+			word.startTime = nextStartTime;
+			word.endTime = nextEndTime;
+		}
+	}
+
+	private applyTrailingWordCatchUp(
+		line: LyricLine,
+		_rawLine: LyricLine | undefined,
+		targetEndTime: number,
+	) {
+		line.endTime = Math.max(line.startTime, targetEndTime);
+	}
 	/**
 	 * 设置当前播放歌词，要注意传入后这个数组内的信息不得修改，否则会发生错误
 	 * @param lines 歌词数组
@@ -579,15 +703,16 @@ export abstract class LyricPlayerBase
 			}
 		}
 
-		// 给背景歌词也尝试提前最多一秒
+		// 应用 Apple Music 风格的行提前：紧邻行使用可调的 lead-in，其他情况保留较早的预切行。
 		for (let i = this.processedLines.length - 1; i >= 0; i--) {
 			const line = this.processedLines[i];
 			if (line.isBG) continue;
 
 			let prevEndTime = 0;
 			let prevRawEndTime: number | undefined;
+			let prevIdx = -1;
 			if (i > 0) {
-				let prevIdx = i - 1;
+				prevIdx = i - 1;
 				if (this.processedLines[prevIdx].isBG) {
 					prevIdx--;
 				}
@@ -597,21 +722,67 @@ export abstract class LyricPlayerBase
 				}
 			}
 
-			const leadInStartTime = Math.max(0, line.startTime - 1000);
 			const rawLineStartTime = this.currentLyricLines[i]?.startTime;
-			const hasOriginalOverlap =
-				Number.isFinite(rawLineStartTime) &&
-				Number.isFinite(prevRawEndTime) &&
-				(rawLineStartTime as number) < (prevRawEndTime as number);
-			const newStartTime = hasOriginalOverlap
+			const rawGap =
+				Number.isFinite(rawLineStartTime) && Number.isFinite(prevRawEndTime)
+					? (rawLineStartTime as number) - (prevRawEndTime as number)
+					: undefined;
+			const hasOriginalOverlap = rawGap !== undefined && rawGap < 0;
+			const isNearSwitch =
+				rawGap !== undefined &&
+				!hasOriginalOverlap &&
+				rawGap <= this.lyricNearSwitchGapMs;
+			const lineLeadInMs = isNearSwitch
+				? this.lyricAdvanceLeadInMs
+				: this.fallbackLyricAdvanceLeadInMs;
+			const leadInStartTime = Math.max(0, line.startTime - lineLeadInMs);
+			const newStartTime = hasOriginalOverlap || isNearSwitch
 				? leadInStartTime
 				: Math.max(prevEndTime, leadInStartTime);
+			const appliedLeadInMs =
+				Number.isFinite(rawLineStartTime)
+					? Math.max(0, rawLineStartTime - newStartTime)
+					: 0;
+
+			if (isNearSwitch && !hasOriginalOverlap && prevIdx >= 0) {
+				const prevLine = this.processedLines[prevIdx];
+				const clippedPrevEndTime = Math.max(
+					prevLine.startTime,
+					Math.min(prevLine.endTime, newStartTime),
+				);
+				this.applyTrailingWordCatchUp(
+					prevLine,
+					this.currentLyricLines[prevIdx],
+					clippedPrevEndTime,
+				);
+
+				const prevBgLine = this.processedLines[prevIdx + 1];
+				if (prevBgLine?.isBG) {
+					const clippedPrevBGEndTime = Math.max(
+						prevBgLine.startTime,
+						Math.min(prevBgLine.endTime, clippedPrevEndTime),
+					);
+					this.applyTrailingWordCatchUp(
+						prevBgLine,
+						this.currentLyricLines[prevIdx + 1],
+						clippedPrevBGEndTime,
+					);
+				}
+			}
 
 			line.startTime = newStartTime;
+			this.applyEarlyWordLeadIn(
+				line,
+				this.resolveWordLeadInMs(isNearSwitch, appliedLeadInMs),
+			);
 
 			const nextLine = this.processedLines[i + 1];
 			if (nextLine?.isBG) {
 				nextLine.startTime = newStartTime;
+				this.applyEarlyWordLeadIn(
+					nextLine,
+					this.resolveWordLeadInMs(isNearSwitch, appliedLeadInMs),
+				);
 			}
 		}
 
