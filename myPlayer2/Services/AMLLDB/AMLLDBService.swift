@@ -8,6 +8,7 @@
 
 import Foundation
 import SwiftData
+import Combine
 
 /// Manages the AMLLDB lyrics index and provides search functionality.
 /// Handles index updates, caching, and fuzzy searching.
