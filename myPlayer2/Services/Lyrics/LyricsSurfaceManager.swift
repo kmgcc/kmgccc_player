@@ -87,8 +87,10 @@ final class LyricsSurfaceManager {
     /// Request a mode switch. This is the ONLY way to change surfaces.
     /// Views should NOT call this directly - use reportMainVisible/reportFullscreenVisible instead.
     func requestMode(_ mode: TargetMode, onComplete: ((TargetMode, Int) -> Void)? = nil) {
-        // Ignore if already targeting this mode
-        guard targetMode != mode else {
+        let desiredCurrentMode: CurrentMode = (mode == .main) ? .main : .fullscreen
+
+        // Ignore only when the requested mode is already fully active and idle.
+        guard !(targetMode == mode && currentMode == desiredCurrentMode && switchState == .idle) else {
             Log.debug("LyricsSurfaceManager: already targeting \(mode), ignoring request", category: .webview)
             return
         }
@@ -121,6 +123,7 @@ final class LyricsSurfaceManager {
 
         // Create/get the target store
         let store = getOrCreateStore(for: targetRole)
+        store.prepareWebViewIfNeeded()
 
         // If store is already ready, complete immediately
         if store.isReady {
@@ -194,14 +197,14 @@ final class LyricsSurfaceManager {
         let oldMode = currentMode
         currentMode = (mode == .main) ? .main : .fullscreen
 
-        // Teardown old surface after new one is confirmed active
-        switch oldMode {
+        // Teardown the opposite surface after new one is confirmed active.
+        // This must not rely on oldMode only: during the very first fullscreen transition,
+        // the previous main store may already exist even if currentMode has not been finalized yet.
+        switch mode {
         case .main:
-            teardownMainStore()
-        case .fullscreen:
             teardownFullscreenStores()
-        case .none:
-            break
+        case .fullscreen:
+            teardownMainStore()
         }
 
         switchState = .idle
@@ -210,7 +213,7 @@ final class LyricsSurfaceManager {
         onSwitchComplete?(mode, generation)
         onSwitchComplete = nil
 
-        Log.info("LyricsSurfaceManager: switch complete to \(mode), gen=\(generation)", category: .webview)
+        Log.info("LyricsSurfaceManager: switch complete to \(mode), gen=\(generation), previousMode=\(oldMode)", category: .webview)
     }
 
     // MARK: - View Visibility Reporting (Views call these, NOT requestMode)
@@ -367,10 +370,15 @@ final class LyricsSurfaceManager {
     }
 
     /// Apply track to all active surfaces.
-    func applyTrack(ttml: String?, currentTime: Double, isPlaying: Bool) {
+    func applyTrack(trackID: UUID? = nil, ttml: String?, currentTime: Double, isPlaying: Bool) {
         for role in activeRoles {
             guard let store = stores[role] else { continue }
-            store.applyTrack(ttml: ttml, currentTime: currentTime, isPlaying: isPlaying)
+            store.applyTrack(
+                trackID: trackID,
+                ttml: ttml,
+                currentTime: currentTime,
+                isPlaying: isPlaying
+            )
         }
     }
 
@@ -454,6 +462,7 @@ final class LyricsSurfaceManager {
         )
 
         store.applyTrack(
+            trackID: currentPlaybackSnapshot.trackID,
             ttml: currentPlaybackSnapshot.lyricsTTML,
             currentTime: currentPlaybackSnapshot.currentTime,
             isPlaying: currentPlaybackSnapshot.isPlaying

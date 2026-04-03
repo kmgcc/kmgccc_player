@@ -114,6 +114,10 @@ struct FullscreenPlayerView: View {
         LyricsSurfaceManager.shared.store(for: .fullscreen)
     }
 
+    private var existingFullscreenStore: LyricsWebViewStore? {
+        LyricsSurfaceManager.shared.existingStore(for: .fullscreen)
+    }
+
     private var coverBlurHighlightStore: LyricsWebViewStore {
         LyricsSurfaceManager.shared.store(for: .fullscreenCoverBlurHighlight)
     }
@@ -190,7 +194,7 @@ struct FullscreenPlayerView: View {
             Log.info("FullscreenPlayerView disappeared", category: .webview)
             didHandleFullscreenAppear = false
             ledMeter.stop()
-            fullscreenStore.onUserSeek = nil
+            existingFullscreenStore?.onUserSeek = nil
             pendingFullscreenLyricsRefresh?.cancel()
             pendingFullscreenLyricsRefresh = nil
             pendingFullscreenLyricsReveal?.cancel()
@@ -1075,6 +1079,7 @@ struct FullscreenPlayerView: View {
             isPlaying: playerVM.isPlaying
         )
         store.applyTrack(
+            trackID: track?.id,
             ttml: ttmlForStore,
             currentTime: playerVM.currentTime,
             isPlaying: playerVM.isPlaying
@@ -1145,6 +1150,7 @@ struct FullscreenPlayerView: View {
         let lyricsText = resolvedFullscreenLyricsText(for: track)
         let ttmlForStore: String? = track == nil ? nil : lyricsText
         store.applyTrack(
+            trackID: track?.id,
             ttml: ttmlForStore,
             currentTime: playerVM.currentTime,
             isPlaying: playerVM.isPlaying
@@ -1445,7 +1451,7 @@ struct FullscreenPlayerView: View {
 
     private func clearFullscreenLyricsTheme() {
         LyricsSurfaceManager.shared.updateThemeOverrideSnapshot(nil, for: .fullscreen)
-        fullscreenStore.setThemePaletteOverride(nil)
+        existingFullscreenStore?.setThemePaletteOverride(nil)
         if let highlightStore = existingCoverBlurHighlightStore {
             LyricsSurfaceManager.shared.updateThemeOverrideSnapshot(
                 nil,

@@ -962,6 +962,12 @@
         let externalTimeMs = 0;
         let externalTimeAnchorPerfMs = performance.now();
         let externalIsPlaying = true;
+        const rendererRuntime = {
+            animationFrameRequestId: 0,
+            destroyed: false,
+            trackTeardownCount: 0,
+            lastTeardownSummary: null,
+        };
         // Align active line toward top (instead of center)
         lyricPlayer.setAlignAnchor("top");
         lyricPlayer.setAlignPosition(0.2);
@@ -1505,7 +1511,7 @@
             return clonedAnimation;
         };
 
-        const fullscreenPackedAnimationTargetMap = new WeakMap();
+        let fullscreenPackedAnimationTargetMap = new WeakMap();
 
         const registerFullscreenPackedAnimationTarget = (sourceNode, targetElement) => {
             if (!(sourceNode instanceof Node) || !(targetElement instanceof Element)) return;
@@ -2162,7 +2168,7 @@
                 }
             }
         };
-        const coverBlurPackedAnimationTargetMap = new WeakMap();
+        let coverBlurPackedAnimationTargetMap = new WeakMap();
 
         const registerCoverBlurPackedAnimationTarget = (sourceNode, targetElement) => {
             if (!(sourceNode instanceof Node) || !(targetElement instanceof Element)) return;
@@ -2967,6 +2973,382 @@
 	                }
 	            }
 	        };
+
+        const clearParallelEmphasisDiagnostics = () => {
+            parallelEmphasisDiagnosticsSourceLines = [];
+            parallelEmphasisDiagnosticPairs = [];
+            lastParallelEmphasisLineState.clear();
+            lastParallelEmphasisPairState.clear();
+        };
+
+        const cancelAnimationList = (animations) => {
+            if (!Array.isArray(animations)) return 0;
+            let count = 0;
+            for (const animation of animations) {
+                if (!(animation instanceof Animation)) continue;
+                count += 1;
+                cancelAnimationSafely(animation);
+            }
+            return count;
+        };
+
+        const cancelSubtreeAnimations = (element) => {
+            if (!(element instanceof Element) || typeof element.getAnimations !== "function") {
+                return 0;
+            }
+            const animations = element.getAnimations({ subtree: true });
+            return cancelAnimationList(animations);
+        };
+
+        const removeNodeSafely = (node) => {
+            if (!(node instanceof Node)) return 0;
+            if (node.parentNode) {
+                node.parentNode.removeChild(node);
+                return 1;
+            }
+            return 0;
+        };
+
+        const releaseSplitWordAuxiliaryState = (splitWord) => {
+            if (!splitWord || typeof splitWord !== "object") {
+                return {
+                    cancelledAnimations: 0,
+                    removedNodes: 0,
+                    fsCharRecords: 0,
+                    cbCharRecords: 0,
+                };
+            }
+
+            let cancelledAnimations = 0;
+            let removedNodes = 0;
+
+            cancelledAnimations += cancelAnimationList(splitWord.elementAnimations);
+            cancelledAnimations += cancelAnimationList(splitWord.maskAnimations);
+            cancelledAnimations += cancelAnimationList(splitWord.__fsSourceElementAnimations);
+            cancelledAnimations += cancelAnimationList(splitWord.__fsInstalledElementAnimations);
+            cancelledAnimations += cancelAnimationList(splitWord.__fsInstalledMaskAnimations);
+            cancelledAnimations += cancelAnimationList(splitWord.__fsGlowAnimations);
+            cancelledAnimations += cancelAnimationList(splitWord.__cbInstalledElementAnimations);
+            cancelledAnimations += cancelAnimationList(splitWord.__cbInstalledMaskAnimations);
+            cancelledAnimations += cancelAnimationList(splitWord.__cbGlowAnimations);
+
+            if (splitWord.__fsPackedAnimation instanceof Animation) {
+                cancelledAnimations += 1;
+                cancelAnimationSafely(splitWord.__fsPackedAnimation);
+            }
+            if (splitWord.__cbPackedAnimation instanceof Animation) {
+                cancelledAnimations += 1;
+                cancelAnimationSafely(splitWord.__cbPackedAnimation);
+            }
+
+            const fsCharRecords = Array.isArray(splitWord.__fsCharRecords)
+                ? splitWord.__fsCharRecords.length
+                : 0;
+            const cbCharRecords = Array.isArray(splitWord.__cbCharRecords)
+                ? splitWord.__cbCharRecords.length
+                : 0;
+
+            removedNodes += removeNodeSafely(splitWord.__fsGlowLayer);
+            removedNodes += removeNodeSafely(splitWord.__cbGlowLayer);
+            removedNodes += removeNodeSafely(splitWord.__fsWordStackElement);
+            removedNodes += removeNodeSafely(splitWord.__cbWordStackElement);
+            removedNodes += removeNodeSafely(splitWord.__fsBaseWordElement);
+            removedNodes += removeNodeSafely(splitWord.__cbBaseWordElement);
+
+            splitWord.__fsGlowLayer = null;
+            splitWord.__cbGlowLayer = null;
+            splitWord.__fsWordStackElement = null;
+            splitWord.__cbWordStackElement = null;
+            splitWord.__fsBaseWordElement = null;
+            splitWord.__cbBaseWordElement = null;
+            splitWord.__fsGlowAnimations = [];
+            splitWord.__cbGlowAnimations = [];
+            splitWord.__fsSourceElementAnimations = [];
+            splitWord.__fsInstalledElementAnimations = [];
+            splitWord.__cbInstalledElementAnimations = [];
+            splitWord.__fsInstalledMaskAnimations = [];
+            splitWord.__cbInstalledMaskAnimations = [];
+            splitWord.__fsCharRecords = [];
+            splitWord.__cbCharRecords = [];
+            splitWord.__fsPackedAnimation = null;
+            splitWord.__cbPackedAnimation = null;
+            splitWord.__fsElementAnimationsInstalled = false;
+            splitWord.__cbElementAnimationsInstalled = false;
+
+            return {
+                cancelledAnimations,
+                removedNodes,
+                fsCharRecords,
+                cbCharRecords,
+            };
+        };
+
+        const teardownCurrentLyricObjects = () => {
+            const lineObjects = Array.isArray(lyricPlayer.currentLyricLineObjects)
+                ? lyricPlayer.currentLyricLineObjects
+                : [];
+            let cancelledAnimations = 0;
+            let removedNodes = 0;
+            let wordObjects = 0;
+            let fsCharRecords = 0;
+            let cbCharRecords = 0;
+
+            cancelledAnimations += cancelSubtreeAnimations(lyricPlayer.getElement());
+
+            for (const lineObj of lineObjects) {
+                if (typeof lineObj?.pause === "function") {
+                    lineObj.pause();
+                }
+                if (typeof lineObj?.disable === "function") {
+                    lineObj.disable();
+                }
+
+                const lineElement =
+                    typeof lineObj?.getElement === "function" ? lineObj.getElement() : lineObj?.element;
+                cancelledAnimations += cancelSubtreeAnimations(lineElement);
+
+                const splitWords = Array.isArray(lineObj?.splittedWords) ? lineObj.splittedWords : [];
+                wordObjects += splitWords.length;
+                for (const splitWord of splitWords) {
+                    const summary = releaseSplitWordAuxiliaryState(splitWord);
+                    cancelledAnimations += summary.cancelledAnimations;
+                    removedNodes += summary.removedNodes;
+                    fsCharRecords += summary.fsCharRecords;
+                    cbCharRecords += summary.cbCharRecords;
+                }
+            }
+
+            return {
+                lineObjects: lineObjects.length,
+                wordObjects,
+                cancelledAnimations,
+                removedNodes,
+                fsCharRecords,
+                cbCharRecords,
+            };
+        };
+
+        const summarizeAnimations = (animations) => {
+            const summary = {
+                total: 0,
+                running: 0,
+                paused: 0,
+                finished: 0,
+                idle: 0,
+            };
+            if (!Array.isArray(animations)) {
+                return summary;
+            }
+            for (const animation of animations) {
+                if (!(animation instanceof Animation)) continue;
+                summary.total += 1;
+                switch (animation.playState) {
+                case "running":
+                    summary.running += 1;
+                    break;
+                case "paused":
+                    summary.paused += 1;
+                    break;
+                case "finished":
+                    summary.finished += 1;
+                    break;
+                case "idle":
+                    summary.idle += 1;
+                    break;
+                default:
+                    break;
+                }
+            }
+            return summary;
+        };
+
+        const collectRendererDiagnostics = (label = "") => {
+            const playerElement = lyricPlayer.getElement();
+            const lineObjects = Array.isArray(lyricPlayer.currentLyricLineObjects)
+                ? lyricPlayer.currentLyricLineObjects
+                : [];
+            let splitWordCount = 0;
+            let emphasizedWordCount = 0;
+            let subElementCount = 0;
+            let auxiliaryAnimationRefs = 0;
+            let auxiliaryNodeRefs = 0;
+
+            for (const lineObj of lineObjects) {
+                const splitWords = Array.isArray(lineObj?.splittedWords) ? lineObj.splittedWords : [];
+                splitWordCount += splitWords.length;
+                for (const splitWord of splitWords) {
+                    if (splitWord?.shouldEmphasize === true) {
+                        emphasizedWordCount += 1;
+                    }
+                    subElementCount += Array.isArray(splitWord?.subElements)
+                        ? splitWord.subElements.length
+                        : 0;
+                    auxiliaryAnimationRefs += [
+                        splitWord?.elementAnimations,
+                        splitWord?.maskAnimations,
+                        splitWord?.__fsSourceElementAnimations,
+                        splitWord?.__fsInstalledElementAnimations,
+                        splitWord?.__fsInstalledMaskAnimations,
+                        splitWord?.__fsGlowAnimations,
+                        splitWord?.__cbInstalledElementAnimations,
+                        splitWord?.__cbInstalledMaskAnimations,
+                        splitWord?.__cbGlowAnimations,
+                    ].reduce(
+                        (count, list) => count + (Array.isArray(list) ? list.length : 0),
+                        0
+                    );
+                    auxiliaryNodeRefs += [
+                        splitWord?.__fsGlowLayer,
+                        splitWord?.__cbGlowLayer,
+                        splitWord?.__fsWordStackElement,
+                        splitWord?.__cbWordStackElement,
+                        splitWord?.__fsBaseWordElement,
+                        splitWord?.__cbBaseWordElement,
+                    ].filter((node) => node instanceof Node).length;
+                }
+            }
+
+            const playerAnimations = typeof playerElement.getAnimations === "function"
+                ? playerElement.getAnimations({ subtree: true })
+                : [];
+            const documentAnimations = typeof document.getAnimations === "function"
+                ? document.getAnimations()
+                : [];
+            const performanceMemory = performance?.memory ?? null;
+
+            return {
+                label,
+                role: surfaceRole,
+                bundleVersion: AMLL_BUNDLE_VERSION,
+                ttmlLength: lastTTML.length,
+                dom: {
+                    totalElements: document.getElementsByTagName("*").length,
+                    lyricLines: playerElement.querySelectorAll('[class*="_lyricLine_"]').length,
+                    lyricMainLines: playerElement.querySelectorAll('[class*="_lyricMainLine_"]').length,
+                    lyricSubLines: playerElement.querySelectorAll('[class*="_lyricSubLine_"]').length,
+                    lyricBgLines: playerElement.querySelectorAll('[class*="_lyricBgLine_"]').length,
+                    splitWords: splitWordCount,
+                    emphasizedWords: emphasizedWordCount,
+                    emphasizedChars: subElementCount,
+                    fsWordStacks: playerElement.querySelectorAll(".amll-fs-word-stack").length,
+                    cbWordStacks: playerElement.querySelectorAll(".amll-cb-word-stack").length,
+                    fsGlowLayers: playerElement.querySelectorAll(".amll-fs-glow-layer").length,
+                    cbGlowLayers: playerElement.querySelectorAll(".amll-cb-glow-layer").length,
+                },
+                renderer: {
+                    currentLyricLineObjects: lineObjects.length,
+                    processedLines: Array.isArray(lyricPlayer.processedLines)
+                        ? lyricPlayer.processedLines.length
+                        : null,
+                    currentLyricLines: Array.isArray(lyricPlayer.currentLyricLines)
+                        ? lyricPlayer.currentLyricLines.length
+                        : null,
+                    hotLines: lyricPlayer.hotLines instanceof Set ? lyricPlayer.hotLines.size : null,
+                    bufferedLines: lyricPlayer.bufferedLines instanceof Set
+                        ? lyricPlayer.bufferedLines.size
+                        : null,
+                    lineTimingOnlyMode,
+                    isNonDynamic: lyricPlayer.isNonDynamic === true,
+                    initialLayoutFinished: lyricPlayer.initialLayoutFinished === true,
+                    lastKnownTimeMs,
+                    externalTimeMs,
+                    externalIsPlaying,
+                    estimatedResizeObserverTargets: lineObjects.length + 3,
+                },
+                caches: {
+                    parallelSourceLines: parallelEmphasisDiagnosticsSourceLines.length,
+                    parallelPairs: parallelEmphasisDiagnosticPairs.length,
+                    lastParallelLineStates: lastParallelEmphasisLineState.size,
+                    lastParallelPairStates: lastParallelEmphasisPairState.size,
+                    auxiliaryAnimationRefs,
+                    auxiliaryNodeRefs,
+                    lastCoverBlurBlendSignatureLength: lastCoverBlurBlendSignature.length,
+                    lastTeardownSummary: rendererRuntime.lastTeardownSummary,
+                },
+                animations: {
+                    playerSubtree: summarizeAnimations(playerAnimations),
+                    document: summarizeAnimations(documentAnimations),
+                    rafActive: rendererRuntime.animationFrameRequestId ? 1 : 0,
+                    trackTeardownCount: rendererRuntime.trackTeardownCount,
+                },
+                jsHeap: performanceMemory
+                    ? {
+                        usedJSHeapSize: performanceMemory.usedJSHeapSize ?? null,
+                        totalJSHeapSize: performanceMemory.totalJSHeapSize ?? null,
+                        jsHeapSizeLimit: performanceMemory.jsHeapSizeLimit ?? null,
+                    }
+                    : null,
+            };
+        };
+
+        const clearRendererState = (reason = "clearState") => {
+            const before = collectRendererDiagnostics(`${reason}-before`);
+            const teardown = teardownCurrentLyricObjects();
+            externalIsPlaying = false;
+            lastKnownTimeMs = 0;
+            externalTimeMs = 0;
+            externalTimeAnchorPerfMs = performance.now();
+            lastSeekAt = 0;
+            lastSeekSeconds = null;
+            lineTimingOnlyMode = false;
+            lyricPlayer.isNonDynamic = false;
+            patchFullscreenLastProcessedTime = -1;
+            lastCoverBlurBlendSignature = "";
+            clearFullscreenCompletedHighlightState();
+            clearParallelEmphasisDiagnostics();
+            fullscreenPackedAnimationTargetMap = new WeakMap();
+            coverBlurPackedAnimationTargetMap = new WeakMap();
+
+            if (typeof lyricPlayer.pause === "function") {
+                lyricPlayer.pause();
+            }
+            if (typeof lyricPlayer.resetScroll === "function") {
+                lyricPlayer.resetScroll();
+            }
+            lyricPlayer.getElement().classList.remove("fs-line-timing-only");
+            lyricPlayer.setLyricLines([]);
+            lastTTML = "";
+
+            rendererRuntime.trackTeardownCount += 1;
+            rendererRuntime.lastTeardownSummary = {
+                reason,
+                teardown,
+            };
+
+            const after = collectRendererDiagnostics(`${reason}-after`);
+            const summary = {
+                reason,
+                teardown,
+                before: {
+                    ttmlLength: before.ttmlLength,
+                    lineObjects: before.renderer.currentLyricLineObjects,
+                    splitWords: before.dom.splitWords,
+                    playerAnimations: before.animations.playerSubtree.total,
+                    documentAnimations: before.animations.document.total,
+                    pendingParallelPairs: before.caches.parallelPairs,
+                },
+                after: {
+                    ttmlLength: after.ttmlLength,
+                    lineObjects: after.renderer.currentLyricLineObjects,
+                    splitWords: after.dom.splitWords,
+                    playerAnimations: after.animations.playerSubtree.total,
+                    documentAnimations: after.animations.document.total,
+                    pendingParallelPairs: after.caches.parallelPairs,
+                },
+            };
+            console.log(`[LyricsRenderer][Teardown] ${JSON.stringify(summary)}`);
+            return summary;
+        };
+
+        const destroyRendererState = () => {
+            const summary = clearRendererState("destroy");
+            rendererRuntime.destroyed = true;
+            if (rendererRuntime.animationFrameRequestId) {
+                cancelAnimationFrame(rendererRuntime.animationFrameRequestId);
+                rendererRuntime.animationFrameRequestId = 0;
+            }
+            return summary;
+        };
 	        
 	        const updateFullscreenParallelHighlightState = () => {
 	            if (!Array.isArray(lyricPlayer.currentLyricLineObjects)) return;
@@ -3276,20 +3658,18 @@
         window.LyricsRenderer = {
             setLyrics: (ttml) => {
                 if (!ttml) {
-                    lyricPlayer.setLyricLines([]);
-                    lineTimingOnlyMode = false;
-                    lyricPlayer.isNonDynamic = false;
-                    lyricPlayer.getElement().classList.remove("fs-line-timing-only");
+                    clearRendererState("setLyrics-empty");
                     console.log("[LyricsRenderer] Cleared lyrics");
-                    lastTTML = "";
-                    parallelEmphasisDiagnosticsSourceLines = [];
-                    parallelEmphasisDiagnosticPairs = [];
-                    lastParallelEmphasisLineState.clear();
-                    lastParallelEmphasisPairState.clear();
-                    clearFullscreenCompletedHighlightState();
                     return;
                 }
 	                try {
+                        if (
+                            lastTTML
+                            || (Array.isArray(lyricPlayer.currentLyricLineObjects)
+                                && lyricPlayer.currentLyricLineObjects.length > 0)
+                        ) {
+                            clearRendererState("setLyrics-replace");
+                        }
 		                    lastTTML = ttml;
 			                    const result = parseTTML(ttml);
 			                    const lines = result.lines.map(mapTTMLLyric);
@@ -3325,16 +3705,7 @@
 	                    console.log("[LyricsRenderer] Loaded lines:", lines.length);
                 } catch (e) {
                     console.error("[LyricsRenderer] TTML Parse Error:", e);
-                    lyricPlayer.setLyricLines([]);
-                    lineTimingOnlyMode = false;
-                    lyricPlayer.isNonDynamic = false;
-                    lyricPlayer.getElement().classList.remove("fs-line-timing-only");
-                    lastTTML = "";
-                    parallelEmphasisDiagnosticsSourceLines = [];
-                    parallelEmphasisDiagnosticPairs = [];
-                    lastParallelEmphasisLineState.clear();
-                    lastParallelEmphasisPairState.clear();
-                    clearFullscreenCompletedHighlightState();
+                    clearRendererState("setLyrics-parse-error");
                     console.log("[LyricsRenderer] Cleared lyrics due to parse error");
                 }
             },
@@ -3677,12 +4048,26 @@
 	                } catch (e) {
 	                    console.error("[LyricsRenderer] Config Error:", e);
 	                }
-	            }
+	            },
+
+            clearState: () => clearRendererState("bridge-clearState"),
+
+            destroy: () => destroyRendererState(),
+
+            collectDiagnostics: (label = "") => {
+                const diagnostics = collectRendererDiagnostics(label);
+                console.log(`[LyricsRenderer][Diagnostics] ${label} ${JSON.stringify(diagnostics)}`);
+                return diagnostics;
+            },
         };
 
         // Animation Loop
         let lastTime = performance.now();
         function animate(time) {
+            if (rendererRuntime.destroyed) {
+                rendererRuntime.animationFrameRequestId = 0;
+                return;
+            }
             const delta = time - lastTime;
             lastTime = time;
             if (externalIsPlaying) {
@@ -3696,9 +4081,9 @@
                 }
             }
             lyricPlayer.update(delta);
-            requestAnimationFrame(animate);
+            rendererRuntime.animationFrameRequestId = requestAnimationFrame(animate);
         }
-        requestAnimationFrame(animate);
+        rendererRuntime.animationFrameRequestId = requestAnimationFrame(animate);
 
         // Notify bridge that renderer is ready (after LyricsRenderer defined)
         if (window.AMLL && typeof window.AMLL._onRendererReady === "function") {

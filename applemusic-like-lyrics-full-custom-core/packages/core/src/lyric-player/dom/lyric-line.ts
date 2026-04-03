@@ -336,9 +336,20 @@ export class LyricLineEl extends LyricLineBase {
 	// private _hide = true;
 	private _prevParentEl: HTMLElement;
 	private lastStyle = "";
+	private pauseWordAnimations() {
+		for (const word of this.splittedWords) {
+			for (const animation of word.elementAnimations) {
+				animation.pause();
+			}
+			for (const animation of word.maskAnimations) {
+				animation.pause();
+			}
+		}
+	}
 	show() {
 		// this._hide = false;
-		if (!this.element.parentElement) {
+		const wasDetached = !this.element.parentElement;
+		if (wasDetached) {
 			this._prevParentEl.appendChild(this.element);
 			this.lyricPlayer.resizeObserver.observe(this.element);
 		}
@@ -346,6 +357,9 @@ export class LyricLineEl extends LyricLineBase {
 			this.rebuildElement();
 			this.built = true;
 			this.updateMaskImageSync();
+		} else if (wasDetached && this.isEnabled) {
+			const isPlayerRunning = this.lyricPlayer.getIsPlaying?.() ?? true;
+			void this.enable(this.lyricPlayer.getCurrentTime(), isPlayerRunning);
 		}
 		this.rebuildStyle();
 	}
@@ -355,10 +369,7 @@ export class LyricLineEl extends LyricLineBase {
 			this._prevParentEl.removeChild(this.element);
 			this.lyricPlayer.resizeObserver.unobserve(this.element);
 		}
-		if (this.built) {
-			this.disposeElements();
-			this.built = false;
-		}
+		this.pauseWordAnimations();
 	}
 	private rebuildStyle() {
 		let style = "";

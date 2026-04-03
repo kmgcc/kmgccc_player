@@ -114,7 +114,7 @@
     // AMLL namespace
     window.AMLL = {
         version: '1.0.0',
-        capabilities: ['ttml', 'lrc', 'seek', 'clearState', 'destroy'],
+        capabilities: ['ttml', 'lrc', 'seek', 'clearState', 'destroy', 'diagnostics'],
 
         /**
          * Set TTML lyrics text
@@ -199,8 +199,9 @@
 
             // Notify renderer to clear its state if available
             if (window.LyricsRenderer && typeof window.LyricsRenderer.clearState === 'function') {
-                window.LyricsRenderer.clearState();
+                return window.LyricsRenderer.clearState();
             }
+            return { status: "renderer-clear-missing" };
         },
 
         /**
@@ -214,8 +215,25 @@
 
             // Notify renderer to destroy if available
             if (window.LyricsRenderer && typeof window.LyricsRenderer.destroy === 'function') {
-                window.LyricsRenderer.destroy();
+                return window.LyricsRenderer.destroy();
             }
+            return { status: "renderer-destroy-missing" };
+        },
+
+        collectDiagnostics: function(label) {
+            const rendererDiagnostics =
+                window.LyricsRenderer && typeof window.LyricsRenderer.collectDiagnostics === 'function'
+                    ? window.LyricsRenderer.collectDiagnostics(label)
+                    : null;
+            const bridgeDiagnostics = {
+                label: label || '',
+                bridgeReady: isReady,
+                pendingBridgeCalls: pendingCalls.length,
+                capabilities: window.AMLL.capabilities.slice(),
+                rendererDiagnostics,
+            };
+            console.log("[Bridge] collectDiagnostics", bridgeDiagnostics);
+            return bridgeDiagnostics;
         },
 
         /**
