@@ -30,8 +30,8 @@ struct LDDCSearchSection: View {
     @State private var searchArtist = ""
     @State private var selectedMode: LDDCMode = .verbatim
     @State private var includeTranslation: Bool
-    // Default platforms: QQ + Kugou + Netease (as requested).
-    @State private var selectedSources: Set<LDDCSource> = [.QM, .KG, .NE]
+    // Default platforms: QQ + Kugou + Netease + AMLLDB.
+    @State private var selectedSources: Set<LDDCSource> = [.QM, .KG, .NE, .AMLLDB]
     @State private var lastAutoSearchToken = 0
 
     @State private var isSearching = false
@@ -51,8 +51,9 @@ struct LDDCSearchSection: View {
     @State private var stripExtraInfo = false
 
     private let client = LDDCClient()
+    private let amlldbService = AMLLDBService.shared
     private let panelMaxWidth: CGFloat = 380
-    private let visibleSources: [LDDCSource] = [.QM, .KG, .NE]
+    private let visibleSources: [LDDCSource] = [.QM, .KG, .NE, .AMLLDB]
 
     init(
         track: Track,
@@ -605,19 +606,31 @@ struct LDDCSearchSection: View {
         editableTrans = ""
 
         do {
-            let response = try await client.search(
-                title: searchTitle,
-                artist: searchArtist.isEmpty ? nil : searchArtist,
-                sources: Array(selectedSources),
-                mode: selectedMode,
-                translation: includeTranslation
-            )
-            searchResults = response.results
-
-            if let errors = response.errors, !errors.isEmpty {
-                // Keep results visible; surface partial failures (e.g. NE blocked) for debugging.
-                searchError = "部分平台搜索失败：\n\(errors.joined(separator: "\n"))"
-            } else if response.results.isEmpty {
+            // Check and update AMLLDB index if needed (on first search)
+            if selectedSources.contains(.AMLLDB) {
+                _ = await amlldbService.checkAndUpdateIfNeeded()
+            }
+            
+            // Perform LDDC and AMLLDB searches in parallel
+            async let lddcTask: LDDCSearchResponse? = performLDDCSearch()
+            async let amlldbTask: [LDDCCandidate] = performAMLLDBSearch()
+            
+            let lddcResponse = await lddcTask
+            let amlldbResults = await amlldbTask
+            
+            // Merge results
+            var allResults: [LDDCCandidate] = []
+            if let lddc = lddcResponse {
+                allResults.append(contentsOf: lddc.results)
+            }
+            allResults.append(contentsOf: amlldbResults)
+            
+            // Sort by score descending
+            allResults.sort { $0.score > $1.score }
+            
+            searchResults = allResults
+            
+            if searchResults.isEmpty {
                 searchError = "未找到可用歌词"
             }
         } catch {
@@ -625,6 +638,35 @@ struct LDDCSearchSection: View {
         }
 
         isSearching = false
+    }
+    
+    private func performLDDCSearch() async -> LDDCSearchResponse? {
+        let lddcSources = selectedSources.filter { $0 != .AMLLDB }
+        guard !lddcSources.isEmpty else { return nil }
+        
+        do {
+            return try await client.search(
+                title: searchTitle,
+                artist: searchArtist.isEmpty ? nil : searchArtist,
+                sources: Array(lddcSources),
+                mode: selectedMode,
+                translation: includeTranslation
+            )
+        } catch {
+            return nil
+        }
+    }
+    
+    private func performAMLLDBSearch() async -> [LDDCCandidate] {
+        guard selectedSources.contains(.AMLLDB) else { return [] }
+        
+        let results = amlldbService.search(
+            title: searchTitle,
+            artist: searchArtist.isEmpty ? nil : searchArtist,
+            limit: 20
+        )
+        
+        return results.map { $0.toLDDCCandidate() }
     }
 
     private func selectCandidate(_ candidate: LDDCCandidate) async {
@@ -635,7 +677,14 @@ struct LDDCSearchSection: View {
         previewTrans = nil
 
         do {
-            if includeTranslation {
+            if candidate.source == "AMLLDB" {
+                // AMLLDB: Direct TTML download, no conversion needed
+                let ttml = try await amlldbService.downloadLyrics(ncmMusicId: candidate.songId)
+                previewOrig = ttml
+                previewTrans = nil
+                editableOrig = ttml
+                editableTrans = ""
+            } else if includeTranslation {
                 let (orig, trans) = try await client.fetchByIdSeparate(
                     candidate: candidate,
                     mode: selectedMode
@@ -671,8 +720,12 @@ struct LDDCSearchSection: View {
 
         do {
             let ttml: String
-
-            if includeTranslation, previewTrans != nil {
+            
+            // Check if this is an AMLLDB result (already TTML format)
+            if selectedCandidate?.source == "AMLLDB" {
+                // AMLLDB lyrics are already in TTML format
+                ttml = origLyrics
+            } else if includeTranslation, previewTrans != nil {
                 ttml = try await TTMLConverter.shared.convertToTTMLWithTranslation(
                     origLyrics: origLyrics,
                     transLyrics: editableTrans,
@@ -702,6 +755,7 @@ struct LDDCSearchSection: View {
         case .KG: return .orange
         case .NE: return .red
         case .LRCLIB: return .blue
+        case .AMLLDB: return .purple
         }
     }
 }
