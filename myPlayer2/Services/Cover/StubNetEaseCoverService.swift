@@ -31,4 +31,24 @@ final class StubNetEaseCoverService: NetEaseCoverServiceProtocol {
 
         return pngData
     }
+
+    func searchCoverCandidates(artist: String, album: String, limit: Int = 5) async throws -> [CoverCandidate] {
+        print("🌐 StubNetEaseCoverService: returning placeholder candidates for \(artist) - \(album)")
+
+        let image = NSImage(size: NSSize(width: 512, height: 512))
+        image.lockFocus()
+        NSColor.systemBlue.withAlphaComponent(0.15).setFill()
+        NSBezierPath(rect: NSRect(origin: .zero, size: image.size)).fill()
+        image.unlockFocus()
+
+        guard
+            let tiffData = image.tiffRepresentation,
+            let bitmap = NSBitmapImageRep(data: tiffData),
+            let pngData = bitmap.representation(using: .png, properties: [:])
+        else {
+            throw NetEaseCoverError.imageDownloadFailed(underlying: CoverDownloadError.invalidImageData)
+        }
+
+        return [CoverCandidate(imageData: pngData, source: .netease, sourceItemId: "stub-\(artist)-\(album)")]
+    }
 }
