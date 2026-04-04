@@ -47,9 +47,12 @@ struct BatchTrackEditSheet: View {
     @State private var isSavingCurrent = false
     @State private var isLoadingDraft = false
     @State private var processStateByTrackID: [UUID: ProcessState] = [:]
-    @State private var isFetchingCover = false
     @State private var coverFetchTask: Task<Void, Never>?
     @State private var previewLyricsVM: LyricsViewModel?
+
+    // MARK: - Cover Search Coordinator
+
+    @State private var coverCoordinator: CoverSearchCoordinator?
 
     private let amllDbURL = URL(string: "https://github.com/amll-dev/amll-ttml-db")!
     private let ttmlToolURL = URL(string: "https://amll-ttml-tool.stevexmh.net/")!
@@ -98,6 +101,11 @@ struct BatchTrackEditSheet: View {
         .onAppear {
             ensurePreviewLyricsViewModel()
             uiState.lyricsPanelSuppressedByModal = true
+            // Initialize cover coordinator with injected services
+            coverCoordinator = CoverSearchCoordinator(
+                coverDownloadService: coverDownloadService,
+                netEaseCoverService: netEaseCoverService
+            )
             guard !tracks.isEmpty else { return }
             prepareTrack(at: 0, triggerAutoSearch: true)
         }
@@ -105,6 +113,9 @@ struct BatchTrackEditSheet: View {
             uiState.lyricsPanelSuppressedByModal = false
             LyricsSurfaceManager.shared.deactivate(role: .batchPreview)
             previewLyricsVM = nil
+            coverFetchTask?.cancel()
+            coverFetchTask = nil
+            coverCoordinator?.cancelSearch()
             lyricsVM.ensureAMLLLoaded(
                 track: playerVM.currentTrack,
                 currentTime: playerVM.currentTime,
@@ -119,6 +130,19 @@ struct BatchTrackEditSheet: View {
         .onChange(of: lyricsText) { _, _ in draftDidChange() }
         .onChange(of: artworkData) { _, _ in draftDidChange() }
         .onChange(of: lyricsTimeOffsetMs) { _, _ in draftDidChange() }
+        .onChange(of: coverCoordinator?.selectedForPreview) { _, newValue in
+            // Reactively update artwork preview when coordinator selects a candidate
+            if let candidate = newValue {
+                artworkData = candidate.imageData
+                statusMessage = "封面已更新"
+                // Auto-save for batch edit
+                _ = saveCurrentTrack(
+                    showFailureMessage: true,
+                    markProcessedIfUnchanged: false,
+                    reason: "查找封面后保存"
+                )
+            }
+        }
         .fileImporter(
             isPresented: $showingArtworkPicker,
             allowedContentTypes: [.image],
@@ -322,28 +346,47 @@ struct BatchTrackEditSheet: View {
                     .buttonStyle(.bordered)
                     .clipShape(Capsule())
 
-                    HStack(spacing: 8) {
-                        Button("查找封面") {
-                            fetchCover()
-                        }
-                        .buttonStyle(.bordered)
-                        .clipShape(Capsule())
-                        .disabled(isFetchingCover)
+                    Button("查找封面") {
+                        fetchCover()
+                    }
+                    .buttonStyle(.bordered)
+                    .clipShape(Capsule())
+                    .disabled(coverCoordinator?.isLoading == true)
 
-                        if isFetchingCover {
-                            ProgressView()
-                                .controlSize(.small)
-                        }
+                    if coverCoordinator?.isLoading == true {
+                        ProgressView()
+                            .controlSize(.small)
                     }
 
                     if artworkData != nil {
                         Button("移除封面", role: .destructive) {
                             artworkData = nil
+                            coverCoordinator?.clear()
                         }
                         .buttonStyle(.bordered)
                         .tint(.red)
                         .clipShape(Capsule())
                     }
+
+                    if let error = coverCoordinator?.error {
+                        Text(error)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                // Candidate strip (appears when candidates exist)
+                if let coordinator = coverCoordinator, coordinator.hasCandidates {
+                    CoverCandidateStripView(
+                        candidates: coordinator.candidates,
+                        selectedCandidate: coordinator.selectedForPreview,
+                        onSelect: { candidate in
+                            coordinator.selectForPreview(candidate)
+                            artworkData = candidate.imageData
+                        }
+                    )
+                    .frame(maxWidth: 200)
                 }
 
                 Spacer()
@@ -528,6 +571,7 @@ struct BatchTrackEditSheet: View {
         guard tracks.indices.contains(index) else { return }
 
         currentIndex = index
+        coverCoordinator?.clear()  // Clear stale candidates from previous track
         loadTrackDraft(from: tracks[index])
         playCurrentTrackForEditing(tracks[index])
         syncAMLLPreview(reason: "切换编辑歌曲", forceLyricsReload: true)
@@ -712,53 +756,14 @@ struct BatchTrackEditSheet: View {
 
     private func fetchCover() {
         coverFetchTask?.cancel()
-        isFetchingCover = true
-
-        let currentArtist = artist
-        let currentAlbum = album
+        coverCoordinator?.clear()
 
         coverFetchTask = Task {
-            defer {
-                Task { @MainActor in
-                    isFetchingCover = false
-                    coverFetchTask = nil
-                }
-            }
-
-            do {
-                let downloadedData: Data
-
-                do {
-                    downloadedData = try await coverDownloadService.downloadCover(
-                        artist: currentArtist,
-                        album: currentAlbum,
-                        size: 1200
-                    )
-                } catch {
-                    downloadedData = try await netEaseCoverService.searchAndDownloadCover(
-                        artist: currentArtist,
-                        album: currentAlbum
-                    )
-                }
-
-                try Task.checkCancellation()
-
-                await MainActor.run {
-                    artworkData = downloadedData
-                    statusMessage = "封面已更新"
-                    _ = saveCurrentTrack(
-                        showFailureMessage: true,
-                        markProcessedIfUnchanged: false,
-                        reason: "查找封面后保存"
-                    )
-                }
-            } catch is CancellationError {
-                return
-            } catch {
-                await MainActor.run {
-                    statusMessage = "查找封面失败: \(error.localizedDescription)"
-                }
-            }
+            guard let coordinator = coverCoordinator else { return }
+            let currentArtist = artist
+            let currentAlbum = album
+            await coordinator.search(artist: currentArtist, album: currentAlbum)
+            // Note: artworkData is updated reactively via onChange
         }
     }
 
