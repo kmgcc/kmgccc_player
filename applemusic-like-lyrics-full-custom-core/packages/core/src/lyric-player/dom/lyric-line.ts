@@ -410,6 +410,10 @@ export class LyricLineEl extends LyricLineBase {
 	}
 	async pause() {
 		if (!this.isEnabled && !this.isExitingHighlight) return;
+		if (this.isExitingHighlight && !this.isEnabled) {
+			this.finishExitHighlightState();
+			return;
+		}
 		for (const word of this.splittedWords) {
 			for (const a of word.elementAnimations) {
 				a.pause();
@@ -724,10 +728,14 @@ export class LyricLineEl extends LyricLineBase {
 							mat,
 							4,
 						)} translate(${offsetX}em, ${offsetY}em)`,
-						textShadow: `0 0 ${Math.min(
-							0.3,
-							blur * 0.3,
-						)}em rgba(255, 255, 255, ${glowLevel})`,
+						// Fullscreen gets a very weak, controlled glow only
+						// Non-fullscreen keeps the original stronger glow
+						textShadow: isFullscreen
+							? `0 0 0.14em rgba(255, 255, 255, 0.12)`
+							: `0 0 ${Math.min(
+								0.3,
+								blur * 0.3,
+							)}em rgba(255, 255, 255, ${glowLevel})`,
 					};
 				});
 

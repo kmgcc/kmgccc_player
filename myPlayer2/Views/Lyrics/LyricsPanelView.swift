@@ -103,7 +103,6 @@ struct LyricsPanelView: View {
                 AMLLWebView(store: lyricsVM.webViewStore)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding(.horizontal, 24)
-                    .padding(.bottom, 12)
             }
         }
     }

@@ -39,6 +39,20 @@ struct MiniPlayerView: View {
     @State private var playPauseSymbolEffectTrigger = 0
     @State private var nextSymbolEffectTrigger = 0
     @State private var artworkImage: NSImage?
+    @State private var isPlaybackModeExpanded = false
+
+    private var playbackModeExpandedWidth: CGFloat { 168 }
+    private var playbackModeCollapsedWidth: CGFloat { 44 }
+    private var playbackModeWidth: CGFloat {
+        isPlaybackModeExpanded ? playbackModeExpandedWidth : playbackModeCollapsedWidth
+    }
+    private var layoutAnimation: Animation {
+        .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08)
+    }
+    private var trackInfoIdealWidth: CGFloat { 100 }
+    private var trackInfoMinWidth: CGFloat { 56 }
+    private var trackInfoMaxWidth: CGFloat { 136 }
+    private var progressAreaMinWidth: CGFloat { 120 }
 
     var body: some View {
         return HStack(spacing: 12) {
@@ -76,7 +90,12 @@ struct MiniPlayerView: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    .frame(width: 136, alignment: .leading)
+                    .frame(
+                        minWidth: trackInfoMinWidth,
+                        idealWidth: trackInfoIdealWidth,
+                        maxWidth: trackInfoMaxWidth,
+                        alignment: .leading
+                    )
                     .clipped()
 
                 }
@@ -84,22 +103,28 @@ struct MiniPlayerView: View {
                 .offset(x: 4, y: 0)
             }
             .buttonStyle(.plain)
+            .layoutPriority(1)
             .contextMenu {
                 nowPlayingInfoContextMenu
             }
 
             // MARK: - Controls
             controlsView
+                .layoutPriority(2)
 
             // MARK: - Playback Mode
             playbackModeView
+                .frame(width: playbackModeWidth, height: 26)
+                .layoutPriority(2)
 
             // MARK: - Progress bar (draggable + hover time labels)
             progressArea
-                .frame(minWidth: 200, maxWidth: .infinity)
+                .frame(minWidth: progressAreaMinWidth, maxWidth: .infinity)
+                .layoutPriority(0)
 
             // MARK: - Right: Volume Slider
             volumeView
+                .layoutPriority(2)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 8)
@@ -112,6 +137,7 @@ struct MiniPlayerView: View {
         )
         .contentShape(Capsule())
         .onTapGesture {}
+        .animation(layoutAnimation, value: isPlaybackModeExpanded)
         .sheet(item: $trackToEdit) { track in
             TrackEditSheet(track: track)
                 .environmentObject(themeStore)
@@ -213,9 +239,11 @@ struct MiniPlayerView: View {
     }
 
     private var playbackModeView: some View {
-        PlaybackModeSlider(
+        let isEnabled = playerVM.currentTrack != nil
+        return PlaybackModeSlider(
             mode: currentPlaybackMode,
-            isEnabled: playerVM.currentTrack != nil,
+            isEnabled: isEnabled,
+            isExpanded: isPlaybackModeExpanded,
             onSelect: { mode in
                 switch mode {
                 case .sequence:
@@ -237,7 +265,18 @@ struct MiniPlayerView: View {
                 }
             }
         )
-        .frame(width: 168, height: 26)
+        .contentShape(Capsule())
+        .onHover { hovering in
+            guard isEnabled else {
+                if isPlaybackModeExpanded {
+                    isPlaybackModeExpanded = false
+                }
+                return
+            }
+            withAnimation(layoutAnimation) {
+                isPlaybackModeExpanded = hovering
+            }
+        }
     }
 
     @ViewBuilder
@@ -518,6 +557,7 @@ struct MiniPlayerView: View {
 struct PlaybackModeSlider: View {
     let mode: PlaybackMode
     let isEnabled: Bool
+    let isExpanded: Bool
     let iconSize: CGFloat
     let selectedColor: Color
     let unselectedColor: Color
@@ -525,28 +565,33 @@ struct PlaybackModeSlider: View {
     let pillTintColor: Color?
     let pillTintBlendMode: BlendMode?
     let onSelect: (PlaybackMode) -> Void
+    let onInteraction: (() -> Void)?
     let scale: CGFloat
 
     init(
         mode: PlaybackMode,
         isEnabled: Bool,
+        isExpanded: Bool = true,
         iconSize: CGFloat = 12,
         selectedColor: Color = .primary,
         unselectedColor: Color = .secondary,
         useScreenBlend: Bool = false,
         pillTintColor: Color? = nil,
         pillTintBlendMode: BlendMode? = nil,
+        onInteraction: (() -> Void)? = nil,
         scale: CGFloat = 1.0,
         onSelect: @escaping (PlaybackMode) -> Void
     ) {
         self.mode = mode
         self.isEnabled = isEnabled
+        self.isExpanded = isExpanded
         self.iconSize = iconSize
         self.selectedColor = selectedColor
         self.unselectedColor = unselectedColor
         self.useScreenBlend = useScreenBlend
         self.pillTintColor = pillTintColor
         self.pillTintBlendMode = pillTintBlendMode
+        self.onInteraction = onInteraction
         self.scale = scale
         self.onSelect = onSelect
     }
@@ -567,6 +612,15 @@ struct PlaybackModeSlider: View {
         }
     }
 
+    private func index(for mode: PlaybackMode) -> Int {
+        switch mode {
+        case .shuffle: return 0
+        case .sequence: return 1
+        case .repeatOne: return 2
+        case .stopAfterTrack: return 3
+        }
+    }
+
     private func modeForIndex(_ index: Int) -> PlaybackMode {
         switch index {
         case 0: return .shuffle
@@ -576,13 +630,34 @@ struct PlaybackModeSlider: View {
         }
     }
 
+    private var visibleModes: [PlaybackMode] {
+        if isExpanded {
+            return [.shuffle, .sequence, .repeatOne, .stopAfterTrack]
+        }
+        return [mode]
+    }
+
+    private func symbol(for mode: PlaybackMode) -> String {
+        switch mode {
+        case .shuffle:
+            return "shuffle"
+        case .sequence:
+            return "list.bullet"
+        case .repeatOne:
+            return "repeat.1"
+        case .stopAfterTrack:
+            return "pause.circle"
+        }
+    }
+
     var body: some View {
         GeometryReader { geometry in
             let inset: CGFloat = 2 * scale
             let totalWidth = geometry.size.width - inset * 2
-            let segmentWidth = max(1, totalWidth / 4)
-            let baseOffset = CGFloat(modeIndex) * segmentWidth
-            let effectiveDrag = isDragging ? dragTranslation : 0
+            let segmentCount = max(1, visibleModes.count)
+            let segmentWidth = max(1, totalWidth / CGFloat(segmentCount))
+            let baseOffset = isExpanded ? CGFloat(modeIndex) * segmentWidth : 0
+            let effectiveDrag = (isDragging && isExpanded) ? dragTranslation : 0
             let knobOffset = clampOffset(
                 baseOffset + effectiveDrag, maxValue: totalWidth - segmentWidth)
             let snap = Animation.spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08)
@@ -606,29 +681,16 @@ struct PlaybackModeSlider: View {
                     .animation((reduceMotion || isDragging) ? .none : snap, value: modeIndex)
 
                 HStack(spacing: 0) {
-                    segmentButton(
-                        systemImage: "shuffle", index: 0, isSelected: modeIndex == 0,
-                        width: segmentWidth
-                    ) {
-                        selectMode(.shuffle, snap: snap)
-                    }
-                    segmentButton(
-                        systemImage: "list.bullet", index: 1, isSelected: modeIndex == 1,
-                        width: segmentWidth
-                    ) {
-                        selectMode(.sequence, snap: snap)
-                    }
-                    segmentButton(
-                        systemImage: "repeat.1", index: 2, isSelected: modeIndex == 2,
-                        width: segmentWidth
-                    ) {
-                        selectMode(.repeatOne, snap: snap)
-                    }
-                    segmentButton(
-                        systemImage: "pause.circle", index: 3, isSelected: modeIndex == 3,
-                        width: segmentWidth
-                    ) {
-                        selectMode(.stopAfterTrack, snap: snap)
+                    ForEach(Array(visibleModes.enumerated()), id: \.offset) { pair in
+                        let modeValue = pair.element
+                        segmentButton(
+                            systemImage: symbol(for: modeValue),
+                            index: index(for: modeValue),
+                            isSelected: mode == modeValue,
+                            width: segmentWidth
+                        ) {
+                            selectMode(modeValue, snap: snap)
+                        }
                     }
                 }
                 .padding(.horizontal, inset)
@@ -637,10 +699,14 @@ struct PlaybackModeSlider: View {
             .simultaneousGesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
+                        guard isExpanded else { return }
+                        onInteraction?()
                         isDragging = true
                         dragTranslation = value.translation.width
                     }
                     .onEnded { value in
+                        guard isExpanded else { return }
+                        onInteraction?()
                         let raw = baseOffset + value.translation.width
                         let index = Int(round(raw / segmentWidth))
                         dragTranslation = 0
@@ -662,6 +728,7 @@ struct PlaybackModeSlider: View {
     }
 
     private func selectMode(_ newMode: PlaybackMode, snap: Animation) {
+        onInteraction?()
         if reduceMotion {
             var tx = Transaction()
             tx.disablesAnimations = true

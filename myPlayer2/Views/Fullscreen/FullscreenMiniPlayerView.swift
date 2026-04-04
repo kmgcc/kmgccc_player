@@ -14,6 +14,10 @@ import SwiftUI
 struct FullscreenMiniPlayerView: View {
     // Scale factor for responsive sizing at different resolutions
     var scale: CGFloat = 1.0
+    var onInteraction: () -> Void = {}
+    var onHoverStateChanged: (Bool) -> Void = { _ in }
+    var onProgressDraggingChanged: (Bool) -> Void = { _ in }
+    var onPlaybackModeExpandedChanged: (Bool) -> Void = { _ in }
     
     private let fixedBarHeight: CGFloat = 60
     private static let fullscreenThemeMinLightness: CGFloat = 0.90
@@ -35,6 +39,7 @@ struct FullscreenMiniPlayerView: View {
     @State private var playPauseSymbolEffectTrigger = 0
     @State private var nextSymbolEffectTrigger = 0
     @State private var artworkImage: NSImage?
+    @State private var isPlaybackModeExpanded = false
 
     // Computed properties based on settings and scale
     private var barHeight: CGFloat { fixedBarHeight * scale }
@@ -46,7 +51,11 @@ struct FullscreenMiniPlayerView: View {
     // Layout constants scaled
     private var trackInfoWidth: CGFloat { 196 * scale }
     private var controlsWidth: CGFloat { 174 * scale }
-    private var playbackModeWidth: CGFloat { 178 * scale }
+    private var playbackModeExpandedWidth: CGFloat { 178 * scale }
+    private var playbackModeCollapsedWidth: CGFloat { 56 * scale }
+    private var playbackModeWidth: CGFloat {
+        isPlaybackModeExpanded ? playbackModeExpandedWidth : playbackModeCollapsedWidth
+    }
     private var minProgressWidth: CGFloat { 320 * scale }
     private var hStackSpacing: CGFloat { 18 * scale }
     private var hPadding: CGFloat { 20 * scale }
@@ -62,6 +71,9 @@ struct FullscreenMiniPlayerView: View {
     private var progressAreaHPadding: CGFloat { 8 * scale }
     private var progressTimeSpacing: CGFloat { 10 * scale }
     private var progressYOffset: CGFloat { 13 * scale }
+    private var layoutAnimation: Animation {
+        .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08)
+    }
 
     var body: some View {
         HStack(spacing: hStackSpacing) {
@@ -90,8 +102,19 @@ struct FullscreenMiniPlayerView: View {
             colorScheme: colorScheme,
             accentColor: themeStore.usesFallbackThemeColor ? nil : themeStore.accentColor,
             prominence: .prominent,
+            materialStyle: miniPlayerGlassMaterialStyle,
             isFloating: true
         )
+        .onHover { hovering in
+            onHoverStateChanged(hovering)
+            if hovering {
+                onInteraction()
+            }
+        }
+        .animation(layoutAnimation, value: isPlaybackModeExpanded)
+        .onChange(of: isPlaybackModeExpanded) { _, expanded in
+            onPlaybackModeExpandedChanged(expanded)
+        }
         .task(id: currentArtworkTaskKey) {
             await loadArtworkThumbnail()
         }
@@ -157,6 +180,7 @@ struct FullscreenMiniPlayerView: View {
         return HStack(spacing: controlsHSpacing) {
             // Previous
             Button {
+                onInteraction()
                 previousSymbolEffectTrigger += 1
                 playerVM.previous()
             } label: {
@@ -173,6 +197,7 @@ struct FullscreenMiniPlayerView: View {
 
             // Play/Pause
             Button {
+                onInteraction()
                 playPauseSymbolEffectTrigger += 1
                 playerVM.togglePlayPause()
             } label: {
@@ -189,6 +214,7 @@ struct FullscreenMiniPlayerView: View {
 
             // Next
             Button {
+                onInteraction()
                 nextSymbolEffectTrigger += 1
                 playerVM.next()
             } label: {
@@ -213,15 +239,18 @@ struct FullscreenMiniPlayerView: View {
     }
 
     private var playbackModeView: some View {
-        PlaybackModeSlider(
+        let isEnabled = playerVM.currentTrack != nil
+        return PlaybackModeSlider(
             mode: currentPlaybackMode,
-            isEnabled: playerVM.currentTrack != nil,
+            isEnabled: isEnabled,
+            isExpanded: isPlaybackModeExpanded,
             iconSize: 16 * scale,
             selectedColor: controlPrimaryColor,
             unselectedColor: controlPrimaryColor.opacity(0.62),
             useScreenBlend: true,
             pillTintColor: themeStore.accentColor,
             pillTintBlendMode: .normal,
+            onInteraction: onInteraction,
             scale: scale,
             onSelect: { mode in
                 switch mode {
@@ -245,6 +274,21 @@ struct FullscreenMiniPlayerView: View {
             }
         )
         .frame(height: 36 * scale)
+        .contentShape(Capsule())
+        .onHover { hovering in
+            guard isEnabled else {
+                if isPlaybackModeExpanded {
+                    isPlaybackModeExpanded = false
+                }
+                return
+            }
+            if hovering {
+                onInteraction()
+            }
+            withAnimation(layoutAnimation) {
+                isPlaybackModeExpanded = hovering
+            }
+        }
     }
 
     private var progressArea: some View {
@@ -256,15 +300,22 @@ struct FullscreenMiniPlayerView: View {
             progress: progressDisplayTime,
             duration: playerVM.duration,
             onSeek: { seekTime in
+                onInteraction()
                 dragProgress = seekTime
             },
             onDragStart: {
+                onInteraction()
                 isDragging = true
+                onProgressDraggingChanged(true)
             },
             onDragEnd: {
+                onInteraction()
                 playerVM.seek(to: dragProgress)
                 isDragging = false
-            }
+                onProgressDraggingChanged(false)
+            },
+            onInteraction: onInteraction,
+            onDragStateChanged: onProgressDraggingChanged
         )
     }
 
@@ -377,6 +428,15 @@ struct FullscreenMiniPlayerView: View {
 
     private var controlDisabledColor: Color {
         Color.secondary.opacity(0.5)
+    }
+
+    private var miniPlayerGlassMaterialStyle: LiquidGlassPillMaterialStyle {
+        switch settings.fullscreenMiniPlayerGlassMaterial {
+        case .clear:
+            return .clear
+        case .darkGlass:
+            return .darkGlass
+        }
     }
 
     private var fullscreenThemeAccentColor: NSColor {

@@ -73,6 +73,10 @@ struct SettingsView: View {
     @State private var fullscreenArtworkScale: Double = AppSettings.shared.fullscreenArtworkScale
     @State private var fullscreenLyricsFontScale: Double = AppSettings.shared.fullscreenLyricsFontScale
     @State private var fullscreenDimmingIntensity: Double = AppSettings.shared.fullscreenDimmingIntensity
+    @State private var fullscreenMiniPlayerAutoHideSeconds: Double = AppSettings.shared
+        .fullscreenMiniPlayerAutoHideSeconds
+    @State private var fullscreenMiniPlayerGlassMaterial: AppSettings.FullscreenMiniPlayerGlassMaterial =
+        AppSettings.shared.fullscreenMiniPlayerGlassMaterial
     @State private var fullscreenLyricsFontNameZh: String = AppSettings.shared
         .fullscreenLyricsFontNameZh
     @State private var fullscreenLyricsFontNameEn: String = AppSettings.shared
@@ -107,6 +111,17 @@ struct SettingsView: View {
         ("settings.lyrics.weight_semibold", 600),
         ("settings.lyrics.weight_bold", 700),
     ]
+    private let fullscreenMiniPlayerAutoHideOptions: [(title: String, seconds: Double)] = [
+        ("关闭自动隐藏", 0),
+        ("2 秒", 2),
+        ("4 秒", 4),
+        ("6 秒", 6),
+    ]
+    private let fullscreenMiniPlayerGlassMaterialOptions:
+        [(title: String, material: AppSettings.FullscreenMiniPlayerGlassMaterial)] = [
+            ("clear", .clear),
+            ("dark glass", .darkGlass),
+        ]
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
@@ -374,6 +389,12 @@ struct SettingsView: View {
             .onChange(of: fullscreenLyricsFontScale) { _, val in
                 AppSettings.shared.fullscreenLyricsFontScale = val
             }
+            .onChange(of: fullscreenMiniPlayerAutoHideSeconds) { _, val in
+                AppSettings.shared.fullscreenMiniPlayerAutoHideSeconds = val
+            }
+            .onChange(of: fullscreenMiniPlayerGlassMaterial) { _, val in
+                AppSettings.shared.fullscreenMiniPlayerGlassMaterial = val
+            }
             .onChange(of: fullscreenLyricsFontNameZh) { _, val in
                 AppSettings.shared.fullscreenLyricsFontNameZh = val
             }
@@ -586,6 +607,68 @@ struct SettingsView: View {
                         set: { _ in settings.fullscreen.toggleMiniPlayerSpectrum() }
                     ))
                     .toggleStyle(.switch)
+
+                    Divider()
+
+                    HStack(spacing: 8) {
+                        Text("Mini Player 自动隐藏")
+                        Spacer()
+                        HStack(spacing: 4) {
+                            ForEach(fullscreenMiniPlayerAutoHideOptions, id: \.seconds) { option in
+                                let selected = fullscreenMiniPlayerAutoHideSeconds == option.seconds
+                                Button {
+                                    fullscreenMiniPlayerAutoHideSeconds = option.seconds
+                                } label: {
+                                    Text(option.title)
+                                        .font(.system(size: 11, weight: selected ? .medium : .regular))
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 4)
+                                }
+                                .buttonStyle(.plain)
+                                .background(
+                                    Capsule()
+                                        .fill(selected ? themeStore.accentColor.opacity(0.18) : Color.clear)
+                                )
+                                .foregroundStyle(selected ? themeStore.accentColor : .secondary)
+                            }
+                        }
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 3)
+                        .background(
+                            Capsule()
+                                .fill(Color.secondary.opacity(0.08))
+                        )
+                    }
+
+                    HStack(spacing: 8) {
+                        Text("Mini Player 材质")
+                        Spacer()
+                        HStack(spacing: 4) {
+                            ForEach(fullscreenMiniPlayerGlassMaterialOptions, id: \.material) { option in
+                                let selected = fullscreenMiniPlayerGlassMaterial == option.material
+                                Button {
+                                    fullscreenMiniPlayerGlassMaterial = option.material
+                                } label: {
+                                    Text(option.title)
+                                        .font(.system(size: 11, weight: selected ? .medium : .regular))
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 4)
+                                }
+                                .buttonStyle(.plain)
+                                .background(
+                                    Capsule()
+                                        .fill(selected ? themeStore.accentColor.opacity(0.18) : Color.clear)
+                                )
+                                .foregroundStyle(selected ? themeStore.accentColor : .secondary)
+                            }
+                        }
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 3)
+                        .background(
+                            Capsule()
+                                .fill(Color.secondary.opacity(0.08))
+                        )
+                    }
 
 //                    Text("开启后，全屏 MiniPlayer 右侧会显示频谱可视化。与皮肤自带的频谱/LED电平表互斥。")
 //                        .font(.caption)
@@ -1434,6 +1517,8 @@ struct SettingsView: View {
     }
 
     private func syncFullscreenLyricsStateFromSettings() {
+        fullscreenMiniPlayerAutoHideSeconds = AppSettings.shared.fullscreenMiniPlayerAutoHideSeconds
+        fullscreenMiniPlayerGlassMaterial = AppSettings.shared.fullscreenMiniPlayerGlassMaterial
         fullscreenLyricsFontNameZh = AppSettings.shared.fullscreenLyricsFontNameZh
         fullscreenLyricsFontNameEn = AppSettings.shared.fullscreenLyricsFontNameEn
         fullscreenLyricsTranslationFontName = AppSettings.shared.fullscreenLyricsTranslationFontName

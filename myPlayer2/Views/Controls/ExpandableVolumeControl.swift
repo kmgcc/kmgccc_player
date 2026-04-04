@@ -15,6 +15,10 @@ struct ExpandableVolumeControl: View {
     @Binding var volume: Double
     @Binding var isExpanded: Bool
     var scale: CGFloat = 1.0
+    var onInteraction: () -> Void = {}
+    var onHoverStateChanged: (Bool) -> Void = { _ in }
+    var onAdjustingChanged: (Bool) -> Void = { _ in }
+    var materialStyle: LiquidGlassPillMaterialStyle = .clear
     
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
@@ -46,10 +50,15 @@ struct ExpandableVolumeControl: View {
             colorScheme: colorScheme,
             accentColor: nil as Color?,
             prominence: .standard,
+            materialStyle: materialStyle,
             isFloating: true
         )
         .onHover { hovering in
             isExpanded = hovering
+            onHoverStateChanged(hovering)
+            if hovering {
+                onInteraction()
+            }
         }
         .animation(expandAnimation, value: isExpanded)
     }
@@ -69,7 +78,15 @@ struct ExpandableVolumeControl: View {
     }
 
     private var sliderView: some View {
-        Slider(value: $volume, in: 0...1)
+        Slider(
+            value: $volume,
+            in: 0...1
+        ) { editing in
+            onAdjustingChanged(editing)
+            if editing {
+                onInteraction()
+            }
+        }
             .controlSize(.regular)
             .tint(controlPrimaryColor)
             .compositingGroup()
@@ -79,6 +96,9 @@ struct ExpandableVolumeControl: View {
             .opacity(isExpanded ? 1 : 0)
             .allowsHitTesting(isExpanded)
             .accessibilityHidden(!isExpanded)
+            .onChange(of: volume) { _, _ in
+                onInteraction()
+            }
     }
 
     private var currentWidth: CGFloat {
@@ -109,6 +129,7 @@ struct ExpandableVolumeControl: View {
     }
 
     private func toggleMute() {
+        onInteraction()
         if volume > 0 {
             UserDefaults.standard.set(volume, forKey: "_expandableVolume_lastVolume")
             volume = 0

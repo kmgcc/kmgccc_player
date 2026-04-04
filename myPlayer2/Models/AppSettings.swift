@@ -530,6 +530,13 @@ public final class AppSettings {
         static let lyricsTranslationFontSize: Double = 18
     }
 
+    enum FullscreenMiniPlayerGlassMaterial: String, CaseIterable, Identifiable {
+        case clear
+        case darkGlass
+
+        var id: String { rawValue }
+    }
+
     /// Fullscreen player artwork scale (0.8 to 1.5, default 1.20)
     @ObservationIgnored
     @AppStorage("fullscreenArtworkScale") var fullscreenArtworkScale: Double =
@@ -549,6 +556,26 @@ public final class AppSettings {
     @ObservationIgnored
     @AppStorage("fullscreenMiniplayerHeight") var fullscreenMiniplayerHeight: Double =
         FullscreenDefaults.miniplayerHeight
+
+    /// Fullscreen mini player auto-hide delay in seconds. `0` disables auto-hide.
+    @ObservationIgnored
+    @AppStorage("fullscreenMiniPlayerAutoHideSeconds") var fullscreenMiniPlayerAutoHideSeconds: Double = 4
+
+    @ObservationIgnored
+    @AppStorage("fullscreenMiniPlayerGlassMaterial") private var fullscreenMiniPlayerGlassMaterialRaw: String =
+        FullscreenMiniPlayerGlassMaterial.clear.rawValue
+
+    var fullscreenMiniPlayerGlassMaterial: FullscreenMiniPlayerGlassMaterial {
+        get {
+            access(keyPath: \.fullscreenMiniPlayerGlassMaterial)
+            return FullscreenMiniPlayerGlassMaterial(rawValue: fullscreenMiniPlayerGlassMaterialRaw) ?? .clear
+        }
+        set {
+            withMutation(keyPath: \.fullscreenMiniPlayerGlassMaterial) {
+                fullscreenMiniPlayerGlassMaterialRaw = newValue.rawValue
+            }
+        }
+    }
 
     /// Fullscreen lyrics font name (Chinese/CJK).
     var fullscreenLyricsFontNameZh: String {

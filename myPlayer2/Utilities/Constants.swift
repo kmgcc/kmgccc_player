@@ -26,6 +26,7 @@ enum Constants {
         static let lyricsPanelMinWidth: CGFloat = 280
         static let lyricsPanelMaxWidth: CGFloat = 560
         static let lyricsPanelDefaultWidth: CGFloat = 320
+        static let detailContentMinWidth: CGFloat = 620
 
         static let miniPlayerHeight: CGFloat = 50
         static let miniPlayerPadding: CGFloat = 16

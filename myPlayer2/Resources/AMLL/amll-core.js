@@ -19945,13 +19945,18 @@ let QN = class extends $A {
     }
   }
   async pause() {
-    if (!(!this.isEnabled && !this.isExitingHighlight))
+    if (!(!this.isEnabled && !this.isExitingHighlight)) {
+      if (this.isExitingHighlight && !this.isEnabled) {
+        this.finishExitHighlightState();
+        return;
+      }
       for (const A of this.splittedWords) {
         for (const I of A.elementAnimations)
           I.pause();
         for (const I of A.maskAnimations)
           I.pause();
       }
+    }
   }
   setMaskAnimationState(A = 0) {
     const I = A - this.lyricLine.startTime;
@@ -20125,7 +20130,9 @@ let QN = class extends $A {
             X,
             4
           )} translate(${p}em, ${V}em)`,
-          textShadow: `0 0 ${Math.min(
+          // Fullscreen gets a very weak, controlled glow only
+          // Non-fullscreen keeps the original stronger glow
+          textShadow: N ? "0 0 0.14em rgba(255, 255, 255, 0.12)" : `0 0 ${Math.min(
             0.3,
             D * 0.3
           )}em rgba(255, 255, 255, ${T})`

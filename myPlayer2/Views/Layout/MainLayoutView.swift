@@ -55,9 +55,20 @@ struct MainLayoutView: View {
                             nowPlayingLayout
                         }
 
-                        MiniPlayerView()
-                            .padding(.horizontal, 16)
-                            .padding(.bottom, 12)
+                        GeometryReader { detailProxy in
+                            MiniPlayerView()
+                                .frame(
+                                    width: miniPlayerAvailableWidth(in: detailProxy.size.width),
+                                    alignment: .leading
+                                )
+                                .padding(.leading, GlassStyleTokens.miniPlayerHorizontalPadding)
+                                .padding(.bottom, 12)
+                                .frame(
+                                    maxWidth: .infinity,
+                                    maxHeight: .infinity,
+                                    alignment: .bottomLeading
+                                )
+                        }
                     }
                     .ignoresSafeArea(.container, edges: .top)
                     .overlay {
@@ -100,15 +111,11 @@ struct MainLayoutView: View {
                 // Only load when state is .loading (initial or refresh).
                 // This prevents re-execution when view re-appears due to sheet dismiss.
                 guard libraryVM.state == .loading else {
-                    print("[Lifecycle] MainLayoutView.task - skipped (already loaded)")
                     return
                 }
-                print("[Lifecycle] MainLayoutView.task - libraryVM id: \(ObjectIdentifier(libraryVM)), state: \(libraryVM.state)")
                 await libraryVM.load()
-                print("[Lifecycle] MainLayoutView.task - libraryVM.load() DONE, playlists count: \(libraryVM.playlists.count)")
             }
             .onAppear {
-                print("[Lifecycle] MainLayoutView.onAppear")
                 columnVisibility = uiState.sidebarVisible ? .all : .detailOnly
                 updateWindowWidth(proxy.size.width)
             }
@@ -142,12 +149,13 @@ struct MainLayoutView: View {
         Color.clear
             .frame(width: 12)
             .contentShape(Rectangle())
-            .overlay(
+            .overlay(alignment: .leading) {
                 Rectangle()
                     .fill(Color.primary.opacity(isHoveringResizeHandle ? 0.1 : 0))
                     .frame(width: 1)
+                    .offset(x: -0.5)
                     .allowsHitTesting(false)
-            )
+            }
             .highPriorityGesture(
                 DragGesture(minimumDistance: 1, coordinateSpace: .local)
                     .onChanged { value in
@@ -195,8 +203,9 @@ struct MainLayoutView: View {
 
     private func currentLyricsWidthBounds() -> ClosedRange<CGFloat> {
         let maxWidth = dynamicLyricsMaxWidth()
-        let minWidth = min(Constants.Layout.lyricsPanelMinWidth, maxWidth)
-        return minWidth...maxWidth
+        let minWidth = Constants.Layout.lyricsPanelMinWidth
+        let resolvedMax = max(minWidth, maxWidth)
+        return minWidth...resolvedMax
     }
 
     private var lyricsToggleButton: some View {
@@ -240,39 +249,55 @@ struct MainLayoutView: View {
     // MARK: - Layout Variants
 
     private var libraryLayout: some View {
-        HStack(spacing: 0) {
-            PlaylistDetailView {
-                lyricsToggleButton
-            }
-            .frame(maxWidth: .infinity)
-            .layoutPriority(1)
+        GeometryReader { proxy in
+            let mainContentWidth = resolvedMainContentWidth(in: proxy.size.width)
+            let lyricsWidth = resolvedLyricsPanelWidth(in: proxy.size.width)
 
-            if shouldShowMainLyricsPanel {
-                lyricsPanelView
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
+            HStack(spacing: 0) {
+                PlaylistDetailView {
+                    lyricsToggleButton
+                }
+                .frame(width: mainContentWidth, alignment: .topLeading)
+                .frame(maxHeight: .infinity, alignment: .topLeading)
+                .layoutPriority(1)
+
+                if shouldShowMainLyricsPanel {
+                    lyricsPanelView(width: lyricsWidth)
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                }
             }
+            .frame(width: proxy.size.width, alignment: .topLeading)
+            .frame(maxHeight: .infinity, alignment: .topLeading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .id("library-layout")
     }
 
     private var nowPlayingLayout: some View {
-        ZStack(alignment: .topTrailing) {
-            NowPlayingHostView()
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        GeometryReader { proxy in
+            let mainContentWidth = resolvedMainContentWidth(in: proxy.size.width)
+            let lyricsWidth = resolvedLyricsPanelWidth(in: proxy.size.width)
 
-            if shouldShowMainLyricsPanel {
-                lyricsPanelView
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
+            ZStack(alignment: .topLeading) {
+                NowPlayingHostView()
+                    .frame(width: mainContentWidth, alignment: .topLeading)
+                    .frame(maxHeight: .infinity, alignment: .topLeading)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+
+                if shouldShowMainLyricsPanel {
+                    lyricsPanelView(width: lyricsWidth)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
-    private var lyricsPanelView: some View {
-        MainLyricsPanelShell(width: uiState.lyricsWidth)
+    private func lyricsPanelView(width: CGFloat) -> some View {
+        MainLyricsPanelShell(width: width)
             .equatable()
-            .frame(width: uiState.lyricsWidth)
+            .frame(width: width)
             .frame(maxHeight: .infinity, alignment: .top)
             .overlay(alignment: .leading) {
                 lyricsResizeHandle
@@ -283,6 +308,32 @@ struct MainLayoutView: View {
         uiState.lyricsVisible
             && !uiState.lyricsPanelSuppressedByModal
             && !fullscreenWindowManager.isFullscreenActive
+    }
+
+    private func resolvedLyricsPanelWidth(in detailWidth: CGFloat) -> CGFloat {
+        guard shouldShowMainLyricsPanel else { return 0 }
+        let maxWidthPreservingDetail = max(
+            Constants.Layout.lyricsPanelMinWidth,
+            detailWidth - Constants.Layout.detailContentMinWidth
+        )
+        let clampedStateWidth = min(
+            uiState.lyricsWidth,
+            Constants.Layout.lyricsPanelMaxWidth,
+            maxWidthPreservingDetail
+        )
+        return max(Constants.Layout.lyricsPanelMinWidth, clampedStateWidth)
+    }
+
+    private func resolvedMainContentWidth(in detailWidth: CGFloat) -> CGFloat {
+        max(0, detailWidth - resolvedLyricsPanelWidth(in: detailWidth))
+    }
+
+    private func miniPlayerAvailableWidth(in detailWidth: CGFloat) -> CGFloat {
+        max(
+            0,
+            resolvedMainContentWidth(in: detailWidth)
+                - GlassStyleTokens.miniPlayerHorizontalPadding * 2
+        )
     }
 
     private func updateWindowWidth(_ width: CGFloat) {
@@ -296,9 +347,9 @@ struct MainLayoutView: View {
         guard windowWidth > 0 else { return defaultMax }
 
         let compactThreshold: CGFloat = 1300
-        let minMainWidth: CGFloat = 560
-        let minLyricsWidthWhenTight: CGFloat = 180
-        let interPanelSpacing: CGFloat = 8
+        let minMainWidth = Constants.Layout.detailContentMinWidth
+        let minLyricsWidthWhenTight: CGFloat = Constants.Layout.lyricsPanelMinWidth
+        let interPanelSpacing: CGFloat = 0
 
         guard windowWidth < compactThreshold else { return defaultMax }
 
