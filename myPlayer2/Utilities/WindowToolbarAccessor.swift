@@ -13,6 +13,7 @@ import SwiftUI
 struct WindowToolbarAccessor: NSViewRepresentable {
 
     let configure: (NSWindow) -> Void
+    var configureContinuously: Bool = false
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -38,8 +39,10 @@ struct WindowToolbarAccessor: NSViewRepresentable {
         // Only configure once per window instance to avoid repeated AppKit churn.
         let needsConfigure = coordinator.lastConfiguredWindow !== window
 
-        guard needsConfigure else { return }
-        coordinator.lastConfiguredWindow = window
+        guard needsConfigure || configureContinuously else { return }
+        if needsConfigure {
+            coordinator.lastConfiguredWindow = window
+        }
         configure(window)
     }
 

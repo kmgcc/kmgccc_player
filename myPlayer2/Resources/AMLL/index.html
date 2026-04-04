@@ -139,11 +139,10 @@
             contain: none !important;
             mix-blend-mode: var(--amll-cb-main-blend, plus-lighter) !important;
         }
+        /* HARD ISOLATION TEST: Base text-shadow disabled to find dominant blowout source */
         .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricMainLine_"],
         .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricMainLine_"] * {
-            text-shadow:
-                0 0 0.04em var(--amll-cb-main-glow, rgb(255, 255, 255)),
-                0 0 0.10em var(--amll-cb-main-glow, rgb(255, 255, 255)) !important;
+            text-shadow: none !important;
         }
         .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricSubLine_"],
         .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricSubLine_"] * {
@@ -548,7 +547,9 @@
             ) !important;
             mix-blend-mode: normal !important;
             opacity: 1 !important;
-            transition: color .14s ease-out !important;
+            transition:
+                opacity .34s ease-out,
+                color .14s ease-out !important;
             /* Keep per-word sweep animation, but make non-highlighted area fully transparent
                so the opaque base layer stays identical to inactive line color. */
             --bright-mask-alpha: 1 !important;
@@ -561,7 +562,9 @@
             ) !important;
             mix-blend-mode: normal !important;
             opacity: 1 !important;
-            transition: color .14s ease-out !important;
+            transition:
+                opacity .34s ease-out,
+                color .14s ease-out !important;
             --bright-mask-alpha: 1 !important;
             --dark-mask-alpha: 0 !important;
         }
@@ -570,16 +573,18 @@
                 --amll-fs-main-inactive,
                 var(--amll-inactive, var(--amll-lp-color, white))
             ) !important;
-            /* Use color instead of opacity - hide by making same as inactive color */
-            visibility: hidden !important;
+            /* Keep fullscreen exit highlight on the layer so opacity fade-out can run. */
+            visibility: visible !important;
+            opacity: 0 !important;
         }
         .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"]:not([class*="_active_"]) .amll-fs-char-active {
             color: var(
                 --amll-fs-main-inactive,
                 var(--amll-inactive, var(--amll-lp-color, white))
             ) !important;
-            /* Use color instead of opacity - hide by making same as inactive color */
-            visibility: hidden !important;
+            /* Keep fullscreen exit highlight on the layer so opacity fade-out can run. */
+            visibility: visible !important;
+            opacity: 0 !important;
         }
         /* Keep fullscreen highlight visible while completed or exiting highlight is still finishing. */
         .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][data-fs-completed-highlight="1"] .amll-fs-word-active,
@@ -589,7 +594,6 @@
                 var(--amll-active, var(--amll-lp-color, white))
             ) !important;
             visibility: visible !important;
-            opacity: 1 !important;
         }
         .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][data-fs-completed-highlight="1"] .amll-fs-char-active,
         .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][data-amll-exiting-highlight="1"] .amll-fs-char-active {
@@ -598,7 +602,13 @@
                 var(--amll-active, var(--amll-lp-color, white))
             ) !important;
             visibility: visible !important;
-            opacity: 1 !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][data-fs-highlight-state="fading"] .amll-fs-word-active,
+        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][data-fs-highlight-state="fading"] .amll-fs-char-active {
+            opacity: var(--amll-fs-highlight-fade-opacity, 0.4) !important;
+            transition:
+                opacity .36s linear,
+                color .14s ease-out !important;
         }
         /* 全屏翻译行配色 - 统一使用非高亮主歌词颜色，不跟随主行高亮 */
         .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"] > [class*="_lyricSubLine_"],
@@ -714,12 +724,25 @@
             clip-path: none !important;
             white-space: nowrap !important;
             width: max-content !important;
+            font: inherit !important;
+            line-height: inherit !important;
+            letter-spacing: inherit !important;
+            text-indent: 0 !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            background: none !important;
+            mask: none !important;
+            -webkit-mask: none !important;
+            mask-image: none !important;
+            -webkit-mask-image: none !important;
+            mix-blend-mode: normal !important;
+            filter: none !important;
         }
 
         /* Use drop-shadow filter for glow - it extends beyond element boundaries */
         .amll-lyric-player.amll-surface-fullscreen .amll-fs-glow-layer.active-glow {
             /* Use solid color instead of rgba for glow */
-            filter: drop-shadow(0 0 0.15em rgb(255, 255, 255));
+            filter: drop-shadow(0 0 0.10em rgba(255, 255, 255, 0.55));
         }
 
         .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-generic .amll-fs-glow-layer.amll-fs-cover-blur-glow-layer {
@@ -1446,15 +1469,37 @@
             });
         };
 
-        const retintGlowKeyframes = (keyframes, colorValue) => {
-            if (!Array.isArray(keyframes) || typeof colorValue !== "string" || colorValue.length === 0) {
+        const rescaleTextShadowAlpha = (textShadow, alphaMultiplier = 1) => {
+            if (typeof textShadow !== "string" || textShadow.length === 0) return textShadow;
+            if (!Number.isFinite(alphaMultiplier) || alphaMultiplier <= 0) return textShadow;
+            return textShadow.replace(/rgba?\(([^)]+)\)/gi, (match) => {
+                const sourceColor = parseRGBAColor(match);
+                if (!sourceColor) return match;
+                return formatRGBAColor({
+                    r: sourceColor.r,
+                    g: sourceColor.g,
+                    b: sourceColor.b,
+                    a: Math.max(0, Math.min(1, sourceColor.a * alphaMultiplier)),
+                }) ?? match;
+            });
+        };
+
+        const retintGlowKeyframes = (keyframes, colorValue, alphaMultiplier = 1) => {
+            if (!Array.isArray(keyframes)) {
                 return keyframes;
             }
             return keyframes.map((keyframe) => {
                 if (!keyframe || typeof keyframe !== "object") return keyframe;
                 const nextKeyframe = { ...keyframe };
                 if (typeof nextKeyframe.textShadow === "string" && nextKeyframe.textShadow.length > 0) {
-                    nextKeyframe.textShadow = recolorTextShadow(nextKeyframe.textShadow, colorValue);
+                    nextKeyframe.textShadow =
+                        typeof colorValue === "string" && colorValue.length > 0
+                            ? recolorTextShadow(nextKeyframe.textShadow, colorValue)
+                            : nextKeyframe.textShadow;
+                    nextKeyframe.textShadow = rescaleTextShadowAlpha(
+                        nextKeyframe.textShadow,
+                        alphaMultiplier,
+                    );
                 }
                 // Glow clones must never inherit the source word's visible fill/stroke/filter.
                 // Keep only the shadow animation so the overlay cannot render as a white solid glyph.
@@ -1843,8 +1888,7 @@
 
             let glowLayer = splitWord.__fsGlowLayer;
             if (!(glowLayer instanceof HTMLElement)) {
-                glowLayer = activeWordElement.cloneNode(false);
-                if (!(glowLayer instanceof HTMLElement)) return null;
+                glowLayer = document.createElement("span");
                 stackElement.appendChild(glowLayer);
                 splitWord.__fsGlowLayer = glowLayer;
             }
@@ -1863,10 +1907,46 @@
             glowLayer.style.overflow = "visible";
             glowLayer.style.contain = "none";
             glowLayer.style.whiteSpace = "nowrap";
+            glowLayer.style.display = "inline-block";
+            glowLayer.style.padding = "0";
+            glowLayer.style.margin = "0";
+            glowLayer.style.background = "none";
+            glowLayer.style.mask = "none";
+            glowLayer.style.webkitMask = "none";
+            glowLayer.style.maskImage = "none";
+            glowLayer.style.webkitMaskImage = "none";
+            glowLayer.style.clipPath = "none";
+            glowLayer.style.transform = "none";
+            glowLayer.style.filter = "none";
+            glowLayer.style.mixBlendMode = "normal";
             glowLayer.style.removeProperty("mix-blend-mode");
             glowLayer.style.removeProperty("text-shadow");
             glowLayer.style.removeProperty("filter");
-            glowLayer.textContent = activeWordElement.textContent;
+
+            // Clone the actual element structure (including per-character spans)
+            // instead of just textContent, so text-shadow follows glyph shapes
+            glowLayer.innerHTML = "";
+            const clonedStructure = activeWordElement.cloneNode(true);
+            if (clonedStructure instanceof HTMLElement) {
+                // Make all text transparent while preserving structure
+                clonedStructure.style.color = "transparent";
+                clonedStructure.style.webkitTextFillColor = "transparent";
+                clonedStructure.style.webkitTextStroke = "0 transparent";
+                // Remove any inline text-shadow from cloned children - let parent animation handle it
+                for (const child of clonedStructure.querySelectorAll("*")) {
+                    if (child instanceof HTMLElement) {
+                        child.style.color = "transparent";
+                        child.style.webkitTextFillColor = "transparent";
+                        child.style.webkitTextStroke = "0 transparent";
+                        child.style.removeProperty("text-shadow");
+                        child.style.removeProperty("filter");
+                    }
+                }
+                glowLayer.appendChild(clonedStructure);
+            } else {
+                // Fallback to textContent if clone fails
+                glowLayer.textContent = activeWordElement.textContent;
+            }
             return glowLayer;
         };
 
@@ -1898,6 +1978,9 @@
          * to appear on top of the text layer in fullscreen mode.
          */
         const installFullscreenEmphasizedGlowLayer = (splitWord) => {
+            // HARD ISOLATION TEST: Wrapper glow layer completely disabled
+            return;
+            // --- TEST DISABLED CODE BELOW ---
             if (!splitWord) return;
             const activeWordElement = splitWord?.__fsActiveWordElement;
             const stackElement = splitWord?.__fsWordStackElement;
@@ -1964,9 +2047,12 @@
                 : null;
             for (const sourceAnimation of emphasisAnimations) {
                 const cloned = cloneAnimationToElement(sourceAnimation, glowLayer, {
-                    transformKeyframes: glowThemeColor
-                        ? (keyframes) => retintGlowKeyframes(keyframes, glowThemeColor)
-                        : undefined,
+                    transformKeyframes: (keyframes) => retintGlowKeyframes(
+                        keyframes,
+                        glowThemeColor,
+                        // Lower alpha to prevent overexposure - glow should be subtle, not blinding
+                        isCoverBlurGenericGlow ? 0.28 : 0.22,
+                    ),
                 });
                 if (cloned instanceof Animation) {
                     glowAnimations.push(cloned);
@@ -1975,13 +2061,14 @@
 
             splitWord.__fsGlowAnimations = glowAnimations;
 
+            // Fullscreen glow layer must not keep the original emphasis glow running
+            // on the source word, otherwise the untouched AMLL glow stacks underneath
+            // the cloned glow animations and blows out visually.
+            // Cancel original emphasis animations for ALL fullscreen modes, not just cover-blur.
+            for (const animation of emphasisAnimations) {
+                cancelAnimationSafely(animation);
+            }
             if (isCoverBlurGenericGlow) {
-                // Cover-blur generic mode must not keep the original emphasis glow running
-                // on the source word, otherwise the untouched AMLL glow stacks underneath
-                // our retinted clone and still blows out visually.
-                for (const animation of emphasisAnimations) {
-                    cancelAnimationSafely(animation);
-                }
                 activeWordElement.style.setProperty("text-shadow", "none", "important");
             } else {
                 activeWordElement.style.textShadow = "none";
@@ -2115,6 +2202,17 @@
         };
 
         let patchFullscreenLastProcessedTime = -1;
+        const updateFullscreenFadingHighlightState = () => {
+            if (!Array.isArray(lyricPlayer.currentLyricLineObjects)) return;
+
+            for (let lineIdx = 0; lineIdx < lyricPlayer.currentLyricLineObjects.length; lineIdx++) {
+                const lineObj = lyricPlayer.currentLyricLineObjects[lineIdx];
+                const lineElement = lineObj?.element;
+                if (!(lineElement instanceof HTMLElement)) continue;
+                delete lineElement.dataset.fsHighlightState;
+                lineElement.style.removeProperty("--amll-fs-highlight-fade-opacity");
+            }
+        };
         const patchFullscreenLineOpacityBehavior = () => {
             if (!fullscreenOpaqueLyricsMode) return;
             if (!Array.isArray(lyricPlayer.currentLyricLineObjects)) return;
@@ -2124,10 +2222,10 @@
                 const lineElement = lineObj?.element;
                 if (!(lineElement instanceof HTMLElement) || !lineElement.style) continue;
                 lineElement.style.setProperty("mix-blend-mode", "normal", "important");
-                lineElement.style.setProperty("opacity", "1", "important");
+                lineElement.style.removeProperty("opacity");
                 for (const child of Array.from(lineElement.children ?? [])) {
                     if (!(child instanceof HTMLElement)) continue;
-                    child.style.setProperty("opacity", "1", "important");
+                    child.style.removeProperty("opacity");
                     child.style.setProperty("mix-blend-mode", "normal", "important");
                 }
 
@@ -2182,6 +2280,7 @@
                     installFullscreenPackedElementAnimations(splitWord, lineObj);
                 }
             }
+            updateFullscreenFadingHighlightState();
         };
         let coverBlurPackedAnimationTargetMap = new WeakMap();
 
@@ -2317,6 +2416,9 @@
         };
 
         const installCoverBlurEmphasizedGlowLayer = (splitWord) => {
+            // HARD ISOLATION TEST: Wrapper glow layer completely disabled
+            return;
+            // --- TEST DISABLED CODE BELOW ---
             if (!splitWord) return;
             const activeWordElement = splitWord?.__cbActiveWordElement;
             const stackElement = splitWord?.__cbWordStackElement;
@@ -2350,20 +2452,49 @@
             glowLayer.style.overflow = "visible";
             glowLayer.style.contain = "none";
             glowLayer.style.whiteSpace = "nowrap";
-            glowLayer.textContent = activeWordElement.textContent;
+
+            // Clone the actual element structure (including per-character spans)
+            // instead of just textContent, so text-shadow follows glyph shapes
+            const clonedContent = activeWordElement.cloneNode(true);
+            if (clonedContent instanceof HTMLElement) {
+                clonedContent.style.color = "transparent";
+                clonedContent.style.webkitTextFillColor = "transparent";
+                clonedContent.style.webkitTextStroke = "0 transparent";
+                for (const child of clonedContent.querySelectorAll("*")) {
+                    if (child instanceof HTMLElement) {
+                        child.style.color = "transparent";
+                        child.style.webkitTextFillColor = "transparent";
+                        child.style.webkitTextStroke = "0 transparent";
+                        child.style.removeProperty("text-shadow");
+                        child.style.removeProperty("filter");
+                    }
+                }
+                glowLayer.appendChild(clonedContent);
+            }
 
             stackElement.appendChild(glowLayer);
             splitWord.__cbGlowLayer = glowLayer;
 
             const glowAnimations = [];
             for (const sourceAnimation of emphasisAnimations) {
-                const cloned = cloneAnimationToElement(sourceAnimation, glowLayer);
+                const cloned = cloneAnimationToElement(sourceAnimation, glowLayer, {
+                    transformKeyframes: (keyframes) => retintGlowKeyframes(
+                        keyframes,
+                        null,
+                        0.28,
+                    ),
+                });
                 if (cloned instanceof Animation) {
                     glowAnimations.push(cloned);
                 }
             }
 
             splitWord.__cbGlowAnimations = glowAnimations;
+
+            // Cancel original emphasis animations to prevent glow stacking
+            for (const animation of emphasisAnimations) {
+                cancelAnimationSafely(animation);
+            }
             activeWordElement.style.textShadow = "none";
         };
 
@@ -3365,7 +3496,7 @@
             return summary;
         };
 	        
-	        const updateFullscreenParallelHighlightState = () => {
+	            const updateFullscreenParallelHighlightState = () => {
 	            if (!Array.isArray(lyricPlayer.currentLyricLineObjects)) return;
 	            
 	            // Skip entirely for line-timing-only mode (逐行皮肤):
@@ -3423,6 +3554,7 @@
 	                    delete lineElement.dataset.fsCompletedHighlight;
 	                }
 	            }
+                updateFullscreenFadingHighlightState();
 	        };
 	        
 	        let lastKnownTimeMs = 0;

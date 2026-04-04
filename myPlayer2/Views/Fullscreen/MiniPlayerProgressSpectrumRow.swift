@@ -26,6 +26,8 @@ struct MiniPlayerProgressSpectrumRow: View {
     let onSeek: (Double) -> Void
     let onDragStart: () -> Void
     let onDragEnd: () -> Void
+    let onInteraction: () -> Void
+    let onDragStateChanged: (Bool) -> Void
     
     // Layout constants
     private var spectrumExpandedWidth: CGFloat { 100 * scale }
@@ -39,6 +41,32 @@ struct MiniPlayerProgressSpectrumRow: View {
     
     /// Unified hover state for the entire row
     @State private var isRowHovered = false
+
+    init(
+        scale: CGFloat,
+        isSpectrumEnabled: Bool,
+        isPlaying: Bool,
+        accentColor: Color?,
+        progress: Double,
+        duration: Double,
+        onSeek: @escaping (Double) -> Void,
+        onDragStart: @escaping () -> Void,
+        onDragEnd: @escaping () -> Void,
+        onInteraction: @escaping () -> Void = {},
+        onDragStateChanged: @escaping (Bool) -> Void = { _ in }
+    ) {
+        self.scale = scale
+        self.isSpectrumEnabled = isSpectrumEnabled
+        self.isPlaying = isPlaying
+        self.accentColor = accentColor
+        self.progress = progress
+        self.duration = duration
+        self.onSeek = onSeek
+        self.onDragStart = onDragStart
+        self.onDragEnd = onDragEnd
+        self.onInteraction = onInteraction
+        self.onDragStateChanged = onDragStateChanged
+    }
     
     var body: some View {
         // Single unified hover region covering the entire progress+spectrum area
@@ -56,6 +84,9 @@ struct MiniPlayerProgressSpectrumRow: View {
         // CRITICAL: Single hover handler for the entire row
         .onHover { hovering in
             isRowHovered = hovering
+            if hovering {
+                onInteraction()
+            }
         }
     }
     
@@ -89,14 +120,18 @@ struct MiniPlayerProgressSpectrumRow: View {
                 .gesture(
                     DragGesture(minimumDistance: 0)
                         .onChanged { value in
+                            onInteraction()
                             onDragStart()
+                            onDragStateChanged(true)
                             let progress = max(0, min(1, value.location.x / geometry.size.width))
                             onSeek(progress * duration)
                         }
                         .onEnded { value in
+                            onInteraction()
                             let progress = max(0, min(1, value.location.x / geometry.size.width))
                             onSeek(progress * duration)
                             onDragEnd()
+                            onDragStateChanged(false)
                         }
                 )
             }

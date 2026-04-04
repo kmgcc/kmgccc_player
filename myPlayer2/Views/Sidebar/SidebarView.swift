@@ -82,7 +82,6 @@ struct SidebarView: View {
             // Playlists List
             List {
                 Section {
-                    let _ = print("[Lifecycle] SidebarView body, libraryVM id: \(ObjectIdentifier(libraryVM)), playlists count: \(libraryVM.playlists.count)")
                     ForEach(libraryVM.playlists) { playlist in
                         Button {
                             handleSelection(.playlist(playlist.id))

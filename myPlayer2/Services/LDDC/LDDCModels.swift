@@ -26,7 +26,7 @@ enum LDDCSource: String, CaseIterable, Identifiable, Codable {
         case .QM: return "QQ音乐"
         case .KG: return "酷狗"
         case .NE: return "网易云"
-        case .AMLLDB: return "AMLL 歌词库"
+        case .AMLLDB: return "AMLL DB"
         }
     }
 }
@@ -72,6 +72,20 @@ struct LDDCCandidate: Identifiable, Codable, Equatable {
 
     var sourceEnum: LDDCSource? {
         LDDCSource(rawValue: source)
+    }
+
+    // MARK: - Score Normalization
+
+    /// Get normalized score in 0-100 range for display.
+    /// AMLLDB raw scores are 0-1, LDDC raw scores are already 0-100.
+    func normalizedScore() -> Double {
+        // AMLLDB scores are 0-1, multiply by 100
+        if source == "AMLLDB" {
+            return min(100.0, max(0.0, score * 100.0))
+        }
+
+        // LDDC scores are already 0-100, use directly
+        return min(100.0, max(0.0, score))
     }
 }
 

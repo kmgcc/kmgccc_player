@@ -788,12 +788,6 @@ final class LyricsWebViewStore: NSObject {
             guard let self else { return }
             if let error = error {
                 Log.debug("JS cleanup warning: \(error.localizedDescription)", category: .webview)
-            } else {
-                let payload = result as? String ?? String(describing: result ?? "nil")
-                Log.info(
-                    "[AMLLDiag][JS-Cleanup] role=\(self.role) trackID=\(trackID?.uuidString.prefix(8) ?? "nil") payload=\(payload)",
-                    category: .webview
-                )
             }
             completion?()
         }
@@ -1042,12 +1036,15 @@ final class LyricsWebViewStore: NSObject {
         trackID: UUID?,
         ttmlLength: Int
     ) {
+        // Diagnostics are verbose - only output when KMGCCC_AMLL_TTML_DIAGNOSTICS=1
+        guard Self.ttmlDiagnosticsEnabled else { return }
+
         let swiftPayload = makeSwiftDiagnosticsPayload(
             stage: stage,
             trackID: trackID,
             ttmlLength: ttmlLength
         )
-        Log.info(
+        Log.debug(
             "[AMLLDiag][Swift] \(compactJSONString(from: swiftPayload))",
             category: .webview
         )
@@ -1070,7 +1067,7 @@ final class LyricsWebViewStore: NSObject {
                 return
             }
             let payload = result as? String ?? String(describing: result ?? "nil")
-            Log.info("[AMLLDiag][JS] \(payload)", category: .webview)
+            Log.debug("[AMLLDiag][JS] \(payload)", category: .webview)
         }
     }
 

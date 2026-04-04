@@ -3,7 +3,8 @@
 //  myPlayer2
 //
 //  kmgccc_player - AMLLDB Service
-//  Manages local lyrics index cache and provides search functionality.
+//  Main service for AMLLDB lyrics search and download.
+//  Uses file-based index cache for reliable search availability.
 //
 
 import Foundation
@@ -11,275 +12,105 @@ import SwiftData
 import Combine
 import os.log
 
-/// Manages the AMLLDB lyrics index and provides search functionality.
-/// Handles index updates, caching, and fuzzy searching.
+/// Main service for AMLLDB lyrics operations.
+/// Provides search and download functionality using the raw index cache.
 @MainActor
 final class AMLLDBService: ObservableObject {
-    
+
     // MARK: - Logger
+
     private static let logger = Logger(subsystem: "com.kmgccc.player", category: "AMLLDB")
-    
+
     // MARK: - Singleton
-    
+
     static let shared = AMLLDBService()
-    
+
     // MARK: - Published State
-    
-    /// Current update progress
-    @Published private(set) var updateProgress: AMLLDBUpdateProgress = .initial
-    
-    /// Whether an update is currently in progress
-    @Published private(set) var isUpdating = false
-    
-    // MARK: - Constants
-    
-    private let lastUpdateKey = "amll-db-last-update"
-    private let updateInterval: TimeInterval = 86400 // 24 hours
-    private let maxSearchResults = 50
-    
+
+    /// Whether AMLLDB is ready for search
+    @Published private(set) var isReady = false
+
+    /// Number of entries available
+    @Published private(set) var entryCount = 0
+
+    /// Last error message
+    @Published private(set) var lastError: String?
+
+    /// Whether currently initializing
+    @Published private(set) var isInitializing = false
+
     // MARK: - Dependencies
-    
+
+    private let cache = AMLLDBRawIndexCache.shared
     private let client = AMLLDBClient()
-    private var modelContext: ModelContext?
-    
+
     // MARK: - Initialization
-    
-    private init() {}
-    
-    // MARK: - Model Context Setup
-    
+
+    private init() {
+        // Observe cache state
+        Task {
+            await observeCacheState()
+        }
+    }
+
+    // MARK: - Setup
+
+    /// Setup with SwiftData context (optional, for backward compatibility)
     func setupModelContext(_ context: ModelContext) {
-        self.modelContext = context
-        Self.logger.info("[AMLLDB] Model context initialized")
+        Self.logger.info("[AMLLDB] Model context setup (SwiftData is optional storage)")
+        // We don't require SwiftData for search anymore
+        // But we keep this for backward compatibility
     }
-    
+
     // MARK: - Index Availability
-    
-    /// Checks if the local index is available (has entries).
-    func isIndexAvailable() -> Bool {
-        guard let context = modelContext else {
-            Self.logger.warning("[AMLLDB] isIndexAvailable: modelContext is nil")
-            return false
-        }
-        let descriptor = FetchDescriptor<AMLLDBIndexEntry>()
-        let count = (try? context.fetchCount(descriptor)) ?? 0
-        Self.logger.info("[AMLLDB] Index available: \(count > 0), entries: \(count)")
-        return count > 0
-    }
-    
-    /// Returns the number of entries in the local index.
-    func getIndexEntryCount() -> Int {
-        guard let context = modelContext else { return 0 }
-        let descriptor = FetchDescriptor<AMLLDBIndexEntry>()
-        return (try? context.fetchCount(descriptor)) ?? 0
-    }
-    
-    /// Returns the timestamp of the last successful update.
-    func getLastUpdateTime() -> Date? {
-        UserDefaults.standard.object(forKey: lastUpdateKey) as? Date
-    }
-    
-    /// Checks if the index should be updated (never updated or > 24 hours).
-    func shouldUpdateIndex() -> Bool {
-        guard let lastUpdate = getLastUpdateTime() else { return true }
-        return Date().timeIntervalSince(lastUpdate) > updateInterval
-    }
-    
-    // MARK: - Index Update
-    
-    /// Checks if update is needed and performs update if necessary.
-    /// - Returns: True if an update was performed
-    @discardableResult
-    func checkAndUpdateIfNeeded() async -> Bool {
-        guard shouldUpdateIndex() else {
-            Self.logger.info("[AMLLDB] Index up to date, skipping update")
-            return false
-        }
-        
-        do {
-            Self.logger.info("[AMLLDB] Starting index update...")
-            try await updateIndex()
-            return true
-        } catch {
-            Self.logger.error("[AMLLDB] Index update failed: \(error.localizedDescription)")
-            return false
-        }
-    }
-    
-    /// Updates the local index by downloading and parsing the latest data.
-    func updateIndex() async throws {
-        guard !isUpdating else { return }
-        
-        isUpdating = true
-        defer { isUpdating = false }
-        
-        updateProgress = .initial
-        
-        do {
-            updateProgress = AMLLDBUpdateProgress(
-                state: .downloading(progress: 0),
-                currentItem: 0,
-                totalItems: 0
-            )
-            
-            Self.logger.info("[AMLLDB] Downloading index...")
-            let indexData = try await client.downloadIndex()
-            Self.logger.info("[AMLLDB] Downloaded \(indexData.count) bytes")
-            
-            updateProgress = AMLLDBUpdateProgress(
-                state: .parsing,
-                currentItem: 0,
-                totalItems: 0
-            )
-            
-            try await parseAndStoreIndex(data: indexData)
-            
-            UserDefaults.standard.set(Date(), forKey: lastUpdateKey)
-            
-            updateProgress = AMLLDBUpdateProgress(
-                state: .completed,
-                currentItem: getIndexEntryCount(),
-                totalItems: getIndexEntryCount()
-            )
-            
-            Self.logger.info("[AMLLDB] Index update completed, total entries: \(self.getIndexEntryCount())")
-            
-        } catch {
-            updateProgress = AMLLDBUpdateProgress(
-                state: .failed(error.localizedDescription),
-                currentItem: 0,
-                totalItems: 0
-            )
-            Self.logger.error("[AMLLDB] Update failed: \(error.localizedDescription)")
-            throw error
-        }
-    }
-    
-    /// Parses index data and stores entries in SwiftData.
-    private func parseAndStoreIndex(data: Data) async throws {
-        guard let context = modelContext else {
-            throw AMLLDBError.storageError("Model context not initialized")
-        }
-        
-        // Clear existing index
-        try await clearIndex()
-        
-        // Parse JSON Lines
-        guard let text = String(data: data, encoding: .utf8) else {
-            throw AMLLDBError.parseError("Invalid UTF-8 encoding")
-        }
-        
-        let lines = text.components(separatedBy: .newlines).filter { !$0.isEmpty }
-        let totalLines = lines.count
-        Self.logger.info("[AMLLDB] Raw JSON lines count: \(totalLines)")
-        
-        // Parse and insert in batches
-        let batchSize = 1000
-        var currentBatch: [AMLLDBIndexEntry] = []
-        var parsedCount = 0
-        var decodeErrorCount = 0
-        var missingFieldCount = 0
-        
-        // Log first line for debugging
-        if let firstLine = lines.first {
-            Self.logger.info("[AMLLDB] First line sample: \(firstLine.prefix(200))")
-        }
-        
-        for (index, line) in lines.enumerated() {
-            do {
-                if let entry = try parseIndexLine(line) {
-                    currentBatch.append(entry)
-                    parsedCount += 1
-                    
-                    if currentBatch.count >= batchSize {
-                        try insertBatch(currentBatch, context: context)
-                        currentBatch.removeAll(keepingCapacity: true)
-                    }
-                } else {
-                    missingFieldCount += 1
-                }
-            } catch {
-                decodeErrorCount += 1
-                if decodeErrorCount <= 5 {
-                    Self.logger.warning("[AMLLDB] Decode error on line \(index + 1): \(error)")
-                }
-            }
-            
-            // Update progress every 1000 items
-            if index % 1000 == 0 {
-                updateProgress = AMLLDBUpdateProgress(
-                    state: .parsing,
-                    currentItem: index,
-                    totalItems: totalLines
-                )
-            }
-        }
-        
-        // Insert remaining batch
-        if !currentBatch.isEmpty {
-            try insertBatch(currentBatch, context: context)
-        }
-        
-        // Verify storage
-        let finalCount = getIndexEntryCount()
-        Self.logger.info("[AMLLDB] Parsed: \(parsedCount), Missing fields: \(missingFieldCount), Decode errors: \(decodeErrorCount), Stored: \(finalCount)")
-    }
-    
-    /// Parses a single JSON line from the index file.
-    private func parseIndexLine(_ line: String) throws -> AMLLDBIndexEntry? {
-        guard let data = line.data(using: .utf8) else { return nil }
-        
-        let rawEntry = try JSONDecoder().decode(AMLLDBRawIndexEntry.self, from: data)
-        
-        guard let ncmId = rawEntry.stringValue(for: "ncmMusicId"),
-              let musicName = rawEntry.stringValue(for: "musicName"),
-              let artists = rawEntry.stringValue(for: "artists") else {
-            return nil
-        }
-        
-        let album = rawEntry.stringValue(for: "album") ?? ""
-        
-        return AMLLDBIndexEntry(
-            ncmMusicId: ncmId,
-            musicName: musicName,
-            artists: artists,
-            album: album,
-            rawLyricFile: rawEntry.rawLyricFile
+
+    /// Check if index is available (either from cache or SwiftData)
+    func getIndexStatus() -> AMLLDBIndexStatus {
+        let hasCache = cache.hasLocalCache()
+        let cacheReady = cache.isReady
+        let count = cache.entryCount
+
+        Self.logger.info("[AMLLDB] Index status: hasCache=\(hasCache), isReady=\(cacheReady), count=\(count)")
+
+        return AMLLDBIndexStatus(
+            available: cacheReady || hasCache,
+            entryCount: count,
+            lastUpdatedAt: nil, // Not tracked at service level anymore
+            needsUpdate: false,
+            isCorruptedOrEmpty: !hasCache && !cacheReady,
+            reason: cacheReady ? "ready" : (hasCache ? "cache exists" : "no cache")
         )
     }
-    
-    /// Inserts a batch of entries into SwiftData.
-    private func insertBatch(_ entries: [AMLLDBIndexEntry], context: ModelContext) throws {
-        for entry in entries {
-            context.insert(entry)
+
+    /// Ensure index is ready for search
+    func ensureIndexReady() async -> Bool {
+        Self.logger.info("[AMLLDB] Ensuring index ready...")
+
+        isInitializing = true
+        defer { isInitializing = false }
+
+        let ready = await cache.ensureReady()
+        isReady = ready
+        entryCount = cache.entryCount
+
+        if !ready {
+            lastError = cache.lastError
         }
-        try context.save()
+
+        Self.logger.info("[AMLLDB] Index ready: \(ready), entries: \(self.entryCount)")
+        return ready
     }
-    
-    /// Clears all index entries from the local database.
-    func clearIndex() async throws {
-        guard let context = modelContext else { return }
-        
-        let descriptor = FetchDescriptor<AMLLDBIndexEntry>()
-        let entries = try context.fetch(descriptor)
-        
-        for entry in entries {
-            context.delete(entry)
-        }
-        
-        try context.save()
-    }
-    
+
     // MARK: - Search
-    
-    /// Searches the local index for matching songs.
+
+    /// Search for lyrics by track info
     /// - Parameters:
-    ///   - title: Song title to search for
-    ///   - artist: Artist name to search for (optional)
-    ///   - album: Album name to search for (optional, for better matching)
-    ///   - duration: Track duration in seconds (optional, for better matching)
-    ///   - limit: Maximum number of results (default: 20)
-    /// - Returns: Array of search results sorted by relevance
+    ///   - title: Song title
+    ///   - artist: Artist name (optional)
+    ///   - album: Album name (optional)
+    ///   - duration: Duration in seconds (optional)
+    ///   - limit: Maximum results (default 20)
+    /// - Returns: Array of search results
     func search(
         title: String,
         artist: String? = nil,
@@ -287,126 +118,200 @@ final class AMLLDBService: ObservableObject {
         duration: Double? = nil,
         limit: Int = 20
     ) -> [AMLLDBSearchResult] {
-        Self.logger.info("[AMLLDB] Search starting - title: '\(title)', artist: '\(artist ?? "nil")'")
-        
-        guard let context = modelContext else {
-            Self.logger.error("[AMLLDB] Search failed: modelContext is nil")
+        Self.logger.debug("[AMLLDB] Search called - title: '\(title)', artist: '\(artist ?? "nil")', album: '\(album ?? "nil")'")
+
+        // Ensure we have entries
+        let entries = cache.getEntries()
+        if entries.isEmpty {
+            Self.logger.warning("[AMLLDB] No entries available for search")
             return []
         }
-        
-        let normalizedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let normalizedArtist = artist?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
-        let normalizedAlbum = album?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
-        
-        guard !normalizedTitle.isEmpty else {
-            Self.logger.warning("[AMLLDB] Search failed: empty title")
-            return []
-        }
-        
-        // Fetch all entries
-        let descriptor = FetchDescriptor<AMLLDBIndexEntry>()
-        guard let entries = try? context.fetch(descriptor) else {
-            Self.logger.error("[AMLLDB] Search failed: could not fetch from SwiftData")
-            return []
-        }
-        
-        Self.logger.info("[AMLLDB] Fetched \(entries.count) entries from local index")
-        
-        // Score and filter entries
-        var results: [(entry: AMLLDBIndexEntry, score: Double)] = []
-        
-        for entry in entries {
-            let score = calculateMatchScore(
-                entry: entry,
-                queryTitle: normalizedTitle,
-                queryArtist: normalizedArtist,
-                queryAlbum: normalizedAlbum,
-                queryDuration: duration
-            )
-            
-            if score > 0 {
-                results.append((entry, score))
-            }
-        }
-        
-        Self.logger.info("[AMLLDB] Matched \(results.count) entries")
-        
-        // Sort by score (descending) and limit results
-        results.sort { $0.score > $1.score }
-        
-        let limitedResults = results.prefix(limit).map { pair in
+
+        Self.logger.debug("[AMLLDB] Searching \(entries.count) entries")
+
+        // Prepare search params
+        let artists: [String] = artist.map { [$0] } ?? []
+        let durationMs = duration.map { Int($0 * 1000) }
+
+        let params = AMLLDBSearchParams(
+            title: title,
+            artists: artists,
+            album: album,
+            durationMs: durationMs
+        )
+
+        // Perform search
+        let candidates = AMLLDBSearcher.search(entries: entries, params: params)
+
+        Self.logger.debug("[AMLLDB] Search returned \(candidates.count) results")
+
+        // Convert to result format
+        return candidates.prefix(limit).map { candidate in
             AMLLDBSearchResult(
-                ncmMusicId: pair.entry.ncmMusicId,
-                musicName: pair.entry.musicName,
-                artists: pair.entry.artists,
-                album: pair.entry.album,
-                matchScore: pair.score
+                rawLyricFile: candidate.entry.rawLyricFile,
+                musicName: candidate.bestTitle,
+                artists: candidate.displayArtists,
+                album: candidate.displayAlbum,
+                matchScore: candidate.totalScore,
+                matchLevel: candidate.matchLevel,
+                ncmMusicId: candidate.entry.ncmMusicId,
+                qqMusicId: candidate.entry.qqMusicId,
+                appleMusicId: candidate.entry.appleMusicId
             )
         }
-        
-        Self.logger.info("[AMLLDB] Returning \(limitedResults.count) results")
-        return limitedResults
     }
-    
-    /// Calculates a match score for an entry against the query.
-    private func calculateMatchScore(
-        entry: AMLLDBIndexEntry,
-        queryTitle: String,
-        queryArtist: String,
-        queryAlbum: String,
-        queryDuration: Double?
-    ) -> Double {
-        let entryTitle = entry.musicName.lowercased()
-        let entryArtists = entry.artists.lowercased()
-        let entryAlbum = entry.album.lowercased()
-        
-        var score: Double = 0
-        
-        // Title matching (most important)
-        if entryTitle == queryTitle {
-            score += 1.0 // Exact match
-        } else if entryTitle.hasPrefix(queryTitle) {
-            score += 0.8 // Prefix match
-        } else if entryTitle.contains(queryTitle) {
-            score += 0.6 // Contains match
-        }
-        
-        // Artist matching (if provided)
-        if !queryArtist.isEmpty {
-            if entryArtists == queryArtist {
-                score += 0.5 // Exact artist match
-            } else if entryArtists.contains(queryArtist) {
-                score += 0.3 // Artist contains query
-            }
-        }
-        
-        // Album matching (if provided, bonus)
-        if !queryAlbum.isEmpty && entryAlbum.contains(queryAlbum) {
-            score += 0.1 // Album bonus
-        }
-        
-        return score
-    }
-    
+
     // MARK: - Lyrics Download
-    
-    /// Downloads TTML lyrics for a specific song.
+
+    /// Download TTML lyrics by raw lyric file name
+    /// - Parameter rawLyricFile: The raw lyric file name
+    /// - Returns: TTML lyrics content
+    func downloadLyricsByRawFile(_ rawLyricFile: String) async throws -> String {
+        Self.logger.info("[AMLLDB] Downloading lyrics via rawLyricFile: \(rawLyricFile)")
+        return try await client.downloadLyricsByRawFile(rawLyricFile)
+    }
+
+    /// Download TTML lyrics by NCM ID (legacy method)
     /// - Parameter ncmMusicId: NetEase Cloud Music ID
     /// - Returns: TTML lyrics content
     func downloadLyrics(ncmMusicId: String) async throws -> String {
-        Self.logger.info("[AMLLDB] Downloading lyrics for ID: \(ncmMusicId)")
-        let ttml = try await client.downloadLyrics(ncmMusicId: ncmMusicId)
-        Self.logger.info("[AMLLDB] Downloaded \(ttml.count) bytes of TTML")
-        return ttml
+        Self.logger.info("[AMLLDB] Downloading lyrics for NCM ID: \(ncmMusicId)")
+        return try await client.downloadLyrics(ncmMusicId: ncmMusicId)
     }
-    
-    // MARK: - Cache Management
-    
-    /// Returns the approximate cache size in bytes.
-    func getCacheSize() async -> Int64 {
-        // SwiftData storage size estimation
-        let entryCount = getIndexEntryCount()
-        // Rough estimate: ~200 bytes per entry
-        return Int64(entryCount * 200)
+
+    // MARK: - Index Management
+
+    /// Check and update index if needed
+    @discardableResult
+    func checkAndUpdateIfNeeded(forceRebuild: Bool = false) async throws -> AMLLDBIndexStatus {
+        Self.logger.info("[AMLLDB] checkAndUpdateIfNeeded called, force=\(forceRebuild)")
+
+        if forceRebuild {
+            let success = await cache.refreshIndex()
+            isReady = success
+            entryCount = cache.entryCount
+        } else {
+            let ready = await cache.ensureReady()
+            isReady = ready
+            entryCount = cache.entryCount
+        }
+
+        return getIndexStatus()
+    }
+
+    /// Clear all cached data
+    func clearIndex() async throws {
+        try cache.clearCache()
+        isReady = false
+        entryCount = 0
+    }
+
+    // MARK: - Backward Compatibility
+
+    /// Backwards-compatible check
+    func isIndexAvailable() -> Bool {
+        cache.isReady || cache.hasLocalCache()
+    }
+
+    /// Get entry count
+    func getIndexEntryCount() -> Int {
+        cache.entryCount
+    }
+
+    /// Get last update time (not used in new implementation)
+    func getLastUpdateTime() -> Date? {
+        nil
+    }
+
+    /// Check if update is needed
+    func shouldUpdateIndex() -> Bool {
+        !cache.isReady && !cache.hasLocalCache()
+    }
+
+    // MARK: - Private
+
+    private func observeCacheState() async {
+        // Periodically sync state with cache
+        while true {
+            await Task.yield()
+
+            isReady = cache.isReady
+            entryCount = cache.entryCount
+
+            try? await Task.sleep(for: .seconds(1))
+        }
+    }
+}
+
+// MARK: - Result Model
+
+/// AMLLDB search result for UI display
+struct AMLLDBSearchResult: Identifiable, Equatable {
+    let id: String // rawLyricFile
+    let rawLyricFile: String
+    let musicName: String
+    let artists: String
+    let album: String
+    let matchScore: Double
+    let matchLevel: AMLLDBMatchLevel
+    let ncmMusicId: String?
+    let qqMusicId: String?
+    let appleMusicId: String?
+
+    init(
+        rawLyricFile: String,
+        musicName: String,
+        artists: String,
+        album: String,
+        matchScore: Double,
+        matchLevel: AMLLDBMatchLevel,
+        ncmMusicId: String?,
+        qqMusicId: String?,
+        appleMusicId: String?
+    ) {
+        self.id = rawLyricFile
+        self.rawLyricFile = rawLyricFile
+        self.musicName = musicName
+        self.artists = artists
+        self.album = album
+        self.matchScore = matchScore
+        self.matchLevel = matchLevel
+        self.ncmMusicId = ncmMusicId
+        self.qqMusicId = qqMusicId
+        self.appleMusicId = appleMusicId
+    }
+
+    /// Convert to LDDCCandidate for UI compatibility
+    func toLDDCCandidate() -> LDDCCandidate {
+        LDDCCandidate(
+            source: "AMLLDB",
+            songId: rawLyricFile, // Use rawLyricFile as songId for download
+            score: matchScore,
+            title: musicName,
+            artist: artists,
+            album: album,
+            durationMs: nil,
+            extra: [
+                "platform": "amll-db",
+                "sourceType": "amll-ttml-database",
+                "ncmMusicId": ncmMusicId ?? "",
+                "matchLevel": matchLevel.rawValue
+            ]
+        )
+    }
+}
+
+// MARK: - Index Status
+
+struct AMLLDBIndexStatus: Equatable {
+    let available: Bool
+    let entryCount: Int
+    let lastUpdatedAt: Date?
+    let needsUpdate: Bool
+    let isCorruptedOrEmpty: Bool
+    let reason: String
+
+    var hasIndexData: Bool {
+        available && entryCount > 0
     }
 }

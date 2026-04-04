@@ -81,7 +81,7 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
                 .ignoresSafeArea(.container, edges: .top)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .frame(minWidth: 400)
+        .frame(minWidth: 320)
         .sheet(item: $trackToEdit) { track in
             TrackEditSheet(track: track)
         }
@@ -97,11 +97,9 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             .presentationSizing(.page)
         }
         .onAppear {
-            print("[PlaylistDetail] onAppear - currentSelection: \(libraryVM.currentSelection), allTracks count: \(libraryVM.allTracks.count), totalTrackCount: \(libraryVM.totalTrackCount)")
             scheduleRebuild(reason: "appear", restoreScroll: true)
         }
         .onDisappear {
-            print("[PlaylistDetail] onDisappear")
             prefetchTask?.cancel()
             prefetchTask = nil
             rebuildTask?.cancel()
@@ -113,15 +111,12 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             }
         }
         .onChange(of: libraryVM.selectedPlaylist?.id) { oldVal, newVal in
-            print("[PlaylistDetail] selectedPlaylist changed from \(oldVal?.uuidString ?? "nil") to \(newVal?.uuidString ?? "nil")")
             scheduleRebuild(reason: "playlist", restoreScroll: true)
         }
         .onChange(of: libraryVM.selectedArtistKey) { oldVal, newVal in
-            print("[PlaylistDetail] selectedArtistKey changed from \(oldVal ?? "nil") to \(newVal ?? "nil")")
             scheduleRebuild(reason: "artist", restoreScroll: true)
         }
         .onChange(of: libraryVM.selectedAlbumKey) { oldVal, newVal in
-            print("[PlaylistDetail] selectedAlbumKey changed from \(oldVal ?? "nil") to \(newVal ?? "nil")")
             scheduleRebuild(reason: "album", restoreScroll: true)
         }
         .onChange(of: searchText) { _, _ in
@@ -136,7 +131,6 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             scheduleRebuild(reason: "sortOrder")
         }
         .onChange(of: libraryVM.totalTrackCount) { oldVal, newVal in
-            print("[PlaylistDetail] totalTrackCount changed from \(oldVal) to \(newVal)")
             scheduleRebuild(reason: "trackCount", restoreScroll: true)
         }
         .onChange(of: libraryVM.refreshTrigger) { _, _ in
@@ -147,13 +141,11 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             isSearchFocused = false
         }
         .onChange(of: libraryVM.state) { oldVal, newVal in
-            print("[PlaylistDetail] libraryVM.state changed from \(oldVal) to \(newVal)")
             if newVal == .loaded {
                 scheduleRebuild(reason: "state_loaded", restoreScroll: true)
             }
         }
         .onChange(of: libraryVM.currentSelection) { oldVal, newVal in
-            print("[PlaylistDetail] currentSelection changed from \(oldVal) to \(newVal)")
             scheduleRebuild(reason: "selection", restoreScroll: true)
         }
     }
@@ -167,51 +159,7 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
     // MARK: - Subviews
 
     private var headerView: some View {
-        HStack(alignment: .center) {
-            VStack(alignment: .leading, spacing: 6) {
-                if isMultiselectMode {
-                    Text("已选择")
-                        .font(.headline)
-                        .fontWeight(.semibold)
-                        .lineLimit(1)
-
-                    HStack(spacing: 8) {
-                        Text("\(selectedTrackIDs.count)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-
-                        Button {
-                            if selectedTrackIDs.count == sortedTracksCache.count {
-                                selectedTrackIDs.removeAll()
-                            } else {
-                                selectedTrackIDs = Set(sortedTracksCache.map(\.id))
-                            }
-                        } label: {
-                            Text(
-                                totalSelectionCount == sortedTracksCache.count
-                                    ? "取消全选" : "全选"
-                            )
-                            .font(.caption)
-                            .foregroundStyle(Color.accentColor)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                } else {
-                    Text(libraryVM.currentTitle)
-                        .font(.headline)
-                        .fontWeight(.semibold)
-                        .lineLimit(1)
-
-                    Text(songCountText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
-
-            Spacer()
-
+        GeometryReader { proxy in
             HStack(spacing: 12) {
                 sortMenu
 
@@ -228,7 +176,6 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
                     canPlay: !sortedTracksCache.isEmpty,
                     onPlay: {
                         if isMultiselectMode && !selectedTrackIDs.isEmpty {
-                            // Play selected
                             let selected = sortedTracksCache.filter {
                                 selectedTrackIDs.contains($0.id)
                             }
@@ -239,7 +186,6 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
                         }
                     },
                     onImport: {
-                        print("🔘 Import button tapped")
                         Task {
                             await libraryVM.importToCurrentPlaylist()
                         }
@@ -253,13 +199,17 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
                 ) {
                     searchText = ""
                 }
-                .frame(width: 140)
+                .frame(minWidth: 96, idealWidth: 140, maxWidth: 140)
 
                 headerAccessory
             }
-            .frame(maxWidth: .infinity, alignment: .trailing)
+            .frame(
+                width: max(0, proxy.size.width - GlassStyleTokens.headerHorizontalPadding * 2),
+                alignment: .trailing
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+            .padding(.horizontal, GlassStyleTokens.headerHorizontalPadding)
         }
-        .cornerAvoidingHorizontalPadding(GlassStyleTokens.headerHorizontalPadding)
         .frame(height: GlassStyleTokens.headerBarHeight)
         .background(alignment: .top) {
             headerBackground
@@ -644,41 +594,68 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
     private var listBottomPadding: CGFloat { 16 }
 
     private var headerBackground: some View {
-        // Progressive Blur (Variable Blur)
-        // Strictly confined and made significantly smaller as requested.
         ZStack(alignment: .top) {
-            Rectangle()
-                .fill(.regularMaterial)
-                .mask {
-                    LinearGradient(
-                        stops: [
-                            .init(color: .black, location: 0.0),  // Full blur at top
-                            .init(color: .clear, location: 0.8),  // Fade out earlier (80% of bar)
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                }
-
-            // Subtle theme-tinted scrim: even tighter fade
-            Rectangle()
-                .fill(
-                    Color(nsColor: .windowBackgroundColor).opacity(
-                        colorScheme == .dark ? 0.2 : 0.05)
-                )
-                .mask {
-                    LinearGradient(
-                        stops: [
-                            .init(color: .black, location: 0.0),
-                            .init(color: .clear, location: 0.6),
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                }
+            headerBackgroundMaterialLayer
+            headerBackgroundScrimLayer
         }
         .frame(height: GlassStyleTokens.headerBarHeight)
         .allowsHitTesting(false)
+    }
+
+    private var headerBackgroundMaterialLayer: some View {
+        Rectangle()
+            .fill(colorScheme == .dark ? .regularMaterial : .ultraThinMaterial)
+            .mask {
+                LinearGradient(
+                    stops: [
+                        .init(color: .black, location: 0.0),
+                        .init(color: .clear, location: colorScheme == .dark ? 0.74 : 0.82),
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            }
+    }
+
+    private var headerBackgroundScrimLayer: some View {
+        Rectangle()
+            .fill(headerBackgroundScrimGradient)
+            .mask {
+                LinearGradient(
+                    stops: [
+                        .init(color: .black, location: 0.0),
+                        .init(color: .clear, location: colorScheme == .dark ? 0.68 : 0.62),
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            }
+    }
+
+    private var headerBackgroundScrimGradient: LinearGradient {
+        if colorScheme == .dark {
+            return LinearGradient(
+                stops: [
+                    .init(color: Color.black.opacity(0.34), location: 0.0),
+                    .init(color: Color.black.opacity(0.20), location: 0.34),
+                    .init(color: Color.black.opacity(0.08), location: 0.58),
+                    .init(color: .clear, location: 1.0),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
+
+        return LinearGradient(
+            stops: [
+                .init(color: Color.white.opacity(0.54), location: 0.0),
+                .init(color: Color.white.opacity(0.28), location: 0.30),
+                .init(color: Color.white.opacity(0.10), location: 0.56),
+                .init(color: .clear, location: 1.0),
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
     }
 
     private func clearSearchFocus() {
@@ -734,7 +711,6 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         debounceNanoseconds: UInt64 = 0,
         restoreScroll: Bool = false
     ) {
-        print("[PlaylistDetail] scheduleRebuild called: reason=\(reason), debounce=\(debounceNanoseconds), currentSelection=\(libraryVM.currentSelection), allTracks.count=\(libraryVM.allTracks.count)")
         rebuildTask?.cancel()
         let token = UUID()
         activeRebuildToken = token
@@ -742,10 +718,7 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             if debounceNanoseconds > 0 {
                 try? await Task.sleep(nanoseconds: debounceNanoseconds)
             }
-            guard !Task.isCancelled else { 
-                print("[PlaylistDetail] scheduleRebuild cancelled")
-                return 
-            }
+            guard !Task.isCancelled else { return }
             isRebuilding = true
             await performRebuild(
                 reason: reason,
@@ -828,7 +801,6 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         syncPlayerQueueIfNeeded(with: parentSortedTracks)
         isRebuilding = false
         let rebuildDurationMs = (ProcessInfo.processInfo.systemUptime - rebuildStart) * 1000
-        print("[PlaylistDetail] performRebuild completed: reason=\(reason), displayedTracksCount=\(displayedTracks.count), filteredTracksCount=\(filteredTracks.count), sortedTracksCount=\(sortedTracks.count), durationMs=\(rebuildDurationMs)")
         PlaylistPerfDiagnostics.markListRebuild(
             reason: reason,
             trackCount: snapshot.trackCount,

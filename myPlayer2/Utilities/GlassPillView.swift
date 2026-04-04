@@ -5,6 +5,11 @@
 
 import SwiftUI
 
+enum LiquidGlassPillMaterialStyle {
+    case clear
+    case darkGlass
+}
+
 extension View {
     func subtleFloatingShadow() -> some View {
         self.shadow(
@@ -19,10 +24,11 @@ extension View {
         colorScheme: ColorScheme,
         accentColor: Color? = nil,
         prominence: GlassStyleTokens.Prominence = .standard,
+        materialStyle: LiquidGlassPillMaterialStyle = .clear,
         isFloating: Bool = false
     ) -> some View {
         self
-            .glassEffect(.clear, in: Capsule())
+            .glassEffect(materialStyle == .darkGlass ? .regular : .clear, in: Capsule())
             .overlay(
                 Capsule()
                     .strokeBorder(
@@ -33,7 +39,7 @@ extension View {
             )
             .background(
                 Capsule()
-                    .fill(GlassStyleTokens.darkNeutralOverlay(for: colorScheme))
+                    .fill(GlassStyleTokens.pillOverlay(for: colorScheme, materialStyle: materialStyle))
                     .allowsHitTesting(false)
             )
             .background {

@@ -355,7 +355,7 @@ final class ThemeStore: ObservableObject {
         }
 
         if paletteChanged {
-            Log.info(
+            Log.debug(
                 "Theme applied (reason=\(reason), scheme=\(schemeState), fallback=\(usesFallbackThemeColor))",
                 category: .theme
             )

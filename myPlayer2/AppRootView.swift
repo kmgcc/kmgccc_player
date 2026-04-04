@@ -6,6 +6,7 @@
 //  Creates and injects all dependencies.
 //
 
+import AppKit
 import SwiftData
 import SwiftUI
 
@@ -168,6 +169,12 @@ struct AppRootView: View {
                 .environment(coverDownloadService)
                 .environment(netEaseCoverService)
                 .environmentObject(themeStore)
+                .background(
+                    WindowToolbarAccessor(
+                        configure: applyMainWindowMinimumSize(to:),
+                        configureContinuously: true
+                    )
+                )
             } else {
                 ProgressView(NSLocalizedString("alert.loading", comment: ""))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -239,6 +246,33 @@ struct AppRootView: View {
 
     // MARK: - Setup
 
+    private var mainWindowMinimumWidth: CGFloat {
+        let baseWindowMinimumWidth: CGFloat = 1100
+        let sidebarWidth =
+            uiState.sidebarVisible
+            ? max(uiState.sidebarLastWidth, Constants.Layout.sidebarMinWidth)
+            : 0
+        let lyricsWidth =
+            (uiState.lyricsVisible
+                && !uiState.lyricsPanelSuppressedByModal
+                && !fullscreenWindowManager.isFullscreenActive)
+            ? Constants.Layout.lyricsPanelMinWidth
+            : 0
+        let detailMinimumWidth = Constants.Layout.detailContentMinWidth
+
+        return max(baseWindowMinimumWidth, sidebarWidth + detailMinimumWidth + lyricsWidth)
+    }
+
+    private func applyMainWindowMinimumSize(to window: NSWindow) {
+        let minSize = NSSize(width: mainWindowMinimumWidth, height: 600)
+        if window.contentMinSize != minSize {
+            window.contentMinSize = minSize
+        }
+        if window.minSize != minSize {
+            window.minSize = minSize
+        }
+    }
+
     @MainActor
     private func setupAppOnLaunch() async {
         guard !hasSetupDependencies else { return }
@@ -295,9 +329,7 @@ struct AppRootView: View {
         )
         libVM.setImportService(fileImportService)
 
-        print("[Lifecycle] setupDependencies: libraryVM created, id: \(ObjectIdentifier(libVM))")
         libraryVM = libVM
-        print("[Lifecycle] setupDependencies: libraryVM assigned, id: \(libraryVM.map { String(describing: ObjectIdentifier($0)) } ?? "nil")")
         playerVM = PlayerViewModel(playbackService: playbackService, levelMeter: ledMeter)
         lyricsVM = LyricsViewModel(settings: AppSettings.shared)
         self.ledMeter = ledMeter

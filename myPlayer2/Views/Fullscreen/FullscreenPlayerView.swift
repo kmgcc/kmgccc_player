@@ -104,6 +104,10 @@ struct FullscreenPlayerView: View {
     @State private var didHandleFullscreenAppear = false
     @State private var isFullscreenBottomControlsVisible = true
     @State private var isFullscreenBottomControlsHovered = false
+    @State private var isFullscreenBottomControlsHotZoneHovered = false
+    @State private var isFullscreenBottomControlsLeadingHovered = false
+    @State private var isFullscreenBottomControlsCenterHovered = false
+    @State private var isFullscreenBottomControlsTrailingHovered = false
     @State private var isFullscreenBottomControlsProgressDragging = false
     @State private var isFullscreenBottomControlsVolumeAdjusting = false
     @State private var isFullscreenBottomControlsPlaybackModeExpanded = false
@@ -575,7 +579,10 @@ struct FullscreenPlayerView: View {
         let volumeOriginX = max(0, groupOriginX + groupWidth - volumeWidth)
 
         return ZStack(alignment: .leading) {
-            leadingControlsPill(size: buttonSize)
+            leadingControlsPill(
+                size: buttonSize,
+                materialStyle: fullscreenBottomControlsGlassMaterialStyle
+            )
                 .frame(width: leadingControlsWidth, height: buttonSize)
                 .offset(x: leadingControlsOriginX)
 
@@ -648,6 +655,46 @@ struct FullscreenPlayerView: View {
         }
     }
 
+    private func updateFullscreenBottomControlsHoverGate(
+        hotZone: Bool? = nil,
+        leading: Bool? = nil,
+        center: Bool? = nil,
+        trailing: Bool? = nil
+    ) {
+        if let hotZone {
+            isFullscreenBottomControlsHotZoneHovered = hotZone
+        }
+        if let leading {
+            isFullscreenBottomControlsLeadingHovered = leading
+        }
+        if let center {
+            isFullscreenBottomControlsCenterHovered = center
+        }
+        if let trailing {
+            isFullscreenBottomControlsTrailingHovered = trailing
+        }
+
+        let isPointerInsideFullscreenBottomControls =
+            isFullscreenBottomControlsHotZoneHovered
+            || isFullscreenBottomControlsLeadingHovered
+            || isFullscreenBottomControlsCenterHovered
+            || isFullscreenBottomControlsTrailingHovered
+
+        guard isPointerInsideFullscreenBottomControls != isFullscreenBottomControlsHovered else {
+            if isPointerInsideFullscreenBottomControls {
+                cancelFullscreenBottomControlsAutoHide()
+                if isFullscreenBottomControlsVisible == false {
+                    withAnimation(bottomControlsAnimation) {
+                        isFullscreenBottomControlsVisible = true
+                    }
+                }
+            }
+            return
+        }
+
+        handleFullscreenBottomControlsHover(isPointerInsideFullscreenBottomControls)
+    }
+
     private func registerFullscreenBottomControlsInteraction() {
         if isFullscreenBottomControlsVisible == false {
             withAnimation(bottomControlsAnimation) {
@@ -668,6 +715,10 @@ struct FullscreenPlayerView: View {
         isFullscreenBottomControlsVolumeAdjusting = false
         isFullscreenBottomControlsPlaybackModeExpanded = false
         isFullscreenBottomControlsHovered = false
+        isFullscreenBottomControlsHotZoneHovered = false
+        isFullscreenBottomControlsLeadingHovered = false
+        isFullscreenBottomControlsCenterHovered = false
+        isFullscreenBottomControlsTrailingHovered = false
         scheduleFullscreenBottomControlsAutoHideIfNeeded()
     }
 
@@ -770,14 +821,17 @@ struct FullscreenPlayerView: View {
                     .onContinuousHover { phase in
                         switch phase {
                         case .active:
-                            handleFullscreenBottomControlsHover(true)
+                            updateFullscreenBottomControlsHoverGate(hotZone: true)
                         case .ended:
-                            handleFullscreenBottomControlsHover(false)
+                            updateFullscreenBottomControlsHoverGate(hotZone: false)
                         }
                     }
 
                 if isFullscreenBottomControlsVisible {
-                    leadingControlsPill(size: scaledButtonSize)
+                    leadingControlsPill(
+                        size: scaledButtonSize,
+                        materialStyle: fullscreenBottomControlsGlassMaterialStyle
+                    )
                         .glassEffectTransition(.materialize)
                         .frame(width: scaledLeadingControlsWidth, height: scaledButtonSize)
                         .position(
@@ -789,6 +843,12 @@ struct FullscreenPlayerView: View {
                         scale: scale,
                         onInteraction: {
                             registerFullscreenBottomControlsInteraction()
+                        },
+                        onHoverStateChanged: { hovering in
+                            updateFullscreenBottomControlsHoverGate(center: hovering)
+                            if hovering {
+                                registerFullscreenBottomControlsInteraction()
+                            }
                         },
                         onProgressDraggingChanged: { dragging in
                             isFullscreenBottomControlsProgressDragging = dragging
@@ -823,6 +883,7 @@ struct FullscreenPlayerView: View {
                             registerFullscreenBottomControlsInteraction()
                         },
                         onHoverStateChanged: { hovering in
+                            updateFullscreenBottomControlsHoverGate(trailing: hovering)
                             if hovering {
                                 registerFullscreenBottomControlsInteraction()
                             } else {
@@ -956,7 +1017,10 @@ struct FullscreenPlayerView: View {
 
     // MARK: - Leading Controls Pill
 
-    private func leadingControlsPill(size: CGFloat) -> some View {
+    private func leadingControlsPill(
+        size: CGFloat,
+        materialStyle: LiquidGlassPillMaterialStyle
+    ) -> some View {
         // Scale factor relative to base button size (60)
         let scaleFactor = size / fullscreenControlButtonSize
         
@@ -988,10 +1052,12 @@ struct FullscreenPlayerView: View {
             colorScheme: fullscreenControlsColorScheme,
             accentColor: nil as Color?,
             prominence: .standard,
-            materialStyle: fullscreenBottomControlsGlassMaterialStyle,
+            materialStyle: materialStyle,
             isFloating: true
         )
+        .environment(\.colorScheme, fullscreenControlsColorScheme)
         .onHover { hovering in
+            updateFullscreenBottomControlsHoverGate(leading: hovering)
             isLeadingControlsExpanded = hovering
             if hovering {
                 registerFullscreenBottomControlsInteraction()

@@ -134,7 +134,6 @@ final class LibraryViewModel {
     /// Default is .allSongs, never nil.
     var currentSelection: LibrarySelection = .allSongs {
         didSet {
-            print("[LibraryViewModel] currentSelection changed from \(oldValue) to \(currentSelection)")
             // Sync legacy properties for backward compatibility during transition
             switch currentSelection {
             case .allSongs:
@@ -266,7 +265,6 @@ final class LibraryViewModel {
         // This ensures the main content area shows All Songs by default
         if currentSelection == .allSongs {
             // Trigger selection change to force content refresh even if already .allSongs
-            print("[LibraryViewModel] load() completed - explicitly triggering .allSongs selection")
             currentSelection = .allSongs
         }
     }

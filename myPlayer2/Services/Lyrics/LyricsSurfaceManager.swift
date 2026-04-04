@@ -91,7 +91,6 @@ final class LyricsSurfaceManager {
 
         // Ignore only when the requested mode is already fully active and idle.
         guard !(targetMode == mode && currentMode == desiredCurrentMode && switchState == .idle) else {
-            Log.debug("LyricsSurfaceManager: already targeting \(mode), ignoring request", category: .webview)
             return
         }
 
@@ -106,7 +105,7 @@ final class LyricsSurfaceManager {
         targetMode = mode
         onSwitchComplete = onComplete
 
-        Log.info("LyricsSurfaceManager: requestMode=\(mode), gen=\(currentGen), currentMode=\(currentMode)", category: .webview)
+        Log.debug("LyricsSurfaceManager: requestMode=\(mode), gen=\(currentGen), currentMode=\(currentMode)", category: .webview)
 
         // Start the switch process
         executeSwitch(to: mode, generation: currentGen)
@@ -119,7 +118,7 @@ final class LyricsSurfaceManager {
         let targetRole: LyricsSurfaceRole = (mode == .main) ? .main : .fullscreen
         let oldMode = currentMode
 
-        Log.info("LyricsSurfaceManager: executeSwitch to \(mode), gen=\(generation), from=\(oldMode)", category: .webview)
+        Log.debug("LyricsSurfaceManager: executeSwitch to \(mode), gen=\(generation), from=\(oldMode)", category: .webview)
 
         // Create/get the target store
         let store = getOrCreateStore(for: targetRole)
@@ -187,7 +186,7 @@ final class LyricsSurfaceManager {
 
         switchState = .active
 
-        Log.info("LyricsSurfaceManager: completeSwitch to \(mode), gen=\(generation)", category: .webview)
+        Log.debug("LyricsSurfaceManager: completeSwitch to \(mode), gen=\(generation)", category: .webview)
 
         // Activate the target role
         let targetRole: LyricsSurfaceRole = (mode == .main) ? .main : .fullscreen
@@ -213,7 +212,7 @@ final class LyricsSurfaceManager {
         onSwitchComplete?(mode, generation)
         onSwitchComplete = nil
 
-        Log.info("LyricsSurfaceManager: switch complete to \(mode), gen=\(generation), previousMode=\(oldMode)", category: .webview)
+        Log.debug("LyricsSurfaceManager: switch complete to \(mode), gen=\(generation), previousMode=\(oldMode)", category: .webview)
     }
 
     // MARK: - View Visibility Reporting (Views call these, NOT requestMode)
@@ -288,7 +287,7 @@ final class LyricsSurfaceManager {
     /// Notify that a store is ready - called by LyricsWebViewStore
     func notifyStoreReady(_ role: LyricsSurfaceRole, store: LyricsWebViewStore) {
         guard let handler = onStoreReadyHandlers.removeValue(forKey: role) else { return }
-        Log.info("LyricsSurfaceManager: store ready for \(role), triggering ready handler", category: .webview)
+        Log.debug("LyricsSurfaceManager: store ready for \(role), triggering ready handler", category: .webview)
         handler(store)
     }
 
@@ -409,7 +408,7 @@ final class LyricsSurfaceManager {
         )
 
         if previousSnapshot.trackID != trackID || previousSnapshot.lyricsHash != lyricsHash {
-            Log.info(
+            Log.debug(
                 "LyricsSurfaceManager: updated playback snapshot track=\(trackID?.uuidString.prefix(8) ?? "nil"), lyricsLen=\(lyricsTTML.count), hash=\(lyricsHash.prefix(8)), playing=\(isPlaying)",
                 category: .webview
             )
@@ -456,8 +455,7 @@ final class LyricsSurfaceManager {
             )
         }
 
-        Log.info(
-            "LyricsSurfaceManager: replay current snapshot to \(role.rawValue), reason=\(reason), track=\(currentPlaybackSnapshot.trackID?.uuidString.prefix(8) ?? "nil"), lyricsLen=\(currentPlaybackSnapshot.lyricsTTML.count), hash=\(currentPlaybackSnapshot.lyricsHash.prefix(8)), time=\(String(format: "%.3f", currentPlaybackSnapshot.currentTime)), playing=\(currentPlaybackSnapshot.isPlaying)",
+        Log.debug("LyricsSurfaceManager: replay current snapshot to \(role.rawValue), reason=\(reason), track=\(currentPlaybackSnapshot.trackID?.uuidString.prefix(8) ?? "nil"), lyricsLen=\(currentPlaybackSnapshot.lyricsTTML.count), hash=\(currentPlaybackSnapshot.lyricsHash.prefix(8)), time=\(String(format: "%.3f", currentPlaybackSnapshot.currentTime)), playing=\(currentPlaybackSnapshot.isPlaying)",
             category: .webview
         )
 

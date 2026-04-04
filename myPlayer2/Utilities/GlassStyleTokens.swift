@@ -67,6 +67,17 @@ struct GlassStyleTokens {
         colorScheme == .dark ? Color.black.opacity(0.18) : .clear
     }
 
+    static func pillOverlay(for colorScheme: ColorScheme, materialStyle: LiquidGlassPillMaterialStyle)
+        -> Color
+    {
+        switch materialStyle {
+        case .clear:
+            return darkNeutralOverlay(for: colorScheme)
+        case .darkGlass:
+            return colorScheme == .dark ? Color.black.opacity(0.30) : Color.black.opacity(0.14)
+        }
+    }
+
     // MARK: - Sidebar & Layout
     static let headerGroupSpacing: CGFloat = 14
     static let headerControlSpacing: CGFloat = 8
