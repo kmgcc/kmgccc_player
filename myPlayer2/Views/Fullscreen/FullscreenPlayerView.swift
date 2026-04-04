@@ -102,6 +102,12 @@ struct FullscreenPlayerView: View {
     @State private var appearanceRotateTrigger = 0
     @State private var currentFullscreenScale: CGFloat = 1.0
     @State private var didHandleFullscreenAppear = false
+    @State private var isFullscreenBottomControlsVisible = true
+    @State private var isFullscreenBottomControlsHovered = false
+    @State private var isFullscreenBottomControlsProgressDragging = false
+    @State private var isFullscreenBottomControlsVolumeAdjusting = false
+    @State private var isFullscreenBottomControlsPlaybackModeExpanded = false
+    @State private var pendingFullscreenBottomControlsHide: DispatchWorkItem?
     @Namespace private var fullscreenLayoutNamespace
 
     var onExitFullscreen: (() -> Void)?
@@ -185,6 +191,7 @@ struct FullscreenPlayerView: View {
             setupSeekCallback()
             reloadLyricsSurface(reason: "fullscreen appear", forceLyricsReload: true)
             syncLyricsColumnVisibility(animated: false)
+            resetFullscreenBottomControlsAutoHideState()
 
             if isLedEnabledForFullscreenSkin() {
                 ledMeter.start()
@@ -203,6 +210,7 @@ struct FullscreenPlayerView: View {
             pendingFullscreenTrackRefresh = nil
             deferredTrackUpdateDeadline = nil
             suppressFullscreenLyricsViewport = false
+            cancelFullscreenBottomControlsAutoHide()
             deactivateCoverBlurHighlightSurface()
             clearFullscreenLyricsTheme()
 
@@ -246,6 +254,9 @@ struct FullscreenPlayerView: View {
         }
         .onChange(of: colorScheme) { _, _ in
             forceRefreshFullscreenLyricsColors(reason: "colorScheme-change")
+        }
+        .onChange(of: settings.fullscreenMiniPlayerAutoHideSeconds) { _, _ in
+            resetFullscreenBottomControlsAutoHideState()
         }
         .onChange(of: bkController.lyricsColorSampleRevision) { _, _ in
             guard pendingFullscreenLyricsBackgroundCapture else { return }
@@ -601,6 +612,98 @@ struct FullscreenPlayerView: View {
         return .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08)
     }
 
+    private var isFullscreenBottomControlsAutoHideEnabled: Bool {
+        settings.fullscreenMiniPlayerAutoHideSeconds > 0
+    }
+
+    private var fullscreenBottomControlsGlassMaterialStyle: LiquidGlassPillMaterialStyle {
+        switch settings.fullscreenMiniPlayerGlassMaterial {
+        case .clear:
+            return .clear
+        case .darkGlass:
+            return .darkGlass
+        }
+    }
+
+    private var shouldBlockFullscreenBottomControlsAutoHide: Bool {
+        isFullscreenBottomControlsHovered
+            || isLeadingControlsExpanded
+            || isVolumeExpanded
+            || isFullscreenBottomControlsProgressDragging
+            || isFullscreenBottomControlsVolumeAdjusting
+            || isFullscreenBottomControlsPlaybackModeExpanded
+    }
+
+    private func handleFullscreenBottomControlsHover(_ hovering: Bool) {
+        isFullscreenBottomControlsHovered = hovering
+        if hovering {
+            cancelFullscreenBottomControlsAutoHide()
+            if isFullscreenBottomControlsVisible == false {
+                withAnimation(bottomControlsAnimation) {
+                    isFullscreenBottomControlsVisible = true
+                }
+            }
+        } else {
+            scheduleFullscreenBottomControlsAutoHideIfNeeded()
+        }
+    }
+
+    private func registerFullscreenBottomControlsInteraction() {
+        if isFullscreenBottomControlsVisible == false {
+            withAnimation(bottomControlsAnimation) {
+                isFullscreenBottomControlsVisible = true
+            }
+        }
+        guard isFullscreenBottomControlsHovered == false else {
+            cancelFullscreenBottomControlsAutoHide()
+            return
+        }
+        scheduleFullscreenBottomControlsAutoHideIfNeeded()
+    }
+
+    private func resetFullscreenBottomControlsAutoHideState() {
+        cancelFullscreenBottomControlsAutoHide()
+        isFullscreenBottomControlsVisible = true
+        isFullscreenBottomControlsProgressDragging = false
+        isFullscreenBottomControlsVolumeAdjusting = false
+        isFullscreenBottomControlsPlaybackModeExpanded = false
+        isFullscreenBottomControlsHovered = false
+        scheduleFullscreenBottomControlsAutoHideIfNeeded()
+    }
+
+    private func scheduleFullscreenBottomControlsAutoHideIfNeeded() {
+        cancelFullscreenBottomControlsAutoHide()
+        guard isFullscreenBottomControlsAutoHideEnabled else {
+            if isFullscreenBottomControlsVisible == false {
+                withAnimation(bottomControlsAnimation) {
+                    isFullscreenBottomControlsVisible = true
+                }
+            }
+            return
+        }
+        guard shouldBlockFullscreenBottomControlsAutoHide == false else { return }
+
+        let hideWorkItem = DispatchWorkItem { @MainActor in
+            guard shouldBlockFullscreenBottomControlsAutoHide == false else {
+                scheduleFullscreenBottomControlsAutoHideIfNeeded()
+                return
+            }
+            withAnimation(bottomControlsAnimation) {
+                isFullscreenBottomControlsVisible = false
+            }
+        }
+        pendingFullscreenBottomControlsHide = hideWorkItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + settings.fullscreenMiniPlayerAutoHideSeconds,
+            execute: hideWorkItem
+        )
+    }
+
+    private func cancelFullscreenBottomControlsAutoHide() {
+        pendingFullscreenBottomControlsHide?.cancel()
+        pendingFullscreenBottomControlsHide = nil
+    }
+
     // MARK: - Fullscreen Bottom Bar Layer (Actual Resolution - Crisp)
     
     @ViewBuilder
@@ -642,43 +745,116 @@ struct FullscreenPlayerView: View {
         let scaledVolumeWidth = volumeWidth * baseScale
         let scaledWindowWidth = windowWidth * baseScale
         let scaledBottomPadding = fullscreenControlsBottomPadding * baseScale
+        let scaledGroupWidth = groupWidth * baseScale
+        let hotZoneWidth = min(scaledWindowWidth, scaledGroupWidth + 120 * baseScale)
+        let hotZoneHeight = scaledButtonSize + 34 * baseScale
+        let controlsRowHeight = max(scaledButtonSize, hotZoneHeight)
+        let controlsCenterY = controlsRowHeight * 0.5
+        let adjustedBottomPadding = max(
+            0,
+            scaledBottomPadding - (controlsRowHeight - scaledButtonSize) * 0.5
+        )
         
         VStack {
             Spacer()
             ZStack(alignment: .leading) {
-                leadingControlsPill(size: scaledButtonSize)
-                    .frame(width: scaledLeadingControlsWidth, height: scaledButtonSize)
-                    .position(
-                        x: scaledLeadingControlsOriginX + scaledLeadingControlsWidth / 2,
-                        y: scaledButtonSize / 2
+                Color.clear
+                    .frame(width: hotZoneWidth, height: hotZoneHeight)
+                    .contentShape(
+                        RoundedRectangle(
+                            cornerRadius: hotZoneHeight * 0.5,
+                            style: .continuous
+                        )
                     )
-                
-                FullscreenMiniPlayerView(scale: scale)
+                    .position(x: scaledWindowWidth * 0.5, y: controlsCenterY)
+                    .onContinuousHover { phase in
+                        switch phase {
+                        case .active:
+                            handleFullscreenBottomControlsHover(true)
+                        case .ended:
+                            handleFullscreenBottomControlsHover(false)
+                        }
+                    }
+
+                if isFullscreenBottomControlsVisible {
+                    leadingControlsPill(size: scaledButtonSize)
+                        .glassEffectTransition(.materialize)
+                        .frame(width: scaledLeadingControlsWidth, height: scaledButtonSize)
+                        .position(
+                            x: scaledLeadingControlsOriginX + scaledLeadingControlsWidth / 2,
+                            y: controlsCenterY
+                        )
+                    
+                    FullscreenMiniPlayerView(
+                        scale: scale,
+                        onInteraction: {
+                            registerFullscreenBottomControlsInteraction()
+                        },
+                        onProgressDraggingChanged: { dragging in
+                            isFullscreenBottomControlsProgressDragging = dragging
+                            if dragging {
+                                registerFullscreenBottomControlsInteraction()
+                            } else {
+                                scheduleFullscreenBottomControlsAutoHideIfNeeded()
+                            }
+                        },
+                        onPlaybackModeExpandedChanged: { expanded in
+                            isFullscreenBottomControlsPlaybackModeExpanded = expanded
+                            if expanded {
+                                registerFullscreenBottomControlsInteraction()
+                            } else {
+                                scheduleFullscreenBottomControlsAutoHideIfNeeded()
+                            }
+                        }
+                    )
+                    .glassEffectTransition(.materialize)
                     .frame(width: scaledMiniPlayerWidth, height: scaledButtonSize)
                     .environment(\.colorScheme, fullscreenControlsColorScheme)
                     .position(
                         x: scaledMiniPlayerOriginX + scaledMiniPlayerWidth / 2,
-                        y: scaledButtonSize / 2
+                        y: controlsCenterY
                     )
-                
-                ExpandableVolumeControl(
-                    volume: volumeBinding,
-                    isExpanded: $isVolumeExpanded,
-                    scale: scale
-                )
-                .frame(width: scaledVolumeWidth, height: scaledButtonSize)
-                .environment(\.colorScheme, fullscreenControlsColorScheme)
-                .position(
-                    x: scaledVolumeOriginX + scaledVolumeWidth / 2,
-                    y: scaledButtonSize / 2
-                )
+                    
+                    ExpandableVolumeControl(
+                        volume: volumeBinding,
+                        isExpanded: $isVolumeExpanded,
+                        scale: scale,
+                        onInteraction: {
+                            registerFullscreenBottomControlsInteraction()
+                        },
+                        onHoverStateChanged: { hovering in
+                            if hovering {
+                                registerFullscreenBottomControlsInteraction()
+                            } else {
+                                scheduleFullscreenBottomControlsAutoHideIfNeeded()
+                            }
+                        },
+                        onAdjustingChanged: { adjusting in
+                            isFullscreenBottomControlsVolumeAdjusting = adjusting
+                            if adjusting {
+                                registerFullscreenBottomControlsInteraction()
+                            } else {
+                                scheduleFullscreenBottomControlsAutoHideIfNeeded()
+                            }
+                        },
+                        materialStyle: fullscreenBottomControlsGlassMaterialStyle
+                    )
+                    .glassEffectTransition(.materialize)
+                    .frame(width: scaledVolumeWidth, height: scaledButtonSize)
+                    .environment(\.colorScheme, fullscreenControlsColorScheme)
+                    .position(
+                        x: scaledVolumeOriginX + scaledVolumeWidth / 2,
+                        y: controlsCenterY
+                    )
+                }
             }
-            .frame(width: scaledWindowWidth, height: scaledButtonSize, alignment: .leading)
-            .padding(.bottom, scaledBottomPadding)
+            .frame(width: scaledWindowWidth, height: controlsRowHeight, alignment: .leading)
+            .padding(.bottom, adjustedBottomPadding)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .animation(bottomControlsAnimation, value: isLeadingControlsExpanded)
         .animation(bottomControlsAnimation, value: isVolumeExpanded)
+        .animation(bottomControlsAnimation, value: isFullscreenBottomControlsVisible)
     }
 
     // MARK: - Artwork and Controls Area (No Lyrics - Lyrics are in crisp layer)
@@ -812,10 +988,16 @@ struct FullscreenPlayerView: View {
             colorScheme: fullscreenControlsColorScheme,
             accentColor: nil as Color?,
             prominence: .standard,
+            materialStyle: fullscreenBottomControlsGlassMaterialStyle,
             isFloating: true
         )
         .onHover { hovering in
             isLeadingControlsExpanded = hovering
+            if hovering {
+                registerFullscreenBottomControlsInteraction()
+            } else {
+                scheduleFullscreenBottomControlsAutoHideIfNeeded()
+            }
         }
     }
 
@@ -825,7 +1007,10 @@ struct FullscreenPlayerView: View {
         @ViewBuilder label: () -> Label,
         action: @escaping () -> Void
     ) -> some View {
-        Button(action: action) {
+        Button {
+            registerFullscreenBottomControlsInteraction()
+            action()
+        } label: {
             label()
                 .frame(width: size, height: size)
                 .contentShape(Circle())

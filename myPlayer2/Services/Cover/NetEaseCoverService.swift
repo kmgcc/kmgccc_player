@@ -122,8 +122,8 @@ final class NetEaseCoverService: NetEaseCoverServiceProtocol {
         await withTaskGroup(of: CoverCandidate?.self) { group in
             for albumResult in result.result.albums {
                 group.addTask {
-                    guard let picURLString = albumResult.picURL,
-                          let coverURL = URL(string: Self.makeLargeCoverURLString(from: picURLString)) else {
+                    let picURLString = albumResult.picURL
+                    guard let coverURL = URL(string: Self.makeLargeCoverURLString(from: picURLString)) else {
                         return nil
                     }
                     do {
@@ -177,14 +177,14 @@ private extension NetEaseCoverService {
         }
     }
 
-    static func makeLargeCoverURLString(from picURLString: String) -> String {
+    nonisolated static func makeLargeCoverURLString(from picURLString: String) -> String {
         if picURLString.contains("?") {
             return "\(picURLString)&param=1200y1200"
         }
         return "\(picURLString)?param=1200y1200"
     }
 
-    static func validateHTTP(response: URLResponse) throws {
+    nonisolated static func validateHTTP(response: URLResponse) throws {
         guard let http = response as? HTTPURLResponse else { return }
         guard (200..<300).contains(http.statusCode) else {
             let error = NSError(
