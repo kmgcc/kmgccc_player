@@ -36,9 +36,11 @@ struct TrackEditSheet: View {
 
     @State private var showingArtworkPicker = false
     @State private var showingLyricsPicker = false
-    @State private var isFetchingCover = false
-    @State private var coverFetchError: String?
     @State private var coverFetchTask: Task<Void, Never>?
+
+    // MARK: - Cover Search Coordinator
+
+    @State private var coverCoordinator: CoverSearchCoordinator?
 
     private let amllDbURL = URL(string: "https://github.com/amll-dev/amll-ttml-db")!
     private let ttmlToolURL = URL(string: "https://amll-ttml-tool.stevexmh.net/")!
@@ -82,11 +84,23 @@ struct TrackEditSheet: View {
         .tint(themeStore.accentColor)
         .accentColor(themeStore.accentColor)
         .onAppear {
+            // Initialize cover coordinator with injected services
+            coverCoordinator = CoverSearchCoordinator(
+                coverDownloadService: coverDownloadService,
+                netEaseCoverService: netEaseCoverService
+            )
             loadTrackData()
         }
         .onDisappear {
             coverFetchTask?.cancel()
             coverFetchTask = nil
+            coverCoordinator?.cancelSearch()
+        }
+        .onChange(of: coverCoordinator?.selectedForPreview) { _, newValue in
+            // Reactively update artwork preview when coordinator selects a candidate
+            if let candidate = newValue {
+                artworkData = candidate.imageData
+            }
         }
     }
 
@@ -150,9 +164,9 @@ struct TrackEditSheet: View {
                     }
                     .buttonStyle(.bordered)
                     .clipShape(Capsule())
-                    .disabled(isFetchingCover)
+                    .disabled(coverCoordinator?.isLoading == true)
 
-                    if isFetchingCover {
+                    if coverCoordinator?.isLoading == true {
                         ProgressView()
                             .controlSize(.small)
                     }
@@ -160,18 +174,31 @@ struct TrackEditSheet: View {
                     if artworkData != nil {
                         Button(LocalizedStringKey("edit.track.remove_artwork")) {
                             artworkData = nil
+                            coverCoordinator?.clear()
                         }
                         .buttonStyle(.bordered)
                         .tint(.red)
                         .clipShape(Capsule())
                     }
 
-                    if let coverFetchError {
-                        Text(coverFetchError)
+                    if let error = coverCoordinator?.error {
+                        Text(error)
                             .font(.caption)
                             .foregroundStyle(.red)
                             .fixedSize(horizontal: false, vertical: true)
                     }
+                }
+
+                // Candidate strip (shown when candidates available)
+                if let coordinator = coverCoordinator, coordinator.hasCandidates {
+                    CoverCandidateStripView(
+                        candidates: coordinator.candidates,
+                        selectedCandidate: coordinator.selectedForPreview,
+                        onSelect: { candidate in
+                            coordinator.selectForPreview(candidate)
+                            artworkData = candidate.imageData
+                        }
+                    )
                 }
             }
         }
@@ -440,45 +467,12 @@ struct TrackEditSheet: View {
 
     private func fetchCover() {
         coverFetchTask?.cancel()
-        isFetchingCover = true
-        coverFetchError = nil
+        coverCoordinator?.clear()
 
         coverFetchTask = Task {
-            defer {
-                Task { @MainActor in
-                    isFetchingCover = false
-                    coverFetchTask = nil
-                }
-            }
-
-            do {
-                let downloadedData: Data
-
-                do {
-                    downloadedData = try await coverDownloadService.downloadCover(
-                        artist: artist,
-                        album: album,
-                        size: 1200
-                    )
-                } catch {
-                    downloadedData = try await netEaseCoverService.searchAndDownloadCover(
-                        artist: artist,
-                        album: album
-                    )
-                }
-
-                try Task.checkCancellation()
-
-                await MainActor.run {
-                    artworkData = downloadedData
-                }
-            } catch is CancellationError {
-                return
-            } catch {
-                await MainActor.run {
-                    coverFetchError = error.localizedDescription
-                }
-            }
+            guard let coordinator = coverCoordinator else { return }
+            await coordinator.search(artist: artist, album: album)
+            // Note: artworkData is updated reactively via onChange(of: selectedForPreview)
         }
     }
 
