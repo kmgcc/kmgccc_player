@@ -19,6 +19,7 @@ import SwiftUI
 struct SidebarView: View {
 
     @Environment(LibraryViewModel.self) private var libraryVM
+    @Environment(ImportEnrichmentService.self) private var importEnrichmentService
     @Environment(UIStateViewModel.self) private var uiState
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var themeStore: ThemeStore
@@ -251,6 +252,11 @@ struct SidebarView: View {
                 isHoveringPlaylists = hovering
             }
 
+            if importEnrichmentService.hasOutstandingWork {
+                sidebarEnrichmentStatus
+                    .transition(.opacity)
+            }
+
             Divider()
 
             // Bottom controls
@@ -281,6 +287,7 @@ struct SidebarView: View {
         .sheet(isPresented: $showingPlaylistSheet) {
             PlaylistEditSheet(playlist: playlistToEdit)
         }
+        .animation(.snappy(duration: 0.2), value: importEnrichmentService.hasOutstandingWork)
     }
 
     private var settingsButton: some View {
@@ -399,6 +406,24 @@ struct SidebarView: View {
         RoundedRectangle(cornerRadius: 8, style: .continuous)
             .fill(isSelected ? themeStore.selectionFill : Color.clear)
     }
+
+    private var sidebarEnrichmentStatus: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+                .scaleEffect(0.72)
+
+            Text(importEnrichmentService.progress.sidebarText)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 4)
+        .padding(.bottom, 8)
+    }
 }
 
 // MARK: - Sidebar Selection
@@ -420,7 +445,7 @@ private struct SidebarWidthPreferenceKey: PreferenceKey {
 
 // MARK: - Preview
 
-#Preview("Sidebar") {
+#Preview("Sidebar") { @MainActor in
     let repository = StubLibraryRepository()
     let libraryVM = LibraryViewModel(repository: repository)
     let uiState = UIStateViewModel()
@@ -428,6 +453,7 @@ private struct SidebarWidthPreferenceKey: PreferenceKey {
     NavigationSplitView {
         SidebarView()
             .environment(libraryVM)
+            .environment(ImportEnrichmentService(repository: repository))
             .environment(uiState)
             .environmentObject(ThemeStore.shared)
     } detail: {

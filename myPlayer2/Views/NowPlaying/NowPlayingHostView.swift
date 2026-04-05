@@ -24,22 +24,20 @@ struct NowPlayingHostView: View {
     @State private var skinRevision = 0
     @State private var artworkSnapshot: ArtworkAssetSnapshot?
 
+    let mainContentWidth: CGFloat
+
     var body: some View {
         let selectedSkinID = settings.selectedNowPlayingSkinID
         let selectedSkin = skinManager.skin(for: selectedSkinID)
 
         GeometryReader { proxy in
-            let windowSize = proxy.size
-            let contentWidth = max(
-                0, windowSize.width - (uiState.lyricsVisible ? uiState.lyricsWidth : 0))
-            let contentHeight = max(0, windowSize.height - Constants.Layout.miniPlayerHeight - 12)
+            let contentHeight = max(0, proxy.size.height - Constants.Layout.miniPlayerHeight - 12)
             let contentBounds = CGRect(
-                origin: .zero, size: CGSize(width: contentWidth, height: contentHeight))
-            let context = makeContext(windowSize: windowSize, contentBounds: contentBounds)
+                origin: .zero, size: CGSize(width: mainContentWidth, height: contentHeight))
+            let context = makeContext(windowSize: proxy.size, contentBounds: contentBounds)
 
             ZStack(alignment: .topLeading) {
                 if settings.nowPlayingArtBackgroundEnabled {
-                    // BKArt is rendered at window level; keep this layer transparent.
                     Color.clear
                 } else {
                     selectedSkin.makeBackground(context: context)
@@ -51,13 +49,11 @@ struct NowPlayingHostView: View {
                         overlay
                     }
                 }
-                .frame(width: contentBounds.width, height: contentBounds.height)
-                .clipped()
+                .frame(width: contentBounds.width, height: contentBounds.height, alignment: .center)
 
             }
             .id("nowPlayingSkin_\(selectedSkinID)_\(skinRevision)")
-            .frame(width: windowSize.width, height: windowSize.height, alignment: .topLeading)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .frame(width: mainContentWidth, height: proxy.size.height, alignment: .topLeading)
         }
         .onChange(of: selectedSkinID) { _, _ in
             skinRevision &+= 1
@@ -77,6 +73,15 @@ struct NowPlayingHostView: View {
         }
         .task(id: currentArtworkTaskKey) {
             await loadArtworkSnapshot()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .libraryTrackDidUpdate)) { notification in
+            guard
+                let trackID = notification.userInfo?["trackID"] as? UUID,
+                trackID == playerVM.currentTrack?.id
+            else { return }
+            Task {
+                await loadArtworkSnapshot()
+            }
         }
     }
 

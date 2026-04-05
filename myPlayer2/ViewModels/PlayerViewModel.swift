@@ -84,6 +84,11 @@ final class PlayerViewModel {
         nowPlayingService.updateNowPlaying(force: true)
     }
 
+    func refreshTracks(_ tracks: [Track]) {
+        playbackService.refreshTracks(tracks)
+        nowPlayingService.updateNowPlaying(force: true)
+    }
+
     // MARK: - Playback Control
 
     func play(track: Track) {

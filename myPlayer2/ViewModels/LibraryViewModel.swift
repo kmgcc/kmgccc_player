@@ -71,6 +71,10 @@ enum LibrarySelection: Hashable {
 @Observable
 @MainActor
 final class LibraryViewModel {
+    struct TrackUpdateEvent: Equatable {
+        let trackID: UUID
+        let revision: Int
+    }
 
     // MARK: - Published State
 
@@ -166,6 +170,7 @@ final class LibraryViewModel {
 
     /// Trigger for UI refresh.
     private(set) var refreshTrigger: Int = 0
+    private(set) var trackUpdateEvent: TrackUpdateEvent?
 
     /// Trigger to reset search text and focus in the UI (incremented on sidebar selection).
     private(set) var searchResetTrigger: Int = 0
@@ -191,6 +196,7 @@ final class LibraryViewModel {
     private let repository: LibraryRepositoryProtocol
     private var importService: FileImportServiceProtocol?
     private var isApplyingSortPreference = false
+    private var trackUpdateRevision = 0
 
     private struct SortPreference: Codable {
         let key: String
@@ -215,12 +221,68 @@ final class LibraryViewModel {
             ) ?? .descending
         migrateLegacySortPreferenceIfNeeded()
         applySortPreferenceForCurrentSelection()
+        self.repository.setChangeHandler { [weak self] change in
+            self?.handleRepositoryChange(change)
+        }
         print("[Lifecycle] LibraryViewModel.init, id: \(ObjectIdentifier(self))")
         Log.debug("LibraryViewModel initialized", category: .library)
     }
 
     deinit {
         print("[Lifecycle] LibraryViewModel.deinit, id: \(ObjectIdentifier(self))")
+    }
+
+    private func handleRepositoryChange(_ change: LibraryRepositoryChange) {
+        switch change {
+        case .trackUpdated(let trackID):
+            Task { @MainActor [weak self] in
+                await self?.applyRepositoryTrackUpdateBatch([trackID])
+            }
+        case .tracksUpdated(let trackIDs):
+            Task { @MainActor [weak self] in
+                await self?.applyRepositoryTrackUpdateBatch(trackIDs)
+            }
+        }
+    }
+
+    private func applyRepositoryTrackUpdateBatch(_ trackIDs: [UUID]) async {
+        let uniqueTrackIDs = Array(Set(trackIDs)).sorted { $0.uuidString < $1.uuidString }
+        guard !uniqueTrackIDs.isEmpty else { return }
+
+        Log.info(
+            "[ImportEnrichmentReload] reload requested for track IDs: \(uniqueTrackIDs.map(\.uuidString))",
+            category: .library
+        )
+
+        let refreshedTracks = await repository.fetchTracks(ids: uniqueTrackIDs)
+        let refreshedByID = Dictionary(uniqueKeysWithValues: refreshedTracks.map { ($0.id, $0) })
+        guard !refreshedByID.isEmpty else { return }
+
+        allTracks = allTracks.map { refreshedByID[$0.id] ?? $0 }
+        for playlist in playlists {
+            playlist.tracks = playlist.tracks.map { refreshedByID[$0.id] ?? $0 }
+        }
+        totalTrackCount = allTracks.count
+
+        Log.info(
+            "[ImportEnrichmentReload] visible playlist rows refreshed for \(refreshedTracks.count) tracks",
+            category: .library
+        )
+
+        for trackID in uniqueTrackIDs {
+            trackUpdateRevision += 1
+            trackUpdateEvent = TrackUpdateEvent(trackID: trackID, revision: trackUpdateRevision)
+            NotificationCenter.default.post(
+                name: .libraryTrackDidUpdate,
+                object: nil,
+                userInfo: ["trackID": trackID]
+            )
+        }
+
+        Log.info(
+            "[ImportEnrichmentReload] current detail/lyrics refreshed for current track if applicable",
+            category: .library
+        )
     }
 
     /// Set the import service (called after initialization).
@@ -282,12 +344,19 @@ final class LibraryViewModel {
     /// If no playlist is selected, imports to the most recently selected playlist (if any),
     /// otherwise the first available playlist. Only creates a playlist if none exist.
     func importToCurrentPlaylist() async {
+        let clickTimestamp = Date()
         Log.info("importToCurrentPlaylist() called", category: .import)
+        Log.info("[ImportPanel] click timestamp: \(clickTimestamp)", category: .import)
         Log.debug("   ↳ selectedPlaylistId = \(selectedPlaylistId?.uuidString ?? "nil")", category: .import)
         Log.debug("   ↳ importService = \(importService != nil ? "available" : "nil")", category: .import)
 
         guard let service = importService else {
             Log.warning("Import service not available", category: .import)
+            return
+        }
+
+        guard let selectedURLs = await service.pickImportURLs(triggeredAt: clickTimestamp) else {
+            Log.debug("Import cancelled before target playlist resolution", category: .import)
             return
         }
 
@@ -322,9 +391,9 @@ final class LibraryViewModel {
         }
 
         // Perform import
-        Log.info("Calling pickAndImport...", category: .import)
-        let count = await service.pickAndImport(to: targetPlaylist)
-        Log.info("pickAndImport returned: \(count) tracks imported", category: .import)
+        Log.info("Calling importSelectedURLs...", category: .import)
+        let count = await service.importSelectedURLs(selectedURLs, to: targetPlaylist)
+        Log.info("importSelectedURLs returned: \(count) tracks imported", category: .import)
 
         // Only refresh if tracks were actually imported
         if count > 0 {
@@ -334,12 +403,19 @@ final class LibraryViewModel {
 
     /// Import to a specific playlist.
     func importToPlaylist(_ playlist: Playlist) async {
+        let clickTimestamp = Date()
         guard let service = importService else {
             Log.warning("Import service not available", category: .import)
             return
         }
 
-        let count = await service.pickAndImport(to: playlist)
+        Log.info("[ImportPanel] click timestamp: \(clickTimestamp)", category: .import)
+        guard let selectedURLs = await service.pickImportURLs(triggeredAt: clickTimestamp) else {
+            Log.debug("Import cancelled for playlist '\(playlist.name)'", category: .import)
+            return
+        }
+
+        let count = await service.importSelectedURLs(selectedURLs, to: playlist)
 
         if count > 0 {
             await refresh()

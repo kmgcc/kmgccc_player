@@ -85,6 +85,7 @@ extension Notification.Name {
     static let previousTrack = Notification.Name("kmgccc_player.previousTrack")
     static let toggleLyrics = Notification.Name("kmgccc_player.toggleLyrics")
     static let playbackTrackDidChange = Notification.Name("kmgccc_player.playbackTrackDidChange")
+    static let libraryTrackDidUpdate = Notification.Name("kmgccc_player.libraryTrackDidUpdate")
     static let aboutEasterEggTriggered = Notification.Name("kmgccc_player.aboutEasterEggTriggered")
     static let enterFullscreen = Notification.Name("kmgccc_player.enterFullscreen")
     static let mainLayoutReady = Notification.Name("kmgccc_player.mainLayoutReady")

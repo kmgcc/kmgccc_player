@@ -46,6 +46,13 @@ struct LyricsPanelView: View {
             .onReceive(NotificationCenter.default.publisher(for: .playbackTrackDidChange)) { _ in
                 reloadLyricsSurface(reason: "playback track notification", forceLyricsReload: true)
             }
+            .onReceive(NotificationCenter.default.publisher(for: .libraryTrackDidUpdate)) { notification in
+                guard
+                    let trackID = notification.userInfo?["trackID"] as? UUID,
+                    trackID == playerVM.currentTrack?.id
+                else { return }
+                reloadLyricsSurface(reason: "library track enrichment update", forceLyricsReload: true)
+            }
             .onChange(of: themeStore.colorScheme) { _, _ in
                 // Theme mode switches must immediately re-push AMLL config,
                 // so light/dark dedicated font weights take effect without waiting for settings edits.

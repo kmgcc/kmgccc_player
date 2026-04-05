@@ -360,8 +360,9 @@ final class LocalLibraryService {
 
     // MARK: - Sidecar Write
 
-    func writeSidecar(for track: Track) {
-        guard !track.libraryRelativePath.isEmpty else { return }
+    @discardableResult
+    func writeSidecar(for track: Track) -> Bool {
+        guard !track.libraryRelativePath.isEmpty else { return false }
 
         do {
             ensureLibraryFolders()
@@ -396,8 +397,10 @@ final class LocalLibraryService {
             let data = try encoder.encode(sidecar)
             let metaURL = LocalLibraryPaths.trackMetaURL(for: track.id)
             try data.write(to: metaURL, options: .atomic)
+            return true
         } catch {
             Log.error("Failed to write sidecar for \(track.title): \(error)", category: .library)
+            return false
         }
     }
 

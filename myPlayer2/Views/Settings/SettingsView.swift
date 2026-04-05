@@ -1421,6 +1421,24 @@ struct SettingsView: View {
 
             GroupBox {
                 VStack(alignment: .leading, spacing: 12) {
+                    Toggle(
+                        "导入时延后补全歌词与封面",
+                        isOn: Binding(
+                            get: { settings.deferImportEnrichment },
+                            set: { settings.deferImportEnrichment = $0 }
+                        )
+                    )
+                    .toggleStyle(.switch)
+
+                    Text("开启后导入会先完成文件复制与基础信息入库，歌曲会先出现在资料库与播放列表中，再在后台补全歌词和封面。关闭后保持当前导入流程。")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(12)
+            }
+
+            GroupBox {
+                VStack(alignment: .leading, spacing: 12) {
                     Text("将应用配置恢复为初始默认值，不会修改音乐资料库。")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)

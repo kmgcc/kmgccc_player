@@ -51,7 +51,7 @@ nonisolated private enum BatchImportItemStage: Sendable {
     case metadata
     case duplicateCheck
     case importing
-    case fetchingLyrics
+    case enrichingMetadata
     case completed
 
     var title: String {
@@ -66,8 +66,8 @@ nonisolated private enum BatchImportItemStage: Sendable {
             return "重复检查"
         case .importing:
             return "导入歌曲"
-        case .fetchingLyrics:
-            return "查找歌词"
+        case .enrichingMetadata:
+            return "补全信息"
         case .completed:
             return "导入完成"
         }
@@ -106,7 +106,7 @@ nonisolated private enum BatchImportStage {
     case readingMetadata
     case waitingForDuplicateChoice
     case importingFiles
-    case fetchingLyrics
+    case enrichingMetadata
     case savingLibrary
     case completed
 
@@ -122,8 +122,8 @@ nonisolated private enum BatchImportStage {
             return "等待处理重复歌曲"
         case .importingFiles:
             return "正在导入歌曲"
-        case .fetchingLyrics:
-            return "正在查找歌词"
+        case .enrichingMetadata:
+            return "正在补全导入信息"
         case .savingLibrary:
             return "正在保存到资料库"
         case .completed:
@@ -143,13 +143,1053 @@ nonisolated private enum BatchImportStage {
             return 0.48...0.48
         case .importingFiles:
             return 0.48...0.82
-        case .fetchingLyrics:
+        case .enrichingMetadata:
             return 0.82...0.96
         case .savingLibrary:
             return 0.96...0.995
         case .completed:
             return 1.0...1.0
         }
+    }
+}
+
+nonisolated private enum ImportEnrichmentMode: Sendable {
+    case immediate
+    case deferred
+
+    var defersEnrichment: Bool {
+        self == .deferred
+    }
+}
+
+nonisolated private enum ImportLyricsLookupOutcome: Sendable {
+    case completed(String)
+    case noResults
+    case failed(String)
+}
+
+nonisolated private enum ImportCoverLookupOutcome: Sendable {
+    case completed(Data)
+    case noResults
+    case failed(String)
+}
+
+nonisolated private enum ImportEnrichmentPart: String, Sendable, Hashable {
+    case lyrics
+    case cover
+
+    var label: String {
+        switch self {
+        case .lyrics: return "歌词"
+        case .cover: return "封面"
+        }
+    }
+}
+
+nonisolated private enum ImportEnrichmentPartState: String, Sendable {
+    case pending
+    case running
+    case flushPending
+    case completed
+    case failed
+    case noResults
+    case skipped
+
+    var isOutstanding: Bool {
+        self == .pending || self == .running || self == .flushPending
+    }
+
+    var isTerminal: Bool {
+        switch self {
+        case .completed, .failed, .noResults, .skipped:
+            return true
+        case .pending, .running, .flushPending:
+            return false
+        }
+    }
+
+    var countsAsFailure: Bool {
+        self == .failed || self == .noResults
+    }
+}
+
+nonisolated private struct ImportEnrichmentPartRequest: Sendable, Hashable {
+    let trackID: UUID
+    let part: ImportEnrichmentPart
+}
+
+nonisolated private struct ImportEnrichmentItemState: Sendable {
+    let trackID: UUID
+    var title: String
+    var artist: String
+    var album: String
+    var lyricsState: ImportEnrichmentPartState
+    var coverState: ImportEnrichmentPartState
+    var lyricAttempts: Int
+    var coverAttempts: Int
+
+    func state(for part: ImportEnrichmentPart) -> ImportEnrichmentPartState {
+        switch part {
+        case .lyrics: return lyricsState
+        case .cover: return coverState
+        }
+    }
+
+    mutating func setState(_ state: ImportEnrichmentPartState, for part: ImportEnrichmentPart) {
+        switch part {
+        case .lyrics:
+            lyricsState = state
+        case .cover:
+            coverState = state
+        }
+    }
+
+    func attempts(for part: ImportEnrichmentPart) -> Int {
+        switch part {
+        case .lyrics: return lyricAttempts
+        case .cover: return coverAttempts
+        }
+    }
+
+    mutating func incrementAttempts(for part: ImportEnrichmentPart) {
+        switch part {
+        case .lyrics:
+            lyricAttempts += 1
+        case .cover:
+            coverAttempts += 1
+        }
+    }
+
+    var hasOutstandingWork: Bool {
+        lyricsState.isOutstanding || coverState.isOutstanding
+    }
+
+    var isTerminal: Bool {
+        lyricsState.isTerminal && coverState.isTerminal
+    }
+
+    var hasTerminalFailure: Bool {
+        lyricsState.countsAsFailure || coverState.countsAsFailure
+    }
+
+    var flushPendingPartCount: Int {
+        [lyricsState, coverState].filter { $0 == .flushPending }.count
+    }
+}
+
+nonisolated struct ImportEnrichmentProgressSnapshot: Sendable, Equatable {
+    let totalEnqueued: Int
+    let completedCount: Int
+    let failedCount: Int
+    let pendingLyricsCount: Int
+    let pendingCoverCount: Int
+    let runningCount: Int
+    let flushPendingCount: Int
+
+    var hasOutstandingWork: Bool {
+        pendingLyricsCount > 0 || pendingCoverCount > 0 || runningCount > 0 || flushPendingCount > 0
+    }
+
+    var sidebarText: String {
+        var parts: [String] = [
+            "补全中 \(completedCount)/\(totalEnqueued)"
+        ]
+        if runningCount > 0 {
+            parts.append("进行中 \(runningCount)")
+        }
+        if flushPendingCount > 0 {
+            parts.append("待提交 \(flushPendingCount)")
+        }
+        if pendingLyricsCount > 0 || pendingCoverCount > 0 {
+            parts.append("词\(pendingLyricsCount) 封\(pendingCoverCount)")
+        }
+        if failedCount > 0 {
+            parts.append("失败 \(failedCount)")
+        }
+        return parts.joined(separator: " · ")
+    }
+}
+
+nonisolated private struct PendingTrackEnrichmentPatch: Sendable {
+    let trackID: UUID
+    var ttmlLyricText: String?
+    var artworkData: Data?
+    var lyricShouldFlush: Bool
+    var coverShouldFlush: Bool
+
+    init(trackID: UUID) {
+        self.trackID = trackID
+        self.ttmlLyricText = nil
+        self.artworkData = nil
+        self.lyricShouldFlush = false
+        self.coverShouldFlush = false
+    }
+}
+
+nonisolated private enum ImportEnrichmentWorker {
+    /// Fetch lyrics using the shared search pipeline that matches manual "Find Lyrics" behavior.
+    /// Uses both AMLLDB and LDDC sources with proper ranking/merging logic.
+    /// Automatically selects the top-ranked candidate from the merged result list.
+    /// - Parameters:
+    ///   - title: Song title to search
+    ///   - artist: Artist name (optional)
+    ///   - album: Album name (optional, improves AMLLDB matching)
+    ///   - duration: Duration in seconds (optional, improves AMLLDB matching)
+    /// - Returns: ImportLyricsLookupOutcome with TTML lyrics or failure status
+    static func fetchLyrics(
+        title: String,
+        artist: String,
+        album: String? = nil,
+        duration: Double? = nil
+    ) async -> ImportLyricsLookupOutcome {
+        // Use shared helper that matches manual "Find Lyrics" ranking logic
+        // This ensures import flow uses the same AMLLDB + LDDC search with proper merging
+        let ttml = await LyricsSearchHelper.searchAndFetchBestLyrics(
+            title: title,
+            artist: artist.isEmpty ? nil : artist,
+            album: album?.isEmpty == true ? nil : album,
+            duration: duration
+        )
+
+        if let ttml {
+            return .completed(ttml)
+        } else {
+            return .noResults
+        }
+    }
+
+    static func fetchCover(
+        artist: String,
+        album: String
+    ) async -> ImportCoverLookupOutcome {
+        let normalizedArtist = artist.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedAlbum = album.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !normalizedArtist.isEmpty || !normalizedAlbum.isEmpty else {
+            return .noResults
+        }
+
+        do {
+            let coverData = try await downloadCoverViaSacad(
+                artist: normalizedArtist,
+                album: normalizedAlbum,
+                size: 1200
+            )
+            return .completed(coverData)
+        } catch {
+            Log.warning(
+                "sacad cover fetch failed for \(normalizedArtist) - \(normalizedAlbum): \(error)",
+                category: .import
+            )
+        }
+
+        do {
+            let coverData = try await downloadNetEaseCover(
+                artist: normalizedArtist,
+                album: normalizedAlbum
+            )
+            return .completed(coverData)
+        } catch let error as NetEaseCoverError {
+            if case .noResults = error {
+                return .noResults
+            }
+            Log.warning(
+                "NetEase cover fetch failed for \(normalizedArtist) - \(normalizedAlbum): \(error)",
+                category: .import
+            )
+            return .failed(error.localizedDescription)
+        } catch {
+            Log.warning(
+                "NetEase cover fetch failed for \(normalizedArtist) - \(normalizedAlbum): \(error)",
+                category: .import
+            )
+            return .failed(error.localizedDescription)
+        }
+    }
+
+    private static func downloadCoverViaSacad(
+        artist: String,
+        album: String,
+        size: Int
+    ) async throws -> Data {
+        let executablePath = "/Users/kmg/.cargo/bin/sacad"
+        let fileManager = FileManager.default
+
+        guard fileManager.isExecutableFile(atPath: executablePath) else {
+            throw CoverDownloadError.executableMissing(path: executablePath)
+        }
+
+        let tempURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("temp_\(UUID().uuidString).jpg")
+
+        defer {
+            try? fileManager.removeItem(at: tempURL)
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executablePath)
+        process.arguments = [artist, album, String(size), tempURL.path]
+
+        let errorPipe = Pipe()
+        process.standardOutput = Pipe()
+        process.standardError = errorPipe
+
+        try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<Void, Error>) in
+            process.terminationHandler = { process in
+                let stderrData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                guard process.terminationStatus == 0 else {
+                    let stderrText = String(data: stderrData, encoding: .utf8)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    continuation.resume(
+                        throwing: CoverDownloadError.processFailed(
+                            exitCode: process.terminationStatus,
+                            message: stderrText?.isEmpty == false
+                                ? stderrText!
+                                : "sacad exited with an error"
+                        )
+                    )
+                    return
+                }
+                continuation.resume()
+            }
+
+            do {
+                try process.run()
+            } catch {
+                continuation.resume(
+                    throwing: CoverDownloadError.processFailed(
+                        exitCode: -1,
+                        message: error.localizedDescription
+                    )
+                )
+            }
+        }
+
+        guard fileManager.fileExists(atPath: tempURL.path) else {
+            throw CoverDownloadError.outputMissing
+        }
+
+        let imageData = try Data(contentsOf: tempURL)
+        guard !imageData.isEmpty, NSImage(data: imageData) != nil else {
+            throw CoverDownloadError.invalidImageData
+        }
+        return imageData
+    }
+
+    private static func downloadNetEaseCover(
+        artist: String,
+        album: String
+    ) async throws -> Data {
+        let query = "\(artist) \(album)".trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else {
+            throw NetEaseCoverError.noResults
+        }
+
+        guard let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)
+        else {
+            throw NetEaseCoverError.badURL
+        }
+
+        let searchURLString =
+            "https://music.163.com/api/search/get/web?type=10&s=\(encodedQuery)&limit=5"
+        guard let searchURL = URL(string: searchURLString) else {
+            throw NetEaseCoverError.badURL
+        }
+
+        let searchData: Data
+        do {
+            let (data, response) = try await URLSession.shared.data(from: searchURL)
+            try validateNetEaseHTTP(response: response)
+            searchData = data
+        } catch let error as NetEaseCoverError {
+            throw error
+        } catch {
+            throw NetEaseCoverError.requestFailed(underlying: error)
+        }
+
+        let result: NetEaseSearchResponse
+        do {
+            result = try JSONDecoder().decode(NetEaseSearchResponse.self, from: searchData)
+        } catch {
+            throw NetEaseCoverError.decodingFailed(underlying: error)
+        }
+
+        guard let picURLString = result.result.albums.first?.picURL else {
+            throw NetEaseCoverError.noResults
+        }
+
+        let finalCoverURLString = makeLargeCoverURLString(from: picURLString)
+        guard let coverURL = URL(string: finalCoverURLString) else {
+            throw NetEaseCoverError.badURL
+        }
+
+        do {
+            let (imageData, response) = try await URLSession.shared.data(from: coverURL)
+            try validateNetEaseHTTP(response: response)
+            guard !imageData.isEmpty, NSImage(data: imageData) != nil else {
+                throw NetEaseCoverError.imageDownloadFailed(
+                    underlying: CoverDownloadError.invalidImageData
+                )
+            }
+            return imageData
+        } catch let error as NetEaseCoverError {
+            throw error
+        } catch {
+            throw NetEaseCoverError.imageDownloadFailed(underlying: error)
+        }
+    }
+
+    private static func validateNetEaseHTTP(response: URLResponse) throws {
+        guard let http = response as? HTTPURLResponse else { return }
+        guard (200..<300).contains(http.statusCode) else {
+            let error = NSError(
+                domain: "NetEaseCoverService",
+                code: http.statusCode,
+                userInfo: [NSLocalizedDescriptionKey: "HTTP \(http.statusCode)"]
+            )
+            throw NetEaseCoverError.requestFailed(underlying: error)
+        }
+    }
+
+    private static func makeLargeCoverURLString(from picURLString: String) -> String {
+        if picURLString.contains("?") {
+            return "\(picURLString)&param=1200y1200"
+        }
+        return "\(picURLString)?param=1200y1200"
+    }
+
+    private struct NetEaseSearchResponse: Decodable, Sendable {
+        let result: ResultPayload
+
+        struct ResultPayload: Decodable, Sendable {
+            let albums: [Album]
+        }
+
+        struct Album: Decodable, Sendable {
+            let picURL: String
+
+            enum CodingKeys: String, CodingKey {
+                case picURL = "picUrl"
+            }
+        }
+    }
+}
+
+@MainActor
+@Observable
+final class ImportEnrichmentService {
+    private let repository: LibraryRepositoryProtocol
+    private let maxConcurrent: Int
+    private let maxAttemptsPerPart = 2
+    private let flushBatchSize = 4
+    private let flushDebounceNanoseconds: UInt64 = 900_000_000
+
+    private var queue: [ImportEnrichmentPartRequest] = []
+    private var queuedRequests: Set<ImportEnrichmentPartRequest> = []
+    private var runningRequests: Set<ImportEnrichmentPartRequest> = []
+    private var trackByID: [UUID: Track] = [:]
+    private var itemStates: [UUID: ImportEnrichmentItemState] = [:]
+    private var pendingFlushPatches: [UUID: PendingTrackEnrichmentPatch] = [:]
+    private var flushTask: Task<Void, Never>?
+    private var isFlushing = false
+    private(set) var progress = ImportEnrichmentProgressSnapshot(
+        totalEnqueued: 0,
+        completedCount: 0,
+        failedCount: 0,
+        pendingLyricsCount: 0,
+        pendingCoverCount: 0,
+        runningCount: 0,
+        flushPendingCount: 0
+    )
+
+    var hasOutstandingWork: Bool { progress.hasOutstandingWork }
+
+    init(repository: LibraryRepositoryProtocol, maxConcurrent: Int = 2) {
+        self.repository = repository
+        self.maxConcurrent = max(1, maxConcurrent)
+        Log.info("[ImportEnrichment] service init", category: .import)
+    }
+
+    deinit {
+        Log.info("[ImportEnrichment] service deinit", category: .import)
+    }
+
+    func enqueueTracks(_ tracks: [Track]) {
+        if hasOutstandingWork == false {
+            resetProgressIfIdle()
+        }
+
+        Log.info("[ImportEnrichment] queue wake requested for \(tracks.count) tracks", category: .import)
+
+        for track in tracks {
+            guard let itemState = makeInitialItemState(for: track) else { continue }
+            if itemStates[track.id] == nil {
+                itemStates[track.id] = itemState
+            } else {
+                itemStates[track.id]?.title = track.title
+                itemStates[track.id]?.artist = track.artist
+                itemStates[track.id]?.album = track.album
+            }
+
+            trackByID[track.id] = track
+
+            if track.ttmlLyricText == nil {
+                enqueuePart(.lyrics, for: track.id)
+            } else if var state = itemStates[track.id], state.lyricsState != .completed {
+                state.lyricsState = .skipped
+                itemStates[track.id] = state
+                Log.info(
+                    "[ImportEnrichment] lyrics skipped \(state.title) - \(state.artist) | already present",
+                    category: .lyrics
+                )
+            }
+
+            if track.artworkData == nil {
+                enqueuePart(.cover, for: track.id)
+            } else if var state = itemStates[track.id], state.coverState != .completed {
+                state.coverState = .skipped
+                itemStates[track.id] = state
+                Log.info(
+                    "[ImportEnrichment] cover skipped \(state.title) - \(state.artist) | already present",
+                    category: .import
+                )
+            }
+
+            guard let state = itemStates[track.id] else {
+                continue
+            }
+            Log.info(
+                "[ImportEnrichment] track queued \(track.title) - \(track.artist) | lyrics=\(state.lyricsState.rawValue) cover=\(state.coverState.rawValue)",
+                category: .import
+            )
+        }
+
+        refreshProgress()
+        drainQueueIfPossible()
+        diagnoseStalledQueue(context: "enqueue")
+    }
+
+    private func makeInitialItemState(for track: Track) -> ImportEnrichmentItemState? {
+        let needsLyrics = track.ttmlLyricText == nil
+        let needsCover = track.artworkData == nil
+        guard needsLyrics || needsCover else { return nil }
+
+        return ImportEnrichmentItemState(
+            trackID: track.id,
+            title: track.title,
+            artist: track.artist,
+            album: track.album,
+            lyricsState: needsLyrics ? .pending : .skipped,
+            coverState: needsCover ? .pending : .skipped,
+            lyricAttempts: 0,
+            coverAttempts: 0
+        )
+    }
+
+    private func enqueuePart(_ part: ImportEnrichmentPart, for trackID: UUID) {
+        let request = ImportEnrichmentPartRequest(trackID: trackID, part: part)
+        guard queuedRequests.contains(request) == false, runningRequests.contains(request) == false
+        else { return }
+        guard var state = itemStates[trackID] else { return }
+        let currentState = state.state(for: part)
+        guard currentState == .pending || currentState == .failed else { return }
+
+        state.setState(.pending, for: part)
+        itemStates[trackID] = state
+        queue.append(request)
+        queuedRequests.insert(request)
+        Log.info(
+            "[ImportEnrichment] \(part.rawValue) enqueued \(state.title) - \(state.artist)",
+            category: part == .lyrics ? .lyrics : .import
+        )
+    }
+
+    private func refreshProgress() {
+        let values = Array(itemStates.values)
+        let completedCount = values.filter(\.isTerminal).count
+        let failedCount = values.filter(\.hasTerminalFailure).count
+        let pendingLyricsCount = values.filter {
+            $0.lyricsState == .pending || $0.lyricsState == .running
+        }.count
+        let pendingCoverCount = values.filter {
+            $0.coverState == .pending || $0.coverState == .running
+        }.count
+        let flushPendingCount = values.reduce(0) { $0 + $1.flushPendingPartCount }
+
+        progress = ImportEnrichmentProgressSnapshot(
+            totalEnqueued: values.count,
+            completedCount: completedCount,
+            failedCount: failedCount,
+            pendingLyricsCount: pendingLyricsCount,
+            pendingCoverCount: pendingCoverCount,
+            runningCount: runningRequests.count,
+            flushPendingCount: flushPendingCount
+        )
+    }
+
+    private func resetProgressIfIdle() {
+        flushTask?.cancel()
+        flushTask = nil
+        queue.removeAll()
+        queuedRequests.removeAll()
+        runningRequests.removeAll()
+        trackByID.removeAll()
+        itemStates.removeAll()
+        pendingFlushPatches.removeAll()
+        isFlushing = false
+        progress = ImportEnrichmentProgressSnapshot(
+            totalEnqueued: 0,
+            completedCount: 0,
+            failedCount: 0,
+            pendingLyricsCount: 0,
+            pendingCoverCount: 0,
+            runningCount: 0,
+            flushPendingCount: 0
+        )
+    }
+
+    private func drainQueueIfPossible() {
+        if queue.isEmpty == false {
+            Log.debug(
+                "[ImportEnrichment] queue wake | queued=\(queue.count) running=\(runningRequests.count)",
+                category: .import
+            )
+        }
+        while runningRequests.count < maxConcurrent, queue.isEmpty == false {
+            let request = queue.removeFirst()
+            queuedRequests.remove(request)
+
+            guard let track = trackByID[request.trackID], var state = itemStates[request.trackID] else {
+                continue
+            }
+
+            if request.part == .lyrics, track.ttmlLyricText != nil {
+                state.setState(.skipped, for: .lyrics)
+                itemStates[request.trackID] = state
+                Log.info(
+                    "[ImportEnrichment] lyrics skipped \(state.title) - \(state.artist) | already present",
+                    category: .lyrics
+                )
+                refreshProgress()
+                continue
+            }
+
+            if request.part == .cover, track.artworkData != nil {
+                state.setState(.skipped, for: .cover)
+                itemStates[request.trackID] = state
+                Log.info(
+                    "[ImportEnrichment] cover skipped \(state.title) - \(state.artist) | already present",
+                    category: .import
+                )
+                refreshProgress()
+                continue
+            }
+
+            state.setState(.running, for: request.part)
+            state.incrementAttempts(for: request.part)
+            itemStates[request.trackID] = state
+            runningRequests.insert(request)
+            refreshProgress()
+            start(request: request, track: track, state: state)
+        }
+        diagnoseStalledQueue(context: "drain")
+    }
+
+    private func start(
+        request: ImportEnrichmentPartRequest,
+        track: Track,
+        state: ImportEnrichmentItemState
+    ) {
+        let title = state.title
+        let artist = state.artist
+        let album = state.album
+        let duration = track.duration > 0 ? track.duration : nil
+        let attempt = state.attempts(for: request.part)
+        Log.info(
+            "[ImportEnrichment] \(request.part.rawValue) started \(title) - \(artist) | attempt \(attempt)/\(maxAttemptsPerPart)",
+            category: request.part == .lyrics ? .lyrics : .import
+        )
+
+        Task(priority: .utility) {
+            let taskStart = ContinuousClock.now
+
+            switch request.part {
+            case .lyrics:
+                let outcome = await ImportEnrichmentWorker.fetchLyrics(
+                    title: title,
+                    artist: artist,
+                    album: album,
+                    duration: duration
+                )
+                await self.completeLyrics(request: request, outcome: outcome)
+            case .cover:
+                let outcome = await ImportEnrichmentWorker.fetchCover(
+                    artist: artist,
+                    album: album
+                )
+                await self.completeCover(request: request, outcome: outcome)
+            }
+
+            let elapsed = taskStart.duration(to: ContinuousClock.now)
+            let elapsedMs = Double(elapsed.components.seconds) * 1000
+                + Double(elapsed.components.attoseconds) / 1_000_000_000_000_000
+            Log.info(
+                "[ImportEnrichment] \(request.part.rawValue) task end \(title) - \(artist) | \(String(format: "%.1f", elapsedMs))ms",
+                category: request.part == .lyrics ? .lyrics : .import
+            )
+        }
+    }
+
+    private func completeLyrics(
+        request: ImportEnrichmentPartRequest,
+        outcome: ImportLyricsLookupOutcome
+    ) async {
+        guard let track = trackByID[request.trackID], var state = itemStates[request.trackID] else {
+            finish(request)
+            return
+        }
+
+        var shouldRequeue = false
+        switch outcome {
+        case .completed(let ttml):
+            if track.ttmlLyricText == nil {
+                bufferFlushPatch(
+                    trackID: request.trackID,
+                    title: state.title,
+                    artist: state.artist
+                ) { patch in
+                    patch.ttmlLyricText = ttml
+                    patch.lyricShouldFlush = true
+                }
+                state.setState(.flushPending, for: .lyrics)
+                Log.info(
+                    "[ImportEnrichment] lyrics buffered \(state.title) - \(state.artist)",
+                    category: .lyrics
+                )
+            } else {
+                state.setState(.skipped, for: .lyrics)
+                Log.info(
+                    "[ImportEnrichment] lyrics skipped \(state.title) - \(state.artist) | already filled before save",
+                    category: .lyrics
+                )
+            }
+        case .noResults:
+            state.setState(.noResults, for: .lyrics)
+            Log.warning(
+                "[ImportEnrichment] lyrics no-results \(state.title) - \(state.artist)",
+                category: .lyrics
+            )
+        case .failed(let message):
+            shouldRequeue = shouldRetry(part: .lyrics, state: state)
+            if shouldRequeue {
+                state.setState(.pending, for: .lyrics)
+                Log.warning(
+                    "[ImportEnrichment] lyrics failed \(state.title) - \(state.artist) | retrying: \(message)",
+                    category: .lyrics
+                )
+            } else {
+                state.setState(.failed, for: .lyrics)
+                Log.warning(
+                    "[ImportEnrichment] lyrics failed \(state.title) - \(state.artist): \(message)",
+                    category: .lyrics
+                )
+            }
+        }
+
+        itemStates[request.trackID] = state
+        scheduleFlushIfNeeded(reason: "lyrics_result")
+        finish(request, requeue: shouldRequeue)
+    }
+
+    private func completeCover(
+        request: ImportEnrichmentPartRequest,
+        outcome: ImportCoverLookupOutcome
+    ) async {
+        guard let track = trackByID[request.trackID], var state = itemStates[request.trackID] else {
+            finish(request)
+            return
+        }
+
+        var shouldRequeue = false
+        switch outcome {
+        case .completed(let data):
+            if track.artworkData == nil {
+                bufferFlushPatch(
+                    trackID: request.trackID,
+                    title: state.title,
+                    artist: state.artist
+                ) { patch in
+                    patch.artworkData = data
+                    patch.coverShouldFlush = true
+                }
+                state.setState(.flushPending, for: .cover)
+                Log.info(
+                    "[ImportEnrichment] cover buffered \(state.title) - \(state.artist)",
+                    category: .import
+                )
+            } else {
+                state.setState(.skipped, for: .cover)
+                Log.info(
+                    "[ImportEnrichment] cover skipped \(state.title) - \(state.artist) | already filled before save",
+                    category: .import
+                )
+            }
+        case .noResults:
+            state.setState(.noResults, for: .cover)
+            Log.warning(
+                "[ImportEnrichment] cover no-results \(state.title) - \(state.artist)",
+                category: .import
+            )
+        case .failed(let message):
+            shouldRequeue = shouldRetry(part: .cover, state: state)
+            if shouldRequeue {
+                state.setState(.pending, for: .cover)
+                Log.warning(
+                    "[ImportEnrichment] cover failed \(state.title) - \(state.artist) | retrying: \(message)",
+                    category: .import
+                )
+            } else {
+                state.setState(.failed, for: .cover)
+                Log.warning(
+                    "[ImportEnrichment] cover failed \(state.title) - \(state.artist): \(message)",
+                    category: .import
+                )
+            }
+        }
+
+        itemStates[request.trackID] = state
+        scheduleFlushIfNeeded(reason: "cover_result")
+        finish(request, requeue: shouldRequeue)
+    }
+
+    private func shouldRetry(part: ImportEnrichmentPart, state: ImportEnrichmentItemState) -> Bool {
+        state.attempts(for: part) < maxAttemptsPerPart
+    }
+
+    private func bufferFlushPatch(
+        trackID: UUID,
+        title: String,
+        artist: String,
+        mutate: (inout PendingTrackEnrichmentPatch) -> Void
+    ) {
+        var patch = pendingFlushPatches[trackID] ?? PendingTrackEnrichmentPatch(trackID: trackID)
+        mutate(&patch)
+        pendingFlushPatches[trackID] = patch
+        Log.info(
+            "[ImportEnrichment] batch buffered \(title) - \(artist) | pendingTracks=\(pendingFlushPatches.count)",
+            category: .import
+        )
+    }
+
+    private func scheduleFlushIfNeeded(reason: String) {
+        guard pendingFlushPatches.isEmpty == false else { return }
+
+        if pendingFlushPatches.count >= flushBatchSize {
+            flushTask?.cancel()
+            flushTask = nil
+            Task { @MainActor in
+                await flushBufferedUpdates(reason: "threshold:\(reason)")
+            }
+            return
+        }
+
+        if queue.isEmpty && runningRequests.isEmpty {
+            flushTask?.cancel()
+            flushTask = nil
+            Task { @MainActor in
+                await flushBufferedUpdates(reason: "idle:\(reason)")
+            }
+            return
+        }
+
+        guard flushTask == nil else { return }
+        flushTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: flushDebounceNanoseconds)
+            await flushBufferedUpdates(reason: "debounce:\(reason)")
+        }
+    }
+
+    private func flushBufferedUpdates(reason: String) async {
+        guard isFlushing == false else { return }
+        guard pendingFlushPatches.isEmpty == false else { return }
+
+        isFlushing = true
+        flushTask?.cancel()
+        flushTask = nil
+
+        let patches = pendingFlushPatches
+        let trackIDs = Array(patches.keys).sorted { $0.uuidString < $1.uuidString }
+        Log.info(
+            "[ImportEnrichment] batch flush start reason=\(reason) tracks=\(trackIDs.count)",
+            category: .import
+        )
+
+        struct PendingRevert {
+            let lyrics: String?
+            let artworkData: Data?
+        }
+
+        var touchedTracks: [Track] = []
+        var revertByTrackID: [UUID: PendingRevert] = [:]
+        var effectivePatches: [UUID: PendingTrackEnrichmentPatch] = [:]
+
+        for trackID in trackIDs {
+            guard let track = trackByID[trackID], let patch = patches[trackID] else { continue }
+            var effectivePatch = patch
+            revertByTrackID[trackID] = PendingRevert(
+                lyrics: track.ttmlLyricText,
+                artworkData: track.artworkData
+            )
+
+            if patch.lyricShouldFlush {
+                if track.ttmlLyricText == nil, let ttml = patch.ttmlLyricText {
+                    track.ttmlLyricText = ttml
+                } else {
+                    effectivePatch.ttmlLyricText = nil
+                    effectivePatch.lyricShouldFlush = false
+                }
+            }
+            if patch.coverShouldFlush {
+                if track.artworkData == nil, let artworkData = patch.artworkData {
+                    track.artworkData = artworkData
+                } else {
+                    effectivePatch.artworkData = nil
+                    effectivePatch.coverShouldFlush = false
+                }
+            }
+
+            if effectivePatch.lyricShouldFlush || effectivePatch.coverShouldFlush {
+                touchedTracks.append(track)
+                effectivePatches[trackID] = effectivePatch
+            } else {
+                if var state = itemStates[trackID] {
+                    if patch.lyricShouldFlush, state.lyricsState == .flushPending {
+                        state.lyricsState = .skipped
+                    }
+                    if patch.coverShouldFlush, state.coverState == .flushPending {
+                        state.coverState = .skipped
+                    }
+                    itemStates[trackID] = state
+                    if state.isTerminal {
+                        trackByID[trackID] = nil
+                    }
+                }
+                pendingFlushPatches.removeValue(forKey: trackID)
+            }
+        }
+
+        guard !touchedTracks.isEmpty else {
+            refreshProgress()
+            Log.info(
+                "[ImportEnrichment] batch flush complete reason=\(reason) persisted=0 failed=0",
+                category: .import
+            )
+            isFlushing = false
+            return
+        }
+
+        let result = await repository.persistTrackUpdates(touchedTracks)
+        let persistedTrackIDs = Set(result.persistedTrackIDs)
+        let failedTrackIDs = Set(result.failedTrackIDs)
+
+        for trackID in persistedTrackIDs {
+            guard let patch = effectivePatches[trackID], var state = itemStates[trackID] else { continue }
+            if patch.lyricShouldFlush, state.lyricsState == .flushPending {
+                state.lyricsState = .completed
+            }
+            if patch.coverShouldFlush, state.coverState == .flushPending {
+                state.coverState = .completed
+            }
+            itemStates[trackID] = state
+            pendingFlushPatches.removeValue(forKey: trackID)
+            if state.isTerminal {
+                trackByID[trackID] = nil
+            }
+        }
+
+        for trackID in failedTrackIDs {
+            guard let patch = effectivePatches[trackID], let revert = revertByTrackID[trackID] else { continue }
+            if let track = trackByID[trackID] {
+                track.ttmlLyricText = revert.lyrics
+                track.artworkData = revert.artworkData
+            }
+            if var state = itemStates[trackID] {
+                if patch.lyricShouldFlush, state.lyricsState == .flushPending {
+                    state.lyricsState = .failed
+                }
+                if patch.coverShouldFlush, state.coverState == .flushPending {
+                    state.coverState = .failed
+                }
+                itemStates[trackID] = state
+                if state.isTerminal {
+                    trackByID[trackID] = nil
+                }
+            }
+            pendingFlushPatches.removeValue(forKey: trackID)
+        }
+
+        refreshProgress()
+        Log.info(
+            "[ImportEnrichment] batch flush complete reason=\(reason) persisted=\(result.persistedTrackIDs.count) failed=\(result.failedTrackIDs.count)",
+            category: .import
+        )
+        if !result.persistedTrackIDs.isEmpty {
+            Log.info(
+                "[ImportEnrichment] visible refresh notified for \(result.persistedTrackIDs.count) persisted tracks",
+                category: .import
+            )
+            Log.info(
+                "[ImportEnrichmentReload] flush success with \(result.persistedTrackIDs.count) updated tracks",
+                category: .import
+            )
+        }
+        if !result.failedTrackIDs.isEmpty {
+            Log.warning(
+                "[ImportEnrichment] persistence flush failed for \(result.failedTrackIDs.count) tracks",
+                category: .import
+            )
+        }
+
+        isFlushing = false
+
+        if pendingFlushPatches.isEmpty == false {
+            scheduleFlushIfNeeded(reason: "post_flush")
+        }
+    }
+
+    private func diagnoseStalledQueue(context: String) {
+        if queue.isEmpty == false && runningRequests.isEmpty {
+            Log.warning(
+                "[ImportEnrichment] queue stalled after \(context) | queued=\(queue.count) running=0",
+                category: .import
+            )
+        }
+    }
+
+    private func finish(_ request: ImportEnrichmentPartRequest, requeue: Bool = false) {
+        runningRequests.remove(request)
+
+        if requeue {
+            queue.append(request)
+            queuedRequests.insert(request)
+        }
+
+        Log.debug(
+            "[ImportEnrichment] finish \(request.part.rawValue) | requeue=\(requeue) queued=\(queue.count) running=\(runningRequests.count)",
+            category: .import
+        )
+
+        refreshProgress()
+
+        if let state = itemStates[request.trackID], state.isTerminal {
+            trackByID[request.trackID] = nil
+        }
+
+        if queue.isEmpty && runningRequests.isEmpty {
+            scheduleFlushIfNeeded(reason: "queue_idle")
+        }
+        drainQueueIfPossible()
     }
 }
 
@@ -177,6 +1217,12 @@ final class FileImportService: FileImportServiceProtocol {
         let progressID: String
         let displayName: String
         let track: Track
+        let needsLyricsEnrichment: Bool
+        let needsCoverEnrichment: Bool
+
+        var needsAnyEnrichment: Bool {
+            needsLyricsEnrichment || needsCoverEnrichment
+        }
     }
 
     private struct ImportedTrackPayload: Sendable {
@@ -217,28 +1263,30 @@ final class FileImportService: FileImportServiceProtocol {
         let displayName: String
         let metadata: ImportPreview
         let payload: ImportedTrackPayload?
+        let needsLyricsEnrichment: Bool
+        let needsCoverEnrichment: Bool
         let errorDescription: String?
     }
 
-    private struct LyricsTrackSnapshot: Sendable {
+    private struct ImportEnrichmentSnapshot: Sendable {
         let progressID: String
         let id: UUID
         let title: String
         let artist: String
+        let album: String
+        let duration: Double?
+        let needsLyrics: Bool
+        let needsCover: Bool
     }
 
-    private enum LyricsFetchOutcome: Sendable {
-        case completed(String)
-        case noResults
-        case failed(String)
-    }
-
-    private struct LyricsFetchTaskOutput: Sendable {
+    private struct ImportEnrichmentTaskOutput: Sendable {
         let progressID: String
         let trackID: UUID
         let title: String
         let artist: String
-        let outcome: LyricsFetchOutcome
+        let album: String
+        let lyricOutcome: ImportLyricsLookupOutcome?
+        let coverOutcome: ImportCoverLookupOutcome?
     }
 
     // MARK: - Supported Types
@@ -262,74 +1310,100 @@ final class FileImportService: FileImportServiceProtocol {
 
     private let repository: LibraryRepositoryProtocol
     private let libraryService: LocalLibraryService
-    private let coverDownloadService: CoverDownloadServiceProtocol
-    private let netEaseCoverService: NetEaseCoverServiceProtocol
+    private let importEnrichmentService: ImportEnrichmentService
 
     // MARK: - Initialization
 
     init(
         repository: LibraryRepositoryProtocol,
         libraryService: LocalLibraryService? = nil,
-        coverDownloadService: CoverDownloadServiceProtocol? = nil,
-        netEaseCoverService: NetEaseCoverServiceProtocol? = nil
+        importEnrichmentService: ImportEnrichmentService
     ) {
         self.repository = repository
         self.libraryService = libraryService ?? LocalLibraryService.shared
-        self.coverDownloadService = coverDownloadService ?? CoverDownloadService()
-        self.netEaseCoverService = netEaseCoverService ?? NetEaseCoverService()
+        self.importEnrichmentService = importEnrichmentService
         Log.debug("FileImportService initialized", category: .import)
     }
 
     // MARK: - Public Methods
 
-    /// Present file picker and import selected files/folders into a specific playlist.
-    /// - Parameter playlist: The target playlist to import into.
-    /// - Returns: Number of tracks successfully imported.
-    @discardableResult
-    func pickAndImport(to playlist: Playlist) async -> Int {
-        Log.debug("pickAndImport called for playlist: '\(playlist.name)' (id=\(playlist.id))", category: .import)
+    func pickImportURLs(triggeredAt: Date) async -> [URL]? {
+        let clickClock = ContinuousClock.now
+        Log.info("[ImportPanel] click timestamp: \(triggeredAt)", category: .import)
+        let creationTimestamp = Date()
+        Log.info("[ImportPanel] panel creation timestamp: \(creationTimestamp)", category: .import)
 
-        // Configure open panel
         let panel = NSOpenPanel()
-        panel.title = String(
-            format: NSLocalizedString("import.panel.title", comment: ""), playlist.name)
-        panel.message = NSLocalizedString("import.panel.message", comment: "")
         panel.canChooseFiles = true
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = true
         panel.allowedContentTypes = Self.supportedUTTypes
+        panel.resolvesAliases = true
+        panel.treatsFilePackagesAsDirectories = false
 
-        // Show panel
-        // Use app-modal panel (instead of sheet) so NSOpenPanel uses full system styling
-        // and does not inherit custom host window chrome tweaks.
-        Log.debug("Showing NSOpenPanel...", category: .import)
-        panel.appearance = NSApp.appearance
-        let response = panel.runModal()
+        let beginTimestamp = Date()
+        let clickToPresentationMs = Self.durationMilliseconds(since: clickClock)
+        Log.info("[ImportPanel] panel begin timestamp: \(beginTimestamp)", category: .import)
+        Log.info(
+            "[ImportPanel] click -> presentation requested: \(String(format: "%.1f", clickToPresentationMs))ms",
+            category: .import
+        )
+
+        let response: NSApplication.ModalResponse
+        guard let window = NSApp.keyWindow
+            ?? NSApp.mainWindow
+            ?? NSApp.windows.first(where: { $0.isVisible })
+        else {
+            Log.error("[ImportPanel] no host window available for attached sheet presentation", category: .import)
+            return nil
+        }
+        response = await withCheckedContinuation { continuation in
+            panel.beginSheetModal(for: window) { modalResponse in
+                continuation.resume(returning: modalResponse)
+            }
+        }
+
+        let selectionTimestamp = Date()
+        let clickToSelectionMs = Self.durationMilliseconds(since: clickClock)
+        Log.info("[ImportPanel] selection returned timestamp: \(selectionTimestamp)", category: .import)
+        Log.info(
+            "[ImportPanel] click -> selection return: \(String(format: "%.1f", clickToSelectionMs))ms",
+            category: .import
+        )
 
         guard response == .OK else {
             Log.debug("NSOpenPanel cancelled by user", category: .import)
-            return 0
+            return nil
         }
 
         Log.debug("NSOpenPanel returned \(panel.urls.count) URLs", category: .import)
         if let first = panel.urls.first {
             Log.debug("   ↳ First URL: \(first.lastPathComponent)", category: .import)
         }
+        return panel.urls
+    }
 
+    /// Import selected files/folders into a specific playlist.
+    @discardableResult
+    func importSelectedURLs(_ selectedURLs: [URL], to playlist: Playlist) async -> Int {
+        Log.debug(
+            "importSelectedURLs called for playlist: '\(playlist.name)' (id=\(playlist.id)) count=\(selectedURLs.count)",
+            category: .import
+        )
         let progressController = BatchImportProgressDialogController()
         defer { progressController.closeNow() }
         progressController.update(
             stage: .scanning,
-            progress: Self.progress(for: .scanning, completed: 0, total: panel.urls.count),
+            progress: Self.progress(for: .scanning, completed: 0, total: selectedURLs.count),
             detail: "正在扫描所选文件和文件夹中的音频文件",
             completedCount: 0,
-            totalCount: panel.urls.count
+            totalCount: selectedURLs.count
         )
 
         // CRITICAL: Start accessing security-scoped resources IMMEDIATELY
         // NSOpenPanel returns security-scoped URLs that expire if not accessed
         var accessingURLs: [URL] = []
-        for url in panel.urls {
+        for url in selectedURLs {
             let didStart = url.startAccessingSecurityScopedResource()
             Log.trace("startAccessingSecurityScopedResource for '\(url.lastPathComponent)': \(didStart)", category: .import)
 
@@ -355,13 +1429,11 @@ final class FileImportService: FileImportServiceProtocol {
         }
 
         // Collect all audio files (including from directories) - OFF MAIN THREAD
-        // Capture panel URLs first since panel is MainActor-isolated
-        let panelURLs = panel.urls
         let (filesToImport, ncmFiles) = await Task.detached(priority: .userInitiated) { 
             var filesToImport: [URL] = []
             var ncmFiles: [URL] = []
 
-            for url in panelURLs {
+            for url in selectedURLs {
                 if url.hasDirectoryPath {
                     let audioFiles = FileImportService.findAudioFiles(in: url)
                     for file in audioFiles {
@@ -544,9 +1616,12 @@ final class FileImportService: FileImportServiceProtocol {
             totalCount: finalCandidates.count
         )
 
+        let enrichmentMode: ImportEnrichmentMode =
+            AppSettings.shared.deferImportEnrichment ? .deferred : .immediate
         let importedRecords = await importCandidatesWithProgress(
             finalCandidates,
-            progressController: progressController
+            progressController: progressController,
+            enrichmentMode: enrichmentMode
         )
 
         guard !importedRecords.isEmpty else {
@@ -554,44 +1629,64 @@ final class FileImportService: FileImportServiceProtocol {
             return 0
         }
 
-        let recordsNeedingLyrics = importedRecords.filter { $0.track.ttmlLyricText == nil }
-        if !recordsNeedingLyrics.isEmpty {
-            print("🎤 Fetching lyrics for \(recordsNeedingLyrics.count) tracks...")
-            await fetchLyricsWithProgress(
-                importedRecords: recordsNeedingLyrics,
+        let importedTracks = importedRecords.map(\.track)
+
+        switch enrichmentMode {
+        case .immediate:
+            let recordsNeedingEnrichment = importedRecords.filter(\.needsAnyEnrichment)
+            if !recordsNeedingEnrichment.isEmpty {
+                await enrichImportedRecordsWithProgress(
+                    importedRecords: recordsNeedingEnrichment,
+                    progressController: progressController
+                )
+            } else {
+                progressController.update(
+                    stage: .enrichingMetadata,
+                    progress: Self.progress(for: .enrichingMetadata, completed: 0, total: 0),
+                    detail: "所有歌曲已有歌词与封面，跳过在线补全",
+                    completedCount: 0,
+                    totalCount: 0
+                )
+            }
+
+            await saveImportedTracks(
+                importedTracks,
+                to: playlist,
                 progressController: progressController
             )
-        } else {
-            progressController.update(
-                stage: .fetchingLyrics,
-                progress: Self.progress(for: .fetchingLyrics, completed: 0, total: 0),
-                detail: "所有歌曲已有可用歌词，跳过在线查找",
-                completedCount: 0,
-                totalCount: 0
+        case .deferred:
+            let recordsNeedingEnrichment = importedRecords.filter(\.needsAnyEnrichment)
+            if !recordsNeedingEnrichment.isEmpty {
+                progressController.update(
+                    stage: .enrichingMetadata,
+                    progress: Self.progress(
+                        for: .enrichingMetadata,
+                        completed: 0,
+                        total: recordsNeedingEnrichment.count
+                    ),
+                    detail: "导入完成后将在后台补全 \(recordsNeedingEnrichment.count) 首歌曲的歌词与封面",
+                    completedCount: 0,
+                    totalCount: recordsNeedingEnrichment.count
+                )
+            } else {
+                progressController.update(
+                    stage: .enrichingMetadata,
+                    progress: Self.progress(for: .enrichingMetadata, completed: 0, total: 0),
+                    detail: "所有歌曲已有歌词与封面，无需后台补全",
+                    completedCount: 0,
+                    totalCount: 0
+                )
+            }
+
+            await saveImportedTracks(
+                importedTracks,
+                to: playlist,
+                progressController: progressController
             )
-        }
 
-        progressController.update(
-            stage: .savingLibrary,
-            progress: Self.progress(for: .savingLibrary, completed: 0, total: 2),
-            detail: "正在写入资料库和播放列表",
-            completedCount: 0,
-            totalCount: 2
-        )
-
-        let importedTracks = importedRecords.map(\.track)
-        await repository.addTracks(importedTracks)
-        progressController.update(
-            stage: .savingLibrary,
-            progress: Self.progress(for: .savingLibrary, completed: 1, total: 2),
-            detail: "歌曲已写入资料库，正在加入播放列表",
-            completedCount: 1,
-            totalCount: 2
-        )
-
-        if !importedTracks.isEmpty {
-            print("🔗 Adding \(importedTracks.count) tracks to playlist '\(playlist.name)'")
-            await repository.addTracks(importedTracks, to: playlist)
+            if !recordsNeedingEnrichment.isEmpty {
+                importEnrichmentService.enqueueTracks(recordsNeedingEnrichment.map(\.track))
+            }
         }
 
         for record in importedRecords {
@@ -654,7 +1749,8 @@ final class FileImportService: FileImportServiceProtocol {
 
     private func importCandidatesWithProgress(
         _ candidates: [ImportCandidate],
-        progressController: BatchImportProgressDialogController
+        progressController: BatchImportProgressDialogController,
+        enrichmentMode: ImportEnrichmentMode
     ) async -> [ImportedTrackRecord] {
         guard !candidates.isEmpty else { return [] }
 
@@ -674,7 +1770,7 @@ final class FileImportService: FileImportServiceProtocol {
                     artist: candidate.metadata.artist,
                     stage: .importing,
                     status: .active,
-                    detail: "正在导入歌曲文件、封面和内嵌歌词"
+                    detail: "正在导入歌曲文件与内嵌信息"
                 )
                 group.addTask {
                     await Self.performImportTask(index: index, candidate: candidate)
@@ -690,19 +1786,25 @@ final class FileImportService: FileImportServiceProtocol {
                     orderedRecords[output.index] = ImportedTrackRecord(
                         progressID: output.progressID,
                         displayName: output.displayName,
-                        track: track
+                        track: track,
+                        needsLyricsEnrichment: output.needsLyricsEnrichment,
+                        needsCoverEnrichment: output.needsCoverEnrichment
                     )
 
-                    let detail =
-                        track.ttmlLyricText == nil
-                        ? "歌曲已导入，等待在线查找歌词"
-                        : "歌曲已导入，已保留现有歌词"
+                    let needsEnrichment = output.needsLyricsEnrichment || output.needsCoverEnrichment
+                    let detail = needsEnrichment
+                        ? Self.pendingEnrichmentDetail(
+                            needsLyrics: output.needsLyricsEnrichment,
+                            needsCover: output.needsCoverEnrichment,
+                            deferred: enrichmentMode.defersEnrichment
+                        )
+                        : "歌曲文件已就绪，已有歌词与封面"
                     progressController.updateItem(
                         id: output.progressID,
                         title: output.metadata.title,
                         artist: output.metadata.artist,
-                        stage: track.ttmlLyricText == nil ? .fetchingLyrics : .importing,
-                        status: track.ttmlLyricText == nil ? .waiting : .success,
+                        stage: needsEnrichment ? .enrichingMetadata : .importing,
+                        status: needsEnrichment ? .waiting : .success,
                         detail: detail
                     )
                 } else {
@@ -741,7 +1843,7 @@ final class FileImportService: FileImportServiceProtocol {
                         artist: candidate.metadata.artist,
                         stage: .importing,
                         status: .active,
-                        detail: "正在导入歌曲文件、封面和内嵌歌词"
+                        detail: "正在导入歌曲文件与内嵌信息"
                     )
                     group.addTask {
                         await Self.performImportTask(index: index, candidate: candidate)
@@ -751,6 +1853,42 @@ final class FileImportService: FileImportServiceProtocol {
         }
 
         return orderedRecords.compactMap { $0 }
+    }
+
+    private func saveImportedTracks(
+        _ importedTracks: [Track],
+        to playlist: Playlist,
+        progressController: BatchImportProgressDialogController
+    ) async {
+        progressController.update(
+            stage: .savingLibrary,
+            progress: Self.progress(for: .savingLibrary, completed: 0, total: 2),
+            detail: "正在写入资料库和播放列表",
+            completedCount: 0,
+            totalCount: 2
+        )
+
+        await repository.addTracks(importedTracks)
+        progressController.update(
+            stage: .savingLibrary,
+            progress: Self.progress(for: .savingLibrary, completed: 1, total: 2),
+            detail: "歌曲已写入资料库，正在加入播放列表",
+            completedCount: 1,
+            totalCount: 2
+        )
+
+        if !importedTracks.isEmpty {
+            print("🔗 Adding \(importedTracks.count) tracks to playlist '\(playlist.name)'")
+            await repository.addTracks(importedTracks, to: playlist)
+        }
+
+        progressController.update(
+            stage: .savingLibrary,
+            progress: Self.progress(for: .savingLibrary, completed: 2, total: 2),
+            detail: "资料库与播放列表保存完成",
+            completedCount: 2,
+            totalCount: 2
+        )
     }
 
     private func makeTrack(from payload: ImportedTrackPayload) -> Track {
@@ -924,107 +2062,109 @@ final class FileImportService: FileImportServiceProtocol {
         )
     }
 
-    // MARK: - Lyrics Fetch with Progress
+    // MARK: - Immediate Enrichment
 
-    private func fetchLyricsWithProgress(
+    private func enrichImportedRecordsWithProgress(
         importedRecords: [ImportedTrackRecord],
         progressController: BatchImportProgressDialogController
     ) async {
         guard !importedRecords.isEmpty else { return }
 
         progressController.update(
-            stage: .fetchingLyrics,
-            progress: Self.progress(for: .fetchingLyrics, completed: 0, total: importedRecords.count),
-            detail: "准备在线查找 \(importedRecords.count) 首歌曲的歌词",
+            stage: .enrichingMetadata,
+            progress: Self.progress(
+                for: .enrichingMetadata,
+                completed: 0,
+                total: importedRecords.count
+            ),
+            detail: "准备补全 \(importedRecords.count) 首歌曲的歌词与封面",
             completedCount: 0,
             totalCount: importedRecords.count
         )
 
         let snapshots = importedRecords.map {
-            LyricsTrackSnapshot(
+            ImportEnrichmentSnapshot(
                 progressID: $0.progressID,
                 id: $0.track.id,
                 title: $0.track.title,
-                artist: $0.track.artist
+                artist: $0.track.artist,
+                album: $0.track.album,
+                duration: $0.track.duration > 0 ? $0.track.duration : nil,
+                needsLyrics: $0.needsLyricsEnrichment,
+                needsCover: $0.needsCoverEnrichment
             )
         }
-        let client = LDDCClient()
         let recordsByTrackID = Dictionary(
             uniqueKeysWithValues: importedRecords.map { ($0.track.id, $0) }
         )
-        let maxConcurrent = Self.lyricsConcurrency(for: snapshots.count)
+        let maxConcurrent = Self.enrichmentConcurrency(for: snapshots.count)
         var iterator = snapshots.makeIterator()
         var completedCount = 0
-        var successCount = 0
+        var lyricSuccessCount = 0
+        var coverSuccessCount = 0
         var noResultCount = 0
         var failedCount = 0
 
-        await withTaskGroup(of: LyricsFetchTaskOutput.self) { group in
+        await withTaskGroup(of: ImportEnrichmentTaskOutput.self) { group in
             for _ in 0..<min(maxConcurrent, snapshots.count) {
                 guard let snapshot = iterator.next() else { break }
                 progressController.updateItem(
                     id: snapshot.progressID,
                     title: snapshot.title,
                     artist: snapshot.artist,
-                    stage: .fetchingLyrics,
+                    stage: .enrichingMetadata,
                     status: .active,
-                    detail: "正在搜索在线歌词"
+                    detail: Self.activeEnrichmentDetail(
+                        needsLyrics: snapshot.needsLyrics,
+                        needsCover: snapshot.needsCover
+                    )
                 )
                 group.addTask {
-                    await Self.fetchLyricsTask(snapshot: snapshot, client: client)
+                    await Self.performImmediateEnrichmentTask(snapshot: snapshot)
                 }
             }
 
             while let output = await group.next() {
                 completedCount += 1
 
-                switch output.outcome {
-                case .completed(let ttml):
-                    successCount += 1
-                    if let record = recordsByTrackID[output.trackID] {
-                        record.track.ttmlLyricText = ttml
-                    }
-                    progressController.updateItem(
-                        id: output.progressID,
-                        title: output.title,
-                        artist: output.artist,
-                        stage: .fetchingLyrics,
-                        status: .success,
-                        detail: "歌词获取成功"
+                let (status, detail, lyricStats, coverStats, misses, failures) =
+                    Self.applyImmediateEnrichmentResult(
+                        output,
+                        to: recordsByTrackID[output.trackID]
                     )
-                case .noResults:
-                    noResultCount += 1
-                    progressController.updateItem(
-                        id: output.progressID,
-                        title: output.title,
-                        artist: output.artist,
-                        stage: .fetchingLyrics,
-                        status: .warning,
-                        detail: "未找到匹配歌词"
-                    )
-                case .failed:
-                    failedCount += 1
-                    progressController.updateItem(
-                        id: output.progressID,
-                        title: output.title,
-                        artist: output.artist,
-                        stage: .fetchingLyrics,
-                        status: .warning,
-                        detail: "歌词查找失败，将继续完成导入"
+                lyricSuccessCount += lyricStats
+                coverSuccessCount += coverStats
+                noResultCount += misses
+                failedCount += failures
+
+                progressController.updateItem(
+                    id: output.progressID,
+                    title: output.title,
+                    artist: output.artist,
+                    stage: .enrichingMetadata,
+                    status: status,
+                    detail: detail
+                )
+
+                if case .warning = status, detail.contains("失败") {
+                    Log.warning(
+                        "Immediate import enrichment completed with warning for \(output.title) - \(output.artist)",
+                        category: .import
                     )
                 }
 
                 progressController.update(
-                    stage: .fetchingLyrics,
+                    stage: .enrichingMetadata,
                     progress: Self.progress(
-                        for: .fetchingLyrics,
+                        for: .enrichingMetadata,
                         completed: completedCount,
                         total: snapshots.count
                     ),
-                    detail: Self.lyricsProgressDetail(
+                    detail: Self.enrichmentProgressDetail(
                         completed: completedCount,
                         total: snapshots.count,
-                        successCount: successCount,
+                        lyricSuccessCount: lyricSuccessCount,
+                        coverSuccessCount: coverSuccessCount,
                         noResultCount: noResultCount,
                         failedCount: failedCount
                     ),
@@ -1037,115 +2177,135 @@ final class FileImportService: FileImportServiceProtocol {
                         id: snapshot.progressID,
                         title: snapshot.title,
                         artist: snapshot.artist,
-                        stage: .fetchingLyrics,
+                        stage: .enrichingMetadata,
                         status: .active,
-                        detail: "正在搜索在线歌词"
+                        detail: Self.activeEnrichmentDetail(
+                            needsLyrics: snapshot.needsLyrics,
+                            needsCover: snapshot.needsCover
+                        )
                     )
                     group.addTask {
-                        await Self.fetchLyricsTask(snapshot: snapshot, client: client)
+                        await Self.performImmediateEnrichmentTask(snapshot: snapshot)
                     }
                 }
             }
         }
     }
 
-    nonisolated private static func fetchLyricsTask(
-        snapshot: LyricsTrackSnapshot,
-        client: LDDCClient
-    ) async -> LyricsFetchTaskOutput {
-        do {
-            let response = try await client.search(
-                title: snapshot.title,
-                artist: snapshot.artist.isEmpty ? nil : snapshot.artist,
-                sources: [.QM, .KG, .NE],
-                mode: .verbatim,
-                translation: true,
-                limitPerSource: 5
-            )
-
-            guard let firstCandidate = response.results.first else {
-                return LyricsFetchTaskOutput(
-                    progressID: snapshot.progressID,
-                    trackID: snapshot.id,
+    nonisolated private static func performImmediateEnrichmentTask(
+        snapshot: ImportEnrichmentSnapshot
+    ) async -> ImportEnrichmentTaskOutput {
+        let lyricTask = snapshot.needsLyrics
+            ? Task {
+                await ImportEnrichmentWorker.fetchLyrics(
                     title: snapshot.title,
                     artist: snapshot.artist,
-                    outcome: .noResults
+                    album: snapshot.album,
+                    duration: snapshot.duration
                 )
             }
-
-            let (origLyrics, transLyrics) = try await client.fetchByIdSeparate(
-                candidate: firstCandidate,
-                mode: .verbatim
-            )
-
-            let ttml: String
-            if let transLyrics, !transLyrics.isEmpty {
-                ttml = try await TTMLConverter.shared.convertToTTMLWithTranslation(
-                    origLyrics: origLyrics,
-                    transLyrics: transLyrics,
-                    stripMetadata: false
-                )
-            } else {
-                ttml = try await TTMLConverter.shared.convertToTTML(
-                    rawLyrics: origLyrics,
-                    stripMetadata: false
-                )
-            }
-
-            return LyricsFetchTaskOutput(
-                progressID: snapshot.progressID,
-                trackID: snapshot.id,
-                title: snapshot.title,
-                artist: snapshot.artist,
-                outcome: .completed(ttml)
-            )
-        } catch let error as LDDCError {
-            if case .noResults = error {
-                return LyricsFetchTaskOutput(
-                    progressID: snapshot.progressID,
-                    trackID: snapshot.id,
-                    title: snapshot.title,
+            : nil
+        let coverTask = snapshot.needsCover
+            ? Task {
+                await ImportEnrichmentWorker.fetchCover(
                     artist: snapshot.artist,
-                    outcome: .noResults
+                    album: snapshot.album
                 )
             }
+            : nil
 
-            Log.warning(
-                "Lyrics fetch failed for \(snapshot.title) - \(snapshot.artist): \(error)",
-                category: .lyrics
-            )
-            return LyricsFetchTaskOutput(
-                progressID: snapshot.progressID,
-                trackID: snapshot.id,
-                title: snapshot.title,
-                artist: snapshot.artist,
-                outcome: .failed(error.localizedDescription)
-            )
-        } catch {
-            Log.warning(
-                "Lyrics fetch failed for \(snapshot.title) - \(snapshot.artist): \(error)",
-                category: .lyrics
-            )
-            return LyricsFetchTaskOutput(
-                progressID: snapshot.progressID,
-                trackID: snapshot.id,
-                title: snapshot.title,
-                artist: snapshot.artist,
-                outcome: .failed(error.localizedDescription)
-            )
-        }
+        return ImportEnrichmentTaskOutput(
+            progressID: snapshot.progressID,
+            trackID: snapshot.id,
+            title: snapshot.title,
+            artist: snapshot.artist,
+            album: snapshot.album,
+            lyricOutcome: await lyricTask?.value,
+            coverOutcome: await coverTask?.value
+        )
     }
 
-    nonisolated private static func lyricsProgressDetail(
+    private static func applyImmediateEnrichmentResult(
+        _ output: ImportEnrichmentTaskOutput,
+        to record: ImportedTrackRecord?
+    ) -> (BatchImportItemStatus, String, Int, Int, Int, Int) {
+        guard let record else {
+            return (.warning, "补全结果未能写回，歌曲已保留导入", 0, 0, 0, 1)
+        }
+
+        var detailParts: [String] = []
+        var status: BatchImportItemStatus = .success
+        var lyricSuccessCount = 0
+        var coverSuccessCount = 0
+        var noResultCount = 0
+        var failedCount = 0
+
+        if let lyricOutcome = output.lyricOutcome {
+            switch lyricOutcome {
+            case .completed(let ttml):
+                if record.track.ttmlLyricText == nil {
+                    record.track.ttmlLyricText = ttml
+                }
+                lyricSuccessCount += 1
+                detailParts.append("歌词已补全")
+            case .noResults:
+                noResultCount += 1
+                status = .warning
+                detailParts.append("未找到歌词")
+            case .failed:
+                failedCount += 1
+                status = .warning
+                detailParts.append("歌词补全失败")
+            }
+        }
+
+        if let coverOutcome = output.coverOutcome {
+            switch coverOutcome {
+            case .completed(let artworkData):
+                if record.track.artworkData == nil {
+                    record.track.artworkData = artworkData
+                }
+                coverSuccessCount += 1
+                detailParts.append("封面已补全")
+            case .noResults:
+                noResultCount += 1
+                status = .warning
+                detailParts.append("未找到封面")
+            case .failed:
+                failedCount += 1
+                status = .warning
+                detailParts.append("封面补全失败")
+            }
+        }
+
+        if detailParts.isEmpty {
+            detailParts.append("歌曲已导入")
+        }
+
+        return (
+            status,
+            detailParts.joined(separator: "，"),
+            lyricSuccessCount,
+            coverSuccessCount,
+            noResultCount,
+            failedCount
+        )
+    }
+
+    nonisolated private static func enrichmentProgressDetail(
         completed: Int,
         total: Int,
-        successCount: Int,
+        lyricSuccessCount: Int,
+        coverSuccessCount: Int,
         noResultCount: Int,
         failedCount: Int
     ) -> String {
         var parts = ["已处理 \(completed) / \(total)"]
-        if successCount > 0 {
-            parts.append("找到歌词 \(successCount)")
+        if lyricSuccessCount > 0 {
+            parts.append("歌词 \(lyricSuccessCount)")
+        }
+        if coverSuccessCount > 0 {
+            parts.append("封面 \(coverSuccessCount)")
         }
         if noResultCount > 0 {
             parts.append("未找到 \(noResultCount)")
@@ -1154,6 +2314,41 @@ final class FileImportService: FileImportServiceProtocol {
             parts.append("失败 \(failedCount)")
         }
         return parts.joined(separator: "，")
+    }
+
+    nonisolated private static func pendingEnrichmentDetail(
+        needsLyrics: Bool,
+        needsCover: Bool,
+        deferred: Bool
+    ) -> String {
+        let work = enrichmentWorkLabel(needsLyrics: needsLyrics, needsCover: needsCover)
+        if deferred {
+            return "歌曲文件已就绪，导入后将在后台补全\(work)"
+        }
+        return "歌曲文件已就绪，等待补全\(work)"
+    }
+
+    nonisolated private static func activeEnrichmentDetail(
+        needsLyrics: Bool,
+        needsCover: Bool
+    ) -> String {
+        "正在补全\(enrichmentWorkLabel(needsLyrics: needsLyrics, needsCover: needsCover))"
+    }
+
+    nonisolated private static func enrichmentWorkLabel(
+        needsLyrics: Bool,
+        needsCover: Bool
+    ) -> String {
+        switch (needsLyrics, needsCover) {
+        case (true, true):
+            return "歌词与封面"
+        case (true, false):
+            return "歌词"
+        case (false, true):
+            return "封面"
+        case (false, false):
+            return "导入信息"
+        }
     }
 
     /// Extract metadata from audio file using AVAsset.
@@ -1458,6 +2653,12 @@ final class FileImportService: FileImportServiceProtocol {
         return range.lowerBound + (range.upperBound - range.lowerBound) * ratio
     }
 
+    nonisolated private static func durationMilliseconds(since start: ContinuousClock.Instant) -> Double {
+        let duration = start.duration(to: ContinuousClock.now)
+        return Double(duration.components.seconds) * 1000
+            + Double(duration.components.attoseconds) / 1_000_000_000_000_000
+    }
+
     nonisolated private static func performImportTask(
         index: Int,
         candidate: ImportCandidate
@@ -1479,16 +2680,7 @@ final class FileImportService: FileImportServiceProtocol {
                 trackId: trackId
             )
 
-            let extractedArtwork = await extractedArtworkTask
-            let artworkData: Data?
-            if let extractedArtwork {
-                artworkData = extractedArtwork
-            } else {
-                artworkData = await Self.fetchCoverForImport(
-                    artist: candidate.metadata.artist,
-                    album: candidate.metadata.album
-                )
-            }
+            let artworkData = await extractedArtworkTask
             let ttmlLyricText = await embeddedLyricsTask
 
             return ImportTaskOutput(
@@ -1509,6 +2701,8 @@ final class FileImportService: FileImportServiceProtocol {
                     ttmlLyricText: ttmlLyricText,
                     lyricsText: nil
                 ),
+                needsLyricsEnrichment: ttmlLyricText == nil,
+                needsCoverEnrichment: artworkData == nil,
                 errorDescription: nil
             )
         } catch {
@@ -1520,6 +2714,8 @@ final class FileImportService: FileImportServiceProtocol {
                 displayName: candidate.displayName,
                 metadata: candidate.metadata,
                 payload: nil,
+                needsLyricsEnrichment: false,
+                needsCoverEnrichment: false,
                 errorDescription: error.localizedDescription
             )
         }
@@ -1589,209 +2785,10 @@ final class FileImportService: FileImportServiceProtocol {
         return min(count, min(6, max(3, cpuCount)))
     }
 
-    nonisolated private static func lyricsConcurrency(for count: Int) -> Int {
+    nonisolated private static func enrichmentConcurrency(for count: Int) -> Int {
         guard count > 0 else { return 1 }
         let cpuCount = max(1, ProcessInfo.processInfo.processorCount)
-        return min(count, min(6, max(4, cpuCount)))
-    }
-
-    nonisolated private static func fetchCoverForImport(artist: String, album: String) async -> Data? {
-        let normalizedArtist = artist.trimmingCharacters(in: .whitespacesAndNewlines)
-        let normalizedAlbum = album.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        guard !normalizedArtist.isEmpty || !normalizedAlbum.isEmpty else {
-            return nil
-        }
-
-        do {
-            let coverData = try await Self.downloadCoverViaSacad(
-                artist: normalizedArtist,
-                album: normalizedAlbum,
-                size: 1200
-            )
-            print("✅ Cover fetch success via sacad: \(normalizedArtist) - \(normalizedAlbum)")
-            return coverData
-        } catch {
-            print("⚠️ sacad cover fetch failed, trying NetEase fallback: \(error)")
-        }
-
-        do {
-            let coverData = try await Self.downloadNetEaseCover(
-                artist: normalizedArtist,
-                album: normalizedAlbum
-            )
-            print("✅ Cover fetch success via NetEase fallback: \(normalizedArtist) - \(normalizedAlbum)")
-            return coverData
-        } catch {
-            print("❌ Cover fetch failed after fallback (sacad -> NetEase): \(error)")
-            return nil
-        }
-    }
-
-    nonisolated private static func downloadCoverViaSacad(
-        artist: String,
-        album: String,
-        size: Int
-    ) async throws -> Data {
-        let executablePath = "/Users/kmg/.cargo/bin/sacad"
-        let fileManager = FileManager.default
-
-        guard fileManager.isExecutableFile(atPath: executablePath) else {
-            throw CoverDownloadError.executableMissing(path: executablePath)
-        }
-
-        let tempURL = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("temp_\(UUID().uuidString).jpg")
-
-        defer {
-            try? fileManager.removeItem(at: tempURL)
-        }
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executablePath)
-        process.arguments = [artist, album, String(size), tempURL.path]
-
-        let errorPipe = Pipe()
-        process.standardOutput = Pipe()
-        process.standardError = errorPipe
-
-        try await withCheckedThrowingContinuation {
-            (continuation: CheckedContinuation<Void, Error>) in
-            process.terminationHandler = { process in
-                let stderrData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-                guard process.terminationStatus == 0 else {
-                    let stderrText = String(data: stderrData, encoding: .utf8)?
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                    continuation.resume(
-                        throwing: CoverDownloadError.processFailed(
-                            exitCode: process.terminationStatus,
-                            message: stderrText?.isEmpty == false ? stderrText! : "sacad exited with an error"
-                        )
-                    )
-                    return
-                }
-                continuation.resume()
-            }
-
-            do {
-                try process.run()
-            } catch {
-                continuation.resume(
-                    throwing: CoverDownloadError.processFailed(
-                        exitCode: -1,
-                        message: error.localizedDescription
-                    )
-                )
-            }
-        }
-
-        guard fileManager.fileExists(atPath: tempURL.path) else {
-            throw CoverDownloadError.outputMissing
-        }
-
-        let imageData = try Data(contentsOf: tempURL)
-        guard !imageData.isEmpty, NSImage(data: imageData) != nil else {
-            throw CoverDownloadError.invalidImageData
-        }
-        return imageData
-    }
-
-    nonisolated private static func downloadNetEaseCover(
-        artist: String,
-        album: String
-    ) async throws -> Data {
-        let query = "\(artist) \(album)".trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else {
-            throw NetEaseCoverError.noResults
-        }
-
-        guard let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)
-        else {
-            throw NetEaseCoverError.badURL
-        }
-
-        let searchURLString =
-            "https://music.163.com/api/search/get/web?type=10&s=\(encodedQuery)&limit=5"
-        guard let searchURL = URL(string: searchURLString) else {
-            throw NetEaseCoverError.badURL
-        }
-
-        let searchData: Data
-        do {
-            let (data, response) = try await URLSession.shared.data(from: searchURL)
-            try Self.validateNetEaseHTTP(response: response)
-            searchData = data
-        } catch let error as NetEaseCoverError {
-            throw error
-        } catch {
-            throw NetEaseCoverError.requestFailed(underlying: error)
-        }
-
-        let result: NetEaseSearchResponse
-        do {
-            result = try JSONDecoder().decode(NetEaseSearchResponse.self, from: searchData)
-        } catch {
-            throw NetEaseCoverError.decodingFailed(underlying: error)
-        }
-
-        guard let picURLString = result.result.albums.first?.picURL else {
-            throw NetEaseCoverError.noResults
-        }
-
-        let finalCoverURLString = Self.makeLargeCoverURLString(from: picURLString)
-        guard let coverURL = URL(string: finalCoverURLString) else {
-            throw NetEaseCoverError.badURL
-        }
-
-        do {
-            let (imageData, response) = try await URLSession.shared.data(from: coverURL)
-            try Self.validateNetEaseHTTP(response: response)
-            guard !imageData.isEmpty, NSImage(data: imageData) != nil else {
-                throw NetEaseCoverError.imageDownloadFailed(
-                    underlying: CoverDownloadError.invalidImageData
-                )
-            }
-            return imageData
-        } catch let error as NetEaseCoverError {
-            throw error
-        } catch {
-            throw NetEaseCoverError.imageDownloadFailed(underlying: error)
-        }
-    }
-
-    nonisolated private static func validateNetEaseHTTP(response: URLResponse) throws {
-        guard let http = response as? HTTPURLResponse else { return }
-        guard (200..<300).contains(http.statusCode) else {
-            let error = NSError(
-                domain: "NetEaseCoverService",
-                code: http.statusCode,
-                userInfo: [NSLocalizedDescriptionKey: "HTTP \(http.statusCode)"]
-            )
-            throw NetEaseCoverError.requestFailed(underlying: error)
-        }
-    }
-
-    nonisolated private static func makeLargeCoverURLString(from picURLString: String) -> String {
-        if picURLString.contains("?") {
-            return "\(picURLString)&param=1200y1200"
-        }
-        return "\(picURLString)?param=1200y1200"
-    }
-
-    nonisolated private struct NetEaseSearchResponse: Decodable, Sendable {
-        let result: ResultPayload
-
-        struct ResultPayload: Decodable, Sendable {
-            let albums: [Album]
-        }
-
-        struct Album: Decodable, Sendable {
-            let picURL: String
-
-            enum CodingKeys: String, CodingKey {
-                case picURL = "picUrl"
-            }
-        }
+        return min(count, min(4, max(2, cpuCount / 2)))
     }
 
     @MainActor

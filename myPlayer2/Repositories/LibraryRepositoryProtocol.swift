@@ -8,10 +8,24 @@
 
 import Foundation
 
+enum LibraryRepositoryChange: Sendable {
+    case trackUpdated(UUID)
+    case tracksUpdated([UUID])
+}
+
+typealias LibraryRepositoryChangeHandler = @MainActor @Sendable (LibraryRepositoryChange) -> Void
+
+struct LibraryTrackPersistenceResult: Sendable {
+    let persistedTrackIDs: [UUID]
+    let failedTrackIDs: [UUID]
+}
+
 /// Protocol for library data access (tracks and playlists).
 /// Implemented by SwiftDataLibraryRepository for persistence.
 @MainActor
 protocol LibraryRepositoryProtocol: AnyObject {
+    func setChangeHandler(_ handler: LibraryRepositoryChangeHandler?)
+
     /// Reload repository state from authoritative Music Library on disk.
     func reloadFromLibrary() async
 
@@ -20,6 +34,9 @@ protocol LibraryRepositoryProtocol: AnyObject {
     /// Fetch all tracks, optionally filtered by playlist.
     /// - Parameter playlist: If nil, returns all tracks. Otherwise, returns tracks in the playlist.
     func fetchTracks(in playlist: Playlist?) async -> [Track]
+
+    /// Fetch only specific tracks from the in-memory repository cache.
+    func fetchTracks(ids: [UUID]) async -> [Track]
 
     /// Add a new track to the library.
     func addTrack(_ track: Track) async
@@ -35,6 +52,12 @@ protocol LibraryRepositoryProtocol: AnyObject {
 
     /// Update track metadata.
     func updateTrack(_ track: Track) async
+
+    /// Persist a batch of track metadata updates and emit a single change notification.
+    func persistTrackUpdates(_ tracks: [Track]) async -> LibraryTrackPersistenceResult
+
+    /// Reload just the specified tracks from the on-disk library sidecars into repository caches.
+    func refreshTracks(ids: [UUID]) async -> [Track]
 
     /// Check if a track with the given file path already exists.
     func trackExists(filePath: String) async -> Bool
