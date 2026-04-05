@@ -90,6 +90,9 @@ final class LibraryViewModel {
     /// Runtime-only albums derived from disk scan.
     private(set) var runtimeAlbums: [AlbumSection] = []
 
+    private(set) var artistEntries: [ArtistEntry] = []
+    private(set) var albumEntries: [AlbumEntry] = []
+
     /// All tracks loaded from Music Library (in-memory snapshot).
     private(set) var allTracks: [Track] = []
     private(set) var playlistItemAddedAtMap: [UUID: [UUID: Date]] = [:]
@@ -318,6 +321,8 @@ final class LibraryViewModel {
         totalTrackCount = allTracks.count
         runtimeArtists = await repository.fetchArtistSections()
         runtimeAlbums = await repository.fetchAlbumSections()
+        artistEntries = await repository.fetchArtistEntries()
+        albumEntries = await repository.fetchAlbumEntries()
 
         Log.info("Loaded \(playlists.count) playlists, \(totalTrackCount) total tracks, \(runtimeArtists.count) artists, \(runtimeAlbums.count) albums", category: .library)
 
@@ -497,6 +502,36 @@ final class LibraryViewModel {
     func deleteTrack(_ track: Track) async {
         await repository.deleteTrack(track)
         await refresh()
+    }
+
+    // MARK: - Artist/Album Entry Lookups
+
+    func artistEntry(for section: ArtistSection) -> ArtistEntry? {
+        artistEntries.first { $0.canonicalName == section.key }
+    }
+
+    func albumEntry(for section: AlbumSection) -> AlbumEntry? {
+        albumEntries.first { $0.canonicalKey == section.key }
+    }
+
+    // MARK: - Artist/Album Entry Saves
+
+    func saveArtistEntry(_ entry: ArtistEntry) async {
+        await repository.updateArtistEntry(entry)
+        if let idx = artistEntries.firstIndex(where: { $0.id == entry.id }) {
+            artistEntries[idx] = entry
+        }
+    }
+
+    func saveAlbumEntry(_ entry: AlbumEntry) async {
+        await repository.updateAlbumEntry(entry)
+        if let idx = albumEntries.firstIndex(where: { $0.id == entry.id }) {
+            albumEntries[idx] = entry
+        }
+    }
+
+    func savePlaylistDescription(_ playlist: Playlist, description: String) async {
+        await repository.updatePlaylistDescription(playlist, description: description)
     }
 
     /// Update track availability after bookmark resolution.
