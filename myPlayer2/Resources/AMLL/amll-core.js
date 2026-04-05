@@ -18799,46 +18799,47 @@ class Kh {
     if (!this.playing) return;
     this.currentTime += A;
     let I = "";
+    const C = this.element.closest(".amll-surface-fullscreen") !== null ? 4 : -10;
     if (I += `transform:translate(${this.left.toFixed(
       2
-    )}px, ${this.top.toFixed(2)}px)`, this.currentInterlude) {
-      const g = this.currentInterlude[1] - this.currentInterlude[0], C = this.currentTime - this.currentInterlude[0];
-      if (C <= g) {
-        const Q = g / Math.ceil(g / this.targetBreatheDuration);
-        let E = 1, i = 1;
-        E *= Math.sin(1.5 * Math.PI - C / Q * 2) / 20 + 1, C < 2e3 && (E *= Lh(C / 2e3)), C < 500 ? i = 0 : C < 1e3 && (i *= (C - 500) / 500), g - C < 750 && (E *= 1 - Hh(
-          (750 - (g - C)) / 750 / 2
-        )), g - C < 375 && (i *= wI(
+    )}px, ${(this.top + C).toFixed(2)}px)`, this.currentInterlude) {
+      const Q = this.currentInterlude[1] - this.currentInterlude[0], E = this.currentTime - this.currentInterlude[0];
+      if (E <= Q) {
+        const i = Q / Math.ceil(Q / this.targetBreatheDuration);
+        let o = 1, D = 1;
+        o *= Math.sin(1.5 * Math.PI - E / i * 2) / 20 + 1, E < 2e3 && (o *= Lh(E / 2e3)), E < 500 ? D = 0 : E < 1e3 && (D *= (E - 500) / 500), Q - E < 750 && (o *= 1 - Hh(
+          (750 - (Q - E)) / 750 / 2
+        )), Q - E < 375 && (D *= wI(
           0,
-          (g - C) / 375,
+          (Q - E) / 375,
           1
         ));
-        const o = Math.max(0, g - 750);
-        E = Math.max(0, E) * 0.7, I += ` scale(${E})`;
-        const D = wI(
+        const c = Math.max(0, Q - 750);
+        o = Math.max(0, o) * 0.7, I += ` scale(${o})`;
+        const t = wI(
           0.25,
-          C * 3 / o * 0.75,
+          E * 3 / c * 0.75,
           1
-        ), c = wI(
+        ), N = wI(
           0.25,
-          (C - o / 3) * 3 / o * 0.75,
+          (E - c / 3) * 3 / c * 0.75,
           1
-        ), t = wI(
+        ), s = wI(
           0.25,
-          (C - o / 3 * 2) * 3 / o * 0.75,
+          (E - c / 3 * 2) * 3 / c * 0.75,
           1
         );
         this.dot0.style.opacity = `${wI(
           0,
-          Math.max(0, i * D),
+          Math.max(0, D * t),
           1
         )}`, this.dot1.style.opacity = `${wI(
           0,
-          Math.max(0, i * c),
+          Math.max(0, D * N),
           1
         )}`, this.dot2.style.opacity = `${wI(
           0,
-          Math.max(0, i * t),
+          Math.max(0, D * s),
           1
         )}`;
       } else
@@ -19428,9 +19429,9 @@ class JQ extends EventTarget {
       const j = this.bufferedLines.has(m), M = j || m >= this.scrollToIndex && m < a, n = l.getLine(), G = g && m === g[2] + 1;
       if (!Y && G) {
         Y = !0, C += o;
-        const p = this.baseFontSize || 24, V = o * 0.75, z = o * 1.5;
-        let W = p - V - z;
-        g && E && (W = this.size[0] - this.interludeDotsSize[0] - D), this.interludeDots.setTransform(W, C), g && this.interludeDots.setInterlude([g[0], g[1]]), C += this.interludeDotsSize[1], C += o;
+        const p = this.baseFontSize || 24, V = o * 0.75, z = this.element.classList.contains("amll-surface-fullscreen") || this.element.classList.contains("amll-surface-fullscreen-cover-blur"), W = o * 2.1, w = o * 1.55, r = z ? w : W;
+        let y = p - V - r;
+        g && E && (y = this.size[0] - this.interludeDotsSize[0] - D), this.interludeDots.setTransform(y, C), g && this.interludeDots.setInterlude([g[0], g[1]]), C += this.interludeDotsSize[1], C += o;
       }
       let J;
       this.hidePassedLines ? m < (g ? g[2] + 1 : this.scrollToIndex) && this.isPlaying ? J = 1e-5 : j ? J = 0.85 : J = this.isNonDynamic ? 0.2 : 1 : j ? J = 0.85 : J = this.isNonDynamic ? 0.2 : 1;
