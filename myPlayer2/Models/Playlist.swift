@@ -18,6 +18,7 @@ final class Playlist {
     // MARK: - Properties
 
     var name: String
+    var description: String = ""
     var createdAt: Date
 
     // MARK: - Relationships
@@ -31,11 +32,13 @@ final class Playlist {
     init(
         id: UUID = UUID(),
         name: String,
+        description: String = "",
         createdAt: Date = Date(),
         tracks: [Track] = []
     ) {
         self.id = id
         self.name = name
+        self.description = description
         self.createdAt = createdAt
         self.tracks = tracks
     }
