@@ -1043,7 +1043,11 @@ export abstract class LyricPlayerBase
 
 				const lyricTextPaddingLeft = this.baseFontSize || 24;
 				const dotsPaddingLeft = dotMargin * 0.75;
-				const leftFineTune = dotMargin * 1.5;
+				// Split horizontal fine tune: window mode moves more left, fullscreen more conservative
+				const isFullscreenSurface = this.element.classList.contains('amll-surface-fullscreen') || this.element.classList.contains('amll-surface-fullscreen-cover-blur');
+				const leftFineTuneMain = dotMargin * 2.1;
+				const leftFineTuneFullscreen = dotMargin * 1.55;
+				const leftFineTune = isFullscreenSurface ? leftFineTuneFullscreen : leftFineTuneMain;
 				let targetX = lyricTextPaddingLeft - dotsPaddingLeft - leftFineTune;
 				if (interlude && isNextDuet) {
 					targetX =
