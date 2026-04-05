@@ -14,9 +14,10 @@ import Foundation
 @MainActor
 protocol FileImportServiceProtocol: AnyObject {
 
-    /// Present file picker and import selected files/folders into a playlist.
-    /// - Parameter playlist: The target playlist.
-    /// - Returns: Number of tracks successfully imported.
+    /// Present the system-native file picker and return selected files/folders.
+    func pickImportURLs(triggeredAt: Date) async -> [URL]?
+
+    /// Import previously selected files/folders into a playlist.
     @discardableResult
-    func pickAndImport(to playlist: Playlist) async -> Int
+    func importSelectedURLs(_ urls: [URL], to playlist: Playlist) async -> Int
 }

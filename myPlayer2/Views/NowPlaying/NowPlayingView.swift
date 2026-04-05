@@ -10,8 +10,20 @@ import SwiftUI
 
 @MainActor
 struct NowPlayingView: View {
+    let mainContentWidth: CGFloat?
+
+    init(mainContentWidth: CGFloat? = nil) {
+        self.mainContentWidth = mainContentWidth
+    }
+
     var body: some View {
-        NowPlayingHostView()
+        if let width = mainContentWidth {
+            NowPlayingHostView(mainContentWidth: width)
+        } else {
+            GeometryReader { proxy in
+                NowPlayingHostView(mainContentWidth: proxy.size.width)
+            }
+        }
     }
 }
 

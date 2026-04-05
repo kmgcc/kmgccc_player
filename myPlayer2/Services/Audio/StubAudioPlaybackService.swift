@@ -58,6 +58,18 @@ final class StubAudioPlaybackService: AudioPlaybackServiceProtocol {
         }
     }
 
+    func refreshTracks(_ tracks: [Track]) {
+        let refreshedByID = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) })
+        guard !refreshedByID.isEmpty else { return }
+
+        queue = queue.map { refreshedByID[$0.id] ?? $0 }
+        if let currentID = currentTrack?.id, let refreshedTrack = refreshedByID[currentID] {
+            currentTrack = refreshedTrack
+            duration = refreshedTrack.duration
+            NotificationCenter.default.post(name: .playbackTrackDidChange, object: nil)
+        }
+    }
+
     func pause() {
         isPlaying = false
         stopTimer()

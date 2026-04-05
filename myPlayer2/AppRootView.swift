@@ -83,6 +83,7 @@ struct AppRootView: View {
     @State private var playerVM: PlayerViewModel?
     @State private var lyricsVM: LyricsViewModel?
     @State private var ledMeter: LEDMeterService?
+    @State private var importEnrichmentService: ImportEnrichmentService?
     @State private var skinManager: SkinManager?
     @State private var easterEggSFX: EasterEggSFXService?
     @StateObject private var artBackgroundController = BKArtBackgroundController()
@@ -96,7 +97,13 @@ struct AppRootView: View {
 
     var body: some View {
         Group {
-            if let libraryVM, let playerVM, let lyricsVM, let ledMeter, let skinManager {
+            if let libraryVM,
+                let playerVM,
+                let lyricsVM,
+                let ledMeter,
+                let importEnrichmentService,
+                let skinManager
+            {
                 ZStack {
                     if uiState.contentMode == .nowPlaying
                         && settings.nowPlayingArtBackgroundEnabled
@@ -129,6 +136,20 @@ struct AppRootView: View {
                     Log.debug("Track changed notification received", category: .ui)
                     Task { @MainActor in
                         await themeStore.updateTheme(for: playerVM.currentTrack)
+                    }
+                }
+                .onReceive(NotificationCenter.default.publisher(for: .libraryTrackDidUpdate)) {
+                    notification in
+                    guard let trackID = notification.userInfo?["trackID"] as? UUID else { return }
+                    guard let refreshedTrack = libraryVM.allTracks.first(where: { $0.id == trackID }) else {
+                        return
+                    }
+                    playerVM.refreshTracks([refreshedTrack])
+                    if playerVM.currentTrack?.id == trackID {
+                        Log.info(
+                            "[ImportEnrichmentReload] current detail/lyrics refreshed for current track if applicable",
+                            category: .library
+                        )
                     }
                 }
                 .onChange(of: uiState.contentMode) { _, newValue in
@@ -165,6 +186,7 @@ struct AppRootView: View {
                 .environment(playerVM)
                 .environment(lyricsVM)
                 .environment(ledMeter)
+                .environment(importEnrichmentService)
                 .environment(skinManager)
                 .environment(coverDownloadService)
                 .environment(netEaseCoverService)
@@ -316,10 +338,13 @@ struct AppRootView: View {
             ))
         ledMeter.attachToMixer(playbackService.mainMixerNode)
 
+        let importEnrichmentService = ImportEnrichmentService(repository: repository)
+
         // Create file import service
         let fileImportService = FileImportService(
             repository: repository,
-            libraryService: libraryService
+            libraryService: libraryService,
+            importEnrichmentService: importEnrichmentService
         )
 
         // Create ViewModels
@@ -333,6 +358,7 @@ struct AppRootView: View {
         playerVM = PlayerViewModel(playbackService: playbackService, levelMeter: ledMeter)
         lyricsVM = LyricsViewModel(settings: AppSettings.shared)
         self.ledMeter = ledMeter
+        self.importEnrichmentService = importEnrichmentService
         skinManager = SkinManager()
         easterEggSFX = EasterEggSFXService()
 

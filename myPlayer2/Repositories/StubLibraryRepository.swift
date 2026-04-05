@@ -17,11 +17,16 @@ final class StubLibraryRepository: LibraryRepositoryProtocol {
 
     private var playlists: [Playlist] = []
     private var allTracks: [Track] = []
+    private var changeHandler: LibraryRepositoryChangeHandler?
 
     // MARK: - Initialization
 
     init() {
         setupFakeData()
+    }
+
+    func setChangeHandler(_ handler: LibraryRepositoryChangeHandler?) {
+        changeHandler = handler
     }
 
     func reloadFromLibrary() async {
@@ -35,6 +40,11 @@ final class StubLibraryRepository: LibraryRepositoryProtocol {
             return playlist.tracks
         }
         return allTracks
+    }
+
+    func fetchTracks(ids: [UUID]) async -> [Track] {
+        let idSet = Set(ids)
+        return allTracks.filter { idSet.contains($0.id) }
     }
 
     func addTrack(_ track: Track) async {
@@ -54,7 +64,22 @@ final class StubLibraryRepository: LibraryRepositoryProtocol {
     }
 
     func updateTrack(_ track: Track) async {
-        // No-op for stub
+        changeHandler?(.trackUpdated(track.id))
+    }
+
+    func persistTrackUpdates(_ tracks: [Track]) async -> LibraryTrackPersistenceResult {
+        let trackIDs = Array(Set(tracks.map(\.id))).sorted { $0.uuidString < $1.uuidString }
+        if trackIDs.count == 1, let trackID = trackIDs.first {
+            changeHandler?(.trackUpdated(trackID))
+        } else if !trackIDs.isEmpty {
+            changeHandler?(.tracksUpdated(trackIDs))
+        }
+        return LibraryTrackPersistenceResult(persistedTrackIDs: trackIDs, failedTrackIDs: [])
+    }
+
+    func refreshTracks(ids: [UUID]) async -> [Track] {
+        let idSet = Set(ids)
+        return allTracks.filter { idSet.contains($0.id) }
     }
 
     func trackExists(filePath: String) async -> Bool {

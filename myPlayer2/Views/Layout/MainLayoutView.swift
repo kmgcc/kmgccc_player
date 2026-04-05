@@ -279,17 +279,19 @@ struct MainLayoutView: View {
             let lyricsWidth = resolvedLyricsPanelWidth(in: proxy.size.width)
 
             ZStack(alignment: .topLeading) {
-                NowPlayingHostView()
+                // Now Playing skin only occupies the main content area (left portion, excluding lyrics)
+                NowPlayingHostView(mainContentWidth: mainContentWidth)
                     .frame(width: mainContentWidth, alignment: .topLeading)
                     .frame(maxHeight: .infinity, alignment: .topLeading)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
+                // Lyrics panel positioned on the right
                 if shouldShowMainLyricsPanel {
                     lyricsPanelView(width: lyricsWidth)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                         .transition(.move(edge: .trailing).combined(with: .opacity))
                 }
             }
+            .frame(width: proxy.size.width, alignment: .topLeading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }

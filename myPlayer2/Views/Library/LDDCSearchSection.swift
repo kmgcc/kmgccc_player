@@ -858,21 +858,9 @@ struct LDDCSearchSection: View {
     // MARK: - Result Merging & Sorting
 
     /// Merge AMLLDB and LDDC results with proper ranking.
-    /// High-confidence AMLLDB results (>=80%) are promoted to the top.
-    /// All other results are sorted together by normalized score.
+    /// Delegates to the shared LyricsSearchHelper for consistency with import flow.
     private func mergeAndSortResults(amlldb: [LDDCCandidate], lddc: [LDDCCandidate]) -> [LDDCCandidate] {
-        // Separate AMLLDB results by confidence level
-        let highConfidenceAMLLDB = amlldb.filter { $0.normalizedScore() >= 80.0 }
-            .sorted { $0.normalizedScore() > $1.normalizedScore() }
-
-        let lowerConfidenceAMLLDB = amlldb.filter { $0.normalizedScore() < 80.0 }
-
-        // Combine lower-confidence AMLLDB with all LDDC results
-        let remainingResults = (lowerConfidenceAMLLDB + lddc)
-            .sorted { $0.normalizedScore() > $1.normalizedScore() }
-
-        // Final order: high-confidence AMLLDB first, then remaining sorted by score
-        return highConfidenceAMLLDB + remainingResults
+        LyricsSearchHelper.mergeAndSortResults(amlldb: amlldb, lddc: lddc)
     }
 
     private func selectCandidate(_ candidate: LDDCCandidate) async {

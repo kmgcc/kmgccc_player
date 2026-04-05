@@ -15,6 +15,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     private let scanner: MusicLibraryScanner
     private let fileManager = FileManager.default
     private let indexContext: ModelContext?
+    private var changeHandler: LibraryRepositoryChangeHandler?
 
     private var allTracks: [Track] = []
     private var playlists: [Playlist] = []
@@ -27,6 +28,10 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         self.indexContext = modelContext
         self.libraryService = libraryService ?? LocalLibraryService.shared
         self.scanner = MusicLibraryScanner()
+    }
+
+    func setChangeHandler(_ handler: LibraryRepositoryChangeHandler?) {
+        changeHandler = handler
     }
 
     // MARK: - Boot/Reload
@@ -80,6 +85,12 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         return allTracks
     }
 
+    func fetchTracks(ids: [UUID]) async -> [Track] {
+        let idSet = Set(ids)
+        guard !idSet.isEmpty else { return [] }
+        return allTracks.filter { idSet.contains($0.id) }
+    }
+
     func addTrack(_ track: Track) async {
         allTracks.append(track)
         libraryService.writeSidecar(for: track)
@@ -116,9 +127,94 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     }
 
     func updateTrack(_ track: Track) async {
-        libraryService.writeSidecar(for: track)
+        _ = await persistTrackUpdates([track])
+    }
+
+    func persistTrackUpdates(_ tracks: [Track]) async -> LibraryTrackPersistenceResult {
+        let uniqueTracks = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) }).values.sorted {
+            $0.id.uuidString < $1.id.uuidString
+        }
+        guard !uniqueTracks.isEmpty else {
+            return LibraryTrackPersistenceResult(persistedTrackIDs: [], failedTrackIDs: [])
+        }
+
+        Log.info(
+            "[ImportEnrichment] repository flush start tracks=\(uniqueTracks.count)",
+            category: .library
+        )
+
+        var persistedTrackIDs: [UUID] = []
+        var failedTrackIDs: [UUID] = []
+
+        for track in uniqueTracks {
+            if libraryService.writeSidecar(for: track) {
+                persistedTrackIDs.append(track.id)
+            } else {
+                failedTrackIDs.append(track.id)
+            }
+        }
+
+        if !persistedTrackIDs.isEmpty {
+            _ = await refreshTracks(ids: persistedTrackIDs)
+        }
+
+        if !persistedTrackIDs.isEmpty {
+            if persistedTrackIDs.count == 1, let trackID = persistedTrackIDs.first {
+                changeHandler?(.trackUpdated(trackID))
+            } else {
+                changeHandler?(.tracksUpdated(persistedTrackIDs))
+            }
+        }
+
+        Log.info(
+            "[ImportEnrichment] repository flush complete persisted=\(persistedTrackIDs.count) failed=\(failedTrackIDs.count)",
+            category: .library
+        )
+
+        return LibraryTrackPersistenceResult(
+            persistedTrackIDs: persistedTrackIDs,
+            failedTrackIDs: failedTrackIDs
+        )
+    }
+
+    func refreshTracks(ids: [UUID]) async -> [Track] {
+        let uniqueIDs = Array(Set(ids)).sorted { $0.uuidString < $1.uuidString }
+        guard !uniqueIDs.isEmpty else { return [] }
+
+        Log.info(
+            "[ImportEnrichmentReload] reload requested for track IDs: \(uniqueIDs.map(\.uuidString))",
+            category: .library
+        )
+
+        let metas = scanner.scanTracks(ids: uniqueIDs)
+        let refreshedTracks = metas.map(buildTrack)
+        let refreshedByID = Dictionary(uniqueKeysWithValues: refreshedTracks.map { ($0.id, $0) })
+
+        guard !refreshedByID.isEmpty else {
+            Log.warning(
+                "[ImportEnrichmentReload] reload read complete for track IDs: []",
+                category: .library
+            )
+            return []
+        }
+
+        allTracks = allTracks.map { refreshedByID[$0.id] ?? $0 }
+        for playlist in playlists {
+            playlist.tracks = playlist.tracks.map { refreshedByID[$0.id] ?? $0 }
+        }
         rebuildRuntimeDerivedState()
         rebuildTrackIndexCache()
+
+        let refreshedIDs = refreshedTracks.map(\.id.uuidString)
+        Log.info(
+            "[ImportEnrichmentReload] reload read complete for track IDs: \(refreshedIDs)",
+            category: .library
+        )
+        Log.info(
+            "[ImportEnrichmentReload] repository cache replaced for \(refreshedTracks.count) tracks",
+            category: .library
+        )
+        return refreshedTracks
     }
 
     func trackExists(filePath: String) async -> Bool {

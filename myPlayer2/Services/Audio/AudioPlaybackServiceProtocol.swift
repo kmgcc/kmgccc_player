@@ -41,6 +41,9 @@ protocol AudioPlaybackServiceProtocol: AnyObject {
     /// Update current playable track set (playlist/filter/import/delete changes).
     func updateQueueTracks(_ tracks: [Track])
 
+    /// Replace queue/current-track metadata for already-known track IDs without rebuilding playback state.
+    func refreshTracks(_ tracks: [Track])
+
     /// Pause playback.
     func pause()
 

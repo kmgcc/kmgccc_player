@@ -59,6 +59,12 @@ final class MusicLibraryScanner {
         return metas
     }
 
+    func scanTracks(ids: [UUID]) -> [ScannedTrackMeta] {
+        ids.compactMap { id in
+            parseTrackMeta(in: LocalLibraryPaths.trackFolderURL(for: id))
+        }
+    }
+
     private func parseTrackMeta(in folderURL: URL) -> ScannedTrackMeta? {
         let metaURL = folderURL.appendingPathComponent("meta.json")
         guard let data = try? Data(contentsOf: metaURL) else { return nil }

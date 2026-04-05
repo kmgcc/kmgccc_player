@@ -152,6 +152,10 @@ public final class AppSettings {
         static let lyricsBackgroundMode = "lyricsBackgroundMode"
     }
 
+    private enum ImportKeys {
+        static let deferImportEnrichment = "deferImportEnrichment"
+    }
+
     /// Whether global accent/tint follows current artwork dominant color.
     var globalArtworkTintEnabled: Bool {
         get {
@@ -242,6 +246,19 @@ public final class AppSettings {
             withMutation(keyPath: \.lyricsBackgroundMode) {
                 UserDefaults.standard.set(
                     newValue.rawValue, forKey: AppearanceKeys.lyricsBackgroundMode)
+            }
+        }
+    }
+
+    /// Whether imported tracks should appear immediately and fetch lyrics/artwork afterward.
+    var deferImportEnrichment: Bool {
+        get {
+            access(keyPath: \.deferImportEnrichment)
+            return UserDefaults.standard.bool(forKey: ImportKeys.deferImportEnrichment)
+        }
+        set {
+            withMutation(keyPath: \.deferImportEnrichment) {
+                UserDefaults.standard.set(newValue, forKey: ImportKeys.deferImportEnrichment)
             }
         }
     }

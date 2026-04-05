@@ -148,6 +148,10 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         .onChange(of: libraryVM.currentSelection) { oldVal, newVal in
             scheduleRebuild(reason: "selection", restoreScroll: true)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .libraryTrackDidUpdate)) { notification in
+            guard let trackID = notification.userInfo?["trackID"] as? UUID else { return }
+            applyTargetedTrackRefresh(trackID: trackID)
+        }
     }
 
     // MARK: - Computed Properties
@@ -874,6 +878,61 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         }
         prefetchTask?.cancel()
         prefetchTask = ArtworkLoader.prefetch(Array(requests))
+    }
+
+    private func applyTargetedTrackRefresh(trackID: UUID) {
+        guard let track = latestTrackFromLibrary(trackID: trackID) else { return }
+        guard let sortIndex = sortedTrackIndexMapCache[trackID] else { return }
+
+        let rowScale = NSScreen.main?.backingScaleFactor ?? 2.0
+        let rowPixels = CGSize(
+            width: Constants.Layout.artworkSmallSize * rowScale,
+            height: Constants.Layout.artworkSmallSize * rowScale
+        )
+        let checksum = ArtworkLoader.checksum(for: track.artworkData)
+        let cacheKey = ArtworkLoader.cacheKey(
+            trackID: track.id,
+            checksum: checksum,
+            targetPixelSize: rowPixels
+        )
+
+        displayedTracksCache = displayedTracksCache.map { $0.id == trackID ? track : $0 }
+        filteredTracksCache = filteredTracksCache.map { $0.id == trackID ? track : $0 }
+        sortedTracksCache = sortedTracksCache.map { $0.id == trackID ? track : $0 }
+        parentSortedTracksCache = parentSortedTracksCache.map { $0.id == trackID ? track : $0 }
+
+        let rowSnapshot = TrackRowSnapshot(
+            trackID: track.id,
+            title: track.title,
+            artist: track.artist,
+            album: track.album,
+            duration: track.duration,
+            durationText: formatDuration(track.duration),
+            artworkChecksum: checksum,
+            artworkData: track.artworkData,
+            artworkCacheKey: cacheKey,
+            isMissing: track.availability == .missing,
+            sortIndex: sortIndex + 1
+        )
+
+        var updatedSnapshots = viewSnapshot.trackSnapshots
+        updatedSnapshots[trackID] = rowSnapshot
+        viewSnapshot = PlaylistViewSnapshot(
+            playlistID: viewSnapshot.playlistID,
+            trackIDs: viewSnapshot.trackIDs,
+            trackSnapshots: updatedSnapshots,
+            totalDuration: viewSnapshot.totalDuration
+        )
+
+        trackByIDCache[trackID] = track
+        lastPrefetchBucket = nil
+    }
+
+    private func latestTrackFromLibrary(trackID: UUID) -> Track? {
+        if let track = libraryVM.allTracks.first(where: { $0.id == trackID }) {
+            return track
+        }
+        return trackByIDCache[trackID]
     }
 
     private func formatDuration(_ duration: Double) -> String {
