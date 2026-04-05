@@ -142,6 +142,7 @@ struct PlaylistSidecar: Codable {
     let createdAt: Date
     let items: [PlaylistItemSidecar]
     let legacyTrackIDs: [UUID]?
+    let description: String?
 
     var trackIDs: [UUID] {
         if schemaVersion >= 2 {
@@ -158,18 +159,21 @@ struct PlaylistSidecar: Codable {
         case items
         case trackIDs
         case trackIds
+        case description
     }
 
     init(
         schemaVersion: Int = 2,
         id: UUID,
         name: String,
+        description: String? = nil,
         createdAt: Date,
         items: [PlaylistItemSidecar]
     ) {
         self.schemaVersion = schemaVersion
         self.id = id
         self.name = name
+        self.description = description
         self.createdAt = createdAt
         self.items = items
         self.legacyTrackIDs = nil
@@ -183,6 +187,7 @@ struct PlaylistSidecar: Codable {
         name = try c.decode(String.self, forKey: .name)
         createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
         schemaVersion = version
+        description = try c.decodeIfPresent(String.self, forKey: .description)
 
         if version >= 2 {
             items = try c.decodeIfPresent([PlaylistItemSidecar].self, forKey: .items) ?? []
@@ -202,6 +207,7 @@ struct PlaylistSidecar: Codable {
         try c.encode(2, forKey: .schemaVersion)
         try c.encode(id, forKey: .id)
         try c.encode(name, forKey: .name)
+        try c.encodeIfPresent(description, forKey: .description)
         try c.encode(createdAt, forKey: .createdAt)
         try c.encode(items, forKey: .items)
     }
@@ -210,6 +216,74 @@ struct PlaylistSidecar: Codable {
 struct PlaylistItemSidecar: Codable {
     let trackID: UUID
     let addedAt: Date
+}
+
+struct ArtistSidecar: Codable {
+    var schemaVersion: Int
+    var id: UUID
+    var canonicalName: String
+    var displayName: String
+    var artworkFileName: String?
+    var description: String?
+    var createdAt: Date
+    var updatedAt: Date
+
+    init(
+        schemaVersion: Int = 1,
+        id: UUID,
+        canonicalName: String,
+        displayName: String,
+        artworkFileName: String? = nil,
+        description: String? = nil,
+        createdAt: Date,
+        updatedAt: Date
+    ) {
+        self.schemaVersion = schemaVersion
+        self.id = id
+        self.canonicalName = canonicalName
+        self.displayName = displayName
+        self.artworkFileName = artworkFileName
+        self.description = description
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+}
+
+struct AlbumSidecar: Codable {
+    var schemaVersion: Int
+    var id: UUID
+    var canonicalKey: String
+    var displayTitle: String
+    var primaryArtistCanonicalName: String
+    var artworkFileName: String?
+    var description: String?
+    var year: Int?
+    var createdAt: Date
+    var updatedAt: Date
+
+    init(
+        schemaVersion: Int = 1,
+        id: UUID,
+        canonicalKey: String,
+        displayTitle: String,
+        primaryArtistCanonicalName: String,
+        artworkFileName: String? = nil,
+        description: String? = nil,
+        year: Int? = nil,
+        createdAt: Date,
+        updatedAt: Date
+    ) {
+        self.schemaVersion = schemaVersion
+        self.id = id
+        self.canonicalKey = canonicalKey
+        self.displayTitle = displayTitle
+        self.primaryArtistCanonicalName = primaryArtistCanonicalName
+        self.artworkFileName = artworkFileName
+        self.description = description
+        self.year = year
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
 }
 
 @MainActor
@@ -397,6 +471,7 @@ final class LocalLibraryService {
         let sidecar = PlaylistSidecar(
             id: playlist.id,
             name: playlist.name,
+            description: nil,
             createdAt: playlist.createdAt,
             items: items
         )
@@ -425,6 +500,86 @@ final class LocalLibraryService {
                 Log.error("Failed to delete playlist sidecar '\(playlist.name)': \(error)", category: .library)
             }
         }
+    }
+
+    // MARK: - Artist/Album Sidecars
+
+    func loadArtistSidecarsFromDisk() -> [(sidecar: ArtistSidecar, folderURL: URL)] {
+        let root = LocalLibraryPaths.artistsRootURL
+        guard let entries = try? fileManager.contentsOfDirectory(
+            at: root, includingPropertiesForKeys: [.isDirectoryKey],
+            options: .skipsHiddenFiles
+        ) else { return [] }
+        return entries.compactMap { folderURL in
+            guard (try? folderURL.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+            else { return nil }
+            let metaURL = folderURL.appendingPathComponent("meta.json")
+            guard let data = try? Data(contentsOf: metaURL),
+                  let sidecar = try? decoder.decode(ArtistSidecar.self, from: data)
+            else { return nil }
+            return (sidecar, folderURL)
+        }
+    }
+
+    func loadAlbumSidecarsFromDisk() -> [(sidecar: AlbumSidecar, folderURL: URL)] {
+        let root = LocalLibraryPaths.albumsRootURL
+        guard let entries = try? fileManager.contentsOfDirectory(
+            at: root, includingPropertiesForKeys: [.isDirectoryKey],
+            options: .skipsHiddenFiles
+        ) else { return [] }
+        return entries.compactMap { folderURL in
+            guard (try? folderURL.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+            else { return nil }
+            let metaURL = folderURL.appendingPathComponent("meta.json")
+            guard let data = try? Data(contentsOf: metaURL),
+                  let sidecar = try? decoder.decode(AlbumSidecar.self, from: data)
+            else { return nil }
+            return (sidecar, folderURL)
+        }
+    }
+
+    func writeArtistSidecar(_ sidecar: ArtistSidecar, artworkData: Data?) {
+        let folder = LocalLibraryPaths.artistFolderURL(for: sidecar.id)
+        do {
+            try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
+            let metaURL = LocalLibraryPaths.artistMetaURL(for: sidecar.id)
+            let data = try encoder.encode(sidecar)
+            try data.write(to: metaURL, options: .atomic)
+            if let artworkData, let fileName = sidecar.artworkFileName {
+                let artworkURL = folder.appendingPathComponent(fileName)
+                try artworkData.write(to: artworkURL, options: .atomic)
+            }
+        } catch {
+            Log.error("Failed to write artist sidecar '\(sidecar.displayName)': \(error)", category: .library)
+        }
+    }
+
+    func writeAlbumSidecar(_ sidecar: AlbumSidecar, artworkData: Data?) {
+        let folder = LocalLibraryPaths.albumFolderURL(for: sidecar.id)
+        do {
+            try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
+            let metaURL = LocalLibraryPaths.albumMetaURL(for: sidecar.id)
+            let data = try encoder.encode(sidecar)
+            try data.write(to: metaURL, options: .atomic)
+            if let artworkData, let fileName = sidecar.artworkFileName {
+                let artworkURL = folder.appendingPathComponent(fileName)
+                try artworkData.write(to: artworkURL, options: .atomic)
+            }
+        } catch {
+            Log.error("Failed to write album sidecar '\(sidecar.displayTitle)': \(error)", category: .library)
+        }
+    }
+
+    func deleteArtistEntry(id: UUID) {
+        let folder = LocalLibraryPaths.artistFolderURL(for: id)
+        guard fileManager.fileExists(atPath: folder.path) else { return }
+        try? fileManager.removeItem(at: folder)
+    }
+
+    func deleteAlbumEntry(id: UUID) {
+        let folder = LocalLibraryPaths.albumFolderURL(for: id)
+        guard fileManager.fileExists(atPath: folder.path) else { return }
+        try? fileManager.removeItem(at: folder)
     }
 
     // MARK: - Bootstrap / Sync
