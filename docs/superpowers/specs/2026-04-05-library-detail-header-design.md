@@ -57,7 +57,7 @@ All fields except `artworkFileName` and `description` are required. Missing opti
 {
   "schemaVersion": 1,
   "id": "uuid",
-  "canonicalTitle": "normalized-album•artist-key",
+  "canonicalKey": "normalized-album•artist-key",
   "displayTitle": "Album Title",
   "primaryArtistCanonicalName": "normalized-artist-key",
   "artworkFileName": "artwork.png",
@@ -69,6 +69,7 @@ All fields except `artworkFileName` and `description` are required. Missing opti
 ```
 
 `year` is `Int?`. `artworkFileName`, `description`, and `year` are optional.
+`canonicalKey` encodes the normalized album+artist identity key (matching `LibraryNormalization.normalizedAlbumKey(album:artist:)`), not just the album title.
 
 ### Playlist Description
 
@@ -132,13 +133,13 @@ actor LibraryMetadataSync {
 1. Load existing `ArtistSidecar` records from disk.
 2. Build a lookup: `[canonicalName: ArtistSidecar]`.
 3. For each derived `ArtistSection`:
-   - If a matching sidecar exists: produce `ArtistEntry` with user-edited fields preserved + updated derived stats (`trackCount`, `albumCount`, `totalDuration`). Write sidecar only if `updatedAt` needs to change (derived stats don't touch user fields).
+   - If a matching sidecar exists: produce `ArtistEntry` with user-edited fields preserved + updated derived stats (`trackCount`, `albumCount`, `totalDuration`). Do not update or rewrite the sidecar — `updatedAt` is only bumped when user-editable persisted fields change, not during derived-stat sync.
    - If no sidecar exists: create a new `ArtistSidecar` with a new UUID, write to disk, produce `ArtistEntry`.
 4. For sidecars with no matching derived section (orphaned):
-   - If `description` is non-empty or `artworkFileName` is set → keep, mark `isOrphaned = true` (future-facing flag, not written to disk yet).
+   - If `description` is non-empty or `artworkFileName` is set → keep, set `isOrphaned = true` on the in-memory `ArtistEntry` only. This is runtime-only derived state; it is not persisted to disk.
    - If no user-edited content → delete folder from disk.
 
-**Album sync:** Same structure, keyed by `canonicalTitle` (which encodes album + primary artist canonical name).
+**Album sync:** Same structure, keyed by `canonicalKey` (which encodes album + primary artist canonical name).
 
 **User-editable fields that survive sync:** `description`, `artworkFileName`, `displayName`/`displayTitle`, `year`.
 **Derived fields that sync refreshes:** `trackCount`, `albumCount`, `totalDuration`, representative artwork loaded from first matching track.
@@ -258,7 +259,7 @@ A single shared SwiftUI component. Not three separate implementations.
 
 - Toggled by the edit button (right-aligned, inside the header row)
 - In read mode: missing values appear as blank text — no "Unknown" placeholders
-- In edit mode: text fields for title (where editable), description, year (album only), artwork replacement
+- In edit mode: text fields for description (all types), year (album only), and artwork replacement (all types). Title editing is out of scope for this pass.
 - Artwork replacement: `NSOpenPanel` / file importer for local image selection
 - On save: calls the appropriate `libraryVM.save*Entry()` method; updates `onArtworkChange` callback
 
