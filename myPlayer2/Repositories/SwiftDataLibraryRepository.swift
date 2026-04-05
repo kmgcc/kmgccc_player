@@ -23,6 +23,9 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     private var runtimeAlbums: [AlbumSection] = []
     private var dedupCountByKey: [String: Int] = [:]
     private var playlistItemAddedAtMap: [UUID: [UUID: Date]] = [:]
+    private var artistEntries: [ArtistEntry] = []
+    private var albumEntries: [AlbumEntry] = []
+    private let metadataSync = LibraryMetadataSync()
 
     init(modelContext: ModelContext? = nil, libraryService: LocalLibraryService? = nil) {
         self.indexContext = modelContext
@@ -67,6 +70,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             return Playlist(
                 id: sidecar.id,
                 name: sidecar.name,
+                userDescription: sidecar.description ?? "",
                 createdAt: sidecar.createdAt,
                 tracks: resolved
             )
@@ -76,6 +80,14 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         playlists = loadedPlaylists.sorted { $0.createdAt < $1.createdAt }
         rebuildRuntimeDerivedState()
         rebuildTrackIndexCache()
+        let (artists, albums) = metadataSync.sync(
+            derivedArtists: runtimeArtists,
+            derivedAlbums: runtimeAlbums,
+            allTracks: allTracks,
+            libraryService: libraryService
+        )
+        artistEntries = artists
+        albumEntries = albums
     }
 
     // MARK: - Track Operations
@@ -96,6 +108,14 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         libraryService.writeSidecar(for: track)
         rebuildRuntimeDerivedState()
         rebuildTrackIndexCache()
+        let (artists, albums) = metadataSync.sync(
+            derivedArtists: runtimeArtists,
+            derivedAlbums: runtimeAlbums,
+            allTracks: allTracks,
+            libraryService: libraryService
+        )
+        artistEntries = artists
+        albumEntries = albums
     }
 
     func addTracks(_ tracks: [Track]) async {
@@ -105,6 +125,14 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         }
         rebuildRuntimeDerivedState()
         rebuildTrackIndexCache()
+        let (artists, albums) = metadataSync.sync(
+            derivedArtists: runtimeArtists,
+            derivedAlbums: runtimeAlbums,
+            allTracks: allTracks,
+            libraryService: libraryService
+        )
+        artistEntries = artists
+        albumEntries = albums
     }
 
     func addPlaylist(_ playlist: Playlist) async {
@@ -124,6 +152,14 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         libraryService.deleteTrackFiles(track)
         rebuildRuntimeDerivedState()
         rebuildTrackIndexCache()
+        let (artists, albums) = metadataSync.sync(
+            derivedArtists: runtimeArtists,
+            derivedAlbums: runtimeAlbums,
+            allTracks: allTracks,
+            libraryService: libraryService
+        )
+        artistEntries = artists
+        albumEntries = albums
     }
 
     func updateTrack(_ track: Track) async {
@@ -204,6 +240,14 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         }
         rebuildRuntimeDerivedState()
         rebuildTrackIndexCache()
+        let (artists, albums) = metadataSync.sync(
+            derivedArtists: runtimeArtists,
+            derivedAlbums: runtimeAlbums,
+            allTracks: allTracks,
+            libraryService: libraryService
+        )
+        artistEntries = artists
+        albumEntries = albums
 
         let refreshedIDs = refreshedTracks.map(\.id.uuidString)
         Log.info(
@@ -304,6 +348,55 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         playlistItemAddedAtMap
     }
 
+    // MARK: - Artist/Album Entries
+
+    func fetchArtistEntries() async -> [ArtistEntry] {
+        artistEntries
+    }
+
+    func fetchAlbumEntries() async -> [AlbumEntry] {
+        albumEntries
+    }
+
+    func updateArtistEntry(_ entry: ArtistEntry) async {
+        if let idx = artistEntries.firstIndex(where: { $0.id == entry.id }) {
+            artistEntries[idx] = entry
+        }
+        let sidecar = ArtistSidecar(
+            id: entry.id,
+            canonicalName: entry.canonicalName,
+            displayName: entry.displayName,
+            artworkFileName: entry.artworkFileName,
+            description: entry.description.isEmpty ? nil : entry.description,
+            createdAt: entry.createdAt,
+            updatedAt: Date()
+        )
+        libraryService.writeArtistSidecar(sidecar, artworkData: entry.artworkData)
+    }
+
+    func updateAlbumEntry(_ entry: AlbumEntry) async {
+        if let idx = albumEntries.firstIndex(where: { $0.id == entry.id }) {
+            albumEntries[idx] = entry
+        }
+        let sidecar = AlbumSidecar(
+            id: entry.id,
+            canonicalKey: entry.canonicalKey,
+            displayTitle: entry.displayTitle,
+            primaryArtistCanonicalName: entry.primaryArtistCanonicalName,
+            artworkFileName: entry.artworkFileName,
+            description: entry.description.isEmpty ? nil : entry.description,
+            year: entry.year,
+            createdAt: entry.createdAt,
+            updatedAt: Date()
+        )
+        libraryService.writeAlbumSidecar(sidecar, artworkData: entry.artworkFileName != nil ? entry.artworkData : nil)
+    }
+
+    func updatePlaylistDescription(_ playlist: Playlist, description: String) async {
+        playlist.userDescription = description
+        writePlaylistToDisk(playlist)
+    }
+
     // MARK: - Cache Maintenance
 
     func clearIndexCacheAndRebuild() async {
@@ -318,6 +411,8 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         runtimeAlbums.removeAll()
         dedupCountByKey.removeAll()
         playlistItemAddedAtMap.removeAll()
+        artistEntries.removeAll()
+        albumEntries.removeAll()
         await reloadFromLibrary()
     }
 

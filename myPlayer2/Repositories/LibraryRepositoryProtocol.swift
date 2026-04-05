@@ -118,4 +118,15 @@ protocol LibraryRepositoryProtocol: AnyObject {
     /// Save any pending changes to the persistent store without writing sidecars to disk.
     /// Used by sync operations that read FROM disk to avoid feedback loops.
     func save() async
+
+    // MARK: - Artist/Album Entries
+
+    func fetchArtistEntries() async -> [ArtistEntry]
+    func fetchAlbumEntries() async -> [AlbumEntry]
+    func updateArtistEntry(_ entry: ArtistEntry) async
+    func updateAlbumEntry(_ entry: AlbumEntry) async
+
+    // MARK: - Playlist Description
+
+    func updatePlaylistDescription(_ playlist: Playlist, description: String) async
 }

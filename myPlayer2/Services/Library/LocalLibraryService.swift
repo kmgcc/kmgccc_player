@@ -471,10 +471,11 @@ final class LocalLibraryService {
                 addedAt: itemAddedAt?[track.id] ?? Date()
             )
         }
+        let desc = playlist.userDescription.isEmpty ? nil : playlist.userDescription
         let sidecar = PlaylistSidecar(
             id: playlist.id,
             name: playlist.name,
-            description: nil,
+            description: desc,
             createdAt: playlist.createdAt,
             items: items
         )
