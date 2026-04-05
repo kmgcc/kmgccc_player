@@ -250,6 +250,14 @@ final class LocalLibraryService {
                 at: LocalLibraryPaths.playlistsRootURL,
                 withIntermediateDirectories: true
             )
+            try fileManager.createDirectory(
+                at: LocalLibraryPaths.artistsRootURL,
+                withIntermediateDirectories: true
+            )
+            try fileManager.createDirectory(
+                at: LocalLibraryPaths.albumsRootURL,
+                withIntermediateDirectories: true
+            )
         } catch {
             Log.error("Failed to create library folders: \(error)", category: .library)
         }

@@ -53,4 +53,28 @@ nonisolated enum LocalLibraryPaths {
     static func libraryURL(from relativePath: String) -> URL {
         libraryRootURL.appendingPathComponent(relativePath)
     }
+
+    static var artistsRootURL: URL {
+        libraryRootURL.appendingPathComponent("Artists", isDirectory: true)
+    }
+
+    static var albumsRootURL: URL {
+        libraryRootURL.appendingPathComponent("Albums", isDirectory: true)
+    }
+
+    static func artistFolderURL(for id: UUID) -> URL {
+        artistsRootURL.appendingPathComponent(id.uuidString, isDirectory: true)
+    }
+
+    static func albumFolderURL(for id: UUID) -> URL {
+        albumsRootURL.appendingPathComponent(id.uuidString, isDirectory: true)
+    }
+
+    static func artistMetaURL(for id: UUID) -> URL {
+        artistFolderURL(for: id).appendingPathComponent("meta.json")
+    }
+
+    static func albumMetaURL(for id: UUID) -> URL {
+        albumFolderURL(for: id).appendingPathComponent("meta.json")
+    }
 }
