@@ -189,6 +189,12 @@ final class StubLibraryRepository: LibraryRepositoryProtocol {
         // No-op for stub
     }
 
+    func fetchArtistEntries() async -> [ArtistEntry] { [] }
+    func fetchAlbumEntries() async -> [AlbumEntry] { [] }
+    func updateArtistEntry(_ entry: ArtistEntry) async {}
+    func updateAlbumEntry(_ entry: AlbumEntry) async {}
+    func updatePlaylistDescription(_ playlist: Playlist, description: String) async {}
+
     // MARK: - Fake Data Setup
 
     private func setupFakeData() {
