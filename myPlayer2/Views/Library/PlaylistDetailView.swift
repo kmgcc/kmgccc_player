@@ -153,6 +153,7 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         }
         .onChange(of: libraryVM.currentSelection) { oldVal, newVal in
             headerArtwork = nil
+            uiState.detailHeaderArtwork = nil
             scheduleRebuild(reason: "selection", restoreScroll: true)
         }
         .onReceive(NotificationCenter.default.publisher(for: .libraryTrackDidUpdate)) { notification in
@@ -389,48 +390,54 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
     /// Always renders the detail header row regardless of content state.
     private var detailScrollView: some View {
         ScrollView(.vertical) {
-            ZStack(alignment: .top) {
-                BlurredArtworkBackgroundView(image: headerArtwork)
-
-                LazyVStack(spacing: 0) {
-                    // Header row (always present for non-allSongs)
-                    if let config = detailHeaderConfig {
-                        LibraryDetailHeaderView(config: config) { image in
+            LazyVStack(spacing: 0) {
+                if let config = detailHeaderConfig {
+                    LibraryDetailHeaderView(
+                        config: config,
+                        onArtworkChange: { image in
                             headerArtwork = image
-                        }
-                    }
+                            uiState.detailHeaderArtwork = image
+                        },
+                        onPlay: {
+                            guard !sortedTracksCache.isEmpty else { return }
+                            playerVM.playTracks(sortedTracksCache)
+                        },
+                        canPlay: !sortedTracksCache.isEmpty
+                    )
+                    
+                    Spacer().frame(height: 12)
+                }
 
-                    // Content: loading indicator, empty state, or track rows
-                    if libraryVM.state == .loading
-                        || (isRebuilding && displayedTracksCache.isEmpty && viewSnapshot.isEmpty)
-                    {
-                        ProgressView()
-                            .controlSize(.large)
-                            .padding(.vertical, 40)
-                            .frame(maxWidth: .infinity)
-                    } else if filteredTracksCache.isEmpty
-                        && !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    {
-                        VStack(spacing: 10) {
-                            Image(systemName: "magnifyingglass")
-                                .font(.system(size: 28))
-                                .foregroundStyle(.tertiary)
-                            Text("library.no_results")
-                                .font(.body)
-                                .foregroundStyle(.secondary)
-                        }
+                if libraryVM.state == .loading
+                    || (isRebuilding && displayedTracksCache.isEmpty && viewSnapshot.isEmpty)
+                {
+                    ProgressView()
+                        .controlSize(.large)
                         .padding(.vertical, 40)
                         .frame(maxWidth: .infinity)
-                    } else {
-                        trackRowsContent
+                } else if filteredTracksCache.isEmpty
+                    && !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                {
+                    VStack(spacing: 10) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 28))
+                            .foregroundStyle(.tertiary)
+                        Text("library.no_results")
+                            .font(.body)
+                            .foregroundStyle(.secondary)
                     }
+                    .padding(.vertical, 40)
+                    .frame(maxWidth: .infinity)
+                } else {
+                    trackRowsContent
+                        .padding(.horizontal, 16)
                 }
-                .scrollTargetLayout()
-                .padding(.top, listTopPadding)
-                .padding(.bottom, listBottomPadding)
-                .padding(.horizontal)
-                .transaction { tx in tx.animation = nil }
             }
+            .scrollTargetLayout()
+            .padding(.top, listTopPadding)
+            .padding(.bottom, listBottomPadding)
+            .padding(.horizontal)
+            .transaction { tx in tx.animation = nil }
         }
         .scrollPosition(id: $listScrollPositionID, anchor: .top)
         .scrollEdgeEffectStyle(.soft, for: .top)

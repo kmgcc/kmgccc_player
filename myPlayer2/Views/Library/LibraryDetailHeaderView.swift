@@ -16,21 +16,24 @@ struct LibraryDetailHeaderView: View {
 
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var themeStore: ThemeStore
 
     let config: DetailHeaderConfig
     let onArtworkChange: (NSImage?) -> Void
+    let onPlay: () -> Void
+    let canPlay: Bool
 
     @State private var isEditing = false
     @State private var editDescription = ""
-    @State private var editYear = ""          // album only
+    @State private var editYear = ""
     @State private var generatedArtwork: NSImage?
     @State private var artworkGenTask: Task<Void, Never>?
     @State private var isImportingArtwork = false
 
     var body: some View {
-        HStack(alignment: .top, spacing: 20) {
+        HStack(alignment: .bottom, spacing: 20) {
             artworkColumn
-                .frame(width: 180, height: 180)
+                .frame(width: 220, height: 220)
 
             VStack(alignment: .leading, spacing: 5) {
                 titleView
@@ -43,10 +46,12 @@ struct LibraryDetailHeaderView: View {
                 } else {
                     descriptionReadView
                 }
+                
+                Spacer()
+                
+                headerButtonsView
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-
-            editButtonView
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 20)
@@ -102,11 +107,19 @@ struct LibraryDetailHeaderView: View {
                 }
             }
         case .artist:
-            ZStack {
-                Circle().fill(.secondary.opacity(0.12))
-                Image(systemName: "person.fill")
-                    .font(.system(size: 64))
-                    .foregroundStyle(.secondary)
+            Group {
+                if let img = generatedArtwork {
+                    Image(nsImage: img)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                } else {
+                    ZStack {
+                        Circle().fill(.secondary.opacity(0.12))
+                        Image(systemName: "person.fill")
+                            .font(.system(size: 64))
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
         case .album(_, stats: let stats):
             Group {
@@ -235,17 +248,78 @@ struct LibraryDetailHeaderView: View {
         }
     }
 
-    // MARK: - Edit button
+    // MARK: - Header Buttons
 
-    private var editButtonView: some View {
+    private var headerButtonsView: some View {
+        HStack(spacing: 10) {
+            playButton
+            editButton
+        }
+    }
+
+    private var playButton: some View {
+        Button(action: onPlay) {
+            HStack(spacing: 6) {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white.opacity(colorScheme == .dark ? 0.95 : 0.90))
+                Text("播放")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.white.opacity(colorScheme == .dark ? 0.95 : 0.90))
+            }
+            .padding(.horizontal, 16)
+            .frame(height: buttonHeight)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .disabled(!canPlay)
+        .background {
+            Capsule()
+                .fill(themeStore.accentColor)
+        }
+        .background {
+            Capsule()
+                .fill(Color.black.opacity(colorScheme == .dark ? 0.22 : 0.08))
+        }
+        .glassEffect(.clear, in: Capsule())
+        .overlay {
+            Capsule()
+                .strokeBorder(Color.white.opacity(0.15), lineWidth: 0.5)
+        }
+        .clipShape(Capsule())
+    }
+
+    private var editButton: some View {
         Button {
             if isEditing { commitEdits() } else { beginEditing() }
         } label: {
-            Image(systemName: isEditing ? "checkmark.circle.fill" : "pencil.circle")
-                .font(.title2)
+            Image(systemName: isEditing ? "checkmark" : "pencil")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(isEditing ? .white : themeStore.accentColor.opacity(colorScheme == .dark ? 0.96 : 0.88))
+                .frame(width: buttonHeight, height: buttonHeight)
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(isEditing ? Color.accentColor : .secondary)
+        .background {
+            if isEditing {
+                Circle()
+                    .fill(themeStore.accentColor)
+            }
+        }
+        .background {
+            Circle()
+                .fill(Color.black.opacity(colorScheme == .dark ? 0.22 : 0.08))
+        }
+        .glassEffect(.clear, in: Circle())
+        .overlay {
+            Circle()
+                .strokeBorder(Color.white.opacity(0.15), lineWidth: 0.5)
+        }
+        .clipShape(Circle())
+    }
+
+    private var buttonHeight: CGFloat {
+        GlassStyleTokens.headerControlHeight
     }
 
     private func beginEditing() {
@@ -281,18 +355,26 @@ struct LibraryDetailHeaderView: View {
 
     private func refreshArtwork() {
         artworkGenTask?.cancel()
+        // Capture identity token; stale async results are dropped if identity changed.
+        let token = config.identity
         switch config {
         case .playlist(let playlist, let data):
             artworkGenTask = Task {
                 let img = await PlaylistArtworkGenerator.shared.artwork(
                     for: playlist, tracks: data.tracks)
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, config.identity == token else { return }
                 generatedArtwork = img
                 onArtworkChange(img)
             }
-        case .artist:
-            generatedArtwork = nil
-            onArtworkChange(nil)
+        case .artist(let entry, _):
+            // Load from persisted artworkData immediately (synchronous — no stale risk).
+            if let data = entry.artworkData, let img = NSImage(data: data) {
+                generatedArtwork = img
+                onArtworkChange(img)
+            } else {
+                generatedArtwork = nil
+                onArtworkChange(nil)
+            }
         case .album(_, let stats):
             generatedArtwork = nil
             onArtworkChange(stats.artworkImage)
@@ -302,41 +384,62 @@ struct LibraryDetailHeaderView: View {
     // MARK: - Artwork import
 
     private func handleArtworkImport(result: Result<[URL], Error>) {
-        guard case .success(let urls) = result, let url = urls.first else { return }
-        guard let nsImage = NSImage(contentsOf: url) else { return }
-        let pngData: Data? = {
-            guard let tiff = nsImage.tiffRepresentation,
-                  let rep = NSBitmapImageRep(data: tiff)
-            else { return nil }
-            return rep.representation(using: .png, properties: [:])
-        }()
-
-        // Update display immediately
-        switch config {
-        case .playlist:
-            generatedArtwork = nsImage
-        default:
-            break
-        }
-        onArtworkChange(nsImage)
-
-        // Persist for artist/album
-        Task {
-            switch config {
-            case .playlist:
-                break   // playlist artwork replacement not persisted in this pass
-            case .artist(let entry, _):
-                var updated = entry
-                updated.artworkFileName = "artwork.png"
-                updated.artworkData = pngData
-                await libraryVM.saveArtistEntry(updated)
-            case .album(let entry, _):
-                var updated = entry
-                updated.artworkFileName = "artwork.png"
-                updated.artworkData = pngData
-                await libraryVM.saveAlbumEntry(updated)
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            
+            let didStartAccess = url.startAccessingSecurityScopedResource()
+            defer {
+                if didStartAccess {
+                    url.stopAccessingSecurityScopedResource()
+                }
             }
+            
+            guard let nsImage = NSImage(contentsOf: url) else { return }
+            guard let tiff = nsImage.tiffRepresentation,
+                  let rep = NSBitmapImageRep(data: tiff),
+                  let pngData = rep.representation(using: .png, properties: [:])
+            else { return }
+
+            // Update display immediately for all cases.
+            generatedArtwork = nsImage
+            onArtworkChange(nsImage)
+
+            Task {
+                switch config {
+                case .playlist(let playlist, let data):
+                    let signature = await computePlaylistSignature(tracks: data.tracks)
+                    await MainActor.run {
+                        LocalLibraryService.shared.savePlaylistArtwork(
+                            playlistID: playlist.id,
+                            image: nsImage,
+                            signature: signature
+                        )
+                    }
+                    await PlaylistArtworkGenerator.shared.invalidate(playlistID: playlist.id)
+                case .artist(let entry, _):
+                    var updated = entry
+                    updated.artworkFileName = "artwork.png"
+                    updated.artworkData = pngData
+                    await libraryVM.saveArtistEntry(updated)
+                    // Refresh the blurred background with the now-persisted artwork.
+                    onArtworkChange(nsImage)
+                case .album(let entry, _):
+                    var updated = entry
+                    updated.artworkFileName = "artwork.png"
+                    updated.artworkData = pngData
+                    await libraryVM.saveAlbumEntry(updated)
+                }
+            }
+            
+        case .failure(let error):
+            print("Artwork import failed: \(error.localizedDescription)")
         }
+    }
+    
+    private func computePlaylistSignature(tracks: [Track]) async -> String {
+        let sortedIDs = tracks.map(\.id.uuidString).sorted().joined()
+        return String(PlaylistArtworkGenerator.stableHash(for: sortedIDs))
     }
 
     // MARK: - Helpers

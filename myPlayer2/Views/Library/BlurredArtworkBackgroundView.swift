@@ -2,9 +2,10 @@
 //  BlurredArtworkBackgroundView.swift
 //  myPlayer2
 //
-//  Large soft blurred artwork image placed at the top of the detail page scroll area.
-//  Scrolls with the content — not a fixed window background.
-//  Fades out at the bottom via a gradient mask.
+//  Soft blurred artwork glow positioned under the detail header artwork.
+//  Fixed visual size — not a full-width wash.
+//  The image is scaled, heavily blurred, and faded radially to create
+//  a localized halo effect that reads as "the cover enlarged and blurred beneath itself."
 //
 
 import SwiftUI
@@ -14,27 +15,30 @@ struct BlurredArtworkBackgroundView: View {
 
     @Environment(\.colorScheme) private var colorScheme
 
+    // Bloom is a fixed visual footprint, independent of window width.
+    private let bloomSize: CGFloat = 500
+
     var body: some View {
         if let image {
             Image(nsImage: image)
                 .resizable()
                 .aspectRatio(contentMode: .fill)
-                .frame(maxWidth: .infinity)
-                .frame(height: 520)
-                .blur(radius: 40, opaque: false)
-                .opacity(colorScheme == .dark ? 0.38 : 0.22)
+                .frame(width: bloomSize, height: bloomSize)
+                .blur(radius: 80, opaque: false)
+                .opacity(colorScheme == .dark ? 0.52 : 0.32)
                 .mask(
-                    LinearGradient(
-                        stops: [
-                            .init(color: .black, location: 0.0),
-                            .init(color: .black, location: 0.35),
-                            .init(color: .clear, location: 1.0),
+                    RadialGradient(
+                        colors: [
+                            .black,
+                            .black.opacity(0.7),
+                            .black.opacity(0.2),
+                            .clear
                         ],
-                        startPoint: .top,
-                        endPoint: .bottom
+                        center: .center,
+                        startRadius: 60,
+                        endRadius: bloomSize / 2
                     )
                 )
-                .clipped()
                 .allowsHitTesting(false)
         }
     }
