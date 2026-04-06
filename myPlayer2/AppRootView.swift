@@ -371,6 +371,15 @@ struct AppRootView: View {
             uiState: uiState
         )
 
+        SharedAppState.shared.configure(
+            libraryVM: libVM,
+            playerVM: playerVM!,
+            lyricsVM: lyricsVM!,
+            ledMeter: ledMeter,
+            skinManager: skinManager!,
+            themeStore: themeStore
+        )
+
         libraryService.startMonitoring(repository: repository)
 
         if let scenario = DebugLaunchScenario.current {

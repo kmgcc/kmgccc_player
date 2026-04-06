@@ -319,12 +319,12 @@ public final class AppSettings {
 
     /// Lead-in milliseconds for near-switch lyric line advance
     @ObservationIgnored
-    @AppStorage("lyricsLeadInMs") var lyricsLeadInMs: Double = 300
+    @AppStorage("lyricsLeadInMs") var lyricsLeadInMs: Double = 600
 
     /// If the next main line begins within this gap (ms) after current main line ends,
     /// the lyrics renderer will early-switch to the next line using `lyricsLeadInMs`.
     @ObservationIgnored
-    @AppStorage("lyricsNearSwitchGapMs") var lyricsNearSwitchGapMs: Double = 85
+    @AppStorage("lyricsNearSwitchGapMs") var lyricsNearSwitchGapMs: Double = 160
 
     /// Global lyrics advance amount in milliseconds (positive value means lyrics appear earlier).
     @ObservationIgnored
@@ -533,7 +533,7 @@ public final class AppSettings {
     }
 
     enum FullscreenDefaults {
-        static let artworkScale: Double = 1.20
+        static let artworkScale: Double = 1.1
         static let lyricsFontScale: Double = 2.0
         static let dimmingIntensity: Double = 0.15
         static let miniplayerHeight: Double = 60

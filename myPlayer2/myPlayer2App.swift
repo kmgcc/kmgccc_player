@@ -5,11 +5,15 @@
 //  kmgccc_player - App Entry Point
 //
 
+import AppKit
 import SwiftData
 import SwiftUI
 
 @main
 struct KmgcccPlayerApp: App {
+
+    // MARK: - AppDelegate
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     // MARK: - SwiftData Container
 
@@ -40,7 +44,8 @@ struct KmgcccPlayerApp: App {
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1100, height: 680)
         .commands {
-            // Playback commands
+            CommandGroup(replacing: .newItem) { }
+
             CommandGroup(after: .appSettings) {
                 Divider()
 
@@ -60,7 +65,6 @@ struct KmgcccPlayerApp: App {
                 .keyboardShortcut(.leftArrow, modifiers: .command)
             }
 
-            // View commands
             CommandGroup(after: .sidebar) {
                 Button(NSLocalizedString("alert.toggle_lyrics", comment: "")) {
                     NotificationCenter.default.post(name: .toggleLyrics, object: nil)
@@ -68,11 +72,15 @@ struct KmgcccPlayerApp: App {
                 .keyboardShortcut("l", modifiers: [.command, .option])
 
                 Button(NSLocalizedString("alert.enter_fullscreen", comment: "")) {
-                    print("[F-Key] ⚡️ Button action triggered in commands")
                     NotificationCenter.default.post(name: .enterFullscreen, object: nil)
                 }
                 .keyboardShortcut("f", modifiers: [])
             }
+        }
+
+        Settings {
+            SettingsRootView()
+                .modelContainer(sharedModelContainer)
         }
     }
 }

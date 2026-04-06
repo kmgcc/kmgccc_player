@@ -4146,6 +4146,20 @@
 	                            lyricPlayer.setAlignPosition(nextAlignPosition);
 	                        }
 	                    }
+					    // alignOffset: additional pixel offset for current line position (negative = up).
+					    // No CSS transition here — Swift already owns the viewport geometry animation.
+					    // Applying a CSS spring on top of the SwiftUI spring creates two independent
+					    // spring systems fighting each other (the double-animation jerk). Swift sends
+					    // this update only after its animation has settled, so an instant snap is
+					    // correct; AMLL's internal setAlignPosition spring handles smooth line
+					    // repositioning within the now-stable viewport.
+					    if (typeof config.alignOffset === "number" && !Number.isNaN(config.alignOffset)) {
+					        const playerEl = lyricPlayer.getElement();
+					        if (playerEl) {
+					            playerEl.style.transition = 'none';
+					            playerEl.style.transform = `translateY(${config.alignOffset}px)`;
+					        }
+					    }
                     if (hasOwn("textColor")) {
                         if (typeof config.textColor === "string" && config.textColor.length > 0) {
                             const resolvedTextColor = fullscreenOpaqueLyricsMode

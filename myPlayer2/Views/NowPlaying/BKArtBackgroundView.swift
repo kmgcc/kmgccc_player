@@ -286,14 +286,14 @@ private final class BKArtBackgroundLayerView: NSView {
         let blue: CGFloat
         let alpha: CGFloat
 
-        init(red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat) {
+        nonisolated init(red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat) {
             self.red = red
             self.green = green
             self.blue = blue
             self.alpha = alpha
         }
 
-        init(color: NSColor) {
+        nonisolated init(color: NSColor) {
             let rgb = color.usingColorSpace(.deviceRGB) ?? color
             var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
             rgb.getRed(&r, green: &g, blue: &b, alpha: &a)
@@ -1368,7 +1368,7 @@ private final class BKArtBackgroundLayerView: NSView {
         let assets = self.assets
         maskWarmupTask = Task { [weak self] in
             let warmedFrames = await Task.detached(priority: .userInitiated) {
-                CGImageArrayBox(images: assets.maskFrames(maxPixel: maskBudget))
+                await CGImageArrayBox(images: assets.maskFrames(maxPixel: maskBudget))
             }.value
             guard !Task.isCancelled else { return }
             await MainActor.run {
@@ -1817,13 +1817,14 @@ private final class BKArtBackgroundLayerView: NSView {
         let sourceBox = CGImageBox(image: sourceImage)
 
         backgroundRenderTasks[cacheKey] = Task { [weak self] in
+            let sourceImage = sourceBox.image
             let rendered = await Task.detached(priority: .utility) {
                 Self.makeTintedBackgroundImage(
-                    from: sourceBox.image,
+                    from: sourceImage,
                     toneStops: toneComponents,
                     tuning: tuning,
                     isDark: isDark
-                ).map(CGImageBox.init(image:))
+                )
             }.value
             guard !Task.isCancelled else { return }
 
@@ -1833,11 +1834,12 @@ private final class BKArtBackgroundLayerView: NSView {
                 guard self.paletteSignature == paletteSignatureAtRequest else { return }
                 guard self.loadedBudget.background == backgroundBudget else { return }
                 guard let rendered else { return }
+                let boxed = CGImageBox(image: rendered)
 
                 self.tintedBackgroundCache.setObject(
-                    rendered,
+                    boxed,
                     forKey: cacheKey as NSString,
-                    cost: max(1, rendered.image.bytesPerRow * rendered.image.height)
+                    cost: max(1, rendered.bytesPerRow * rendered.height)
                 )
                 self.applyCurrentBackgroundPhase()
             }

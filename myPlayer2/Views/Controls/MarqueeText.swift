@@ -14,6 +14,7 @@ struct MarqueeText: View {
         case body
         case subheadline
         case caption
+        case custom(fontSize: CGFloat)  // For fullscreen mode with scaled sizes
     }
 
     let text: String
@@ -35,6 +36,21 @@ struct MarqueeText: View {
     ) {
         self.text = text
         self.style = style
+        self.fontWeight = fontWeight
+        self.color = color
+        self.shouldAnimate = shouldAnimate
+    }
+
+    /// Convenience initializer for custom font size (fullscreen mode)
+    init(
+        text: String,
+        fontSize: CGFloat,
+        fontWeight: Font.Weight = .regular,
+        color: Color = .primary,
+        shouldAnimate: Bool = true
+    ) {
+        self.text = text
+        self.style = .custom(fontSize: fontSize)
         self.fontWeight = fontWeight
         self.color = color
         self.shouldAnimate = shouldAnimate
@@ -109,20 +125,27 @@ struct MarqueeText: View {
             return .subheadline
         case .caption:
             return .caption
+        case .custom(fontSize: let size):
+            return .system(size: size)
         }
     }
 
     private var nsFont: NSFont {
         let textStyle: NSFont.TextStyle
+        let pointSize: CGFloat
         switch style {
         case .body:
             textStyle = .body
+            pointSize = NSFont.preferredFont(forTextStyle: textStyle).pointSize
         case .subheadline:
             textStyle = .subheadline
+            pointSize = NSFont.preferredFont(forTextStyle: textStyle).pointSize
         case .caption:
             textStyle = .caption1
+            pointSize = NSFont.preferredFont(forTextStyle: textStyle).pointSize
+        case .custom(fontSize: let size):
+            pointSize = size
         }
-        let pointSize = NSFont.preferredFont(forTextStyle: textStyle).pointSize
         return NSFont.systemFont(ofSize: pointSize, weight: nsWeight)
     }
 

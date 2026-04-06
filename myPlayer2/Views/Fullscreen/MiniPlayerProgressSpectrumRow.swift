@@ -138,17 +138,21 @@ struct MiniPlayerProgressSpectrumRow: View {
             
             // Time labels overlay - show only on hover
             HStack(spacing: timeSpacing) {
-                Text(formattedTime(progress))
-                    .font(.system(size: timeFontSize, weight: .medium, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(timeColor)
+                NumericTimeText(
+                    time: progress,
+                    fontSize: timeFontSize,
+                    fontWeight: .medium,
+                    color: timeColor
+                )
                 
                 Spacer(minLength: 18 * scale)
                 
-                Text(formattedTime(duration))
-                    .font(.system(size: timeFontSize, weight: .medium, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(timeColor)
+                NumericTimeText(
+                    time: duration,
+                    fontSize: timeFontSize,
+                    fontWeight: .medium,
+                    color: timeColor
+                )
             }
             .padding(.horizontal, hPadding)
             .offset(y: progressYOffset)
@@ -180,32 +184,111 @@ struct MiniPlayerProgressSpectrumRow: View {
         .animation(.spring(response: 0.35, dampingFraction: 0.75, blendDuration: 0.1), value: isRowHovered)
     }
     
-    // MARK: - Helpers
-    
+    // MARK: - Color Helpers
+
+    /// Minimum lightness for progress/time colors (80% HSL)
+    private static let minLightness: CGFloat = 0.80
+
     private func progressWidth(in totalWidth: CGFloat) -> CGFloat {
         guard duration > 0 else { return 0 }
         let p = progress / duration
         return totalWidth * CGFloat(max(0, min(1, p)))
     }
-    
-    private func formattedTime(_ time: Double) -> String {
-        guard time.isFinite, time > 0 else { return "0:00" }
-        let total = Int(time.rounded(.down))
-        let minutes = total / 60
-        let seconds = total % 60
-        return String(format: "%d:%02d", minutes, seconds)
-    }
-    
+
     private var progressFillColor: Color {
-        Color.primary.opacity(0.9)
+        let base = accentColor ?? Color.primary
+        return enforceMinLightness(base, minLightness: Self.minLightness).opacity(0.9)
     }
-    
+
     private var progressTrackColor: Color {
-        Color.secondary.opacity(0.32)
+        let base = accentColor ?? Color.secondary
+        return enforceMinLightness(base, minLightness: Self.minLightness).opacity(0.25)
     }
-    
+
     private var timeColor: Color {
-        Color.primary
+        let base = accentColor ?? Color.primary
+        return enforceMinLightness(base, minLightness: Self.minLightness)
+    }
+
+    // MARK: - HSL Color Processing
+
+    private func enforceMinLightness(_ color: Color, minLightness: CGFloat) -> Color {
+        let nsColor = NSColor(color)
+        guard let hsl = hslComponents(from: nsColor) else { return color }
+        let targetL = max(hsl.l, minLightness)
+        if targetL <= hsl.l + 0.000_001 { return color }
+        let adjustedNSColor = rgbColorFromHsl(h: hsl.h, s: hsl.s, l: targetL)
+        return Color(nsColor: adjustedNSColor)
+    }
+
+    private func hslComponents(from color: NSColor) -> (h: CGFloat, s: CGFloat, l: CGFloat)? {
+        guard let rgb = color.usingColorSpace(.deviceRGB) else { return nil }
+
+        let r = clamp01(rgb.redComponent)
+        let g = clamp01(rgb.greenComponent)
+        let b = clamp01(rgb.blueComponent)
+
+        let maxV = max(r, max(g, b))
+        let minV = min(r, min(g, b))
+        let delta = maxV - minV
+        let l = (maxV + minV) * 0.5
+
+        var h: CGFloat = 0
+        if delta > 0.000_001 {
+            if maxV == r {
+                h = ((g - b) / delta).truncatingRemainder(dividingBy: 6)
+            } else if maxV == g {
+                h = ((b - r) / delta) + 2
+            } else {
+                h = ((r - g) / delta) + 4
+            }
+            h /= 6
+            if h < 0 { h += 1 }
+        }
+
+        var s: CGFloat = 0
+        if delta > 0.000_001 {
+            s = delta / (1 - abs(2 * l - 1))
+        }
+
+        return (h: h, s: s, l: l)
+    }
+
+    private func rgbColorFromHsl(h: CGFloat, s: CGFloat, l: CGFloat) -> NSColor {
+        let c = (1 - abs(2 * l - 1)) * s
+        let hPrime = h * 6
+        let x = c * (1 - abs(hPrime.truncatingRemainder(dividingBy: 2) - 1))
+
+        var rp: CGFloat = 0
+        var gp: CGFloat = 0
+        var bp: CGFloat = 0
+
+        switch hPrime {
+        case 0..<1:
+            rp = c; gp = x; bp = 0
+        case 1..<2:
+            rp = x; gp = c; bp = 0
+        case 2..<3:
+            rp = 0; gp = c; bp = x
+        case 3..<4:
+            rp = 0; gp = x; bp = c
+        case 4..<5:
+            rp = x; gp = 0; bp = c
+        default:
+            rp = c; gp = 0; bp = x
+        }
+
+        let m = l - c * 0.5
+        return NSColor(
+            calibratedRed: clamp01(rp + m),
+            green: clamp01(gp + m),
+            blue: clamp01(bp + m),
+            alpha: 1.0
+        )
+    }
+
+    private func clamp01(_ value: CGFloat) -> CGFloat {
+        min(max(value, 0), 1)
     }
 }
 

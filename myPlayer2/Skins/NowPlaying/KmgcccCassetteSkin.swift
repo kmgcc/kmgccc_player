@@ -89,24 +89,21 @@ private struct CassetteArtwork: View {
     // MARK: - Fullscreen Fine-tuning Constants
     /// Scale adjustment for cassette in fullscreen (<1.0 = smaller, 1.0 = no change)
     private let cassetteFullscreenScaleAdjustment: CGFloat = 0.88
-    /// Horizontal shift for cassette in fullscreen (negative = left)
-    private let cassetteFullscreenLeftShift: CGFloat = -44
+    /// Additional leftward shift applied to the cassette body in fullscreen only.
+    /// Defined in base-canvas points so it scales proportionally with the canvas scaleEffect.
+    private let cassetteFullscreenExtraLeftShift: CGFloat = 50
 
     var body: some View {
         let isFullscreen = fullscreenManager.isFullscreenActive
 
-        // Apply fullscreen adjustments only in fullscreen mode
-        // Only shift left when lyrics are visible; when no lyrics, cassette should center
         let scaleAdjustment = isFullscreen ? cassetteFullscreenScaleAdjustment : 1.0
-        let leftShift = (isFullscreen && context.lyricsVisible) ? cassetteFullscreenLeftShift : 0
 
-        // Create adjusted context with modified content size for fullscreen scaling
         let adjustedContext = isFullscreen ? context.withContentSizeAdjustment(scaleAdjustment) : context
 
         let size = CassetteLayout.cassetteSize(for: adjustedContext)
         let visualizerMode = isFullscreen ? fullscreenVisualizerMode : normalVisualizerMode
         let centeredYOffset: CGFloat = visualizerMode == "led" ? 12 : max(22, min(36, size.height * 0.07))
-        let horizontalOffset: CGFloat = -12 + leftShift
+        let horizontalOffset: CGFloat = -(12 + (isFullscreen ? cassetteFullscreenExtraLeftShift : 0))
 
         ZStack {
             Image(tapeAssetName)

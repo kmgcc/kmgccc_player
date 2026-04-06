@@ -46,6 +46,10 @@ private struct ClassicLEDArtwork: View {
     private let fullscreenArtworkBoost: CGFloat = 1.22
     /// Horizontal shift for artwork in fullscreen (negative = left)
     private let fullscreenLeftShift: CGFloat = -40
+    /// Additional visual scale applied to the cover stack in fullscreen.
+    /// Applied via scaleEffect inside the scaled canvas, so it is
+    /// resolution-stable (proportional to the base canvas, not screen pixels).
+    private let fullscreenCoverScaleEffect: CGFloat = 1.2
 
     var body: some View {
         let contentSize = context.contentSize
@@ -95,6 +99,7 @@ private struct ClassicLEDArtwork: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .scaleEffect(isFullscreen ? fullscreenCoverScaleEffect : 1.0)
         .offset(x: leftShift, y: yOffset)
     }
 

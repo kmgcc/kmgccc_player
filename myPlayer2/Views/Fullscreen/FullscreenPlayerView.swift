@@ -66,7 +66,7 @@ struct FullscreenPlayerView: View {
     private let fullscreenBackgroundLyricsAvoidanceHorizontalInset: CGFloat = 28
     private let fullscreenBackgroundLyricsAvoidanceTopInset: CGFloat = 36
     private let fullscreenBackgroundLyricsAvoidanceBottomInset: CGFloat = 60
-    private let fullscreenLyricsAlignPosition: Double = 0.28
+    private let fullscreenLyricsAlignPosition: Double = 0.18  // Current line higher in viewport (was 0.28)
     private let coverSkinLyricsRightShift: CGFloat = 30
     private let fullscreenLyricsMinimumBaseLightness: CGFloat = 0.52
     private let fullscreenLyricsMaximumBaseLightness: CGFloat = 0.66
@@ -118,6 +118,13 @@ struct FullscreenPlayerView: View {
 
     private var isCoverBlurFullscreenSkin: Bool {
         settings.fullscreen.skinID == "fullscreen.coverGradientBlur"
+    }
+
+    /// Cover-element skins (classic, rotating, cassette) get a slight vertical
+    /// drop when the fullscreen miniplayer auto-hides, and return when it reappears.
+    private var isCoverSkinWithMiniplayerMotion: Bool {
+        let id = settings.fullscreen.skinID
+        return id == "coverLed" || id == "rotatingCover" || id == "kmgccc.cassette"
     }
 
     private var fullscreenStore: LyricsWebViewStore {
@@ -345,17 +352,18 @@ struct FullscreenPlayerView: View {
 
     @ViewBuilder
     private func fullscreenScaledContainer(selectedSkin: any NowPlayingSkin, scale: CGFloat) -> some View {
-        // Scaled container: artwork skin only for layout/positioning
-        // NOTE: AMLL lyrics, miniplayer, and controls are NOT here - they render at actual resolution
+        // Cover-element skins drop slightly when the miniplayer auto-hides
+        let coverDropY: CGFloat = isCoverSkinWithMiniplayerMotion && !isFullscreenBottomControlsVisible ? 20 : 0
+
         ZStack {
-            // Main content layout (without lyrics and without miniplayer - those are in separate layers)
             VStack(spacing: 0) {
                 artworkAndControlsArea(selectedSkin: selectedSkin, scale: scale)
                     .padding(.horizontal, topContentHorizontalPadding)
                     .padding(.top, 6)
                     .padding(.bottom, 12)
-                
-                // Spacer where miniplayer would be (to maintain layout proportions)
+                    .offset(y: coverDropY)
+                    .animation(coverDropAnimation, value: isFullscreenBottomControlsVisible)
+
                 Spacer(minLength: fullscreenControlsBottomPadding + fullscreenControlButtonSize)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -370,34 +378,39 @@ struct FullscreenPlayerView: View {
         let windowWidth = Self.baseCanvasWidth
         let lyricsVisible = shouldShowLyricsColumn
 
-        // Calculate base positions (in 1470x923 coordinate space)
+        // Mirror the same base offset used by artworkAndControlsArea so lyrics and
+        // artwork share the same canvas-relative coordinate origin.
         let artworkToCenterOffset = max(0, (windowWidth - metrics.artworkWidth) * 0.5)
-        let baseContentOffsetX = lyricsVisible ? -topContentLeftShift : artworkToCenterOffset
+        let baseContentOffsetX: CGFloat = lyricsVisible ? -topContentLeftShift : artworkToCenterOffset
         let columnSpacing = lyricsVisible ? artworkLyricsColumnSpacing : 0
 
-        // Calculate lyrics position within base canvas
         let artworkX = baseContentOffsetX
         let baseLyricsX = artworkX + metrics.artworkWidth + columnSpacing - (lyricsVisible ? lyricsColumnLeftNudge : 0)
         let baseLyricsWidth = lyricsVisible ? metrics.lyricsWidth : 0
 
-        // FIX: Expand left by 60pt and right by 100pt for wider lyrics area
-        // Left edge moves left to overlap artwork area more
-        // Skin-specific right shift for fullscreen cover skin
-        let leftExpansion: CGFloat = 60
-        let rightExpansion: CGFloat = 100
+        // Expand left by 80pt (moves block left) and right by 140pt for the lyrics viewport.
+        // Skin-specific right shift for the cover-gradient-blur skin.
+        let leftExpansion: CGFloat = 80
+        let rightExpansion: CGFloat = 140
         let coverSkinOffset: CGFloat = settings.fullscreen.skinID == "fullscreen.coverGradientBlur" ? coverSkinLyricsRightShift : 0
         let finalLyricsX = baseLyricsX - leftExpansion + coverSkinOffset
         let finalLyricsWidth = baseLyricsWidth + leftExpansion + rightExpansion
 
-        // Convert to actual screen coordinates
+        // Convert to actual screen coordinates.
+        // Both artwork (in the center-aligned scaled canvas) and lyrics (in this screen-
+        // resolution layer) derive their X from the same canvas-coordinate origin, so the
+        // visual relationship between cover and lyrics stays stable across all resolutions.
         let actualLyricsX = finalLyricsX * scale
-        let actualLyricsWidth = max(100, finalLyricsWidth * scale)  // Ensure minimum width
+        let actualLyricsWidth = max(100, finalLyricsWidth * scale)
 
-        // FIX: Reduce reserved space at bottom so lyrics extend lower
-        let miniplayerTotalHeight = fullscreenControlButtonSize + fullscreenControlsBottomPadding
-        let bottomReservedHeight = miniplayerTotalHeight + 10
-        let availableHeight = Self.baseCanvasHeight - bottomReservedHeight
-        let actualLyricsHeight = max(100, availableHeight * scale)  // Ensure minimum height
+        // Fixed AMLL frame — always the full base canvas height. AMLL's DOM never resizes
+        // during miniplayer hide/show, so setAlignPosition never chases a moving target.
+        let actualLyricsHeight = Self.baseCanvasHeight * scale  // 923*scale, constant
+
+        // Visible clip boundary — Swift-only. Animates 851↔923*scale via bottomControlsAnimation.
+        // Only the mask window changes; the WebView content space stays stable.
+        let visibleBottomReserve: CGFloat = isFullscreenBottomControlsVisible ? fullscreenControlsBottomPadding : 0
+        let visibleClipHeight = (Self.baseCanvasHeight - visibleBottomReserve) * scale
 
         // Debug logging for first layout
         let _ = {
@@ -406,30 +419,61 @@ struct FullscreenPlayerView: View {
             }
         }()
 
-        ZStack {
+        ZStack(alignment: .topLeading) {
             if lyricsVisible && hasLyricsForCurrentTrack {
-                // Position the lyrics container with fixed left edge, expanded width
-                fullscreenLyricsCrispView(scale: scale)
-                    .frame(width: actualLyricsWidth, height: actualLyricsHeight)
-                    .position(
-                        x: actualLyricsX + actualLyricsWidth / 2,
-                        y: actualLyricsHeight / 2
-                    )
+                // Top-left anchored. Height is fixed; only the visible clip region changes.
+                fullscreenLyricsCrispView(scale: scale, visibleClipHeight: visibleClipHeight)
+                    .frame(width: actualLyricsWidth, height: actualLyricsHeight, alignment: .topLeading)
+                    .offset(x: actualLyricsX)
             } else {
                 Color.clear
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .animation(lyricsLayoutAnimation, value: lyricsVisible)
+        // REMOVED: .animation(lyricsLayoutAnimation, value: lyricsVisible)
+        // The container animation was causing the entire AMLL block to animate in
+        // from above, making it look like a falling block. The correct behavior
+        // is for AMLL to handle the animation internally via setAlignPosition,
+        // keeping the current line fixed while other lines converge.
+        .animation(bottomControlsAnimation, value: isFullscreenBottomControlsVisible)  // mask only
+        .onChange(of: isFullscreenBottomControlsVisible) { oldValue, newValue in
+            // ISSUE 1 FIX: The "jerk" was caused by overlapping animations.
+            // Swift-side animates: mask (0.34s spring), scaleEffect (0.34s), artwork position (0.62s)
+            // AMLL-side animates: setAlignPosition reposition (internal spring)
+            // When these animate simultaneously, they fight each other.
+            //
+            // ROOT CAUSE: The 0.02s delay sent AMLL config while Swift animation was still
+            // in progress (spring response 0.34s, settling ~0.5s). AMLL repositioned during
+            // Swift geometry change, causing visible discontinuity.
+            //
+            // FIX: Hold alignPosition/alignOffset CONSTANT during animation by waiting
+            // until after the longest Swift animation settles (lyricsLayoutAnimation = 0.62s).
+            // This proves the remaining jerk is AMLL-side timing vs Swift-side timing.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.65) {
+                applyFullscreenLyricsTheme(reason: "bottomControlsVisibility-changed")
+            }
+        }
     }
 
     @ViewBuilder
-    private func fullscreenLyricsCrispView(scale: CGFloat) -> some View {
+    private func fullscreenLyricsCrispView(scale: CGFloat, visibleClipHeight: CGFloat) -> some View {
         GeometryReader { proxy in
-            let topFade = min(12 * scale, max(5 * scale, proxy.size.height * 0.015))
-            let bottomFade = min(90 * scale, max(52 * scale, proxy.size.height * 0.12))
+            let topFade: CGFloat = 58 * scale
+            // Bottom feather shape: controls where the fade-out starts within the visible clip region.
+            // Does NOT affect expandedHeight — WebView size is pinned to 420pt overbleed always.
+            // visible: larger fade → bottom fade starts higher, giving lyrics breathing room
+            //          above the miniplayer bar.
+            // hidden:  smaller fade → bottom fade starts lower, revealing more solid content
+            //          in the expanded view before the edge softens.
+            let baseBottomFadeVisible: CGFloat = 60
+            let baseBottomFadeHidden: CGFloat = 380
+            let bottomFade = (isFullscreenBottomControlsVisible ? baseBottomFadeVisible : baseBottomFadeHidden) * scale
             let horizontalInset: CGFloat = 10 * scale
-            let expandedHeight = proxy.size.height + topFade + bottomFade + 6 * scale
+            // Fixed expanded height: always allocate the maximum bottom overbleed (420pt) so
+            // AMLL's DOM height never changes during miniplayer hide/show. Previously this used
+            // the variable `bottomFade`, which caused expandedHeight to jump from ~947 to ~1407
+            // and AMLL to recompute its entire line layout on every state change.
+            let expandedHeight = proxy.size.height + topFade + 420 * scale + 6 * scale
             ZStack {
                 let webViewWidth = max(0, proxy.size.width - horizontalInset * 2)
 
@@ -438,7 +482,7 @@ struct FullscreenPlayerView: View {
                         scale: scale,
                         width: webViewWidth,
                         height: expandedHeight,
-                        visibleHeight: proxy.size.height,
+                        visibleHeight: visibleClipHeight,  // mask clip; independent of WebView height
                         topFade: topFade,
                         bottomFade: bottomFade,
                         blendMode: coverBlurBaseBlendMode,
@@ -454,7 +498,7 @@ struct FullscreenPlayerView: View {
                         scale: scale,
                         width: webViewWidth,
                         height: expandedHeight,
-                        visibleHeight: proxy.size.height,
+                        visibleHeight: visibleClipHeight,
                         topFade: topFade,
                         bottomFade: bottomFade,
                         blendMode: coverBlurHighlightBlendMode,
@@ -471,7 +515,7 @@ struct FullscreenPlayerView: View {
                         scale: scale,
                         width: webViewWidth,
                         height: expandedHeight,
-                        visibleHeight: proxy.size.height,
+                        visibleHeight: visibleClipHeight,
                         topFade: topFade,
                         bottomFade: bottomFade,
                         blendMode: isCoverBlurFullscreenSkin ? coverBlurBaseBlendMode : .normal,
@@ -481,7 +525,13 @@ struct FullscreenPlayerView: View {
                     }
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            // Motion feel: subtle y-scale anchored at top creates "pushing down" feel during expansion
+            .scaleEffect(
+                y: isFullscreenBottomControlsVisible ? 0.97 : 1.0,
+                anchor: .top
+            )
+            .animation(bottomControlsAnimation, value: isFullscreenBottomControlsVisible)
         }
     }
 
@@ -503,11 +553,15 @@ struct FullscreenPlayerView: View {
             .opacity(fullscreenLyricsViewportOpacity)
             .environment(\.colorScheme, .dark)
             .mask(
-                fullscreenLyricsMask(
-                    visibleHeight: visibleHeight,
-                    topFade: topFade,
-                    bottomFade: bottomFade
-                )
+                ZStack(alignment: .top) {
+                    fullscreenLyricsMask(
+                        visibleHeight: visibleHeight,
+                        topFade: topFade,
+                        bottomFade: bottomFade
+                    )
+                }
+                .frame(height: height, alignment: .top)  // Align mask to top of expanded content
+                .offset(y: (isFullscreenBottomControlsVisible ? 42 : 58) * scale)  // Mask moves down
             )
 
         if useCompositingGroup {
@@ -547,6 +601,10 @@ struct FullscreenPlayerView: View {
     private let fullscreenControlsHorizontalPadding: CGFloat = 80
     private let fullscreenControlsBottomPadding: CGFloat = 72
     private let fullscreenMiniPlayerMaxWidth: CGFloat = 1200
+    /// Width to remove from the collapsed mini-player pill. Taken entirely from the
+    /// progress-bar area (which uses maxWidth: .infinity). Outer button spacing is
+    /// unaffected; the group re-centers automatically.
+    private let fullscreenMiniPlayerPillWidthReduction: CGFloat = 160
     private let leadingControlsExpandedWidth: CGFloat = 180
     private let leadingControlsCollapsedWidth: CGFloat = 120  // 2 buttons × 60pt
     private let volumeExpandedWidth: CGFloat = 180
@@ -567,6 +625,7 @@ struct FullscreenPlayerView: View {
         let collapsedMiniPlayerWidth = max(
             0,
             min(availableGroupWidth - fixedControlWidth, fullscreenMiniPlayerMaxWidth)
+                - fullscreenMiniPlayerPillWidthReduction
         )
         let groupWidth = fixedControlWidth + collapsedMiniPlayerWidth
         let currentMiniPlayerWidth = max(
@@ -617,6 +676,17 @@ struct FullscreenPlayerView: View {
             return .easeInOut(duration: 0.18)
         }
         return .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08)
+    }
+
+    /// Slower spring used specifically for the cover-element drop/rise when the
+    /// fullscreen miniplayer hides or shows. Same damping and character as
+    /// bottomControlsAnimation but a longer response so the motion feels
+    /// deliberate and consistent with the lyrics-region expansion.
+    private var coverDropAnimation: Animation {
+        if reduceMotion {
+            return .easeInOut(duration: 0.28)
+        }
+        return .spring(response: 0.55, dampingFraction: 0.82, blendDuration: 0.08)
     }
 
     private var isFullscreenBottomControlsAutoHideEnabled: Bool {
@@ -775,6 +845,7 @@ struct FullscreenPlayerView: View {
         let collapsedMiniPlayerWidth = max(
             0,
             min(availableGroupWidth - fixedControlWidth, fullscreenMiniPlayerMaxWidth)
+                - fullscreenMiniPlayerPillWidthReduction
         )
         let groupWidth = fixedControlWidth + collapsedMiniPlayerWidth
         let currentMiniPlayerWidth = max(
@@ -922,15 +993,13 @@ struct FullscreenPlayerView: View {
 
     @ViewBuilder
     private func artworkAndControlsArea(selectedSkin: any NowPlayingSkin, scale: CGFloat) -> some View {
-        // Fixed layout for 1470x923 base canvas
-        // NOTE: Lyrics are NOT rendered here - they are in fullscreenLyricsLayer at actual resolution
         let metrics = layoutMetrics
         let windowWidth = Self.baseCanvasWidth
         let lyricsVisible = shouldShowLyricsColumn
-        let artworkToCenterOffset = max(0, (windowWidth - metrics.artworkWidth) * 0.5)
-        let contentOffsetX = lyricsVisible ? -topContentLeftShift : artworkToCenterOffset
 
-        // Only artwork area - no lyrics (lyrics are in separate crisp layer)
+        let artworkToCenterOffset = max(0, (windowWidth - metrics.artworkWidth) * 0.5)
+        let contentOffsetX: CGFloat = lyricsVisible ? -topContentLeftShift : artworkToCenterOffset
+
         skinArtworkArea(
             selectedSkin: selectedSkin,
             artworkColumnWidth: metrics.artworkWidth,
@@ -1291,22 +1360,12 @@ struct FullscreenPlayerView: View {
     private func handleTrackIdChange(_ oldId: UUID?, _ newId: UUID?) {
         guard oldId != newId else { return }
 
-        // Immediately clear old artwork snapshot to prevent stale colors
-        // from being used for the new track's background/overlay
+        // Clear artwork snapshot to prevent stale colors
         artworkSnapshot = nil
-        
-        let targetVisible = desiredLyricsColumnVisibility
-        let currentVisible = lyricsColumnVisible ?? targetVisible
-        let layoutWillChange = currentVisible != targetVisible
-        let lyricsEntering = layoutWillChange && !currentVisible && targetVisible
-        deferredTrackUpdateDeadline =
-            layoutWillChange ? Date().addingTimeInterval(trackUpdateDeferralDuration) : nil
-        pendingFullscreenLyricsReveal?.cancel()
-        pendingFullscreenLyricsReveal = nil
-        suppressFullscreenLyricsViewport = lyricsEntering
-        resetFullscreenLyricsBackgroundSnapshot()
-        scheduleFullscreenLyricsBackgroundCapture()
-        scheduleFullscreenTrackRefresh(layoutWillChange: layoutWillChange, revealLyricsAfterRefresh: lyricsEntering)
+
+        // Simplified track change handling - matches window mode behavior
+        // Apply track immediately without deferred scheduling
+        reloadLyricsSurface(reason: "fullscreen track changed", forceLyricsReload: true)
     }
 
     private func reloadLyricsSurface(
@@ -1617,7 +1676,10 @@ struct FullscreenPlayerView: View {
             "fullscreenLineTimingInactiveColor": lineTimingMainInactiveColor,
             "fullscreenLineTimingSubInactiveColor": lineTimingSubInactiveColor,
             "alignAnchor": "top",
-            "alignPosition": fullscreenLyricsAlignPosition,
+            // Hidden-state fix: Restore to higher position (was 0.32, too low).
+            // Visible state left unchanged at 0.18 (already correct).
+            "alignPosition": isFullscreenBottomControlsVisible ? 0.18 : 0.20,
+            "alignOffset": 0,
             "lineHeight": 1.8,
             "activeScale": 1.2,
             "leadInMs": max(0, settings.lyricsLeadInMs),
@@ -1921,7 +1983,6 @@ struct FullscreenPlayerView: View {
             metrics.artworkWidth
             + artworkLyricsColumnSpacing
             - lyricsColumnLeftNudge
-            - topContentLeftShift
             + fullscreenBackgroundLyricsAvoidanceHorizontalInset
         let rectY = fullscreenBackgroundLyricsAvoidanceTopInset
         let rectWidth = max(

@@ -310,15 +310,11 @@ final class AMLLDBRawIndexCache: ObservableObject {
         updateTask = Task { [weak self] in
             guard let self = self else { return }
 
-            do {
-                let success = await self.downloadIndex()
-                if success {
-                    Self.logger.info("[AMLLDB] Background update completed successfully")
-                } else {
-                    Self.logger.warning("[AMLLDB] Background update failed")
-                }
-            } catch {
-                Self.logger.error("[AMLLDB] Background update error: \(error.localizedDescription)")
+            let success = await self.downloadIndex()
+            if success {
+                Self.logger.info("[AMLLDB] Background update completed successfully")
+            } else {
+                Self.logger.warning("[AMLLDB] Background update failed")
             }
         }
     }

@@ -75,11 +75,14 @@ final class CoverSearchCoordinator {
                             size: 1200
                         )
                         if !Task.isCancelled {
-                            sacadCandidate = CoverCandidate(
-                                imageData: data,
-                                source: .sacad,
-                                sourceItemId: normalizedQuery
-                            )
+                            let candidate = await MainActor.run {
+                                CoverCandidate(
+                                    imageData: data,
+                                    source: .sacad,
+                                    sourceItemId: normalizedQuery
+                                )
+                            }
+                            sacadCandidate = candidate
                         }
                     } catch {
                         // Sacad failed - continue with NetEase only
