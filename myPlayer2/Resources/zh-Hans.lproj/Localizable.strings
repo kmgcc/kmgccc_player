@@ -220,6 +220,8 @@
 "alert.play_pause" = "播放/暂停";
 "alert.next" = "下一首";
 "alert.previous" = "上一首";
+"alert.enter_fullscreen" = "进入全屏";
+"menu.customize_toolbar" = "自定义工具栏…";
 
 // MARK: - Fullscreen
 "fullscreen.exit" = "退出全屏";

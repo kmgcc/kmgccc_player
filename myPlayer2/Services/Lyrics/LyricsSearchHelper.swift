@@ -22,8 +22,8 @@ struct LyricsSearchHelper {
 
     // MARK: - Search Configuration
 
-    /// Default sources for LDDC search
-    static let defaultLDDCSources: Set<LDDCSource> = [.QM, .KG, .NE]
+    /// Default sources for LDDC search (nonisolated because it's just a configuration constant)
+    nonisolated static let defaultLDDCSources: Set<LDDCSource> = [.QM, .KG, .NE]
 
     /// Search result containing merged and ranked candidates
     struct SearchResult: Sendable {

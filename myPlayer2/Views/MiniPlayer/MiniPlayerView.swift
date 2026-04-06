@@ -348,17 +348,23 @@ struct MiniPlayerView: View {
         }
         .overlay(alignment: .top) {
             HStack {
-                Text(formattedTime(progressDisplayTime))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .opacity(isProgressHovering ? 1 : 0)
+                NumericTimeText(
+                    time: progressDisplayTime,
+                    fontSize: 10,
+                    fontWeight: .medium,
+                    color: .secondary
+                )
+                .opacity(isProgressHovering ? 1 : 0)
 
                 Spacer()
 
-                Text(formattedTime(playerVM.duration))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .opacity(isProgressHovering ? 1 : 0)
+                NumericTimeText(
+                    time: playerVM.duration,
+                    fontSize: 10,
+                    fontWeight: .medium,
+                    color: .secondary
+                )
+                .opacity(isProgressHovering ? 1 : 0)
             }
             .offset(y: -8)
             .animation(.easeInOut(duration: 0.12), value: isProgressHovering)
@@ -371,14 +377,6 @@ struct MiniPlayerView: View {
 
     private var progressDisplayTime: Double {
         isDragging ? dragProgress : playerVM.currentTime
-    }
-
-    private func formattedTime(_ time: Double) -> String {
-        guard time.isFinite, time > 0 else { return "0:00" }
-        let total = Int(time.rounded(.down))
-        let minutes = total / 60
-        let seconds = total % 60
-        return String(format: "%d:%02d", minutes, seconds)
     }
     
     private var currentArtworkTaskKey: String {

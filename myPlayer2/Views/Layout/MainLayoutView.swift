@@ -38,12 +38,6 @@ struct MainLayoutView: View {
     var body: some View {
         GeometryReader { proxy in
             ZStack {
-                if uiState.contentMode == .library, let artwork = uiState.detailHeaderArtwork {
-                    BlurredArtworkBackgroundView(image: artwork)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                        .ignoresSafeArea()
-                }
-                
                 NavigationSplitView(columnVisibility: $columnVisibility) {
                     SidebarView()
                         .navigationSplitViewColumnWidth(

@@ -230,7 +230,9 @@ private final class MiniPlayerSpectrumHostView: NSView {
     }
 
     func updateAccentColor(_ accentColor: NSColor) {
-        let resolved = Self.resolveStaticLightModeColors(from: accentColor)
+        // Use artwork-faithful colors for fullscreen mini player spectrum
+        // This preserves the artwork's hue/chroma more truthfully without oversaturation
+        let resolved = Self.resolveArtworkFaithfulColors(from: accentColor)
         cachedColors = resolved.fillColors
         cachedStrokeColors = resolved.strokeColors
 
@@ -344,17 +346,41 @@ private final class MiniPlayerSpectrumHostView: NSView {
         CATransaction.commit()
     }
 
-    private static func resolveStaticLightModeColors(from accentColor: NSColor) -> (fillColors: [CGColor], strokeColors: [CGColor]) {
-        guard let staticRGB = accentColor.usingColorSpace(.deviceRGB) else {
-            return (Array(repeating: CGColor(gray: 0.7, alpha: 0.85), count: 9),
-                    Array(repeating: CGColor(gray: 0.6, alpha: 0.95), count: 9))
+    /// Fullscreen mini player spectrum colors that faithfully represent artwork palette.
+    /// Preserves artwork hue/chroma with minimal adjustment for visibility against glass background.
+    private static func resolveArtworkFaithfulColors(from accentColor: NSColor) -> (fillColors: [CGColor], strokeColors: [CGColor]) {
+        guard let inputRGB = accentColor.usingColorSpace(.deviceRGB) else {
+            return (Array(repeating: CGColor(gray: 0.6, alpha: 0.85), count: 9),
+                    Array(repeating: CGColor(gray: 0.5, alpha: 0.7), count: 9))
         }
         
-        let leftBase = NSColor(red: staticRGB.redComponent,
-                              green: staticRGB.greenComponent,
-                              blue: staticRGB.blueComponent,
-                              alpha: 1.0)
-        let rightBase = makeSecondaryColor(leftBase)
+        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        inputRGB.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+        
+        let faithfulSat: CGFloat
+        if s > 0.72 {
+            faithfulSat = s * 0.88
+        } else if s > 0.55 {
+            faithfulSat = s * 0.94
+        } else {
+            faithfulSat = s
+        }
+        
+        let faithfulBri: CGFloat
+        if b < 0.28 {
+            faithfulBri = b + 0.22
+        } else if b > 0.85 {
+            faithfulBri = b - 0.12
+        } else {
+            faithfulBri = b
+        }
+        
+        let leftBase = NSColor(hue: h, saturation: faithfulSat, brightness: faithfulBri, alpha: 0.85)
+        
+        let shiftedHue = fmod(h + 0.06, 1.0)
+        let secondarySat = faithfulSat * 0.92
+        let secondaryBri = min(1.0, faithfulBri + 0.06)
+        let rightBase = NSColor(hue: shiftedHue, saturation: secondarySat, brightness: secondaryBri, alpha: 0.80)
         
         let total = max(1, 9 - 1)
         var fillColors: [CGColor] = []
@@ -364,193 +390,24 @@ private final class MiniPlayerSpectrumHostView: NSView {
             let t = CGFloat(index) / CGFloat(total)
             let r = leftBase.redComponent + (rightBase.redComponent - leftBase.redComponent) * t
             let g = leftBase.greenComponent + (rightBase.greenComponent - leftBase.greenComponent) * t
-            let b = leftBase.blueComponent + (rightBase.blueComponent - leftBase.blueComponent) * t
-            let interpolated = NSColor(red: r, green: g, blue: b, alpha: 1.0)
+            let bComp = leftBase.blueComponent + (rightBase.blueComponent - leftBase.blueComponent) * t
             
-            let finalFill = normalizeForMiniPlayer(interpolated)
+            let fillAlpha = 0.85 - t * 0.08
+            let fillColor = NSColor(calibratedRed: r, green: g, blue: bComp, alpha: fillAlpha)
             
-            var hue: CGFloat = 0
-            var sat: CGFloat = 0
-            var bri: CGFloat = 0
-            var alp: CGFloat = 0
-            finalFill.getHue(&hue, saturation: &sat, brightness: &bri, alpha: &alp)
+            let strokeHSB = fillColor.usingColorSpace(.deviceRGB) ?? fillColor
+            var sh: CGFloat = 0, ss: CGFloat = 0, sb: CGFloat = 0, sa: CGFloat = 0
+            strokeHSB.getHue(&sh, saturation: &ss, brightness: &sb, alpha: &sa)
             
-            let strokeBri = max(0.0, bri - 0.06)
-            let strokeSat = min(1.0, sat + 0.15)
-            let strokeColor = NSColor(hue: hue, saturation: strokeSat, brightness: strokeBri, alpha: 0.95)
+            let strokeBri = max(0.12, sb - 0.04)
+            let strokeAlpha = 0.92
+            let strokeColor = NSColor(hue: sh, saturation: ss, brightness: strokeBri, alpha: strokeAlpha)
             
-            fillColors.append(finalFill.cgColor)
-            strokeColors.append(strokeColor.cgColor)
-        }
-        
-        return (fillColors, strokeColors)
-    }
-
-    private static func hslLightness(_ color: NSColor) -> CGFloat {
-        guard let rgb = color.usingColorSpace(.deviceRGB) else { return 0.5 }
-        let maxC = max(rgb.redComponent, max(rgb.greenComponent, rgb.blueComponent))
-        let minC = min(rgb.redComponent, min(rgb.greenComponent, rgb.blueComponent))
-        return (maxC + minC) / 2.0
-    }
-
-    private static func normalizeForMiniPlayer(_ color: NSColor, minLightness: CGFloat = 0.50) -> NSColor {
-        let L = hslLightness(color)
-        guard L < minLightness else { return color }
-        
-        var hue: CGFloat = 0
-        var sat: CGFloat = 0
-        var bri: CGFloat = 0
-        var alp: CGFloat = 0
-        color.getHue(&hue, saturation: &sat, brightness: &bri, alpha: &alp)
-        
-        let liftAmount = minLightness - L
-        let saturationCap = max(0.45, 0.80 - liftAmount * 1.5)
-        let safeSat = min(sat, saturationCap)
-        let safeBri = max(bri, minLightness + 0.08)
-        
-        return NSColor(hue: hue, saturation: safeSat, brightness: safeBri, alpha: 0.85)
-    }
-
-    private static func makeSecondaryColor(_ color: NSColor) -> NSColor {
-        var hue: CGFloat = 0
-        var sat: CGFloat = 0
-        var bri: CGFloat = 0
-        var alp: CGFloat = 0
-        color.getHue(&hue, saturation: &sat, brightness: &bri, alpha: &alp)
-        let shiftedHue = fmod(hue + 0.08, 1.0)
-        return NSColor(hue: shiftedHue, saturation: sat * 0.85, brightness: bri * 1.08, alpha: alp * 0.9)
-    }
-
-    private static func clampToLightnessFloor(_ color: NSColor, minLightness: CGFloat = 0.50) -> NSColor {
-        guard let rgb = color.usingColorSpace(.deviceRGB) else { return color }
-        let r = rgb.redComponent
-        let g = rgb.greenComponent
-        let b = rgb.blueComponent
-        let maxC = max(r, max(g, b))
-        let minC = min(r, min(g, b))
-        let lightness = (maxC + minC) / 2.0
-        guard lightness < minLightness else { return color }
-        var hue: CGFloat = 0
-        var sat: CGFloat = 0
-        var bri: CGFloat = 0
-        var alp: CGFloat = 0
-        color.getHue(&hue, saturation: &sat, brightness: &bri, alpha: &alp)
-        let safeSat = min(sat, 0.65)
-        let newBri = max(bri, minLightness + 0.05)
-        return NSColor(hue: hue, saturation: safeSat, brightness: newBri, alpha: alp)
-    }
-
-    private static func makeCapsuleColorsWithStroke(
-        accentColor: NSColor,
-        isDark: Bool
-    ) -> (fill: [CGColor], stroke: [CGColor]) {
-        let leftBase = clampToLightnessFloor(accentColor)
-        let rightBase = clampToLightnessFloor(makeSecondaryColor(accentColor))
-        let total = max(1, 9 - 1)
-
-        var fillColors: [CGColor] = []
-        var strokeColors: [CGColor] = []
-
-        for index in 0..<9 {
-            let t = CGFloat(index) / CGFloat(total)
-            let fillColor = makeInterpolatedColor(
-                leftBase: leftBase,
-                rightBase: rightBase,
-                t: t,
-                isDark: isDark
-            )
             fillColors.append(fillColor.cgColor)
-
-            var hue: CGFloat = 0
-            var saturation: CGFloat = 0
-            var brightness: CGFloat = 0
-            var alpha: CGFloat = 0
-            fillColor.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
-
-            let strokeBrightness: CGFloat
-            let strokeSaturation: CGFloat
-            let strokeAlpha: CGFloat
-
-            if isDark {
-                strokeBrightness = min(1.0, brightness + 0.35)
-                strokeSaturation = min(1.0, saturation + 0.25)
-                strokeAlpha = min(1.0, alpha + 0.1)
-            } else {
-                strokeBrightness = max(0.0, brightness - 0.06)
-                strokeSaturation = min(1.0, saturation + 0.15)
-                strokeAlpha = min(1.0, alpha + 0.1)
-            }
-
-            let strokeColor = NSColor(
-                hue: hue,
-                saturation: strokeSaturation,
-                brightness: strokeBrightness,
-                alpha: strokeAlpha
-            )
             strokeColors.append(strokeColor.cgColor)
         }
-
+        
         return (fillColors, strokeColors)
-    }
-
-    private static func makeCapsuleColors(accentColor: NSColor, isDark: Bool) -> [CGColor] {
-        let leftBase = clampToLightnessFloor(accentColor)
-        let rightBase = clampToLightnessFloor(makeSecondaryColor(accentColor))
-        let total = max(1, 9 - 1)
-
-        return (0..<9).map { index in
-            let t = CGFloat(index) / CGFloat(total)
-            return makeInterpolatedColor(
-                leftBase: leftBase,
-                rightBase: rightBase,
-                t: t,
-                isDark: isDark
-            ).cgColor
-        }
-    }
-
-    private static func makeInterpolatedColor(
-        leftBase: NSColor,
-        rightBase: NSColor,
-        t: CGFloat,
-        isDark: Bool
-    ) -> NSColor {
-        guard
-            let c1 = leftBase.usingColorSpace(.deviceRGB),
-            let c2 = rightBase.usingColorSpace(.deviceRGB)
-        else {
-            return leftBase
-        }
-
-        let red = c1.redComponent + (c2.redComponent - c1.redComponent) * t
-        let green = c1.greenComponent + (c2.greenComponent - c1.greenComponent) * t
-        let blue = c1.blueComponent + (c2.blueComponent - c1.blueComponent) * t
-        let interpolated = NSColor(calibratedRed: red, green: green, blue: blue, alpha: 1)
-
-        var hue: CGFloat = 0
-        var saturation: CGFloat = 0
-        var brightness: CGFloat = 0
-        var alpha: CGFloat = 0
-        interpolated.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
-
-        let targetBrightness: CGFloat
-        let targetAlpha: CGFloat
-
-        if isDark {
-            targetBrightness = max(0.10, min(0.14, brightness * 0.4))
-            targetAlpha = 0.8
-            saturation *= 0.9
-        } else {
-            targetBrightness = min(max(0.1, brightness * 0.7), 0.55)
-            targetAlpha = 0.85
-        }
-
-        return NSColor(
-            hue: hue,
-            saturation: saturation,
-            brightness: targetBrightness,
-            alpha: targetAlpha
-        )
     }
 }
 

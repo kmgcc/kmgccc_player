@@ -50,6 +50,18 @@ nonisolated enum LocalLibraryPaths {
         playlistsRootURL.appendingPathComponent("\(id.uuidString).json")
     }
 
+    static func legacyPlaylistArtworkURL(for id: UUID) -> URL {
+        playlistsRootURL.appendingPathComponent("\(id.uuidString)_artwork.png")
+    }
+
+    static func playlistCustomArtworkURL(for id: UUID) -> URL {
+        playlistsRootURL.appendingPathComponent("\(id.uuidString)_custom.png")
+    }
+
+    static func playlistGeneratedArtworkURL(for id: UUID) -> URL {
+        playlistsRootURL.appendingPathComponent("\(id.uuidString)_generated.png")
+    }
+
     static func libraryURL(from relativePath: String) -> URL {
         libraryRootURL.appendingPathComponent(relativePath)
     }

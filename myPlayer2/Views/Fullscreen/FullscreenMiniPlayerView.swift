@@ -128,17 +128,21 @@ struct FullscreenMiniPlayerView: View {
 
             VStack(alignment: .leading, spacing: trackInfoVSpacing) {
                 if let track = playerVM.currentTrack {
-                    Text(track.title)
-                        .font(.system(size: titleFontSize, weight: .semibold))
-                        .lineLimit(1)
-                        .foregroundStyle(lyricsDynamicPrimaryColor)
+                    MarqueeText(
+                        text: track.title,
+                        fontSize: titleFontSize,
+                        fontWeight: .semibold,
+                        color: lyricsDynamicPrimaryColor
+                    )
 
-                    Text(track.artist.isEmpty
-                        ? NSLocalizedString("library.unknown_artist", comment: "")
-                        : track.artist)
-                        .font(.system(size: artistFontSize, weight: .medium))
-                        .lineLimit(1)
-                        .foregroundStyle(lyricsDynamicSecondaryColor)
+                    MarqueeText(
+                        text: track.artist.isEmpty
+                            ? NSLocalizedString("library.unknown_artist", comment: "")
+                            : track.artist,
+                        fontSize: artistFontSize,
+                        fontWeight: .medium,
+                        color: lyricsDynamicSecondaryColor
+                    )
                 } else {
                     Text("mini.not_playing")
                         .font(.system(size: titleFontSize, weight: .semibold))
@@ -354,14 +358,6 @@ struct FullscreenMiniPlayerView: View {
 
     private var progressDisplayTime: Double {
         isDragging ? dragProgress : playerVM.currentTime
-    }
-
-    private func formattedTime(_ time: Double) -> String {
-        guard time.isFinite, time > 0 else { return "0:00" }
-        let total = Int(time.rounded(.down))
-        let minutes = total / 60
-        let seconds = total % 60
-        return String(format: "%d:%02d", minutes, seconds)
     }
 
     private var progressFillColor: Color {

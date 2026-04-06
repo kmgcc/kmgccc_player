@@ -132,11 +132,13 @@ final class NetEaseCoverService: NetEaseCoverServiceProtocol {
                         guard !imageData.isEmpty, NSImage(data: imageData) != nil else {
                             return nil
                         }
-                        return CoverCandidate(
-                            imageData: imageData,
-                            source: .netease,
-                            sourceItemId: String(albumResult.id)
-                        )
+                        return await MainActor.run {
+                            CoverCandidate(
+                                imageData: imageData,
+                                source: .netease,
+                                sourceItemId: String(albumResult.id)
+                            )
+                        }
                     } catch {
                         return nil
                     }

@@ -785,7 +785,7 @@ final class LyricsWebViewStore: NSObject {
             )
         )
         executeJavaScriptCall(jsCleanup) { [weak self] result, error in
-            guard let self else { return }
+            guard self != nil else { return }
             if let error = error {
                 Log.debug("JS cleanup warning: \(error.localizedDescription)", category: .webview)
             }

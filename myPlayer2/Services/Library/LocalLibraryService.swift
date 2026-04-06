@@ -143,6 +143,10 @@ struct PlaylistSidecar: Codable {
     let items: [PlaylistItemSidecar]
     let legacyTrackIDs: [UUID]?
     let description: String?
+    let customHeaderArtworkFileName: String?
+    let generatedHeaderArtworkFileName: String?
+    let headerArtworkSource: PlaylistArtworkSource?
+    let generatedArtworkSignature: String?
 
     var trackIDs: [UUID] {
         if schemaVersion >= 2 {
@@ -160,15 +164,24 @@ struct PlaylistSidecar: Codable {
         case trackIDs
         case trackIds
         case description
+        case customHeaderArtworkFileName
+        case generatedHeaderArtworkFileName
+        case headerArtworkSource
+        case generatedArtworkSignature
+        case legacyHeaderArtworkSignature = "headerArtworkSignature"
     }
 
     init(
-        schemaVersion: Int = 2,
+        schemaVersion: Int = 4,
         id: UUID,
         name: String,
         description: String? = nil,
         createdAt: Date,
-        items: [PlaylistItemSidecar]
+        items: [PlaylistItemSidecar],
+        customHeaderArtworkFileName: String? = nil,
+        generatedHeaderArtworkFileName: String? = nil,
+        headerArtworkSource: PlaylistArtworkSource? = nil,
+        generatedArtworkSignature: String? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.id = id
@@ -177,6 +190,10 @@ struct PlaylistSidecar: Codable {
         self.createdAt = createdAt
         self.items = items
         self.legacyTrackIDs = nil
+        self.customHeaderArtworkFileName = customHeaderArtworkFileName
+        self.generatedHeaderArtworkFileName = generatedHeaderArtworkFileName
+        self.headerArtworkSource = headerArtworkSource
+        self.generatedArtworkSignature = generatedArtworkSignature
     }
 
     init(from decoder: Decoder) throws {
@@ -188,6 +205,18 @@ struct PlaylistSidecar: Codable {
         createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
         schemaVersion = version
         description = try c.decodeIfPresent(String.self, forKey: .description)
+        customHeaderArtworkFileName = try c.decodeIfPresent(
+            String.self,
+            forKey: .customHeaderArtworkFileName
+        )
+        generatedHeaderArtworkFileName = try c.decodeIfPresent(
+            String.self,
+            forKey: .generatedHeaderArtworkFileName
+        )
+        headerArtworkSource = try c.decodeIfPresent(PlaylistArtworkSource.self, forKey: .headerArtworkSource)
+        generatedArtworkSignature =
+            try c.decodeIfPresent(String.self, forKey: .generatedArtworkSignature)
+            ?? c.decodeIfPresent(String.self, forKey: .legacyHeaderArtworkSignature)
 
         if version >= 2 {
             items = try c.decodeIfPresent([PlaylistItemSidecar].self, forKey: .items) ?? []
@@ -204,18 +233,40 @@ struct PlaylistSidecar: Codable {
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(2, forKey: .schemaVersion)
+        try c.encode(4, forKey: .schemaVersion)
         try c.encode(id, forKey: .id)
         try c.encode(name, forKey: .name)
         try c.encodeIfPresent(description, forKey: .description)
         try c.encode(createdAt, forKey: .createdAt)
         try c.encode(items, forKey: .items)
+        try c.encodeIfPresent(customHeaderArtworkFileName, forKey: .customHeaderArtworkFileName)
+        try c.encodeIfPresent(generatedHeaderArtworkFileName, forKey: .generatedHeaderArtworkFileName)
+        try c.encodeIfPresent(headerArtworkSource, forKey: .headerArtworkSource)
+        try c.encodeIfPresent(generatedArtworkSignature, forKey: .generatedArtworkSignature)
     }
 }
 
 struct PlaylistItemSidecar: Codable {
     let trackID: UUID
     let addedAt: Date
+}
+
+enum PlaylistArtworkSource: String, Codable {
+    case none
+    case custom
+    case generated
+}
+
+struct PersistedPlaylistArtwork {
+    let image: NSImage
+    let source: PlaylistArtworkSource
+    let fileURL: URL
+}
+
+struct PersistedPlaylistArtworkRecord {
+    let customArtwork: PersistedPlaylistArtwork?
+    let generatedArtwork: PersistedPlaylistArtwork?
+    let generatedSignature: String?
 }
 
 struct ArtistSidecar: Codable {
@@ -472,12 +523,17 @@ final class LocalLibraryService {
             )
         }
         let desc = playlist.userDescription.isEmpty ? nil : playlist.userDescription
+        let existingSidecar = loadPlaylistSidecar(playlistID: playlist.id)
         let sidecar = PlaylistSidecar(
             id: playlist.id,
             name: playlist.name,
             description: desc,
             createdAt: playlist.createdAt,
-            items: items
+            items: items,
+            customHeaderArtworkFileName: existingSidecar?.customHeaderArtworkFileName,
+            generatedHeaderArtworkFileName: existingSidecar?.generatedHeaderArtworkFileName,
+            headerArtworkSource: existingSidecar?.headerArtworkSource,
+            generatedArtworkSignature: existingSidecar?.generatedArtworkSignature
         )
 
         do {
@@ -504,6 +560,246 @@ final class LocalLibraryService {
                 Log.error("Failed to delete playlist sidecar '\(playlist.name)': \(error)", category: .library)
             }
         }
+        let artworkURL = LocalLibraryPaths.legacyPlaylistArtworkURL(for: playlist.id)
+        if fileManager.fileExists(atPath: artworkURL.path) {
+            try? fileManager.removeItem(at: artworkURL)
+        }
+        let customArtworkURL = LocalLibraryPaths.playlistCustomArtworkURL(for: playlist.id)
+        if fileManager.fileExists(atPath: customArtworkURL.path) {
+            try? fileManager.removeItem(at: customArtworkURL)
+        }
+        let generatedArtworkURL = LocalLibraryPaths.playlistGeneratedArtworkURL(for: playlist.id)
+        if fileManager.fileExists(atPath: generatedArtworkURL.path) {
+            try? fileManager.removeItem(at: generatedArtworkURL)
+        }
+    }
+
+    func loadPlaylistArtworkRecord(playlistID: UUID) -> PersistedPlaylistArtworkRecord {
+        let sidecar = loadPlaylistSidecar(playlistID: playlistID)
+        let migratedSidecar = migrateLegacyPlaylistArtworkIfNeeded(
+            playlistID: playlistID,
+            sidecar: sidecar
+        )
+
+        let customArtwork = loadPersistedPlaylistArtwork(
+            playlistID: playlistID,
+            fileName: migratedSidecar?.customHeaderArtworkFileName,
+            source: .custom
+        )
+        let generatedArtwork = loadPersistedPlaylistArtwork(
+            playlistID: playlistID,
+            fileName: migratedSidecar?.generatedHeaderArtworkFileName,
+            source: .generated
+        )
+
+        return PersistedPlaylistArtworkRecord(
+            customArtwork: customArtwork,
+            generatedArtwork: generatedArtwork,
+            generatedSignature: migratedSidecar?.generatedArtworkSignature
+        )
+    }
+
+    func savePlaylistCustomArtwork(playlistID: UUID, image: NSImage) {
+        let fileURL = LocalLibraryPaths.playlistCustomArtworkURL(for: playlistID)
+        guard writePNGArtwork(image, to: fileURL) else { return }
+
+        let existing = loadPlaylistSidecar(playlistID: playlistID)
+
+        // Delete old generated artwork file when switching to custom
+        if let generatedFileName = existing?.generatedHeaderArtworkFileName {
+            let generatedURL = LocalLibraryPaths.playlistsRootURL
+                .appendingPathComponent(generatedFileName)
+            try? FileManager.default.removeItem(at: generatedURL)
+        }
+
+        updatePlaylistArtworkMetadata(
+            playlistID: playlistID,
+            customFileName: fileURL.lastPathComponent,
+            generatedFileName: nil, // Clear generated file reference
+            activeSource: .custom,
+            generatedSignature: nil // Clear signature since we're using custom
+        )
+        debugArtworkPersistence(
+            "selectionIdentity=\(playlistID) source=custom filePath=\(fileURL.path) save=accepted oldGeneratedDeleted=true"
+        )
+    }
+
+    func savePlaylistGeneratedArtwork(
+        playlistID: UUID,
+        image: NSImage,
+        signature: String
+    ) {
+        let fileURL = LocalLibraryPaths.playlistGeneratedArtworkURL(for: playlistID)
+        guard writePNGArtwork(image, to: fileURL) else { return }
+
+        let existing = loadPlaylistSidecar(playlistID: playlistID)
+        let activeSource: PlaylistArtworkSource =
+            existing?.customHeaderArtworkFileName == nil ? .generated : (existing?.headerArtworkSource ?? .custom)
+        updatePlaylistArtworkMetadata(
+            playlistID: playlistID,
+            customFileName: existing?.customHeaderArtworkFileName,
+            generatedFileName: fileURL.lastPathComponent,
+            activeSource: activeSource,
+            generatedSignature: signature
+        )
+        debugArtworkPersistence(
+            "selectionIdentity=\(playlistID) source=generated filePath=\(fileURL.path) save=accepted generatedSignature=\(signature)"
+        )
+    }
+
+    /// Explicitly regenerate playlist artwork from tracks and set it as the active artwork.
+    /// This clears any custom artwork and forces generation (or re-generation) of the built-in cover.
+    func regeneratePlaylistArtwork(
+        playlistID: UUID,
+        tracks: [Track],
+        image: NSImage
+    ) {
+        let fileURL = LocalLibraryPaths.playlistGeneratedArtworkURL(for: playlistID)
+        guard writePNGArtwork(image, to: fileURL) else { return }
+
+        let existing = loadPlaylistSidecar(playlistID: playlistID)
+
+        // Delete old custom artwork file when switching to generated
+        if let customFileName = existing?.customHeaderArtworkFileName {
+            let customURL = LocalLibraryPaths.playlistsRootURL
+                .appendingPathComponent(customFileName)
+            try? FileManager.default.removeItem(at: customURL)
+        }
+
+        // Clear custom artwork (set to nil) and set active source to generated
+        updatePlaylistArtworkMetadata(
+            playlistID: playlistID,
+            customFileName: nil,
+            generatedFileName: fileURL.lastPathComponent,
+            activeSource: .generated,
+            generatedSignature: nil // Signature not used for stability anymore
+        )
+        debugArtworkPersistence(
+            "selectionIdentity=\(playlistID) source=generated filePath=\(fileURL.path) phase=regenerate save=accepted oldCustomDeleted=true"
+        )
+    }
+
+    func loadPlaylistSidecar(playlistID: UUID) -> PlaylistSidecar? {
+        let url = LocalLibraryPaths.playlistURL(for: playlistID)
+        guard let data = try? Data(contentsOf: url),
+              let sidecar = try? decoder.decode(PlaylistSidecar.self, from: data)
+        else { return nil }
+        return sidecar
+    }
+
+    private func updatePlaylistArtworkMetadata(
+        playlistID: UUID,
+        customFileName: String?,
+        generatedFileName: String?,
+        activeSource: PlaylistArtworkSource,
+        generatedSignature: String?
+    ) {
+        guard let sidecar = loadPlaylistSidecar(playlistID: playlistID) else { return }
+        let updated = PlaylistSidecar(
+            schemaVersion: sidecar.schemaVersion,
+            id: sidecar.id,
+            name: sidecar.name,
+            description: sidecar.description,
+            createdAt: sidecar.createdAt,
+            items: sidecar.items,
+            customHeaderArtworkFileName: customFileName,
+            generatedHeaderArtworkFileName: generatedFileName,
+            headerArtworkSource: activeSource,
+            generatedArtworkSignature: generatedSignature
+        )
+        do {
+            let data = try encoder.encode(updated)
+            let url = LocalLibraryPaths.playlistURL(for: playlistID)
+            try data.write(to: url, options: .atomic)
+        } catch {
+            Log.error("Failed to update playlist artwork metadata: \(error)", category: .library)
+        }
+    }
+
+    private func migrateLegacyPlaylistArtworkIfNeeded(
+        playlistID: UUID,
+        sidecar: PlaylistSidecar?
+    ) -> PlaylistSidecar? {
+        guard let sidecar else { return nil }
+
+        let legacyURL = LocalLibraryPaths.legacyPlaylistArtworkURL(for: playlistID)
+        guard fileManager.fileExists(atPath: legacyURL.path) else { return sidecar }
+        guard sidecar.customHeaderArtworkFileName == nil, sidecar.generatedHeaderArtworkFileName == nil else {
+            return sidecar
+        }
+
+        let legacySource = sidecar.headerArtworkSource ?? .custom
+        let destinationURL: URL
+        let customFileName: String?
+        let generatedFileName: String?
+
+        switch legacySource {
+        case .generated:
+            destinationURL = LocalLibraryPaths.playlistGeneratedArtworkURL(for: playlistID)
+            customFileName = nil
+            generatedFileName = destinationURL.lastPathComponent
+        case .custom, .none:
+            destinationURL = LocalLibraryPaths.playlistCustomArtworkURL(for: playlistID)
+            customFileName = destinationURL.lastPathComponent
+            generatedFileName = nil
+        }
+
+        do {
+            if fileManager.fileExists(atPath: destinationURL.path) {
+                try? fileManager.removeItem(at: destinationURL)
+            }
+            try fileManager.copyItem(at: legacyURL, to: destinationURL)
+            try? fileManager.removeItem(at: legacyURL)
+        } catch {
+            Log.error("Failed to migrate legacy playlist artwork: \(error)", category: .library)
+        }
+
+        updatePlaylistArtworkMetadata(
+            playlistID: playlistID,
+            customFileName: customFileName,
+            generatedFileName: generatedFileName,
+            activeSource: legacySource == .none ? .custom : legacySource,
+            generatedSignature: sidecar.generatedArtworkSignature
+        )
+
+        debugArtworkPersistence(
+            "selectionIdentity=\(playlistID) source=\((legacySource == .generated) ? "generated" : "custom") filePath=\(destinationURL.path) migration=legacy-single-file"
+        )
+
+        return loadPlaylistSidecar(playlistID: playlistID)
+    }
+
+    private func loadPersistedPlaylistArtwork(
+        playlistID _: UUID,
+        fileName: String?,
+        source: PlaylistArtworkSource
+    ) -> PersistedPlaylistArtwork? {
+        guard let fileName else { return nil }
+        let fileURL = LocalLibraryPaths.playlistsRootURL.appendingPathComponent(fileName)
+        guard fileManager.fileExists(atPath: fileURL.path), let image = NSImage(contentsOf: fileURL) else {
+            return nil
+        }
+        return PersistedPlaylistArtwork(image: image, source: source, fileURL: fileURL)
+    }
+
+    @discardableResult
+    private func writePNGArtwork(_ image: NSImage, to url: URL) -> Bool {
+        guard let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let pngData = rep.representation(using: .png, properties: [:])
+        else { return false }
+
+        do {
+            try pngData.write(to: url, options: .atomic)
+            return true
+        } catch {
+            Log.error("Failed to save playlist artwork: \(error)", category: .library)
+            return false
+        }
+    }
+
+    private func debugArtworkPersistence(_ message: String) {
+        print("🎨 [HeaderArtworkPersistence] \(message)")
     }
 
     // MARK: - Artist/Album Sidecars

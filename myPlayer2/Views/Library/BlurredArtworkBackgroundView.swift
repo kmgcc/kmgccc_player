@@ -12,31 +12,38 @@ import SwiftUI
 
 struct BlurredArtworkBackgroundView: View {
     let image: NSImage?
+    var bloomSize: CGFloat = 1000
 
     @Environment(\.colorScheme) private var colorScheme
 
-    // Bloom is a fixed visual footprint, independent of window width.
-    private let bloomSize: CGFloat = 500
+    /// Vertical stretch factor — the halo extends further below center
+    /// so it remains visible after the cover scrolls out of view.
+    private var verticalExtent: CGFloat { bloomSize * 1.5 }
 
     var body: some View {
         if let image {
             Image(nsImage: image)
                 .resizable()
                 .aspectRatio(contentMode: .fill)
-                .frame(width: bloomSize, height: bloomSize)
-                .blur(radius: 80, opaque: false)
-                .opacity(colorScheme == .dark ? 0.52 : 0.32)
+                .frame(width: bloomSize, height: verticalExtent)
+                .blur(radius: bloomSize * 0.085, opaque: false)
+                // Boost saturation for richer color bloom
+                .saturation(1.35)
+                // Lower opacity for softer glow
+                .opacity(colorScheme == .dark ? 0.38 : 0.28)
+                // In light mode, slightly boost brightness for better visibility
+                .brightness(colorScheme == .dark ? 0.0 : 0.08)
                 .mask(
-                    RadialGradient(
+                    EllipticalGradient(
                         colors: [
                             .black,
                             .black.opacity(0.7),
                             .black.opacity(0.2),
                             .clear
                         ],
-                        center: .center,
-                        startRadius: 60,
-                        endRadius: bloomSize / 2
+                        center: UnitPoint(x: 0.5, y: 0.38),
+                        startRadiusFraction: 0.04,
+                        endRadiusFraction: 0.5
                     )
                 )
                 .allowsHitTesting(false)

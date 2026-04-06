@@ -11,6 +11,166 @@
 import AppKit
 import SwiftUI
 
+// MARK: - Halo Session State (Parent-Owned)
+
+/// Parent-owned halo session state that persists independently of header view lifecycle.
+/// The header may report geometry upward, but this state survives header recycling/offscreen.
+/// Missing/nil child updates NEVER destroy the current valid state.
+///
+/// Transform model:
+/// - Position: halo moves upward with scroll but at a damped rate (slower than cover)
+/// - Scale: starts small (baseScale) and grows gradually via an eased curve
+/// - No withAnimation on the scroll path — transforms are computed directly
+///   from the raw scroll delta, keeping the per-frame cost minimal.
+@MainActor
+@Observable
+final class HaloSessionState {
+    /// Identity of the selection this session belongs to
+    var selectionIdentity: String?
+
+    /// Resolved artwork image for the current selection (same source as header)
+    var resolvedArtwork: NSImage?
+
+    /// Last valid cover anchor center in scroll-content coordinate space
+    /// Set when header reports valid bounds; persists after header scrolls offscreen.
+    /// NOT cleared on selection change — reused for immediate first paint.
+    var lastValidAnchor: CGPoint?
+
+    /// Raw scroll delta from initial offset. Written once per scroll frame.
+    /// All derived transforms (position, scale) are computed inline from this single value.
+    private(set) var scrollDelta: CGFloat = 0
+
+    /// Initial scroll offset captured on first measurement after session start.
+    private var initialScrollOffset: CGFloat?
+
+    // MARK: - Transform constants
+
+    /// Desired halo speed as a fraction of scroll-content speed (screen space).
+    /// 0.6 = halo moves upward at 60 % of the speed the cover/content moves.
+    ///
+    /// The halo is embedded inside the scroll content, so it already inherits
+    /// a 1:1 scroll movement. To achieve fraction f in screen space the halo's
+    /// position within content must be counteracted by (1 - f) of each scroll
+    /// unit. See `contentSpaceOffset`.
+    private static let parallaxFraction: CGFloat = 0.6
+
+    /// Resting scale before any scroll
+    private static let baseScale: CGFloat = 0.72
+
+    /// Maximum additional scale growth at full scroll extent
+    private static let maxScaleGrowth: CGFloat = 0.5
+
+    /// Scroll distance (pts) over which scale grows from base to base+max
+    private static let scaleRange: CGFloat = 500
+
+    // MARK: - Derived transforms
+
+    /// Whether this session has valid content to render
+    var hasValidContent: Bool {
+        resolvedArtwork != nil && lastValidAnchor != nil
+    }
+
+    /// Y offset to apply in VStack-content space to achieve the parallax effect.
+    ///
+    /// Because the halo lives inside the scroll content it already moves with
+    /// the list at 1:1. To make it appear slower (at `parallaxFraction` of
+    /// scroll speed) we partially counteract the scroll in content space:
+    ///
+    ///   contentSpaceOffset = scrollDelta × (f − 1)
+    ///
+    /// Derivation (scroll down by N, scrollDelta = −N):
+    ///   • content moves up N in screen space
+    ///   • halo content-Y += (−N)(f − 1) = N(1 − f)
+    ///   • halo screen-Y  = content-Y − N = +N(1−f) − N = −Nf   ✓
+    ///   • cover screen-Y = −N  →  halo (−Nf) < cover (−N)  ✓
+    var contentSpaceOffset: CGFloat {
+        scrollDelta * (Self.parallaxFraction - 1.0)
+    }
+
+    /// Scale computed from scroll distance via an ease-out power curve.
+    /// Grows gradually as the user scrolls upward; stays at baseScale at rest.
+    var computedScale: CGFloat {
+        let upwardScroll = max(0, -scrollDelta)
+        let t = min(upwardScroll / Self.scaleRange, 1.0)
+        // ease-out: fast initial growth that tapers off
+        let eased = 1.0 - pow(1.0 - t, 2.5)
+        return Self.baseScale + Self.maxScaleGrowth * eased
+    }
+
+    // MARK: - Mutations
+
+    /// Start a new session for a different selection.
+    /// Preserves lastValidAnchor for immediate first paint (anchor updates naturally
+    /// from the next geometry report). Does NOT clear artwork — prevents white flash.
+    func beginNewSession(selectionIdentity: String) {
+        self.selectionIdentity = selectionIdentity
+        // lastValidAnchor deliberately kept — same header position, enables instant halo
+        // resolvedArtwork deliberately kept — prevents flash on transition
+        self.initialScrollOffset = nil
+        self.scrollDelta = 0
+    }
+
+    /// Update artwork when a valid new resolution arrives.
+    /// Only replaces if the identity matches the current session.
+    func updateArtwork(identity: String, image: NSImage?) {
+        guard self.selectionIdentity == identity else { return }
+        self.resolvedArtwork = image
+    }
+
+    /// Update anchor from header geometry report.
+    /// Only accepts valid bounds; nil values are ignored (never destroy current state).
+    func updateAnchorIfValid(bounds: CGRect?) {
+        guard let bounds, bounds.width > 0, bounds.height > 0 else { return }
+        self.lastValidAnchor = CGPoint(x: bounds.midX, y: bounds.midY)
+    }
+
+    /// Update scroll delta from current offset. Called once per scroll frame.
+    /// No animation, no threshold — just a single property write.
+    func updateScroll(offset: CGFloat) {
+        if initialScrollOffset == nil {
+            initialScrollOffset = offset
+        }
+        scrollDelta = offset - (initialScrollOffset ?? offset)
+    }
+}
+
+// MARK: - Halo Render View (isolated observation boundary)
+
+/// Standalone View struct that renders the halo bloom.
+///
+/// Being a separate struct creates an independent @Observable tracking boundary:
+/// SwiftUI only re-evaluates *this* body when `session.scrollDelta` changes —
+/// not `PlaylistDetailView.body` and not the LazyVStack track list.
+/// Without this isolation, every scroll frame would re-diff the entire content
+/// tree (track rows, header, preference keys), causing jank on long playlists.
+fileprivate struct HaloRenderView: View {
+    let session: HaloSessionState
+
+    var body: some View {
+        Group {
+            if session.hasValidContent,
+               let image = session.resolvedArtwork,
+               let anchor = session.lastValidAnchor
+            {
+                let bloomSize: CGFloat = 220 * 4.0
+                let haloX = anchor.x
+                // contentSpaceOffset counteracts (1 - parallaxFraction) of scroll
+                // so the halo drifts slower than the cover in screen space.
+                let haloY = anchor.y + session.contentSpaceOffset
+
+                BlurredArtworkBackgroundView(image: image, bloomSize: bloomSize)
+                    .frame(width: bloomSize, height: bloomSize * 1.5)
+                    .scaleEffect(session.computedScale)
+                    .position(x: haloX, y: haloY)
+            }
+        }
+        .frame(height: 0)          // takes no layout space
+        .allowsHitTesting(false)
+    }
+}
+
+// MARK: - Playlist Detail View
+
 /// View displaying tracks in the selected playlist or all songs.
 struct PlaylistDetailView<HeaderAccessory: View>: View {
 
@@ -51,7 +211,9 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
     @State private var selectedTrackIDs: Set<UUID> = []
     @State private var sortSymbolEffectTrigger = 0
     @State private var batchEditRequest: BatchEditRequest?
-    @State private var headerArtwork: NSImage?
+
+    /// Parent-owned halo session state - survives header lifecycle, selection switches
+    @State private var haloSession = HaloSessionState()
 
     // MARK: - Init
 
@@ -81,12 +243,24 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
                 detailScrollView
             }
         }
+        // Fill available space, anchor content to top
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .overlay(alignment: .top) {
-            headerView
-                .ignoresSafeArea(.container, edges: .top)
+        // Overlay toolbar at top - reads width from parent's frame constraint
+        .overlay(alignment: .topLeading) {
+            GeometryReader { overlayGeo in
+                ZStack(alignment: .topLeading) {
+                    // Decorative fade background - can extend left, doesn't affect toolbar layout
+                    playlistTopFade(width: overlayGeo.size.width)
+                        .offset(x: -48)
+                        .allowsHitTesting(false)
+
+                    // Toolbar content row - strictly constrained to content width
+                    headerViewInternal(width: overlayGeo.size.width)
+                        .ignoresSafeArea(.container, edges: .top)
+                }
+            }
+            .frame(height: GlassStyleTokens.headerBarHeight + 8)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .frame(minWidth: 320)
         .sheet(item: $trackToEdit) { track in
             TrackEditSheet(track: track)
@@ -117,12 +291,18 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             }
         }
         .onChange(of: libraryVM.selectedPlaylist?.id) { oldVal, newVal in
+            // Begin new halo session for different playlist - preserves old artwork until new resolves
+            haloSession.beginNewSession(selectionIdentity: "playlist-\(newVal ?? UUID())")
             scheduleRebuild(reason: "playlist", restoreScroll: true)
         }
         .onChange(of: libraryVM.selectedArtistKey) { oldVal, newVal in
+            // Begin new halo session for different artist
+            haloSession.beginNewSession(selectionIdentity: "artist-\(newVal ?? "")")
             scheduleRebuild(reason: "artist", restoreScroll: true)
         }
         .onChange(of: libraryVM.selectedAlbumKey) { oldVal, newVal in
+            // Begin new halo session for different album
+            haloSession.beginNewSession(selectionIdentity: "album-\(newVal ?? "")")
             scheduleRebuild(reason: "album", restoreScroll: true)
         }
         .onChange(of: searchText) { _, _ in
@@ -152,8 +332,6 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             }
         }
         .onChange(of: libraryVM.currentSelection) { oldVal, newVal in
-            headerArtwork = nil
-            uiState.detailHeaderArtwork = nil
             scheduleRebuild(reason: "selection", restoreScroll: true)
         }
         .onReceive(NotificationCenter.default.publisher(for: .libraryTrackDidUpdate)) { notification in
@@ -179,11 +357,12 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             guard let playlist = libraryVM.playlists.first(where: { $0.id == id }) else {
                 return nil
             }
+            let playlistTracks = playlist.tracks.filter { $0.availability != .missing }
             return .playlist(
                 playlist,
                 entry: PlaylistHeaderData(
                     description: playlist.userDescription,
-                    tracks: displayedTracksCache
+                    tracks: playlistTracks
                 )
             )
         case .artist(let key):
@@ -207,7 +386,8 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
                 return nil
             }
             let totalDuration = displayedTracksCache.reduce(0) { $0 + $1.duration }
-            let firstArtwork = displayedTracksCache.first?.artworkData.flatMap {
+            let firstArtworkData = entry.artworkData ?? displayedTracksCache.first?.artworkData
+            let firstArtwork = firstArtworkData.flatMap {
                 NSImage(data: $0)
             }
             return .album(
@@ -224,62 +404,137 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
 
     // MARK: - Subviews
 
-    private var headerView: some View {
-        GeometryReader { proxy in
-            HStack(spacing: 12) {
-                sortMenu
+    private func headerViewInternal(width: CGFloat) -> some View {
+        HStack(spacing: 12) {
+            sortMenu
 
-                // Skills: $macos-appkit-liquid-glass-toolbar + $macos-appkit-liquid-glass-controls
-                // Group Multiselect + Play + Import into one pill
-                GlassToolbarTriplePill(
-                    isMultiselectActive: isMultiselectMode,
-                    onToggleMultiselect: {
-                        isMultiselectMode.toggle()
-                        if !isMultiselectMode {
-                            selectedTrackIDs.removeAll()
-                        }
-                    },
-                    canPlay: !sortedTracksCache.isEmpty,
-                    onPlay: {
-                        if isMultiselectMode && !selectedTrackIDs.isEmpty {
-                            let selected = sortedTracksCache.filter {
-                                selectedTrackIDs.contains($0.id)
-                            }
-                            playerVM.playTracks(selected)
-                        } else {
-                            guard !sortedTracksCache.isEmpty else { return }
-                            playerVM.playTracks(sortedTracksCache)
-                        }
-                    },
-                    onImport: {
-                        Task {
-                            await libraryVM.importToCurrentPlaylist()
-                        }
+            GlassToolbarTriplePill(
+                isMultiselectActive: isMultiselectMode,
+                onToggleMultiselect: {
+                    isMultiselectMode.toggle()
+                    if !isMultiselectMode {
+                        selectedTrackIDs.removeAll()
                     }
-                )
-
-                GlassToolbarSearchField(
-                    placeholder: "搜索",
-                    text: $searchText,
-                    focused: $isSearchFocused
-                ) {
-                    searchText = ""
+                },
+                canPlay: !sortedTracksCache.isEmpty,
+                onPlay: {
+                    if isMultiselectMode && !selectedTrackIDs.isEmpty {
+                        let selected = sortedTracksCache.filter {
+                            selectedTrackIDs.contains($0.id)
+                        }
+                        playerVM.playTracks(selected)
+                    } else {
+                        guard !sortedTracksCache.isEmpty else { return }
+                        playerVM.playTracks(sortedTracksCache)
+                    }
+                },
+                onImport: {
+                    Task {
+                        await libraryVM.importToCurrentPlaylist()
+                    }
                 }
-                .frame(minWidth: 96, idealWidth: 140, maxWidth: 140)
-
-                headerAccessory
-            }
-            .frame(
-                width: max(0, proxy.size.width - GlassStyleTokens.headerHorizontalPadding * 2),
-                alignment: .trailing
             )
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
-            .padding(.horizontal, GlassStyleTokens.headerHorizontalPadding)
+
+            Spacer(minLength: 0)
+
+            GlassToolbarSearchField(
+                placeholder: "搜索",
+                text: $searchText,
+                focused: $isSearchFocused
+            ) {
+                searchText = ""
+            }
+            .frame(minWidth: 96, idealWidth: 140, maxWidth: 140)
+
+            headerAccessory
         }
-        .frame(height: GlassStyleTokens.headerBarHeight)
-        .background(alignment: .top) {
-            headerBackground
+        // Padding inward, then constrain to exact width - HStack naturally gets (width - padding*2)
+        .padding(.horizontal, GlassStyleTokens.headerHorizontalPadding)
+        .frame(width: width, height: GlassStyleTokens.headerBarHeight)
+    }
+
+    private func playlistTopFade(width: CGFloat) -> some View {
+        let fadeHeight: CGFloat = GlassStyleTokens.headerBarHeight + 8
+        let bg = Color(nsColor: .windowBackgroundColor)
+
+        return ZStack(alignment: .top) {
+            Rectangle()
+                .fill(Material.ultraThin)
+                .mask {
+                    LinearGradient(
+                        stops: [
+                            .init(color: .black, location: 0.0),
+                            .init(color: .clear, location: colorScheme == .dark ? 0.74 : 0.82),
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                }
+                .mask {
+                    playlistTopFadeHorizontalMask
+                }
+
+            Rectangle()
+                .fill(playlistTopFadeScrimGradient(bg: bg))
+                .mask {
+                    LinearGradient(
+                        stops: [
+                            .init(color: .black, location: 0.0),
+                            .init(color: .clear, location: colorScheme == .dark ? 0.68 : 0.62),
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                }
+                .mask {
+                    playlistTopFadeHorizontalMask
+                }
         }
+        .frame(width: width + 48, height: fadeHeight)
+        .frame(maxWidth: .infinity, maxHeight: fadeHeight, alignment: .topLeading)
+        .allowsHitTesting(false)
+    }
+
+    private var playlistTopFadeHorizontalMask: some View {
+        HStack(spacing: 0) {
+            LinearGradient(
+                stops: [
+                    .init(color: .clear, location: 0.0),
+                    .init(color: .black.opacity(0.15), location: 0.35),
+                    .init(color: .black.opacity(0.45), location: 0.55),
+                    .init(color: .black, location: 1.0),
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+            .frame(width: 48)
+            Rectangle()
+        }
+    }
+
+    private func playlistTopFadeScrimGradient(bg: Color) -> LinearGradient {
+        if colorScheme == .dark {
+            return LinearGradient(
+                stops: [
+                    .init(color: bg.opacity(0.012), location: 0.0),
+                    .init(color: bg.opacity(0.006), location: 0.35),
+                    .init(color: bg.opacity(0.002), location: 0.60),
+                    .init(color: .clear, location: 1.0),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
+        return LinearGradient(
+            stops: [
+                .init(color: bg.opacity(0.40), location: 0.0),
+                .init(color: bg.opacity(0.18), location: 0.30),
+                .init(color: bg.opacity(0.06), location: 0.56),
+                .init(color: .clear, location: 1.0),
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
     }
 
     private var sortMenu: some View {
@@ -387,58 +642,30 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
     }
 
     /// Scroll view used for playlist/artist/album selections.
-    /// Always renders the detail header row regardless of content state.
+    /// Header is NOT inside LazyVStack - uses separate VStack for stability.
+    /// Halo renders from parent-owned session state.
     private var detailScrollView: some View {
         ScrollView(.vertical) {
-            LazyVStack(spacing: 0) {
+            VStack(spacing: 0) {
+                // Halo layer - renders from parent-owned session state
+                // Independent of header view lifecycle
+                haloLayer
+
+                // Header section - NOT inside LazyVStack for stable lifecycle
+                // Reports geometry upward but doesn't own halo state
                 if let config = detailHeaderConfig {
-                    LibraryDetailHeaderView(
-                        config: config,
-                        onArtworkChange: { image in
-                            headerArtwork = image
-                            uiState.detailHeaderArtwork = image
-                        },
-                        onPlay: {
-                            guard !sortedTracksCache.isEmpty else { return }
-                            playerVM.playTracks(sortedTracksCache)
-                        },
-                        canPlay: !sortedTracksCache.isEmpty
-                    )
-                    
-                    Spacer().frame(height: 12)
+                    headerContentSection(config: config)
                 }
 
-                if libraryVM.state == .loading
-                    || (isRebuilding && displayedTracksCache.isEmpty && viewSnapshot.isEmpty)
-                {
-                    ProgressView()
-                        .controlSize(.large)
-                        .padding(.vertical, 40)
-                        .frame(maxWidth: .infinity)
-                } else if filteredTracksCache.isEmpty
-                    && !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                {
-                    VStack(spacing: 10) {
-                        Image(systemName: "magnifyingglass")
-                            .font(.system(size: 28))
-                            .foregroundStyle(.tertiary)
-                        Text("library.no_results")
-                            .font(.body)
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.vertical, 40)
-                    .frame(maxWidth: .infinity)
-                } else {
-                    trackRowsContent
-                        .padding(.horizontal, 16)
-                }
+                // Track content section - uses LazyVStack for performance
+                trackContentSection
             }
-            .scrollTargetLayout()
             .padding(.top, listTopPadding)
             .padding(.bottom, listBottomPadding)
             .padding(.horizontal)
             .transaction { tx in tx.animation = nil }
         }
+        .coordinateSpace(name: "detailScroll")
         .scrollPosition(id: $listScrollPositionID, anchor: .top)
         .scrollEdgeEffectStyle(.soft, for: .top)
         .onChange(of: listScrollPositionID) { _, _ in
@@ -446,6 +673,89 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         }
         .onTapGesture {
             clearSearchFocus()
+        }
+    }
+
+    /// Halo layer — hosts HaloRenderView and attaches the scroll-offset sensor.
+    ///
+    /// Rendering is delegated to HaloRenderView (a separate View struct) so that
+    /// @Observable tracking for per-frame scrollDelta changes is scoped to that
+    /// tiny view. This view just owns the preference sensor and the write path.
+    private var haloLayer: some View {
+        HaloRenderView(session: haloSession)
+            // Scroll-offset sensor: measures haloLayer's Y in the ScrollView's
+            // fixed coordinate space. Value decreases as content scrolls up.
+            .background(
+                GeometryReader { geo in
+                    Color.clear
+                        .preference(
+                            key: ScrollOffsetPreferenceKey.self,
+                            value: geo.frame(in: .named("detailScroll")).minY
+                        )
+                }
+            )
+            .onPreferenceChange(ScrollOffsetPreferenceKey.self) { offset in
+                haloSession.updateScroll(offset: offset)
+            }
+    }
+
+    /// Header content section - positioned outside LazyVStack for stable lifecycle.
+    /// Reports geometry to parent but doesn't own halo state.
+    @ViewBuilder
+    private func headerContentSection(config: DetailHeaderConfig) -> some View {
+        LibraryDetailHeaderView(
+            config: config,
+            onPlay: {
+                guard !sortedTracksCache.isEmpty else { return }
+                playerVM.playTracks(sortedTracksCache)
+            },
+            canPlay: !sortedTracksCache.isEmpty
+        )
+        .onPreferenceChange(HeaderArtworkBoundsPreferenceKey.self) { bounds in
+            // CRITICAL: Only accept valid bounds - never destroy state on nil
+            // This prevents halo disappearing when header scrolls offscreen
+            haloSession.updateAnchorIfValid(bounds: bounds)
+        }
+        .onPreferenceChange(HeaderArtworkImagePreferenceKey.self) { image in
+            // Update artwork in session - only if valid image provided
+            if let image {
+                haloSession.updateArtwork(
+                    identity: haloSession.selectionIdentity ?? "",
+                    image: image
+                )
+            }
+        }
+
+        Spacer().frame(height: 12)
+    }
+
+    /// Track content section - uses LazyVStack for performance.
+    private var trackContentSection: some View {
+        Group {
+            if libraryVM.state == .loading
+                || (isRebuilding && displayedTracksCache.isEmpty && viewSnapshot.isEmpty)
+            {
+                ProgressView()
+                    .controlSize(.large)
+                    .padding(.vertical, 40)
+                    .frame(maxWidth: .infinity)
+            } else if filteredTracksCache.isEmpty
+                && !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            {
+                VStack(spacing: 10) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 28))
+                        .foregroundStyle(.tertiary)
+                    Text("library.no_results")
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 40)
+                .frame(maxWidth: .infinity)
+            } else {
+                trackRowsContent
+                    .padding(.horizontal, 16)
+            }
         }
     }
 
@@ -720,72 +1030,9 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
 
     private var listBottomPadding: CGFloat { 16 }
 
-    private var headerBackground: some View {
-        ZStack(alignment: .top) {
-            headerBackgroundMaterialLayer
-            headerBackgroundScrimLayer
-        }
-        .frame(height: GlassStyleTokens.headerBarHeight)
-        .allowsHitTesting(false)
-    }
+    // MARK: - Header Background
 
-    private var headerBackgroundMaterialLayer: some View {
-        Rectangle()
-            .fill(colorScheme == .dark ? .regularMaterial : .ultraThinMaterial)
-            .mask {
-                LinearGradient(
-                    stops: [
-                        .init(color: .black, location: 0.0),
-                        .init(color: .clear, location: colorScheme == .dark ? 0.74 : 0.82),
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            }
-    }
-
-    private var headerBackgroundScrimLayer: some View {
-        Rectangle()
-            .fill(headerBackgroundScrimGradient)
-            .mask {
-                LinearGradient(
-                    stops: [
-                        .init(color: .black, location: 0.0),
-                        .init(color: .clear, location: colorScheme == .dark ? 0.68 : 0.62),
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            }
-    }
-
-    private var headerBackgroundScrimGradient: LinearGradient {
-        if colorScheme == .dark {
-            return LinearGradient(
-                stops: [
-                    .init(color: Color.black.opacity(0.34), location: 0.0),
-                    .init(color: Color.black.opacity(0.20), location: 0.34),
-                    .init(color: Color.black.opacity(0.08), location: 0.58),
-                    .init(color: .clear, location: 1.0),
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        }
-
-        return LinearGradient(
-            stops: [
-                .init(color: Color.white.opacity(0.54), location: 0.0),
-                .init(color: Color.white.opacity(0.28), location: 0.30),
-                .init(color: Color.white.opacity(0.10), location: 0.56),
-                .init(color: .clear, location: 1.0),
-            ],
-            startPoint: .top,
-            endPoint: .bottom
-        )
-    }
-
-    private func clearSearchFocus() {
+private func clearSearchFocus() {
         if isSearchFocused {
             isSearchFocused = false
         }
@@ -1064,6 +1311,29 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         let minutes = totalSeconds / 60
         let seconds = totalSeconds % 60
         return String(format: "%d:%02d", minutes, seconds)
+    }
+}
+
+// MARK: - Preference Keys for Header Artwork (shared with LibraryDetailHeaderView)
+
+struct HeaderArtworkBoundsPreferenceKey: PreferenceKey {
+    static var defaultValue: CGRect?
+    static func reduce(value: inout CGRect?, nextValue: () -> CGRect?) {
+        value = nextValue() ?? value
+    }
+}
+
+struct HeaderArtworkImagePreferenceKey: PreferenceKey {
+    static var defaultValue: NSImage?
+    static func reduce(value: inout NSImage?, nextValue: () -> NSImage?) {
+        value = nextValue() ?? value
+    }
+}
+
+private struct ScrollOffsetPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 

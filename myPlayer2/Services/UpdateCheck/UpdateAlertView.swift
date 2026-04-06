@@ -70,7 +70,7 @@ struct UpdateAlertView: View {
     private var contentView: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                if let error = error {
+                if error != nil {
                     HStack(spacing: 8) {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .foregroundStyle(.orange)

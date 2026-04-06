@@ -85,7 +85,6 @@ final class UIStateViewModel {
 
     /// One-shot flag to request restoring library scroll after leaving Now Playing.
     var shouldRestoreLibraryScrollOnReturn: Bool = false
-
     init() {
         if defaults.object(forKey: StorageKey.sidebarVisible) != nil {
             sidebarVisible = defaults.bool(forKey: StorageKey.sidebarVisible)

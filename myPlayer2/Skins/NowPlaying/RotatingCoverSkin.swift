@@ -48,17 +48,15 @@ private struct RotatingCoverArtwork: View {
     // MARK: - Fullscreen Fine-tuning Constants
     /// Slight boost to artwork size in fullscreen (1.0 = no change)
     private let fullscreenArtworkBoost: CGFloat = 1.22
-    /// Horizontal shift for artwork in fullscreen (negative = left)
-    private let fullscreenLeftShift: CGFloat = -40
+    /// Additional visual scale applied to the cover stack in fullscreen.
+    /// Applied via scaleEffect inside the scaled canvas, resolution-stable.
+    private let fullscreenCoverScaleEffect: CGFloat = 1.2
 
     var body: some View {
         let contentSize = context.contentSize
         let isFullscreen = fullscreenManager.isFullscreenActive
 
-        // Apply fullscreen boost and left shift only in fullscreen mode
-        // Only shift left when lyrics are visible; when no lyrics, artwork should center
         let artworkBoost = isFullscreen ? fullscreenArtworkBoost : 1.0
-        let leftShift = (isFullscreen && context.lyricsVisible) ? fullscreenLeftShift : 0
 
         let scaleFactor: CGFloat = isFullscreen ? 0.6 : 0.55
         let maxSize: CGFloat = isFullscreen ? 500 : 380
@@ -94,7 +92,8 @@ private struct RotatingCoverArtwork: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .offset(x: leftShift, y: yOffset)
+        .scaleEffect(isFullscreen ? fullscreenCoverScaleEffect : 1.0)
+        .offset(y: yOffset)
         .onAppear {
             lastTrackID = context.track?.id
             if context.playback.isPlaying {
