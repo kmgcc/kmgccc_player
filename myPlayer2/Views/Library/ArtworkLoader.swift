@@ -142,7 +142,7 @@ enum PlaylistPerfDiagnostics {
 
 enum ArtworkLoader {
     static let cache = ArtworkImageCache()
-    private static let decodeGate = ArtworkDecodeGate(maxConcurrent: 3)
+    private static let decodeGate = ArtworkDecodeGate(maxConcurrent: 6)
 
     nonisolated static func checksum(for data: Data?) -> UInt64 {
         guard let data else { return 0 }
@@ -172,6 +172,8 @@ enum ArtworkLoader {
         if let cached = await cache.image(for: cacheKey) {
             return cached
         }
+
+        guard !Task.isCancelled else { return nil }
 
         await decodeGate.acquire()
         let signpost = PlaylistPerfDiagnostics.beginDecodeSignpost()
