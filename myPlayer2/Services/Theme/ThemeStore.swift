@@ -10,6 +10,11 @@ import AppKit
 import Combine
 import SwiftUI
 
+private final class NSColorBox: NSObject {
+    let color: NSColor
+    init(_ color: NSColor) { self.color = color }
+}
+
 /// Final computed colors for the application theme.
 struct ThemePalette: Equatable {
     let scheme: ColorScheme
@@ -43,7 +48,7 @@ final class ThemeStore: ObservableObject {
 
     private let defaultBlueNS: NSColor
     private var rawDominantColor: NSColor
-    private var dominantColorCache: [String: NSColor] = [:]
+    private let dominantColorCache = NSCache<NSString, NSColorBox>()
     private var activeTrackID: UUID?
     private var extractionToken = UUID()
     private let extractionQueue = DispatchQueue(
@@ -72,6 +77,8 @@ final class ThemeStore: ObservableObject {
         self.accentColor = Color(nsColor: fallback)
         self.accentNSColor = fallback
         self.selectionFill = Color(nsColor: fallback).opacity(0.14)
+        
+        dominantColorCache.countLimit = 50
 
         // Initial palette generation
         Task {
@@ -159,7 +166,7 @@ final class ThemeStore: ObservableObject {
         
         Log.trace("Cleared averageColorCache for new track", category: .theme)
 
-        if let cacheKey, let cached = dominantColorCache[cacheKey] {
+        if let cacheKey, let cached = dominantColorCache.object(forKey: cacheKey as NSString)?.color {
             Log.debug("Cache hit for dominant color cache key \(cacheKey)", category: .theme)
             rawDominantColor = cached
             usesFallbackThemeColor = false
@@ -215,7 +222,7 @@ final class ThemeStore: ObservableObject {
         
         let resolved = extractedColor ?? rawDominantColor
         if let cacheKey {
-            dominantColorCache[cacheKey] = resolved
+            dominantColorCache.setObject(NSColorBox(resolved), forKey: cacheKey as NSString)
         }
         rawDominantColor = resolved
         usesFallbackThemeColor = extractedColor == nil

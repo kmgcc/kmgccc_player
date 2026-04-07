@@ -214,6 +214,11 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
 
     /// Parent-owned halo session state - survives header lifecycle, selection switches
     @State private var haloSession = HaloSessionState()
+    
+    /// Cached album header artwork to avoid repeated NSImage(data:) decoding on every body re-evaluate.
+    /// Cache key combines entry ID + artwork data checksum to invalidate on content change.
+    @State private var cachedAlbumHeaderArtwork: NSImage?
+    @State private var cachedAlbumArtworkKey: String?
 
     // MARK: - Init
 
@@ -332,6 +337,12 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             }
         }
         .onChange(of: libraryVM.currentSelection) { oldVal, newVal in
+            cachedAlbumHeaderArtwork = nil
+            cachedAlbumArtworkKey = nil
+            if newVal == .allSongs {
+                haloSession.resolvedArtwork = nil
+                haloSession.lastValidAnchor = nil
+            }
             scheduleRebuild(reason: "selection", restoreScroll: true)
         }
         .onReceive(NotificationCenter.default.publisher(for: .libraryTrackDidUpdate)) { notification in
@@ -386,10 +397,19 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
                 return nil
             }
             let totalDuration = displayedTracksCache.reduce(0) { $0 + $1.duration }
-            let firstArtworkData = entry.artworkData ?? displayedTracksCache.first?.artworkData
-            let firstArtwork = firstArtworkData.flatMap {
-                NSImage(data: $0)
+            
+            // Use cached artwork if key matches, avoiding repeated NSImage(data:) decoding
+            let artworkData = entry.artworkData ?? displayedTracksCache.first?.artworkData
+            let cacheKey = "\(entry.id)-\(artworkData?.hashValue ?? 0)"
+            let firstArtwork: NSImage?
+            if cachedAlbumArtworkKey == cacheKey, let cached = cachedAlbumHeaderArtwork {
+                firstArtwork = cached
+            } else {
+                firstArtwork = artworkData.flatMap { NSImage(data: $0) }
+                cachedAlbumHeaderArtwork = firstArtwork
+                cachedAlbumArtworkKey = cacheKey
             }
+            
             return .album(
                 entry,
                 stats: AlbumDerivedStats(

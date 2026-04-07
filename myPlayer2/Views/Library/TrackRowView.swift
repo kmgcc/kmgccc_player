@@ -40,6 +40,7 @@ struct TrackRowView<MenuContent: View>: View {
     @State private var isHovering = false
     @State private var artworkImage: NSImage?
     @State private var isArtworkReady = false
+    @State private var artworkLoadTask: Task<Void, Never>?
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -135,8 +136,20 @@ struct TrackRowView<MenuContent: View>: View {
         .onAppear {
             onRowAppear?()
         }
-        .task(id: model.artworkCacheKey) {
-            await loadArtwork()
+        .onChange(of: model.artworkCacheKey) { _, newKey in
+            artworkLoadTask?.cancel()
+            artworkLoadTask = Task {
+                await loadArtwork()
+            }
+        }
+        .task {
+            artworkLoadTask = Task {
+                await loadArtwork()
+            }
+        }
+        .onDisappear {
+            artworkLoadTask?.cancel()
+            artworkLoadTask = nil
         }
     }
 
@@ -176,7 +189,6 @@ struct TrackRowView<MenuContent: View>: View {
                 .clipShape(RoundedRectangle(cornerRadius: 6))
                 .grayscale(model.isMissing ? 1.0 : 0.0)
                 .opacity(isArtworkReady ? 1.0 : 0.0)
-                .animation(.easeInOut(duration: 0.20), value: isArtworkReady)
         } else {
             placeholderArtwork
         }

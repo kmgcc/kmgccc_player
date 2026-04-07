@@ -326,16 +326,16 @@ struct FullscreenPlayerView: View {
             }
 
             // Layer 1: AMLL lyrics at actual resolution
-            fullscreenLyricsLayer(scale: scale)
+            fullscreenLyricsLayer(scale: scale, screenWidth: proxy.size.width)
                 .frame(width: proxy.size.width, height: proxy.size.height)
 
             // Layer 2: Scaled container for artwork only
-            fullscreenScaledContainer(selectedSkin: selectedSkin, scale: scale)
+            fullscreenScaledContainer(selectedSkin: selectedSkin, scale: scale, screenWidth: proxy.size.width)
                 .frame(width: Self.baseCanvasWidth, height: Self.baseCanvasHeight)
                 .scaleEffect(scale, anchor: .center)
-            
+
             // Layer 3: Bottom bar at actual resolution - on top
-            fullscreenBottomBarLayer(scale: scale)
+            fullscreenBottomBarLayer(scale: scale, screenHeight: proxy.size.height)
                 .frame(width: proxy.size.width, height: proxy.size.height)
         }
         .id("fullscreen_\(settings.fullscreen.skinID)_\(skinRevision)")
@@ -351,13 +351,13 @@ struct FullscreenPlayerView: View {
     // MARK: - Fullscreen Scaled Container (Artwork + Controls Only)
 
     @ViewBuilder
-    private func fullscreenScaledContainer(selectedSkin: any NowPlayingSkin, scale: CGFloat) -> some View {
+    private func fullscreenScaledContainer(selectedSkin: any NowPlayingSkin, scale: CGFloat, screenWidth: CGFloat) -> some View {
         // Cover-element skins drop slightly when the miniplayer auto-hides
         let coverDropY: CGFloat = isCoverSkinWithMiniplayerMotion && !isFullscreenBottomControlsVisible ? 20 : 0
 
         ZStack {
             VStack(spacing: 0) {
-                artworkAndControlsArea(selectedSkin: selectedSkin, scale: scale)
+                artworkAndControlsArea(selectedSkin: selectedSkin, scale: scale, screenWidth: screenWidth)
                     .padding(.horizontal, topContentHorizontalPadding)
                     .padding(.top, 6)
                     .padding(.bottom, 12)
@@ -373,7 +373,7 @@ struct FullscreenPlayerView: View {
     // MARK: - Fullscreen Lyrics Layer (Actual Resolution - Crisp)
 
     @ViewBuilder
-    private func fullscreenLyricsLayer(scale: CGFloat) -> some View {
+    private func fullscreenLyricsLayer(scale: CGFloat, screenWidth: CGFloat) -> some View {
         let metrics = layoutMetrics
         let windowWidth = Self.baseCanvasWidth
         let lyricsVisible = shouldShowLyricsColumn
@@ -382,26 +382,38 @@ struct FullscreenPlayerView: View {
         // artwork share the same canvas-relative coordinate origin.
         let artworkToCenterOffset = max(0, (windowWidth - metrics.artworkWidth) * 0.5)
         let baseContentOffsetX: CGFloat = lyricsVisible ? -topContentLeftShift : artworkToCenterOffset
+
+        // On screens wider than the 1470:923 canvas (e.g. 16:9 at 1080p), the scaled
+        // canvas is centered horizontally with a margin on each side.  Apply the same
+        // horizontal correction used by artworkAndControlsArea so the lyrics left anchor
+        // tracks the actual 1:1 cover-image right edge instead of the full decorative
+        // artwork-column right edge.
+        let scaleX = screenWidth / Self.baseCanvasWidth
+        let artworkColumnCenterX = baseContentOffsetX + metrics.artworkWidth / 2
+        let artworkHorizCorrection: CGFloat = lyricsVisible
+            ? (artworkColumnCenterX - Self.baseCanvasWidth / 2) * (scaleX - scale) / scale
+            : 0
+        let artworkX = baseContentOffsetX + artworkHorizCorrection
+
         let columnSpacing = lyricsVisible ? artworkLyricsColumnSpacing : 0
-
-        let artworkX = baseContentOffsetX
         let baseLyricsX = artworkX + metrics.artworkWidth + columnSpacing - (lyricsVisible ? lyricsColumnLeftNudge : 0)
-        let baseLyricsWidth = lyricsVisible ? metrics.lyricsWidth : 0
 
-        // Expand left by 80pt (moves block left) and right by 140pt for the lyrics viewport.
+        // Expand left by 80pt (moves block left) for the lyrics viewport.
         // Skin-specific right shift for the cover-gradient-blur skin.
         let leftExpansion: CGFloat = 80
-        let rightExpansion: CGFloat = 140
         let coverSkinOffset: CGFloat = settings.fullscreen.skinID == "fullscreen.coverGradientBlur" ? coverSkinLyricsRightShift : 0
         let finalLyricsX = baseLyricsX - leftExpansion + coverSkinOffset
-        let finalLyricsWidth = baseLyricsWidth + leftExpansion + rightExpansion
 
-        // Convert to actual screen coordinates.
-        // Both artwork (in the center-aligned scaled canvas) and lyrics (in this screen-
-        // resolution layer) derive their X from the same canvas-coordinate origin, so the
-        // visual relationship between cover and lyrics stays stable across all resolutions.
-        let actualLyricsX = finalLyricsX * scale
-        let actualLyricsWidth = max(100, finalLyricsWidth * scale)
+        // Canvas horizontal centering margin: on 16:9 screens the canvas is narrower than
+        // the screen; add the side margin so the lyrics block stays anchored to the cover
+        // image, not to the left screen edge.
+        let canvasCenteringX = max(0, (screenWidth - Self.baseCanvasWidth * scale) / 2)
+        let actualLyricsX = finalLyricsX * scale + canvasCenteringX
+
+        // Right boundary: span to screen-edge minus an adaptive padding rather than a
+        // fixed canvas-fraction, so the region fills available space on all displays.
+        let lyricsRightScreenPad: CGFloat = 44 * scale
+        let actualLyricsWidth = max(100, screenWidth - actualLyricsX - lyricsRightScreenPad)
 
         // Fixed AMLL frame — always the full base canvas height. AMLL's DOM never resizes
         // during miniplayer hide/show, so setAlignPosition never chases a moving target.
@@ -828,7 +840,7 @@ struct FullscreenPlayerView: View {
     // MARK: - Fullscreen Bottom Bar Layer (Actual Resolution - Crisp)
     
     @ViewBuilder
-    private func fullscreenBottomBarLayer(scale: CGFloat) -> some View {
+    private func fullscreenBottomBarLayer(scale: CGFloat, screenHeight: CGFloat) -> some View {
         // Use the same base calculations as bottomControlsRow, then multiply by scale
         let baseScale = scale
         let buttonSize = fullscreenControlButtonSize
@@ -866,7 +878,11 @@ struct FullscreenPlayerView: View {
         let scaledVolumeOriginX = volumeOriginX * baseScale
         let scaledVolumeWidth = volumeWidth * baseScale
         let scaledWindowWidth = windowWidth * baseScale
-        let scaledBottomPadding = fullscreenControlsBottomPadding * baseScale
+        // Canvas-bottom-relative bottom padding: on displays where the canvas has vertical
+        // margins (scale = scaleX, e.g. portrait-aspect MacBooks), anchor the controls bar
+        // to the canvas bottom rather than the screen bottom so the visual spacing is stable.
+        let canvasBottomMargin = max(0, (screenHeight - Self.baseCanvasHeight * baseScale) / 2)
+        let scaledBottomPadding = fullscreenControlsBottomPadding * baseScale + canvasBottomMargin
         let scaledGroupWidth = groupWidth * baseScale
         let hotZoneWidth = min(scaledWindowWidth, scaledGroupWidth + 120 * baseScale)
         let hotZoneHeight = scaledButtonSize + 34 * baseScale
@@ -992,13 +1008,24 @@ struct FullscreenPlayerView: View {
     // MARK: - Artwork and Controls Area (No Lyrics - Lyrics are in crisp layer)
 
     @ViewBuilder
-    private func artworkAndControlsArea(selectedSkin: any NowPlayingSkin, scale: CGFloat) -> some View {
+    private func artworkAndControlsArea(selectedSkin: any NowPlayingSkin, scale: CGFloat, screenWidth: CGFloat) -> some View {
         let metrics = layoutMetrics
         let windowWidth = Self.baseCanvasWidth
         let lyricsVisible = shouldShowLyricsColumn
 
         let artworkToCenterOffset = max(0, (windowWidth - metrics.artworkWidth) * 0.5)
         let contentOffsetX: CGFloat = lyricsVisible ? -topContentLeftShift : artworkToCenterOffset
+
+        // Shift the artwork column left to compensate for the canvas horizontal centering
+        // margin on screens wider than the 1470:923 aspect ratio (e.g. 16:9 at 1080p).
+        // Without this, the canvas margin shifts the cover right relative to the baseline
+        // composition.  On baseline displays (canvas ≈ fills width) the correction is ~0.
+        let scaleX = screenWidth / Self.baseCanvasWidth
+        let artworkColumnCenterX = contentOffsetX + metrics.artworkWidth / 2
+        let artworkHorizCorrection: CGFloat = lyricsVisible
+            ? (artworkColumnCenterX - Self.baseCanvasWidth / 2) * (scaleX - scale) / scale
+            : 0
+        let adjustedContentOffsetX = contentOffsetX + artworkHorizCorrection
 
         skinArtworkArea(
             selectedSkin: selectedSkin,
@@ -1008,7 +1035,7 @@ struct FullscreenPlayerView: View {
         .frame(width: metrics.artworkWidth)
         .frame(maxHeight: .infinity)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .offset(x: contentOffsetX)
+        .offset(x: adjustedContentOffsetX)
     }
 
     @ViewBuilder
