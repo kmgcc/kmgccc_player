@@ -179,6 +179,22 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         let tracks: [Track]
     }
 
+    private struct SortableTrackEntry: Sendable {
+        let id: UUID
+        let title: String
+        let artist: String
+        let duration: Double
+        let addedAt: Date
+        let importedAt: Date?
+        let playlistItemAddedAt: Date?
+    }
+
+    private struct SortedTrackComputation: Sendable {
+        let filteredTrackIDs: [UUID]
+        let sortedTrackIDs: [UUID]
+        let parentSortedTrackIDs: [UUID]
+    }
+
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(UIStateViewModel.self) private var uiState
@@ -198,12 +214,13 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
     @State private var viewSnapshot: PlaylistViewSnapshot = .empty
     @State private var sortedTrackIndexMapCache: [UUID: Int] = [:]
     @State private var parentSortedTrackIndexMapCache: [UUID: Int] = [:]
-    @State private var trackByIDCache: [UUID: Track] = [:]
     @State private var prefetchTask: Task<Void, Never>?
     @State private var rebuildTask: Task<Void, Never>?
     @State private var snapshotUpdateTask: Task<Void, Never>?
     @State private var activeRebuildToken = UUID()
     @State private var isRebuilding = false
+    @State private var isSelectionTransitioning = false
+    @State private var selectionTransitionTask: Task<Void, Never>?
     @State private var lastQueueTrackIDs: [UUID] = []
     @State private var lastPrefetchBucket: Int?
     @FocusState private var isSearchFocused: Bool
@@ -211,6 +228,7 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
     @State private var selectedTrackIDs: Set<UUID> = []
     @State private var sortSymbolEffectTrigger = 0
     @State private var batchEditRequest: BatchEditRequest?
+    @StateObject private var pageSession = PlaylistDetailSessionController()
 
     /// Parent-owned halo session state - survives header lifecycle, selection switches
     @State private var haloSession = HaloSessionState()
@@ -232,6 +250,7 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         Group {
             if libraryVM.currentSelection == .allSongs {
                 if libraryVM.state == .loading
+                    || isSelectionTransitioning
                     || (isRebuilding && displayedTracksCache.isEmpty && viewSnapshot.isEmpty)
                 {
                     ProgressView()
@@ -243,9 +262,19 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
                     noResultsView
                 } else {
                     trackListView
+                        .id("rows-\(selectionIdentity)")
                 }
             } else {
-                detailScrollView
+                if isSelectionTransitioning
+                    || (isRebuilding && displayedTracksCache.isEmpty && viewSnapshot.isEmpty)
+                {
+                    ProgressView()
+                        .controlSize(.large)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    detailScrollView
+                        .id("rows-\(selectionIdentity)")
+                }
             }
         }
         // Fill available space, anchor content to top
@@ -282,9 +311,14 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             .presentationSizing(.page)
         }
         .onAppear {
+            pageSession.activateFirstPaintPhases(for: libraryVM.currentSelection)
             scheduleRebuild(reason: "appear", restoreScroll: true)
         }
         .onDisappear {
+            isSelectionTransitioning = false
+            selectionTransitionTask?.cancel()
+            selectionTransitionTask = nil
+            pageSession.cancelPhases()
             prefetchTask?.cancel()
             prefetchTask = nil
             rebuildTask?.cancel()
@@ -298,17 +332,14 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         .onChange(of: libraryVM.selectedPlaylist?.id) { oldVal, newVal in
             // Begin new halo session for different playlist - preserves old artwork until new resolves
             haloSession.beginNewSession(selectionIdentity: "playlist-\(newVal ?? UUID())")
-            scheduleRebuild(reason: "playlist", restoreScroll: true)
         }
         .onChange(of: libraryVM.selectedArtistKey) { oldVal, newVal in
             // Begin new halo session for different artist
             haloSession.beginNewSession(selectionIdentity: "artist-\(newVal ?? "")")
-            scheduleRebuild(reason: "artist", restoreScroll: true)
         }
         .onChange(of: libraryVM.selectedAlbumKey) { oldVal, newVal in
             // Begin new halo session for different album
             haloSession.beginNewSession(selectionIdentity: "album-\(newVal ?? "")")
-            scheduleRebuild(reason: "album", restoreScroll: true)
         }
         .onChange(of: searchText) { _, _ in
             scheduleRebuild(reason: "search", debounceNanoseconds: 150_000_000)
@@ -339,11 +370,22 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         .onChange(of: libraryVM.currentSelection) { oldVal, newVal in
             cachedAlbumHeaderArtwork = nil
             cachedAlbumArtworkKey = nil
-            if newVal == .allSongs {
-                haloSession.resolvedArtwork = nil
-                haloSession.lastValidAnchor = nil
+            selectionTransitionTask?.cancel()
+            pageSession.beginTeardown()
+            let targetSelection = newVal
+            selectionTransitionTask = Task { @MainActor in
+                await Task.yield()
+                guard !Task.isCancelled else { return }
+                guard libraryVM.currentSelection == targetSelection else { return }
+                isSelectionTransitioning = true
+                releaseListCachesForSelectionTransition()
+                pageSession.activateFirstPaintPhases(for: targetSelection)
+                if targetSelection == .allSongs {
+                    haloSession.resolvedArtwork = nil
+                    haloSession.lastValidAnchor = nil
+                }
+                scheduleRebuild(reason: "selection", restoreScroll: true)
             }
-            scheduleRebuild(reason: "selection", restoreScroll: true)
         }
         .onReceive(NotificationCenter.default.publisher(for: .libraryTrackDidUpdate)) { notification in
             guard let trackID = notification.userInfo?["trackID"] as? UUID else { return }
@@ -355,6 +397,19 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
 
     private var isFiltering: Bool {
         !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var selectionIdentity: String {
+        switch libraryVM.currentSelection {
+        case .allSongs:
+            return "allSongs"
+        case .playlist(let id):
+            return "playlist-\(id.uuidString)"
+        case .artist(let key):
+            return "artist-\(key)"
+        case .album(let key):
+            return "album-\(key)"
+        }
     }
 
     // MARK: - Detail Header
@@ -405,7 +460,7 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             if cachedAlbumArtworkKey == cacheKey, let cached = cachedAlbumHeaderArtwork {
                 firstArtwork = cached
             } else {
-                firstArtwork = artworkData.flatMap { NSImage(data: $0) }
+                firstArtwork = ArtworkLoader.headerPreviewImage(data: artworkData, maxPixelSize: 640)
                 cachedAlbumHeaderArtwork = firstArtwork
                 cachedAlbumArtworkKey = cacheKey
             }
@@ -603,14 +658,13 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
     @ViewBuilder
     private var trackRowsContent: some View {
         ForEach(viewSnapshot.trackIDs, id: \.self) { trackID in
-            if
-                let rowSnapshot = viewSnapshot.snapshot(for: trackID),
-                let track = trackByIDCache[trackID]
-            {
+            if let rowSnapshot = viewSnapshot.snapshot(for: trackID) {
                 TrackRowView(
                     model: trackRowModel(for: rowSnapshot),
                     isPlaying: playerVM.currentTrack?.id == trackID,
                     isSelected: isMultiselectMode && selectedTrackIDs.contains(trackID),
+                    enableSecondaryInteractions: pageSession.areRowSecondaryInteractionsEnabled,
+                    enableArtworkLoading: pageSession.areRowArtworkLoadsEnabled,
                     onTap: {
                         if isMultiselectMode {
                             if selectedTrackIDs.contains(trackID) {
@@ -630,10 +684,12 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
                         prefetchAroundTrackID(trackID)
                     }
                 ) {
-                    trackMenu(track: track)
+                    trackMenu(trackID: trackID)
                 }
                 .contextMenu {
-                    trackMenu(track: track)
+                    if pageSession.areRowSecondaryInteractionsEnabled {
+                        trackMenu(trackID: trackID)
+                    }
                 }
             }
         }
@@ -669,7 +725,13 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             VStack(spacing: 0) {
                 // Halo layer - renders from parent-owned session state
                 // Independent of header view lifecycle
-                haloLayer
+                if pageSession.isHeaderEffectsEnabled {
+                    haloLayer
+                } else {
+                    Color.clear
+                        .frame(height: 0)
+                        .allowsHitTesting(false)
+                }
 
                 // Header section - NOT inside LazyVStack for stable lifecycle
                 // Reports geometry upward but doesn't own halo state
@@ -855,164 +917,168 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
     }
 
     @ViewBuilder
-    private func trackMenu(track: Track) -> some View {
-        if isMultiselectMode && selectedTrackIDs.contains(track.id) {
-            // Batch Actions
-            Text("已选择 \(selectedTrackIDs.count) 首歌曲")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 4)
+    private func trackMenu(trackID: UUID) -> some View {
+        if let track = latestTrackFromLibrary(trackID: trackID) {
+            if isMultiselectMode && selectedTrackIDs.contains(trackID) {
+                // Batch Actions
+                Text("已选择 \(selectedTrackIDs.count) 首歌曲")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 4)
 
-            Divider()
+                Divider()
 
-            Button {
-                openBatchEditor()
-            } label: {
-                Label("批量编辑歌曲信息…", systemImage: "square.stack.3d.forward.dottedline")
-            }
+                Button {
+                    openBatchEditor()
+                } label: {
+                    Label("批量编辑歌曲信息…", systemImage: "square.stack.3d.forward.dottedline")
+                }
 
-            Divider()
+                Divider()
 
-            Menu {
-                ForEach(libraryVM.playlists) { playlist in
-                    if libraryVM.selectedPlaylist?.id != playlist.id {
-                        Button {
-                            processBatchAction { tracks in
-                                await libraryVM.addTracksToPlaylist(tracks, playlist: playlist)
+                Menu {
+                    ForEach(libraryVM.playlists) { playlist in
+                        if libraryVM.selectedPlaylist?.id != playlist.id {
+                            Button {
+                                processBatchAction { tracks in
+                                    await libraryVM.addTracksToPlaylist(tracks, playlist: playlist)
+                                }
+                            } label: {
+                                Label(playlist.name, systemImage: "music.note.list")
                             }
-                        } label: {
-                            Label(playlist.name, systemImage: "music.note.list")
                         }
+                    }
+
+                    Divider()
+
+                    Button {
+                        processBatchAction { tracks in
+                            let playlist = await libraryVM.createNewPlaylist()
+                            await libraryVM.addTracksToPlaylist(tracks, playlist: playlist)
+                        }
+                    } label: {
+                        Label("新建播放列表", systemImage: "plus")
+                    }
+                } label: {
+                    Label("添加到播放列表...", systemImage: "plus.circle")
+                }
+                .id("batch_add_to_playlist_\(libraryVM.playlists.count)")
+
+                if let currentPlaylist = libraryVM.selectedPlaylist {
+                    Button {
+                        processBatchAction { tracks in
+                            await libraryVM.removeTracksFromPlaylist(tracks, playlist: currentPlaylist)
+                        }
+                    } label: {
+                        Label("从当前播放列表移除", systemImage: "minus.circle")
                     }
                 }
 
                 Divider()
 
-                Button {
+                Button(role: .destructive) {
                     processBatchAction { tracks in
-                        let playlist = await libraryVM.createNewPlaylist()
-                        await libraryVM.addTracksToPlaylist(tracks, playlist: playlist)
+                        for track in tracks {
+                            await libraryVM.deleteTrack(track)
+                        }
+                        // Clear selection after delete
+                        await MainActor.run {
+                            // Selection will be cleared by cache rebuild or logic
+                            selectedTrackIDs.removeAll()
+                        }
                     }
                 } label: {
-                    Label("新建播放列表", systemImage: "plus")
+                    Label("从资料库删除", systemImage: "trash")
                 }
-            } label: {
-                Label("添加到播放列表...", systemImage: "plus.circle")
-            }
-            .id("batch_add_to_playlist_\(libraryVM.playlists.count)")
 
-            if let currentPlaylist = libraryVM.selectedPlaylist {
+            } else {
+                // SINGLE TRACK ACTIONS (Keep existing)
+
+                // Enter multiselect mode
                 Button {
-                    processBatchAction { tracks in
-                        await libraryVM.removeTracksFromPlaylist(tracks, playlist: currentPlaylist)
+                    isMultiselectMode = true
+                    selectedTrackIDs.insert(trackID)
+                } label: {
+                    Label("多选歌曲…", systemImage: "checkmark.circle")
+                }
+
+                Divider()
+
+                // Play
+                Button {
+                    let startIndex = parentSortedTrackIndexMapCache[track.id] ?? 0
+                    playerVM.playTracks(parentSortedTracksCache, startingAt: startIndex)
+                } label: {
+                    Label("播放", systemImage: "play")
+                }
+
+                Divider()
+
+                // Add to Playlist
+                Menu {
+                    ForEach(libraryVM.playlists) { playlist in
+                        // Don't show current playlist if we are in it
+                        if libraryVM.selectedPlaylist?.id != playlist.id {
+                            Button {
+                                Task {
+                                    await libraryVM.addTracksToPlaylist(
+                                        [track], playlist: playlist)
+                                }
+                            } label: {
+                                Label(playlist.name, systemImage: "music.note.list")
+                            }
+                        }
+                    }
+
+                    Divider()
+
+                    Button {
+                        Task {
+                            let playlist = await libraryVM.createNewPlaylist()
+                            await libraryVM.addTracksToPlaylist([track], playlist: playlist)
+                        }
+                    } label: {
+                        Label("新建播放列表", systemImage: "plus")
                     }
                 } label: {
-                    Label("从当前播放列表移除", systemImage: "minus.circle")
+                    Label("添加到播放列表...", systemImage: "plus.circle")
                 }
-            }
+                .id("single_add_to_playlist_\(libraryVM.playlists.count)")
 
-            Divider()
+                // Remove from Playlist (if in one)
+                if let currentPlaylist = libraryVM.selectedPlaylist {
+                    Button {
+                        Task {
+                            await libraryVM.removeTracksFromPlaylist(
+                                [track], playlist: currentPlaylist)
+                        }
+                    } label: {
+                        Label("从当前播放列表移除", systemImage: "minus.circle")
+                    }
+                }
 
-            Button(role: .destructive) {
-                processBatchAction { tracks in
-                    for track in tracks {
+                Divider()
+
+                // Edit Metadata
+                Button {
+                    trackToEdit = track
+                } label: {
+                    Label("编辑歌曲信息", systemImage: "info.circle")
+                }
+
+                Divider()
+
+                // Delete from Library
+                Button(role: .destructive) {
+                    Task {
                         await libraryVM.deleteTrack(track)
                     }
-                    // Clear selection after delete
-                    await MainActor.run {
-                        // Selection will be cleared by cache rebuild or logic
-                        selectedTrackIDs.removeAll()
-                    }
+                } label: {
+                    Label("从资料库删除", systemImage: "trash")
                 }
-            } label: {
-                Label("从资料库删除", systemImage: "trash")
             }
-
         } else {
-            // SINGLE TRACK ACTIONS (Keep existing)
-
-            // Enter multiselect mode
-            Button {
-                isMultiselectMode = true
-                selectedTrackIDs.insert(track.id)
-            } label: {
-                Label("多选歌曲…", systemImage: "checkmark.circle")
-            }
-
-            Divider()
-
-            // Play
-            Button {
-                let startIndex = parentSortedTrackIndexMapCache[track.id] ?? 0
-                playerVM.playTracks(parentSortedTracksCache, startingAt: startIndex)
-            } label: {
-                Label("播放", systemImage: "play")
-            }
-
-            Divider()
-
-            // Add to Playlist
-            Menu {
-                ForEach(libraryVM.playlists) { playlist in
-                    // Don't show current playlist if we are in it
-                    if libraryVM.selectedPlaylist?.id != playlist.id {
-                        Button {
-                            Task {
-                                await libraryVM.addTracksToPlaylist(
-                                    [track], playlist: playlist)
-                            }
-                        } label: {
-                            Label(playlist.name, systemImage: "music.note.list")
-                        }
-                    }
-                }
-
-                Divider()
-
-                Button {
-                    Task {
-                        let playlist = await libraryVM.createNewPlaylist()
-                        await libraryVM.addTracksToPlaylist([track], playlist: playlist)
-                    }
-                } label: {
-                    Label("新建播放列表", systemImage: "plus")
-                }
-            } label: {
-                Label("添加到播放列表...", systemImage: "plus.circle")
-            }
-            .id("single_add_to_playlist_\(libraryVM.playlists.count)")
-
-            // Remove from Playlist (if in one)
-            if let currentPlaylist = libraryVM.selectedPlaylist {
-                Button {
-                    Task {
-                        await libraryVM.removeTracksFromPlaylist(
-                            [track], playlist: currentPlaylist)
-                    }
-                } label: {
-                    Label("从当前播放列表移除", systemImage: "minus.circle")
-                }
-            }
-
-            Divider()
-
-            // Edit Metadata
-            Button {
-                trackToEdit = track
-            } label: {
-                Label("编辑歌曲信息", systemImage: "info.circle")
-            }
-
-            Divider()
-
-            // Delete from Library
-            Button(role: .destructive) {
-                Task {
-                    await libraryVM.deleteTrack(track)
-                }
-            } label: {
-                Label("从资料库删除", systemImage: "trash")
-            }
+            Text("library.track_unavailable")
         }
     }
 
@@ -1100,6 +1166,21 @@ private func clearSearchFocus() {
         }
     }
 
+    @MainActor
+    private func releaseListCachesForSelectionTransition() {
+        prefetchTask?.cancel()
+        prefetchTask = nil
+        rebuildTask?.cancel()
+        rebuildTask = nil
+        snapshotUpdateTask?.cancel()
+        snapshotUpdateTask = nil
+        lastPrefetchBucket = nil
+        listScrollPositionID = nil
+        isMultiselectMode = false
+        selectedTrackIDs.removeAll()
+        lastQueueTrackIDs = []
+    }
+
     private func scheduleRebuild(
         reason: String,
         debounceNanoseconds: UInt64 = 0,
@@ -1130,15 +1211,107 @@ private func clearSearchFocus() {
         let rebuildStart = ProcessInfo.processInfo.systemUptime
         let displayedTracks = currentDisplayedTracks()
         let trimmedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let filteredTracks: [Track] = {
-            guard !trimmedSearch.isEmpty else { return displayedTracks }
-            return displayedTracks.filter {
-                $0.title.localizedCaseInsensitiveContains(trimmedSearch)
-            }
-        }()
+        let sourceFingerprint = pageSourceFingerprint(for: displayedTracks)
+        let modelKey = await PlaylistPageModelCacheService.shared.cacheKey(
+            selectionIdentity: selectionIdentity,
+            sourceFingerprint: sourceFingerprint,
+            searchText: trimmedSearch,
+            sortKeyRawValue: libraryVM.trackSortKey.rawValue,
+            sortOrderRawValue: libraryVM.trackSortOrder.rawValue
+        )
 
-        let sortedTracks = libraryVM.sortedTracks(filteredTracks)
-        let parentSortedTracks = libraryVM.sortedTracks(displayedTracks)
+        if let cached = await PlaylistPageModelCacheService.shared.model(for: modelKey) {
+            let displayedTrackByID = Dictionary(uniqueKeysWithValues: displayedTracks.map { ($0.id, $0) })
+            let filteredTracks = cached.filteredTrackIDs.compactMap { displayedTrackByID[$0] }
+            let sortedTracks = cached.sortedTrackIDs.compactMap { displayedTrackByID[$0] }
+            let parentSortedTracks = cached.parentSortedTrackIDs.compactMap { displayedTrackByID[$0] }
+
+            let cacheCoherent =
+                filteredTracks.count == cached.filteredTrackIDs.count
+                && sortedTracks.count == cached.sortedTrackIDs.count
+                && parentSortedTracks.count == cached.parentSortedTrackIDs.count
+
+            if cacheCoherent, !Task.isCancelled, activeRebuildToken == token {
+                prefetchTask?.cancel()
+                prefetchTask = nil
+                lastPrefetchBucket = nil
+                displayedTracksCache = displayedTracks
+                filteredTracksCache = filteredTracks
+                sortedTracksCache = sortedTracks
+                parentSortedTracksCache = parentSortedTracks
+                sortedTrackIndexMapCache = cached.sortedTrackIndexMap
+                parentSortedTrackIndexMapCache = cached.parentSortedTrackIndexMap
+                viewSnapshot = cached.snapshot
+                selectedTrackIDs.formIntersection(Set(sortedTracks.map(\.id)))
+                if restoreScroll {
+                    restoreScrollIfNeeded()
+                }
+                updateLibrarySnapshot()
+                syncPlayerQueueIfNeeded(with: parentSortedTracks)
+                isRebuilding = false
+                isSelectionTransitioning = false
+                let rebuildDurationMs = (ProcessInfo.processInfo.systemUptime - rebuildStart) * 1000
+                PlaylistPerfDiagnostics.markListRebuild(
+                    reason: "\(reason)-cache-hit",
+                    trackCount: cached.snapshot.trackCount,
+                    durationMs: rebuildDurationMs
+                )
+                return
+            } else {
+                await PlaylistPageModelCacheService.shared.remove(
+                    key: modelKey,
+                    selectionIdentity: cached.selectionIdentity
+                )
+            }
+        }
+
+        let playlistItemAddedAtMap: [UUID: Date]? = {
+            guard let playlistID = libraryVM.selectedPlaylistId else { return nil }
+            return libraryVM.playlistItemAddedAtMap[playlistID]
+        }()
+        let sortableEntries: [SortableTrackEntry] = displayedTracks.map { track in
+            SortableTrackEntry(
+                id: track.id,
+                title: track.title,
+                artist: track.artist,
+                duration: track.duration,
+                addedAt: track.addedAt,
+                importedAt: track.importedAt,
+                playlistItemAddedAt: playlistItemAddedAtMap?[track.id]
+            )
+        }
+        let sortedComputation = await computeSortedTrackIDs(
+            entries: sortableEntries,
+            searchText: trimmedSearch,
+            sortKey: libraryVM.trackSortKey,
+            sortOrder: libraryVM.trackSortOrder
+        )
+
+        guard !Task.isCancelled, activeRebuildToken == token else {
+            if activeRebuildToken == token {
+                isRebuilding = false
+                isSelectionTransitioning = false
+            }
+            return
+        }
+
+        let displayedTrackByID = Dictionary(uniqueKeysWithValues: displayedTracks.map { ($0.id, $0) })
+        let filteredTracks = sortedComputation.filteredTrackIDs.compactMap { displayedTrackByID[$0] }
+        let sortedTracks = sortedComputation.sortedTrackIDs.compactMap { displayedTrackByID[$0] }
+        let parentSortedTracks = sortedComputation.parentSortedTrackIDs.compactMap {
+            displayedTrackByID[$0]
+        }
+
+        guard
+            filteredTracks.count == sortedComputation.filteredTrackIDs.count,
+            sortedTracks.count == sortedComputation.sortedTrackIDs.count,
+            parentSortedTracks.count == sortedComputation.parentSortedTrackIDs.count
+        else {
+            isRebuilding = false
+            isSelectionTransitioning = false
+            return
+        }
+
         let rowScale = NSScreen.main?.backingScaleFactor ?? 2.0
         let rowPixels = CGSize(
             width: Constants.Layout.artworkSmallSize * rowScale,
@@ -1162,6 +1335,7 @@ private func clearSearchFocus() {
         ) else {
             if activeRebuildToken == token {
                 isRebuilding = false
+                isSelectionTransitioning = false
             }
             return
         }
@@ -1169,6 +1343,7 @@ private func clearSearchFocus() {
         guard !Task.isCancelled, activeRebuildToken == token else {
             if activeRebuildToken == token {
                 isRebuilding = false
+                isSelectionTransitioning = false
             }
             return
         }
@@ -1185,21 +1360,159 @@ private func clearSearchFocus() {
         parentSortedTrackIndexMapCache = Dictionary(
             uniqueKeysWithValues: parentSortedTracks.enumerated().map { ($0.element.id, $0.offset) }
         )
-        trackByIDCache = Dictionary(uniqueKeysWithValues: sortedTracks.map { ($0.id, $0) })
         viewSnapshot = snapshot
         selectedTrackIDs.formIntersection(Set(sortedTracks.map(\.id)))
+
+        let pageEntry = PlaylistPageModelCacheEntry(
+            key: modelKey,
+            selectionIdentity: selectionIdentity,
+            sourceFingerprint: sourceFingerprint,
+            searchText: trimmedSearch,
+            sortKeyRawValue: libraryVM.trackSortKey.rawValue,
+            sortOrderRawValue: libraryVM.trackSortOrder.rawValue,
+            displayedTrackIDs: displayedTracks.map(\.id),
+            filteredTrackIDs: filteredTracks.map(\.id),
+            sortedTrackIDs: sortedTracks.map(\.id),
+            parentSortedTrackIDs: parentSortedTracks.map(\.id),
+            sortedTrackIndexMap: sortedTrackIndexMapCache,
+            parentSortedTrackIndexMap: parentSortedTrackIndexMapCache,
+            snapshot: snapshot,
+            cachedAt: Date()
+        )
+        await PlaylistPageModelCacheService.shared.store(pageEntry)
+
         if restoreScroll {
             restoreScrollIfNeeded()
         }
         updateLibrarySnapshot()
         syncPlayerQueueIfNeeded(with: parentSortedTracks)
         isRebuilding = false
+        isSelectionTransitioning = false
         let rebuildDurationMs = (ProcessInfo.processInfo.systemUptime - rebuildStart) * 1000
         PlaylistPerfDiagnostics.markListRebuild(
             reason: reason,
             trackCount: snapshot.trackCount,
             durationMs: rebuildDurationMs
         )
+    }
+
+    private func pageSourceFingerprint(for tracks: [Track]) -> String {
+        var hash: UInt64 = 1_469_598_103_934_665_603
+        hash ^= UInt64(tracks.count)
+        hash &*= 1_099_511_628_211
+
+        let step = max(1, tracks.count / 32)
+        for index in stride(from: 0, to: tracks.count, by: step) {
+            let track = tracks[index]
+            let uuid = track.id.uuid
+            withUnsafeBytes(of: uuid) { raw in
+                for byte in raw {
+                    hash ^= UInt64(byte)
+                    hash &*= 1_099_511_628_211
+                }
+            }
+            hash ^= UInt64(track.duration.bitPattern)
+            hash &*= 1_099_511_628_211
+        }
+
+        hash ^= UInt64(libraryVM.totalTrackCount)
+        hash &*= 1_099_511_628_211
+        hash ^= UInt64(bitPattern: Int64(libraryVM.refreshTrigger))
+        hash &*= 1_099_511_628_211
+        hash ^= UInt64(bitPattern: Int64(libraryVM.trackUpdateEvent?.revision ?? 0))
+        hash &*= 1_099_511_628_211
+
+        return String(hash, radix: 16)
+    }
+
+    private func computeSortedTrackIDs(
+        entries: [SortableTrackEntry],
+        searchText: String,
+        sortKey: TrackSortKey,
+        sortOrder: TrackSortOrder
+    ) async -> SortedTrackComputation {
+        await Task.detached(priority: .userInitiated) {
+            let trimmedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let filteredEntries: [SortableTrackEntry]
+            if trimmedSearch.isEmpty {
+                filteredEntries = entries
+            } else {
+                filteredEntries = entries.filter {
+                    $0.title.localizedCaseInsensitiveContains(trimmedSearch)
+                }
+            }
+
+            let sortedFiltered = filteredEntries.sorted {
+                Self.compareSortableTracks(
+                    $0,
+                    $1,
+                    sortKey: sortKey,
+                    sortOrder: sortOrder
+                )
+            }
+            let parentSorted = trimmedSearch.isEmpty
+                ? sortedFiltered
+                : entries.sorted {
+                    Self.compareSortableTracks(
+                        $0,
+                        $1,
+                        sortKey: sortKey,
+                        sortOrder: sortOrder
+                    )
+                }
+            return SortedTrackComputation(
+                filteredTrackIDs: filteredEntries.map(\.id),
+                sortedTrackIDs: sortedFiltered.map(\.id),
+                parentSortedTrackIDs: parentSorted.map(\.id)
+            )
+        }.value
+    }
+
+    private nonisolated static func compareSortableTracks(
+        _ lhs: SortableTrackEntry,
+        _ rhs: SortableTrackEntry,
+        sortKey: TrackSortKey,
+        sortOrder: TrackSortOrder
+    ) -> Bool {
+        let result: ComparisonResult
+
+        switch sortKey {
+        case .importedAt:
+            result = compareDates(lhs.importedAt ?? lhs.addedAt, rhs.importedAt ?? rhs.addedAt)
+        case .addedAt:
+            result = compareDates(
+                lhs.playlistItemAddedAt ?? lhs.importedAt ?? lhs.addedAt,
+                rhs.playlistItemAddedAt ?? rhs.importedAt ?? rhs.addedAt
+            )
+        case .title:
+            result = lhs.title.localizedCaseInsensitiveCompare(rhs.title)
+        case .artist:
+            result = lhs.artist.localizedCaseInsensitiveCompare(rhs.artist)
+        case .duration:
+            result = compareDoubles(lhs.duration, rhs.duration)
+        }
+
+        if result == .orderedSame {
+            let titleResult = lhs.title.localizedCaseInsensitiveCompare(rhs.title)
+            if titleResult != .orderedSame {
+                return titleResult == .orderedAscending
+            }
+            return lhs.id.uuidString < rhs.id.uuidString
+        }
+
+        return sortOrder == .ascending
+            ? result == .orderedAscending
+            : result == .orderedDescending
+    }
+
+    private nonisolated static func compareDates(_ lhs: Date, _ rhs: Date) -> ComparisonResult {
+        if lhs == rhs { return .orderedSame }
+        return lhs < rhs ? .orderedAscending : .orderedDescending
+    }
+
+    private nonisolated static func compareDoubles(_ lhs: Double, _ rhs: Double) -> ComparisonResult {
+        if lhs == rhs { return .orderedSame }
+        return lhs < rhs ? .orderedAscending : .orderedDescending
     }
 
     private func currentDisplayedTracks() -> [Track] {
@@ -1244,8 +1557,9 @@ private func clearSearchFocus() {
     }
 
     private func prefetchAroundTrackID(_ trackID: UUID) {
+        guard pageSession.isRowArtworkPrefetchEnabled else { return }
         guard let startIndex = sortedTrackIndexMapCache[trackID] else { return }
-        let bucket = startIndex / 3
+        let bucket = startIndex / 4
         guard bucket != lastPrefetchBucket else { return }
         lastPrefetchBucket = bucket
         let rowScale = NSScreen.main?.backingScaleFactor ?? 2.0
@@ -1254,7 +1568,7 @@ private func clearSearchFocus() {
             height: Constants.Layout.artworkSmallSize * rowScale
         )
         let start = min(startIndex + 1, viewSnapshot.trackIDs.count)
-        let end = min(viewSnapshot.trackIDs.count, startIndex + 9)
+        let end = min(viewSnapshot.trackIDs.count, startIndex + 5)
         guard start < end else { return }
 
         let requests: [ArtworkPrefetchRequest] = Array(viewSnapshot.trackIDs[start..<end]).compactMap {
@@ -1314,7 +1628,6 @@ private func clearSearchFocus() {
             totalDuration: viewSnapshot.totalDuration
         )
 
-        trackByIDCache[trackID] = track
         lastPrefetchBucket = nil
     }
 
@@ -1322,7 +1635,10 @@ private func clearSearchFocus() {
         if let track = libraryVM.allTracks.first(where: { $0.id == trackID }) {
             return track
         }
-        return trackByIDCache[trackID]
+        if let track = sortedTracksCache.first(where: { $0.id == trackID }) {
+            return track
+        }
+        return parentSortedTracksCache.first(where: { $0.id == trackID })
     }
 
     private func formatDuration(_ duration: Double) -> String {

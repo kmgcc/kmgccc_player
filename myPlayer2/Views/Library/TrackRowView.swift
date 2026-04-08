@@ -33,6 +33,8 @@ struct TrackRowView<MenuContent: View>: View {
     let model: TrackRowModel
     let isPlaying: Bool
     let isSelected: Bool
+    let enableSecondaryInteractions: Bool
+    let enableArtworkLoading: Bool
     let onTap: () -> Void
     let onRowAppear: (() -> Void)?
     @ViewBuilder let menuContent: () -> MenuContent
@@ -40,7 +42,6 @@ struct TrackRowView<MenuContent: View>: View {
     @State private var isHovering = false
     @State private var artworkImage: NSImage?
     @State private var isArtworkReady = false
-    @State private var artworkLoadTask: Task<Void, Never>?
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -48,6 +49,8 @@ struct TrackRowView<MenuContent: View>: View {
         model: TrackRowModel,
         isPlaying: Bool,
         isSelected: Bool = false,
+        enableSecondaryInteractions: Bool = true,
+        enableArtworkLoading: Bool = true,
         onTap: @escaping () -> Void,
         onRowAppear: (() -> Void)? = nil,
         @ViewBuilder menuContent: @escaping () -> MenuContent
@@ -55,6 +58,8 @@ struct TrackRowView<MenuContent: View>: View {
         self.model = model
         self.isPlaying = isPlaying
         self.isSelected = isSelected
+        self.enableSecondaryInteractions = enableSecondaryInteractions
+        self.enableArtworkLoading = enableArtworkLoading
         self.onTap = onTap
         self.onRowAppear = onRowAppear
         self.menuContent = menuContent
@@ -104,18 +109,20 @@ struct TrackRowView<MenuContent: View>: View {
                 .monospacedDigit()
                 .frame(width: 42, alignment: .trailing)
 
-            Menu {
-                menuContent()
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 14, weight: .regular))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 28, height: 28)
-                    .contentShape(Rectangle())
+            if enableSecondaryInteractions {
+                Menu {
+                    menuContent()
+                } label: {
+                    trailingMenuGlyph
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+            } else {
+                trailingMenuGlyph
+                    .opacity(0.72)
+                    .allowsHitTesting(false)
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
         }
         .padding(.vertical, 4)
         .padding(.horizontal, 8)
@@ -126,6 +133,7 @@ struct TrackRowView<MenuContent: View>: View {
         )
         .contentShape(Rectangle())
         .onHover { hover in
+            guard enableSecondaryInteractions else { return }
             isHovering = hover
         }
         .onTapGesture {
@@ -136,21 +144,18 @@ struct TrackRowView<MenuContent: View>: View {
         .onAppear {
             onRowAppear?()
         }
-        .onChange(of: model.artworkCacheKey) { _, newKey in
-            artworkLoadTask?.cancel()
-            artworkLoadTask = Task {
-                await loadArtwork()
+        .task(id: artworkTaskIdentity) {
+            await loadArtwork()
+        }
+        .onChange(of: enableSecondaryInteractions) { _, enabled in
+            if !enabled {
+                isHovering = false
             }
         }
-        .task {
-            artworkLoadTask = Task {
-                await loadArtwork()
-            }
-        }
-        .onDisappear {
-            artworkLoadTask?.cancel()
-            artworkLoadTask = nil
-        }
+    }
+
+    private var artworkTaskIdentity: String {
+        enableArtworkLoading ? model.artworkCacheKey : "paused-\(model.id.uuidString)"
     }
 
     private var artistText: String {
@@ -174,6 +179,14 @@ struct TrackRowView<MenuContent: View>: View {
             return Color.accentColor.opacity(colorScheme == .dark ? 0.2 : 0.15)
         }
         return isHovering ? Color.primary.opacity(0.04) : Color.clear
+    }
+
+    private var trailingMenuGlyph: some View {
+        Image(systemName: "ellipsis")
+            .font(.system(size: 14, weight: .regular))
+            .foregroundStyle(.secondary)
+            .frame(width: 28, height: 28)
+            .contentShape(Rectangle())
     }
 
     @ViewBuilder
@@ -217,6 +230,8 @@ struct TrackRowView<MenuContent: View>: View {
 
     @MainActor
     private func loadArtwork() async {
+        guard enableArtworkLoading else { return }
+
         guard let data = model.artworkData, !data.isEmpty else {
             artworkImage = nil
             isArtworkReady = false
@@ -224,26 +239,49 @@ struct TrackRowView<MenuContent: View>: View {
         }
 
         let scale = NSScreen.main?.backingScaleFactor ?? 2.0
-        let targetPixels = CGSize(
+        let highTargetPixels = CGSize(
             width: Constants.Layout.artworkSmallSize * scale,
             height: Constants.Layout.artworkSmallSize * scale
         )
-
-        let image = await ArtworkLoader.loadImage(
-            artworkData: data,
-            cacheKey: model.artworkCacheKey,
-            targetPixelSize: targetPixels
+        let lowSide = max(22, Constants.Layout.artworkSmallSize * 0.55)
+        let lowTargetPixels = CGSize(
+            width: lowSide * scale,
+            height: lowSide * scale
         )
+        let lowCacheKey = "\(model.artworkCacheKey)-lq"
+
+        if let cachedHigh = await ArtworkLoader.cachedImage(for: model.artworkCacheKey) {
+            artworkImage = cachedHigh
+            isArtworkReady = true
+            return
+        }
 
         guard !Task.isCancelled else { return }
 
-        if let image {
-            artworkImage = image
-            isArtworkReady = false
-            withAnimation(.easeInOut(duration: 0.20)) {
+        if let lowImage = await ArtworkLoader.loadImage(
+            artworkData: data,
+            cacheKey: lowCacheKey,
+            targetPixelSize: lowTargetPixels
+        ) {
+            artworkImage = lowImage
+            isArtworkReady = true
+        }
+
+        guard !Task.isCancelled else { return }
+
+        try? await Task.sleep(nanoseconds: 120_000_000)
+        guard !Task.isCancelled else { return }
+
+        if let highImage = await ArtworkLoader.loadImage(
+            artworkData: data,
+            cacheKey: model.artworkCacheKey,
+            targetPixelSize: highTargetPixels
+        ) {
+            artworkImage = highImage
+            withAnimation(.easeInOut(duration: 0.16)) {
                 isArtworkReady = true
             }
-        } else {
+        } else if artworkImage == nil {
             artworkImage = nil
             isArtworkReady = false
         }
@@ -255,6 +293,8 @@ extension TrackRowView: Equatable where MenuContent: View {
         lhs.model == rhs.model
             && lhs.isPlaying == rhs.isPlaying
             && lhs.isSelected == rhs.isSelected
+            && lhs.enableSecondaryInteractions == rhs.enableSecondaryInteractions
+            && lhs.enableArtworkLoading == rhs.enableArtworkLoading
     }
 }
 

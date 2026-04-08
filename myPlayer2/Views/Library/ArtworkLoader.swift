@@ -142,7 +142,6 @@ enum PlaylistPerfDiagnostics {
 
 enum ArtworkLoader {
     static let cache = ArtworkImageCache()
-    private static let decodeGate = ArtworkDecodeGate(maxConcurrent: 6)
 
     nonisolated static func checksum(for data: Data?) -> UInt64 {
         guard let data else { return 0 }
@@ -162,6 +161,10 @@ enum ArtworkLoader {
         "\(trackID.uuidString)-\(checksum)-\(Int(targetPixelSize.width))x\(Int(targetPixelSize.height))"
     }
 
+    static func cachedImage(for cacheKey: String) async -> NSImage? {
+        await cache.image(for: cacheKey)
+    }
+
     static func loadImage(
         artworkData: Data?,
         cacheKey: String,
@@ -173,15 +176,14 @@ enum ArtworkLoader {
             return cached
         }
 
-        guard !Task.isCancelled else { return nil }
-
-        await decodeGate.acquire()
         let signpost = PlaylistPerfDiagnostics.beginDecodeSignpost()
         let startUptime = ProcessInfo.processInfo.systemUptime
 
-        let image = await Task.detached(priority: .utility) {
-            return downsampledImage(data: artworkData, targetPixelSize: targetPixelSize)
-        }.value
+        let image = await ArtworkDerivativeCacheStore.shared.image(
+            for: cacheKey,
+            artworkData: artworkData,
+            targetPixelSize: targetPixelSize
+        )
 
         let endUptime = ProcessInfo.processInfo.systemUptime
         PlaylistPerfDiagnostics.endDecodeSignpost(signpost)
@@ -189,13 +191,33 @@ enum ArtworkLoader {
             durationMs: (endUptime - startUptime) * 1000,
             wasOnMainThread: false
         )
-        await decodeGate.release()
 
         guard !Task.isCancelled else { return nil }
 
         if let image {
             let cost = Int(targetPixelSize.width * targetPixelSize.height * 4)
             await cache.setImage(image, for: cacheKey, cost: max(1, cost))
+        }
+        return image
+    }
+
+    static func loadHeaderImage(
+        artworkData: Data?,
+        cacheKey: String,
+        maxPixelSize: Int = 640
+    ) async -> NSImage? {
+        guard let artworkData, !artworkData.isEmpty else { return nil }
+        if let cached = await cache.image(for: cacheKey) {
+            return cached
+        }
+        let image = await ArtworkDerivativeCacheStore.shared.image(
+            for: cacheKey,
+            artworkData: artworkData,
+            maxPixelSize: maxPixelSize
+        )
+        if let image {
+            let side = max(1, maxPixelSize)
+            await cache.setImage(image, for: cacheKey, cost: side * side * 4)
         }
         return image
     }
@@ -215,6 +237,28 @@ enum ArtworkLoader {
                 )
             }
         }
+    }
+
+    nonisolated static func headerPreviewImage(
+        data: Data?,
+        maxPixelSize: Int = 640
+    ) -> NSImage? {
+        guard let data, !data.isEmpty else { return nil }
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        return downsampledImage(source: source, maxPixelSize: max(1, maxPixelSize))
+    }
+
+    nonisolated static func headerPreviewImage(
+        fileURL: URL,
+        maxPixelSize: Int = 640
+    ) -> NSImage? {
+        guard
+            let source = CGImageSourceCreateWithURL(
+                fileURL as CFURL,
+                [kCGImageSourceShouldCache: false] as CFDictionary
+            )
+        else { return nil }
+        return downsampledImage(source: source, maxPixelSize: max(1, maxPixelSize))
     }
 
     private nonisolated static func downsampledImage(data: Data, targetPixelSize: CGSize)
@@ -238,6 +282,26 @@ enum ArtworkLoader {
         return NSImage(
             cgImage: cgImage,
             size: .init(width: targetPixelSize.width, height: targetPixelSize.height))
+    }
+
+    private nonisolated static func downsampledImage(
+        source: CGImageSource,
+        maxPixelSize: Int
+    ) -> NSImage? {
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: max(1, maxPixelSize),
+        ]
+
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        else { return nil }
+
+        return NSImage(
+            cgImage: cgImage,
+            size: CGSize(width: cgImage.width, height: cgImage.height)
+        )
     }
 }
 
