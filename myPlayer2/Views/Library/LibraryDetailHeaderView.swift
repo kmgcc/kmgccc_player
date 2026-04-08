@@ -28,6 +28,7 @@ private final class HeaderArtworkPresentationState: ObservableObject {
     private var activeSelectionIdentity: String?
     private var activeSelectionType: DetailHeaderArtworkSelectionType?
     private var loadTask: Task<Void, Never>?
+    private var previewUpgradeTask: Task<Void, Never>?
 
     init(resolver: DetailHeaderArtworkResolver = .shared) {
         self.resolver = resolver
@@ -35,10 +36,12 @@ private final class HeaderArtworkPresentationState: ObservableObject {
 
     deinit {
         loadTask?.cancel()
+        previewUpgradeTask?.cancel()
     }
 
     func resolve(_ request: DetailHeaderArtworkRequest) {
         loadTask?.cancel()
+        previewUpgradeTask?.cancel()
         activeSelectionIdentity = request.selectionIdentity
         activeSelectionType = request.selectionType
 
@@ -46,6 +49,7 @@ private final class HeaderArtworkPresentationState: ObservableObject {
         if let immediate {
             accept(immediate, phase: "publish-accepted-immediate")
         }
+        schedulePreviewUpgrade(for: request)
 
         guard case .playlist = request, immediate == nil else { return }
 
@@ -119,6 +123,61 @@ private final class HeaderArtworkPresentationState: ObservableObject {
         )
     }
 
+    private func schedulePreviewUpgrade(for request: DetailHeaderArtworkRequest) {
+        guard let payload = previewUpgradePayload(for: request) else { return }
+
+        previewUpgradeTask = Task {
+            let image = await ArtworkLoader.loadHeaderImage(
+                artworkData: payload.data,
+                cacheKey: payload.cacheKey,
+                maxPixelSize: 640
+            )
+            await MainActor.run {
+                guard let image else { return }
+                guard !Task.isCancelled else { return }
+                guard self.activeSelectionIdentity == request.selectionIdentity,
+                      self.activeSelectionType == request.selectionType,
+                      let current = self.resolvedArtwork
+                else { return }
+
+                self.accept(
+                    ResolvedHeaderArtwork(
+                        selectionIdentity: current.selectionIdentity,
+                        selectionType: current.selectionType,
+                        source: current.source,
+                        image: image,
+                        fileURL: current.fileURL,
+                        generationSignature: current.generationSignature
+                    ),
+                    phase: "publish-accepted-preview-upgrade"
+                )
+            }
+        }
+    }
+
+    private func previewUpgradePayload(for request: DetailHeaderArtworkRequest) -> (
+        cacheKey: String, data: Data
+    )? {
+        switch request {
+        case .playlist:
+            return nil
+        case .artist(let selectionIdentity, let entry):
+            guard let data = entry.artworkData, !data.isEmpty else { return nil }
+            let checksum = ArtworkLoader.checksum(for: data)
+            return ("hdr-\(selectionIdentity)-\(checksum)-640", data)
+        case .album(let selectionIdentity, let entry, let fallbackImage):
+            if let data = entry.artworkData, !data.isEmpty {
+                let checksum = ArtworkLoader.checksum(for: data)
+                return ("hdr-\(selectionIdentity)-\(checksum)-640", data)
+            }
+            if let data = fallbackImage?.tiffRepresentation, !data.isEmpty {
+                let checksum = ArtworkLoader.checksum(for: data)
+                return ("hdr-\(selectionIdentity)-fallback-\(checksum)-640", data)
+            }
+            return nil
+        }
+    }
+
     private func logState(_ message: String) {
         print("🎨 [HeaderArtworkState] \(message)")
     }
@@ -139,6 +198,7 @@ struct LibraryDetailHeaderView: View {
     @State private var editYear = ""
     @State private var isImportingArtwork = false
     @State private var isRegeneratingArtwork = false
+    @State private var scheduledResolveTask: Task<Void, Never>?
     @StateObject private var artworkPresentation = HeaderArtworkPresentationState()
 
     var body: some View {
@@ -179,9 +239,15 @@ artworkColumn
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 20)
-        .onAppear { artworkPresentation.resolve(config.artworkRequest) }
+        .onAppear {
+            scheduleArtworkResolve(delayNanoseconds: 26_000_000)
+        }
         .onChange(of: config.artworkIdentity) { _, _ in
-            artworkPresentation.resolve(config.artworkRequest)
+            scheduleArtworkResolve(delayNanoseconds: 18_000_000)
+        }
+        .onDisappear {
+            scheduledResolveTask?.cancel()
+            scheduledResolveTask = nil
         }
         .fileImporter(
             isPresented: $isImportingArtwork,
@@ -189,6 +255,19 @@ artworkColumn
             allowsMultipleSelection: false
         ) { result in
             handleArtworkImport(result: result)
+        }
+    }
+
+    @MainActor
+    private func scheduleArtworkResolve(delayNanoseconds: UInt64) {
+        let request = config.artworkRequest
+        scheduledResolveTask?.cancel()
+        scheduledResolveTask = Task { @MainActor in
+            if delayNanoseconds > 0 {
+                try? await Task.sleep(nanoseconds: delayNanoseconds)
+            }
+            guard !Task.isCancelled else { return }
+            artworkPresentation.resolve(request)
         }
     }
 

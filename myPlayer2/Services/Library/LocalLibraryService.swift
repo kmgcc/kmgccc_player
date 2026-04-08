@@ -10,6 +10,7 @@ import AppKit
 import Darwin
 import Dispatch
 import Foundation
+import ImageIO
 
 struct TrackSidecar: Codable {
     let schemaVersion: Int
@@ -776,10 +777,36 @@ final class LocalLibraryService {
     ) -> PersistedPlaylistArtwork? {
         guard let fileName else { return nil }
         let fileURL = LocalLibraryPaths.playlistsRootURL.appendingPathComponent(fileName)
-        guard fileManager.fileExists(atPath: fileURL.path), let image = NSImage(contentsOf: fileURL) else {
+        guard
+            fileManager.fileExists(atPath: fileURL.path),
+            let image = downsampledArtworkImage(fileURL: fileURL, maxPixelSize: 680)
+        else {
             return nil
         }
         return PersistedPlaylistArtwork(image: image, source: source, fileURL: fileURL)
+    }
+
+    private func downsampledArtworkImage(fileURL: URL, maxPixelSize: Int) -> NSImage? {
+        guard
+            let source = CGImageSourceCreateWithURL(
+                fileURL as CFURL,
+                [kCGImageSourceShouldCache: false] as CFDictionary
+            )
+        else { return nil }
+
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: max(1, maxPixelSize),
+        ]
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        else { return nil }
+
+        return NSImage(
+            cgImage: cgImage,
+            size: CGSize(width: cgImage.width, height: cgImage.height)
+        )
     }
 
     @discardableResult

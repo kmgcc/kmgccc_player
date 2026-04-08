@@ -344,7 +344,9 @@ final class DetailHeaderArtworkResolver {
             return nil
 
         case .artist(let selectionIdentity, let entry):
-            if let data = entry.artworkData, let image = NSImage(data: data) {
+            if let data = entry.artworkData,
+               let image = ArtworkLoader.headerPreviewImage(data: data, maxPixelSize: 320)
+            {
                 let fileURL = entry.artworkFileName.map {
                     LocalLibraryPaths.artistFolderURL(for: entry.id).appendingPathComponent($0)
                 }
@@ -372,7 +374,7 @@ final class DetailHeaderArtworkResolver {
         case .album(let selectionIdentity, let entry, let fallbackImage):
             if let fileName = entry.artworkFileName,
                let data = entry.artworkData,
-               let image = NSImage(data: data)
+               let image = ArtworkLoader.headerPreviewImage(data: data, maxPixelSize: 320)
             {
                 let fileURL = LocalLibraryPaths.albumFolderURL(for: entry.id).appendingPathComponent(fileName)
                 logResolver("selectionType=album selectionIdentity=\(entry.id) source=custom filePath=\(fileURL.path) phase=immediate-accepted")
@@ -386,7 +388,10 @@ final class DetailHeaderArtworkResolver {
                 )
             }
 
-            if let image = entry.artworkData.flatMap(NSImage.init(data:)) ?? fallbackImage {
+            let fallbackPreview = entry.artworkData.flatMap {
+                ArtworkLoader.headerPreviewImage(data: $0, maxPixelSize: 320)
+            } ?? fallbackImage
+            if let image = fallbackPreview {
                 logResolver("selectionType=album selectionIdentity=\(entry.id) source=album-fallback filePath=nil phase=immediate-accepted")
                 return ResolvedHeaderArtwork(
                     selectionIdentity: selectionIdentity,

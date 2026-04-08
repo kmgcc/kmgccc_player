@@ -13,6 +13,11 @@ import SwiftUI
 struct BlurredArtworkBackgroundView: View {
     let image: NSImage?
     var bloomSize: CGFloat = 1000
+    
+    /// Render the expensive blur chain at a reduced internal resolution, then scale up.
+    /// This drastically reduces transient offscreen textures while keeping the on-screen
+    /// size and perceived halo range the same.
+    var internalRenderScale: CGFloat = 0.5
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -22,11 +27,18 @@ struct BlurredArtworkBackgroundView: View {
 
     var body: some View {
         if let image {
+            let s = max(0.25, min(1.0, internalRenderScale))
+            let scaledBloom = bloomSize * s
+            let scaledExtent = verticalExtent * s
+            let scaledBlur = (bloomSize * 0.085) * s
+            
             Image(nsImage: image)
                 .resizable()
                 .aspectRatio(contentMode: .fill)
-                .frame(width: bloomSize, height: verticalExtent)
-                .blur(radius: bloomSize * 0.085, opaque: false)
+                // Render small first (smaller offscreen buffers), then scale up to the
+                // intended on-screen size.
+                .frame(width: scaledBloom, height: scaledExtent)
+                .blur(radius: scaledBlur, opaque: false)
                 // Boost saturation for richer color bloom
                 .saturation(1.35)
                 // Lower opacity for softer glow
@@ -46,6 +58,8 @@ struct BlurredArtworkBackgroundView: View {
                         endRadiusFraction: 0.5
                     )
                 )
+                .scaleEffect(1.0 / s)
+                .frame(width: bloomSize, height: verticalExtent)
                 .allowsHitTesting(false)
         }
     }

@@ -1245,7 +1245,7 @@ extension LyricsWebViewStore: WKScriptMessageHandler {
             case "onUserSeek":
                 handleOnUserSeek(message.body)
             case "log":
-                print("[AMLLWeb:\(role)] \(message.body)")
+                Log.trace("[AMLLWeb:\(role)] \(message.body)", category: .webview)
             default:
                 Log.debug("Unknown message: \(message.name)", category: .webview)
             }
@@ -1258,8 +1258,9 @@ extension LyricsWebViewStore: WKScriptMessageHandler {
             seconds >= 0
         else { return }
 
-        print(
-            "[LyricsStore] User seek: \(String(format: "%.2f", seconds))s, objectID=\(webViewObjectID)"
+        Log.trace(
+            "[LyricsStore] User seek: \(String(format: "%.2f", seconds))s, objectID=\(webViewObjectID)",
+            category: .lyrics
         )
         onUserSeek?(seconds)
     }
