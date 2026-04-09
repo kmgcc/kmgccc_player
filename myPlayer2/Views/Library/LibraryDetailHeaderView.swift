@@ -9,177 +9,28 @@
 //
 
 import AppKit
-import Combine
 import SwiftUI
 import UniformTypeIdentifiers
-
-// Preference keys are defined in PlaylistDetailView.swift to be shared across views
 
 private struct NormalizedImportedHeaderArtwork {
     let image: NSImage
     let pngData: Data
 }
 
-@MainActor
-private final class HeaderArtworkPresentationState: ObservableObject {
-    @Published private(set) var resolvedArtwork: ResolvedHeaderArtwork?
+private struct HeaderArtworkBoundsReporter: View {
+    let onChange: (CGRect) -> Void
 
-    private let resolver: DetailHeaderArtworkResolver
-    private var activeSelectionIdentity: String?
-    private var activeSelectionType: DetailHeaderArtworkSelectionType?
-    private var loadTask: Task<Void, Never>?
-    private var previewUpgradeTask: Task<Void, Never>?
-
-    init(resolver: DetailHeaderArtworkResolver = .shared) {
-        self.resolver = resolver
-    }
-
-    deinit {
-        loadTask?.cancel()
-        previewUpgradeTask?.cancel()
-    }
-
-    func resolve(_ request: DetailHeaderArtworkRequest) {
-        loadTask?.cancel()
-        previewUpgradeTask?.cancel()
-        activeSelectionIdentity = request.selectionIdentity
-        activeSelectionType = request.selectionType
-
-        let immediate = resolver.resolveImmediately(for: request)
-        if let immediate {
-            accept(immediate, phase: "publish-accepted-immediate")
+    var body: some View {
+        GeometryReader { geo in
+            let frame = geo.frame(in: .named("detailScroll"))
+            Color.clear
+                .onAppear {
+                    onChange(frame)
+                }
+                .onChange(of: frame) { _, newFrame in
+                    onChange(newFrame)
+                }
         }
-        schedulePreviewUpgrade(for: request)
-
-        guard case .playlist = request, immediate == nil else { return }
-
-        accept(
-            ResolvedHeaderArtwork(
-                selectionIdentity: request.selectionIdentity,
-                selectionType: request.selectionType,
-                source: .placeholder,
-                image: nil,
-                fileURL: nil,
-                generationSignature: nil
-            ),
-            phase: "publish-accepted-pending-placeholder"
-        )
-
-        logState(
-            "selectionType=\(request.selectionType.rawValue) selectionIdentity=\(request.debugSelectionID) phase=deferred-start pendingSource=placeholder"
-        )
-
-        loadTask = Task { [resolver] in
-            let resolved = await resolver.resolveDeferredArtwork(for: request)
-            await MainActor.run {
-                guard let resolved else { return }
-                self.accept(resolved, phase: "publish-accepted-deferred")
-            }
-        }
-    }
-
-    func publishImportedArtwork(_ artwork: ResolvedHeaderArtwork) {
-        activeSelectionIdentity = artwork.selectionIdentity
-        activeSelectionType = artwork.selectionType
-        accept(artwork, phase: "publish-accepted-import")
-    }
-
-    /// Force publish artwork regardless of priority - used when explicitly switching sources
-    func forcePublishArtwork(_ artwork: ResolvedHeaderArtwork) {
-        activeSelectionIdentity = artwork.selectionIdentity
-        activeSelectionType = artwork.selectionType
-        // Clear current first to bypass priority check, then set new
-        resolvedArtwork = nil
-        resolvedArtwork = artwork
-        logState(
-            "selectionType=\(artwork.selectionType.rawValue) selectionIdentity=\(artwork.selectionIdentity) source=\(artwork.source.rawValue) phase=force-publish"
-        )
-    }
-
-    private func accept(_ artwork: ResolvedHeaderArtwork, phase: String) {
-        guard activeSelectionIdentity == artwork.selectionIdentity,
-              activeSelectionType == artwork.selectionType
-        else {
-            logState(
-                "selectionType=\(artwork.selectionType.rawValue) selectionIdentity=\(artwork.selectionIdentity) source=\(artwork.source.rawValue) filePath=\(artwork.fileURL?.path ?? "nil") publishDropped=stale-result phase=\(phase)"
-            )
-            return
-        }
-
-        if let current = resolvedArtwork,
-           current.selectionIdentity == artwork.selectionIdentity,
-           current.selectionType == artwork.selectionType,
-           current.source.priority > artwork.source.priority
-        {
-            logState(
-                "selectionType=\(artwork.selectionType.rawValue) selectionIdentity=\(artwork.selectionIdentity) source=\(artwork.source.rawValue) filePath=\(artwork.fileURL?.path ?? "nil") publishDropped=higher-priority-current currentSource=\(current.source.rawValue) phase=\(phase)"
-            )
-            return
-        }
-
-        resolvedArtwork = artwork
-        logState(
-            "selectionType=\(artwork.selectionType.rawValue) selectionIdentity=\(artwork.selectionIdentity) source=\(artwork.source.rawValue) filePath=\(artwork.fileURL?.path ?? "nil") phase=\(phase)"
-        )
-    }
-
-    private func schedulePreviewUpgrade(for request: DetailHeaderArtworkRequest) {
-        guard let payload = previewUpgradePayload(for: request) else { return }
-
-        previewUpgradeTask = Task {
-            let image = await ArtworkLoader.loadHeaderImage(
-                artworkData: payload.data,
-                cacheKey: payload.cacheKey,
-                maxPixelSize: 640
-            )
-            await MainActor.run {
-                guard let image else { return }
-                guard !Task.isCancelled else { return }
-                guard self.activeSelectionIdentity == request.selectionIdentity,
-                      self.activeSelectionType == request.selectionType,
-                      let current = self.resolvedArtwork
-                else { return }
-
-                self.accept(
-                    ResolvedHeaderArtwork(
-                        selectionIdentity: current.selectionIdentity,
-                        selectionType: current.selectionType,
-                        source: current.source,
-                        image: image,
-                        fileURL: current.fileURL,
-                        generationSignature: current.generationSignature
-                    ),
-                    phase: "publish-accepted-preview-upgrade"
-                )
-            }
-        }
-    }
-
-    private func previewUpgradePayload(for request: DetailHeaderArtworkRequest) -> (
-        cacheKey: String, data: Data
-    )? {
-        switch request {
-        case .playlist:
-            return nil
-        case .artist(let selectionIdentity, let entry):
-            guard let data = entry.artworkData, !data.isEmpty else { return nil }
-            let checksum = ArtworkLoader.checksum(for: data)
-            return ("hdr-\(selectionIdentity)-\(checksum)-640", data)
-        case .album(let selectionIdentity, let entry, let fallbackImage):
-            if let data = entry.artworkData, !data.isEmpty {
-                let checksum = ArtworkLoader.checksum(for: data)
-                return ("hdr-\(selectionIdentity)-\(checksum)-640", data)
-            }
-            if let data = fallbackImage?.tiffRepresentation, !data.isEmpty {
-                let checksum = ArtworkLoader.checksum(for: data)
-                return ("hdr-\(selectionIdentity)-fallback-\(checksum)-640", data)
-            }
-            return nil
-        }
-    }
-
-    private func logState(_ message: String) {
-        print("🎨 [HeaderArtworkState] \(message)")
     }
 }
 
@@ -190,33 +41,31 @@ struct LibraryDetailHeaderView: View {
     @EnvironmentObject private var themeStore: ThemeStore
 
     let config: DetailHeaderConfig
+    /// Stable identity for artwork crossfade state machine
+    let artworkIdentity: String?
+    /// Current visible artwork layer (bottom - old or placeholder)
+    let currentArtwork: NSImage?
+    /// Incoming artwork layer (top - crossfading in)
+    let incomingArtwork: NSImage?
+    /// Opacity of incoming layer (0 = show current, 1 = show incoming)
+    let incomingOpacity: Double
     let onPlay: () -> Void
     let canPlay: Bool
+    let onArtworkFrameChange: (CGRect) -> Void
+    let onArtworkMutation: () -> Void
 
     @State private var isEditing = false
     @State private var editDescription = ""
     @State private var editYear = ""
     @State private var isImportingArtwork = false
     @State private var isRegeneratingArtwork = false
-    @State private var scheduledResolveTask: Task<Void, Never>?
-    @StateObject private var artworkPresentation = HeaderArtworkPresentationState()
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 20) {
-artworkColumn
+            artworkColumn
             .frame(width: 220, height: 220)
             .background(
-                GeometryReader { geo in
-                    Color.clear
-                        .preference(
-                            key: HeaderArtworkBoundsPreferenceKey.self,
-                            value: geo.frame(in: .named("detailScroll"))
-                        )
-                        .preference(
-                            key: HeaderArtworkImagePreferenceKey.self,
-                            value: artworkPresentation.resolvedArtwork?.image
-                        )
-                }
+                HeaderArtworkBoundsReporter(onChange: onArtworkFrameChange)
             )
 
             VStack(alignment: .leading, spacing: 5) {
@@ -239,35 +88,12 @@ artworkColumn
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 20)
-        .onAppear {
-            scheduleArtworkResolve(delayNanoseconds: 26_000_000)
-        }
-        .onChange(of: config.artworkIdentity) { _, _ in
-            scheduleArtworkResolve(delayNanoseconds: 18_000_000)
-        }
-        .onDisappear {
-            scheduledResolveTask?.cancel()
-            scheduledResolveTask = nil
-        }
         .fileImporter(
             isPresented: $isImportingArtwork,
             allowedContentTypes: [UTType.jpeg, UTType.png, UTType.heic, UTType.tiff],
             allowsMultipleSelection: false
         ) { result in
             handleArtworkImport(result: result)
-        }
-    }
-
-    @MainActor
-    private func scheduleArtworkResolve(delayNanoseconds: UInt64) {
-        let request = config.artworkRequest
-        scheduledResolveTask?.cancel()
-        scheduledResolveTask = Task { @MainActor in
-            if delayNanoseconds > 0 {
-                try? await Task.sleep(nanoseconds: delayNanoseconds)
-            }
-            guard !Task.isCancelled else { return }
-            artworkPresentation.resolve(request)
         }
     }
 
@@ -343,54 +169,63 @@ artworkColumn
 
     @ViewBuilder
     private var artworkImage: some View {
+        // Stable container identity prevents SwiftUI from rebuilding the ZStack during crossfade
+        ZStack {
+            // Bottom layer: current artwork or placeholder (stable identity)
+            artworkBaseLayer
+                .id("artwork-base-\(artworkIdentity ?? "nil")")
+
+            // Top layer: incoming artwork with crossfade opacity
+            if let incomingArtwork {
+                Image(nsImage: incomingArtwork)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .opacity(incomingOpacity)
+                    // Incoming gets its own identity so it doesn't conflict with base
+                    .id("artwork-incoming-\(artworkIdentity ?? "nil")-\(ObjectIdentifier(incomingArtwork).hashValue)")
+            }
+        }
+        // Entire ZStack has stable identity based on artwork identity
+        .id("artwork-container-\(artworkIdentity ?? "nil")")
+    }
+
+    @ViewBuilder
+    private var artworkBaseLayer: some View {
+        if let currentArtwork {
+            Image(nsImage: currentArtwork)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+        } else {
+            artworkPlaceholder
+        }
+    }
+
+    @ViewBuilder
+    private var artworkPlaceholder: some View {
         switch config {
         case .playlist:
-            Group {
-                if let img = artworkPresentation.resolvedArtwork?.image {
-                    Image(nsImage: img)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                } else {
-                    Rectangle()
-                        .fill(.secondary.opacity(0.15))
-                        .overlay(
-                            Image(systemName: "music.note.list")
-                                .font(.system(size: 44))
-                                .foregroundStyle(.tertiary)
-                        )
-                }
-            }
+            Rectangle()
+                .fill(.secondary.opacity(0.15))
+                .overlay(
+                    Image(systemName: "music.note.list")
+                        .font(.system(size: 44))
+                        .foregroundStyle(.tertiary)
+                )
         case .artist:
-            Group {
-                if let img = artworkPresentation.resolvedArtwork?.image {
-                    Image(nsImage: img)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                } else {
-                    ZStack {
-                        Circle().fill(.secondary.opacity(0.12))
-                        Image(systemName: "person.fill")
-                            .font(.system(size: 64))
-                            .foregroundStyle(.secondary)
-                    }
-                }
+            ZStack {
+                Circle().fill(.secondary.opacity(0.12))
+                Image(systemName: "person.fill")
+                    .font(.system(size: 64))
+                    .foregroundStyle(.secondary)
             }
         case .album:
-            Group {
-                if let img = artworkPresentation.resolvedArtwork?.image {
-                    Image(nsImage: img)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                } else {
-                    Rectangle()
-                        .fill(.secondary.opacity(0.15))
-                        .overlay(
-                            Image(systemName: "opticaldisc")
-                                .font(.system(size: 44))
-                                .foregroundStyle(.tertiary)
-                        )
-                }
-            }
+            Rectangle()
+                .fill(.secondary.opacity(0.15))
+                .overlay(
+                    Image(systemName: "opticaldisc")
+                        .font(.system(size: 44))
+                        .foregroundStyle(.tertiary)
+                )
         }
     }
 
@@ -630,18 +465,7 @@ artworkColumn
                         )
                     }
                     await MainActor.run {
-                        artworkPresentation.publishImportedArtwork(
-                            ResolvedHeaderArtwork(
-                                selectionIdentity: config.selectionIdentity,
-                                selectionType: .playlist,
-                                source: .custom,
-                                image: importedArtwork.image,
-                                fileURL: LocalLibraryPaths.playlistCustomArtworkURL(for: playlist.id),
-                                generationSignature: nil
-                            )
-                        )
-                        // Trigger refresh to ensure halo also updates
-                        artworkPresentation.resolve(config.artworkRequest)
+                        onArtworkMutation()
                     }
                 case .artist(let entry, _):
                     var updated = entry
@@ -649,17 +473,7 @@ artworkColumn
                     updated.artworkData = importedArtwork.pngData
                     await libraryVM.saveArtistEntry(updated)
                     await MainActor.run {
-                        artworkPresentation.publishImportedArtwork(
-                            ResolvedHeaderArtwork(
-                                selectionIdentity: config.selectionIdentity,
-                                selectionType: .artist,
-                                source: .custom,
-                                image: importedArtwork.image,
-                                fileURL: LocalLibraryPaths.artistFolderURL(for: entry.id)
-                                    .appendingPathComponent("artwork.png"),
-                                generationSignature: nil
-                            )
-                        )
+                        onArtworkMutation()
                     }
                 case .album(let entry, _):
                     var updated = entry
@@ -667,17 +481,7 @@ artworkColumn
                     updated.artworkData = importedArtwork.pngData
                     await libraryVM.saveAlbumEntry(updated)
                     await MainActor.run {
-                        artworkPresentation.publishImportedArtwork(
-                            ResolvedHeaderArtwork(
-                                selectionIdentity: config.selectionIdentity,
-                                selectionType: .album,
-                                source: .custom,
-                                image: importedArtwork.image,
-                                fileURL: LocalLibraryPaths.albumFolderURL(for: entry.id)
-                                    .appendingPathComponent("artwork.png"),
-                                generationSignature: nil
-                            )
-                        )
+                        onArtworkMutation()
                     }
                 }
             }
@@ -752,21 +556,7 @@ artworkColumn
                     tracks: tracks,
                     image: image
                 )
-
-                // Force immediate UI update with new artwork (bypasses priority check)
-                let newArtwork = ResolvedHeaderArtwork(
-                    selectionIdentity: config.selectionIdentity,
-                    selectionType: .playlist,
-                    source: .newlyGenerated,
-                    image: image,
-                    fileURL: LocalLibraryPaths.playlistGeneratedArtworkURL(for: playlist.id),
-                    generationSignature: nil
-                )
-                artworkPresentation.forcePublishArtwork(newArtwork)
-
-                // Trigger a refresh by resolving again to ensure halo also updates
-                artworkPresentation.resolve(config.artworkRequest)
-
+                onArtworkMutation()
                 isRegeneratingArtwork = false
             }
         }

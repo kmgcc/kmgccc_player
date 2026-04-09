@@ -15,12 +15,12 @@ struct PlaylistPageModelCacheEntry: Sendable {
     let sortKeyRawValue: String
     let sortOrderRawValue: String
     let displayedTrackIDs: [UUID]
-    let filteredTrackIDs: [UUID]
-    let sortedTrackIDs: [UUID]
-    let parentSortedTrackIDs: [UUID]
-    let sortedTrackIndexMap: [UUID: Int]
-    let parentSortedTrackIndexMap: [UUID: Int]
-    let snapshot: PlaylistViewSnapshot
+    let rowRecords: [PlaylistPageRowRecord]
+    let queueTrackIDs: [UUID]
+    let queueIndexMap: [UUID: Int]
+    let displayedTrackCount: Int
+    let filteredTrackCount: Int
+    let displayedTotalDuration: Double
     let cachedAt: Date
 }
 
@@ -99,9 +99,9 @@ actor PlaylistPageModelCacheService {
     }
 
     private func estimatedCost(for entry: PlaylistPageModelCacheEntry) -> Int {
-        let tracks = max(entry.snapshot.trackCount, entry.sortedTrackIDs.count)
-        let mapCost = (entry.sortedTrackIndexMap.count + entry.parentSortedTrackIndexMap.count) * 16
-        return tracks * 112 + mapCost
+        let tracks = max(entry.displayedTrackCount, entry.rowRecords.count)
+        let mapCost = entry.queueIndexMap.count * 16
+        return tracks * 88 + mapCost
     }
 
     private func removeKeyIndex(_ key: String, selectionIdentity: String) {
