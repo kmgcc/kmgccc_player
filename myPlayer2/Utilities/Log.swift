@@ -6,6 +6,7 @@
 //  Thread-safe and callable from any context without await.
 //
 
+import CoreGraphics
 import Foundation
 import OSLog
 
@@ -245,5 +246,383 @@ nonisolated private func _log(
 extension Logger {
     nonisolated func warning(_ message: String) {
         log("\(message)")
+    }
+}
+
+// MARK: - Runtime Lyrics Profiling
+
+private struct LyricsRuntimeProfileSession {
+    let id: Int
+    let trigger: String
+    let selection: String
+    let hasHeader: Bool
+    let contentMode: String
+    let trackID: String
+    let trackTitle: String
+    let startedAtUptime: TimeInterval
+    var counters: [String: Int] = [:]
+    var durationsMs: [String: Double] = [:]
+    var timepointsMs: [String: Double] = [:]
+    var metadata: [String: String] = [:]
+    var uniqueValues: [String: Set<String>] = [:]
+    var jsProfile: [String: Any]?
+}
+
+enum LyricsRuntimeProfile {
+    private nonisolated(unsafe) static let lock = NSLock()
+    private nonisolated(unsafe) static var nextSessionID = 0
+    private nonisolated(unsafe) static var currentSession: LyricsRuntimeProfileSession?
+    private nonisolated(unsafe) static var finalizeWorkItem: DispatchWorkItem?
+
+    nonisolated static let enabled: Bool = {
+        let rawValue = ProcessInfo.processInfo.environment["KMGCCC_LYRICS_RUNTIME_PROFILE"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return rawValue == "1" || rawValue == "true" || rawValue == "yes" || rawValue == "on"
+    }()
+
+    @discardableResult
+    nonisolated static func markBody(_ key: String) -> Int {
+        guard enabled else { return 0 }
+        increment(key)
+        return 0
+    }
+
+    @discardableResult
+    nonisolated static func beginSession(
+        trigger: String,
+        selection: String,
+        hasHeader: Bool,
+        contentMode: String,
+        trackID: UUID?,
+        trackTitle: String?
+    ) -> Int? {
+        guard enabled else { return nil }
+
+        lock.lock()
+        defer { lock.unlock() }
+
+        if let existing = currentSession {
+            emitLocked(existing, reason: "superseded")
+            currentSession = nil
+        }
+        finalizeWorkItem?.cancel()
+        finalizeWorkItem = nil
+
+        nextSessionID += 1
+        let session = LyricsRuntimeProfileSession(
+            id: nextSessionID,
+            trigger: trigger,
+            selection: selection,
+            hasHeader: hasHeader,
+            contentMode: contentMode,
+            trackID: trackID?.uuidString ?? "nil",
+            trackTitle: trackTitle ?? "nil",
+            startedAtUptime: ProcessInfo.processInfo.systemUptime
+        )
+        currentSession = session
+
+        scheduleAutoFinalizeLocked(sessionID: session.id, after: 1.35)
+        return session.id
+    }
+
+    nonisolated static func currentSessionID() -> Int? {
+        guard enabled else { return nil }
+        lock.lock()
+        defer { lock.unlock() }
+        return currentSession?.id
+    }
+
+    nonisolated static func increment(_ key: String, by delta: Int = 1) {
+        guard enabled else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        guard var session = currentSession else { return }
+        session.counters[key, default: 0] += delta
+        currentSession = session
+    }
+
+    nonisolated static func addDuration(_ key: String, ms: Double) {
+        guard enabled else { return }
+        guard ms.isFinite else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        guard var session = currentSession else { return }
+        session.durationsMs[key, default: 0] += ms
+        currentSession = session
+    }
+
+    nonisolated static func recordTimepoint(_ key: String) {
+        guard enabled else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        guard var session = currentSession else { return }
+        guard session.timepointsMs[key] == nil else { return }
+        let elapsedMs = (ProcessInfo.processInfo.systemUptime - session.startedAtUptime) * 1000
+        guard elapsedMs.isFinite else { return }
+        session.timepointsMs[key] = elapsedMs
+        currentSession = session
+    }
+
+    nonisolated static func setMetadata(_ key: String, value: String) {
+        guard enabled else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        guard var session = currentSession else { return }
+        session.metadata[key] = value
+        currentSession = session
+    }
+
+    nonisolated static func insertUniqueValue(_ key: String, value: String) {
+        guard enabled else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        guard var session = currentSession else { return }
+        var values = session.uniqueValues[key, default: []]
+        values.insert(value)
+        session.uniqueValues[key] = values
+        currentSession = session
+    }
+
+    nonisolated static func recordFrameWrite(
+        key: String,
+        previous: CGRect,
+        next: CGRect
+    ) {
+        guard enabled else { return }
+        increment("\(key).count")
+        if nearlyEqual(previous: previous, next: next) {
+            increment("\(key).same")
+        } else {
+            increment("\(key).changed")
+            setMetadata("\(key).last", value: formatRect(next))
+        }
+    }
+
+    nonisolated static func recordFlagChange(
+        key: String,
+        previous: Bool,
+        next: Bool
+    ) {
+        guard enabled else { return }
+        increment("\(key).count")
+        if previous == next {
+            increment("\(key).same")
+        } else {
+            increment("\(key).changed")
+            setMetadata("\(key).last", value: next ? "true" : "false")
+        }
+    }
+
+    nonisolated static func mergeJSProfile(
+        sessionID: Int,
+        payload: [String: Any]
+    ) {
+        guard enabled else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        guard var session = currentSession, session.id == sessionID else { return }
+        session.jsProfile = payload
+        currentSession = session
+    }
+
+    nonisolated static func finalizeSession(
+        sessionID: Int? = nil,
+        reason: String
+    ) {
+        guard enabled else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        guard let session = currentSession else { return }
+        if let sessionID, session.id != sessionID {
+            return
+        }
+        finalizeWorkItem?.cancel()
+        finalizeWorkItem = nil
+        emitLocked(session, reason: reason)
+        currentSession = nil
+    }
+
+    private nonisolated static func scheduleAutoFinalizeLocked(sessionID: Int, after delay: TimeInterval) {
+        let workItem = DispatchWorkItem {
+            LyricsRuntimeProfile.finalizeSession(sessionID: sessionID, reason: "auto-timeout")
+        }
+        finalizeWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+    }
+
+    private nonisolated static func emitLocked(_ session: LyricsRuntimeProfileSession, reason: String) {
+        let elapsedMs = (ProcessInfo.processInfo.systemUptime - session.startedAtUptime) * 1000
+        var payload: [String: Any] = [
+            "sessionID": session.id,
+            "reason": reason,
+            "trigger": session.trigger,
+            "selection": session.selection,
+            "hasHeader": session.hasHeader,
+            "contentMode": session.contentMode,
+            "trackID": session.trackID,
+            "trackTitle": session.trackTitle,
+            "elapsedMs": round(elapsedMs * 100) / 100,
+            "counters": session.counters,
+            "durationsMs": roundedDictionary(session.durationsMs),
+            "metadata": session.metadata,
+        ]
+        if !session.timepointsMs.isEmpty {
+            payload["timepointsMs"] = roundedDictionary(session.timepointsMs)
+        }
+        if !session.uniqueValues.isEmpty {
+            payload["uniqueCounts"] = session.uniqueValues.mapValues(\.count)
+        }
+        if let jsProfile = session.jsProfile {
+            payload["jsProfile"] = jsProfile
+        }
+
+        Log.info(
+            "[LyricsRuntimeProfile][Summary] \(compactJSONString(payload))",
+            category: .perf
+        )
+    }
+
+    private nonisolated static func roundedDictionary(_ source: [String: Double]) -> [String: Double] {
+        var result: [String: Double] = [:]
+        for (key, value) in source {
+            result[key] = round(value * 100) / 100
+        }
+        return result
+    }
+
+    private nonisolated static func compactJSONString(_ object: [String: Any]) -> String {
+        guard JSONSerialization.isValidJSONObject(object),
+            let data = try? JSONSerialization.data(withJSONObject: object),
+            let string = String(data: data, encoding: .utf8)
+        else {
+            return String(describing: object)
+        }
+        return string
+    }
+
+    private nonisolated static func nearlyEqual(previous: CGRect, next: CGRect) -> Bool {
+        abs(previous.origin.x - next.origin.x) < 0.5
+            && abs(previous.origin.y - next.origin.y) < 0.5
+            && abs(previous.size.width - next.size.width) < 0.5
+            && abs(previous.size.height - next.size.height) < 0.5
+    }
+
+    private nonisolated static func formatRect(_ rect: CGRect) -> String {
+        "x=\(Int(rect.origin.x.rounded())) y=\(Int(rect.origin.y.rounded())) w=\(Int(rect.size.width.rounded())) h=\(Int(rect.size.height.rounded()))"
+    }
+}
+
+enum TintTimelineProbe {
+    private nonisolated(unsafe) static let lock = NSLock()
+    private nonisolated(unsafe) static var sessionID: Int?
+    private nonisolated(unsafe) static var rootReceiveIndex = 0
+    private nonisolated(unsafe) static var headerPublishIndex = 0
+    private nonisolated(unsafe) static var rootCommitIndex = 0
+    private nonisolated(unsafe) static var lastHeaderConsumerIndex: [String: Int] = [:]
+    private nonisolated(unsafe) static var lastRootConsumerIndex: [String: Int] = [:]
+
+    nonisolated static func noteRootReceive(source: String) {
+        guard LyricsRuntimeProfile.enabled else { return }
+        guard let currentSessionID = LyricsRuntimeProfile.currentSessionID() else { return }
+        lock.lock()
+        resetIfNeeded(for: currentSessionID)
+        rootReceiveIndex += 1
+        let index = rootReceiveIndex
+        lock.unlock()
+
+        LyricsRuntimeProfile.increment("tint.root.receive.count")
+        LyricsRuntimeProfile.recordTimepoint("tint.root.receive.\(index)")
+        LyricsRuntimeProfile.setMetadata("tint.root.receive.\(index).source", value: source)
+    }
+
+    nonisolated static func noteHeaderPublish(source: String) {
+        guard LyricsRuntimeProfile.enabled else { return }
+        guard let currentSessionID = LyricsRuntimeProfile.currentSessionID() else { return }
+        lock.lock()
+        resetIfNeeded(for: currentSessionID)
+        headerPublishIndex += 1
+        let index = headerPublishIndex
+        lock.unlock()
+
+        LyricsRuntimeProfile.increment("tint.header.publish.count")
+        LyricsRuntimeProfile.recordTimepoint("tint.header.publish.\(index)")
+        LyricsRuntimeProfile.setMetadata("tint.header.publish.\(index).source", value: source)
+    }
+
+    nonisolated static func noteRootCommit(source: String) {
+        guard LyricsRuntimeProfile.enabled else { return }
+        guard let currentSessionID = LyricsRuntimeProfile.currentSessionID() else { return }
+        lock.lock()
+        resetIfNeeded(for: currentSessionID)
+        rootCommitIndex += 1
+        let index = rootCommitIndex
+        lock.unlock()
+
+        LyricsRuntimeProfile.increment("tint.root.commit.count")
+        LyricsRuntimeProfile.recordTimepoint("tint.root.commit.\(index)")
+        LyricsRuntimeProfile.setMetadata("tint.root.commit.\(index).source", value: source)
+    }
+
+    nonisolated static func noteHeaderConsumer(_ key: String) {
+        guard LyricsRuntimeProfile.enabled else { return }
+        guard let currentSessionID = LyricsRuntimeProfile.currentSessionID() else { return }
+        lock.lock()
+        resetIfNeeded(for: currentSessionID)
+        guard headerPublishIndex > 0 else {
+            lock.unlock()
+            return
+        }
+        let sanitizedKey = sanitize(key)
+        guard lastHeaderConsumerIndex[sanitizedKey] != headerPublishIndex else {
+            lock.unlock()
+            return
+        }
+        lastHeaderConsumerIndex[sanitizedKey] = headerPublishIndex
+        let index = headerPublishIndex
+        lock.unlock()
+
+        LyricsRuntimeProfile.increment("tint.header.consumer.count")
+        LyricsRuntimeProfile.recordTimepoint("tint.header.consumer.\(sanitizedKey).\(index)")
+    }
+
+    nonisolated static func noteRootConsumer(_ key: String) {
+        guard LyricsRuntimeProfile.enabled else { return }
+        guard let currentSessionID = LyricsRuntimeProfile.currentSessionID() else { return }
+        lock.lock()
+        resetIfNeeded(for: currentSessionID)
+        guard rootCommitIndex > 0 else {
+            lock.unlock()
+            return
+        }
+        let sanitizedKey = sanitize(key)
+        guard lastRootConsumerIndex[sanitizedKey] != rootCommitIndex else {
+            lock.unlock()
+            return
+        }
+        lastRootConsumerIndex[sanitizedKey] = rootCommitIndex
+        let index = rootCommitIndex
+        lock.unlock()
+
+        LyricsRuntimeProfile.increment("tint.root.consumer.count")
+        LyricsRuntimeProfile.recordTimepoint("tint.root.consumer.\(sanitizedKey).\(index)")
+    }
+
+    private nonisolated static func resetIfNeeded(for currentSessionID: Int) {
+        guard sessionID != currentSessionID else { return }
+        sessionID = currentSessionID
+        rootReceiveIndex = 0
+        headerPublishIndex = 0
+        rootCommitIndex = 0
+        lastHeaderConsumerIndex = [:]
+        lastRootConsumerIndex = [:]
+    }
+
+    private nonisolated static func sanitize(_ value: String) -> String {
+        String(
+            value.map { character in
+                character.isLetter || character.isNumber ? character : "_"
+            }
+        )
     }
 }

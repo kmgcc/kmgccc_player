@@ -93,6 +93,12 @@ final class PlaylistPageController {
     private var currentArtworkPresentationIdentity: String?
     private var didFadeHeaderIdentity: String?
     private var didFadeHaloIdentity: String?
+    @ObservationIgnored
+    private var lastPlaybackTrackChangeUptime: TimeInterval = 0
+    @ObservationIgnored
+    private var headerHeavyWorkBaselineUptime: TimeInterval = 0
+    @ObservationIgnored
+    private var hasObservedPlaybackTrackChangeSinceBaseline = false
 
     func bind(
         libraryVM: LibraryViewModel,
@@ -107,6 +113,7 @@ final class PlaylistPageController {
     func appear() {
         guard let libraryVM else { return }
         haloState.beginSession(selectionIdentity: selectionIdentity(for: libraryVM.currentSelection))
+        resetHeaderHeavyWorkDeferralBaseline()
         activateFirstPaintPhases(for: libraryVM.currentSelection)
         scheduleRebuild(reason: "appear", restoreScroll: true)
     }
@@ -117,10 +124,12 @@ final class PlaylistPageController {
         page = nil
         lastQueueTrackIDs = []
         resetArtworkPresentation(force: true, identity: nil)
+        resetHeaderHeavyWorkDeferralBaseline()
         haloState.clear()
     }
 
     func handleSelectionChange(_ selection: LibrarySelection) {
+        resetHeaderHeavyWorkDeferralBaseline()
         beginSelectionTransition(to: selection)
         scheduleRebuild(reason: "selection", restoreScroll: true)
     }
@@ -144,7 +153,13 @@ final class PlaylistPageController {
 
     func refreshHeaderArtwork() {
         guard page?.header != nil else { return }
+        LyricsRuntimeProfile.increment("header.refreshHeaderArtwork")
         loadHeaderArtwork()
+    }
+
+    func notePlaybackTrackDidChange() {
+        lastPlaybackTrackChangeUptime = ProcessInfo.processInfo.systemUptime
+        hasObservedPlaybackTrackChangeSinceBaseline = true
     }
 
     func clearMultiselectState() {
@@ -161,12 +176,22 @@ final class PlaylistPageController {
     }
 
     func updateHeaderArtworkBounds(_ bounds: CGRect, selectionIdentity: String) {
+        LyricsRuntimeProfile.increment("header.artworkBoundsUpdate.called")
         guard haloState.selectionIdentity == selectionIdentity else { return }
-        haloState.updateAnchor(bounds: bounds)
+        if haloState.updateAnchor(bounds: bounds) {
+            LyricsRuntimeProfile.increment("header.artworkBoundsUpdate.changed")
+        } else {
+            LyricsRuntimeProfile.increment("header.artworkBoundsUpdate.same")
+        }
     }
 
     func updateHaloScroll(offset: CGFloat) {
-        haloState.updateScroll(offset: offset)
+        LyricsRuntimeProfile.increment("header.haloScrollUpdate.called")
+        if haloState.updateScroll(offset: offset) {
+            LyricsRuntimeProfile.increment("header.haloScrollUpdate.changed")
+        } else {
+            LyricsRuntimeProfile.increment("header.haloScrollUpdate.same")
+        }
     }
 
     private var lastPrefetchTime: Date = .distantPast
@@ -272,6 +297,7 @@ final class PlaylistPageController {
             try? await Task.sleep(nanoseconds: 140_000_000)
             guard !Task.isCancelled, self.phaseToken == token else { return }
             self.isHeaderEffectsEnabled = true
+            LyricsRuntimeProfile.increment("header.effectsEnabled.true")
         }
     }
 
@@ -443,6 +469,12 @@ final class PlaylistPageController {
     private func applyPageModel(_ pageModel: PlaylistPageModel, restoreScroll: Bool) {
         resetArtworkPresentation(force: false, identity: pageModel.header?.artworkIdentity)
         page = pageModel
+        LyricsRuntimeProfile.setMetadata("page.rows.count", value: "\(pageModel.rows.count)")
+        LyricsRuntimeProfile.setMetadata(
+            "page.header.present",
+            value: pageModel.header == nil ? "false" : "true"
+        )
+        LyricsRuntimeProfile.setMetadata("page.queue.count", value: "\(pageModel.queueTracks.count)")
         selectedTrackIDs.formIntersection(Set(pageModel.rows.map(\.id)))
         lastPrefetchBucket = nil
         isSelectionTransitioning = false
@@ -465,15 +497,26 @@ final class PlaylistPageController {
             return
         }
 
+        LyricsRuntimeProfile.increment("header.loadHeaderArtwork")
+        LyricsRuntimeProfile.setMetadata("header.selectionIdentity", value: page.selectionIdentity)
+        LyricsRuntimeProfile.setMetadata("header.artworkIdentity", value: header.artworkIdentity)
+
         headerResolveTask?.cancel()
         headerUpgradeTask?.cancel()
         let request = header.config.artworkRequest
         let selectionIdentity = page.selectionIdentity
         let loadToken = UUID()
         headerResolveToken = loadToken
+        resetHeaderHeavyWorkDeferralBaseline()
 
         headerResolveTask = Task { @MainActor in
+            let immediateStart = ProcessInfo.processInfo.systemUptime
             let immediate = DetailHeaderArtworkResolver.shared.resolveImmediately(for: request)
+            LyricsRuntimeProfile.increment("header.resolveImmediate.count")
+            LyricsRuntimeProfile.addDuration(
+                "header.resolveImmediate",
+                ms: (ProcessInfo.processInfo.systemUptime - immediateStart) * 1000
+            )
             self.applyResolvedHeaderArtwork(
                 immediate,
                 artworkIdentity: header.artworkIdentity,
@@ -481,7 +524,13 @@ final class PlaylistPageController {
                 resolveToken: loadToken
             )
 
+            let deferredStart = ProcessInfo.processInfo.systemUptime
             let resolved = await DetailHeaderArtworkResolver.shared.resolveDeferredArtwork(for: request)
+            LyricsRuntimeProfile.increment("header.resolveDeferred.count")
+            LyricsRuntimeProfile.addDuration(
+                "header.resolveDeferred",
+                ms: (ProcessInfo.processInfo.systemUptime - deferredStart) * 1000
+            )
             guard !Task.isCancelled, self.headerResolveToken == loadToken else { return }
 
             let finalResolved = resolved ?? immediate
@@ -500,17 +549,26 @@ final class PlaylistPageController {
         selectionIdentity: String,
         resolveToken: UUID
     ) {
+        LyricsRuntimeProfile.increment("header.applyResolvedArtwork")
         guard var currentPage = page, currentPage.selectionIdentity == selectionIdentity else { return }
         guard var currentHeader = currentPage.header else { return }
 
         // Immediate stage: publish what we have right away.
         if let image = resolved?.image {
+            LyricsRuntimeProfile.increment("header.applyResolvedArtwork.image")
             currentHeader.artwork = image
             currentPage.header = currentHeader
             page = currentPage
             publishHeaderImage(image, identity: artworkIdentity, resolveToken: resolveToken)
+            let haloSeedStart = ProcessInfo.processInfo.systemUptime
+            let haloSeed = immediateHaloSeed(from: image)
+            LyricsRuntimeProfile.increment("header.immediateHaloSeed.count")
+            LyricsRuntimeProfile.addDuration(
+                "header.immediateHaloSeed",
+                ms: (ProcessInfo.processInfo.systemUptime - haloSeedStart) * 1000
+            )
             publishHaloImage(
-                immediateHaloSeed(from: image),
+                haloSeed,
                 identity: artworkIdentity,
                 resolveToken: resolveToken
             )
@@ -523,7 +581,14 @@ final class PlaylistPageController {
         guard payload.data != nil || payload.fileURL != nil else { return }
 
         headerUpgradeTask?.cancel()
+        let shouldDeferHeavyUpgrade = shouldDeferHeaderHeavyWork
         headerUpgradeTask = Task { @MainActor in
+            if shouldDeferHeavyUpgrade {
+                await self.waitForHeaderHeavyWorkQuietWindow(resolveToken: resolveToken)
+                guard !Task.isCancelled else { return }
+                guard self.headerResolveToken == resolveToken else { return }
+            }
+            let upgradeStart = ProcessInfo.processInfo.systemUptime
             let headerRequest = PlaylistArtworkPipeline.headerRequest(
                 artworkIdentity: artworkIdentity,
                 artworkData: payload.data,
@@ -540,6 +605,11 @@ final class PlaylistPageController {
             async let upgradedHaloSeed = PlaylistArtworkPipeline.shared.load(haloSeedRequest)
 
             let (headerImage, haloSeedImage) = await (upgradedHeader, upgradedHaloSeed)
+            LyricsRuntimeProfile.increment("header.pipelineUpgrade.count")
+            LyricsRuntimeProfile.addDuration(
+                "header.pipelineUpgrade",
+                ms: (ProcessInfo.processInfo.systemUptime - upgradeStart) * 1000
+            )
             guard !Task.isCancelled else { return }
             guard self.headerResolveToken == resolveToken else { return }
             guard var currentPage = self.page, currentPage.selectionIdentity == selectionIdentity else { return }
@@ -566,8 +636,45 @@ final class PlaylistPageController {
         }
     }
 
+    private var shouldDeferHeaderHeavyWork: Bool {
+        guard let uiState else { return false }
+        return uiState.lyricsVisible && !uiState.lyricsPanelSuppressedByModal
+    }
+
+    private func waitForHeaderHeavyWorkQuietWindow(resolveToken: UUID) async {
+        let quietInterval: TimeInterval = 0.35
+        let baseline = headerHeavyWorkBaselineUptime > 0
+            ? headerHeavyWorkBaselineUptime
+            : ProcessInfo.processInfo.systemUptime
+        let deadline = baseline + 3.0
+
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            guard !Task.isCancelled else { return }
+            guard headerResolveToken == resolveToken else { return }
+
+            if !hasObservedPlaybackTrackChangeSinceBaseline {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+                continue
+            }
+
+            let idleTime = ProcessInfo.processInfo.systemUptime - lastPlaybackTrackChangeUptime
+            if idleTime >= quietInterval {
+                return
+            }
+
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+    }
+
+    private func resetHeaderHeavyWorkDeferralBaseline() {
+        headerHeavyWorkBaselineUptime = ProcessInfo.processInfo.systemUptime
+        hasObservedPlaybackTrackChangeSinceBaseline = false
+        lastPlaybackTrackChangeUptime = 0
+    }
+
     private func resetArtworkPresentation(force: Bool, identity: String?) {
         guard force || currentArtworkPresentationIdentity != identity else { return }
+        LyricsRuntimeProfile.increment("header.resetArtworkPresentation")
         currentArtworkPresentationIdentity = identity
         didFadeHeaderIdentity = nil
         didFadeHaloIdentity = nil
@@ -584,6 +691,7 @@ final class PlaylistPageController {
 
     private func publishHeaderImage(_ image: NSImage, identity: String, resolveToken: UUID) {
         guard currentArtworkPresentationIdentity == identity else { return }
+        LyricsRuntimeProfile.increment("header.publishHeaderImage")
         if didFadeHeaderIdentity == identity {
             if headerIncomingArtwork != nil {
                 headerIncomingArtwork = image
@@ -598,6 +706,7 @@ final class PlaylistPageController {
     private func publishHaloImage(_ image: NSImage?, identity: String, resolveToken: UUID) {
         guard let image else { return }
         guard currentArtworkPresentationIdentity == identity else { return }
+        LyricsRuntimeProfile.increment("header.publishHaloImage")
         if didFadeHaloIdentity == identity {
             if haloIncomingImage != nil {
                 haloIncomingImage = image
@@ -613,16 +722,19 @@ final class PlaylistPageController {
         guard currentArtworkPresentationIdentity == identity else { return }
         didFadeHeaderIdentity = identity
         headerFadeTask?.cancel()
+        LyricsRuntimeProfile.increment("header.crossfade.trigger")
 
         headerIncomingArtwork = image
         headerIncomingOpacity = 0
 
         headerFadeTask = Task { @MainActor in
+            let fadeStart = ProcessInfo.processInfo.systemUptime
             await Task.yield()
             guard self.headerResolveToken == resolveToken else { return }
             guard !Task.isCancelled else { return }
             guard self.currentArtworkPresentationIdentity == identity else { return }
 
+            LyricsRuntimeProfile.increment("header.crossfade.animationStart")
             withAnimation(.easeInOut(duration: FadeTiming.headerCrossfadeDuration)) {
                 self.headerIncomingOpacity = 1
             }
@@ -634,6 +746,11 @@ final class PlaylistPageController {
             self.headerCurrentArtwork = image
             self.headerIncomingArtwork = nil
             self.headerIncomingOpacity = 0
+            LyricsRuntimeProfile.increment("header.crossfade.complete")
+            LyricsRuntimeProfile.addDuration(
+                "header.crossfade",
+                ms: (ProcessInfo.processInfo.systemUptime - fadeStart) * 1000
+            )
         }
     }
 
@@ -642,12 +759,14 @@ final class PlaylistPageController {
         guard currentArtworkPresentationIdentity == identity else { return }
         didFadeHaloIdentity = identity
         haloFadeTask?.cancel()
+        LyricsRuntimeProfile.increment("header.halo.trigger")
 
         haloIncomingImage = image
         haloSourceBlendOpacity = 1
         haloPresentationOpacity = 0
 
         haloFadeTask = Task { @MainActor in
+            let fadeStart = ProcessInfo.processInfo.systemUptime
             while !self.isHeaderEffectsEnabled {
                 try? await Task.sleep(nanoseconds: 16_000_000)
                 guard !Task.isCancelled else { return }
@@ -659,6 +778,7 @@ final class PlaylistPageController {
             guard self.currentArtworkPresentationIdentity == identity else { return }
             await Task.yield()
 
+            LyricsRuntimeProfile.increment("header.halo.animationStart")
             withAnimation(.easeInOut(duration: FadeTiming.haloReadyFadeDuration)) {
                 self.haloPresentationOpacity = 1
             }
@@ -671,6 +791,11 @@ final class PlaylistPageController {
             self.haloIncomingImage = nil
             self.haloSourceBlendOpacity = 1
             self.haloPresentationOpacity = 1
+            LyricsRuntimeProfile.increment("header.halo.complete")
+            LyricsRuntimeProfile.addDuration(
+                "header.halo",
+                ms: (ProcessInfo.processInfo.systemUptime - fadeStart) * 1000
+            )
         }
     }
 

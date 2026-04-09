@@ -38,7 +38,21 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     // MARK: - Audio Engine Components
 
-    private let engine = AVAudioEngine()
+    /// Lazy initialization: engine is only created on first access.
+    /// This defers ~15-30ms of AVAudioEngine construction from app launch to first use.
+    @ObservationIgnored
+    private lazy var engine: AVAudioEngine = {
+        let e = AVAudioEngine()
+        setupEngine(e)
+        return e
+    }()
+
+    /// Set once engine has been accessed (for guard checks without triggering lazy init)
+    @ObservationIgnored
+    private var isEngineInitialized: Bool { engineAccessed }
+    @ObservationIgnored
+    private var engineAccessed = false
+
     private let playerNode = AVAudioPlayerNode()
     private let delayNode = AVAudioUnitDelay()
     private var audioFile: AVAudioFile?
@@ -72,8 +86,10 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     // MARK: - Level Meter Integration
 
     /// The main mixer node (exposed for level meter tap)
+    /// Accessing this property triggers lazy engine initialization.
     var mainMixerNode: AVAudioMixerNode {
-        engine.mainMixerNode
+        engineAccessed = true
+        return engine.mainMixerNode
     }
 
     // MARK: - Initialization
@@ -81,13 +97,15 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     init() {
         // Restore volume from settings
         self.volume = AppSettings.shared.volume
-        setupEngine()
-        Log.debug("AVAudioPlaybackService initialized", category: .audio)
+        // Engine is now lazily initialized on first access (see `engine` property)
+        Log.debug("AVAudioPlaybackService initialized (engine deferred)", category: .audio)
     }
 
     // MARK: - Engine Setup
 
-    private func setupEngine() {
+    /// Sets up the audio engine with nodes and connections.
+    /// Called once when engine is first accessed via lazy initialization.
+    private func setupEngine(_ engine: AVAudioEngine) {
         // Attach player node to engine
         engine.attach(playerNode)
         engine.attach(delayNode)

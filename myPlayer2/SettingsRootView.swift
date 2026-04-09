@@ -16,8 +16,10 @@ struct SettingsRootView: View {
         if let libraryVM = sharedState.libraryVM,
            let playerVM = sharedState.playerVM,
            let lyricsVM = sharedState.lyricsVM,
-           let ledMeter = sharedState.ledMeter
+           let ledMeterProvider = sharedState.ledMeterProvider
         {
+            // Settings view needs the actual LEDMeterService for real-time preview
+            let ledMeter = ledMeterProvider.getOrCreate()
             SettingsView()
                 .environment(settings)
                 .environment(libraryVM)

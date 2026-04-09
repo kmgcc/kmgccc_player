@@ -937,13 +937,38 @@
         const defaultRenderScale = isBatchPreviewSurface ? 0.45 : 0.75;
         const defaultOverscanPx = useFullscreenQualityProfile ? 260 : 96;
         const defaultFPSCap = isBatchPreviewSurface ? 45 : 60;
-        const defaultWordFadeWidth = isBatchPreviewSurface ? 0.3 : (isFullscreenSurface ? 1.0 : 0.7);
+        const defaultWordFadeWidth = isBatchPreviewSurface
+            ? 0.3
+            : (isFullscreenSurface ? 1.0 : 0.7);
         // Fullscreen-specific compositing fallback is disabled.
         // Fullscreen AMLL now follows the same renderer path as main window.
         const fullscreenForcedByHost = false;
         console.log(
             `[LyricsRenderer] Boot: role=${surfaceRole}, href=${window.location.href}, fullscreenFallback=${fullscreenForcedByHost}, bundle=${AMLL_BUNDLE_VERSION}`
         );
+
+        let activeTrackProfileSession = null;
+        let firstVisibleLineProbeRequestId = 0;
+        const NativeResizeObserver = window.ResizeObserver;
+        if (
+            typeof NativeResizeObserver === "function"
+            && window.__AMLL_TRACK_PROFILE_RESIZE_OBSERVER_PATCHED__ !== true
+        ) {
+            window.ResizeObserver = class AMLLTrackProfileResizeObserver extends NativeResizeObserver {
+                constructor(callback) {
+                    super((entries, observer) => {
+                        if (activeTrackProfileSession) {
+                            activeTrackProfileSession.resizeObserverCallbackCount += 1;
+                            activeTrackProfileSession.resizeObserverEntryCount += Array.isArray(entries)
+                                ? entries.length
+                                : 0;
+                        }
+                        callback(entries, observer);
+                    });
+                }
+            };
+            window.__AMLL_TRACK_PROFILE_RESIZE_OBSERVER_PATCHED__ = true;
+        }
 
         // Initialize Player
         const playerContainer = document.getElementById('player');
@@ -995,7 +1020,106 @@
             destroyed: false,
             trackTeardownCount: 0,
             lastTeardownSummary: null,
+            skipNextReplaceClear: false,
         };
+        const createTrackProfileSession = (session = {}) => ({
+            sessionID: Number.isFinite(session?.sessionID) ? session.sessionID : 0,
+            trackID: typeof session?.trackID === "string" ? session.trackID : "nil",
+            role: typeof session?.role === "string" ? session.role : surfaceRole,
+            ttmlLength: Number.isFinite(session?.ttmlLength) ? session.ttmlLength : 0,
+            currentTime: Number.isFinite(session?.currentTime) ? session.currentTime : 0,
+            isPlaying: session?.isPlaying === true,
+            startedAtMs: performance.now(),
+            setLyricsCount: 0,
+            setLyricsDurationMs: 0,
+            clearRendererStateCount: 0,
+            clearRendererStateDurationMs: 0,
+            setLyricLinesCount: 0,
+            calcLayoutCount: 0,
+            calcLayoutDurationMs: 0,
+            domRebuildCount: 0,
+            maskRebuildCount: 0,
+            maskRebuildDurationMs: 0,
+            resizeObserverCallbackCount: 0,
+            resizeObserverEntryCount: 0,
+            firstVisibleLineMs: null,
+            firstVisibleLineSource: null,
+            firstVisibleLineText: null,
+            clearReasons: {},
+        });
+
+        const wrapTrackedMethod = (target, methodName, options = {}) => {
+            if (!target || typeof target[methodName] !== "function") return;
+            const marker = `__amllTrackProfileWrapped_${methodName}`;
+            if (target[marker] === true) return;
+            const original = target[methodName].bind(target);
+            target[marker] = true;
+            target[methodName] = (...args) => {
+                if (activeTrackProfileSession && typeof options.counterKey === "string") {
+                    activeTrackProfileSession[options.counterKey] += 1;
+                }
+                const start = performance.now();
+                const finalize = () => {
+                    if (
+                        activeTrackProfileSession
+                        && typeof options.durationKey === "string"
+                    ) {
+                        activeTrackProfileSession[options.durationKey] += performance.now() - start;
+                    }
+                    if (typeof options.afterHook === "function") {
+                        options.afterHook();
+                    }
+                };
+                try {
+                    const result = original(...args);
+                    if (result && typeof result.then === "function") {
+                        return result.then(
+                            (value) => {
+                                finalize();
+                                return value;
+                            },
+                            (error) => {
+                                finalize();
+                                throw error;
+                            }
+                        );
+                    }
+                    finalize();
+                    return result;
+                } catch (error) {
+                    finalize();
+                    throw error;
+                }
+            };
+        };
+
+        const patchCurrentLineObjectsForTrackProfile = () => {
+            const lineObjects = Array.isArray(lyricPlayer.currentLyricLineObjects)
+                ? lyricPlayer.currentLyricLineObjects
+                : [];
+            for (const lineObj of lineObjects) {
+                wrapTrackedMethod(lineObj, "rebuildElement", {
+                    counterKey: "domRebuildCount",
+                });
+                wrapTrackedMethod(lineObj, "updateMaskImage", {
+                    counterKey: "maskRebuildCount",
+                    durationKey: "maskRebuildDurationMs",
+                });
+                wrapTrackedMethod(lineObj, "updateMaskImageSync", {
+                    counterKey: "maskRebuildCount",
+                    durationKey: "maskRebuildDurationMs",
+                });
+            }
+        };
+
+        wrapTrackedMethod(lyricPlayer, "setLyricLines", {
+            counterKey: "setLyricLinesCount",
+            afterHook: patchCurrentLineObjectsForTrackProfile,
+        });
+        wrapTrackedMethod(lyricPlayer, "calcLayout", {
+            counterKey: "calcLayoutCount",
+            durationKey: "calcLayoutDurationMs",
+        });
         // Align active line toward top (instead of center)
         lyricPlayer.setAlignAnchor("top");
         lyricPlayer.setAlignPosition(0.2);
@@ -3428,6 +3552,13 @@
         };
 
         const clearRendererState = (reason = "clearState") => {
+            const clearStart = performance.now();
+            stopFirstVisibleLineProbe();
+            if (activeTrackProfileSession) {
+                activeTrackProfileSession.clearRendererStateCount += 1;
+                activeTrackProfileSession.clearReasons[reason] =
+                    (activeTrackProfileSession.clearReasons[reason] || 0) + 1;
+            }
             const before = collectRendererDiagnostics(`${reason}-before`);
             const teardown = teardownCurrentLyricObjects();
             externalIsPlaying = false;
@@ -3460,6 +3591,7 @@
                 reason,
                 teardown,
             };
+            rendererRuntime.skipNextReplaceClear = reason === "bridge-clearState";
 
             const after = collectRendererDiagnostics(`${reason}-after`);
             const summary = {
@@ -3483,6 +3615,9 @@
                 },
             };
             console.log(`[LyricsRenderer][Teardown] ${JSON.stringify(summary)}`);
+            if (activeTrackProfileSession) {
+                activeTrackProfileSession.clearRendererStateDurationMs += performance.now() - clearStart;
+            }
             return summary;
         };
 
@@ -3559,14 +3694,15 @@
 	        
 	        let lastKnownTimeMs = 0;
 	        const coreSetCurrentTime = lyricPlayer.setCurrentTime.bind(lyricPlayer);
-	        const originalSetCurrentTime = (ms, force = false) => {
-	            const timeMs = Math.max(0, Math.floor(ms));
-	            lastKnownTimeMs = timeMs;
-	            coreSetCurrentTime(timeMs, force);
-	            traceParallelEmphasisState(timeMs);
-	            if (fullscreenOpaqueLyricsMode) {
-	                enforceFullscreenNormalCompositing();
-	                patchFullscreenLineOpacityBehavior();
+        const originalSetCurrentTime = (ms, force = false) => {
+            const timeMs = Math.max(0, Math.floor(ms));
+            lastKnownTimeMs = timeMs;
+            coreSetCurrentTime(timeMs, force);
+            captureFirstVisibleLine("setCurrentTime");
+            traceParallelEmphasisState(timeMs);
+            if (fullscreenOpaqueLyricsMode) {
+                enforceFullscreenNormalCompositing();
+                patchFullscreenLineOpacityBehavior();
 	            } else if (fullscreenCoverBlurMode) {
 	                patchCoverBlurLineBehavior();
 	            }
@@ -3660,6 +3796,70 @@
             const opacity = Number.parseFloat(style.opacity || "1");
             if (Number.isFinite(opacity) && opacity <= 0.001) return false;
             return element.getClientRects().length > 0;
+        };
+
+        const findFirstVisibleLineElement = () => {
+            const playerElement = lyricPlayer.getElement();
+            const activeMainLine = playerElement.querySelector(
+                '[class*="_lyricLine_"][class*="_active_"] > [class*="_lyricMainLine_"]'
+            );
+            if (isProbeVisibleElement(activeMainLine)) {
+                return {
+                    element: activeMainLine,
+                    probeMode: "active",
+                };
+            }
+            const visibleMainLine = Array.from(
+                playerElement.querySelectorAll('[class*="_lyricMainLine_"]')
+            ).find((element) => isProbeVisibleElement(element));
+            if (visibleMainLine instanceof HTMLElement) {
+                return {
+                    element: visibleMainLine,
+                    probeMode: "visible",
+                };
+            }
+            return null;
+        };
+
+        const captureFirstVisibleLine = (source) => {
+            if (!activeTrackProfileSession) return;
+            if (activeTrackProfileSession.firstVisibleLineMs !== null) return;
+            const probe = findFirstVisibleLineElement();
+            const element = probe?.element;
+            if (!(element instanceof HTMLElement)) return;
+            activeTrackProfileSession.firstVisibleLineMs =
+                performance.now() - activeTrackProfileSession.startedAtMs;
+            activeTrackProfileSession.firstVisibleLineSource =
+                probe?.probeMode === "visible" ? `${source}-visible` : source;
+            activeTrackProfileSession.firstVisibleLineText = (element.textContent || "")
+                .trim()
+                .slice(0, 80);
+        };
+
+        const stopFirstVisibleLineProbe = () => {
+            if (firstVisibleLineProbeRequestId) {
+                cancelAnimationFrame(firstVisibleLineProbeRequestId);
+                firstVisibleLineProbeRequestId = 0;
+            }
+        };
+
+        const runFirstVisibleLineProbe = () => {
+            if (!activeTrackProfileSession) {
+                stopFirstVisibleLineProbe();
+                return;
+            }
+            captureFirstVisibleLine("raf");
+            if (activeTrackProfileSession.firstVisibleLineMs !== null) {
+                stopFirstVisibleLineProbe();
+                return;
+            }
+            firstVisibleLineProbeRequestId = requestAnimationFrame(runFirstVisibleLineProbe);
+        };
+
+        const restartFirstVisibleLineProbe = () => {
+            stopFirstVisibleLineProbe();
+            if (!activeTrackProfileSession) return;
+            firstVisibleLineProbeRequestId = requestAnimationFrame(runFirstVisibleLineProbe);
         };
 
         const snapshotLayer = (selector, scope = lyricPlayer.getElement()) => {
@@ -3804,17 +4004,26 @@
         // Define the Renderer Implementation for Bridge
         window.LyricsRenderer = {
             setLyrics: (ttml) => {
+                const setLyricsStart = performance.now();
+                if (activeTrackProfileSession) {
+                    activeTrackProfileSession.setLyricsCount += 1;
+                }
                 if (!ttml) {
                     clearRendererState("setLyrics-empty");
+                    rendererRuntime.skipNextReplaceClear = false;
+                    if (activeTrackProfileSession) {
+                        activeTrackProfileSession.setLyricsDurationMs += performance.now() - setLyricsStart;
+                    }
                     console.log("[LyricsRenderer] Cleared lyrics");
                     return;
                 }
 	                try {
-                        if (
-                            lastTTML
-                            || (Array.isArray(lyricPlayer.currentLyricLineObjects)
-                                && lyricPlayer.currentLyricLineObjects.length > 0)
-                        ) {
+                        const shouldSkipReplaceClear = rendererRuntime.skipNextReplaceClear === true;
+                        rendererRuntime.skipNextReplaceClear = false;
+                        const hasExistingLyricObjects =
+                            Array.isArray(lyricPlayer.currentLyricLineObjects)
+                            && lyricPlayer.currentLyricLineObjects.length > 0;
+                        if (!shouldSkipReplaceClear && (lastTTML || hasExistingLyricObjects)) {
                             clearRendererState("setLyrics-replace");
                         }
 		                    lastTTML = ttml;
@@ -3843,16 +4052,24 @@
 	                        syncCoverBlurRootState();
 	                        patchCoverBlurLineBehavior();
 	                    }
-	                    const currentMs = Number.isFinite(lastKnownTimeMs)
-	                        ? lastKnownTimeMs
-	                        : (lyricPlayer.getCurrentTime ? lyricPlayer.getCurrentTime() : 0);
-	                    originalSetCurrentTime(currentMs, true);
-	                    externalTimeMs = currentMs;
-	                    externalTimeAnchorPerfMs = performance.now();
-	                    console.log("[LyricsRenderer] Loaded lines:", lines.length);
+		                    const currentMs = Number.isFinite(lastKnownTimeMs)
+		                        ? lastKnownTimeMs
+		                        : (lyricPlayer.getCurrentTime ? lyricPlayer.getCurrentTime() : 0);
+		                    originalSetCurrentTime(currentMs, true);
+		                    externalTimeMs = currentMs;
+		                    externalTimeAnchorPerfMs = performance.now();
+                            captureFirstVisibleLine("setLyrics");
+                            restartFirstVisibleLineProbe();
+                            if (activeTrackProfileSession) {
+                                activeTrackProfileSession.setLyricsDurationMs += performance.now() - setLyricsStart;
+                            }
+		                    console.log("[LyricsRenderer] Loaded lines:", lines.length);
                 } catch (e) {
                     console.error("[LyricsRenderer] TTML Parse Error:", e);
                     clearRendererState("setLyrics-parse-error");
+                    if (activeTrackProfileSession) {
+                        activeTrackProfileSession.setLyricsDurationMs += performance.now() - setLyricsStart;
+                    }
                     console.log("[LyricsRenderer] Cleared lyrics due to parse error");
                 }
             },
@@ -4221,11 +4438,52 @@
 	                    if (needsLyricsReload && lastTTML) {
 	                        window.LyricsRenderer.setLyrics(lastTTML);
 	                    }
-	                    console.log("[LyricsRenderer] Config updated:", config);
-	                } catch (e) {
-	                    console.error("[LyricsRenderer] Config Error:", e);
-	                }
-	            },
+		                    console.log("[LyricsRenderer] Config updated:", config);
+		                } catch (e) {
+		                    console.error("[LyricsRenderer] Config Error:", e);
+		                }
+		            },
+
+            beginTrackProfileSession: (session = {}) => {
+                activeTrackProfileSession = createTrackProfileSession(session);
+                restartFirstVisibleLineProbe();
+                return {
+                    sessionID: activeTrackProfileSession.sessionID,
+                    trackID: activeTrackProfileSession.trackID,
+                    startedAtMs: activeTrackProfileSession.startedAtMs,
+                };
+            },
+
+            collectTrackProfileSession: () => {
+                if (!activeTrackProfileSession) return null;
+                captureFirstVisibleLine("collect");
+                return {
+                    sessionID: activeTrackProfileSession.sessionID,
+                    trackID: activeTrackProfileSession.trackID,
+                    role: activeTrackProfileSession.role,
+                    ttmlLength: activeTrackProfileSession.ttmlLength,
+                    currentTime: activeTrackProfileSession.currentTime,
+                    isPlaying: activeTrackProfileSession.isPlaying,
+                    setLyricsCount: activeTrackProfileSession.setLyricsCount,
+                    setLyricsDurationMs: Math.round(activeTrackProfileSession.setLyricsDurationMs * 100) / 100,
+                    clearRendererStateCount: activeTrackProfileSession.clearRendererStateCount,
+                    clearRendererStateDurationMs: Math.round(activeTrackProfileSession.clearRendererStateDurationMs * 100) / 100,
+                    setLyricLinesCount: activeTrackProfileSession.setLyricLinesCount,
+                    calcLayoutCount: activeTrackProfileSession.calcLayoutCount,
+                    calcLayoutDurationMs: Math.round(activeTrackProfileSession.calcLayoutDurationMs * 100) / 100,
+                    domRebuildCount: activeTrackProfileSession.domRebuildCount,
+                    maskRebuildCount: activeTrackProfileSession.maskRebuildCount,
+                    maskRebuildDurationMs: Math.round(activeTrackProfileSession.maskRebuildDurationMs * 100) / 100,
+                    resizeObserverCallbackCount: activeTrackProfileSession.resizeObserverCallbackCount,
+                    resizeObserverEntryCount: activeTrackProfileSession.resizeObserverEntryCount,
+                    firstVisibleLineMs: activeTrackProfileSession.firstVisibleLineMs === null
+                        ? null
+                        : Math.round(activeTrackProfileSession.firstVisibleLineMs * 100) / 100,
+                    firstVisibleLineSource: activeTrackProfileSession.firstVisibleLineSource,
+                    firstVisibleLineText: activeTrackProfileSession.firstVisibleLineText,
+                    clearReasons: activeTrackProfileSession.clearReasons,
+                };
+            },
 
             clearState: () => clearRendererState("bridge-clearState"),
 

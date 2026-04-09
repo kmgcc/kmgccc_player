@@ -10,7 +10,7 @@ import SwiftUI
 /// LED meter settings: live preview, visual config, and tuning parameters.
 struct LEDMeterSettingsView: View {
     @Environment(AppSettings.self) private var settings
-    @Environment(LEDMeterService.self) private var ledMeter
+    @Environment(LEDMeterServiceProvider.self) private var ledMeterProvider
     @EnvironmentObject private var themeStore: ThemeStore
 
     @State private var sensitivity: Float = AppSettings.shared.ledSensitivity
@@ -35,6 +35,8 @@ struct LEDMeterSettingsView: View {
                     .font(.subheadline.bold())
                     .foregroundStyle(.secondary)
 
+                let ledMeter = ledMeterProvider.getOrCreate()
+                
                 LedMeterView(
                     level: Double(ledMeter.normalizedLevel),
                     ledValues: ledMeter.metrics.leds,
@@ -304,7 +306,7 @@ struct LEDMeterSettingsView: View {
         settings.ledBrightnessLevels = brightnessLevels
         settings.lookaheadMs = lookaheadMs
 
-        ledMeter.updateConfig(
+        ledMeterProvider.getOrCreate().updateConfig(
             LEDMeterConfig(
                 ledCount: ledCount,
                 levels: brightnessLevels,

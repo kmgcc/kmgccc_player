@@ -14,7 +14,7 @@ struct NowPlayingHostView: View {
 
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(UIStateViewModel.self) private var uiState
-    @Environment(LEDMeterService.self) private var ledMeter
+    @Environment(LEDMeterServiceProvider.self) private var ledMeterProvider
     @Environment(AppSettings.self) private var settings
     @Environment(SkinManager.self) private var skinManager
     @Environment(\.colorScheme) private var colorScheme
@@ -58,18 +58,18 @@ struct NowPlayingHostView: View {
         .onChange(of: selectedSkinID) { _, _ in
             skinRevision &+= 1
             if isLedEnabledForCurrentSkin() {
-                ledMeter.start()
+                ledMeterProvider.getOrCreate().start()
             } else {
-                ledMeter.stop()
+                ledMeterProvider.getOrCreate().stop()
             }
         }
         .onAppear {
             if isLedEnabledForCurrentSkin() {
-                ledMeter.start()
+                ledMeterProvider.getOrCreate().start()
             }
         }
         .onDisappear {
-            ledMeter.stop()
+            ledMeterProvider.getOrCreate().stop()
         }
         .task(id: currentArtworkTaskKey) {
             await loadArtworkSnapshot()
@@ -136,8 +136,8 @@ struct NowPlayingHostView: View {
         return SkinContext(
             track: trackMeta,
             playback: playback,
-            audio: ledMeter.audioMetrics,
-            led: ledMeter.metrics,
+            audio: ledMeterProvider.getOrCreate().audioMetrics,
+            led: ledMeterProvider.getOrCreate().metrics,
             theme: theme,
             windowSize: windowSize,
             contentBounds: contentBounds,

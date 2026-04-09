@@ -132,7 +132,7 @@ private struct ClassicLEDArtwork: View {
 
 private struct ClassicLEDSkinNormalSettingsView: View {
     @AppStorage("skin.classicLED.visualizerMode") private var visualizerMode: String = "off"
-    @Environment(LEDMeterService.self) private var ledMeter
+    @Environment(LEDMeterServiceProvider.self) private var ledMeterProvider
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -141,10 +141,10 @@ private struct ClassicLEDSkinNormalSettingsView: View {
                 set: { isOn in
                     if isOn {
                         visualizerMode = "led"
-                        ledMeter.start()
+                        ledMeterProvider.getOrCreate().start()
                     } else if visualizerMode == "led" {
                         visualizerMode = "off"
-                        ledMeter.stop()
+                        ledMeterProvider.getOrCreate().stop()
                     }
                 }
             ))
@@ -155,7 +155,7 @@ private struct ClassicLEDSkinNormalSettingsView: View {
                 set: { isOn in
                     if isOn {
                         visualizerMode = "spectrum"
-                        ledMeter.stop()
+                        ledMeterProvider.getOrCreate().stop()
                     } else if visualizerMode == "spectrum" {
                         visualizerMode = "off"
                     }
@@ -167,7 +167,7 @@ private struct ClassicLEDSkinNormalSettingsView: View {
 }
 
 private struct ClassicLEDSkinFullscreenSettingsView: View {
-    @Environment(LEDMeterService.self) private var ledMeter
+    @Environment(LEDMeterServiceProvider.self) private var ledMeterProvider
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {

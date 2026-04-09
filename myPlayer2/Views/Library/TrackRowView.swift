@@ -67,6 +67,14 @@ struct TrackRowView<MenuContent: View>: View {
 
     var body: some View {
         let _ = PlaylistPerfDiagnostics.markRowBodyRecompute()
+        let _ = LyricsRuntimeProfile.increment("TrackRowView.body")
+        let _ = LyricsRuntimeProfile.insertUniqueValue("TrackRowView.body.trackID", value: model.id.uuidString)
+        if isPlaying {
+            let _ = TintTimelineProbe.noteRootConsumer("TrackRowView.isPlaying")
+        }
+        if isSelected {
+            let _ = TintTimelineProbe.noteRootConsumer("TrackRowView.isSelected")
+        }
 
         HStack(spacing: 12) {
             artworkView
@@ -142,6 +150,8 @@ struct TrackRowView<MenuContent: View>: View {
             }
         }
         .onAppear {
+            LyricsRuntimeProfile.increment("TrackRowView.onAppear")
+            LyricsRuntimeProfile.insertUniqueValue("TrackRowView.onAppear.trackID", value: model.id.uuidString)
             onRowAppear?()
         }
         .task(id: artworkTaskIdentity) {

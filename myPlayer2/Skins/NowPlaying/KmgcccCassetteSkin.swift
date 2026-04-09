@@ -987,7 +987,7 @@ private struct CassetteOverlay: View {
 private struct KmgcccCassetteNormalSettingsView: View {
     @AppStorage("skin.kmgcccCassette.visualizerMode") private var visualizerMode: String = "off"
     @AppStorage("skin.kmgcccCassette.showKmgLook") private var showKmgLook: Bool = false
-    @Environment(LEDMeterService.self) private var ledMeter
+    @Environment(LEDMeterServiceProvider.self) private var ledMeterProvider
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -996,10 +996,10 @@ private struct KmgcccCassetteNormalSettingsView: View {
                 set: { isOn in
                     if isOn {
                         visualizerMode = "led"
-                        ledMeter.start()
+                        ledMeterProvider.getOrCreate().start()
                     } else if visualizerMode == "led" {
                         visualizerMode = "off"
-                        ledMeter.stop()
+                        ledMeterProvider.getOrCreate().stop()
                     }
                 }
             ))
