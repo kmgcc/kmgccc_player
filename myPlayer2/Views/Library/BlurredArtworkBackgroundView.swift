@@ -11,6 +11,9 @@ import SwiftUI
 @MainActor
 @Observable
 final class HeaderHaloState {
+    private static let anchorEpsilon: CGFloat = 0.5
+    private static let scrollEpsilon: CGFloat = 0.5
+
     private(set) var selectionIdentity: String?
     private(set) var anchor: CGPoint?
     private(set) var scrollDelta: CGFloat = 0
@@ -51,16 +54,31 @@ final class HeaderHaloState {
         scrollDelta = 0
     }
 
-    func updateAnchor(bounds: CGRect?) {
-        guard let bounds, bounds.width > 0, bounds.height > 0 else { return }
-        anchor = CGPoint(x: bounds.midX, y: bounds.midY)
+    @discardableResult
+    func updateAnchor(bounds: CGRect?) -> Bool {
+        guard let bounds, bounds.width > 0, bounds.height > 0 else { return false }
+        let nextAnchor = CGPoint(x: bounds.midX, y: bounds.midY)
+        if let anchor,
+            abs(anchor.x - nextAnchor.x) < Self.anchorEpsilon,
+            abs(anchor.y - nextAnchor.y) < Self.anchorEpsilon
+        {
+            return false
+        }
+        anchor = nextAnchor
+        return true
     }
 
-    func updateScroll(offset: CGFloat) {
+    @discardableResult
+    func updateScroll(offset: CGFloat) -> Bool {
         if initialScrollOffset == nil {
             initialScrollOffset = offset
         }
-        scrollDelta = offset - (initialScrollOffset ?? offset)
+        let nextDelta = offset - (initialScrollOffset ?? offset)
+        if abs(nextDelta - scrollDelta) < Self.scrollEpsilon {
+            return false
+        }
+        scrollDelta = nextDelta
+        return true
     }
 }
 
@@ -73,6 +91,7 @@ struct HeaderHaloBackgroundView: View {
     var bloomSize: CGFloat = 220 * 4.0
 
     var body: some View {
+        let _ = LyricsRuntimeProfile.markBody("HeaderHaloBackgroundView.body")
         Group {
             let hasSource = currentSource != nil || incomingSource != nil
             if let anchor = state.anchor, hasSource {

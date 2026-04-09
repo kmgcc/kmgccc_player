@@ -14,11 +14,13 @@ import SwiftUI
 struct LyricsPanelView: View {
 
     @Environment(PlayerViewModel.self) private var playerVM
+    @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(LyricsViewModel.self) private var lyricsVM
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var themeStore: ThemeStore
 
     var body: some View {
+        let _ = LyricsRuntimeProfile.markBody("LyricsPanelView.body")
         ZStack(alignment: .top) {
             lyricsBackgroundLayer
             panelContent
@@ -124,6 +126,17 @@ struct LyricsPanelView: View {
 
     private func handleTrackIdChange(_ oldId: UUID?, _ newId: UUID?) {
         guard oldId != newId else { return }
+        LyricsRuntimeProfile.increment("LyricsPanelView.trackIDChange")
+        switch libraryVM.currentSelection {
+        case .allSongs:
+            LyricsRuntimeProfile.setMetadata("lyrics.selectionKind", value: "allSongs")
+        case .playlist:
+            LyricsRuntimeProfile.setMetadata("lyrics.selectionKind", value: "playlist-header")
+        case .artist:
+            LyricsRuntimeProfile.setMetadata("lyrics.selectionKind", value: "artist-header")
+        case .album:
+            LyricsRuntimeProfile.setMetadata("lyrics.selectionKind", value: "album-header")
+        }
         print(
             "[LyricsPanelView] Track changed: \(oldId?.uuidString.prefix(8) ?? "nil") -> \(newId?.uuidString.prefix(8) ?? "nil")"
         )

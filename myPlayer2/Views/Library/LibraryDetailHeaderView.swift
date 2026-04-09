@@ -17,6 +17,17 @@ private struct NormalizedImportedHeaderArtwork {
     let pngData: Data
 }
 
+private struct LibraryPresentedAccentColorKey: EnvironmentKey {
+    static let defaultValue: Color = ThemeStore.shared.accentColor
+}
+
+extension EnvironmentValues {
+    var libraryPresentedAccentColor: Color {
+        get { self[LibraryPresentedAccentColorKey.self] }
+        set { self[LibraryPresentedAccentColorKey.self] = newValue }
+    }
+}
+
 private struct HeaderArtworkBoundsReporter: View {
     let onChange: (CGRect) -> Void
 
@@ -25,9 +36,11 @@ private struct HeaderArtworkBoundsReporter: View {
             let frame = geo.frame(in: .named("detailScroll"))
             Color.clear
                 .onAppear {
+                    LyricsRuntimeProfile.increment("HeaderArtworkBoundsReporter.callback")
                     onChange(frame)
                 }
                 .onChange(of: frame) { _, newFrame in
+                    LyricsRuntimeProfile.increment("HeaderArtworkBoundsReporter.callback")
                     onChange(newFrame)
                 }
         }
@@ -38,7 +51,6 @@ struct LibraryDetailHeaderView: View {
 
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(\.colorScheme) private var colorScheme
-    @EnvironmentObject private var themeStore: ThemeStore
 
     let config: DetailHeaderConfig
     /// Stable identity for artwork crossfade state machine
@@ -61,6 +73,7 @@ struct LibraryDetailHeaderView: View {
     @State private var isRegeneratingArtwork = false
 
     var body: some View {
+        let _ = LyricsRuntimeProfile.markBody("LibraryDetailHeaderView.body")
         HStack(alignment: .bottom, spacing: 20) {
             artworkColumn
             .frame(width: 220, height: 220)
@@ -111,10 +124,7 @@ struct LibraryDetailHeaderView: View {
                     Rectangle()
                         .fill(.ultraThinMaterial)
                         .overlay(
-                            ProgressView()
-                                .progressViewStyle(.circular)
-                                .scaleEffect(1.2)
-                                .tint(themeStore.accentColor)
+                            HeaderArtworkProgressOverlay()
                         )
                         .clipShape(artworkClipShape)
                 }
@@ -142,29 +152,11 @@ struct LibraryDetailHeaderView: View {
 
     /// Compact artwork action button with Liquid Glass styling
     private func artworkActionButton(icon: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: icon)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(themeStore.accentColor)
-                .frame(width: 32, height: 32)
-                .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .background {
-            Circle()
-                .fill(.thinMaterial)
-        }
-        .background {
-            Circle()
-                .fill(Color.black.opacity(colorScheme == .dark ? 0.25 : 0.08))
-        }
-        .glassEffect(.clear, in: Circle())
-        .overlay {
-            Circle()
-                .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5)
-        }
-        .clipShape(Circle())
-        .shadow(color: .black.opacity(0.2), radius: 3, x: 0, y: 1)
+        HeaderArtworkActionButton(
+            icon: icon,
+            colorScheme: colorScheme,
+            action: action
+        )
     }
 
     @ViewBuilder
@@ -347,64 +339,22 @@ struct LibraryDetailHeaderView: View {
     }
 
     private var playButton: some View {
-        Button(action: onPlay) {
-            HStack(spacing: 6) {
-                Image(systemName: "play.fill")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.white.opacity(colorScheme == .dark ? 0.95 : 0.90))
-                Text("播放")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.white.opacity(colorScheme == .dark ? 0.95 : 0.90))
-            }
-            .padding(.horizontal, 16)
-            .frame(height: buttonHeight)
-            .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .disabled(!canPlay)
-        .background {
-            Capsule()
-                .fill(themeStore.accentColor)
-        }
-        .background {
-            Capsule()
-                .fill(Color.black.opacity(colorScheme == .dark ? 0.22 : 0.08))
-        }
-        .glassEffect(.clear, in: Capsule())
-        .overlay {
-            Capsule()
-                .strokeBorder(Color.white.opacity(0.15), lineWidth: 0.5)
-        }
-        .clipShape(Capsule())
+        HeaderPlayButton(
+            canPlay: canPlay,
+            colorScheme: colorScheme,
+            buttonHeight: buttonHeight,
+            action: onPlay
+        )
     }
 
     private var editButton: some View {
-        Button {
+        HeaderEditButton(
+            isEditing: isEditing,
+            colorScheme: colorScheme,
+            buttonHeight: buttonHeight
+        ) {
             if isEditing { commitEdits() } else { beginEditing() }
-        } label: {
-            Image(systemName: isEditing ? "checkmark" : "pencil")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(isEditing ? .white : themeStore.accentColor.opacity(colorScheme == .dark ? 0.96 : 0.88))
-                .frame(width: buttonHeight, height: buttonHeight)
-                .contentShape(Circle())
         }
-        .buttonStyle(.plain)
-        .background {
-            if isEditing {
-                Circle()
-                    .fill(themeStore.accentColor)
-            }
-        }
-        .background {
-            Circle()
-                .fill(Color.black.opacity(colorScheme == .dark ? 0.22 : 0.08))
-        }
-        .glassEffect(.clear, in: Circle())
-        .overlay {
-            Circle()
-                .strokeBorder(Color.white.opacity(0.15), lineWidth: 0.5)
-        }
-        .clipShape(Circle())
     }
 
     private var buttonHeight: CGFloat {
@@ -572,5 +522,151 @@ struct LibraryDetailHeaderView: View {
             return String(format: "%d:%02d:%02d", h, m, s)
         }
         return String(format: "%d:%02d", m, s)
+    }
+}
+
+private struct HeaderArtworkProgressOverlay: View {
+    @Environment(\.libraryPresentedAccentColor) private var presentedAccentColor
+
+    var body: some View {
+        let _ = LyricsRuntimeProfile.markBody("HeaderArtworkProgressOverlay.body")
+        let _ = TintTimelineProbe.noteHeaderConsumer("HeaderArtworkProgressOverlay")
+        ProgressView()
+            .progressViewStyle(.circular)
+            .scaleEffect(1.2)
+            .tint(presentedAccentColor)
+            .transaction { transaction in
+                transaction.animation = nil
+            }
+    }
+}
+
+private struct HeaderArtworkActionButton: View {
+    @Environment(\.libraryPresentedAccentColor) private var presentedAccentColor
+
+    let icon: String
+    let colorScheme: ColorScheme
+    let action: () -> Void
+
+    var body: some View {
+        let _ = LyricsRuntimeProfile.markBody("HeaderArtworkActionButton.body")
+        let _ = TintTimelineProbe.noteHeaderConsumer("HeaderArtworkActionButton")
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(presentedAccentColor)
+                .frame(width: 32, height: 32)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .background {
+            Circle()
+                .fill(.thinMaterial)
+        }
+        .background {
+            Circle()
+                .fill(Color.black.opacity(colorScheme == .dark ? 0.25 : 0.08))
+        }
+        .glassEffect(.clear, in: Circle())
+        .overlay {
+            Circle()
+                .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5)
+        }
+        .clipShape(Circle())
+        .shadow(color: .black.opacity(0.2), radius: 3, x: 0, y: 1)
+        .transaction { transaction in
+            transaction.animation = nil
+        }
+    }
+}
+
+private struct HeaderPlayButton: View {
+    @Environment(\.libraryPresentedAccentColor) private var presentedAccentColor
+
+    let canPlay: Bool
+    let colorScheme: ColorScheme
+    let buttonHeight: CGFloat
+    let action: () -> Void
+
+    var body: some View {
+        let _ = LyricsRuntimeProfile.markBody("HeaderPlayButton.body")
+        let _ = TintTimelineProbe.noteHeaderConsumer("HeaderPlayButton")
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white.opacity(colorScheme == .dark ? 0.95 : 0.90))
+                Text("播放")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.white.opacity(colorScheme == .dark ? 0.95 : 0.90))
+            }
+            .padding(.horizontal, 16)
+            .frame(height: buttonHeight)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .disabled(!canPlay)
+        .background {
+            Capsule()
+                .fill(presentedAccentColor)
+        }
+        .background {
+            Capsule()
+                .fill(Color.black.opacity(colorScheme == .dark ? 0.22 : 0.08))
+        }
+        .glassEffect(.clear, in: Capsule())
+        .overlay {
+            Capsule()
+                .strokeBorder(Color.white.opacity(0.15), lineWidth: 0.5)
+        }
+        .clipShape(Capsule())
+        .transaction { transaction in
+            transaction.animation = nil
+        }
+    }
+}
+
+private struct HeaderEditButton: View {
+    @Environment(\.libraryPresentedAccentColor) private var presentedAccentColor
+
+    let isEditing: Bool
+    let colorScheme: ColorScheme
+    let buttonHeight: CGFloat
+    let action: () -> Void
+
+    var body: some View {
+        let _ = LyricsRuntimeProfile.markBody("HeaderEditButton.body")
+        let _ = TintTimelineProbe.noteHeaderConsumer("HeaderEditButton")
+        Button(action: action) {
+            Image(systemName: isEditing ? "checkmark" : "pencil")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(
+                    isEditing
+                        ? .white
+                        : presentedAccentColor.opacity(colorScheme == .dark ? 0.96 : 0.88)
+                )
+                .frame(width: buttonHeight, height: buttonHeight)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .background {
+            if isEditing {
+                Circle()
+                    .fill(presentedAccentColor)
+            }
+        }
+        .background {
+            Circle()
+                .fill(Color.black.opacity(colorScheme == .dark ? 0.22 : 0.08))
+        }
+        .glassEffect(.clear, in: Circle())
+        .overlay {
+            Circle()
+                .strokeBorder(Color.white.opacity(0.15), lineWidth: 0.5)
+        }
+        .clipShape(Circle())
+        .transaction { transaction in
+            transaction.animation = nil
+        }
     }
 }

@@ -44,6 +44,8 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
     }
 
     var body: some View {
+        let _ = LyricsRuntimeProfile.markBody("PlaylistDetailView.body")
+        let _ = TintTimelineProbe.noteRootConsumer("PlaylistDetailView.body")
         Group {
             if libraryVM.currentSelection == .allSongs {
                 if libraryVM.state == .loading
@@ -75,6 +77,7 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         }
         // Fill available space, anchor content to top
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(PlaylistLayoutPassProbe(key: "PlaylistDetailView.root"))
         // Overlay toolbar at top - reads width from parent's frame constraint
         .overlay(alignment: .topLeading) {
             GeometryReader { overlayGeo in
@@ -145,6 +148,9 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         .onReceive(NotificationCenter.default.publisher(for: .libraryTrackDidUpdate)) { notification in
             guard let trackID = notification.userInfo?["trackID"] as? UUID else { return }
             pageController.applyTargetedTrackRefresh(trackID: trackID)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .playbackTrackDidChange)) { _ in
+            pageController.notePlaybackTrackDidChange()
         }
     }
 
@@ -374,38 +380,12 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
 
     @ViewBuilder
     private var trackRowsContent: some View {
-        ForEach(currentRows) { row in
-            TrackRowView(
-                model: row.trackRowModel,
-                isPlaying: playerVM.currentTrack?.id == row.id,
-                isSelected: pageController.isMultiselectMode && pageController.selectedTrackIDs.contains(row.id),
-                enableSecondaryInteractions: pageController.areRowSecondaryInteractionsEnabled,
-                enableArtworkLoading: pageController.areRowArtworkLoadsEnabled,
-                onTap: {
-                    if pageController.isMultiselectMode {
-                        if pageController.selectedTrackIDs.contains(row.id) {
-                            pageController.selectedTrackIDs.remove(row.id)
-                        } else {
-                            pageController.selectedTrackIDs.insert(row.id)
-                        }
-                    } else {
-                        let startIndex = pageController.queueStartIndex(for: row.id)
-                        playerVM.playTracks(queueTracks, startingAt: startIndex)
-                    }
-                },
-                onRowAppear: {
-                    pageController.prefetchAroundTrackID(row.id)
-                }
-            ) {
-                trackMenu(trackID: row.id)
-            }
-            .contextMenu {
-                if pageController.areRowSecondaryInteractionsEnabled {
-                    trackMenu(trackID: row.id)
-                }
-            }
-        }
-        Color.clear.frame(height: 160)
+        PlaylistTrackRowsSection(
+            rows: currentRows,
+            queueTracks: queueTracks,
+            pageController: pageController,
+            menuBuilder: erasedTrackMenu(trackID:)
+        )
     }
 
     private var trackListView: some View {
@@ -419,6 +399,7 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             .padding(.horizontal)
             .transaction { tx in tx.animation = nil }
         }
+        .background(PlaylistLayoutPassProbe(key: "PlaylistDetailView.trackList"))
         .scrollPosition(id: scrollBinding, anchor: .top)
         .scrollEdgeEffectStyle(.soft, for: .top)
         .onTapGesture {
@@ -448,6 +429,7 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             .padding(.horizontal)
             .transaction { tx in tx.animation = nil }
         }
+        .background(PlaylistLayoutPassProbe(key: "PlaylistDetailView.detailScroll"))
         .coordinateSpace(name: "detailScroll")
         .scrollPosition(id: scrollBinding, anchor: .top)
         .scrollEdgeEffectStyle(.soft, for: .top)
@@ -499,7 +481,8 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
     }
 
     private var trackContentSection: some View {
-        Group {
+        let _ = LyricsRuntimeProfile.markBody("PlaylistDetailView.trackContentSection")
+        return Group {
             if libraryVM.state == .loading && pageController.page == nil {
                 ProgressView()
                     .controlSize(.large)
@@ -517,8 +500,10 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
                 .padding(.vertical, 40)
                 .frame(maxWidth: .infinity)
             } else {
-                trackRowsContent
-                    .padding(.horizontal, 16)
+                LazyVStack(spacing: 0) {
+                    trackRowsContent
+                }
+                .padding(.horizontal, 16)
             }
         }
     }
@@ -782,8 +767,95 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         }
     }
 
+    private func erasedTrackMenu(trackID: UUID) -> AnyView {
+        AnyView(trackMenu(trackID: trackID))
+    }
+
     private var listTopPadding: CGFloat { GlassStyleTokens.headerBarHeight + 16 }
     private var listBottomPadding: CGFloat { 16 }
+}
+
+private struct PlaylistTrackRowsSection: View {
+    @Environment(PlayerViewModel.self) private var playerVM
+
+    let rows: [PlaylistPageRowModel]
+    let queueTracks: [Track]
+    let pageController: PlaylistPageController
+    let menuBuilder: (UUID) -> AnyView
+
+    var body: some View {
+        let _ = LyricsRuntimeProfile.markBody("PlaylistTrackRowsSection.body")
+        ForEach(rows) { row in
+            TrackRowView(
+                model: row.trackRowModel,
+                isPlaying: playerVM.currentTrack?.id == row.id,
+                isSelected: pageController.isMultiselectMode && pageController.selectedTrackIDs.contains(row.id),
+                enableSecondaryInteractions: pageController.areRowSecondaryInteractionsEnabled,
+                enableArtworkLoading: pageController.areRowArtworkLoadsEnabled,
+                onTap: {
+                    if pageController.isMultiselectMode {
+                        if pageController.selectedTrackIDs.contains(row.id) {
+                            pageController.selectedTrackIDs.remove(row.id)
+                        } else {
+                            pageController.selectedTrackIDs.insert(row.id)
+                        }
+                    } else {
+                        let startIndex = pageController.queueStartIndex(for: row.id)
+                        playerVM.playTracks(queueTracks, startingAt: startIndex)
+                    }
+                },
+                onRowAppear: {
+                    pageController.prefetchAroundTrackID(row.id)
+                }
+            ) {
+                menuBuilder(row.id)
+            }
+            .contextMenu {
+                if pageController.areRowSecondaryInteractionsEnabled {
+                    menuBuilder(row.id)
+                }
+            }
+        }
+        Color.clear.frame(height: 160)
+    }
+}
+
+private struct PlaylistLayoutPassProbe: NSViewRepresentable {
+    let key: String
+
+    func makeNSView(context: Context) -> PlaylistLayoutPassProbeView {
+        PlaylistLayoutPassProbeView(key: key)
+    }
+
+    func updateNSView(_ nsView: PlaylistLayoutPassProbeView, context: Context) {
+        LyricsRuntimeProfile.increment("\(key).updateNSView")
+    }
+}
+
+private final class PlaylistLayoutPassProbeView: NSView {
+    private let key: String
+
+    init(key: String) {
+        self.key = key
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override func layout() {
+        super.layout()
+        LyricsRuntimeProfile.increment("\(key).layout")
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        let previous = frame
+        super.setFrameSize(newSize)
+        LyricsRuntimeProfile.recordFrameWrite(key: "\(key).frame", previous: previous, next: frame)
+    }
 }
 
 private struct ScrollOffsetSensor: View {
@@ -794,9 +866,11 @@ private struct ScrollOffsetSensor: View {
             let offset = geo.frame(in: .named("detailScroll")).minY
             Color.clear
                 .onAppear {
+                    LyricsRuntimeProfile.increment("ScrollOffsetSensor.callback")
                     onChange(offset)
                 }
                 .onChange(of: offset) { _, newOffset in
+                    LyricsRuntimeProfile.increment("ScrollOffsetSensor.callback")
                     onChange(newOffset)
                 }
         }

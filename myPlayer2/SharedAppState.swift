@@ -15,7 +15,7 @@ final class SharedAppState: ObservableObject {
     @Published var libraryVM: LibraryViewModel?
     @Published var playerVM: PlayerViewModel?
     @Published var lyricsVM: LyricsViewModel?
-    @Published var ledMeter: LEDMeterService?
+    @Published var ledMeterProvider: LEDMeterServiceProvider?
     @Published var skinManager: SkinManager?
     @Published var themeStore: ThemeStore?
 
@@ -23,14 +23,14 @@ final class SharedAppState: ObservableObject {
         libraryVM: LibraryViewModel,
         playerVM: PlayerViewModel,
         lyricsVM: LyricsViewModel,
-        ledMeter: LEDMeterService,
+        ledMeterProvider: LEDMeterServiceProvider,
         skinManager: SkinManager,
         themeStore: ThemeStore
     ) {
         self.libraryVM = libraryVM
         self.playerVM = playerVM
         self.lyricsVM = lyricsVM
-        self.ledMeter = ledMeter
+        self.ledMeterProvider = ledMeterProvider
         self.skinManager = skinManager
         self.themeStore = themeStore
     }

@@ -110,6 +110,7 @@ final class LyricsWebViewStore: NSObject {
     private var pendingApplyTrack: DispatchWorkItem?
     private var pendingVisibleLayerProbe: DispatchWorkItem?
     private var pendingTrackDiagnosticsProbe: DispatchWorkItem?
+    private var pendingTrackProfileCollection: DispatchWorkItem?
     private let applyTrackDebounceMs: Int = 50
     private var didRegisterMessageHandlers = false
     private var isShutDown = false
@@ -169,6 +170,8 @@ final class LyricsWebViewStore: NSObject {
         pendingVisibleLayerProbe = nil
         pendingTrackDiagnosticsProbe?.cancel()
         pendingTrackDiagnosticsProbe = nil
+        pendingTrackProfileCollection?.cancel()
+        pendingTrackProfileCollection = nil
         pendingCalls.removeAll()
         onUserSeek = nil
 
@@ -390,6 +393,9 @@ final class LyricsWebViewStore: NSObject {
         debugDescription: String
     ) {
         guard !isShutDown else { return }
+        let bridgeCategory = bridgeCategory(for: debugDescription)
+        LyricsRuntimeProfile.increment("swiftToJS.enqueued")
+        LyricsRuntimeProfile.increment("swiftToJS.enqueued.\(bridgeCategory)")
         let pendingCall = PendingJavaScriptCall(
             debugDescription: debugDescription,
             call: call
@@ -409,6 +415,9 @@ final class LyricsWebViewStore: NSObject {
         _ pendingCall: PendingJavaScriptCall,
         completion: ((Any?, Error?) -> Void)? = nil
     ) {
+        let bridgeCategory = bridgeCategory(for: pendingCall.debugDescription)
+        LyricsRuntimeProfile.increment("swiftToJS.executed")
+        LyricsRuntimeProfile.increment("swiftToJS.executed.\(bridgeCategory)")
         let finish: @MainActor @Sendable (Any?, Error?) -> Void = { result, error in
             if let error {
                 Log.debug(
@@ -440,6 +449,31 @@ final class LyricsWebViewStore: NSObject {
                 }
             )
         }
+    }
+
+    private func bridgeCategory(for debugDescription: String) -> String {
+        if debugDescription.contains("setLyricsTTML") {
+            return "setLyricsTTML"
+        }
+        if debugDescription.contains("clearState") {
+            return "clearState"
+        }
+        if debugDescription.contains("setPlaying") {
+            return "setPlaying"
+        }
+        if debugDescription.contains("setConfig") {
+            return "setConfig"
+        }
+        if debugDescription.contains("collectTrackProfileSession") {
+            return "collectTrackProfileSession"
+        }
+        if debugDescription.contains("beginTrackProfileSession") {
+            return "beginTrackProfileSession"
+        }
+        if debugDescription.contains("collectDiagnostics") {
+            return "collectDiagnostics"
+        }
+        return "other"
     }
 
     private func runDebugVisibleLayerProbe(label: String) {
@@ -697,6 +731,12 @@ final class LyricsWebViewStore: NSObject {
             "applyTrack: trackID=\(trackID?.uuidString.prefix(8) ?? "nil"), ttmlLen=\(ttml?.count ?? 0), time=\(currentTime), playing=\(isPlaying), objectID=\(webViewObjectID)",
             category: .webview
         )
+        let activeProfileSessionID = beginTrackProfileSession(
+            trackID: trackID,
+            ttmlLength: ttml?.count ?? 0,
+            currentTime: currentTime,
+            isPlaying: isPlaying
+        )
         logTrackDiagnostics(
             stage: "beforeTrackTeardown",
             trackID: trackID,
@@ -727,6 +767,12 @@ final class LyricsWebViewStore: NSObject {
                 ttmlLength: ttml?.count ?? 0,
                 delay: 0.35
             )
+            if let activeProfileSessionID {
+                self.scheduleTrackProfileCollection(
+                    sessionID: activeProfileSessionID,
+                    trackID: trackID
+                )
+            }
         }
     }
 
@@ -814,6 +860,8 @@ final class LyricsWebViewStore: NSObject {
         pendingVisibleLayerProbe = nil
         pendingTrackDiagnosticsProbe?.cancel()
         pendingTrackDiagnosticsProbe = nil
+        pendingTrackProfileCollection?.cancel()
+        pendingTrackProfileCollection = nil
         pendingCalls.removeAll()
 
         // Clear all state
@@ -1031,6 +1079,101 @@ final class LyricsWebViewStore: NSObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
     }
 
+    private func beginTrackProfileSession(
+        trackID: UUID?,
+        ttmlLength: Int,
+        currentTime: Double,
+        isPlaying: Bool
+    ) -> Int? {
+        guard LyricsRuntimeProfile.enabled else { return nil }
+        guard role == LyricsSurfaceRole.main.rawValue else { return nil }
+        guard isReady else { return nil }
+        guard let sessionID = LyricsRuntimeProfile.currentSessionID() else { return nil }
+
+        let payload: [String: Any] = [
+            "sessionID": sessionID,
+            "trackID": trackID?.uuidString ?? "nil",
+            "ttmlLength": ttmlLength,
+            "currentTime": currentTime,
+            "isPlaying": isPlaying,
+            "role": role,
+        ]
+        let call = PendingJavaScriptCall(
+            debugDescription: "window.AMLL.beginTrackProfileSession(session)",
+            call: .function(
+                body: "return window.AMLL.beginTrackProfileSession(session);",
+                arguments: ["session": payload]
+            )
+        )
+        executeJavaScriptCall(call)
+        LyricsRuntimeProfile.setMetadata("webview.role", value: role)
+        LyricsRuntimeProfile.setMetadata("webview.objectID", value: "\(webViewObjectID)")
+        return sessionID
+    }
+
+    private func scheduleTrackProfileCollection(
+        sessionID: Int,
+        trackID: UUID?
+    ) {
+        guard LyricsRuntimeProfile.enabled else { return }
+        pendingTrackProfileCollection?.cancel()
+
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.collectTrackProfileSession(sessionID: sessionID, trackID: trackID)
+        }
+        pendingTrackProfileCollection = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: workItem)
+    }
+
+    private func collectTrackProfileSession(
+        sessionID: Int,
+        trackID: UUID?
+    ) {
+        guard LyricsRuntimeProfile.enabled else { return }
+        guard role == LyricsSurfaceRole.main.rawValue else { return }
+        guard isReady else { return }
+
+        let call = PendingJavaScriptCall(
+            debugDescription: "window.AMLL.collectTrackProfileSession()",
+            call: .function(
+                body: "return window.AMLL.collectTrackProfileSession();",
+                arguments: [:]
+            )
+        )
+
+        executeJavaScriptCall(call) { result, error in
+            if let error {
+                LyricsRuntimeProfile.setMetadata(
+                    "jsProfile.error",
+                    value: error.localizedDescription
+                )
+                return
+            }
+
+            if let payload = result as? [String: Any] {
+                LyricsRuntimeProfile.mergeJSProfile(sessionID: sessionID, payload: payload)
+                return
+            }
+
+            if let payloadString = result as? String,
+                let data = payloadString.data(using: .utf8),
+                let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            {
+                LyricsRuntimeProfile.mergeJSProfile(sessionID: sessionID, payload: object)
+                return
+            }
+
+            LyricsRuntimeProfile.setMetadata(
+                "jsProfile.unexpectedResult",
+                value: String(describing: result ?? "nil")
+            )
+            LyricsRuntimeProfile.setMetadata(
+                "jsProfile.trackID",
+                value: trackID?.uuidString ?? "nil"
+            )
+        }
+    }
+
     private func logTrackDiagnostics(
         stage: String,
         trackID: UUID?,
@@ -1207,6 +1350,8 @@ final class LyricsWebViewStore: NSObject {
 
         isTimeSyncInFlight = true
         lastDeliveredTime = seconds
+        LyricsRuntimeProfile.increment("swiftToJS.executed")
+        LyricsRuntimeProfile.increment("swiftToJS.executed.setCurrentTime")
         let js = "window.AMLL.setCurrentTime(\(seconds))"
         webView.evaluateJavaScript(js) { [weak self] _, error in
             Task { @MainActor [weak self] in

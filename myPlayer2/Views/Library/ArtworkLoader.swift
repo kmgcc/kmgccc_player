@@ -34,35 +34,6 @@ actor ArtworkImageCache {
     }
 }
 
-actor ArtworkDecodeGate {
-    private let maxConcurrent: Int
-    private var running = 0
-    private var waiters: [CheckedContinuation<Void, Never>] = []
-
-    init(maxConcurrent: Int) {
-        self.maxConcurrent = max(1, maxConcurrent)
-    }
-
-    func acquire() async {
-        if running < maxConcurrent {
-            running += 1
-            return
-        }
-        await withCheckedContinuation { continuation in
-            waiters.append(continuation)
-        }
-    }
-
-    func release() {
-        if waiters.isEmpty {
-            running = max(0, running - 1)
-            return
-        }
-        let continuation = waiters.removeFirst()
-        continuation.resume()
-    }
-}
-
 enum PlaylistPerfDiagnostics {
     private static let lock = NSLock()
     private static var rowBodyRecomputeCount = 0
@@ -208,12 +179,19 @@ enum ArtworkLoader {
     ) async -> NSImage? {
         guard let artworkData, !artworkData.isEmpty else { return nil }
         if let cached = await cache.image(for: cacheKey) {
+            LyricsRuntimeProfile.increment("header.loadHeaderImage.cacheHit")
             return cached
         }
+        let startUptime = ProcessInfo.processInfo.systemUptime
         let image = await ArtworkDerivativeCacheStore.shared.image(
             for: cacheKey,
             artworkData: artworkData,
             maxPixelSize: maxPixelSize
+        )
+        LyricsRuntimeProfile.increment("header.loadHeaderImage.count")
+        LyricsRuntimeProfile.addDuration(
+            "header.loadHeaderImage",
+            ms: (ProcessInfo.processInfo.systemUptime - startUptime) * 1000
         )
         if let image {
             let side = max(1, maxPixelSize)
@@ -244,21 +222,35 @@ enum ArtworkLoader {
         maxPixelSize: Int = 640
     ) -> NSImage? {
         guard let data, !data.isEmpty else { return nil }
+        let startUptime = ProcessInfo.processInfo.systemUptime
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
-        return downsampledImage(source: source, maxPixelSize: max(1, maxPixelSize))
+        let image = downsampledImage(source: source, maxPixelSize: max(1, maxPixelSize))
+        LyricsRuntimeProfile.increment("header.headerPreviewImage.data.count")
+        LyricsRuntimeProfile.addDuration(
+            "header.headerPreviewImage.data",
+            ms: (ProcessInfo.processInfo.systemUptime - startUptime) * 1000
+        )
+        return image
     }
 
     nonisolated static func headerPreviewImage(
         fileURL: URL,
         maxPixelSize: Int = 640
     ) -> NSImage? {
+        let startUptime = ProcessInfo.processInfo.systemUptime
         guard
             let source = CGImageSourceCreateWithURL(
                 fileURL as CFURL,
                 [kCGImageSourceShouldCache: false] as CFDictionary
             )
         else { return nil }
-        return downsampledImage(source: source, maxPixelSize: max(1, maxPixelSize))
+        let image = downsampledImage(source: source, maxPixelSize: max(1, maxPixelSize))
+        LyricsRuntimeProfile.increment("header.headerPreviewImage.file.count")
+        LyricsRuntimeProfile.addDuration(
+            "header.headerPreviewImage.file",
+            ms: (ProcessInfo.processInfo.systemUptime - startUptime) * 1000
+        )
+        return image
     }
 
     private nonisolated static func downsampledImage(data: Data, targetPixelSize: CGSize)

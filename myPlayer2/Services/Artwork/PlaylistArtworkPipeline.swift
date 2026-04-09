@@ -70,10 +70,18 @@ actor PlaylistArtworkPipeline {
 
         guard !Task.isCancelled else { return nil }
 
-        await decodeGate.acquire()
+        // Acquire decode slot with cancellation support
+        let (acquired, _) = await decodeGate.acquire()
+        guard acquired else {
+            // Cancelled while waiting for slot
+            return nil
+        }
 
+        // Ensure release is called exactly once after successful acquire
+        defer { Task { await decodeGate.release() } }
+
+        // Double-check cancellation after acquiring slot
         guard !Task.isCancelled else {
-            await decodeGate.release()
             return nil
         }
 
@@ -84,12 +92,10 @@ actor PlaylistArtworkPipeline {
         )
 
         guard let image else {
-            await decodeGate.release()
             return nil
         }
 
         guard !Task.isCancelled else {
-            await decodeGate.release()
             return nil
         }
 
@@ -99,7 +105,6 @@ actor PlaylistArtworkPipeline {
             cost: max(1, Int(request.pixelSize.width * request.pixelSize.height * 4))
         )
 
-        await decodeGate.release()
         return image
     }
     

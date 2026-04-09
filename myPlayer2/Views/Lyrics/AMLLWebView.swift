@@ -35,6 +35,7 @@ struct AMLLWebView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> WebViewHostView {
+        LyricsRuntimeProfile.increment("AMLLWebView.makeNSView")
         let hostView = WebViewHostView()
 
         Log.debug(
@@ -49,6 +50,7 @@ struct AMLLWebView: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: WebViewHostView, context: Context) {
+        LyricsRuntimeProfile.increment("AMLLWebView.updateNSView")
         // Always try to ensure WebView is attached with correct frame
         context.coordinator.tryAttach(to: nsView, context: "updateNSView")
 
@@ -66,6 +68,31 @@ struct AMLLWebView: NSViewRepresentable {
         if webView.appearance != appearanceIcon {
             webView.appearance = appearanceIcon
         }
+
+        LyricsRuntimeProfile.recordFlagChange(
+            key: "WebViewHostView.isHidden",
+            previous: context.coordinator.lastHostHidden,
+            next: nsView.isHidden
+        )
+        context.coordinator.lastHostHidden = nsView.isHidden
+        LyricsRuntimeProfile.recordFlagChange(
+            key: "WKWebView.isHidden",
+            previous: context.coordinator.lastWebViewHidden,
+            next: webView.isHidden
+        )
+        context.coordinator.lastWebViewHidden = webView.isHidden
+        if let lastAlphaValue = context.coordinator.lastWebViewAlphaValue {
+            if abs(lastAlphaValue - Double(webView.alphaValue)) >= 0.001 {
+                LyricsRuntimeProfile.increment("WKWebView.alphaValue.changed")
+                LyricsRuntimeProfile.setMetadata(
+                    "WKWebView.alphaValue.last",
+                    value: String(format: "%.3f", webView.alphaValue)
+                )
+            } else {
+                LyricsRuntimeProfile.increment("WKWebView.alphaValue.same")
+            }
+        }
+        context.coordinator.lastWebViewAlphaValue = Double(webView.alphaValue)
 
         if context.coordinator.lastLoggedAppearanceMode != mode {
             context.coordinator.lastLoggedAppearanceMode = mode
@@ -89,6 +116,7 @@ struct AMLLWebView: NSViewRepresentable {
     }
 
     static func dismantleNSView(_ nsView: WebViewHostView, coordinator: Coordinator) {
+        LyricsRuntimeProfile.increment("AMLLWebView.dismantleNSView")
         guard let attachmentID = coordinator.attachmentID else {
             Log.debug("dismantleNSView: no attachmentID", category: .webview)
             return
@@ -111,6 +139,9 @@ struct AMLLWebView: NSViewRepresentable {
         var attachmentID: UUID?
         var lastLoggedReady: Bool = false
         var lastLoggedAppearanceMode: AppSettings.AppearanceMode?
+        var lastHostHidden = false
+        var lastWebViewHidden = false
+        var lastWebViewAlphaValue: Double?
         private weak var hostView: WebViewHostView?
         private var hasAttemptedAttach = false
 
@@ -120,6 +151,7 @@ struct AMLLWebView: NSViewRepresentable {
 
         /// Try to attach WebView to host, with detailed logging
         func tryAttach(to hostView: WebViewHostView, context: String) {
+            LyricsRuntimeProfile.increment("AMLLWebView.tryAttach")
             // Check conditions but don't block - just log
             let hasWindow = hostView.window != nil
             let hasFrame = hostView.frame.size.width > 0 && hostView.frame.size.height > 0
@@ -130,8 +162,19 @@ struct AMLLWebView: NSViewRepresentable {
             // If already attached to this host, just ensure frame is correct
             if isAttached {
                 if let webView = store.preparedWebView, webView.frame != hostView.bounds {
+                    LyricsRuntimeProfile.recordFrameWrite(
+                        key: "WKWebView.frame",
+                        previous: webView.frame,
+                        next: hostView.bounds
+                    )
                     webView.frame = hostView.bounds
                     Log.debug("Updated WebView frame: \(webView.frame)", category: .webview)
+                } else if let webView = store.preparedWebView {
+                    LyricsRuntimeProfile.recordFrameWrite(
+                        key: "WKWebView.frame",
+                        previous: webView.frame,
+                        next: webView.frame
+                    )
                 }
                 self.hostView = hostView
                 return
@@ -144,6 +187,7 @@ struct AMLLWebView: NSViewRepresentable {
         }
 
         func attachWebView(to hostView: WebViewHostView) {
+            LyricsRuntimeProfile.increment("AMLLWebView.attachWebView")
             if attachmentID == nil || store.activeAttachmentID != attachmentID {
                 attachmentID = store.attach()
                 Log.debug("Attached store, attachmentID=\(attachmentID?.uuidString.prefix(8) ?? "nil")", category: .webview)
@@ -156,11 +200,17 @@ struct AMLLWebView: NSViewRepresentable {
 
             // Remove from old superview if different
             if let superview = webView.superview, superview !== hostView {
+                LyricsRuntimeProfile.increment("AMLLWebView.reparentFromOldSuperview")
                 Log.debug("Removing WebView from old superview", category: .webview)
                 webView.removeFromSuperview()
             }
 
             // Add to new host
+            LyricsRuntimeProfile.recordFrameWrite(
+                key: "WKWebView.frame",
+                previous: webView.frame,
+                next: hostView.bounds
+            )
             webView.frame = hostView.bounds
             webView.autoresizingMask = [.width, .height]
             hostView.addSubview(webView)
@@ -173,6 +223,7 @@ struct AMLLWebView: NSViewRepresentable {
         }
 
         func detachWebView(from hostView: WebViewHostView) {
+            LyricsRuntimeProfile.increment("AMLLWebView.detachWebView")
             let webView = store.webView
             guard webView.superview === hostView else { return }
             webView.removeFromSuperview()
@@ -224,6 +275,45 @@ struct AMLLWebView: NSViewRepresentable {
 
 final class WebViewHostView: NSView {
     override var isFlipped: Bool { true }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        let previousFrame = frame
+        super.setFrameSize(newSize)
+        LyricsRuntimeProfile.recordFrameWrite(
+            key: "WebViewHostView.frame",
+            previous: previousFrame,
+            next: frame
+        )
+    }
+
+    override func setFrameOrigin(_ newOrigin: NSPoint) {
+        let previousFrame = frame
+        super.setFrameOrigin(newOrigin)
+        LyricsRuntimeProfile.recordFrameWrite(
+            key: "WebViewHostView.frame",
+            previous: previousFrame,
+            next: frame
+        )
+    }
+
+    override func layout() {
+        LyricsRuntimeProfile.increment("WebViewHostView.layout")
+        super.layout()
+    }
+
+    override func layoutSubtreeIfNeeded() {
+        LyricsRuntimeProfile.increment("WebViewHostView.layoutSubtreeIfNeeded")
+        super.layoutSubtreeIfNeeded()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        LyricsRuntimeProfile.increment("WebViewHostView.viewDidMoveToWindow")
+        LyricsRuntimeProfile.setMetadata(
+            "WebViewHostView.windowAttached",
+            value: window != nil ? "true" : "false"
+        )
+    }
 }
 
 // MARK: - Preview

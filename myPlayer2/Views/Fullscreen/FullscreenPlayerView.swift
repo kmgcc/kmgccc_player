@@ -78,7 +78,7 @@ struct FullscreenPlayerView: View {
     private let fullscreenLyricsSaturationCeiling: CGFloat = 0.58
 
     @Environment(PlayerViewModel.self) private var playerVM
-    @Environment(LEDMeterService.self) private var ledMeter
+    @Environment(LEDMeterServiceProvider.self) private var ledMeterProvider
     @Environment(AppSettings.self) private var settings
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -205,13 +205,13 @@ struct FullscreenPlayerView: View {
             resetFullscreenBottomControlsAutoHideState()
 
             if isLedEnabledForFullscreenSkin() {
-                ledMeter.start()
+                ledMeterProvider.getOrCreate().start()
             }
         }
         .onDisappear {
             Log.info("FullscreenPlayerView disappeared", category: .webview)
             didHandleFullscreenAppear = false
-            ledMeter.stop()
+            ledMeterProvider.getOrCreate().stop()
             existingFullscreenStore?.onUserSeek = nil
             pendingFullscreenLyricsRefresh?.cancel()
             pendingFullscreenLyricsRefresh = nil
@@ -238,9 +238,9 @@ struct FullscreenPlayerView: View {
         }
         .onChange(of: settings.fullscreen.skinID) { _, newValue in
             if isLedEnabledForFullscreenSkin() {
-                ledMeter.start()
+                ledMeterProvider.getOrCreate().start()
             } else {
-                ledMeter.stop()
+                ledMeterProvider.getOrCreate().stop()
             }
 
             // Note: Mutual exclusivity is now handled by FullscreenPresentationCoordinator
@@ -1935,8 +1935,8 @@ struct FullscreenPlayerView: View {
         return SkinContext(
             track: trackMeta,
             playback: playback,
-            audio: ledMeter.audioMetrics,
-            led: ledMeter.metrics,
+            audio: ledMeterProvider.getOrCreate().audioMetrics,
+            led: ledMeterProvider.getOrCreate().metrics,
             theme: theme,
             windowSize: windowSize,
             contentBounds: contentBounds,

@@ -114,7 +114,7 @@
     // AMLL namespace
     window.AMLL = {
         version: '1.0.0',
-        capabilities: ['ttml', 'lrc', 'seek', 'clearState', 'destroy', 'diagnostics'],
+        capabilities: ['ttml', 'lrc', 'seek', 'clearState', 'destroy', 'diagnostics', 'trackProfile'],
 
         /**
          * Set TTML lyrics text
@@ -234,6 +234,40 @@
             };
             console.log("[Bridge] collectDiagnostics", bridgeDiagnostics);
             return bridgeDiagnostics;
+        },
+
+        beginTrackProfileSession: function(session) {
+            try {
+                if (!isReady) {
+                    pendingCalls.push({ method: 'beginTrackProfileSession', args: [session] });
+                    return null;
+                }
+                if (
+                    window.LyricsRenderer
+                    && typeof window.LyricsRenderer.beginTrackProfileSession === 'function'
+                ) {
+                    return window.LyricsRenderer.beginTrackProfileSession(session);
+                }
+                return null;
+            } catch (e) {
+                console.error("[Bridge-Crash] beginTrackProfileSession:", e);
+                return null;
+            }
+        },
+
+        collectTrackProfileSession: function() {
+            try {
+                if (
+                    window.LyricsRenderer
+                    && typeof window.LyricsRenderer.collectTrackProfileSession === 'function'
+                ) {
+                    return window.LyricsRenderer.collectTrackProfileSession();
+                }
+                return null;
+            } catch (e) {
+                console.error("[Bridge-Crash] collectTrackProfileSession:", e);
+                return null;
+            }
         },
 
         /**
