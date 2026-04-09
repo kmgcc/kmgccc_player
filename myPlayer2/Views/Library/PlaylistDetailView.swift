@@ -8,166 +8,7 @@
 //  Import button is HERE (per-playlist), NOT in main toolbar.
 //
 
-import AppKit
 import SwiftUI
-
-// MARK: - Halo Session State (Parent-Owned)
-
-/// Parent-owned halo session state that persists independently of header view lifecycle.
-/// The header may report geometry upward, but this state survives header recycling/offscreen.
-/// Missing/nil child updates NEVER destroy the current valid state.
-///
-/// Transform model:
-/// - Position: halo moves upward with scroll but at a damped rate (slower than cover)
-/// - Scale: starts small (baseScale) and grows gradually via an eased curve
-/// - No withAnimation on the scroll path — transforms are computed directly
-///   from the raw scroll delta, keeping the per-frame cost minimal.
-@MainActor
-@Observable
-final class HaloSessionState {
-    /// Identity of the selection this session belongs to
-    var selectionIdentity: String?
-
-    /// Resolved artwork image for the current selection (same source as header)
-    var resolvedArtwork: NSImage?
-
-    /// Last valid cover anchor center in scroll-content coordinate space
-    /// Set when header reports valid bounds; persists after header scrolls offscreen.
-    /// NOT cleared on selection change — reused for immediate first paint.
-    var lastValidAnchor: CGPoint?
-
-    /// Raw scroll delta from initial offset. Written once per scroll frame.
-    /// All derived transforms (position, scale) are computed inline from this single value.
-    private(set) var scrollDelta: CGFloat = 0
-
-    /// Initial scroll offset captured on first measurement after session start.
-    private var initialScrollOffset: CGFloat?
-
-    // MARK: - Transform constants
-
-    /// Desired halo speed as a fraction of scroll-content speed (screen space).
-    /// 0.6 = halo moves upward at 60 % of the speed the cover/content moves.
-    ///
-    /// The halo is embedded inside the scroll content, so it already inherits
-    /// a 1:1 scroll movement. To achieve fraction f in screen space the halo's
-    /// position within content must be counteracted by (1 - f) of each scroll
-    /// unit. See `contentSpaceOffset`.
-    private static let parallaxFraction: CGFloat = 0.6
-
-    /// Resting scale before any scroll
-    private static let baseScale: CGFloat = 0.72
-
-    /// Maximum additional scale growth at full scroll extent
-    private static let maxScaleGrowth: CGFloat = 0.5
-
-    /// Scroll distance (pts) over which scale grows from base to base+max
-    private static let scaleRange: CGFloat = 500
-
-    // MARK: - Derived transforms
-
-    /// Whether this session has valid content to render
-    var hasValidContent: Bool {
-        resolvedArtwork != nil && lastValidAnchor != nil
-    }
-
-    /// Y offset to apply in VStack-content space to achieve the parallax effect.
-    ///
-    /// Because the halo lives inside the scroll content it already moves with
-    /// the list at 1:1. To make it appear slower (at `parallaxFraction` of
-    /// scroll speed) we partially counteract the scroll in content space:
-    ///
-    ///   contentSpaceOffset = scrollDelta × (f − 1)
-    ///
-    /// Derivation (scroll down by N, scrollDelta = −N):
-    ///   • content moves up N in screen space
-    ///   • halo content-Y += (−N)(f − 1) = N(1 − f)
-    ///   • halo screen-Y  = content-Y − N = +N(1−f) − N = −Nf   ✓
-    ///   • cover screen-Y = −N  →  halo (−Nf) < cover (−N)  ✓
-    var contentSpaceOffset: CGFloat {
-        scrollDelta * (Self.parallaxFraction - 1.0)
-    }
-
-    /// Scale computed from scroll distance via an ease-out power curve.
-    /// Grows gradually as the user scrolls upward; stays at baseScale at rest.
-    var computedScale: CGFloat {
-        let upwardScroll = max(0, -scrollDelta)
-        let t = min(upwardScroll / Self.scaleRange, 1.0)
-        // ease-out: fast initial growth that tapers off
-        let eased = 1.0 - pow(1.0 - t, 2.5)
-        return Self.baseScale + Self.maxScaleGrowth * eased
-    }
-
-    // MARK: - Mutations
-
-    /// Start a new session for a different selection.
-    /// Preserves lastValidAnchor for immediate first paint (anchor updates naturally
-    /// from the next geometry report). Does NOT clear artwork — prevents white flash.
-    func beginNewSession(selectionIdentity: String) {
-        self.selectionIdentity = selectionIdentity
-        // lastValidAnchor deliberately kept — same header position, enables instant halo
-        // resolvedArtwork deliberately kept — prevents flash on transition
-        self.initialScrollOffset = nil
-        self.scrollDelta = 0
-    }
-
-    /// Update artwork when a valid new resolution arrives.
-    /// Only replaces if the identity matches the current session.
-    func updateArtwork(identity: String, image: NSImage?) {
-        guard self.selectionIdentity == identity else { return }
-        self.resolvedArtwork = image
-    }
-
-    /// Update anchor from header geometry report.
-    /// Only accepts valid bounds; nil values are ignored (never destroy current state).
-    func updateAnchorIfValid(bounds: CGRect?) {
-        guard let bounds, bounds.width > 0, bounds.height > 0 else { return }
-        self.lastValidAnchor = CGPoint(x: bounds.midX, y: bounds.midY)
-    }
-
-    /// Update scroll delta from current offset. Called once per scroll frame.
-    /// No animation, no threshold — just a single property write.
-    func updateScroll(offset: CGFloat) {
-        if initialScrollOffset == nil {
-            initialScrollOffset = offset
-        }
-        scrollDelta = offset - (initialScrollOffset ?? offset)
-    }
-}
-
-// MARK: - Halo Render View (isolated observation boundary)
-
-/// Standalone View struct that renders the halo bloom.
-///
-/// Being a separate struct creates an independent @Observable tracking boundary:
-/// SwiftUI only re-evaluates *this* body when `session.scrollDelta` changes —
-/// not `PlaylistDetailView.body` and not the LazyVStack track list.
-/// Without this isolation, every scroll frame would re-diff the entire content
-/// tree (track rows, header, preference keys), causing jank on long playlists.
-fileprivate struct HaloRenderView: View {
-    let session: HaloSessionState
-
-    var body: some View {
-        Group {
-            if session.hasValidContent,
-               let image = session.resolvedArtwork,
-               let anchor = session.lastValidAnchor
-            {
-                let bloomSize: CGFloat = 220 * 4.0
-                let haloX = anchor.x
-                // contentSpaceOffset counteracts (1 - parallaxFraction) of scroll
-                // so the halo drifts slower than the cover in screen space.
-                let haloY = anchor.y + session.contentSpaceOffset
-
-                BlurredArtworkBackgroundView(image: image, bloomSize: bloomSize)
-                    .frame(width: bloomSize, height: bloomSize * 1.5)
-                    .scaleEffect(session.computedScale)
-                    .position(x: haloX, y: haloY)
-            }
-        }
-        .frame(height: 0)          // takes no layout space
-        .allowsHitTesting(false)
-    }
-}
 
 // MARK: - Playlist Detail View
 
@@ -177,22 +18,6 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
     private struct BatchEditRequest: Identifiable {
         let id = UUID()
         let tracks: [Track]
-    }
-
-    private struct SortableTrackEntry: Sendable {
-        let id: UUID
-        let title: String
-        let artist: String
-        let duration: Double
-        let addedAt: Date
-        let importedAt: Date?
-        let playlistItemAddedAt: Date?
-    }
-
-    private struct SortedTrackComputation: Sendable {
-        let filteredTrackIDs: [UUID]
-        let sortedTrackIDs: [UUID]
-        let parentSortedTrackIDs: [UUID]
     }
 
     @Environment(LibraryViewModel.self) private var libraryVM
@@ -205,38 +30,10 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
     // MARK: - State
 
     @State private var trackToEdit: Track?
-    @State private var searchText: String = ""
-    @State private var listScrollPositionID: UUID?
-    @State private var displayedTracksCache: [Track] = []
-    @State private var filteredTracksCache: [Track] = []
-    @State private var sortedTracksCache: [Track] = []
-    @State private var parentSortedTracksCache: [Track] = []
-    @State private var viewSnapshot: PlaylistViewSnapshot = .empty
-    @State private var sortedTrackIndexMapCache: [UUID: Int] = [:]
-    @State private var parentSortedTrackIndexMapCache: [UUID: Int] = [:]
-    @State private var prefetchTask: Task<Void, Never>?
-    @State private var rebuildTask: Task<Void, Never>?
-    @State private var snapshotUpdateTask: Task<Void, Never>?
-    @State private var activeRebuildToken = UUID()
-    @State private var isRebuilding = false
-    @State private var isSelectionTransitioning = false
-    @State private var selectionTransitionTask: Task<Void, Never>?
-    @State private var lastQueueTrackIDs: [UUID] = []
-    @State private var lastPrefetchBucket: Int?
     @FocusState private var isSearchFocused: Bool
-    @State private var isMultiselectMode = false
-    @State private var selectedTrackIDs: Set<UUID> = []
     @State private var sortSymbolEffectTrigger = 0
     @State private var batchEditRequest: BatchEditRequest?
-    @StateObject private var pageSession = PlaylistDetailSessionController()
-
-    /// Parent-owned halo session state - survives header lifecycle, selection switches
-    @State private var haloSession = HaloSessionState()
-    
-    /// Cached album header artwork to avoid repeated NSImage(data:) decoding on every body re-evaluate.
-    /// Cache key combines entry ID + artwork data checksum to invalidate on content change.
-    @State private var cachedAlbumHeaderArtwork: NSImage?
-    @State private var cachedAlbumArtworkKey: String?
+    @State private var pageController = PlaylistPageController()
 
     // MARK: - Init
 
@@ -250,23 +47,22 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         Group {
             if libraryVM.currentSelection == .allSongs {
                 if libraryVM.state == .loading
-                    || isSelectionTransitioning
-                    || (isRebuilding && displayedTracksCache.isEmpty && viewSnapshot.isEmpty)
+                    || pageController.isSelectionTransitioning
                 {
                     ProgressView()
                         .controlSize(.large)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if displayedTracksCache.isEmpty {
+                } else if (pageController.page?.displayedTrackCount ?? 0) == 0 {
                     emptyStateView
-                } else if filteredTracksCache.isEmpty {
+                } else if (pageController.page?.rows.isEmpty ?? true) {
                     noResultsView
                 } else {
                     trackListView
                         .id("rows-\(selectionIdentity)")
                 }
             } else {
-                if isSelectionTransitioning
-                    || (isRebuilding && displayedTracksCache.isEmpty && viewSnapshot.isEmpty)
+                if pageController.isSelectionTransitioning
+                    || (libraryVM.state == .loading && pageController.page == nil)
                 {
                     ProgressView()
                         .controlSize(.large)
@@ -311,95 +107,58 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             .presentationSizing(.page)
         }
         .onAppear {
-            pageSession.activateFirstPaintPhases(for: libraryVM.currentSelection)
-            scheduleRebuild(reason: "appear", restoreScroll: true)
+            pageController.bind(libraryVM: libraryVM, playerVM: playerVM, uiState: uiState)
+            pageController.appear()
         }
         .onDisappear {
-            isSelectionTransitioning = false
-            selectionTransitionTask?.cancel()
-            selectionTransitionTask = nil
-            pageSession.cancelPhases()
-            prefetchTask?.cancel()
-            prefetchTask = nil
-            rebuildTask?.cancel()
-            rebuildTask = nil
-            snapshotUpdateTask?.cancel()
-            snapshotUpdateTask = nil
-            Task {
-                await LibraryTrackSnapshotBuilder.shared.cancelBuild()
-            }
+            pageController.disappear()
         }
-        .onChange(of: libraryVM.selectedPlaylist?.id) { oldVal, newVal in
-            // Begin new halo session for different playlist - preserves old artwork until new resolves
-            haloSession.beginNewSession(selectionIdentity: "playlist-\(newVal ?? UUID())")
-        }
-        .onChange(of: libraryVM.selectedArtistKey) { oldVal, newVal in
-            // Begin new halo session for different artist
-            haloSession.beginNewSession(selectionIdentity: "artist-\(newVal ?? "")")
-        }
-        .onChange(of: libraryVM.selectedAlbumKey) { oldVal, newVal in
-            // Begin new halo session for different album
-            haloSession.beginNewSession(selectionIdentity: "album-\(newVal ?? "")")
-        }
-        .onChange(of: searchText) { _, _ in
-            scheduleRebuild(reason: "search", debounceNanoseconds: 150_000_000)
+        .onChange(of: pageController.searchText) { _, _ in
+            pageController.handleSearchChange()
         }
         .onChange(of: libraryVM.trackSortKey) { _, _ in
             sortSymbolEffectTrigger += 1
-            scheduleRebuild(reason: "sortKey")
+            pageController.handleSortChange(reason: "sortKey")
         }
         .onChange(of: libraryVM.trackSortOrder) { _, _ in
             sortSymbolEffectTrigger += 1
-            scheduleRebuild(reason: "sortOrder")
+            pageController.handleSortChange(reason: "sortOrder")
         }
-        .onChange(of: libraryVM.totalTrackCount) { oldVal, newVal in
-            scheduleRebuild(reason: "trackCount", restoreScroll: true)
+        .onChange(of: libraryVM.totalTrackCount) { _, _ in
+            pageController.handleLibraryRefresh(reason: "trackCount", restoreScroll: true)
         }
         .onChange(of: libraryVM.refreshTrigger) { _, _ in
-            scheduleRebuild(reason: "refresh", restoreScroll: true)
+            pageController.handleLibraryRefresh(reason: "refresh", restoreScroll: true)
         }
         .onChange(of: libraryVM.searchResetTrigger) { _, _ in
-            searchText = ""
+            pageController.searchText = ""
             isSearchFocused = false
         }
-        .onChange(of: libraryVM.state) { oldVal, newVal in
+        .onChange(of: libraryVM.state) { _, newVal in
             if newVal == .loaded {
-                scheduleRebuild(reason: "state_loaded", restoreScroll: true)
+                pageController.handleLibraryRefresh(reason: "state_loaded", restoreScroll: true)
             }
         }
-        .onChange(of: libraryVM.currentSelection) { oldVal, newVal in
-            cachedAlbumHeaderArtwork = nil
-            cachedAlbumArtworkKey = nil
-            selectionTransitionTask?.cancel()
-            pageSession.beginTeardown()
-            let targetSelection = newVal
-            selectionTransitionTask = Task { @MainActor in
-                await Task.yield()
-                guard !Task.isCancelled else { return }
-                guard libraryVM.currentSelection == targetSelection else { return }
-                isSelectionTransitioning = true
-                releaseListCachesForSelectionTransition()
-                pageSession.activateFirstPaintPhases(for: targetSelection)
-                if targetSelection == .allSongs {
-                    haloSession.resolvedArtwork = nil
-                    haloSession.lastValidAnchor = nil
-                }
-                scheduleRebuild(reason: "selection", restoreScroll: true)
-            }
+        .onChange(of: libraryVM.currentSelection) { _, newVal in
+            pageController.handleSelectionChange(newVal)
         }
         .onReceive(NotificationCenter.default.publisher(for: .libraryTrackDidUpdate)) { notification in
             guard let trackID = notification.userInfo?["trackID"] as? UUID else { return }
-            applyTargetedTrackRefresh(trackID: trackID)
+            pageController.applyTargetedTrackRefresh(trackID: trackID)
         }
     }
 
     // MARK: - Computed Properties
 
     private var isFiltering: Bool {
-        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !pageController.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var selectionIdentity: String {
+        pageController.page?.selectionIdentity ?? fallbackSelectionIdentity
+    }
+
+    private var fallbackSelectionIdentity: String {
         switch libraryVM.currentSelection {
         case .allSongs:
             return "allSongs"
@@ -412,69 +171,30 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         }
     }
 
-    // MARK: - Detail Header
+    private var searchBinding: Binding<String> {
+        Binding(
+            get: { pageController.searchText },
+            set: { pageController.searchText = $0 }
+        )
+    }
 
-    /// Config for LibraryDetailHeaderView. Nil for .allSongs (no header).
-    private var detailHeaderConfig: DetailHeaderConfig? {
-        switch libraryVM.currentSelection {
-        case .allSongs:
-            return nil
-        case .playlist(let id):
-            guard let playlist = libraryVM.playlists.first(where: { $0.id == id }) else {
-                return nil
-            }
-            let playlistTracks = playlist.tracks.filter { $0.availability != .missing }
-            return .playlist(
-                playlist,
-                entry: PlaylistHeaderData(
-                    description: playlist.userDescription,
-                    tracks: playlistTracks
-                )
-            )
-        case .artist(let key):
-            guard let entry = libraryVM.artistEntries.first(where: { $0.canonicalName == key }) else {
-                return nil
-            }
-            let albumCount = libraryVM.albumEntries
-                .filter { $0.primaryArtistCanonicalName == key }
-                .count
-            let totalDuration = displayedTracksCache.reduce(0) { $0 + $1.duration }
-            return .artist(
-                entry,
-                stats: ArtistDerivedStats(
-                    trackCount: displayedTracksCache.count,
-                    albumCount: albumCount,
-                    totalDuration: totalDuration
-                )
-            )
-        case .album(let key):
-            guard let entry = libraryVM.albumEntries.first(where: { $0.canonicalKey == key }) else {
-                return nil
-            }
-            let totalDuration = displayedTracksCache.reduce(0) { $0 + $1.duration }
-            
-            // Use cached artwork if key matches, avoiding repeated NSImage(data:) decoding
-            let artworkData = entry.artworkData ?? displayedTracksCache.first?.artworkData
-            let cacheKey = "\(entry.id)-\(artworkData?.hashValue ?? 0)"
-            let firstArtwork: NSImage?
-            if cachedAlbumArtworkKey == cacheKey, let cached = cachedAlbumHeaderArtwork {
-                firstArtwork = cached
-            } else {
-                firstArtwork = ArtworkLoader.headerPreviewImage(data: artworkData, maxPixelSize: 640)
-                cachedAlbumHeaderArtwork = firstArtwork
-                cachedAlbumArtworkKey = cacheKey
-            }
-            
-            return .album(
-                entry,
-                stats: AlbumDerivedStats(
-                    artistName: entry.primaryArtistDisplayName,
-                    trackCount: displayedTracksCache.count,
-                    totalDuration: totalDuration,
-                    artworkImage: firstArtwork
-                )
-            )
-        }
+    private var scrollBinding: Binding<UUID?> {
+        Binding(
+            get: { pageController.listScrollPositionID },
+            set: { pageController.updateScrollPosition($0) }
+        )
+    }
+
+    private var currentRows: [PlaylistPageRowModel] {
+        pageController.page?.rows ?? []
+    }
+
+    private var queueTracks: [Track] {
+        pageController.page?.queueTracks ?? []
+    }
+
+    private var detailHeaderModel: PlaylistPageHeaderModel? {
+        pageController.page?.header
     }
 
     // MARK: - Subviews
@@ -484,23 +204,22 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             sortMenu
 
             GlassToolbarTriplePill(
-                isMultiselectActive: isMultiselectMode,
+                isMultiselectActive: pageController.isMultiselectMode,
                 onToggleMultiselect: {
-                    isMultiselectMode.toggle()
-                    if !isMultiselectMode {
-                        selectedTrackIDs.removeAll()
+                    pageController.isMultiselectMode.toggle()
+                    if !pageController.isMultiselectMode {
+                        pageController.selectedTrackIDs.removeAll()
                     }
                 },
-                canPlay: !sortedTracksCache.isEmpty,
+                canPlay: !queueTracks.isEmpty,
                 onPlay: {
-                    if isMultiselectMode && !selectedTrackIDs.isEmpty {
-                        let selected = sortedTracksCache.filter {
-                            selectedTrackIDs.contains($0.id)
-                        }
+                    if pageController.isMultiselectMode && !pageController.selectedTrackIDs.isEmpty {
+                        let selected = selectedTracksForBatchEditor()
+                        guard !selected.isEmpty else { return }
                         playerVM.playTracks(selected)
                     } else {
-                        guard !sortedTracksCache.isEmpty else { return }
-                        playerVM.playTracks(sortedTracksCache)
+                        guard !queueTracks.isEmpty else { return }
+                        playerVM.playTracks(queueTracks)
                     }
                 },
                 onImport: {
@@ -514,16 +233,15 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
 
             GlassToolbarSearchField(
                 placeholder: "搜索",
-                text: $searchText,
+                text: searchBinding,
                 focused: $isSearchFocused
             ) {
-                searchText = ""
+                pageController.searchText = ""
             }
             .frame(minWidth: 96, idealWidth: 140, maxWidth: 140)
 
             headerAccessory
         }
-        // Padding inward, then constrain to exact width - HStack naturally gets (width - padding*2)
         .padding(.horizontal, GlassStyleTokens.headerHorizontalPadding)
         .frame(width: width, height: GlassStyleTokens.headerBarHeight)
     }
@@ -654,42 +372,36 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         )
     }
 
-    /// The track rows and bottom spacer shared by both scroll view variants.
     @ViewBuilder
     private var trackRowsContent: some View {
-        ForEach(viewSnapshot.trackIDs, id: \.self) { trackID in
-            if let rowSnapshot = viewSnapshot.snapshot(for: trackID) {
-                TrackRowView(
-                    model: trackRowModel(for: rowSnapshot),
-                    isPlaying: playerVM.currentTrack?.id == trackID,
-                    isSelected: isMultiselectMode && selectedTrackIDs.contains(trackID),
-                    enableSecondaryInteractions: pageSession.areRowSecondaryInteractionsEnabled,
-                    enableArtworkLoading: pageSession.areRowArtworkLoadsEnabled,
-                    onTap: {
-                        if isMultiselectMode {
-                            if selectedTrackIDs.contains(trackID) {
-                                selectedTrackIDs.remove(trackID)
-                            } else {
-                                selectedTrackIDs.insert(trackID)
-                            }
+        ForEach(currentRows) { row in
+            TrackRowView(
+                model: row.trackRowModel,
+                isPlaying: playerVM.currentTrack?.id == row.id,
+                isSelected: pageController.isMultiselectMode && pageController.selectedTrackIDs.contains(row.id),
+                enableSecondaryInteractions: pageController.areRowSecondaryInteractionsEnabled,
+                enableArtworkLoading: pageController.areRowArtworkLoadsEnabled,
+                onTap: {
+                    if pageController.isMultiselectMode {
+                        if pageController.selectedTrackIDs.contains(row.id) {
+                            pageController.selectedTrackIDs.remove(row.id)
                         } else {
-                            let startIndex = parentSortedTrackIndexMapCache[trackID] ?? 0
-                            playerVM.playTracks(
-                                parentSortedTracksCache,
-                                startingAt: startIndex
-                            )
+                            pageController.selectedTrackIDs.insert(row.id)
                         }
-                    },
-                    onRowAppear: {
-                        prefetchAroundTrackID(trackID)
+                    } else {
+                        let startIndex = pageController.queueStartIndex(for: row.id)
+                        playerVM.playTracks(queueTracks, startingAt: startIndex)
                     }
-                ) {
-                    trackMenu(trackID: trackID)
+                },
+                onRowAppear: {
+                    pageController.prefetchAroundTrackID(row.id)
                 }
-                .contextMenu {
-                    if pageSession.areRowSecondaryInteractionsEnabled {
-                        trackMenu(trackID: trackID)
-                    }
+            ) {
+                trackMenu(trackID: row.id)
+            }
+            .contextMenu {
+                if pageController.areRowSecondaryInteractionsEnabled {
+                    trackMenu(trackID: row.id)
                 }
             }
         }
@@ -707,25 +419,17 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             .padding(.horizontal)
             .transaction { tx in tx.animation = nil }
         }
-        .scrollPosition(id: $listScrollPositionID, anchor: .top)
+        .scrollPosition(id: scrollBinding, anchor: .top)
         .scrollEdgeEffectStyle(.soft, for: .top)
-        .onChange(of: listScrollPositionID) { _, _ in
-            scheduleSnapshotUpdate()
-        }
         .onTapGesture {
             clearSearchFocus()
         }
     }
 
-    /// Scroll view used for playlist/artist/album selections.
-    /// Header is NOT inside LazyVStack - uses separate VStack for stability.
-    /// Halo renders from parent-owned session state.
     private var detailScrollView: some View {
         ScrollView(.vertical) {
             VStack(spacing: 0) {
-                // Halo layer - renders from parent-owned session state
-                // Independent of header view lifecycle
-                if pageSession.isHeaderEffectsEnabled {
+                if pageController.isHeaderEffectsEnabled {
                     haloLayer
                 } else {
                     Color.clear
@@ -733,13 +437,10 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
                         .allowsHitTesting(false)
                 }
 
-                // Header section - NOT inside LazyVStack for stable lifecycle
-                // Reports geometry upward but doesn't own halo state
-                if let config = detailHeaderConfig {
-                    headerContentSection(config: config)
+                if let header = detailHeaderModel {
+                    headerContentSection(model: header)
                 }
 
-                // Track content section - uses LazyVStack for performance
                 trackContentSection
             }
             .padding(.top, listTopPadding)
@@ -748,82 +449,63 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             .transaction { tx in tx.animation = nil }
         }
         .coordinateSpace(name: "detailScroll")
-        .scrollPosition(id: $listScrollPositionID, anchor: .top)
+        .scrollPosition(id: scrollBinding, anchor: .top)
         .scrollEdgeEffectStyle(.soft, for: .top)
-        .onChange(of: listScrollPositionID) { _, _ in
-            scheduleSnapshotUpdate()
-        }
         .onTapGesture {
             clearSearchFocus()
         }
     }
 
-    /// Halo layer — hosts HaloRenderView and attaches the scroll-offset sensor.
-    ///
-    /// Rendering is delegated to HaloRenderView (a separate View struct) so that
-    /// @Observable tracking for per-frame scrollDelta changes is scoped to that
-    /// tiny view. This view just owns the preference sensor and the write path.
     private var haloLayer: some View {
-        HaloRenderView(session: haloSession)
-            // Scroll-offset sensor: measures haloLayer's Y in the ScrollView's
-            // fixed coordinate space. Value decreases as content scrolls up.
-            .background(
-                GeometryReader { geo in
-                    Color.clear
-                        .preference(
-                            key: ScrollOffsetPreferenceKey.self,
-                            value: geo.frame(in: .named("detailScroll")).minY
-                        )
-                }
-            )
-            .onPreferenceChange(ScrollOffsetPreferenceKey.self) { offset in
-                haloSession.updateScroll(offset: offset)
+        HeaderHaloBackgroundView(
+            state: pageController.haloState,
+            currentSource: pageController.haloCurrentImage,
+            incomingSource: pageController.haloIncomingImage,
+            sourceBlendOpacity: pageController.haloSourceBlendOpacity,
+            presentationOpacity: pageController.haloPresentationOpacity
+        )
+        .background(
+            ScrollOffsetSensor { offset in
+                pageController.updateHaloScroll(offset: offset)
             }
+        )
     }
 
-    /// Header content section - positioned outside LazyVStack for stable lifecycle.
-    /// Reports geometry to parent but doesn't own halo state.
     @ViewBuilder
-    private func headerContentSection(config: DetailHeaderConfig) -> some View {
+    private func headerContentSection(model: PlaylistPageHeaderModel) -> some View {
         LibraryDetailHeaderView(
-            config: config,
+            config: model.config,
+            artworkIdentity: model.artworkIdentity,
+            currentArtwork: pageController.headerCurrentArtwork,
+            incomingArtwork: pageController.headerIncomingArtwork,
+            incomingOpacity: pageController.headerIncomingOpacity,
             onPlay: {
-                guard !sortedTracksCache.isEmpty else { return }
-                playerVM.playTracks(sortedTracksCache)
+                guard !queueTracks.isEmpty else { return }
+                playerVM.playTracks(queueTracks)
             },
-            canPlay: !sortedTracksCache.isEmpty
-        )
-        .onPreferenceChange(HeaderArtworkBoundsPreferenceKey.self) { bounds in
-            // CRITICAL: Only accept valid bounds - never destroy state on nil
-            // This prevents halo disappearing when header scrolls offscreen
-            haloSession.updateAnchorIfValid(bounds: bounds)
-        }
-        .onPreferenceChange(HeaderArtworkImagePreferenceKey.self) { image in
-            // Update artwork in session - only if valid image provided
-            if let image {
-                haloSession.updateArtwork(
-                    identity: haloSession.selectionIdentity ?? "",
-                    image: image
+            canPlay: !queueTracks.isEmpty,
+            onArtworkFrameChange: { bounds in
+                pageController.updateHeaderArtworkBounds(
+                    bounds,
+                    selectionIdentity: model.config.selectionIdentity
                 )
+            },
+            onArtworkMutation: {
+                pageController.refreshHeaderArtwork()
             }
-        }
+        )
 
         Spacer().frame(height: 12)
     }
 
-    /// Track content section - uses LazyVStack for performance.
     private var trackContentSection: some View {
         Group {
-            if libraryVM.state == .loading
-                || (isRebuilding && displayedTracksCache.isEmpty && viewSnapshot.isEmpty)
-            {
+            if libraryVM.state == .loading && pageController.page == nil {
                 ProgressView()
                     .controlSize(.large)
                     .padding(.vertical, 40)
                     .frame(maxWidth: .infinity)
-            } else if filteredTracksCache.isEmpty
-                && !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            {
+            } else if currentRows.isEmpty && isFiltering {
                 VStack(spacing: 10) {
                     Image(systemName: "magnifyingglass")
                         .font(.system(size: 28))
@@ -857,9 +539,7 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
                 .font(.subheadline)
                 .foregroundStyle(.tertiary)
 
-            // Import button in empty state
             Button {
-                print("🔘 Import button (empty state) tapped")
                 Task {
                     await libraryVM.importToCurrentPlaylist()
                 }
@@ -889,7 +569,7 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
                 .font(.title3)
                 .foregroundStyle(.secondary)
 
-            Text(String(format: NSLocalizedString("library.no_matches", comment: ""), searchText))
+            Text(String(format: NSLocalizedString("library.no_matches", comment: ""), pageController.searchText))
                 .font(.subheadline)
                 .foregroundStyle(.tertiary)
 
@@ -900,28 +580,27 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
     }
 
     private var songCountText: String {
+        let displayedCount = pageController.page?.displayedTrackCount ?? 0
+        let filteredCount = pageController.page?.filteredTrackCount ?? 0
         if isFiltering {
             return String(
                 format: NSLocalizedString("library.song_count_filtered", comment: ""),
-                filteredTracksCache.count, displayedTracksCache.count)
+                filteredCount,
+                displayedCount
+            )
         }
         let format =
-            displayedTracksCache.count == 1
+            displayedCount == 1
             ? NSLocalizedString("library.song_count_one", comment: "")
             : NSLocalizedString("library.song_count", comment: "")
-        return String(format: format, displayedTracksCache.count)
-    }
-
-    private var totalSelectionCount: Int {
-        selectedTrackIDs.count
+        return String(format: format, displayedCount)
     }
 
     @ViewBuilder
     private func trackMenu(trackID: UUID) -> some View {
-        if let track = latestTrackFromLibrary(trackID: trackID) {
-            if isMultiselectMode && selectedTrackIDs.contains(trackID) {
-                // Batch Actions
-                Text("已选择 \(selectedTrackIDs.count) 首歌曲")
+        if let track = pageController.latestTrackFromLibrary(trackID: trackID) {
+            if pageController.isMultiselectMode && pageController.selectedTrackIDs.contains(trackID) {
+                Text("已选择 \(pageController.selectedTrackIDs.count) 首歌曲")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 4)
@@ -981,10 +660,8 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
                         for track in tracks {
                             await libraryVM.deleteTrack(track)
                         }
-                        // Clear selection after delete
                         await MainActor.run {
-                            // Selection will be cleared by cache rebuild or logic
-                            selectedTrackIDs.removeAll()
+                            pageController.selectedTrackIDs.removeAll()
                         }
                     }
                 } label: {
@@ -992,37 +669,30 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
                 }
 
             } else {
-                // SINGLE TRACK ACTIONS (Keep existing)
-
-                // Enter multiselect mode
                 Button {
-                    isMultiselectMode = true
-                    selectedTrackIDs.insert(trackID)
+                    pageController.isMultiselectMode = true
+                    pageController.selectedTrackIDs.insert(trackID)
                 } label: {
                     Label("多选歌曲…", systemImage: "checkmark.circle")
                 }
 
                 Divider()
 
-                // Play
                 Button {
-                    let startIndex = parentSortedTrackIndexMapCache[track.id] ?? 0
-                    playerVM.playTracks(parentSortedTracksCache, startingAt: startIndex)
+                    let startIndex = pageController.queueStartIndex(for: track.id)
+                    playerVM.playTracks(queueTracks, startingAt: startIndex)
                 } label: {
                     Label("播放", systemImage: "play")
                 }
 
                 Divider()
 
-                // Add to Playlist
                 Menu {
                     ForEach(libraryVM.playlists) { playlist in
-                        // Don't show current playlist if we are in it
                         if libraryVM.selectedPlaylist?.id != playlist.id {
                             Button {
                                 Task {
-                                    await libraryVM.addTracksToPlaylist(
-                                        [track], playlist: playlist)
+                                    await libraryVM.addTracksToPlaylist([track], playlist: playlist)
                                 }
                             } label: {
                                 Label(playlist.name, systemImage: "music.note.list")
@@ -1045,12 +715,10 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
                 }
                 .id("single_add_to_playlist_\(libraryVM.playlists.count)")
 
-                // Remove from Playlist (if in one)
                 if let currentPlaylist = libraryVM.selectedPlaylist {
                     Button {
                         Task {
-                            await libraryVM.removeTracksFromPlaylist(
-                                [track], playlist: currentPlaylist)
+                            await libraryVM.removeTracksFromPlaylist([track], playlist: currentPlaylist)
                         }
                     } label: {
                         Label("从当前播放列表移除", systemImage: "minus.circle")
@@ -1059,7 +727,6 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
 
                 Divider()
 
-                // Edit Metadata
                 Button {
                     trackToEdit = track
                 } label: {
@@ -1068,7 +735,6 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
 
                 Divider()
 
-                // Delete from Library
                 Button(role: .destructive) {
                     Task {
                         await libraryVM.deleteTrack(track)
@@ -1083,597 +749,59 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
     }
 
     private func processBatchAction(action: @escaping ([Track]) async -> Void) {
-        let selectedTracks = sortedTracksCache.filter { selectedTrackIDs.contains($0.id) }
+        let selectedTracks = selectedTracksForBatchEditor()
         Task {
             await action(selectedTracks)
             await MainActor.run {
-                isMultiselectMode = false
-                selectedTrackIDs.removeAll()
+                pageController.clearMultiselectState()
             }
         }
     }
 
     private func selectedTracksForBatchEditor() -> [Track] {
-        sortedTracksCache.filter { selectedTrackIDs.contains($0.id) }
+        currentRows.compactMap { row in
+            guard pageController.selectedTrackIDs.contains(row.id) else { return nil }
+            return pageController.latestTrackFromLibrary(trackID: row.id)
+        }
     }
 
     private func openBatchEditor() {
         let selectedTracks = selectedTracksForBatchEditor()
         guard !selectedTracks.isEmpty else { return }
         uiState.lyricsPanelSuppressedByModal = true
-        batchEditRequest = BatchEditRequest(
-            tracks: selectedTracks
-        )
+        batchEditRequest = BatchEditRequest(tracks: selectedTracks)
     }
 
     private func clearMultiselectState() {
-        uiState.lyricsPanelSuppressedByModal = false
-        isMultiselectMode = false
-        selectedTrackIDs.removeAll()
+        pageController.clearMultiselectState()
     }
 
-    private var listTopPadding: CGFloat { GlassStyleTokens.headerBarHeight + 16 }
-
-    private var listBottomPadding: CGFloat { 16 }
-
-    // MARK: - Header Background
-
-private func clearSearchFocus() {
+    private func clearSearchFocus() {
         if isSearchFocused {
             isSearchFocused = false
         }
     }
 
-    private func restoreScrollIfNeeded() {
-        let playlistID = libraryVM.selectedPlaylist?.id
-        let restoreID = uiState.consumeLibraryRestoreTarget(for: playlistID)
-
-        guard
-            let restoreID,
-            sortedTracksCache.contains(where: { $0.id == restoreID })
-        else {
-            // No restore target (or missing in current dataset): keep default initial position.
-            listScrollPositionID = nil
-            return
-        }
-
-        // Defer one runloop to ensure scroll container has mounted.
-        Task { @MainActor in
-            listScrollPositionID = restoreID
-        }
-    }
-
-    private func updateLibrarySnapshot() {
-        let firstID = sortedTracksCache.first?.id
-        let userScrolled = {
-            guard let position = listScrollPositionID, let firstID else { return false }
-            return position != firstID
-        }()
-
-        uiState.rememberLibraryContext(
-            playlistID: libraryVM.selectedPlaylist?.id,
-            scrollTrackID: listScrollPositionID,
-            userScrolled: userScrolled
-        )
-    }
-
-    private func scheduleSnapshotUpdate() {
-        snapshotUpdateTask?.cancel()
-        snapshotUpdateTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 120_000_000)
-            guard !Task.isCancelled else { return }
-            updateLibrarySnapshot()
-        }
-    }
-
-    @MainActor
-    private func releaseListCachesForSelectionTransition() {
-        prefetchTask?.cancel()
-        prefetchTask = nil
-        rebuildTask?.cancel()
-        rebuildTask = nil
-        snapshotUpdateTask?.cancel()
-        snapshotUpdateTask = nil
-        lastPrefetchBucket = nil
-        listScrollPositionID = nil
-        isMultiselectMode = false
-        selectedTrackIDs.removeAll()
-        lastQueueTrackIDs = []
-    }
-
-    private func scheduleRebuild(
-        reason: String,
-        debounceNanoseconds: UInt64 = 0,
-        restoreScroll: Bool = false
-    ) {
-        rebuildTask?.cancel()
-        let token = UUID()
-        activeRebuildToken = token
-        rebuildTask = Task { @MainActor in
-            if debounceNanoseconds > 0 {
-                try? await Task.sleep(nanoseconds: debounceNanoseconds)
-            }
-            guard !Task.isCancelled else { return }
-            isRebuilding = true
-            await performRebuild(
-                reason: reason,
-                restoreScroll: restoreScroll,
-                token: token
-            )
-        }
-    }
-
-    private func performRebuild(
-        reason: String,
-        restoreScroll: Bool,
-        token: UUID
-    ) async {
-        let rebuildStart = ProcessInfo.processInfo.systemUptime
-        let displayedTracks = currentDisplayedTracks()
-        let trimmedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let sourceFingerprint = pageSourceFingerprint(for: displayedTracks)
-        let modelKey = await PlaylistPageModelCacheService.shared.cacheKey(
-            selectionIdentity: selectionIdentity,
-            sourceFingerprint: sourceFingerprint,
-            searchText: trimmedSearch,
-            sortKeyRawValue: libraryVM.trackSortKey.rawValue,
-            sortOrderRawValue: libraryVM.trackSortOrder.rawValue
-        )
-
-        if let cached = await PlaylistPageModelCacheService.shared.model(for: modelKey) {
-            let displayedTrackByID = Dictionary(uniqueKeysWithValues: displayedTracks.map { ($0.id, $0) })
-            let filteredTracks = cached.filteredTrackIDs.compactMap { displayedTrackByID[$0] }
-            let sortedTracks = cached.sortedTrackIDs.compactMap { displayedTrackByID[$0] }
-            let parentSortedTracks = cached.parentSortedTrackIDs.compactMap { displayedTrackByID[$0] }
-
-            let cacheCoherent =
-                filteredTracks.count == cached.filteredTrackIDs.count
-                && sortedTracks.count == cached.sortedTrackIDs.count
-                && parentSortedTracks.count == cached.parentSortedTrackIDs.count
-
-            if cacheCoherent, !Task.isCancelled, activeRebuildToken == token {
-                prefetchTask?.cancel()
-                prefetchTask = nil
-                lastPrefetchBucket = nil
-                displayedTracksCache = displayedTracks
-                filteredTracksCache = filteredTracks
-                sortedTracksCache = sortedTracks
-                parentSortedTracksCache = parentSortedTracks
-                sortedTrackIndexMapCache = cached.sortedTrackIndexMap
-                parentSortedTrackIndexMapCache = cached.parentSortedTrackIndexMap
-                viewSnapshot = cached.snapshot
-                selectedTrackIDs.formIntersection(Set(sortedTracks.map(\.id)))
-                if restoreScroll {
-                    restoreScrollIfNeeded()
-                }
-                updateLibrarySnapshot()
-                syncPlayerQueueIfNeeded(with: parentSortedTracks)
-                isRebuilding = false
-                isSelectionTransitioning = false
-                let rebuildDurationMs = (ProcessInfo.processInfo.systemUptime - rebuildStart) * 1000
-                PlaylistPerfDiagnostics.markListRebuild(
-                    reason: "\(reason)-cache-hit",
-                    trackCount: cached.snapshot.trackCount,
-                    durationMs: rebuildDurationMs
-                )
-                return
-            } else {
-                await PlaylistPageModelCacheService.shared.remove(
-                    key: modelKey,
-                    selectionIdentity: cached.selectionIdentity
-                )
-            }
-        }
-
-        let playlistItemAddedAtMap: [UUID: Date]? = {
-            guard let playlistID = libraryVM.selectedPlaylistId else { return nil }
-            return libraryVM.playlistItemAddedAtMap[playlistID]
-        }()
-        let sortableEntries: [SortableTrackEntry] = displayedTracks.map { track in
-            SortableTrackEntry(
-                id: track.id,
-                title: track.title,
-                artist: track.artist,
-                duration: track.duration,
-                addedAt: track.addedAt,
-                importedAt: track.importedAt,
-                playlistItemAddedAt: playlistItemAddedAtMap?[track.id]
-            )
-        }
-        let sortedComputation = await computeSortedTrackIDs(
-            entries: sortableEntries,
-            searchText: trimmedSearch,
-            sortKey: libraryVM.trackSortKey,
-            sortOrder: libraryVM.trackSortOrder
-        )
-
-        guard !Task.isCancelled, activeRebuildToken == token else {
-            if activeRebuildToken == token {
-                isRebuilding = false
-                isSelectionTransitioning = false
-            }
-            return
-        }
-
-        let displayedTrackByID = Dictionary(uniqueKeysWithValues: displayedTracks.map { ($0.id, $0) })
-        let filteredTracks = sortedComputation.filteredTrackIDs.compactMap { displayedTrackByID[$0] }
-        let sortedTracks = sortedComputation.sortedTrackIDs.compactMap { displayedTrackByID[$0] }
-        let parentSortedTracks = sortedComputation.parentSortedTrackIDs.compactMap {
-            displayedTrackByID[$0]
-        }
-
-        guard
-            filteredTracks.count == sortedComputation.filteredTrackIDs.count,
-            sortedTracks.count == sortedComputation.sortedTrackIDs.count,
-            parentSortedTracks.count == sortedComputation.parentSortedTrackIDs.count
-        else {
-            isRebuilding = false
-            isSelectionTransitioning = false
-            return
-        }
-
-        let rowScale = NSScreen.main?.backingScaleFactor ?? 2.0
-        let rowPixels = CGSize(
-            width: Constants.Layout.artworkSmallSize * rowScale,
-            height: Constants.Layout.artworkSmallSize * rowScale
-        )
-        let inputs = sortedTracks.map {
-            TrackRowBuildInput(
-                trackID: $0.id,
-                title: $0.title,
-                artist: $0.artist,
-                album: $0.album,
-                duration: $0.duration,
-                artworkData: $0.artworkData,
-                isMissing: $0.availability == .missing
-            )
-        }
-        guard let snapshot = await LibraryTrackSnapshotBuilder.shared.buildSnapshot(
-            playlistID: libraryVM.selectedPlaylist?.id ?? UUID(),
-            tracks: inputs,
-            targetPixelSize: rowPixels
-        ) else {
-            if activeRebuildToken == token {
-                isRebuilding = false
-                isSelectionTransitioning = false
-            }
-            return
-        }
-
-        guard !Task.isCancelled, activeRebuildToken == token else {
-            if activeRebuildToken == token {
-                isRebuilding = false
-                isSelectionTransitioning = false
-            }
-            return
-        }
-
-        prefetchTask?.cancel()
-        prefetchTask = nil
-        lastPrefetchBucket = nil
-        displayedTracksCache = displayedTracks
-        filteredTracksCache = filteredTracks
-        sortedTracksCache = sortedTracks
-        parentSortedTracksCache = parentSortedTracks
-        sortedTrackIndexMapCache = Dictionary(
-            uniqueKeysWithValues: snapshot.trackIDs.enumerated().map { ($0.element, $0.offset) })
-        parentSortedTrackIndexMapCache = Dictionary(
-            uniqueKeysWithValues: parentSortedTracks.enumerated().map { ($0.element.id, $0.offset) }
-        )
-        viewSnapshot = snapshot
-        selectedTrackIDs.formIntersection(Set(sortedTracks.map(\.id)))
-
-        let pageEntry = PlaylistPageModelCacheEntry(
-            key: modelKey,
-            selectionIdentity: selectionIdentity,
-            sourceFingerprint: sourceFingerprint,
-            searchText: trimmedSearch,
-            sortKeyRawValue: libraryVM.trackSortKey.rawValue,
-            sortOrderRawValue: libraryVM.trackSortOrder.rawValue,
-            displayedTrackIDs: displayedTracks.map(\.id),
-            filteredTrackIDs: filteredTracks.map(\.id),
-            sortedTrackIDs: sortedTracks.map(\.id),
-            parentSortedTrackIDs: parentSortedTracks.map(\.id),
-            sortedTrackIndexMap: sortedTrackIndexMapCache,
-            parentSortedTrackIndexMap: parentSortedTrackIndexMapCache,
-            snapshot: snapshot,
-            cachedAt: Date()
-        )
-        await PlaylistPageModelCacheService.shared.store(pageEntry)
-
-        if restoreScroll {
-            restoreScrollIfNeeded()
-        }
-        updateLibrarySnapshot()
-        syncPlayerQueueIfNeeded(with: parentSortedTracks)
-        isRebuilding = false
-        isSelectionTransitioning = false
-        let rebuildDurationMs = (ProcessInfo.processInfo.systemUptime - rebuildStart) * 1000
-        PlaylistPerfDiagnostics.markListRebuild(
-            reason: reason,
-            trackCount: snapshot.trackCount,
-            durationMs: rebuildDurationMs
-        )
-    }
-
-    private func pageSourceFingerprint(for tracks: [Track]) -> String {
-        var hash: UInt64 = 1_469_598_103_934_665_603
-        hash ^= UInt64(tracks.count)
-        hash &*= 1_099_511_628_211
-
-        let step = max(1, tracks.count / 32)
-        for index in stride(from: 0, to: tracks.count, by: step) {
-            let track = tracks[index]
-            let uuid = track.id.uuid
-            withUnsafeBytes(of: uuid) { raw in
-                for byte in raw {
-                    hash ^= UInt64(byte)
-                    hash &*= 1_099_511_628_211
-                }
-            }
-            hash ^= UInt64(track.duration.bitPattern)
-            hash &*= 1_099_511_628_211
-        }
-
-        hash ^= UInt64(libraryVM.totalTrackCount)
-        hash &*= 1_099_511_628_211
-        hash ^= UInt64(bitPattern: Int64(libraryVM.refreshTrigger))
-        hash &*= 1_099_511_628_211
-        hash ^= UInt64(bitPattern: Int64(libraryVM.trackUpdateEvent?.revision ?? 0))
-        hash &*= 1_099_511_628_211
-
-        return String(hash, radix: 16)
-    }
-
-    private func computeSortedTrackIDs(
-        entries: [SortableTrackEntry],
-        searchText: String,
-        sortKey: TrackSortKey,
-        sortOrder: TrackSortOrder
-    ) async -> SortedTrackComputation {
-        await Task.detached(priority: .userInitiated) {
-            let trimmedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-            let filteredEntries: [SortableTrackEntry]
-            if trimmedSearch.isEmpty {
-                filteredEntries = entries
-            } else {
-                filteredEntries = entries.filter {
-                    $0.title.localizedCaseInsensitiveContains(trimmedSearch)
-                }
-            }
-
-            let sortedFiltered = filteredEntries.sorted {
-                Self.compareSortableTracks(
-                    $0,
-                    $1,
-                    sortKey: sortKey,
-                    sortOrder: sortOrder
-                )
-            }
-            let parentSorted = trimmedSearch.isEmpty
-                ? sortedFiltered
-                : entries.sorted {
-                    Self.compareSortableTracks(
-                        $0,
-                        $1,
-                        sortKey: sortKey,
-                        sortOrder: sortOrder
-                    )
-                }
-            return SortedTrackComputation(
-                filteredTrackIDs: filteredEntries.map(\.id),
-                sortedTrackIDs: sortedFiltered.map(\.id),
-                parentSortedTrackIDs: parentSorted.map(\.id)
-            )
-        }.value
-    }
-
-    private nonisolated static func compareSortableTracks(
-        _ lhs: SortableTrackEntry,
-        _ rhs: SortableTrackEntry,
-        sortKey: TrackSortKey,
-        sortOrder: TrackSortOrder
-    ) -> Bool {
-        let result: ComparisonResult
-
-        switch sortKey {
-        case .importedAt:
-            result = compareDates(lhs.importedAt ?? lhs.addedAt, rhs.importedAt ?? rhs.addedAt)
-        case .addedAt:
-            result = compareDates(
-                lhs.playlistItemAddedAt ?? lhs.importedAt ?? lhs.addedAt,
-                rhs.playlistItemAddedAt ?? rhs.importedAt ?? rhs.addedAt
-            )
-        case .title:
-            result = lhs.title.localizedCaseInsensitiveCompare(rhs.title)
-        case .artist:
-            result = lhs.artist.localizedCaseInsensitiveCompare(rhs.artist)
-        case .duration:
-            result = compareDoubles(lhs.duration, rhs.duration)
-        }
-
-        if result == .orderedSame {
-            let titleResult = lhs.title.localizedCaseInsensitiveCompare(rhs.title)
-            if titleResult != .orderedSame {
-                return titleResult == .orderedAscending
-            }
-            return lhs.id.uuidString < rhs.id.uuidString
-        }
-
-        return sortOrder == .ascending
-            ? result == .orderedAscending
-            : result == .orderedDescending
-    }
-
-    private nonisolated static func compareDates(_ lhs: Date, _ rhs: Date) -> ComparisonResult {
-        if lhs == rhs { return .orderedSame }
-        return lhs < rhs ? .orderedAscending : .orderedDescending
-    }
-
-    private nonisolated static func compareDoubles(_ lhs: Double, _ rhs: Double) -> ComparisonResult {
-        if lhs == rhs { return .orderedSame }
-        return lhs < rhs ? .orderedAscending : .orderedDescending
-    }
-
-    private func currentDisplayedTracks() -> [Track] {
-        switch libraryVM.currentSelection {
-        case .allSongs:
-            return libraryVM.allTracks.filter { $0.availability != .missing }
-        case .playlist(let id):
-            if let playlist = libraryVM.playlists.first(where: { $0.id == id }) {
-                return playlist.tracks.filter { $0.availability != .missing }
-            }
-            return []
-        case .artist(let key):
-            return libraryVM.allTracks.filter {
-                LibraryNormalization.normalizeArtist($0.artist) == key
-                    && $0.availability != .missing
-            }
-        case .album(let key):
-            return libraryVM.allTracks.filter {
-                LibraryNormalization.normalizedAlbumKey(album: $0.album, artist: $0.artist)
-                    == key && $0.availability != .missing
-            }
-        }
-    }
-
-    private func syncPlayerQueueIfNeeded(with tracks: [Track]) {
-        let trackIDs = tracks.map(\.id)
-        guard trackIDs != lastQueueTrackIDs else { return }
-        lastQueueTrackIDs = trackIDs
-        playerVM.updateQueueTracks(tracks)
-    }
-
-    private func trackRowModel(for snapshot: TrackRowSnapshot) -> TrackRowModel {
-        TrackRowModel(
-            id: snapshot.trackID,
-            title: snapshot.title,
-            artist: snapshot.artist,
-            durationText: snapshot.durationText,
-            artworkData: snapshot.artworkData,
-            artworkCacheKey: snapshot.artworkCacheKey,
-            isMissing: snapshot.isMissing
-        )
-    }
-
-    private func prefetchAroundTrackID(_ trackID: UUID) {
-        guard pageSession.isRowArtworkPrefetchEnabled else { return }
-        guard let startIndex = sortedTrackIndexMapCache[trackID] else { return }
-        let bucket = startIndex / 4
-        guard bucket != lastPrefetchBucket else { return }
-        lastPrefetchBucket = bucket
-        let rowScale = NSScreen.main?.backingScaleFactor ?? 2.0
-        let rowPixels = CGSize(
-            width: Constants.Layout.artworkSmallSize * rowScale,
-            height: Constants.Layout.artworkSmallSize * rowScale
-        )
-        let start = min(startIndex + 1, viewSnapshot.trackIDs.count)
-        let end = min(viewSnapshot.trackIDs.count, startIndex + 5)
-        guard start < end else { return }
-
-        let requests: [ArtworkPrefetchRequest] = Array(viewSnapshot.trackIDs[start..<end]).compactMap {
-            trackID in
-            guard let snapshot = viewSnapshot.snapshot(for: trackID) else { return nil }
-            return ArtworkPrefetchRequest(
-                cacheKey: snapshot.artworkCacheKey,
-                artworkData: snapshot.artworkData,
-                targetPixelSize: rowPixels
-            )
-        }
-        prefetchTask?.cancel()
-        prefetchTask = ArtworkLoader.prefetch(Array(requests))
-    }
-
-    private func applyTargetedTrackRefresh(trackID: UUID) {
-        guard let track = latestTrackFromLibrary(trackID: trackID) else { return }
-        guard let sortIndex = sortedTrackIndexMapCache[trackID] else { return }
-
-        let rowScale = NSScreen.main?.backingScaleFactor ?? 2.0
-        let rowPixels = CGSize(
-            width: Constants.Layout.artworkSmallSize * rowScale,
-            height: Constants.Layout.artworkSmallSize * rowScale
-        )
-        let checksum = ArtworkLoader.checksum(for: track.artworkData)
-        let cacheKey = ArtworkLoader.cacheKey(
-            trackID: track.id,
-            checksum: checksum,
-            targetPixelSize: rowPixels
-        )
-
-        displayedTracksCache = displayedTracksCache.map { $0.id == trackID ? track : $0 }
-        filteredTracksCache = filteredTracksCache.map { $0.id == trackID ? track : $0 }
-        sortedTracksCache = sortedTracksCache.map { $0.id == trackID ? track : $0 }
-        parentSortedTracksCache = parentSortedTracksCache.map { $0.id == trackID ? track : $0 }
-
-        let rowSnapshot = TrackRowSnapshot(
-            trackID: track.id,
-            title: track.title,
-            artist: track.artist,
-            album: track.album,
-            duration: track.duration,
-            durationText: formatDuration(track.duration),
-            artworkChecksum: checksum,
-            artworkData: track.artworkData,
-            artworkCacheKey: cacheKey,
-            isMissing: track.availability == .missing,
-            sortIndex: sortIndex + 1
-        )
-
-        var updatedSnapshots = viewSnapshot.trackSnapshots
-        updatedSnapshots[trackID] = rowSnapshot
-        viewSnapshot = PlaylistViewSnapshot(
-            playlistID: viewSnapshot.playlistID,
-            trackIDs: viewSnapshot.trackIDs,
-            trackSnapshots: updatedSnapshots,
-            totalDuration: viewSnapshot.totalDuration
-        )
-
-        lastPrefetchBucket = nil
-    }
-
-    private func latestTrackFromLibrary(trackID: UUID) -> Track? {
-        if let track = libraryVM.allTracks.first(where: { $0.id == trackID }) {
-            return track
-        }
-        if let track = sortedTracksCache.first(where: { $0.id == trackID }) {
-            return track
-        }
-        return parentSortedTracksCache.first(where: { $0.id == trackID })
-    }
-
-    private func formatDuration(_ duration: Double) -> String {
-        guard duration.isFinite, duration > 0 else { return "0:00" }
-        let totalSeconds = Int(duration.rounded(.down))
-        let minutes = totalSeconds / 60
-        let seconds = totalSeconds % 60
-        return String(format: "%d:%02d", minutes, seconds)
-    }
+    private var listTopPadding: CGFloat { GlassStyleTokens.headerBarHeight + 16 }
+    private var listBottomPadding: CGFloat { 16 }
 }
 
-// MARK: - Preference Keys for Header Artwork (shared with LibraryDetailHeaderView)
+private struct ScrollOffsetSensor: View {
+    let onChange: (CGFloat) -> Void
 
-struct HeaderArtworkBoundsPreferenceKey: PreferenceKey {
-    static var defaultValue: CGRect?
-    static func reduce(value: inout CGRect?, nextValue: () -> CGRect?) {
-        value = nextValue() ?? value
+    var body: some View {
+        GeometryReader { geo in
+            let offset = geo.frame(in: .named("detailScroll")).minY
+            Color.clear
+                .onAppear {
+                    onChange(offset)
+                }
+                .onChange(of: offset) { _, newOffset in
+                    onChange(newOffset)
+                }
+        }
     }
 }
-
-struct HeaderArtworkImagePreferenceKey: PreferenceKey {
-    static var defaultValue: NSImage?
-    static func reduce(value: inout NSImage?, nextValue: () -> NSImage?) {
-        value = nextValue() ?? value
-    }
-}
-
-private struct ScrollOffsetPreferenceKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
-// MARK: - Preview
 
 #Preview("Playlist Detail") { @MainActor in
     let repository = StubLibraryRepository()

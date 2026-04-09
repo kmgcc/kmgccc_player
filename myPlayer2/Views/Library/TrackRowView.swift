@@ -15,7 +15,7 @@ struct TrackRowModel: Identifiable, Equatable {
     let artist: String
     let durationText: String
     let artworkData: Data?
-    let artworkCacheKey: String
+    let artworkIdentity: String
     let isMissing: Bool
 
     static func == (lhs: TrackRowModel, rhs: TrackRowModel) -> Bool {
@@ -23,7 +23,7 @@ struct TrackRowModel: Identifiable, Equatable {
             && lhs.title == rhs.title
             && lhs.artist == rhs.artist
             && lhs.durationText == rhs.durationText
-            && lhs.artworkCacheKey == rhs.artworkCacheKey
+            && lhs.artworkIdentity == rhs.artworkIdentity
             && lhs.isMissing == rhs.isMissing
     }
 }
@@ -155,7 +155,7 @@ struct TrackRowView<MenuContent: View>: View {
     }
 
     private var artworkTaskIdentity: String {
-        enableArtworkLoading ? model.artworkCacheKey : "paused-\(model.id.uuidString)"
+        enableArtworkLoading ? model.artworkIdentity : "paused-\(model.id.uuidString)"
     }
 
     private var artistText: String {
@@ -239,18 +239,20 @@ struct TrackRowView<MenuContent: View>: View {
         }
 
         let scale = NSScreen.main?.backingScaleFactor ?? 2.0
-        let highTargetPixels = CGSize(
-            width: Constants.Layout.artworkSmallSize * scale,
-            height: Constants.Layout.artworkSmallSize * scale
+        let lowRequest = PlaylistArtworkPipeline.rowLowRequest(
+            trackID: model.id,
+            artworkData: data,
+            logicalSize: Constants.Layout.artworkSmallSize,
+            scale: scale
         )
-        let lowSide = max(22, Constants.Layout.artworkSmallSize * 0.55)
-        let lowTargetPixels = CGSize(
-            width: lowSide * scale,
-            height: lowSide * scale
+        let highRequest = PlaylistArtworkPipeline.rowHighRequest(
+            trackID: model.id,
+            artworkData: data,
+            logicalSize: Constants.Layout.artworkSmallSize,
+            scale: scale
         )
-        let lowCacheKey = "\(model.artworkCacheKey)-lq"
 
-        if let cachedHigh = await ArtworkLoader.cachedImage(for: model.artworkCacheKey) {
+        if let cachedHigh = await PlaylistArtworkPipeline.shared.cachedImage(for: highRequest) {
             artworkImage = cachedHigh
             isArtworkReady = true
             return
@@ -258,11 +260,7 @@ struct TrackRowView<MenuContent: View>: View {
 
         guard !Task.isCancelled else { return }
 
-        if let lowImage = await ArtworkLoader.loadImage(
-            artworkData: data,
-            cacheKey: lowCacheKey,
-            targetPixelSize: lowTargetPixels
-        ) {
+        if let lowImage = await PlaylistArtworkPipeline.shared.load(lowRequest) {
             artworkImage = lowImage
             isArtworkReady = true
         }
@@ -272,13 +270,9 @@ struct TrackRowView<MenuContent: View>: View {
         try? await Task.sleep(nanoseconds: 120_000_000)
         guard !Task.isCancelled else { return }
 
-        if let highImage = await ArtworkLoader.loadImage(
-            artworkData: data,
-            cacheKey: model.artworkCacheKey,
-            targetPixelSize: highTargetPixels
-        ) {
+        if let highImage = await PlaylistArtworkPipeline.shared.load(highRequest) {
             artworkImage = highImage
-            withAnimation(.easeInOut(duration: 0.16)) {
+            withAnimation(.easeInOut(duration: 0.05)) {
                 isArtworkReady = true
             }
         } else if artworkImage == nil {
@@ -309,7 +303,7 @@ extension TrackRowView: Equatable where MenuContent: View {
                 artist: "The Weeknd",
                 durationText: "3:23",
                 artworkData: nil,
-                artworkCacheKey: "demo",
+                artworkIdentity: "demo",
                 isMissing: false
             ),
             isPlaying: true,
@@ -328,7 +322,7 @@ extension TrackRowView: Equatable where MenuContent: View {
                 artist: "Unknown Artist",
                 durationText: "0:00",
                 artworkData: nil,
-                artworkCacheKey: "missing",
+                artworkIdentity: "missing",
                 isMissing: true
             ),
             isPlaying: false,
