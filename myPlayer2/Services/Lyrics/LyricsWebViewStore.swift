@@ -87,6 +87,7 @@ final class LyricsWebViewStore: NSObject {
     private var lastTrackID: UUID?
     private var lastTime: Double?
     private var lastIsPlaying: Bool?
+    private var lastViewportVisible: Bool = true
     private var lastConfigJSON: String?
     private var lastThemeConfigPatchJSON: String?
     private var lastThemeCSSScript: String?
@@ -316,6 +317,21 @@ final class LyricsWebViewStore: NSObject {
         callJS("window.AMLL.setPlaying(\(boolStr))", debugDescription: "window.AMLL.setPlaying")
     }
 
+    func setViewportVisible(_ isVisible: Bool) {
+        guard !isShutDown else { return }
+
+        if isVisible == lastViewportVisible {
+            return
+        }
+
+        lastViewportVisible = isVisible
+        let boolStr = isVisible ? "true" : "false"
+        callJS(
+            "window.AMLL.setViewportVisible(\(boolStr))",
+            debugDescription: "window.AMLL.setViewportVisible"
+        )
+    }
+
     func setConfigJSON(_ json: String) {
         guard !isShutDown else { return }
 
@@ -461,6 +477,9 @@ final class LyricsWebViewStore: NSObject {
         if debugDescription.contains("setPlaying") {
             return "setPlaying"
         }
+        if debugDescription.contains("setViewportVisible") {
+            return "setViewportVisible"
+        }
         if debugDescription.contains("setConfig") {
             return "setConfig"
         }
@@ -597,6 +616,13 @@ final class LyricsWebViewStore: NSObject {
             isTimeSyncInFlight = false
             lastDeliveredTime = nil
             dispatchTimeSync(time)
+        }
+
+        if !lastViewportVisible {
+            callJS(
+                "window.AMLL.setViewportVisible(false)",
+                debugDescription: "window.AMLL.setViewportVisible(replay)"
+            )
         }
 
         Log.debug("Replay complete, objectID=\(webViewObjectID)", category: .webview)

@@ -177,6 +177,7 @@ private final class MiniPlayerSpectrumHostView: NSView {
             service.removeConsumer(consumerID)
             self.consumerID = nil
         }
+        service.stop()
         pauseTransitionTimer?.invalidate()
         pauseTransitionTimer = nil
         currentWave = Array(repeating: 0, count: 9)

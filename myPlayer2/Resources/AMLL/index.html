@@ -3693,6 +3693,68 @@
 	        };
 	        
 	        let lastKnownTimeMs = 0;
+	        let rendererViewportVisible = true;
+	        let pendingViewportVisibilityFrame = 0;
+	        const cancelPendingViewportVisibilityFrame = () => {
+	            if (pendingViewportVisibilityFrame) {
+	                cancelAnimationFrame(pendingViewportVisibilityFrame);
+	                pendingViewportVisibilityFrame = 0;
+	            }
+	        };
+	        const replayViewportEnterAnimation = () => {
+	            if (!rendererViewportVisible) return;
+	            const replayTimeMs = Number.isFinite(lastKnownTimeMs)
+	                ? lastKnownTimeMs
+	                : (lyricPlayer.getCurrentTime ? lyricPlayer.getCurrentTime() : 0);
+	            if (typeof lyricPlayer.onPageShow === "function") {
+	                lyricPlayer.onPageShow();
+	            } else {
+	                lyricPlayer.isPageVisible = true;
+	                lyricPlayer.setCurrentTime(replayTimeMs, true);
+	            }
+	            requestAnimationFrame(() => {
+	                if (!rendererViewportVisible) return;
+	                const hotLines = lyricPlayer.hotLines;
+	                const lineObjects = Array.isArray(lyricPlayer.currentLyricLineObjects)
+	                    ? lyricPlayer.currentLyricLineObjects
+	                    : [];
+	                lineObjects.forEach((lineObj, index) => {
+	                    if (!(hotLines instanceof Set) || !hotLines.has(index)) return;
+	                    if (typeof lineObj.enable === "function") {
+	                        try {
+	                            lineObj.enable(replayTimeMs, externalIsPlaying);
+	                        } catch (error) {
+	                            console.warn("[LyricsRenderer] replayViewportEnterAnimation enable failed", error);
+	                        }
+	                    }
+	                    if (externalIsPlaying && typeof lineObj.resume === "function") {
+	                        try {
+	                            lineObj.resume();
+	                        } catch (error) {
+	                            console.warn("[LyricsRenderer] replayViewportEnterAnimation resume failed", error);
+	                        }
+	                    }
+	                });
+	            });
+	        };
+	        const setViewportVisible = (visible) => {
+	            const nextVisible = !!visible;
+	            if (rendererViewportVisible === nextVisible) return;
+	            rendererViewportVisible = nextVisible;
+	            cancelPendingViewportVisibilityFrame();
+	            if (!nextVisible) {
+	                if (typeof lyricPlayer.onPageHide === "function") {
+	                    lyricPlayer.onPageHide();
+	                } else {
+	                    lyricPlayer.isPageVisible = false;
+	                }
+	                return;
+	            }
+	            pendingViewportVisibilityFrame = requestAnimationFrame(() => {
+	                pendingViewportVisibilityFrame = 0;
+	                replayViewportEnterAnimation();
+	            });
+	        };
 	        const coreSetCurrentTime = lyricPlayer.setCurrentTime.bind(lyricPlayer);
         const originalSetCurrentTime = (ms, force = false) => {
             const timeMs = Math.max(0, Math.floor(ms));
@@ -4102,6 +4164,10 @@
                         lyricPlayer.pause();
                     }
 	            },
+
+	            setViewportVisible: (isVisible) => {
+	                setViewportVisible(isVisible);
+	            },
             
 	            setConfig: (config) => {
 		                try {
@@ -4373,8 +4439,13 @@
 					    if (typeof config.alignOffset === "number" && !Number.isNaN(config.alignOffset)) {
 					        const playerEl = lyricPlayer.getElement();
 					        if (playerEl) {
-					            playerEl.style.transition = 'none';
-					            playerEl.style.transform = `translateY(${config.alignOffset}px)`;
+					            if (Math.abs(config.alignOffset) <= 0.001) {
+					                playerEl.style.removeProperty("transition");
+					                playerEl.style.removeProperty("transform");
+					            } else {
+					                playerEl.style.transition = "none";
+					                playerEl.style.transform = `translateY(${config.alignOffset}px)`;
+					            }
 					        }
 					    }
                     if (hasOwn("textColor")) {

@@ -28,6 +28,7 @@ actor ArtworkAssetStore {
     private var waitingContinuations: [String: [CheckedContinuation<ArtworkAssetSnapshot?, Never>]] = [:]
     private var fullImageInProgressKeys: Set<String> = []
     private var fullImageWaitingContinuations: [String: [CheckedContinuation<NSImage?, Never>]] = [:]
+    private var fullImageGeneration: UInt64 = 0
     
     func clearCache() {
         cache.removeAllObjects()
@@ -35,6 +36,24 @@ actor ArtworkAssetStore {
         inProgressKeys.removeAll()
         waitingContinuations.removeAll()
         fullImageInProgressKeys.removeAll()
+        fullImageGeneration &+= 1
+        for waiters in fullImageWaitingContinuations.values {
+            for continuation in waiters {
+                continuation.resume(returning: nil)
+            }
+        }
+        fullImageWaitingContinuations.removeAll()
+    }
+
+    func purgeHydratedImages() {
+        fullImageGeneration &+= 1
+        fullImageCache.removeAllObjects()
+        fullImageInProgressKeys.removeAll()
+        for waiters in fullImageWaitingContinuations.values {
+            for continuation in waiters {
+                continuation.resume(returning: nil)
+            }
+        }
         fullImageWaitingContinuations.removeAll()
     }
     
@@ -143,11 +162,12 @@ actor ArtworkAssetStore {
         }
 
         fullImageInProgressKeys.insert(snapshot.cacheKey)
+        let generation = fullImageGeneration
         let fullImage = await Task.detached(priority: .utility) {
             Self.downsampledImage(data: artworkData, maxPixelSize: 1400)
         }.value
 
-        if let fullImage {
+        if generation == fullImageGeneration, let fullImage {
             fullImageCache.setObject(
                 fullImage,
                 forKey: key,

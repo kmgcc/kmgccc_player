@@ -114,7 +114,7 @@
     // AMLL namespace
     window.AMLL = {
         version: '1.0.0',
-        capabilities: ['ttml', 'lrc', 'seek', 'clearState', 'destroy', 'diagnostics', 'trackProfile'],
+        capabilities: ['ttml', 'lrc', 'seek', 'clearState', 'destroy', 'diagnostics', 'trackProfile', 'viewportVisibility'],
 
         /**
          * Set TTML lyrics text
@@ -171,6 +171,20 @@
                 }
             } catch (e) {
                  console.error("[Bridge-Crash] setPlaying:", e);
+            }
+        },
+
+        setViewportVisible: function(isVisible) {
+            try {
+                if (!isReady) {
+                    pendingCalls.push({ method: 'setViewportVisible', args: [isVisible] });
+                    return;
+                }
+                if (window.LyricsRenderer && typeof window.LyricsRenderer.setViewportVisible === 'function') {
+                    window.LyricsRenderer.setViewportVisible(!!isVisible);
+                }
+            } catch (e) {
+                console.error("[Bridge-Crash] setViewportVisible:", e);
             }
         },
 

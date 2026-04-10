@@ -144,7 +144,7 @@ private struct ClassicLEDSkinNormalSettingsView: View {
                         ledMeterProvider.getOrCreate().start()
                     } else if visualizerMode == "led" {
                         visualizerMode = "off"
-                        ledMeterProvider.getOrCreate().stop()
+                        ledMeterProvider.releaseNowPlayingResources()
                     }
                 }
             ))
@@ -155,7 +155,7 @@ private struct ClassicLEDSkinNormalSettingsView: View {
                 set: { isOn in
                     if isOn {
                         visualizerMode = "spectrum"
-                        ledMeterProvider.getOrCreate().stop()
+                        ledMeterProvider.releaseNowPlayingResources()
                     } else if visualizerMode == "spectrum" {
                         visualizerMode = "off"
                     }
@@ -342,6 +342,7 @@ private final class PillSpectrumHostView: NSView {
             service.removeConsumer(consumerID)
             self.consumerID = nil
         }
+        service.stop()
         currentWave = Array(repeating: 0, count: 9)
         layoutCapsules()
     }

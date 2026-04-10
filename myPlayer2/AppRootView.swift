@@ -701,6 +701,7 @@ private struct MainAppContentView: View {
     let netEaseCoverService: NetEaseCoverService
     let themeStore: ThemeStore
     let showArtBackground: Bool
+    @State private var hasPresentedNowPlayingArtBackground = false
 
     var body: some View {
         mainContentView
@@ -772,9 +773,11 @@ private struct MainAppContentView: View {
     }
 
     private func handleOnAppear() {
-        if shouldTriggerArtBackgroundTransition {
-            artBackgroundController.triggerTransition()
+        guard shouldTriggerArtBackgroundTransition else { return }
+        if markNowPlayingArtBackgroundPresentationIfNeeded() {
+            return
         }
+        artBackgroundController.triggerTransition()
     }
 
     private func handleTrackDidChange() {
@@ -806,9 +809,11 @@ private struct MainAppContentView: View {
     }
 
     private func handleContentModeChange(_ newValue: ContentMode) {
-        if newValue == .nowPlaying && shouldTriggerArtBackgroundTransition {
-            artBackgroundController.triggerTransition()
+        guard newValue == .nowPlaying, shouldTriggerArtBackgroundTransition else { return }
+        if markNowPlayingArtBackgroundPresentationIfNeeded() {
+            return
         }
+        artBackgroundController.triggerTransition()
     }
 
     private func handleTrackIdChange() {
@@ -833,6 +838,15 @@ private struct MainAppContentView: View {
         uiState.contentMode == .nowPlaying
             && settings.nowPlayingArtBackgroundEnabled
             && playerVM.currentTrack != nil
+    }
+
+    @discardableResult
+    private func markNowPlayingArtBackgroundPresentationIfNeeded() -> Bool {
+        let isFirstPresentation = !hasPresentedNowPlayingArtBackground
+        if isFirstPresentation {
+            hasPresentedNowPlayingArtBackground = true
+        }
+        return isFirstPresentation
     }
 
     private func startLyricsRuntimeProfileIfNeeded(trigger: String) {

@@ -101,10 +101,14 @@ public final class AudioAnalysisHub: @unchecked Sendable {
     func stop() {
         activeClients = max(0, activeClients - 1)
         guard activeClients == 0 else { return }
-        guard isInstalled else { return }
+        guard isInstalled else {
+            purgeInactiveState()
+            return
+        }
         mixerNode?.removeTap(onBus: 0)
         isInstalled = false
         stopTimer()
+        purgeInactiveState()
     }
 
     // MARK: - Consumer API
@@ -167,6 +171,20 @@ public final class AudioAnalysisHub: @unchecked Sendable {
     private func stopTimer() {
         timer?.cancel()
         timer = nil
+    }
+
+    private func purgeInactiveState() {
+        consumerLock.lock()
+        consumers.removeAll()
+        consumerLock.unlock()
+
+        resetBuffer()
+        fftInput = [Float](repeating: 0, count: fftSize)
+        fftReal = [Float](repeating: 0, count: fftSize / 2)
+        fftImag = [Float](repeating: 0, count: fftSize / 2)
+        fftMagnitudes = [Float](repeating: 0, count: fftSize / 2)
+        sampleRate = 44_100
+        mixerNode = nil
     }
 
     nonisolated private func process() {

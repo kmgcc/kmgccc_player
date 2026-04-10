@@ -60,7 +60,7 @@ struct NowPlayingHostView: View {
             if isLedEnabledForCurrentSkin() {
                 ledMeterProvider.getOrCreate().start()
             } else {
-                ledMeterProvider.getOrCreate().stop()
+                ledMeterProvider.releaseNowPlayingResources()
             }
         }
         .onAppear {
@@ -69,7 +69,12 @@ struct NowPlayingHostView: View {
             }
         }
         .onDisappear {
-            ledMeterProvider.getOrCreate().stop()
+            ledMeterProvider.releaseNowPlayingResources()
+            artworkSnapshot = nil
+            Task {
+                await ArtworkAssetStore.shared.purgeHydratedImages()
+                await CassetteArtworkCache.shared.removeAll()
+            }
         }
         .task(id: currentArtworkTaskKey) {
             await loadArtworkSnapshot()
