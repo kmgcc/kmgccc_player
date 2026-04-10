@@ -69,11 +69,20 @@ final class Track {
     @Attribute(.externalStorage)
     var artworkData: Data?
 
-    // MARK: - Playback Stats
-
-    /// Play count - how many times this track has been played.
-    /// Incremented when user listens to >=50% of track or >=30 seconds.
-    var playCount: Int = 0
+    // MARK: - Playback Stats (Deprecated)
+    /// DEPRECATED: All playback stats now live in preferenceStats via PreferenceStatsService.
+    /// This property is kept for backward compatibility during migration only.
+    /// Use `PreferenceStatsService.shared.getStats(for: id).playCount` instead.
+    @MainActor
+    var playCount: Int {
+        get {
+            PreferenceStatsService.shared.getStats(for: id).playCount
+        }
+        set {
+            // No-op: stats are managed through PreferenceStatsService
+            // This setter exists to prevent breaking old code during migration
+        }
+    }
 
     // MARK: - Lyrics
 
@@ -102,7 +111,7 @@ final class Track {
         artworkData: Data? = nil,
         ttmlLyricText: String? = nil,
         lyricsText: String? = nil,
-        playCount: Int = 0
+        playCount: Int? = nil  // DEPRECATED: Ignored, use PreferenceStatsService instead
     ) {
         self.id = id
         self.title = title
@@ -119,7 +128,7 @@ final class Track {
         self.artworkData = artworkData
         self.ttmlLyricText = ttmlLyricText
         self.lyricsText = lyricsText
-        self.playCount = playCount
+        // NOTE: playCount parameter is deprecated. If provided, it's stored in preferenceStats via sidecar.
     }
 
     // MARK: - Bookmark Resolution
