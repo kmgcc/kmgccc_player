@@ -4,6 +4,7 @@
 //
 //  kmgccc_player - AVAudioEngine Playback Service
 //  Real audio playback using AVAudioEngine + AVAudioPlayerNode.
+//  Integrated with Smart Shuffle for preference-based random playback.
 //
 
 import AVFoundation
@@ -30,8 +31,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     var volume: Double {
         didSet {
-            applyVolume()
-            // Persist to AppSettings
+            playerNode.volume = Float(volume)
             AppSettings.shared.volume = volume
         }
     }
@@ -61,19 +61,16 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     private var sampleRate: Double = 44100
     private var startingFramePosition: AVAudioFramePosition = 0
-    private var queue: [Track] = []
-    private var queueIndex: Int = 0
-    private let shuffleQueue = ShuffleQueueManager(recentLimit: 15)
-    private var lastKnownShuffleEnabled = AppSettings.shared.shuffleEnabled
     private var activeScheduleToken = UUID()
     private var completionWorkItem: DispatchWorkItem?
     private var drainStartUptime: TimeInterval?
     private var drainStartTime: Double = 0
-    private var lastLookaheadMs: Double = AppSettings.shared.lookaheadMs
+    private var lastKnownShuffleEnabled = AppSettings.shared.shuffleEnabled
+    private var lastKnownRepeatMode = AppSettings.shared.repeatMode
 
-    // MARK: - Play Count Service
+    // MARK: - Smart Shuffle Integration
 
-    private let playCountService: PlayCountServiceProtocol = PlayCountService.shared
+    private let smartController = SmartPlaybackController()
 
     // MARK: - Timer
 
@@ -82,6 +79,11 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     // MARK: - Current File Access
 
     private var currentFileURL: URL?
+
+    // MARK: - Seek Detection
+
+    private var isSeeking = false
+    private var seekStartTime: Double = 0
 
     // MARK: - Level Meter Integration
 
@@ -95,37 +97,29 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     // MARK: - Initialization
 
     init() {
-        // Restore volume from settings
         self.volume = AppSettings.shared.volume
         // Engine is now lazily initialized on first access (see `engine` property)
-        Log.debug("AVAudioPlaybackService initialized (engine deferred)", category: .audio)
+        setupSmartController()
+        Log.debug("AVAudioPlaybackService initialized with Smart Shuffle (engine deferred)", category: .audio)
     }
 
-    // MARK: - Engine Setup
+    // MARK: - Setup
 
     /// Sets up the audio engine with nodes and connections.
     /// Called once when engine is first accessed via lazy initialization.
     private func setupEngine(_ engine: AVAudioEngine) {
-        // Attach player node to engine
         engine.attach(playerNode)
         engine.attach(delayNode)
 
-        // Connect player to main mixer
         let mainMixer = engine.mainMixerNode
         engine.connect(playerNode, to: mainMixer, format: nil)
 
-        // Route main mixer through delay before output
         engine.disconnectNodeOutput(mainMixer)
         engine.connect(mainMixer, to: delayNode, format: nil)
         engine.connect(delayNode, to: engine.outputNode, format: nil)
 
-        // Apply initial lookahead delay
         configureDelay()
-
-        // Apply initial volume
-        applyVolume()
-
-        // Prepare engine
+        playerNode.volume = Float(volume)
         engine.prepare()
 
         NotificationCenter.default.addObserver(
@@ -136,8 +130,17 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         )
     }
 
-    /// Handles audio output device changes.
-    /// The engine is stopped by the system when device changes; this reconnects and resumes.
+    private func setupSmartController() {
+        smartController.onPlayTrack = { [weak self] track in
+            self?.playInternal(track: track)
+        }
+        smartController.onTrackChanged = { [weak self] track in
+            self?.currentTrack = track
+        }
+    }
+
+    // MARK: - Engine Management
+
     @objc private func handleEngineConfigurationChange(_ notification: Notification) {
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -212,23 +215,11 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         configureDelay()
     }
 
-    private func applyVolume() {
-        playerNode.volume = Float(volume)
-    }
-
     // MARK: - Lookahead (Audio Delay)
 
     private var lookaheadSeconds: Double {
-        let ms = max(0, min(200, lastLookaheadMs))
+        let ms = max(0, min(200, AppSettings.shared.lookaheadMs))
         return ms / 1000.0
-    }
-
-    private func updateLookaheadIfNeeded(force: Bool = false) {
-        let newMs = AppSettings.shared.lookaheadMs
-        if force || abs(newMs - lastLookaheadMs) > 0.1 {
-            lastLookaheadMs = newMs
-            configureDelay()
-        }
     }
 
     private func configureDelay() {
@@ -289,20 +280,27 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     func play(track: Track) {
         Log.debug("play(track:) called for: \(track.title)", category: .audio)
-        // Single-track play resets queue to just this track.
-        queue = [track]
-        queueIndex = 0
-        shuffleQueue.rebuild(with: [track.id], currentTrackID: track.id, resetHistory: true)
-        playInternal(track: track)
+        let shuffleEnabled = AppSettings.shared.shuffleEnabled
+        smartController.startPlayback(tracks: [track], startingAt: 0, shuffle: shuffleEnabled)
+    }
+
+    func playTracks(_ tracks: [Track], startingAt index: Int) {
+        guard index >= 0, index < tracks.count else { return }
+        let shuffleEnabled = AppSettings.shared.shuffleEnabled
+
+        // Update last known settings
+        lastKnownShuffleEnabled = shuffleEnabled
+        lastKnownRepeatMode = AppSettings.shared.repeatMode
+
+        // Pass to smart controller
+        smartController.startPlayback(tracks: tracks, startingAt: index, shuffle: shuffleEnabled)
     }
 
     private func playInternal(track: Track) {
-        // Stop current playback but keep queue state.
         stopPlayback(clearQueue: false)
-        updateLookaheadIfNeeded(force: true)
+        configureDelay()
         resetDelayBuffer()
 
-        // Resolve bookmark/local library path to get file URL
         let result = track.resolveFileURL()
         track.availability = result.newAvailability
 
@@ -313,49 +311,33 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
         currentFileURL = fileURL
 
-        // Update bookmark if stale
         if let refreshedData = result.refreshedBookmarkData {
             track.fileBookmarkData = refreshedData
         }
 
         do {
-            // Load audio file
             audioFile = try AVAudioFile(forReading: fileURL)
 
             guard let audioFile = audioFile else { return }
 
-            // Get file properties
             sampleRate = audioFile.processingFormat.sampleRate
             let fileDuration = Double(audioFile.length) / sampleRate
 
-            // Set state BEFORE starting playback
             currentTrack = track
             duration = fileDuration
             currentTime = 0
             startingFramePosition = 0
 
-            // Start play count session
-            playCountService.startPlaybackSession(for: track)
-
-            // Reconnect player with correct format
             engine.disconnectNodeOutput(playerNode)
             engine.connect(playerNode, to: engine.mainMixerNode, format: audioFile.processingFormat)
 
-            // Start engine if not running
             if !engine.isRunning {
                 try engine.start()
             }
 
-            // Schedule entire file
             scheduleFile(audioFile)
-
-            // Start playback
             playerNode.play()
-
-            // Set isPlaying AFTER playerNode.play()
             isPlaying = true
-
-            // Start progress timer
             startProgressTimer()
 
             print("▶️ Playing: \(track.title) (duration: \(String(format: "%.1f", fileDuration))s)")
@@ -381,7 +363,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     func resume() {
         guard !isPlaying, audioFile != nil else { return }
 
-        updateLookaheadIfNeeded(force: true)
+        configureDelay()
         resetDelayBuffer()
         playerNode.play()
         isPlaying = true
@@ -395,8 +377,6 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     }
 
     private func stopPlayback(clearQueue: Bool) {
-        print("⏹️ stop() called")
-
         cancelPendingCompletion()
         invalidateScheduleToken()
         playerNode.stop()
@@ -404,7 +384,6 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         stopProgressTimer()
         stopAccessingCurrentFile()
 
-        // Reset playback state
         isPlaying = false
         currentTime = 0
         duration = 0
@@ -413,9 +392,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         startingFramePosition = 0
 
         if clearQueue {
-            queue.removeAll()
-            queueIndex = 0
-            shuffleQueue.reset()
+            smartController.stop()
         }
     }
 
@@ -424,27 +401,30 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
         let wasPlaying = isPlaying
 
-        // Stop current playback
+        // Mark that we're seeking
+        isSeeking = true
+        smartController.beginSeek()
+        seekStartTime = seconds
+
         cancelPendingCompletion()
         invalidateScheduleToken()
         playerNode.stop()
         resetDelayBuffer()
         isPlaying = false
 
-        // Calculate frame position
         let targetFrame = AVAudioFramePosition(seconds * sampleRate)
         let totalFrames = audioFile.length
 
         guard targetFrame >= 0, targetFrame < totalFrames else {
             print("⚠️ Seek position out of range")
+            isSeeking = false
+            smartController.endSeek()
             return
         }
 
         let frameCount = AVAudioFrameCount(totalFrames - targetFrame)
 
-        // Schedule from new position
         startingFramePosition = targetFrame
-        updateLookaheadIfNeeded(force: true)
         currentTime = max(0, min(seconds - lookaheadSeconds, duration))
 
         scheduleSegment(audioFile, startingFrame: targetFrame, frameCount: frameCount)
@@ -455,46 +435,20 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             startProgressTimer()
         }
 
+        // Clear seeking flag after a short delay
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            self?.isSeeking = false
+            self?.smartController.endSeek()
+        }
+
         print("⏩ Seeked to \(String(format: "%.1f", seconds))s")
     }
 
-    // MARK: - Queue Management (simplified for now)
-
-    func playTracks(_ tracks: [Track], startingAt index: Int) {
-        guard index >= 0, index < tracks.count else { return }
-        queue = tracks
-        queueIndex = index
-        shuffleQueue.rebuild(
-            with: tracks.map(\.id),
-            currentTrackID: tracks[index].id,
-            resetHistory: true
-        )
-        lastKnownShuffleEnabled = shuffleEnabled
-        playInternal(track: tracks[index])
-    }
+    // MARK: - Queue Management
 
     func updateQueueTracks(_ tracks: [Track]) {
         guard !tracks.isEmpty else { return }
-        queue = tracks
-
-        if let currentID = currentTrack?.id,
-            let index = queue.firstIndex(where: { $0.id == currentID })
-        {
-            queueIndex = index
-            shuffleQueue.rebuild(
-                with: tracks.map(\.id),
-                currentTrackID: currentID,
-                resetHistory: false
-            )
-        } else {
-            queueIndex = min(max(queueIndex, 0), max(0, queue.count - 1))
-            let currentID = queue.indices.contains(queueIndex) ? queue[queueIndex].id : nil
-            shuffleQueue.rebuild(
-                with: tracks.map(\.id),
-                currentTrackID: currentID,
-                resetHistory: true
-            )
-        }
+        smartController.updateQueue(tracks: tracks, preservePosition: true)
     }
 
     func refreshTracks(_ tracks: [Track]) {
@@ -516,15 +470,25 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     }
 
     func next() {
-        guard !queue.isEmpty else { return }
         syncShuffleStateIfNeeded()
-        let nextIndex = computeNextIndex(autoAdvance: false)
-        queueIndex = nextIndex
-        playInternal(track: queue[nextIndex])
+
+        if AppSettings.shared.stopAfterTrack {
+            stop()
+            return
+        }
+
+        if let repeatMode = RepeatMode(rawValue: AppSettings.shared.repeatMode),
+           repeatMode == .one,
+           let track = currentTrack {
+            // Repeat current track
+            playInternal(track: track)
+            return
+        }
+
+        smartController.nextTrack()
     }
 
     func previous() {
-        guard !queue.isEmpty else { return }
         syncShuffleStateIfNeeded()
 
         // Standard behavior: if you're a few seconds in, restart.
@@ -533,77 +497,15 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             return
         }
 
-        let prevIndex = computePreviousIndex()
-        queueIndex = prevIndex
-        playInternal(track: queue[prevIndex])
-    }
-
-    private enum RepeatMode: String {
-        case off
-        case all
-        case one
-    }
-
-    private var repeatMode: RepeatMode {
-        RepeatMode(rawValue: AppSettings.shared.repeatMode) ?? .off
-    }
-
-    private var shuffleEnabled: Bool {
-        AppSettings.shared.shuffleEnabled
-    }
-
-    private var stopAfterTrackEnabled: Bool {
-        AppSettings.shared.stopAfterTrack
-    }
-
-    private func computeNextIndex(autoAdvance: Bool) -> Int {
-        if autoAdvance, repeatMode == .one {
-            return queueIndex
-        }
-
-        if shuffleEnabled, queue.count > 1 {
-            let currentID = queue[queueIndex].id
-            guard
-                let nextID = shuffleQueue.nextTrackID(currentTrackID: currentID),
-                let nextIndex = queue.firstIndex(where: { $0.id == nextID })
-            else {
-                return queueIndex
-            }
-            return nextIndex
-        }
-
-        let next = queueIndex + 1
-        if next < queue.count {
-            return next
-        }
-        return repeatMode == .all ? 0 : queueIndex
-    }
-
-    private func computePreviousIndex() -> Int {
-        if shuffleEnabled, let lastID = shuffleQueue.previousTrackID(),
-            let idx = queue.firstIndex(where: { $0.id == lastID })
-        {
-            return idx
-        }
-        let prev = queueIndex - 1
-        if prev >= 0 {
-            return prev
-        }
-        return repeatMode == .all ? max(0, queue.count - 1) : queueIndex
+        smartController.previousTrack()
     }
 
     private func syncShuffleStateIfNeeded() {
-        let enabled = shuffleEnabled
+        let enabled = AppSettings.shared.shuffleEnabled
         guard enabled != lastKnownShuffleEnabled else { return }
+
         lastKnownShuffleEnabled = enabled
-        if enabled {
-            let currentID = queue.indices.contains(queueIndex) ? queue[queueIndex].id : nil
-            shuffleQueue.rebuild(
-                with: queue.map(\.id),
-                currentTrackID: currentID,
-                resetHistory: false
-            )
-        }
+        smartController.setShuffle(enabled)
     }
 
     // MARK: - Progress Timer
@@ -611,8 +513,6 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     private func startProgressTimer() {
         stopProgressTimer()
 
-        // Keep UI-facing playback state updates lightweight to avoid
-        // triggering large SwiftUI view recomputations during playback.
         progressTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) {
             [weak self] _ in
             Task { @MainActor [weak self] in
@@ -620,7 +520,6 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             }
         }
 
-        // Add to common run loop mode to ensure updates during UI interactions
         if let timer = progressTimer {
             RunLoop.main.add(timer, forMode: .common)
         }
@@ -632,7 +531,6 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     }
 
     private func updateProgress() {
-        updateLookaheadIfNeeded()
         let nowUptime = ProcessInfo.processInfo.systemUptime
 
         if let drainStartUptime {
@@ -642,28 +540,25 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         }
 
         guard isPlaying else { return }
-        guard playerNode.isPlaying else {
-            // Node stopped but we think we're playing - wait for completion handler
-            return
-        }
+        guard playerNode.isPlaying else { return }
 
         guard let nodeTime = playerNode.lastRenderTime,
             nodeTime.isSampleTimeValid,
             let playerTime = playerNode.playerTime(forNodeTime: nodeTime)
         else {
-            // lastRenderTime not yet available, wait for next tick
             return
         }
 
         let currentFrame = startingFramePosition + playerTime.sampleTime
         let newTime = Double(currentFrame) / sampleRate
 
-        // Apply lookahead delay so UI/lyrics match audible output
         let audibleTime = newTime - lookaheadSeconds
+        let previousTime = currentTime
         currentTime = max(0, min(audibleTime, duration))
 
+        // Update smart controller with progress
         if duration > 0 {
-            playCountService.updatePlaybackProgress(currentTime: currentTime, duration: duration)
+            smartController.updateProgress(currentTime: currentTime, duration: duration)
         }
     }
 
@@ -671,8 +566,8 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     private func handlePlaybackCompletion(token: UUID) {
         guard token == activeScheduleToken else { return }
-        // Only handle if we think we're still playing
         guard isPlaying else { return }
+
         let delaySeconds = lookaheadSeconds
         if delaySeconds > 0 {
             beginDrain(lookaheadSeconds: delaySeconds, token: token)
@@ -702,33 +597,22 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
         print("✅ Playback completed: \(currentTrack?.title ?? "unknown")")
 
-        guard !queue.isEmpty else {
+        let stopAfterTrack = AppSettings.shared.stopAfterTrack
+        let repeatMode = RepeatMode(rawValue: AppSettings.shared.repeatMode) ?? .off
+
+        if stopAfterTrack {
             isPlaying = false
             currentTime = duration
             return
         }
 
-        if stopAfterTrackEnabled {
-            isPlaying = false
-            currentTime = duration
+        if repeatMode == .one, let track = currentTrack {
+            playInternal(track: track)
             return
         }
 
-        if repeatMode == .one {
-            playInternal(track: queue[queueIndex])
-            return
-        }
-
-        let nextIndex = computeNextIndex(autoAdvance: true)
-        if nextIndex == queueIndex, repeatMode == .off, !shuffleEnabled {
-            // End of queue and no repeat.
-            isPlaying = false
-            currentTime = duration
-            return
-        }
-
-        queueIndex = nextIndex
-        playInternal(track: queue[nextIndex])
+        // Auto-advance via smart controller
+        smartController.autoAdvance()
     }
 
     // MARK: - File Access
@@ -738,5 +622,13 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             url.stopAccessingSecurityScopedResource()
             currentFileURL = nil
         }
+    }
+
+    // MARK: - Repeat Mode
+
+    private enum RepeatMode: String {
+        case off
+        case all
+        case one
     }
 }

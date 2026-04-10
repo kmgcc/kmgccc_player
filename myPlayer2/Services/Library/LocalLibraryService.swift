@@ -30,6 +30,8 @@ struct TrackSidecar: Codable {
     let ttmlLyricsFileName: String?
     let ncmSourcePath: String?
     let playCount: Int?
+    /// Extended preference statistics (schemaVersion >= 3)
+    let preferenceStats: TrackPreferenceStats?
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion
@@ -49,10 +51,11 @@ struct TrackSidecar: Codable {
         case ttmlLyricsFileName
         case ncmSourcePath
         case playCount
+        case preferenceStats
     }
 
     init(
-        schemaVersion: Int = 2,
+        schemaVersion: Int = 3,
         id: UUID,
         title: String,
         artist: String,
@@ -68,7 +71,8 @@ struct TrackSidecar: Codable {
         lyricsType: String?,
         ttmlLyricsFileName: String?,
         ncmSourcePath: String?,
-        playCount: Int? = 0
+        playCount: Int? = 0,
+        preferenceStats: TrackPreferenceStats? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.id = id
@@ -87,6 +91,7 @@ struct TrackSidecar: Codable {
         self.ttmlLyricsFileName = ttmlLyricsFileName
         self.ncmSourcePath = ncmSourcePath
         self.playCount = playCount
+        self.preferenceStats = preferenceStats
     }
 
     init(from decoder: Decoder) throws {
@@ -112,11 +117,21 @@ struct TrackSidecar: Codable {
         ncmSourcePath = try container.decodeIfPresent(String.self, forKey: .ncmSourcePath)
         // playCount defaults to 0 for backward compatibility (schemaVersion 1 doesn't have this field)
         playCount = try container.decodeIfPresent(Int.self, forKey: .playCount) ?? 0
+
+        // preferenceStats: migrate from legacy playCount if not present
+        if let stats = try container.decodeIfPresent(TrackPreferenceStats.self, forKey: .preferenceStats) {
+            preferenceStats = stats
+        } else if schemaVersion < 3, let legacyPlayCount = playCount, legacyPlayCount > 0 {
+            // Migration: create preferenceStats from legacy playCount
+            preferenceStats = TrackPreferenceStats.fromLegacy(playCount: legacyPlayCount)
+        } else {
+            preferenceStats = nil
+        }
     }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(2, forKey: .schemaVersion)
+        try container.encode(3, forKey: .schemaVersion)
         try container.encode(id, forKey: .id)
         try container.encode(title, forKey: .title)
         try container.encode(artist, forKey: .artist)
@@ -132,7 +147,10 @@ struct TrackSidecar: Codable {
         try container.encodeIfPresent(lyricsType, forKey: .lyricsType)
         try container.encodeIfPresent(ttmlLyricsFileName, forKey: .ttmlLyricsFileName)
         try container.encodeIfPresent(ncmSourcePath, forKey: .ncmSourcePath)
-        try container.encodeIfPresent(playCount, forKey: .playCount)
+        // NOTE: playCount is deprecated - all stats now live in preferenceStats
+        // We intentionally do NOT write playCount to avoid double-counting
+        // The field is kept in CodingKeys only for backward compatibility during decoding
+        try container.encodeIfPresent(preferenceStats, forKey: .preferenceStats)
     }
 }
 
@@ -426,8 +444,11 @@ final class LocalLibraryService {
             let artworkFileName = try writeArtworkIfNeeded(track: track, folder: trackFolder)
             let ttmlFileName = try writeLyricsIfNeeded(track: track, folder: trackFolder)
 
+            // Get preference stats from the stats service if available
+            let preferenceStats = PreferenceStatsService.shared.getStats(for: track.id)
+
             let sidecar = TrackSidecar(
-                schemaVersion: 2,
+                schemaVersion: 3,
                 id: track.id,
                 title: track.title,
                 artist: track.artist,
@@ -443,7 +464,7 @@ final class LocalLibraryService {
                 lyricsType: nil,
                 ttmlLyricsFileName: ttmlFileName,
                 ncmSourcePath: nil,
-                playCount: track.playCount
+                preferenceStats: preferenceStats
             )
 
             let data = try encoder.encode(sidecar)
@@ -1143,9 +1164,12 @@ final class LocalLibraryService {
                 availability: isAvailable ? .available : .missing,
                 artworkData: artworkData,
                 ttmlLyricText: ttmlText,
-                lyricsText: lyricsText,
-                playCount: sidecar.playCount ?? 0
+                lyricsText: lyricsText
             )
+
+            // Load preference stats into cache if available.
+            // If preferenceStats exists in sidecar, use it; otherwise migration will happen on first write.
+            PreferenceStatsService.shared.loadStats(from: sidecar)
 
             tracks.append(track)
         }

@@ -22,7 +22,10 @@ struct ScannedTrackMeta {
     let artworkFileName: String?
     let lyricsFileName: String?
     let ttmlLyricsFileName: String?
-    let playCount: Int
+    /// DEPRECATED: Use preferenceStats instead. Kept for migration only.
+    let playCount: Int?
+    /// Modern preference statistics (schemaVersion >= 3)
+    let preferenceStats: TrackPreferenceStats?
     let folderURL: URL
 
     var libraryRelativePath: String {
@@ -108,13 +111,31 @@ final class MusicLibraryScanner {
         let ttmlLyricsFileName = (json["ttmlLyricsFileName"] as? String)?.trimmingCharacters(
             in: .whitespacesAndNewlines)
 
-        // Parse playCount with default 0 for backward compatibility
-        let playCount: Int
-        if let playCountValue = json["playCount"] {
-            playCount = (playCountValue as? Int) ?? 0
-        } else {
-            playCount = 0
-        }
+        // Parse preferenceStats (schemaVersion >= 3)
+        let preferenceStats: TrackPreferenceStats? = {
+            guard let statsDict = json["preferenceStats"] as? [String: Any] else { return nil }
+            // Basic parsing - enough for migration purposes
+            var stats = TrackPreferenceStats()
+            if let pc = statsDict["playCount"] as? Int {
+                stats.playCount = pc
+            }
+            if let cpc = statsDict["completePlayCount"] as? Int {
+                stats.completePlayCount = cpc
+            }
+            if let sc = statsDict["skipCount"] as? Int {
+                stats.skipCount = sc
+            }
+            if let qsc = statsDict["quickSkipCount"] as? Int {
+                stats.quickSkipCount = qsc
+            }
+            return stats
+        }()
+
+        // Parse legacy playCount (schemaVersion < 3)
+        let playCount: Int? = {
+            guard let playCountValue = json["playCount"] else { return nil }
+            return (playCountValue as? Int) ?? 0
+        }()
 
         return ScannedTrackMeta(
             schemaVersion: schemaVersion,
@@ -131,7 +152,8 @@ final class MusicLibraryScanner {
             artworkFileName: (artworkFileName?.isEmpty ?? true) ? nil : artworkFileName,
             lyricsFileName: (lyricsFileName?.isEmpty ?? true) ? nil : lyricsFileName,
             ttmlLyricsFileName: (ttmlLyricsFileName?.isEmpty ?? true) ? nil : ttmlLyricsFileName,
-            playCount: playCount,
+            playCount: playCount,  // DEPRECATED: For migration only
+            preferenceStats: preferenceStats,
             folderURL: folderURL
         )
     }
