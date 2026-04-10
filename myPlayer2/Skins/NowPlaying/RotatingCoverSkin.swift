@@ -324,6 +324,7 @@ private final class PillSpectrumHostView: NSView {
             service.removeConsumer(consumerID)
             self.consumerID = nil
         }
+        service.stop()
         currentWave = Array(repeating: 0, count: 9)
         layoutCapsules()
     }

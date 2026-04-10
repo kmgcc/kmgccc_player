@@ -258,6 +258,10 @@ private struct BKArtBackgroundRepresentable: NSViewRepresentable {
             nsView.triggerTransition(seed: seed &+ UInt64(truncatingIfNeeded: transitionID))
         }
     }
+
+    static func dismantleNSView(_ nsView: BKArtBackgroundLayerView, coordinator: ()) {
+        nsView.prepareForDismissal()
+    }
 }
 
 @MainActor
@@ -302,6 +306,11 @@ private final class BKArtBackgroundLayerView: NSView {
             blue = b
             alpha = a
         }
+    }
+
+    private enum BackgroundAssetMode {
+        case currentPhaseLowRes
+        case fullSet
     }
 
     private struct ShapeState {
@@ -431,6 +440,7 @@ private final class BKArtBackgroundLayerView: NSView {
     )
     private var loadedMaskFrames: [CGImage] = []
     private var loadedBudget = BKThemeAssets.PixelBudget(background: 0, shape: 0, mask: 0)
+    private var loadedBackgroundSourceIndices: [Int] = []
     private let tintedBackgroundCache = NSCache<NSString, CGImageBox>()
     private var fromContainer: Container?
     private var toContainer: Container?
@@ -452,7 +462,9 @@ private final class BKArtBackgroundLayerView: NSView {
     private var autoTransitionTimer: DispatchSourceTimer?
     private var speedRampClockSubscription: AnyCancellable?
     private var maskWarmupTask: Task<Void, Never>?
+    private var initialResourceUpgradeTask: Task<Void, Never>?
     private var backgroundRenderTasks: [String: Task<Void, Never>] = [:]
+    private var backgroundRenderGeneration: UInt64 = 0
     private var pendingTransitionSeed: UInt64?
     private var transitionSeedCounter: UInt64 = 0
     private var speedCurrent: Double = 1.0
@@ -466,6 +478,10 @@ private final class BKArtBackgroundLayerView: NSView {
     private var deferredPaletteUpdate: ([NSColor], Bool)?
     private let ultraDarkOverlayOpacity: Float = 0.50
     private var activeAvoidanceRect: CGRect?
+    private var backgroundAssetMode: BackgroundAssetMode = .currentPhaseLowRes
+    private let initialBackgroundBudgetCap: Int = 960
+    private let initialBackgroundUpgradeDelay: UInt64 = 180_000_000
+    private let initialMaskWarmupDelay: UInt64 = 420_000_000
 
     // Style Selector State
     private var lastStyle: BackgroundStyle?
@@ -485,6 +501,9 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     deinit {
+        MainActor.assumeIsolated {
+            releaseHeavyResources()
+        }
         backgroundClockSubscription?.cancel()
         shapeClockSubscription?.cancel()
         dotClockSubscription?.cancel()
@@ -492,6 +511,7 @@ private final class BKArtBackgroundLayerView: NSView {
         autoTransitionTimer?.cancel()
         speedRampClockSubscription?.cancel()
         maskWarmupTask?.cancel()
+        initialResourceUpgradeTask?.cancel()
         backgroundRenderTasks.values.forEach { $0.cancel() }
     }
 
@@ -503,6 +523,11 @@ private final class BKArtBackgroundLayerView: NSView {
         } else {
             startTimersIfNeeded()
         }
+    }
+
+    func prepareForDismissal() {
+        stopTimers()
+        releaseHeavyResources()
     }
 
     override func layout() {
@@ -639,6 +664,7 @@ private final class BKArtBackgroundLayerView: NSView {
         applyCurrentBackgroundPhase()
         publishCurrentSurfaceBackgroundColor()
         startTimersIfNeeded()
+        scheduleInitialResourceUpgradeIfNeeded()
     }
 
     func triggerTransition(seed: UInt64) {
@@ -648,7 +674,9 @@ private final class BKArtBackgroundLayerView: NSView {
         ensureBaseContainer(seed: seed)
         guard let current = fromContainer else { return }
         guard toContainer == nil else { return }
-        syncLoadedAssetsIfNeeded()
+        cancelInitialResourceUpgradeTask()
+        promoteBackgroundAssetsToFullSet()
+        syncLoadedAssetsIfNeeded(allowMaskWarmup: true)
         startMaskWarmupIfNeeded(maskBudget: loadedBudget.mask)
         guard !loadedMaskFrames.isEmpty else {
             pendingTransitionSeed = seed
@@ -705,6 +733,7 @@ private final class BKArtBackgroundLayerView: NSView {
         applyCurrentBackgroundPhase()
         publishCurrentSurfaceBackgroundColor()
         startTimersIfNeeded()
+        scheduleInitialResourceUpgradeIfNeeded()
     }
 
     private func layoutContainer(_ container: Container?) {
@@ -1604,7 +1633,10 @@ private final class BKArtBackgroundLayerView: NSView {
         }
 
         guard !loadedBackgrounds.isEmpty else { return }
-        let sourceIndex = backgroundPhase % loadedBackgrounds.count
+        let displayIndex = backgroundPhase % loadedBackgrounds.count
+        let sourceIndex = loadedBackgroundSourceIndices.isEmpty
+            ? displayIndex
+            : loadedBackgroundSourceIndices[min(displayIndex, loadedBackgroundSourceIndices.count - 1)]
         guard
             let image = resolvedBackgroundImage(
                 sourceIndex: sourceIndex,
@@ -1736,6 +1768,7 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     private func cancelBackgroundRenderTasks() {
+        backgroundRenderGeneration &+= 1
         backgroundRenderTasks.values.forEach { $0.cancel() }
         backgroundRenderTasks.removeAll(keepingCapacity: false)
     }
@@ -1782,7 +1815,14 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     private func resolvedBackgroundImage(sourceIndex: Int, variantIndex: Int) -> CGImage? {
-        guard sourceIndex >= 0, sourceIndex < loadedBackgrounds.count else { return nil }
+        let sourceLookupIndex: Int
+        if let matchedIndex = loadedBackgroundSourceIndices.firstIndex(of: sourceIndex) {
+            sourceLookupIndex = matchedIndex
+        } else if sourceIndex >= 0, sourceIndex < loadedBackgrounds.count {
+            sourceLookupIndex = sourceIndex
+        } else {
+            return nil
+        }
         let toneVariants = backgroundToneVariants()
         let safeVariantIndex = min(max(0, variantIndex), max(0, toneVariants.count - 1))
         let cacheKey =
@@ -1792,7 +1832,7 @@ private final class BKArtBackgroundLayerView: NSView {
             return cached.image
         }
 
-        let sourceImage = loadedBackgrounds[sourceIndex]
+        let sourceImage = loadedBackgrounds[sourceLookupIndex]
         let toneStops = toneVariants.isEmpty ? BKArtBackgroundView.fallbackPalette : toneVariants[safeVariantIndex]
         scheduleTintedBackgroundRenderIfNeeded(
             cacheKey: cacheKey,
@@ -1815,6 +1855,7 @@ private final class BKArtBackgroundLayerView: NSView {
         let tuning = imageVariantTuning(for: toneStops)
         let isDark = harmonized.isDark
         let sourceBox = CGImageBox(image: sourceImage)
+        let renderGeneration = backgroundRenderGeneration
 
         backgroundRenderTasks[cacheKey] = Task { [weak self] in
             let sourceImage = sourceBox.image
@@ -1831,6 +1872,9 @@ private final class BKArtBackgroundLayerView: NSView {
             await MainActor.run {
                 guard let self else { return }
                 self.backgroundRenderTasks.removeValue(forKey: cacheKey)
+                guard self.backgroundRenderGeneration == renderGeneration else { return }
+                guard self.window != nil else { return }
+                guard self.fromContainer != nil || self.toContainer != nil else { return }
                 guard self.paletteSignature == paletteSignatureAtRequest else { return }
                 guard self.loadedBudget.background == backgroundBudget else { return }
                 guard let rendered else { return }
@@ -2118,24 +2162,48 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     private func syncLoadedAssetsIfNeeded() {
-        let budget = currentAssetBudget()
-        guard budget != loadedBudget else { return }
+        syncLoadedAssetsIfNeeded(allowMaskWarmup: false)
+    }
 
-        if budget.background != loadedBudget.background {
+    private func syncLoadedAssetsIfNeeded(allowMaskWarmup: Bool) {
+        let budget = currentAssetBudget()
+        let targetBackgroundIndices = desiredBackgroundSourceIndices()
+        let backgroundBudgetChanged = budget.background != loadedBudget.background
+        let shapeBudgetChanged = budget.shape != loadedBudget.shape
+        let maskBudgetChanged = budget.mask != loadedBudget.mask
+        let backgroundSetChanged = targetBackgroundIndices != loadedBackgroundSourceIndices
+
+        guard backgroundBudgetChanged || shapeBudgetChanged || maskBudgetChanged || backgroundSetChanged else {
+            if allowMaskWarmup {
+                startMaskWarmupIfNeeded(maskBudget: budget.mask)
+            }
+            return
+        }
+
+        if backgroundBudgetChanged || backgroundSetChanged {
             cancelBackgroundRenderTasks()
         }
-        if budget.mask != loadedBudget.mask {
+        if maskBudgetChanged {
             maskWarmupTask?.cancel()
             maskWarmupTask = nil
             loadedMaskFrames.removeAll(keepingCapacity: false)
         }
 
         loadedBudget = budget
-        loadedBackgrounds = assets.backgrounds(maxPixel: budget.background)
-        loadedShapes = assets.shapes(maxPixel: budget.shape)
+        let loadedBackgroundSet = loadBackgrounds(
+            sourceIndices: targetBackgroundIndices,
+            maxPixel: budget.background
+        )
+        loadedBackgrounds = loadedBackgroundSet.images
+        loadedBackgroundSourceIndices = loadedBackgroundSet.indices
+        if shapeBudgetChanged || loadedShapes.images.isEmpty {
+            loadedShapes = assets.shapes(maxPixel: budget.shape)
+        }
         loadedMaskFrames = assets.cachedMaskFrames(maxPixel: budget.mask) ?? []
         tintedBackgroundCache.removeAllObjects()
-        startMaskWarmupIfNeeded(maskBudget: budget.mask)
+        if allowMaskWarmup {
+            startMaskWarmupIfNeeded(maskBudget: budget.mask)
+        }
     }
 
     private func resolvedMaskFrames() -> [CGImage] {
@@ -2147,6 +2215,18 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     private func currentAssetBudget() -> BKThemeAssets.PixelBudget {
+        let fullBudget = fullResolutionAssetBudget()
+        let background = backgroundAssetMode == .fullSet
+            ? fullBudget.background
+            : min(fullBudget.background, initialBackgroundBudgetCap)
+        return BKThemeAssets.PixelBudget(
+            background: background,
+            shape: fullBudget.shape,
+            mask: fullBudget.mask
+        )
+    }
+
+    private func fullResolutionAssetBudget() -> BKThemeAssets.PixelBudget {
         let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
         let longestEdge = max(bounds.width, bounds.height)
         let nativePixel = Int(max(1, (longestEdge * scale).rounded()))
@@ -2156,7 +2236,86 @@ private final class BKArtBackgroundLayerView: NSView {
         return BKThemeAssets.PixelBudget(background: background, shape: shape, mask: mask)
     }
 
+    private func desiredBackgroundSourceIndices() -> [Int] {
+        let count = assets.backgroundCount
+        guard count > 0 else { return [] }
+
+        switch backgroundAssetMode {
+        case .currentPhaseLowRes:
+            return [backgroundPhase % count]
+        case .fullSet:
+            return Array(0..<count)
+        }
+    }
+
+    private func loadBackgrounds(sourceIndices: [Int], maxPixel: Int) -> (images: [CGImage], indices: [Int]) {
+        guard !sourceIndices.isEmpty, maxPixel > 0 else { return ([], []) }
+
+        if sourceIndices.count == assets.backgroundCount {
+            let images = assets.backgrounds(maxPixel: maxPixel)
+            let availableIndices = Array(0..<min(images.count, sourceIndices.count))
+            return (images, availableIndices)
+        }
+
+        var images: [CGImage] = []
+        var resolvedIndices: [Int] = []
+        for sourceIndex in sourceIndices {
+            guard let image = assets.background(at: sourceIndex, maxPixel: maxPixel) else { continue }
+            images.append(image)
+            resolvedIndices.append(sourceIndex)
+        }
+        return (images, resolvedIndices)
+    }
+
+    private func promoteBackgroundAssetsToFullSet() {
+        backgroundAssetMode = .fullSet
+    }
+
+    private func cancelInitialResourceUpgradeTask() {
+        initialResourceUpgradeTask?.cancel()
+        initialResourceUpgradeTask = nil
+    }
+
+    private func scheduleInitialResourceUpgradeIfNeeded() {
+        guard backgroundAssetMode == .currentPhaseLowRes else { return }
+        guard initialResourceUpgradeTask == nil else { return }
+        guard window != nil else { return }
+        guard fromContainer != nil else { return }
+
+        initialResourceUpgradeTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                Task { @MainActor [weak self] in
+                    self?.initialResourceUpgradeTask = nil
+                }
+            }
+
+            try? await Task.sleep(nanoseconds: self.initialBackgroundUpgradeDelay)
+            guard !Task.isCancelled else { return }
+
+            await MainActor.run {
+                guard self.window != nil else { return }
+                guard self.fromContainer != nil else { return }
+                guard self.backgroundAssetMode == .currentPhaseLowRes else { return }
+
+                self.promoteBackgroundAssetsToFullSet()
+                self.syncLoadedAssetsIfNeeded(allowMaskWarmup: false)
+                self.applyCurrentBackgroundPhase()
+            }
+
+            try? await Task.sleep(nanoseconds: self.initialMaskWarmupDelay)
+            guard !Task.isCancelled else { return }
+
+            await MainActor.run {
+                guard self.window != nil else { return }
+                guard self.fromContainer != nil else { return }
+                self.startMaskWarmupIfNeeded(maskBudget: self.loadedBudget.mask)
+            }
+        }
+    }
+
     private func releaseHeavyResources() {
+        cancelInitialResourceUpgradeTask()
         maskWarmupTask?.cancel()
         maskWarmupTask = nil
         cancelBackgroundRenderTasks()
@@ -2169,11 +2328,21 @@ private final class BKArtBackgroundLayerView: NSView {
         transitionMaskLayer?.removeFromSuperlayer()
         transitionMaskLayer = nil
         loadedBackgrounds.removeAll(keepingCapacity: false)
+        loadedBackgroundSourceIndices.removeAll(keepingCapacity: false)
         loadedShapes = BKThemeAssets.ShapeLoadResult(images: [], scaleByIndex: [:], edgePinnedIndices: [])
         loadedMaskFrames.removeAll(keepingCapacity: false)
         loadedBudget = BKThemeAssets.PixelBudget(background: 0, shape: 0, mask: 0)
+        backgroundAssetMode = .currentPhaseLowRes
         tintedBackgroundCache.removeAllObjects()
         assets.purgeTransientCaches()
+        layer?.mask = nil
+        layer?.contents = nil
+        layer?.sublayers?.forEach { sublayer in
+            sublayer.mask = nil
+            sublayer.contents = nil
+            sublayer.removeFromSuperlayer()
+        }
+        layer?.sublayers = nil
     }
 
     private func release(container: Container?) {

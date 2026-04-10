@@ -147,6 +147,10 @@ final class AudioVisualizationService {
         hub.stop()
         stopTimerLocked()
 
+        consumerLock.lock()
+        consumers.removeAll()
+        consumerLock.unlock()
+
         let zeroWave = Array(repeating: Float(0), count: Constants.bandCount)
         let shouldPublishZero = lastPublishedWave.contains(where: { $0 > 0.001 })
 

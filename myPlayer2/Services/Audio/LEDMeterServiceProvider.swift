@@ -74,6 +74,12 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
         _service?.stop()
     }
 
+    /// Force-drop nowPlaying-only heavy state without changing provider lifetime.
+    func releaseNowPlayingResources() {
+        _service?.stop()
+        _service = nil
+    }
+
     /// Updates config on existing service or stores for future creation.
     func updateConfig(_ newConfig: LEDMeterConfig) {
         if let service = _service {

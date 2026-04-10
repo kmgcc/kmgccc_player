@@ -55,6 +55,7 @@ final class LEDMeterService: AudioLevelMeterProtocol {
     private var config: LEDMeterConfig
     private var consumerID: UUID?
     private var isInstalled = false
+    private var runGeneration: UInt64 = 0
 
     // Hub reference (singleton)
     private let hub = AudioAnalysisHub.shared
@@ -80,6 +81,8 @@ final class LEDMeterService: AudioLevelMeterProtocol {
 
     func start() {
         guard !isInstalled else { return }
+        runGeneration &+= 1
+        let generation = runGeneration
 
         hub.targetHz = config.targetHz
         // Start Hub
@@ -93,6 +96,7 @@ final class LEDMeterService: AudioLevelMeterProtocol {
 
             Task { @MainActor in
                 guard let self else { return }
+                guard self.isInstalled, self.runGeneration == generation else { return }
                 self.metrics = result.led
                 self.audioMetrics = result.audio
             }
@@ -103,9 +107,11 @@ final class LEDMeterService: AudioLevelMeterProtocol {
 
     func stop() {
         guard isInstalled else { return }
+        runGeneration &+= 1
 
         if let id = consumerID {
             hub.removeConsumer(id)
+            consumerID = nil
         }
         hub.stop()  // Note: Single hub stop logic might be tricky if multiple consumers. Hub should probably count refs or just run.
         // For now, assuming this is the primary controller of capture.
@@ -113,6 +119,7 @@ final class LEDMeterService: AudioLevelMeterProtocol {
         // As per user request "AudioAnalysisHub (tap + FFT magnitude)", we'll let this service control start/stop for now as it's the main driver.
 
         isInstalled = false
+        processor.reset()
         metrics = LEDMeterMetrics.zero(count: config.ledCount)
         audioMetrics = AudioMetrics.zero
     }

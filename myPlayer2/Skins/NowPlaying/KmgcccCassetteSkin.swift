@@ -314,12 +314,15 @@ private struct CassetteLumaStats: Sendable {
     let mean: Double
 }
 
-private actor CassetteArtworkCache {
+actor CassetteArtworkCache {
     static let shared = CassetteArtworkCache()
 
     private var storage: [String: Data] = [:]
     private var keys: [String] = []
+    private var costs: [String: Int] = [:]
+    private var totalBytes = 0
     private let maxCount = 48
+    private let maxTotalBytes = 24 * 1024 * 1024
 
     func data(for key: String) -> Data? {
         storage[key]
@@ -329,11 +332,27 @@ private actor CassetteArtworkCache {
         if storage[key] == nil {
             keys.append(key)
         }
+        if let previousCost = costs[key] {
+            totalBytes -= previousCost
+        }
         storage[key] = data
-        while keys.count > maxCount {
+        let cost = data.count
+        costs[key] = cost
+        totalBytes += cost
+        while keys.count > maxCount || totalBytes > maxTotalBytes {
             let oldest = keys.removeFirst()
             storage.removeValue(forKey: oldest)
+            if let removedCost = costs.removeValue(forKey: oldest) {
+                totalBytes -= removedCost
+            }
         }
+    }
+
+    func removeAll() {
+        storage.removeAll()
+        keys.removeAll()
+        costs.removeAll()
+        totalBytes = 0
     }
 }
 
@@ -999,7 +1018,7 @@ private struct KmgcccCassetteNormalSettingsView: View {
                         ledMeterProvider.getOrCreate().start()
                     } else if visualizerMode == "led" {
                         visualizerMode = "off"
-                        ledMeterProvider.getOrCreate().stop()
+                        ledMeterProvider.releaseNowPlayingResources()
                     }
                 }
             ))

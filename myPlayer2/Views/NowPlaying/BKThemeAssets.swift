@@ -83,6 +83,27 @@ final class BKThemeAssets: @unchecked Sendable {
         return images
     }
 
+    var backgroundCount: Int {
+        backgroundURLs.count
+    }
+
+    func background(at index: Int, maxPixel: Int) -> CGImage? {
+        guard index >= 0, index < backgroundURLs.count else { return nil }
+
+        let key = "background-\(index)-\(maxPixel)" as NSString
+        if let cached = backgroundCache.object(forKey: key) {
+            return cached.images.first
+        }
+
+        guard let image = Self.downsampledImage(from: backgroundURLs[index], maxPixel: maxPixel) else {
+            return nil
+        }
+
+        let box = ImageArrayBox(images: [image])
+        backgroundCache.setObject(box, forKey: key, cost: Self.byteCost(for: image))
+        return image
+    }
+
     func shapes(maxPixel: Int) -> ShapeLoadResult {
         let key = "shapes-\(maxPixel)" as NSString
         if let cached = shapeCache.object(forKey: key) {
