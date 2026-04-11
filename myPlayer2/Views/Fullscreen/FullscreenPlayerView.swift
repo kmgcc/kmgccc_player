@@ -421,13 +421,15 @@ struct FullscreenPlayerView: View {
 
         ZStack(alignment: .topLeading) {
             if shouldShowQueuePanel {
+                // 队列面板：作为右侧区域中的悬浮卡片，垂直居中，右对齐带边距
                 fullscreenQueuePanel(
                     scale: scale,
                     width: actualLyricsWidth,
                     visibleHeight: visibleClipHeight
                 )
-                .frame(width: actualLyricsWidth, height: actualLyricsHeight, alignment: .topLeading)
-                .offset(x: actualLyricsX)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                .padding(.trailing, 60 * scale)
+                .padding(.vertical, 80 * scale)
                 .allowsHitTesting(true)
                 .accessibilityHidden(false)
             } else if shouldShowLyricsColumn {
@@ -562,7 +564,7 @@ struct FullscreenPlayerView: View {
                 handleQueueTrackTap(track)
             }
         )
-        .frame(width: width, height: visibleHeight, alignment: .topLeading)
+        .frame(maxHeight: visibleHeight, alignment: .top)
     }
 
     @ViewBuilder

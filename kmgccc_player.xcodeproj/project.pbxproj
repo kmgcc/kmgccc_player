@@ -126,7 +126,6 @@
 				9351198D2F33149A00766A5F /* AMLL */,
 				935118942F3231C500766A5F /* myPlayer2 */,
 				935118932F3231C500766A5F /* Products */,
-				933AAE202F3CC8EB0081B59C /* BKThemes */,
 			);
 			sourceTree = "<group>";
 		};
