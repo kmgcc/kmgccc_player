@@ -244,7 +244,7 @@ struct MiniPlayerView: View {
             mode: currentPlaybackMode,
             isEnabled: isEnabled,
             isExpanded: isPlaybackModeExpanded,
-            onSelect: { mode in
+            onModeChange: { mode in
                 switch mode {
                 case .sequence:
                     shuffleEnabled = false
@@ -263,7 +263,8 @@ struct MiniPlayerView: View {
                     repeatMode = "off"
                     stopAfterTrack = true
                 }
-            }
+            },
+            onCurrentModeRetap: { _ in }
         )
         .contentShape(Capsule())
         .onHover { hovering in
@@ -562,7 +563,8 @@ struct PlaybackModeSlider: View {
     let useScreenBlend: Bool
     let pillTintColor: Color?
     let pillTintBlendMode: BlendMode?
-    let onSelect: (PlaybackMode) -> Void
+    let onModeChange: (PlaybackMode) -> Void
+    let onCurrentModeRetap: (PlaybackMode) -> Void
     let onInteraction: (() -> Void)?
     let scale: CGFloat
 
@@ -578,7 +580,8 @@ struct PlaybackModeSlider: View {
         pillTintBlendMode: BlendMode? = nil,
         onInteraction: (() -> Void)? = nil,
         scale: CGFloat = 1.0,
-        onSelect: @escaping (PlaybackMode) -> Void
+        onModeChange: @escaping (PlaybackMode) -> Void,
+        onCurrentModeRetap: @escaping (PlaybackMode) -> Void = { _ in }
     ) {
         self.mode = mode
         self.isEnabled = isEnabled
@@ -591,7 +594,8 @@ struct PlaybackModeSlider: View {
         self.pillTintBlendMode = pillTintBlendMode
         self.onInteraction = onInteraction
         self.scale = scale
-        self.onSelect = onSelect
+        self.onModeChange = onModeChange
+        self.onCurrentModeRetap = onCurrentModeRetap
     }
 
     @Environment(\.colorScheme) private var colorScheme
@@ -683,12 +687,11 @@ struct PlaybackModeSlider: View {
                         let modeValue = pair.element
                         segmentButton(
                             systemImage: symbol(for: modeValue),
-                            index: index(for: modeValue),
+                            mode: modeValue,
                             isSelected: mode == modeValue,
-                            width: segmentWidth
-                        ) {
-                            selectMode(modeValue, snap: snap)
-                        }
+                            width: segmentWidth,
+                            snap: snap
+                        )
                     }
                 }
                 .padding(.horizontal, inset)
@@ -710,7 +713,9 @@ struct PlaybackModeSlider: View {
                         dragTranslation = 0
                         isDragging = false
                         let clampedIndex = max(0, min(3, index))
-                        selectMode(modeForIndex(clampedIndex), snap: snap)
+                        let targetMode = modeForIndex(clampedIndex)
+                        guard targetMode != mode else { return }
+                        commitModeChange(targetMode, snap: snap)
                     }
             )
         }
@@ -725,33 +730,45 @@ struct PlaybackModeSlider: View {
         }
     }
 
-    private func selectMode(_ newMode: PlaybackMode, snap: Animation) {
+    private func commitModeChange(_ newMode: PlaybackMode, snap: Animation) {
         onInteraction?()
         if reduceMotion {
             var tx = Transaction()
             tx.disablesAnimations = true
             withTransaction(tx) {
-                onSelect(newMode)
+                onModeChange(newMode)
             }
         } else {
             withAnimation(snap) {
-                onSelect(newMode)
+                onModeChange(newMode)
             }
         }
     }
 
+    private func handleSegmentTap(_ tappedMode: PlaybackMode, snap: Animation) {
+        if tappedMode == mode {
+            onInteraction?()
+            onCurrentModeRetap(tappedMode)
+            return
+        }
+
+        commitModeChange(tappedMode, snap: snap)
+    }
+
     private func segmentButton(
         systemImage: String,
-        index: Int,
+        mode: PlaybackMode,
         isSelected: Bool,
         width: CGFloat,
-        action: @escaping () -> Void
+        snap: Animation
     ) -> some View {
-        Button(action: action) {
+        Button {
+            handleSegmentTap(mode, snap: snap)
+        } label: {
             ZStack {
                 Rectangle()
                     .fill(Color.clear)
-                segmentIcon(systemImage: systemImage, index: index, isSelected: isSelected)
+                segmentIcon(systemImage: systemImage, index: index(for: mode), isSelected: isSelected)
             }
             .frame(width: width, height: 28 * scale)
             .contentShape(Rectangle())

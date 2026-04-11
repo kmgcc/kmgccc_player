@@ -15,11 +15,11 @@ struct FullscreenMiniPlayerView: View {
     // Scale factor for responsive sizing at different resolutions
     var scale: CGFloat = 1.0
     let playbackMode: PlaybackMode
-    let onPlaybackModeTap: (PlaybackMode) -> Void
+    let onPlaybackModeChange: (PlaybackMode) -> Void
+    let onCurrentPlaybackModeRetap: (PlaybackMode) -> Void
     var onInteraction: () -> Void = {}
     var onHoverStateChanged: (Bool) -> Void = { _ in }
     var onProgressDraggingChanged: (Bool) -> Void = { _ in }
-    var onPlaybackModeExpandedChanged: (Bool) -> Void = { _ in }
     
     private let fixedBarHeight: CGFloat = 60
     private static let fullscreenThemeMinLightness: CGFloat = 0.90
@@ -51,7 +51,7 @@ struct FullscreenMiniPlayerView: View {
     private var controlsWidth: CGFloat { 174 * scale }
     private var playbackModeExpandedWidth: CGFloat { 178 * scale }
     private var playbackModeCollapsedWidth: CGFloat { 56 * scale }
-    private var playbackModeWidth: CGFloat {
+    private var playbackModeOccupancyWidth: CGFloat {
         isPlaybackModeExpanded ? playbackModeExpandedWidth : playbackModeCollapsedWidth
     }
     private var minProgressWidth: CGFloat { 320 * scale }
@@ -85,7 +85,7 @@ struct FullscreenMiniPlayerView: View {
 
             // Playback Mode
             playbackModeView
-                .frame(width: playbackModeWidth)
+                .frame(width: playbackModeOccupancyWidth, alignment: .leading)
 
             // Progress bar
             progressArea
@@ -108,10 +108,6 @@ struct FullscreenMiniPlayerView: View {
             if hovering {
                 onInteraction()
             }
-        }
-        .animation(layoutAnimation, value: isPlaybackModeExpanded)
-        .onChange(of: isPlaybackModeExpanded) { _, expanded in
-            onPlaybackModeExpandedChanged(expanded)
         }
         .task(id: currentArtworkTaskKey) {
             await loadArtworkThumbnail()
@@ -247,12 +243,12 @@ struct FullscreenMiniPlayerView: View {
             pillTintBlendMode: .normal,
             onInteraction: onInteraction,
             scale: scale,
-            onSelect: { mode in
-                onPlaybackModeTap(mode)
-            }
+            onModeChange: onPlaybackModeChange,
+            onCurrentModeRetap: onCurrentPlaybackModeRetap
         )
-        .frame(height: 36 * scale)
+        .frame(width: playbackModeOccupancyWidth, height: 36 * scale, alignment: .leading)
         .contentShape(Capsule())
+        .animation(layoutAnimation, value: isPlaybackModeExpanded)
         .onHover { hovering in
             guard isEnabled else {
                 if isPlaybackModeExpanded {
@@ -545,7 +541,8 @@ struct FullscreenMiniPlayerView: View {
         Spacer()
         FullscreenMiniPlayerView(
             playbackMode: .sequence,
-            onPlaybackModeTap: { _ in }
+            onPlaybackModeChange: { _ in },
+            onCurrentPlaybackModeRetap: { _ in }
         )
             .environment(playerVM)
             .environmentObject(ThemeStore.shared)
