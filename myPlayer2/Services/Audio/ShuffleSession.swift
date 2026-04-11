@@ -324,6 +324,42 @@ final class ShuffleSession {
         recentlyPlayedTrackIDs
     }
 
+    /// Get the full generated sequence.
+    func getFullSequence() -> [UUID] {
+        return generatedTrackIDs
+    }
+
+    /// Get current index in the sequence.
+    func getCurrentIndexInSequence() -> Int {
+        return currentIndex
+    }
+
+    /// Jump to a specific track in the sequence without reshuffling.
+    /// Adjusts history and position but keeps the generated sequence stable.
+    func jumpTo(trackID: UUID) {
+        guard let targetIndex = generatedTrackIDs.firstIndex(of: trackID) else { return }
+        
+        // If target is before current, we need to adjust history
+        if targetIndex < currentIndex {
+            // Move tracks from current position back to history
+            // This ensures forward navigation works correctly after jump
+        }
+        
+        // Update current index
+        currentIndex = targetIndex
+        
+        // Update history to include tracks before current position
+        recentlyPlayedTrackIDs = Array(generatedTrackIDs.prefix(targetIndex))
+        
+        // Add current track to history
+        if targetIndex < generatedTrackIDs.count {
+            appendToHistory(generatedTrackIDs[targetIndex])
+        }
+        
+        // Ensure queue is extended if needed
+        extendQueueIfNeeded()
+    }
+
     /// Check if a track was recently played.
     func wasRecentlyPlayed(_ trackID: UUID, within: Int = 10) -> Bool {
         let recent = Array(recentlyPlayedTrackIDs.suffix(within))

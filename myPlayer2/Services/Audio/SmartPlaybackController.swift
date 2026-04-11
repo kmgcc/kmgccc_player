@@ -523,6 +523,52 @@ final class SmartPlaybackController {
 
     // MARK: - Queue Information
 
+    /// Get all tracks in current playback order (for Fullscreen Queue View).
+    /// For shuffle mode, returns the full generated sequence including played, current, and upcoming.
+    func getCurrentQueue() -> [Track] {
+        guard isShuffleEnabled, let session = shuffleSession else {
+            // Sequential mode: return all tracks
+            return sourceTracks
+        }
+        
+        // Shuffle mode: get the full generated sequence
+        let sequenceIDs = session.getFullSequence()
+        return sequenceIDs.compactMap { id in sourceTracks.first { $0.id == id } }
+    }
+    
+    /// Get the current track's index in the queue display order.
+    func getCurrentQueueIndex() -> Int? {
+        guard let track = currentTrack else { return nil }
+        
+        if isShuffleEnabled, let session = shuffleSession {
+            return session.getCurrentIndexInSequence()
+        } else {
+            return currentSourceIndex
+        }
+    }
+    
+    /// Jump to a specific track in the queue without reshuffling.
+    /// For shuffle mode, maintains the session stability.
+    func jumpToTrackInQueue(_ track: Track) {
+        guard sourceTracks.contains(where: { $0.id == track.id }) else { return }
+        
+        lastChangeWasUserAction = true
+        finalizeCurrentSession(userInitiated: true)
+        
+        if isShuffleEnabled, let session = shuffleSession {
+            // Jump to this track in the shuffle session without reshuffling
+            session.jumpTo(trackID: track.id)
+        } else {
+            // Sequential mode: update index
+            if let index = sourceTracks.firstIndex(where: { $0.id == track.id }) {
+                currentSourceIndex = index
+            }
+        }
+        
+        startTrackSession(track: track)
+        onPlayTrack?(track)
+    }
+
     /// Get upcoming tracks (for UI preview).
     func getUpcomingTracks(count: Int) -> [Track] {
         guard isShuffleEnabled, let session = shuffleSession else {

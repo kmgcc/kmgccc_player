@@ -89,6 +89,14 @@ final class PlayerViewModel {
         nowPlayingService.updateNowPlaying(force: true)
     }
 
+    var currentQueueTracks: [Track] {
+        playbackService.currentQueueTracks()
+    }
+
+    var currentQueueDisplayIndex: Int? {
+        playbackService.currentQueueDisplayIndex()
+    }
+
     // MARK: - Playback Control
 
     func play(track: Track) {
@@ -141,6 +149,17 @@ final class PlayerViewModel {
 
     func setVolume(_ newVolume: Double) {
         volume = newVolume
+    }
+
+    func playTrackFromQueue(_ track: Track) {
+        playbackService.playTrackFromQueue(track)
+        startLevelMeterIfNeeded()
+        nowPlayingService.updateNowPlaying(force: true)
+    }
+
+    func setShuffleEnabled(_ enabled: Bool) {
+        playbackService.setShuffleEnabled(enabled)
+        nowPlayingService.updateNowPlaying(force: true)
     }
 
     // MARK: - Cleanup

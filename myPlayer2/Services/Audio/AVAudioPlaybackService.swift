@@ -455,16 +455,10 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         let refreshedByID = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) })
         guard !refreshedByID.isEmpty else { return }
 
-        queue = queue.map { refreshedByID[$0.id] ?? $0 }
-
-        var refreshedCurrentTrack = false
+        // Update current track if it was refreshed
         if let currentID = currentTrack?.id, let refreshedTrack = refreshedByID[currentID] {
             currentTrack = refreshedTrack
             duration = refreshedTrack.duration
-            refreshedCurrentTrack = true
-        }
-
-        if refreshedCurrentTrack {
             NotificationCenter.default.post(name: .playbackTrackDidChange, object: nil)
         }
     }
@@ -622,6 +616,26 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             url.stopAccessingSecurityScopedResource()
             currentFileURL = nil
         }
+    }
+
+    // MARK: - Queue Access for Fullscreen Queue View
+
+    func currentQueueTracks() -> [Track] {
+        return smartController.getCurrentQueue()
+    }
+
+    func currentQueueDisplayIndex() -> Int? {
+        return smartController.getCurrentQueueIndex()
+    }
+
+    func playTrackFromQueue(_ track: Track) {
+        smartController.jumpToTrackInQueue(track)
+    }
+
+    func setShuffleEnabled(_ enabled: Bool) {
+        AppSettings.shared.shuffleEnabled = enabled
+        lastKnownShuffleEnabled = enabled
+        smartController.setShuffle(enabled)
     }
 
     // MARK: - Repeat Mode
