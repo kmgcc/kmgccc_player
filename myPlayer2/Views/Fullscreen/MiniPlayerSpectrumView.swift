@@ -116,6 +116,16 @@ private struct MiniPlayerSpectrumContainer: NSViewRepresentable {
     }
 }
 
+extension MiniPlayerSpectrumContainer: Equatable {
+    static func == (lhs: MiniPlayerSpectrumContainer, rhs: MiniPlayerSpectrumContainer) -> Bool {
+        lhs.isPlaying == rhs.isPlaying
+            && lhs.dotSize == rhs.dotSize
+            && lhs.spacing == rhs.spacing
+            && lhs.pausedBehavior == rhs.pausedBehavior
+            && lhs.accentColor.isVisuallyEqual(to: rhs.accentColor)
+    }
+}
+
 // MARK: - Host View
 
 @MainActor
@@ -409,6 +419,23 @@ private final class MiniPlayerSpectrumHostView: NSView {
         }
         
         return (fillColors, strokeColors)
+    }
+}
+
+private extension NSColor {
+    func isVisuallyEqual(to other: NSColor) -> Bool {
+        guard
+            let lhs = usingColorSpace(.deviceRGB),
+            let rhs = other.usingColorSpace(.deviceRGB)
+        else {
+            return false
+        }
+
+        let epsilon: CGFloat = 0.001
+        return abs(lhs.redComponent - rhs.redComponent) < epsilon
+            && abs(lhs.greenComponent - rhs.greenComponent) < epsilon
+            && abs(lhs.blueComponent - rhs.blueComponent) < epsilon
+            && abs(lhs.alphaComponent - rhs.alphaComponent) < epsilon
     }
 }
 

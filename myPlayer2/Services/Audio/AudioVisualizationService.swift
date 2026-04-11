@@ -37,6 +37,7 @@ final class AudioVisualizationService {
     private var timer: DispatchSourceTimer?
     private var activeRefs = 0
     private var isRunning = false
+    private var pendingStopWorkItem: DispatchWorkItem?
 
     private var isPlaying: Bool = false
     private var pauseStartTime: TimeInterval?
@@ -64,6 +65,8 @@ final class AudioVisualizationService {
     func start() {
         processingQueue.async { [weak self] in
             guard let self else { return }
+            self.pendingStopWorkItem?.cancel()
+            self.pendingStopWorkItem = nil
             self.activeRefs += 1
             guard self.activeRefs == 1 else { return }
             self.startLocked()
@@ -75,7 +78,7 @@ final class AudioVisualizationService {
             guard let self else { return }
             self.activeRefs = max(0, self.activeRefs - 1)
             guard self.activeRefs == 0, self.isRunning else { return }
-            self.stopLocked()
+            self.scheduleStopLocked()
         }
     }
 
@@ -115,6 +118,8 @@ final class AudioVisualizationService {
     }
 
     private func startLocked() {
+        pendingStopWorkItem?.cancel()
+        pendingStopWorkItem = nil
         let now = Date().timeIntervalSinceReferenceDate
         isRunning = true
         isPlaying = false
@@ -140,6 +145,8 @@ final class AudioVisualizationService {
     }
 
     private func stopLocked() {
+        pendingStopWorkItem?.cancel()
+        pendingStopWorkItem = nil
         if let id = hubConsumerId {
             hub.removeConsumer(id)
         }
@@ -168,6 +175,19 @@ final class AudioVisualizationService {
         if shouldPublishZero {
             publish(zeroWave)
         }
+    }
+
+    private func scheduleStopLocked() {
+        pendingStopWorkItem?.cancel()
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            guard self.activeRefs == 0, self.isRunning else { return }
+            self.stopLocked()
+        }
+
+        pendingStopWorkItem = workItem
+        processingQueue.asyncAfter(deadline: .now() + 0.35, execute: workItem)
     }
 
     private func enqueue(_ data: AudioAnalysisData) {

@@ -126,6 +126,7 @@
 				9351198D2F33149A00766A5F /* AMLL */,
 				935118942F3231C500766A5F /* myPlayer2 */,
 				935118932F3231C500766A5F /* Products */,
+				93EBF7BA2F8A113D007F15E3 /* Recovered References */,
 			);
 			sourceTree = "<group>";
 		};
@@ -136,6 +137,14 @@
 				933AADFD2F3CC8D40081B59C /* BKArt.bundle */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		93EBF7BA2F8A113D007F15E3 /* Recovered References */ = {
+			isa = PBXGroup;
+			children = (
+				933AAE202F3CC8EB0081B59C /* BKThemes */,
+			);
+			name = "Recovered References";
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
