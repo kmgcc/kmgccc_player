@@ -61,3 +61,4 @@ Tools/lddc-server/
 *.flac
 LIQUID_GLASS_SPEC.md
 *.bak
+.claude/worktrees/

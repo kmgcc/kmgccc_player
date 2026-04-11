@@ -44,6 +44,18 @@ protocol AudioPlaybackServiceProtocol: AnyObject {
     /// Replace queue/current-track metadata for already-known track IDs without rebuilding playback state.
     func refreshTracks(_ tracks: [Track])
 
+    /// Return the current queue in the active playback order.
+    func currentQueueTracks() -> [Track]
+
+    /// Return the current track index in the displayed queue order.
+    func currentQueueDisplayIndex() -> Int?
+
+    /// Jump to a specific track within the current queue without rebuilding it.
+    func playTrackFromQueue(_ track: Track)
+
+    /// Immediately sync shuffle behavior for the active playback session.
+    func setShuffleEnabled(_ enabled: Bool)
+
     /// Pause playback.
     func pause()
 

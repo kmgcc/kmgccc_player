@@ -8,6 +8,7 @@
 import AppKit
 import Combine
 import CoreImage
+import ImageIO
 import QuartzCore
 import SwiftUI
 
@@ -66,22 +67,206 @@ private enum CassetteLayout {
     }
 
     static func tapeAspectRatio() -> CGFloat {
-        if let size = NSImage(named: "tape")?.size, size.height > 0 {
-            return size.width / size.height
+        CassetteThemeAssetCache.shared.tapeAspectRatio()
+    }
+}
+
+private struct CassetteThemeImageSet {
+    let shell: NSImage
+    let gray: NSImage
+    let paper: NSImage
+    let outline: NSImage
+    let mask: NSImage
+}
+
+private final class CassetteThemeImageSetBox: NSObject {
+    let value: CassetteThemeImageSet
+
+    init(_ value: CassetteThemeImageSet) {
+        self.value = value
+    }
+}
+
+private final class CassetteThemeAssetCache {
+    static let shared = CassetteThemeAssetCache()
+
+    private enum Resource: String {
+        case light = "cassette_tape_light"
+        case dark = "cassette_tape_dark"
+        case gray = "cassette_tape_gray"
+        case paper = "cassette_tape_paper"
+        case outline = "cassette_tape_outline"
+        case mask = "cassette_tape_mask"
+    }
+
+    private let cache = NSCache<NSString, CassetteThemeImageSetBox>()
+    private let lock = NSLock()
+    private var resolvedAspectRatio: CGFloat?
+
+    private init() {
+        cache.countLimit = 4
+        cache.totalCostLimit = 32 * 1024 * 1024
+    }
+
+    func imageSet(colorScheme: ColorScheme, maxPixel: Int) -> CassetteThemeImageSet? {
+        let key = "\(colorScheme == .dark ? "dark" : "light")-\(maxPixel)" as NSString
+        if let cached = cache.object(forKey: key) {
+            return cached.value
         }
-        return 1.6
+
+        guard
+            let shell = loadImage(
+                resource: colorScheme == .dark ? .dark : .light,
+                maxPixel: maxPixel
+            ),
+            let gray = loadImage(resource: .gray, maxPixel: maxPixel),
+            let paper = loadImage(resource: .paper, maxPixel: maxPixel),
+            let outline = loadImage(resource: .outline, maxPixel: maxPixel),
+            let mask = loadImage(resource: .mask, maxPixel: maxPixel)
+        else {
+            return nil
+        }
+
+        let imageSet = CassetteThemeImageSet(
+            shell: shell,
+            gray: gray,
+            paper: paper,
+            outline: outline,
+            mask: mask
+        )
+        cache.setObject(
+            CassetteThemeImageSetBox(imageSet),
+            forKey: key,
+            cost: estimatedCost(for: imageSet)
+        )
+        return imageSet
+    }
+
+    func removeAll() {
+        cache.removeAllObjects()
+    }
+
+    func tapeAspectRatio() -> CGFloat {
+        lock.lock()
+        if let resolvedAspectRatio {
+            lock.unlock()
+            return resolvedAspectRatio
+        }
+        lock.unlock()
+
+        let ratio: CGFloat
+        if
+            let url = resourceURL(for: .light),
+            let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+            let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+            let width = properties[kCGImagePropertyPixelWidth] as? CGFloat,
+            let height = properties[kCGImagePropertyPixelHeight] as? CGFloat,
+            height > 0
+        {
+            ratio = width / height
+        } else {
+            ratio = 3149.0 / 2006.0
+        }
+
+        lock.lock()
+        resolvedAspectRatio = ratio
+        lock.unlock()
+        return ratio
+    }
+
+    private func loadImage(resource: Resource, maxPixel: Int) -> NSImage? {
+        guard let url = resourceURL(for: resource) else { return nil }
+        guard
+            let source = CGImageSourceCreateWithURL(
+                url as CFURL,
+                [kCGImageSourceShouldCache: false] as CFDictionary
+            )
+        else { return nil }
+
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCache: false,
+            kCGImageSourceShouldCacheImmediately: false,
+            kCGImageSourceThumbnailMaxPixelSize: max(1, maxPixel),
+        ]
+
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return nil
+        }
+
+        return NSImage(
+            cgImage: image,
+            size: NSSize(width: image.width, height: image.height)
+        )
+    }
+
+    private func resourceURL(for resource: Resource) -> URL? {
+        let bundles = [Bundle.main, Bundle(for: CassetteThemeImageSetBox.self)]
+        let relativePaths = [
+            "CassetteSkin/\(resource.rawValue).png",
+            "Resources/CassetteSkin/\(resource.rawValue).png",
+            "\(resource.rawValue).png",
+        ]
+
+        for bundle in bundles {
+            if
+                let direct = bundle.url(
+                    forResource: resource.rawValue,
+                    withExtension: "png",
+                    subdirectory: "CassetteSkin"
+                )
+            {
+                return direct
+            }
+            if let direct = bundle.url(forResource: resource.rawValue, withExtension: "png") {
+                return direct
+            }
+            guard let resourceURL = bundle.resourceURL else { continue }
+            for relativePath in relativePaths {
+                let candidate = resourceURL.appendingPathComponent(relativePath)
+                if FileManager.default.fileExists(atPath: candidate.path) {
+                    return candidate
+                }
+            }
+        }
+
+        return nil
+    }
+
+    private func estimatedCost(for imageSet: CassetteThemeImageSet) -> Int {
+        [
+            imageSet.shell,
+            imageSet.gray,
+            imageSet.paper,
+            imageSet.outline,
+            imageSet.mask,
+        ]
+        .reduce(0) { partial, image in
+            partial + Self.estimatedCost(for: image)
+        }
+    }
+
+    private static func estimatedCost(for image: NSImage) -> Int {
+        if let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+            return max(1, cgImage.bytesPerRow * cgImage.height)
+        }
+        let size = image.size
+        return max(1, Int(ceil(size.width)) * Int(ceil(size.height)) * 4)
     }
 }
 
 private struct CassetteArtwork: View {
     let context: SkinContext
     @AppStorage("skin.kmgcccCassette.showKmgLook") private var showKmgLook: Bool = false
+    @Environment(\.displayScale) private var displayScale
     @StateObject private var fullscreenManager = FullscreenWindowManager.shared
     @State private var adjustedArtworkImage: NSImage?
     @State private var adjustedArtworkKey: String?
     @State private var renderKey: String = ""
     @State private var adjustedVisible: Bool = false
     @State private var processingTask: Task<Void, Never>?
+    @State private var processingGeneration: UInt64 = 0
 
     @AppStorage("skin.kmgcccCassette.visualizerMode") private var normalVisualizerMode: String = "off"
     @AppStorage("skin.kmgcccCassette.fullscreen.visualizerMode") private var fullscreenVisualizerMode: String = "off"
@@ -101,31 +286,32 @@ private struct CassetteArtwork: View {
         let adjustedContext = isFullscreen ? context.withContentSizeAdjustment(scaleAdjustment) : context
 
         let size = CassetteLayout.cassetteSize(for: adjustedContext)
+        let themeImages = cassetteThemeImages(for: size)
         let visualizerMode = isFullscreen ? fullscreenVisualizerMode : normalVisualizerMode
         let centeredYOffset: CGFloat = visualizerMode == "led" ? 12 : max(22, min(36, size.height * 0.07))
         let horizontalOffset: CGFloat = -(12 + (isFullscreen ? cassetteFullscreenExtraLeftShift : 0))
 
         ZStack {
-            Image(tapeAssetName)
+            cassetteThemeImage(themeImages?.shell, fallbackNamed: tapeAssetName)
                 .resizable()
                 .aspectRatio(contentMode: .fit)
                 .frame(width: size.width, height: size.height)
 
-            maskedArtwork(size: size)
+            maskedArtwork(size: size, maskImage: themeImages?.mask)
 
-            Image("tapegray")
+            cassetteThemeImage(themeImages?.gray, fallbackNamed: "tapegray")
                 .resizable()
                 .aspectRatio(contentMode: .fit)
                 .frame(width: size.width, height: size.height)
 
-            Image("tapepaper")
+            cassetteThemeImage(themeImages?.paper, fallbackNamed: "tapepaper")
                 .resizable()
                 .aspectRatio(contentMode: .fit)
                 .frame(width: size.width, height: size.height)
                 .blendMode(.multiply)
                 .opacity(0.40)
 
-            Image("tapeoutline")
+            cassetteThemeImage(themeImages?.outline, fallbackNamed: "tapeoutline")
                 .resizable()
                 .aspectRatio(contentMode: .fit)
                 .frame(width: size.width, height: size.height)
@@ -149,24 +335,27 @@ private struct CassetteArtwork: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         .offset(x: horizontalOffset, y: centeredYOffset)
         .onAppear {
-            scheduleAdjustedArtworkProcessing()
+            scheduleAdjustedArtworkProcessing(targetSize: size)
         }
         .onChange(of: context.track?.id) { _, _ in
-            scheduleAdjustedArtworkProcessing()
+            scheduleAdjustedArtworkProcessing(targetSize: size)
         }
         .onChange(of: context.track?.artworkChecksum) { _, _ in
-            scheduleAdjustedArtworkProcessing()
+            scheduleAdjustedArtworkProcessing(targetSize: size)
         }
         .onChange(of: context.theme.colorScheme) { _, _ in
-            scheduleAdjustedArtworkProcessing()
+            scheduleAdjustedArtworkProcessing(targetSize: size)
+        }
+        .onChange(of: processingBudgetKey(for: size)) { _, _ in
+            scheduleAdjustedArtworkProcessing(targetSize: size)
         }
         .onDisappear {
-            processingTask?.cancel()
+            teardownArtworkState(purgeCaches: true)
         }
     }
 
     @ViewBuilder
-    private func maskedArtwork(size: CGSize) -> some View {
+    private func maskedArtwork(size: CGSize, maskImage: NSImage?) -> some View {
         ZStack {
             originalArtworkImage
                 .resizable()
@@ -185,7 +374,7 @@ private struct CassetteArtwork: View {
         .scaleEffect(0.90)
         .clipped()
         .mask(
-            Image("tapemask")
+            cassetteThemeImage(maskImage, fallbackNamed: "tapemask")
                 .resizable()
                 .aspectRatio(contentMode: .fit)
                 .frame(width: size.width, height: size.height)
@@ -213,14 +402,13 @@ private struct CassetteArtwork: View {
         return min(max(60, base), 120)
     }
 
-    private func scheduleAdjustedArtworkProcessing() {
+    private func scheduleAdjustedArtworkProcessing(targetSize: CGSize) {
         processingTask?.cancel()
+        processingGeneration &+= 1
+        let generation = processingGeneration
 
         guard let track = context.track, let data = track.artworkData else {
-            renderKey = ""
-            adjustedArtworkKey = nil
-            adjustedArtworkImage = nil
-            adjustedVisible = false
+            clearAdjustedArtworkState(resetRenderKey: true)
             return
         }
 
@@ -228,25 +416,30 @@ private struct CassetteArtwork: View {
         let hi = (context.theme.colorScheme == .dark) ? 0.80 : 0.83
         let midAnchor = 0.5
         let seed = UInt64(bitPattern: Int64(track.id.uuidString.hashValue))
+        let maxPixel = processingMaxPixel(for: targetSize)
         let key = makeToneKey(
             trackID: track.id,
             scheme: context.theme.colorScheme,
             lo: lo,
             hi: hi,
             mid: midAnchor,
-            checksum: track.artworkChecksum
+            checksum: track.artworkChecksum,
+            maxPixel: maxPixel
         )
         renderKey = key
+        if adjustedArtworkKey != key {
+            adjustedArtworkKey = nil
+            adjustedArtworkImage = nil
+        }
         adjustedVisible = false
 
         processingTask = Task(priority: .utility) {
-            if let cached = await CassetteArtworkCache.shared.data(for: key),
+            if let cached = await CassetteArtworkCache.shared.image(for: key),
                 !Task.isCancelled
             {
                 await MainActor.run {
-                    guard self.renderKey == key else { return }
-                    guard let cachedImage = NSImage(data: cached) else { return }
-                    self.adjustedArtworkImage = cachedImage
+                    guard self.processingGeneration == generation, self.renderKey == key else { return }
+                    self.adjustedArtworkImage = cached
                     self.adjustedArtworkKey = key
                     withAnimation(.easeInOut(duration: 0.26)) {
                         self.adjustedVisible = true
@@ -255,24 +448,28 @@ private struct CassetteArtwork: View {
                 return
             }
 
-            let result = await Task.detached(priority: .utility) {
-                CassetteArtworkToneMapper.process(
-                    data: data,
-                    lo: lo,
-                    hi: hi,
-                    midAnchor: midAnchor,
-                    seed: seed
-                )
-            }.value
+            let result = await CassetteArtworkProcessor.shared.process(
+                data: data,
+                lo: lo,
+                hi: hi,
+                midAnchor: midAnchor,
+                seed: seed,
+                maxPixel: maxPixel
+            )
 
             guard !Task.isCancelled, let result else {
                 return
             }
 
-            await CassetteArtworkCache.shared.setData(result.data, for: key)
             await MainActor.run {
-                guard self.renderKey == key else { return }
-                guard let image = NSImage(data: result.data) else { return }
+                guard self.processingGeneration == generation, self.renderKey == key else { return }
+                let image = NSImage(
+                    cgImage: result.image,
+                    size: NSSize(width: result.image.width, height: result.image.height)
+                )
+                Task {
+                    await CassetteArtworkCache.shared.setImage(image, for: key)
+                }
                 self.adjustedArtworkImage = image
                 self.adjustedArtworkKey = key
                 withAnimation(.easeInOut(duration: 0.26)) {
@@ -288,23 +485,67 @@ private struct CassetteArtwork: View {
         lo: Double,
         hi: Double,
         mid: Double,
-        checksum: UInt64
+        checksum: UInt64,
+        maxPixel: Int
     ) -> String {
-        "\(trackID.uuidString)-\(scheme == .dark ? "dark" : "light")-\(String(format: "%.3f", lo))-\(String(format: "%.3f", hi))-\(String(format: "%.3f", mid))-\(checksum)"
+        "\(trackID.uuidString)-\(scheme == .dark ? "dark" : "light")-\(String(format: "%.3f", lo))-\(String(format: "%.3f", hi))-\(String(format: "%.3f", mid))-\(checksum)-px:\(maxPixel)"
     }
 
-    private func fastChecksum(_ data: Data) -> UInt64 {
-        if data.isEmpty { return 0 }
-        var hash: UInt64 = 1_469_598_103_934_665_603
-        let stride = max(1, data.count / 512)
-        var index = 0
-        while index < data.count {
-            hash ^= UInt64(data[index])
-            hash = hash &* 1_099_511_628_211
-            index += stride
+    private func processingBudgetKey(for size: CGSize) -> Int {
+        processingMaxPixel(for: size)
+    }
+
+    private func processingMaxPixel(for size: CGSize) -> Int {
+        let resolvedScale = max(1.0, displayScale)
+        let displayedWidth = size.width * 0.90
+        let displayedHeight = size.height * 0.90
+        let longestSide = max(displayedWidth, displayedHeight)
+        let overscan = max(1.15, min(1.35, displayedWidth / max(1, displayedHeight)))
+        let target = Int(ceil(longestSide * resolvedScale * overscan))
+        return min(1_600, max(640, target))
+    }
+
+    private func themeMaxPixel(for size: CGSize) -> Int {
+        let resolvedScale = max(1.0, displayScale)
+        let longestSide = max(size.width, size.height)
+        let target = Int(ceil(longestSide * resolvedScale * 2.2))
+        return min(1_400, max(900, target))
+    }
+
+    private func cassetteThemeImages(for size: CGSize) -> CassetteThemeImageSet? {
+        CassetteThemeAssetCache.shared.imageSet(
+            colorScheme: context.theme.colorScheme,
+            maxPixel: themeMaxPixel(for: size)
+        )
+    }
+
+    private func cassetteThemeImage(_ image: NSImage?, fallbackNamed name: String) -> Image {
+        if let image {
+            return Image(nsImage: image)
         }
-        hash ^= UInt64(data.count)
-        return hash
+        return Image(name)
+    }
+
+    private func clearAdjustedArtworkState(resetRenderKey: Bool) {
+        if resetRenderKey {
+            renderKey = ""
+        }
+        adjustedArtworkKey = nil
+        adjustedArtworkImage = nil
+        adjustedVisible = false
+    }
+
+    private func teardownArtworkState(purgeCaches: Bool) {
+        processingGeneration &+= 1
+        processingTask?.cancel()
+        processingTask = nil
+        clearAdjustedArtworkState(resetRenderKey: true)
+
+        guard purgeCaches else { return }
+        CassetteThemeAssetCache.shared.removeAll()
+        Task {
+            await CassetteArtworkCache.shared.removeAll()
+        }
     }
 }
 
@@ -317,26 +558,26 @@ private struct CassetteLumaStats: Sendable {
 actor CassetteArtworkCache {
     static let shared = CassetteArtworkCache()
 
-    private var storage: [String: Data] = [:]
+    private var storage: [String: NSImage] = [:]
     private var keys: [String] = []
     private var costs: [String: Int] = [:]
     private var totalBytes = 0
     private let maxCount = 48
     private let maxTotalBytes = 24 * 1024 * 1024
 
-    func data(for key: String) -> Data? {
+    func image(for key: String) -> NSImage? {
         storage[key]
     }
 
-    func setData(_ data: Data, for key: String) {
+    func setImage(_ image: NSImage, for key: String) {
         if storage[key] == nil {
             keys.append(key)
         }
         if let previousCost = costs[key] {
             totalBytes -= previousCost
         }
-        storage[key] = data
-        let cost = data.count
+        storage[key] = image
+        let cost = Self.estimatedCost(for: image)
         costs[key] = cost
         totalBytes += cost
         while keys.count > maxCount || totalBytes > maxTotalBytes {
@@ -354,6 +595,41 @@ actor CassetteArtworkCache {
         costs.removeAll()
         totalBytes = 0
     }
+
+    private static func estimatedCost(for image: NSImage) -> Int {
+        if let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+            return max(1, cgImage.bytesPerRow * cgImage.height)
+        }
+        let size = image.size
+        let width = max(1, Int(ceil(size.width)))
+        let height = max(1, Int(ceil(size.height)))
+        return width * height * 4
+    }
+}
+
+private actor CassetteArtworkProcessor {
+    static let shared = CassetteArtworkProcessor()
+
+    func process(
+        data: Data,
+        lo: Double,
+        hi: Double,
+        midAnchor: Double,
+        seed: UInt64,
+        maxPixel: Int
+    ) -> (image: CGImage, before: CassetteLumaStats, after: CassetteLumaStats)? {
+        guard !Task.isCancelled else { return nil }
+        let result = CassetteArtworkToneMapper.process(
+            data: data,
+            lo: lo,
+            hi: hi,
+            midAnchor: midAnchor,
+            seed: seed,
+            maxPixel: maxPixel
+        )
+        guard !Task.isCancelled else { return nil }
+        return result
+    }
 }
 
 private enum CassetteArtworkToneMapper {
@@ -362,139 +638,153 @@ private enum CassetteArtworkToneMapper {
         lo: Double,
         hi: Double,
         midAnchor: Double,
-        seed: UInt64
-    ) -> (data: Data, before: CassetteLumaStats, after: CassetteLumaStats)? {
-        let ciContext = CIContext(options: [.cacheIntermediates: false])
-        guard let linearSpace = CGColorSpace(name: CGColorSpace.linearSRGB) else { return nil }
-        guard let outputSpace = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
-        guard let input = CIImage(data: data), !input.extent.isEmpty else { return nil }
+        seed: UInt64,
+        maxPixel: Int
+    ) -> (image: CGImage, before: CassetteLumaStats, after: CassetteLumaStats)? {
+        return autoreleasepool {
+            let ciContext = CIContext(options: [.cacheIntermediates: false])
+            guard let linearSpace = CGColorSpace(name: CGColorSpace.linearSRGB) else { return nil }
+            guard let input = downsampledInputImage(data: data, maxPixel: maxPixel), !input.extent.isEmpty else { return nil }
 
-        let linearInput = input.applyingFilter("CISRGBToneCurveToLinear")
+            let linearInput = input.applyingFilter("CISRGBToneCurveToLinear")
+            guard
+                let before = sampledLumaStats(
+                    from: linearInput, seed: seed, ciContext: ciContext, linearSpace: linearSpace)
+            else { return nil }
+
+            let exposureEV: Double = before.high > hi ? (log2(hi / before.high) * 0.85) : 0
+            let exposedLinear =
+                exposureEV < 0
+                ? linearInput.applyingFilter("CIExposureAdjust", parameters: ["inputEV": exposureEV])
+                : linearInput
+
+            let toeLift: Double = {
+                guard before.low < lo else { return 0 }
+                let deficit = lo - before.low
+                return min(0.05, max(0.02, deficit * 0.5))
+            }()
+            let shoulderDrop: Double = {
+                let pressure = max(0.0, before.high - hi) / max(1e-4, 1.0 - hi)
+                guard pressure > 0 else { return 0 }
+                return min(0.08, max(0.03, pressure * 0.08))
+            }()
+
+            let point0 = CIVector(x: 0.0, y: 0.0)
+            let point1 = CIVector(x: 0.25, y: CGFloat(min(0.30, 0.25 + toeLift)))
+            let point2 = CIVector(x: 0.50, y: CGFloat(midAnchor))
+            let point3 = CIVector(x: 0.75, y: CGFloat(max(0.62, 0.75 - shoulderDrop)))
+            let point4 = CIVector(x: 1.00, y: 1.00)
+
+            let tonedLinear = exposedLinear.applyingFilter(
+                "CIToneCurve",
+                parameters: [
+                    "inputPoint0": point0,
+                    "inputPoint1": point1,
+                    "inputPoint2": point2,
+                    "inputPoint3": point3,
+                    "inputPoint4": point4,
+                ]
+            )
+
+            let ditherAmount = CGFloat(1.0 / 255.0)
+            guard let noiseSource = CIFilter(name: "CIRandomGenerator")?.outputImage else {
+                return nil
+            }
+            let noise =
+                noiseSource
+                .cropped(to: tonedLinear.extent)
+                .applyingFilter(
+                    "CIColorMatrix",
+                    parameters: [
+                        "inputRVector": CIVector(x: 0.3333, y: 0.3333, z: 0.3333, w: 0),
+                        "inputGVector": CIVector(x: 0.3333, y: 0.3333, z: 0.3333, w: 0),
+                        "inputBVector": CIVector(x: 0.3333, y: 0.3333, z: 0.3333, w: 0),
+                        "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 0),
+                        "inputBiasVector": CIVector(x: -0.5, y: -0.5, z: -0.5, w: 0),
+                    ]
+                )
+                .applyingFilter(
+                    "CIColorMatrix",
+                    parameters: [
+                        "inputRVector": CIVector(x: ditherAmount, y: 0, z: 0, w: 0),
+                        "inputGVector": CIVector(x: 0, y: ditherAmount, z: 0, w: 0),
+                        "inputBVector": CIVector(x: 0, y: 0, z: ditherAmount, w: 0),
+                        "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 0),
+                    ]
+                )
+
+            let ditheredLinear = noise.applyingFilter(
+                "CIAdditionCompositing",
+                parameters: ["inputBackgroundImage": tonedLinear]
+            )
+            .cropped(to: tonedLinear.extent)
+
+            let clampedLinear = ditheredLinear.applyingFilter(
+                "CIColorClamp",
+                parameters: [
+                    "inputMinComponents": CIVector(x: 0, y: 0, z: 0, w: 0),
+                    "inputMaxComponents": CIVector(
+                        x: CGFloat(hi),
+                        y: CGFloat(hi),
+                        z: CGFloat(hi),
+                        w: 1
+                    ),
+                ]
+            )
+
+            let outputImage = clampedLinear.applyingFilter("CILinearToSRGBToneCurve")
+            guard
+                let renderedImage = ciContext.createCGImage(outputImage, from: outputImage.extent),
+                let after = sampledLumaStats(
+                    from: clampedLinear,
+                    seed: seed &+ 0xB529_7A4D,
+                    ciContext: ciContext,
+                    linearSpace: linearSpace
+                )
+            else { return nil }
+
+            ciContext.clearCaches()
+
+            #if DEBUG
+                let overflow = after.high > hi + 1e-4
+                let underflow = after.low < lo - 1e-4
+                print(
+                    String(
+                        format:
+                            "[CassetteBrightness] before(min=%.4f max=%.4f mean=%.4f) after(min=%.4f max=%.4f mean=%.4f) lo=%.2f hi=%.2f overflow=%@ underflow=%@",
+                        before.low, before.high, before.mean,
+                        after.low, after.high, after.mean,
+                        lo, hi,
+                        overflow ? "YES" : "NO",
+                        underflow ? "YES" : "NO"
+                    )
+                )
+                assert(after.high <= hi + 1e-4, "Cassette artwork luma overflow")
+            #endif
+
+            return (renderedImage, before, after)
+        }
+    }
+
+    private nonisolated static func downsampledInputImage(data: Data, maxPixel: Int) -> CIImage? {
         guard
-            let before = sampledLumaStats(
-                from: linearInput, seed: seed, ciContext: ciContext, linearSpace: linearSpace)
+            let source = CGImageSourceCreateWithData(
+                data as CFData,
+                [kCGImageSourceShouldCache: false] as CFDictionary
+            )
         else { return nil }
 
-        // Only downshift exposure to tame highlights; never raise whole image for low-end.
-        let exposureEV: Double = before.high > hi ? (log2(hi / before.high) * 0.85) : 0
-        let exposedLinear =
-            exposureEV < 0
-            ? linearInput.applyingFilter("CIExposureAdjust", parameters: ["inputEV": exposureEV])
-            : linearInput
-
-        // S-curve: keep mid anchor, slight toe lift only when very dark, compress shoulder near hi.
-        let toeLift: Double = {
-            guard before.low < lo else { return 0 }
-            let deficit = lo - before.low
-            return min(0.05, max(0.02, deficit * 0.5))
-        }()
-        let shoulderDrop: Double = {
-            let pressure = max(0.0, before.high - hi) / max(1e-4, 1.0 - hi)
-            guard pressure > 0 else { return 0 }
-            return min(0.08, max(0.03, pressure * 0.08))
-        }()
-
-        let point0 = CIVector(x: 0.0, y: 0.0)
-        let point1 = CIVector(x: 0.25, y: CGFloat(min(0.30, 0.25 + toeLift)))
-        let point2 = CIVector(x: 0.50, y: CGFloat(midAnchor))
-        let point3 = CIVector(x: 0.75, y: CGFloat(max(0.62, 0.75 - shoulderDrop)))
-        let point4 = CIVector(x: 1.00, y: 1.00)
-
-        let tonedLinear = exposedLinear.applyingFilter(
-            "CIToneCurve",
-            parameters: [
-                "inputPoint0": point0,
-                "inputPoint1": point1,
-                "inputPoint2": point2,
-                "inputPoint3": point3,
-                "inputPoint4": point4,
-            ]
-        )
-
-        // Very weak dither to reduce banding.
-        let ditherAmount = CGFloat(1.0 / 255.0)
-        guard let noiseSource = CIFilter(name: "CIRandomGenerator")?.outputImage else {
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: false,
+            kCGImageSourceShouldCache: false,
+            kCGImageSourceThumbnailMaxPixelSize: max(1, maxPixel),
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
             return nil
         }
-        let noise =
-            noiseSource
-            .cropped(to: tonedLinear.extent)
-            .applyingFilter(
-                "CIColorMatrix",
-                parameters: [
-                    "inputRVector": CIVector(x: 0.3333, y: 0.3333, z: 0.3333, w: 0),
-                    "inputGVector": CIVector(x: 0.3333, y: 0.3333, z: 0.3333, w: 0),
-                    "inputBVector": CIVector(x: 0.3333, y: 0.3333, z: 0.3333, w: 0),
-                    "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 0),
-                    "inputBiasVector": CIVector(x: -0.5, y: -0.5, z: -0.5, w: 0),
-                ]
-            )
-            .applyingFilter(
-                "CIColorMatrix",
-                parameters: [
-                    "inputRVector": CIVector(x: ditherAmount, y: 0, z: 0, w: 0),
-                    "inputGVector": CIVector(x: 0, y: ditherAmount, z: 0, w: 0),
-                    "inputBVector": CIVector(x: 0, y: 0, z: ditherAmount, w: 0),
-                    "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 0),
-                ]
-            )
-
-        let ditheredLinear = noise.applyingFilter(
-            "CIAdditionCompositing",
-            parameters: ["inputBackgroundImage": tonedLinear]
-        )
-        .cropped(to: tonedLinear.extent)
-
-        // Final hard cap only for highlights; no hard floor on shadows.
-        let clampedLinear = ditheredLinear.applyingFilter(
-            "CIColorClamp",
-            parameters: [
-                "inputMinComponents": CIVector(x: 0, y: 0, z: 0, w: 0),
-                "inputMaxComponents": CIVector(
-                    x: CGFloat(hi),
-                    y: CGFloat(hi),
-                    z: CGFloat(hi),
-                    w: 1
-                ),
-            ]
-        )
-
-        let outputImage = clampedLinear.applyingFilter("CILinearToSRGBToneCurve")
-        guard
-            let pngData = ciContext.pngRepresentation(
-                of: outputImage,
-                format: .RGBA8,
-                colorSpace: outputSpace,
-                options: [:]
-            ),
-            let after = sampledLumaStats(
-                from: clampedLinear,
-                seed: seed &+ 0xB529_7A4D,
-                ciContext: ciContext,
-                linearSpace: linearSpace
-            )
-        else { return nil }
-
-        ciContext.clearCaches()
-
-        #if DEBUG
-            let overflow = after.high > hi + 1e-4
-            let underflow = after.low < lo - 1e-4
-            print(
-                String(
-                    format:
-                        "[CassetteBrightness] before(min=%.4f max=%.4f mean=%.4f) after(min=%.4f max=%.4f mean=%.4f) lo=%.2f hi=%.2f overflow=%@ underflow=%@",
-                    before.low, before.high, before.mean,
-                    after.low, after.high, after.mean,
-                    lo, hi,
-                    overflow ? "YES" : "NO",
-                    underflow ? "YES" : "NO"
-                )
-            )
-            assert(after.high <= hi + 1e-4, "Cassette artwork luma overflow")
-        #endif
-
-        return (pngData, before, after)
+        return CIImage(cgImage: image)
     }
 
     private nonisolated static func sampledLumaStats(

@@ -70,6 +70,25 @@ final class StubAudioPlaybackService: AudioPlaybackServiceProtocol {
         }
     }
 
+    func currentQueueTracks() -> [Track] {
+        queue
+    }
+
+    func currentQueueDisplayIndex() -> Int? {
+        guard !queue.isEmpty, currentIndex >= 0, currentIndex < queue.count else { return nil }
+        return currentIndex
+    }
+
+    func playTrackFromQueue(_ track: Track) {
+        guard let index = queue.firstIndex(where: { $0.id == track.id }) else { return }
+        currentIndex = index
+        play(track: track)
+    }
+
+    func setShuffleEnabled(_ enabled: Bool) {
+        AppSettings.shared.shuffleEnabled = enabled
+    }
+
     func pause() {
         isPlaying = false
         stopTimer()

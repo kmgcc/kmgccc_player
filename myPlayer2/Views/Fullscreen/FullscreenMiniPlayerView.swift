@@ -14,6 +14,8 @@ import SwiftUI
 struct FullscreenMiniPlayerView: View {
     // Scale factor for responsive sizing at different resolutions
     var scale: CGFloat = 1.0
+    let playbackMode: PlaybackMode
+    let onPlaybackModeTap: (PlaybackMode) -> Void
     var onInteraction: () -> Void = {}
     var onHoverStateChanged: (Bool) -> Void = { _ in }
     var onProgressDraggingChanged: (Bool) -> Void = { _ in }
@@ -28,10 +30,6 @@ struct FullscreenMiniPlayerView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
-
-    @AppStorage("shuffleEnabled") private var shuffleEnabled: Bool = false
-    @AppStorage("repeatMode") private var repeatMode: String = "off"
-    @AppStorage("stopAfterTrack") private var stopAfterTrack: Bool = false
 
     @State private var isDragging = false
     @State private var dragProgress: Double = 0
@@ -235,17 +233,10 @@ struct FullscreenMiniPlayerView: View {
         }
     }
 
-    private var currentPlaybackMode: PlaybackMode {
-        if stopAfterTrack { return .stopAfterTrack }
-        if repeatMode == "one" { return .repeatOne }
-        if shuffleEnabled { return .shuffle }
-        return .sequence
-    }
-
     private var playbackModeView: some View {
         let isEnabled = playerVM.currentTrack != nil
         return PlaybackModeSlider(
-            mode: currentPlaybackMode,
+            mode: playbackMode,
             isEnabled: isEnabled,
             isExpanded: isPlaybackModeExpanded,
             iconSize: 16 * scale,
@@ -257,24 +248,7 @@ struct FullscreenMiniPlayerView: View {
             onInteraction: onInteraction,
             scale: scale,
             onSelect: { mode in
-                switch mode {
-                case .sequence:
-                    shuffleEnabled = false
-                    repeatMode = "off"
-                    stopAfterTrack = false
-                case .shuffle:
-                    shuffleEnabled = true
-                    repeatMode = "off"
-                    stopAfterTrack = false
-                case .repeatOne:
-                    shuffleEnabled = false
-                    repeatMode = "one"
-                    stopAfterTrack = false
-                case .stopAfterTrack:
-                    shuffleEnabled = false
-                    repeatMode = "off"
-                    stopAfterTrack = true
-                }
+                onPlaybackModeTap(mode)
             }
         )
         .frame(height: 36 * scale)
@@ -569,7 +543,10 @@ struct FullscreenMiniPlayerView: View {
 
     VStack {
         Spacer()
-        FullscreenMiniPlayerView()
+        FullscreenMiniPlayerView(
+            playbackMode: .sequence,
+            onPlaybackModeTap: { _ in }
+        )
             .environment(playerVM)
             .environmentObject(ThemeStore.shared)
             .padding(40)

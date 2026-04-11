@@ -86,20 +86,18 @@ struct FullscreenPlayerView: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @StateObject private var bkController = BKArtBackgroundController()
     @State private var skinRevision = 0
-    @State private var lyricsColumnVisible: Bool?
+    @State private var rightPanelMode: FullscreenRightPanelMode = .lyrics
     @State private var lockedFullscreenLyricsBackgroundColor: NSColor?
     @State private var lockedFullscreenLyricsUltraDark: Bool = false
     @State private var pendingFullscreenLyricsBackgroundCapture: Bool = false
     @State private var pendingFullscreenLyricsRefresh: DispatchWorkItem?
     @State private var pendingFullscreenLyricsReveal: DispatchWorkItem?
-    @State private var pendingFullscreenLyricsVisibilitySync: DispatchWorkItem?
     @State private var pendingFullscreenTrackRefresh: DispatchWorkItem?
     @State private var artworkSnapshot: ArtworkAssetSnapshot?
     @State private var coverBlurLyricsTheme: FullscreenCoverBlurLyricsTheme?
     @State private var deferredTrackUpdateDeadline: Date?
     @State private var suppressFullscreenLyricsViewport = false
     @State private var isLeadingControlsExpanded = false
-    @State private var isLyricsManuallyHidden = false
     @State private var appearanceRotateTrigger = 0
     @State private var currentFullscreenScale: CGFloat = 1.0
     @State private var didHandleFullscreenAppear = false
@@ -191,19 +189,11 @@ struct FullscreenPlayerView: View {
             // Report visibility to manager - manager handles the switch with debouncing
             LyricsSurfaceManager.shared.reportFullscreenVisible(true)
 
-            // Initialize lyrics visibility before other operations
-            if lyricsColumnVisible == nil {
-                lyricsColumnVisible = desiredLyricsColumnVisibility
-                syncFullscreenLyricsViewportVisibility(desiredLyricsColumnVisibility, after: 0)
-                Log.debug("Initialized lyricsColumnVisible to \(lyricsColumnVisible ?? false)", category: .webview)
-            }
-
             syncCoverBlurHighlightActivation()
             resetFullscreenLyricsBackgroundSnapshot()
             scheduleFullscreenLyricsBackgroundCapture()
             setupSeekCallback()
             reloadLyricsSurface(reason: "fullscreen appear", forceLyricsReload: true)
-            syncLyricsColumnVisibility(animated: false)
             resetFullscreenBottomControlsAutoHideState()
 
             if isLedEnabledForFullscreenSkin() {
@@ -220,13 +210,10 @@ struct FullscreenPlayerView: View {
             pendingFullscreenLyricsRefresh = nil
             pendingFullscreenLyricsReveal?.cancel()
             pendingFullscreenLyricsReveal = nil
-            pendingFullscreenLyricsVisibilitySync?.cancel()
-            pendingFullscreenLyricsVisibilitySync = nil
             pendingFullscreenTrackRefresh?.cancel()
             pendingFullscreenTrackRefresh = nil
             deferredTrackUpdateDeadline = nil
             suppressFullscreenLyricsViewport = false
-            existingFullscreenStore?.setViewportVisible(false)
             cancelFullscreenBottomControlsAutoHide()
             deactivateCoverBlurHighlightSurface()
             clearFullscreenLyricsTheme()
@@ -266,8 +253,9 @@ struct FullscreenPlayerView: View {
         }
         .onChange(of: playerVM.currentTrack?.id, handleTrackIdChange)
         .onChange(of: hasLyricsForCurrentTrack) { _, _ in
-            if syncLyricsColumnVisibility(animated: true) {
-                deferredTrackUpdateDeadline = Date().addingTimeInterval(trackUpdateDeferralDuration)
+            // 当歌词可用性变化时，如果当前在歌词模式但没有歌词，自动切换到队列
+            if rightPanelMode == .lyrics && !hasLyricsForCurrentTrack {
+                rightPanelMode = .queue
             }
         }
         .onChange(of: fullscreenLyricsConfigSignature) { _, _ in
@@ -385,8 +373,7 @@ struct FullscreenPlayerView: View {
     @ViewBuilder
     private func fullscreenLyricsLayer(scale: CGFloat, screenWidth: CGFloat) -> some View {
         let hostMetrics = layoutMetrics(showLyricsColumn: true)
-        let lyricsVisible = shouldShowLyricsColumn
-        let keepLyricsHostMounted = shouldKeepFullscreenLyricsHostMounted
+        let rightPanelVisible = shouldShowRightPanelColumn
 
         let scaleX = screenWidth / Self.baseCanvasWidth
         let hostBaseContentOffsetX: CGFloat = -topContentLeftShift
@@ -409,7 +396,7 @@ struct FullscreenPlayerView: View {
         let canvasCenteringX = max(0, (screenWidth - Self.baseCanvasWidth * scale) / 2)
         let visibleLyricsX = finalLyricsX * scale + canvasCenteringX
         let hiddenLyricsX = visibleLyricsX + 92 * scale
-        let actualLyricsX = lyricsVisible ? visibleLyricsX : hiddenLyricsX
+        let actualLyricsX = rightPanelVisible ? visibleLyricsX : hiddenLyricsX
 
         // Right boundary: span to screen-edge minus an adaptive padding rather than a
         // fixed canvas-fraction, so the region fills available space on all displays.
@@ -427,13 +414,23 @@ struct FullscreenPlayerView: View {
 
         // Debug logging for first layout
         let _ = {
-            if lyricsVisible && hasLyricsForCurrentTrack {
-                Log.debug("fullscreenLyricsLayer: scale=\(scale), width=\(actualLyricsWidth), height=\(actualLyricsHeight), visible=\(lyricsVisible)", category: .webview)
+            if rightPanelVisible && (hasLyricsForCurrentTrack || shouldShowQueuePanel) {
+                Log.debug("fullscreenLyricsLayer: scale=\(scale), width=\(actualLyricsWidth), height=\(actualLyricsHeight), visible=\(rightPanelVisible)", category: .webview)
             }
         }()
 
         ZStack(alignment: .topLeading) {
-            if keepLyricsHostMounted {
+            if shouldShowQueuePanel {
+                fullscreenQueuePanel(
+                    scale: scale,
+                    width: actualLyricsWidth,
+                    visibleHeight: visibleClipHeight
+                )
+                .frame(width: actualLyricsWidth, height: actualLyricsHeight, alignment: .topLeading)
+                .offset(x: actualLyricsX)
+                .allowsHitTesting(true)
+                .accessibilityHidden(false)
+            } else if shouldShowLyricsColumn {
                 // Top-left anchored. Height is fixed; only the visible clip region changes.
                 fullscreenLyricsCrispView(scale: scale, visibleClipHeight: visibleClipHeight)
                     .frame(width: actualLyricsWidth, height: actualLyricsHeight, alignment: .topLeading)
@@ -551,6 +548,23 @@ struct FullscreenPlayerView: View {
         }
     }
 
+    private func fullscreenQueuePanel(
+        scale: CGFloat,
+        width: CGFloat,
+        visibleHeight: CGFloat
+    ) -> some View {
+        FullscreenQueueView(
+            tracks: playerVM.currentQueueTracks,
+            currentTrackID: playerVM.currentTrack?.id,
+            playbackMode: currentPlaybackMode,
+            scale: scale,
+            onTrackTap: { track in
+                handleQueueTrackTap(track)
+            }
+        )
+        .frame(width: width, height: visibleHeight, alignment: .topLeading)
+    }
+
     @ViewBuilder
     private func fullscreenMaskedLyricsSurface<Content: View>(
         scale: CGFloat,
@@ -593,7 +607,7 @@ struct FullscreenPlayerView: View {
     // MARK: - Fixed Layout Metrics (for 1470x923 base canvas)
 
     private var layoutMetrics: (artworkWidth: CGFloat, lyricsWidth: CGFloat) {
-        layoutMetrics(showLyricsColumn: shouldShowLyricsColumn)
+        layoutMetrics(showLyricsColumn: shouldShowRightPanelColumn)
     }
 
     private func layoutMetrics(
@@ -667,7 +681,10 @@ struct FullscreenPlayerView: View {
                 .frame(width: leadingControlsWidth, height: buttonSize)
                 .offset(x: leadingControlsOriginX)
 
-            FullscreenMiniPlayerView()
+            FullscreenMiniPlayerView(
+                playbackMode: currentPlaybackMode,
+                onPlaybackModeTap: handlePlaybackOrderButtonTap
+            )
                 .frame(width: currentMiniPlayerWidth, height: buttonSize)
                 .environment(\.colorScheme, fullscreenControlsColorScheme)
                 .offset(x: miniPlayerOriginX)
@@ -938,6 +955,8 @@ struct FullscreenPlayerView: View {
                     
                     FullscreenMiniPlayerView(
                         scale: scale,
+                        playbackMode: currentPlaybackMode,
+                        onPlaybackModeTap: handlePlaybackOrderButtonTap,
                         onInteraction: {
                             registerFullscreenBottomControlsInteraction()
                         },
@@ -1021,7 +1040,7 @@ struct FullscreenPlayerView: View {
     private func artworkAndControlsArea(selectedSkin: any NowPlayingSkin, scale: CGFloat, screenWidth: CGFloat) -> some View {
         let metrics = layoutMetrics
         let windowWidth = Self.baseCanvasWidth
-        let lyricsVisible = shouldShowLyricsColumn
+        let lyricsVisible = shouldShowRightPanelColumn
 
         let artworkToCenterOffset = max(0, (windowWidth - metrics.artworkWidth) * 0.5)
         let contentOffsetX: CGFloat = lyricsVisible ? -topContentLeftShift : artworkToCenterOffset
@@ -1218,10 +1237,11 @@ struct FullscreenPlayerView: View {
     }
 
     private func lyricsVisibilityButton(size: CGFloat) -> some View {
-        let lyricsVisible = shouldShowLyricsColumn
-        let icon = lyricsVisible ? "quote.bubble.fill" : "quote.bubble"
-        let helpText: LocalizedStringKey = lyricsVisible ? "Hide Lyrics" : "Show Lyrics"
-        let canToggle = hasLyricsForCurrentTrack
+        // 歌词按钮：当前显示歌词时显示填充图标，否则显示空心图标
+        let isShowingLyrics = rightPanelMode == .lyrics && hasLyricsForCurrentTrack
+        let icon = isShowingLyrics ? "quote.bubble.fill" : "quote.bubble"
+        let helpText: LocalizedStringKey = isShowingLyrics ? "Hide Lyrics" : "Show Lyrics"
+        let canToggle = hasLyricsForCurrentTrack || rightPanelMode == .queue
 
         return leadingControlButton(size: size, help: helpText) {
             Image(systemName: icon)
@@ -1243,15 +1263,26 @@ struct FullscreenPlayerView: View {
     // MARK: - Helpers
 
     private var shouldShowLyricsColumn: Bool {
-        lyricsColumnVisible ?? desiredLyricsColumnVisibility
+        rightPanelMode == .lyrics && hasLyricsForCurrentTrack
+    }
+
+    private var shouldShowQueuePanel: Bool {
+        rightPanelMode == .queue && playerVM.currentTrack != nil && !playerVM.currentQueueTracks.isEmpty
+    }
+
+    private var shouldShowRightPanelColumn: Bool {
+        shouldShowLyricsColumn || shouldShowQueuePanel
     }
 
     private var hasLyricsForCurrentTrack: Bool {
         hasLyrics(for: playerVM.currentTrack)
     }
 
-    private var desiredLyricsColumnVisibility: Bool {
-        hasLyricsForCurrentTrack && !isLyricsManuallyHidden
+    private var currentPlaybackMode: PlaybackMode {
+        if settings.stopAfterTrack { return .stopAfterTrack }
+        if settings.repeatMode == "one" { return .repeatOne }
+        if settings.shuffleEnabled { return .shuffle }
+        return .sequence
     }
 
     private var lyricsLayoutAnimation: Animation {
@@ -1370,12 +1401,60 @@ struct FullscreenPlayerView: View {
         }
     }
 
+    /// 歌词按钮点击：在歌词和队列之间切换
     private func toggleFullscreenLyricsVisibility() {
-        guard hasLyricsForCurrentTrack else { return }
-        isLyricsManuallyHidden.toggle()
-        let didChangeLayout = syncLyricsColumnVisibility(animated: true)
-        guard didChangeLayout else { return }
-        deferredTrackUpdateDeadline = Date().addingTimeInterval(trackUpdateDeferralDuration)
+        withAnimation(lyricsLayoutAnimation) {
+            if rightPanelMode == .queue {
+                // 当前显示队列，切换到歌词（如果有歌词）
+                if hasLyricsForCurrentTrack {
+                    rightPanelMode = .lyrics
+                }
+            } else {
+                // 当前显示歌词或空白，切换到队列
+                rightPanelMode = .queue
+            }
+        }
+    }
+
+    /// 播放顺序按钮点击处理
+    private func handlePlaybackOrderButtonTap(_ tappedMode: PlaybackMode) {
+        if tappedMode == currentPlaybackMode {
+            // 点击当前模式：在歌词和队列之间切换
+            withAnimation(lyricsLayoutAnimation) {
+                toggleFullscreenRightPanel()
+            }
+            return
+        }
+
+        // 切换到新模式：先切模式，然后直接显示该模式的队列
+        applyPlaybackMode(tappedMode)
+        withAnimation(lyricsLayoutAnimation) {
+            rightPanelMode = .queue
+        }
+    }
+
+    /// 切换右侧面板：歌词 <-> 队列
+    private func toggleFullscreenRightPanel() {
+        switch rightPanelMode {
+        case .lyrics:
+            rightPanelMode = .queue
+        case .queue:
+            // 从队列切回歌词（仅当有歌词时）
+            if hasLyricsForCurrentTrack {
+                rightPanelMode = .lyrics
+            }
+        }
+    }
+
+    private func applyPlaybackMode(_ mode: PlaybackMode) {
+        let shuffleEnabled = mode == .shuffle
+        settings.repeatMode = mode == .repeatOne ? "one" : "off"
+        settings.stopAfterTrack = mode == .stopAfterTrack
+        playerVM.setShuffleEnabled(shuffleEnabled)
+    }
+
+    private func handleQueueTrackTap(_ track: Track) {
+        playerVM.playTrackFromQueue(track)
     }
 
     private func handleCurrentTimeChange(_ oldTime: Double, _ newTime: Double) {
@@ -1503,50 +1582,6 @@ struct FullscreenPlayerView: View {
         )
     }
 
-    @discardableResult
-    private func syncLyricsColumnVisibility(animated: Bool) -> Bool {
-        let targetVisible = desiredLyricsColumnVisibility
-        let currentVisible = lyricsColumnVisible ?? targetVisible
-
-        // Ensure state is initialized even when there's no visual change.
-        if lyricsColumnVisible == nil {
-            lyricsColumnVisible = targetVisible
-            syncFullscreenLyricsViewportVisibility(targetVisible, after: 0)
-            return false
-        }
-
-        guard currentVisible != targetVisible else { return false }
-
-        pendingFullscreenLyricsReveal?.cancel()
-        pendingFullscreenLyricsReveal = nil
-        suppressFullscreenLyricsViewport = false
-        syncFullscreenLyricsViewportVisibility(
-            targetVisible,
-            after: targetVisible && animated ? fullscreenLyricsRevealDelay : 0
-        )
-
-        if animated {
-            withAnimation(lyricsLayoutAnimation) {
-                lyricsColumnVisible = targetVisible
-            }
-        } else {
-            lyricsColumnVisible = targetVisible
-        }
-
-        return true
-    }
-
-    private var trackUpdateDeferralDuration: TimeInterval {
-        reduceMotion ? 0.20 : 0.34
-    }
-
-    private func currentTrackUpdateDeferral() -> TimeInterval {
-        max(0, deferredTrackUpdateDeadline?.timeIntervalSinceNow ?? 0)
-    }
-
-    private var fullscreenLyricsRevealDelay: TimeInterval {
-        reduceMotion ? 0 : (1.0 / 60.0)
-    }
 
     private var fullscreenLyricsViewportOpacity: Double {
         guard playerVM.currentTrack != nil else { return 0 }
@@ -1564,36 +1599,8 @@ struct FullscreenPlayerView: View {
         return 1
     }
 
-    private var shouldKeepFullscreenLyricsHostMounted: Bool {
-        playerVM.currentTrack != nil
-    }
-
     private var isFullscreenLyricsHostVisible: Bool {
         fullscreenLyricsHostOpacity > 0.001
-    }
-
-    private func syncFullscreenLyricsViewportVisibility(_ visible: Bool, after delay: TimeInterval) {
-        pendingFullscreenLyricsVisibilitySync?.cancel()
-        pendingFullscreenLyricsVisibilitySync = nil
-
-        guard visible else {
-            fullscreenStore.setViewportVisible(false)
-            return
-        }
-
-        let revealTrackID = playerVM.currentTrack?.id
-        let workItem = DispatchWorkItem {
-            guard playerVM.currentTrack?.id == revealTrackID else { return }
-            fullscreenStore.setViewportVisible(true)
-            pendingFullscreenLyricsVisibilitySync = nil
-        }
-        pendingFullscreenLyricsVisibilitySync = workItem
-
-        if delay <= 0 {
-            DispatchQueue.main.async(execute: workItem)
-        } else {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
-        }
     }
 
     private func scheduleFullscreenLyricsViewportReveal(after delay: TimeInterval) {
@@ -1624,7 +1631,7 @@ struct FullscreenPlayerView: View {
         pendingFullscreenLyricsReveal?.cancel()
         pendingFullscreenLyricsReveal = nil
 
-        let delay = layoutWillChange ? max(trackUpdateDeferralDuration, currentTrackUpdateDeferral()) : 0
+        let delay: TimeInterval = layoutWillChange ? (reduceMotion ? 0.20 : 0.34) : 0
         let workItem = DispatchWorkItem {
             reloadLyricsSurface(reason: "fullscreen track changed", forceLyricsReload: true)
             if revealLyricsAfterRefresh {
@@ -1636,16 +1643,13 @@ struct FullscreenPlayerView: View {
                 }
                 pendingFullscreenLyricsReveal = revealWorkItem
                 DispatchQueue.main.asyncAfter(
-                    deadline: .now() + fullscreenLyricsRevealDelay,
+                    deadline: .now() + (reduceMotion ? 0 : 1.0/60.0),
                     execute: revealWorkItem
                 )
             } else {
                 suppressFullscreenLyricsViewport = false
             }
             pendingFullscreenTrackRefresh = nil
-            if currentTrackUpdateDeferral() <= 0.01 {
-                deferredTrackUpdateDeadline = nil
-            }
         }
 
         pendingFullscreenTrackRefresh = workItem
@@ -1950,8 +1954,7 @@ struct FullscreenPlayerView: View {
         }
 
         pendingFullscreenLyricsRefresh = workItem
-        let delay = max(0.22, currentTrackUpdateDeferral())
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.22, execute: workItem)
     }
 
     private func makeContext(windowSize: CGSize, artworkColumnWidth: CGFloat, fullscreenScale: CGFloat = 1.0) -> SkinContext {
@@ -2417,8 +2420,15 @@ struct FullscreenPlayerView: View {
         }
     }
 
-    private func resolveCoverBlurThemeColor(for track: Track?) -> NSColor? {
+    private func currentArtworkSnapshot(for track: Track?) -> ArtworkAssetSnapshot? {
         guard let track, let snapshot = artworkSnapshot, snapshot.trackID == track.id else {
+            return nil
+        }
+        return snapshot
+    }
+
+    private func resolveCoverBlurThemeColor(for track: Track?) -> NSColor? {
+        guard let snapshot = currentArtworkSnapshot(for: track) else {
             return nil
         }
 
@@ -2466,10 +2476,10 @@ struct FullscreenPlayerView: View {
     }
 
     private func resolveFullscreenLyricsBaseColor(for track: Track?) -> NSColor {
-        if let accent = artworkSnapshot?.accentColor {
+        if let accent = currentArtworkSnapshot(for: track)?.accentColor {
             return accent
         }
-        if let base = artworkSnapshot?.averageColor {
+        if let base = currentArtworkSnapshot(for: track)?.averageColor {
             return base
         }
 
@@ -2512,14 +2522,14 @@ struct FullscreenPlayerView: View {
             artworkSnapshot = nil
             return
         }
-        
+
+        let expectedTrackID = track.id
+        let expectedTaskKey = currentArtworkTaskKey
         let snapshot = await ArtworkAssetStore.shared.snapshot(trackID: track.id, artworkData: artworkData)
         guard !Task.isCancelled else { return }
-        let deferral = currentTrackUpdateDeferral()
-        if deferral > 0 {
-            try? await Task.sleep(nanoseconds: UInt64(deferral * 1_000_000_000))
-        }
-        guard !Task.isCancelled else { return }
+        guard playerVM.currentTrack?.id == expectedTrackID else { return }
+        guard currentArtworkTaskKey == expectedTaskKey else { return }
+        guard snapshot?.trackID == expectedTrackID else { return }
 
         artworkSnapshot = snapshot
 
