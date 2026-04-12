@@ -160,6 +160,16 @@ extension DetailHeaderConfig {
     /// Backward-compatible alias for existing call sites.
     var identity: String { selectionIdentity }
 
+    /// Whether the header artwork should use a circular shape.
+    var isCircle: Bool {
+        switch self {
+        case .artist:
+            return true
+        case .playlist, .album:
+            return false
+        }
+    }
+
     private static func artworkFingerprint(data: Data?) -> String {
         guard let data else { return "nil" }
         var hash: UInt64 = 1469598103934665603

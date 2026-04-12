@@ -162,6 +162,16 @@ final class SmartPlaybackController {
         }
     }
 
+    /// Mark the currently active playback session so its already-started stats will be dropped once.
+    func discardCurrentSessionStatsOnFinalizeOnce() {
+        guard let tracker = currentSessionTracker else { return }
+        tracker.discardStatsOnFinalizeOnce()
+        Log.info(
+            "[PlaybackSession] active session marked discard-on-finalize once trackID=\(currentTrack?.id.uuidString ?? "none")",
+            category: .playback
+        )
+    }
+
     // MARK: - Navigation
 
     /// Get the current track.
@@ -383,6 +393,15 @@ final class SmartPlaybackController {
         // Finalize and get outcome
         let outcome = tracker.finalize()
 
+        if tracker.consumePendingStatsDiscardFlag() {
+            Log.info(
+                "[PlaybackSession] finalized without stats writeback due to one-shot discard trackID=\(trackID.uuidString)",
+                category: .playback
+            )
+            currentSessionTracker = nil
+            return
+        }
+
         // Log session summary
         print(String(repeating: "=", count: 60))
         print("🎵 [PlaybackSession] FINALIZED - \(trackTitle)")
@@ -400,7 +419,7 @@ final class SmartPlaybackController {
         print("   Is Completed: \(isCompleted)")
 
         // Apply to stats
-        PreferenceStatsService.shared.applyPlaybackOutcome(
+        let didChangeStats = PreferenceStatsService.shared.applyPlaybackOutcome(
             trackID: trackID,
             outcome: outcome,
             trackDuration: track.duration
@@ -444,25 +463,31 @@ final class SmartPlaybackController {
             print("      playCount: \(updatedStats.playCount)")
         }
 
-        // Write to disk
-        print("   💾 Writing to disk...")
-        let metaPath = "\(NSHomeDirectory())/Music/kmgccc_player Library/Tracks/\(trackID.uuidString)/meta.json"
-        print("   Path: \(metaPath)")
+        print("   Stats Changed: \(didChangeStats)")
 
-        PreferenceStatsService.shared.saveStats(for: track)
+        if didChangeStats {
+            // Write to disk
+            print("   💾 Writing meta only to disk...")
+            let metaPath = "\(NSHomeDirectory())/Music/kmgccc_player Library/Tracks/\(trackID.uuidString)/meta.json"
+            print("   Path: \(metaPath)")
 
-        // Verify write by checking file modification time
-        let fileURL = URL(fileURLWithPath: metaPath)
-        if let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
-           let modDate = attributes[.modificationDate] as? Date {
-            let timeSinceMod = Date().timeIntervalSince(modDate)
-            if timeSinceMod < 1.0 {
-                print("   ✅ Write confirmed (modified \(String(format: "%.2f", timeSinceMod))s ago)")
+            PreferenceStatsService.shared.saveStats(for: track)
+
+            // Verify write by checking file modification time
+            let fileURL = URL(fileURLWithPath: metaPath)
+            if let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
+               let modDate = attributes[.modificationDate] as? Date {
+                let timeSinceMod = Date().timeIntervalSince(modDate)
+                if timeSinceMod < 1.0 {
+                    print("   ✅ Meta write confirmed (modified \(String(format: "%.2f", timeSinceMod))s ago)")
+                } else {
+                    print("   ⚠️ Meta file not recently modified (last mod: \(String(format: "%.2f", timeSinceMod))s ago)")
+                }
             } else {
-                print("   ⚠️ File not recently modified (last mod: \(String(format: "%.2f", timeSinceMod))s ago)")
+                print("   ⚠️ Could not verify meta write")
             }
         } else {
-            print("   ⚠️ Could not verify file write")
+            print("   ⏭️ No stats delta, skipping disk write")
         }
 
         print(String(repeating: "=", count: 60))
@@ -515,7 +540,7 @@ final class SmartPlaybackController {
         if let trackIDs = notification.userInfo?["trackIDs"] as? [UUID] {
             for trackID in trackIDs {
                 if let track = sourceTracks.first(where: { $0.id == trackID }) {
-                    LocalLibraryService.shared.writeSidecar(for: track)
+                    LocalLibraryService.shared.writeMetaOnly(for: track, reason: "playbackStats")
                 }
             }
         }

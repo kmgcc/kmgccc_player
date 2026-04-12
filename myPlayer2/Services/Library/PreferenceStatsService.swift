@@ -74,35 +74,46 @@ final class PreferenceStatsService {
 
     /// Update stats for a track.
     /// 使用 V2 评分器计算基础权重。
-    func updateStats(for trackID: UUID, duration: Double, update: (inout TrackPreferenceStats) -> Void) {
+    @discardableResult
+    func updateStats(for trackID: UUID, duration: Double, update: (inout TrackPreferenceStats) -> Void) -> Bool {
         cacheLock.lock()
+        defer { cacheLock.unlock() }
 
-        var stats = statsCache[trackID] ?? TrackPreferenceStats()
+        let originalStats = statsCache[trackID] ?? TrackPreferenceStats()
+        var stats = originalStats
         update(&stats)
 
         // 使用 V2 评分器重新计算缓存值
         _ = PreferenceScorerV2.updateCachedScores(stats: &stats, duration: duration)
 
+        guard stats != originalStats else {
+            return false
+        }
+
         statsCache[trackID] = stats
         dirtyTrackIDs.insert(trackID)
-
-        cacheLock.unlock()
+        return true
     }
 
     /// Legacy wrapper for backward compatibility (uses default duration)
-    func updateStats(for trackID: UUID, update: (inout TrackPreferenceStats) -> Void) {
+    @discardableResult
+    func updateStats(for trackID: UUID, update: (inout TrackPreferenceStats) -> Void) -> Bool {
         updateStats(for: trackID, duration: 0, update: update)
     }
 
     /// Apply a playback session outcome to a track's stats.
     /// Uses V2 scoring algorithm with proper duration-based weight calculation.
-    func applyPlaybackOutcome(trackID: UUID, outcome: PlaybackSessionOutcome, trackDuration: Double) {
-        updateStats(for: trackID, duration: trackDuration) { stats in
-            switch outcome {
-            case .tooShort:
-                // Don't count very short plays.
-                break
+    @discardableResult
+    func applyPlaybackOutcome(trackID: UUID, outcome: PlaybackSessionOutcome, trackDuration: Double) -> Bool {
+        switch outcome {
+        case .tooShort:
+            return false
+        default:
+            break
+        }
 
+        return updateStats(for: trackID, duration: trackDuration) { stats in
+            switch outcome {
             case .completed:
                 stats.playCount += 1
                 stats.completePlayCount += 1
@@ -139,6 +150,8 @@ final class PreferenceStatsService {
                     stats.completePlayCount += 1
                     stats.lastCompletedAt = Date()
                 }
+            case .tooShort:
+                break
             }
         }
     }
@@ -177,6 +190,18 @@ final class PreferenceStatsService {
         cacheLock.unlock()
     }
 
+    /// Replace stats with an exact value loaded from disk or bulk maintenance logic.
+    func replaceStats(for trackID: UUID, with stats: TrackPreferenceStats, markDirty: Bool = false) {
+        cacheLock.lock()
+        statsCache[trackID] = stats
+        if markDirty {
+            dirtyTrackIDs.insert(trackID)
+        } else {
+            dirtyTrackIDs.remove(trackID)
+        }
+        cacheLock.unlock()
+    }
+
     /// Save all dirty stats to their respective sidecars.
     /// - Parameter trackProvider: Optional closure to get Track objects for writing sidecars.
     func saveAllPending(trackProvider: ((UUID) -> Track?)? = nil) async {
@@ -191,7 +216,7 @@ final class PreferenceStatsService {
         if let provider = trackProvider {
             for trackID in tracksToSave {
                 if let track = provider(trackID) {
-                    LocalLibraryService.shared.writeSidecar(for: track)
+                    LocalLibraryService.shared.writeMetaOnly(for: track, reason: "playbackStats")
                 }
             }
         } else {
@@ -209,7 +234,7 @@ final class PreferenceStatsService {
 
     /// Save stats for a specific track immediately.
     func saveStats(for track: Track) {
-        LocalLibraryService.shared.writeSidecar(for: track)
+        LocalLibraryService.shared.writeMetaOnly(for: track, reason: "playbackStats")
 
         cacheLock.lock()
         dirtyTrackIDs.remove(track.id)

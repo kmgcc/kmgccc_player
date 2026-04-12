@@ -465,20 +465,6 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     func next() {
         syncShuffleStateIfNeeded()
-
-        if AppSettings.shared.stopAfterTrack {
-            stop()
-            return
-        }
-
-        if let repeatMode = RepeatMode(rawValue: AppSettings.shared.repeatMode),
-           repeatMode == .one,
-           let track = currentTrack {
-            // Repeat current track
-            playInternal(track: track)
-            return
-        }
-
         smartController.nextTrack()
     }
 
@@ -636,6 +622,10 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         AppSettings.shared.shuffleEnabled = enabled
         lastKnownShuffleEnabled = enabled
         smartController.setShuffle(enabled)
+    }
+
+    func discardCurrentPlaybackSessionStatsOnce() {
+        smartController.discardCurrentSessionStatsOnFinalizeOnce()
     }
 
     // MARK: - Repeat Mode

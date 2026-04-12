@@ -51,6 +51,7 @@ struct LibraryDetailHeaderView: View {
 
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var themeStore: ThemeStore
 
     let config: DetailHeaderConfig
     /// Stable identity for artwork crossfade state machine
@@ -194,31 +195,8 @@ struct LibraryDetailHeaderView: View {
 
     @ViewBuilder
     private var artworkPlaceholder: some View {
-        switch config {
-        case .playlist:
-            Rectangle()
-                .fill(.secondary.opacity(0.15))
-                .overlay(
-                    Image(systemName: "music.note.list")
-                        .font(.system(size: 44))
-                        .foregroundStyle(.tertiary)
-                )
-        case .artist:
-            ZStack {
-                Circle().fill(.secondary.opacity(0.12))
-                Image(systemName: "person.fill")
-                    .font(.system(size: 64))
-                    .foregroundStyle(.secondary)
-            }
-        case .album:
-            Rectangle()
-                .fill(.secondary.opacity(0.15))
-                .overlay(
-                    Image(systemName: "opticaldisc")
-                        .font(.system(size: 44))
-                        .foregroundStyle(.tertiary)
-                )
-        }
+        let isCircle = config.isCircle
+        ArtworkPlaceholderView.header(size: 220, isCircle: isCircle)
     }
 
     private var artworkClipShape: AnyShape {

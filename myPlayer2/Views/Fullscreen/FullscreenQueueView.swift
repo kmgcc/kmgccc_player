@@ -404,24 +404,7 @@ private struct QueueRow: View {
                 .frame(width: artworkSize, height: artworkSize)
                 .clipShape(RoundedRectangle(cornerRadius: 6 * scale, style: .continuous))
         } else {
-            // Placeholder with dark-appropriate colors
-            RoundedRectangle(cornerRadius: 6 * scale, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            Color.white.opacity(0.15),
-                            Color.white.opacity(0.05)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-                .frame(width: artworkSize, height: artworkSize)
-                .overlay {
-                    Image(systemName: "music.note")
-                        .font(.system(size: 16 * scale))
-                        .foregroundStyle(.white.opacity(0.4))
-                }
+            ArtworkPlaceholderView.queueRow(artworkSize: 44, scale: scale)
         }
     }
 

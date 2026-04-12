@@ -11,6 +11,13 @@
 import Foundation
 import SwiftUI
 
+enum TrackEditPersistenceMode {
+    case metaOnly
+    case metaAndLyrics
+    case metaAndArtwork
+    case metaLyricsAndArtwork
+}
+
 enum TrackSortKey: String, CaseIterable, Identifiable {
     case importedAt
     case addedAt
@@ -343,6 +350,25 @@ final class LibraryViewModel {
         Log.debug("Refresh triggered, refreshTrigger=\(refreshTrigger)", category: .library)
     }
 
+    /// Notify the UI that in-memory track-adjacent data changed without forcing a repository reload.
+    func notifyTrackAuxiliaryDataChanged(trackIDs: [UUID]) {
+        let uniqueTrackIDs = Array(Set(trackIDs)).sorted { $0.uuidString < $1.uuidString }
+        guard !uniqueTrackIDs.isEmpty else { return }
+
+        refreshTrigger += 1
+
+        if let currentTrackID = SharedAppState.shared.playerVM?.currentTrack?.id,
+           uniqueTrackIDs.contains(currentTrackID) {
+            trackUpdateRevision += 1
+            trackUpdateEvent = TrackUpdateEvent(trackID: currentTrackID, revision: trackUpdateRevision)
+            NotificationCenter.default.post(
+                name: .libraryTrackDidUpdate,
+                object: nil,
+                userInfo: ["trackID": currentTrackID]
+            )
+        }
+    }
+
     // MARK: - Import (Per-Playlist)
 
     /// Import music files to the currently selected playlist.
@@ -528,12 +554,21 @@ final class LibraryViewModel {
         if let newBookmark = refreshedBookmark {
             track.fileBookmarkData = newBookmark
         }
-        await repository.updateTrack(track)
+        await repository.persistTrackMetaOnly(track, reason: "availabilityRefresh")
         await refresh()
     }
 
-    func saveTrackEdits(_ track: Track) async {
-        await repository.updateTrack(track)
+    func saveTrackEdits(_ track: Track, mode: TrackEditPersistenceMode, reason: String) async {
+        switch mode {
+        case .metaOnly:
+            await repository.persistTrackMetaOnly(track, reason: reason)
+        case .metaAndLyrics:
+            await repository.persistTrackMetaAndLyrics(track, reason: reason)
+        case .metaAndArtwork:
+            await repository.persistTrackMetaAndArtwork(track, reason: reason)
+        case .metaLyricsAndArtwork:
+            await repository.persistTrackMetaLyricsAndArtwork(track, reason: reason)
+        }
         await refresh()
     }
 

@@ -165,6 +165,7 @@ final class BKThemeAssets: @unchecked Sendable {
         backgroundCache.removeAllObjects()
         shapeCache.removeAllObjects()
         maskCache.removeAllObjects()
+        Self.maskProcessingContext.clearCaches()
     }
 
     private static func resolveBundle() -> Bundle? {

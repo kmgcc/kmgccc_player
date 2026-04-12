@@ -133,19 +133,11 @@ private struct RotatingCoverArtwork: View {
                 .resizable()
                 .aspectRatio(contentMode: .fill)
         } else {
-            Circle()
-                .fill(
-                    LinearGradient(
-                        colors: [Color.indigo.opacity(0.45), Color.blue.opacity(0.35)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-                .overlay {
-                    Image(systemName: "music.note")
-                        .font(.system(size: 52))
-                        .foregroundStyle(.white.opacity(0.35))
-                }
+            ArtworkPlaceholderView.nowPlaying(
+                size: min(context.contentSize.width, context.contentSize.height) * 0.5,
+                cornerRadius: 0,
+                isCircle: true
+            )
         }
     }
 }

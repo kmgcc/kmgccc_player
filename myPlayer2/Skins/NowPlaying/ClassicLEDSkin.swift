@@ -113,19 +113,10 @@ private struct ClassicLEDArtwork: View {
                 .aspectRatio(contentMode: .fill)
                 .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         } else {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [Color.purple.opacity(0.5), Color.blue.opacity(0.5)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-                .overlay {
-                    Image(systemName: "music.note")
-                        .font(.system(size: 56))
-                        .foregroundStyle(.white.opacity(0.35))
-                }
+            ArtworkPlaceholderView.nowPlaying(
+                size: min(context.contentSize.width, context.contentSize.height) * 0.5,
+                cornerRadius: cornerRadius
+            )
         }
     }
 }

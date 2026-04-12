@@ -1089,9 +1089,37 @@ final class ImportEnrichmentService {
             return
         }
 
-        let result = await repository.persistTrackUpdates(touchedTracks)
-        let persistedTrackIDs = Set(result.persistedTrackIDs)
-        let failedTrackIDs = Set(result.failedTrackIDs)
+        let lyricOnlyTracks = touchedTracks.filter { track in
+            guard let patch = effectivePatches[track.id] else { return false }
+            return patch.lyricShouldFlush && !patch.coverShouldFlush
+        }
+        let coverOnlyTracks = touchedTracks.filter { track in
+            guard let patch = effectivePatches[track.id] else { return false }
+            return !patch.lyricShouldFlush && patch.coverShouldFlush
+        }
+        let lyricAndCoverTracks = touchedTracks.filter { track in
+            guard let patch = effectivePatches[track.id] else { return false }
+            return patch.lyricShouldFlush && patch.coverShouldFlush
+        }
+
+        var persistedTrackIDs: Set<UUID> = []
+        var failedTrackIDs: Set<UUID> = []
+
+        if !lyricOnlyTracks.isEmpty {
+            let result = await repository.persistTrackMetaAndLyrics(lyricOnlyTracks, reason: "importEnrichmentLyrics")
+            persistedTrackIDs.formUnion(result.persistedTrackIDs)
+            failedTrackIDs.formUnion(result.failedTrackIDs)
+        }
+        if !coverOnlyTracks.isEmpty {
+            let result = await repository.persistTrackMetaAndArtwork(coverOnlyTracks, reason: "importEnrichmentArtwork")
+            persistedTrackIDs.formUnion(result.persistedTrackIDs)
+            failedTrackIDs.formUnion(result.failedTrackIDs)
+        }
+        if !lyricAndCoverTracks.isEmpty {
+            let result = await repository.persistTrackMetaLyricsAndArtwork(lyricAndCoverTracks, reason: "importEnrichmentLyricsArtwork")
+            persistedTrackIDs.formUnion(result.persistedTrackIDs)
+            failedTrackIDs.formUnion(result.failedTrackIDs)
+        }
 
         for trackID in persistedTrackIDs {
             guard let patch = effectivePatches[trackID], var state = itemStates[trackID] else { continue }
@@ -1131,22 +1159,22 @@ final class ImportEnrichmentService {
 
         refreshProgress()
         Log.info(
-            "[ImportEnrichment] batch flush complete reason=\(reason) persisted=\(result.persistedTrackIDs.count) failed=\(result.failedTrackIDs.count)",
+            "[ImportEnrichment] batch flush complete reason=\(reason) persisted=\(persistedTrackIDs.count) failed=\(failedTrackIDs.count)",
             category: .import
         )
-        if !result.persistedTrackIDs.isEmpty {
+        if !persistedTrackIDs.isEmpty {
             Log.info(
-                "[ImportEnrichment] visible refresh notified for \(result.persistedTrackIDs.count) persisted tracks",
+                "[ImportEnrichment] visible refresh notified for \(persistedTrackIDs.count) persisted tracks",
                 category: .import
             )
             Log.info(
-                "[ImportEnrichmentReload] flush success with \(result.persistedTrackIDs.count) updated tracks",
+                "[ImportEnrichmentReload] flush success with \(persistedTrackIDs.count) updated tracks",
                 category: .import
             )
         }
-        if !result.failedTrackIDs.isEmpty {
+        if !failedTrackIDs.isEmpty {
             Log.warning(
-                "[ImportEnrichment] persistence flush failed for \(result.failedTrackIDs.count) tracks",
+                "[ImportEnrichment] persistence flush failed for \(failedTrackIDs.count) tracks",
                 category: .import
             )
         }

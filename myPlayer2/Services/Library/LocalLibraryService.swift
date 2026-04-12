@@ -154,6 +154,25 @@ struct TrackSidecar: Codable {
     }
 }
 
+private struct TrackPersistenceReferences {
+    let artworkFileName: String?
+    let lyricsFileName: String?
+    let lyricsType: String?
+    let ttmlLyricsFileName: String?
+
+    init(
+        artworkFileName: String? = nil,
+        lyricsFileName: String? = nil,
+        lyricsType: String? = nil,
+        ttmlLyricsFileName: String? = nil
+    ) {
+        self.artworkFileName = artworkFileName
+        self.lyricsFileName = lyricsFileName
+        self.lyricsType = lyricsType
+        self.ttmlLyricsFileName = ttmlLyricsFileName
+    }
+}
+
 struct PlaylistSidecar: Codable {
     let schemaVersion: Int
     let id: UUID
@@ -430,95 +449,370 @@ final class LocalLibraryService {
 
     // MARK: - Sidecar Write
 
+    /// Import-only full resource persistence.
+    /// Ordinary business updates must use `writeMetaOnly` / `writeTrackMetaAnd...`.
     @discardableResult
-    func writeSidecar(for track: Track) -> Bool {
+    func writeImportedTrackSidecar(for track: Track, reason: String = "importFullTrack") -> Bool {
         guard !track.libraryRelativePath.isEmpty else { return false }
 
         do {
-            ensureLibraryFolders()
-            let trackFolder = LocalLibraryPaths.trackFolderURL(for: track.id)
-            try fileManager.createDirectory(at: trackFolder, withIntermediateDirectories: true)
-
-            let audioFileName = URL(fileURLWithPath: track.libraryRelativePath).lastPathComponent
-
-            let artworkFileName = try writeArtworkIfNeeded(track: track, folder: trackFolder)
-            let ttmlFileName = try writeLyricsIfNeeded(track: track, folder: trackFolder)
-
-            // Get preference stats from the stats service if available
-            let preferenceStats = PreferenceStatsService.shared.getStats(for: track.id)
-
-            let sidecar = TrackSidecar(
-                schemaVersion: 3,
-                id: track.id,
-                title: track.title,
-                artist: track.artist,
-                album: track.album,
-                duration: track.duration,
-                addedAt: track.addedAt,
-                importedAt: track.importedAt ?? track.addedAt,
-                lyricsTimeOffsetMs: track.lyricsTimeOffsetMs,
-                originalFilePath: track.originalFilePath.isEmpty ? nil : track.originalFilePath,
-                audioFileName: audioFileName.isEmpty ? nil : audioFileName,
-                artworkFileName: artworkFileName,
-                lyricsFileName: nil,
-                lyricsType: nil,
-                ttmlLyricsFileName: ttmlFileName,
-                ncmSourcePath: nil,
-                preferenceStats: preferenceStats
+            let references = loadTrackPersistenceReferences(for: track.id)
+            let trackFolder = try ensureTrackFolder(for: track.id)
+            let artworkFileName = try writeArtworkIfChanged(
+                for: track,
+                reason: reason,
+                existingFileName: references.artworkFileName
             )
-
-            let data = try encoder.encode(sidecar)
-            let metaURL = LocalLibraryPaths.trackMetaURL(for: track.id)
-            try data.write(to: metaURL, options: .atomic)
+            let updatedReferences = try writeLyricsAssets(
+                for: track,
+                folder: trackFolder,
+                existing: references
+            )
+            let finalReferences = TrackPersistenceReferences(
+                artworkFileName: artworkFileName,
+                lyricsFileName: updatedReferences.lyricsFileName,
+                lyricsType: updatedReferences.lyricsType,
+                ttmlLyricsFileName: updatedReferences.ttmlLyricsFileName
+            )
+            logTrackPersistence(
+                track: track,
+                reason: reason,
+                action: "import-full-sidecar",
+                artwork: "requested"
+            )
+            try writeTrackMeta(for: track, references: finalReferences)
             return true
         } catch {
-            Log.error("Failed to write sidecar for \(track.title): \(error)", category: .library)
+            Log.error("Failed to write imported track sidecar for \(track.title): \(error)", category: .library)
             return false
         }
     }
 
-    private func writeArtworkIfNeeded(track: Track, folder: URL) throws -> String? {
-        let artworkURL = LocalLibraryPaths.trackArtworkURL(for: track.id)
+    @discardableResult
+    func writeMetaOnly(for track: Track, reason: String) -> Bool {
+        guard !track.libraryRelativePath.isEmpty else { return false }
+
+        do {
+            let references = loadTrackPersistenceReferences(for: track.id)
+            logTrackPersistence(track: track, reason: reason, action: "meta-only", artwork: "not-requested")
+            try writeTrackMeta(for: track, references: references)
+            return true
+        } catch {
+            Log.error("Failed to write meta only for \(track.title): \(error)", category: .library)
+            return false
+        }
+    }
+
+    @discardableResult
+    func writeTrackMetaAndLyrics(for track: Track, reason: String) -> Bool {
+        guard !track.libraryRelativePath.isEmpty else { return false }
+
+        do {
+            let references = loadTrackPersistenceReferences(for: track.id)
+            let trackFolder = try ensureTrackFolder(for: track.id)
+            let updatedReferences = try writeLyricsAssets(for: track, folder: trackFolder, existing: references)
+            logTrackPersistence(track: track, reason: reason, action: "meta+lyrics", artwork: "not-requested")
+            try writeTrackMeta(for: track, references: updatedReferences)
+            return true
+        } catch {
+            Log.error("Failed to write meta+lyrics for \(track.title): \(error)", category: .library)
+            return false
+        }
+    }
+
+    @discardableResult
+    func writeTrackMetaAndArtwork(for track: Track, reason: String) -> Bool {
+        guard !track.libraryRelativePath.isEmpty else { return false }
+
+        do {
+            let references = loadTrackPersistenceReferences(for: track.id)
+            let artworkFileName = try writeArtworkIfChanged(
+                for: track,
+                reason: reason,
+                existingFileName: references.artworkFileName
+            )
+            let finalReferences = TrackPersistenceReferences(
+                artworkFileName: artworkFileName,
+                lyricsFileName: references.lyricsFileName,
+                lyricsType: references.lyricsType,
+                ttmlLyricsFileName: references.ttmlLyricsFileName
+            )
+            try writeTrackMeta(for: track, references: finalReferences)
+            return true
+        } catch {
+            Log.error("Failed to write meta+artwork for \(track.title): \(error)", category: .library)
+            return false
+        }
+    }
+
+    @discardableResult
+    func writeTrackMetaLyricsAndArtwork(for track: Track, reason: String) -> Bool {
+        guard !track.libraryRelativePath.isEmpty else { return false }
+
+        do {
+            let references = loadTrackPersistenceReferences(for: track.id)
+            let trackFolder = try ensureTrackFolder(for: track.id)
+            let artworkFileName = try writeArtworkIfChanged(
+                for: track,
+                reason: reason,
+                existingFileName: references.artworkFileName
+            )
+            let updatedReferences = try writeLyricsAssets(for: track, folder: trackFolder, existing: references)
+            let finalReferences = TrackPersistenceReferences(
+                artworkFileName: artworkFileName,
+                lyricsFileName: updatedReferences.lyricsFileName,
+                lyricsType: updatedReferences.lyricsType,
+                ttmlLyricsFileName: updatedReferences.ttmlLyricsFileName
+            )
+            try writeTrackMeta(for: track, references: finalReferences)
+            return true
+        } catch {
+            Log.error("Failed to write meta+lyrics+artwork for \(track.title): \(error)", category: .library)
+            return false
+        }
+    }
+
+    private func ensureTrackFolder(for trackID: UUID) throws -> URL {
+        ensureLibraryFolders()
+        let trackFolder = LocalLibraryPaths.trackFolderURL(for: trackID)
+        try fileManager.createDirectory(at: trackFolder, withIntermediateDirectories: true)
+        return trackFolder
+    }
+
+    private func loadTrackPersistenceReferences(for trackID: UUID) -> TrackPersistenceReferences {
+        let metaURL = LocalLibraryPaths.trackMetaURL(for: trackID)
+        guard let data = try? Data(contentsOf: metaURL),
+              let sidecar = try? decoder.decode(TrackSidecar.self, from: data)
+        else {
+            return TrackPersistenceReferences()
+        }
+
+        let resolvedArtworkFileName = resolvedTrackArtworkFileName(
+            for: trackID,
+            preferredFileName: sidecar.artworkFileName
+        )
+
+        return TrackPersistenceReferences(
+            artworkFileName: resolvedArtworkFileName,
+            lyricsFileName: sidecar.lyricsFileName,
+            lyricsType: sidecar.lyricsType,
+            ttmlLyricsFileName: sidecar.ttmlLyricsFileName
+        )
+    }
+
+    private func writeTrackMeta(for track: Track, references: TrackPersistenceReferences) throws {
+        _ = try ensureTrackFolder(for: track.id)
+        let audioFileName = URL(fileURLWithPath: track.libraryRelativePath).lastPathComponent
+        let preferenceStats = PreferenceStatsService.shared.getStats(for: track.id)
+        let sidecar = TrackSidecar(
+            schemaVersion: 3,
+            id: track.id,
+            title: track.title,
+            artist: track.artist,
+            album: track.album,
+            duration: track.duration,
+            addedAt: track.addedAt,
+            importedAt: track.importedAt ?? track.addedAt,
+            lyricsTimeOffsetMs: track.lyricsTimeOffsetMs,
+            originalFilePath: track.originalFilePath.isEmpty ? nil : track.originalFilePath,
+            audioFileName: audioFileName.isEmpty ? nil : audioFileName,
+            artworkFileName: references.artworkFileName,
+            lyricsFileName: references.lyricsFileName,
+            lyricsType: references.lyricsType,
+            ttmlLyricsFileName: references.ttmlLyricsFileName,
+            ncmSourcePath: nil,
+            preferenceStats: preferenceStats
+        )
+
+        let data = try encoder.encode(sidecar)
+        let metaURL = LocalLibraryPaths.trackMetaURL(for: track.id)
+        try data.write(to: metaURL, options: .atomic)
+    }
+
+    func writeArtworkIfChanged(
+        for track: Track,
+        reason: String,
+        existingFileName: String? = nil
+    ) throws -> String? {
+        let trackFolder = try ensureTrackFolder(for: track.id)
+        let existingArtworkFileName = resolvedTrackArtworkFileName(
+            for: track.id,
+            preferredFileName: existingFileName
+        )
+        let existingArtworkURL = existingArtworkFileName.map { trackFolder.appendingPathComponent($0) }
+        let existingArtworkData = existingArtworkURL.flatMap { try? Data(contentsOf: $0) }
+        let targetArtworkFileName = LocalLibraryPaths.preferredTrackArtworkFileName
+        let targetArtworkURL = LocalLibraryPaths.trackArtworkURL(
+            for: track.id,
+            fileName: targetArtworkFileName
+        )
 
         guard let data = track.artworkData, !data.isEmpty else {
-            if fileManager.fileExists(atPath: artworkURL.path) {
-                try fileManager.removeItem(at: artworkURL)
+            let candidateFileNames = LocalLibraryPaths.trackArtworkCandidateFileNames(
+                preferredFileName: existingArtworkFileName
+            )
+            var removedAny = false
+            for fileName in candidateFileNames {
+                let candidateURL = trackFolder.appendingPathComponent(fileName)
+                if fileManager.fileExists(atPath: candidateURL.path) {
+                    try fileManager.removeItem(at: candidateURL)
+                    removedAny = true
+                }
             }
+            logTrackPersistence(
+                track: track,
+                reason: reason,
+                action: "artwork-remove",
+                artwork: removedAny ? "removed" : "already-missing"
+            )
             return nil
         }
 
-        if let image = NSImage(data: data), let jpeg = image.jpegData(compression: 0.9) {
-            try jpeg.write(to: artworkURL, options: .atomic)
-        } else {
-            try data.write(to: artworkURL, options: .atomic)
+        if dataMatches(data, existingArtworkData), existingArtworkFileName == targetArtworkFileName {
+            logTrackPersistence(track: track, reason: reason, action: "artwork-skip", artwork: "raw-unchanged")
+            return existingArtworkFileName
         }
 
-        return artworkURL.lastPathComponent
+        let dataToWrite: Data
+        let encoding: String
+        if isPNGData(data) {
+            if dataMatches(data, existingArtworkData), existingArtworkFileName == targetArtworkFileName {
+                logTrackPersistence(track: track, reason: reason, action: "artwork-skip", artwork: "encoded-unchanged")
+                return existingArtworkFileName
+            }
+            dataToWrite = data
+            encoding = "png-original"
+        } else if let image = NSImage(data: data), let png = image.pngData() {
+            if dataMatches(png, existingArtworkData), existingArtworkFileName == targetArtworkFileName {
+                logTrackPersistence(track: track, reason: reason, action: "artwork-skip", artwork: "encoded-unchanged")
+                return existingArtworkFileName
+            }
+            dataToWrite = png
+            encoding = "png"
+        } else {
+            logTrackPersistence(track: track, reason: reason, action: "artwork-error", artwork: "png-encode-failed")
+            throw NSError(
+                domain: "LocalLibraryService.TrackPersistence",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Artwork could not be encoded as PNG"]
+            )
+        }
+
+        try dataToWrite.write(to: targetArtworkURL, options: .atomic)
+        if let existingArtworkFileName, existingArtworkFileName != targetArtworkFileName,
+           let existingArtworkURL,
+           fileManager.fileExists(atPath: existingArtworkURL.path) {
+            try? fileManager.removeItem(at: existingArtworkURL)
+        }
+        logTrackPersistence(
+            track: track,
+            reason: reason,
+            action: "artwork-write",
+            artwork: "changed encoding=\(encoding)"
+        )
+        return targetArtworkFileName
     }
 
-    private func writeLyricsIfNeeded(track: Track, folder: URL) throws -> String? {
-        var ttmlFileName: String?
-
+    private func writeLyricsAssets(
+        for track: Track,
+        folder: URL,
+        existing: TrackPersistenceReferences
+    ) throws -> TrackPersistenceReferences {
         let ttmlText = track.ttmlLyricText?.trimmingCharacters(in: .whitespacesAndNewlines)
         let legacyText = track.lyricsText?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ttmlURL = folder.appendingPathComponent("lyrics.ttml")
+        let plainLyricsURL = folder.appendingPathComponent("lyrics.txt")
 
         if let ttml = ttmlText, !ttml.isEmpty {
-            let ttmlURL = folder.appendingPathComponent("lyrics.ttml")
             try ttml.write(to: ttmlURL, atomically: true, encoding: .utf8)
-            ttmlFileName = "lyrics.ttml"
+            if fileManager.fileExists(atPath: plainLyricsURL.path) {
+                try? fileManager.removeItem(at: plainLyricsURL)
+            }
+            return TrackPersistenceReferences(
+                artworkFileName: existing.artworkFileName,
+                lyricsFileName: nil,
+                lyricsType: nil,
+                ttmlLyricsFileName: "lyrics.ttml"
+            )
         }
 
-        if ttmlFileName == nil, let legacy = legacyText, !legacy.isEmpty {
+        if let legacy = legacyText, !legacy.isEmpty {
             let isTTML = legacy.lowercased().contains("<tt") && legacy.contains("</")
             if isTTML {
-                let fileName = "lyrics.ttml"
-                let lyricsURL = folder.appendingPathComponent(fileName)
-                try legacy.write(to: lyricsURL, atomically: true, encoding: .utf8)
-                ttmlFileName = fileName
+                try legacy.write(to: ttmlURL, atomically: true, encoding: .utf8)
+                if fileManager.fileExists(atPath: plainLyricsURL.path) {
+                    try? fileManager.removeItem(at: plainLyricsURL)
+                }
+                return TrackPersistenceReferences(
+                    artworkFileName: existing.artworkFileName,
+                    lyricsFileName: nil,
+                    lyricsType: nil,
+                    ttmlLyricsFileName: "lyrics.ttml"
+                )
             }
+
+            try legacy.write(to: plainLyricsURL, atomically: true, encoding: .utf8)
+            if fileManager.fileExists(atPath: ttmlURL.path) {
+                try? fileManager.removeItem(at: ttmlURL)
+            }
+            return TrackPersistenceReferences(
+                artworkFileName: existing.artworkFileName,
+                lyricsFileName: "lyrics.txt",
+                lyricsType: "plain",
+                ttmlLyricsFileName: nil
+            )
         }
 
-        return ttmlFileName
+        if fileManager.fileExists(atPath: ttmlURL.path) {
+            try? fileManager.removeItem(at: ttmlURL)
+        }
+        if fileManager.fileExists(atPath: plainLyricsURL.path) {
+            try? fileManager.removeItem(at: plainLyricsURL)
+        }
+
+        return TrackPersistenceReferences(
+            artworkFileName: existing.artworkFileName,
+            lyricsFileName: nil,
+            lyricsType: nil,
+            ttmlLyricsFileName: nil
+        )
+    }
+
+    private func dataMatches(_ lhs: Data, _ rhs: Data?) -> Bool {
+        guard let rhs else { return false }
+        guard ArtworkAssetStore.checksum(for: lhs) == ArtworkAssetStore.checksum(for: rhs) else {
+            return false
+        }
+        return lhs == rhs
+    }
+
+    private func resolvedTrackArtworkFileName(for trackID: UUID, preferredFileName: String?) -> String? {
+        let folder = LocalLibraryPaths.trackFolderURL(for: trackID)
+        return resolvedTrackArtworkFileName(in: folder, preferredFileName: preferredFileName)
+    }
+
+    private func resolvedTrackArtworkFileName(in folder: URL, preferredFileName: String?) -> String? {
+        for fileName in LocalLibraryPaths.trackArtworkCandidateFileNames(preferredFileName: preferredFileName) {
+            let candidateURL = folder.appendingPathComponent(fileName)
+            if fileManager.fileExists(atPath: candidateURL.path) {
+                return fileName
+            }
+        }
+        if let preferredFileName, !preferredFileName.isEmpty {
+            return preferredFileName
+        }
+        return nil
+    }
+
+    private func isPNGData(_ data: Data) -> Bool {
+        data.starts(with: [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+    }
+
+    private func logTrackPersistence(track: Track, reason: String, action: String, artwork: String) {
+        Log.info(
+            "[TrackPersistence] reason=\(reason) track=\(track.id.uuidString) title=\(track.title) action=\(action) artwork=\(artwork)",
+            category: .library
+        )
     }
 
     // MARK: - Track Deletion
@@ -969,7 +1263,7 @@ final class LocalLibraryService {
                 if needsImportBackfill {
                     track.importedAt = track.addedAt
                 }
-                await repository.updateTrack(track)
+                await repository.persistTrackMetaOnly(track, reason: "availabilityRefresh")
             }
         }
 
@@ -1076,7 +1370,7 @@ final class LocalLibraryService {
             let result = track.resolveFileURL()
             guard let sourceURL = result.url else {
                 track.availability = .missing
-                await repository.updateTrack(track)
+                await repository.persistTrackMetaOnly(track, reason: "legacyMigration")
                 continue
             }
 
@@ -1087,7 +1381,7 @@ final class LocalLibraryService {
                     track.originalFilePath = sourceURL.path
                 }
                 track.availability = .available
-                await repository.updateTrack(track)
+                await repository.persistTrackMetaOnly(track, reason: "legacyMigration")
             } catch {
                 Log.error("Failed to migrate track \(track.title): \(error)", category: .library)
             }
@@ -1131,17 +1425,27 @@ final class LocalLibraryService {
                 : LocalLibraryPaths.libraryURL(from: relativePath)
             let isAvailable = audioURL.map { fileManager.fileExists(atPath: $0.path) } ?? false
 
-            let artworkData = sidecar.artworkFileName.flatMap { fileName -> Data? in
+            let resolvedArtworkFileName = resolvedTrackArtworkFileName(
+                in: dir,
+                preferredFileName: sidecar.artworkFileName
+            )
+            let artworkData = resolvedArtworkFileName.flatMap { fileName -> Data? in
                 let url = dir.appendingPathComponent(fileName)
                 return try? Data(contentsOf: url)
             }
 
             var ttmlText: String?
             var lyricsText: String?
+            if let ttmlFileName = sidecar.ttmlLyricsFileName {
+                let url = dir.appendingPathComponent(ttmlFileName)
+                if let text = try? String(contentsOf: url, encoding: .utf8), !text.isEmpty {
+                    ttmlText = text
+                }
+            }
             if let lyricsFile = sidecar.lyricsFileName {
                 let url = dir.appendingPathComponent(lyricsFile)
                 if let text = try? String(contentsOf: url, encoding: .utf8) {
-                    if lyricsFile.lowercased().hasSuffix(".ttml") {
+                    if lyricsFile.lowercased().hasSuffix(".ttml"), ttmlText == nil {
                         ttmlText = text
                     } else {
                         lyricsText = text
@@ -1295,13 +1599,13 @@ final class LocalLibraryService {
 }
 
 extension NSImage {
-    fileprivate func jpegData(compression: CGFloat) -> Data? {
+    fileprivate func pngData() -> Data? {
         guard let tiff = tiffRepresentation,
             let rep = NSBitmapImageRep(data: tiff)
         else {
             return nil
         }
 
-        return rep.representation(using: .jpeg, properties: [.compressionFactor: compression])
+        return rep.representation(using: .png, properties: [:])
     }
 }

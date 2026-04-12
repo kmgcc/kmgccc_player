@@ -98,11 +98,13 @@ struct FullscreenPlayerView: View {
     @State private var pendingFullscreenLyricsBackgroundCapture: Bool = false
     @State private var pendingFullscreenLyricsRefresh: DispatchWorkItem?
     @State private var pendingFullscreenLyricsReveal: DispatchWorkItem?
+    @State private var pendingFullscreenLyricsHostDetach: DispatchWorkItem?
     @State private var pendingFullscreenTrackRefresh: DispatchWorkItem?
     @State private var artworkSnapshot: ArtworkAssetSnapshot?
     @State private var coverBlurLyricsTheme: FullscreenCoverBlurLyricsTheme?
     @State private var deferredTrackUpdateDeadline: Date?
     @State private var suppressFullscreenLyricsViewport = false
+    @State private var fullscreenLyricsHostMounted = false
     @State private var isLeadingControlsExpanded = false
     @State private var appearanceRotateTrigger = 0
     @State private var currentFullscreenScale: CGFloat = 1.0
@@ -197,6 +199,7 @@ struct FullscreenPlayerView: View {
             syncCoverBlurHighlightActivation()
             resetFullscreenLyricsBackgroundSnapshot()
             scheduleFullscreenLyricsBackgroundCapture()
+            fullscreenLyricsHostMounted = isShowingLyricsPanel && playerVM.currentTrack != nil
             setupSeekCallback()
             reloadLyricsSurface(reason: "fullscreen appear", forceLyricsReload: true)
             resetFullscreenBottomControlsAutoHideState()
@@ -215,10 +218,13 @@ struct FullscreenPlayerView: View {
             pendingFullscreenLyricsRefresh = nil
             pendingFullscreenLyricsReveal?.cancel()
             pendingFullscreenLyricsReveal = nil
+            pendingFullscreenLyricsHostDetach?.cancel()
+            pendingFullscreenLyricsHostDetach = nil
             pendingFullscreenTrackRefresh?.cancel()
             pendingFullscreenTrackRefresh = nil
             deferredTrackUpdateDeadline = nil
             suppressFullscreenLyricsViewport = false
+            fullscreenLyricsHostMounted = false
             cancelFullscreenBottomControlsAutoHide()
             deactivateCoverBlurHighlightSurface()
             clearFullscreenLyricsTheme()
@@ -320,7 +326,10 @@ struct FullscreenPlayerView: View {
                     trackID: playerVM.currentTrack?.id,
                     artworkData: playerVM.currentTrack?.artworkData,
                     isPlaying: playerVM.isPlaying,
-                    avoidanceRect: nil
+                    avoidanceRect: nil,
+                    resourceProfile: settings.fullscreen.skinID == "kmgccc.cassette"
+                        ? .cassetteForeground
+                        : .standard
                 )
                 .ignoresSafeArea()
 
@@ -389,7 +398,8 @@ struct FullscreenPlayerView: View {
     @ViewBuilder
     private func fullscreenLyricsLayer(scale: CGFloat, screenWidth: CGFloat) -> some View {
         let hostMetrics = layoutMetrics(showLyricsColumn: true)
-        let rightPanelVisible = isShowingRightPanel
+        let lyricsPanelVisible = isShowingLyricsPanel
+        let keepLyricsHostMounted = shouldKeepFullscreenLyricsHostMounted
 
         let scaleX = screenWidth / Self.baseCanvasWidth
         let hostBaseContentOffsetX: CGFloat = -topContentLeftShift
@@ -412,7 +422,7 @@ struct FullscreenPlayerView: View {
         let canvasCenteringX = max(0, (screenWidth - Self.baseCanvasWidth * scale) / 2)
         let visibleLyricsX = finalLyricsX * scale + canvasCenteringX
         let hiddenLyricsX = visibleLyricsX + 92 * scale
-        let actualLyricsX = rightPanelVisible ? visibleLyricsX : hiddenLyricsX
+        let actualLyricsX = lyricsPanelVisible ? visibleLyricsX : hiddenLyricsX
 
         // Right boundary: span to screen-edge minus an adaptive padding rather than a
         // fixed canvas-fraction, so the region fills available space on all displays.
@@ -430,12 +440,21 @@ struct FullscreenPlayerView: View {
 
         // Debug logging for first layout
         let _ = {
-            if rightPanelVisible {
-                Log.debug("fullscreenLyricsLayer: scale=\(scale), width=\(actualLyricsWidth), height=\(actualLyricsHeight), visible=\(rightPanelVisible)", category: .webview)
+            if keepLyricsHostMounted {
+                Log.debug("fullscreenLyricsLayer: scale=\(scale), width=\(actualLyricsWidth), height=\(actualLyricsHeight), visible=\(lyricsPanelVisible)", category: .webview)
             }
         }()
 
         ZStack(alignment: .topLeading) {
+            if keepLyricsHostMounted {
+                fullscreenLyricsCrispView(scale: scale, visibleClipHeight: visibleClipHeight)
+                    .frame(width: actualLyricsWidth, height: actualLyricsHeight, alignment: .topLeading)
+                    .offset(x: actualLyricsX)
+                    .opacity(fullscreenLyricsHostOpacity)
+                    .allowsHitTesting(isFullscreenLyricsHostVisible)
+                    .accessibilityHidden(!isFullscreenLyricsHostVisible)
+            }
+
             if isShowingQueuePanel {
                 // 队列面板：位置微调：更靠左、更宽、稍微下移
                 fullscreenQueuePanel(
@@ -447,15 +466,10 @@ struct FullscreenPlayerView: View {
                 .padding(.top, 72 * scale)  // 稍微往下移一点（原来是60）
                 .allowsHitTesting(true)
                 .accessibilityHidden(false)
-            } else if isShowingLyricsPanel {
-                // Top-left anchored. Height is fixed; only the visible clip region changes.
-                fullscreenLyricsCrispView(scale: scale, visibleClipHeight: visibleClipHeight)
-                    .frame(width: actualLyricsWidth, height: actualLyricsHeight, alignment: .topLeading)
-                    .offset(x: actualLyricsX)
-                    .allowsHitTesting(true)
-                    .accessibilityHidden(false)
-            } else {
-                Color.clear
+                .transition(.asymmetric(
+                    insertion: .opacity.combined(with: .offset(x: 92 * scale)),
+                    removal: .opacity.combined(with: .offset(x: 92 * scale))
+                ))
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -838,6 +852,8 @@ struct FullscreenPlayerView: View {
     }
 
     private func handleRightPanelDisplayStateChange(_ newState: RightPanelDisplayState) {
+        syncFullscreenLyricsHostMount()
+
         if newState == .queue {
             cancelFullscreenBottomControlsAutoHide()
             if isFullscreenBottomControlsVisible == false {
@@ -1455,6 +1471,12 @@ struct FullscreenPlayerView: View {
     }
 
     private func setRightPanelDisplayState(_ newState: RightPanelDisplayState) {
+        if newState == .lyrics, playerVM.currentTrack != nil {
+            pendingFullscreenLyricsHostDetach?.cancel()
+            pendingFullscreenLyricsHostDetach = nil
+            fullscreenLyricsHostMounted = true
+        }
+
         withAnimation(lyricsLayoutAnimation) {
             rightPanelDisplayState = newState
         }
@@ -1491,6 +1513,7 @@ struct FullscreenPlayerView: View {
 
         // Simplified track change handling - matches window mode behavior
         // Apply track immediately without deferred scheduling
+        syncFullscreenLyricsHostMount()
         reloadLyricsSurface(reason: "fullscreen track changed", forceLyricsReload: true)
     }
 
@@ -1596,6 +1619,66 @@ struct FullscreenPlayerView: View {
         )
     }
 
+
+    private var fullscreenLyricsHostOpacity: Double {
+        guard isShowingLyricsPanel, playerVM.currentTrack != nil else { return 0 }
+        if isCoverBlurFullscreenSkin && coverBlurLyricsTheme?.trackID != playerVM.currentTrack?.id {
+            return 0
+        }
+        return 1
+    }
+
+    private var shouldKeepFullscreenLyricsHostMounted: Bool {
+        fullscreenLyricsHostMounted && playerVM.currentTrack != nil
+    }
+
+    private var isFullscreenLyricsHostVisible: Bool {
+        fullscreenLyricsHostOpacity > 0.001
+    }
+
+    private var fullscreenLyricsHostDetachDelay: TimeInterval {
+        reduceMotion ? 0.22 : 0.72
+    }
+
+    private func syncFullscreenLyricsHostMount() {
+        let shouldShowLyricsHost = isShowingLyricsPanel && playerVM.currentTrack != nil
+
+        pendingFullscreenLyricsHostDetach?.cancel()
+        pendingFullscreenLyricsHostDetach = nil
+
+        if shouldShowLyricsHost {
+            fullscreenLyricsHostMounted = true
+            return
+        }
+
+        guard fullscreenLyricsHostMounted else { return }
+        scheduleFullscreenLyricsHostDetach(after: fullscreenLyricsHostDetachDelay)
+    }
+
+    private func scheduleFullscreenLyricsHostDetach(after delay: TimeInterval) {
+        pendingFullscreenLyricsHostDetach?.cancel()
+
+        let detachTrackID = playerVM.currentTrack?.id
+        let workItem = DispatchWorkItem {
+            if isShowingLyricsPanel {
+                pendingFullscreenLyricsHostDetach = nil
+                return
+            }
+            if playerVM.currentTrack?.id != detachTrackID {
+                pendingFullscreenLyricsHostDetach = nil
+                return
+            }
+            fullscreenLyricsHostMounted = false
+            pendingFullscreenLyricsHostDetach = nil
+        }
+        pendingFullscreenLyricsHostDetach = workItem
+
+        if delay <= 0 {
+            DispatchQueue.main.async(execute: workItem)
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+        }
+    }
 
     private var fullscreenLyricsViewportOpacity: Double {
         guard playerVM.currentTrack != nil else { return 0 }

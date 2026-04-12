@@ -291,20 +291,7 @@ struct MiniPlayerView: View {
                 .frame(width: 36, height: 36)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
         } else {
-            RoundedRectangle(cornerRadius: 8)
-                .fill(
-                    LinearGradient(
-                        colors: [.purple.opacity(0.4), .blue.opacity(0.4)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-                .frame(width: 36, height: 36)
-                .overlay {
-                    Image(systemName: "music.note")
-                        .font(.system(size: 14))
-                        .foregroundStyle(.white.opacity(0.6))
-                }
+            ArtworkPlaceholderView.miniPlayer()
         }
     }
 

@@ -56,6 +56,10 @@ protocol AudioPlaybackServiceProtocol: AnyObject {
     /// Immediately sync shuffle behavior for the active playback session.
     func setShuffleEnabled(_ enabled: Bool)
 
+    /// Discard the currently active playback session's pending stats writeback once.
+    /// Only affects the session that is already in progress when this is called.
+    func discardCurrentPlaybackSessionStatsOnce()
+
     /// Pause playback.
     func pause()
 

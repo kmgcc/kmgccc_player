@@ -105,7 +105,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
 
     func addTrack(_ track: Track) async {
         allTracks.append(track)
-        libraryService.writeSidecar(for: track)
+        persistImportedTrackResources([track], reason: "initialImport")
         rebuildRuntimeDerivedState()
         rebuildTrackIndexCache()
         let (artists, albums) = metadataSync.sync(
@@ -119,10 +119,8 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     }
 
     func addTracks(_ tracks: [Track]) async {
-        for track in tracks {
-            allTracks.append(track)
-            libraryService.writeSidecar(for: track)
-        }
+        allTracks.append(contentsOf: tracks)
+        persistImportedTrackResources(tracks, reason: "initialImport")
         rebuildRuntimeDerivedState()
         rebuildTrackIndexCache()
         let (artists, albums) = metadataSync.sync(
@@ -162,55 +160,60 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         albumEntries = albums
     }
 
-    func updateTrack(_ track: Track) async {
-        _ = await persistTrackUpdates([track])
+    func persistTrackMetaOnly(_ track: Track, reason: String) async {
+        _ = await persistTrackMetaOnly([track], reason: reason)
     }
 
-    func persistTrackUpdates(_ tracks: [Track]) async -> LibraryTrackPersistenceResult {
-        let uniqueTracks = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) }).values.sorted {
-            $0.id.uuidString < $1.id.uuidString
+    func persistTrackMetaOnly(_ tracks: [Track], reason: String) async -> LibraryTrackPersistenceResult {
+        await persistTracks(
+            tracks,
+            label: "meta-only",
+            reason: reason
+        ) { [libraryService] track in
+            libraryService.writeMetaOnly(for: track, reason: reason)
         }
-        guard !uniqueTracks.isEmpty else {
-            return LibraryTrackPersistenceResult(persistedTrackIDs: [], failedTrackIDs: [])
+    }
+
+    func persistTrackMetaAndLyrics(_ track: Track, reason: String) async {
+        _ = await persistTrackMetaAndLyrics([track], reason: reason)
+    }
+
+    func persistTrackMetaAndLyrics(_ tracks: [Track], reason: String) async -> LibraryTrackPersistenceResult {
+        await persistTracks(
+            tracks,
+            label: "meta+lyrics",
+            reason: reason
+        ) { [libraryService] track in
+            libraryService.writeTrackMetaAndLyrics(for: track, reason: reason)
         }
+    }
 
-        Log.info(
-            "[ImportEnrichment] repository flush start tracks=\(uniqueTracks.count)",
-            category: .library
-        )
+    func persistTrackMetaAndArtwork(_ track: Track, reason: String) async {
+        _ = await persistTrackMetaAndArtwork([track], reason: reason)
+    }
 
-        var persistedTrackIDs: [UUID] = []
-        var failedTrackIDs: [UUID] = []
-
-        for track in uniqueTracks {
-            if libraryService.writeSidecar(for: track) {
-                persistedTrackIDs.append(track.id)
-            } else {
-                failedTrackIDs.append(track.id)
-            }
+    func persistTrackMetaAndArtwork(_ tracks: [Track], reason: String) async -> LibraryTrackPersistenceResult {
+        await persistTracks(
+            tracks,
+            label: "meta+artwork",
+            reason: reason
+        ) { [libraryService] track in
+            libraryService.writeTrackMetaAndArtwork(for: track, reason: reason)
         }
+    }
 
-        if !persistedTrackIDs.isEmpty {
-            _ = await refreshTracks(ids: persistedTrackIDs)
+    func persistTrackMetaLyricsAndArtwork(_ track: Track, reason: String) async {
+        _ = await persistTrackMetaLyricsAndArtwork([track], reason: reason)
+    }
+
+    func persistTrackMetaLyricsAndArtwork(_ tracks: [Track], reason: String) async -> LibraryTrackPersistenceResult {
+        await persistTracks(
+            tracks,
+            label: "meta+lyrics+artwork",
+            reason: reason
+        ) { [libraryService] track in
+            libraryService.writeTrackMetaLyricsAndArtwork(for: track, reason: reason)
         }
-
-        if !persistedTrackIDs.isEmpty {
-            if persistedTrackIDs.count == 1, let trackID = persistedTrackIDs.first {
-                changeHandler?(.trackUpdated(trackID))
-            } else {
-                changeHandler?(.tracksUpdated(persistedTrackIDs))
-            }
-        }
-
-        Log.info(
-            "[ImportEnrichment] repository flush complete persisted=\(persistedTrackIDs.count) failed=\(failedTrackIDs.count)",
-            category: .library
-        )
-
-        return LibraryTrackPersistenceResult(
-            persistedTrackIDs: persistedTrackIDs,
-            failedTrackIDs: failedTrackIDs
-        )
     }
 
     func refreshTracks(ids: [UUID]) async -> [Track] {
@@ -522,6 +525,75 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     private func writePlaylistToDisk(_ playlist: Playlist) {
         let itemDates = playlistItemAddedAtMap[playlist.id] ?? [:]
         libraryService.writePlaylist(playlist, itemAddedAt: itemDates)
+    }
+
+    private func persistTracks(
+        _ tracks: [Track],
+        label: String,
+        reason: String,
+        writer: (Track) -> Bool
+    ) async -> LibraryTrackPersistenceResult {
+        let uniqueTracks = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) }).values.sorted {
+            $0.id.uuidString < $1.id.uuidString
+        }
+        guard !uniqueTracks.isEmpty else {
+            return LibraryTrackPersistenceResult(persistedTrackIDs: [], failedTrackIDs: [])
+        }
+
+        Log.info(
+            "[TrackPersistenceRepository] label=\(label) reason=\(reason) start tracks=\(uniqueTracks.count)",
+            category: .library
+        )
+
+        var persistedTrackIDs: [UUID] = []
+        var failedTrackIDs: [UUID] = []
+
+        for track in uniqueTracks {
+            if writer(track) {
+                persistedTrackIDs.append(track.id)
+            } else {
+                failedTrackIDs.append(track.id)
+            }
+        }
+
+        if !persistedTrackIDs.isEmpty {
+            _ = await refreshTracks(ids: persistedTrackIDs)
+        }
+
+        if !persistedTrackIDs.isEmpty {
+            if persistedTrackIDs.count == 1, let trackID = persistedTrackIDs.first {
+                changeHandler?(.trackUpdated(trackID))
+            } else {
+                changeHandler?(.tracksUpdated(persistedTrackIDs))
+            }
+        }
+
+        Log.info(
+            "[TrackPersistenceRepository] label=\(label) reason=\(reason) complete persisted=\(persistedTrackIDs.count) failed=\(failedTrackIDs.count)",
+            category: .library
+        )
+
+        return LibraryTrackPersistenceResult(
+            persistedTrackIDs: persistedTrackIDs,
+            failedTrackIDs: failedTrackIDs
+        )
+    }
+
+    /// Import-only full resource persistence for newly created track folders.
+    private func persistImportedTrackResources(_ tracks: [Track], reason: String) {
+        let uniqueTracks = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) }).values.sorted {
+            $0.id.uuidString < $1.id.uuidString
+        }
+        guard !uniqueTracks.isEmpty else { return }
+
+        Log.warning(
+            "[TrackPersistenceRepository] import-only full resource write reason=\(reason) tracks=\(uniqueTracks.count)",
+            category: .library
+        )
+
+        for track in uniqueTracks {
+            _ = libraryService.writeImportedTrackSidecar(for: track, reason: reason)
+        }
     }
 
     private func clearTrackIndexCache() {

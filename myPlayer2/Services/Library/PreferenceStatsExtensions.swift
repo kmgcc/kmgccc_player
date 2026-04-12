@@ -49,15 +49,18 @@ extension Track {
 
     /// Toggle the manual like state (none -> liked -> disliked -> none).
     func toggleManualLikeState() {
-        PreferenceStatsService.shared.toggleManualLikeState(trackID: id)
-        // Save immediately for manual actions.
-        LocalLibraryService.shared.writeSidecar(for: self)
+        let current = preferenceStats.manualLikeState
+        let next = current.nextState
+        guard current != next else { return }
+        PreferenceStatsService.shared.setManualLikeState(trackID: id, state: next)
+        LocalLibraryService.shared.writeMetaOnly(for: self, reason: "manualLike")
     }
 
     /// Set manual like state explicitly.
     func setManualLikeState(_ state: ManualLikeState) {
+        guard preferenceStats.manualLikeState != state else { return }
         PreferenceStatsService.shared.setManualLikeState(trackID: id, state: state)
-        LocalLibraryService.shared.writeSidecar(for: self)
+        LocalLibraryService.shared.writeMetaOnly(for: self, reason: "manualLike")
     }
 }
 

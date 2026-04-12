@@ -263,9 +263,9 @@ public final class AppSettings {
         }
     }
 
-    /// Accent color hex string
+    /// Accent color hex string (default: soft warm yellow)
     @ObservationIgnored
-    @AppStorage("accentColorHex") var accentColorHex: String = "#007AFF"
+    @AppStorage("accentColorHex") var accentColorHex: String = "#FFC878"
 
     /// Liquid Glass intensity (0.0 to 1.0)
     @ObservationIgnored

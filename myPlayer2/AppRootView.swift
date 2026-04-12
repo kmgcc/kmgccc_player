@@ -740,7 +740,10 @@ private struct MainAppContentView: View {
                 controller: artBackgroundController,
                 trackID: playerVM.currentTrack?.id,
                 artworkData: playerVM.currentTrack?.artworkData,
-                isPlaying: playerVM.isPlaying
+                isPlaying: playerVM.isPlaying,
+                resourceProfile: settings.selectedNowPlayingSkinID == "kmgccc.cassette"
+                    ? .cassetteForeground
+                    : .standard
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .ignoresSafeArea()

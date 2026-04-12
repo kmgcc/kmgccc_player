@@ -63,11 +63,53 @@ final class StubLibraryRepository: LibraryRepositoryProtocol {
         allTracks.removeAll { $0.id == track.id }
     }
 
-    func updateTrack(_ track: Track) async {
+    func persistTrackMetaOnly(_ track: Track, reason _: String) async {
+        _ = await persistTrackMetaOnly([track], reason: "stub")
+    }
+
+    func persistTrackMetaOnly(_ tracks: [Track], reason _: String) async -> LibraryTrackPersistenceResult {
+        let trackIDs = Array(Set(tracks.map(\.id))).sorted { $0.uuidString < $1.uuidString }
+        if trackIDs.count == 1, let trackID = trackIDs.first {
+            changeHandler?(.trackUpdated(trackID))
+        } else if !trackIDs.isEmpty {
+            changeHandler?(.tracksUpdated(trackIDs))
+        }
+        return LibraryTrackPersistenceResult(persistedTrackIDs: trackIDs, failedTrackIDs: [])
+    }
+
+    func persistTrackMetaAndLyrics(_ track: Track, reason _: String) async {
         changeHandler?(.trackUpdated(track.id))
     }
 
-    func persistTrackUpdates(_ tracks: [Track]) async -> LibraryTrackPersistenceResult {
+    func persistTrackMetaAndLyrics(_ tracks: [Track], reason _: String) async -> LibraryTrackPersistenceResult {
+        let trackIDs = Array(Set(tracks.map(\.id))).sorted { $0.uuidString < $1.uuidString }
+        if trackIDs.count == 1, let trackID = trackIDs.first {
+            changeHandler?(.trackUpdated(trackID))
+        } else if !trackIDs.isEmpty {
+            changeHandler?(.tracksUpdated(trackIDs))
+        }
+        return LibraryTrackPersistenceResult(persistedTrackIDs: trackIDs, failedTrackIDs: [])
+    }
+
+    func persistTrackMetaAndArtwork(_ track: Track, reason _: String) async {
+        changeHandler?(.trackUpdated(track.id))
+    }
+
+    func persistTrackMetaAndArtwork(_ tracks: [Track], reason _: String) async -> LibraryTrackPersistenceResult {
+        let trackIDs = Array(Set(tracks.map(\.id))).sorted { $0.uuidString < $1.uuidString }
+        if trackIDs.count == 1, let trackID = trackIDs.first {
+            changeHandler?(.trackUpdated(trackID))
+        } else if !trackIDs.isEmpty {
+            changeHandler?(.tracksUpdated(trackIDs))
+        }
+        return LibraryTrackPersistenceResult(persistedTrackIDs: trackIDs, failedTrackIDs: [])
+    }
+
+    func persistTrackMetaLyricsAndArtwork(_ track: Track, reason _: String) async {
+        changeHandler?(.trackUpdated(track.id))
+    }
+
+    func persistTrackMetaLyricsAndArtwork(_ tracks: [Track], reason _: String) async -> LibraryTrackPersistenceResult {
         let trackIDs = Array(Set(tracks.map(\.id))).sorted { $0.uuidString < $1.uuidString }
         if trackIDs.count == 1, let trackID = trackIDs.first {
             changeHandler?(.trackUpdated(trackID))

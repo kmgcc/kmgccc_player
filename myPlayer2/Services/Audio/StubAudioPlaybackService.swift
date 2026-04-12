@@ -89,6 +89,8 @@ final class StubAudioPlaybackService: AudioPlaybackServiceProtocol {
         AppSettings.shared.shuffleEnabled = enabled
     }
 
+    func discardCurrentPlaybackSessionStatsOnce() {}
+
     func pause() {
         isPlaying = false
         stopTimer()
