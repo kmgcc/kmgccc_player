@@ -11,6 +11,8 @@ import Foundation
 nonisolated enum LocalLibraryPaths {
 
     static let libraryRootName = "kmgccc_player Library"
+    static let preferredTrackArtworkFileName = "artwork.png"
+    static let legacyTrackArtworkFileName = "artwork.jpg"
 
     static var libraryRootURL: URL {
         let base = FileManager.default.urls(for: .musicDirectory, in: .userDomainMask).first
@@ -34,8 +36,22 @@ nonisolated enum LocalLibraryPaths {
         trackFolderURL(for: id).appendingPathComponent("meta.json")
     }
 
-    static func trackArtworkURL(for id: UUID) -> URL {
-        trackFolderURL(for: id).appendingPathComponent("artwork.jpg")
+    static func trackArtworkURL(for id: UUID, fileName: String = preferredTrackArtworkFileName) -> URL {
+        trackFolderURL(for: id).appendingPathComponent(fileName)
+    }
+
+    static func trackArtworkCandidateFileNames(preferredFileName: String? = nil) -> [String] {
+        var names: [String] = []
+        if let preferredFileName, !preferredFileName.isEmpty {
+            names.append(preferredFileName)
+        }
+        if !names.contains(preferredTrackArtworkFileName) {
+            names.append(preferredTrackArtworkFileName)
+        }
+        if !names.contains(legacyTrackArtworkFileName) {
+            names.append(legacyTrackArtworkFileName)
+        }
+        return names
     }
 
     static func trackLyricsURL(for id: UUID, ext: String) -> URL {

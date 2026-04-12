@@ -63,11 +63,11 @@ final class ThemeStore: ObservableObject {
     private var averageColorCache: NSColor?
 
     private init() {
-        // Default theme color: light orange-red.
+        // Default theme color: soft warm yellow (desaturated for calmer appearance)
         let fallback = NSColor(
             calibratedRed: 255.0 / 255.0,
-            green: 150.0 / 255.0,
-            blue: 50.0 / 255.0,
+            green: 200.0 / 255.0,
+            blue: 120.0 / 255.0,
             alpha: 1.0
         )
         self.defaultBlueNS = fallback

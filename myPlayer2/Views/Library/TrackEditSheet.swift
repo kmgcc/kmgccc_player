@@ -42,6 +42,11 @@ struct TrackEditSheet: View {
 
     @State private var coverCoordinator: CoverSearchCoordinator?
 
+    private struct TrackEditChangeSet {
+        let hasChanges: Bool
+        let persistenceMode: TrackEditPersistenceMode
+    }
+
     private let amllDbURL = URL(string: "https://github.com/amll-dev/amll-ttml-db")!
     private let ttmlToolURL = URL(string: "https://amll-ttml-tool.stevexmh.net/")!
 
@@ -350,21 +355,7 @@ struct TrackEditSheet: View {
             LDDCSearchSection(track: track) { ttml in
                 // Update lyrics text
                 lyricsText = ttml
-                track.ttmlLyricText = ttml
-                track.lyricsText = nil
-
-                Task {
-                    await libraryVM.saveTrackEdits(track)
-                    if playerVM.currentTrack?.id == track.id {
-                        lyricsVM.ensureAMLLLoaded(
-                            track: track,
-                            currentTime: playerVM.currentTime,
-                            isPlaying: playerVM.isPlaying,
-                            reason: "LDDC lyrics applied",
-                            forceLyricsReload: true
-                        )
-                    }
-                }
+                saveChanges(preferredReason: "trackEditLyrics")
             }
         }
         .fileImporter(
@@ -399,6 +390,7 @@ struct TrackEditSheet: View {
             .buttonStyle(.borderedProminent)
             .clipShape(Capsule())
             .keyboardShortcut(.return)
+            .disabled(!trackEditChangeSet.hasChanges)
         }
         .padding()
     }
@@ -414,7 +406,66 @@ struct TrackEditSheet: View {
         lyricsTimeOffsetMs = track.lyricsTimeOffsetMs
     }
 
-    private func saveChanges() {
+    private var trackEditChangeSet: TrackEditChangeSet {
+        let savedTitle =
+            title.isEmpty ? NSLocalizedString("library.unknown_title", comment: "") : title
+        let savedArtist =
+            artist.isEmpty ? NSLocalizedString("library.unknown_artist", comment: "") : artist
+        let savedAlbum =
+            album.isEmpty ? NSLocalizedString("library.unknown_album", comment: "") : album
+
+        let metadataChanged =
+            savedTitle != track.title
+            || savedArtist != track.artist
+            || savedAlbum != track.album
+            || abs(lyricsTimeOffsetMs - track.lyricsTimeOffsetMs) > 0.000_1
+
+        let trimmedLyrics = lyricsText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let targetTTML: String? = {
+            guard !trimmedLyrics.isEmpty else { return nil }
+            return trimmedLyrics.lowercased().contains("<tt") ? trimmedLyrics : nil
+        }()
+        let targetPlainLyrics: String? = {
+            guard !trimmedLyrics.isEmpty else { return nil }
+            return trimmedLyrics.lowercased().contains("<tt") ? nil : trimmedLyrics
+        }()
+
+        let lyricsChanged = track.ttmlLyricText != targetTTML || track.lyricsText != targetPlainLyrics
+        let artworkChanged = artworkData != track.artworkData
+        let hasChanges = metadataChanged || lyricsChanged || artworkChanged
+
+        let persistenceMode: TrackEditPersistenceMode
+        if artworkChanged && lyricsChanged {
+            persistenceMode = .metaLyricsAndArtwork
+        } else if artworkChanged {
+            persistenceMode = .metaAndArtwork
+        } else if lyricsChanged {
+            persistenceMode = .metaAndLyrics
+        } else {
+            persistenceMode = .metaOnly
+        }
+
+        return TrackEditChangeSet(hasChanges: hasChanges, persistenceMode: persistenceMode)
+    }
+
+    private func reason(for mode: TrackEditPersistenceMode, preferredReason: String?) -> String {
+        switch mode {
+        case .metaOnly:
+            return preferredReason ?? "trackEditMetaOnly"
+        case .metaAndLyrics:
+            return preferredReason ?? "trackEditLyrics"
+        case .metaAndArtwork, .metaLyricsAndArtwork:
+            return "trackEditArtwork"
+        }
+    }
+
+    private func saveChanges(preferredReason: String? = nil) {
+        let changeSet = trackEditChangeSet
+        guard changeSet.hasChanges else {
+            print("[TrackEditSheet] No changes detected, skipping save")
+            return
+        }
+
         track.title =
             title.isEmpty ? NSLocalizedString("library.unknown_title", comment: "") : title
         track.artist =
@@ -436,7 +487,11 @@ struct TrackEditSheet: View {
         track.lyricsTimeOffsetMs = lyricsTimeOffsetMs
 
         Task {
-            await libraryVM.saveTrackEdits(track)
+            await libraryVM.saveTrackEdits(
+                track,
+                mode: changeSet.persistenceMode,
+                reason: reason(for: changeSet.persistenceMode, preferredReason: preferredReason)
+            )
             print("[TrackEditSheet] Saved changes for: \(track.title)")
             if playerVM.currentTrack?.id == track.id {
                 lyricsVM.ensureAMLLLoaded(

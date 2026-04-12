@@ -71,6 +71,9 @@ final class PlaybackSessionTracker {
     /// Whether the track is currently playing.
     private(set) var isActive: Bool = true
 
+    /// Whether this session's eventual finalize writeback should be discarded once.
+    private var shouldDiscardStatsOnFinalize: Bool = false
+
     // MARK: - Initialization
 
     init(track: Track) {
@@ -129,6 +132,16 @@ final class PlaybackSessionTracker {
         }
         isActive = false
         return computeOutcome()
+    }
+
+    func discardStatsOnFinalizeOnce() {
+        shouldDiscardStatsOnFinalize = true
+    }
+
+    func consumePendingStatsDiscardFlag() -> Bool {
+        let shouldDiscard = shouldDiscardStatsOnFinalize
+        shouldDiscardStatsOnFinalize = false
+        return shouldDiscard
     }
 
     // MARK: - Outcome Computation

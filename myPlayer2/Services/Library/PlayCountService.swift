@@ -129,8 +129,8 @@ final class PlayCountService: PlayCountServiceProtocol {
             stats.lastPlayedAt = Date()
         }
 
-        // Persist to disk
-        LocalLibraryService.shared.writeSidecar(for: track)
+        // Persist stats without touching artwork resources.
+        LocalLibraryService.shared.writeMetaOnly(for: track, reason: "playbackStats")
 
         print("✅ Play counted for '\(track.title)' via legacy PlayCountService (delegated to PreferenceStatsService)")
     }

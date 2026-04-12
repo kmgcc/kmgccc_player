@@ -103,8 +103,12 @@ final class MusicLibraryScanner {
             return nil
         }
 
-        let artworkFileName = (json["artworkFileName"] as? String)?.trimmingCharacters(
+        let declaredArtworkFileName = (json["artworkFileName"] as? String)?.trimmingCharacters(
             in: .whitespacesAndNewlines)
+        let artworkFileName = resolveArtworkFileName(
+            in: folderURL,
+            preferredFileName: declaredArtworkFileName
+        )
         let lyricsFileName = (json["lyricsFileName"] as? String)?.trimmingCharacters(
             in: .whitespacesAndNewlines)
 
@@ -194,6 +198,20 @@ final class MusicLibraryScanner {
         let supported = Set(Constants.FileTypes.supportedAudioExtensions)
         if let audio = files.first(where: { supported.contains($0.pathExtension.lowercased()) }) {
             return audio.lastPathComponent
+        }
+        return nil
+    }
+
+    private func resolveArtworkFileName(in folder: URL, preferredFileName: String?) -> String? {
+        for fileName in LocalLibraryPaths.trackArtworkCandidateFileNames(preferredFileName: preferredFileName) {
+            let artworkURL = folder.appendingPathComponent(fileName)
+            if fileManager.fileExists(atPath: artworkURL.path) {
+                return fileName
+            }
+        }
+
+        if let preferredFileName, !preferredFileName.isEmpty {
+            return preferredFileName
         }
         return nil
     }

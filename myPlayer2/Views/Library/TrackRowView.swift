@@ -44,6 +44,7 @@ struct TrackRowView<MenuContent: View>: View {
     @State private var isArtworkReady = false
 
     @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var themeStore: ThemeStore
 
     init(
         model: TrackRowModel,
@@ -218,24 +219,7 @@ struct TrackRowView<MenuContent: View>: View {
     }
 
     private var placeholderArtwork: some View {
-        RoundedRectangle(cornerRadius: 6)
-            .fill(
-                LinearGradient(
-                    colors: [.purple.opacity(0.6), .blue.opacity(0.6)],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-            )
-            .frame(
-                width: Constants.Layout.artworkSmallSize,
-                height: Constants.Layout.artworkSmallSize
-            )
-            .overlay {
-                Image(systemName: "music.note")
-                    .font(.system(size: 16))
-                    .foregroundStyle(.white.opacity(0.8))
-            }
-            .grayscale(model.isMissing ? 1.0 : 0.0)
+        ArtworkPlaceholderView.trackRow(isGrayscale: model.isMissing)
     }
 
     @MainActor

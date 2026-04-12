@@ -158,20 +158,7 @@ struct FullscreenMiniPlayerView: View {
                 .frame(width: artworkSize, height: artworkSize)
                 .clipShape(RoundedRectangle(cornerRadius: artworkCornerRadius, style: .continuous))
         } else {
-            RoundedRectangle(cornerRadius: artworkCornerRadius, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [.purple.opacity(0.4), .blue.opacity(0.4)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-                .frame(width: artworkSize, height: artworkSize)
-                .overlay {
-                    Image(systemName: "music.note")
-                        .font(.system(size: musicNoteIconSize))
-                        .foregroundStyle(.white.opacity(0.6))
-                }
+            ArtworkPlaceholderView.fullscreenMiniPlayer(artworkSize: 44, scale: scale)
         }
     }
 

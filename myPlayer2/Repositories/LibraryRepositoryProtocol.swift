@@ -38,10 +38,12 @@ protocol LibraryRepositoryProtocol: AnyObject {
     /// Fetch only specific tracks from the in-memory repository cache.
     func fetchTracks(ids: [UUID]) async -> [Track]
 
-    /// Add a new track to the library.
+    /// Add a newly imported track to the library and persist its full resource sidecar.
+    /// Ordinary metadata/artwork/lyrics updates must use the explicit persistence APIs below.
     func addTrack(_ track: Track) async
 
-    /// Add multiple tracks to the library.
+    /// Add newly imported tracks to the library and persist their full resource sidecars.
+    /// Ordinary metadata/artwork/lyrics updates must use the explicit persistence APIs below.
     func addTracks(_ tracks: [Track]) async
 
     /// Add a playlist (used for bootstrap from disk).
@@ -50,11 +52,29 @@ protocol LibraryRepositoryProtocol: AnyObject {
     /// Delete a track from the library.
     func deleteTrack(_ track: Track) async
 
-    /// Update track metadata.
-    func updateTrack(_ track: Track) async
+    /// Persist track sidecar metadata only, preserving existing artwork/lyrics file references.
+    func persistTrackMetaOnly(_ track: Track, reason: String) async
 
-    /// Persist a batch of track metadata updates and emit a single change notification.
-    func persistTrackUpdates(_ tracks: [Track]) async -> LibraryTrackPersistenceResult
+    /// Persist track sidecar metadata only for multiple tracks, preserving existing asset references.
+    func persistTrackMetaOnly(_ tracks: [Track], reason: String) async -> LibraryTrackPersistenceResult
+
+    /// Persist track metadata plus lyric assets.
+    func persistTrackMetaAndLyrics(_ track: Track, reason: String) async
+
+    /// Persist track metadata plus lyric assets for multiple tracks.
+    func persistTrackMetaAndLyrics(_ tracks: [Track], reason: String) async -> LibraryTrackPersistenceResult
+
+    /// Persist track metadata plus artwork asset.
+    func persistTrackMetaAndArtwork(_ track: Track, reason: String) async
+
+    /// Persist track metadata plus artwork asset for multiple tracks.
+    func persistTrackMetaAndArtwork(_ tracks: [Track], reason: String) async -> LibraryTrackPersistenceResult
+
+    /// Persist track metadata plus both lyric and artwork assets.
+    func persistTrackMetaLyricsAndArtwork(_ track: Track, reason: String) async
+
+    /// Persist track metadata plus both lyric and artwork assets for multiple tracks.
+    func persistTrackMetaLyricsAndArtwork(_ tracks: [Track], reason: String) async -> LibraryTrackPersistenceResult
 
     /// Reload just the specified tracks from the on-disk library sidecars into repository caches.
     func refreshTracks(ids: [UUID]) async -> [Track]

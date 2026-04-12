@@ -13,7 +13,6 @@ import SwiftUI
 @MainActor
 struct SettingsView: View {
 
-    @Environment(\.dismiss) private var dismiss
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var themeStore: ThemeStore
 
@@ -40,34 +39,10 @@ struct SettingsView: View {
         .navigationSplitViewStyle(.prominentDetail)
         .tint(themeStore.accentColor)
         .accentColor(themeStore.accentColor)
-        .overlay(alignment: .topTrailing) {
-            closeButton
-        }
         .frame(minWidth: 760, minHeight: 680)
         .onAppear {
             settings.fullscreen.normalizeConfiguration()
         }
-        .background(
-            WindowToolbarAccessor { window in
-                window.titlebarAppearsTransparent = true
-            }
-        )
-    }
-
-    // MARK: - Close Button
-
-    private var closeButton: some View {
-        GlassIconButton(
-            systemImage: "xmark",
-            size: GlassStyleTokens.headerControlHeight,
-            iconSize: GlassStyleTokens.headerStandardIconSize,
-            isPrimary: false,
-            help: "关闭",
-            surfaceVariant: .defaultToolbar
-        ) {
-            dismiss()
-        }
-        .padding(GlassStyleTokens.headerHorizontalPadding)
     }
 
     // MARK: - Detail View

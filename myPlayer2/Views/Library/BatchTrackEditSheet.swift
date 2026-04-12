@@ -18,6 +18,11 @@ struct BatchTrackEditSheet: View {
         var saveError: String?
     }
 
+    private struct TrackDraftChangeSet {
+        let hasChanges: Bool
+        let persistenceMode: TrackEditPersistenceMode
+    }
+
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     @Environment(\.colorScheme) private var colorScheme
@@ -655,8 +660,8 @@ struct BatchTrackEditSheet: View {
         guard let track = currentTrack else { return false }
         guard !isSavingCurrent else { return false }
 
-        let hasChanges = hasDraftChangesComparedToCurrentTrack()
-        if !hasChanges {
+        let changeSet = draftChangeSet(for: track)
+        if !changeSet.hasChanges {
             if markProcessedIfUnchanged {
                 markTrackCompleted(track: track, edited: false)
                 statusMessage = "已完成：\(track.title)"
@@ -685,7 +690,13 @@ struct BatchTrackEditSheet: View {
             track.ttmlLyricText = nil
         }
 
-        Task { await libraryVM.saveTrackEdits(track) }
+        Task {
+            await libraryVM.saveTrackEdits(
+                track,
+                mode: changeSet.persistenceMode,
+                reason: persistenceReason(for: changeSet.persistenceMode, preferredReason: reason)
+            )
+        }
         markTrackCompleted(track: track, edited: true)
         statusMessage = "已保存：\(track.title)"
         syncAMLLPreview(reason: reason, forceLyricsReload: true)
@@ -703,7 +714,10 @@ struct BatchTrackEditSheet: View {
 
     private func hasDraftChangesComparedToCurrentTrack() -> Bool {
         guard let track = currentTrack else { return false }
+        return draftChangeSet(for: track).hasChanges
+    }
 
+    private func draftChangeSet(for track: Track) -> TrackDraftChangeSet {
         let savedTitle =
             title.isEmpty ? NSLocalizedString("library.unknown_title", comment: "") : title
         let savedArtist =
@@ -711,11 +725,11 @@ struct BatchTrackEditSheet: View {
         let savedAlbum =
             album.isEmpty ? NSLocalizedString("library.unknown_album", comment: "") : album
 
-        if savedTitle != track.title { return true }
-        if savedArtist != track.artist { return true }
-        if savedAlbum != track.album { return true }
-        if artworkData != track.artworkData { return true }
-        if abs(lyricsTimeOffsetMs - track.lyricsTimeOffsetMs) > 0.000_1 { return true }
+        let metadataChanged =
+            savedTitle != track.title
+            || savedArtist != track.artist
+            || savedAlbum != track.album
+            || abs(lyricsTimeOffsetMs - track.lyricsTimeOffsetMs) > 0.000_1
 
         let trimmedLyrics = lyricsText.trimmingCharacters(in: .whitespacesAndNewlines)
         let targetTTML: String? = {
@@ -727,9 +741,36 @@ struct BatchTrackEditSheet: View {
             return trimmedLyrics.lowercased().contains("<tt") ? nil : trimmedLyrics
         }()
 
-        if track.ttmlLyricText != targetTTML { return true }
-        if track.lyricsText != targetPlainLyrics { return true }
-        return false
+        let lyricsChanged = track.ttmlLyricText != targetTTML || track.lyricsText != targetPlainLyrics
+        let artworkChanged = artworkData != track.artworkData
+        let hasChanges = metadataChanged || lyricsChanged || artworkChanged
+
+        let persistenceMode: TrackEditPersistenceMode
+        if artworkChanged && lyricsChanged {
+            persistenceMode = .metaLyricsAndArtwork
+        } else if artworkChanged {
+            persistenceMode = .metaAndArtwork
+        } else if lyricsChanged {
+            persistenceMode = .metaAndLyrics
+        } else {
+            persistenceMode = .metaOnly
+        }
+
+        return TrackDraftChangeSet(hasChanges: hasChanges, persistenceMode: persistenceMode)
+    }
+
+    private func persistenceReason(
+        for mode: TrackEditPersistenceMode,
+        preferredReason _: String
+    ) -> String {
+        switch mode {
+        case .metaOnly:
+            return "trackEditMetaOnly"
+        case .metaAndLyrics:
+            return "trackEditLyrics"
+        case .metaAndArtwork, .metaLyricsAndArtwork:
+            return "trackEditArtwork"
+        }
     }
 
     private func handleArtworkImport(_ result: Result<[URL], Error>) {

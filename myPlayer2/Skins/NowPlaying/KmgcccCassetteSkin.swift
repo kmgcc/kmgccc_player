@@ -72,10 +72,7 @@ private enum CassetteLayout {
 }
 
 private struct CassetteThemeImageSet {
-    let shell: NSImage
-    let gray: NSImage
-    let paper: NSImage
-    let outline: NSImage
+    let shellComposite: NSImage
     let mask: NSImage
 }
 
@@ -127,11 +124,21 @@ private final class CassetteThemeAssetCache {
             return nil
         }
 
+        let outlineOpacity: CGFloat = colorScheme == .dark ? 0.20 : 0.80
+        guard
+            let shellComposite = composeShellImage(
+                shell: shell,
+                gray: gray,
+                paper: paper,
+                outline: outline,
+                outlineOpacity: outlineOpacity
+            )
+        else {
+            return nil
+        }
+
         let imageSet = CassetteThemeImageSet(
-            shell: shell,
-            gray: gray,
-            paper: paper,
-            outline: outline,
+            shellComposite: shellComposite,
             mask: mask
         )
         cache.setObject(
@@ -235,16 +242,61 @@ private final class CassetteThemeAssetCache {
     }
 
     private func estimatedCost(for imageSet: CassetteThemeImageSet) -> Int {
-        [
-            imageSet.shell,
-            imageSet.gray,
-            imageSet.paper,
-            imageSet.outline,
-            imageSet.mask,
-        ]
-        .reduce(0) { partial, image in
+        [imageSet.shellComposite, imageSet.mask].reduce(0) { partial, image in
             partial + Self.estimatedCost(for: image)
         }
+    }
+
+    private func composeShellImage(
+        shell: NSImage,
+        gray: NSImage,
+        paper: NSImage,
+        outline: NSImage,
+        outlineOpacity: CGFloat
+    ) -> NSImage? {
+        guard
+            let shellCG = shell.cgImage(forProposedRect: nil, context: nil, hints: nil),
+            let grayCG = gray.cgImage(forProposedRect: nil, context: nil, hints: nil),
+            let paperCG = paper.cgImage(forProposedRect: nil, context: nil, hints: nil),
+            let outlineCG = outline.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        else { return nil }
+
+        let width = shellCG.width
+        let height = shellCG.height
+        let rect = CGRect(x: 0, y: 0, width: width, height: height)
+
+        guard
+            let context = CGContext(
+                data: nil,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: 0,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )
+        else { return nil }
+
+        context.interpolationQuality = .high
+        context.draw(shellCG, in: rect)
+        context.draw(grayCG, in: rect)
+
+        context.saveGState()
+        context.setBlendMode(.multiply)
+        context.setAlpha(0.40)
+        context.draw(paperCG, in: rect)
+        context.restoreGState()
+
+        context.saveGState()
+        context.setAlpha(outlineOpacity)
+        context.draw(outlineCG, in: rect)
+        context.restoreGState()
+
+        guard let composed = context.makeImage() else { return nil }
+        return NSImage(
+            cgImage: composed,
+            size: NSSize(width: composed.width, height: composed.height)
+        )
     }
 
     private static func estimatedCost(for image: NSImage) -> Int {
@@ -267,6 +319,8 @@ private struct CassetteArtwork: View {
     @State private var adjustedVisible: Bool = false
     @State private var processingTask: Task<Void, Never>?
     @State private var processingGeneration: UInt64 = 0
+    @State private var originalArtworkReleaseTask: Task<Void, Never>?
+    @State private var keepsOriginalArtworkLayer: Bool = true
 
     @AppStorage("skin.kmgcccCassette.visualizerMode") private var normalVisualizerMode: String = "off"
     @AppStorage("skin.kmgcccCassette.fullscreen.visualizerMode") private var fullscreenVisualizerMode: String = "off"
@@ -292,30 +346,12 @@ private struct CassetteArtwork: View {
         let horizontalOffset: CGFloat = -(12 + (isFullscreen ? cassetteFullscreenExtraLeftShift : 0))
 
         ZStack {
-            cassetteThemeImage(themeImages?.shell, fallbackNamed: tapeAssetName)
+            cassetteThemeImage(themeImages?.shellComposite, fallbackNamed: tapeAssetName)
                 .resizable()
                 .aspectRatio(contentMode: .fit)
                 .frame(width: size.width, height: size.height)
 
             maskedArtwork(size: size, maskImage: themeImages?.mask)
-
-            cassetteThemeImage(themeImages?.gray, fallbackNamed: "tapegray")
-                .resizable()
-                .aspectRatio(contentMode: .fit)
-                .frame(width: size.width, height: size.height)
-
-            cassetteThemeImage(themeImages?.paper, fallbackNamed: "tapepaper")
-                .resizable()
-                .aspectRatio(contentMode: .fit)
-                .frame(width: size.width, height: size.height)
-                .blendMode(.multiply)
-                .opacity(0.40)
-
-            cassetteThemeImage(themeImages?.outline, fallbackNamed: "tapeoutline")
-                .resizable()
-                .aspectRatio(contentMode: .fit)
-                .frame(width: size.width, height: size.height)
-                .opacity(context.theme.colorScheme == .dark ? 0.20 : 0.80)
         }
         .overlay(alignment: .bottomTrailing) {
             if showKmgLook {
@@ -357,10 +393,12 @@ private struct CassetteArtwork: View {
     @ViewBuilder
     private func maskedArtwork(size: CGSize, maskImage: NSImage?) -> some View {
         ZStack {
-            originalArtworkImage
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-                .opacity(showAdjustedLayer ? 0 : 1)
+            if keepsOriginalArtworkLayer || !showAdjustedLayer {
+                originalArtworkImage
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .opacity(showAdjustedLayer ? 0 : 1)
+            }
 
             if showAdjustedLayer, let adjustedArtworkImage {
                 Image(nsImage: adjustedArtworkImage)
@@ -404,6 +442,7 @@ private struct CassetteArtwork: View {
 
     private func scheduleAdjustedArtworkProcessing(targetSize: CGSize) {
         processingTask?.cancel()
+        originalArtworkReleaseTask?.cancel()
         processingGeneration &+= 1
         let generation = processingGeneration
 
@@ -431,6 +470,7 @@ private struct CassetteArtwork: View {
             adjustedArtworkKey = nil
             adjustedArtworkImage = nil
         }
+        keepsOriginalArtworkLayer = true
         adjustedVisible = false
 
         processingTask = Task(priority: .utility) {
@@ -444,6 +484,7 @@ private struct CassetteArtwork: View {
                     withAnimation(.easeInOut(duration: 0.26)) {
                         self.adjustedVisible = true
                     }
+                    self.scheduleOriginalArtworkLayerRelease(generation: generation, key: key)
                 }
                 return
             }
@@ -475,6 +516,7 @@ private struct CassetteArtwork: View {
                 withAnimation(.easeInOut(duration: 0.26)) {
                     self.adjustedVisible = true
                 }
+                self.scheduleOriginalArtworkLayerRelease(generation: generation, key: key)
             }
         }
     }
@@ -508,8 +550,8 @@ private struct CassetteArtwork: View {
     private func themeMaxPixel(for size: CGSize) -> Int {
         let resolvedScale = max(1.0, displayScale)
         let longestSide = max(size.width, size.height)
-        let target = Int(ceil(longestSide * resolvedScale * 2.2))
-        return min(1_400, max(900, target))
+        let target = Int(ceil(longestSide * resolvedScale * 1.18))
+        return min(1_100, max(640, target))
     }
 
     private func cassetteThemeImages(for size: CGSize) -> CassetteThemeImageSet? {
@@ -527,24 +569,42 @@ private struct CassetteArtwork: View {
     }
 
     private func clearAdjustedArtworkState(resetRenderKey: Bool) {
+        originalArtworkReleaseTask?.cancel()
+        originalArtworkReleaseTask = nil
         if resetRenderKey {
             renderKey = ""
         }
         adjustedArtworkKey = nil
         adjustedArtworkImage = nil
         adjustedVisible = false
+        keepsOriginalArtworkLayer = true
     }
 
     private func teardownArtworkState(purgeCaches: Bool) {
         processingGeneration &+= 1
         processingTask?.cancel()
         processingTask = nil
+        originalArtworkReleaseTask?.cancel()
+        originalArtworkReleaseTask = nil
         clearAdjustedArtworkState(resetRenderKey: true)
 
         guard purgeCaches else { return }
         CassetteThemeAssetCache.shared.removeAll()
         Task {
             await CassetteArtworkCache.shared.removeAll()
+        }
+    }
+
+    private func scheduleOriginalArtworkLayerRelease(generation: UInt64, key: String) {
+        originalArtworkReleaseTask?.cancel()
+        originalArtworkReleaseTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 320_000_000)
+            guard !Task.isCancelled else { return }
+            guard processingGeneration == generation else { return }
+            guard renderKey == key else { return }
+            guard adjustedVisible, showAdjustedLayer else { return }
+            keepsOriginalArtworkLayer = false
+            originalArtworkReleaseTask = nil
         }
     }
 }

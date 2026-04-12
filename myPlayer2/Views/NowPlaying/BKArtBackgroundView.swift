@@ -70,11 +70,17 @@ final class BKArtBackgroundController: ObservableObject {
 }
 
 struct BKArtBackgroundView: View {
+    enum ResourceProfile: Equatable, Sendable {
+        case standard
+        case cassetteForeground
+    }
+
     @ObservedObject var controller: BKArtBackgroundController
     let trackID: UUID?
     let artworkData: Data?
     let isPlaying: Bool
     var avoidanceRect: CGRect? = nil
+    var resourceProfile: ResourceProfile = .standard
     @Environment(\.colorScheme) private var colorScheme
 
     @State private var palette: [NSColor] = Self.fallbackPalette
@@ -93,7 +99,8 @@ struct BKArtBackgroundView: View {
             palette: palette,
             isDark: colorScheme == .dark,
             isPlaying: isPlaying,
-            avoidanceRect: avoidanceRect
+            avoidanceRect: avoidanceRect,
+            resourceProfile: resourceProfile
         )
         .allowsHitTesting(false)
         .onAppear {
@@ -264,6 +271,7 @@ private struct BKArtBackgroundRepresentable: NSViewRepresentable {
     let isDark: Bool
     let isPlaying: Bool
     let avoidanceRect: CGRect?
+    let resourceProfile: BKArtBackgroundView.ResourceProfile
 
     func makeNSView(context: Context) -> BKArtBackgroundLayerView {
         let contentView = BKArtBackgroundLayerView()
@@ -271,6 +279,7 @@ private struct BKArtBackgroundRepresentable: NSViewRepresentable {
         contentView.trackID = trackID
         contentView.updatePalette(palette, isDark: isDark)
         contentView.updateAvoidanceRect(avoidanceRect)
+        contentView.updateResourceProfile(resourceProfile)
         contentView.ensureBaseContainer(seed: seed)
         contentView.setPlayback(isPlaying: isPlaying)
         contentView.currentTransitionID = transitionID
@@ -282,6 +291,7 @@ private struct BKArtBackgroundRepresentable: NSViewRepresentable {
         nsView.trackID = trackID
         nsView.updatePalette(palette, isDark: isDark)
         nsView.updateAvoidanceRect(avoidanceRect)
+        nsView.updateResourceProfile(resourceProfile)
         nsView.ensureBaseContainer(seed: seed)
         nsView.setPlayback(isPlaying: isPlaying)
 
@@ -512,9 +522,7 @@ private final class BKArtBackgroundLayerView: NSView {
     private let ultraDarkOverlayOpacity: Float = 0.50
     private var activeAvoidanceRect: CGRect?
     private var backgroundAssetMode: BackgroundAssetMode = .currentPhaseLowRes
-    private let initialBackgroundBudgetCap: Int = 960
-    private let initialBackgroundUpgradeDelay: UInt64 = 180_000_000
-    private let initialMaskWarmupDelay: UInt64 = 420_000_000
+    private var resourceProfile: BKArtBackgroundView.ResourceProfile = .standard
 
     // Style Selector State
     private var lastStyle: BackgroundStyle?
@@ -561,6 +569,15 @@ private final class BKArtBackgroundLayerView: NSView {
     func prepareForDismissal() {
         stopTimers()
         releaseHeavyResources()
+    }
+
+    func updateResourceProfile(_ profile: BKArtBackgroundView.ResourceProfile) {
+        guard resourceProfile != profile else { return }
+        resourceProfile = profile
+        cancelInitialResourceUpgradeTask()
+        syncLoadedAssetsIfNeeded()
+        applyCurrentBackgroundPhase()
+        scheduleInitialResourceUpgradeIfNeeded()
     }
 
     override func layout() {
@@ -847,7 +864,7 @@ private final class BKArtBackgroundLayerView: NSView {
         container.shapeSwatches = swatchResult.colors.isEmpty ? harmonized.shapePool : swatchResult.colors
         container.swatchDiagnostics = swatchResult.diagnostics
 
-        let count = rng.nextInt(in: 10...16)
+        let count = targetShapeCount(using: &rng)
         let chosenShapes = chooseShapeImages(count: count, rng: &rng)
         let plannedTints = makeShapeTintPlan(
             count: chosenShapes.count,
@@ -1027,6 +1044,15 @@ private final class BKArtBackgroundLayerView: NSView {
             )
         }
         return output
+    }
+
+    private func targetShapeCount(using rng: inout BKSeededRandom) -> Int {
+        switch resourceProfile {
+        case .standard:
+            return rng.nextInt(in: 10...16)
+        case .cassetteForeground:
+            return 10
+        }
     }
 
     private func randomPinnedEdgePoint(side: CGFloat, rng: inout BKSeededRandom) -> CGPoint {
@@ -1977,12 +2003,14 @@ private final class BKArtBackgroundLayerView: NSView {
         }
         let finalImage = toneMap(image: composed, isDark: isDark)
         let outputSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
-        return backgroundRenderContext.createCGImage(
+        let rendered = backgroundRenderContext.createCGImage(
             finalImage,
             from: input.extent,
             format: .RGBA8,
             colorSpace: outputSpace
         )
+        backgroundRenderContext.clearCaches()
+        return rendered
     }
 
     private nonisolated static let backgroundRenderContext = CIContext(
@@ -2266,9 +2294,16 @@ private final class BKArtBackgroundLayerView: NSView {
         let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
         let longestEdge = max(bounds.width, bounds.height)
         let nativePixel = Int(max(1, (longestEdge * scale).rounded()))
-        let background = min(max(nativePixel, 960), 1536)
-        let shape = min(max(background / 3, 256), 512)
-        let mask = min(max(background / 2, 512), 768)
+        let backgroundCap = resourceProfile == .cassetteForeground ? 1_280 : 1_536
+        let backgroundFloor = resourceProfile == .cassetteForeground ? 800 : 960
+        let shapeCap = resourceProfile == .cassetteForeground ? 384 : 512
+        let shapeFloor = resourceProfile == .cassetteForeground ? 224 : 256
+        let maskCap = resourceProfile == .cassetteForeground ? 640 : 768
+        let maskFloor = resourceProfile == .cassetteForeground ? 448 : 512
+        let background = min(max(nativePixel, backgroundFloor), backgroundCap)
+        let shapeDivisor = resourceProfile == .cassetteForeground ? 4 : 3
+        let shape = min(max(background / shapeDivisor, shapeFloor), shapeCap)
+        let mask = min(max(background / 2, maskFloor), maskCap)
         return BKThemeAssets.PixelBudget(background: background, shape: shape, mask: mask)
     }
 
@@ -2339,6 +2374,8 @@ private final class BKArtBackgroundLayerView: NSView {
                 self.applyCurrentBackgroundPhase()
             }
 
+            guard self.shouldAutoWarmMasksOnIdle else { return }
+
             try? await Task.sleep(nanoseconds: self.initialMaskWarmupDelay)
             guard !Task.isCancelled else { return }
 
@@ -2371,6 +2408,7 @@ private final class BKArtBackgroundLayerView: NSView {
         backgroundAssetMode = .currentPhaseLowRes
         tintedBackgroundCache.removeAllObjects()
         assets.purgeTransientCaches()
+        Self.backgroundRenderContext.clearCaches()
         layer?.mask = nil
         layer?.contents = nil
         layer?.sublayers?.forEach { sublayer in
@@ -2421,6 +2459,22 @@ private final class BKArtBackgroundLayerView: NSView {
             sublayer.contents = nil
         }
         container.layer.removeFromSuperlayer()
+    }
+
+    private var initialBackgroundBudgetCap: Int {
+        resourceProfile == .cassetteForeground ? 768 : 960
+    }
+
+    private var initialBackgroundUpgradeDelay: UInt64 {
+        resourceProfile == .cassetteForeground ? 260_000_000 : 180_000_000
+    }
+
+    private var initialMaskWarmupDelay: UInt64 {
+        resourceProfile == .cassetteForeground ? 700_000_000 : 420_000_000
+    }
+
+    private var shouldAutoWarmMasksOnIdle: Bool {
+        resourceProfile == .standard
     }
 
     private static func paletteSignature(for colors: [CGColor]) -> String {

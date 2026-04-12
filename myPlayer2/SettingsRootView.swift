@@ -18,14 +18,12 @@ struct SettingsRootView: View {
            let lyricsVM = sharedState.lyricsVM,
            let ledMeterProvider = sharedState.ledMeterProvider
         {
-            // Settings view needs the actual LEDMeterService for real-time preview
-            let ledMeter = ledMeterProvider.getOrCreate()
             SettingsView()
                 .environment(settings)
                 .environment(libraryVM)
                 .environment(playerVM)
                 .environment(lyricsVM)
-                .environment(ledMeter)
+                .environment(ledMeterProvider)
                 .environmentObject(themeStore)
         } else {
             VStack(spacing: 16) {

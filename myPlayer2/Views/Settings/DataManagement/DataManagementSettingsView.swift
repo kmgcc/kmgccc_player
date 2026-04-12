@@ -11,6 +11,7 @@ import SwiftUI
 struct DataManagementSettingsView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(LibraryViewModel.self) private var libraryVM
+    @Environment(PlayerViewModel.self) private var playerVM
 
     @State private var showResetDataAlert: Bool = false
     @State private var showClearIndexCacheAlert: Bool = false
@@ -39,26 +40,53 @@ struct DataManagementSettingsView: View {
                 .padding(12)
             }
 
-            // Reset settings
+            // Reset app settings
             GroupBox {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("将应用配置恢复为初始默认值，不会修改音乐资料库。")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
 
-                    HStack(spacing: 10) {
-                        Button("初始化应用设置", role: .destructive) {
-                            showResetDataAlert = true
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .clipShape(Capsule())
-
-                        Button("清除索引缓存") {
-                            showClearIndexCacheAlert = true
-                        }
-                        .buttonStyle(.bordered)
-                        .clipShape(Capsule())
+                    Button("初始化应用设置", role: .destructive) {
+                        showResetDataAlert = true
                     }
+                    .buttonStyle(.borderedProminent)
+                    .clipShape(Capsule())
+                }
+                .padding(12)
+            }
+
+            // Index cache
+            GroupBox {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("清除本地索引缓存，下次进入资料库时将重新建立索引，不会删除歌曲文件。")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+
+                    Button("清除索引缓存") {
+                        showClearIndexCacheAlert = true
+                    }
+                    .buttonStyle(.bordered)
+                    .clipShape(Capsule())
+                }
+                .padding(12)
+            }
+
+            // Music preference reset
+            GroupBox {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("批量重置整个音乐资料库中的播放统计偏好数据，只会修改所选统计字段与统计相关旧残留。")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+
+                    Button("重置音乐偏好数据", role: .destructive) {
+                        MusicPreferenceResetDialogPresenter.present(
+                            libraryVM: libraryVM,
+                            playerVM: playerVM
+                        )
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .clipShape(Capsule())
                 }
                 .padding(12)
             }
@@ -74,24 +102,6 @@ struct DataManagementSettingsView: View {
                         showClearArtworkColorCacheAlert = true
                     }
                     .buttonStyle(.bordered)
-                    .clipShape(Capsule())
-                }
-                .padding(12)
-            }
-
-            // Smart shuffle preference data
-            GroupBox {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("清除所有歌曲的智能播放偏好记录，包括播放完成率、跳过次数和手动喜好状态。智能播放将从零开始重新学习。")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-
-                    Button("重置音乐偏好数据", role: .destructive) {
-                        ResetPreferenceDataDialogPresenter.present {
-                            PreferenceStatsService.shared.clearCache()
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
                     .clipShape(Capsule())
                 }
                 .padding(12)

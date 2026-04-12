@@ -174,6 +174,10 @@ final class PlayerViewModel {
         nowPlayingService.updateNowPlaying(force: true)
     }
 
+    func discardCurrentPlaybackSessionStatsOnce() {
+        playbackService.discardCurrentPlaybackSessionStatsOnce()
+    }
+
     // MARK: - Cleanup
 
     func stopLevelMeter() {
