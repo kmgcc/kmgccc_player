@@ -78,6 +78,24 @@ struct DataManagementSettingsView: View {
                 }
                 .padding(12)
             }
+
+            // Smart shuffle preference data
+            GroupBox {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("清除所有歌曲的智能播放偏好记录，包括播放完成率、跳过次数和手动喜好状态。智能播放将从零开始重新学习。")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+
+                    Button("重置音乐偏好数据", role: .destructive) {
+                        ResetPreferenceDataDialogPresenter.present {
+                            PreferenceStatsService.shared.clearCache()
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .clipShape(Capsule())
+                }
+                .padding(12)
+            }
         }
         .alert("初始化应用数据？", isPresented: $showResetDataAlert) {
             Button("取消", role: .cancel) {}
