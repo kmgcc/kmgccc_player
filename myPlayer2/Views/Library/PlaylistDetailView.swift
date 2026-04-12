@@ -152,6 +152,14 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         .onReceive(NotificationCenter.default.publisher(for: .playbackTrackDidChange)) { _ in
             pageController.notePlaybackTrackDidChange()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .toggleMultiselectMode)) { _ in
+            // Only enable multi-select if there are tracks to select
+            guard let page = pageController.page, !page.rows.isEmpty else { return }
+            pageController.isMultiselectMode.toggle()
+            if !pageController.isMultiselectMode {
+                pageController.selectedTrackIDs.removeAll()
+            }
+        }
     }
 
     // MARK: - Computed Properties
@@ -222,10 +230,16 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
                     if pageController.isMultiselectMode && !pageController.selectedTrackIDs.isEmpty {
                         let selected = selectedTracksForBatchEditor()
                         guard !selected.isEmpty else { return }
-                        playerVM.playTracks(selected)
+                        playerVM.playTracks(
+                            selected,
+                            libraryQueueSource: .librarySelection(selectionIdentity)
+                        )
                     } else {
                         guard !queueTracks.isEmpty else { return }
-                        playerVM.playTracks(queueTracks)
+                        playerVM.playTracks(
+                            queueTracks,
+                            libraryQueueSource: .librarySelection(selectionIdentity)
+                        )
                     }
                 },
                 onImport: {
@@ -383,6 +397,7 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         PlaylistTrackRowsSection(
             rows: currentRows,
             queueTracks: queueTracks,
+            selectionIdentity: selectionIdentity,
             pageController: pageController,
             menuBuilder: erasedTrackMenu(trackID:)
         )
@@ -463,7 +478,10 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             incomingOpacity: pageController.headerIncomingOpacity,
             onPlay: {
                 guard !queueTracks.isEmpty else { return }
-                playerVM.playTracks(queueTracks)
+                playerVM.playTracks(
+                    queueTracks,
+                    libraryQueueSource: .librarySelection(selectionIdentity)
+                )
             },
             canPlay: !queueTracks.isEmpty,
             onArtworkFrameChange: { bounds in
@@ -665,7 +683,11 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
 
                 Button {
                     let startIndex = pageController.queueStartIndex(for: track.id)
-                    playerVM.playTracks(queueTracks, startingAt: startIndex)
+                    playerVM.playTracks(
+                        queueTracks,
+                        startingAt: startIndex,
+                        libraryQueueSource: .librarySelection(selectionIdentity)
+                    )
                 } label: {
                     Label("播放", systemImage: "play")
                 }
@@ -780,6 +802,7 @@ private struct PlaylistTrackRowsSection: View {
 
     let rows: [PlaylistPageRowModel]
     let queueTracks: [Track]
+    let selectionIdentity: String
     let pageController: PlaylistPageController
     let menuBuilder: (UUID) -> AnyView
 
@@ -801,7 +824,11 @@ private struct PlaylistTrackRowsSection: View {
                         }
                     } else {
                         let startIndex = pageController.queueStartIndex(for: row.id)
-                        playerVM.playTracks(queueTracks, startingAt: startIndex)
+                        playerVM.playTracks(
+                            queueTracks,
+                            startingAt: startIndex,
+                            libraryQueueSource: .librarySelection(selectionIdentity)
+                        )
                     }
                 },
                 onRowAppear: {

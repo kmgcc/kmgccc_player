@@ -266,11 +266,25 @@ struct FullscreenPlayerView: View {
         .onChange(of: colorScheme) { _, _ in
             forceRefreshFullscreenLyricsColors(reason: "colorScheme-change")
         }
+        .onReceive(NotificationCenter.default.publisher(for: .toggleQueuePanel)) { _ in
+            // Cycle through right panel states: lyrics -> queue -> hidden -> lyrics
+            let nextState: RightPanelDisplayState
+            switch rightPanelDisplayState {
+            case .queue:
+                nextState = .hidden
+            case .lyrics:
+                nextState = .queue
+            case .hidden:
+                nextState = .lyrics
+            }
+            setRightPanelDisplayState(nextState)
+        }
         .onChange(of: settings.fullscreenMiniPlayerAutoHideSeconds) { _, _ in
             resetFullscreenBottomControlsAutoHideState()
         }
         .onChange(of: bkController.lyricsColorSampleRevision) { _, _ in
             guard pendingFullscreenLyricsBackgroundCapture else { return }
+            guard bkController.lyricsColorTrackID == playerVM.currentTrack?.id else { return }
             scheduleFullscreenLyricsRefresh(preferLiveSurface: true)
         }
         .task(id: currentArtworkTaskKey) {
@@ -1285,7 +1299,7 @@ struct FullscreenPlayerView: View {
         rightPanelDisplayState != .hidden
     }
 
-    private var currentPlaybackMode: PlaybackMode {
+    private var currentPlaybackMode: PlaybackOrderMode {
         if settings.stopAfterTrack { return .stopAfterTrack }
         if settings.repeatMode == "one" { return .repeatOne }
         if settings.shuffleEnabled { return .shuffle }
@@ -1421,11 +1435,11 @@ struct FullscreenPlayerView: View {
         setRightPanelDisplayState(nextState)
     }
 
-    private func handlePlaybackModeChange(_ tappedMode: PlaybackMode) {
+    private func handlePlaybackModeChange(_ tappedMode: PlaybackOrderMode) {
         applyPlaybackMode(tappedMode)
     }
 
-    private func handleCurrentPlaybackModeRetap(_ currentMode: PlaybackMode) {
+    private func handleCurrentPlaybackModeRetap(_ currentMode: PlaybackOrderMode) {
         guard currentMode == currentPlaybackMode else { return }
 
         let nextState: RightPanelDisplayState
@@ -1446,7 +1460,7 @@ struct FullscreenPlayerView: View {
         }
     }
 
-    private func applyPlaybackMode(_ mode: PlaybackMode) {
+    private func applyPlaybackMode(_ mode: PlaybackOrderMode) {
         let shuffleEnabled = mode == .shuffle
         settings.repeatMode = mode == .repeatOne ? "one" : "off"
         settings.stopAfterTrack = mode == .stopAfterTrack
@@ -1888,6 +1902,11 @@ struct FullscreenPlayerView: View {
     private func captureFullscreenLyricsBackgroundSnapshot(preferLiveSurface: Bool = false) {
         guard settings.nowPlayingArtBackgroundEnabled else {
             resetFullscreenLyricsBackgroundSnapshot()
+            return
+        }
+
+        guard bkController.lyricsColorTrackID == playerVM.currentTrack?.id else {
+            pendingFullscreenLyricsBackgroundCapture = playerVM.currentTrack != nil
             return
         }
 
@@ -2466,7 +2485,7 @@ struct FullscreenPlayerView: View {
             return backgroundColor
         }
 
-        if settings.nowPlayingArtBackgroundEnabled {
+        if settings.nowPlayingArtBackgroundEnabled, bkController.lyricsColorTrackID == track?.id {
             if pendingFullscreenLyricsBackgroundCapture,
                 let backgroundColor = bkController.primaryBackgroundColor
             {

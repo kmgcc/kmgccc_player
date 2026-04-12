@@ -350,10 +350,6 @@ final class LibraryViewModel {
     /// otherwise the first available playlist. Only creates a playlist if none exist.
     func importToCurrentPlaylist() async {
         let clickTimestamp = Date()
-        Log.info("importToCurrentPlaylist() called", category: .import)
-        Log.info("[ImportPanel] click timestamp: \(clickTimestamp)", category: .import)
-        Log.debug("   ↳ selectedPlaylistId = \(selectedPlaylistId?.uuidString ?? "nil")", category: .import)
-        Log.debug("   ↳ importService = \(importService != nil ? "available" : "nil")", category: .import)
 
         guard let service = importService else {
             Log.warning("Import service not available", category: .import)
@@ -361,44 +357,36 @@ final class LibraryViewModel {
         }
 
         guard let selectedURLs = await service.pickImportURLs(triggeredAt: clickTimestamp) else {
-            Log.debug("Import cancelled before target playlist resolution", category: .import)
             return
         }
 
         // Resolve target playlist
         let targetPlaylist: Playlist
         if let selected = selectedPlaylist {
-            Log.debug("   ↳ Using existing playlist: '\(selected.name)'", category: .import)
             targetPlaylist = selected
         } else {
             if playlists.isEmpty {
-                Log.debug("   ↳ No playlists exist, creating one for import...", category: .import)
                 targetPlaylist = await repository.createPlaylist(
                     name: String(
                         format: NSLocalizedString("library.imported_playlist_name", comment: ""),
                         formattedDate))
                 playlists = await repository.fetchPlaylists()
                 selectedPlaylistId = targetPlaylist.id
-                Log.debug("   ↳ Created playlist: '\(targetPlaylist.name)' (id=\(targetPlaylist.id))", category: .import)
             } else if let lastId = UserDefaults.standard.string(forKey: "lastSelectedPlaylistId"),
                 let uuid = UUID(uuidString: lastId),
                 let last = playlists.first(where: { $0.id == uuid })
             {
-                Log.debug("   ↳ No playlist selected, using last selected: '\(last.name)'", category: .import)
                 targetPlaylist = last
                 selectedPlaylistId = last.id
             } else {
                 let fallback = playlists[0]
-                Log.debug("   ↳ No playlist selected, using first playlist: '\(fallback.name)'", category: .import)
                 targetPlaylist = fallback
                 selectedPlaylistId = fallback.id
             }
         }
 
         // Perform import
-        Log.info("Calling importSelectedURLs...", category: .import)
         let count = await service.importSelectedURLs(selectedURLs, to: targetPlaylist)
-        Log.info("importSelectedURLs returned: \(count) tracks imported", category: .import)
 
         // Only refresh if tracks were actually imported
         if count > 0 {
@@ -414,9 +402,7 @@ final class LibraryViewModel {
             return
         }
 
-        Log.info("[ImportPanel] click timestamp: \(clickTimestamp)", category: .import)
         guard let selectedURLs = await service.pickImportURLs(triggeredAt: clickTimestamp) else {
-            Log.debug("Import cancelled for playlist '\(playlist.name)'", category: .import)
             return
         }
 
