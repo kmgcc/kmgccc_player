@@ -174,50 +174,17 @@ final class NCMImportProgressDialogPresenter: NSObject, NSWindowDelegate {
         Self.activePresenter = presenter
         
         // Layout constants
-        let rowTotalHeight: CGFloat = 52
-        let headerHeight: CGFloat = 80
-        let footerHeight: CGFloat = 60
-        let listVerticalPadding: CGFloat = 8
-        let maxItemsWithoutScroll = 9
-        
         let itemCount = items.count
-        let shouldScroll = itemCount > maxItemsWithoutScroll
+        let shouldScroll = itemCount > AppDialogTokens.maxVisibleRows
+        let windowHeight = AppDialogTokens.windowHeight(rowCount: itemCount)
         
-        let windowHeight: CGFloat
-        if shouldScroll {
-            let visibleRowsHeight = CGFloat(maxItemsWithoutScroll) * rowTotalHeight
-            windowHeight = headerHeight + visibleRowsHeight + listVerticalPadding + footerHeight
-        } else {
-            let rowsHeight = CGFloat(itemCount) * rowTotalHeight
-            windowHeight = headerHeight + rowsHeight + listVerticalPadding + footerHeight
-        }
-        
-        let windowSize = NSSize(width: 580, height: windowHeight)
-        
-        let panel = NSPanel(
-            contentRect: NSRect(origin: .zero, size: windowSize),
-            styleMask: [.titled, .closable, .fullSizeContentView],
-            backing: .buffered,
-            defer: false
+        let (panel, visualEffect) = AppDialogTokens.makePanel(
+            width: AppDialogTokens.progressDialogWidth,
+            height: windowHeight
         )
-        
-        panel.title = ""
-        panel.titlebarAppearsTransparent = true
-        panel.titleVisibility = .hidden
-        panel.isMovableByWindowBackground = true
-        panel.isReleasedWhenClosed = false
         panel.delegate = presenter
-        
-        let visualEffect = NSVisualEffectView()
-        visualEffect.material = .popover
-        visualEffect.blendingMode = .behindWindow
-        visualEffect.state = .active
-        visualEffect.frame = NSRect(origin: .zero, size: windowSize)
-        visualEffect.autoresizingMask = [.width, .height]
-        panel.contentView = visualEffect
-        
         presenter.panel = panel
-        
+
         let viewModel = NCMImportProgressViewModel(
             items: items,
             onComplete: { [weak presenter] results in
@@ -229,16 +196,22 @@ final class NCMImportProgressDialogPresenter: NSObject, NSWindowDelegate {
             }
         )
         presenter.viewModel = viewModel
-        
+
+        let visibleRowsHeight: CGFloat? = shouldScroll
+            ? CGFloat(AppDialogTokens.maxVisibleRows) * AppDialogTokens.rowHeight
+            : nil
         let rootView = NCMImportProgressDialogView(
             viewModel: viewModel,
             shouldScroll: shouldScroll,
-            visibleRowsHeight: shouldScroll ? CGFloat(maxItemsWithoutScroll) * rowTotalHeight : nil
+            visibleRowsHeight: visibleRowsHeight
         )
-        .frame(width: 580, height: windowHeight)
-        
+        .frame(width: AppDialogTokens.progressDialogWidth, height: windowHeight)
+
         let hostingView = NSHostingView(rootView: rootView)
-        hostingView.frame = NSRect(origin: .zero, size: windowSize)
+        hostingView.frame = NSRect(
+            origin: .zero,
+            size: NSSize(width: AppDialogTokens.progressDialogWidth, height: windowHeight)
+        )
         hostingView.autoresizingMask = [.width, .height]
         
         visualEffect.addSubview(hostingView)
@@ -412,73 +385,58 @@ struct NCMImportProgressDialogView: View {
                     VStack(spacing: 0) {
                         ForEach(viewModel.items) { item in
                             NCMProgressRowView(item: item)
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 4)
+                                .padding(.horizontal, AppDialogTokens.contentHorizontalPadding)
+                                .padding(.vertical, AppDialogTokens.contentRowVerticalPadding)
                         }
                     }
-                    .padding(.vertical, 4)
+                    .padding(.vertical, AppDialogTokens.contentRowVerticalPadding)
                 }
                 .frame(height: visibleRowsHeight)
             } else {
                 VStack(spacing: 0) {
                     ForEach(viewModel.items) { item in
                         NCMProgressRowView(item: item)
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 4)
+                            .padding(.horizontal, AppDialogTokens.contentHorizontalPadding)
+                            .padding(.vertical, AppDialogTokens.contentRowVerticalPadding)
                     }
                 }
-                .padding(.vertical, 4)
+                .padding(.vertical, AppDialogTokens.contentRowVerticalPadding)
             }
             
-            Divider()
-                .opacity(0.5)
-            
+            AppDialogDivider()
+
             footerView
         }
     }
     
     private var headerView: some View {
-        VStack(spacing: 8) {
-            HStack {
-                Text("正在导入 NCM 文件")
-                    .font(.headline)
-                    .foregroundStyle(.primary)
-                
-                Spacer()
-                
-                Text("\(viewModel.completedItemsCount)/\(viewModel.items.count)")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-            
-            ProgressView(value: viewModel.displayProgress)
-                .progressViewStyle(.linear)
-        }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 16)
-        .background(.thinMaterial)
+        AppDialogProgressHeader(
+            title: "正在导入 NCM 文件",
+            counterText: "\(viewModel.completedItemsCount)/\(viewModel.items.count)",
+            progress: viewModel.displayProgress
+        )
     }
-    
+
     private var footerView: some View {
         HStack {
-            if viewModel.isAllCompleted {
-                if viewModel.hasAnyFailed {
-                    Text("部分转换失败")
-                        .font(.subheadline)
-                        .foregroundStyle(.orange)
+            Group {
+                if viewModel.isAllCompleted {
+                    if viewModel.hasAnyFailed {
+                        Text("部分转换失败")
+                            .foregroundStyle(.orange)
+                    } else {
+                        Text("转换完成")
+                            .foregroundStyle(.green)
+                    }
                 } else {
-                    Text("转换完成")
-                        .font(.subheadline)
-                        .foregroundStyle(.green)
+                    Text("转换中...")
+                        .foregroundStyle(.secondary)
                 }
-            } else {
-                Text("转换中...")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
             }
-            
+            .font(.subheadline)
+
             Spacer()
-            
+
             Button(viewModel.isAllCompleted ? "完成" : "取消") {
                 if viewModel.isAllCompleted {
                     viewModel.complete()
@@ -490,8 +448,8 @@ struct NCMImportProgressDialogView: View {
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 14)
+        .padding(.horizontal, AppDialogTokens.footerHorizontalPadding)
+        .padding(.vertical, AppDialogTokens.footerVerticalPadding)
         .background(.thinMaterial)
     }
 }
@@ -500,18 +458,17 @@ struct NCMImportProgressDialogView: View {
 
 struct NCMProgressRowView: View {
     @Bindable var item: NCMProgressItemModel
-    @Environment(\.colorScheme) private var colorScheme
-    
+
     var body: some View {
         HStack(spacing: 12) {
             statusIcon
-            
+
             VStack(alignment: .leading, spacing: 2) {
                 HStack {
                     Text(item.title.isEmpty ? item.fileName : item.title)
                         .font(.system(size: 13, weight: .medium))
                         .lineLimit(1)
-                    
+
                     if !item.artist.isEmpty {
                         Text("- \(item.artist)")
                             .font(.system(size: 12))
@@ -519,11 +476,11 @@ struct NCMProgressRowView: View {
                             .lineLimit(1)
                     }
                 }
-                
+
                 Text(item.step.description)
                     .font(.caption2)
                     .foregroundStyle(stepColor)
-                
+
                 if let error = item.errorMessage {
                     Text(error)
                         .font(.caption2)
@@ -531,15 +488,12 @@ struct NCMProgressRowView: View {
                         .lineLimit(1)
                 }
             }
-            
+
             Spacer()
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(colorScheme == .dark ? Color.white.opacity(0.05) : Color.black.opacity(0.03))
-        )
+        .padding(.horizontal, AppDialogTokens.rowHorizontalPadding)
+        .padding(.vertical, AppDialogTokens.rowVerticalPadding)
+        .appDialogRowBackground()
     }
     
     private var stepColor: Color {

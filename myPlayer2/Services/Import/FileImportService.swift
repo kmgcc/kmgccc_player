@@ -3189,28 +3189,11 @@ final class DuplicateImportDialogPresenter: NSObject, NSWindowDelegate {
         // Width: 760 (Balanced)
         let windowSize = NSSize(width: 760, height: clampedHeight)
 
-        // Create Panel
-        let panel = NSPanel(
-            contentRect: NSRect(origin: .zero, size: windowSize),
-            styleMask: [.titled, .closable, .fullSizeContentView],
-            backing: .buffered,
-            defer: false
+        // Create Panel + Visual Effect
+        let (panel, visualEffect) = AppDialogTokens.makePanel(
+            width: windowSize.width,
+            height: windowSize.height
         )
-
-        panel.title = ""
-        panel.titlebarAppearsTransparent = true
-        panel.titleVisibility = .hidden
-        panel.isMovableByWindowBackground = true
-        panel.isReleasedWhenClosed = false
-
-        // Visual Effect (Neutral Liquid Glass)
-        let visualEffect = NSVisualEffectView()
-        visualEffect.material = .popover
-        visualEffect.blendingMode = .behindWindow
-        visualEffect.state = .active
-        visualEffect.frame = NSRect(origin: .zero, size: windowSize)
-        visualEffect.autoresizingMask = [.width, .height]
-        panel.contentView = visualEffect
 
         let presenter = DuplicateImportDialogPresenter(panel: panel)
         panel.delegate = presenter
@@ -3294,11 +3277,10 @@ struct DuplicateImportDialogView: View {
     private let maxItemsWithoutScroll = 9
 
     // LAYOUT CONSTANTS (Width: 760)
-    // Padding: 20 -> Header Top moved up slightly
     // Left: 306 (~43%) | Spacing: 12 | Right: 394 (~55%)
     private let leftColumnWidth: CGFloat = 306
     private let rightColumnWidth: CGFloat = 394
-    private let horizontalPadding: CGFloat = 24
+    private let horizontalPadding: CGFloat = AppDialogTokens.headerHorizontalPadding
 
     var body: some View {
         VStack(spacing: 0) {
@@ -3382,11 +3364,11 @@ struct DuplicateImportDialogView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.thinMaterial)
         .overlay(alignment: .bottom) {
-            Divider().opacity(0.5)
+            AppDialogDivider()
         }
         .zIndex(1)
     }
-    
+
     private var footerView: some View {
         HStack {
             Button("取消") {
@@ -3394,9 +3376,9 @@ struct DuplicateImportDialogView: View {
             }
             .keyboardShortcut(.cancelAction)
             .controlSize(.large)
-            
+
             Spacer()
-            
+
             Button(viewModel.buttonTitle) {
                 onFinish(true)
             }
@@ -3405,11 +3387,11 @@ struct DuplicateImportDialogView: View {
             .controlSize(.large)
             .tint(themeStore.accentColor)
         }
-        .padding(.vertical, 20)
+        .padding(.vertical, AppDialogTokens.footerVerticalPadding)
         .padding(.horizontal, horizontalPadding)
         .background(.thinMaterial)
         .overlay(alignment: .top) {
-            Divider().opacity(0.5)
+            AppDialogDivider()
         }
     }
 }
@@ -3531,16 +3513,16 @@ struct DuplicateRowView: View {
             if isIncoming {
                 if isSelected {
                     // Stronger highlight for selection
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    RoundedRectangle(cornerRadius: AppDialogTokens.rowCornerRadius, style: .continuous)
                         .fill(themeAccent.opacity(colorScheme == .dark ? 0.22 : 0.12))
                 } else {
                     // Subtle background for incoming candidates
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    RoundedRectangle(cornerRadius: AppDialogTokens.rowCornerRadius, style: .continuous)
                         .fill(Color.primary.opacity(0.03))
                 }
             } else {
                 // Simple transparent for existing, or very subtle
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                RoundedRectangle(cornerRadius: AppDialogTokens.rowCornerRadius, style: .continuous)
                     .fill(Color.primary.opacity(0.01))
             }
         }
