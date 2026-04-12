@@ -17,6 +17,7 @@ import SwiftUI
 @MainActor
 final class BKArtBackgroundController: ObservableObject {
     @Published private(set) var transitionID: Int = 0
+    @Published private(set) var lyricsColorTrackID: UUID?
     @Published private(set) var primaryBackgroundColor: NSColor?
     @Published private(set) var currentSurfaceBackgroundColor: NSColor?
     @Published private(set) var currentSurfaceUsesDotBackground: Bool = false
@@ -28,24 +29,42 @@ final class BKArtBackgroundController: ObservableObject {
         transitionID &+= 1
     }
 
-    func setPrimaryBackgroundColor(_ color: NSColor?) {
+    func beginLyricsColorSampling(for trackID: UUID?) {
+        lyricsColorTrackID = trackID
+        primaryBackgroundColor = nil
+        currentSurfaceBackgroundColor = nil
+        currentSurfaceUsesDotBackground = false
+        currentSurfaceVariantIndex = nil
+        isUltraDarkActive = false
+    }
+
+    func setPrimaryBackgroundColor(_ color: NSColor?, for trackID: UUID?) {
+        guard lyricsColorTrackID == trackID else { return }
         primaryBackgroundColor = color
     }
 
-    func setCurrentSurfaceBackgroundColor(_ color: NSColor?) {
+    func setCurrentSurfaceBackgroundColor(_ color: NSColor?, for trackID: UUID?) {
+        guard lyricsColorTrackID == trackID else { return }
         currentSurfaceBackgroundColor = color
     }
 
-    func setCurrentSurfaceDescriptor(usesDotBackground: Bool, variantIndex: Int?) {
+    func setCurrentSurfaceDescriptor(
+        usesDotBackground: Bool,
+        variantIndex: Int?,
+        for trackID: UUID?
+    ) {
+        guard lyricsColorTrackID == trackID else { return }
         currentSurfaceUsesDotBackground = usesDotBackground
         currentSurfaceVariantIndex = variantIndex
     }
 
-    func setUltraDarkActive(_ isActive: Bool) {
+    func setUltraDarkActive(_ isActive: Bool, for trackID: UUID?) {
+        guard lyricsColorTrackID == trackID else { return }
         isUltraDarkActive = isActive
     }
 
-    func markLyricsColorSampleReady() {
+    func markLyricsColorSampleReady(for trackID: UUID?) {
+        guard lyricsColorTrackID == trackID else { return }
         lyricsColorSampleRevision &+= 1
     }
 }
@@ -68,6 +87,7 @@ struct BKArtBackgroundView: View {
     var body: some View {
         BKArtBackgroundRepresentable(
             controller: controller,
+            trackID: trackID,
             transitionID: controller.transitionID,
             seed: seedValue,
             palette: palette,
@@ -104,29 +124,36 @@ struct BKArtBackgroundView: View {
         paletteRefreshTask?.cancel()
 
         guard let data = artworkData else {
+            controller.beginLyricsColorSampling(for: trackID)
             palette = Self.fallbackPalette
-            controller.setPrimaryBackgroundColor(Self.fallbackPalette.first)
-            controller.setCurrentSurfaceBackgroundColor(nil)
-            controller.setCurrentSurfaceDescriptor(usesDotBackground: false, variantIndex: nil)
-            controller.setUltraDarkActive(false)
+            controller.setPrimaryBackgroundColor(Self.fallbackPalette.first, for: trackID)
+            controller.setCurrentSurfaceBackgroundColor(nil, for: trackID)
+            controller.setCurrentSurfaceDescriptor(
+                usesDotBackground: false,
+                variantIndex: nil,
+                for: trackID
+            )
+            controller.setUltraDarkActive(false, for: trackID)
             return
         }
 
         let currentSignature = artworkSignature
+        let currentTrackID = trackID
+        controller.beginLyricsColorSampling(for: currentTrackID)
 
         if currentSignature == lastArtworkSignature, !cachedBasePalette.isEmpty || !cachedRichPalette.isEmpty
         {
             applyResolvedPalette(
                 basePalette: cachedBasePalette,
                 richPalette: cachedRichPalette,
-                signature: currentSignature
+                signature: currentSignature,
+                trackID: currentTrackID
             )
             return
         }
 
         let token = UUID()
         paletteRefreshToken = token
-        let currentTrackID = trackID
 
         paletteRefreshTask = Task(priority: .userInitiated) {
             let extracted: (base: [NSColor], rich: [NSColor])
@@ -155,7 +182,8 @@ struct BKArtBackgroundView: View {
                 applyResolvedPalette(
                     basePalette: extracted.base,
                     richPalette: extracted.rich,
-                    signature: currentSignature
+                    signature: currentSignature,
+                    trackID: currentTrackID
                 )
                 paletteRefreshTask = nil
             }
@@ -165,7 +193,8 @@ struct BKArtBackgroundView: View {
     private func applyResolvedPalette(
         basePalette: [NSColor],
         richPalette: [NSColor],
-        signature: Int
+        signature: Int,
+        trackID: UUID?
     ) {
         cachedBasePalette = basePalette
         cachedRichPalette = richPalette
@@ -173,7 +202,7 @@ struct BKArtBackgroundView: View {
 
         let chosen = richPalette.isEmpty ? basePalette : richPalette
         let resolvedPalette = chosen.isEmpty ? Self.fallbackPalette : chosen
-        controller.setCurrentSurfaceBackgroundColor(nil)
+        controller.setCurrentSurfaceBackgroundColor(nil, for: trackID)
         palette = resolvedPalette
         let harmonized = BKColorEngine.make(
             extracted: resolvedPalette,
@@ -184,9 +213,9 @@ struct BKArtBackgroundView: View {
             ?? predictedInitialBackgroundColor(from: harmonized)
             ?? resolvedPalette.first
             ?? Self.fallbackPalette.first
-        controller.setPrimaryBackgroundColor(primaryBackgroundColor)
-        controller.setUltraDarkActive(isUltraDarkPalette(harmonized))
-        controller.markLyricsColorSampleReady()
+        controller.setPrimaryBackgroundColor(primaryBackgroundColor, for: trackID)
+        controller.setUltraDarkActive(isUltraDarkPalette(harmonized), for: trackID)
+        controller.markLyricsColorSampleReady(for: trackID)
     }
 
     private func predictedInitialBackgroundColor(from harmonized: HarmonizedPalette) -> NSColor? {
@@ -228,6 +257,7 @@ struct BKArtBackgroundView: View {
 
 private struct BKArtBackgroundRepresentable: NSViewRepresentable {
     let controller: BKArtBackgroundController
+    let trackID: UUID?
     let transitionID: Int
     let seed: UInt64
     let palette: [NSColor]
@@ -238,6 +268,7 @@ private struct BKArtBackgroundRepresentable: NSViewRepresentable {
     func makeNSView(context: Context) -> BKArtBackgroundLayerView {
         let contentView = BKArtBackgroundLayerView()
         contentView.backgroundController = controller
+        contentView.trackID = trackID
         contentView.updatePalette(palette, isDark: isDark)
         contentView.updateAvoidanceRect(avoidanceRect)
         contentView.ensureBaseContainer(seed: seed)
@@ -248,6 +279,7 @@ private struct BKArtBackgroundRepresentable: NSViewRepresentable {
 
     func updateNSView(_ nsView: BKArtBackgroundLayerView, context: Context) {
         nsView.backgroundController = controller
+        nsView.trackID = trackID
         nsView.updatePalette(palette, isDark: isDark)
         nsView.updateAvoidanceRect(avoidanceRect)
         nsView.ensureBaseContainer(seed: seed)
@@ -267,6 +299,7 @@ private struct BKArtBackgroundRepresentable: NSViewRepresentable {
 @MainActor
 private final class BKArtBackgroundLayerView: NSView {
     weak var backgroundController: BKArtBackgroundController?
+    var trackID: UUID?
 
     private final class CGImageBox: @unchecked Sendable {
         let image: CGImage
@@ -1776,14 +1809,17 @@ private final class BKArtBackgroundLayerView: NSView {
     private func publishCurrentSurfaceBackgroundColor() {
         // Defer publishing to avoid "Publishing changes from within view updates" warnings
         // This method is called from layout(), updateNSView(), and animation callbacks
+        let publishedTrackID = trackID
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.backgroundController?.setCurrentSurfaceDescriptor(
                 usesDotBackground: self.fromContainer?.style == .dot,
-                variantIndex: self.fromContainer?.bgVariantIndex
+                variantIndex: self.fromContainer?.bgVariantIndex,
+                for: publishedTrackID
             )
             self.backgroundController?.setCurrentSurfaceBackgroundColor(
-                self.resolvedDisplayedBackgroundColor(for: self.fromContainer)
+                self.resolvedDisplayedBackgroundColor(for: self.fromContainer),
+                for: publishedTrackID
             )
         }
     }

@@ -10,7 +10,7 @@ import AppKit
 import SwiftUI
 
 // Playback mode enum shared with FullscreenMiniPlayerView
-enum PlaybackMode {
+enum PlaybackOrderMode {
     case sequence
     case shuffle
     case repeatOne
@@ -73,7 +73,8 @@ struct MiniPlayerView: View {
                                 text: track.title,
                                 style: .subheadline,
                                 fontWeight: .medium,
-                                color: .primary
+                                color: .primary,
+                                enablesContentTransition: true
                             )
 
                             MarqueeText(
@@ -82,7 +83,8 @@ struct MiniPlayerView: View {
                                     : track.artist,
                                 style: .caption,
                                 fontWeight: .regular,
-                                color: .secondary
+                                color: .secondary,
+                                enablesContentTransition: true
                             )
                         } else {
                             Text("mini.not_playing")
@@ -231,7 +233,7 @@ struct MiniPlayerView: View {
         }
     }
 
-    private var currentPlaybackMode: PlaybackMode {
+    private var currentPlaybackMode: PlaybackOrderMode {
         if stopAfterTrack { return .stopAfterTrack }
         if repeatMode == "one" { return .repeatOne }
         if shuffleEnabled { return .shuffle }
@@ -554,7 +556,7 @@ struct MiniPlayerView: View {
 
 // Playback mode slider shared with FullscreenMiniPlayerView
 struct PlaybackModeSlider: View {
-    let mode: PlaybackMode
+    let mode: PlaybackOrderMode
     let isEnabled: Bool
     let isExpanded: Bool
     let iconSize: CGFloat
@@ -563,13 +565,13 @@ struct PlaybackModeSlider: View {
     let useScreenBlend: Bool
     let pillTintColor: Color?
     let pillTintBlendMode: BlendMode?
-    let onModeChange: (PlaybackMode) -> Void
-    let onCurrentModeRetap: (PlaybackMode) -> Void
+    let onModeChange: (PlaybackOrderMode) -> Void
+    let onCurrentModeRetap: (PlaybackOrderMode) -> Void
     let onInteraction: (() -> Void)?
     let scale: CGFloat
 
     init(
-        mode: PlaybackMode,
+        mode: PlaybackOrderMode,
         isEnabled: Bool,
         isExpanded: Bool = true,
         iconSize: CGFloat = 12,
@@ -580,8 +582,8 @@ struct PlaybackModeSlider: View {
         pillTintBlendMode: BlendMode? = nil,
         onInteraction: (() -> Void)? = nil,
         scale: CGFloat = 1.0,
-        onModeChange: @escaping (PlaybackMode) -> Void,
-        onCurrentModeRetap: @escaping (PlaybackMode) -> Void = { _ in }
+        onModeChange: @escaping (PlaybackOrderMode) -> Void,
+        onCurrentModeRetap: @escaping (PlaybackOrderMode) -> Void = { _ in }
     ) {
         self.mode = mode
         self.isEnabled = isEnabled
@@ -614,7 +616,7 @@ struct PlaybackModeSlider: View {
         }
     }
 
-    private func index(for mode: PlaybackMode) -> Int {
+    private func index(for mode: PlaybackOrderMode) -> Int {
         switch mode {
         case .shuffle: return 0
         case .sequence: return 1
@@ -623,7 +625,7 @@ struct PlaybackModeSlider: View {
         }
     }
 
-    private func modeForIndex(_ index: Int) -> PlaybackMode {
+    private func modeForIndex(_ index: Int) -> PlaybackOrderMode {
         switch index {
         case 0: return .shuffle
         case 1: return .sequence
@@ -632,14 +634,14 @@ struct PlaybackModeSlider: View {
         }
     }
 
-    private var visibleModes: [PlaybackMode] {
+    private var visibleModes: [PlaybackOrderMode] {
         if isExpanded {
             return [.shuffle, .sequence, .repeatOne, .stopAfterTrack]
         }
         return [mode]
     }
 
-    private func symbol(for mode: PlaybackMode) -> String {
+    private func symbol(for mode: PlaybackOrderMode) -> String {
         switch mode {
         case .shuffle:
             return "shuffle"
@@ -730,7 +732,7 @@ struct PlaybackModeSlider: View {
         }
     }
 
-    private func commitModeChange(_ newMode: PlaybackMode, snap: Animation) {
+    private func commitModeChange(_ newMode: PlaybackOrderMode, snap: Animation) {
         onInteraction?()
         if reduceMotion {
             var tx = Transaction()
@@ -745,7 +747,7 @@ struct PlaybackModeSlider: View {
         }
     }
 
-    private func handleSegmentTap(_ tappedMode: PlaybackMode, snap: Animation) {
+    private func handleSegmentTap(_ tappedMode: PlaybackOrderMode, snap: Animation) {
         if tappedMode == mode {
             onInteraction?()
             onCurrentModeRetap(tappedMode)
@@ -757,7 +759,7 @@ struct PlaybackModeSlider: View {
 
     private func segmentButton(
         systemImage: String,
-        mode: PlaybackMode,
+        mode: PlaybackOrderMode,
         isSelected: Bool,
         width: CGFloat,
         snap: Animation

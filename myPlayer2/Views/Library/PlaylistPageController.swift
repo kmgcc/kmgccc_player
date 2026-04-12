@@ -487,7 +487,10 @@ final class PlaylistPageController {
         }
 
         updateLibrarySnapshot()
-        syncPlayerQueueIfNeeded(with: pageModel.queueTracks)
+        syncPlayerQueueIfNeeded(
+            with: pageModel.queueTracks,
+            selectionIdentity: pageModel.selectionIdentity
+        )
         loadHeaderArtwork()
     }
 
@@ -959,8 +962,12 @@ final class PlaylistPageController {
         )
     }
 
-    private func syncPlayerQueueIfNeeded(with tracks: [Track]) {
+    private func syncPlayerQueueIfNeeded(with tracks: [Track], selectionIdentity: String) {
         guard let playerVM else { return }
+        guard playerVM.activeLibraryQueueSource == .librarySelection(selectionIdentity) else {
+            lastQueueTrackIDs = []
+            return
+        }
         let trackIDs = tracks.map(\.id)
         guard trackIDs != lastQueueTrackIDs else { return }
         lastQueueTrackIDs = trackIDs

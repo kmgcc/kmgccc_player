@@ -125,7 +125,7 @@ struct AppRootView: View {
     @State private var hasSetupDependencies = false
 
     var body: some View {
-        AppRootContentView(
+        let rootContent = AppRootContentView(
             libraryVM: libraryVM,
             playerVM: playerVM,
             lyricsVM: lyricsVM,
@@ -140,75 +140,93 @@ struct AppRootView: View {
             netEaseCoverService: netEaseCoverService,
             themeStore: themeStore
         )
-        .environment(\.locale, Locale(identifier: "zh-Hans"))
-        .task {
-            await setupAppOnLaunch()
-        }
-        // Appearance
-        .preferredColorScheme(currentColorScheme)
-        .tint(presentedAccentColor)
-        .accentColor(presentedAccentColor)
-        .environment(\.libraryPresentedAccentColor, presentedAccentColor)
-        // Global Sync for Appearance Changes
-        .onChange(of: settings.followSystemAppearance) { _, _ in
-            applyAppearanceToWindows()
-        }
-        .onChange(of: settings.manualAppearance) { _, _ in
-            applyAppearanceToWindows()
-        }
-        .onChange(of: settings.globalArtworkTintEnabled) { _, _ in
-            Task { @MainActor in
-                await themeStore.refreshPalette(reason: "global_artwork_tint_toggle")
+            .environment(\.locale, Locale(identifier: "zh-Hans"))
+            .task {
+                await setupAppOnLaunch()
             }
-        }
-        // Theme Update Strategy: Follow effective SwiftUI ColorScheme
-        .onChange(of: swiftUIColorScheme) { _, newScheme in
-            syncThemeStoreWithSwiftUIColorScheme(newScheme)
-        }
-        .onAppear {
-            applyAppearanceToWindows()
-            syncThemeStoreWithSwiftUIColorScheme(swiftUIColorScheme)
-            presentedAccentColor = themeStore.accentColor
-            TintTimelineProbe.noteHeaderPublish(source: "AppRoot.onAppear")
-        }
-        .onReceive(themeStore.$accentColor) { newValue in
-            TintTimelineProbe.noteRootReceive(source: "AppRoot.onReceive")
-            schedulePresentedAccentColorUpdate(newValue)
-        }
-        // Command Handling
-        .onReceive(NotificationCenter.default.publisher(for: .togglePlayPause)) { _ in
-            playerVM?.togglePlayPause()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .nextTrack)) { _ in
-            playerVM?.next()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .previousTrack)) { _ in
-            playerVM?.previous()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .toggleLyrics)) { _ in
-            uiState.toggleLyrics()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .aboutEasterEggTriggered)) { _ in
-            easterEggSFX?.playRandomIfAllowed()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .enterFullscreen)) { _ in
-            Log.debug("F-Key: Notification received", category: .fullscreen)
-            let manager = FullscreenWindowManager.shared
-            Log.trace("F-Key: isFullscreenActive=\(manager.isFullscreenActive), isTransitioning=\(manager.isTransitioning)", category: .fullscreen)
-            guard !manager.isFullscreenActive else {
-                Log.debug("F-Key: Already in fullscreen, ignoring", category: .fullscreen)
-                return
+            .preferredColorScheme(currentColorScheme)
+            .tint(presentedAccentColor)
+            .accentColor(presentedAccentColor)
+            .environment(\.libraryPresentedAccentColor, presentedAccentColor)
+
+        let appearanceSyncView = rootContent
+            .onChange(of: settings.followSystemAppearance) { _, _ in
+                applyAppearanceToWindows()
             }
-            guard !manager.isTransitioning else {
-                Log.debug("F-Key: Transition in progress, ignoring", category: .fullscreen)
-                return
+            .onChange(of: settings.manualAppearance) { _, _ in
+                applyAppearanceToWindows()
             }
-            Log.debug("F-Key: Dispatching to next runloop", category: .fullscreen)
-            DispatchQueue.main.async {
-                Log.info("F-Key: Executing showFullscreenWindow()", category: .fullscreen)
-                manager.showFullscreenWindow()
+            .onChange(of: settings.globalArtworkTintEnabled) { _, _ in
+                Task { @MainActor in
+                    await themeStore.refreshPalette(reason: "global_artwork_tint_toggle")
+                }
             }
-        }
+            .onChange(of: swiftUIColorScheme) { _, newScheme in
+                syncThemeStoreWithSwiftUIColorScheme(newScheme)
+            }
+            .onAppear {
+                applyAppearanceToWindows()
+                syncThemeStoreWithSwiftUIColorScheme(swiftUIColorScheme)
+                presentedAccentColor = themeStore.accentColor
+                TintTimelineProbe.noteHeaderPublish(source: "AppRoot.onAppear")
+            }
+            .onReceive(themeStore.$accentColor) { newValue in
+                TintTimelineProbe.noteRootReceive(source: "AppRoot.onReceive")
+                schedulePresentedAccentColorUpdate(newValue)
+            }
+
+        let commandHandlersView = appearanceSyncView
+            .onReceive(NotificationCenter.default.publisher(for: .togglePlayPause)) { _ in
+                playerVM?.togglePlayPause()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .nextTrack)) { _ in
+                playerVM?.next()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .previousTrack)) { _ in
+                playerVM?.previous()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .toggleLyrics)) { _ in
+                uiState.toggleLyrics()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .aboutEasterEggTriggered)) { _ in
+                easterEggSFX?.playRandomIfAllowed()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .enterFullscreen)) { _ in
+                Log.debug("F-Key: Notification received", category: .fullscreen)
+                let manager = FullscreenWindowManager.shared
+                Log.trace("F-Key: isFullscreenActive=\(manager.isFullscreenActive), isTransitioning=\(manager.isTransitioning)", category: .fullscreen)
+                guard !manager.isFullscreenActive else {
+                    Log.debug("F-Key: Already in fullscreen, ignoring", category: .fullscreen)
+                    return
+                }
+                guard !manager.isTransitioning else {
+                    Log.debug("F-Key: Transition in progress, ignoring", category: .fullscreen)
+                    return
+                }
+                Log.debug("F-Key: Dispatching to next runloop", category: .fullscreen)
+                DispatchQueue.main.async {
+                    Log.info("F-Key: Executing showFullscreenWindow()", category: .fullscreen)
+                    manager.showFullscreenWindow()
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .toggleSidebar)) { _ in
+                uiState.toggleSidebar()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .importMusic)) { _ in
+                Task {
+                    await libraryVM?.importToCurrentPlaylist()
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .newPlaylist)) { _ in
+                Task {
+                    _ = await libraryVM?.createNewPlaylist()
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .playbackModeChanged)) { _ in
+                playerVM?.setShuffleEnabled(AppSettings.shared.shuffleEnabled)
+            }
+
+        return commandHandlersView
     }
 
     // MARK: - Setup

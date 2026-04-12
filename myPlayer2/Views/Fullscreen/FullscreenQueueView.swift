@@ -15,7 +15,7 @@ import SwiftUI
 struct FullscreenQueueView: View {
     let tracks: [Track]
     let currentTrackID: UUID?
-    let playbackMode: PlaybackMode
+    let playbackMode: PlaybackOrderMode
     let scale: CGFloat
     let visibleHeight: CGFloat
     let onTrackTap: (Track) -> Void
@@ -25,7 +25,7 @@ struct FullscreenQueueView: View {
     init(
         tracks: [Track],
         currentTrackID: UUID?,
-        playbackMode: PlaybackMode,
+        playbackMode: PlaybackOrderMode,
         scale: CGFloat = 1.0,
         visibleHeight: CGFloat = 600,
         onTrackTap: @escaping (Track) -> Void

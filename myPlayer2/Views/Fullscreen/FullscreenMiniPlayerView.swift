@@ -14,9 +14,9 @@ import SwiftUI
 struct FullscreenMiniPlayerView: View {
     // Scale factor for responsive sizing at different resolutions
     var scale: CGFloat = 1.0
-    let playbackMode: PlaybackMode
-    let onPlaybackModeChange: (PlaybackMode) -> Void
-    let onCurrentPlaybackModeRetap: (PlaybackMode) -> Void
+    let playbackMode: PlaybackOrderMode
+    let onPlaybackModeChange: (PlaybackOrderMode) -> Void
+    let onCurrentPlaybackModeRetap: (PlaybackOrderMode) -> Void
     var onInteraction: () -> Void = {}
     var onHoverStateChanged: (Bool) -> Void = { _ in }
     var onProgressDraggingChanged: (Bool) -> Void = { _ in }
@@ -126,7 +126,8 @@ struct FullscreenMiniPlayerView: View {
                         text: track.title,
                         fontSize: titleFontSize,
                         fontWeight: .semibold,
-                        color: lyricsDynamicPrimaryColor
+                        color: lyricsDynamicPrimaryColor,
+                        enablesContentTransition: true
                     )
 
                     MarqueeText(
@@ -135,7 +136,8 @@ struct FullscreenMiniPlayerView: View {
                             : track.artist,
                         fontSize: artistFontSize,
                         fontWeight: .medium,
-                        color: lyricsDynamicSecondaryColor
+                        color: lyricsDynamicSecondaryColor,
+                        enablesContentTransition: true
                     )
                 } else {
                     Text("mini.not_playing")

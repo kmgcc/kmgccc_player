@@ -32,17 +32,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func configureViewMenu(_ viewMenu: NSMenu?) {
-        guard let viewMenu else { return }
-
-        let customizeToolbarItem = NSMenuItem(
-            title: NSLocalizedString("menu.customize_toolbar", comment: ""),
-            action: #selector(showToolbarCustomization),
-            keyEquivalent: ""
-        )
-        customizeToolbarItem.target = self
-
-        viewMenu.addItem(NSMenuItem.separator())
-        viewMenu.addItem(customizeToolbarItem)
+        // View menu now managed by SwiftUI CommandGroup(replacing: .sidebar)
+        // This avoids duplication with the system-provided View menu items
     }
 
     private func configureWindowMenu(_ windowMenu: NSMenu?) {

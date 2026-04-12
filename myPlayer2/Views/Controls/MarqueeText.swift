@@ -22,6 +22,7 @@ struct MarqueeText: View {
     let fontWeight: Font.Weight
     let color: Color
     let shouldAnimate: Bool  // NEW: Only animate when true (playing/hovered)
+    let enablesContentTransition: Bool
 
     var pauseAtStart: TimeInterval = 3.0
     var pointsPerSecond: CGFloat = 28.0
@@ -32,13 +33,15 @@ struct MarqueeText: View {
         style: Style = .body,
         fontWeight: Font.Weight = .regular,
         color: Color = .primary,
-        shouldAnimate: Bool = true  // Default to animate for backward compatibility
+        shouldAnimate: Bool = true,  // Default to animate for backward compatibility
+        enablesContentTransition: Bool = false
     ) {
         self.text = text
         self.style = style
         self.fontWeight = fontWeight
         self.color = color
         self.shouldAnimate = shouldAnimate
+        self.enablesContentTransition = enablesContentTransition
     }
 
     /// Convenience initializer for custom font size (fullscreen mode)
@@ -47,13 +50,15 @@ struct MarqueeText: View {
         fontSize: CGFloat,
         fontWeight: Font.Weight = .regular,
         color: Color = .primary,
-        shouldAnimate: Bool = true
+        shouldAnimate: Bool = true,
+        enablesContentTransition: Bool = false
     ) {
         self.text = text
         self.style = .custom(fontSize: fontSize)
         self.fontWeight = fontWeight
         self.color = color
         self.shouldAnimate = shouldAnimate
+        self.enablesContentTransition = enablesContentTransition
     }
 
     @State private var availableWidth: CGFloat = 0
@@ -64,22 +69,10 @@ struct MarqueeText: View {
         GeometryReader { proxy in
             let width = max(0, proxy.size.width)
             let overflow = max(0, textWidth - width)
-            let shouldScroll = overflow > minOverflowToScroll
+            let isActivelyScrolling = overflow > minOverflowToScroll && shouldAnimate
 
-            ZStack(alignment: .leading) {
-                // OPTIMIZED: Only use TimelineView when shouldAnimate is true
-                if shouldScroll && shouldAnimate {
-                    TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: false)) { timeline in
-                        scrollingLabel
-                            .offset(x: offset(at: timeline.date, overflow: overflow))
-                    }
-                } else if shouldScroll {
-                    // Show static truncated text when not animating
-                    staticLabel
-                        .truncationMode(.tail)
-                } else {
-                    staticLabel
-                }
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !isActivelyScrolling)) { timeline in
+                label(isActivelyScrolling: isActivelyScrolling, date: timeline.date, overflow: overflow)
             }
             .frame(width: width, alignment: .leading)
             .clipped()
@@ -100,21 +93,28 @@ struct MarqueeText: View {
         }
     }
 
-    private var staticLabel: some View {
-        Text(text)
-            .font(swiftUIFont)
-            .fontWeight(fontWeight)
-            .foregroundStyle(color)
-            .lineLimit(1)
+    @ViewBuilder
+    private func label(isActivelyScrolling: Bool, date: Date, overflow: CGFloat) -> some View {
+        baseLabel
+            .truncationMode(.tail)
+            .fixedSize(horizontal: isActivelyScrolling, vertical: false)
+            .offset(x: isActivelyScrolling ? offset(at: date, overflow: overflow) : 0)
     }
 
-    private var scrollingLabel: some View {
-        Text(text)
+    @ViewBuilder
+    private var baseLabel: some View {
+        let label = Text(text)
             .font(swiftUIFont)
             .fontWeight(fontWeight)
             .foregroundStyle(color)
             .lineLimit(1)
-            .fixedSize(horizontal: true, vertical: false)
+        if enablesContentTransition {
+            label
+                .contentTransition(.interpolate)
+                .animation(.easeInOut(duration: 0.25), value: text)
+        } else {
+            label
+        }
     }
 
     private var swiftUIFont: Font {

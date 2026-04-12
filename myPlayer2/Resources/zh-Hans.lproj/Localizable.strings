@@ -223,6 +223,27 @@
 "alert.enter_fullscreen" = "进入全屏";
 "menu.customize_toolbar" = "自定义工具栏…";
 
+// MARK: - Menu
+"menu.import_music" = "导入音乐…";
+"menu.new_playlist" = "新建播放列表";
+"menu.toggle_multiselect" = "进入多选模式";
+"menu.toggle_sidebar" = "切换侧边栏";
+"menu.toggle_lyrics" = "切换歌词面板";
+"menu.open_fullscreen_player" = "打开全屏播放器";
+"menu.playback" = "播放控制";
+"menu.play_pause" = "播放/暂停";
+"menu.next_track" = "下一首";
+"menu.previous_track" = "上一首";
+"menu.toggle_queue" = "切换播放队列";
+"menu.playback_order" = "播放顺序";
+"menu.sequence" = "顺序播放";
+"menu.shuffle" = "随机播放";
+"menu.repeat_one" = "单曲循环";
+"menu.stop_after_track" = "播完暂停";
+"menu.help_center" = "帮助中心";
+"menu.submit_feedback" = "提交反馈";
+"menu.github" = "GitHub";
+
 // MARK: - Fullscreen
 "fullscreen.exit" = "退出全屏";
 "fullscreen.refresh_lyrics_colors" = "刷新歌词";

@@ -1327,13 +1327,10 @@ final class FileImportService: FileImportServiceProtocol {
 
     // MARK: - Public Methods
 
-    func pickImportURLs(triggeredAt: Date) async -> [URL]? {
-        let clickClock = ContinuousClock.now
-        Log.info("[ImportPanel] click timestamp: \(triggeredAt)", category: .import)
-        let creationTimestamp = Date()
-        Log.info("[ImportPanel] panel creation timestamp: \(creationTimestamp)", category: .import)
-
+    func pickImportURLs(triggeredAt _: Date) async -> [URL]? {
         let panel = NSOpenPanel()
+        panel.title = "选择要导入的音乐文件"
+        panel.message = "可选择音乐文件，或包含音乐文件的文件夹。"
         panel.canChooseFiles = true
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = true
@@ -1341,45 +1338,21 @@ final class FileImportService: FileImportServiceProtocol {
         panel.resolvesAliases = true
         panel.treatsFilePackagesAsDirectories = false
 
-        let beginTimestamp = Date()
-        let clickToPresentationMs = Self.durationMilliseconds(since: clickClock)
-        Log.info("[ImportPanel] panel begin timestamp: \(beginTimestamp)", category: .import)
-        Log.info(
-            "[ImportPanel] click -> presentation requested: \(String(format: "%.1f", clickToPresentationMs))ms",
-            category: .import
-        )
-
-        let response: NSApplication.ModalResponse
         guard let window = NSApp.keyWindow
             ?? NSApp.mainWindow
             ?? NSApp.windows.first(where: { $0.isVisible })
         else {
-            Log.error("[ImportPanel] no host window available for attached sheet presentation", category: .import)
+            Log.warning("Import panel host window unavailable", category: .import)
             return nil
         }
-        response = await withCheckedContinuation { continuation in
+
+        let response = await withCheckedContinuation { continuation in
             panel.beginSheetModal(for: window) { modalResponse in
                 continuation.resume(returning: modalResponse)
             }
         }
 
-        let selectionTimestamp = Date()
-        let clickToSelectionMs = Self.durationMilliseconds(since: clickClock)
-        Log.info("[ImportPanel] selection returned timestamp: \(selectionTimestamp)", category: .import)
-        Log.info(
-            "[ImportPanel] click -> selection return: \(String(format: "%.1f", clickToSelectionMs))ms",
-            category: .import
-        )
-
-        guard response == .OK else {
-            Log.debug("NSOpenPanel cancelled by user", category: .import)
-            return nil
-        }
-
-        Log.debug("NSOpenPanel returned \(panel.urls.count) URLs", category: .import)
-        if let first = panel.urls.first {
-            Log.debug("   ↳ First URL: \(first.lastPathComponent)", category: .import)
-        }
+        guard response == .OK else { return nil }
         return panel.urls
     }
 

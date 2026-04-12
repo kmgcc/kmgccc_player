@@ -15,6 +15,10 @@ import MediaPlayer
 @MainActor
 final class PlayerViewModel {
 
+    enum LibraryQueueSource: Equatable {
+        case librarySelection(String)
+    }
+
     // MARK: - Dependencies
 
     private let playbackService: AudioPlaybackServiceProtocol
@@ -22,6 +26,7 @@ final class PlayerViewModel {
     private let settings: AppSettings
     private let nowPlayingService: NowPlayingService
     private var isLevelMeterRunning = false
+    private(set) var activeLibraryQueueSource: LibraryQueueSource?
 
     // MARK: - Computed Properties (from playbackService)
 
@@ -73,7 +78,12 @@ final class PlayerViewModel {
     // MARK: - Queue Management
 
     /// Play tracks starting at a specific index.
-    func playTracks(_ tracks: [Track], startingAt index: Int = 0) {
+    func playTracks(
+        _ tracks: [Track],
+        startingAt index: Int = 0,
+        libraryQueueSource: LibraryQueueSource? = nil
+    ) {
+        activeLibraryQueueSource = libraryQueueSource
         playbackService.playTracks(tracks, startingAt: index)
         startLevelMeterIfNeeded()
         nowPlayingService.updateNowPlaying(force: true)
@@ -100,6 +110,7 @@ final class PlayerViewModel {
     // MARK: - Playback Control
 
     func play(track: Track) {
+        activeLibraryQueueSource = nil
         playbackService.play(track: track)
         startLevelMeterIfNeeded()
         nowPlayingService.updateNowPlaying(force: true)
@@ -127,6 +138,7 @@ final class PlayerViewModel {
     }
 
     func stop() {
+        activeLibraryQueueSource = nil
         playbackService.stop()
         stopLevelMeterIfRunning()
         nowPlayingService.updateNowPlaying(force: true)
