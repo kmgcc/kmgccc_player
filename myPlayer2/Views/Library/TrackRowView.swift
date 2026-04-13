@@ -81,7 +81,7 @@ struct TrackRowView<MenuContent: View>: View {
             artworkView
 
             HStack(spacing: 10) {
-                MarqueeText(
+                SeamlessMarqueeText(
                     text: model.title,
                     style: .body,
                     fontWeight: isPlaying ? .semibold : .regular,
@@ -90,7 +90,7 @@ struct TrackRowView<MenuContent: View>: View {
                 )
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                MarqueeText(
+                SeamlessMarqueeText(
                     text: artistText,
                     style: .subheadline,
                     fontWeight: .regular,
