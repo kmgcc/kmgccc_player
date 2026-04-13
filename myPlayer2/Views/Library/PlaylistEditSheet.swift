@@ -8,22 +8,15 @@
 
 import SwiftUI
 
-/// Sheet for creating or editing a playlist.
+/// Sheet for creating a new playlist.
 struct PlaylistEditSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @Environment(LibraryViewModel.self) private var libraryVM
 
-    /// Existing playlist to edit, or nil for new playlist.
-    let playlist: Playlist?
-
-    /// Mode: create or edit.
-    var isCreating: Bool { playlist == nil }
-
     // MARK: - Editable State
 
     @State private var name: String = ""
-    @State private var showingDeleteConfirmation = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -33,7 +26,7 @@ struct PlaylistEditSheet: View {
             Divider()
 
             // Content
-            VStack(alignment: .leading, spacing: 24) {
+            VStack(alignment: .leading, spacing: 18) {
                 // Name field
                 VStack(alignment: .leading, spacing: 8) {
                     Text("edit.playlist.name")
@@ -47,32 +40,7 @@ struct PlaylistEditSheet: View {
                     .font(.title3)
                 }
 
-                // Track count (edit mode only)
-                if let playlist = playlist {
-                    HStack {
-                        Image(systemName: "music.note.list")
-                            .foregroundStyle(.secondary)
-
-                        Text("edit.playlist.tracks_count \(playlist.tracks.count)")
-                            .foregroundStyle(.secondary)
-                    }
-                    .font(.subheadline)
-                }
-
                 Spacer()
-
-                // Delete button (edit mode only)
-                if !isCreating {
-                    Button(role: .destructive) {
-                        showingDeleteConfirmation = true
-                    } label: {
-                        Label(
-                            "edit.playlist.delete",
-                            systemImage: "trash")
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.red)
-                }
             }
             .padding(24)
 
@@ -82,36 +50,13 @@ struct PlaylistEditSheet: View {
             footerView
         }
         .frame(width: 400, height: 300)
-        .onAppear {
-            if let playlist = playlist {
-                name = playlist.name
-            }
-        }
-        .confirmationDialog(
-            "edit.playlist.delete_confirm_title",
-            isPresented: $showingDeleteConfirmation,
-            titleVisibility: .visible
-        ) {
-            Button(
-                "edit.playlist.delete_confirm", role: .destructive
-            ) {
-                deletePlaylist()
-            }
-            Button("edit.track.cancel", role: .cancel) {}
-        } message: {
-            Text("edit.playlist.delete_desc")
-        }
     }
 
     // MARK: - Header
 
     private var headerView: some View {
         HStack {
-            Text(
-                isCreating
-                    ? "sidebar.new_playlist"
-                    : "sidebar.edit_playlist"
-            )
+            Text("sidebar.new_playlist")
             .font(.title2)
             .fontWeight(.bold)
 
@@ -140,11 +85,7 @@ struct PlaylistEditSheet: View {
 
             Spacer()
 
-            Button(
-                isCreating
-                    ? "context.new_playlist"
-                    : "edit.track.save"
-            ) {
+            Button("context.new_playlist") {
                 savePlaylist()
             }
             .buttonStyle(.borderedProminent)
@@ -161,23 +102,7 @@ struct PlaylistEditSheet: View {
         guard !trimmedName.isEmpty else { return }
 
         Task {
-            if let playlist = playlist {
-                // Update existing
-                await libraryVM.renamePlaylist(playlist, name: trimmedName)
-            } else {
-                // Create new
-                let newPlaylist = await libraryVM.createNewPlaylist()
-                await libraryVM.renamePlaylist(newPlaylist, name: trimmedName)
-            }
-            dismiss()
-        }
-    }
-
-    private func deletePlaylist() {
-        guard let playlist = playlist else { return }
-
-        Task {
-            await libraryVM.deletePlaylist(playlist)
+            _ = await libraryVM.createPlaylist(name: trimmedName)
             dismiss()
         }
     }
@@ -189,15 +114,6 @@ struct PlaylistEditSheet: View {
     let repository = StubLibraryRepository()
     let libraryVM = LibraryViewModel(repository: repository)
 
-    PlaylistEditSheet(playlist: nil)
-        .environment(libraryVM)
-}
-
-#Preview("Edit Playlist") {
-    let repository = StubLibraryRepository()
-    let libraryVM = LibraryViewModel(repository: repository)
-    let playlist = Playlist(name: "My Favorites")
-
-    PlaylistEditSheet(playlist: playlist)
+    PlaylistEditSheet()
         .environment(libraryVM)
 }

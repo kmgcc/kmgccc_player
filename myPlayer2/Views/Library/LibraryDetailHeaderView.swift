@@ -68,10 +68,12 @@ struct LibraryDetailHeaderView: View {
     let onArtworkMutation: () -> Void
 
     @State private var isEditing = false
+    @State private var editTitle = ""
     @State private var editDescription = ""
     @State private var editYear = ""
     @State private var isImportingArtwork = false
     @State private var isRegeneratingArtwork = false
+    @State private var showingPlaylistDeleteConfirmation = false
 
     var body: some View {
         let _ = LyricsRuntimeProfile.markBody("LibraryDetailHeaderView.body")
@@ -109,6 +111,25 @@ struct LibraryDetailHeaderView: View {
         ) { result in
             handleArtworkImport(result: result)
         }
+        .confirmationDialog(
+            NSLocalizedString("edit.playlist.delete_confirm_title", comment: ""),
+            isPresented: $showingPlaylistDeleteConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button(
+                NSLocalizedString("edit.playlist.delete_confirm", comment: ""),
+                role: .destructive
+            ) {
+                Task {
+                    if case .playlist(let playlist, _) = config {
+                        await libraryVM.deletePlaylist(playlist)
+                    }
+                }
+            }
+            Button(NSLocalizedString("edit.track.cancel", comment: ""), role: .cancel) {}
+        } message: {
+            Text(NSLocalizedString("edit.playlist.delete_desc", comment: ""))
+        }
     }
 
     // MARK: - Artwork column
@@ -134,11 +155,12 @@ struct LibraryDetailHeaderView: View {
 
             if isEditing {
                 HStack(spacing: 8) {
-                    // Regenerate button (left)
-                    artworkActionButton(
-                        icon: "wand.and.stars",
-                        action: { handleRegenerateArtwork() }
-                    )
+                    if canGenerateArtwork {
+                        artworkActionButton(
+                            icon: "wand.and.stars",
+                            action: { handleRegenerateArtwork() }
+                        )
+                    }
 
                     // Import button (right)
                     artworkActionButton(
@@ -209,10 +231,20 @@ struct LibraryDetailHeaderView: View {
     // MARK: - Text fields
 
     private var titleView: some View {
-        Text(titleString)
-            .font(.title)
-            .fontWeight(.bold)
-            .lineLimit(2)
+        Group {
+            if isEditing {
+                TextField("", text: $editTitle, axis: .vertical)
+                    .font(.title.weight(.bold))
+                    .textFieldStyle(.plain)
+                    .lineLimit(1...2)
+                    .onSubmit { commitEdits() }
+            } else {
+                Text(titleString)
+                    .font(.title)
+                    .fontWeight(.bold)
+                    .lineLimit(2)
+            }
+        }
     }
 
     private var titleString: String {
@@ -313,6 +345,9 @@ struct LibraryDetailHeaderView: View {
         HStack(spacing: 10) {
             playButton
             editButton
+            if case .playlist = config {
+                playlistDeleteButton
+            }
         }
     }
 
@@ -329,9 +364,21 @@ struct LibraryDetailHeaderView: View {
         HeaderEditButton(
             isEditing: isEditing,
             colorScheme: colorScheme,
-            buttonHeight: buttonHeight
+            buttonHeight: buttonHeight,
+            symbolName: "pencil"
         ) {
             if isEditing { commitEdits() } else { beginEditing() }
+        }
+    }
+
+    private var playlistDeleteButton: some View {
+        HeaderEditButton(
+            isEditing: false,
+            colorScheme: colorScheme,
+            buttonHeight: buttonHeight,
+            symbolName: "trash"
+        ) {
+            showingPlaylistDeleteConfirmation = true
         }
     }
 
@@ -340,6 +387,7 @@ struct LibraryDetailHeaderView: View {
     }
 
     private func beginEditing() {
+        editTitle = titleString
         editDescription = currentDescription
         if case .album(let entry, _) = config {
             editYear = entry.year.map { String($0) } ?? ""
@@ -348,22 +396,32 @@ struct LibraryDetailHeaderView: View {
     }
 
     private func commitEdits() {
+        let trimmedTitle = editTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTitle.isEmpty else { return }
+
         isEditing = false
+        let title = trimmedTitle
         let desc = editDescription
         let yearStr = editYear
         Task {
             switch config {
             case .playlist(let playlist, _):
-                await libraryVM.savePlaylistDescription(playlist, description: desc)
+                await libraryVM.savePlaylistEdits(
+                    playlist,
+                    name: title,
+                    description: desc
+                )
             case .artist(let entry, _):
                 var updated = entry
+                updated.displayName = title
                 updated.description = desc
-                await libraryVM.saveArtistEntry(updated)
+                await libraryVM.saveArtistEdits(original: entry, updated: updated)
             case .album(let entry, _):
                 var updated = entry
+                updated.displayTitle = title
                 updated.description = desc
                 updated.year = Int(yearStr)
-                await libraryVM.saveAlbumEntry(updated)
+                await libraryVM.saveAlbumEdits(original: entry, updated: updated)
             }
         }
     }
@@ -400,17 +458,11 @@ struct LibraryDetailHeaderView: View {
                     updated.artworkFileName = "artwork.png"
                     updated.artworkData = importedArtwork.pngData
                     await libraryVM.saveArtistEntry(updated)
-                    await MainActor.run {
-                        onArtworkMutation()
-                    }
                 case .album(let entry, _):
                     var updated = entry
                     updated.artworkFileName = "artwork.png"
                     updated.artworkData = importedArtwork.pngData
                     await libraryVM.saveAlbumEntry(updated)
-                    await MainActor.run {
-                        onArtworkMutation()
-                    }
                 }
             }
 
@@ -452,40 +504,76 @@ struct LibraryDetailHeaderView: View {
 
     // MARK: - Artwork regeneration
 
+    private var canGenerateArtwork: Bool {
+        switch config {
+        case .playlist, .artist:
+            return true
+        case .album:
+            return false
+        }
+    }
+
     private func handleRegenerateArtwork() {
-        guard case .playlist(let playlist, let data) = config else { return }
         guard !isRegeneratingArtwork else { return }
 
         isRegeneratingArtwork = true
 
         Task {
-            let tracks = data.tracks
-            let snapshots: [(id: UUID, artworkData: Data?)] = tracks.map {
-                (id: $0.id, artworkData: $0.artworkData)
-            }
+            switch config {
+            case .playlist(let playlist, let data):
+                let tracks = data.tracks
+                let snapshots: [(id: UUID, artworkData: Data?)] = tracks.map {
+                    (id: $0.id, artworkData: $0.artworkData)
+                }
+                let variationSeed = Int.random(in: 0...Int.max)
 
-            // Use random seed for varied regeneration (produces different result each time)
-            let variationSeed = Int.random(in: 0...Int.max)
-
-            // Generate new artwork from tracks with variation
-            guard let image = await PlaylistArtworkGenerator.shared.generateArtwork(
-                playlistID: playlist.id,
-                snapshots: snapshots,
-                variationSeed: variationSeed
-            ) else {
-                await MainActor.run { isRegeneratingArtwork = false }
-                return
-            }
-
-            // Persist the generated artwork and set it as active
-            await MainActor.run {
-                LocalLibraryService.shared.regeneratePlaylistArtwork(
+                guard let image = await PlaylistArtworkGenerator.shared.generateArtwork(
                     playlistID: playlist.id,
-                    tracks: tracks,
-                    image: image
-                )
-                onArtworkMutation()
-                isRegeneratingArtwork = false
+                    snapshots: snapshots,
+                    variationSeed: variationSeed
+                ) else {
+                    await MainActor.run { isRegeneratingArtwork = false }
+                    return
+                }
+
+                await MainActor.run {
+                    LocalLibraryService.shared.regeneratePlaylistArtwork(
+                        playlistID: playlist.id,
+                        tracks: tracks,
+                        image: image
+                    )
+                    onArtworkMutation()
+                    isRegeneratingArtwork = false
+                }
+            case .artist(let entry, _):
+                let artistTracks = libraryVM.allTracks.filter {
+                    LibraryNormalization.normalizeArtist($0.artist) == entry.canonicalName
+                        && $0.availability != .missing
+                }
+                guard let generatedArtwork = await ArtistArtworkGenerator.shared.generateArtwork(
+                    artistName: entry.displayName,
+                    tracks: artistTracks
+                ) else {
+                    await MainActor.run { isRegeneratingArtwork = false }
+                    return
+                }
+
+                guard let pngData = generatedArtwork.pngData() else {
+                    await MainActor.run { isRegeneratingArtwork = false }
+                    return
+                }
+
+                var updated = entry
+                updated.artworkFileName = "artwork.png"
+                updated.artworkData = pngData
+                await libraryVM.saveArtistEntry(updated)
+                await MainActor.run {
+                    isRegeneratingArtwork = false
+                }
+            case .album:
+                await MainActor.run {
+                    isRegeneratingArtwork = false
+                }
             }
         }
     }
@@ -610,13 +698,14 @@ private struct HeaderEditButton: View {
     let isEditing: Bool
     let colorScheme: ColorScheme
     let buttonHeight: CGFloat
+    let symbolName: String
     let action: () -> Void
 
     var body: some View {
         let _ = LyricsRuntimeProfile.markBody("HeaderEditButton.body")
         let _ = TintTimelineProbe.noteHeaderConsumer("HeaderEditButton")
         Button(action: action) {
-            Image(systemName: isEditing ? "checkmark" : "pencil")
+            Image(systemName: isEditing ? "checkmark" : symbolName)
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(
                     isEditing

@@ -102,13 +102,13 @@ public final class AudioAnalysisHub: @unchecked Sendable {
         activeClients = max(0, activeClients - 1)
         guard activeClients == 0 else { return }
         guard isInstalled else {
-            purgeInactiveState()
+            purgeInactiveState(preservingMixerAttachment: true)
             return
         }
         mixerNode?.removeTap(onBus: 0)
         isInstalled = false
         stopTimer()
-        purgeInactiveState()
+        purgeInactiveState(preservingMixerAttachment: true)
     }
 
     // MARK: - Consumer API
@@ -173,7 +173,7 @@ public final class AudioAnalysisHub: @unchecked Sendable {
         timer = nil
     }
 
-    private func purgeInactiveState() {
+    private func purgeInactiveState(preservingMixerAttachment: Bool) {
         consumerLock.lock()
         consumers.removeAll()
         consumerLock.unlock()
@@ -184,7 +184,9 @@ public final class AudioAnalysisHub: @unchecked Sendable {
         fftImag = [Float](repeating: 0, count: fftSize / 2)
         fftMagnitudes = [Float](repeating: 0, count: fftSize / 2)
         sampleRate = 44_100
-        mixerNode = nil
+        if preservingMixerAttachment == false {
+            mixerNode = nil
+        }
     }
 
     nonisolated private func process() {

@@ -67,7 +67,11 @@ actor ArtworkAssetStore {
         return cache.object(forKey: key as NSString)
     }
     
-    func snapshot(trackID: UUID, artworkData: Data) async -> ArtworkAssetSnapshot? {
+    func snapshot(
+        trackID: UUID,
+        artworkData: Data,
+        fullImageMaxPixelSize: Int = 1_400
+    ) async -> ArtworkAssetSnapshot? {
         let checksum = Self.computeChecksum(artworkData)
         let snapshot = await snapshotMetadata(
             trackID: trackID,
@@ -77,7 +81,8 @@ actor ArtworkAssetStore {
 
         return await hydrateSnapshot(
             snapshot,
-            artworkData: artworkData
+            artworkData: artworkData,
+            fullImageMaxPixelSize: fullImageMaxPixelSize
         )
     }
 
@@ -144,27 +149,32 @@ actor ArtworkAssetStore {
 
     private func hydrateSnapshot(
         _ snapshot: ArtworkAssetSnapshot?,
-        artworkData: Data
+        artworkData: Data,
+        fullImageMaxPixelSize: Int
     ) async -> ArtworkAssetSnapshot? {
         guard let snapshot else { return nil }
         if snapshot.fullImage != nil { return snapshot }
 
-        let key = snapshot.cacheKey as NSString
+        let hydratedKey = "\(snapshot.cacheKey)|full:\(max(1, fullImageMaxPixelSize))"
+        let key = hydratedKey as NSString
         if let cachedFullImage = fullImageCache.object(forKey: key) {
             return snapshot.replacing(fullImage: cachedFullImage)
         }
 
-        if fullImageInProgressKeys.contains(snapshot.cacheKey) {
+        if fullImageInProgressKeys.contains(hydratedKey) {
             let image = await withCheckedContinuation { continuation in
-                fullImageWaitingContinuations[snapshot.cacheKey, default: []].append(continuation)
+                fullImageWaitingContinuations[hydratedKey, default: []].append(continuation)
             }
             return snapshot.replacing(fullImage: image)
         }
 
-        fullImageInProgressKeys.insert(snapshot.cacheKey)
+        fullImageInProgressKeys.insert(hydratedKey)
         let generation = fullImageGeneration
         let fullImage = await Task.detached(priority: .utility) {
-            Self.downsampledImage(data: artworkData, maxPixelSize: 1400)
+            Self.downsampledImage(
+                data: artworkData,
+                maxPixelSize: max(1, fullImageMaxPixelSize)
+            )
         }.value
 
         if generation == fullImageGeneration, let fullImage {
@@ -175,8 +185,8 @@ actor ArtworkAssetStore {
             )
         }
 
-        fullImageInProgressKeys.remove(snapshot.cacheKey)
-        if let waiters = fullImageWaitingContinuations.removeValue(forKey: snapshot.cacheKey) {
+        fullImageInProgressKeys.remove(hydratedKey)
+        if let waiters = fullImageWaitingContinuations.removeValue(forKey: hydratedKey) {
             for continuation in waiters {
                 continuation.resume(returning: fullImage)
             }

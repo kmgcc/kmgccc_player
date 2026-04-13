@@ -115,31 +115,14 @@ final class MusicLibraryScanner {
         let ttmlLyricsFileName = (json["ttmlLyricsFileName"] as? String)?.trimmingCharacters(
             in: .whitespacesAndNewlines)
 
-        // Parse preferenceStats (schemaVersion >= 3)
-        let preferenceStats: TrackPreferenceStats? = {
-            guard let statsDict = json["preferenceStats"] as? [String: Any] else { return nil }
-            // Basic parsing - enough for migration purposes
-            var stats = TrackPreferenceStats()
-            if let pc = statsDict["playCount"] as? Int {
-                stats.playCount = pc
-            }
-            if let cpc = statsDict["completePlayCount"] as? Int {
-                stats.completePlayCount = cpc
-            }
-            if let sc = statsDict["skipCount"] as? Int {
-                stats.skipCount = sc
-            }
-            if let qsc = statsDict["quickSkipCount"] as? Int {
-                stats.quickSkipCount = qsc
-            }
-            return stats
-        }()
-
         // Parse legacy playCount (schemaVersion < 3)
         let playCount: Int? = {
             guard let playCountValue = json["playCount"] else { return nil }
-            return (playCountValue as? Int) ?? 0
+            return parseInt(playCountValue) ?? 0
         }()
+
+        // Parse preferenceStats (schemaVersion >= 3) with tolerant field handling.
+        let preferenceStats = parsePreferenceStats(json["preferenceStats"])
 
         return ScannedTrackMeta(
             schemaVersion: schemaVersion,
@@ -165,13 +148,35 @@ final class MusicLibraryScanner {
     private func parseDouble(_ raw: Any?) -> Double? {
         switch raw {
         case let value as Double:
-            return value
+            return value.isFinite ? value : nil
         case let value as Int:
             return Double(value)
         case let value as NSNumber:
-            return value.doubleValue
+            let doubleValue = value.doubleValue
+            return doubleValue.isFinite ? doubleValue : nil
         case let value as String:
-            return Double(value)
+            guard let parsed = Double(value), parsed.isFinite else { return nil }
+            return parsed
+        default:
+            return nil
+        }
+    }
+
+    private func parseInt(_ raw: Any?) -> Int? {
+        switch raw {
+        case let value as Int:
+            return value
+        case let value as NSNumber:
+            return value.intValue
+        case let value as Double:
+            guard value.isFinite else { return nil }
+            return Int(value.rounded(.towardZero))
+        case let value as String:
+            if let parsed = Int(value) {
+                return parsed
+            }
+            guard let parsedDouble = Double(value), parsedDouble.isFinite else { return nil }
+            return Int(parsedDouble.rounded(.towardZero))
         default:
             return nil
         }
@@ -180,6 +185,33 @@ final class MusicLibraryScanner {
     private func parseDate(_ raw: Any?) -> Date? {
         guard let value = raw as? String, !value.isEmpty else { return nil }
         return iso8601WithFractional.date(from: value) ?? iso8601.date(from: value)
+    }
+
+    private func parsePreferenceStats(_ raw: Any?) -> TrackPreferenceStats? {
+        guard let statsDict = raw as? [String: Any] else { return nil }
+
+        var stats = TrackPreferenceStats()
+        stats.playCount = max(0, parseInt(statsDict["playCount"]) ?? 0)
+        stats.completePlayCount = max(0, parseInt(statsDict["completePlayCount"]) ?? 0)
+        stats.skipCount = max(0, parseInt(statsDict["skipCount"]) ?? 0)
+        stats.quickSkipCount = max(0, parseInt(statsDict["quickSkipCount"]) ?? 0)
+        stats.totalPlayedSeconds = max(0, parseDouble(statsDict["totalPlayedSeconds"]) ?? 0)
+        stats.lastPlayedAt = parseDate(statsDict["lastPlayedAt"])
+        stats.lastCompletedAt = parseDate(statsDict["lastCompletedAt"])
+        stats.lastSkippedAt = parseDate(statsDict["lastSkippedAt"])
+
+        if let manualStateRaw = statsDict["manualLikeState"] as? String,
+           let manualState = ManualLikeState(rawValue: manualStateRaw) {
+            stats.manualLikeState = manualState
+        }
+
+        let parsedPreferenceScore = parseDouble(statsDict["preferenceScoreCache"]) ?? 0
+        stats.preferenceScoreCache = parsedPreferenceScore.isFinite ? parsedPreferenceScore : 0
+
+        let parsedEffectiveWeight = parseDouble(statsDict["effectiveWeightCache"]) ?? 1.0
+        stats.effectiveWeightCache = parsedEffectiveWeight.isFinite ? parsedEffectiveWeight : 1.0
+
+        return stats
     }
 
     private func findAudioFileName(in folder: URL) -> String? {

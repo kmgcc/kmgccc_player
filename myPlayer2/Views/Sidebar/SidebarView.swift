@@ -27,7 +27,7 @@ struct SidebarView: View {
 
     @State private var showSettings = false
     @State private var showingPlaylistSheet = false
-    @State private var playlistToEdit: Playlist?  // nil = create new
+    @State private var deletionRequest: SidebarDeletionRequest?
     @State private var isHoveringPlaylists = false
     @State private var isArtistsExpanded = false
     @State private var isAlbumsExpanded = false
@@ -102,26 +102,6 @@ struct SidebarView: View {
                         .buttonStyle(.plain)
                         .listRowInsets(EdgeInsets(top: 1, leading: 6, bottom: 1, trailing: 6))
                         .listRowBackground(Color.clear)
-                        .contextMenu {
-                            Button {
-                                playlistToEdit = playlist
-                                showingPlaylistSheet = true
-                            } label: {
-                                Label(
-                                    "sidebar.edit_playlist",
-                                    systemImage: "pencil")
-                            }
-
-                            Button(role: .destructive) {
-                                Task {
-                                    await libraryVM.deletePlaylist(playlist)
-                                }
-                            } label: {
-                                Label(
-                                    "sidebar.delete_playlist",
-                                    systemImage: "trash")
-                            }
-                        }
                     }
                 } header: {
                     HStack {
@@ -131,7 +111,6 @@ struct SidebarView: View {
                         Spacer()
 
                         Button {
-                            playlistToEdit = nil
                             showingPlaylistSheet = true
                         } label: {
                             Image(systemName: "plus")
@@ -171,6 +150,21 @@ struct SidebarView: View {
                             .buttonStyle(.plain)
                             .listRowInsets(EdgeInsets(top: 1, leading: 6, bottom: 1, trailing: 6))
                             .listRowBackground(Color.clear)
+                            .contextMenu {
+                                if let entry = libraryVM.artistEntry(for: artist) {
+                                    Button(role: .destructive) {
+                                        deletionRequest = .artist(
+                                            entry: entry,
+                                            trackCount: artist.trackCount
+                                        )
+                                    } label: {
+                                        Label(
+                                            "sidebar.delete_artist",
+                                            systemImage: "trash"
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                 } header: {
@@ -220,6 +214,21 @@ struct SidebarView: View {
                             .buttonStyle(.plain)
                             .listRowInsets(EdgeInsets(top: 1, leading: 6, bottom: 1, trailing: 6))
                             .listRowBackground(Color.clear)
+                            .contextMenu {
+                                if let entry = libraryVM.albumEntry(for: album) {
+                                    Button(role: .destructive) {
+                                        deletionRequest = .album(
+                                            entry: entry,
+                                            trackCount: album.trackCount
+                                        )
+                                    } label: {
+                                        Label(
+                                            "sidebar.delete_album",
+                                            systemImage: "trash"
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                 } header: {
@@ -285,7 +294,24 @@ struct SidebarView: View {
                 .environmentObject(themeStore)
         }
         .sheet(isPresented: $showingPlaylistSheet) {
-            PlaylistEditSheet(playlist: playlistToEdit)
+            PlaylistEditSheet()
+        }
+        .alert(
+            deletionRequest?.title ?? "",
+            isPresented: Binding(
+                get: { deletionRequest != nil },
+                set: { if !$0 { deletionRequest = nil } }
+            ),
+            presenting: deletionRequest
+        ) { request in
+            Button(request.confirmActionTitle, role: .destructive) {
+                confirmDeletion(request)
+            }
+            Button(NSLocalizedString("edit.track.cancel", comment: ""), role: .cancel) {
+                deletionRequest = nil
+            }
+        } message: { request in
+            Text(request.message)
         }
         .animation(.snappy(duration: 0.2), value: importEnrichmentService.hasOutstandingWork)
     }
@@ -424,6 +450,18 @@ struct SidebarView: View {
         .padding(.top, 4)
         .padding(.bottom, 8)
     }
+
+    private func confirmDeletion(_ request: SidebarDeletionRequest) {
+        deletionRequest = nil
+        Task {
+            switch request {
+            case .artist(let entry, _):
+                await libraryVM.deleteArtist(entry)
+            case .album(let entry, _):
+                await libraryVM.deleteAlbum(entry)
+            }
+        }
+    }
 }
 
 // MARK: - Sidebar Selection
@@ -433,6 +471,55 @@ private enum SidebarSelection: Hashable {
     case playlist(UUID)
     case artist(String)
     case album(String)
+}
+
+private enum SidebarDeletionRequest: Identifiable {
+    case artist(entry: ArtistEntry, trackCount: Int)
+    case album(entry: AlbumEntry, trackCount: Int)
+
+    var id: String {
+        switch self {
+        case .artist(let entry, _):
+            return "artist-\(entry.id.uuidString)"
+        case .album(let entry, _):
+            return "album-\(entry.id.uuidString)"
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .artist:
+            return NSLocalizedString("sidebar.delete_artist_confirm_title", comment: "")
+        case .album:
+            return NSLocalizedString("sidebar.delete_album_confirm_title", comment: "")
+        }
+    }
+
+    var confirmActionTitle: String {
+        switch self {
+        case .artist:
+            return NSLocalizedString("sidebar.delete_artist", comment: "")
+        case .album:
+            return NSLocalizedString("sidebar.delete_album", comment: "")
+        }
+    }
+
+    var message: String {
+        switch self {
+        case .artist(let entry, let trackCount):
+            return String(
+                format: NSLocalizedString("sidebar.delete_artist_confirm_message", comment: ""),
+                entry.displayName,
+                trackCount
+            )
+        case .album(let entry, let trackCount):
+            return String(
+                format: NSLocalizedString("sidebar.delete_album_confirm_message", comment: ""),
+                entry.displayTitle,
+                trackCount
+            )
+        }
+    }
 }
 
 private struct SidebarWidthPreferenceKey: PreferenceKey {

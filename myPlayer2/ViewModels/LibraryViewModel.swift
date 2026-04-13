@@ -24,6 +24,8 @@ enum TrackSortKey: String, CaseIterable, Identifiable {
     case title
     case artist
     case duration
+    case playCount
+    case preference
 
     var id: String { rawValue }
 
@@ -39,6 +41,10 @@ enum TrackSortKey: String, CaseIterable, Identifiable {
             return NSLocalizedString("sort.artist", comment: "")
         case .duration:
             return NSLocalizedString("sort.duration", comment: "")
+        case .playCount:
+            return NSLocalizedString("sort.play_count", comment: "")
+        case .preference:
+            return NSLocalizedString("sort.preference", comment: "")
         }
     }
 }
@@ -330,6 +336,7 @@ final class LibraryViewModel {
         runtimeAlbums = await repository.fetchAlbumSections()
         artistEntries = await repository.fetchArtistEntries()
         albumEntries = await repository.fetchAlbumEntries()
+        reconcileSelectionAfterLoad()
 
         Log.info("Loaded \(playlists.count) playlists, \(totalTrackCount) total tracks, \(runtimeArtists.count) artists, \(runtimeAlbums.count) albums", category: .library)
 
@@ -491,10 +498,24 @@ final class LibraryViewModel {
         await refresh()
     }
 
+    func savePlaylistEdits(_ playlist: Playlist, name: String, description: String) async {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { return }
+        await repository.updatePlaylistDetails(
+            playlist,
+            name: trimmedName,
+            description: description
+        )
+        await invalidateDetailSelectionCacheIfNeeded(
+            selectionIdentity: "playlist-\(playlist.id.uuidString)"
+        )
+        await refresh()
+    }
+
     func deletePlaylist(_ playlist: Playlist) async {
         await repository.deletePlaylist(playlist)
-        if selectedPlaylistId == playlist.id {
-            selectedPlaylistId = nil
+        if currentSelection == .playlist(playlist.id) {
+            currentSelection = .allSongs
         }
         await refresh()
     }
@@ -529,21 +550,122 @@ final class LibraryViewModel {
     // MARK: - Artist/Album Entry Saves
 
     func saveArtistEntry(_ entry: ArtistEntry) async {
-        await repository.updateArtistEntry(entry)
-        if let idx = artistEntries.firstIndex(where: { $0.id == entry.id }) {
-            artistEntries[idx] = entry
+        var persisted = entry
+        persisted.updatedAt = Date()
+        await repository.updateArtistEntry(persisted)
+        if let idx = artistEntries.firstIndex(where: { $0.id == persisted.id }) {
+            artistEntries[idx] = persisted
         }
+        await invalidateDetailSelectionCacheIfNeeded(
+            selectionIdentity: "artist-\(persisted.canonicalName)"
+        )
+    }
+
+    func saveArtistEdits(original: ArtistEntry, updated: ArtistEntry) async {
+        let trimmedName = updated.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { return }
+
+        var persisted = updated
+        persisted.displayName = trimmedName
+        persisted.canonicalName = LibraryNormalization.normalizeArtist(trimmedName)
+        persisted.updatedAt = Date()
+
+        await repository.applyArtistEdits(original: original, updated: persisted)
+        currentSelection = .artist(persisted.canonicalName)
+        await invalidateDetailSelectionCacheIfNeeded(
+            selectionIdentity: "artist-\(original.canonicalName)"
+        )
+        await invalidateDetailSelectionCacheIfNeeded(
+            selectionIdentity: "artist-\(persisted.canonicalName)"
+        )
+        await refresh()
     }
 
     func saveAlbumEntry(_ entry: AlbumEntry) async {
-        await repository.updateAlbumEntry(entry)
-        if let idx = albumEntries.firstIndex(where: { $0.id == entry.id }) {
-            albumEntries[idx] = entry
+        var persisted = entry
+        persisted.updatedAt = Date()
+        await repository.updateAlbumEntry(persisted)
+        if let idx = albumEntries.firstIndex(where: { $0.id == persisted.id }) {
+            albumEntries[idx] = persisted
         }
+        await invalidateDetailSelectionCacheIfNeeded(
+            selectionIdentity: "album-\(persisted.canonicalKey)"
+        )
+    }
+
+    func saveAlbumEdits(original: AlbumEntry, updated: AlbumEntry) async {
+        let trimmedTitle = updated.displayTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTitle.isEmpty else { return }
+
+        var persisted = updated
+        persisted.displayTitle = trimmedTitle
+        persisted.canonicalKey = LibraryNormalization.normalizedAlbumKey(
+            album: trimmedTitle,
+            artist: original.primaryArtistDisplayName
+        )
+        persisted.primaryArtistCanonicalName = original.primaryArtistCanonicalName
+        persisted.primaryArtistDisplayName = original.primaryArtistDisplayName
+        persisted.updatedAt = Date()
+
+        await repository.applyAlbumEdits(original: original, updated: persisted)
+        currentSelection = .album(persisted.canonicalKey)
+        selectedAlbumName = persisted.displayTitle
+        await invalidateDetailSelectionCacheIfNeeded(
+            selectionIdentity: "album-\(original.canonicalKey)"
+        )
+        await invalidateDetailSelectionCacheIfNeeded(
+            selectionIdentity: "album-\(persisted.canonicalKey)"
+        )
+        await refresh()
+    }
+
+    func deleteArtist(_ entry: ArtistEntry) async {
+        let affectedTrackIDs = Set(
+            allTracks
+                .filter { LibraryNormalization.normalizeArtist($0.artist) == entry.canonicalName }
+                .map(\.id)
+        )
+        let affectedAlbumKeys = Set(
+            allTracks
+                .filter { LibraryNormalization.normalizeArtist($0.artist) == entry.canonicalName }
+                .map { LibraryNormalization.normalizedAlbumKey(album: $0.album, artist: $0.artist) }
+        )
+
+        if currentSelection == .artist(entry.canonicalName) {
+            currentSelection = .allSongs
+        } else if case .album(let key) = currentSelection, affectedAlbumKeys.contains(key) {
+            currentSelection = .allSongs
+        }
+
+        cleanupPlaybackAfterDeletingTracks(affectedTrackIDs)
+        await repository.deleteArtist(entry)
+        await refresh()
+    }
+
+    func deleteAlbum(_ entry: AlbumEntry) async {
+        let affectedTrackIDs = Set(
+            allTracks
+                .filter {
+                    LibraryNormalization.normalizedAlbumKey(album: $0.album, artist: $0.artist)
+                        == entry.canonicalKey
+                }
+                .map(\.id)
+        )
+
+        if currentSelection == .album(entry.canonicalKey) {
+            currentSelection = .allSongs
+        }
+
+        cleanupPlaybackAfterDeletingTracks(affectedTrackIDs)
+        await repository.deleteAlbum(entry)
+        await refresh()
     }
 
     func savePlaylistDescription(_ playlist: Playlist, description: String) async {
         await repository.updatePlaylistDescription(playlist, description: description)
+        await invalidateDetailSelectionCacheIfNeeded(
+            selectionIdentity: "playlist-\(playlist.id.uuidString)"
+        )
     }
 
     /// Update track availability after bookmark resolution.
@@ -691,6 +813,68 @@ final class LibraryViewModel {
         defaults.set(true, forKey: DefaultsKey.trackSortMigrationDone)
     }
 
+    private func invalidateDetailSelectionCacheIfNeeded(selectionIdentity: String) async {
+        await PlaylistPageModelCacheService.shared.invalidate(selectionIdentity: selectionIdentity)
+
+        guard currentSelectionIdentity == selectionIdentity else { return }
+        refreshTrigger += 1
+    }
+
+    private func reconcileSelectionAfterLoad() {
+        switch currentSelection {
+        case .allSongs:
+            break
+        case .playlist(let id):
+            guard playlists.contains(where: { $0.id == id }) else {
+                currentSelection = .allSongs
+                return
+            }
+        case .artist(let key):
+            guard runtimeArtists.contains(where: { $0.key == key }) else {
+                currentSelection = .allSongs
+                return
+            }
+        case .album(let key):
+            guard let album = runtimeAlbums.first(where: { $0.key == key }) else {
+                currentSelection = .allSongs
+                return
+            }
+            selectedAlbumName = album.name
+        }
+    }
+
+    private func cleanupPlaybackAfterDeletingTracks(_ deletedTrackIDs: Set<UUID>) {
+        guard !deletedTrackIDs.isEmpty else { return }
+        guard let playerVM = SharedAppState.shared.playerVM else { return }
+
+        if let currentTrackID = playerVM.currentTrack?.id, deletedTrackIDs.contains(currentTrackID) {
+            playerVM.stop()
+            return
+        }
+
+        let remainingQueue = playerVM.currentQueueTracks.filter { !deletedTrackIDs.contains($0.id) }
+        guard remainingQueue.count != playerVM.currentQueueTracks.count else { return }
+
+        if remainingQueue.isEmpty {
+            playerVM.stop()
+        } else {
+            playerVM.updateQueueTracks(remainingQueue)
+        }
+    }
+
+    private var currentSelectionIdentity: String {
+        switch currentSelection {
+        case .allSongs:
+            return "allSongs"
+        case .playlist(let id):
+            return "playlist-\(id.uuidString)"
+        case .artist(let key):
+            return "artist-\(key)"
+        case .album(let key):
+            return "album-\(key)"
+        }
+    }
+
     private func sortTrack(_ lhs: Track, _ rhs: Track) -> Bool {
         let result: ComparisonResult
 
@@ -720,6 +904,10 @@ final class LibraryViewModel {
             result = lhs.artist.localizedCaseInsensitiveCompare(rhs.artist)
         case .duration:
             result = compareDoubles(lhs.duration, rhs.duration)
+        case .playCount:
+            result = compareInts(lhs.preferenceStats.playCount, rhs.preferenceStats.playCount)
+        case .preference:
+            result = compareDoubles(lhs.preferenceScore, rhs.preferenceScore)
         }
 
         if result == .orderedSame {
@@ -741,6 +929,11 @@ final class LibraryViewModel {
     }
 
     private func compareDoubles(_ lhs: Double, _ rhs: Double) -> ComparisonResult {
+        if lhs == rhs { return .orderedSame }
+        return lhs < rhs ? .orderedAscending : .orderedDescending
+    }
+
+    private func compareInts(_ lhs: Int, _ rhs: Int) -> ComparisonResult {
         if lhs == rhs { return .orderedSame }
         return lhs < rhs ? .orderedAscending : .orderedDescending
     }

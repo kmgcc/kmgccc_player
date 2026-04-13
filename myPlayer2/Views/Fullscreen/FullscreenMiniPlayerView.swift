@@ -9,11 +9,18 @@
 import AppKit
 import SwiftUI
 
+struct FullscreenControlsGlassStyle {
+    let colorScheme: ColorScheme
+    let accentColor: Color?
+    let materialStyle: LiquidGlassPillMaterialStyle
+}
+
 /// Enlarged mini player bar for fullscreen mode.
 /// Layout: Cover+Title | Controls | Playback Mode | Progress | Volume
 struct FullscreenMiniPlayerView: View {
     // Scale factor for responsive sizing at different resolutions
     var scale: CGFloat = 1.0
+    let glassStyle: FullscreenControlsGlassStyle
     let playbackMode: PlaybackOrderMode
     let onPlaybackModeChange: (PlaybackOrderMode) -> Void
     let onCurrentPlaybackModeRetap: (PlaybackOrderMode) -> Void
@@ -28,7 +35,6 @@ struct FullscreenMiniPlayerView: View {
 
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(AppSettings.self) private var settings
-    @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
 
     @State private var isDragging = false
@@ -97,10 +103,10 @@ struct FullscreenMiniPlayerView: View {
         .padding(.vertical, vPadding)
         .frame(height: barHeight)
         .liquidGlassPill(
-            colorScheme: colorScheme,
-            accentColor: themeStore.usesFallbackThemeColor ? nil : themeStore.accentColor,
+            colorScheme: glassStyle.colorScheme,
+            accentColor: glassStyle.accentColor,
             prominence: .prominent,
-            materialStyle: miniPlayerGlassMaterialStyle,
+            materialStyle: glassStyle.materialStyle,
             isFloating: true
         )
         .onHover { hovering in
@@ -385,15 +391,6 @@ struct FullscreenMiniPlayerView: View {
         Color.secondary.opacity(0.5)
     }
 
-    private var miniPlayerGlassMaterialStyle: LiquidGlassPillMaterialStyle {
-        switch settings.fullscreenMiniPlayerGlassMaterial {
-        case .clear:
-            return .clear
-        case .darkGlass:
-            return .darkGlass
-        }
-    }
-
     private var fullscreenThemeAccentColor: NSColor {
         Self.resolveControlAccentColor(from: themeStore.accentNSColor)
     }
@@ -529,6 +526,11 @@ struct FullscreenMiniPlayerView: View {
     VStack {
         Spacer()
         FullscreenMiniPlayerView(
+            glassStyle: FullscreenControlsGlassStyle(
+                colorScheme: .dark,
+                accentColor: ThemeStore.shared.accentColor,
+                materialStyle: .clear
+            ),
             playbackMode: .sequence,
             onPlaybackModeChange: { _ in },
             onCurrentPlaybackModeRetap: { _ in }

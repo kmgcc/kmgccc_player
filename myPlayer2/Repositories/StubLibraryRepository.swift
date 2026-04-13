@@ -155,6 +155,11 @@ final class StubLibraryRepository: LibraryRepositoryProtocol {
         playlist.name = name
     }
 
+    func updatePlaylistDetails(_ playlist: Playlist, name: String, description: String) async {
+        playlist.name = name
+        playlist.userDescription = description
+    }
+
     func deletePlaylist(_ playlist: Playlist) async {
         playlists.removeAll { $0.id == playlist.id }
     }
@@ -235,6 +240,10 @@ final class StubLibraryRepository: LibraryRepositoryProtocol {
     func fetchAlbumEntries() async -> [AlbumEntry] { [] }
     func updateArtistEntry(_ entry: ArtistEntry) async {}
     func updateAlbumEntry(_ entry: AlbumEntry) async {}
+    func applyArtistEdits(original _: ArtistEntry, updated _: ArtistEntry) async {}
+    func applyAlbumEdits(original _: AlbumEntry, updated _: AlbumEntry) async {}
+    func deleteArtist(_ entry: ArtistEntry) async {}
+    func deleteAlbum(_ entry: AlbumEntry) async {}
     func updatePlaylistDescription(_ playlist: Playlist, description: String) async {}
 
     // MARK: - Fake Data Setup

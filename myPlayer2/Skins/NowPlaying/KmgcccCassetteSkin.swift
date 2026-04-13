@@ -963,6 +963,7 @@ private struct WaveformCapsulesRepresentable: NSViewRepresentable {
 
     static func dismantleNSView(_ nsView: WaveformCapsulesHostView, coordinator: ()) {
         nsView.stop()
+        nsView.teardownViewBacking()
     }
 }
 
@@ -985,13 +986,7 @@ private final class WaveformCapsulesHostView: NSView {
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        wantsLayer = true
-        layer = CALayer()
-        layer?.masksToBounds = false
-
-        rootLayer.masksToBounds = false
-        layer?.addSublayer(rootLayer)
-        setupCapsuleLayers()
+        ensureViewLayerIfNeeded()
     }
 
     required init?(coder: NSCoder) {
@@ -1000,6 +995,7 @@ private final class WaveformCapsulesHostView: NSView {
 
     override func layout() {
         super.layout()
+        ensureViewLayerIfNeeded()
         guard bounds.size != lastLayoutSize else { return }
         lastLayoutSize = bounds.size
         layoutCapsules()
@@ -1007,6 +1003,7 @@ private final class WaveformCapsulesHostView: NSView {
 
     func start() {
         guard consumerID == nil else { return }
+        ensureViewLayerIfNeeded()
         service.start()
         consumerID = service.addConsumer { [weak self] wave in
             self?.applyWave(wave)
@@ -1020,7 +1017,7 @@ private final class WaveformCapsulesHostView: NSView {
         }
         service.stop()
         currentWave = Array(repeating: 0, count: WaveformCapsulesConstants.capsuleCount)
-        layoutCapsules()
+        teardownViewBacking()
     }
 
     func setPlayback(isPlaying: Bool) {
@@ -1053,6 +1050,7 @@ private final class WaveformCapsulesHostView: NSView {
     }
 
     private func setupCapsuleLayers() {
+        guard capsuleLayers.isEmpty else { return }
         capsuleLayers = (0..<WaveformCapsulesConstants.capsuleCount).map { _ in
             let layer = CALayer()
             layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
@@ -1066,6 +1064,41 @@ private final class WaveformCapsulesHostView: NSView {
             rootLayer.addSublayer(layer)
             return layer
         }
+    }
+
+    func teardownViewBacking() {
+        lastLayoutSize = .zero
+        paletteSignature = 0
+        cachedColors.removeAll(keepingCapacity: false)
+        rootLayer.sublayers?.forEach { sublayer in
+            sublayer.mask = nil
+            sublayer.contents = nil
+            sublayer.removeFromSuperlayer()
+        }
+        rootLayer.sublayers = nil
+        rootLayer.removeFromSuperlayer()
+        capsuleLayers.removeAll(keepingCapacity: false)
+        layer?.mask = nil
+        layer?.contents = nil
+        layer?.sublayers = nil
+        layer = nil
+        wantsLayer = false
+    }
+
+    private func ensureViewLayerIfNeeded() {
+        if !wantsLayer {
+            wantsLayer = true
+        }
+        if layer == nil {
+            let hostLayer = CALayer()
+            hostLayer.masksToBounds = false
+            layer = hostLayer
+        }
+        if rootLayer.superlayer == nil {
+            rootLayer.masksToBounds = false
+            layer?.addSublayer(rootLayer)
+        }
+        setupCapsuleLayers()
     }
 
     private func applyWave(_ wave: [Float]) {

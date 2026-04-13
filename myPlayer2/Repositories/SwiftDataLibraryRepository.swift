@@ -294,7 +294,16 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     }
 
     func renamePlaylist(_ playlist: Playlist, name: String) async {
+        await updatePlaylistDetails(
+            playlist,
+            name: name,
+            description: playlist.userDescription
+        )
+    }
+
+    func updatePlaylistDetails(_ playlist: Playlist, name: String, description: String) async {
         playlist.name = name
+        playlist.userDescription = description
         writePlaylistToDisk(playlist)
     }
 
@@ -365,39 +374,186 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         if let idx = artistEntries.firstIndex(where: { $0.id == entry.id }) {
             artistEntries[idx] = entry
         }
-        let sidecar = ArtistSidecar(
-            id: entry.id,
-            canonicalName: entry.canonicalName,
-            displayName: entry.displayName,
-            artworkFileName: entry.artworkFileName,
-            description: entry.description.isEmpty ? nil : entry.description,
-            createdAt: entry.createdAt,
-            updatedAt: Date()
-        )
-        libraryService.writeArtistSidecar(sidecar, artworkData: entry.artworkData)
+        writeArtistEntryToDisk(entry)
     }
 
     func updateAlbumEntry(_ entry: AlbumEntry) async {
         if let idx = albumEntries.firstIndex(where: { $0.id == entry.id }) {
             albumEntries[idx] = entry
         }
-        let sidecar = AlbumSidecar(
-            id: entry.id,
-            canonicalKey: entry.canonicalKey,
-            displayTitle: entry.displayTitle,
-            primaryArtistCanonicalName: entry.primaryArtistCanonicalName,
-            artworkFileName: entry.artworkFileName,
-            description: entry.description.isEmpty ? nil : entry.description,
-            year: entry.year,
-            createdAt: entry.createdAt,
-            updatedAt: Date()
+        writeAlbumEntryToDisk(entry)
+    }
+
+    func applyArtistEdits(original: ArtistEntry, updated: ArtistEntry) async {
+        let trimmedName = updated.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedName = trimmedName.isEmpty ? original.displayName : trimmedName
+        let newCanonicalName = LibraryNormalization.normalizeArtist(resolvedName)
+        let isRename =
+            original.displayName != resolvedName
+            || original.canonicalName != newCanonicalName
+
+        var finalEntry = updated
+        finalEntry.displayName = resolvedName
+        finalEntry.canonicalName = newCanonicalName
+        finalEntry.updatedAt = Date()
+
+        guard isRename else {
+            await updateArtistEntry(finalEntry)
+            return
+        }
+
+        let targetArtist = artistEntries.first {
+            $0.canonicalName == newCanonicalName && $0.id != original.id
+        }
+        let entryToPersist = mergedArtistEntry(
+            preferred: finalEntry,
+            fallback: targetArtist,
+            canonicalName: newCanonicalName,
+            displayName: resolvedName
         )
-        libraryService.writeAlbumSidecar(sidecar, artworkData: entry.artworkFileName != nil ? entry.artworkData : nil)
+        writeArtistEntryToDisk(entryToPersist)
+        if let targetArtist {
+            libraryService.deleteArtistEntry(id: original.id)
+            artistEntries.removeAll { $0.id == original.id }
+            if let idx = artistEntries.firstIndex(where: { $0.id == targetArtist.id }) {
+                artistEntries[idx] = entryToPersist
+            }
+        } else if let idx = artistEntries.firstIndex(where: { $0.id == original.id }) {
+            artistEntries[idx] = entryToPersist
+        }
+
+        let relatedAlbums = albumEntries.filter { $0.primaryArtistCanonicalName == original.canonicalName }
+        for album in relatedAlbums {
+            var migratedAlbum = album
+            migratedAlbum.primaryArtistCanonicalName = newCanonicalName
+            migratedAlbum.primaryArtistDisplayName = resolvedName
+            migratedAlbum.canonicalKey = LibraryNormalization.normalizedAlbumKey(
+                album: migratedAlbum.displayTitle,
+                artist: resolvedName
+            )
+            migratedAlbum.updatedAt = Date()
+
+            let targetAlbum = albumEntries.first {
+                $0.canonicalKey == migratedAlbum.canonicalKey && $0.id != album.id
+            }
+            let albumToPersist = mergedAlbumEntry(
+                preferred: migratedAlbum,
+                fallback: targetAlbum,
+                canonicalKey: migratedAlbum.canonicalKey,
+                displayTitle: migratedAlbum.displayTitle,
+                primaryArtistCanonicalName: newCanonicalName,
+                primaryArtistDisplayName: resolvedName
+            )
+            writeAlbumEntryToDisk(albumToPersist)
+            if let targetAlbum {
+                libraryService.deleteAlbumEntry(id: album.id)
+                albumEntries.removeAll { $0.id == album.id }
+                if let idx = albumEntries.firstIndex(where: { $0.id == targetAlbum.id }) {
+                    albumEntries[idx] = albumToPersist
+                }
+            } else if let idx = albumEntries.firstIndex(where: { $0.id == album.id }) {
+                albumEntries[idx] = albumToPersist
+            }
+        }
+
+        let affectedTracks = allTracks.filter {
+            LibraryNormalization.normalizeArtist($0.artist) == original.canonicalName
+        }
+        for track in affectedTracks {
+            track.artist = resolvedName
+        }
+        _ = await persistTrackMetaOnly(affectedTracks, reason: "artistRename")
+    }
+
+    func applyAlbumEdits(original: AlbumEntry, updated: AlbumEntry) async {
+        let trimmedTitle = updated.displayTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedTitle = trimmedTitle.isEmpty ? original.displayTitle : trimmedTitle
+        let newCanonicalKey = LibraryNormalization.normalizedAlbumKey(
+            album: resolvedTitle,
+            artist: original.primaryArtistDisplayName
+        )
+        let isRename =
+            original.displayTitle != resolvedTitle
+            || original.canonicalKey != newCanonicalKey
+
+        var finalEntry = updated
+        finalEntry.displayTitle = resolvedTitle
+        finalEntry.canonicalKey = newCanonicalKey
+        finalEntry.primaryArtistCanonicalName = original.primaryArtistCanonicalName
+        finalEntry.primaryArtistDisplayName = original.primaryArtistDisplayName
+        finalEntry.updatedAt = Date()
+
+        guard isRename else {
+            await updateAlbumEntry(finalEntry)
+            return
+        }
+
+        let targetAlbum = albumEntries.first {
+            $0.canonicalKey == newCanonicalKey && $0.id != original.id
+        }
+        let entryToPersist = mergedAlbumEntry(
+            preferred: finalEntry,
+            fallback: targetAlbum,
+            canonicalKey: newCanonicalKey,
+            displayTitle: resolvedTitle,
+            primaryArtistCanonicalName: original.primaryArtistCanonicalName,
+            primaryArtistDisplayName: original.primaryArtistDisplayName
+        )
+        writeAlbumEntryToDisk(entryToPersist)
+        if let targetAlbum {
+            libraryService.deleteAlbumEntry(id: original.id)
+            albumEntries.removeAll { $0.id == original.id }
+            if let idx = albumEntries.firstIndex(where: { $0.id == targetAlbum.id }) {
+                albumEntries[idx] = entryToPersist
+            }
+        } else if let idx = albumEntries.firstIndex(where: { $0.id == original.id }) {
+            albumEntries[idx] = entryToPersist
+        }
+
+        let affectedTracks = allTracks.filter {
+            LibraryNormalization.normalizedAlbumKey(album: $0.album, artist: $0.artist)
+                == original.canonicalKey
+        }
+        for track in affectedTracks {
+            track.album = resolvedTitle
+        }
+        _ = await persistTrackMetaOnly(affectedTracks, reason: "albumRename")
+    }
+
+    func deleteArtist(_ entry: ArtistEntry) async {
+        libraryService.deleteArtistEntry(id: entry.id)
+        let affectedTracks = allTracks.filter {
+            LibraryNormalization.normalizeArtist($0.artist) == entry.canonicalName
+        }
+        let affectedAlbumKeys = Set(affectedTracks.map {
+            LibraryNormalization.normalizedAlbumKey(album: $0.album, artist: $0.artist)
+        })
+        deleteTracksAndMetadata(
+            tracks: affectedTracks,
+            cleanupArtistCanonicalNames: [entry.canonicalName],
+            cleanupAlbumKeys: affectedAlbumKeys
+        )
+    }
+
+    func deleteAlbum(_ entry: AlbumEntry) async {
+        libraryService.deleteAlbumEntry(id: entry.id)
+        let affectedTracks = allTracks.filter {
+            LibraryNormalization.normalizedAlbumKey(album: $0.album, artist: $0.artist)
+                == entry.canonicalKey
+        }
+        deleteTracksAndMetadata(
+            tracks: affectedTracks,
+            cleanupArtistCanonicalNames: [entry.primaryArtistCanonicalName],
+            cleanupAlbumKeys: [entry.canonicalKey]
+        )
     }
 
     func updatePlaylistDescription(_ playlist: Playlist, description: String) async {
-        playlist.userDescription = description
-        writePlaylistToDisk(playlist)
+        await updatePlaylistDetails(
+            playlist,
+            name: playlist.name,
+            description: description
+        )
     }
 
     // MARK: - Cache Maintenance
@@ -428,6 +584,11 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     private func buildTrack(from meta: ScannedTrackMeta) -> Track {
         let audioURL = LocalLibraryPaths.libraryURL(from: meta.libraryRelativePath)
         let isAvailable = fileManager.fileExists(atPath: audioURL.path)
+        let persistedStats = meta.preferenceStats
+            ?? meta.playCount.map { TrackPreferenceStats.fromLegacy(playCount: max($0, 0)) }
+            ?? TrackPreferenceStats()
+
+        PreferenceStatsService.shared.replaceStats(for: meta.id, with: persistedStats)
 
         let artworkData: Data? = meta.artworkFileName.flatMap { fileName in
             let artworkURL = meta.folderURL.appendingPathComponent(fileName)
@@ -525,6 +686,178 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     private func writePlaylistToDisk(_ playlist: Playlist) {
         let itemDates = playlistItemAddedAtMap[playlist.id] ?? [:]
         libraryService.writePlaylist(playlist, itemAddedAt: itemDates)
+    }
+
+    private func writeArtistEntryToDisk(_ entry: ArtistEntry) {
+        let sidecar = ArtistSidecar(
+            id: entry.id,
+            canonicalName: entry.canonicalName,
+            displayName: entry.displayName,
+            artworkFileName: entry.artworkFileName,
+            description: entry.description.isEmpty ? nil : entry.description,
+            createdAt: entry.createdAt,
+            updatedAt: entry.updatedAt
+        )
+        libraryService.writeArtistSidecar(sidecar, artworkData: entry.artworkData)
+    }
+
+    private func writeAlbumEntryToDisk(_ entry: AlbumEntry) {
+        let sidecar = AlbumSidecar(
+            id: entry.id,
+            canonicalKey: entry.canonicalKey,
+            displayTitle: entry.displayTitle,
+            primaryArtistCanonicalName: entry.primaryArtistCanonicalName,
+            artworkFileName: entry.artworkFileName,
+            description: entry.description.isEmpty ? nil : entry.description,
+            year: entry.year,
+            createdAt: entry.createdAt,
+            updatedAt: entry.updatedAt
+        )
+        libraryService.writeAlbumSidecar(
+            sidecar,
+            artworkData: entry.artworkFileName != nil ? entry.artworkData : nil
+        )
+    }
+
+    private func mergedArtistEntry(
+        preferred: ArtistEntry,
+        fallback: ArtistEntry?,
+        canonicalName: String,
+        displayName: String
+    ) -> ArtistEntry {
+        guard let fallback else {
+            var merged = preferred
+            merged.canonicalName = canonicalName
+            merged.displayName = displayName
+            return merged
+        }
+
+        return ArtistEntry(
+            id: fallback.id,
+            canonicalName: canonicalName,
+            displayName: displayName,
+            artworkFileName: preferred.artworkData != nil || preferred.artworkFileName != nil
+                ? preferred.artworkFileName
+                : fallback.artworkFileName,
+            description: preferred.description.isEmpty ? fallback.description : preferred.description,
+            artworkData: preferred.artworkData ?? fallback.artworkData,
+            createdAt: min(preferred.createdAt, fallback.createdAt),
+            updatedAt: Date(),
+            trackCount: max(preferred.trackCount, fallback.trackCount),
+            albumCount: max(preferred.albumCount, fallback.albumCount),
+            totalDuration: max(preferred.totalDuration, fallback.totalDuration),
+            isOrphaned: false
+        )
+    }
+
+    private func mergedAlbumEntry(
+        preferred: AlbumEntry,
+        fallback: AlbumEntry?,
+        canonicalKey: String,
+        displayTitle: String,
+        primaryArtistCanonicalName: String,
+        primaryArtistDisplayName: String
+    ) -> AlbumEntry {
+        guard let fallback else {
+            var merged = preferred
+            merged.canonicalKey = canonicalKey
+            merged.displayTitle = displayTitle
+            merged.primaryArtistCanonicalName = primaryArtistCanonicalName
+            merged.primaryArtistDisplayName = primaryArtistDisplayName
+            return merged
+        }
+
+        return AlbumEntry(
+            id: fallback.id,
+            canonicalKey: canonicalKey,
+            displayTitle: displayTitle,
+            primaryArtistCanonicalName: primaryArtistCanonicalName,
+            primaryArtistDisplayName: primaryArtistDisplayName,
+            artworkFileName: preferred.artworkData != nil || preferred.artworkFileName != nil
+                ? preferred.artworkFileName
+                : fallback.artworkFileName,
+            description: preferred.description.isEmpty ? fallback.description : preferred.description,
+            year: preferred.year ?? fallback.year,
+            artworkData: preferred.artworkData ?? fallback.artworkData,
+            createdAt: min(preferred.createdAt, fallback.createdAt),
+            updatedAt: Date(),
+            trackCount: max(preferred.trackCount, fallback.trackCount),
+            totalDuration: max(preferred.totalDuration, fallback.totalDuration),
+            isOrphaned: false
+        )
+    }
+
+    private func deleteTracksAndMetadata(
+        tracks: [Track],
+        cleanupArtistCanonicalNames: Set<String>,
+        cleanupAlbumKeys: Set<String>
+    ) {
+        let uniqueTracks = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) }).values.sorted {
+            $0.id.uuidString < $1.id.uuidString
+        }
+        let trackIDs = Set(uniqueTracks.map(\.id))
+
+        if !trackIDs.isEmpty {
+            allTracks.removeAll { trackIDs.contains($0.id) }
+
+            for playlist in playlists {
+                let removedTrackIDs = playlist.tracks
+                    .filter { trackIDs.contains($0.id) }
+                    .map(\.id)
+                guard !removedTrackIDs.isEmpty else { continue }
+                playlist.tracks.removeAll { trackIDs.contains($0.id) }
+                var dates = playlistItemAddedAtMap[playlist.id] ?? [:]
+                for trackID in removedTrackIDs {
+                    dates[trackID] = nil
+                }
+                playlistItemAddedAtMap[playlist.id] = dates
+                writePlaylistToDisk(playlist)
+            }
+
+            for track in uniqueTracks {
+                libraryService.deleteTrackFiles(track)
+            }
+        }
+
+        cleanupMetadataSidecars(
+            impactedArtistCanonicalNames: cleanupArtistCanonicalNames,
+            impactedAlbumKeys: cleanupAlbumKeys
+        )
+
+        rebuildRuntimeDerivedState()
+        rebuildTrackIndexCache()
+        let (artists, albums) = metadataSync.sync(
+            derivedArtists: runtimeArtists,
+            derivedAlbums: runtimeAlbums,
+            allTracks: allTracks,
+            libraryService: libraryService
+        )
+        artistEntries = artists
+        albumEntries = albums
+    }
+
+    private func cleanupMetadataSidecars(
+        impactedArtistCanonicalNames: Set<String>,
+        impactedAlbumKeys: Set<String>
+    ) {
+        let liveArtistKeys = Set(allTracks.map { LibraryNormalization.normalizeArtist($0.artist) })
+        let liveAlbumKeys = Set(allTracks.map {
+            LibraryNormalization.normalizedAlbumKey(album: $0.album, artist: $0.artist)
+        })
+
+        for artist in artistEntries
+        where impactedArtistCanonicalNames.contains(artist.canonicalName)
+            && !liveArtistKeys.contains(artist.canonicalName)
+        {
+            libraryService.deleteArtistEntry(id: artist.id)
+        }
+
+        for album in albumEntries
+        where impactedAlbumKeys.contains(album.canonicalKey)
+            && !liveAlbumKeys.contains(album.canonicalKey)
+        {
+            libraryService.deleteAlbumEntry(id: album.id)
+        }
     }
 
     private func persistTracks(
