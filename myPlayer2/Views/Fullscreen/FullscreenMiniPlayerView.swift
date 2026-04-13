@@ -128,7 +128,7 @@ struct FullscreenMiniPlayerView: View {
 
             VStack(alignment: .leading, spacing: trackInfoVSpacing) {
                 if let track = playerVM.currentTrack {
-                    MarqueeText(
+                    SeamlessMarqueeText(
                         text: track.title,
                         fontSize: titleFontSize,
                         fontWeight: .semibold,
@@ -136,7 +136,7 @@ struct FullscreenMiniPlayerView: View {
                         enablesContentTransition: true
                     )
 
-                    MarqueeText(
+                    SeamlessMarqueeText(
                         text: track.artist.isEmpty
                             ? NSLocalizedString("library.unknown_artist", comment: "")
                             : track.artist,
