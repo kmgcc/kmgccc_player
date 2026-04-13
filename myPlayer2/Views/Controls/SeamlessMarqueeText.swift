@@ -37,7 +37,8 @@ struct SeamlessMarqueeText: View {
 
     @State private var textWidth: CGFloat = 0
     @State private var containerWidth: CGFloat = 0
-    @State private var offset: CGFloat = 0     // loop sets this in Task 3; always 0 here
+    @State private var offset: CGFloat = 0
+    @State private var loopTask: Task<Void, Never>? = nil
 
     // MARK: - Body
 
@@ -121,10 +122,55 @@ struct SeamlessMarqueeText: View {
         startLoop()
     }
 
-    // MARK: - Loop task stubs (implemented in Task 3)
+    // MARK: - Loop task
 
-    private func startLoop() { /* Task 3 */ }
-    private func stopLoop()  { /* Task 3 */ }
+    private func startLoop() {
+        let distance = textWidth + gap                      // scroll distance per cycle
+        let duration = Double(distance / max(1, speed))    // seconds for one scroll pass
+
+        loopTask = Task { @MainActor in
+            while !Task.isCancelled {
+
+                // Phase 1 — Scroll: animate offset 0 → -(textWidth + gap) linearly
+                withAnimation(.linear(duration: duration)) {
+                    offset = -distance
+                }
+
+                // Wait for the animation to complete
+                do { try await Task.sleep(for: .seconds(duration)) }
+                catch { break }                             // CancellationError → exit loop
+                guard !Task.isCancelled else { break }
+
+                // Phase 2 — Pause: hold at end position (copy 2 occupies copy 1's slot)
+                do { try await Task.sleep(for: .seconds(pauseDuration)) }
+                catch { break }
+                guard !Task.isCancelled else { break }
+
+                // Phase 3 — Reset: offset = 0 with no animation.
+                // Invisible: at -distance, copy 2 is visually identical to copy 1 at 0.
+                resetOffsetImmediately()
+
+                // Yield twice so SwiftUI renders the reset before the next withAnimation.
+                // Without this, reset and new animation may coalesce in one render pass,
+                // causing the animation to start mid-slide instead of from 0.
+                await Task.yield()
+                await Task.yield()
+                guard !Task.isCancelled else { break }
+            }
+        }
+    }
+
+    private func stopLoop() {
+        loopTask?.cancel()
+        loopTask = nil
+        resetOffsetImmediately()
+    }
+
+    private func resetOffsetImmediately() {
+        var tx = Transaction()
+        tx.disablesAnimations = true
+        withTransaction(tx) { offset = 0 }
+    }
 
     // MARK: - Font helpers
 
@@ -217,28 +263,44 @@ extension SeamlessMarqueeText {
 
 // MARK: - Preview
 
-#Preview("SeamlessMarqueeText – Static scaffold") {
+#Preview("SeamlessMarqueeText – Animated") {
     VStack(alignment: .leading, spacing: 20) {
-        Text("Short (should not scroll)").font(.caption).foregroundStyle(.secondary)
-        SeamlessMarqueeText(
-            text: "Short title",
-            style: .body,
-            fontWeight: .medium,
-            color: .primary
-        )
-        .frame(width: 200)
-        .border(Color.red.opacity(0.3))
-
-        Text("Long (overflow, no scroll yet)").font(.caption).foregroundStyle(.secondary)
-        SeamlessMarqueeText(
-            text: "A very long title that definitely overflows its container width here",
-            style: .body,
-            fontWeight: .medium,
-            color: .primary
-        )
-        .frame(width: 200)
-        .border(Color.red.opacity(0.3))
+        Group {
+            Text("Short (no scroll)").font(.caption).foregroundStyle(.secondary)
+            SeamlessMarqueeText(
+                text: "Short title",
+                style: .body,
+                fontWeight: .medium,
+                color: .primary
+            )
+            .frame(width: 200)
+            .border(Color.red.opacity(0.3))
+        }
+        Group {
+            Text("Long — scrolls seamlessly, pauses 5s, loops").font(.caption).foregroundStyle(.secondary)
+            SeamlessMarqueeText(
+                text: "A very long title that definitely overflows its container width here",
+                style: .body,
+                fontWeight: .medium,
+                color: .primary,
+                speed: 30
+            )
+            .frame(width: 200)
+            .border(Color.red.opacity(0.3))
+        }
+        Group {
+            Text("shouldAnimate: false — must stay static").font(.caption).foregroundStyle(.secondary)
+            SeamlessMarqueeText(
+                text: "A very long title that definitely overflows but must not scroll",
+                style: .body,
+                fontWeight: .medium,
+                color: .primary,
+                shouldAnimate: false
+            )
+            .frame(width: 200)
+            .border(Color.red.opacity(0.3))
+        }
     }
     .padding()
-    .frame(width: 320, height: 160)
+    .frame(width: 320, height: 240)
 }
