@@ -10,6 +10,12 @@
 "sidebar.new_playlist" = "New Playlist";
 "sidebar.edit_playlist" = "Edit Playlist";
 "sidebar.delete_playlist" = "Delete Playlist";
+"sidebar.delete_artist" = "Delete Artist";
+"sidebar.delete_album" = "Delete Album";
+"sidebar.delete_artist_confirm_title" = "Delete Artist?";
+"sidebar.delete_album_confirm_title" = "Delete Album?";
+"sidebar.delete_artist_confirm_message" = "This will delete \"%@\" and its %d related tracks. This action cannot be undone.";
+"sidebar.delete_album_confirm_message" = "This will delete \"%@\" and its %d related tracks. This action cannot be undone.";
 "sidebar.settings" = "Settings";
 "sidebar.appearance_light" = "Appearance: Light";
 "sidebar.appearance_dark" = "Appearance: Dark";
@@ -125,6 +131,8 @@
 "sort.title" = "Title";
 "sort.artist" = "Artist";
 "sort.duration" = "Duration";
+"sort.play_count" = "Play Count";
+"sort.preference" = "Preference";
 "sort.ascending" = "Ascending";
 "sort.descending" = "Descending";
 "sort.help" = "Sort Songs";

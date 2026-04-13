@@ -99,6 +99,9 @@ protocol LibraryRepositoryProtocol: AnyObject {
     /// Rename a playlist.
     func renamePlaylist(_ playlist: Playlist, name: String) async
 
+    /// Persist playlist header metadata in one write path.
+    func updatePlaylistDetails(_ playlist: Playlist, name: String, description: String) async
+
     /// Delete a playlist.
     func deletePlaylist(_ playlist: Playlist) async
 
@@ -145,6 +148,10 @@ protocol LibraryRepositoryProtocol: AnyObject {
     func fetchAlbumEntries() async -> [AlbumEntry]
     func updateArtistEntry(_ entry: ArtistEntry) async
     func updateAlbumEntry(_ entry: AlbumEntry) async
+    func applyArtistEdits(original: ArtistEntry, updated: ArtistEntry) async
+    func applyAlbumEdits(original: AlbumEntry, updated: AlbumEntry) async
+    func deleteArtist(_ entry: ArtistEntry) async
+    func deleteAlbum(_ entry: AlbumEntry) async
 
     // MARK: - Playlist Description
 

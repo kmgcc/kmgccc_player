@@ -18,6 +18,7 @@ enum DetailHeaderConfig {
 struct PlaylistHeaderData {
     var description: String
     var tracks: [Track]
+    var artworkRevision: String?
 }
 
 struct ArtistDerivedStats {
@@ -124,8 +125,11 @@ extension DetailHeaderConfig {
     var artworkIdentity: String {
         switch self {
         case .playlist(_, let entry):
+            if let artworkRevision = entry.artworkRevision, !artworkRevision.isEmpty {
+                return "\(selectionIdentity)-artwork-\(artworkRevision)"
+            }
             let signature = PlaylistArtworkGenerator.contentSignature(tracks: entry.tracks)
-            return "\(selectionIdentity)-\(signature)"
+            return "\(selectionIdentity)-unresolved-\(signature)"
         case .artist(let entry, _):
             return "\(selectionIdentity)-\(entry.updatedAt.timeIntervalSince1970)-\(entry.artworkFileName ?? "none")-\(Self.artworkFingerprint(data: entry.artworkData))"
         case .album(let entry, let stats):

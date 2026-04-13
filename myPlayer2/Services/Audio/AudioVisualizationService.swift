@@ -18,6 +18,9 @@ final class AudioVisualizationService {
         static let bandCount = 9
         static let uiUpdateHz: Double = 30
         static let staleDataThreshold: TimeInterval = 0.12
+        static let staleRestartThreshold: TimeInterval = 0.80
+        static let restartCooldown: TimeInterval = 1.20
+        static let stopGracePeriod: TimeInterval = 0.35
         static let publishEpsilon: Float = 0.015
         static let forcePublishInterval: TimeInterval = 0.25
         static let defaultFFTSize = 1024
@@ -57,6 +60,7 @@ final class AudioVisualizationService {
     private var lastDataTime: TimeInterval = 0
     private var lastTickTime: TimeInterval = 0
     private var lastPublishTime: TimeInterval = 0
+    private var lastRestartAttemptTime: TimeInterval = 0
 
     static let shared = AudioVisualizationService()
 
@@ -136,6 +140,7 @@ final class AudioVisualizationService {
         lastDataTime = now
         lastTickTime = now
         lastPublishTime = 0
+        lastRestartAttemptTime = 0
 
         hub.start()
         hubConsumerId = hub.addConsumer { [weak self] data in
@@ -153,10 +158,6 @@ final class AudioVisualizationService {
         hubConsumerId = nil
         hub.stop()
         stopTimerLocked()
-
-        consumerLock.lock()
-        consumers.removeAll()
-        consumerLock.unlock()
 
         let zeroWave = Array(repeating: Float(0), count: Constants.bandCount)
         let shouldPublishZero = lastPublishedWave.contains(where: { $0 > 0.001 })
@@ -187,7 +188,7 @@ final class AudioVisualizationService {
         }
 
         pendingStopWorkItem = workItem
-        processingQueue.asyncAfter(deadline: .now() + 0.35, execute: workItem)
+        processingQueue.asyncAfter(deadline: .now() + Constants.stopGracePeriod, execute: workItem)
     }
 
     private func enqueue(_ data: AudioAnalysisData) {
@@ -241,6 +242,14 @@ final class AudioVisualizationService {
             )
         }
 
+        if isPlaying,
+           activeRefs > 0,
+           now - lastDataTime > Constants.staleRestartThreshold,
+           now - lastRestartAttemptTime > Constants.restartCooldown
+        {
+            restartAnalysisChainLocked(now: now)
+        }
+
         var targetBlend: Float = 0
         if !isPlaying, let start = pauseStartTime, now - start >= 0.05 {
             targetBlend = 1
@@ -281,6 +290,23 @@ final class AudioVisualizationService {
                 callback(wave)
             }
         }
+    }
+
+    private func restartAnalysisChainLocked(now: TimeInterval) {
+        lastRestartAttemptTime = now
+
+        if let id = hubConsumerId {
+            hub.removeConsumer(id)
+            hubConsumerId = nil
+        }
+
+        hub.stop()
+        hub.start()
+        hubConsumerId = hub.addConsumer { [weak self] data in
+            self?.enqueue(data)
+        }
+        lastDataTime = now
+        startTimerLocked()
     }
 }
 

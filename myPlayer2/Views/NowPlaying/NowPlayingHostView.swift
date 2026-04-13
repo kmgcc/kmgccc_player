@@ -154,7 +154,7 @@ struct NowPlayingHostView: View {
     private var currentArtworkTaskKey: String {
         guard let track = playerVM.currentTrack else { return "none" }
         let checksum = ArtworkAssetStore.checksum(for: track.artworkData)
-        return "\(track.id.uuidString)-\(checksum)"
+        return "\(track.id.uuidString)-\(checksum)-px:\(preferredArtworkFullImageMaxPixel)"
     }
     
     private func loadArtworkSnapshot() async {
@@ -164,9 +164,17 @@ struct NowPlayingHostView: View {
             return
         }
         
-        let snapshot = await ArtworkAssetStore.shared.snapshot(trackID: track.id, artworkData: artworkData)
+        let snapshot = await ArtworkAssetStore.shared.snapshot(
+            trackID: track.id,
+            artworkData: artworkData,
+            fullImageMaxPixelSize: preferredArtworkFullImageMaxPixel
+        )
         guard !Task.isCancelled else { return }
         artworkSnapshot = snapshot
+    }
+
+    private var preferredArtworkFullImageMaxPixel: Int {
+        settings.selectedNowPlayingSkinID == "kmgccc.cassette" ? 900 : 1_400
     }
 
     private func isLedEnabledForCurrentSkin() -> Bool {

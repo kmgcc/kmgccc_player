@@ -10,7 +10,7 @@ import Foundation
 struct ArtistEntry: Identifiable {
     // Persistent fields (from sidecar)
     let id: UUID
-    let canonicalName: String
+    var canonicalName: String
     var displayName: String
     var artworkFileName: String?
     var description: String

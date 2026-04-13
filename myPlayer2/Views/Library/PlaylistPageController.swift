@@ -16,6 +16,8 @@ final class PlaylistPageController {
         let title: String
         let artist: String
         let duration: Double
+        let playCount: Int
+        let preferenceScore: Double
         let addedAt: Date
         let importedAt: Date?
         let playlistItemAddedAt: Date?
@@ -154,6 +156,7 @@ final class PlaylistPageController {
     func refreshHeaderArtwork() {
         guard page?.header != nil else { return }
         LyricsRuntimeProfile.increment("header.refreshHeaderArtwork")
+        rebuildCurrentHeaderModel(forceResetArtworkPresentation: true)
         loadHeaderArtwork()
     }
 
@@ -392,6 +395,8 @@ final class PlaylistPageController {
                 title: $0.title,
                 artist: $0.artist,
                 duration: $0.duration,
+                playCount: Self.normalizedPlayCount(for: $0),
+                preferenceScore: Self.normalizedPreferenceScore(for: $0),
                 addedAt: $0.addedAt,
                 importedAt: $0.importedAt,
                 playlistItemAddedAt: playlistItemAddedAtMap?[$0.id]
@@ -409,9 +414,9 @@ final class PlaylistPageController {
         guard !Task.isCancelled, activeLoadToken == token else { return }
 
         let queueTracks = buildResult.queueTrackIDs.compactMap { displayedTrackByID[$0] }
-        let rows: [PlaylistPageRowModel] = buildResult.rowRecords.compactMap {
-            guard let track = displayedTrackByID[$0.id] else { return nil }
-            return PlaylistPageRowModel(record: $0, artworkData: track.artworkData)
+        let rows: [PlaylistPageRowModel] = buildResult.rowRecords.compactMap { record -> PlaylistPageRowModel? in
+            guard let track = displayedTrackByID[record.id] else { return nil }
+            return PlaylistPageRowModel(record: record, artworkData: track.artworkData)
         }
         guard queueTracks.count == buildResult.queueTrackIDs.count,
               rows.count == buildResult.rowRecords.count
@@ -492,6 +497,30 @@ final class PlaylistPageController {
             selectionIdentity: pageModel.selectionIdentity
         )
         loadHeaderArtwork()
+    }
+
+    private func rebuildCurrentHeaderModel(forceResetArtworkPresentation: Bool) {
+        guard let currentPage = page, let libraryVM else { return }
+
+        let displayedTracks = currentDisplayedTracks(
+            selection: currentPage.selection,
+            libraryVM: libraryVM
+        )
+        let rebuiltHeader = buildHeaderModel(
+            selection: currentPage.selection,
+            libraryVM: libraryVM,
+            displayedTracks: displayedTracks,
+            displayedTotalDuration: currentPage.displayedTotalDuration
+        )
+
+        var updatedPage = currentPage
+        updatedPage.header = rebuiltHeader
+        page = updatedPage
+
+        resetArtworkPresentation(
+            force: forceResetArtworkPresentation,
+            identity: rebuiltHeader?.artworkIdentity
+        )
     }
 
     private func loadHeaderArtwork() {
@@ -884,11 +913,13 @@ final class PlaylistPageController {
             config = nil
         case .playlist(let id):
             guard let playlist = libraryVM.playlists.first(where: { $0.id == id }) else { return nil }
+            let artworkRevision = LocalLibraryService.shared.playlistArtworkRevision(playlistID: playlist.id)
             config = .playlist(
                 playlist,
                 entry: PlaylistHeaderData(
                     description: playlist.userDescription,
-                    tracks: displayedTracks
+                    tracks: displayedTracks,
+                    artworkRevision: artworkRevision
                 )
             )
         case .artist(let key):
@@ -1128,6 +1159,10 @@ final class PlaylistPageController {
             result = lhs.artist.localizedCaseInsensitiveCompare(rhs.artist)
         case .duration:
             result = compareDoubles(lhs.duration, rhs.duration)
+        case .playCount:
+            result = compareInts(lhs.playCount, rhs.playCount)
+        case .preference:
+            result = compareDoubles(lhs.preferenceScore, rhs.preferenceScore)
         }
 
         if result == .orderedSame {
@@ -1151,6 +1186,20 @@ final class PlaylistPageController {
     private nonisolated static func compareDoubles(_ lhs: Double, _ rhs: Double) -> ComparisonResult {
         if lhs == rhs { return .orderedSame }
         return lhs < rhs ? .orderedAscending : .orderedDescending
+    }
+
+    private nonisolated static func compareInts(_ lhs: Int, _ rhs: Int) -> ComparisonResult {
+        if lhs == rhs { return .orderedSame }
+        return lhs < rhs ? .orderedAscending : .orderedDescending
+    }
+
+    private static func normalizedPlayCount(for track: Track) -> Int {
+        max(track.preferenceStats.playCount, 0)
+    }
+
+    private static func normalizedPreferenceScore(for track: Track) -> Double {
+        let score = track.preferenceScore
+        return score.isFinite ? score : 0
     }
 
     private nonisolated static func formatDuration(_ duration: Double) -> String {

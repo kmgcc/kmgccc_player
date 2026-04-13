@@ -185,6 +185,7 @@ struct PlaylistSidecar: Codable {
     let generatedHeaderArtworkFileName: String?
     let headerArtworkSource: PlaylistArtworkSource?
     let generatedArtworkSignature: String?
+    let artworkRevision: String?
 
     var trackIDs: [UUID] {
         if schemaVersion >= 2 {
@@ -206,6 +207,7 @@ struct PlaylistSidecar: Codable {
         case generatedHeaderArtworkFileName
         case headerArtworkSource
         case generatedArtworkSignature
+        case artworkRevision
         case legacyHeaderArtworkSignature = "headerArtworkSignature"
     }
 
@@ -219,7 +221,8 @@ struct PlaylistSidecar: Codable {
         customHeaderArtworkFileName: String? = nil,
         generatedHeaderArtworkFileName: String? = nil,
         headerArtworkSource: PlaylistArtworkSource? = nil,
-        generatedArtworkSignature: String? = nil
+        generatedArtworkSignature: String? = nil,
+        artworkRevision: String? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.id = id
@@ -232,6 +235,7 @@ struct PlaylistSidecar: Codable {
         self.generatedHeaderArtworkFileName = generatedHeaderArtworkFileName
         self.headerArtworkSource = headerArtworkSource
         self.generatedArtworkSignature = generatedArtworkSignature
+        self.artworkRevision = artworkRevision
     }
 
     init(from decoder: Decoder) throws {
@@ -255,6 +259,7 @@ struct PlaylistSidecar: Codable {
         generatedArtworkSignature =
             try c.decodeIfPresent(String.self, forKey: .generatedArtworkSignature)
             ?? c.decodeIfPresent(String.self, forKey: .legacyHeaderArtworkSignature)
+        artworkRevision = try c.decodeIfPresent(String.self, forKey: .artworkRevision)
 
         if version >= 2 {
             items = try c.decodeIfPresent([PlaylistItemSidecar].self, forKey: .items) ?? []
@@ -281,6 +286,7 @@ struct PlaylistSidecar: Codable {
         try c.encodeIfPresent(generatedHeaderArtworkFileName, forKey: .generatedHeaderArtworkFileName)
         try c.encodeIfPresent(headerArtworkSource, forKey: .headerArtworkSource)
         try c.encodeIfPresent(generatedArtworkSignature, forKey: .generatedArtworkSignature)
+        try c.encodeIfPresent(artworkRevision, forKey: .artworkRevision)
     }
 }
 
@@ -849,7 +855,8 @@ final class LocalLibraryService {
             customHeaderArtworkFileName: existingSidecar?.customHeaderArtworkFileName,
             generatedHeaderArtworkFileName: existingSidecar?.generatedHeaderArtworkFileName,
             headerArtworkSource: existingSidecar?.headerArtworkSource,
-            generatedArtworkSignature: existingSidecar?.generatedArtworkSignature
+            generatedArtworkSignature: existingSidecar?.generatedArtworkSignature,
+            artworkRevision: existingSidecar?.artworkRevision
         )
 
         do {
@@ -915,6 +922,10 @@ final class LocalLibraryService {
         )
     }
 
+    func playlistArtworkRevision(playlistID: UUID) -> String? {
+        loadPlaylistSidecar(playlistID: playlistID)?.artworkRevision
+    }
+
     func savePlaylistCustomArtwork(playlistID: UUID, image: NSImage) {
         let fileURL = LocalLibraryPaths.playlistCustomArtworkURL(for: playlistID)
         guard writePNGArtwork(image, to: fileURL) else { return }
@@ -933,7 +944,8 @@ final class LocalLibraryService {
             customFileName: fileURL.lastPathComponent,
             generatedFileName: nil, // Clear generated file reference
             activeSource: .custom,
-            generatedSignature: nil // Clear signature since we're using custom
+            generatedSignature: nil, // Clear signature since we're using custom
+            artworkRevision: UUID().uuidString
         )
         debugArtworkPersistence(
             "selectionIdentity=\(playlistID) source=custom filePath=\(fileURL.path) save=accepted oldGeneratedDeleted=true"
@@ -949,14 +961,18 @@ final class LocalLibraryService {
         guard writePNGArtwork(image, to: fileURL) else { return }
 
         let existing = loadPlaylistSidecar(playlistID: playlistID)
+        let shouldActivateGenerated = existing?.customHeaderArtworkFileName == nil
         let activeSource: PlaylistArtworkSource =
-            existing?.customHeaderArtworkFileName == nil ? .generated : (existing?.headerArtworkSource ?? .custom)
+            shouldActivateGenerated ? .generated : (existing?.headerArtworkSource ?? .custom)
         updatePlaylistArtworkMetadata(
             playlistID: playlistID,
             customFileName: existing?.customHeaderArtworkFileName,
             generatedFileName: fileURL.lastPathComponent,
             activeSource: activeSource,
-            generatedSignature: signature
+            generatedSignature: signature,
+            artworkRevision: shouldActivateGenerated
+                ? UUID().uuidString
+                : existing?.artworkRevision
         )
         debugArtworkPersistence(
             "selectionIdentity=\(playlistID) source=generated filePath=\(fileURL.path) save=accepted generatedSignature=\(signature)"
@@ -988,7 +1004,8 @@ final class LocalLibraryService {
             customFileName: nil,
             generatedFileName: fileURL.lastPathComponent,
             activeSource: .generated,
-            generatedSignature: nil // Signature not used for stability anymore
+            generatedSignature: nil, // Signature not used for stability anymore
+            artworkRevision: UUID().uuidString
         )
         debugArtworkPersistence(
             "selectionIdentity=\(playlistID) source=generated filePath=\(fileURL.path) phase=regenerate save=accepted oldCustomDeleted=true"
@@ -1008,7 +1025,8 @@ final class LocalLibraryService {
         customFileName: String?,
         generatedFileName: String?,
         activeSource: PlaylistArtworkSource,
-        generatedSignature: String?
+        generatedSignature: String?,
+        artworkRevision: String?
     ) {
         guard let sidecar = loadPlaylistSidecar(playlistID: playlistID) else { return }
         let updated = PlaylistSidecar(
@@ -1021,7 +1039,8 @@ final class LocalLibraryService {
             customHeaderArtworkFileName: customFileName,
             generatedHeaderArtworkFileName: generatedFileName,
             headerArtworkSource: activeSource,
-            generatedArtworkSignature: generatedSignature
+            generatedArtworkSignature: generatedSignature,
+            artworkRevision: artworkRevision
         )
         do {
             let data = try encoder.encode(updated)
@@ -1075,7 +1094,8 @@ final class LocalLibraryService {
             customFileName: customFileName,
             generatedFileName: generatedFileName,
             activeSource: legacySource == .none ? .custom : legacySource,
-            generatedSignature: sidecar.generatedArtworkSignature
+            generatedSignature: sidecar.generatedArtworkSignature,
+            artworkRevision: sidecar.artworkRevision ?? UUID().uuidString
         )
 
         debugArtworkPersistence(
@@ -1599,7 +1619,7 @@ final class LocalLibraryService {
 }
 
 extension NSImage {
-    fileprivate func pngData() -> Data? {
+    func pngData() -> Data? {
         guard let tiff = tiffRepresentation,
             let rep = NSBitmapImageRep(data: tiff)
         else {

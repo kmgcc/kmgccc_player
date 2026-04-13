@@ -61,10 +61,14 @@ extension View {
         colorScheme: ColorScheme,
         accentColor: Color? = nil,
         prominence: GlassStyleTokens.Prominence = .standard,
+        materialStyle: LiquidGlassPillMaterialStyle = .clear,
         isFloating: Bool = false
     ) -> some View {
         self
-            .glassEffect(.clear, in: RoundedRectangle(cornerRadius: cornerRadius))
+            .glassEffect(
+                materialStyle == .darkGlass ? .regular : .clear,
+                in: RoundedRectangle(cornerRadius: cornerRadius)
+            )
             .overlay(
                 RoundedRectangle(cornerRadius: cornerRadius)
                     .strokeBorder(
@@ -75,7 +79,7 @@ extension View {
             )
             .background(
                 RoundedRectangle(cornerRadius: cornerRadius)
-                    .fill(GlassStyleTokens.darkNeutralOverlay(for: colorScheme))
+                    .fill(GlassStyleTokens.pillOverlay(for: colorScheme, materialStyle: materialStyle))
                     .allowsHitTesting(false)
             )
             .background {

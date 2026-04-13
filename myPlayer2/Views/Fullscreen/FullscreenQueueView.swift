@@ -16,16 +16,19 @@ struct FullscreenQueueView: View {
     let tracks: [Track]
     let currentTrackID: UUID?
     let playbackMode: PlaybackOrderMode
+    let glassStyle: FullscreenControlsGlassStyle
     let scale: CGFloat
     let visibleHeight: CGFloat
     let onTrackTap: (Track) -> Void
 
     @EnvironmentObject private var themeStore: ThemeStore
+    @State private var hasPerformedInitialScroll = false
 
     init(
         tracks: [Track],
         currentTrackID: UUID?,
         playbackMode: PlaybackOrderMode,
+        glassStyle: FullscreenControlsGlassStyle,
         scale: CGFloat = 1.0,
         visibleHeight: CGFloat = 600,
         onTrackTap: @escaping (Track) -> Void
@@ -33,6 +36,7 @@ struct FullscreenQueueView: View {
         self.tracks = tracks
         self.currentTrackID = currentTrackID
         self.playbackMode = playbackMode
+        self.glassStyle = glassStyle
         self.scale = scale
         self.visibleHeight = visibleHeight
         self.onTrackTap = onTrackTap
@@ -217,16 +221,15 @@ struct FullscreenQueueView: View {
                 .padding(.bottom, contentPadding)
         }
         .frame(width: panelWidth, height: panelHeight, alignment: .top)
-        // Use the same Liquid Glass material system as FullscreenMiniPlayerView
-        // Force dark colorScheme for consistent dark mode appearance
         .liquidGlassRect(
             cornerRadius: cornerRadius,
-            colorScheme: .dark,  // Fixed dark appearance
-            accentColor: nil,
+            colorScheme: glassStyle.colorScheme,
+            accentColor: glassStyle.accentColor,
             prominence: .prominent,
+            materialStyle: glassStyle.materialStyle,
             isFloating: true
         )
-        .environment(\.colorScheme, .dark)  // Force dark mode for all child views
+        .environment(\.colorScheme, glassStyle.colorScheme)
     }
 
     // MARK: - Title Header
@@ -236,17 +239,17 @@ struct FullscreenQueueView: View {
             // Mode icon
             Image(systemName: modeIcon)
                 .font(.system(size: 14 * scale, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.7))
+                .foregroundStyle(secondaryForegroundColor)
 
             Text(titleText)
                 .font(.system(size: 16 * scale, weight: .semibold))
-                .foregroundStyle(.white)  // Fixed light text for dark background
+                .foregroundStyle(primaryForegroundColor)
 
             Spacer()
 
             Text("\(tracks.count) 首")
                 .font(.system(size: 13 * scale, weight: .medium))
-                .foregroundStyle(.white.opacity(0.6))
+                .foregroundStyle(secondaryForegroundColor)
         }
     }
 
@@ -256,38 +259,52 @@ struct FullscreenQueueView: View {
     // MARK: - Track List
 
     private var trackList: some View {
-        ScrollView(.vertical, showsIndicators: true) {
-            LazyVStack(spacing: rowSpacing) {
-                // Top spacer: ensures first item starts below fade region
-                Color.clear
-                    .frame(height: listTopSafeSpacing)
-                    .accessibilityHidden(true)
+        ScrollViewReader { proxy in
+            ScrollView(.vertical, showsIndicators: true) {
+                LazyVStack(spacing: rowSpacing) {
+                    // Top spacer: ensures first item starts below fade region
+                    Color.clear
+                        .frame(height: listTopSafeSpacing)
+                        .accessibilityHidden(true)
 
-                ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
-                    QueueRow(
-                        track: track,
-                        index: index,
-                        isPlaying: track.id == currentTrackID,
-                        scale: scale,
-                        artworkSize: artworkSize,
-                        rowHeight: rowHeight,
-                        accentColor: processedThemeColor
-                    )
-                    .id(track.id)
-                    .onTapGesture {
-                        onTrackTap(track)
+                    ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
+                        QueueRow(
+                            track: track,
+                            index: index,
+                            isPlaying: track.id == currentTrackID,
+                            scale: scale,
+                            artworkSize: artworkSize,
+                            rowHeight: rowHeight,
+                            accentColor: processedThemeColor
+                        )
+                        .id(track.id)
+                        .onTapGesture {
+                            onTrackTap(track)
+                        }
                     }
-                }
 
-                // Bottom spacer: ensures last item doesn't get eaten by bottom fade
-                Color.clear
-                    .frame(height: listTopSafeSpacing)
-                    .accessibilityHidden(true)
+                    // Bottom spacer: ensures last item doesn't get eaten by bottom fade
+                    Color.clear
+                        .frame(height: listTopSafeSpacing)
+                        .accessibilityHidden(true)
+                }
+            }
+            .mask(trackListMask)
+            .animation(.spring(response: 0.52, dampingFraction: 0.80, blendDuration: 0.15), value: tracks.map(\.id))
+            .onAppear {
+                scrollToCurrentTrack(using: proxy, animated: false)
+                hasPerformedInitialScroll = true
+            }
+            .onChange(of: currentTrackID) { _, _ in
+                scrollToCurrentTrack(using: proxy, animated: hasPerformedInitialScroll)
+            }
+            .onChange(of: playbackMode) { _, _ in
+                scrollToCurrentTrack(using: proxy, animated: hasPerformedInitialScroll)
+            }
+            .onChange(of: tracks.map(\.id)) { _, _ in
+                scrollToCurrentTrack(using: proxy, animated: hasPerformedInitialScroll)
             }
         }
-        .mask(trackListMask)
-        // Animate position changes when queue reordering occurs
-        .animation(.spring(response: 0.52, dampingFraction: 0.80, blendDuration: 0.15), value: tracks.map(\.id))
     }
 
     /// Mask that creates true alpha fade at top and bottom edges
@@ -329,6 +346,28 @@ struct FullscreenQueueView: View {
             return "pause.circle"
         }
     }
+
+    private var primaryForegroundColor: Color {
+        Color.primary.opacity(0.96)
+    }
+
+    private var secondaryForegroundColor: Color {
+        Color.secondary.opacity(0.82)
+    }
+
+    private func scrollToCurrentTrack(using proxy: ScrollViewProxy, animated: Bool) {
+        guard let currentTrackID, tracks.contains(where: { $0.id == currentTrackID }) else { return }
+
+        DispatchQueue.main.async {
+            if animated {
+                withAnimation(.easeInOut(duration: 0.24)) {
+                    proxy.scrollTo(currentTrackID, anchor: .center)
+                }
+            } else {
+                proxy.scrollTo(currentTrackID, anchor: .center)
+            }
+        }
+    }
 }
 
 // MARK: - Queue Row
@@ -355,12 +394,12 @@ private struct QueueRow: View {
             VStack(alignment: .leading, spacing: 2 * scale) {
                 Text(track.title)
                     .font(.system(size: 14 * scale, weight: isPlaying ? .semibold : .medium))
-                    .foregroundStyle(isPlaying ? accentColor : .white)  // Light text on dark
+                    .foregroundStyle(isPlaying ? accentColor : Color.primary.opacity(0.96))
                     .lineLimit(1)
 
                 Text(artistText)
                     .font(.system(size: 12 * scale, weight: .regular))
-                    .foregroundStyle(.white.opacity(0.6))  // Secondary light text
+                    .foregroundStyle(Color.secondary.opacity(0.82))
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -374,7 +413,7 @@ private struct QueueRow: View {
             } else {
                 Text(formatDuration(track.duration))
                     .font(.system(size: 12 * scale, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.5))  // Dimmed light text
+                    .foregroundStyle(Color.secondary.opacity(0.72))
                     .monospacedDigit()
             }
         }
@@ -414,7 +453,7 @@ private struct QueueRow: View {
         if isPlaying {
             return accentColor.opacity(0.15)
         }
-        return isHovering ? Color.white.opacity(0.08) : Color.clear
+        return isHovering ? Color.primary.opacity(0.08) : Color.clear
     }
 
     // MARK: - Artist Text
@@ -459,6 +498,8 @@ extension FullscreenQueueView: Equatable {
     static func == (lhs: FullscreenQueueView, rhs: FullscreenQueueView) -> Bool {
         lhs.currentTrackID == rhs.currentTrackID
             && lhs.playbackMode == rhs.playbackMode
+            && lhs.glassStyle.colorScheme == rhs.glassStyle.colorScheme
+            && lhs.glassStyle.materialStyle == rhs.glassStyle.materialStyle
             && lhs.scale == rhs.scale
             && lhs.visibleHeight == rhs.visibleHeight
             && lhs.tracks.map(\.id) == rhs.tracks.map(\.id)
@@ -482,6 +523,11 @@ extension FullscreenQueueView: Equatable {
         tracks: tracks,
         currentTrackID: tracks[0].id,
         playbackMode: .shuffle,
+        glassStyle: FullscreenControlsGlassStyle(
+            colorScheme: .dark,
+            accentColor: ThemeStore.shared.accentColor,
+            materialStyle: .clear
+        ),
         scale: 1.0,
         visibleHeight: 650,
         onTrackTap: { _ in }

@@ -530,9 +530,7 @@ private final class BKArtBackgroundLayerView: NSView {
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        wantsLayer = true
-        layer = CALayer()
-        layer?.masksToBounds = true
+        ensureRootLayerIfNeeded()
         tintedBackgroundCache.countLimit = 6
         tintedBackgroundCache.totalCostLimit = 48 * 1024 * 1024
     }
@@ -569,6 +567,11 @@ private final class BKArtBackgroundLayerView: NSView {
     func prepareForDismissal() {
         stopTimers()
         releaseHeavyResources()
+        deferredPaletteUpdate = nil
+        activeAvoidanceRect = nil
+        backgroundController = nil
+        trackID = nil
+        tearDownRootLayer()
     }
 
     func updateResourceProfile(_ profile: BKArtBackgroundView.ResourceProfile) {
@@ -583,6 +586,7 @@ private final class BKArtBackgroundLayerView: NSView {
     override func layout() {
         super.layout()
         guard !bounds.isEmpty else { return }
+        ensureRootLayerIfNeeded()
         layer?.frame = bounds
 
         if fromContainer == nil {
@@ -706,6 +710,7 @@ private final class BKArtBackgroundLayerView: NSView {
     func ensureBaseContainer(seed: UInt64) {
         rebuildSeed = seed
         guard fromContainer == nil, !bounds.isEmpty else { return }
+        ensureRootLayerIfNeeded()
         syncLoadedAssetsIfNeeded()
         let container = buildContainer(seed: seed)
         fromContainer = container
@@ -2294,12 +2299,12 @@ private final class BKArtBackgroundLayerView: NSView {
         let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
         let longestEdge = max(bounds.width, bounds.height)
         let nativePixel = Int(max(1, (longestEdge * scale).rounded()))
-        let backgroundCap = resourceProfile == .cassetteForeground ? 1_280 : 1_536
-        let backgroundFloor = resourceProfile == .cassetteForeground ? 800 : 960
-        let shapeCap = resourceProfile == .cassetteForeground ? 384 : 512
-        let shapeFloor = resourceProfile == .cassetteForeground ? 224 : 256
-        let maskCap = resourceProfile == .cassetteForeground ? 640 : 768
-        let maskFloor = resourceProfile == .cassetteForeground ? 448 : 512
+        let backgroundCap = resourceProfile == .cassetteForeground ? 1_024 : 1_536
+        let backgroundFloor = resourceProfile == .cassetteForeground ? 640 : 960
+        let shapeCap = resourceProfile == .cassetteForeground ? 320 : 512
+        let shapeFloor = resourceProfile == .cassetteForeground ? 192 : 256
+        let maskCap = resourceProfile == .cassetteForeground ? 512 : 768
+        let maskFloor = resourceProfile == .cassetteForeground ? 384 : 512
         let background = min(max(nativePixel, backgroundFloor), backgroundCap)
         let shapeDivisor = resourceProfile == .cassetteForeground ? 4 : 3
         let shape = min(max(background / shapeDivisor, shapeFloor), shapeCap)
@@ -2363,6 +2368,7 @@ private final class BKArtBackgroundLayerView: NSView {
 
             try? await Task.sleep(nanoseconds: self.initialBackgroundUpgradeDelay)
             guard !Task.isCancelled else { return }
+            guard self.shouldAutoPromoteBackgroundsOnIdle else { return }
 
             await MainActor.run {
                 guard self.window != nil else { return }
@@ -2419,6 +2425,35 @@ private final class BKArtBackgroundLayerView: NSView {
         layer?.sublayers = nil
     }
 
+    private func ensureRootLayerIfNeeded() {
+        if !wantsLayer {
+            wantsLayer = true
+        }
+        if layer == nil {
+            let rootLayer = CALayer()
+            rootLayer.masksToBounds = true
+            layer = rootLayer
+        } else {
+            layer?.masksToBounds = true
+        }
+    }
+
+    private func tearDownRootLayer() {
+        lastLayoutSize = .zero
+        pendingBoundsRebuild = false
+        layer?.mask = nil
+        layer?.contents = nil
+        layer?.sublayers?.forEach { sublayer in
+            sublayer.mask = nil
+            sublayer.contents = nil
+            sublayer.removeFromSuperlayer()
+        }
+        layer?.sublayers = nil
+        layer = nil
+        wantsLayer = false
+        removeFromSuperviewWithoutNeedingDisplay()
+    }
+
     private func release(container: Container?) {
         guard let container else { return }
         container.layer.mask = nil
@@ -2462,11 +2497,11 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     private var initialBackgroundBudgetCap: Int {
-        resourceProfile == .cassetteForeground ? 768 : 960
+        resourceProfile == .cassetteForeground ? 640 : 960
     }
 
     private var initialBackgroundUpgradeDelay: UInt64 {
-        resourceProfile == .cassetteForeground ? 260_000_000 : 180_000_000
+        resourceProfile == .cassetteForeground ? 900_000_000 : 180_000_000
     }
 
     private var initialMaskWarmupDelay: UInt64 {
@@ -2474,6 +2509,10 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     private var shouldAutoWarmMasksOnIdle: Bool {
+        resourceProfile == .standard
+    }
+
+    private var shouldAutoPromoteBackgroundsOnIdle: Bool {
         resourceProfile == .standard
     }
 

@@ -10,6 +10,12 @@
 "sidebar.new_playlist" = "新建播放列表";
 "sidebar.edit_playlist" = "编辑播放列表";
 "sidebar.delete_playlist" = "删除播放列表";
+"sidebar.delete_artist" = "删除歌手";
+"sidebar.delete_album" = "删除专辑";
+"sidebar.delete_artist_confirm_title" = "删除歌手？";
+"sidebar.delete_album_confirm_title" = "删除专辑？";
+"sidebar.delete_artist_confirm_message" = "将删除“%@”及其关联的 %d 首歌曲。此操作不可恢复。";
+"sidebar.delete_album_confirm_message" = "将删除“%@”及其关联的 %d 首歌曲。此操作不可恢复。";
 "sidebar.settings" = "设置";
 "sidebar.appearance_light" = "外观：浅色";
 "sidebar.appearance_dark" = "外观：深色";
@@ -128,6 +134,8 @@
 "sort.title" = "标题";
 "sort.artist" = "歌手";
 "sort.duration" = "时长";
+"sort.play_count" = "播放次数";
+"sort.preference" = "偏好程度";
 "sort.ascending" = "升序";
 "sort.descending" = "降序";
 "sort.help" = "排序歌曲";
