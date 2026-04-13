@@ -5,6 +5,7 @@
 //  kmgccc_player - Rotating Cover Skin
 //
 
+import Combine
 import SwiftUI
 
 struct RotatingCoverSkin: NowPlayingSkin {
@@ -34,6 +35,96 @@ struct RotatingCoverSkin: NowPlayingSkin {
     }
 }
 
+private enum RotatingCoverLayout {
+    static let windowScaleFactor: CGFloat = 0.40
+    static let windowMaxSize: CGFloat = 260
+    static let fullscreenScaleFactor: CGFloat = 0.44
+    static let fullscreenMaxSize: CGFloat = 340
+    static let minSize: CGFloat = 160
+    static let fullscreenArtworkBoost: CGFloat = 1.22
+    static let fullscreenCoverScaleEffect: CGFloat = 1.2
+    static let baseOversizeRatio: CGFloat = 1.08
+    static let baseMinExtra: CGFloat = 18
+    static let yOffsetWindow: CGFloat = 18
+    static let yOffsetFullscreen: CGFloat = 32
+
+    struct Metrics {
+        let discSize: CGFloat
+        let baseSize: CGFloat
+        let yOffset: CGFloat
+        let scaleEffect: CGFloat
+    }
+
+    static func metrics(for context: SkinContext, isFullscreen: Bool) -> Metrics {
+        let contentSize = context.contentSize
+        let artworkBoost = isFullscreen ? fullscreenArtworkBoost : 1.0
+        let scaleFactor = isFullscreen ? fullscreenScaleFactor : windowScaleFactor
+        let maxSize = isFullscreen ? fullscreenMaxSize : windowMaxSize
+        let maxDisc = min(
+            contentSize.width * scaleFactor,
+            contentSize.height * scaleFactor,
+            maxSize * artworkBoost
+        )
+        let discSize = max(minSize * artworkBoost, maxDisc)
+        let baseSize = max(discSize + baseMinExtra, discSize * baseOversizeRatio)
+        let yOffset = isFullscreen ? yOffsetFullscreen : yOffsetWindow
+        let scaleEffect = isFullscreen ? fullscreenCoverScaleEffect : 1.0
+        return Metrics(
+            discSize: discSize,
+            baseSize: baseSize,
+            yOffset: yOffset,
+            scaleEffect: scaleEffect
+        )
+    }
+}
+
+@MainActor
+private final class RotatingCoverRotation: ObservableObject {
+    @Published var angle: Double = 0
+    private var velocity: Double = 0
+    private var targetVelocity: Double = 0
+    private var lastTime: TimeInterval = 0
+
+    // Physics constants
+    private let maxSpeed: Double = 8.0
+    private let startTau: Double = 0.30  // Seconds to reach ~63% of target speed when starting
+    private let stopTau: Double = 0.55   // Higher inertia when slowing down
+
+    func setPlaying(_ isPlaying: Bool) {
+        targetVelocity = isPlaying ? maxSpeed : 0
+    }
+
+    func reset() {
+        angle = 0
+        velocity = 0
+        targetVelocity = 0
+        lastTime = 0
+    }
+
+    func tick(at date: Date) {
+        let now = date.timeIntervalSinceReferenceDate
+
+        // First tick init
+        if lastTime == 0 {
+            lastTime = now
+            return
+        }
+
+        var dt = now - lastTime
+        lastTime = now
+        if dt > 0.1 { dt = 0.016 }  // Prevent jumps on resume
+
+        let tau = targetVelocity > velocity ? startTau : stopTau
+        let decay = exp(-dt / tau)
+        velocity = targetVelocity + (velocity - targetVelocity) * decay
+
+        angle += velocity * dt
+
+        // Wrap to prevent float drift over long periods
+        if angle > 36000 { angle -= 36000 }
+    }
+}
+
 private struct RotatingCoverArtwork: View {
     let context: SkinContext
     @StateObject private var fullscreenManager = FullscreenWindowManager.shared
@@ -45,40 +136,34 @@ private struct RotatingCoverArtwork: View {
     @State private var rotationStart: Date? = nil
     @State private var lastTrackID: UUID? = nil
 
-    // MARK: - Fullscreen Fine-tuning Constants
-    /// Slight boost to artwork size in fullscreen (1.0 = no change)
-    private let fullscreenArtworkBoost: CGFloat = 1.22
-    /// Additional visual scale applied to the cover stack in fullscreen.
-    /// Applied via scaleEffect inside the scaled canvas, resolution-stable.
-    private let fullscreenCoverScaleEffect: CGFloat = 1.2
-
     var body: some View {
-        let contentSize = context.contentSize
         let isFullscreen = fullscreenManager.isFullscreenActive
-
-        let artworkBoost = isFullscreen ? fullscreenArtworkBoost : 1.0
-
-        let scaleFactor: CGFloat = isFullscreen ? 0.6 : 0.55
-        let maxSize: CGFloat = isFullscreen ? 500 : 380
-        let maxDisc = min(contentSize.width * scaleFactor, contentSize.height * scaleFactor, maxSize * artworkBoost)
-        let discSize = max(200 * artworkBoost, maxDisc)
-        let yOffset: CGFloat = isFullscreen ? 32 : 18
-        
+        let layout = RotatingCoverLayout.metrics(for: context, isFullscreen: isFullscreen)
         let visualizerMode = isFullscreen ? fullscreenVisualizerMode : normalVisualizerMode
 
         VStack(spacing: 32) {
             TimelineView(.animation) { timeline in
                 let angle = context.theme.reduceMotion ? 0 : currentRotationAngle(at: timeline.date)
 
-                artworkView
-                    .frame(width: discSize, height: discSize)
-                    .clipShape(Circle())
-                    .overlay(
-                        Circle()
-                            .stroke(Color.white.opacity(0.12), lineWidth: 1)
-                    )
-                    .rotationEffect(.degrees(angle))
-                    .shadow(color: .black.opacity(0.4), radius: 24, x: 0, y: 12)
+                ZStack {
+                    Circle()
+                        .fill(.clear)
+                        .frame(width: layout.baseSize, height: layout.baseSize)
+                        .liquidGlassCircle(
+                            colorScheme: context.theme.colorScheme,
+                            isFloating: false
+                        )
+
+                    artworkView
+                        .frame(width: layout.discSize, height: layout.discSize)
+                        .clipShape(Circle())
+                        .overlay(
+                            Circle()
+                                .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                        )
+                        .rotationEffect(.degrees(angle))
+                        .shadow(color: .black.opacity(0.4), radius: 24, x: 0, y: 12)
+                }
             }
 
             if visualizerMode == "spectrum" {
@@ -92,8 +177,8 @@ private struct RotatingCoverArtwork: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .scaleEffect(isFullscreen ? fullscreenCoverScaleEffect : 1.0)
-        .offset(y: yOffset)
+        .scaleEffect(layout.scaleEffect)
+        .offset(y: layout.yOffset)
         .onAppear {
             lastTrackID = context.track?.id
             if context.playback.isPlaying {
