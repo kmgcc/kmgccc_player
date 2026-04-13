@@ -69,7 +69,7 @@ struct MiniPlayerView: View {
 
                     VStack(alignment: .leading, spacing: 4) {
                         if let track = playerVM.currentTrack {
-                            MarqueeText(
+                            SeamlessMarqueeText(
                                 text: track.title,
                                 style: .subheadline,
                                 fontWeight: .medium,
@@ -77,7 +77,7 @@ struct MiniPlayerView: View {
                                 enablesContentTransition: true
                             )
 
-                            MarqueeText(
+                            SeamlessMarqueeText(
                                 text: track.artist.isEmpty
                                     ? NSLocalizedString("library.unknown_artist", comment: "")
                                     : track.artist,
