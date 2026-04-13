@@ -4,6 +4,11 @@
 // Seamless looping marquee for title/artist text.
 // Drives animation via withAnimation(.linear) + async Task state machine.
 // Renders two text copies so the loop reset is invisible.
+//
+// Measurement risk: textWidth uses NSString.size(withAttributes: [.font: nsFont]).
+// This assumes nsFont (NSFont.systemFont) matches SwiftUI's Text rendering exactly.
+// If a visible seam appears at the loop boundary, replace measureTextWidth() with
+// a hidden Text + background(GeometryReader) approach.
 
 import AppKit
 import SwiftUI
@@ -28,20 +33,57 @@ struct SeamlessMarqueeText: View {
     var shouldAnimate: Bool = true
     var enablesContentTransition: Bool = false
 
-    // MARK: - Body (static only — animation wired in Tasks 2–3)
+    // MARK: - State
+
+    @State private var textWidth: CGFloat = 0
+    @State private var containerWidth: CGFloat = 0
+    @State private var offset: CGFloat = 0     // loop sets this in Task 3; always 0 here
+
+    // MARK: - Body
 
     var body: some View {
         GeometryReader { proxy in
             let width = max(0, proxy.size.width)
-            textLabel
-                .truncationMode(.tail)
+            contentView(width: width)
                 .frame(width: width, alignment: .leading)
                 .clipped()
+                .onAppear { syncContainerWidth(width) }
+                .onChange(of: width) { _, newWidth in syncContainerWidth(newWidth) }
         }
         .frame(height: lineHeight)
+        .onChange(of: text)          { _, _ in refreshAndRestart() }
+        .onChange(of: style)         { _, _ in refreshAndRestart() }
+        .onChange(of: fontWeight)    { _, _ in refreshAndRestart() }
+        .onChange(of: gap)           { _, _ in refreshAndRestart() }
+        .onChange(of: speed)         { _, _ in refreshAndRestart() }
+        .onChange(of: pauseDuration) { _, _ in refreshAndRestart() }
+        .onChange(of: shouldAnimate) { _, newVal in
+            if newVal { refreshAndRestart() } else { stopLoop() }
+        }
+        .onDisappear {
+            stopLoop()
+        }
     }
 
-    // MARK: - Text rendering (shared by static and marquee modes)
+    // MARK: - Content view
+
+    @ViewBuilder
+    private func contentView(width: CGFloat) -> some View {
+        let isMarquee = shouldAnimate && (textWidth - width) > 2.0
+        if isMarquee {
+            HStack(spacing: gap) {
+                textLabel
+                textLabel
+            }
+            .fixedSize(horizontal: true, vertical: false)
+            .offset(x: offset)
+        } else {
+            textLabel
+                .truncationMode(.tail)
+        }
+    }
+
+    // MARK: - Text rendering (shared by both modes)
 
     @ViewBuilder
     private var textLabel: some View {
@@ -58,6 +100,31 @@ struct SeamlessMarqueeText: View {
             base
         }
     }
+
+    // MARK: - Measurement
+
+    private func syncContainerWidth(_ width: CGFloat) {
+        guard abs(containerWidth - width) > 0.5 else { return }
+        containerWidth = width
+        refreshAndRestart()
+    }
+
+    private func measureTextWidth() {
+        let attrs: [NSAttributedString.Key: Any] = [.font: nsFont]
+        textWidth = ceil((text as NSString).size(withAttributes: attrs).width)
+    }
+
+    private func refreshAndRestart() {
+        measureTextWidth()
+        stopLoop()
+        guard shouldAnimate, containerWidth > 0, textWidth > containerWidth + 2.0 else { return }
+        startLoop()
+    }
+
+    // MARK: - Loop task stubs (implemented in Task 3)
+
+    private func startLoop() { /* Task 3 */ }
+    private func stopLoop()  { /* Task 3 */ }
 
     // MARK: - Font helpers
 
