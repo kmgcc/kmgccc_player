@@ -445,6 +445,8 @@ struct LDDCSearchSection: View {
                 }
             }
 
+            previewActionBar
+
             Group {
                 if isFetchingPreview {
                     ProgressView("加载预览...")
@@ -496,27 +498,33 @@ struct LDDCSearchSection: View {
                             .foregroundStyle(.green)
                     }
                 }
-
-                // Strip metadata toggle
-                Toggle("去除元数据", isOn: $stripExtraInfo)
-                    .toggleStyle(.switch)
-                    .font(.caption)
-
-                // Apply button (fallback)
-                Button {
-                    Task { await applyLyrics() }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "checkmark.circle")
-                        Text("应用")
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(isApplying || editableOrig.isEmpty)
-                .clipShape(Capsule())
             }
 
+            previewActionBar
+
             previewEditor
+        }
+    }
+
+    private var previewActionBar: some View {
+        HStack(spacing: 12) {
+            Toggle("去除多余信息", isOn: $stripExtraInfo)
+                .toggleStyle(.switch)
+                .font(.caption)
+
+            Spacer()
+
+            Button {
+                Task { await applyLyrics() }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "checkmark.circle")
+                    Text("应用")
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(isApplying || editableOrig.isEmpty)
+            .clipShape(Capsule())
         }
     }
     
@@ -648,6 +656,7 @@ struct LDDCSearchSection: View {
         searchError = nil
         previewError = nil
         applyError = nil
+        stripExtraInfo = false
         amlldbResults = []
         lddcResults = []
         searchResults = []

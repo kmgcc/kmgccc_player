@@ -28,6 +28,9 @@ final class BackgroundAnimationClock: ObservableObject {
     /// Gate for dot animations (15 fps)
     var dotGate = AnimationPhaseGate(interval: 4)  // 60/4 = 15Hz
     
+    /// Gate for dot animations at high rate (30 fps)
+    var dotHighRateGate = AnimationPhaseGate(interval: 2)  // 60/2 = 30Hz
+    
     /// Gate for transitions (6 fps)
     var transitionGate = AnimationPhaseGate(interval: 10)  // 60/10 = 6Hz
     
@@ -46,6 +49,7 @@ final class BackgroundAnimationClock: ObservableObject {
     let backgroundPublisher = PassthroughSubject<Void, Never>()
     let shapePublisher = PassthroughSubject<Void, Never>()
     let dotPublisher = PassthroughSubject<Void, Never>()
+    let dotHighRatePublisher = PassthroughSubject<Void, Never>()
     let transitionPublisher = PassthroughSubject<Void, Never>()
     let speedRampPublisher = PassthroughSubject<Void, Never>()
     
@@ -140,6 +144,7 @@ final class BackgroundAnimationClock: ObservableObject {
         backgroundGate.reset()
         shapeGate.reset()
         dotGate.reset()
+        dotHighRateGate.reset()
         transitionGate.reset()
         speedRampGate.reset()
     }
@@ -158,6 +163,10 @@ final class BackgroundAnimationClock: ObservableObject {
         
         if dotGate.tick() {
             dotPublisher.send()
+        }
+        
+        if dotHighRateGate.tick() {
+            dotHighRatePublisher.send()
         }
         
         if transitionGate.tick() {

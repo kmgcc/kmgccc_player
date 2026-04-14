@@ -848,14 +848,24 @@ final class PlaylistPageController {
                 data: resolved?.image?.tiffRepresentation,
                 fileURL: resolved?.fileURL
             )
-        case .artist(_, let entry):
+        case .artist(_, let entry, _):
             return HeaderArtworkPayload(
-                data: entry.artworkData ?? resolved?.image?.tiffRepresentation,
+                data: resolved?.source == .placeholder
+                    ? nil
+                    : entry.artworkData ?? resolved?.image?.tiffRepresentation,
                 fileURL: resolved?.fileURL
             )
         case .album(_, let entry, let fallbackImage):
+            let squareData: Data? = {
+                switch resolved?.source {
+                case .custom, .albumFallback:
+                    return resolved?.image?.tiffRepresentation
+                default:
+                    return nil
+                }
+            }()
             return HeaderArtworkPayload(
-                data: entry.artworkData ?? fallbackImage?.tiffRepresentation ?? resolved?.image?.tiffRepresentation,
+                data: squareData ?? fallbackImage?.tiffRepresentation ?? resolved?.image?.tiffRepresentation ?? entry.artworkData,
                 fileURL: resolved?.fileURL
             )
         }
@@ -926,15 +936,14 @@ final class PlaylistPageController {
             guard let entry = libraryVM.artistEntries.first(where: { $0.canonicalName == key }) else {
                 return nil
             }
-            let albumCount = libraryVM.albumEntries
-                .filter { $0.primaryArtistCanonicalName == key }
-                .count
+            let albumCount = Set(displayedTracks.map(\.albumGroupKey)).count
             config = .artist(
                 entry,
                 stats: ArtistDerivedStats(
                     trackCount: displayedTracks.count,
                     albumCount: albumCount,
-                    totalDuration: displayedTotalDuration
+                    totalDuration: displayedTotalDuration,
+                    artworkTracks: displayedTracks
                 )
             )
         case .album(let key):
@@ -942,7 +951,7 @@ final class PlaylistPageController {
                 return nil
             }
             let fallbackArtwork = displayedTracks.first?.artworkData.flatMap {
-                ArtworkLoader.headerPreviewImage(data: $0, maxPixelSize: 320)
+                ArtworkLoader.squareHeaderPreviewImage(data: $0, maxPixelSize: 320)
             }
             config = .album(
                 entry,
@@ -1023,7 +1032,7 @@ final class PlaylistPageController {
             }
         case .album(let key):
             return libraryVM.allTracks.filter {
-                LibraryNormalization.normalizedAlbumKey(album: $0.album, artist: $0.artist) == key
+                $0.albumGroupKey == key
                     && $0.availability != .missing
             }
         }

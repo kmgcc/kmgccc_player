@@ -13,6 +13,7 @@ struct ScannedTrackMeta {
     let title: String
     let artist: String
     let album: String
+    let albumArtist: String?
     let duration: Double
     let addedAt: Date
     let importedAt: Date
@@ -83,6 +84,8 @@ final class MusicLibraryScanner {
         let title = LibraryNormalization.displayTitle(json["title"] as? String)
         let artist = LibraryNormalization.displayArtist(json["artist"] as? String)
         let album = LibraryNormalization.displayAlbum(json["album"] as? String)
+        let albumArtist = (json["albumArtist"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         let duration = parseDouble(json["duration"]) ?? 0
 
         let now = Date()
@@ -130,6 +133,7 @@ final class MusicLibraryScanner {
             title: title,
             artist: artist,
             album: album,
+            albumArtist: albumArtist?.isEmpty == true ? nil : albumArtist,
             duration: duration,
             addedAt: addedAt,
             importedAt: importedAt,

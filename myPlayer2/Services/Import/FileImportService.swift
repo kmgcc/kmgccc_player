@@ -21,6 +21,7 @@ nonisolated struct ImportPreview: Sendable {
     let title: String
     let artist: String
     let album: String
+    let albumArtist: String?
     let duration: Double
     let lyrics: String?
     let artworkData: Data?
@@ -1258,6 +1259,7 @@ final class FileImportService: FileImportServiceProtocol {
         let title: String
         let artist: String
         let album: String
+        let albumArtist: String?
         let duration: Double
         let importedAt: Date
         let originalFilePath: String
@@ -1721,7 +1723,10 @@ final class FileImportService: FileImportServiceProtocol {
     /// ASSUMES: Parent caller has already started accessing security-scoped resource.
     private func importFile(
         url: URL,
-        metadata: (title: String, artist: String, album: String, duration: Double, lyrics: String?),
+        metadata: (
+            title: String, artist: String, album: String, albumArtist: String?, duration: Double,
+            lyrics: String?
+        ),
         preloadedArtworkData: Data?
     ) async -> Track? {
         let candidate = ImportCandidate(
@@ -1732,6 +1737,7 @@ final class FileImportService: FileImportServiceProtocol {
                 title: metadata.title,
                 artist: metadata.artist,
                 album: metadata.album,
+                albumArtist: metadata.albumArtist,
                 duration: metadata.duration,
                 lyrics: metadata.lyrics,
                 artworkData: preloadedArtworkData
@@ -1898,6 +1904,7 @@ final class FileImportService: FileImportServiceProtocol {
             title: payload.title,
             artist: payload.artist,
             album: payload.album,
+            albumArtist: payload.albumArtist,
             duration: payload.duration,
             importedAt: payload.importedAt,
             fileBookmarkData: Data(),
@@ -2017,6 +2024,7 @@ final class FileImportService: FileImportServiceProtocol {
                 title: ncmResult.metadata.title,
                 artist: ncmResult.metadata.artistName,
                 album: ncmResult.metadata.album,
+                albumArtist: nil,
                 duration: ncmResult.metadata.durationSeconds,
                 lyrics: nil,
                 artworkData: ncmResult.coverData
@@ -2027,6 +2035,7 @@ final class FileImportService: FileImportServiceProtocol {
                 title: raw.title,
                 artist: raw.artist,
                 album: raw.album,
+                albumArtist: raw.albumArtist,
                 duration: raw.duration,
                 lyrics: raw.lyrics,
                 artworkData: nil
@@ -2355,7 +2364,8 @@ final class FileImportService: FileImportServiceProtocol {
     /// Extract metadata from audio file using AVAsset.
     /// Made nonisolated static to allow concurrent execution from TaskGroup.
     nonisolated private static func extractMetadata(from url: URL) async -> (
-        title: String, artist: String, album: String, duration: Double, lyrics: String?
+        title: String, artist: String, album: String, albumArtist: String?, duration: Double,
+        lyrics: String?
     ) {
         let asset = AVURLAsset(url: url)
 
@@ -2363,6 +2373,7 @@ final class FileImportService: FileImportServiceProtocol {
         var title: String?
         var artist: String?
         var album: String?
+        var albumArtist: String?
         var lyrics: String?
         var duration: Double = 0
 
@@ -2393,6 +2404,8 @@ final class FileImportService: FileImportServiceProtocol {
                     if artist == nil { artist = try? await item.load(.stringValue) }
                 case "albumName":
                     if album == nil { album = try? await item.load(.stringValue) }
+                case "albumArtist":
+                    if albumArtist == nil { albumArtist = try? await item.load(.stringValue) }
                 case "lyrics":
                     if lyrics == nil { lyrics = try? await item.load(.stringValue) }
                 default:
@@ -2410,6 +2423,12 @@ final class FileImportService: FileImportServiceProtocol {
                 }
                 if album == nil && (keyString == "ALBUM" || keyString == "ALBUMTITLE") {
                     album = try? await item.load(.stringValue)
+                }
+                if albumArtist == nil
+                    && (keyString == "ALBUMARTIST" || keyString == "ALBUM ARTIST"
+                        || keyString == "ALBUM_ARTIST")
+                {
+                    albumArtist = try? await item.load(.stringValue)
                 }
                 if lyrics == nil
                     && (keyString == "LYRICS" || keyString == "UNSYNCEDLYRICS"
@@ -2461,8 +2480,16 @@ final class FileImportService: FileImportServiceProtocol {
         let finalTitle = title ?? url.deletingPathExtension().lastPathComponent
         let finalArtist = artist ?? NSLocalizedString("library.unknown_artist", comment: "")
         let finalAlbum = album ?? NSLocalizedString("library.unknown_album", comment: "")
+        let finalAlbumArtist = albumArtist?.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        return (finalTitle, finalArtist, finalAlbum, duration, lyrics)
+        return (
+            finalTitle,
+            finalArtist,
+            finalAlbum,
+            finalAlbumArtist?.isEmpty == true ? nil : finalAlbumArtist,
+            duration,
+            lyrics
+        )
     }
 
     /// Extract artwork from audio file.
@@ -2694,6 +2721,7 @@ final class FileImportService: FileImportServiceProtocol {
                     title: candidate.metadata.title,
                     artist: candidate.metadata.artist,
                     album: candidate.metadata.album,
+                    albumArtist: candidate.metadata.albumArtist,
                     duration: candidate.metadata.duration,
                     importedAt: importedAt,
                     originalFilePath: candidate.fileURL.path,

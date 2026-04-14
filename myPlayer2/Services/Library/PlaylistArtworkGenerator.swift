@@ -343,7 +343,7 @@ final class DetailHeaderArtworkResolver {
             logResolver("selectionType=playlist selectionIdentity=\(playlistID) phase=immediate-miss noArtworkExists")
             return nil
 
-        case .artist(let selectionIdentity, let entry):
+        case .artist(let selectionIdentity, let entry, let tracks):
             if let data = entry.artworkData,
                let image = ArtworkLoader.headerPreviewImage(data: data, maxPixelSize: 320)
             {
@@ -361,12 +361,16 @@ final class DetailHeaderArtworkResolver {
                 )
             }
 
+            let placeholderImage = ArtistArtworkGenerator.placeholderArtwork(
+                artistName: entry.displayName,
+                tracks: tracks
+            )
             logResolver("selectionType=artist selectionIdentity=\(entry.id) source=placeholder phase=immediate-accepted")
             return ResolvedHeaderArtwork(
                 selectionIdentity: selectionIdentity,
                 selectionType: .artist,
                 source: .placeholder,
-                image: nil,
+                image: placeholderImage,
                 fileURL: nil,
                 generationSignature: nil
             )
@@ -374,7 +378,7 @@ final class DetailHeaderArtworkResolver {
         case .album(let selectionIdentity, let entry, let fallbackImage):
             if let fileName = entry.artworkFileName,
                let data = entry.artworkData,
-               let image = ArtworkLoader.headerPreviewImage(data: data, maxPixelSize: 320)
+               let image = ArtworkLoader.squareHeaderPreviewImage(data: data, maxPixelSize: 320)
             {
                 let fileURL = LocalLibraryPaths.albumFolderURL(for: entry.id).appendingPathComponent(fileName)
                 logResolver("selectionType=album selectionIdentity=\(entry.id) source=custom filePath=\(fileURL.path) phase=immediate-accepted")
@@ -389,7 +393,7 @@ final class DetailHeaderArtworkResolver {
             }
 
             let fallbackPreview = entry.artworkData.flatMap {
-                ArtworkLoader.headerPreviewImage(data: $0, maxPixelSize: 320)
+                ArtworkLoader.squareHeaderPreviewImage(data: $0, maxPixelSize: 320)
             } ?? fallbackImage
             if let image = fallbackPreview {
                 logResolver("selectionType=album selectionIdentity=\(entry.id) source=album-fallback filePath=nil phase=immediate-accepted")
@@ -481,7 +485,7 @@ final class DetailHeaderArtworkResolver {
             )
 
         case .artist, .album:
-            return resolveImmediately(for: request)
+            return nil
         }
     }
 

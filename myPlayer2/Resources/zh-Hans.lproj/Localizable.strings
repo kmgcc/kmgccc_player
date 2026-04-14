@@ -180,6 +180,9 @@
 "edit.playlist.delete_confirm" = "删除";
 "edit.playlist.delete_confirm_title" = "删除播放列表？";
 "edit.playlist.delete_desc" = "这将移除播放列表，但不会删除歌曲文件本身。";
+"header.generate_artwork" = "生成封面";
+"header.import_artwork" = "导入封面";
+"header.restore_default_album_artwork" = "恢复默认专辑封面";
 
 // MARK: - Search LDDC
 "search.lddc.title" = "歌词查找 (LDDC)";

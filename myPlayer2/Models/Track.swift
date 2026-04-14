@@ -29,6 +29,8 @@ final class Track {
     var title: String
     var artist: String
     var album: String
+    var albumArtist: String?
+    var albumGroupKey: String
     var duration: Double  // seconds
     var addedAt: Date
     var importedAt: Date?
@@ -100,6 +102,8 @@ final class Track {
         title: String,
         artist: String = "",
         album: String = "",
+        albumArtist: String? = nil,
+        albumGroupKey: String = "",
         duration: Double = 0,
         addedAt: Date = Date(),
         importedAt: Date? = nil,
@@ -117,6 +121,8 @@ final class Track {
         self.title = title
         self.artist = artist
         self.album = album
+        self.albumArtist = albumArtist
+        self.albumGroupKey = albumGroupKey
         self.duration = duration
         self.addedAt = addedAt
         self.importedAt = importedAt ?? addedAt
@@ -212,5 +218,40 @@ final class Track {
     /// Whether the track is currently playable.
     var isPlayable: Bool {
         availability != .missing
+    }
+}
+
+enum TrackLyricsDraft {
+    struct Storage: Equatable {
+        let ttmlText: String?
+        let plainText: String?
+    }
+
+    static func storage(from editorText: String) -> Storage {
+        let trimmed = editorText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return Storage(ttmlText: nil, plainText: nil)
+        }
+
+        if looksLikeTTML(trimmed) {
+            return Storage(ttmlText: trimmed, plainText: nil)
+        }
+
+        return Storage(ttmlText: nil, plainText: trimmed)
+    }
+
+    static func differs(from track: Track, editorText: String) -> Bool {
+        let draft = storage(from: editorText)
+        return draft.ttmlText != track.ttmlLyricText || draft.plainText != track.lyricsText
+    }
+
+    static func assign(editorText: String, to track: Track) {
+        let draft = storage(from: editorText)
+        track.ttmlLyricText = draft.ttmlText
+        track.lyricsText = draft.plainText
+    }
+
+    private static func looksLikeTTML(_ text: String) -> Bool {
+        text.lowercased().contains("<tt")
     }
 }

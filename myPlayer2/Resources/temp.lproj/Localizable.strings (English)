@@ -177,6 +177,9 @@
 "edit.playlist.delete_confirm" = "Delete";
 "edit.playlist.delete_confirm_title" = "Delete Playlist?";
 "edit.playlist.delete_desc" = "This will remove the playlist but not the tracks themselves.";
+"header.generate_artwork" = "Generate Artwork";
+"header.import_artwork" = "Import Artwork";
+"header.restore_default_album_artwork" = "Restore Default Album Artwork";
 
 // MARK: - Search LDDC
 "search.lddc.title" = "Lyrics Search (LDDC)";

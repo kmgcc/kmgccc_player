@@ -678,17 +678,7 @@ struct BatchTrackEditSheet: View {
         track.artworkData = artworkData
         track.lyricsTimeOffsetMs = lyricsTimeOffsetMs
 
-        let trimmedLyrics = lyricsText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmedLyrics.isEmpty {
-            track.lyricsText = nil
-            track.ttmlLyricText = nil
-        } else if trimmedLyrics.lowercased().contains("<tt") {
-            track.ttmlLyricText = trimmedLyrics
-            track.lyricsText = nil
-        } else {
-            track.lyricsText = trimmedLyrics
-            track.ttmlLyricText = nil
-        }
+        TrackLyricsDraft.assign(editorText: lyricsText, to: track)
 
         Task {
             await libraryVM.saveTrackEdits(
@@ -731,17 +721,7 @@ struct BatchTrackEditSheet: View {
             || savedAlbum != track.album
             || abs(lyricsTimeOffsetMs - track.lyricsTimeOffsetMs) > 0.000_1
 
-        let trimmedLyrics = lyricsText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let targetTTML: String? = {
-            guard !trimmedLyrics.isEmpty else { return nil }
-            return trimmedLyrics.lowercased().contains("<tt") ? trimmedLyrics : nil
-        }()
-        let targetPlainLyrics: String? = {
-            guard !trimmedLyrics.isEmpty else { return nil }
-            return trimmedLyrics.lowercased().contains("<tt") ? nil : trimmedLyrics
-        }()
-
-        let lyricsChanged = track.ttmlLyricText != targetTTML || track.lyricsText != targetPlainLyrics
+        let lyricsChanged = TrackLyricsDraft.differs(from: track, editorText: lyricsText)
         let artworkChanged = artworkData != track.artworkData
         let hasChanges = metadataChanged || lyricsChanged || artworkChanged
 

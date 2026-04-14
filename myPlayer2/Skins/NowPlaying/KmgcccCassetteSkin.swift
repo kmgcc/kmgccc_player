@@ -42,12 +42,54 @@ struct KmgcccCassetteSkin: NowPlayingSkin {
 }
 
 private enum CassetteLayout {
-    static let ledGap: CGFloat = 24
+    static let sizeReserve: CGFloat = 24
     static let ledHeight: CGFloat = 18
+
+    /// Scale-proportional visual gap between cassette bottom and LED meter.
+    static func visualLedGap(for size: CGSize) -> CGFloat {
+        max(26, size.height * 0.105)
+    }
+
+    // MARK: - Fullscreen Fine-tuning Constants
+    /// Counteracts the host-level `fullscreenArtworkScale` multiplier applied in
+    /// `FullscreenPlayerView.skinArtworkArea` so the cassette maintains the same
+    /// visual size as in window mode.
+    static let fullscreenScaleAdjustment: CGFloat = 0.88
+    /// The cassette artwork's visual weight (window + labels) is slightly right-of-center.
+    /// This additional leftward nudge compensates for the wider fullscreen canvas and
+    /// lyrics-column displacement so the tape body remains visually centered.
+    static let fullscreenExtraLeftShift: CGFloat = 50
+
+    struct Metrics {
+        let size: CGSize
+        let horizontalOffset: CGFloat
+        let centeredYOffset: CGFloat
+        let visualizerMode: String
+    }
+
+    static func metrics(
+        for context: SkinContext,
+        isFullscreen: Bool,
+        normalVisualizerMode: String,
+        fullscreenVisualizerMode: String
+    ) -> Metrics {
+        let scaleAdjustment = isFullscreen ? fullscreenScaleAdjustment : 1.0
+        let adjustedContext = isFullscreen ? context.withContentSizeAdjustment(scaleAdjustment) : context
+        let size = cassetteSize(for: adjustedContext)
+        let visualizerMode = isFullscreen ? fullscreenVisualizerMode : normalVisualizerMode
+        let centeredYOffset: CGFloat = visualizerMode == "led" ? 12 : max(22, min(36, size.height * 0.07))
+        let horizontalOffset: CGFloat = -(12 + (isFullscreen ? fullscreenExtraLeftShift : 0))
+        return Metrics(
+            size: size,
+            horizontalOffset: horizontalOffset,
+            centeredYOffset: centeredYOffset,
+            visualizerMode: visualizerMode
+        )
+    }
 
     static func cassetteSize(for context: SkinContext) -> CGSize {
         let content = context.contentSize
-        let availableHeight = max(0, content.height - (ledGap + ledHeight))
+        let availableHeight = max(0, content.height - (sizeReserve + ledHeight))
         let aspect = tapeAspectRatio()
 
         let maxWidth = min(content.width * 0.72, 520)
@@ -72,7 +114,10 @@ private enum CassetteLayout {
 }
 
 private struct CassetteThemeImageSet {
-    let shellComposite: NSImage
+    let shell: NSImage
+    let gray: NSImage
+    let paper: NSImage
+    let outline: NSImage
     let mask: NSImage
 }
 
@@ -124,21 +169,11 @@ private final class CassetteThemeAssetCache {
             return nil
         }
 
-        let outlineOpacity: CGFloat = colorScheme == .dark ? 0.20 : 0.80
-        guard
-            let shellComposite = composeShellImage(
-                shell: shell,
-                gray: gray,
-                paper: paper,
-                outline: outline,
-                outlineOpacity: outlineOpacity
-            )
-        else {
-            return nil
-        }
-
         let imageSet = CassetteThemeImageSet(
-            shellComposite: shellComposite,
+            shell: shell,
+            gray: gray,
+            paper: paper,
+            outline: outline,
             mask: mask
         )
         cache.setObject(
@@ -242,61 +277,10 @@ private final class CassetteThemeAssetCache {
     }
 
     private func estimatedCost(for imageSet: CassetteThemeImageSet) -> Int {
-        [imageSet.shellComposite, imageSet.mask].reduce(0) { partial, image in
+        [imageSet.shell, imageSet.gray, imageSet.paper, imageSet.outline, imageSet.mask].reduce(0) {
+            partial, image in
             partial + Self.estimatedCost(for: image)
         }
-    }
-
-    private func composeShellImage(
-        shell: NSImage,
-        gray: NSImage,
-        paper: NSImage,
-        outline: NSImage,
-        outlineOpacity: CGFloat
-    ) -> NSImage? {
-        guard
-            let shellCG = shell.cgImage(forProposedRect: nil, context: nil, hints: nil),
-            let grayCG = gray.cgImage(forProposedRect: nil, context: nil, hints: nil),
-            let paperCG = paper.cgImage(forProposedRect: nil, context: nil, hints: nil),
-            let outlineCG = outline.cgImage(forProposedRect: nil, context: nil, hints: nil)
-        else { return nil }
-
-        let width = shellCG.width
-        let height = shellCG.height
-        let rect = CGRect(x: 0, y: 0, width: width, height: height)
-
-        guard
-            let context = CGContext(
-                data: nil,
-                width: width,
-                height: height,
-                bitsPerComponent: 8,
-                bytesPerRow: 0,
-                space: CGColorSpaceCreateDeviceRGB(),
-                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-            )
-        else { return nil }
-
-        context.interpolationQuality = .high
-        context.draw(shellCG, in: rect)
-        context.draw(grayCG, in: rect)
-
-        context.saveGState()
-        context.setBlendMode(.multiply)
-        context.setAlpha(0.40)
-        context.draw(paperCG, in: rect)
-        context.restoreGState()
-
-        context.saveGState()
-        context.setAlpha(outlineOpacity)
-        context.draw(outlineCG, in: rect)
-        context.restoreGState()
-
-        guard let composed = context.makeImage() else { return nil }
-        return NSImage(
-            cgImage: composed,
-            size: NSSize(width: composed.width, height: composed.height)
-        )
     }
 
     private static func estimatedCost(for image: NSImage) -> Int {
@@ -325,33 +309,44 @@ private struct CassetteArtwork: View {
     @AppStorage("skin.kmgcccCassette.visualizerMode") private var normalVisualizerMode: String = "off"
     @AppStorage("skin.kmgcccCassette.fullscreen.visualizerMode") private var fullscreenVisualizerMode: String = "off"
 
-    // MARK: - Fullscreen Fine-tuning Constants
-    /// Scale adjustment for cassette in fullscreen (<1.0 = smaller, 1.0 = no change)
-    private let cassetteFullscreenScaleAdjustment: CGFloat = 0.88
-    /// Additional leftward shift applied to the cassette body in fullscreen only.
-    /// Defined in base-canvas points so it scales proportionally with the canvas scaleEffect.
-    private let cassetteFullscreenExtraLeftShift: CGFloat = 50
-
     var body: some View {
         let isFullscreen = fullscreenManager.isFullscreenActive
-
-        let scaleAdjustment = isFullscreen ? cassetteFullscreenScaleAdjustment : 1.0
-
-        let adjustedContext = isFullscreen ? context.withContentSizeAdjustment(scaleAdjustment) : context
-
-        let size = CassetteLayout.cassetteSize(for: adjustedContext)
+        let metrics = CassetteLayout.metrics(
+            for: context,
+            isFullscreen: isFullscreen,
+            normalVisualizerMode: normalVisualizerMode,
+            fullscreenVisualizerMode: fullscreenVisualizerMode
+        )
+        let size = metrics.size
         let themeImages = cassetteThemeImages(for: size)
-        let visualizerMode = isFullscreen ? fullscreenVisualizerMode : normalVisualizerMode
-        let centeredYOffset: CGFloat = visualizerMode == "led" ? 12 : max(22, min(36, size.height * 0.07))
-        let horizontalOffset: CGFloat = -(12 + (isFullscreen ? cassetteFullscreenExtraLeftShift : 0))
+        let horizontalOffset = metrics.horizontalOffset
+        let centeredYOffset = metrics.centeredYOffset
 
         ZStack {
-            cassetteThemeImage(themeImages?.shellComposite, fallbackNamed: tapeAssetName)
+            cassetteThemeImage(themeImages?.shell, fallbackNamed: tapeAssetName)
                 .resizable()
                 .aspectRatio(contentMode: .fit)
                 .frame(width: size.width, height: size.height)
 
             maskedArtwork(size: size, maskImage: themeImages?.mask)
+
+            cassetteThemeImage(themeImages?.gray, fallbackNamed: "tapegray")
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(width: size.width, height: size.height)
+
+            cassetteThemeImage(themeImages?.paper, fallbackNamed: "tapepaper")
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(width: size.width, height: size.height)
+                .blendMode(.multiply)
+                .opacity(0.40)
+
+            cassetteThemeImage(themeImages?.outline, fallbackNamed: "tapeoutline")
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(width: size.width, height: size.height)
+                .opacity(context.theme.colorScheme == .dark ? 0.20 : 0.80)
         }
         .overlay(alignment: .bottomTrailing) {
             if showKmgLook {
@@ -474,6 +469,13 @@ private struct CassetteArtwork: View {
         adjustedVisible = false
 
         processingTask = Task(priority: .utility) {
+            defer {
+                Task { @MainActor in
+                    guard self.processingGeneration == generation else { return }
+                    self.processingTask = nil
+                }
+            }
+
             if let cached = await CassetteArtworkCache.shared.image(for: key),
                 !Task.isCancelled
             {
@@ -969,6 +971,11 @@ private struct WaveformCapsulesRepresentable: NSViewRepresentable {
 
 @MainActor
 private final class WaveformCapsulesHostView: NSView {
+    #if DEBUG
+        private static var liveInstanceCount = 0
+        private static let lifecycleLoggingEnabled =
+            ProcessInfo.processInfo.environment["KMGCCC_DEBUG_NOWPLAYING_LIFECYCLE"] == "1"
+    #endif
 
     private let service = AudioVisualizationService.shared
     private let rootLayer = CALayer()
@@ -987,10 +994,17 @@ private final class WaveformCapsulesHostView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         ensureViewLayerIfNeeded()
+        logLifecycle("init")
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    deinit {
+        MainActor.assumeIsolated {
+            logLifecycle("deinit")
+        }
     }
 
     override func layout() {
@@ -1070,12 +1084,16 @@ private final class WaveformCapsulesHostView: NSView {
         lastLayoutSize = .zero
         paletteSignature = 0
         cachedColors.removeAll(keepingCapacity: false)
+        layer?.removeAllAnimations()
+        rootLayer.removeAllAnimations()
         rootLayer.sublayers?.forEach { sublayer in
+            sublayer.removeAllAnimations()
             sublayer.mask = nil
             sublayer.contents = nil
             sublayer.removeFromSuperlayer()
         }
         rootLayer.sublayers = nil
+        rootLayer.contents = nil
         rootLayer.removeFromSuperlayer()
         capsuleLayers.removeAll(keepingCapacity: false)
         layer?.mask = nil
@@ -1083,6 +1101,24 @@ private final class WaveformCapsulesHostView: NSView {
         layer?.sublayers = nil
         layer = nil
         wantsLayer = false
+    }
+
+    private func logLifecycle(_ event: String) {
+        #if DEBUG
+            guard Self.lifecycleLoggingEnabled else { return }
+            switch event {
+            case "init":
+                Self.liveInstanceCount += 1
+            case "deinit":
+                Self.liveInstanceCount = max(0, Self.liveInstanceCount - 1)
+            default:
+                break
+            }
+            Log.info(
+                "[WaveformCapsulesHostView] \(event) live=\(Self.liveInstanceCount)",
+                category: .perf
+            )
+        #endif
     }
 
     private func ensureViewLayerIfNeeded() {
@@ -1365,13 +1401,19 @@ private struct CassetteOverlay: View {
     @AppStorage("skin.kmgcccCassette.fullscreen.visualizerMode") private var fullscreenVisualizerMode: String = "off"
 
     var body: some View {
-        let size = CassetteLayout.cassetteSize(for: context)
-        let yOffset = size.height / 2 + CassetteLayout.ledGap
         let isFullscreen = fullscreenManager.isFullscreenActive
-        let visualizerMode = isFullscreen ? fullscreenVisualizerMode : normalVisualizerMode
+        let metrics = CassetteLayout.metrics(
+            for: context,
+            isFullscreen: isFullscreen,
+            normalVisualizerMode: normalVisualizerMode,
+            fullscreenVisualizerMode: fullscreenVisualizerMode
+        )
+        let size = metrics.size
+        let yOffset = metrics.centeredYOffset + size.height / 2 + CassetteLayout.visualLedGap(for: size)
+        let horizontalOffset = metrics.horizontalOffset
 
         Group {
-            if visualizerMode == "led" {
+            if metrics.visualizerMode == "led" {
                 LedMeterView(
                     level: Double(context.audio.smoothedLevel),
                     ledValues: context.led.leds,
@@ -1380,7 +1422,7 @@ private struct CassetteOverlay: View {
                     pillTint: context.theme.artworkAccentColor
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                .offset(y: yOffset)
+                .offset(x: horizontalOffset, y: yOffset)
             }
         }
     }

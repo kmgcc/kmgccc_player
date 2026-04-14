@@ -137,7 +137,7 @@ final class LibraryViewModel {
         }
     }
 
-    /// Currently selected album key (normalized album + artist).
+    /// Currently selected album key (normalized logical album identity).
     var selectedAlbumKey: String? {
         didSet {
             if selectedAlbumKey != nil {
@@ -599,9 +599,9 @@ final class LibraryViewModel {
 
         var persisted = updated
         persisted.displayTitle = trimmedTitle
-        persisted.canonicalKey = LibraryNormalization.normalizedAlbumKey(
-            album: trimmedTitle,
-            artist: original.primaryArtistDisplayName
+        persisted.canonicalKey = LibraryNormalization.retitledAlbumKey(
+            existingKey: original.canonicalKey,
+            newAlbumTitle: trimmedTitle
         )
         persisted.primaryArtistCanonicalName = original.primaryArtistCanonicalName
         persisted.primaryArtistDisplayName = original.primaryArtistDisplayName
@@ -619,6 +619,27 @@ final class LibraryViewModel {
         await refresh()
     }
 
+    func restoreDefaultAlbumArtwork(_ entry: AlbumEntry) async {
+        let fallbackArtwork = allTracks.first {
+            $0.albumGroupKey == entry.canonicalKey
+        }?.artworkData
+
+        var updated = entry
+        updated.artworkFileName = nil
+        updated.artworkData = fallbackArtwork
+        updated.updatedAt = Date()
+
+        await repository.updateAlbumEntry(updated)
+        if let idx = albumEntries.firstIndex(where: { $0.id == updated.id }) {
+            albumEntries[idx] = updated
+        }
+
+        await invalidateDetailSelectionCacheIfNeeded(
+            selectionIdentity: "album-\(updated.canonicalKey)"
+        )
+        await refresh()
+    }
+
     func deleteArtist(_ entry: ArtistEntry) async {
         let affectedTrackIDs = Set(
             allTracks
@@ -628,7 +649,7 @@ final class LibraryViewModel {
         let affectedAlbumKeys = Set(
             allTracks
                 .filter { LibraryNormalization.normalizeArtist($0.artist) == entry.canonicalName }
-                .map { LibraryNormalization.normalizedAlbumKey(album: $0.album, artist: $0.artist) }
+                .map(\.albumGroupKey)
         )
 
         if currentSelection == .artist(entry.canonicalName) {
@@ -645,10 +666,7 @@ final class LibraryViewModel {
     func deleteAlbum(_ entry: AlbumEntry) async {
         let affectedTrackIDs = Set(
             allTracks
-                .filter {
-                    LibraryNormalization.normalizedAlbumKey(album: $0.album, artist: $0.artist)
-                        == entry.canonicalKey
-                }
+                .filter { $0.albumGroupKey == entry.canonicalKey }
                 .map(\.id)
         )
 

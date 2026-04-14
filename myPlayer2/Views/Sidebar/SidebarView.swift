@@ -102,6 +102,16 @@ struct SidebarView: View {
                         .buttonStyle(.plain)
                         .listRowInsets(EdgeInsets(top: 1, leading: 6, bottom: 1, trailing: 6))
                         .listRowBackground(Color.clear)
+                        .contextMenu {
+                            Button(role: .destructive) {
+                                deletionRequest = .playlist(playlist: playlist)
+                            } label: {
+                                Label(
+                                    NSLocalizedString("edit.playlist.delete", comment: ""),
+                                    systemImage: "trash"
+                                )
+                            }
+                        }
                     }
                 } header: {
                     HStack {
@@ -455,6 +465,8 @@ struct SidebarView: View {
         deletionRequest = nil
         Task {
             switch request {
+            case .playlist(let playlist):
+                await libraryVM.deletePlaylist(playlist)
             case .artist(let entry, _):
                 await libraryVM.deleteArtist(entry)
             case .album(let entry, _):
@@ -474,11 +486,14 @@ private enum SidebarSelection: Hashable {
 }
 
 private enum SidebarDeletionRequest: Identifiable {
+    case playlist(playlist: Playlist)
     case artist(entry: ArtistEntry, trackCount: Int)
     case album(entry: AlbumEntry, trackCount: Int)
 
     var id: String {
         switch self {
+        case .playlist(let playlist):
+            return "playlist-\(playlist.id.uuidString)"
         case .artist(let entry, _):
             return "artist-\(entry.id.uuidString)"
         case .album(let entry, _):
@@ -488,6 +503,8 @@ private enum SidebarDeletionRequest: Identifiable {
 
     var title: String {
         switch self {
+        case .playlist:
+            return NSLocalizedString("edit.playlist.delete_confirm_title", comment: "")
         case .artist:
             return NSLocalizedString("sidebar.delete_artist_confirm_title", comment: "")
         case .album:
@@ -497,6 +514,8 @@ private enum SidebarDeletionRequest: Identifiable {
 
     var confirmActionTitle: String {
         switch self {
+        case .playlist:
+            return NSLocalizedString("edit.playlist.delete_confirm", comment: "")
         case .artist:
             return NSLocalizedString("sidebar.delete_artist", comment: "")
         case .album:
@@ -506,6 +525,8 @@ private enum SidebarDeletionRequest: Identifiable {
 
     var message: String {
         switch self {
+        case .playlist:
+            return NSLocalizedString("edit.playlist.delete_desc", comment: "")
         case .artist(let entry, let trackCount):
             return String(
                 format: NSLocalizedString("sidebar.delete_artist_confirm_message", comment: ""),

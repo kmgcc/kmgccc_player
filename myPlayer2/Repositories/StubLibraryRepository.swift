@@ -204,19 +204,12 @@ final class StubLibraryRepository: LibraryRepositoryProtocol {
     }
 
     func fetchAlbumSections() async -> [AlbumSection] {
-        Dictionary(
-            grouping: allTracks,
-            by: { LibraryNormalization.normalizedAlbumKey(album: $0.album, artist: $0.artist) }
-        )
-        .map { key, tracks in
-            AlbumSection(
-                key: key,
-                name: LibraryNormalization.displayAlbum(tracks.first?.album),
-                artistName: LibraryNormalization.displayArtist(tracks.first?.artist),
-                trackCount: tracks.count
-            )
+        let grouping = LibraryNormalization.buildAlbumGrouping(tracks: allTracks)
+        for track in allTracks {
+            track.albumGroupKey = grouping.albumKeyByTrackID[track.id]
+                ?? LibraryNormalization.normalizedAlbumKey(album: track.album)
         }
-        .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        return grouping.sections
     }
 
     func fetchPlaylistItemAddedAtMap() async -> [UUID: [UUID: Date]] {

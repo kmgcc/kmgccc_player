@@ -72,8 +72,7 @@ struct LibraryDetailHeaderView: View {
     @State private var editDescription = ""
     @State private var editYear = ""
     @State private var isImportingArtwork = false
-    @State private var isRegeneratingArtwork = false
-    @State private var showingPlaylistDeleteConfirmation = false
+    @State private var isArtworkActionInFlight = false
 
     var body: some View {
         let _ = LyricsRuntimeProfile.markBody("LibraryDetailHeaderView.body")
@@ -111,25 +110,6 @@ struct LibraryDetailHeaderView: View {
         ) { result in
             handleArtworkImport(result: result)
         }
-        .confirmationDialog(
-            NSLocalizedString("edit.playlist.delete_confirm_title", comment: ""),
-            isPresented: $showingPlaylistDeleteConfirmation,
-            titleVisibility: .visible
-        ) {
-            Button(
-                NSLocalizedString("edit.playlist.delete_confirm", comment: ""),
-                role: .destructive
-            ) {
-                Task {
-                    if case .playlist(let playlist, _) = config {
-                        await libraryVM.deletePlaylist(playlist)
-                    }
-                }
-            }
-            Button(NSLocalizedString("edit.track.cancel", comment: ""), role: .cancel) {}
-        } message: {
-            Text(NSLocalizedString("edit.playlist.delete_desc", comment: ""))
-        }
     }
 
     // MARK: - Artwork column
@@ -142,7 +122,7 @@ struct LibraryDetailHeaderView: View {
                     .clipShape(artworkClipShape)
 
                 // Loading overlay during regeneration
-                if isRegeneratingArtwork {
+                if isArtworkActionInFlight {
                     Rectangle()
                         .fill(.ultraThinMaterial)
                         .overlay(
@@ -158,13 +138,22 @@ struct LibraryDetailHeaderView: View {
                     if canGenerateArtwork {
                         artworkActionButton(
                             icon: "wand.and.stars",
+                            help: NSLocalizedString("header.generate_artwork", comment: ""),
                             action: { handleRegenerateArtwork() }
                         )
                     }
 
-                    // Import button (right)
+                    if canRestoreDefaultArtwork {
+                        artworkActionButton(
+                            icon: "arrow.counterclockwise",
+                            help: NSLocalizedString("header.restore_default_album_artwork", comment: ""),
+                            action: { handleRestoreDefaultArtwork() }
+                        )
+                    }
+
                     artworkActionButton(
                         icon: "photo.badge.plus",
+                        help: NSLocalizedString("header.import_artwork", comment: ""),
                         action: { isImportingArtwork = true }
                     )
                 }
@@ -174,10 +163,15 @@ struct LibraryDetailHeaderView: View {
     }
 
     /// Compact artwork action button with Liquid Glass styling
-    private func artworkActionButton(icon: String, action: @escaping () -> Void) -> some View {
+    private func artworkActionButton(
+        icon: String,
+        help: String,
+        action: @escaping () -> Void
+    ) -> some View {
         HeaderArtworkActionButton(
             icon: icon,
             colorScheme: colorScheme,
+            help: help,
             action: action
         )
     }
@@ -345,9 +339,6 @@ struct LibraryDetailHeaderView: View {
         HStack(spacing: 10) {
             playButton
             editButton
-            if case .playlist = config {
-                playlistDeleteButton
-            }
         }
     }
 
@@ -368,17 +359,6 @@ struct LibraryDetailHeaderView: View {
             symbolName: "pencil"
         ) {
             if isEditing { commitEdits() } else { beginEditing() }
-        }
-    }
-
-    private var playlistDeleteButton: some View {
-        HeaderEditButton(
-            isEditing: false,
-            colorScheme: colorScheme,
-            buttonHeight: buttonHeight,
-            symbolName: "trash"
-        ) {
-            showingPlaylistDeleteConfirmation = true
         }
     }
 
@@ -513,10 +493,17 @@ struct LibraryDetailHeaderView: View {
         }
     }
 
-    private func handleRegenerateArtwork() {
-        guard !isRegeneratingArtwork else { return }
+    private var canRestoreDefaultArtwork: Bool {
+        if case .album = config {
+            return true
+        }
+        return false
+    }
 
-        isRegeneratingArtwork = true
+    private func handleRegenerateArtwork() {
+        guard !isArtworkActionInFlight else { return }
+
+        isArtworkActionInFlight = true
 
         Task {
             switch config {
@@ -532,7 +519,7 @@ struct LibraryDetailHeaderView: View {
                     snapshots: snapshots,
                     variationSeed: variationSeed
                 ) else {
-                    await MainActor.run { isRegeneratingArtwork = false }
+                    await MainActor.run { isArtworkActionInFlight = false }
                     return
                 }
 
@@ -543,7 +530,7 @@ struct LibraryDetailHeaderView: View {
                         image: image
                     )
                     onArtworkMutation()
-                    isRegeneratingArtwork = false
+                    isArtworkActionInFlight = false
                 }
             case .artist(let entry, _):
                 let artistTracks = libraryVM.allTracks.filter {
@@ -554,12 +541,12 @@ struct LibraryDetailHeaderView: View {
                     artistName: entry.displayName,
                     tracks: artistTracks
                 ) else {
-                    await MainActor.run { isRegeneratingArtwork = false }
+                    await MainActor.run { isArtworkActionInFlight = false }
                     return
                 }
 
                 guard let pngData = generatedArtwork.pngData() else {
-                    await MainActor.run { isRegeneratingArtwork = false }
+                    await MainActor.run { isArtworkActionInFlight = false }
                     return
                 }
 
@@ -568,12 +555,26 @@ struct LibraryDetailHeaderView: View {
                 updated.artworkData = pngData
                 await libraryVM.saveArtistEntry(updated)
                 await MainActor.run {
-                    isRegeneratingArtwork = false
+                    isArtworkActionInFlight = false
                 }
             case .album:
                 await MainActor.run {
-                    isRegeneratingArtwork = false
+                    isArtworkActionInFlight = false
                 }
+            }
+        }
+    }
+
+    private func handleRestoreDefaultArtwork() {
+        guard !isArtworkActionInFlight else { return }
+        guard case .album(let entry, _) = config else { return }
+
+        isArtworkActionInFlight = true
+        Task {
+            await libraryVM.restoreDefaultAlbumArtwork(entry)
+            await MainActor.run {
+                onArtworkMutation()
+                isArtworkActionInFlight = false
             }
         }
     }
@@ -612,6 +613,7 @@ private struct HeaderArtworkActionButton: View {
 
     let icon: String
     let colorScheme: ColorScheme
+    let help: String
     let action: () -> Void
 
     var body: some View {
@@ -640,6 +642,7 @@ private struct HeaderArtworkActionButton: View {
         }
         .clipShape(Circle())
         .shadow(color: .black.opacity(0.2), radius: 3, x: 0, y: 1)
+        .help(help)
         .transaction { transaction in
             transaction.animation = nil
         }

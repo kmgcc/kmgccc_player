@@ -242,6 +242,11 @@ struct FullscreenPlayerView: View {
         }
         .onChange(of: selectedSkinID) { oldValue, newValue in
             skinRevision &+= 1
+            if oldValue == "kmgccc.cassette", newValue != oldValue {
+                Task {
+                    await CassetteArtworkCache.shared.removeAll()
+                }
+            }
             let coverBlurTransition = oldValue == "fullscreen.coverGradientBlur"
                 || newValue == "fullscreen.coverGradientBlur"
             syncCoverBlurHighlightActivation()
@@ -339,7 +344,8 @@ struct FullscreenPlayerView: View {
                     avoidanceRect: nil,
                     resourceProfile: settings.fullscreen.skinID == "kmgccc.cassette"
                         ? .cassetteForeground
-                        : .standard
+                        : .standard,
+                    dotRenderStyle: .solidCircles
                 )
                 .ignoresSafeArea()
 
@@ -604,6 +610,7 @@ struct FullscreenPlayerView: View {
             currentTrackID: playerVM.currentTrack?.id,
             playbackMode: currentPlaybackMode,
             glassStyle: fullscreenControlsGlassStyle,
+            usesBrightTextPalette: fullscreenQueueUsesBrightTextPalette,
             scale: scale,
             visibleHeight: visibleHeight,
             onTrackTap: { track in
@@ -982,7 +989,7 @@ struct FullscreenPlayerView: View {
         VStack {
             Spacer()
             ZStack(alignment: .leading) {
-                Color.clear
+                Color.white.opacity(0.001)
                     .frame(width: hotZoneWidth, height: hotZoneHeight)
                     .contentShape(
                         RoundedRectangle(
@@ -1000,86 +1007,88 @@ struct FullscreenPlayerView: View {
                         }
                     }
 
-                leadingControlsPill(
-                    size: scaledButtonSize,
-                    materialStyle: fullscreenControlsGlassStyle.materialStyle
-                )
+                ZStack(alignment: .leading) {
+                    leadingControlsPill(
+                        size: scaledButtonSize,
+                        materialStyle: fullscreenControlsGlassStyle.materialStyle
+                    )
+                        .glassEffectTransition(.materialize)
+                        .frame(width: scaledLeadingControlsWidth, height: scaledButtonSize)
+                        .position(
+                            x: scaledLeadingControlsOriginX + scaledLeadingControlsWidth / 2,
+                            y: controlsCenterY
+                        )
+
+                    FullscreenMiniPlayerView(
+                        scale: scale,
+                        glassStyle: fullscreenControlsGlassStyle,
+                        playbackMode: currentPlaybackMode,
+                        onPlaybackModeChange: handlePlaybackModeChange,
+                        onCurrentPlaybackModeRetap: handleCurrentPlaybackModeRetap,
+                        onInteraction: {
+                            registerFullscreenBottomControlsInteraction()
+                        },
+                        onHoverStateChanged: { hovering in
+                            updateFullscreenBottomControlsHoverGate(center: hovering)
+                            if hovering {
+                                registerFullscreenBottomControlsInteraction()
+                            }
+                        },
+                        onProgressDraggingChanged: { dragging in
+                            isFullscreenBottomControlsProgressDragging = dragging
+                            if dragging {
+                                registerFullscreenBottomControlsInteraction()
+                            } else {
+                                scheduleFullscreenBottomControlsAutoHideIfNeeded()
+                            }
+                        }
+                    )
                     .glassEffectTransition(.materialize)
-                    .frame(width: scaledLeadingControlsWidth, height: scaledButtonSize)
+                    .frame(width: scaledMiniPlayerWidth, height: scaledButtonSize)
+                    .environment(\.colorScheme, fullscreenControlsGlassStyle.colorScheme)
                     .position(
-                        x: scaledLeadingControlsOriginX + scaledLeadingControlsWidth / 2,
+                        x: scaledMiniPlayerOriginX + scaledMiniPlayerWidth / 2,
                         y: controlsCenterY
                     )
 
-                FullscreenMiniPlayerView(
-                    scale: scale,
-                    glassStyle: fullscreenControlsGlassStyle,
-                    playbackMode: currentPlaybackMode,
-                    onPlaybackModeChange: handlePlaybackModeChange,
-                    onCurrentPlaybackModeRetap: handleCurrentPlaybackModeRetap,
-                    onInteraction: {
-                        registerFullscreenBottomControlsInteraction()
-                    },
-                    onHoverStateChanged: { hovering in
-                        updateFullscreenBottomControlsHoverGate(center: hovering)
-                        if hovering {
+                    ExpandableVolumeControl(
+                        volume: volumeBinding,
+                        isExpanded: $isVolumeExpanded,
+                        scale: scale,
+                        onInteraction: {
                             registerFullscreenBottomControlsInteraction()
-                        }
-                    },
-                    onProgressDraggingChanged: { dragging in
-                        isFullscreenBottomControlsProgressDragging = dragging
-                        if dragging {
-                            registerFullscreenBottomControlsInteraction()
-                        } else {
-                            scheduleFullscreenBottomControlsAutoHideIfNeeded()
-                        }
-                    }
-                )
-                .glassEffectTransition(.materialize)
-                .frame(width: scaledMiniPlayerWidth, height: scaledButtonSize)
-                .environment(\.colorScheme, fullscreenControlsGlassStyle.colorScheme)
-                .position(
-                    x: scaledMiniPlayerOriginX + scaledMiniPlayerWidth / 2,
-                    y: controlsCenterY
-                )
-
-                ExpandableVolumeControl(
-                    volume: volumeBinding,
-                    isExpanded: $isVolumeExpanded,
-                    scale: scale,
-                    onInteraction: {
-                        registerFullscreenBottomControlsInteraction()
-                    },
-                    onHoverStateChanged: { hovering in
-                        updateFullscreenBottomControlsHoverGate(trailing: hovering)
-                        if hovering {
-                            registerFullscreenBottomControlsInteraction()
-                        } else {
-                            scheduleFullscreenBottomControlsAutoHideIfNeeded()
-                        }
-                    },
-                    onAdjustingChanged: { adjusting in
-                        isFullscreenBottomControlsVolumeAdjusting = adjusting
-                        if adjusting {
-                            registerFullscreenBottomControlsInteraction()
-                        } else {
-                            scheduleFullscreenBottomControlsAutoHideIfNeeded()
-                        }
-                    },
-                    materialStyle: fullscreenControlsGlassStyle.materialStyle
-                )
-                .glassEffectTransition(.materialize)
-                .frame(width: scaledVolumeWidth, height: scaledButtonSize)
-                .environment(\.colorScheme, fullscreenControlsGlassStyle.colorScheme)
-                .position(
-                    x: scaledVolumeOriginX + scaledVolumeWidth / 2,
-                    y: controlsCenterY
-                )
+                        },
+                        onHoverStateChanged: { hovering in
+                            updateFullscreenBottomControlsHoverGate(trailing: hovering)
+                            if hovering {
+                                registerFullscreenBottomControlsInteraction()
+                            } else {
+                                scheduleFullscreenBottomControlsAutoHideIfNeeded()
+                            }
+                        },
+                        onAdjustingChanged: { adjusting in
+                            isFullscreenBottomControlsVolumeAdjusting = adjusting
+                            if adjusting {
+                                registerFullscreenBottomControlsInteraction()
+                            } else {
+                                scheduleFullscreenBottomControlsAutoHideIfNeeded()
+                            }
+                        },
+                        materialStyle: fullscreenControlsGlassStyle.materialStyle
+                    )
+                    .glassEffectTransition(.materialize)
+                    .frame(width: scaledVolumeWidth, height: scaledButtonSize)
+                    .environment(\.colorScheme, fullscreenControlsGlassStyle.colorScheme)
+                    .position(
+                        x: scaledVolumeOriginX + scaledVolumeWidth / 2,
+                        y: controlsCenterY
+                    )
+                }
+                .opacity(isFullscreenBottomControlsVisible ? 1 : 0)
+                .allowsHitTesting(isFullscreenBottomControlsVisible)
+                .accessibilityHidden(!isFullscreenBottomControlsVisible)
             }
             .frame(width: scaledWindowWidth, height: controlsRowHeight, alignment: .leading)
-            .opacity(isFullscreenBottomControlsVisible ? 1 : 0)
-            .allowsHitTesting(isFullscreenBottomControlsVisible)
-            .accessibilityHidden(!isFullscreenBottomControlsVisible)
             .padding(.bottom, adjustedBottomPadding)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1352,6 +1361,11 @@ struct FullscreenPlayerView: View {
             accentColor: themeStore.usesFallbackThemeColor ? nil : themeStore.accentColor,
             materialStyle: settings.fullscreenMiniPlayerGlassMaterial == .darkGlass ? .darkGlass : .clear
         )
+    }
+
+    private var fullscreenQueueUsesBrightTextPalette: Bool {
+        let skinID = settings.fullscreen.skinID
+        return skinID == "coverLed" || skinID == "rotatingCover" || skinID == "kmgccc.cassette"
     }
 
     private var fullscreenControlsColorScheme: ColorScheme {
@@ -2669,7 +2683,7 @@ struct FullscreenPlayerView: View {
     }
 
     private var preferredArtworkFullImageMaxPixel: Int {
-        settings.fullscreen.skinID == "kmgccc.cassette" ? 1_100 : 1_400
+        1_400
     }
 
     private func hslComponents(from color: NSColor) -> (hue: CGFloat, saturation: CGFloat, lightness: CGFloat)

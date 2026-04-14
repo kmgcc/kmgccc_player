@@ -353,9 +353,7 @@ struct TrackEditSheet: View {
 
             // LDDC Lyrics Search
             LDDCSearchSection(track: track) { ttml in
-                // Update lyrics text
                 lyricsText = ttml
-                saveChanges(preferredReason: "trackEditLyrics")
             }
         }
         .fileImporter(
@@ -420,17 +418,7 @@ struct TrackEditSheet: View {
             || savedAlbum != track.album
             || abs(lyricsTimeOffsetMs - track.lyricsTimeOffsetMs) > 0.000_1
 
-        let trimmedLyrics = lyricsText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let targetTTML: String? = {
-            guard !trimmedLyrics.isEmpty else { return nil }
-            return trimmedLyrics.lowercased().contains("<tt") ? trimmedLyrics : nil
-        }()
-        let targetPlainLyrics: String? = {
-            guard !trimmedLyrics.isEmpty else { return nil }
-            return trimmedLyrics.lowercased().contains("<tt") ? nil : trimmedLyrics
-        }()
-
-        let lyricsChanged = track.ttmlLyricText != targetTTML || track.lyricsText != targetPlainLyrics
+        let lyricsChanged = TrackLyricsDraft.differs(from: track, editorText: lyricsText)
         let artworkChanged = artworkData != track.artworkData
         let hasChanges = metadataChanged || lyricsChanged || artworkChanged
 
@@ -472,17 +460,7 @@ struct TrackEditSheet: View {
             artist.isEmpty ? NSLocalizedString("library.unknown_artist", comment: "") : artist
         track.album =
             album.isEmpty ? NSLocalizedString("library.unknown_album", comment: "") : album
-        let trimmedLyrics = lyricsText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmedLyrics.isEmpty {
-            track.lyricsText = nil
-            track.ttmlLyricText = nil
-        } else if trimmedLyrics.lowercased().contains("<tt") {
-            track.ttmlLyricText = trimmedLyrics
-            track.lyricsText = nil
-        } else {
-            track.lyricsText = trimmedLyrics
-            track.ttmlLyricText = nil
-        }
+        TrackLyricsDraft.assign(editorText: lyricsText, to: track)
         track.artworkData = artworkData
         track.lyricsTimeOffsetMs = lyricsTimeOffsetMs
 
