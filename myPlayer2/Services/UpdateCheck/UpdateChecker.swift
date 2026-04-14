@@ -38,6 +38,7 @@ final class UpdateChecker: ObservableObject {
     func checkForUpdates() async {
         isChecking = true
         error = nil
+        remoteInfo = nil
         
         do {
             // Add timestamp to bypass GitHub Pages cache
@@ -53,8 +54,13 @@ final class UpdateChecker: ObservableObject {
                 throw UpdateError.invalidResponse
             }
             
-            let info = try JSONDecoder().decode(RemoteVersionInfo.self, from: data)
+            let decodeResult = try RemoteVersionInfo.decodeResult(from: data)
+            let info = decodeResult.info
             self.remoteInfo = info
+            
+            if decodeResult.usedSanitizedJSON {
+                print("[UpdateChecker] ⚠️ Remote version.json was malformed; recovered by escaping raw control characters in strings")
+            }
             
             // Log for debugging
             print("[UpdateChecker] ✅ Remote version fetched:")
