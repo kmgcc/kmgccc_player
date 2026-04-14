@@ -1,4 +1,4 @@
-# User requested exclusions
+# Manual exclusions
 BKThemes/
 apple-audio-visualization-main/
 applemusic-like-lyrics-full-refractor/
@@ -13,9 +13,6 @@ ui_candidates.txt
 myPlayer2/scan_ui.py
 myPlayer2/ui_candidates.txt
 myPlayer2/Assets.xcassets/
-pv-tool
-pv-demo/
-pv-embed/
 
 # Tool working directories
 .opencode/
@@ -52,14 +49,11 @@ env/
 dist/
 *.spec
 
-# LDDC_Fetch_Core - use zip archive instead
-LDDC_Fetch_Core/
-
 # Tools / Binary distributions
 Tools/lddc-server/
 .derivedDataLocalBuild/
 *.flac
-LIQUID_GLASS_SPEC.md
+/LIQUID_GLASS_SPEC.md
 *.bak
 .claude/worktrees/
 .worktrees/
