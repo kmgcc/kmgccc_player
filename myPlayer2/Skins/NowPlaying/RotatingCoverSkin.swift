@@ -48,7 +48,7 @@ private enum RotatingCoverLayout {
     private static let classicFullscreenVisualScale: CGFloat = 1.2
     private static let baseExpansionRatio: CGFloat = 1.12
 
-    static let discToBaseRatio: CGFloat = 0.67
+    static let discToBaseRatio: CGFloat = 0.75
     static let yOffsetWindow: CGFloat = 18
     static let yOffsetFullscreen: CGFloat = 32
 
@@ -116,9 +116,9 @@ private enum RotatingCoverDiscMode {
             )
         case .cd:
             return RotationProfile(
-                maxSpeed: 3200.0,
-                startTau: 0.11,
-                stopTau: 0.58
+                maxSpeed: 3100.0,
+                startTau: 0.40,
+                stopTau: 0.68
             )
         }
     }
