@@ -119,6 +119,7 @@ struct KmgcccPlayerApp: App {
 
     // MARK: - AppDelegate
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    @StateObject private var settingsSceneDependencies = SettingsSceneDependencies()
 
     // MARK: - SwiftData Container
 
@@ -142,7 +143,7 @@ struct KmgcccPlayerApp: App {
 
     var body: some Scene {
         WindowGroup("") {
-            AppRootView()
+            AppRootView(settingsSceneDependencies: settingsSceneDependencies)
                 .frame(minWidth: 1100, minHeight: 600)
         }
         .modelContainer(sharedModelContainer)
@@ -242,8 +243,27 @@ struct KmgcccPlayerApp: App {
         }
 
         Settings {
-            SettingsRootView()
-                .modelContainer(sharedModelContainer)
+            Group {
+                if let libraryVM = settingsSceneDependencies.libraryVM,
+                   let playerVM = settingsSceneDependencies.playerVM,
+                   let lyricsVM = settingsSceneDependencies.lyricsVM,
+                   let ledMeterProvider = settingsSceneDependencies.ledMeterProvider {
+                    SettingsRootView(
+                        libraryVM: libraryVM,
+                        playerVM: playerVM,
+                        lyricsVM: lyricsVM,
+                        ledMeterProvider: ledMeterProvider
+                    )
+                } else {
+                    VStack(spacing: 16) {
+                        ProgressView()
+                        Text("加载设置中...")
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(width: 400, height: 200)
+                }
+            }
+            .modelContainer(sharedModelContainer)
         }
     }
 }

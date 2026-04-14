@@ -8,30 +8,21 @@
 import SwiftUI
 
 struct SettingsRootView: View {
+    let libraryVM: LibraryViewModel
+    let playerVM: PlayerViewModel
+    let lyricsVM: LyricsViewModel
+    let ledMeterProvider: LEDMeterServiceProvider
+
     @StateObject private var themeStore = ThemeStore.shared
     @State private var settings = AppSettings.shared
-    @ObservedObject private var sharedState = SharedAppState.shared
 
     var body: some View {
-        if let libraryVM = sharedState.libraryVM,
-           let playerVM = sharedState.playerVM,
-           let lyricsVM = sharedState.lyricsVM,
-           let ledMeterProvider = sharedState.ledMeterProvider
-        {
-            SettingsView()
-                .environment(settings)
-                .environment(libraryVM)
-                .environment(playerVM)
-                .environment(lyricsVM)
-                .environment(ledMeterProvider)
-                .environmentObject(themeStore)
-        } else {
-            VStack(spacing: 16) {
-                ProgressView()
-                Text("加载设置中...")
-                    .foregroundStyle(.secondary)
-            }
-            .frame(width: 400, height: 200)
-        }
+        SettingsView()
+            .environment(settings)
+            .environment(libraryVM)
+            .environment(playerVM)
+            .environment(lyricsVM)
+            .environment(ledMeterProvider)
+            .environmentObject(themeStore)
     }
 }

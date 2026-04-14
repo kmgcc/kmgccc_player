@@ -95,6 +95,7 @@ private extension String {
 /// Creates real services for production, stubs for previews.
 @MainActor
 struct AppRootView: View {
+    @ObservedObject var settingsSceneDependencies: SettingsSceneDependencies
 
     @Environment(\.modelContext) private var modelContext
 
@@ -314,14 +315,35 @@ struct AppRootView: View {
         )
 
         // Create ViewModels
+        let playerVM = PlayerViewModel(playbackService: playbackService, levelMeter: ledMeterProvider)
         let libVM = LibraryViewModel(
             repository: repository,
             libraryService: libraryService
         )
         libVM.setImportService(fileImportService)
+        libVM.currentTrackIDProvider = { [weak playerVM] in
+            playerVM?.currentTrack?.id
+        }
+        libVM.onTracksDeleted = { [weak playerVM] deletedTrackIDs in
+            guard let playerVM, !deletedTrackIDs.isEmpty else { return }
+
+            if let currentTrackID = playerVM.currentTrack?.id, deletedTrackIDs.contains(currentTrackID) {
+                playerVM.stop()
+                return
+            }
+
+            let remainingQueue = playerVM.currentQueueTracks.filter { !deletedTrackIDs.contains($0.id) }
+            guard remainingQueue.count != playerVM.currentQueueTracks.count else { return }
+
+            if remainingQueue.isEmpty {
+                playerVM.stop()
+            } else {
+                playerVM.updateQueueTracks(remainingQueue)
+            }
+        }
 
         libraryVM = libVM
-        playerVM = PlayerViewModel(playbackService: playbackService, levelMeter: ledMeterProvider)
+        self.playerVM = playerVM
         lyricsVM = LyricsViewModel(settings: AppSettings.shared)
         self.ledMeterProvider = ledMeterProvider
         self.importEnrichmentService = importEnrichmentService
@@ -330,20 +352,18 @@ struct AppRootView: View {
 
         // Configure fullscreen window manager with dependencies
         FullscreenWindowManager.shared.configure(
-            playerVM: playerVM!,
+            playerVM: playerVM,
             lyricsVM: lyricsVM!,
             ledMeterProvider: ledMeterProvider,
             skinManager: skinManager!,
             uiState: uiState
         )
 
-        SharedAppState.shared.configure(
+        settingsSceneDependencies.configure(
             libraryVM: libVM,
-            playerVM: playerVM!,
+            playerVM: playerVM,
             lyricsVM: lyricsVM!,
-            ledMeterProvider: ledMeterProvider,
-            skinManager: skinManager!,
-            themeStore: themeStore
+            ledMeterProvider: ledMeterProvider
         )
 
         libraryService.startMonitoring(repository: repository)
@@ -354,7 +374,7 @@ struct AppRootView: View {
                     scenario,
                     repository: repository,
                     libraryVM: libVM,
-                    playerVM: playerVM!
+                    playerVM: playerVM
                 )
             }
         }
@@ -930,7 +950,7 @@ private struct MainAppContentView: View {
 // MARK: - Preview
 
 #Preview("App Root") {
-    AppRootView()
+    AppRootView(settingsSceneDependencies: SettingsSceneDependencies())
         .modelContainer(for: [TrackIndexEntry.self], inMemory: true)
         .frame(width: 1200, height: 800)
 }
