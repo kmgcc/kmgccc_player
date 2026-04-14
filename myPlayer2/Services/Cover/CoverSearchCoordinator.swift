@@ -44,8 +44,7 @@ final class CoverSearchCoordinator {
         self.netEaseCoverService = netEaseCoverService
     }
 
-    /// Searches both sources concurrently, merges and sorts candidates.
-    /// The highest-resolution candidate becomes selectedForPreview.
+    /// Searches NetEase first so the UI can render quickly, then merges slower sources in the background.
     func search(artist: String, album: String) async {
         searchTask?.cancel()
         isLoading = true
@@ -61,79 +60,75 @@ final class CoverSearchCoordinator {
                 searchTask = nil
             }
 
-            // Concurrent search from both sources
-            var sacadCandidate: CoverCandidate? = nil
-            var neteaseCandidates: [CoverCandidate] = []
+            do {
+                let preferredCandidate = try await withCoverLookupTimeout(
+                    CoverLookupConfiguration.netEasePreferredTimeout
+                ) {
+                    try await self.netEaseCoverService.searchTopCoverCandidate(
+                        artist: artist,
+                        album: album
+                    )
+                }
+                guard !Task.isCancelled else { return }
+                self.publishMergedCandidates([preferredCandidate], preferExistingSelection: false)
+            } catch {
+                print("[CoverSearchCoordinator] NetEase preferred candidate failed: \(error)")
+            }
 
-            await withTaskGroup(of: Void.self) { group in
-                // Sacad search (single result)
+            var backgroundCandidates: [CoverCandidate] = []
+            await withTaskGroup(of: [CoverCandidate].self) { group in
                 group.addTask {
                     do {
-                        let data = try await self.coverDownloadService.downloadCover(
-                            artist: artist,
-                            album: album,
-                            size: 1200
-                        )
-                        if !Task.isCancelled {
-                            let candidate = await MainActor.run {
-                                CoverCandidate(
-                                    imageData: data,
-                                    source: .sacad,
-                                    sourceItemId: normalizedQuery
-                                )
-                            }
-                            sacadCandidate = candidate
+                        return try await withCoverLookupTimeout(
+                            CoverLookupConfiguration.netEaseCandidatesTimeout
+                        ) {
+                            try await self.netEaseCoverService.searchCoverCandidates(
+                                artist: artist,
+                                album: album,
+                                limit: CoverLookupConfiguration.netEaseCandidateLimit
+                            )
                         }
                     } catch {
-                        // Sacad failed - continue with NetEase only
+                        print("[CoverSearchCoordinator] NetEase candidates failed: \(error)")
+                        return []
+                    }
+                }
+
+                group.addTask {
+                    do {
+                        let data = try await withCoverLookupTimeout(
+                            CoverLookupConfiguration.sacadTimeout
+                        ) {
+                            try await self.coverDownloadService.downloadCover(
+                                artist: artist,
+                                album: album,
+                                size: 1200
+                            )
+                        }
+                        let candidate = CoverCandidate(
+                            imageData: data,
+                            source: .sacad,
+                            sourceItemId: normalizedQuery
+                        )
+                        return [candidate]
+                    } catch {
                         print("[CoverSearchCoordinator] Sacad failed: \(error)")
+                        return []
                     }
                 }
 
-                // NetEase multi-candidate search
-                group.addTask {
-                    do {
-                        let results = try await self.netEaseCoverService.searchCoverCandidates(
-                            artist: artist,
-                            album: album,
-                            limit: 5
-                        )
-                        if !Task.isCancelled {
-                            neteaseCandidates = results
-                        }
-                    } catch {
-                        // NetEase failed - continue with sacad only
-                        print("[CoverSearchCoordinator] NetEase failed: \(error)")
+                for await partialCandidates in group {
+                    guard !Task.isCancelled else { return }
+                    backgroundCandidates.append(contentsOf: partialCandidates)
+                    self.publishMergedCandidates(backgroundCandidates, preferExistingSelection: true)
+                    if self.candidates.isEmpty == false {
+                        self.error = nil
                     }
                 }
             }
 
-            // If cancelled, don't update candidates - just exit
             guard !Task.isCancelled else { return }
-
-            // Merge candidates
-            var merged: [CoverCandidate] = []
-
-            // Add sacad result first (it's from authoritative sources)
-            if let sacad = sacadCandidate {
-                merged.append(sacad)
-            }
-
-            // Add NetEase results, deduplicating by ID
-            for candidate in neteaseCandidates {
-                // Skip if already present (same ID means same source item)
-                if !merged.contains(candidate) {
-                    merged.append(candidate)
-                }
-            }
-
-            // Sort by resolution descending
-            merged.sort { $0.resolution > $1.resolution }
-
-            candidates = merged
-            // Default selection: highest resolution
-            selectedForPreview = merged.first
-            if merged.isEmpty {
+            if candidates.isEmpty {
                 error = NSLocalizedString("cover.no_results", comment: "No cover found")
             }
         }
@@ -173,5 +168,28 @@ final class CoverSearchCoordinator {
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .filter { !$0.isEmpty }
             .joined(separator: "-")
+    }
+
+    private func publishMergedCandidates(
+        _ incomingCandidates: [CoverCandidate],
+        preferExistingSelection: Bool
+    ) {
+        var merged = candidates
+        for candidate in incomingCandidates {
+            if !merged.contains(candidate) {
+                merged.append(candidate)
+            }
+        }
+
+        merged.sort { $0.resolution > $1.resolution }
+        candidates = merged
+
+        if preferExistingSelection,
+           let currentSelection = selectedForPreview,
+           merged.contains(currentSelection) {
+            return
+        }
+
+        selectedForPreview = merged.first
     }
 }

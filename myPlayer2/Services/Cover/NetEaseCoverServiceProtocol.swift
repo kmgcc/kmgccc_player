@@ -11,5 +11,6 @@ import Foundation
 @MainActor
 protocol NetEaseCoverServiceProtocol: AnyObject {
     func searchAndDownloadCover(artist: String, album: String) async throws -> Data
+    func searchTopCoverCandidate(artist: String, album: String) async throws -> CoverCandidate
     func searchCoverCandidates(artist: String, album: String, limit: Int) async throws -> [CoverCandidate]
 }

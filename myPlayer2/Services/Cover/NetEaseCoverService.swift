@@ -14,131 +14,39 @@ import Foundation
 final class NetEaseCoverService: NetEaseCoverServiceProtocol {
     private let session: URLSession
 
-    init(session: URLSession = .shared) {
+    init(session: URLSession = NetEaseCoverService.makeDefaultSession()) {
         self.session = session
     }
 
     func searchAndDownloadCover(artist: String, album: String) async throws -> Data {
-        let query = "\(artist) \(album)".trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else {
+        let candidate = try await searchTopCoverCandidate(artist: artist, album: album)
+        return candidate.imageData
+    }
+
+    func searchTopCoverCandidate(artist: String, album: String) async throws -> CoverCandidate {
+        guard let albumResult = try await searchAlbumResults(
+            artist: artist,
+            album: album,
+            limit: 1
+        ).first else {
             throw NetEaseCoverError.noResults
         }
 
-        guard let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)
-        else {
-            throw NetEaseCoverError.badURL
-        }
-
-        let searchURLString =
-            "https://music.163.com/api/search/get/web?type=10&s=\(encodedQuery)&limit=5"
-        guard let searchURL = URL(string: searchURLString) else {
-            throw NetEaseCoverError.badURL
-        }
-
-        let searchData: Data
-        do {
-            let (data, response) = try await session.data(from: searchURL)
-            try Self.validateHTTP(response: response)
-            searchData = data
-        } catch let error as NetEaseCoverError {
-            throw error
-        } catch {
-            throw NetEaseCoverError.requestFailed(underlying: error)
-        }
-
-        let result: NetEaseSearchResponse
-        do {
-            result = try JSONDecoder().decode(NetEaseSearchResponse.self, from: searchData)
-        } catch {
-            throw NetEaseCoverError.decodingFailed(underlying: error)
-        }
-
-        guard let picURLString = result.result.albums.first?.picURL else {
-            throw NetEaseCoverError.noResults
-        }
-
-        let finalCoverURLString = Self.makeLargeCoverURLString(from: picURLString)
-        guard let coverURL = URL(string: finalCoverURLString) else {
-            throw NetEaseCoverError.badURL
-        }
-
-        do {
-            let (imageData, response) = try await session.data(from: coverURL)
-            try Self.validateHTTP(response: response)
-            guard !imageData.isEmpty, NSImage(data: imageData) != nil else {
-                throw NetEaseCoverError.imageDownloadFailed(
-                    underlying: CoverDownloadError.invalidImageData
-                )
-            }
-            return imageData
-        } catch let error as NetEaseCoverError {
-            throw error
-        } catch {
-            throw NetEaseCoverError.imageDownloadFailed(underlying: error)
-        }
+        return try await downloadCandidate(for: albumResult)
     }
 
     /// Searches NetEase for album covers and returns all candidates with metadata.
     /// Downloads covers for all matching albums (up to limit), sorted by resolution descending.
     func searchCoverCandidates(artist: String, album: String, limit: Int = 5) async throws -> [CoverCandidate] {
-        let query = "\(artist) \(album)".trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else {
-            throw NetEaseCoverError.noResults
-        }
-
-        guard let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
-            throw NetEaseCoverError.badURL
-        }
-
-        let searchURLString = "https://music.163.com/api/search/get/web?type=10&s=\(encodedQuery)&limit=\(limit)"
-        guard let searchURL = URL(string: searchURLString) else {
-            throw NetEaseCoverError.badURL
-        }
-
-        let searchData: Data
-        do {
-            let (data, response) = try await session.data(from: searchURL)
-            try Self.validateHTTP(response: response)
-            searchData = data
-        } catch let error as NetEaseCoverError {
-            throw error
-        } catch {
-            throw NetEaseCoverError.requestFailed(underlying: error)
-        }
-
-        let result: NetEaseSearchResponse
-        do {
-            result = try JSONDecoder().decode(NetEaseSearchResponse.self, from: searchData)
-        } catch {
-            throw NetEaseCoverError.decodingFailed(underlying: error)
-        }
-
-        guard !result.result.albums.isEmpty else {
-            throw NetEaseCoverError.noResults
-        }
+        let albumResults = try await searchAlbumResults(artist: artist, album: album, limit: limit)
 
         // Download covers for all albums concurrently
         var candidates: [CoverCandidate] = []
         await withTaskGroup(of: CoverCandidate?.self) { group in
-            for albumResult in result.result.albums {
+            for albumResult in albumResults {
                 group.addTask {
-                    let picURLString = albumResult.picURL
-                    guard let coverURL = URL(string: Self.makeLargeCoverURLString(from: picURLString)) else {
-                        return nil
-                    }
                     do {
-                        let (imageData, response) = try await self.session.data(from: coverURL)
-                        try Self.validateHTTP(response: response)
-                        guard !imageData.isEmpty, NSImage(data: imageData) != nil else {
-                            return nil
-                        }
-                        return await MainActor.run {
-                            CoverCandidate(
-                                imageData: imageData,
-                                source: .netease,
-                                sourceItemId: String(albumResult.id)
-                            )
-                        }
+                        return try await self.downloadCandidate(for: albumResult)
                     } catch {
                         return nil
                     }
@@ -161,6 +69,78 @@ final class NetEaseCoverService: NetEaseCoverServiceProtocol {
 }
 
 private extension NetEaseCoverService {
+    struct AlbumSearchResult: Sendable {
+        let id: Int
+        let picURL: String
+    }
+
+    func searchAlbumResults(artist: String, album: String, limit: Int) async throws -> [AlbumSearchResult] {
+        let query = "\(artist) \(album)".trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else {
+            throw NetEaseCoverError.noResults
+        }
+
+        guard let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)
+        else {
+            throw NetEaseCoverError.badURL
+        }
+
+        let searchURLString =
+            "https://music.163.com/api/search/get/web?type=10&s=\(encodedQuery)&limit=\(limit)"
+        guard let searchURL = URL(string: searchURLString) else {
+            throw NetEaseCoverError.badURL
+        }
+
+        let searchData: Data
+        do {
+            let (data, response) = try await session.data(from: searchURL)
+            try Self.validateHTTP(response: response)
+            searchData = data
+        } catch let error as NetEaseCoverError {
+            throw error
+        } catch {
+            throw NetEaseCoverError.requestFailed(underlying: error)
+        }
+
+        let result: NetEaseSearchResponse
+        do {
+            result = try JSONDecoder().decode(NetEaseSearchResponse.self, from: searchData)
+        } catch {
+            throw NetEaseCoverError.decodingFailed(underlying: error)
+        }
+
+        let albums = result.result.albums.map { AlbumSearchResult(id: $0.id, picURL: $0.picURL) }
+        guard !albums.isEmpty else {
+            throw NetEaseCoverError.noResults
+        }
+        return albums
+    }
+
+    func downloadCandidate(for albumResult: AlbumSearchResult) async throws -> CoverCandidate {
+        guard let coverURL = URL(string: Self.makeLargeCoverURLString(from: albumResult.picURL)) else {
+            throw NetEaseCoverError.badURL
+        }
+
+        do {
+            let (imageData, response) = try await session.data(from: coverURL)
+            try Self.validateHTTP(response: response)
+            guard !imageData.isEmpty, NSImage(data: imageData) != nil else {
+                throw NetEaseCoverError.imageDownloadFailed(
+                    underlying: CoverDownloadError.invalidImageData
+                )
+            }
+            return CoverCandidate(
+                imageData: imageData,
+                source: .netease,
+                sourceItemId: String(albumResult.id)
+            )
+        } catch let error as NetEaseCoverError {
+            throw error
+        } catch {
+            throw NetEaseCoverError.imageDownloadFailed(underlying: error)
+        }
+    }
+
     struct NetEaseSearchResponse: Decodable {
         let result: ResultPayload
 
@@ -184,6 +164,13 @@ private extension NetEaseCoverService {
             return "\(picURLString)&param=1200y1200"
         }
         return "\(picURLString)?param=1200y1200"
+    }
+
+    nonisolated static func makeDefaultSession() -> URLSession {
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = CoverLookupConfiguration.netEasePreferredTimeout
+        configuration.timeoutIntervalForResource = CoverLookupConfiguration.netEaseCandidatesTimeout
+        return URLSession(configuration: configuration)
     }
 
     nonisolated static func validateHTTP(response: URLResponse) throws {
