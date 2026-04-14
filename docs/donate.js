@@ -3,7 +3,7 @@
     const qrSection = document.getElementById('qrSection');
     const wxQrImg = document.getElementById('wxQr');
     const apQrImg = document.getElementById('apQr');
-    
+
     function loadImage(img, src) {
         img.classList.remove('loaded');
         img.src = src;
@@ -11,25 +11,28 @@
             img.classList.add('loaded');
         };
     }
-    
+
     function selectAmount(button) {
-        const wxSrc = button.dataset.wx;
-        const apSrc = button.dataset.ap;
-        
+        const { wx, ap } = button.dataset;
+
         amountButtons.forEach(btn => btn.classList.remove('selected'));
         button.classList.add('selected');
-        
-        if (wxSrc && apSrc) {
-            loadImage(wxQrImg, wxSrc);
-            loadImage(apQrImg, apSrc);
+
+        if (wx && ap) {
+            loadImage(wxQrImg, wx);
+            loadImage(apQrImg, ap);
             qrSection.classList.add('visible');
         }
     }
-    
+
     amountButtons.forEach(button => {
-        button.addEventListener('click', () => selectAmount(button));
+        button.addEventListener('click', event => selectAmount(event.currentTarget));
     });
-    
+
+    if (amountButtons.length > 0) {
+        selectAmount(amountButtons[0]);
+    }
+
     [wxQrImg, apQrImg].forEach(img => {
         img.addEventListener('click', () => {
             if (img.src) {
