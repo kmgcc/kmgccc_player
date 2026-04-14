@@ -13,6 +13,8 @@ import SwiftUI
 @MainActor
 struct SettingsView: View {
 
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var themeStore: ThemeStore
 
@@ -39,6 +41,11 @@ struct SettingsView: View {
         .navigationSplitViewStyle(.prominentDetail)
         .tint(themeStore.accentColor)
         .accentColor(themeStore.accentColor)
+        .overlay(alignment: .topTrailing) {
+            settingsCloseButton
+                .padding(.top, 18)
+                .padding(.trailing, 20)
+        }
         .frame(minWidth: 760, minHeight: 680)
         .onAppear {
             settings.fullscreen.normalizeConfiguration()
@@ -70,6 +77,29 @@ struct SettingsView: View {
             .frame(maxWidth: 800, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private var settingsCloseButton: some View {
+        Button {
+            dismiss()
+        } label: {
+            Image(systemName: "xmark")
+                .font(.system(size: GlassStyleTokens.headerStandardIconSize, weight: .semibold))
+                .foregroundStyle(themeStore.accentColor.opacity(colorScheme == .dark ? 0.94 : 0.84))
+                .frame(
+                    width: GlassStyleTokens.headerControlHeight,
+                    height: GlassStyleTokens.headerControlHeight
+                )
+                .contentShape(Circle())
+                .liquidGlassCircle(
+                    colorScheme: colorScheme,
+                    accentColor: nil as Color?,
+                    isFloating: true
+                )
+        }
+        .buttonStyle(.plain)
+        .help("关闭")
+        .accessibilityLabel(Text("关闭"))
     }
 }
 
