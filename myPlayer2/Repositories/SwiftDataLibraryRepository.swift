@@ -427,9 +427,9 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             var migratedAlbum = album
             migratedAlbum.primaryArtistCanonicalName = newCanonicalName
             migratedAlbum.primaryArtistDisplayName = resolvedName
-            migratedAlbum.canonicalKey = LibraryNormalization.normalizedAlbumKey(
-                album: migratedAlbum.displayTitle,
-                artist: resolvedName
+            migratedAlbum.canonicalKey = LibraryNormalization.renamedArtistAlbumKey(
+                existingKey: migratedAlbum.canonicalKey,
+                newArtistCanonicalName: newCanonicalName
             )
             migratedAlbum.updatedAt = Date()
 
@@ -468,9 +468,9 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     func applyAlbumEdits(original: AlbumEntry, updated: AlbumEntry) async {
         let trimmedTitle = updated.displayTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedTitle = trimmedTitle.isEmpty ? original.displayTitle : trimmedTitle
-        let newCanonicalKey = LibraryNormalization.normalizedAlbumKey(
-            album: resolvedTitle,
-            artist: original.primaryArtistDisplayName
+        let newCanonicalKey = LibraryNormalization.retitledAlbumKey(
+            existingKey: original.canonicalKey,
+            newAlbumTitle: resolvedTitle
         )
         let isRename =
             original.displayTitle != resolvedTitle
@@ -511,8 +511,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         }
 
         let affectedTracks = allTracks.filter {
-            LibraryNormalization.normalizedAlbumKey(album: $0.album, artist: $0.artist)
-                == original.canonicalKey
+            $0.albumGroupKey == original.canonicalKey
         }
         for track in affectedTracks {
             track.album = resolvedTitle
@@ -526,7 +525,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             LibraryNormalization.normalizeArtist($0.artist) == entry.canonicalName
         }
         let affectedAlbumKeys = Set(affectedTracks.map {
-            LibraryNormalization.normalizedAlbumKey(album: $0.album, artist: $0.artist)
+            $0.albumGroupKey
         })
         deleteTracksAndMetadata(
             tracks: affectedTracks,
@@ -538,8 +537,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     func deleteAlbum(_ entry: AlbumEntry) async {
         libraryService.deleteAlbumEntry(id: entry.id)
         let affectedTracks = allTracks.filter {
-            LibraryNormalization.normalizedAlbumKey(album: $0.album, artist: $0.artist)
-                == entry.canonicalKey
+            $0.albumGroupKey == entry.canonicalKey
         }
         deleteTracksAndMetadata(
             tracks: affectedTracks,
@@ -621,6 +619,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             title: meta.title,
             artist: meta.artist,
             album: meta.album,
+            albumArtist: meta.albumArtist,
             duration: meta.duration,
             addedAt: meta.addedAt,
             importedAt: meta.importedAt,
@@ -638,11 +637,9 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     private func rebuildRuntimeDerivedState() {
         var dedup: [String: Int] = [:]
         var artistBucket: [String: (name: String, count: Int)] = [:]
-        var albumBucket: [String: (name: String, artistName: String, count: Int)] = [:]
 
         for track in allTracks {
             let artistDisplay = LibraryNormalization.displayArtist(track.artist)
-            let albumDisplay = LibraryNormalization.displayAlbum(track.album)
 
             let dedupKey = LibraryNormalization.normalizedDedupKey(
                 title: track.title,
@@ -657,30 +654,19 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
                 artistValue.name = artistDisplay
             }
             artistBucket[artistKey] = artistValue
-
-            let albumKey = LibraryNormalization.normalizedAlbumKey(
-                album: track.album,
-                artist: track.artist
-            )
-            var albumValue = albumBucket[albumKey] ?? (albumDisplay, artistDisplay, 0)
-            albumValue.count += 1
-            albumBucket[albumKey] = albumValue
         }
 
         dedupCountByKey = dedup
         runtimeArtists = artistBucket
             .map { ArtistSection(key: $0.key, name: $0.value.name, trackCount: $0.value.count) }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-        runtimeAlbums = albumBucket
-            .map {
-                AlbumSection(
-                    key: $0.key,
-                    name: $0.value.name,
-                    artistName: $0.value.artistName,
-                    trackCount: $0.value.count
-                )
-            }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+
+        let albumGrouping = LibraryNormalization.buildAlbumGrouping(tracks: allTracks)
+        for track in allTracks {
+            track.albumGroupKey = albumGrouping.albumKeyByTrackID[track.id]
+                ?? LibraryNormalization.normalizedAlbumKey(album: track.album)
+        }
+        runtimeAlbums = albumGrouping.sections
     }
 
     private func writePlaylistToDisk(_ playlist: Playlist) {
@@ -842,7 +828,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     ) {
         let liveArtistKeys = Set(allTracks.map { LibraryNormalization.normalizeArtist($0.artist) })
         let liveAlbumKeys = Set(allTracks.map {
-            LibraryNormalization.normalizedAlbumKey(album: $0.album, artist: $0.artist)
+            $0.albumGroupKey
         })
 
         for artist in artistEntries

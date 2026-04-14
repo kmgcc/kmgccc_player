@@ -25,6 +25,7 @@ struct ArtistDerivedStats {
     let trackCount: Int
     let albumCount: Int
     let totalDuration: Double
+    let artworkTracks: [Track]
 }
 
 struct AlbumDerivedStats {
@@ -65,14 +66,14 @@ enum DetailHeaderArtworkSourceKind: String {
 
 enum DetailHeaderArtworkRequest {
     case playlist(selectionIdentity: String, playlistID: UUID, tracks: [Track])
-    case artist(selectionIdentity: String, entry: ArtistEntry)
+    case artist(selectionIdentity: String, entry: ArtistEntry, tracks: [Track])
     case album(selectionIdentity: String, entry: AlbumEntry, fallbackImage: NSImage?)
 
     var selectionIdentity: String {
         switch self {
         case .playlist(let selectionIdentity, _, _):
             return selectionIdentity
-        case .artist(let selectionIdentity, _):
+        case .artist(let selectionIdentity, _, _):
             return selectionIdentity
         case .album(let selectionIdentity, _, _):
             return selectionIdentity
@@ -94,7 +95,7 @@ enum DetailHeaderArtworkRequest {
         switch self {
         case .playlist(_, let playlistID, _):
             return playlistID.uuidString
-        case .artist(_, let entry):
+        case .artist(_, let entry, _):
             return entry.id.uuidString
         case .album(_, let entry, _):
             return entry.id.uuidString
@@ -150,8 +151,12 @@ extension DetailHeaderConfig {
                 playlistID: playlist.id,
                 tracks: entry.tracks
             )
-        case .artist(let entry, _):
-            return .artist(selectionIdentity: selectionIdentity, entry: entry)
+        case .artist(let entry, let stats):
+            return .artist(
+                selectionIdentity: selectionIdentity,
+                entry: entry,
+                tracks: stats.artworkTracks
+            )
         case .album(let entry, let stats):
             return .album(
                 selectionIdentity: selectionIdentity,

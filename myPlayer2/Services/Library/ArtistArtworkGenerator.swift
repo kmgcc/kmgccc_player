@@ -11,26 +11,82 @@ import Foundation
 actor ArtistArtworkGenerator {
     static let shared = ArtistArtworkGenerator()
 
+    private final class PlaceholderCacheBox: @unchecked Sendable {
+        let cache: NSCache<NSString, NSImage> = {
+            let cache = NSCache<NSString, NSImage>()
+            cache.countLimit = 128
+            cache.totalCostLimit = 40 * 1024 * 1024
+            return cache
+        }()
+    }
+
+    private struct GradientSpec {
+        let startColor: NSColor
+        let endColor: NSColor
+        let textColor: NSColor
+        let angle: CGFloat
+    }
+
+    private nonisolated static let placeholderCache = PlaceholderCacheBox()
+    private nonisolated static let placeholderPixelSide = 640
+
     func generateArtwork(artistName: String, tracks: [Track]) async -> NSImage? {
         await Task.detached(priority: .userInitiated) {
-            Self.renderArtwork(artistName: artistName, tracks: tracks)
+            Self.placeholderArtwork(artistName: artistName, tracks: tracks)
         }.value
+    }
+
+    nonisolated static func placeholderArtwork(artistName: String, tracks: [Track]) -> NSImage? {
+        let cacheKey = placeholderCacheKey(artistName: artistName, tracks: tracks) as NSString
+        if let cached = placeholderCache.cache.object(forKey: cacheKey) {
+            return cached
+        }
+
+        guard let image = renderArtwork(
+            artistName: artistName,
+            tracks: tracks,
+            pixelSide: placeholderPixelSide
+        ) else {
+            return nil
+        }
+
+        placeholderCache.cache.setObject(
+            image,
+            forKey: cacheKey,
+            cost: placeholderPixelSide * placeholderPixelSide * 4
+        )
+        return image
     }
 
     private nonisolated static func renderArtwork(
         artistName: String,
-        tracks: [Track]
+        tracks: [Track],
+        pixelSide: Int
     ) -> NSImage? {
-        let canvasSize = CGSize(width: 1024, height: 1024)
-        let backgroundColor = resolveBackgroundColor(artistName: artistName, tracks: tracks)
-        let foregroundColor = contrastingTextColor(for: backgroundColor)
+        let side = CGFloat(max(256, pixelSide))
+        let canvasSize = CGSize(width: side, height: side)
+        let gradient = resolveGradientSpec(artistName: artistName, tracks: tracks)
 
         let image = NSImage(size: canvasSize)
         image.lockFocus()
         defer { image.unlockFocus() }
 
-        backgroundColor.setFill()
-        NSBezierPath(rect: CGRect(origin: .zero, size: canvasSize)).fill()
+        let canvasRect = CGRect(origin: .zero, size: canvasSize)
+        if let backgroundGradient = NSGradient(colors: [gradient.startColor, gradient.endColor]) {
+            backgroundGradient.draw(in: canvasRect, angle: gradient.angle)
+        } else {
+            gradient.startColor.setFill()
+            NSBezierPath(rect: canvasRect).fill()
+        }
+
+        let highlight = NSColor.white.withAlphaComponent(0.08)
+        if let highlightGradient = NSGradient(colors: [highlight, .clear]) {
+            let highlightRect = canvasRect.insetBy(dx: -canvasSize.width * 0.18, dy: -canvasSize.height * 0.18)
+            highlightGradient.draw(
+                in: NSBezierPath(ovalIn: highlightRect),
+                relativeCenterPosition: NSPoint(x: -0.35, y: 0.42)
+            )
+        }
 
         let paragraphStyle = NSMutableParagraphStyle()
         paragraphStyle.alignment = .center
@@ -39,7 +95,7 @@ actor ArtistArtworkGenerator {
         let fontSize = suggestedFontSize(for: artistName, canvasWidth: canvasSize.width)
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: fontSize, weight: .semibold),
-            .foregroundColor: foregroundColor,
+            .foregroundColor: gradient.textColor,
             .paragraphStyle: paragraphStyle,
             .kern: -0.4,
         ]
@@ -68,51 +124,78 @@ actor ArtistArtworkGenerator {
         return image
     }
 
-    private nonisolated static func resolveBackgroundColor(
+    private nonisolated static func placeholderCacheKey(
         artistName: String,
         tracks: [Track]
-    ) -> NSColor {
+    ) -> String {
+        let text = artistName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? LibraryNormalization.unknownArtist
+            : artistName.trimmingCharacters(in: .whitespacesAndNewlines)
         let sortedTracks = tracks.sorted { $0.id.uuidString < $1.id.uuidString }
-        let candidateColors = sortedTracks.compactMap { track -> NSColor? in
-            guard let artworkData = track.artworkData, !artworkData.isEmpty else { return nil }
-            return ArtworkColorExtractor.averageColor(from: artworkData)
-                ?? ArtworkColorExtractor.uiThemePalette(from: artworkData, maxColors: 2).first
+
+        if let representative = sortedTracks.first(where: {
+            guard let artworkData = $0.artworkData else { return false }
+            return !artworkData.isEmpty
+        }) {
+            let checksum = ArtworkLoader.checksum(for: representative.artworkData)
+            return "\(text)|\(representative.id.uuidString)|\(checksum)|\(sortedTracks.count)"
         }
 
-        if let averaged = average(colors: Array(candidateColors.prefix(16))) {
-            return normalizeBackgroundColor(averaged)
-        }
-
-        return fallbackColor(for: artistName)
+        return "\(text)|fallback|\(sortedTracks.count)"
     }
 
-    private nonisolated static func average(colors: [NSColor]) -> NSColor? {
-        guard !colors.isEmpty else { return nil }
+    private nonisolated static func resolveGradientSpec(
+        artistName: String,
+        tracks: [Track]
+    ) -> GradientSpec {
+        let sortedTracks = tracks.sorted { $0.id.uuidString < $1.id.uuidString }
 
-        var red: CGFloat = 0
-        var green: CGFloat = 0
-        var blue: CGFloat = 0
-        var count: CGFloat = 0
-
-        for color in colors {
-            guard let rgb = color.usingColorSpace(.deviceRGB) else { continue }
-            red += rgb.redComponent
-            green += rgb.greenComponent
-            blue += rgb.blueComponent
-            count += 1
+        for track in sortedTracks {
+            guard let artworkData = track.artworkData, !artworkData.isEmpty else { continue }
+            let palette = ArtworkColorExtractor.uiThemePalette(from: artworkData, maxColors: 3)
+            if let spec = gradientSpec(from: palette, artistName: artistName) {
+                return spec
+            }
+            if let average = ArtworkColorExtractor.averageColor(from: artworkData) {
+                return gradientSpec(fromAverageColor: average, artistName: artistName)
+            }
         }
 
-        guard count > 0 else { return nil }
-        return NSColor(
-            calibratedRed: red / count,
-            green: green / count,
-            blue: blue / count,
-            alpha: 1
+        return fallbackGradient(for: artistName)
+    }
+
+    private nonisolated static func gradientSpec(
+        from palette: [NSColor],
+        artistName: String
+    ) -> GradientSpec? {
+        let normalized = palette.compactMap(normalizeGradientColor(_:))
+        guard let startColor = normalized.first else { return nil }
+        let endColor = normalized.dropFirst().first
+            ?? deriveGradientPair(from: startColor, artistName: artistName)
+        return GradientSpec(
+            startColor: startColor,
+            endColor: endColor,
+            textColor: contrastingTextColor(for: blend(startColor, endColor)),
+            angle: gradientAngle(for: artistName)
         )
     }
 
-    private nonisolated static func normalizeBackgroundColor(_ color: NSColor) -> NSColor {
-        guard let rgb = color.usingColorSpace(.deviceRGB) else { return fallbackColor(for: "") }
+    private nonisolated static func gradientSpec(
+        fromAverageColor color: NSColor,
+        artistName: String
+    ) -> GradientSpec {
+        let startColor = normalizeGradientColor(color) ?? fallbackGradient(for: artistName).startColor
+        let endColor = deriveGradientPair(from: startColor, artistName: artistName)
+        return GradientSpec(
+            startColor: startColor,
+            endColor: endColor,
+            textColor: contrastingTextColor(for: blend(startColor, endColor)),
+            angle: gradientAngle(for: artistName)
+        )
+    }
+
+    private nonisolated static func normalizeGradientColor(_ color: NSColor) -> NSColor? {
+        guard let rgb = color.usingColorSpace(.deviceRGB) else { return nil }
 
         var hue: CGFloat = 0
         var saturation: CGFloat = 0
@@ -122,20 +205,57 @@ actor ArtistArtworkGenerator {
 
         return NSColor(
             calibratedHue: hue,
-            saturation: min(max(saturation, 0.20), 0.42),
-            brightness: min(max(brightness, 0.38), 0.68),
+            saturation: min(max(saturation, 0.24), 0.62),
+            brightness: min(max(brightness, 0.34), 0.84),
             alpha: 1
         )
     }
 
-    private nonisolated static func fallbackColor(for artistName: String) -> NSColor {
+    private nonisolated static func deriveGradientPair(
+        from color: NSColor,
+        artistName: String
+    ) -> NSColor {
+        guard let rgb = color.usingColorSpace(.deviceRGB) else {
+            return fallbackGradient(for: artistName).endColor
+        }
+
+        var hue: CGFloat = 0
+        var saturation: CGFloat = 0
+        var brightness: CGFloat = 0
+        var alpha: CGFloat = 0
+        rgb.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
+
+        let hash = PlaylistArtworkGenerator.stableHash(for: artistName)
+        let hueShift = CGFloat((hash % 19) + 9) / 360.0
+        let shiftedHue = (hue + hueShift).truncatingRemainder(dividingBy: 1)
+        return NSColor(
+            calibratedHue: shiftedHue,
+            saturation: min(max(saturation * 0.86, 0.20), 0.56),
+            brightness: min(max(brightness * 1.12, 0.42), 0.90),
+            alpha: 1
+        )
+    }
+
+    private nonisolated static func fallbackGradient(for artistName: String) -> GradientSpec {
         let hash = PlaylistArtworkGenerator.stableHash(for: artistName)
         let hue = CGFloat(hash % 360) / 360.0
-        return NSColor(
+        let startColor = NSColor(
             calibratedHue: hue,
-            saturation: 0.28,
-            brightness: 0.54,
+            saturation: 0.34,
+            brightness: 0.48,
             alpha: 1
+        )
+        let endColor = NSColor(
+            calibratedHue: (hue + 0.10).truncatingRemainder(dividingBy: 1),
+            saturation: 0.26,
+            brightness: 0.72,
+            alpha: 1
+        )
+        return GradientSpec(
+            startColor: startColor,
+            endColor: endColor,
+            textColor: contrastingTextColor(for: blend(startColor, endColor)),
+            angle: gradientAngle(for: artistName)
         )
     }
 
@@ -148,6 +268,25 @@ actor ArtistArtworkGenerator {
         return luminance > 0.56
             ? NSColor(calibratedWhite: 0.10, alpha: 0.95)
             : NSColor(calibratedWhite: 0.98, alpha: 0.98)
+    }
+
+    private nonisolated static func blend(_ lhs: NSColor, _ rhs: NSColor) -> NSColor {
+        guard let left = lhs.usingColorSpace(.deviceRGB),
+              let right = rhs.usingColorSpace(.deviceRGB)
+        else {
+            return lhs
+        }
+
+        return NSColor(
+            calibratedRed: (left.redComponent + right.redComponent) / 2,
+            green: (left.greenComponent + right.greenComponent) / 2,
+            blue: (left.blueComponent + right.blueComponent) / 2,
+            alpha: 1
+        )
+    }
+
+    private nonisolated static func gradientAngle(for artistName: String) -> CGFloat {
+        CGFloat(20 + (PlaylistArtworkGenerator.stableHash(for: artistName) % 55))
     }
 
     private nonisolated static func suggestedFontSize(

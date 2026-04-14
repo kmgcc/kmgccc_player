@@ -46,8 +46,7 @@ final class LibraryMetadataSync {
         var albumCountByArtist: [String: Set<String>] = [:]
         for track in allTracks {
             let artistKey = LibraryNormalization.normalizeArtist(track.artist)
-            let albumKey = LibraryNormalization.normalizedAlbumKey(
-                album: track.album, artist: track.artist)
+            let albumKey = track.albumGroupKey
             albumCountByArtist[artistKey, default: []].insert(albumKey)
         }
 
@@ -152,45 +151,43 @@ final class LibraryMetadataSync {
         var result: [AlbumEntry] = []
 
         for section in derived {
-            let matchingTracks = allTracks.filter {
-                LibraryNormalization.normalizedAlbumKey(album: $0.album, artist: $0.artist)
-                    == section.key
-            }
+            let matchingTracks = allTracks.filter { $0.albumGroupKey == section.key }
             let totalDuration = matchingTracks.reduce(0) { $0 + $1.duration }
-            let firstArtwork = matchingTracks.first?.artworkData
-            let primaryArtistKey = LibraryNormalization.normalizeArtist(section.artistName)
+            let firstArtwork =
+                matchingTracks.first(where: { $0.artworkData != nil })?.artworkData
+                ?? matchingTracks.first?.artworkData
 
-            if let (sidecar, folderURL) = existing[section.key] {
-                existing.removeValue(forKey: section.key)
-                let artworkData: Data?
-                if let fileName = sidecar.artworkFileName {
-                    artworkData = try? Data(contentsOf: folderURL.appendingPathComponent(fileName))
-                } else {
-                    artworkData = firstArtwork
+            var matchedSidecars: [(sidecar: AlbumSidecar, folderURL: URL)] = []
+            if let exact = existing.removeValue(forKey: section.key) {
+                matchedSidecars.append(exact)
+            }
+
+            let migratedKeys = existing.keys.filter { key in
+                guard let candidate = existing[key] else { return false }
+                return shouldMigrateAlbumSidecar(candidate.sidecar, into: section)
+            }
+            for key in migratedKeys {
+                if let candidate = existing.removeValue(forKey: key) {
+                    matchedSidecars.append(candidate)
                 }
-                result.append(AlbumEntry(
-                    id: sidecar.id,
-                    canonicalKey: sidecar.canonicalKey,
-                    displayTitle: sidecar.displayTitle,
-                    primaryArtistCanonicalName: sidecar.primaryArtistCanonicalName,
-                    primaryArtistDisplayName: section.artistName,
-                    artworkFileName: sidecar.artworkFileName,
-                    description: sidecar.description ?? "",
-                    year: sidecar.year,
-                    artworkData: artworkData,
-                    createdAt: sidecar.createdAt,
-                    updatedAt: sidecar.updatedAt,
-                    trackCount: section.trackCount,
-                    totalDuration: totalDuration,
-                    isOrphaned: false
-                ))
+            }
+
+            if let entry = mergedAlbumEntry(
+                from: matchedSidecars,
+                section: section,
+                firstArtwork: firstArtwork,
+                totalDuration: totalDuration,
+                now: now,
+                libraryService: libraryService
+            ) {
+                result.append(entry)
             } else {
                 let newID = UUID()
                 let newSidecar = AlbumSidecar(
                     id: newID,
                     canonicalKey: section.key,
                     displayTitle: section.name,
-                    primaryArtistCanonicalName: primaryArtistKey,
+                    primaryArtistCanonicalName: section.artistCanonicalName,
                     createdAt: now,
                     updatedAt: now
                 )
@@ -199,7 +196,7 @@ final class LibraryMetadataSync {
                     id: newID,
                     canonicalKey: section.key,
                     displayTitle: section.name,
-                    primaryArtistCanonicalName: primaryArtistKey,
+                    primaryArtistCanonicalName: section.artistCanonicalName,
                     primaryArtistDisplayName: section.artistName,
                     artworkFileName: nil,
                     description: "",
@@ -248,5 +245,102 @@ final class LibraryMetadataSync {
         return result.sorted {
             $0.displayTitle.localizedCaseInsensitiveCompare($1.displayTitle) == .orderedAscending
         }
+    }
+
+    private func shouldMigrateAlbumSidecar(_ sidecar: AlbumSidecar, into section: AlbumSection) -> Bool {
+        guard LibraryNormalization.normalizeAlbum(sidecar.displayTitle)
+            == LibraryNormalization.normalizeAlbum(section.name)
+        else {
+            return false
+        }
+
+        let titleOnlyKey = LibraryNormalization.normalizedAlbumKey(album: section.name)
+        if section.key == titleOnlyKey {
+            return true
+        }
+
+        return sidecar.primaryArtistCanonicalName == section.artistCanonicalName
+            || section.memberArtistCanonicalNames.contains(sidecar.primaryArtistCanonicalName)
+    }
+
+    private func mergedAlbumEntry(
+        from candidates: [(sidecar: AlbumSidecar, folderURL: URL)],
+        section: AlbumSection,
+        firstArtwork: Data?,
+        totalDuration: Double,
+        now: Date,
+        libraryService: LocalLibraryService
+    ) -> AlbumEntry? {
+        guard !candidates.isEmpty else { return nil }
+
+        let sortedCandidates = candidates.sorted { lhs, rhs in
+            let lhsHasUserContent =
+                !(lhs.sidecar.description ?? "").isEmpty
+                || lhs.sidecar.artworkFileName != nil
+                || lhs.sidecar.year != nil
+            let rhsHasUserContent =
+                !(rhs.sidecar.description ?? "").isEmpty
+                || rhs.sidecar.artworkFileName != nil
+                || rhs.sidecar.year != nil
+
+            if lhsHasUserContent != rhsHasUserContent {
+                return lhsHasUserContent && !rhsHasUserContent
+            }
+            return lhs.sidecar.updatedAt > rhs.sidecar.updatedAt
+        }
+
+        guard let keeper = sortedCandidates.first else { return nil }
+
+        let artworkSource = sortedCandidates.first { candidate in
+            guard let fileName = candidate.sidecar.artworkFileName else { return false }
+            return (try? Data(contentsOf: candidate.folderURL.appendingPathComponent(fileName))) != nil
+        }
+        let artworkData = artworkSource.flatMap { candidate in
+            candidate.sidecar.artworkFileName.flatMap { fileName in
+                try? Data(contentsOf: candidate.folderURL.appendingPathComponent(fileName))
+            }
+        }
+        let mergedDescription = sortedCandidates.compactMap { candidate in
+            let description = candidate.sidecar.description?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (description?.isEmpty ?? true) ? nil : description
+        }.first
+        let mergedYear = sortedCandidates.compactMap { $0.sidecar.year }.first
+
+        let mergedSidecar = AlbumSidecar(
+            id: keeper.sidecar.id,
+            canonicalKey: section.key,
+            displayTitle: section.name,
+            primaryArtistCanonicalName: section.artistCanonicalName,
+            artworkFileName: artworkSource?.sidecar.artworkFileName,
+            description: mergedDescription,
+            year: mergedYear,
+            createdAt: sortedCandidates.map { $0.sidecar.createdAt }.min() ?? keeper.sidecar.createdAt,
+            updatedAt: now
+        )
+        libraryService.writeAlbumSidecar(
+            mergedSidecar,
+            artworkData: mergedSidecar.artworkFileName != nil ? artworkData : nil
+        )
+
+        for candidate in sortedCandidates.dropFirst() {
+            libraryService.deleteAlbumEntry(id: candidate.sidecar.id)
+        }
+
+        return AlbumEntry(
+            id: mergedSidecar.id,
+            canonicalKey: mergedSidecar.canonicalKey,
+            displayTitle: mergedSidecar.displayTitle,
+            primaryArtistCanonicalName: mergedSidecar.primaryArtistCanonicalName,
+            primaryArtistDisplayName: section.artistName,
+            artworkFileName: mergedSidecar.artworkFileName,
+            description: mergedSidecar.description ?? "",
+            year: mergedSidecar.year,
+            artworkData: artworkData ?? firstArtwork,
+            createdAt: mergedSidecar.createdAt,
+            updatedAt: mergedSidecar.updatedAt,
+            trackCount: section.trackCount,
+            totalDuration: totalDuration,
+            isOrphaned: false
+        )
     }
 }

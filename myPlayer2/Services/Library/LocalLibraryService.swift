@@ -18,6 +18,7 @@ struct TrackSidecar: Codable {
     let title: String
     let artist: String
     let album: String
+    let albumArtist: String?
     let duration: Double
     let addedAt: Date
     let importedAt: Date?
@@ -39,6 +40,7 @@ struct TrackSidecar: Codable {
         case title
         case artist
         case album
+        case albumArtist
         case duration
         case addedAt
         case importedAt
@@ -55,11 +57,12 @@ struct TrackSidecar: Codable {
     }
 
     init(
-        schemaVersion: Int = 3,
+        schemaVersion: Int = 4,
         id: UUID,
         title: String,
         artist: String,
         album: String,
+        albumArtist: String? = nil,
         duration: Double,
         addedAt: Date,
         importedAt: Date?,
@@ -79,6 +82,7 @@ struct TrackSidecar: Codable {
         self.title = title
         self.artist = artist
         self.album = album
+        self.albumArtist = albumArtist
         self.duration = duration
         self.addedAt = addedAt
         self.importedAt = importedAt
@@ -104,6 +108,7 @@ struct TrackSidecar: Codable {
         title = try container.decode(String.self, forKey: .title)
         artist = try container.decode(String.self, forKey: .artist)
         album = try container.decode(String.self, forKey: .album)
+        albumArtist = try container.decodeIfPresent(String.self, forKey: .albumArtist)
         duration = try container.decode(Double.self, forKey: .duration)
         addedAt = try container.decode(Date.self, forKey: .addedAt)
         importedAt = try container.decodeIfPresent(Date.self, forKey: .importedAt)
@@ -131,11 +136,12 @@ struct TrackSidecar: Codable {
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(3, forKey: .schemaVersion)
+        try container.encode(4, forKey: .schemaVersion)
         try container.encode(id, forKey: .id)
         try container.encode(title, forKey: .title)
         try container.encode(artist, forKey: .artist)
         try container.encode(album, forKey: .album)
+        try container.encodeIfPresent(albumArtist, forKey: .albumArtist)
         try container.encode(duration, forKey: .duration)
         try container.encode(addedAt, forKey: .addedAt)
         try container.encodeIfPresent(importedAt, forKey: .importedAt)
@@ -611,11 +617,15 @@ final class LocalLibraryService {
         let audioFileName = URL(fileURLWithPath: track.libraryRelativePath).lastPathComponent
         let preferenceStats = PreferenceStatsService.shared.getStats(for: track.id)
         let sidecar = TrackSidecar(
-            schemaVersion: 3,
+            schemaVersion: 4,
             id: track.id,
             title: track.title,
             artist: track.artist,
             album: track.album,
+            albumArtist: {
+                let trimmed = track.albumArtist?.trimmingCharacters(in: .whitespacesAndNewlines)
+                return (trimmed?.isEmpty ?? true) ? nil : trimmed
+            }(),
             duration: track.duration,
             addedAt: track.addedAt,
             importedAt: track.importedAt ?? track.addedAt,
@@ -1220,9 +1230,19 @@ final class LocalLibraryService {
         let folder = LocalLibraryPaths.albumFolderURL(for: sidecar.id)
         do {
             try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
+            let previousArtworkFileName = loadAlbumSidecarsFromDisk()
+                .first(where: { $0.sidecar.id == sidecar.id })?
+                .sidecar
+                .artworkFileName
             let metaURL = LocalLibraryPaths.albumMetaURL(for: sidecar.id)
             let data = try encoder.encode(sidecar)
             try data.write(to: metaURL, options: .atomic)
+            if let previousArtworkFileName, previousArtworkFileName != sidecar.artworkFileName {
+                let previousArtworkURL = folder.appendingPathComponent(previousArtworkFileName)
+                if fileManager.fileExists(atPath: previousArtworkURL.path) {
+                    try? fileManager.removeItem(at: previousArtworkURL)
+                }
+            }
             if let artworkData, let fileName = sidecar.artworkFileName {
                 let artworkURL = folder.appendingPathComponent(fileName)
                 try artworkData.write(to: artworkURL, options: .atomic)
@@ -1478,6 +1498,7 @@ final class LocalLibraryService {
                 title: sidecar.title,
                 artist: sidecar.artist,
                 album: sidecar.album,
+                albumArtist: sidecar.albumArtist,
                 duration: sidecar.duration,
                 addedAt: sidecar.addedAt,
                 importedAt: sidecar.importedAt ?? sidecar.addedAt,

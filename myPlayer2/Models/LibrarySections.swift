@@ -19,6 +19,8 @@ struct AlbumSection: Identifiable, Hashable {
     let key: String
     let name: String
     let artistName: String
+    let artistCanonicalName: String
+    let memberArtistCanonicalNames: [String]
     let trackCount: Int
 
     var id: String { key }

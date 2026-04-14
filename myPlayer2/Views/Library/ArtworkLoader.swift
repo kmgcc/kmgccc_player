@@ -233,6 +233,22 @@ enum ArtworkLoader {
         return image
     }
 
+    nonisolated static func squareHeaderPreviewImage(
+        data: Data?,
+        maxPixelSize: Int = 640
+    ) -> NSImage? {
+        guard let data, !data.isEmpty else { return nil }
+        let startUptime = ProcessInfo.processInfo.systemUptime
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        let image = squareDownsampledImage(source: source, maxPixelSize: max(1, maxPixelSize))
+        LyricsRuntimeProfile.increment("header.squareHeaderPreviewImage.data.count")
+        LyricsRuntimeProfile.addDuration(
+            "header.squareHeaderPreviewImage.data",
+            ms: (ProcessInfo.processInfo.systemUptime - startUptime) * 1000
+        )
+        return image
+    }
+
     nonisolated static func headerPreviewImage(
         fileURL: URL,
         maxPixelSize: Int = 640
@@ -248,6 +264,26 @@ enum ArtworkLoader {
         LyricsRuntimeProfile.increment("header.headerPreviewImage.file.count")
         LyricsRuntimeProfile.addDuration(
             "header.headerPreviewImage.file",
+            ms: (ProcessInfo.processInfo.systemUptime - startUptime) * 1000
+        )
+        return image
+    }
+
+    nonisolated static func squareHeaderPreviewImage(
+        fileURL: URL,
+        maxPixelSize: Int = 640
+    ) -> NSImage? {
+        let startUptime = ProcessInfo.processInfo.systemUptime
+        guard
+            let source = CGImageSourceCreateWithURL(
+                fileURL as CFURL,
+                [kCGImageSourceShouldCache: false] as CFDictionary
+            )
+        else { return nil }
+        let image = squareDownsampledImage(source: source, maxPixelSize: max(1, maxPixelSize))
+        LyricsRuntimeProfile.increment("header.squareHeaderPreviewImage.file.count")
+        LyricsRuntimeProfile.addDuration(
+            "header.squareHeaderPreviewImage.file",
             ms: (ProcessInfo.processInfo.systemUptime - startUptime) * 1000
         )
         return image
@@ -293,6 +329,60 @@ enum ArtworkLoader {
         return NSImage(
             cgImage: cgImage,
             size: CGSize(width: cgImage.width, height: cgImage.height)
+        )
+    }
+
+    private nonisolated static func squareDownsampledImage(
+        source: CGImageSource,
+        maxPixelSize: Int
+    ) -> NSImage? {
+        guard let image = downsampledImage(source: source, maxPixelSize: maxPixelSize) else {
+            return nil
+        }
+        return squareCroppedImage(image, pixelSize: maxPixelSize)
+    }
+
+    private nonisolated static func squareCroppedImage(
+        _ image: NSImage,
+        pixelSize: Int
+    ) -> NSImage? {
+        var proposedRect = CGRect(origin: .zero, size: image.size)
+        guard let cgImage = image.cgImage(forProposedRect: &proposedRect, context: nil, hints: nil)
+        else { return nil }
+
+        let squareSide = min(cgImage.width, cgImage.height)
+        let cropRect = CGRect(
+            x: (cgImage.width - squareSide) / 2,
+            y: (cgImage.height - squareSide) / 2,
+            width: squareSide,
+            height: squareSide
+        )
+        guard let cropped = cgImage.cropping(to: cropRect) else { return image }
+
+        let destinationSide = max(1, pixelSize)
+        let destRect = CGRect(x: 0, y: 0, width: destinationSide, height: destinationSide)
+        guard
+            let context = CGContext(
+                data: nil,
+                width: destinationSide,
+                height: destinationSide,
+                bitsPerComponent: 8,
+                bytesPerRow: 0,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )
+        else { return NSImage(cgImage: cropped, size: CGSize(width: squareSide, height: squareSide)) }
+
+        context.interpolationQuality = .high
+        context.draw(cropped, in: destRect)
+
+        guard let resized = context.makeImage() else {
+            return NSImage(cgImage: cropped, size: CGSize(width: squareSide, height: squareSide))
+        }
+
+        return NSImage(
+            cgImage: resized,
+            size: CGSize(width: destinationSide, height: destinationSide)
         )
     }
 }

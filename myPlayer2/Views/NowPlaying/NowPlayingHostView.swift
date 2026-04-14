@@ -55,8 +55,13 @@ struct NowPlayingHostView: View {
             .id("nowPlayingSkin_\(selectedSkinID)_\(skinRevision)")
             .frame(width: mainContentWidth, height: proxy.size.height, alignment: .topLeading)
         }
-        .onChange(of: selectedSkinID) { _, _ in
+        .onChange(of: selectedSkinID) { oldValue, newValue in
             skinRevision &+= 1
+            if oldValue == "kmgccc.cassette", newValue != oldValue {
+                Task {
+                    await CassetteArtworkCache.shared.removeAll()
+                }
+            }
             if isLedEnabledForCurrentSkin() {
                 ledMeterProvider.getOrCreate().start()
             } else {
@@ -174,7 +179,7 @@ struct NowPlayingHostView: View {
     }
 
     private var preferredArtworkFullImageMaxPixel: Int {
-        settings.selectedNowPlayingSkinID == "kmgccc.cassette" ? 900 : 1_400
+        1_400
     }
 
     private func isLedEnabledForCurrentSkin() -> Bool {

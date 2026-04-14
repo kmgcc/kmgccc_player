@@ -75,12 +75,18 @@ struct BKArtBackgroundView: View {
         case cassetteForeground
     }
 
+    enum DotRenderStyle: Equatable, Sendable {
+        case dotGrid
+        case solidCircles
+    }
+
     @ObservedObject var controller: BKArtBackgroundController
     let trackID: UUID?
     let artworkData: Data?
     let isPlaying: Bool
     var avoidanceRect: CGRect? = nil
     var resourceProfile: ResourceProfile = .standard
+    var dotRenderStyle: DotRenderStyle = .dotGrid
     @Environment(\.colorScheme) private var colorScheme
 
     @State private var palette: [NSColor] = Self.fallbackPalette
@@ -100,7 +106,8 @@ struct BKArtBackgroundView: View {
             isDark: colorScheme == .dark,
             isPlaying: isPlaying,
             avoidanceRect: avoidanceRect,
-            resourceProfile: resourceProfile
+            resourceProfile: resourceProfile,
+            dotRenderStyle: dotRenderStyle
         )
         .allowsHitTesting(false)
         .onAppear {
@@ -272,6 +279,7 @@ private struct BKArtBackgroundRepresentable: NSViewRepresentable {
     let isPlaying: Bool
     let avoidanceRect: CGRect?
     let resourceProfile: BKArtBackgroundView.ResourceProfile
+    let dotRenderStyle: BKArtBackgroundView.DotRenderStyle
 
     func makeNSView(context: Context) -> BKArtBackgroundLayerView {
         let contentView = BKArtBackgroundLayerView()
@@ -280,6 +288,7 @@ private struct BKArtBackgroundRepresentable: NSViewRepresentable {
         contentView.updatePalette(palette, isDark: isDark)
         contentView.updateAvoidanceRect(avoidanceRect)
         contentView.updateResourceProfile(resourceProfile)
+        contentView.updateDotRenderStyle(dotRenderStyle)
         contentView.ensureBaseContainer(seed: seed)
         contentView.setPlayback(isPlaying: isPlaying)
         contentView.currentTransitionID = transitionID
@@ -292,6 +301,7 @@ private struct BKArtBackgroundRepresentable: NSViewRepresentable {
         nsView.updatePalette(palette, isDark: isDark)
         nsView.updateAvoidanceRect(avoidanceRect)
         nsView.updateResourceProfile(resourceProfile)
+        nsView.updateDotRenderStyle(dotRenderStyle)
         nsView.ensureBaseContainer(seed: seed)
         nsView.setPlayback(isPlaying: isPlaying)
 
@@ -308,6 +318,12 @@ private struct BKArtBackgroundRepresentable: NSViewRepresentable {
 
 @MainActor
 private final class BKArtBackgroundLayerView: NSView {
+    #if DEBUG
+        private static var liveInstanceCount = 0
+        private static let lifecycleLoggingEnabled =
+            ProcessInfo.processInfo.environment["KMGCCC_DEBUG_NOWPLAYING_LIFECYCLE"] == "1"
+    #endif
+
     weak var backgroundController: BKArtBackgroundController?
     var trackID: UUID?
 
@@ -523,6 +539,12 @@ private final class BKArtBackgroundLayerView: NSView {
     private var activeAvoidanceRect: CGRect?
     private var backgroundAssetMode: BackgroundAssetMode = .currentPhaseLowRes
     private var resourceProfile: BKArtBackgroundView.ResourceProfile = .standard
+    private var dotRenderStyle: BKArtBackgroundView.DotRenderStyle = .dotGrid
+    private var solidCircleDotTimer: DispatchSourceTimer?
+
+    private static let solidCircleTargetFPS: Double = 30.0
+    private static let solidCircleFrameInterval: TimeInterval = 1.0 / solidCircleTargetFPS
+    private static let solidCircleFrameIntervalNanos: Int = 33_333_333
 
     // Style Selector State
     private var lastStyle: BackgroundStyle?
@@ -533,6 +555,7 @@ private final class BKArtBackgroundLayerView: NSView {
         ensureRootLayerIfNeeded()
         tintedBackgroundCache.countLimit = 6
         tintedBackgroundCache.totalCostLimit = 48 * 1024 * 1024
+        logLifecycle("init")
     }
 
     required init?(coder: NSCoder) {
@@ -540,6 +563,9 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     deinit {
+        MainActor.assumeIsolated {
+            logLifecycle("deinit")
+        }
         MainActor.assumeIsolated {
             releaseHeavyResources()
         }
@@ -549,6 +575,7 @@ private final class BKArtBackgroundLayerView: NSView {
         transitionClockSubscription?.cancel()
         autoTransitionTimer?.cancel()
         speedRampClockSubscription?.cancel()
+        solidCircleDotTimer?.cancel()
         maskWarmupTask?.cancel()
         initialResourceUpgradeTask?.cancel()
         backgroundRenderTasks.values.forEach { $0.cancel() }
@@ -581,6 +608,16 @@ private final class BKArtBackgroundLayerView: NSView {
         syncLoadedAssetsIfNeeded()
         applyCurrentBackgroundPhase()
         scheduleInitialResourceUpgradeIfNeeded()
+    }
+
+    func updateDotRenderStyle(_ style: BKArtBackgroundView.DotRenderStyle) {
+        guard dotRenderStyle != style else { return }
+        let wasRunning = isDotAnimationDriverRunning
+        stopDotAnimationDriver()
+        dotRenderStyle = style
+        if wasRunning {
+            startDotTimerIfNeeded()
+        }
     }
 
     override func layout() {
@@ -1400,7 +1437,12 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     private func startDotTimerIfNeeded() {
-        guard dotClockSubscription == nil else { return }
+        guard !isDotAnimationDriverRunning else { return }
+        if dotRenderStyle == .solidCircles {
+            startSolidCircleDotTimerIfNeeded()
+            return
+        }
+
         dotClockSubscription = animationClock.dotPublisher
             .sink { [weak self] in
                 self?.tickDotAnimation()
@@ -1420,8 +1462,7 @@ private final class BKArtBackgroundLayerView: NSView {
         backgroundClockSubscription = nil
         shapeClockSubscription?.cancel()
         shapeClockSubscription = nil
-        dotClockSubscription?.cancel()
-        dotClockSubscription = nil
+        stopDotAnimationDriver()
         autoTransitionTimer?.cancel()
         autoTransitionTimer = nil
         stopTransitionTimer()
@@ -1525,8 +1566,7 @@ private final class BKArtBackgroundLayerView: NSView {
         backgroundClockSubscription = nil
         shapeClockSubscription?.cancel()
         shapeClockSubscription = nil
-        dotClockSubscription?.cancel()
-        dotClockSubscription = nil
+        stopDotAnimationDriver()
         autoTransitionTimer?.cancel()
         autoTransitionTimer = nil
         stopTransitionTimer()
@@ -1553,9 +1593,8 @@ private final class BKArtBackgroundLayerView: NSView {
             didPauseBackgroundTimerForTransition = false
         }
 
-        if currentStyle != .dot, dotClockSubscription != nil {
-            dotClockSubscription?.cancel()
-            dotClockSubscription = nil
+        if currentStyle != .dot, isDotAnimationDriverRunning {
+            stopDotAnimationDriver()
             didPauseDotTimerForTransition = true
         } else {
             didPauseDotTimerForTransition = false
@@ -1738,6 +1777,41 @@ private final class BKArtBackgroundLayerView: NSView {
         guard dt > 0.0001 else { return }
         tickDotBackground(for: fromContainer, dt: dt)
         tickDotBackground(for: toContainer, dt: dt)
+    }
+
+    private func startSolidCircleDotTimerIfNeeded() {
+        guard solidCircleDotTimer == nil else { return }
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        let interval = DispatchTimeInterval.nanoseconds(Self.solidCircleFrameIntervalNanos)
+        timer.schedule(
+            deadline: .now() + interval,
+            repeating: interval,
+            leeway: .milliseconds(1)
+        )
+        timer.setEventHandler { [weak self] in
+            self?.tickSolidCircleDotAnimation()
+        }
+        timer.resume()
+        solidCircleDotTimer = timer
+    }
+
+    private func tickSolidCircleDotAnimation() {
+        guard solidCircleDotTimer != nil else { return }
+        let dt = Self.solidCircleFrameInterval * speedCurrent
+        guard dt > 0.0001 else { return }
+        tickDotBackground(for: fromContainer, dt: dt)
+        tickDotBackground(for: toContainer, dt: dt)
+    }
+
+    private var isDotAnimationDriverRunning: Bool {
+        dotClockSubscription != nil || solidCircleDotTimer != nil
+    }
+
+    private func stopDotAnimationDriver() {
+        dotClockSubscription?.cancel()
+        dotClockSubscription = nil
+        solidCircleDotTimer?.cancel()
+        solidCircleDotTimer = nil
     }
 
     private func updateShapes(for container: Container?, dt: CGFloat) {
@@ -2403,6 +2477,7 @@ private final class BKArtBackgroundLayerView: NSView {
         release(container: toContainer)
         fromContainer = nil
         toContainer = nil
+        transitionMaskLayer?.removeAllAnimations()
         transitionMaskLayer?.contents = nil
         transitionMaskLayer?.removeFromSuperlayer()
         transitionMaskLayer = nil
@@ -2415,9 +2490,11 @@ private final class BKArtBackgroundLayerView: NSView {
         tintedBackgroundCache.removeAllObjects()
         assets.purgeTransientCaches()
         Self.backgroundRenderContext.clearCaches()
+        layer?.removeAllAnimations()
         layer?.mask = nil
         layer?.contents = nil
         layer?.sublayers?.forEach { sublayer in
+            sublayer.removeAllAnimations()
             sublayer.mask = nil
             sublayer.contents = nil
             sublayer.removeFromSuperlayer()
@@ -2441,9 +2518,11 @@ private final class BKArtBackgroundLayerView: NSView {
     private func tearDownRootLayer() {
         lastLayoutSize = .zero
         pendingBoundsRebuild = false
+        layer?.removeAllAnimations()
         layer?.mask = nil
         layer?.contents = nil
         layer?.sublayers?.forEach { sublayer in
+            sublayer.removeAllAnimations()
             sublayer.mask = nil
             sublayer.contents = nil
             sublayer.removeFromSuperlayer()
@@ -2456,11 +2535,16 @@ private final class BKArtBackgroundLayerView: NSView {
 
     private func release(container: Container?) {
         guard let container else { return }
+        container.layer.removeAllAnimations()
+        container.backgroundLayer.removeAllAnimations()
+        container.backgroundToneLayer.removeAllAnimations()
         container.layer.mask = nil
         container.backgroundLayer.contents = nil
         container.backgroundToneLayer.contents = nil
         container.shapeLayers.forEach { shape in
+            shape.removeAllAnimations()
             shape.sublayers?.forEach { sublayer in
+                sublayer.removeAllAnimations()
                 sublayer.mask = nil
                 sublayer.contents = nil
             }
@@ -2472,28 +2556,52 @@ private final class BKArtBackgroundLayerView: NSView {
             slot.cellSmall = nil
             slot.maskBig = nil
             slot.maskSmall = nil
+            slot.rootLayer.removeAllAnimations()
             slot.rootLayer.sublayers?.forEach { sublayer in
+                sublayer.removeAllAnimations()
                 sublayer.mask = nil
                 sublayer.contents = nil
             }
             slot.rootLayer.removeFromSuperlayer()
         }
         container.dotSlots.removeAll(keepingCapacity: false)
+        container.dotRoot?.removeAllAnimations()
         container.dotRoot?.sublayers?.forEach { sublayer in
+            sublayer.removeAllAnimations()
             sublayer.mask = nil
             sublayer.contents = nil
         }
         container.dotRoot?.removeFromSuperlayer()
         container.dotRoot = nil
         container.dotGradient = nil
+        container.ultraDarkOverlay?.removeAllAnimations()
         container.ultraDarkOverlay?.contents = nil
         container.ultraDarkOverlay?.removeFromSuperlayer()
         container.ultraDarkOverlay = nil
         container.layer.sublayers?.forEach { sublayer in
+            sublayer.removeAllAnimations()
             sublayer.mask = nil
             sublayer.contents = nil
         }
         container.layer.removeFromSuperlayer()
+    }
+
+    private func logLifecycle(_ event: String) {
+        #if DEBUG
+            guard Self.lifecycleLoggingEnabled else { return }
+            switch event {
+            case "init":
+                Self.liveInstanceCount += 1
+            case "deinit":
+                Self.liveInstanceCount = max(0, Self.liveInstanceCount - 1)
+            default:
+                break
+            }
+            Log.info(
+                "[BKArtBackgroundLayerView] \(event) live=\(Self.liveInstanceCount)",
+                category: .perf
+            )
+        #endif
     }
 
     private var initialBackgroundBudgetCap: Int {
@@ -2550,7 +2658,12 @@ private final class BKArtBackgroundLayerView: NSView {
         updateDotGradient(container)
 
         // Initialize first Slot.
-        createAndAddSlot(to: container, rng: &rng, overlapT: 0.88, initialIdleDelay: 0)
+        createAndAddSlot(
+            to: container,
+            rng: &rng,
+            overlapT: initialDotLeadInOverlap,
+            initialIdleDelay: 0
+        )
         ensureLayerOrder(for: container)
     }
 
@@ -2571,7 +2684,9 @@ private final class BKArtBackgroundLayerView: NSView {
         )
 
         // 2. Create Slot
-        let dotBaseRadius = baseSize * CGFloat(rng.next(in: 0.26...0.34))
+        let dotBaseRadius = baseSize * CGFloat(
+            rng.next(in: dotBaseRadiusRange())
+        )
         let slot = DotSlot(anim: anim, baseRadius: dotBaseRadius)
         slot.radiusBig = CGFloat(rng.next(in: 5.0...6.2))
         slot.radiusSmall = CGFloat(rng.next(in: 3.0...4.0))
@@ -2581,56 +2696,101 @@ private final class BKArtBackgroundLayerView: NSView {
         slot.rootLayer.frame = root.bounds
 
         // 3. Build Layer Tree for this Slot
-        // We need new Grid layers specific to this slot to allow independent masking and coloring
-        let dotSpacing: CGFloat = 30
-        let cols = Int(baseSize / dotSpacing) + 6
-        let rows = Int(baseSize / dotSpacing) + 6
+        if dotRenderStyle == .solidCircles {
+            let solid1 = CAShapeLayer()
+            solid1.frame = root.bounds
+            solid1.path = CGPath(rect: root.bounds, transform: nil)
+            solid1.fillColor = NSColor(white: 0.3, alpha: 1.0).cgColor
+            solid1.opacity = 0.90
+            slot.rootLayer.addSublayer(solid1)
+            slot.cellBig = solid1
 
-        // Grid 1 (Big)
-        let grid1 = CALayer()
-        grid1.frame = root.bounds
-        let cell1 = addDotGrid(
-            to: grid1, cols: cols, rows: rows, spacing: dotSpacing, radius: slot.radiusBig,
-            opacity: 0.90)
-        slot.rootLayer.addSublayer(grid1)
-        slot.cellBig = cell1
+            let mask1 = CAShapeLayer()
+            mask1.fillColor = NSColor.black.cgColor
+            mask1.bounds = CGRect(
+                x: 0,
+                y: 0,
+                width: slot.maskBaseRadiusBig * 2,
+                height: slot.maskBaseRadiusBig * 2
+            )
+            mask1.path = CGPath(ellipseIn: mask1.bounds, transform: nil)
+            mask1.position = anim.start
+            mask1.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+            solid1.mask = mask1
+            slot.maskBig = mask1
 
-        let mask1 = CAShapeLayer()
-        mask1.fillColor = NSColor.black.cgColor
-        mask1.bounds = CGRect(
-            x: 0,
-            y: 0,
-            width: slot.maskBaseRadiusBig * 2,
-            height: slot.maskBaseRadiusBig * 2
-        )
-        mask1.path = CGPath(ellipseIn: mask1.bounds, transform: nil)
-        mask1.position = anim.start
-        mask1.anchorPoint = CGPoint(x: 0.5, y: 0.5)
-        grid1.mask = mask1
-        slot.maskBig = mask1
+            let solid2 = CAShapeLayer()
+            solid2.frame = root.bounds
+            solid2.path = CGPath(rect: root.bounds, transform: nil)
+            solid2.fillColor = NSColor(white: 0.3, alpha: 1.0).cgColor
+            solid2.opacity = 0.50
+            slot.rootLayer.addSublayer(solid2)
+            slot.cellSmall = solid2
 
-        // Grid 2 (Small)
-        let grid2 = CALayer()
-        grid2.frame = root.bounds
-        let cell2 = addDotGrid(
-            to: grid2, cols: cols, rows: rows, spacing: dotSpacing, radius: slot.radiusSmall,
-            opacity: 0.50)
-        slot.rootLayer.addSublayer(grid2)
-        slot.cellSmall = cell2
+            let mask2 = CAShapeLayer()
+            mask2.fillColor = NSColor.black.cgColor
+            mask2.bounds = CGRect(
+                x: 0,
+                y: 0,
+                width: slot.maskBaseRadiusSmall * 2,
+                height: slot.maskBaseRadiusSmall * 2
+            )
+            mask2.path = CGPath(ellipseIn: mask2.bounds, transform: nil)
+            mask2.position = anim.start
+            mask2.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+            solid2.mask = mask2
+            slot.maskSmall = mask2
+        } else {
+            let dotSpacing: CGFloat = 30
+            let cols = Int(baseSize / dotSpacing) + 6
+            let rows = Int(baseSize / dotSpacing) + 6
 
-        let mask2 = CAShapeLayer()
-        mask2.fillColor = NSColor.black.cgColor
-        mask2.bounds = CGRect(
-            x: 0,
-            y: 0,
-            width: slot.maskBaseRadiusSmall * 2,
-            height: slot.maskBaseRadiusSmall * 2
-        )
-        mask2.path = CGPath(ellipseIn: mask2.bounds, transform: nil)
-        mask2.position = anim.start
-        mask2.anchorPoint = CGPoint(x: 0.5, y: 0.5)
-        grid2.mask = mask2
-        slot.maskSmall = mask2
+            // Grid 1 (Big)
+            let grid1 = CALayer()
+            grid1.frame = root.bounds
+            let cell1 = addDotGrid(
+                to: grid1, cols: cols, rows: rows, spacing: dotSpacing, radius: slot.radiusBig,
+                opacity: 0.90)
+            slot.rootLayer.addSublayer(grid1)
+            slot.cellBig = cell1
+
+            let mask1 = CAShapeLayer()
+            mask1.fillColor = NSColor.black.cgColor
+            mask1.bounds = CGRect(
+                x: 0,
+                y: 0,
+                width: slot.maskBaseRadiusBig * 2,
+                height: slot.maskBaseRadiusBig * 2
+            )
+            mask1.path = CGPath(ellipseIn: mask1.bounds, transform: nil)
+            mask1.position = anim.start
+            mask1.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+            grid1.mask = mask1
+            slot.maskBig = mask1
+
+            // Grid 2 (Small)
+            let grid2 = CALayer()
+            grid2.frame = root.bounds
+            let cell2 = addDotGrid(
+                to: grid2, cols: cols, rows: rows, spacing: dotSpacing, radius: slot.radiusSmall,
+                opacity: 0.50)
+            slot.rootLayer.addSublayer(grid2)
+            slot.cellSmall = cell2
+
+            let mask2 = CAShapeLayer()
+            mask2.fillColor = NSColor.black.cgColor
+            mask2.bounds = CGRect(
+                x: 0,
+                y: 0,
+                width: slot.maskBaseRadiusSmall * 2,
+                height: slot.maskBaseRadiusSmall * 2
+            )
+            mask2.path = CGPath(ellipseIn: mask2.bounds, transform: nil)
+            mask2.position = anim.start
+            mask2.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+            grid2.mask = mask2
+            slot.maskSmall = mask2
+        }
 
         // 4. Add to container. Tint is assigned when this slot enters moving.
         root.addSublayer(slot.rootLayer)
@@ -2644,17 +2804,17 @@ private final class BKArtBackgroundLayerView: NSView {
         initialIdleDelay: TimeInterval?
     ) -> DotAnimState {
         let dotAvoidanceRect = activeAvoidanceRect?.insetBy(dx: -34, dy: -24)
-        let radius = baseSize * 0.30
+        let radius = baseSize * dotOffscreenTravelRadiusFactor
 
         for _ in 0..<18 {
             let start = randomOffscreenPoint(radius: radius, rng: &rng, marginMul: 1.05)
             let end = randomOffscreenPoint(radius: radius, rng: &rng, marginMul: 1.45)
             let cp1 = randomControlPoint(avoidanceRect: dotAvoidanceRect, rng: &rng)
             let cp2 = randomControlPoint(avoidanceRect: dotAvoidanceRect, rng: &rng)
-            let duration = rng.next(in: 12.0...17.0)
-            var leadIn = overlapT ?? rng.next(in: 0.55...0.75)
-            if duration > 16.0 {
-                leadIn = max(0.50, leadIn - 0.05)
+            let duration = rng.next(in: dotTravelDurationRange())
+            var leadIn = overlapT ?? rng.next(in: dotLeadInOverlapRange())
+            if duration > dotLongDurationThreshold {
+                leadIn = max(dotLeadInMinimum, leadIn - dotLongDurationLeadInAdjustment)
             }
 
             if pathAvoidsAvoidanceRect(
@@ -2664,7 +2824,7 @@ private final class BKArtBackgroundLayerView: NSView {
                 end: end,
                 avoidanceRect: dotAvoidanceRect
             ) {
-                let idleDelay = max(0, initialIdleDelay ?? rng.next(in: 0.10...0.45))
+                let idleDelay = max(0, initialIdleDelay ?? rng.next(in: dotIdleDelayRange()))
                 return DotAnimState(
                     motion: .idle(idleDelay),
                     start: start,
@@ -2693,7 +2853,7 @@ private final class BKArtBackgroundLayerView: NSView {
         overlapT: Double?,
         initialIdleDelay: TimeInterval?
     ) -> DotAnimState {
-        let radius = baseSize * 0.30
+        let radius = baseSize * dotOffscreenTravelRadiusFactor
         let leftLaneMaxX = avoidanceRect.map { max(bounds.minX + 120, $0.minX - 56) }
             ?? (bounds.width * 0.40)
         let laneX = min(max(bounds.width * 0.18, CGFloat(120)), leftLaneMaxX)
@@ -2714,9 +2874,9 @@ private final class BKArtBackgroundLayerView: NSView {
             x: min(leftLaneMaxX, laneX + cpInset),
             y: startFromTop ? bounds.maxY * 0.26 : bounds.maxY * 0.74
         )
-        let duration = rng.next(in: 12.0...16.0)
-        let idleDelay = max(0, initialIdleDelay ?? rng.next(in: 0.10...0.30))
-        let leadIn = overlapT ?? rng.next(in: 0.55...0.70)
+        let duration = rng.next(in: dotFallbackTravelDurationRange())
+        let idleDelay = max(0, initialIdleDelay ?? rng.next(in: dotFallbackIdleDelayRange()))
+        let leadIn = overlapT ?? rng.next(in: dotFallbackLeadInOverlapRange())
         return DotAnimState(
             motion: .idle(idleDelay),
             start: start,
@@ -2887,10 +3047,12 @@ private final class BKArtBackgroundLayerView: NSView {
                     p3: slot.anim.end)
 
                 var scale: CGFloat = 1.0
-                if nextT < 0.25 {
-                    scale = 0.6 + 0.4 * easeOutQuint(nextT / 0.25)
-                } else if nextT > 0.8 {
-                    scale = 1.0 - 0.4 * easeInQuint((nextT - 0.8) / 0.2)
+                if nextT < dotScaleRampInEnd {
+                    let progress = nextT / dotScaleRampInEnd
+                    scale = dotMinimumScale + (1.0 - dotMinimumScale) * easeOutQuint(progress)
+                } else if nextT > dotScaleRampOutStart {
+                    let progress = (nextT - dotScaleRampOutStart) / (1.0 - dotScaleRampOutStart)
+                    scale = 1.0 - (1.0 - dotMinimumScale) * easeInQuint(progress)
                 }
 
                 let currentR =
@@ -2992,6 +3154,141 @@ private final class BKArtBackgroundLayerView: NSView {
                 y: CGFloat(
                     rng.next(in: Double(bounds.minY - margin)...Double(bounds.maxY + margin)))
             )
+        }
+    }
+
+    private func dotBaseRadiusRange() -> ClosedRange<Double> {
+        switch dotRenderStyle {
+        case .dotGrid:
+            return 0.26...0.34
+        case .solidCircles:
+            return 0.34...0.44
+        }
+    }
+
+    private var dotOffscreenTravelRadiusFactor: CGFloat {
+        switch dotRenderStyle {
+        case .dotGrid:
+            return 0.30
+        case .solidCircles:
+            return 0.40
+        }
+    }
+
+    private func dotTravelDurationRange() -> ClosedRange<Double> {
+        switch dotRenderStyle {
+        case .dotGrid:
+            return 12.0...17.0
+        case .solidCircles:
+            return 24.0...32.0
+        }
+    }
+
+    private func dotFallbackTravelDurationRange() -> ClosedRange<Double> {
+        switch dotRenderStyle {
+        case .dotGrid:
+            return 12.0...16.0
+        case .solidCircles:
+            return 23.0...29.0
+        }
+    }
+
+    private func dotIdleDelayRange() -> ClosedRange<Double> {
+        switch dotRenderStyle {
+        case .dotGrid:
+            return 0.10...0.45
+        case .solidCircles:
+            return 0.18...0.65
+        }
+    }
+
+    private func dotFallbackIdleDelayRange() -> ClosedRange<Double> {
+        switch dotRenderStyle {
+        case .dotGrid:
+            return 0.10...0.30
+        case .solidCircles:
+            return 0.16...0.48
+        }
+    }
+
+    private func dotLeadInOverlapRange() -> ClosedRange<Double> {
+        switch dotRenderStyle {
+        case .dotGrid:
+            return 0.55...0.75
+        case .solidCircles:
+            return 0.72...0.84
+        }
+    }
+
+    private func dotFallbackLeadInOverlapRange() -> ClosedRange<Double> {
+        switch dotRenderStyle {
+        case .dotGrid:
+            return 0.55...0.70
+        case .solidCircles:
+            return 0.72...0.82
+        }
+    }
+
+    private var initialDotLeadInOverlap: Double {
+        switch dotRenderStyle {
+        case .dotGrid:
+            return 0.88
+        case .solidCircles:
+            return 0.82
+        }
+    }
+
+    private var dotLongDurationThreshold: Double {
+        switch dotRenderStyle {
+        case .dotGrid:
+            return 16.0
+        case .solidCircles:
+            return 29.0
+        }
+    }
+
+    private var dotLeadInMinimum: Double {
+        switch dotRenderStyle {
+        case .dotGrid:
+            return 0.50
+        case .solidCircles:
+            return 0.68
+        }
+    }
+
+    private var dotLongDurationLeadInAdjustment: Double {
+        switch dotRenderStyle {
+        case .dotGrid:
+            return 0.05
+        case .solidCircles:
+            return 0.03
+        }
+    }
+
+    private var dotScaleRampInEnd: Double {
+        switch dotRenderStyle {
+        case .dotGrid:
+            return 0.25
+        case .solidCircles:
+            return 0.34
+        }
+    }
+
+    private var dotScaleRampOutStart: Double {
+        switch dotRenderStyle {
+        case .dotGrid:
+            return 0.80
+        case .solidCircles:
+            return 0.72
+        }
+    }
+
+    private var dotMinimumScale: CGFloat {
+        switch dotRenderStyle {
+        case .dotGrid:
+            return 0.60
+        case .solidCircles:
+            return 0.86
         }
     }
 

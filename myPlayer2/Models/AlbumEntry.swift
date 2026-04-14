@@ -10,7 +10,7 @@ import Foundation
 struct AlbumEntry: Identifiable {
     // Persistent fields (from sidecar)
     let id: UUID
-    var canonicalKey: String        // normalized album+artist key
+    var canonicalKey: String        // normalized logical album key
     var displayTitle: String
     var primaryArtistCanonicalName: String
     var primaryArtistDisplayName: String
