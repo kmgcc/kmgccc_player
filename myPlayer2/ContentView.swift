@@ -11,8 +11,10 @@ import SwiftUI
 /// Legacy ContentView - redirects to AppRootView.
 /// Kept for compatibility with existing project structure.
 struct ContentView: View {
+    @StateObject private var settingsSceneDependencies = SettingsSceneDependencies()
+
     var body: some View {
-        AppRootView()
+        AppRootView(settingsSceneDependencies: settingsSceneDependencies)
     }
 }
 

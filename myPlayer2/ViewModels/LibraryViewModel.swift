@@ -211,6 +211,8 @@ final class LibraryViewModel {
 
     private let repository: LibraryRepositoryProtocol
     private var importService: FileImportServiceProtocol?
+    var currentTrackIDProvider: (() -> UUID?)?
+    var onTracksDeleted: ((Set<UUID>) -> Void)?
     private var isApplyingSortPreference = false
     private var trackUpdateRevision = 0
 
@@ -364,7 +366,7 @@ final class LibraryViewModel {
 
         refreshTrigger += 1
 
-        if let currentTrackID = SharedAppState.shared.playerVM?.currentTrack?.id,
+        if let currentTrackID = currentTrackIDProvider?(),
            uniqueTrackIDs.contains(currentTrackID) {
             trackUpdateRevision += 1
             trackUpdateEvent = TrackUpdateEvent(trackID: currentTrackID, revision: trackUpdateRevision)
@@ -863,21 +865,7 @@ final class LibraryViewModel {
 
     private func cleanupPlaybackAfterDeletingTracks(_ deletedTrackIDs: Set<UUID>) {
         guard !deletedTrackIDs.isEmpty else { return }
-        guard let playerVM = SharedAppState.shared.playerVM else { return }
-
-        if let currentTrackID = playerVM.currentTrack?.id, deletedTrackIDs.contains(currentTrackID) {
-            playerVM.stop()
-            return
-        }
-
-        let remainingQueue = playerVM.currentQueueTracks.filter { !deletedTrackIDs.contains($0.id) }
-        guard remainingQueue.count != playerVM.currentQueueTracks.count else { return }
-
-        if remainingQueue.isEmpty {
-            playerVM.stop()
-        } else {
-            playerVM.updateQueueTracks(remainingQueue)
-        }
+        onTracksDeleted?(deletedTrackIDs)
     }
 
     private var currentSelectionIdentity: String {

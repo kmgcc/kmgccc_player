@@ -1,37 +1,28 @@
 //
-//  SharedAppState.swift
+//  SettingsSceneDependencies.swift
 //  myPlayer2
 //
-//  kmgccc_player - Shared App State for Settings Scene
+//  kmgccc_player - Shared dependencies for the Settings scene
 //
 
 import Combine
-import SwiftUI
 
 @MainActor
-final class SharedAppState: ObservableObject {
-    static let shared = SharedAppState()
-
+final class SettingsSceneDependencies: ObservableObject {
     @Published var libraryVM: LibraryViewModel?
     @Published var playerVM: PlayerViewModel?
     @Published var lyricsVM: LyricsViewModel?
     @Published var ledMeterProvider: LEDMeterServiceProvider?
-    @Published var skinManager: SkinManager?
-    @Published var themeStore: ThemeStore?
 
     func configure(
         libraryVM: LibraryViewModel,
         playerVM: PlayerViewModel,
         lyricsVM: LyricsViewModel,
-        ledMeterProvider: LEDMeterServiceProvider,
-        skinManager: SkinManager,
-        themeStore: ThemeStore
+        ledMeterProvider: LEDMeterServiceProvider
     ) {
         self.libraryVM = libraryVM
         self.playerVM = playerVM
         self.lyricsVM = lyricsVM
         self.ledMeterProvider = ledMeterProvider
-        self.skinManager = skinManager
-        self.themeStore = themeStore
     }
 }
