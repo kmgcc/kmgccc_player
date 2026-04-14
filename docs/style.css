@@ -7,7 +7,7 @@
 body {
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
     background: linear-gradient(180deg, #f5f5f7 0%, #ffffff 100%);
-    color: #1d1d1f;
+    color: #162033;
     line-height: 1.5;
     min-height: 100vh;
 }
@@ -19,16 +19,28 @@ body {
 }
 
 .hero {
-    text-align: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 48px;
     margin-bottom: 120px;
 }
 
 .app-icon {
-    width: 120px;
-    height: 120px;
-    border-radius: 24px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
-    margin-bottom: 24px;
+    width: 220px;
+    height: 220px;
+    border-radius: 0;
+    box-shadow: none;
+    flex-shrink: 0;
+    object-fit: contain;
+}
+
+.hero-content {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: flex-start;
+    text-align: left;
 }
 
 h1 {
@@ -48,38 +60,56 @@ h1 {
 .buttons {
     display: flex;
     gap: 12px;
-    justify-content: center;
+    justify-content: flex-start;
     flex-wrap: wrap;
 }
 
 .btn {
     display: inline-flex;
     align-items: center;
+    gap: 6px;
     padding: 14px 28px;
-    border-radius: 24px;
-    font-size: 17px;
+    border: 1.5px solid transparent;
+    border-radius: 999px;
+    font-size: 15px;
     font-weight: 500;
     text-decoration: none;
     transition: all 0.2s ease;
 }
 
 .btn-primary {
-    background: #0071e3;
-    color: white;
+    background: #162033;
+    color: #ffffff;
 }
 
 .btn-primary:hover {
-    background: #0077ed;
+    background: #1d2940;
     transform: scale(1.02);
 }
 
 .btn-secondary {
-    background: #e3e3e8;
-    color: #1d1d1f;
+    background: transparent;
+    border-color: #2563eb;
+    color: #2563eb;
 }
 
 .btn-secondary:hover {
-    background: #dcdcdd;
+    background: rgba(37, 99, 235, 0.08);
+}
+
+.btn-donate {
+    background: transparent;
+    border-color: #7c3aed;
+    color: #7c3aed;
+}
+
+.btn-donate:hover {
+    background: rgba(124, 58, 237, 0.08);
+}
+
+.btn-icon {
+    font-size: 22px;
+    line-height: 1;
 }
 
 .screenshots {
@@ -111,6 +141,18 @@ h1 {
         padding: 60px 16px;
     }
 
+    .hero {
+        flex-direction: column;
+        text-align: center;
+        gap: 28px;
+        margin-bottom: 80px;
+    }
+
+    .hero-content {
+        align-items: center;
+        text-align: center;
+    }
+
     h1 {
         font-size: 36px;
     }
@@ -120,11 +162,59 @@ h1 {
     }
 
     .app-icon {
-        width: 100px;
-        height: 100px;
+        width: 160px;
+        height: 160px;
     }
 
     .screenshots {
         grid-template-columns: 1fr;
+    }
+
+    .buttons {
+        justify-content: center;
+    }
+}
+
+@media (prefers-color-scheme: dark) {
+    body {
+        background: linear-gradient(180deg, #1a1a1a 0%, #0f0f0f 100%);
+        color: #f5f5f7;
+    }
+
+    .tagline {
+        color: #a1a1aa;
+    }
+
+    .btn-primary {
+        background: #dbe7ff;
+        color: #162033;
+    }
+
+    .btn-primary:hover {
+        background: #cddcff;
+    }
+
+    .btn-secondary {
+        background: transparent;
+        border-color: #60a5fa;
+        color: #60a5fa;
+    }
+
+    .btn-secondary:hover {
+        background: rgba(96, 165, 250, 0.14);
+    }
+
+    .btn-donate {
+        background: transparent;
+        border-color: #c084fc;
+        color: #c084fc;
+    }
+
+    .btn-donate:hover {
+        background: rgba(192, 132, 252, 0.14);
+    }
+
+    .screenshot-item {
+        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
     }
 }
