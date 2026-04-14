@@ -32,6 +32,15 @@ final class StubNetEaseCoverService: NetEaseCoverServiceProtocol {
         return pngData
     }
 
+    func searchTopCoverCandidate(artist: String, album: String) async throws -> CoverCandidate {
+        let data = try await searchAndDownloadCover(artist: artist, album: album)
+        return CoverCandidate(
+            imageData: data,
+            source: .netease,
+            sourceItemId: "stub-top-\(artist)-\(album)"
+        )
+    }
+
     func searchCoverCandidates(artist: String, album: String, limit: Int = 5) async throws -> [CoverCandidate] {
         print("🌐 StubNetEaseCoverService: returning placeholder candidates for \(artist) - \(album)")
 

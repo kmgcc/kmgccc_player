@@ -12,6 +12,28 @@ import Foundation
 @Observable
 @MainActor
 final class CoverDownloadService: CoverDownloadServiceProtocol {
+    private final class ContinuationState: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<Void, Error>?
+
+        init(_ continuation: CheckedContinuation<Void, Error>) {
+            self.continuation = continuation
+        }
+
+        func resume(_ result: Result<Void, Error>) {
+            lock.lock()
+            defer { lock.unlock() }
+            guard let continuation else { return }
+            self.continuation = nil
+            switch result {
+            case .success:
+                continuation.resume()
+            case .failure(let error):
+                continuation.resume(throwing: error)
+            }
+        }
+    }
+
     private let executablePath: String
     private let fileManager: FileManager
 
@@ -49,13 +71,60 @@ final class CoverDownloadService: CoverDownloadServiceProtocol {
             process.executableURL = URL(fileURLWithPath: executablePath)
             process.arguments = [artist, album, String(size), tempURL.path]
 
-            let outputPipe = Pipe()
             let errorPipe = Pipe()
-            process.standardOutput = outputPipe
+            process.standardOutput = Pipe()
             process.standardError = errorPipe
 
             do {
-                try process.run()
+                try await withTaskCancellationHandler {
+                    try await withCheckedThrowingContinuation {
+                        (continuation: CheckedContinuation<Void, Error>) in
+                        let state = ContinuationState(continuation)
+                        process.terminationHandler = { process in
+                            let stderrData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                            guard process.terminationStatus == 0 else {
+                                let stderrText = String(data: stderrData, encoding: .utf8)?
+                                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                                state.resume(
+                                    .failure(
+                                        CoverDownloadError.processFailed(
+                                            exitCode: process.terminationStatus,
+                                            message: stderrText?.isEmpty == false
+                                                ? stderrText!
+                                                : "sacad exited with an error"
+                                        )
+                                    )
+                                )
+                                return
+                            }
+                            state.resume(.success(()))
+                        }
+
+                        do {
+                            try process.run()
+                        } catch {
+                            state.resume(
+                                .failure(
+                                    CoverDownloadError.processFailed(
+                                        exitCode: -1,
+                                        message: error.localizedDescription
+                                    )
+                                )
+                            )
+                        }
+                    }
+                } onCancel: {
+                    if process.isRunning {
+                        process.terminate()
+                    }
+                }
+            } catch let error as CoverDownloadError {
+                throw error
+            } catch is CancellationError {
+                if process.isRunning {
+                    process.terminate()
+                }
+                throw CoverDownloadError.cancelled
             } catch {
                 throw CoverDownloadError.processFailed(
                     exitCode: -1,
@@ -63,20 +132,10 @@ final class CoverDownloadService: CoverDownloadServiceProtocol {
                 )
             }
 
-            process.waitUntilExit()
-
-            if Task.isCancelled {
-                process.terminate()
-                throw CoverDownloadError.cancelled
-            }
-
             guard process.terminationStatus == 0 else {
-                let stderrData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-                let stderrText = String(data: stderrData, encoding: .utf8)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
                 throw CoverDownloadError.processFailed(
                     exitCode: process.terminationStatus,
-                    message: stderrText?.isEmpty == false ? stderrText! : "sacad exited with an error"
+                    message: "sacad exited with an error"
                 )
             }
 

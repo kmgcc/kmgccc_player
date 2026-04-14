@@ -8,6 +8,14 @@
 import AppKit
 import Foundation
 
+enum CoverLookupConfiguration {
+    static let netEasePreferredTimeout: TimeInterval = 8
+    static let netEaseCandidatesTimeout: TimeInterval = 12
+    static let sacadTimeout: TimeInterval = 18
+    static let importPerTrackTimeout: TimeInterval = 30
+    static let netEaseCandidateLimit = 5
+}
+
 enum CoverDownloadError: Error {
     case executableMissing(path: String)
     case processFailed(exitCode: Int32, message: String)
@@ -24,13 +32,44 @@ enum NetEaseCoverError: Error {
     case imageDownloadFailed(underlying: Error)
 }
 
-enum CoverSource {
+enum CoverSource: Sendable {
     case sacad
     case netease
 }
 
+enum CoverLookupTimeoutError: LocalizedError {
+    case timedOut(seconds: TimeInterval)
+
+    var errorDescription: String? {
+        switch self {
+        case .timedOut(let seconds):
+            return "Timed out after \(Int(seconds)) seconds"
+        }
+    }
+}
+
+func withCoverLookupTimeout<T: Sendable>(
+    _ seconds: TimeInterval,
+    operation: @escaping @Sendable () async throws -> T
+) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask {
+            try await operation()
+        }
+        group.addTask {
+            let timeoutNanoseconds = UInt64(seconds * 1_000_000_000)
+            try await Task.sleep(nanoseconds: timeoutNanoseconds)
+            throw CoverLookupTimeoutError.timedOut(seconds: seconds)
+        }
+
+        let result = try await group.next()!
+        group.cancelAll()
+        return result
+    }
+}
+
 /// A cover image candidate with stable identity and resolution metadata.
-struct CoverCandidate: Identifiable, Equatable, Hashable {
+struct CoverCandidate: Identifiable, Equatable, Hashable, Sendable {
     let id: String  // Stable identity: "sacad:<normalized-query>" or "netease:<album-id>"
     let imageData: Data
     let resolution: Int  // Larger dimension (e.g., 1200 for 1200x1200)

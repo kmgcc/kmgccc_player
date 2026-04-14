@@ -328,6 +328,28 @@ nonisolated private struct PendingTrackEnrichmentPatch: Sendable {
 }
 
 nonisolated private enum ImportEnrichmentWorker {
+    private final class ContinuationState: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<Void, Error>?
+
+        init(_ continuation: CheckedContinuation<Void, Error>) {
+            self.continuation = continuation
+        }
+
+        func resume(_ result: Result<Void, Error>) {
+            lock.lock()
+            defer { lock.unlock() }
+            guard let continuation else { return }
+            self.continuation = nil
+            switch result {
+            case .success:
+                continuation.resume()
+            case .failure(let error):
+                continuation.resume(throwing: error)
+            }
+        }
+    }
+
     /// Fetch lyrics using the shared search pipeline that matches manual "Find Lyrics" behavior.
     /// Uses both AMLLDB and LDDC sources with proper ranking/merging logic.
     /// Automatically selects the top-ranked candidate from the merged result list.
@@ -371,37 +393,61 @@ nonisolated private enum ImportEnrichmentWorker {
         }
 
         do {
-            let coverData = try await downloadCoverViaSacad(
-                artist: normalizedArtist,
-                album: normalizedAlbum,
-                size: 1200
-            )
-            return .completed(coverData)
-        } catch {
-            Log.warning(
-                "sacad cover fetch failed for \(normalizedArtist) - \(normalizedAlbum): \(error)",
-                category: .import
-            )
-        }
+            let coverData = try await withCoverLookupTimeout(
+                CoverLookupConfiguration.importPerTrackTimeout
+            ) {
+                do {
+                    return try await withCoverLookupTimeout(
+                        CoverLookupConfiguration.netEaseCandidatesTimeout
+                    ) {
+                        try await downloadNetEaseCover(
+                            artist: normalizedArtist,
+                            album: normalizedAlbum
+                        )
+                    }
+                } catch let error as NetEaseCoverError {
+                    if case .noResults = error {
+                        // Fall through to sacad.
+                    } else {
+                        Log.warning(
+                            "NetEase cover fetch failed for \(normalizedArtist) - \(normalizedAlbum): \(error)",
+                            category: .import
+                        )
+                    }
+                } catch {
+                    Log.warning(
+                        "NetEase cover fetch failed for \(normalizedArtist) - \(normalizedAlbum): \(error)",
+                        category: .import
+                    )
+                }
 
-        do {
-            let coverData = try await downloadNetEaseCover(
-                artist: normalizedArtist,
-                album: normalizedAlbum
-            )
+                return try await withCoverLookupTimeout(CoverLookupConfiguration.sacadTimeout) {
+                    try await downloadCoverViaSacad(
+                        artist: normalizedArtist,
+                        album: normalizedAlbum,
+                        size: 1200
+                    )
+                }
+            }
             return .completed(coverData)
         } catch let error as NetEaseCoverError {
             if case .noResults = error {
                 return .noResults
             }
             Log.warning(
-                "NetEase cover fetch failed for \(normalizedArtist) - \(normalizedAlbum): \(error)",
+                "Import cover fetch failed for \(normalizedArtist) - \(normalizedAlbum): \(error)",
                 category: .import
             )
             return .failed(error.localizedDescription)
+        } catch let error as CoverLookupTimeoutError {
+            Log.warning(
+                "Import cover fetch timed out for \(normalizedArtist) - \(normalizedAlbum): \(error)",
+                category: .import
+            )
+            return .failed("封面查找超时")
         } catch {
             Log.warning(
-                "NetEase cover fetch failed for \(normalizedArtist) - \(normalizedAlbum): \(error)",
+                "Import cover fetch failed for \(normalizedArtist) - \(normalizedAlbum): \(error)",
                 category: .import
             )
             return .failed(error.localizedDescription)
@@ -435,35 +481,46 @@ nonisolated private enum ImportEnrichmentWorker {
         process.standardOutput = Pipe()
         process.standardError = errorPipe
 
-        try await withCheckedThrowingContinuation {
-            (continuation: CheckedContinuation<Void, Error>) in
-            process.terminationHandler = { process in
-                let stderrData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-                guard process.terminationStatus == 0 else {
-                    let stderrText = String(data: stderrData, encoding: .utf8)?
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                    continuation.resume(
-                        throwing: CoverDownloadError.processFailed(
-                            exitCode: process.terminationStatus,
-                            message: stderrText?.isEmpty == false
-                                ? stderrText!
-                                : "sacad exited with an error"
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<Void, Error>) in
+                let state = ContinuationState(continuation)
+                process.terminationHandler = { process in
+                    let stderrData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                    guard process.terminationStatus == 0 else {
+                        let stderrText = String(data: stderrData, encoding: .utf8)?
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        state.resume(
+                            .failure(
+                                CoverDownloadError.processFailed(
+                                    exitCode: process.terminationStatus,
+                                    message: stderrText?.isEmpty == false
+                                        ? stderrText!
+                                        : "sacad exited with an error"
+                                )
+                            )
+                        )
+                        return
+                    }
+                    state.resume(.success(()))
+                }
+
+                do {
+                    try process.run()
+                } catch {
+                    state.resume(
+                        .failure(
+                            CoverDownloadError.processFailed(
+                                exitCode: -1,
+                                message: error.localizedDescription
+                            )
                         )
                     )
-                    return
                 }
-                continuation.resume()
             }
-
-            do {
-                try process.run()
-            } catch {
-                continuation.resume(
-                    throwing: CoverDownloadError.processFailed(
-                        exitCode: -1,
-                        message: error.localizedDescription
-                    )
-                )
+        } onCancel: {
+            if process.isRunning {
+                process.terminate()
             }
         }
 
@@ -482,6 +539,7 @@ nonisolated private enum ImportEnrichmentWorker {
         artist: String,
         album: String
     ) async throws -> Data {
+        let session = makeNetEaseSession()
         let query = "\(artist) \(album)".trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else {
             throw NetEaseCoverError.noResults
@@ -500,7 +558,7 @@ nonisolated private enum ImportEnrichmentWorker {
 
         let searchData: Data
         do {
-            let (data, response) = try await URLSession.shared.data(from: searchURL)
+            let (data, response) = try await session.data(from: searchURL)
             try validateNetEaseHTTP(response: response)
             searchData = data
         } catch let error as NetEaseCoverError {
@@ -526,7 +584,7 @@ nonisolated private enum ImportEnrichmentWorker {
         }
 
         do {
-            let (imageData, response) = try await URLSession.shared.data(from: coverURL)
+            let (imageData, response) = try await session.data(from: coverURL)
             try validateNetEaseHTTP(response: response)
             guard !imageData.isEmpty, NSImage(data: imageData) != nil else {
                 throw NetEaseCoverError.imageDownloadFailed(
@@ -558,6 +616,13 @@ nonisolated private enum ImportEnrichmentWorker {
             return "\(picURLString)&param=1200y1200"
         }
         return "\(picURLString)?param=1200y1200"
+    }
+
+    private static func makeNetEaseSession() -> URLSession {
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = CoverLookupConfiguration.netEasePreferredTimeout
+        configuration.timeoutIntervalForResource = CoverLookupConfiguration.netEaseCandidatesTimeout
+        return URLSession(configuration: configuration)
     }
 
     private struct NetEaseSearchResponse: Decodable, Sendable {
