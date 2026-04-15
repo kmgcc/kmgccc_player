@@ -385,7 +385,7 @@ final class PlaylistPageController {
         }
 
         let playlistItemAddedAtMap: [UUID: Date]? = {
-            guard let playlistID = libraryVM.selectedPlaylistId else { return nil }
+            guard case .playlist(let playlistID) = libraryVM.currentSelection else { return nil }
             return libraryVM.playlistItemAddedAtMap[playlistID]
         }()
 
