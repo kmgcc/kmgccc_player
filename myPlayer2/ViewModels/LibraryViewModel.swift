@@ -110,43 +110,6 @@ final class LibraryViewModel {
     private(set) var allTracks: [Track] = []
     private(set) var playlistItemAddedAtMap: [UUID: [UUID: Date]] = [:]
 
-    /// Currently selected playlist (nil = All Songs, unless artist/album selected).
-    /// Published so UI can react to changes.
-    var selectedPlaylistId: UUID? {
-        didSet {
-            if selectedPlaylistId != nil {
-                selectedArtistKey = nil
-                selectedAlbumKey = nil
-                selectedAlbumName = nil
-                applySortPreferenceForCurrentSelection()
-            } else if selectedArtistKey == nil && selectedAlbumKey == nil {
-                // Only apply sort if we reverted to All Songs (no other selection active)
-                applySortPreferenceForCurrentSelection()
-            }
-        }
-    }
-
-    /// Currently selected artist key (normalized).
-    var selectedArtistKey: String? {
-        didSet {
-            if selectedArtistKey != nil {
-                selectedPlaylistId = nil
-                selectedAlbumKey = nil
-                selectedAlbumName = nil
-            }
-        }
-    }
-
-    /// Currently selected album key (normalized logical album identity).
-    var selectedAlbumKey: String? {
-        didSet {
-            if selectedAlbumKey != nil {
-                selectedPlaylistId = nil
-                selectedArtistKey = nil
-            }
-        }
-    }
-
     /// Selected album display name for header.
     var selectedAlbumName: String?
     
@@ -154,25 +117,6 @@ final class LibraryViewModel {
     /// Default is .allSongs, never nil.
     var currentSelection: LibrarySelection = .allSongs {
         didSet {
-            // Sync legacy properties for backward compatibility during transition
-            switch currentSelection {
-            case .allSongs:
-                selectedPlaylistId = nil
-                selectedArtistKey = nil
-                selectedAlbumKey = nil
-            case .playlist(let id):
-                selectedPlaylistId = id
-                selectedArtistKey = nil
-                selectedAlbumKey = nil
-            case .artist(let key):
-                selectedPlaylistId = nil
-                selectedArtistKey = key
-                selectedAlbumKey = nil
-            case .album(let key):
-                selectedPlaylistId = nil
-                selectedArtistKey = nil
-                selectedAlbumKey = key
-            }
             selectedAlbumName = nil
             applySortPreferenceForCurrentSelection()
         }
@@ -313,7 +257,7 @@ final class LibraryViewModel {
 
     /// Get the currently selected playlist object.
     var selectedPlaylist: Playlist? {
-        guard let id = selectedPlaylistId else { return nil }
+        guard case .playlist(let id) = currentSelection else { return nil }
         return playlists.first { $0.id == id }
     }
 
@@ -406,17 +350,17 @@ final class LibraryViewModel {
                         format: NSLocalizedString("library.imported_playlist_name", comment: ""),
                         formattedDate))
                 playlists = await repository.fetchPlaylists()
-                selectedPlaylistId = targetPlaylist.id
+                currentSelection = .playlist(targetPlaylist.id)
             } else if let lastId = UserDefaults.standard.string(forKey: "lastSelectedPlaylistId"),
                 let uuid = UUID(uuidString: lastId),
                 let last = playlists.first(where: { $0.id == uuid })
             {
                 targetPlaylist = last
-                selectedPlaylistId = last.id
+                currentSelection = .playlist(last.id)
             } else {
                 let fallback = playlists[0]
                 targetPlaylist = fallback
-                selectedPlaylistId = fallback.id
+                currentSelection = .playlist(fallback.id)
             }
         }
 
@@ -455,7 +399,7 @@ final class LibraryViewModel {
         Log.debug("createPlaylist: '\(name)'", category: .library)
         let playlist = await repository.createPlaylist(name: name)
         playlists = await repository.fetchPlaylists()
-        selectedPlaylistId = playlist.id
+        currentSelection = .playlist(playlist.id)
         return playlist
     }
 
@@ -470,9 +414,7 @@ final class LibraryViewModel {
     /// Select a playlist by ID.
     func selectPlaylist(_ playlist: Playlist?) {
         searchResetTrigger += 1
-        selectedPlaylistId = playlist?.id
-        selectedArtistKey = nil
-        selectedAlbumKey = nil
+        currentSelection = playlist.map { .playlist($0.id) } ?? .allSongs
         selectedAlbumName = nil
         if let id = playlist?.id {
             UserDefaults.standard.set(id.uuidString, forKey: "lastSelectedPlaylistId")
@@ -483,16 +425,15 @@ final class LibraryViewModel {
     /// Select an artist.
     func selectArtist(_ artist: ArtistSection) {
         searchResetTrigger += 1
-        selectedArtistKey = artist.key
-        // selectedPlaylistId handled by didSet
+        currentSelection = .artist(artist.key)
+        selectedAlbumName = nil
     }
 
     /// Select an album.
     func selectAlbum(_ album: AlbumSection) {
         searchResetTrigger += 1
-        selectedAlbumKey = album.key
+        currentSelection = .album(album.key)
         selectedAlbumName = album.name
-        // selectedPlaylistId handled by didSet
     }
 
     func renamePlaylist(_ playlist: Playlist, name: String) async {
@@ -723,15 +664,17 @@ final class LibraryViewModel {
 
     /// Title for the current view.
     var currentTitle: String {
-        if let playlist = selectedPlaylist {
-            return playlist.name
-        } else if let artistKey = selectedArtistKey {
-            return runtimeArtists.first(where: { $0.key == artistKey })?.name
+        switch currentSelection {
+        case .playlist:
+            return selectedPlaylist?.name ?? NSLocalizedString("library.all_songs", comment: "")
+        case .artist(let key):
+            return runtimeArtists.first(where: { $0.key == key })?.name
                 ?? LibraryNormalization.unknownArtist
-        } else if let albumName = selectedAlbumName {
-            return albumName
+        case .album:
+            return selectedAlbumName ?? NSLocalizedString("library.all_songs", comment: "")
+        case .allSongs:
+            return NSLocalizedString("library.all_songs", comment: "")
         }
-        return NSLocalizedString("library.all_songs", comment: "")
     }
 
     /// Subtitle for the current view.
@@ -767,14 +710,16 @@ final class LibraryViewModel {
     }
 
     private var sortContextKey: String {
-        if let id = selectedPlaylistId {
+        switch currentSelection {
+        case .allSongs:
+            return "__all_songs__"
+        case .playlist(let id):
             return id.uuidString
-        } else if let artistKey = selectedArtistKey {
-            return "ARTIST_\(artistKey)"
-        } else if let albumKey = selectedAlbumKey {
-            return "ALBUM_\(albumKey)"
+        case .artist(let key):
+            return "ARTIST_\(key)"
+        case .album(let key):
+            return "ALBUM_\(key)"
         }
-        return "__all_songs__"
     }
 
     private func persistSortPreferenceForCurrentSelection() {
@@ -891,7 +836,7 @@ final class LibraryViewModel {
                 rhs.importedAt ?? rhs.addedAt
             )
         case .addedAt:
-            if let playlistID = selectedPlaylistId {
+            if case .playlist(let playlistID) = currentSelection {
                 let left =
                     playlistItemAddedAtMap[playlistID]?[lhs.id]
                     ?? lhs.importedAt
