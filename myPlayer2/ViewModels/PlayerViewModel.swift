@@ -215,13 +215,9 @@ final class PlayerViewModel {
     }
 
     private var isLedEnabledForCurrentSkin: Bool {
-        switch settings.selectedNowPlayingSkinID {
-        case ClassicLEDSkin.id:
-            return UserDefaults.standard.string(forKey: "skin.classicLED.visualizerMode") == "led"
-        case "kmgccc.cassette":
-            return UserDefaults.standard.string(forKey: "skin.kmgcccCassette.visualizerMode") == "led"
-        default:
-            return false
-        }
+        SkinContextFactory.isLedEnabled(
+            skinID: settings.selectedNowPlayingSkinID,
+            isFullscreen: false
+        )
     }
 }

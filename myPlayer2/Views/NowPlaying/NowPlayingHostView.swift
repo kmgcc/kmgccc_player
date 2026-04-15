@@ -96,59 +96,17 @@ struct NowPlayingHostView: View {
     }
 
     private func makeContext(windowSize: CGSize, contentBounds: CGRect) -> SkinContext {
-        let track = playerVM.currentTrack
-
-        let trackMeta: SkinContext.TrackMetadata? = track.map {
-            SkinContext.TrackMetadata(
-                id: $0.id,
-                title: $0.title,
-                artist: $0.artist,
-                album: $0.album,
-                duration: $0.duration,
-                artworkChecksum: artworkSnapshot?.artworkChecksum ?? 0,
-                artworkData: $0.artworkData,
-                artworkImage: artworkSnapshot?.fullImage
-            )
-        }
-
-        let playback = SkinContext.PlaybackState(
+        SkinContextFactory.makeContext(
+            track: playerVM.currentTrack,
+            artworkSnapshot: artworkSnapshot,
             isPlaying: playerVM.isPlaying,
             currentTime: playerVM.currentTime,
             duration: playerVM.duration,
-            progress: playerVM.duration > 0 ? playerVM.currentTime / playerVM.duration : 0
-        )
-
-        let theme = SkinContext.ThemeTokens(
+            ledMeterProvider: ledMeterProvider,
             accentColor: themeStore.accentColor,
             colorScheme: colorScheme,
             reduceMotion: reduceMotion,
             reduceTransparency: reduceTransparency,
-            glassIntensity: AppSettings.shared.liquidGlassIntensity,
-            backgroundBlur: AppSettings.shared.nowPlayingBackgroundBlur,
-            backgroundBrightness: AppSettings.shared.nowPlayingBackgroundBrightness,
-            backgroundSaturation: AppSettings.shared.nowPlayingBackgroundSaturation,
-            meshAmplitude: AppSettings.shared.nowPlayingMeshAmplitude,
-            meshFlowSpeed: AppSettings.shared.nowPlayingMeshFlowSpeed,
-            meshSharpness: AppSettings.shared.nowPlayingMeshSharpness,
-            meshSoftness: AppSettings.shared.nowPlayingMeshSoftness,
-            meshColorBoost: AppSettings.shared.nowPlayingMeshColorBoost,
-            meshContrast: AppSettings.shared.nowPlayingMeshContrast,
-            meshBassImpact: AppSettings.shared.nowPlayingMeshBassImpact,
-            artworkAccentColor: artworkSnapshot?.accentColor.map { Color(nsColor: $0) },
-            artworkPalette: artworkSnapshot?.palette ?? [],
-            artworkRichPalette: artworkSnapshot?.richPalette ?? [],
-            artworkAverageColor: artworkSnapshot?.averageColor,
-            kickToBrightnessMix: AppSettings.shared.bgKickToBrightnessMix,
-            kickDisplaceAmount: AppSettings.shared.bgKickDisplaceAmount,
-            kickScaleAmount: AppSettings.shared.bgKickScaleAmount
-        )
-
-        return SkinContext(
-            track: trackMeta,
-            playback: playback,
-            audio: ledMeterProvider.getOrCreate().audioMetrics,
-            led: ledMeterProvider.getOrCreate().metrics,
-            theme: theme,
             windowSize: windowSize,
             contentBounds: contentBounds,
             fullscreenScale: 1.0,
@@ -183,14 +141,9 @@ struct NowPlayingHostView: View {
     }
 
     private func isLedEnabledForCurrentSkin() -> Bool {
-        let skinID = settings.selectedNowPlayingSkinID
-        switch skinID {
-        case "coverLed":
-            return UserDefaults.standard.string(forKey: "skin.classicLED.visualizerMode") == "led"
-        case "kmgccc.cassette":
-            return UserDefaults.standard.string(forKey: "skin.kmgcccCassette.visualizerMode") == "led"
-        default:
-            return false
-        }
+        SkinContextFactory.isLedEnabled(
+            skinID: settings.selectedNowPlayingSkinID,
+            isFullscreen: false
+        )
     }
 }
