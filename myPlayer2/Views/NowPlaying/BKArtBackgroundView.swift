@@ -67,6 +67,25 @@ final class BKArtBackgroundController: ObservableObject {
         guard lyricsColorTrackID == trackID else { return }
         lyricsColorSampleRevision &+= 1
     }
+
+    /// Fullscreen keeps its own controller for lyrics/theme sampling, but may seed
+    /// its initial presentation state from the window-mode controller on entry.
+    func seedPresentationState(from source: BKArtBackgroundController, for trackID: UUID?) {
+        transitionID = source.transitionID
+
+        guard source.lyricsColorTrackID == trackID else {
+            beginLyricsColorSampling(for: trackID)
+            return
+        }
+
+        lyricsColorTrackID = source.lyricsColorTrackID
+        primaryBackgroundColor = source.primaryBackgroundColor
+        currentSurfaceBackgroundColor = source.currentSurfaceBackgroundColor
+        currentSurfaceUsesDotBackground = source.currentSurfaceUsesDotBackground
+        currentSurfaceVariantIndex = source.currentSurfaceVariantIndex
+        isUltraDarkActive = source.isUltraDarkActive
+        lyricsColorSampleRevision = source.lyricsColorSampleRevision
+    }
 }
 
 struct BKArtBackgroundView: View {

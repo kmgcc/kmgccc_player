@@ -12,6 +12,7 @@ struct FullscreenSkinTabView: View {
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var themeStore: ThemeStore
 
+    @State private var fullscreenArtBackgroundEnabled: Bool = AppSettings.shared.fullscreenArtBackgroundEnabled
     @State private var fullscreenArtworkScale: Double = AppSettings.shared.fullscreenArtworkScale
     @State private var fullscreenDimmingIntensity: Double = AppSettings.shared.fullscreenDimmingIntensity
     @State private var fullscreenMiniPlayerAutoHideSeconds: Double = AppSettings.shared.fullscreenMiniPlayerAutoHideSeconds
@@ -30,6 +31,12 @@ struct FullscreenSkinTabView: View {
             ("dark glass", .darkGlass),
         ]
 
+    private var skinHostActions: SkinHostActions {
+        SkinHostActions(
+            setVisualizerMode: { FullscreenPresentationCoordinator.shared.setVisualizerMode($0) }
+        )
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             // Skin selection
@@ -37,6 +44,13 @@ struct FullscreenSkinTabView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     Text("全屏皮肤")
                         .font(.headline)
+
+                    Toggle("启用艺术背景 (Beta)", isOn: $fullscreenArtBackgroundEnabled)
+                        .toggleStyle(.switch)
+
+                    Text("全屏模式可单独控制艺术背景；遇到性能问题时可以关闭。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
 
                     Picker("", selection: Binding(
                         get: { settings.fullscreen.skinID },
@@ -54,12 +68,15 @@ struct FullscreenSkinTabView: View {
 
             // Skin-specific options
             if let _ = SkinRegistry.fullscreenOptions.first(where: { $0.id == settings.fullscreen.skinID }),
-               let optionsView = SkinRegistry.fullscreenSkin(for: settings.fullscreen.skinID).fullscreenSettingsView {
+               let optionsView = SkinRegistry.fullscreenSkin(for: settings.fullscreen.skinID)
+                .makeSettingsView(actions: skinHostActions)
+            {
                 GroupBox {
                     VStack(alignment: .leading, spacing: 16) {
                         Text("皮肤选项")
                             .font(.headline)
                         optionsView
+                            .environment(FullscreenPresentationCoordinator.shared)
                     }
                     .padding(12)
                 }
@@ -101,10 +118,14 @@ struct FullscreenSkinTabView: View {
             }
         }
         .onAppear {
+            fullscreenArtBackgroundEnabled = settings.fullscreenArtBackgroundEnabled
             fullscreenArtworkScale = settings.fullscreenArtworkScale
             fullscreenDimmingIntensity = settings.fullscreenDimmingIntensity
             fullscreenMiniPlayerAutoHideSeconds = settings.fullscreenMiniPlayerAutoHideSeconds
             fullscreenMiniPlayerGlassMaterial = settings.fullscreenMiniPlayerGlassMaterial
+        }
+        .onChange(of: fullscreenArtBackgroundEnabled) { _, newValue in
+            settings.fullscreenArtBackgroundEnabled = newValue
         }
         .onChange(of: fullscreenArtworkScale) { _, newValue in
             settings.fullscreenArtworkScale = newValue

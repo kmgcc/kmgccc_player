@@ -21,14 +21,15 @@ struct NowPlayingHostView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @EnvironmentObject private var themeStore: ThemeStore
+    @EnvironmentObject private var fullscreenWindowManager: FullscreenWindowManager
     @State private var skinRevision = 0
     @State private var artworkSnapshot: ArtworkAssetSnapshot?
 
     let mainContentWidth: CGFloat
 
     var body: some View {
-        let selectedSkinID = settings.selectedNowPlayingSkinID
-        let selectedSkin = skinManager.skin(for: selectedSkinID)
+        let selectedSkinID = settings.normalSkinID
+        let selectedSkin = skinManager.normalSkin(for: selectedSkinID)
 
         GeometryReader { proxy in
             let contentHeight = max(0, proxy.size.height - Constants.Layout.miniPlayerHeight - 12)
@@ -37,7 +38,7 @@ struct NowPlayingHostView: View {
             let context = makeContext(windowSize: proxy.size, contentBounds: contentBounds)
 
             ZStack(alignment: .topLeading) {
-                if settings.nowPlayingArtBackgroundEnabled {
+                if context.artBackgroundActive {
                     Color.clear
                 } else {
                     selectedSkin.makeBackground(context: context)
@@ -96,7 +97,15 @@ struct NowPlayingHostView: View {
     }
 
     private func makeContext(windowSize: CGSize, contentBounds: CGRect) -> SkinContext {
-        SkinContextFactory.makeContext(
+        let artBackgroundActive = ArtBackgroundPolicy.normalIsActive(
+            contentMode: uiState.contentMode,
+            isEnabled: settings.nowPlayingArtBackgroundEnabled,
+            hasTrack: playerVM.currentTrack != nil,
+            isFullscreenActive: fullscreenWindowManager.isFullscreenActive,
+            allowsHostArtBackground: skinManager.normalSkin(for: settings.normalSkinID).allowsHostArtBackground
+        )
+
+        return SkinContextFactory.makeContext(
             track: playerVM.currentTrack,
             artworkSnapshot: artworkSnapshot,
             isPlaying: playerVM.isPlaying,
@@ -110,7 +119,10 @@ struct NowPlayingHostView: View {
             windowSize: windowSize,
             contentBounds: contentBounds,
             fullscreenScale: 1.0,
-            lyricsVisible: false  // Normal mode handles lyrics separately
+            lyricsVisible: false,
+            artBackgroundActive: artBackgroundActive,
+            visualizerMode: FullscreenPresentationCoordinator.shared.visualizerMode,
+            audioSpectrumProvider: AudioVisualizationService.shared
         )
     }
     

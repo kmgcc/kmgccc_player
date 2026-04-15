@@ -11,30 +11,42 @@ import CoreImage
 import CryptoKit
 import SwiftUI
 
-struct RotatingCoverSkin: NowPlayingSkin {
-    static let id: String = "rotatingCover"
-
-    let id: String = RotatingCoverSkin.id
+struct RotatingCoverTheme: SkinTheme {
+    let id: String = "rotatingCover"
     let name: String = NSLocalizedString("skin.rotating_cover.name", comment: "")
     let detail: String = NSLocalizedString("skin.rotating_cover.detail", comment: "")
     let systemImage: String = "record.circle"
-    var isFullscreenCompatible: Bool { true }
-    var isNowPlayingCompatible: Bool { true }
+    let normal: (any NormalSkin)? = RotatingCoverNormalSkin()
+    let fullscreen: (any FullscreenSkin)? = RotatingCoverFullscreenSkin()
+}
+
+struct RotatingCoverNormalSkin: NormalSkin {
+    func makeBackground(context: SkinContext) -> AnyView {
+        AnyView(UnifiedNowPlayingBackground(context: context))
+    }
+
+    func makeArtwork(context: SkinContext) -> AnyView {
+        AnyView(RotatingCoverArtwork(context: context, isFullscreen: false))
+    }
+
+    func makeSettingsView() -> AnyView? {
+        AnyView(RotatingCoverSkinNormalSettingsView())
+    }
+}
+
+struct RotatingCoverFullscreenSkin: FullscreenSkin {
+    var hasMiniPlayerMotion: Bool { true }
 
     func makeBackground(context: SkinContext) -> AnyView {
         AnyView(UnifiedNowPlayingBackground(context: context))
     }
 
     func makeArtwork(context: SkinContext) -> AnyView {
-        AnyView(RotatingCoverArtwork(context: context))
+        AnyView(RotatingCoverArtwork(context: context, isFullscreen: true))
     }
 
-    var settingsView: AnyView? {
-        AnyView(RotatingCoverSkinNormalSettingsView())
-    }
-
-    var fullscreenSettingsView: AnyView? {
-        AnyView(RotatingCoverSkinFullscreenSettingsView())
+    func makeSettingsView(actions: SkinHostActions) -> AnyView? {
+        AnyView(RotatingCoverSkinFullscreenSettingsView(actions: actions))
     }
 }
 
@@ -804,7 +816,7 @@ private final class RotatingCDDiscHostView: NSView {
 
 private struct RotatingCoverArtwork: View {
     let context: SkinContext
-    @StateObject private var fullscreenManager = FullscreenWindowManager.shared
+    let isFullscreen: Bool
     @StateObject private var rotation = RotatingCoverRotation()
     @StateObject private var cdMotionBlurCache = RotatingCoverCDMotionBlurCache()
 
@@ -823,9 +835,11 @@ private struct RotatingCoverArtwork: View {
     }
 
     var body: some View {
-        let isFullscreen = fullscreenManager.isFullscreenActive
         let layout = RotatingCoverLayout.metrics(for: context, isFullscreen: isFullscreen)
-        let visualizerMode = isFullscreen ? fullscreenVisualizerMode : normalVisualizerMode
+        let visualizerMode =
+            isFullscreen
+            ? (context.visualizerMode == .skinVisualizer ? fullscreenVisualizerMode : "off")
+            : normalVisualizerMode
         let reduceMotion = context.theme.reduceMotion
 
         VStack(spacing: 32) {
@@ -956,7 +970,10 @@ private struct RotatingCoverSkinNormalSettingsView: View {
 }
 
 private struct RotatingCoverSkinFullscreenSettingsView: View {
+    let actions: SkinHostActions
+
     @AppStorage("skin.rotatingCover.cdMode") private var cdMode: Bool = false
+    @Environment(FullscreenPresentationCoordinator.self) private var fullscreenPresentation
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -965,15 +982,15 @@ private struct RotatingCoverSkinFullscreenSettingsView: View {
 
             Toggle("频谱动画", isOn: Binding(
                 get: {
-                    FullscreenPresentationCoordinator.shared.isSkinVisualizerEnabled
+                    fullscreenPresentation.visualizerMode == .skinVisualizer
                     && UserDefaults.standard.string(forKey: "skin.rotatingCover.fullscreen.visualizerMode") == "spectrum"
                 },
                 set: { isOn in
                     if isOn {
                         UserDefaults.standard.set("spectrum", forKey: "skin.rotatingCover.fullscreen.visualizerMode")
-                        FullscreenPresentationCoordinator.shared.setVisualizerMode(.skinVisualizer)
+                        actions.setVisualizerMode(.skinVisualizer)
                     } else {
-                        FullscreenPresentationCoordinator.shared.setVisualizerMode(.off)
+                        actions.setVisualizerMode(.off)
                     }
                 }
             ))
@@ -1018,7 +1035,8 @@ private struct PillSpectrumView: View {
             artworkPalette: Array(context.theme.artworkPalette.prefix(2)),
             artworkAccentColor: NSColor(pillTint ?? .white),
             capsuleWidth: capsuleWidth,
-            capsuleSpacing: capsuleSpacing
+            capsuleSpacing: capsuleSpacing,
+            spectrumProvider: context.audioSpectrumProvider
         )
         .frame(width: contentWidth, height: contentHeight)
         .background(
@@ -1042,9 +1060,10 @@ private struct PillSpectrumContainer: NSViewRepresentable {
     let artworkAccentColor: NSColor
     let capsuleWidth: CGFloat
     let capsuleSpacing: CGFloat
+    let spectrumProvider: AudioSpectrumProviding
 
     func makeNSView(context: Context) -> PillSpectrumHostView {
-        let view = PillSpectrumHostView()
+        let view = PillSpectrumHostView(spectrumProvider: spectrumProvider)
         view.capsuleWidth = capsuleWidth
         view.capsuleSpacing = capsuleSpacing
         view.updatePalette(artworkPalette, accentColor: artworkAccentColor, isDark: isDark)
@@ -1067,7 +1086,7 @@ private struct PillSpectrumContainer: NSViewRepresentable {
 
 @MainActor
 private final class PillSpectrumHostView: NSView {
-    private let service = AudioVisualizationService.shared
+    private let spectrumProvider: AudioSpectrumProviding
     private let rootLayer = CALayer()
     private var capsuleLayers: [CALayer] = []
     private var strokeLayers: [CAShapeLayer] = []
@@ -1083,8 +1102,9 @@ private final class PillSpectrumHostView: NSView {
     var capsuleWidth: CGFloat = 6
     var capsuleSpacing: CGFloat = 6
 
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
+    init(spectrumProvider: AudioSpectrumProviding) {
+        self.spectrumProvider = spectrumProvider
+        super.init(frame: .zero)
         wantsLayer = true
         layer = CALayer()
         layer?.masksToBounds = false
@@ -1107,18 +1127,18 @@ private final class PillSpectrumHostView: NSView {
 
     func start() {
         guard consumerID == nil else { return }
-        service.start()
-        consumerID = service.addConsumer { [weak self] wave in
+        spectrumProvider.start()
+        consumerID = spectrumProvider.addConsumer(queue: .main) { [weak self] wave in
             self?.applyWave(wave)
         }
     }
 
     func stop() {
         if let consumerID {
-            service.removeConsumer(consumerID)
+            spectrumProvider.removeConsumer(id: consumerID)
             self.consumerID = nil
         }
-        service.stop()
+        spectrumProvider.stop()
         currentWave = Array(repeating: 0, count: 9)
         layoutCapsules()
     }
@@ -1126,7 +1146,7 @@ private final class PillSpectrumHostView: NSView {
     func setPlayback(isPlaying: Bool) {
         guard lastPlaybackState != isPlaying else { return }
         lastPlaybackState = isPlaying
-        service.updatePlaybackState(isPlaying: isPlaying)
+        spectrumProvider.updatePlaybackState(isPlaying: isPlaying)
     }
 
     func updatePalette(_ palette: [NSColor], accentColor: NSColor, isDark: Bool) {

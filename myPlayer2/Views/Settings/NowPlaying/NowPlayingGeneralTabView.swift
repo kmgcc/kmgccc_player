@@ -42,7 +42,7 @@ struct NowPlayingGeneralTabView: View {
             GroupBox {
                 VStack(alignment: .leading, spacing: 20) {
                     Picker("", selection: $nowPlayingSkin) {
-                        ForEach(SkinRegistry.nowPlayingOptions) { skin in
+                        ForEach(SkinRegistry.normalOptions) { skin in
                             Label(skin.name, systemImage: skin.systemImage)
                                 .tag(skin.id)
                         }
@@ -50,7 +50,7 @@ struct NowPlayingGeneralTabView: View {
                     .pickerStyle(.radioGroup)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
-                    if let selected = SkinRegistry.nowPlayingOptions.first(where: {
+                    if let selected = SkinRegistry.normalOptions.first(where: {
                         $0.id == nowPlayingSkin
                     }) {
                         Text(LocalizedStringKey(selected.detail))
@@ -65,8 +65,8 @@ struct NowPlayingGeneralTabView: View {
             }
 
             // Skin-specific options
-            if let selected = SkinRegistry.options.first(where: { $0.id == nowPlayingSkin }),
-               let optionsView = SkinRegistry.skin(for: nowPlayingSkin).settingsView {
+            if let selected = SkinRegistry.normalOptions.first(where: { $0.id == nowPlayingSkin }),
+               let optionsView = SkinRegistry.normalSkin(for: nowPlayingSkin).makeSettingsView() {
                 VStack(alignment: .leading, spacing: 12) {
                     Text(
                         String(
