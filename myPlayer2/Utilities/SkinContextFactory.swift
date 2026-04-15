@@ -23,7 +23,10 @@ enum SkinContextFactory {
         windowSize: CGSize,
         contentBounds: CGRect,
         fullscreenScale: CGFloat = 1.0,
-        lyricsVisible: Bool
+        lyricsVisible: Bool,
+        artBackgroundActive: Bool,
+        visualizerMode: FullscreenVisualizerMode,
+        audioSpectrumProvider: AudioSpectrumProviding
     ) -> SkinContext {
         let trackMeta: SkinContext.TrackMetadata? = track.map {
             SkinContext.TrackMetadata(
@@ -79,7 +82,10 @@ enum SkinContextFactory {
             windowSize: windowSize,
             contentBounds: contentBounds,
             fullscreenScale: fullscreenScale,
-            lyricsVisible: lyricsVisible
+            lyricsVisible: lyricsVisible,
+            artBackgroundActive: artBackgroundActive,
+            visualizerMode: visualizerMode,
+            audioSpectrumProvider: audioSpectrumProvider
         )
     }
 

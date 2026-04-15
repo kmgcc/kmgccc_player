@@ -31,6 +31,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
     weak var ledMeterProvider: LEDMeterServiceProvider?
     weak var skinManager: SkinManager?
     weak var uiState: UIStateViewModel?
+    weak var windowedArtBackgroundController: BKArtBackgroundController?
 
     private var suspendedMainLyricsVisibility: Bool?
 
@@ -44,13 +45,15 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         lyricsVM: LyricsViewModel,
         ledMeterProvider: LEDMeterServiceProvider,
         skinManager: SkinManager,
-        uiState: UIStateViewModel
+        uiState: UIStateViewModel,
+        artBackgroundController: BKArtBackgroundController
     ) {
         self.playerVM = playerVM
         self.lyricsVM = lyricsVM
         self.ledMeterProvider = ledMeterProvider
         self.skinManager = skinManager
         self.uiState = uiState
+        self.windowedArtBackgroundController = artBackgroundController
     }
 
     /// Show the fullscreen player window.
@@ -121,7 +124,9 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         window.collectionBehavior = [.fullScreenPrimary, .canJoinAllSpaces, .fullScreenAllowsTiling]
 
         // Create the content view with all necessary environment injected
-        let contentView = FullscreenPlayerView {
+        let contentView = FullscreenPlayerView(
+            windowedArtBackgroundController: windowedArtBackgroundController
+        ) {
             self.closeFullscreenWindow()
         }
         .environment(playerVM)

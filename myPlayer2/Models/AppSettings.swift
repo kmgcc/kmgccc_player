@@ -150,6 +150,7 @@ public final class AppSettings {
         static let followSystemAppearance = "followSystemAppearance"
         static let manualAppearance = "manualAppearance"
         static let lyricsBackgroundMode = "lyricsBackgroundMode"
+        static let fullscreenArtBackgroundEnabled = "fullscreenArtBackgroundEnabled"
     }
 
     private enum ImportKeys {
@@ -347,6 +348,12 @@ public final class AppSettings {
         }
     }
 
+    /// Normal window skin selection facade used by the refactored skin host.
+    var normalSkinID: String {
+        get { selectedNowPlayingSkinID }
+        set { selectedNowPlayingSkinID = newValue }
+    }
+
     /// Fullscreen skin selection - now managed by FullscreenPresentationCoordinator.
     /// This property is kept for backward compatibility but delegates to the coordinator.
     var selectedFullscreenSkinID: String {
@@ -365,6 +372,27 @@ public final class AppSettings {
     /// Enable BKArt animated background layer in Now Playing.
     @ObservationIgnored
     @AppStorage("nowPlayingArtBackgroundEnabled") var nowPlayingArtBackgroundEnabled: Bool = true
+
+    /// Enable BKArt animated background layer in fullscreen.
+    /// Falls back to the window toggle until the fullscreen-specific key is written.
+    var fullscreenArtBackgroundEnabled: Bool {
+        get {
+            access(keyPath: \.fullscreenArtBackgroundEnabled)
+            if UserDefaults.standard.object(forKey: AppearanceKeys.fullscreenArtBackgroundEnabled) == nil
+            {
+                return nowPlayingArtBackgroundEnabled
+            }
+            return UserDefaults.standard.bool(forKey: AppearanceKeys.fullscreenArtBackgroundEnabled)
+        }
+        set {
+            withMutation(keyPath: \.fullscreenArtBackgroundEnabled) {
+                UserDefaults.standard.set(
+                    newValue,
+                    forKey: AppearanceKeys.fullscreenArtBackgroundEnabled
+                )
+            }
+        }
+    }
 
     /// Legacy background blur multiplier (kept for compatibility)
     @ObservationIgnored

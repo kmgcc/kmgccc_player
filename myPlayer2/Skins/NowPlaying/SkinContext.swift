@@ -80,6 +80,15 @@ struct SkinContext {
     /// When false, artwork should center itself; when true, artwork should leave room for lyrics.
     let lyricsVisible: Bool
 
+    /// Whether the host is rendering BK art background instead of the skin background.
+    let artBackgroundActive: Bool
+
+    /// Active fullscreen visualizer state supplied by the host.
+    let visualizerMode: FullscreenVisualizerMode
+
+    /// Spectrum provider used by skins that render animated bars/capsules.
+    let audioSpectrumProvider: AudioSpectrumProviding
+
     var contentSize: CGSize {
         contentBounds.size
     }
@@ -105,7 +114,10 @@ extension SkinContext {
                 )
             ),
             fullscreenScale: fullscreenScale,
-            lyricsVisible: lyricsVisible
+            lyricsVisible: lyricsVisible,
+            artBackgroundActive: artBackgroundActive,
+            visualizerMode: visualizerMode,
+            audioSpectrumProvider: audioSpectrumProvider
         )
     }
 }

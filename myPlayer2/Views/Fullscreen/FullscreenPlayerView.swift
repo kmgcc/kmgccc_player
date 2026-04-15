@@ -41,6 +41,7 @@ struct FullscreenPlayerView: View {
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(LEDMeterServiceProvider.self) private var ledMeterProvider
     @Environment(AppSettings.self) private var settings
+    @Environment(SkinManager.self) private var skinManager
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -66,6 +67,7 @@ struct FullscreenPlayerView: View {
     @State private var appearanceRotateTrigger = 0
     @State private var currentFullscreenScale: CGFloat = 1.0
     @State private var didHandleFullscreenAppear = false
+    @State private var hasPresentedFullscreenArtBackground = false
     @State private var isFullscreenMiniPlayerSpectrumLeaseActive = false
     @State private var isFullscreenBottomControlsVisible = true
     @State private var isFullscreenBottomControlsHovered = false
@@ -78,17 +80,29 @@ struct FullscreenPlayerView: View {
     @State private var pendingFullscreenBottomControlsHide: DispatchWorkItem?
     @Namespace private var fullscreenLayoutNamespace
 
+    let windowedArtBackgroundController: BKArtBackgroundController?
     var onExitFullscreen: (() -> Void)?
 
+    private var selectedFullscreenSkin: any FullscreenSkin {
+        skinManager.fullscreenSkin(for: settings.fullscreen.skinID)
+    }
+
     private var isCoverBlurFullscreenSkin: Bool {
-        settings.fullscreen.skinID == "fullscreen.coverGradientBlur"
+        selectedFullscreenSkin.wantsCoverBlurLyricsTreatment
     }
 
     /// Cover-element skins (classic, rotating, cassette) get a slight vertical
     /// drop when the fullscreen miniplayer auto-hides, and return when it reappears.
     private var isCoverSkinWithMiniplayerMotion: Bool {
-        let id = settings.fullscreen.skinID
-        return id == "coverLed" || id == "rotatingCover" || id == "kmgccc.cassette"
+        selectedFullscreenSkin.hasMiniPlayerMotion
+    }
+
+    private var isFullscreenArtBackgroundActive: Bool {
+        ArtBackgroundPolicy.fullscreenIsActive(
+            isEnabled: settings.fullscreenArtBackgroundEnabled,
+            hasTrack: playerVM.currentTrack != nil,
+            allowsHostArtBackground: selectedFullscreenSkin.allowsHostArtBackground
+        )
     }
 
     private var fullscreenStore: LyricsWebViewStore {
@@ -126,8 +140,8 @@ struct FullscreenPlayerView: View {
 
     var body: some View {
         let selectedSkinID = settings.fullscreen.skinID
-        let selectedSkin = SkinRegistry.fullscreenSkin(for: selectedSkinID)
-        let usesCustomBg = selectedSkinID == "fullscreen.coverGradientBlur"
+        let selectedSkin = selectedFullscreenSkin
+        let usesCustomBg = !selectedSkin.allowsHostArtBackground
 
         GeometryReader { proxy in
             fullscreenContent(for: proxy, selectedSkin: selectedSkin, skinUsesCustomBackground: usesCustomBg)
@@ -162,6 +176,8 @@ struct FullscreenPlayerView: View {
             reloadLyricsSurface(reason: "fullscreen appear", forceLyricsReload: true)
             resetFullscreenBottomControlsAutoHideState()
             syncFullscreenMiniPlayerSpectrumLease()
+            seedFullscreenArtBackgroundControllerFromWindowMode()
+            _ = markFullscreenArtBackgroundPresentationIfNeeded()
 
             if isLedEnabledForFullscreenSkin() {
                 ledMeterProvider.getOrCreate().start()
@@ -206,6 +222,7 @@ struct FullscreenPlayerView: View {
             let coverBlurTransition = oldValue == "fullscreen.coverGradientBlur"
                 || newValue == "fullscreen.coverGradientBlur"
             syncCoverBlurHighlightActivation()
+            handleFullscreenArtBackgroundChange(reason: "fullscreen skin changed")
             guard coverBlurTransition else { return }
             reloadLyricsSurface(reason: "fullscreen skin changed", forceLyricsReload: true)
         }
@@ -218,6 +235,9 @@ struct FullscreenPlayerView: View {
 
             // Note: Mutual exclusivity is now handled by FullscreenPresentationCoordinator
             // When skin is set to kmgccc.cassette, Coordinator automatically disables MiniPlayer spectrum
+        }
+        .onChange(of: settings.fullscreenArtBackgroundEnabled) { _, _ in
+            handleFullscreenArtBackgroundChange(reason: "fullscreen art background toggle")
         }
         .onChange(of: settings.fullscreen.isMiniPlayerSpectrumEnabled) { _, _ in
             syncFullscreenMiniPlayerSpectrumLease()
@@ -272,7 +292,7 @@ struct FullscreenPlayerView: View {
     // MARK: - Fullscreen Content (Extracted to simplify body type checking)
     
     @ViewBuilder
-    private func fullscreenContent(for proxy: GeometryProxy, selectedSkin: any NowPlayingSkin, skinUsesCustomBackground: Bool) -> some View {
+    private func fullscreenContent(for proxy: GeometryProxy, selectedSkin: any FullscreenSkin, skinUsesCustomBackground: Bool) -> some View {
         let scaleX = proxy.size.width / Self.baseCanvasWidth
         let scaleY = proxy.size.height / Self.baseCanvasHeight
         let scale = min(scaleX, scaleY)
@@ -291,16 +311,14 @@ struct FullscreenPlayerView: View {
                 Color.black.opacity(effectiveDimmingIntensity * 0.7)
                     .ignoresSafeArea()
                     .allowsHitTesting(false)
-            } else if settings.nowPlayingArtBackgroundEnabled && playerVM.currentTrack != nil {
+            } else if isFullscreenArtBackgroundActive {
                 BKArtBackgroundView(
                     controller: bkController,
                     trackID: playerVM.currentTrack?.id,
                     artworkData: playerVM.currentTrack?.artworkData,
                     isPlaying: playerVM.isPlaying,
                     avoidanceRect: nil,
-                    resourceProfile: settings.fullscreen.skinID == "kmgccc.cassette"
-                        ? .cassetteForeground
-                        : .standard,
+                    resourceProfile: selectedSkin.artBackgroundResourceProfile,
                     dotRenderStyle: .solidCircles
                 )
                 .ignoresSafeArea()
@@ -346,7 +364,7 @@ struct FullscreenPlayerView: View {
     // MARK: - Fullscreen Scaled Container (Artwork + Controls Only)
 
     @ViewBuilder
-    private func fullscreenScaledContainer(selectedSkin: any NowPlayingSkin, scale: CGFloat, screenWidth: CGFloat) -> some View {
+    private func fullscreenScaledContainer(selectedSkin: any FullscreenSkin, scale: CGFloat, screenWidth: CGFloat) -> some View {
         // Cover-element skins drop slightly when the miniplayer auto-hides
         let coverDropY: CGFloat = isCoverSkinWithMiniplayerMotion && !isFullscreenBottomControlsVisible ? 20 : 0
 
@@ -385,7 +403,7 @@ struct FullscreenPlayerView: View {
         // Expand left by 80pt (moves block left) for the lyrics viewport.
         // Skin-specific right shift for the cover-gradient-blur skin.
         let leftExpansion: CGFloat = 80
-        let coverSkinOffset: CGFloat = settings.fullscreen.skinID == "fullscreen.coverGradientBlur" ? coverSkinLyricsRightShift : 0
+        let coverSkinOffset: CGFloat = isCoverBlurFullscreenSkin ? coverSkinLyricsRightShift : 0
         let finalLyricsX = baseLyricsX - leftExpansion + coverSkinOffset
 
         // Canvas horizontal centering margin: on 16:9 screens the canvas is narrower than
@@ -997,7 +1015,7 @@ struct FullscreenPlayerView: View {
     // MARK: - Artwork and Controls Area (No Lyrics - Lyrics are in crisp layer)
 
     @ViewBuilder
-    private func artworkAndControlsArea(selectedSkin: any NowPlayingSkin, scale: CGFloat, screenWidth: CGFloat) -> some View {
+    private func artworkAndControlsArea(selectedSkin: any FullscreenSkin, scale: CGFloat, screenWidth: CGFloat) -> some View {
         let metrics = layoutMetrics
         let windowWidth = Self.baseCanvasWidth
         let rightPanelVisible = isShowingRightPanel
@@ -1029,7 +1047,7 @@ struct FullscreenPlayerView: View {
 
     @ViewBuilder
     private func skinArtworkArea(
-        selectedSkin: any NowPlayingSkin,
+        selectedSkin: any FullscreenSkin,
         artworkColumnWidth: CGFloat,
         scale: CGFloat
     ) -> some View {
@@ -1441,11 +1459,49 @@ struct FullscreenPlayerView: View {
         // Clear artwork snapshot to prevent stale colors
         artworkSnapshot = nil
         syncFullscreenMiniPlayerSpectrumLease()
+        handleFullscreenArtBackgroundChange(reason: "fullscreen track changed")
 
         // Simplified track change handling - matches window mode behavior
         // Apply track immediately without deferred scheduling
         syncFullscreenLyricsHostMount()
         reloadLyricsSurface(reason: "fullscreen track changed", forceLyricsReload: true)
+    }
+
+    private func handleFullscreenArtBackgroundChange(reason: String) {
+        if isFullscreenArtBackgroundActive {
+            seedFullscreenArtBackgroundControllerFromWindowMode()
+            if markFullscreenArtBackgroundPresentationIfNeeded() == false {
+                bkController.triggerTransition()
+            }
+        } else {
+            hasPresentedFullscreenArtBackground = false
+        }
+
+        resetFullscreenLyricsBackgroundSnapshot()
+        scheduleFullscreenLyricsBackgroundCapture()
+        applyFullscreenLyricsTheme(force: true, reason: reason)
+    }
+
+    private func seedFullscreenArtBackgroundControllerFromWindowMode() {
+        guard let windowedArtBackgroundController else { return }
+        bkController.seedPresentationState(
+            from: windowedArtBackgroundController,
+            for: playerVM.currentTrack?.id
+        )
+    }
+
+    @discardableResult
+    private func markFullscreenArtBackgroundPresentationIfNeeded() -> Bool {
+        guard isFullscreenArtBackgroundActive else {
+            hasPresentedFullscreenArtBackground = false
+            return false
+        }
+
+        let isFirstPresentation = !hasPresentedFullscreenArtBackground
+        if isFirstPresentation {
+            hasPresentedFullscreenArtBackground = true
+        }
+        return isFirstPresentation
     }
 
     private func syncFullscreenMiniPlayerSpectrumLease() {
@@ -1745,7 +1801,7 @@ struct FullscreenPlayerView: View {
                 bkPrimaryBackgroundColor: bkController.primaryBackgroundColor,
                 bkSurfaceBackgroundColor: bkController.currentSurfaceBackgroundColor,
                 bkLyricsColorTrackID: bkController.lyricsColorTrackID,
-                artBackgroundEnabled: settings.nowPlayingArtBackgroundEnabled
+                artBackgroundEnabled: isFullscreenArtBackgroundActive
             )
 
         if isCoverBlurFullscreenSkin, readyCoverBlurTheme == nil {
@@ -1860,17 +1916,18 @@ struct FullscreenPlayerView: View {
 
     private func scheduleFullscreenLyricsBackgroundCapture() {
         pendingFullscreenLyricsBackgroundCapture =
-            settings.nowPlayingArtBackgroundEnabled && playerVM.currentTrack != nil
+            isFullscreenArtBackgroundActive && playerVM.currentTrack != nil
     }
 
     private func captureFullscreenLyricsBackgroundSnapshot(preferLiveSurface: Bool = false) {
-        guard settings.nowPlayingArtBackgroundEnabled else {
+        guard isFullscreenArtBackgroundActive else {
             resetFullscreenLyricsBackgroundSnapshot()
             return
         }
 
         guard bkController.lyricsColorTrackID == playerVM.currentTrack?.id else {
-            pendingFullscreenLyricsBackgroundCapture = playerVM.currentTrack != nil
+            pendingFullscreenLyricsBackgroundCapture = isFullscreenArtBackgroundActive
+                && playerVM.currentTrack != nil
             return
         }
 
@@ -1947,7 +2004,10 @@ struct FullscreenPlayerView: View {
             windowSize: windowSize,
             contentBounds: contentBounds,
             fullscreenScale: fullscreenScale,
-            lyricsVisible: isShowingRightPanel
+            lyricsVisible: isShowingRightPanel,
+            artBackgroundActive: isFullscreenArtBackgroundActive,
+            visualizerMode: FullscreenPresentationCoordinator.shared.visualizerMode,
+            audioSpectrumProvider: AudioVisualizationService.shared
         )
     }
 
@@ -2053,7 +2113,7 @@ struct FullscreenPlayerView: View {
         fileBookmarkData: Data()
     )
 
-    FullscreenPlayerView {
+    FullscreenPlayerView(windowedArtBackgroundController: nil) {
         print("Exit fullscreen")
     }
     .environment(playerVM)
