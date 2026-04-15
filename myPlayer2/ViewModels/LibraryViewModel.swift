@@ -324,9 +324,9 @@ final class LibraryViewModel {
 
     // MARK: - Import (Per-Playlist)
 
-    /// Import music files to the currently selected playlist.
-    /// If no playlist is selected, imports to the most recently selected playlist (if any),
-    /// otherwise the first available playlist. Only creates a playlist if none exist.
+    /// Import music files to the current library context.
+    /// When a playlist is selected, imported tracks are also added to that playlist.
+    /// For non-playlist selections (All Songs / artist / album), imports only write to the library.
     func importToCurrentPlaylist() async {
         let clickTimestamp = Date()
 
@@ -339,30 +339,7 @@ final class LibraryViewModel {
             return
         }
 
-        // Resolve target playlist
-        let targetPlaylist: Playlist
-        if let selected = selectedPlaylist {
-            targetPlaylist = selected
-        } else {
-            if playlists.isEmpty {
-                targetPlaylist = await repository.createPlaylist(
-                    name: String(
-                        format: NSLocalizedString("library.imported_playlist_name", comment: ""),
-                        formattedDate))
-                playlists = await repository.fetchPlaylists()
-                currentSelection = .playlist(targetPlaylist.id)
-            } else if let lastId = UserDefaults.standard.string(forKey: "lastSelectedPlaylistId"),
-                let uuid = UUID(uuidString: lastId),
-                let last = playlists.first(where: { $0.id == uuid })
-            {
-                targetPlaylist = last
-                currentSelection = .playlist(last.id)
-            } else {
-                let fallback = playlists[0]
-                targetPlaylist = fallback
-                currentSelection = .playlist(fallback.id)
-            }
-        }
+        let targetPlaylist = selectedPlaylist
 
         // Perform import
         let count = await service.importSelectedURLs(selectedURLs, to: targetPlaylist)

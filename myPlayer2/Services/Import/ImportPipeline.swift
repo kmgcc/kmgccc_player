@@ -56,13 +56,16 @@ enum ImportPipeline {
     @discardableResult
     static func run(
         urls selectedURLs: [URL],
-        to playlist: Playlist,
+        to playlist: Playlist?,
         repository: LibraryRepositoryProtocol,
         libraryService: LocalLibraryService,
-        importEnrichmentService: ImportEnrichmentService
+        importEnrichmentService: ImportEnrichmentService,
+        enrichmentMode: ImportEnrichmentMode,
+        ttmlConverter: any EmbeddedLyricsTTMLConverting
     ) async -> Int {
+        let destinationDescription = playlist.map { "'\($0.name)' (id=\($0.id))" } ?? "library only"
         Log.debug(
-            "importSelectedURLs called for playlist: '\(playlist.name)' (id=\(playlist.id)) count=\(selectedURLs.count)",
+            "importSelectedURLs called for destination: \(destinationDescription) count=\(selectedURLs.count)",
             category: .import
         )
         let progressController = BatchImportProgressDialogController()
@@ -203,7 +206,10 @@ enum ImportPipeline {
             )
         }
 
-        Log.debug("Found \(resolvedFiles.count) audio files to import to '\(playlist.name)'", category: .import)
+        Log.debug(
+            "Found \(resolvedFiles.count) audio files to import to \(playlist?.name ?? "library")",
+            category: .import
+        )
 
         let libraryTracks = await repository.fetchTracks(in: nil)
         let existingByDedupKey = Dictionary(grouping: libraryTracks) {
@@ -301,30 +307,32 @@ enum ImportPipeline {
             totalCount: finalCandidates.count
         )
 
-        let enrichmentMode: ImportEnrichmentMode =
-            AppSettings.shared.deferImportEnrichment ? .deferred : .immediate
         let importedRecords = await ImportWriteStage.importCandidates(
             finalCandidates,
             progressController: progressController,
             enrichmentMode: enrichmentMode,
-            libraryService: libraryService
+            libraryService: libraryService,
+            ttmlConverter: ttmlConverter
         )
 
         guard !importedRecords.isEmpty else {
-            print("⚠️ No tracks to import")
+            Log.warning("No tracks produced during import write stage", category: .import)
             return 0
         }
 
-        let importedTracks = importedRecords.map(\.track)
+        var recordsToSave = importedRecords
 
         switch enrichmentMode {
         case .immediate:
             let recordsNeedingEnrichment = importedRecords.filter(\.needsAnyEnrichment)
             if !recordsNeedingEnrichment.isEmpty {
-                await ImportEnrichmentStage.runImmediate(
+                let patches = await ImportEnrichmentStage.runImmediate(
                     importedRecords: recordsNeedingEnrichment,
                     progressController: progressController
                 )
+                if !patches.isEmpty {
+                    applyImmediateEnrichmentPatches(patches, to: &recordsToSave)
+                }
             } else {
                 progressController.update(
                     stage: .enrichingMetadata,
@@ -336,7 +344,7 @@ enum ImportPipeline {
             }
 
             await ImportWriteStage.save(
-                importedTracks,
+                recordsToSave.map(\.track),
                 to: playlist,
                 progressController: progressController,
                 repository: repository
@@ -366,7 +374,7 @@ enum ImportPipeline {
             }
 
             await ImportWriteStage.save(
-                importedTracks,
+                recordsToSave.map(\.track),
                 to: playlist,
                 progressController: progressController,
                 repository: repository
@@ -380,29 +388,38 @@ enum ImportPipeline {
             }
         }
 
-        for record in importedRecords {
+        let importedTracks = recordsToSave.map(\.track)
+
+        for record in recordsToSave {
             progressController.completeImportedItem(id: record.progressID)
         }
 
+        let saveStepCount = playlist == nil ? 1 : 2
         progressController.update(
             stage: .savingLibrary,
-            progress: BatchImportStage.progress(for: .savingLibrary, completed: 2, total: 2),
-            detail: "资料库与播放列表保存完成",
-            completedCount: 2,
-            totalCount: 2
+            progress: BatchImportStage.progress(
+                for: .savingLibrary,
+                completed: saveStepCount,
+                total: saveStepCount
+            ),
+            detail: playlist == nil ? "资料库保存完成" : "资料库与播放列表保存完成",
+            completedCount: saveStepCount,
+            totalCount: saveStepCount
         )
 
         progressController.update(
             stage: .completed,
             progress: 1.0,
-            detail: "已成功导入 \(importedRecords.count) 首歌曲到“\(playlist.name)”",
+            detail: playlist.map {
+                "已成功导入 \(importedRecords.count) 首歌曲到“\($0.name)”"
+            } ?? "已成功导入 \(importedRecords.count) 首歌曲到资料库",
             completedCount: importedTracks.count,
             totalCount: finalCandidates.count
         )
         try? await Task.sleep(nanoseconds: 500_000_000)
 
-        print("✅ Import complete: \(importedRecords.count) imported")
-        return importedRecords.count
+        Log.info("Import complete: \(recordsToSave.count) imported", category: .import)
+        return recordsToSave.count
     }
 
     /// Recursively find audio files in a directory.
@@ -428,6 +445,18 @@ enum ImportPipeline {
         }
 
         return audioFiles
+    }
+
+    @MainActor
+    private static func applyImmediateEnrichmentPatches(
+        _ patches: [UUID: ImportedTrackEnrichmentPatch],
+        to records: inout [ImportedTrackRecord]
+    ) {
+        guard !patches.isEmpty else { return }
+        for record in records {
+            guard let patch = patches[record.track.id] else { continue }
+            patch.apply(to: record.track)
+        }
     }
 
     /// Check if a URL is a supported audio file.

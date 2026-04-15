@@ -10,8 +10,8 @@ enum ImportEnrichmentStage {
     static func runImmediate(
         importedRecords: [ImportedTrackRecord],
         progressController: BatchImportProgressDialogController
-    ) async {
-        guard !importedRecords.isEmpty else { return }
+    ) async -> [UUID: ImportedTrackEnrichmentPatch] {
+        guard !importedRecords.isEmpty else { return [:] }
 
         progressController.update(
             stage: .enrichingMetadata,
@@ -37,11 +37,10 @@ enum ImportEnrichmentStage {
                 needsCover: $0.needsCoverEnrichment
             )
         }
-        let recordsByTrackID = Dictionary(
-            uniqueKeysWithValues: importedRecords.map { ($0.track.id, $0) }
-        )
-        let maxConcurrent = enrichmentConcurrency(for: snapshots.count)
+        let knownTrackIDs = Set(importedRecords.map(\.track.id))
+        let maxConcurrent = ImportConcurrencyPolicy.immediateEnrichment(for: snapshots.count)
         var iterator = snapshots.makeIterator()
+        var patchesByTrackID: [UUID: ImportedTrackEnrichmentPatch] = [:]
         var completedCount = 0
         var lyricSuccessCount = 0
         var coverSuccessCount = 0
@@ -70,26 +69,28 @@ enum ImportEnrichmentStage {
             while let output = await group.next() {
                 completedCount += 1
 
-                let (status, detail, lyricStats, coverStats, misses, failures) =
-                    applyImmediateEnrichmentResult(
-                        output,
-                        to: recordsByTrackID[output.trackID]
-                    )
-                lyricSuccessCount += lyricStats
-                coverSuccessCount += coverStats
-                noResultCount += misses
-                failedCount += failures
+                let update = buildImmediateEnrichmentUpdate(
+                    output,
+                    hasRecord: knownTrackIDs.contains(output.trackID)
+                )
+                lyricSuccessCount += update.lyricSuccessCount
+                coverSuccessCount += update.coverSuccessCount
+                noResultCount += update.noResultCount
+                failedCount += update.failedCount
+                if update.patch.hasChanges {
+                    patchesByTrackID[update.trackID] = update.patch
+                }
 
                 progressController.updateItem(
                     id: output.progressID,
                     title: output.title,
                     artist: output.artist,
                     stage: .enrichingMetadata,
-                    status: status,
-                    detail: detail
+                    status: update.status,
+                    detail: update.detail
                 )
 
-                if case .warning = status, detail.contains("失败") {
+                if case .warning = update.status, update.detail.contains("失败") {
                     Log.warning(
                         "Immediate import enrichment completed with warning for \(output.title) - \(output.artist)",
                         category: .import
@@ -133,6 +134,7 @@ enum ImportEnrichmentStage {
                 }
             }
         }
+        return patchesByTrackID
     }
 
     static func scheduleDeferred(
@@ -175,12 +177,28 @@ enum ImportEnrichmentStage {
         )
     }
 
-    private static func applyImmediateEnrichmentResult(
+    private static func buildImmediateEnrichmentUpdate(
         _ output: ImportEnrichmentTaskOutput,
-        to record: ImportedTrackRecord?
-    ) -> (BatchImportItemStatus, String, Int, Int, Int, Int) {
-        guard let record else {
-            return (.warning, "补全结果未能写回，歌曲已保留导入", 0, 0, 0, 1)
+        hasRecord: Bool
+    ) -> ImmediateImportEnrichmentUpdate {
+        guard hasRecord else {
+            return ImmediateImportEnrichmentUpdate(
+                progressID: output.progressID,
+                trackID: output.trackID,
+                title: output.title,
+                artist: output.artist,
+                status: .warning,
+                detail: "补全结果未能写回，歌曲已保留导入",
+                lyricSuccessCount: 0,
+                coverSuccessCount: 0,
+                noResultCount: 0,
+                failedCount: 1,
+                patch: ImportedTrackEnrichmentPatch(
+                    trackID: output.trackID,
+                    ttmlLyricText: nil,
+                    artworkData: nil
+                )
+            )
         }
 
         var detailParts: [String] = []
@@ -189,13 +207,13 @@ enum ImportEnrichmentStage {
         var coverSuccessCount = 0
         var noResultCount = 0
         var failedCount = 0
+        var ttmlLyricText: String?
+        var resolvedArtworkData: Data?
 
         if let lyricOutcome = output.lyricOutcome {
             switch lyricOutcome {
             case .completed(let ttml):
-                if record.track.ttmlLyricText == nil {
-                    record.track.ttmlLyricText = ttml
-                }
+                ttmlLyricText = ttml
                 lyricSuccessCount += 1
                 detailParts.append("歌词已补全")
             case .noResults:
@@ -212,9 +230,7 @@ enum ImportEnrichmentStage {
         if let coverOutcome = output.coverOutcome {
             switch coverOutcome {
             case .completed(let artworkData):
-                if record.track.artworkData == nil {
-                    record.track.artworkData = artworkData
-                }
+                resolvedArtworkData = artworkData
                 coverSuccessCount += 1
                 detailParts.append("封面已补全")
             case .noResults:
@@ -232,13 +248,22 @@ enum ImportEnrichmentStage {
             detailParts.append("歌曲已导入")
         }
 
-        return (
-            status,
-            detailParts.joined(separator: "，"),
-            lyricSuccessCount,
-            coverSuccessCount,
-            noResultCount,
-            failedCount
+        return ImmediateImportEnrichmentUpdate(
+            progressID: output.progressID,
+            trackID: output.trackID,
+            title: output.title,
+            artist: output.artist,
+            status: status,
+            detail: detailParts.joined(separator: "，"),
+            lyricSuccessCount: lyricSuccessCount,
+            coverSuccessCount: coverSuccessCount,
+            noResultCount: noResultCount,
+            failedCount: failedCount,
+            patch: ImportedTrackEnrichmentPatch(
+                trackID: output.trackID,
+                ttmlLyricText: ttmlLyricText,
+                artworkData: resolvedArtworkData
+            )
         )
     }
 
@@ -287,11 +312,5 @@ enum ImportEnrichmentStage {
         case (false, false):
             return "导入信息"
         }
-    }
-
-    nonisolated private static func enrichmentConcurrency(for count: Int) -> Int {
-        guard count > 0 else { return 1 }
-        let cpuCount = max(1, ProcessInfo.processInfo.processorCount)
-        return min(count, min(4, max(2, cpuCount / 2)))
     }
 }

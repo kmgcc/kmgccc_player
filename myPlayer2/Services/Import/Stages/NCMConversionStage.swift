@@ -23,7 +23,7 @@ enum NCMConversionStage {
 
         var results: [NCMConversionTaskOutput] = []
         var iterator = ncmFiles.makeIterator()
-        let maxConcurrent = ncmConcurrency(for: ncmFiles.count)
+        let maxConcurrent = ImportConcurrencyPolicy.ncmConversion(for: ncmFiles.count)
         var completedCount = 0
         var failureCount = 0
 
@@ -96,13 +96,6 @@ enum NCMConversionStage {
 
         return results
     }
-
-    nonisolated private static func ncmConcurrency(for count: Int) -> Int {
-        guard count > 0 else { return 1 }
-        let cpuCount = max(1, ProcessInfo.processInfo.processorCount)
-        return min(count, min(6, max(2, cpuCount)))
-    }
-
     nonisolated private static func runNCMConversionTask(sourceURL: URL) async -> NCMConversionTaskOutput {
         do {
             let converter = NCMConverter()

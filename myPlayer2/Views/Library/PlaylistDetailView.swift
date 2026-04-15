@@ -361,11 +361,10 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
                     Button {
                         libraryVM.trackSortKey = key
                     } label: {
-                        if libraryVM.trackSortKey == key {
-                            Label(key.title, systemImage: "checkmark")
-                        } else {
-                            Text(key.title)
-                        }
+                        systemSortMenuLabel(
+                            title: key.title,
+                            isSelected: libraryVM.trackSortKey == key
+                        )
                     }
                 }
             }
@@ -375,11 +374,10 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
                     Button {
                         libraryVM.trackSortOrder = order
                     } label: {
-                        if libraryVM.trackSortOrder == order {
-                            Label(order.title, systemImage: "checkmark")
-                        } else {
-                            Text(order.title)
-                        }
+                        systemSortMenuLabel(
+                            title: order.title,
+                            isSelected: libraryVM.trackSortOrder == order
+                        )
                     }
                 }
             }
@@ -390,6 +388,22 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
                 sortSymbolEffectTrigger += 1
             }
         )
+    }
+
+    private func systemSortMenuLabel(
+        title: String,
+        isSelected: Bool
+    ) -> some View {
+        Group {
+            if isSelected {
+                Label(title, systemImage: "checkmark")
+            } else {
+                Text(title)
+                    .padding(.leading, 22)
+            }
+        }
+        .frame(minWidth: 148, alignment: .leading)
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     @ViewBuilder

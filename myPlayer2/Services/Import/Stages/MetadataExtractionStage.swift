@@ -25,7 +25,7 @@ enum MetadataExtractionStage {
             let durationTime = try await asset.load(.duration)
             duration = CMTimeGetSeconds(durationTime)
         } catch {
-            print("⚠️ Failed to load duration: \(error)")
+            Log.warning("Failed to load import duration for \(url.lastPathComponent): \(error)", category: .import)
         }
 
         var allItems: [AVMetadataItem] = []
@@ -147,12 +147,15 @@ enum MetadataExtractionStage {
         return nil
     }
 
-    nonisolated static func prepareEmbeddedTTMLLyrics(_ embeddedLyrics: String?) async -> String? {
+    nonisolated static func prepareEmbeddedTTMLLyrics(
+        _ embeddedLyrics: String?,
+        converter: any EmbeddedLyricsTTMLConverting
+    ) async -> String? {
         guard let embeddedLyrics, !embeddedLyrics.isEmpty else { return nil }
         if embeddedLyrics.lowercased().contains("<tt") {
             return embeddedLyrics
         }
-        return try? await TTMLConverter.shared.convertToTTML(
+        return try? await converter.convertToTTML(
             rawLyrics: embeddedLyrics,
             stripMetadata: true
         )
