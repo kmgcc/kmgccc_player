@@ -13,7 +13,8 @@ enum ImportWriteStage {
             title: String, artist: String, album: String, albumArtist: String?, duration: Double,
             lyrics: String?
         ),
-        preloadedArtworkData: Data?
+        preloadedArtworkData: Data?,
+        ttmlConverter: any EmbeddedLyricsTTMLConverting = TTMLConverter.shared
     ) async -> Track? {
         let candidate = ImportCandidate(
             progressID: url.path,
@@ -30,10 +31,14 @@ enum ImportWriteStage {
             )
         )
 
-        let output = await performImportTask(index: 0, candidate: candidate)
+        let output = await performImportTask(
+            index: 0,
+            candidate: candidate,
+            ttmlConverter: ttmlConverter
+        )
         guard let payload = output.payload else {
             if let errorDescription = output.errorDescription {
-                print("❌ Failed to import \(url.lastPathComponent): \(errorDescription)")
+                Log.error("Failed to import \(url.lastPathComponent): \(errorDescription)", category: .import)
             }
             return nil
         }
@@ -44,13 +49,14 @@ enum ImportWriteStage {
         _ candidates: [ImportCandidate],
         progressController: BatchImportProgressDialogController,
         enrichmentMode: ImportEnrichmentMode,
-        libraryService _: LocalLibraryService
+        libraryService _: LocalLibraryService,
+        ttmlConverter: any EmbeddedLyricsTTMLConverting
     ) async -> [ImportedTrackRecord] {
         guard !candidates.isEmpty else { return [] }
 
         var orderedRecords = Array<ImportedTrackRecord?>(repeating: nil, count: candidates.count)
         var iterator = Array(candidates.enumerated()).makeIterator()
-        let maxConcurrent = importConcurrency(for: candidates.count)
+        let maxConcurrent = ImportConcurrencyPolicy.trackImport(for: candidates.count)
         var processedCount = 0
         var importedCount = 0
         var failedCount = 0
@@ -67,7 +73,11 @@ enum ImportWriteStage {
                     detail: "正在导入歌曲文件与内嵌信息"
                 )
                 group.addTask {
-                    await performImportTask(index: index, candidate: candidate)
+                    await performImportTask(
+                        index: index,
+                        candidate: candidate,
+                        ttmlConverter: ttmlConverter
+                    )
                 }
             }
 
@@ -140,7 +150,11 @@ enum ImportWriteStage {
                         detail: "正在导入歌曲文件与内嵌信息"
                     )
                     group.addTask {
-                        await performImportTask(index: index, candidate: candidate)
+                        await performImportTask(
+                            index: index,
+                            candidate: candidate,
+                            ttmlConverter: ttmlConverter
+                        )
                     }
                 }
             }
@@ -151,38 +165,46 @@ enum ImportWriteStage {
 
     static func save(
         _ importedTracks: [Track],
-        to playlist: Playlist,
+        to playlist: Playlist?,
         progressController: BatchImportProgressDialogController,
         repository: LibraryRepositoryProtocol
     ) async {
+        let saveStepCount = playlist == nil ? 1 : 2
         progressController.update(
             stage: .savingLibrary,
-            progress: BatchImportStage.progress(for: .savingLibrary, completed: 0, total: 2),
-            detail: "正在写入资料库和播放列表",
+            progress: BatchImportStage.progress(for: .savingLibrary, completed: 0, total: saveStepCount),
+            detail: playlist == nil ? "正在写入资料库" : "正在写入资料库和播放列表",
             completedCount: 0,
-            totalCount: 2
+            totalCount: saveStepCount
         )
 
         await repository.addTracks(importedTracks)
         progressController.update(
             stage: .savingLibrary,
-            progress: BatchImportStage.progress(for: .savingLibrary, completed: 1, total: 2),
-            detail: "歌曲已写入资料库，正在加入播放列表",
+            progress: BatchImportStage.progress(for: .savingLibrary, completed: 1, total: saveStepCount),
+            detail: playlist == nil ? "歌曲已写入资料库" : "歌曲已写入资料库，正在加入播放列表",
             completedCount: 1,
-            totalCount: 2
+            totalCount: saveStepCount
         )
 
-        if !importedTracks.isEmpty {
-            print("🔗 Adding \(importedTracks.count) tracks to playlist '\(playlist.name)'")
+        if let playlist, !importedTracks.isEmpty {
+            Log.info(
+                "Adding \(importedTracks.count) imported tracks to playlist '\(playlist.name)'",
+                category: .import
+            )
             await repository.addTracks(importedTracks, to: playlist)
         }
 
         progressController.update(
             stage: .savingLibrary,
-            progress: BatchImportStage.progress(for: .savingLibrary, completed: 2, total: 2),
-            detail: "资料库与播放列表保存完成",
-            completedCount: 2,
-            totalCount: 2
+            progress: BatchImportStage.progress(
+                for: .savingLibrary,
+                completed: saveStepCount,
+                total: saveStepCount
+            ),
+            detail: playlist == nil ? "资料库保存完成" : "资料库与播放列表保存完成",
+            completedCount: saveStepCount,
+            totalCount: saveStepCount
         )
     }
 
@@ -234,7 +256,8 @@ enum ImportWriteStage {
 
     nonisolated private static func performImportTask(
         index: Int,
-        candidate: ImportCandidate
+        candidate: ImportCandidate,
+        ttmlConverter: any EmbeddedLyricsTTMLConverting
     ) async -> ImportTaskOutput {
         let trackId = UUID()
         let importedAt = Date()
@@ -245,7 +268,10 @@ enum ImportWriteStage {
             }
             return await MetadataExtractionStage.extractArtwork(from: candidate.fileURL)
         }()
-        async let embeddedLyricsTask = MetadataExtractionStage.prepareEmbeddedTTMLLyrics(candidate.metadata.lyrics)
+        async let embeddedLyricsTask = MetadataExtractionStage.prepareEmbeddedTTMLLyrics(
+            candidate.metadata.lyrics,
+            converter: ttmlConverter
+        )
 
         do {
             let libraryRelativePath = try importAudioFileToLibrary(
@@ -328,11 +354,5 @@ enum ImportWriteStage {
         try fileManager.copyItem(at: sourceURL, to: destURL)
 
         return "Tracks/\(trackId.uuidString)/\(audioFileName)"
-    }
-
-    nonisolated private static func importConcurrency(for count: Int) -> Int {
-        guard count > 0 else { return 1 }
-        let cpuCount = max(1, ProcessInfo.processInfo.processorCount)
-        return min(count, min(6, max(3, cpuCount)))
     }
 }

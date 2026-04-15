@@ -24,7 +24,7 @@ enum DuplicateChecker {
 
         var orderedResults = Array<CandidatePreparationResult?>(repeating: nil, count: files.count)
         var iterator = Array(files.enumerated()).makeIterator()
-        let maxConcurrent = metadataConcurrency(for: files.count)
+        let maxConcurrent = ImportConcurrencyPolicy.duplicatePreparation(for: files.count)
         var completedCount = 0
 
         await withTaskGroup(of: CandidatePreparationResult.self) { group in
@@ -161,11 +161,5 @@ enum DuplicateChecker {
             candidate: candidate,
             duplicateRow: duplicateRow
         )
-    }
-
-    nonisolated private static func metadataConcurrency(for count: Int) -> Int {
-        guard count > 0 else { return 1 }
-        let cpuCount = max(1, ProcessInfo.processInfo.processorCount)
-        return min(count, min(12, max(4, cpuCount * 2)))
     }
 }

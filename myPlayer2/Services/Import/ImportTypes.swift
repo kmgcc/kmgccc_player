@@ -5,6 +5,12 @@
 
 import Foundation
 
+nonisolated protocol EmbeddedLyricsTTMLConverting: Sendable {
+    func convertToTTML(rawLyrics: String, stripMetadata: Bool) async throws -> String
+}
+
+extension TTMLConverter: EmbeddedLyricsTTMLConverting {}
+
 nonisolated struct ImportPreview: Sendable {
     let title: String
     let artist: String
@@ -77,6 +83,25 @@ struct ImportedTrackRecord {
     }
 }
 
+struct ImportedTrackEnrichmentPatch: Sendable {
+    let trackID: UUID
+    let ttmlLyricText: String?
+    let artworkData: Data?
+
+    var hasChanges: Bool {
+        ttmlLyricText != nil || artworkData != nil
+    }
+
+    func apply(to track: Track) {
+        if track.ttmlLyricText == nil, let ttmlLyricText {
+            track.ttmlLyricText = ttmlLyricText
+        }
+        if track.artworkData == nil, let artworkData {
+            track.artworkData = artworkData
+        }
+    }
+}
+
 struct ImportedTrackPayload: Sendable {
     let id: UUID
     let title: String
@@ -140,4 +165,18 @@ struct ImportEnrichmentTaskOutput: Sendable {
     let album: String
     let lyricOutcome: ImportLyricsLookupOutcome?
     let coverOutcome: ImportCoverLookupOutcome?
+}
+
+struct ImmediateImportEnrichmentUpdate: Sendable {
+    let progressID: String
+    let trackID: UUID
+    let title: String
+    let artist: String
+    let status: BatchImportItemStatus
+    let detail: String
+    let lyricSuccessCount: Int
+    let coverSuccessCount: Int
+    let noResultCount: Int
+    let failedCount: Int
+    let patch: ImportedTrackEnrichmentPatch
 }

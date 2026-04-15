@@ -12,14 +12,16 @@ import Foundation
 @MainActor
 final class StubFileImportService: FileImportServiceProtocol {
     func pickImportURLs(triggeredAt: Date) async -> [URL]? {
-        print("📁 StubFileImportService: pickImportURLs at \(triggeredAt) (no-op)")
+        Log.debug("StubFileImportService.pickImportURLs at \(triggeredAt) (no-op)", category: .import)
         return nil
     }
 
     @discardableResult
-    func importSelectedURLs(_ urls: [URL], to playlist: Playlist) async -> Int {
-        print(
-            "📁 StubFileImportService: importSelectedURLs(\(urls.count)) to \"\(playlist.name)\" (no-op)"
+    func importSelectedURLs(_ urls: [URL], to playlist: Playlist?) async -> Int {
+        let destination = playlist.map { "\"\($0.name)\"" } ?? "library only"
+        Log.debug(
+            "StubFileImportService.importSelectedURLs(\(urls.count)) to \(destination) (no-op)",
+            category: .import
         )
         return 0
     }
