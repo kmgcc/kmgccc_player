@@ -15,61 +15,43 @@ struct SkinOption: Identifiable {
     let systemImage: String
 }
 
-@MainActor
 enum SkinRegistry {
 
-    static let themes: [any SkinTheme] = [
-        ClassicLEDTheme(),
-        RotatingCoverTheme(),
-        KmgcccCassetteTheme(),
-        CoverGradientBlurTheme(),
+    static let skins: [any NowPlayingSkin] = [
+        ClassicLEDSkin(),
+        RotatingCoverSkin(),
+        KmgcccCassetteSkin(),
+        FullscreenCoverGradientBlurSkin(),
     ]
 
     static let defaultSkinID: String = "kmgccc.cassette"
 
     static let defaultFullscreenSkinID: String = "kmgccc.cassette"
 
-    static var normalSkinThemes: [any SkinTheme] {
-        themes.filter { $0.normal != nil }
+    static var fullscreenSkins: [any NowPlayingSkin] {
+        skins.filter { $0.isFullscreenCompatible }
     }
 
-    static var fullscreenSkinThemes: [any SkinTheme] {
-        themes.filter { $0.fullscreen != nil }
+    static var nowPlayingSkins: [any NowPlayingSkin] {
+        skins.filter { $0.isNowPlayingCompatible }
     }
 
-    static func normalSkin(for id: String) -> any NormalSkin {
-        if let match = themes.first(where: { $0.id == id && $0.normal != nil })?.normal {
+    static func skin(for id: String) -> any NowPlayingSkin {
+        if let match = skins.first(where: { $0.id == id }) {
             return match
         }
-        if let fallback = themes.first(where: { $0.id == defaultSkinID })?.normal {
+        if let fallback = skins.first(where: { $0.id == defaultSkinID }) {
             return fallback
         }
-        return themes.first(where: { $0.normal != nil })!.normal!
+        return skins.first ?? ClassicLEDSkin()
     }
 
-    static func fullscreenSkin(for id: String) -> any FullscreenSkin {
-        if let match = themes.first(where: { $0.id == id && $0.fullscreen != nil })?.fullscreen {
-            return match
-        }
-        if let fallback = themes.first(where: { $0.id == defaultFullscreenSkinID })?.fullscreen {
-            return fallback
-        }
-        return themes.first(where: { $0.fullscreen != nil })!.fullscreen!
+    static func fullscreenSkin(for id: String) -> any NowPlayingSkin {
+        fullscreenSkins.first { $0.id == id } ?? ClassicLEDSkin()
     }
 
     static var options: [SkinOption] {
-        themes.map {
-            SkinOption(
-                id: $0.id,
-                name: $0.name,
-                detail: $0.detail,
-                systemImage: $0.systemImage
-            )
-        }
-    }
-
-    static var normalOptions: [SkinOption] {
-        normalSkinThemes.map {
+        skins.map {
             SkinOption(
                 id: $0.id,
                 name: $0.name,
@@ -80,7 +62,18 @@ enum SkinRegistry {
     }
 
     static var fullscreenOptions: [SkinOption] {
-        fullscreenSkinThemes.map {
+        fullscreenSkins.map {
+            SkinOption(
+                id: $0.id,
+                name: $0.name,
+                detail: $0.detail,
+                systemImage: $0.systemImage
+            )
+        }
+    }
+
+    static var nowPlayingOptions: [SkinOption] {
+        nowPlayingSkins.map {
             SkinOption(
                 id: $0.id,
                 name: $0.name,

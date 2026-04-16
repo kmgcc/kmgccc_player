@@ -21,15 +21,14 @@ struct NowPlayingHostView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @EnvironmentObject private var themeStore: ThemeStore
-    @EnvironmentObject private var fullscreenWindowManager: FullscreenWindowManager
     @State private var skinRevision = 0
     @State private var artworkSnapshot: ArtworkAssetSnapshot?
 
     let mainContentWidth: CGFloat
 
     var body: some View {
-        let selectedSkinID = settings.normalSkinID
-        let selectedSkin = skinManager.normalSkin(for: selectedSkinID)
+        let selectedSkinID = settings.selectedNowPlayingSkinID
+        let selectedSkin = skinManager.skin(for: selectedSkinID)
 
         GeometryReader { proxy in
             let contentHeight = max(0, proxy.size.height - Constants.Layout.miniPlayerHeight - 12)
@@ -38,7 +37,7 @@ struct NowPlayingHostView: View {
             let context = makeContext(windowSize: proxy.size, contentBounds: contentBounds)
 
             ZStack(alignment: .topLeading) {
-                if context.artBackgroundActive {
+                if settings.nowPlayingArtBackgroundEnabled {
                     Color.clear
                 } else {
                     selectedSkin.makeBackground(context: context)
@@ -60,7 +59,7 @@ struct NowPlayingHostView: View {
             skinRevision &+= 1
             if oldValue == "kmgccc.cassette", newValue != oldValue {
                 Task {
-                    await CassetteSkinMemoryCoordinator.purgeTransientCaches()
+                    await CassetteArtworkCache.shared.removeAll()
                 }
             }
             if isLedEnabledForCurrentSkin() {
@@ -76,21 +75,10 @@ struct NowPlayingHostView: View {
         }
         .onDisappear {
             ledMeterProvider.releaseNowPlayingResources()
-            let exitCleanup = currentArtworkCleanupDescriptor
             artworkSnapshot = nil
-            BKThemeAssets.shared.purgeTransientCaches()
-            BackgroundAnimationClock.shared.stop()
-            ArtworkColorExtractor.clearCaches()
             Task {
-                if let exitCleanup {
-                    await ArtworkAssetStore.shared.purgeSnapshot(
-                        trackID: exitCleanup.trackID,
-                        artworkChecksum: exitCleanup.artworkChecksum,
-                        fullImageMaxPixelSize: exitCleanup.fullImageMaxPixelSize
-                    )
-                }
-                await ArtworkAssetStore.shared.clearCache()
-                await CassetteSkinMemoryCoordinator.purgeTransientCaches()
+                await ArtworkAssetStore.shared.purgeHydratedImages()
+                await CassetteArtworkCache.shared.removeAll()
             }
         }
         .task(id: currentArtworkTaskKey) {
@@ -108,32 +96,63 @@ struct NowPlayingHostView: View {
     }
 
     private func makeContext(windowSize: CGSize, contentBounds: CGRect) -> SkinContext {
-        let artBackgroundActive = ArtBackgroundPolicy.normalIsActive(
-            contentMode: uiState.contentMode,
-            isEnabled: settings.nowPlayingArtBackgroundEnabled,
-            hasTrack: playerVM.currentTrack != nil,
-            isFullscreenActive: fullscreenWindowManager.isFullscreenActive,
-            allowsHostArtBackground: skinManager.normalSkin(for: settings.normalSkinID).allowsHostArtBackground
-        )
+        let track = playerVM.currentTrack
 
-        return SkinContextFactory.makeContext(
-            track: playerVM.currentTrack,
-            artworkSnapshot: artworkSnapshot,
+        let trackMeta: SkinContext.TrackMetadata? = track.map {
+            SkinContext.TrackMetadata(
+                id: $0.id,
+                title: $0.title,
+                artist: $0.artist,
+                album: $0.album,
+                duration: $0.duration,
+                artworkChecksum: artworkSnapshot?.artworkChecksum ?? 0,
+                artworkData: $0.artworkData,
+                artworkImage: artworkSnapshot?.fullImage
+            )
+        }
+
+        let playback = SkinContext.PlaybackState(
             isPlaying: playerVM.isPlaying,
             currentTime: playerVM.currentTime,
             duration: playerVM.duration,
-            ledMeterProvider: ledMeterProvider,
+            progress: playerVM.duration > 0 ? playerVM.currentTime / playerVM.duration : 0
+        )
+
+        let theme = SkinContext.ThemeTokens(
             accentColor: themeStore.accentColor,
             colorScheme: colorScheme,
             reduceMotion: reduceMotion,
             reduceTransparency: reduceTransparency,
+            glassIntensity: AppSettings.shared.liquidGlassIntensity,
+            backgroundBlur: AppSettings.shared.nowPlayingBackgroundBlur,
+            backgroundBrightness: AppSettings.shared.nowPlayingBackgroundBrightness,
+            backgroundSaturation: AppSettings.shared.nowPlayingBackgroundSaturation,
+            meshAmplitude: AppSettings.shared.nowPlayingMeshAmplitude,
+            meshFlowSpeed: AppSettings.shared.nowPlayingMeshFlowSpeed,
+            meshSharpness: AppSettings.shared.nowPlayingMeshSharpness,
+            meshSoftness: AppSettings.shared.nowPlayingMeshSoftness,
+            meshColorBoost: AppSettings.shared.nowPlayingMeshColorBoost,
+            meshContrast: AppSettings.shared.nowPlayingMeshContrast,
+            meshBassImpact: AppSettings.shared.nowPlayingMeshBassImpact,
+            artworkAccentColor: artworkSnapshot?.accentColor.map { Color(nsColor: $0) },
+            artworkPalette: artworkSnapshot?.palette ?? [],
+            artworkRichPalette: artworkSnapshot?.richPalette ?? [],
+            artworkAverageColor: artworkSnapshot?.averageColor,
+            kickToBrightnessMix: AppSettings.shared.bgKickToBrightnessMix,
+            kickDisplaceAmount: AppSettings.shared.bgKickDisplaceAmount,
+            kickScaleAmount: AppSettings.shared.bgKickScaleAmount
+        )
+
+        return SkinContext(
+            track: trackMeta,
+            playback: playback,
+            audio: ledMeterProvider.getOrCreate().audioMetrics,
+            led: ledMeterProvider.getOrCreate().metrics,
+            theme: theme,
             windowSize: windowSize,
             contentBounds: contentBounds,
             fullscreenScale: 1.0,
-            lyricsVisible: false,
-            artBackgroundActive: artBackgroundActive,
-            visualizerMode: FullscreenPresentationCoordinator.shared.visualizerMode,
-            audioSpectrumProvider: AudioVisualizationService.shared
+            lyricsVisible: false  // Normal mode handles lyrics separately
         )
     }
     
@@ -141,15 +160,6 @@ struct NowPlayingHostView: View {
         guard let track = playerVM.currentTrack else { return "none" }
         let checksum = ArtworkAssetStore.checksum(for: track.artworkData)
         return "\(track.id.uuidString)-\(checksum)-px:\(preferredArtworkFullImageMaxPixel)"
-    }
-
-    private var currentArtworkCleanupDescriptor: ArtworkCleanupDescriptor? {
-        guard let track = playerVM.currentTrack else { return nil }
-        return ArtworkCleanupDescriptor(
-            trackID: track.id,
-            artworkChecksum: ArtworkAssetStore.checksum(for: track.artworkData),
-            fullImageMaxPixelSize: preferredArtworkFullImageMaxPixel
-        )
     }
     
     private func loadArtworkSnapshot() async {
@@ -169,19 +179,18 @@ struct NowPlayingHostView: View {
     }
 
     private var preferredArtworkFullImageMaxPixel: Int {
-        settings.normalSkinID == "kmgccc.cassette" ? 1_200 : 1_400
+        1_400
     }
 
     private func isLedEnabledForCurrentSkin() -> Bool {
-        SkinContextFactory.isLedEnabled(
-            skinID: settings.selectedNowPlayingSkinID,
-            isFullscreen: false
-        )
+        let skinID = settings.selectedNowPlayingSkinID
+        switch skinID {
+        case "coverLed":
+            return UserDefaults.standard.string(forKey: "skin.classicLED.visualizerMode") == "led"
+        case "kmgccc.cassette":
+            return UserDefaults.standard.string(forKey: "skin.kmgcccCassette.visualizerMode") == "led"
+        default:
+            return false
+        }
     }
-}
-
-private struct ArtworkCleanupDescriptor {
-    let trackID: UUID
-    let artworkChecksum: UInt64
-    let fullImageMaxPixelSize: Int
 }

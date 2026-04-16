@@ -9,26 +9,13 @@ import AppKit
 import SwiftData
 import SwiftUI
 
-// MARK: - Playback Mode for Menu
-
-enum PlaybackMode: String, CaseIterable, Identifiable {
-    case sequence
-    case shuffle
-    case repeatOne
-    case stopAfterTrack
-
-    var id: String { rawValue }
-}
-
 // MARK: - Playback Order Menu Content
 
 @MainActor
 private struct PlaybackOrderMenuContent: View {
-    @State private var currentMode: PlaybackMode = .sequence
+    @State private var currentMode: PlaybackOrderMode = AppSettings.shared.playbackOrderMode
 
     var body: some View {
-        let settings = AppSettings.shared
-
         Button {
             setPlaybackMode(.sequence)
         } label: {
@@ -77,40 +64,12 @@ private struct PlaybackOrderMenuContent: View {
     }
 
     private func updateCurrentMode() {
-        let settings = AppSettings.shared
-        if settings.stopAfterTrack {
-            currentMode = .stopAfterTrack
-        } else if settings.repeatMode == "one" {
-            currentMode = .repeatOne
-        } else if settings.shuffleEnabled {
-            currentMode = .shuffle
-        } else {
-            currentMode = .sequence
-        }
+        currentMode = AppSettings.shared.playbackOrderMode
     }
 
-    private func setPlaybackMode(_ mode: PlaybackMode) {
-        let settings = AppSettings.shared
-        switch mode {
-        case .sequence:
-            settings.shuffleEnabled = false
-            settings.repeatMode = "off"
-            settings.stopAfterTrack = false
-        case .shuffle:
-            settings.shuffleEnabled = true
-            settings.repeatMode = "off"
-            settings.stopAfterTrack = false
-        case .repeatOne:
-            settings.shuffleEnabled = false
-            settings.repeatMode = "one"
-            settings.stopAfterTrack = false
-        case .stopAfterTrack:
-            settings.shuffleEnabled = false
-            settings.repeatMode = "off"
-            settings.stopAfterTrack = true
-        }
+    private func setPlaybackMode(_ mode: PlaybackOrderMode) {
+        AppSettings.shared.setPlaybackOrderMode(mode, announceChange: true)
         currentMode = mode
-        NotificationCenter.default.post(name: .playbackModeChanged, object: nil)
     }
 }
 

@@ -224,7 +224,7 @@ struct AppRootView: View {
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .playbackModeChanged)) { _ in
-                playerVM?.setShuffleEnabled(AppSettings.shared.shuffleEnabled)
+                playerVM?.syncPlaybackOrderModeFromSettings()
             }
 
         return commandHandlersView
@@ -356,8 +356,7 @@ struct AppRootView: View {
             lyricsVM: lyricsVM!,
             ledMeterProvider: ledMeterProvider,
             skinManager: skinManager!,
-            uiState: uiState,
-            artBackgroundController: artBackgroundController
+            uiState: uiState
         )
 
         settingsSceneDependencies.configure(
@@ -695,14 +694,10 @@ private struct AppRootContentView: View {
                let importEnrichmentService = importEnrichmentService,
                let skinManager = skinManager {
 
-                let selectedSkin = skinManager.normalSkin(for: settings.normalSkinID)
-                let showArtBackground = ArtBackgroundPolicy.normalIsActive(
-                    contentMode: uiState.contentMode,
-                    isEnabled: settings.nowPlayingArtBackgroundEnabled,
-                    hasTrack: playerVM.currentTrack != nil,
-                    isFullscreenActive: fullscreenWindowManager.isFullscreenActive,
-                    allowsHostArtBackground: selectedSkin.allowsHostArtBackground
-                )
+                let showArtBackground = uiState.contentMode == .nowPlaying
+                    && settings.nowPlayingArtBackgroundEnabled
+                    && playerVM.currentTrack != nil
+                    && !fullscreenWindowManager.isFullscreenActive
 
                 MainAppContentView(
                     libraryVM: libraryVM,
@@ -761,13 +756,15 @@ private struct MainAppContentView: View {
     @ViewBuilder
     private var artBackgroundView: some View {
         if showArtBackground {
-            let selectedSkin = skinManager.normalSkin(for: settings.normalSkinID)
             BKArtBackgroundView(
                 controller: artBackgroundController,
                 trackID: playerVM.currentTrack?.id,
                 artworkData: playerVM.currentTrack?.artworkData,
                 isPlaying: playerVM.isPlaying,
-                resourceProfile: selectedSkin.artBackgroundResourceProfile
+                resourceProfile: settings.selectedNowPlayingSkinID == "kmgccc.cassette"
+                    ? .cassetteForeground
+                    : .standard,
+                initialPalette: [themeStore.accentNSColor]
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .ignoresSafeArea()
@@ -809,7 +806,6 @@ private struct MainAppContentView: View {
             .environment(coverDownloadService)
             .environment(netEaseCoverService)
             .environmentObject(themeStore)
-            .environmentObject(fullscreenWindowManager)
             .background(
                 WindowToolbarAccessor(
                     configure: applyMainWindowMinimumSize(to:),
@@ -863,21 +859,13 @@ private struct MainAppContentView: View {
     }
 
     private func handleTrackIdChange() {
-        if showArtBackground {
+        if uiState.contentMode == .nowPlaying && settings.nowPlayingArtBackgroundEnabled {
             artBackgroundController.triggerTransition()
         }
     }
 
     private func handleArtBackgroundEnabledChange(_ enabled: Bool) {
-        let selectedSkin = skinManager.normalSkin(for: settings.normalSkinID)
-        let shouldTrigger = ArtBackgroundPolicy.normalIsActive(
-            contentMode: uiState.contentMode,
-            isEnabled: enabled,
-            hasTrack: playerVM.currentTrack != nil,
-            isFullscreenActive: fullscreenWindowManager.isFullscreenActive,
-            allowsHostArtBackground: selectedSkin.allowsHostArtBackground
-        )
-        if shouldTrigger {
+        if enabled && uiState.contentMode == .nowPlaying && playerVM.currentTrack != nil {
             artBackgroundController.triggerTransition()
         }
     }
@@ -889,7 +877,9 @@ private struct MainAppContentView: View {
     }
 
     private var shouldTriggerArtBackgroundTransition: Bool {
-        showArtBackground
+        uiState.contentMode == .nowPlaying
+            && settings.nowPlayingArtBackgroundEnabled
+            && playerVM.currentTrack != nil
     }
 
     @discardableResult

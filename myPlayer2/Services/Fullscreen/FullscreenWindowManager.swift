@@ -31,7 +31,6 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
     weak var ledMeterProvider: LEDMeterServiceProvider?
     weak var skinManager: SkinManager?
     weak var uiState: UIStateViewModel?
-    weak var windowedArtBackgroundController: BKArtBackgroundController?
 
     private var suspendedMainLyricsVisibility: Bool?
 
@@ -45,15 +44,13 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         lyricsVM: LyricsViewModel,
         ledMeterProvider: LEDMeterServiceProvider,
         skinManager: SkinManager,
-        uiState: UIStateViewModel,
-        artBackgroundController: BKArtBackgroundController
+        uiState: UIStateViewModel
     ) {
         self.playerVM = playerVM
         self.lyricsVM = lyricsVM
         self.ledMeterProvider = ledMeterProvider
         self.skinManager = skinManager
         self.uiState = uiState
-        self.windowedArtBackgroundController = artBackgroundController
     }
 
     /// Show the fullscreen player window.
@@ -78,7 +75,6 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
             previousKeyWindow = NSApp.keyWindow === window ? previousKeyWindow : NSApp.keyWindow
             isFullscreenActive = true
             installEscapeMonitorIfNeeded()
-            (window as? FullscreenPlayerWindow)?.startCursorAutoHide()
             window.makeKeyAndOrderFront(nil)
             window.orderFrontRegardless()
             if !window.styleMask.contains(.fullScreen) {
@@ -125,9 +121,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         window.collectionBehavior = [.fullScreenPrimary, .canJoinAllSpaces, .fullScreenAllowsTiling]
 
         // Create the content view with all necessary environment injected
-        let contentView = FullscreenPlayerView(
-            windowedArtBackgroundController: windowedArtBackgroundController
-        ) {
+        let contentView = FullscreenPlayerView {
             self.closeFullscreenWindow()
         }
         .environment(playerVM)
@@ -145,7 +139,6 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         previousKeyWindow = NSApp.keyWindow
         fullscreenWindow = window
         installEscapeMonitorIfNeeded()
-        window.startCursorAutoHide()
 
         window.makeKeyAndOrderFront(nil)
         window.toggleFullScreen(nil)
@@ -175,7 +168,6 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         // Request main mode before dismissing - this is the single source of truth
         LyricsSurfaceManager.shared.requestMode(.main)
 
-        (window as? FullscreenPlayerWindow)?.stopCursorAutoHide()
         window.orderOut(nil)
         window.contentView = nil
         window.delegate = nil
@@ -244,9 +236,6 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         }
         installEscapeMonitorIfNeeded()
         window.makeKey()
-        if let fullscreenWindow = window as? FullscreenPlayerWindow {
-            fullscreenWindow.startCursorAutoHide()
-        }
         isTransitioning = false
     }
 
@@ -292,71 +281,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
     }
 }
 
-@MainActor
 private final class FullscreenPlayerWindow: NSWindow {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
-
-    private let cursorHideDelay: TimeInterval = 3.0
-    private var cursorAutoHideTimer: Timer?
-    private var isCursorHiddenForIdle = false
-
-    override func sendEvent(_ event: NSEvent) {
-        switch event.type {
-        case .mouseMoved,
-             .leftMouseDown, .leftMouseUp,
-             .rightMouseDown, .rightMouseUp,
-             .otherMouseDown, .otherMouseUp,
-             .leftMouseDragged, .rightMouseDragged, .otherMouseDragged,
-             .scrollWheel:
-            noteCursorActivity()
-        default:
-            break
-        }
-
-        super.sendEvent(event)
-    }
-
-    func startCursorAutoHide() {
-        acceptsMouseMovedEvents = true
-        noteCursorActivity()
-    }
-
-    func stopCursorAutoHide() {
-        cursorAutoHideTimer?.invalidate()
-        cursorAutoHideTimer = nil
-        revealCursorIfNeeded()
-        acceptsMouseMovedEvents = false
-    }
-
-    private func noteCursorActivity() {
-        revealCursorIfNeeded()
-        scheduleCursorAutoHide()
-    }
-
-    private func scheduleCursorAutoHide() {
-        cursorAutoHideTimer?.invalidate()
-        cursorAutoHideTimer = Timer.scheduledTimer(withTimeInterval: cursorHideDelay, repeats: false) {
-            [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.hideCursorIfNeeded()
-            }
-        }
-        if let cursorAutoHideTimer {
-            RunLoop.main.add(cursorAutoHideTimer, forMode: .common)
-        }
-    }
-
-    private func hideCursorIfNeeded() {
-        guard isVisible, styleMask.contains(.fullScreen), isKeyWindow else { return }
-        guard !isCursorHiddenForIdle else { return }
-        NSCursor.hide()
-        isCursorHiddenForIdle = true
-    }
-
-    private func revealCursorIfNeeded() {
-        guard isCursorHiddenForIdle else { return }
-        NSCursor.unhide()
-        isCursorHiddenForIdle = false
-    }
 }

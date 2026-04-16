@@ -9,14 +9,6 @@
 import AppKit
 import SwiftUI
 
-// Playback mode enum shared with FullscreenMiniPlayerView
-enum PlaybackOrderMode {
-    case sequence
-    case shuffle
-    case repeatOne
-    case stopAfterTrack
-}
-
 /// Mini player bar with true Liquid Glass capsule effect.
 /// Layout: Cover+Title | Controls | Playback Mode | Progress
 struct MiniPlayerView: View {
@@ -26,9 +18,7 @@ struct MiniPlayerView: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
 
-    @AppStorage("shuffleEnabled") private var shuffleEnabled: Bool = false
-    @AppStorage("repeatMode") private var repeatMode: String = "off"
-    @AppStorage("stopAfterTrack") private var stopAfterTrack: Bool = false
+    @State private var settings = AppSettings.shared
 
     /// For drag-to-seek
     @State private var isDragging = false
@@ -234,10 +224,7 @@ struct MiniPlayerView: View {
     }
 
     private var currentPlaybackMode: PlaybackOrderMode {
-        if stopAfterTrack { return .stopAfterTrack }
-        if repeatMode == "one" { return .repeatOne }
-        if shuffleEnabled { return .shuffle }
-        return .sequence
+        settings.playbackOrderMode
     }
 
     private var playbackModeView: some View {
@@ -247,24 +234,7 @@ struct MiniPlayerView: View {
             isEnabled: isEnabled,
             isExpanded: isPlaybackModeExpanded,
             onModeChange: { mode in
-                switch mode {
-                case .sequence:
-                    shuffleEnabled = false
-                    repeatMode = "off"
-                    stopAfterTrack = false
-                case .shuffle:
-                    shuffleEnabled = true
-                    repeatMode = "off"
-                    stopAfterTrack = false
-                case .repeatOne:
-                    shuffleEnabled = false
-                    repeatMode = "one"
-                    stopAfterTrack = false
-                case .stopAfterTrack:
-                    shuffleEnabled = false
-                    repeatMode = "off"
-                    stopAfterTrack = true
-                }
+                playerVM.setPlaybackOrderMode(mode)
             },
             onCurrentModeRetap: { _ in }
         )

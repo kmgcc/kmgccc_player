@@ -27,10 +27,6 @@ public enum ArtworkColorExtractor {
     }
 
     private nonisolated static let pixelCache = PixelCacheBox()
-
-    public nonisolated static func clearCaches() {
-        pixelCache.cache.removeAllObjects()
-    }
     
     private final class PixelDataCacheEntry: NSObject {
         let pixels: [UInt8]

@@ -220,13 +220,10 @@ final class PlaylistPageController {
         let end = min(page.rows.count, startIndex + windowSize + 1)
         guard start < end else { return }
 
-        let requests: [PlaylistArtworkRequest] = page.rows[start..<end].compactMap { row in
-            guard let artworkData = libraryVM?.artworkData(for: row.id), !artworkData.isEmpty else {
-                return nil
-            }
-            return PlaylistArtworkPipeline.rowHighRequest(
-                trackID: row.id,
-                artworkData: artworkData,
+        let requests = page.rows[start..<end].map {
+            PlaylistArtworkPipeline.rowHighRequest(
+                trackID: $0.id,
+                artworkData: $0.artworkData,
                 logicalSize: Constants.Layout.artworkSmallSize,
                 scale: scale
             )
@@ -353,9 +350,6 @@ final class PlaylistPageController {
         let selectionIdentity = selectionIdentity(for: selection)
         let displayedTracks = currentDisplayedTracks(selection: selection, libraryVM: libraryVM)
         let displayedTrackByID = Dictionary(uniqueKeysWithValues: displayedTracks.map { ($0.id, $0) })
-        let artworkVersionsByID = Dictionary(
-            uniqueKeysWithValues: displayedTracks.map { ($0.id, libraryVM.artworkRevision(for: $0.id)) }
-        )
         let trimmedSearch = normalizedSearch(searchText)
         let sourceFingerprint = pageSourceFingerprint(
             for: displayedTracks,
@@ -376,6 +370,7 @@ final class PlaylistPageController {
                 selectionIdentity: selectionIdentity,
                 sourceFingerprint: sourceFingerprint,
                 displayedTracks: displayedTracks,
+                displayedTrackByID: displayedTrackByID,
                 cacheEntry: cached
            )
         {
@@ -390,7 +385,7 @@ final class PlaylistPageController {
         }
 
         let playlistItemAddedAtMap: [UUID: Date]? = {
-            guard case .playlist(let playlistID) = libraryVM.currentSelection else { return nil }
+            guard let playlistID = libraryVM.selectedPlaylistId else { return nil }
             return libraryVM.playlistItemAddedAtMap[playlistID]
         }()
 
@@ -411,7 +406,6 @@ final class PlaylistPageController {
         let buildResult = await Self.buildPageResult(
             displayedTracks: displayedTracks,
             entries: sortableEntries,
-            artworkVersionsByID: artworkVersionsByID,
             searchText: trimmedSearch,
             sortKey: libraryVM.trackSortKey,
             sortOrder: libraryVM.trackSortOrder
@@ -420,7 +414,10 @@ final class PlaylistPageController {
         guard !Task.isCancelled, activeLoadToken == token else { return }
 
         let queueTracks = buildResult.queueTrackIDs.compactMap { displayedTrackByID[$0] }
-        let rows = buildResult.rowRecords.map(PlaylistPageRowModel.init(record:))
+        let rows: [PlaylistPageRowModel] = buildResult.rowRecords.compactMap { record -> PlaylistPageRowModel? in
+            guard let track = displayedTrackByID[record.id] else { return nil }
+            return PlaylistPageRowModel(record: record, artworkData: track.artworkData)
+        }
         guard queueTracks.count == buildResult.queueTrackIDs.count,
               rows.count == buildResult.rowRecords.count
         else {
@@ -879,12 +876,19 @@ final class PlaylistPageController {
         selectionIdentity: String,
         sourceFingerprint: String,
         displayedTracks: [Track],
+        displayedTrackByID: [UUID: Track],
         cacheEntry: PlaylistPageModelCacheEntry
     ) -> PlaylistPageModel? {
-        let displayedTrackByID = Dictionary(uniqueKeysWithValues: displayedTracks.map { ($0.id, $0) })
-        let rows = cacheEntry.rowRecords.map(PlaylistPageRowModel.init(record:))
+        let rows: [PlaylistPageRowModel] = cacheEntry.rowRecords.compactMap {
+            guard let track = displayedTrackByID[$0.id] else { return nil }
+            return PlaylistPageRowModel(record: $0, artworkData: track.artworkData)
+        }
         let queueTracks = cacheEntry.queueTrackIDs.compactMap { displayedTrackByID[$0] }
-        guard queueTracks.count == cacheEntry.queueTrackIDs.count else { return nil }
+        guard rows.count == cacheEntry.rowRecords.count,
+              queueTracks.count == cacheEntry.queueTrackIDs.count
+        else {
+            return nil
+        }
 
         return PlaylistPageModel(
             selection: selection,
@@ -1086,7 +1090,6 @@ final class PlaylistPageController {
     private static func buildPageResult(
         displayedTracks: [Track],
         entries: [SortableTrackEntry],
-        artworkVersionsByID: [UUID: Int],
         searchText: String,
         sortKey: TrackSortKey,
         sortOrder: TrackSortOrder
@@ -1118,8 +1121,10 @@ final class PlaylistPageController {
                     title: track.title,
                     artist: track.artist,
                     durationText: formatDuration(track.duration),
-                    artworkIdentity: "row-\(track.id.uuidString)",
-                    artworkVersion: artworkVersionsByID[track.id] ?? 0,
+                    artworkIdentity: PlaylistArtworkPipeline.rowSourceIdentity(
+                        trackID: track.id,
+                        artworkData: track.artworkData
+                    ),
                     isMissing: track.availability == .missing
                 )
             }

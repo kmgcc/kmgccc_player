@@ -361,10 +361,11 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
                     Button {
                         libraryVM.trackSortKey = key
                     } label: {
-                        systemSortMenuLabel(
-                            title: key.title,
-                            isSelected: libraryVM.trackSortKey == key
-                        )
+                        if libraryVM.trackSortKey == key {
+                            Label(key.title, systemImage: "checkmark")
+                        } else {
+                            Text(key.title)
+                        }
                     }
                 }
             }
@@ -374,10 +375,11 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
                     Button {
                         libraryVM.trackSortOrder = order
                     } label: {
-                        systemSortMenuLabel(
-                            title: order.title,
-                            isSelected: libraryVM.trackSortOrder == order
-                        )
+                        if libraryVM.trackSortOrder == order {
+                            Label(order.title, systemImage: "checkmark")
+                        } else {
+                            Text(order.title)
+                        }
                     }
                 }
             }
@@ -388,22 +390,6 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
                 sortSymbolEffectTrigger += 1
             }
         )
-    }
-
-    private func systemSortMenuLabel(
-        title: String,
-        isSelected: Bool
-    ) -> some View {
-        Group {
-            if isSelected {
-                Label(title, systemImage: "checkmark")
-            } else {
-                Text(title)
-                    .padding(.leading, 22)
-            }
-        }
-        .frame(minWidth: 148, alignment: .leading)
-        .fixedSize(horizontal: true, vertical: false)
     }
 
     @ViewBuilder
@@ -674,7 +660,9 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
 
                 Button(role: .destructive) {
                     processBatchAction { tracks in
-                        await libraryVM.deleteTracks(tracks)
+                        for track in tracks {
+                            await libraryVM.deleteTrack(track)
+                        }
                         await MainActor.run {
                             pageController.selectedTrackIDs.removeAll()
                         }

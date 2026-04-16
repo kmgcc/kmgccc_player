@@ -14,7 +14,6 @@ struct PlaylistPageRowRecord: Sendable, Equatable {
     let artist: String
     let durationText: String
     let artworkIdentity: String
-    let artworkVersion: Int
     let isMissing: Bool
 }
 
@@ -23,8 +22,8 @@ struct PlaylistPageRowModel: Identifiable, Equatable {
     let title: String
     let artist: String
     let durationText: String
+    let artworkData: Data?
     let artworkIdentity: String
-    let artworkVersion: Int
     let isMissing: Bool
 
     init(
@@ -32,27 +31,27 @@ struct PlaylistPageRowModel: Identifiable, Equatable {
         title: String,
         artist: String,
         durationText: String,
+        artworkData: Data?,
         artworkIdentity: String,
-        artworkVersion: Int,
         isMissing: Bool
     ) {
         self.id = id
         self.title = title
         self.artist = artist
         self.durationText = durationText
+        self.artworkData = artworkData
         self.artworkIdentity = artworkIdentity
-        self.artworkVersion = artworkVersion
         self.isMissing = isMissing
     }
 
-    init(record: PlaylistPageRowRecord) {
+    init(record: PlaylistPageRowRecord, artworkData: Data?) {
         self.init(
             id: record.id,
             title: record.title,
             artist: record.artist,
             durationText: record.durationText,
+            artworkData: artworkData,
             artworkIdentity: record.artworkIdentity,
-            artworkVersion: record.artworkVersion,
             isMissing: record.isMissing
         )
     }
@@ -63,8 +62,8 @@ struct PlaylistPageRowModel: Identifiable, Equatable {
             title: title,
             artist: artist,
             durationText: durationText,
+            artworkData: artworkData,
             artworkIdentity: artworkIdentity,
-            artworkVersion: artworkVersion,
             isMissing: isMissing
         )
     }
