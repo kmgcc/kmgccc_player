@@ -12,8 +12,7 @@ import Foundation
 @Observable
 @MainActor
 final class CoverDownloadService: CoverDownloadServiceProtocol {
-    private final class ContinuationState: @unchecked Sendable {
-        private let lock = NSLock()
+    private actor ContinuationState {
         private var continuation: CheckedContinuation<Void, Error>?
 
         init(_ continuation: CheckedContinuation<Void, Error>) {
@@ -21,8 +20,6 @@ final class CoverDownloadService: CoverDownloadServiceProtocol {
         }
 
         func resume(_ result: Result<Void, Error>) {
-            lock.lock()
-            defer { lock.unlock() }
             guard let continuation else { return }
             self.continuation = nil
             switch result {
@@ -85,32 +82,38 @@ final class CoverDownloadService: CoverDownloadServiceProtocol {
                             guard process.terminationStatus == 0 else {
                                 let stderrText = String(data: stderrData, encoding: .utf8)?
                                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                                state.resume(
-                                    .failure(
-                                        CoverDownloadError.processFailed(
-                                            exitCode: process.terminationStatus,
-                                            message: stderrText?.isEmpty == false
-                                                ? stderrText!
-                                                : "sacad exited with an error"
+                                Task {
+                                    await state.resume(
+                                        .failure(
+                                            CoverDownloadError.processFailed(
+                                                exitCode: process.terminationStatus,
+                                                message: stderrText?.isEmpty == false
+                                                    ? stderrText!
+                                                    : "sacad exited with an error"
+                                            )
                                         )
                                     )
-                                )
+                                }
                                 return
                             }
-                            state.resume(.success(()))
+                            Task {
+                                await state.resume(.success(()))
+                            }
                         }
 
                         do {
                             try process.run()
                         } catch {
-                            state.resume(
-                                .failure(
-                                    CoverDownloadError.processFailed(
-                                        exitCode: -1,
-                                        message: error.localizedDescription
+                            Task {
+                                await state.resume(
+                                    .failure(
+                                        CoverDownloadError.processFailed(
+                                            exitCode: -1,
+                                            message: error.localizedDescription
+                                        )
                                     )
                                 )
-                            )
+                            }
                         }
                     }
                 } onCancel: {

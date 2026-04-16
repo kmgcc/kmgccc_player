@@ -5,10 +5,10 @@
 //  kmgccc_player - Shared Cover Service Models
 //
 
-import AppKit
 import Foundation
+import ImageIO
 
-enum CoverLookupConfiguration {
+nonisolated enum CoverLookupConfiguration {
     static let netEasePreferredTimeout: TimeInterval = 8
     static let netEaseCandidatesTimeout: TimeInterval = 12
     static let sacadTimeout: TimeInterval = 18
@@ -16,7 +16,7 @@ enum CoverLookupConfiguration {
     static let netEaseCandidateLimit = 5
 }
 
-enum CoverDownloadError: Error {
+nonisolated enum CoverDownloadError: Error {
     case executableMissing(path: String)
     case processFailed(exitCode: Int32, message: String)
     case outputMissing
@@ -24,7 +24,7 @@ enum CoverDownloadError: Error {
     case cancelled
 }
 
-enum NetEaseCoverError: Error {
+nonisolated enum NetEaseCoverError: Error {
     case badURL
     case requestFailed(underlying: Error)
     case decodingFailed(underlying: Error)
@@ -32,12 +32,12 @@ enum NetEaseCoverError: Error {
     case imageDownloadFailed(underlying: Error)
 }
 
-enum CoverSource: Sendable {
+nonisolated enum CoverSource: Sendable {
     case sacad
     case netease
 }
 
-enum CoverLookupTimeoutError: LocalizedError {
+nonisolated enum CoverLookupTimeoutError: LocalizedError {
     case timedOut(seconds: TimeInterval)
 
     var errorDescription: String? {
@@ -48,7 +48,7 @@ enum CoverLookupTimeoutError: LocalizedError {
     }
 }
 
-func withCoverLookupTimeout<T: Sendable>(
+nonisolated func withCoverLookupTimeout<T: Sendable>(
     _ seconds: TimeInterval,
     operation: @escaping @Sendable () async throws -> T
 ) async throws -> T {
@@ -69,7 +69,7 @@ func withCoverLookupTimeout<T: Sendable>(
 }
 
 /// A cover image candidate with stable identity and resolution metadata.
-struct CoverCandidate: Identifiable, Equatable, Hashable, Sendable {
+nonisolated struct CoverCandidate: Identifiable, Equatable, Hashable, Sendable {
     let id: String  // Stable identity: "sacad:<normalized-query>" or "netease:<album-id>"
     let imageData: Data
     let resolution: Int  // Larger dimension (e.g., 1200 for 1200x1200)
@@ -116,11 +116,13 @@ struct CoverCandidate: Identifiable, Equatable, Hashable, Sendable {
     }
 
     private static func computeDimensions(from data: Data) -> (Int, Int) {
-        guard let image = NSImage(data: data),
-              let rep = image.representations.first else {
+        guard let imageSource = CGImageSourceCreateWithData(data as CFData, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int else {
             return (0, 0)
         }
-        return (rep.pixelsWide, rep.pixelsHigh)
+        return (width, height)
     }
 
     // Equatable - compare by ID only for deduplication
