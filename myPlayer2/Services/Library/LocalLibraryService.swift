@@ -834,11 +834,7 @@ final class LocalLibraryService {
     // MARK: - Track Deletion
 
     func deleteTrackFiles(_ track: Track) {
-        deleteTrackFiles(trackID: track.id)
-    }
-
-    func deleteTrackFiles(trackID: UUID) {
-        let folder = LocalLibraryPaths.trackFolderURL(for: trackID)
+        let folder = LocalLibraryPaths.trackFolderURL(for: track.id)
         if fileManager.fileExists(atPath: folder.path) {
             do {
                 try fileManager.removeItem(at: folder)

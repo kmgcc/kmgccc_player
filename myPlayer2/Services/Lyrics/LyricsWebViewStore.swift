@@ -35,8 +35,6 @@ final class LyricsWebViewStore: NSObject {
         ProcessInfo.processInfo.environment["AMLL_TTML_DIAGNOSTICS"] == "1"
     private nonisolated static let visibleLayerProbeEnabled =
         ProcessInfo.processInfo.environment["KMGCCC_AMLL_VISIBLE_LAYER_PROBE"] == "1"
-    private nonisolated static let trackProfileDiagnosticsEnabled =
-        ProcessInfo.processInfo.environment["KMGCCC_AMLL_TRACK_PROFILE_DIAGNOSTICS"] == "1"
     private nonisolated static let automaticRecycleTrackThreshold: Int = {
         guard
             let rawValue = ProcessInfo.processInfo.environment["KMGCCC_AMLL_WEBVIEW_RECYCLE_TRACKS"],
@@ -116,7 +114,6 @@ final class LyricsWebViewStore: NSObject {
     private let applyTrackDebounceMs: Int = 50
     private var didRegisterMessageHandlers = false
     private var isShutDown = false
-    private var syntheticTrackProfileSessionSeed = 0
 
     // MARK: - Callbacks
 
@@ -477,16 +474,6 @@ final class LyricsWebViewStore: NSObject {
             return "collectDiagnostics"
         }
         return "other"
-    }
-
-    private func compactJSONString(from object: [String: Any]) -> String {
-        guard JSONSerialization.isValidJSONObject(object),
-            let data = try? JSONSerialization.data(withJSONObject: object),
-            let string = String(data: data, encoding: .utf8)
-        else {
-            return String(describing: object)
-        }
-        return string
     }
 
     private func runDebugVisibleLayerProbe(label: String) {
@@ -1098,19 +1085,10 @@ final class LyricsWebViewStore: NSObject {
         currentTime: Double,
         isPlaying: Bool
     ) -> Int? {
-        guard role == LyricsSurfaceRole.main.rawValue || role == LyricsSurfaceRole.fullscreen.rawValue else {
-            return nil
-        }
+        guard LyricsRuntimeProfile.enabled else { return nil }
+        guard role == LyricsSurfaceRole.main.rawValue else { return nil }
         guard isReady else { return nil }
-        let runtimeSessionID = LyricsRuntimeProfile.currentSessionID()
-        let sessionID: Int
-        if let runtimeSessionID {
-            sessionID = runtimeSessionID
-        } else {
-            guard Self.trackProfileDiagnosticsEnabled else { return nil }
-            syntheticTrackProfileSessionSeed -= 1
-            sessionID = syntheticTrackProfileSessionSeed
-        }
+        guard let sessionID = LyricsRuntimeProfile.currentSessionID() else { return nil }
 
         let payload: [String: Any] = [
             "sessionID": sessionID,
@@ -1128,10 +1106,8 @@ final class LyricsWebViewStore: NSObject {
             )
         )
         executeJavaScriptCall(call)
-        if LyricsRuntimeProfile.enabled {
-            LyricsRuntimeProfile.setMetadata("webview.role", value: role)
-            LyricsRuntimeProfile.setMetadata("webview.objectID", value: "\(webViewObjectID)")
-        }
+        LyricsRuntimeProfile.setMetadata("webview.role", value: role)
+        LyricsRuntimeProfile.setMetadata("webview.objectID", value: "\(webViewObjectID)")
         return sessionID
     }
 
@@ -1139,7 +1115,7 @@ final class LyricsWebViewStore: NSObject {
         sessionID: Int,
         trackID: UUID?
     ) {
-        guard LyricsRuntimeProfile.enabled || Self.trackProfileDiagnosticsEnabled else { return }
+        guard LyricsRuntimeProfile.enabled else { return }
         pendingTrackProfileCollection?.cancel()
 
         let workItem = DispatchWorkItem { [weak self] in
@@ -1147,25 +1123,14 @@ final class LyricsWebViewStore: NSObject {
         }
         pendingTrackProfileCollection = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: workItem)
-        if Self.trackProfileDiagnosticsEnabled {
-            let lateSessionID = sessionID
-            let lateTrackID = trackID
-            DispatchQueue.main.asyncAfter(deadline: .now() + 8.0) { [weak self] in
-                guard let self else { return }
-                guard self.lastTrackID == lateTrackID else { return }
-                self.collectTrackProfileSession(sessionID: lateSessionID, trackID: lateTrackID)
-            }
-        }
     }
 
     private func collectTrackProfileSession(
         sessionID: Int,
         trackID: UUID?
     ) {
-        guard LyricsRuntimeProfile.enabled || Self.trackProfileDiagnosticsEnabled else { return }
-        guard role == LyricsSurfaceRole.main.rawValue || role == LyricsSurfaceRole.fullscreen.rawValue else {
-            return
-        }
+        guard LyricsRuntimeProfile.enabled else { return }
+        guard role == LyricsSurfaceRole.main.rawValue else { return }
         guard isReady else { return }
 
         let call = PendingJavaScriptCall(
@@ -1178,31 +1143,15 @@ final class LyricsWebViewStore: NSObject {
 
         executeJavaScriptCall(call) { result, error in
             if let error {
-                if LyricsRuntimeProfile.enabled {
-                    LyricsRuntimeProfile.setMetadata(
-                        "jsProfile.error",
-                        value: error.localizedDescription
-                    )
-                }
-                if Self.trackProfileDiagnosticsEnabled {
-                    Log.info(
-                        "[AMLLTrackProfile] role=\(self.role) stage=collect error=\(error.localizedDescription) trackID=\(trackID?.uuidString ?? "nil") sessionID=\(sessionID)",
-                        category: .perf
-                    )
-                }
+                LyricsRuntimeProfile.setMetadata(
+                    "jsProfile.error",
+                    value: error.localizedDescription
+                )
                 return
             }
 
             if let payload = result as? [String: Any] {
-                if LyricsRuntimeProfile.enabled {
-                    LyricsRuntimeProfile.mergeJSProfile(sessionID: sessionID, payload: payload)
-                }
-                if Self.trackProfileDiagnosticsEnabled {
-                    Log.info(
-                        "[AMLLTrackProfile] role=\(self.role) stage=collect payload=\(self.compactJSONString(from: payload))",
-                        category: .perf
-                    )
-                }
+                LyricsRuntimeProfile.mergeJSProfile(sessionID: sessionID, payload: payload)
                 return
             }
 
@@ -1210,34 +1159,18 @@ final class LyricsWebViewStore: NSObject {
                 let data = payloadString.data(using: .utf8),
                 let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             {
-                if LyricsRuntimeProfile.enabled {
-                    LyricsRuntimeProfile.mergeJSProfile(sessionID: sessionID, payload: object)
-                }
-                if Self.trackProfileDiagnosticsEnabled {
-                    Log.info(
-                        "[AMLLTrackProfile] role=\(self.role) stage=collect payload=\(self.compactJSONString(from: object))",
-                        category: .perf
-                    )
-                }
+                LyricsRuntimeProfile.mergeJSProfile(sessionID: sessionID, payload: object)
                 return
             }
 
-            if LyricsRuntimeProfile.enabled {
-                LyricsRuntimeProfile.setMetadata(
-                    "jsProfile.unexpectedResult",
-                    value: String(describing: result ?? "nil")
-                )
-                LyricsRuntimeProfile.setMetadata(
-                    "jsProfile.trackID",
-                    value: trackID?.uuidString ?? "nil"
-                )
-            }
-            if Self.trackProfileDiagnosticsEnabled {
-                Log.info(
-                    "[AMLLTrackProfile] role=\(self.role) stage=collect unexpectedResult=\(String(describing: result ?? "nil")) trackID=\(trackID?.uuidString ?? "nil") sessionID=\(sessionID)",
-                    category: .perf
-                )
-            }
+            LyricsRuntimeProfile.setMetadata(
+                "jsProfile.unexpectedResult",
+                value: String(describing: result ?? "nil")
+            )
+            LyricsRuntimeProfile.setMetadata(
+                "jsProfile.trackID",
+                value: trackID?.uuidString ?? "nil"
+            )
         }
     }
 

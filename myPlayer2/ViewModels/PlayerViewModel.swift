@@ -174,6 +174,18 @@ final class PlayerViewModel {
         nowPlayingService.updateNowPlaying(force: true)
     }
 
+    func setPlaybackOrderMode(_ mode: PlaybackOrderMode, announceChange: Bool = true) {
+        settings.setPlaybackOrderMode(mode, announceChange: announceChange)
+        playbackService.setShuffleEnabled(mode == .shuffle)
+        nowPlayingService.updateNowPlaying(force: true)
+    }
+
+    func syncPlaybackOrderModeFromSettings() {
+        let mode = settings.playbackOrderMode
+        playbackService.setShuffleEnabled(mode == .shuffle)
+        nowPlayingService.updateNowPlaying(force: true)
+    }
+
     func discardCurrentPlaybackSessionStatsOnce() {
         playbackService.discardCurrentPlaybackSessionStatsOnce()
     }
@@ -215,9 +227,13 @@ final class PlayerViewModel {
     }
 
     private var isLedEnabledForCurrentSkin: Bool {
-        SkinContextFactory.isLedEnabled(
-            skinID: settings.selectedNowPlayingSkinID,
-            isFullscreen: false
-        )
+        switch settings.selectedNowPlayingSkinID {
+        case ClassicLEDSkin.id:
+            return UserDefaults.standard.string(forKey: "skin.classicLED.visualizerMode") == "led"
+        case "kmgccc.cassette":
+            return UserDefaults.standard.string(forKey: "skin.kmgcccCassette.visualizerMode") == "led"
+        default:
+            return false
+        }
     }
 }

@@ -9,6 +9,15 @@
 import Foundation
 import SwiftUI
 
+enum PlaybackOrderMode: String, CaseIterable, Identifiable {
+    case sequence
+    case shuffle
+    case repeatOne
+    case stopAfterTrack
+
+    var id: String { rawValue }
+}
+
 /// Observable app settings using AppStorage for persistence.
 /// Observable app settings using AppStorage for persistence.
 @Observable
@@ -150,11 +159,17 @@ public final class AppSettings {
         static let followSystemAppearance = "followSystemAppearance"
         static let manualAppearance = "manualAppearance"
         static let lyricsBackgroundMode = "lyricsBackgroundMode"
-        static let fullscreenArtBackgroundEnabled = "fullscreenArtBackgroundEnabled"
     }
 
     private enum ImportKeys {
         static let deferImportEnrichment = "deferImportEnrichment"
+    }
+
+    private enum PlaybackOrderKeys {
+        static let mode = "playbackOrderMode"
+        static let shuffleEnabled = "shuffleEnabled"
+        static let repeatMode = "repeatMode"
+        static let stopAfterTrack = "stopAfterTrack"
     }
 
     /// Whether global accent/tint follows current artwork dominant color.
@@ -348,12 +363,6 @@ public final class AppSettings {
         }
     }
 
-    /// Normal window skin selection facade used by the refactored skin host.
-    var normalSkinID: String {
-        get { selectedNowPlayingSkinID }
-        set { selectedNowPlayingSkinID = newValue }
-    }
-
     /// Fullscreen skin selection - now managed by FullscreenPresentationCoordinator.
     /// This property is kept for backward compatibility but delegates to the coordinator.
     var selectedFullscreenSkinID: String {
@@ -372,27 +381,6 @@ public final class AppSettings {
     /// Enable BKArt animated background layer in Now Playing.
     @ObservationIgnored
     @AppStorage("nowPlayingArtBackgroundEnabled") var nowPlayingArtBackgroundEnabled: Bool = true
-
-    /// Enable BKArt animated background layer in fullscreen.
-    /// Falls back to the window toggle until the fullscreen-specific key is written.
-    var fullscreenArtBackgroundEnabled: Bool {
-        get {
-            access(keyPath: \.fullscreenArtBackgroundEnabled)
-            if UserDefaults.standard.object(forKey: AppearanceKeys.fullscreenArtBackgroundEnabled) == nil
-            {
-                return nowPlayingArtBackgroundEnabled
-            }
-            return UserDefaults.standard.bool(forKey: AppearanceKeys.fullscreenArtBackgroundEnabled)
-        }
-        set {
-            withMutation(keyPath: \.fullscreenArtBackgroundEnabled) {
-                UserDefaults.standard.set(
-                    newValue,
-                    forKey: AppearanceKeys.fullscreenArtBackgroundEnabled
-                )
-            }
-        }
-    }
 
     /// Legacy background blur multiplier (kept for compatibility)
     @ObservationIgnored
@@ -531,16 +519,131 @@ public final class AppSettings {
     @AppStorage("bgQuietSuppressionMode") var bgQuietSuppressionMode: String = "mild"
 
     /// Shuffle enabled
-    @ObservationIgnored
-    @AppStorage("shuffleEnabled") var shuffleEnabled: Bool = false
+    var shuffleEnabled: Bool {
+        get {
+            access(keyPath: \.shuffleEnabled)
+            return readLegacyPlaybackFields().shuffleEnabled
+        }
+        set {
+            withMutation(keyPath: \.shuffleEnabled) {
+                var fields = readLegacyPlaybackFields()
+                fields.shuffleEnabled = newValue
+                writePlaybackOrder(derivePlaybackOrderMode(from: fields))
+            }
+        }
+    }
 
     /// Repeat mode: "off", "all", "one"
-    @ObservationIgnored
-    @AppStorage("repeatMode") var repeatMode: String = "off"
+    var repeatMode: String {
+        get {
+            access(keyPath: \.repeatMode)
+            return readLegacyPlaybackFields().repeatMode
+        }
+        set {
+            withMutation(keyPath: \.repeatMode) {
+                var fields = readLegacyPlaybackFields()
+                fields.repeatMode = newValue
+                writePlaybackOrder(derivePlaybackOrderMode(from: fields))
+            }
+        }
+    }
 
     /// Pause playback after current song finishes (single-cycle stop mode).
-    @ObservationIgnored
-    @AppStorage("stopAfterTrack") var stopAfterTrack: Bool = false
+    var stopAfterTrack: Bool {
+        get {
+            access(keyPath: \.stopAfterTrack)
+            return readLegacyPlaybackFields().stopAfterTrack
+        }
+        set {
+            withMutation(keyPath: \.stopAfterTrack) {
+                var fields = readLegacyPlaybackFields()
+                fields.stopAfterTrack = newValue
+                writePlaybackOrder(derivePlaybackOrderMode(from: fields))
+            }
+        }
+    }
+
+    var playbackOrderMode: PlaybackOrderMode {
+        get {
+            access(keyPath: \.playbackOrderMode)
+
+            if let rawValue = UserDefaults.standard.string(forKey: PlaybackOrderKeys.mode),
+                let mode = PlaybackOrderMode(rawValue: rawValue)
+            {
+                return mode
+            }
+
+            let fields = readLegacyPlaybackFields()
+            guard fields.hasStoredValue else { return .sequence }
+            return derivePlaybackOrderMode(from: fields)
+        }
+        set {
+            setPlaybackOrderMode(newValue)
+        }
+    }
+
+    func setPlaybackOrderMode(_ mode: PlaybackOrderMode, announceChange: Bool = false) {
+        let oldMode = playbackOrderMode
+
+        withMutation(keyPath: \.playbackOrderMode) {
+            writePlaybackOrder(mode)
+        }
+
+        guard announceChange, oldMode != mode else { return }
+        NotificationCenter.default.post(name: .playbackModeChanged, object: nil)
+    }
+
+    private struct LegacyPlaybackOrderFields {
+        var shuffleEnabled: Bool
+        var repeatMode: String
+        var stopAfterTrack: Bool
+        var hasStoredValue: Bool
+    }
+
+    private func readLegacyPlaybackFields() -> LegacyPlaybackOrderFields {
+        let defaults = UserDefaults.standard
+        let hasShuffle = defaults.object(forKey: PlaybackOrderKeys.shuffleEnabled) != nil
+        let hasRepeat = defaults.object(forKey: PlaybackOrderKeys.repeatMode) != nil
+        let hasStopAfterTrack = defaults.object(forKey: PlaybackOrderKeys.stopAfterTrack) != nil
+
+        return LegacyPlaybackOrderFields(
+            shuffleEnabled: hasShuffle ? defaults.bool(forKey: PlaybackOrderKeys.shuffleEnabled) : false,
+            repeatMode: defaults.string(forKey: PlaybackOrderKeys.repeatMode) ?? "off",
+            stopAfterTrack: hasStopAfterTrack ? defaults.bool(forKey: PlaybackOrderKeys.stopAfterTrack) : false,
+            hasStoredValue: hasShuffle || hasRepeat || hasStopAfterTrack
+        )
+    }
+
+    private func derivePlaybackOrderMode(from fields: LegacyPlaybackOrderFields) -> PlaybackOrderMode {
+        if fields.stopAfterTrack { return .stopAfterTrack }
+        if fields.repeatMode == "one" { return .repeatOne }
+        if fields.shuffleEnabled { return .shuffle }
+        return .sequence
+    }
+
+    private func writePlaybackOrder(_ mode: PlaybackOrderMode) {
+        let defaults = UserDefaults.standard
+        defaults.set(mode.rawValue, forKey: PlaybackOrderKeys.mode)
+
+        switch mode {
+        case .sequence:
+            defaults.set(false, forKey: PlaybackOrderKeys.shuffleEnabled)
+            defaults.set("off", forKey: PlaybackOrderKeys.repeatMode)
+            defaults.set(false, forKey: PlaybackOrderKeys.stopAfterTrack)
+        case .shuffle:
+            defaults.set(true, forKey: PlaybackOrderKeys.shuffleEnabled)
+            defaults.set("off", forKey: PlaybackOrderKeys.repeatMode)
+            defaults.set(false, forKey: PlaybackOrderKeys.stopAfterTrack)
+        case .repeatOne:
+            defaults.set(false, forKey: PlaybackOrderKeys.shuffleEnabled)
+            defaults.set("one", forKey: PlaybackOrderKeys.repeatMode)
+            defaults.set(false, forKey: PlaybackOrderKeys.stopAfterTrack)
+        case .stopAfterTrack:
+            defaults.set(false, forKey: PlaybackOrderKeys.shuffleEnabled)
+            defaults.set("off", forKey: PlaybackOrderKeys.repeatMode)
+            defaults.set(true, forKey: PlaybackOrderKeys.stopAfterTrack)
+        }
+    }
 
     // MARK: - Fullscreen Presentation Coordinator
 

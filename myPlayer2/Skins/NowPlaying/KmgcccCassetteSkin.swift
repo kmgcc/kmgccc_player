@@ -12,53 +12,32 @@ import ImageIO
 import QuartzCore
 import SwiftUI
 
-struct KmgcccCassetteTheme: SkinTheme {
+struct KmgcccCassetteSkin: NowPlayingSkin {
     let id: String = "kmgccc.cassette"
     let name: String = NSLocalizedString("skin.kmgccc_cassette.name", comment: "")
     let detail: String = NSLocalizedString("skin.kmgccc_cassette.detail", comment: "")
     let systemImage: String = "music.note.list"
-    let normal: (any NormalSkin)? = KmgcccCassetteNormalSkin()
-    let fullscreen: (any FullscreenSkin)? = KmgcccCassetteFullscreenSkin()
-}
-
-struct KmgcccCassetteNormalSkin: NormalSkin {
-    var artBackgroundResourceProfile: BKArtBackgroundView.ResourceProfile { .cassetteForeground }
+    var isFullscreenCompatible: Bool { true }
+    var isNowPlayingCompatible: Bool { true }
 
     func makeBackground(context: SkinContext) -> AnyView {
         AnyView(UnifiedNowPlayingBackground(context: context))
     }
 
     func makeArtwork(context: SkinContext) -> AnyView {
-        AnyView(CassetteArtwork(context: context, isFullscreen: false))
+        AnyView(CassetteArtwork(context: context))
     }
 
     func makeOverlay(context: SkinContext) -> AnyView? {
-        AnyView(CassetteOverlay(context: context, isFullscreen: false))
+        AnyView(CassetteOverlay(context: context))
     }
 
-    func makeSettingsView() -> AnyView? {
+    var settingsView: AnyView? {
         AnyView(KmgcccCassetteNormalSettingsView())
     }
-}
 
-struct KmgcccCassetteFullscreenSkin: FullscreenSkin {
-    var hasMiniPlayerMotion: Bool { true }
-    var artBackgroundResourceProfile: BKArtBackgroundView.ResourceProfile { .cassetteForeground }
-
-    func makeBackground(context: SkinContext) -> AnyView {
-        AnyView(UnifiedNowPlayingBackground(context: context))
-    }
-
-    func makeArtwork(context: SkinContext) -> AnyView {
-        AnyView(CassetteArtwork(context: context, isFullscreen: true))
-    }
-
-    func makeOverlay(context: SkinContext) -> AnyView? {
-        AnyView(CassetteOverlay(context: context, isFullscreen: true))
-    }
-
-    func makeSettingsView(actions: SkinHostActions) -> AnyView? {
-        AnyView(KmgcccCassetteFullscreenSettingsView(actions: actions))
+    var fullscreenSettingsView: AnyView? {
+        AnyView(KmgcccCassetteFullscreenSettingsView())
     }
 }
 
@@ -167,8 +146,8 @@ private final class CassetteThemeAssetCache {
     private var resolvedAspectRatio: CGFloat?
 
     private init() {
-        cache.countLimit = 3
-        cache.totalCostLimit = 24 * 1024 * 1024
+        cache.countLimit = 4
+        cache.totalCostLimit = 32 * 1024 * 1024
     }
 
     func imageSet(colorScheme: ColorScheme, maxPixel: Int) -> CassetteThemeImageSet? {
@@ -313,22 +292,11 @@ private final class CassetteThemeAssetCache {
     }
 }
 
-enum CassetteSkinMemoryCoordinator {
-    static func purgeThemeAssets() {
-        CassetteThemeAssetCache.shared.removeAll()
-    }
-
-    static func purgeTransientCaches() async {
-        purgeThemeAssets()
-        await CassetteArtworkCache.shared.removeAll()
-    }
-}
-
 private struct CassetteArtwork: View {
     let context: SkinContext
-    let isFullscreen: Bool
     @AppStorage("skin.kmgcccCassette.showKmgLook") private var showKmgLook: Bool = false
     @Environment(\.displayScale) private var displayScale
+    @StateObject private var fullscreenManager = FullscreenWindowManager.shared
     @State private var adjustedArtworkImage: NSImage?
     @State private var adjustedArtworkKey: String?
     @State private var renderKey: String = ""
@@ -342,13 +310,12 @@ private struct CassetteArtwork: View {
     @AppStorage("skin.kmgcccCassette.fullscreen.visualizerMode") private var fullscreenVisualizerMode: String = "off"
 
     var body: some View {
-        let effectiveFullscreenVisualizerMode =
-            context.visualizerMode == .skinVisualizer ? fullscreenVisualizerMode : "off"
+        let isFullscreen = fullscreenManager.isFullscreenActive
         let metrics = CassetteLayout.metrics(
             for: context,
             isFullscreen: isFullscreen,
             normalVisualizerMode: normalVisualizerMode,
-            fullscreenVisualizerMode: effectiveFullscreenVisualizerMode
+            fullscreenVisualizerMode: fullscreenVisualizerMode
         )
         let size = metrics.size
         let themeImages = cassetteThemeImages(for: size)
@@ -502,7 +469,6 @@ private struct CassetteArtwork: View {
         adjustedVisible = false
 
         processingTask = Task(priority: .utility) {
-            let cacheGeneration = await CassetteArtworkCache.shared.currentGeneration()
             defer {
                 Task { @MainActor in
                     guard self.processingGeneration == generation else { return }
@@ -545,11 +511,7 @@ private struct CassetteArtwork: View {
                     size: NSSize(width: result.image.width, height: result.image.height)
                 )
                 Task {
-                    await CassetteArtworkCache.shared.setImage(
-                        image,
-                        for: key,
-                        generation: cacheGeneration
-                    )
+                    await CassetteArtworkCache.shared.setImage(image, for: key)
                 }
                 self.adjustedArtworkImage = image
                 self.adjustedArtworkKey = key
@@ -629,8 +591,9 @@ private struct CassetteArtwork: View {
         clearAdjustedArtworkState(resetRenderKey: true)
 
         guard purgeCaches else { return }
+        CassetteThemeAssetCache.shared.removeAll()
         Task {
-            await CassetteSkinMemoryCoordinator.purgeTransientCaches()
+            await CassetteArtworkCache.shared.removeAll()
         }
     }
 
@@ -661,7 +624,6 @@ actor CassetteArtworkCache {
     private var keys: [String] = []
     private var costs: [String: Int] = [:]
     private var totalBytes = 0
-    private var generation: UInt64 = 0
     private let maxCount = 48
     private let maxTotalBytes = 24 * 1024 * 1024
 
@@ -669,12 +631,7 @@ actor CassetteArtworkCache {
         storage[key]
     }
 
-    func currentGeneration() -> UInt64 {
-        generation
-    }
-
-    func setImage(_ image: NSImage, for key: String, generation: UInt64) {
-        guard generation == self.generation else { return }
+    func setImage(_ image: NSImage, for key: String) {
         if storage[key] == nil {
             keys.append(key)
         }
@@ -695,7 +652,6 @@ actor CassetteArtworkCache {
     }
 
     func removeAll() {
-        generation &+= 1
         storage.removeAll()
         keys.removeAll()
         costs.removeAll()
@@ -982,8 +938,7 @@ private struct WaveformCapsulesLayer: View {
             isPlaying: context.playback.isPlaying,
             isDark: context.theme.colorScheme == .dark,
             artworkPalette: Array(context.theme.artworkPalette.prefix(2)),
-            artworkAccentColor: NSColor(context.theme.artworkAccentColor ?? .white),
-            spectrumProvider: context.audioSpectrumProvider
+            artworkAccentColor: NSColor(context.theme.artworkAccentColor ?? .white)
         )
         .allowsHitTesting(false)
     }
@@ -994,10 +949,9 @@ private struct WaveformCapsulesRepresentable: NSViewRepresentable {
     let isDark: Bool
     let artworkPalette: [NSColor]
     let artworkAccentColor: NSColor
-    let spectrumProvider: AudioSpectrumProviding
 
     func makeNSView(context: Context) -> WaveformCapsulesHostView {
-        let view = WaveformCapsulesHostView(spectrumProvider: spectrumProvider)
+        let view = WaveformCapsulesHostView()
         view.updatePalette(artworkPalette, accentColor: artworkAccentColor, isDark: isDark)
         view.start()
         view.setPlayback(isPlaying: isPlaying)
@@ -1023,7 +977,7 @@ private final class WaveformCapsulesHostView: NSView {
             ProcessInfo.processInfo.environment["KMGCCC_DEBUG_NOWPLAYING_LIFECYCLE"] == "1"
     #endif
 
-    private let spectrumProvider: AudioSpectrumProviding
+    private let service = AudioVisualizationService.shared
     private let rootLayer = CALayer()
     private var capsuleLayers: [CALayer] = []
     private var consumerID: UUID?
@@ -1037,9 +991,8 @@ private final class WaveformCapsulesHostView: NSView {
     private var lastPlaybackState: Bool?
     private var lastLayoutSize: CGSize = .zero
 
-    init(spectrumProvider: AudioSpectrumProviding) {
-        self.spectrumProvider = spectrumProvider
-        super.init(frame: .zero)
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
         ensureViewLayerIfNeeded()
         logLifecycle("init")
     }
@@ -1065,18 +1018,18 @@ private final class WaveformCapsulesHostView: NSView {
     func start() {
         guard consumerID == nil else { return }
         ensureViewLayerIfNeeded()
-        spectrumProvider.start()
-        consumerID = spectrumProvider.addConsumer(queue: .main) { [weak self] wave in
+        service.start()
+        consumerID = service.addConsumer { [weak self] wave in
             self?.applyWave(wave)
         }
     }
 
     func stop() {
         if let consumerID {
-            spectrumProvider.removeConsumer(id: consumerID)
+            service.removeConsumer(consumerID)
             self.consumerID = nil
         }
-        spectrumProvider.stop()
+        service.stop()
         currentWave = Array(repeating: 0, count: WaveformCapsulesConstants.capsuleCount)
         teardownViewBacking()
     }
@@ -1084,7 +1037,7 @@ private final class WaveformCapsulesHostView: NSView {
     func setPlayback(isPlaying: Bool) {
         guard lastPlaybackState != isPlaying else { return }
         lastPlaybackState = isPlaying
-        spectrumProvider.updatePlaybackState(isPlaying: isPlaying)
+        service.updatePlaybackState(isPlaying: isPlaying)
     }
 
     func updatePalette(_ palette: [NSColor], accentColor: NSColor, isDark: Bool) {
@@ -1443,18 +1396,17 @@ private struct HolesOverlay: View {
 
 private struct CassetteOverlay: View {
     let context: SkinContext
-    let isFullscreen: Bool
+    @StateObject private var fullscreenManager = FullscreenWindowManager.shared
     @AppStorage("skin.kmgcccCassette.visualizerMode") private var normalVisualizerMode: String = "off"
     @AppStorage("skin.kmgcccCassette.fullscreen.visualizerMode") private var fullscreenVisualizerMode: String = "off"
 
     var body: some View {
-        let effectiveFullscreenVisualizerMode =
-            context.visualizerMode == .skinVisualizer ? fullscreenVisualizerMode : "off"
+        let isFullscreen = fullscreenManager.isFullscreenActive
         let metrics = CassetteLayout.metrics(
             for: context,
             isFullscreen: isFullscreen,
             normalVisualizerMode: normalVisualizerMode,
-            fullscreenVisualizerMode: effectiveFullscreenVisualizerMode
+            fullscreenVisualizerMode: fullscreenVisualizerMode
         )
         let size = metrics.size
         let yOffset = metrics.centeredYOffset + size.height / 2 + CassetteLayout.visualLedGap(for: size)
@@ -1507,21 +1459,15 @@ private struct KmgcccCassetteNormalSettingsView: View {
 }
 
 private struct KmgcccCassetteFullscreenSettingsView: View {
-    let actions: SkinHostActions
-
     @AppStorage("skin.kmgcccCassette.fullscreen.visualizerMode") private var visualizerMode: String = "off"
     @AppStorage("skin.kmgcccCassette.showKmgLook") private var showKmgLook: Bool = false
-    @Environment(FullscreenPresentationCoordinator.self) private var fullscreenPresentation
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Toggle("LED 电平表", isOn: Binding(
-                get: {
-                    fullscreenPresentation.visualizerMode == .skinVisualizer && visualizerMode == "led"
-                },
+                get: { visualizerMode == "led" },
                 set: { isOn in
                     visualizerMode = isOn ? "led" : "off"
-                    actions.setVisualizerMode(isOn ? .skinVisualizer : .off)
                 }
             ))
             .toggleStyle(.switch)

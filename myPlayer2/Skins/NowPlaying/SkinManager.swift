@@ -11,43 +11,23 @@ import SwiftUI
 @MainActor
 final class SkinManager {
 
-    var selectedNormalSkinID: String {
-        get { resolveNormalSkinID(AppSettings.shared.normalSkinID) }
-        set { AppSettings.shared.normalSkinID = resolveNormalSkinID(newValue) }
+    var selectedSkinID: String {
+        get { resolveSkinID(AppSettings.shared.selectedNowPlayingSkinID) }
+        set { AppSettings.shared.selectedNowPlayingSkinID = resolveSkinID(newValue) }
     }
 
-    var selectedFullscreenSkinID: String {
-        get { resolveFullscreenSkinID(AppSettings.shared.fullscreen.skinID) }
-        set { AppSettings.shared.fullscreen.setSkinID(resolveFullscreenSkinID(newValue)) }
+    var selectedSkin: any NowPlayingSkin {
+        SkinRegistry.skin(for: selectedSkinID)
     }
 
-    var selectedNormalSkin: any NormalSkin {
-        SkinRegistry.normalSkin(for: selectedNormalSkinID)
+    func skin(for id: String) -> any NowPlayingSkin {
+        SkinRegistry.skin(for: resolveSkinID(id))
     }
 
-    var selectedFullscreenSkin: any FullscreenSkin {
-        SkinRegistry.fullscreenSkin(for: selectedFullscreenSkinID)
-    }
-
-    func normalSkin(for id: String) -> any NormalSkin {
-        SkinRegistry.normalSkin(for: resolveNormalSkinID(id))
-    }
-
-    func fullscreenSkin(for id: String) -> any FullscreenSkin {
-        SkinRegistry.fullscreenSkin(for: resolveFullscreenSkinID(id))
-    }
-
-    private func resolveNormalSkinID(_ id: String) -> String {
-        if SkinRegistry.normalSkinThemes.contains(where: { $0.id == id }) {
+    private func resolveSkinID(_ id: String) -> String {
+        if SkinRegistry.skins.contains(where: { $0.id == id }) {
             return id
         }
         return SkinRegistry.defaultSkinID
-    }
-
-    private func resolveFullscreenSkinID(_ id: String) -> String {
-        if SkinRegistry.fullscreenSkinThemes.contains(where: { $0.id == id }) {
-            return id
-        }
-        return SkinRegistry.defaultFullscreenSkinID
     }
 }
