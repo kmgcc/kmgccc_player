@@ -60,7 +60,7 @@ struct NowPlayingHostView: View {
             skinRevision &+= 1
             if oldValue == "kmgccc.cassette", newValue != oldValue {
                 Task {
-                    await CassetteArtworkCache.shared.removeAll()
+                    await CassetteSkinMemoryCoordinator.purgeTransientCaches()
                 }
             }
             if isLedEnabledForCurrentSkin() {
@@ -76,10 +76,21 @@ struct NowPlayingHostView: View {
         }
         .onDisappear {
             ledMeterProvider.releaseNowPlayingResources()
+            let exitCleanup = currentArtworkCleanupDescriptor
             artworkSnapshot = nil
+            BKThemeAssets.shared.purgeTransientCaches()
+            BackgroundAnimationClock.shared.stop()
+            ArtworkColorExtractor.clearCaches()
             Task {
-                await ArtworkAssetStore.shared.purgeHydratedImages()
-                await CassetteArtworkCache.shared.removeAll()
+                if let exitCleanup {
+                    await ArtworkAssetStore.shared.purgeSnapshot(
+                        trackID: exitCleanup.trackID,
+                        artworkChecksum: exitCleanup.artworkChecksum,
+                        fullImageMaxPixelSize: exitCleanup.fullImageMaxPixelSize
+                    )
+                }
+                await ArtworkAssetStore.shared.clearCache()
+                await CassetteSkinMemoryCoordinator.purgeTransientCaches()
             }
         }
         .task(id: currentArtworkTaskKey) {
@@ -131,6 +142,15 @@ struct NowPlayingHostView: View {
         let checksum = ArtworkAssetStore.checksum(for: track.artworkData)
         return "\(track.id.uuidString)-\(checksum)-px:\(preferredArtworkFullImageMaxPixel)"
     }
+
+    private var currentArtworkCleanupDescriptor: ArtworkCleanupDescriptor? {
+        guard let track = playerVM.currentTrack else { return nil }
+        return ArtworkCleanupDescriptor(
+            trackID: track.id,
+            artworkChecksum: ArtworkAssetStore.checksum(for: track.artworkData),
+            fullImageMaxPixelSize: preferredArtworkFullImageMaxPixel
+        )
+    }
     
     private func loadArtworkSnapshot() async {
         guard let track = playerVM.currentTrack, let artworkData = track.artworkData, !artworkData.isEmpty
@@ -149,7 +169,7 @@ struct NowPlayingHostView: View {
     }
 
     private var preferredArtworkFullImageMaxPixel: Int {
-        1_400
+        settings.normalSkinID == "kmgccc.cassette" ? 1_200 : 1_400
     }
 
     private func isLedEnabledForCurrentSkin() -> Bool {
@@ -158,4 +178,10 @@ struct NowPlayingHostView: View {
             isFullscreen: false
         )
     }
+}
+
+private struct ArtworkCleanupDescriptor {
+    let trackID: UUID
+    let artworkChecksum: UInt64
+    let fullImageMaxPixelSize: Int
 }

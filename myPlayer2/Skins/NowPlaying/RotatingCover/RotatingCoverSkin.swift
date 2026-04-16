@@ -67,16 +67,19 @@ private enum RotatingCoverLayout {
     struct Metrics {
         let discSize: CGFloat
         let baseSize: CGFloat
+        let xOffset: CGFloat
         let yOffset: CGFloat
     }
 
     static func metrics(for context: SkinContext, isFullscreen: Bool) -> Metrics {
         let baseSize = expandedBaseVisualSize(for: context, isFullscreen: isFullscreen)
         let discSize = baseSize * discToBaseRatio
+        let xOffset: CGFloat = isFullscreen ? -28 : 0
         let yOffset = isFullscreen ? yOffsetFullscreen : yOffsetWindow
         return Metrics(
             discSize: discSize,
             baseSize: baseSize,
+            xOffset: xOffset,
             yOffset: yOffset
         )
     }
@@ -879,7 +882,7 @@ private struct RotatingCoverArtwork: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .offset(y: layout.yOffset)
+        .offset(x: layout.xOffset, y: layout.yOffset)
         .onAppear {
             lastTrackID = context.track?.id
             rotation.setMode(discMode, isPlaying: context.playback.isPlaying)

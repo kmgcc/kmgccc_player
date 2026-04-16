@@ -6,6 +6,7 @@
 //
 
 import AppKit
+import CryptoKit
 import Foundation
 import SwiftUI
 
@@ -47,6 +48,9 @@ enum FullscreenCoverBlurRenderLayer: String {
 
 @MainActor
 final class FullscreenLyricsThemeEngine {
+    private nonisolated static let diagnosticsEnabled =
+        ProcessInfo.processInfo.environment["KMGCCC_AMLL_TRACK_PROFILE_DIAGNOSTICS"] == "1"
+
     private enum Tuning {
         static let minimumBaseLightness: CGFloat = 0.52
         static let maximumBaseLightness: CGFloat = 0.66
@@ -195,6 +199,16 @@ final class FullscreenLyricsThemeEngine {
         if let data = try? JSONSerialization.data(withJSONObject: config),
             let json = String(data: data, encoding: .utf8)
         {
+            if Self.diagnosticsEnabled {
+                let configHash = SHA256.hash(data: data).compactMap { String(format: "%02x", $0) }
+                    .joined()
+                let alignPosition = config["alignPosition"] as? Double ?? -1
+                let coverBlurMode = config["coverBlurFullscreenGenericMode"] as? Bool ?? false
+                Log.info(
+                    "[FullscreenLyricsConfig] role=\(store.role) force=\(force) reason=\(reason.isEmpty ? "config" : reason) hash=\(String(configHash.prefix(12))) alignPosition=\(String(format: "%.3f", alignPosition)) coverBlurGeneric=\(coverBlurMode)",
+                    category: .perf
+                )
+            }
             if let role = LyricsSurfaceRole(rawValue: store.role) {
                 LyricsSurfaceManager.shared.updateSurfaceConfigSnapshot(json, for: role)
             }

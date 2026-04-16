@@ -14,8 +14,8 @@ struct TrackRowModel: Identifiable, Equatable {
     let title: String
     let artist: String
     let durationText: String
-    let artworkData: Data?
     let artworkIdentity: String
+    let artworkVersion: Int
     let isMissing: Bool
 
     static func == (lhs: TrackRowModel, rhs: TrackRowModel) -> Bool {
@@ -24,12 +24,14 @@ struct TrackRowModel: Identifiable, Equatable {
             && lhs.artist == rhs.artist
             && lhs.durationText == rhs.durationText
             && lhs.artworkIdentity == rhs.artworkIdentity
+            && lhs.artworkVersion == rhs.artworkVersion
             && lhs.isMissing == rhs.isMissing
     }
 }
 
 /// Row view for displaying a track in a list.
 struct TrackRowView<MenuContent: View>: View {
+    @Environment(LibraryViewModel.self) private var libraryVM
     let model: TrackRowModel
     let isPlaying: Bool
     let isSelected: Bool
@@ -155,6 +157,10 @@ struct TrackRowView<MenuContent: View>: View {
             LyricsRuntimeProfile.insertUniqueValue("TrackRowView.onAppear.trackID", value: model.id.uuidString)
             onRowAppear?()
         }
+        .onDisappear {
+            artworkImage = nil
+            isArtworkReady = false
+        }
         .task(id: artworkTaskIdentity) {
             await loadArtwork()
         }
@@ -166,7 +172,9 @@ struct TrackRowView<MenuContent: View>: View {
     }
 
     private var artworkTaskIdentity: String {
-        enableArtworkLoading ? model.artworkIdentity : "paused-\(model.id.uuidString)"
+        enableArtworkLoading
+            ? "\(model.artworkIdentity)-v\(model.artworkVersion)"
+            : "paused-\(model.id.uuidString)"
     }
 
     private var artistText: String {
@@ -226,7 +234,7 @@ struct TrackRowView<MenuContent: View>: View {
     private func loadArtwork() async {
         guard enableArtworkLoading else { return }
 
-        guard let data = model.artworkData, !data.isEmpty else {
+        guard let data = libraryVM.artworkData(for: model.id), !data.isEmpty else {
             artworkImage = nil
             isArtworkReady = false
             return
@@ -289,6 +297,9 @@ extension TrackRowView: Equatable where MenuContent: View {
 // MARK: - Preview
 
 #Preview("Track Row") {
+    let repository = StubLibraryRepository()
+    let libraryVM = LibraryViewModel(repository: repository)
+
     VStack(spacing: 0) {
         TrackRowView(
             model: TrackRowModel(
@@ -296,8 +307,8 @@ extension TrackRowView: Equatable where MenuContent: View {
                 title: "Blinding Lights",
                 artist: "The Weeknd",
                 durationText: "3:23",
-                artworkData: nil,
                 artworkIdentity: "demo",
+                artworkVersion: 0,
                 isMissing: false
             ),
             isPlaying: true,
@@ -315,8 +326,8 @@ extension TrackRowView: Equatable where MenuContent: View {
                 title: "Missing Track",
                 artist: "Unknown Artist",
                 durationText: "0:00",
-                artworkData: nil,
                 artworkIdentity: "missing",
+                artworkVersion: 0,
                 isMissing: true
             ),
             isPlaying: false,
@@ -326,4 +337,5 @@ extension TrackRowView: Equatable where MenuContent: View {
         }
     }
     .padding()
+    .environment(libraryVM)
 }
