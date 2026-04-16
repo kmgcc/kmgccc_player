@@ -6,6 +6,8 @@ import SwiftUI
 struct FullscreenPlayerView: View {
     static let baseCanvasWidth: CGFloat = 1470
     static let baseCanvasHeight: CGFloat = 923
+    private nonisolated static let diagnosticsEnabled =
+        ProcessInfo.processInfo.environment["KMGCCC_AMLL_TRACK_PROFILE_DIAGNOSTICS"] == "1"
 
     private enum RightPanelDisplayState {
         case hidden
@@ -99,6 +101,13 @@ struct FullscreenPlayerView: View {
         GeometryReader { proxy in
             fullscreenCanvas(for: proxy)
         }
+        .overlay {
+            FullscreenPlaybackTimeObserver(
+                onCurrentTimeChange: handleCurrentTimeChange
+            )
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
         .contentShape(Rectangle())
         .contextMenu {
             Button {
@@ -119,6 +128,7 @@ struct FullscreenPlayerView: View {
             Log.info("FullscreenPlayerView appeared", category: .webview)
 
             LyricsSurfaceManager.shared.reportFullscreenVisible(true)
+            syncRightPanelDisplayStateWithLyricsAvailability(animated: false)
 
             syncCoverBlurHighlightActivation()
             lyricsController.resetBackgroundSnapshot()
@@ -190,7 +200,6 @@ struct FullscreenPlayerView: View {
         .onChange(of: settings.fullscreen.isMiniPlayerSpectrumEnabled) { _, _ in
             syncFullscreenMiniPlayerSpectrumLease()
         }
-        .onChange(of: playerVM.currentTime, handleCurrentTimeChange)
         .onChange(of: playerVM.isPlaying) { _, newValue in
             LyricsSurfaceManager.shared.updatePlayingState(newValue)
             fullscreenStore.setPlaying(newValue)
@@ -235,6 +244,12 @@ struct FullscreenPlayerView: View {
         .onChange(of: bkController.lyricsColorSampleRevision) { _, _ in
             guard lyricsController.pendingBackgroundCapture else { return }
             guard bkController.lyricsColorTrackID == playerVM.currentTrack?.id else { return }
+            if Self.diagnosticsEnabled {
+                Log.info(
+                    "[FullscreenLyricsSample] trackID=\(playerVM.currentTrack?.id.uuidString ?? "nil") revision=\(bkController.lyricsColorSampleRevision) pendingCapture=\(lyricsController.pendingBackgroundCapture)",
+                    category: .perf
+                )
+            }
             lyricsController.scheduleLyricsRefresh(
                 preferLiveSurface: true,
                 captureSnapshot: captureFullscreenLyricsBackgroundSnapshot,
@@ -292,7 +307,7 @@ struct FullscreenPlayerView: View {
             controlsColorScheme: fullscreenControlsColorScheme,
             effectiveAppearance: effectiveFullscreenAppearance,
             artworkScale: settings.fullscreenArtworkScale,
-            canToggleLyrics: playerVM.currentTrack != nil,
+            canToggleLyrics: currentTrackHasDisplayableFullscreenLyrics,
             autoHideSeconds: settings.fullscreenMiniPlayerAutoHideSeconds,
             shouldKeepControlsVisible: isShowingQueuePanel,
             makeSkinContext: { artworkColumnWidth, fullscreenScale in
@@ -371,6 +386,10 @@ struct FullscreenPlayerView: View {
 
     private var isShowingRightPanel: Bool {
         rightPanelDisplayState != .hidden
+    }
+
+    private var currentTrackHasDisplayableFullscreenLyrics: Bool {
+        hasDisplayableFullscreenLyrics(for: playerVM.currentTrack)
     }
 
     private var currentPlaybackMode: PlaybackOrderMode {
@@ -538,12 +557,21 @@ struct FullscreenPlayerView: View {
     }
 
     private func setRightPanelDisplayState(_ newState: RightPanelDisplayState) {
-        if newState == .lyrics, playerVM.currentTrack != nil {
+        let resolvedState: RightPanelDisplayState
+        if newState == .lyrics, !currentTrackHasDisplayableFullscreenLyrics {
+            resolvedState = .hidden
+        } else {
+            resolvedState = newState
+        }
+
+        guard resolvedState != rightPanelDisplayState else { return }
+
+        if resolvedState == .lyrics, playerVM.currentTrack != nil {
             lyricsController.prepareForShowingLyrics(hasTrack: true)
         }
 
         withAnimation(lyricsLayoutAnimation) {
-            rightPanelDisplayState = newState
+            rightPanelDisplayState = resolvedState
         }
     }
 
@@ -581,6 +609,7 @@ struct FullscreenPlayerView: View {
             currentTrackID: newId,
             reduceMotion: reduceMotion
         )
+        syncRightPanelDisplayStateWithLyricsAvailability(animated: true)
         reloadLyricsSurface(reason: "fullscreen track changed")
     }
 
@@ -704,6 +733,36 @@ struct FullscreenPlayerView: View {
         }
 
         return ""
+    }
+
+    private func hasDisplayableFullscreenLyrics(for track: Track?) -> Bool {
+        !resolvedFullscreenLyricsText(for: track)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty
+    }
+
+    private func syncRightPanelDisplayStateWithLyricsAvailability(animated: Bool) {
+        guard !isShowingQueuePanel else { return }
+
+        let hasLyrics = currentTrackHasDisplayableFullscreenLyrics
+        let nextState: RightPanelDisplayState?
+
+        switch rightPanelDisplayState {
+        case .lyrics where !hasLyrics:
+            nextState = .hidden
+        case .hidden where hasLyrics:
+            nextState = .lyrics
+        default:
+            nextState = nil
+        }
+
+        guard let nextState else { return }
+
+        if animated {
+            setRightPanelDisplayState(nextState)
+        } else {
+            rightPanelDisplayState = nextState
+        }
     }
 
     private func activateCoverBlurHighlightSurface() {
@@ -993,5 +1052,18 @@ struct FullscreenPlayerView: View {
 
     private var preferredArtworkFullImageMaxPixel: Int {
         1_400
+    }
+}
+
+@MainActor
+private struct FullscreenPlaybackTimeObserver: View {
+    @Environment(PlayerViewModel.self) private var playerVM
+
+    let onCurrentTimeChange: (Double, Double) -> Void
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .onChange(of: playerVM.currentTime, onCurrentTimeChange)
     }
 }

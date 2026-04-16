@@ -159,6 +159,10 @@ final class LibraryViewModel {
     var onTracksDeleted: ((Set<UUID>) -> Void)?
     private var isApplyingSortPreference = false
     private var trackUpdateRevision = 0
+    @ObservationIgnored
+    private var tracksByID: [UUID: Track] = [:]
+    @ObservationIgnored
+    private var trackArtworkRevisions: [UUID: Int] = [:]
 
     private struct SortPreference: Codable {
         let key: String
@@ -221,6 +225,9 @@ final class LibraryViewModel {
         guard !refreshedByID.isEmpty else { return }
 
         allTracks = allTracks.map { refreshedByID[$0.id] ?? $0 }
+        for (trackID, track) in refreshedByID {
+            tracksByID[trackID] = track
+        }
         for playlist in playlists {
             playlist.tracks = playlist.tracks.map { refreshedByID[$0.id] ?? $0 }
         }
@@ -232,6 +239,7 @@ final class LibraryViewModel {
         )
 
         for trackID in uniqueTrackIDs {
+            trackArtworkRevisions[trackID, default: 0] += 1
             trackUpdateRevision += 1
             trackUpdateEvent = TrackUpdateEvent(trackID: trackID, revision: trackUpdateRevision)
             NotificationCenter.default.post(
@@ -274,14 +282,7 @@ final class LibraryViewModel {
         state = .loading
 
         await repository.reloadFromLibrary()
-        playlists = await repository.fetchPlaylists()
-        allTracks = await repository.fetchTracks(in: nil)
-        playlistItemAddedAtMap = await repository.fetchPlaylistItemAddedAtMap()
-        totalTrackCount = allTracks.count
-        runtimeArtists = await repository.fetchArtistSections()
-        runtimeAlbums = await repository.fetchAlbumSections()
-        artistEntries = await repository.fetchArtistEntries()
-        albumEntries = await repository.fetchAlbumEntries()
+        await applyRepositorySnapshot()
         reconcileSelectionAfterLoad()
 
         Log.info("Loaded \(playlists.count) playlists, \(totalTrackCount) total tracks, \(runtimeArtists.count) artists, \(runtimeAlbums.count) albums", category: .library)
@@ -298,7 +299,11 @@ final class LibraryViewModel {
 
     /// Refresh all data and trigger UI update.
     func refresh() async {
-        await load()
+        state = .loading
+        await repository.reloadFromLibrary()
+        await applyRepositorySnapshot()
+        reconcileSelectionAfterLoad()
+        state = .loaded
         refreshTrigger += 1
         Log.debug("Refresh triggered, refreshTrigger=\(refreshTrigger)", category: .library)
     }
@@ -308,6 +313,9 @@ final class LibraryViewModel {
         let uniqueTrackIDs = Array(Set(trackIDs)).sorted { $0.uuidString < $1.uuidString }
         guard !uniqueTrackIDs.isEmpty else { return }
 
+        for trackID in uniqueTrackIDs {
+            trackArtworkRevisions[trackID, default: 0] += 1
+        }
         refreshTrigger += 1
 
         if let currentTrackID = currentTrackIDProvider?(),
@@ -453,8 +461,18 @@ final class LibraryViewModel {
     // MARK: - Track Operations
 
     func deleteTrack(_ track: Track) async {
-        await repository.deleteTrack(track)
-        await refresh()
+        await deleteTracks([track])
+    }
+
+    func deleteTracks(_ tracks: [Track]) async {
+        let uniqueTracks = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) }).values.sorted {
+            $0.id.uuidString < $1.id.uuidString
+        }
+        guard !uniqueTracks.isEmpty else { return }
+
+        cleanupPlaybackAfterDeletingTracks(Set(uniqueTracks.map(\.id)))
+        await repository.deleteTracks(uniqueTracks)
+        await refreshFromRepositorySnapshot()
     }
 
     // MARK: - Artist/Album Entry Lookups
@@ -580,7 +598,7 @@ final class LibraryViewModel {
 
         cleanupPlaybackAfterDeletingTracks(affectedTrackIDs)
         await repository.deleteArtist(entry)
-        await refresh()
+        await refreshFromRepositorySnapshot()
     }
 
     func deleteAlbum(_ entry: AlbumEntry) async {
@@ -596,7 +614,7 @@ final class LibraryViewModel {
 
         cleanupPlaybackAfterDeletingTracks(affectedTrackIDs)
         await repository.deleteAlbum(entry)
-        await refresh()
+        await refreshFromRepositorySnapshot()
     }
 
     func savePlaylistDescription(_ playlist: Playlist, description: String) async {
@@ -762,6 +780,31 @@ final class LibraryViewModel {
         refreshTrigger += 1
     }
 
+    private func applyRepositorySnapshot() async {
+        playlists = await repository.fetchPlaylists()
+        allTracks = await repository.fetchTracks(in: nil)
+        playlistItemAddedAtMap = await repository.fetchPlaylistItemAddedAtMap()
+        totalTrackCount = allTracks.count
+        tracksByID = Dictionary(uniqueKeysWithValues: allTracks.map { ($0.id, $0) })
+        trackArtworkRevisions = Dictionary(
+            uniqueKeysWithValues: allTracks.map { track in
+                (track.id, (trackArtworkRevisions[track.id] ?? -1) + 1)
+            }
+        )
+        runtimeArtists = await repository.fetchArtistSections()
+        runtimeAlbums = await repository.fetchAlbumSections()
+        artistEntries = await repository.fetchArtistEntries()
+        albumEntries = await repository.fetchAlbumEntries()
+    }
+
+    private func refreshFromRepositorySnapshot() async {
+        await applyRepositorySnapshot()
+        reconcileSelectionAfterLoad()
+        state = .loaded
+        refreshTrigger += 1
+        Log.debug("Snapshot refresh triggered, refreshTrigger=\(refreshTrigger)", category: .library)
+    }
+
     private func reconcileSelectionAfterLoad() {
         switch currentSelection {
         case .allSongs:
@@ -788,6 +831,14 @@ final class LibraryViewModel {
     private func cleanupPlaybackAfterDeletingTracks(_ deletedTrackIDs: Set<UUID>) {
         guard !deletedTrackIDs.isEmpty else { return }
         onTracksDeleted?(deletedTrackIDs)
+    }
+
+    func artworkData(for trackID: UUID) -> Data? {
+        tracksByID[trackID]?.artworkData
+    }
+
+    func artworkRevision(for trackID: UUID) -> Int {
+        trackArtworkRevisions[trackID] ?? 0
     }
 
     private var currentSelectionIdentity: String {

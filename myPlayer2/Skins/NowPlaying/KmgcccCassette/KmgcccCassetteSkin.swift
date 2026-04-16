@@ -167,8 +167,8 @@ private final class CassetteThemeAssetCache {
     private var resolvedAspectRatio: CGFloat?
 
     private init() {
-        cache.countLimit = 4
-        cache.totalCostLimit = 32 * 1024 * 1024
+        cache.countLimit = 3
+        cache.totalCostLimit = 24 * 1024 * 1024
     }
 
     func imageSet(colorScheme: ColorScheme, maxPixel: Int) -> CassetteThemeImageSet? {
@@ -310,6 +310,17 @@ private final class CassetteThemeAssetCache {
         }
         let size = image.size
         return max(1, Int(ceil(size.width)) * Int(ceil(size.height)) * 4)
+    }
+}
+
+enum CassetteSkinMemoryCoordinator {
+    static func purgeThemeAssets() {
+        CassetteThemeAssetCache.shared.removeAll()
+    }
+
+    static func purgeTransientCaches() async {
+        purgeThemeAssets()
+        await CassetteArtworkCache.shared.removeAll()
     }
 }
 
@@ -491,6 +502,7 @@ private struct CassetteArtwork: View {
         adjustedVisible = false
 
         processingTask = Task(priority: .utility) {
+            let cacheGeneration = await CassetteArtworkCache.shared.currentGeneration()
             defer {
                 Task { @MainActor in
                     guard self.processingGeneration == generation else { return }
@@ -533,7 +545,11 @@ private struct CassetteArtwork: View {
                     size: NSSize(width: result.image.width, height: result.image.height)
                 )
                 Task {
-                    await CassetteArtworkCache.shared.setImage(image, for: key)
+                    await CassetteArtworkCache.shared.setImage(
+                        image,
+                        for: key,
+                        generation: cacheGeneration
+                    )
                 }
                 self.adjustedArtworkImage = image
                 self.adjustedArtworkKey = key
@@ -613,9 +629,8 @@ private struct CassetteArtwork: View {
         clearAdjustedArtworkState(resetRenderKey: true)
 
         guard purgeCaches else { return }
-        CassetteThemeAssetCache.shared.removeAll()
         Task {
-            await CassetteArtworkCache.shared.removeAll()
+            await CassetteSkinMemoryCoordinator.purgeTransientCaches()
         }
     }
 
@@ -646,6 +661,7 @@ actor CassetteArtworkCache {
     private var keys: [String] = []
     private var costs: [String: Int] = [:]
     private var totalBytes = 0
+    private var generation: UInt64 = 0
     private let maxCount = 48
     private let maxTotalBytes = 24 * 1024 * 1024
 
@@ -653,7 +669,12 @@ actor CassetteArtworkCache {
         storage[key]
     }
 
-    func setImage(_ image: NSImage, for key: String) {
+    func currentGeneration() -> UInt64 {
+        generation
+    }
+
+    func setImage(_ image: NSImage, for key: String, generation: UInt64) {
+        guard generation == self.generation else { return }
         if storage[key] == nil {
             keys.append(key)
         }
@@ -674,6 +695,7 @@ actor CassetteArtworkCache {
     }
 
     func removeAll() {
+        generation &+= 1
         storage.removeAll()
         keys.removeAll()
         costs.removeAll()

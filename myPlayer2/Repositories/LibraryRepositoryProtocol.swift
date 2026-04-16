@@ -52,6 +52,9 @@ protocol LibraryRepositoryProtocol: AnyObject {
     /// Delete a track from the library.
     func deleteTrack(_ track: Track) async
 
+    /// Delete multiple tracks from the library in one batch.
+    func deleteTracks(_ tracks: [Track]) async
+
     /// Persist track sidecar metadata only, preserving existing artwork/lyrics file references.
     func persistTrackMetaOnly(_ track: Track, reason: String) async
 

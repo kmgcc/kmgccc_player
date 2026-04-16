@@ -34,6 +34,11 @@ actor ArtworkAssetStore {
         cache.removeAllObjects()
         fullImageCache.removeAllObjects()
         inProgressKeys.removeAll()
+        for waiters in waitingContinuations.values {
+            for continuation in waiters {
+                continuation.resume(returning: nil)
+            }
+        }
         waitingContinuations.removeAll()
         fullImageInProgressKeys.removeAll()
         fullImageGeneration &+= 1
@@ -55,6 +60,31 @@ actor ArtworkAssetStore {
             }
         }
         fullImageWaitingContinuations.removeAll()
+    }
+
+    func purgeSnapshot(
+        trackID: UUID,
+        artworkChecksum: UInt64,
+        fullImageMaxPixelSize: Int? = nil
+    ) {
+        let baseKey = "\(trackID.uuidString)-\(artworkChecksum)"
+        cache.removeObject(forKey: baseKey as NSString)
+        inProgressKeys.remove(baseKey)
+        if let waiters = waitingContinuations.removeValue(forKey: baseKey) {
+            for continuation in waiters {
+                continuation.resume(returning: nil)
+            }
+        }
+        if let fullImageMaxPixelSize {
+            let hydratedKey = "\(baseKey)|full:\(max(1, fullImageMaxPixelSize))"
+            fullImageCache.removeObject(forKey: hydratedKey as NSString)
+            fullImageInProgressKeys.remove(hydratedKey)
+            if let waiters = fullImageWaitingContinuations.removeValue(forKey: hydratedKey) {
+                for continuation in waiters {
+                    continuation.resume(returning: nil)
+                }
+            }
+        }
     }
     
     nonisolated static func checksum(for data: Data?) -> UInt64 {

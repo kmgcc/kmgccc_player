@@ -2378,13 +2378,16 @@ private final class BKArtBackgroundLayerView: NSView {
 
     private func currentAssetBudget() -> BKThemeAssets.PixelBudget {
         let fullBudget = fullResolutionAssetBudget()
-        let background = backgroundAssetMode == .fullSet
-            ? fullBudget.background
-            : min(fullBudget.background, initialBackgroundBudgetCap)
+        guard backgroundAssetMode != .fullSet else {
+            return fullBudget
+        }
+
+        let background = min(fullBudget.background, initialBackgroundBudgetCap)
+        let shape = min(fullBudget.shape, initialShapeBudgetCap)
         return BKThemeAssets.PixelBudget(
             background: background,
-            shape: fullBudget.shape,
-            mask: fullBudget.mask
+            shape: shape,
+            mask: 0
         )
     }
 
@@ -2392,8 +2395,8 @@ private final class BKArtBackgroundLayerView: NSView {
         let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
         let longestEdge = max(bounds.width, bounds.height)
         let nativePixel = Int(max(1, (longestEdge * scale).rounded()))
-        let backgroundCap = resourceProfile == .cassetteForeground ? 1_024 : 1_536
-        let backgroundFloor = resourceProfile == .cassetteForeground ? 640 : 960
+        let backgroundCap = resourceProfile == .cassetteForeground ? 1_024 : 2_048
+        let backgroundFloor = resourceProfile == .cassetteForeground ? 640 : 1_024
         let shapeCap = resourceProfile == .cassetteForeground ? 320 : 512
         let shapeFloor = resourceProfile == .cassetteForeground ? 192 : 256
         let maskCap = resourceProfile == .cassetteForeground ? 512 : 768
@@ -2506,6 +2509,21 @@ private final class BKArtBackgroundLayerView: NSView {
         loadedMaskFrames.removeAll(keepingCapacity: false)
         loadedBudget = BKThemeAssets.PixelBudget(background: 0, shape: 0, mask: 0)
         backgroundAssetMode = .currentPhaseLowRes
+        backgroundPhase = 0
+        backgroundPhaseFloat = 0
+        maskFrameIndex = 0
+        maskFrameProgress = 0
+        transitionSeedCounter = 0
+        deferredPaletteUpdate = nil
+        paletteSignature = ""
+        lastStyle = nil
+        lastStyleRunCount = 0
+        pendingBoundsRebuild = false
+        isTransitionInFlight = false
+        didPauseBackgroundTimerForTransition = false
+        didPauseDotTimerForTransition = false
+        isPausedFrozen = false
+        lastTickTime = CACurrentMediaTime()
         tintedBackgroundCache.removeAllObjects()
         assets.purgeTransientCaches()
         Self.backgroundRenderContext.clearCaches()
@@ -2624,15 +2642,19 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     private var initialBackgroundBudgetCap: Int {
-        resourceProfile == .cassetteForeground ? 640 : 960
+        resourceProfile == .cassetteForeground ? 640 : 1_280
+    }
+
+    private var initialShapeBudgetCap: Int {
+        resourceProfile == .cassetteForeground ? 192 : 320
     }
 
     private var initialBackgroundUpgradeDelay: UInt64 {
-        resourceProfile == .cassetteForeground ? 900_000_000 : 180_000_000
+        resourceProfile == .cassetteForeground ? 900_000_000 : 90_000_000
     }
 
     private var initialMaskWarmupDelay: UInt64 {
-        resourceProfile == .cassetteForeground ? 700_000_000 : 420_000_000
+        resourceProfile == .cassetteForeground ? 700_000_000 : 320_000_000
     }
 
     private var shouldAutoWarmMasksOnIdle: Bool {
@@ -2720,7 +2742,14 @@ private final class BKArtBackgroundLayerView: NSView {
             solid1.frame = root.bounds
             solid1.path = CGPath(rect: root.bounds, transform: nil)
             solid1.fillColor = NSColor(white: 0.3, alpha: 1.0).cgColor
-            solid1.opacity = 0.90
+            solid1.opacity = 0.72
+            solid1.allowsEdgeAntialiasing = true
+            solid1.shouldRasterize = true
+            solid1.rasterizationScale = NSScreen.main?.backingScaleFactor ?? 2
+            if let blurFilter = CIFilter(name: "CIGaussianBlur") {
+                blurFilter.setValue(24.0, forKey: kCIInputRadiusKey)
+                solid1.filters = [blurFilter]
+            }
             slot.rootLayer.addSublayer(solid1)
             slot.cellBig = solid1
 
@@ -2742,7 +2771,8 @@ private final class BKArtBackgroundLayerView: NSView {
             solid2.frame = root.bounds
             solid2.path = CGPath(rect: root.bounds, transform: nil)
             solid2.fillColor = NSColor(white: 0.3, alpha: 1.0).cgColor
-            solid2.opacity = 0.50
+            solid2.opacity = 0.56
+            solid2.allowsEdgeAntialiasing = true
             slot.rootLayer.addSublayer(solid2)
             slot.cellSmall = solid2
 
@@ -2811,7 +2841,10 @@ private final class BKArtBackgroundLayerView: NSView {
             slot.maskSmall = mask2
         }
 
-        // 4. Add to container. Tint is assigned when this slot enters moving.
+        // Seed the slot color immediately so the first fullscreen frame already reflects the theme.
+        assignRandomColor(to: slot, rng: &rng)
+
+        // 4. Add to container.
         root.addSublayer(slot.rootLayer)
         container.dotSlots.append(slot)
     }
