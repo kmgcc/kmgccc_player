@@ -251,7 +251,7 @@ extension Logger {
 
 // MARK: - Runtime Lyrics Profiling
 
-private struct LyricsRuntimeProfileSession {
+nonisolated private struct LyricsRuntimeProfileSession {
     let id: Int
     let trigger: String
     let selection: String
@@ -268,8 +268,8 @@ private struct LyricsRuntimeProfileSession {
     var jsProfile: [String: Any]?
 }
 
-enum LyricsRuntimeProfile {
-    private nonisolated(unsafe) static let lock = NSLock()
+nonisolated enum LyricsRuntimeProfile {
+    private static let lock = NSLock()
     private nonisolated(unsafe) static var nextSessionID = 0
     private nonisolated(unsafe) static var currentSession: LyricsRuntimeProfileSession?
     private nonisolated(unsafe) static var finalizeWorkItem: DispatchWorkItem?
@@ -513,8 +513,8 @@ enum LyricsRuntimeProfile {
     }
 }
 
-enum TintTimelineProbe {
-    private nonisolated(unsafe) static let lock = NSLock()
+nonisolated enum TintTimelineProbe {
+    private static let lock = NSLock()
     private nonisolated(unsafe) static var sessionID: Int?
     private nonisolated(unsafe) static var rootReceiveIndex = 0
     private nonisolated(unsafe) static var headerPublishIndex = 0

@@ -447,6 +447,7 @@ private final class BKArtBackgroundLayerView: NSView {
 
         var anim: DotAnimState
         var color: CGColor?
+        let colorSeed: UInt64
 
         var baseRadius: CGFloat
         var radiusBig: CGFloat
@@ -454,8 +455,9 @@ private final class BKArtBackgroundLayerView: NSView {
         var maskBaseRadiusBig: CGFloat
         var maskBaseRadiusSmall: CGFloat
 
-        init(anim: DotAnimState, baseRadius: CGFloat) {
+        init(anim: DotAnimState, baseRadius: CGFloat, colorSeed: UInt64) {
             self.anim = anim
+            self.colorSeed = colorSeed == 0 ? 0xA17D_4C59_10F3_778D : colorSeed
             self.baseRadius = baseRadius
             self.radiusBig = 0
             self.radiusSmall = 0
@@ -766,6 +768,8 @@ private final class BKArtBackgroundLayerView: NSView {
 
         applyTone(fromContainer)
         applyTone(toContainer)
+        retintDotSlots(in: fromContainer)
+        retintDotSlots(in: toContainer)
         prewarmTintedBackgroundsIfNeeded()
         applyCurrentBackgroundPhase()
         publishCurrentSurfaceBackgroundColor()
@@ -1683,7 +1687,8 @@ private final class BKArtBackgroundLayerView: NSView {
             || (luma < 0.30 && harmonized.grayScore > 0.70)
     }
 
-    private func assignRandomColor(to slot: DotSlot, rng: inout BKSeededRandom) {
+    private func applyDotColor(to slot: DotSlot, colorSeed: UInt64) {
+        var rng = BKSeededRandom(seed: colorSeed)
         let jitter = dotJitterBudget()
         let hueJitter = CGFloat(rng.next(in: jitter.hue))
         let satJitter = CGFloat(rng.next(in: jitter.saturation))
@@ -1704,6 +1709,13 @@ private final class BKArtBackgroundLayerView: NSView {
         slot.cellBig?.fillColor = slot.color
         slot.cellSmall?.fillColor = slot.color
         CATransaction.commit()
+    }
+
+    private func retintDotSlots(in container: Container?) {
+        guard let container, container.style == .dot else { return }
+        for slot in container.dotSlots {
+            applyDotColor(to: slot, colorSeed: slot.colorSeed)
+        }
     }
 
     private func scheduleNextAutoTransition() {
@@ -2791,7 +2803,7 @@ private final class BKArtBackgroundLayerView: NSView {
         let dotBaseRadius = baseSize * CGFloat(
             rng.next(in: dotBaseRadiusRange())
         )
-        let slot = DotSlot(anim: anim, baseRadius: dotBaseRadius)
+        let slot = DotSlot(anim: anim, baseRadius: dotBaseRadius, colorSeed: rng.nextUInt64())
         slot.radiusBig = CGFloat(rng.next(in: 5.0...6.2))
         slot.radiusSmall = CGFloat(rng.next(in: 3.0...4.0))
         slot.maskBaseRadiusBig = max(1, dotBaseRadius * 0.75)
@@ -2806,26 +2818,19 @@ private final class BKArtBackgroundLayerView: NSView {
             solid1.path = CGPath(rect: root.bounds, transform: nil)
             solid1.fillColor = NSColor(white: 0.3, alpha: 1.0).cgColor
             solid1.opacity = 0.88
+            solid1.zPosition = 1
             slot.rootLayer.addSublayer(solid1)
             slot.cellBig = solid1
 
-            let mask1 = CAGradientLayer()
-            mask1.type = .radial
-            mask1.colors = [
-                NSColor.black.withAlphaComponent(1.0).cgColor,
-                NSColor.black.withAlphaComponent(0.92).cgColor,
-                NSColor.black.withAlphaComponent(0.34).cgColor,
-                NSColor.clear.cgColor,
-            ]
-            mask1.locations = [0.0, 0.68, 0.88, 1.0]
-            mask1.startPoint = CGPoint(x: 0.5, y: 0.5)
-            mask1.endPoint = CGPoint(x: 1.0, y: 1.0)
+            let mask1 = CAShapeLayer()
+            mask1.fillColor = NSColor.black.cgColor
             mask1.bounds = CGRect(
                 x: 0,
                 y: 0,
                 width: slot.maskBaseRadiusBig * 2,
                 height: slot.maskBaseRadiusBig * 2
             )
+            mask1.path = CGPath(ellipseIn: mask1.bounds, transform: nil)
             mask1.position = anim.start
             mask1.anchorPoint = CGPoint(x: 0.5, y: 0.5)
             solid1.mask = mask1
@@ -2835,19 +2840,28 @@ private final class BKArtBackgroundLayerView: NSView {
             solid2.frame = root.bounds
             solid2.path = CGPath(rect: root.bounds, transform: nil)
             solid2.fillColor = NSColor(white: 0.3, alpha: 1.0).cgColor
-            solid2.opacity = 0.50
+            solid2.opacity = 0.58
+            solid2.zPosition = 0
             slot.rootLayer.addSublayer(solid2)
             slot.cellSmall = solid2
 
-            let mask2 = CAShapeLayer()
-            mask2.fillColor = NSColor.black.cgColor
+            let mask2 = CAGradientLayer()
+            mask2.type = .radial
+            mask2.colors = [
+                NSColor.black.withAlphaComponent(1.0).cgColor,
+                NSColor.black.withAlphaComponent(0.92).cgColor,
+                NSColor.black.withAlphaComponent(0.34).cgColor,
+                NSColor.clear.cgColor,
+            ]
+            mask2.locations = [0.0, 0.68, 0.88, 1.0]
+            mask2.startPoint = CGPoint(x: 0.5, y: 0.5)
+            mask2.endPoint = CGPoint(x: 1.0, y: 1.0)
             mask2.bounds = CGRect(
                 x: 0,
                 y: 0,
                 width: slot.maskBaseRadiusSmall * 2,
                 height: slot.maskBaseRadiusSmall * 2
             )
-            mask2.path = CGPath(ellipseIn: mask2.bounds, transform: nil)
             mask2.position = anim.start
             mask2.anchorPoint = CGPoint(x: 0.5, y: 0.5)
             solid2.mask = mask2
@@ -3070,18 +3084,6 @@ private final class BKArtBackgroundLayerView: NSView {
         }
     }
 
-    private func dotColorSeed(for slot: DotSlot) -> UInt64 {
-        let sx = UInt64(bitPattern: Int64((Double(slot.anim.start.x) * 1000).rounded()))
-        let sy = UInt64(bitPattern: Int64((Double(slot.anim.start.y) * 1000).rounded()))
-        let ex = UInt64(bitPattern: Int64((Double(slot.anim.end.x) * 1000).rounded()))
-        let ey = UInt64(bitPattern: Int64((Double(slot.anim.end.y) * 1000).rounded()))
-        return
-            sx
-            ^ (sy &* 0x9E37_79B9_7F4A_7C15)
-            ^ (ex &* 0xBF58_476D_1CE4_E5B9)
-            ^ (ey &* 0x94D0_49BB_1331_11EB)
-    }
-
     @discardableResult
     private func addDotGrid(
         to parent: CALayer, cols: Int, rows: Int, spacing: CGFloat, radius: CGFloat, opacity: Float,
@@ -3122,12 +3124,7 @@ private final class BKArtBackgroundLayerView: NSView {
             case .idle(let remaining):
                 let next = remaining - dt
                 if next <= 0 {
-                    var recolorRng = BKSeededRandom(
-                        seed: rebuildSeed
-                            ^ dotColorSeed(for: slot)
-                            ^ UInt64(bitPattern: Int64(Double(backgroundPhase) * 131.0))
-                    )
-                    assignRandomColor(to: slot, rng: &recolorRng)
+                    applyDotColor(to: slot, colorSeed: slot.colorSeed)
                     slot.anim.motion = .moving(0)
                 } else {
                     slot.anim.motion = .idle(next)

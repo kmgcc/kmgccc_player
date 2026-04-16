@@ -533,7 +533,6 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         let newTime = Double(currentFrame) / sampleRate
 
         let audibleTime = newTime - lookaheadSeconds
-        let previousTime = currentTime
         currentTime = max(0, min(audibleTime, duration))
 
         // Update smart controller with progress
@@ -591,8 +590,11 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             return
         }
 
-        // Auto-advance via smart controller
-        smartController.autoAdvance()
+        // Auto-advance via smart controller, or stop at queue end.
+        if smartController.autoAdvance() == nil {
+            isPlaying = false
+            currentTime = duration
+        }
     }
 
     // MARK: - File Access

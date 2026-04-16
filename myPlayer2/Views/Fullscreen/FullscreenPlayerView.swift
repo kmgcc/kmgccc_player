@@ -1123,38 +1123,53 @@ struct FullscreenPlayerView: View {
     @ViewBuilder
     private func artworkAndControlsArea(selectedSkin: any NowPlayingSkin, scale: CGFloat, screenWidth: CGFloat) -> some View {
         let metrics = layoutMetrics
-        if isShowingRightPanel {
-            let contentOffsetX: CGFloat = -topContentLeftShift
+        let artworkOffsetX = artworkColumnOffsetX(
+            artworkWidth: metrics.artworkWidth,
+            scale: scale,
+            screenWidth: screenWidth
+        )
 
-            // Shift the artwork column left to compensate for the canvas horizontal centering
-            // margin on screens wider than the 1470:923 aspect ratio (e.g. 16:9 at 1080p).
-            // Without this, the canvas margin shifts the cover right relative to the baseline
-            // composition. On baseline displays (canvas ≈ fills width) the correction is ~0.
-            let scaleX = screenWidth / Self.baseCanvasWidth
-            let artworkColumnCenterX = contentOffsetX + metrics.artworkWidth / 2
-            let artworkHorizCorrection =
-                (artworkColumnCenterX - Self.baseCanvasWidth / 2) * (scaleX - scale) / scale
-            let adjustedContentOffsetX = contentOffsetX + artworkHorizCorrection
+        skinArtworkArea(
+            selectedSkin: selectedSkin,
+            artworkColumnWidth: metrics.artworkWidth,
+            scale: scale
+        )
+        .frame(width: metrics.artworkWidth)
+        .frame(maxHeight: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        .offset(x: artworkOffsetX)
+    }
 
-            skinArtworkArea(
-                selectedSkin: selectedSkin,
-                artworkColumnWidth: metrics.artworkWidth,
-                scale: scale
-            )
-            .frame(width: metrics.artworkWidth)
-            .frame(maxHeight: .infinity)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-            .offset(x: adjustedContentOffsetX)
-        } else {
-            skinArtworkArea(
-                selectedSkin: selectedSkin,
-                artworkColumnWidth: metrics.artworkWidth,
-                scale: scale
-            )
-            .frame(width: metrics.artworkWidth)
-            .frame(maxHeight: .infinity)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-        }
+    private func artworkColumnOffsetX(
+        artworkWidth: CGFloat,
+        scale: CGFloat,
+        screenWidth: CGFloat
+    ) -> CGFloat {
+        guard isShowingRightPanel else { return 0 }
+        let visibleCenterX = visibleArtworkColumnCenterX(
+            artworkWidth: artworkWidth,
+            scale: scale,
+            screenWidth: screenWidth
+        )
+        return visibleCenterX - Self.baseCanvasWidth * 0.5
+    }
+
+    private func visibleArtworkColumnCenterX(
+        artworkWidth: CGFloat,
+        scale: CGFloat,
+        screenWidth: CGFloat
+    ) -> CGFloat {
+        let contentOffsetX: CGFloat = -topContentLeftShift
+
+        // Shift the artwork column left to compensate for the canvas horizontal centering
+        // margin on screens wider than the 1470:923 aspect ratio (e.g. 16:9 at 1080p).
+        // Without this, the canvas margin shifts the cover right relative to the baseline
+        // composition. On baseline displays (canvas ≈ fills width) the correction is ~0.
+        let scaleX = screenWidth / Self.baseCanvasWidth
+        let artworkColumnCenterX = contentOffsetX + artworkWidth / 2
+        let artworkHorizCorrection =
+            (artworkColumnCenterX - Self.baseCanvasWidth / 2) * (scaleX - scale) / scale
+        return artworkColumnCenterX + artworkHorizCorrection
     }
 
     @ViewBuilder

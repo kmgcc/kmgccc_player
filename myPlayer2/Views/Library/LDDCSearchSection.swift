@@ -7,6 +7,7 @@
 //
 
 import SwiftUI
+import SwiftData
 import os.log
 
 /// LDDC lyrics search section with Liquid Glass styling.

@@ -450,13 +450,8 @@ private final class PillSpectrumHostView: NSView {
             layer.cornerRadius = cornerRadius
 
             let strokeLayer = strokeLayers[index]
-            strokeLayer.frame = frame
-            strokeLayer.path = CGPath(
-                roundedRect: frame.insetBy(dx: 0.25, dy: 0.25),
-                cornerWidth: max(0, cornerRadius - 0.25),
-                cornerHeight: max(0, cornerRadius - 0.25),
-                transform: nil
-            )
+            let path = NSBezierPath(roundedRect: frame, xRadius: cornerRadius, yRadius: cornerRadius)
+            strokeLayer.path = path.cgPath
         }
         CATransaction.commit()
     }

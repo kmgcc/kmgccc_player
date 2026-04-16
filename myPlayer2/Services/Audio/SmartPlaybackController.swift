@@ -185,14 +185,14 @@ final class SmartPlaybackController {
     }
 
     /// Go to next track (user-initiated).
-    func nextTrack() -> Track? {
+    func nextTrack() {
         lastChangeWasUserAction = true
         finalizeCurrentSession(userInitiated: true)
 
         let nextTrack: Track?
 
         if isShuffleEnabled, let session = shuffleSession {
-            guard let nextID = session.next() else { return nil }
+            guard let nextID = session.next() else { return }
             nextTrack = sourceTracks.first { $0.id == nextID }
         } else {
             let nextIndex = currentSourceIndex + 1
@@ -202,7 +202,7 @@ final class SmartPlaybackController {
             } else {
                 // End of queue - wrap if repeat all.
                 if sourceTracks.isEmpty {
-                    return nil
+                    return
                 }
                 currentSourceIndex = 0
                 nextTrack = sourceTracks[0]
@@ -213,19 +213,17 @@ final class SmartPlaybackController {
             startTrackSession(track: track)
             onPlayTrack?(track)
         }
-
-        return nextTrack
     }
 
     /// Go to previous track (user-initiated).
-    func previousTrack() -> Track? {
+    func previousTrack() {
         lastChangeWasUserAction = true
         finalizeCurrentSession(userInitiated: true)
 
         let prevTrack: Track?
 
         if isShuffleEnabled, let session = shuffleSession {
-            guard let prevID = session.previous() else { return nil }
+            guard let prevID = session.previous() else { return }
             prevTrack = sourceTracks.first { $0.id == prevID }
         } else {
             let prevIndex = currentSourceIndex - 1
@@ -235,7 +233,7 @@ final class SmartPlaybackController {
             } else {
                 // Start of queue - wrap to end.
                 if sourceTracks.isEmpty {
-                    return nil
+                    return
                 }
                 currentSourceIndex = sourceTracks.count - 1
                 prevTrack = sourceTracks[currentSourceIndex]
@@ -246,8 +244,6 @@ final class SmartPlaybackController {
             startTrackSession(track: track)
             onPlayTrack?(track)
         }
-
-        return prevTrack
     }
 
     /// Auto-advance to next track (playback completed naturally).
@@ -457,7 +453,7 @@ final class SmartPlaybackController {
                 print("      ⚡ QUICK SKIP detected!")
                 print("      quickSkipCount: \(updatedStats.quickSkipCount)")
             }
-        case .interrupted(let progress, let playedSeconds):
+        case .interrupted(let progress, _):
             print("   ⏸️ Outcome: INTERRUPTED")
             print("      Progress: \(String(format: "%.1f", progress * 100))%")
             print("      playCount: \(updatedStats.playCount)")
@@ -563,7 +559,7 @@ final class SmartPlaybackController {
     
     /// Get the current track's index in the queue display order.
     func getCurrentQueueIndex() -> Int? {
-        guard let track = currentTrack else { return nil }
+        guard currentTrack != nil else { return nil }
         
         if isShuffleEnabled, let session = shuffleSession {
             return session.getCurrentIndexInSequence()

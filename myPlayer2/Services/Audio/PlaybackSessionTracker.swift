@@ -211,7 +211,7 @@ final class PlaybackSessionTracker {
             stats.lastPlayedAt = startTime
             stats.lastCompletedAt = Date()
 
-        case .skipped(let progress, _):
+        case .skipped(_, _):
             stats.playCount += 1
             stats.skipCount += 1
             stats.totalPlayedSeconds += totalPlayedSeconds

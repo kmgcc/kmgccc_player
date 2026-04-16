@@ -19,13 +19,11 @@ final class PreferenceStatsService {
     // MARK: - Cache
 
     /// In-memory cache of track stats (trackID -> stats).
+    /// Access is serialized by this service's @MainActor isolation.
     private var statsCache: [UUID: TrackPreferenceStats] = [:]
 
     /// Set of track IDs with unsaved changes.
     private var dirtyTrackIDs: Set<UUID> = []
-
-    /// Lock for thread-safe cache access.
-    private let cacheLock = NSLock()
 
     // MARK: - Initialization
 
@@ -35,9 +33,6 @@ final class PreferenceStatsService {
 
     /// Get stats for a track (from cache or creates default).
     func getStats(for trackID: UUID) -> TrackPreferenceStats {
-        cacheLock.lock()
-        defer { cacheLock.unlock() }
-
         if let cached = statsCache[trackID] {
             return cached
         }
@@ -48,9 +43,6 @@ final class PreferenceStatsService {
 
     /// Get stats for multiple tracks.
     func getStats(for trackIDs: [UUID]) -> [UUID: TrackPreferenceStats] {
-        cacheLock.lock()
-        defer { cacheLock.unlock() }
-
         var result: [UUID: TrackPreferenceStats] = [:]
         for trackID in trackIDs {
             result[trackID] = statsCache[trackID] ?? TrackPreferenceStats()
@@ -76,9 +68,6 @@ final class PreferenceStatsService {
     /// 使用 V2 评分器计算基础权重。
     @discardableResult
     func updateStats(for trackID: UUID, duration: Double, update: (inout TrackPreferenceStats) -> Void) -> Bool {
-        cacheLock.lock()
-        defer { cacheLock.unlock() }
-
         let originalStats = statsCache[trackID] ?? TrackPreferenceStats()
         var stats = originalStats
         update(&stats)
@@ -180,35 +169,29 @@ final class PreferenceStatsService {
 
     /// Load stats from a track sidecar.
     func loadStats(from sidecar: TrackSidecar) {
-        cacheLock.lock()
         if let stats = sidecar.preferenceStats {
             statsCache[sidecar.id] = stats
         } else if let legacyPlayCount = sidecar.playCount, legacyPlayCount > 0 {
             // Migrate from legacy playCount.
             statsCache[sidecar.id] = TrackPreferenceStats.fromLegacy(playCount: legacyPlayCount)
         }
-        cacheLock.unlock()
     }
 
     /// Replace stats with an exact value loaded from disk or bulk maintenance logic.
     func replaceStats(for trackID: UUID, with stats: TrackPreferenceStats, markDirty: Bool = false) {
-        cacheLock.lock()
         statsCache[trackID] = stats
         if markDirty {
             dirtyTrackIDs.insert(trackID)
         } else {
             dirtyTrackIDs.remove(trackID)
         }
-        cacheLock.unlock()
     }
 
     /// Save all dirty stats to their respective sidecars.
     /// - Parameter trackProvider: Optional closure to get Track objects for writing sidecars.
     func saveAllPending(trackProvider: ((UUID) -> Track?)? = nil) async {
-        cacheLock.lock()
         let tracksToSave = Array(dirtyTrackIDs)
         dirtyTrackIDs.removeAll()
-        cacheLock.unlock()
 
         guard !tracksToSave.isEmpty else { return }
 
@@ -236,16 +219,12 @@ final class PreferenceStatsService {
     func saveStats(for track: Track) {
         LocalLibraryService.shared.writeMetaOnly(for: track, reason: "playbackStats")
 
-        cacheLock.lock()
         dirtyTrackIDs.remove(track.id)
-        cacheLock.unlock()
     }
 
     /// Mark a track as needing save (called when session ends).
     func markDirty(_ trackID: UUID) {
-        cacheLock.lock()
         dirtyTrackIDs.insert(trackID)
-        cacheLock.unlock()
     }
 
     // MARK: - Bulk Operations
@@ -254,7 +233,6 @@ final class PreferenceStatsService {
     func preloadStats(repository: LibraryRepositoryProtocol) async {
         let tracks = await repository.fetchTracks(in: nil)
 
-        cacheLock.lock()
         for track in tracks {
             // Stats will be loaded when sidecar is read.
             // For now, just ensure cache entry exists.
@@ -262,25 +240,20 @@ final class PreferenceStatsService {
                 statsCache[track.id] = TrackPreferenceStats()
             }
         }
-        cacheLock.unlock()
 
         print("📊 Preloaded stats for \(tracks.count) tracks")
     }
 
     /// Clear all cached stats (e.g., on logout or reset).
     func clearCache() {
-        cacheLock.lock()
         statsCache.removeAll()
         dirtyTrackIDs.removeAll()
-        cacheLock.unlock()
     }
 
     /// Get statistics summary for debugging.
     var cacheStatistics: (cached: Int, dirty: Int) {
-        cacheLock.lock()
         let cached = statsCache.count
         let dirty = dirtyTrackIDs.count
-        cacheLock.unlock()
         return (cached, dirty)
     }
 }
