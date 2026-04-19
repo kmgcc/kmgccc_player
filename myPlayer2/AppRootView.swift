@@ -7,97 +7,14 @@
 //
 
 import AppKit
-import AVFoundation
-import Combine
 import SwiftData
 import SwiftUI
-
-private struct DebugLaunchScenario {
-    enum LibrarySelectionMode: String {
-        case allSongs
-        case firstPlaylist
-        case largestPlaylist
-        case smallestPlaylist
-    }
-
-    let trackID: UUID?
-    let fullscreenSkinID: String?
-    let showFullscreen: Bool
-    let quitAfterSeconds: TimeInterval?
-    let autoNextInterval: TimeInterval?
-    let autoNextCount: Int?
-    let librarySelectionMode: LibrarySelectionMode?
-    let forceLyricsVisible: Bool
-    let resizePulseCount: Int?
-    let resizePulseInterval: TimeInterval?
-
-    var isEnabled: Bool {
-        trackID != nil
-            || fullscreenSkinID != nil
-            || showFullscreen
-            || quitAfterSeconds != nil
-            || autoNextInterval != nil
-            || autoNextCount != nil
-            || librarySelectionMode != nil
-            || forceLyricsVisible
-            || resizePulseCount != nil
-    }
-
-    static var current: DebugLaunchScenario? {
-        let environment = ProcessInfo.processInfo.environment
-        let trackID = environment["KMGCCC_DEBUG_PROOF_TRACK_ID"].flatMap(UUID.init(uuidString:))
-        let fullscreenSkinID = environment["KMGCCC_DEBUG_PROOF_FULLSCREEN_SKIN"]?
-            .trimmingCharacters(in: .whitespaces)
-            .nilIfEmpty
-        let showFullscreen = environment["KMGCCC_DEBUG_PROOF_SHOW_FULLSCREEN"].map {
-            ["1", "true", "yes", "on"].contains($0.lowercased())
-        } ?? false
-        let quitAfterSeconds = environment["KMGCCC_DEBUG_PROOF_QUIT_AFTER_SECONDS"].flatMap {
-            Double($0)
-        }
-        let autoNextInterval = environment["KMGCCC_DEBUG_PROOF_AUTO_NEXT_INTERVAL"].flatMap {
-            Double($0)
-        }
-        let autoNextCount = environment["KMGCCC_DEBUG_PROOF_AUTO_NEXT_COUNT"].flatMap {
-            Int($0)
-        }
-        let librarySelectionMode = environment["KMGCCC_DEBUG_PROOF_LIBRARY_SELECTION"]
-            .flatMap { LibrarySelectionMode(rawValue: $0.trimmingCharacters(in: .whitespacesAndNewlines)) }
-        let forceLyricsVisible = environment["KMGCCC_DEBUG_PROOF_SHOW_LYRICS"].map {
-            ["1", "true", "yes", "on"].contains($0.lowercased())
-        } ?? (librarySelectionMode != nil)
-        let resizePulseCount = environment["KMGCCC_DEBUG_PROOF_RESIZE_PULSES"].flatMap(Int.init)
-        let resizePulseInterval = environment["KMGCCC_DEBUG_PROOF_RESIZE_INTERVAL"].flatMap(Double.init)
-
-        let scenario = DebugLaunchScenario(
-            trackID: trackID,
-            fullscreenSkinID: fullscreenSkinID,
-            showFullscreen: showFullscreen,
-            quitAfterSeconds: quitAfterSeconds,
-            autoNextInterval: autoNextInterval,
-            autoNextCount: autoNextCount,
-            librarySelectionMode: librarySelectionMode,
-            forceLyricsVisible: forceLyricsVisible,
-            resizePulseCount: resizePulseCount,
-            resizePulseInterval: resizePulseInterval
-        )
-        return scenario.isEnabled ? scenario : nil
-    }
-}
-
-private extension String {
-    var nilIfEmpty: String? {
-        isEmpty ? nil : self
-    }
-}
 
 /// Root view that sets up dependency injection.
 /// Creates real services for production, stubs for previews.
 @MainActor
 struct AppRootView: View {
-    @ObservedObject var settingsSceneDependencies: SettingsSceneDependencies
-
-    @Environment(\.modelContext) private var modelContext
+    @ObservedObject var appSession: AppSessionHost
 
     // MARK: - App Globals (live updates via AppSettings)
     @State private var settings = AppSettings.shared
@@ -108,14 +25,6 @@ struct AppRootView: View {
 
     // MARK: - State Objects
 
-    @State private var uiState = UIStateViewModel()
-    @State private var libraryVM: LibraryViewModel?
-    @State private var playerVM: PlayerViewModel?
-    @State private var lyricsVM: LyricsViewModel?
-    @State private var ledMeterProvider: LEDMeterServiceProvider?
-    @State private var importEnrichmentService: ImportEnrichmentService?
-    @State private var skinManager: SkinManager?
-    @State private var easterEggSFX: EasterEggSFXService?
     @StateObject private var artBackgroundController = BKArtBackgroundController()
     @StateObject private var fullscreenWindowManager = FullscreenWindowManager.shared
 
@@ -123,16 +32,15 @@ struct AppRootView: View {
     @State private var coverDownloadService = CoverDownloadService()
     @State private var netEaseCoverService = NetEaseCoverService()
 
-    @State private var hasSetupDependencies = false
-
     var body: some View {
+        let uiState = appSession.uiState
         let rootContent = AppRootContentView(
-            libraryVM: libraryVM,
-            playerVM: playerVM,
-            lyricsVM: lyricsVM,
-            ledMeterProvider: ledMeterProvider,
-            importEnrichmentService: importEnrichmentService,
-            skinManager: skinManager,
+            libraryVM: appSession.libraryVM,
+            playerVM: appSession.playerVM,
+            lyricsVM: appSession.lyricsVM,
+            ledMeterProvider: appSession.ledMeterProvider,
+            importEnrichmentService: appSession.importEnrichmentService,
+            skinManager: appSession.skinManager,
             settings: settings,
             uiState: uiState,
             artBackgroundController: artBackgroundController,
@@ -143,7 +51,7 @@ struct AppRootView: View {
         )
             .environment(\.locale, Locale(identifier: "zh-Hans"))
             .task {
-                await setupAppOnLaunch()
+                await appSession.setupIfNeeded()
             }
             .preferredColorScheme(currentColorScheme)
             .tint(presentedAccentColor)
@@ -178,19 +86,19 @@ struct AppRootView: View {
 
         let commandHandlersView = appearanceSyncView
             .onReceive(NotificationCenter.default.publisher(for: .togglePlayPause)) { _ in
-                playerVM?.togglePlayPause()
+                appSession.playerVM?.togglePlayPause()
             }
             .onReceive(NotificationCenter.default.publisher(for: .nextTrack)) { _ in
-                playerVM?.next()
+                appSession.playerVM?.next()
             }
             .onReceive(NotificationCenter.default.publisher(for: .previousTrack)) { _ in
-                playerVM?.previous()
+                appSession.playerVM?.previous()
             }
             .onReceive(NotificationCenter.default.publisher(for: .toggleLyrics)) { _ in
                 uiState.toggleLyrics()
             }
             .onReceive(NotificationCenter.default.publisher(for: .aboutEasterEggTriggered)) { _ in
-                easterEggSFX?.playRandomIfAllowed()
+                appSession.easterEggSFX?.playRandomIfAllowed()
             }
             .onReceive(NotificationCenter.default.publisher(for: .enterFullscreen)) { _ in
                 Log.debug("F-Key: Notification received", category: .fullscreen)
@@ -215,24 +123,25 @@ struct AppRootView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: .importMusic)) { _ in
                 Task {
-                    await libraryVM?.importToCurrentPlaylist()
+                    await appSession.libraryVM?.importToCurrentPlaylist()
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .newPlaylist)) { _ in
                 Task {
-                    _ = await libraryVM?.createNewPlaylist()
+                    _ = await appSession.libraryVM?.createNewPlaylist()
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .playbackModeChanged)) { _ in
-                playerVM?.syncPlaybackOrderModeFromSettings()
+                appSession.playerVM?.syncPlaybackOrderModeFromSettings()
             }
 
         return commandHandlersView
     }
 
-    // MARK: - Setup
+    // MARK: - Layout
 
     private var mainWindowMinimumWidth: CGFloat {
+        let uiState = appSession.uiState
         let baseWindowMinimumWidth: CGFloat = 1100
         let sidebarWidth =
             uiState.sidebarVisible
@@ -256,127 +165,6 @@ struct AppRootView: View {
         }
         if window.minSize != minSize {
             window.minSize = minSize
-        }
-    }
-
-    @MainActor
-    private func setupAppOnLaunch() async {
-        guard !hasSetupDependencies else { return }
-        hasSetupDependencies = true
-        print("[Lifecycle] AppRootView initial setup")
-        setupDependencies()
-
-        WhatsNewWindowManager.shared.showIfNeeded()
-        print("[Lifecycle] WhatsNew window check completed")
-
-        Task {
-            await UpdateWindowManager.shared.checkAndShowIfNeeded()
-        }
-    }
-
-    @MainActor
-    private func setupDependencies() {
-        let libraryService = LocalLibraryService.shared
-        libraryService.ensureLibraryFolders()
-
-        // Create repository with SwiftData
-        let repository = SwiftDataLibraryRepository(
-            modelContext: modelContext,
-            libraryService: libraryService
-        )
-
-        // Create real playback service (AVAudioEngine)
-        let playbackService = AVAudioPlaybackService()
-
-        // Create LED meter provider (lazy initialization)
-        let ledMeterProvider = LEDMeterServiceProvider(
-            config: LEDMeterConfig(
-                ledCount: AppSettings.shared.ledCount,
-                levels: AppSettings.shared.ledBrightnessLevels,
-                cutoffHz: Float(AppSettings.shared.ledCutoffHz),
-                preGain: Float(AppSettings.shared.ledPreGain),
-                sensitivity: AppSettings.shared.ledSensitivity,
-                speed: Float(AppSettings.shared.ledSpeed),
-                targetHz: AppSettings.shared.ledTargetHz,
-                transientThreshold: Float(AppSettings.shared.ledTransientThreshold)
-            ),
-            mixerProvider: { [weak playbackService] in
-                playbackService?.mainMixerNode ?? AVAudioEngine().mainMixerNode
-            }
-        )
-
-        let importEnrichmentService = ImportEnrichmentService(repository: repository)
-
-        // Create file import service
-        let fileImportService = FileImportService(
-            repository: repository,
-            libraryService: libraryService,
-            importEnrichmentService: importEnrichmentService
-        )
-
-        // Create ViewModels
-        let playerVM = PlayerViewModel(playbackService: playbackService, levelMeter: ledMeterProvider)
-        let libVM = LibraryViewModel(
-            repository: repository,
-            libraryService: libraryService
-        )
-        libVM.setImportService(fileImportService)
-        libVM.currentTrackIDProvider = { [weak playerVM] in
-            playerVM?.currentTrack?.id
-        }
-        libVM.onTracksDeleted = { [weak playerVM] deletedTrackIDs in
-            guard let playerVM, !deletedTrackIDs.isEmpty else { return }
-
-            if let currentTrackID = playerVM.currentTrack?.id, deletedTrackIDs.contains(currentTrackID) {
-                playerVM.stop()
-                return
-            }
-
-            let remainingQueue = playerVM.currentQueueTracks.filter { !deletedTrackIDs.contains($0.id) }
-            guard remainingQueue.count != playerVM.currentQueueTracks.count else { return }
-
-            if remainingQueue.isEmpty {
-                playerVM.stop()
-            } else {
-                playerVM.updateQueueTracks(remainingQueue)
-            }
-        }
-
-        libraryVM = libVM
-        self.playerVM = playerVM
-        lyricsVM = LyricsViewModel(settings: AppSettings.shared)
-        self.ledMeterProvider = ledMeterProvider
-        self.importEnrichmentService = importEnrichmentService
-        skinManager = SkinManager()
-        easterEggSFX = EasterEggSFXService()
-
-        // Configure fullscreen window manager with dependencies
-        FullscreenWindowManager.shared.configure(
-            playerVM: playerVM,
-            lyricsVM: lyricsVM!,
-            ledMeterProvider: ledMeterProvider,
-            skinManager: skinManager!,
-            uiState: uiState
-        )
-
-        settingsSceneDependencies.configure(
-            libraryVM: libVM,
-            playerVM: playerVM,
-            lyricsVM: lyricsVM!,
-            ledMeterProvider: ledMeterProvider
-        )
-
-        libraryService.startMonitoring(repository: repository)
-
-        if let scenario = DebugLaunchScenario.current {
-            Task { @MainActor in
-                await runDebugLaunchScenarioIfNeeded(
-                    scenario,
-                    repository: repository,
-                    libraryVM: libVM,
-                    playerVM: playerVM
-                )
-            }
         }
     }
 
@@ -433,11 +221,12 @@ struct AppRootView: View {
     }
 
     private var shouldDeferAccentPresentation: Bool {
+        let uiState = appSession.uiState
         guard uiState.contentMode == .library else { return false }
         guard uiState.lyricsVisible, !uiState.lyricsPanelSuppressedByModal else { return false }
         guard !fullscreenWindowManager.isFullscreenActive else { return false }
 
-        switch libraryVM?.currentSelection {
+        switch appSession.libraryVM?.currentSelection {
         case .playlist, .artist, .album:
             return true
         default:
@@ -445,226 +234,6 @@ struct AppRootView: View {
         }
     }
 
-    @MainActor
-    private func runDebugLaunchScenarioIfNeeded(
-        _ scenario: DebugLaunchScenario,
-        repository: LibraryRepositoryProtocol,
-        libraryVM: LibraryViewModel,
-        playerVM: PlayerViewModel
-    ) async {
-        Log.debug(
-            "DebugLaunch scenario: trackID=\(scenario.trackID?.uuidString ?? "nil"), fullscreenSkin=\(scenario.fullscreenSkinID ?? "nil"), showFullscreen=\(scenario.showFullscreen), quitAfter=\(scenario.quitAfterSeconds ?? -1), autoNextInterval=\(scenario.autoNextInterval ?? -1), autoNextCount=\(scenario.autoNextCount ?? -1), librarySelection=\(scenario.librarySelectionMode?.rawValue ?? "nil"), forceLyricsVisible=\(scenario.forceLyricsVisible), resizePulses=\(scenario.resizePulseCount ?? -1), resizeInterval=\(scenario.resizePulseInterval ?? -1)",
-            category: .ui
-        )
-
-        if let fullscreenSkinID = scenario.fullscreenSkinID {
-            AppSettings.shared.selectedFullscreenSkinID = fullscreenSkinID
-        }
-
-        if scenario.forceLyricsVisible {
-            uiState.lyricsVisible = true
-        }
-
-        if let librarySelectionMode = scenario.librarySelectionMode {
-            await libraryVM.load()
-            uiState.showLibrary()
-            AppSettings.shared.shuffleEnabled = false
-
-            let playlists = await repository.fetchPlaylists()
-            let nonEmptyQueues = await nonEmptyPlaylistQueues(
-                from: playlists,
-                repository: repository
-            )
-
-            guard let queueSeed = debugQueueSeed(
-                for: librarySelectionMode,
-                from: nonEmptyQueues
-            ) else {
-                Log.warning("DebugLaunch: no non-empty playlist available for queue seed", category: .ui)
-                scheduleDebugTerminationIfNeeded(after: scenario.quitAfterSeconds)
-                return
-            }
-
-            switch librarySelectionMode {
-            case .allSongs:
-                libraryVM.currentSelection = .allSongs
-            case .firstPlaylist, .largestPlaylist, .smallestPlaylist:
-                libraryVM.currentSelection = .playlist(queueSeed.playlist.id)
-            }
-
-            let startIndex: Int
-            if let trackID = scenario.trackID,
-                let matchedIndex = queueSeed.tracks.firstIndex(where: { $0.id == trackID })
-            {
-                startIndex = matchedIndex
-            } else {
-                startIndex = 0
-            }
-
-            try? await Task.sleep(nanoseconds: 350_000_000)
-            playerVM.playTracks(queueSeed.tracks, startingAt: startIndex)
-            Log.info(
-                "DebugLaunch: library page=\(librarySelectionMode.rawValue), queueSeedPlaylist=\(queueSeed.playlist.name), queueCount=\(queueSeed.tracks.count), startIndex=\(startIndex)",
-                category: .ui
-            )
-        } else if let trackID = scenario.trackID {
-            await repository.reloadFromLibrary()
-            let tracks = await repository.fetchTracks(in: nil)
-            guard let track = tracks.first(where: { $0.id == trackID }) else {
-                Log.warning("DebugLaunch: track not found: \(trackID.uuidString)", category: .ui)
-                scheduleDebugTerminationIfNeeded(after: scenario.quitAfterSeconds)
-                return
-            }
-
-            uiState.showNowPlaying()
-            playerVM.play(track: track)
-            await themeStore.updateTheme(for: track)
-            Log.debug("DebugLaunch: playing track \(track.title) (\(track.id.uuidString))", category: .ui)
-        }
-
-        if scenario.showFullscreen {
-            let openDelay: TimeInterval = scenario.trackID == nil ? 0.25 : 0.9
-            DispatchQueue.main.asyncAfter(deadline: .now() + openDelay) {
-                Log.debug("DebugLaunch: opening fullscreen window", category: .ui)
-                FullscreenWindowManager.shared.showFullscreenWindow()
-            }
-        }
-
-        scheduleDebugAutoNextIfNeeded(scenario: scenario, playerVM: playerVM)
-        scheduleDebugResizeIfNeeded(scenario: scenario, libraryVM: libraryVM, playerVM: playerVM)
-        scheduleDebugTerminationIfNeeded(after: scenario.quitAfterSeconds)
-    }
-
-    private func nonEmptyPlaylistQueues(
-        from playlists: [Playlist],
-        repository: LibraryRepositoryProtocol
-    ) async -> [(playlist: Playlist, tracks: [Track])] {
-        var result: [(playlist: Playlist, tracks: [Track])] = []
-        for playlist in playlists {
-            let tracks = await repository.fetchTracks(in: playlist)
-            if !tracks.isEmpty {
-                result.append((playlist, tracks))
-            }
-        }
-        return result
-    }
-
-    private func debugQueueSeed(
-        for selectionMode: DebugLaunchScenario.LibrarySelectionMode,
-        from queues: [(playlist: Playlist, tracks: [Track])]
-    ) -> (playlist: Playlist, tracks: [Track])? {
-        guard !queues.isEmpty else { return nil }
-
-        switch selectionMode {
-        case .allSongs, .firstPlaylist:
-            return queues.first
-        case .largestPlaylist:
-            return queues.max { lhs, rhs in lhs.tracks.count < rhs.tracks.count }
-        case .smallestPlaylist:
-            return queues.min { lhs, rhs in lhs.tracks.count < rhs.tracks.count }
-        }
-    }
-
-    private func scheduleDebugAutoNextIfNeeded(
-        scenario: DebugLaunchScenario,
-        playerVM: PlayerViewModel
-    ) {
-        guard let autoNextCount = scenario.autoNextCount, autoNextCount > 0 else { return }
-
-        let interval = max(scenario.autoNextInterval ?? 1.5, 0.25)
-        let startDelay: TimeInterval = scenario.showFullscreen
-            ? (scenario.trackID == nil ? 1.0 : 1.8)
-            : (scenario.trackID == nil ? 0.6 : 1.0)
-
-        for step in 0..<autoNextCount {
-            let fireDelay = startDelay + (Double(step) * interval)
-            DispatchQueue.main.asyncAfter(deadline: .now() + fireDelay) {
-                Log.info(
-                    "DebugLaunch: auto next \(step + 1)/\(autoNextCount), interval=\(interval)",
-                    category: .ui
-                )
-                playerVM.next()
-            }
-        }
-    }
-
-    private func scheduleDebugTerminationIfNeeded(after seconds: TimeInterval?) {
-        guard let seconds, seconds > 0 else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
-            Log.debug("DebugLaunch: terminating app after \(seconds)s", category: .ui)
-            NSApp.terminate(nil)
-        }
-    }
-
-    private func scheduleDebugResizeIfNeeded(
-        scenario: DebugLaunchScenario,
-        libraryVM: LibraryViewModel,
-        playerVM: PlayerViewModel
-    ) {
-        guard let resizePulseCount = scenario.resizePulseCount, resizePulseCount > 0 else { return }
-
-        let interval = max(scenario.resizePulseInterval ?? 0.11, 0.04)
-        let startDelay: TimeInterval = 1.0
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + startDelay) {
-            guard let window = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first else { return }
-
-            let selectionLabel: String
-            let hasHeader: Bool
-            switch libraryVM.currentSelection {
-            case .allSongs:
-                selectionLabel = "allSongs"
-                hasHeader = false
-            case .playlist(let id):
-                selectionLabel = "playlist:\(id.uuidString)"
-                hasHeader = true
-            case .artist(let key):
-                selectionLabel = "artist:\(key)"
-                hasHeader = true
-            case .album(let key):
-                selectionLabel = "album:\(key)"
-                hasHeader = true
-            }
-
-            _ = LyricsRuntimeProfile.beginSession(
-                trigger: "windowResize",
-                selection: selectionLabel,
-                hasHeader: hasHeader,
-                contentMode: "library",
-                trackID: playerVM.currentTrack?.id,
-                trackTitle: playerVM.currentTrack?.title
-            )
-            LyricsRuntimeProfile.setMetadata("resize.pulse.count", value: "\(resizePulseCount)")
-            LyricsRuntimeProfile.setMetadata("resize.pulse.intervalMs", value: "\(Int((interval * 1000).rounded()))")
-
-            let originalFrame = window.frame
-            let widthDelta = min(max(originalFrame.width * 0.16, 160), 280)
-            let heightDelta = min(max(originalFrame.height * 0.08, 48), 120)
-
-            for step in 0..<resizePulseCount {
-                let isExpanded = step.isMultiple(of: 2)
-                let targetSize = NSSize(
-                    width: max(980, originalFrame.width + (isExpanded ? widthDelta : -widthDelta)),
-                    height: max(620, originalFrame.height + (isExpanded ? heightDelta : -heightDelta))
-                )
-                let origin = NSPoint(
-                    x: originalFrame.maxX - targetSize.width,
-                    y: originalFrame.maxY - targetSize.height
-                )
-                let targetFrame = NSRect(origin: origin, size: targetSize)
-
-                DispatchQueue.main.asyncAfter(deadline: .now() + (Double(step) * interval)) {
-                    window.setFrame(targetFrame, display: true)
-                }
-            }
-
-            DispatchQueue.main.asyncAfter(
-                deadline: .now() + (Double(resizePulseCount) * interval) + 0.08
-            ) {
-                window.setFrame(originalFrame, display: true)
-            }
-        }
-    }
 }
 
 // MARK: - Content View
@@ -951,7 +520,29 @@ private struct MainAppContentView: View {
 // MARK: - Preview
 
 #Preview("App Root") {
-    AppRootView(settingsSceneDependencies: SettingsSceneDependencies())
-        .modelContainer(for: [TrackIndexEntry.self], inMemory: true)
-        .frame(width: 1200, height: 800)
+    let settingsSceneDependencies = SettingsSceneDependencies()
+    let sharedModelContainer: ModelContainer = {
+        let schema = Schema([
+            TrackIndexEntry.self
+        ])
+        let modelConfiguration = ModelConfiguration(
+            schema: schema,
+            isStoredInMemoryOnly: true
+        )
+
+        do {
+            return try ModelContainer(for: schema, configurations: [modelConfiguration])
+        } catch {
+            fatalError("Could not create preview ModelContainer: \(error)")
+        }
+    }()
+
+    return AppRootView(
+        appSession: AppSessionHost(
+            modelContainer: sharedModelContainer,
+            settingsSceneDependencies: settingsSceneDependencies
+        )
+    )
+    .modelContainer(sharedModelContainer)
+    .frame(width: 1200, height: 800)
 }

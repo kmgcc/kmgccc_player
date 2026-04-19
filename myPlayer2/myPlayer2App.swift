@@ -78,31 +78,47 @@ struct KmgcccPlayerApp: App {
 
     // MARK: - AppDelegate
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    @StateObject private var settingsSceneDependencies = SettingsSceneDependencies()
+    @StateObject private var settingsSceneDependencies: SettingsSceneDependencies
+    @StateObject private var appSession: AppSessionHost
 
     // MARK: - SwiftData Container
 
-    var sharedModelContainer: ModelContainer = {
-        let schema = Schema([
-            TrackIndexEntry.self
-        ])
-        let modelConfiguration = ModelConfiguration(
-            schema: schema,
-            url: TrackIndexStorePaths.storeURL
-        )
+    let sharedModelContainer: ModelContainer
 
-        do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
-        } catch {
-            fatalError("Could not create ModelContainer: \(error)")
-        }
-    }()
+    init() {
+        let sharedModelContainer: ModelContainer = {
+            let schema = Schema([
+                TrackIndexEntry.self
+            ])
+            let modelConfiguration = ModelConfiguration(
+                schema: schema,
+                url: TrackIndexStorePaths.storeURL
+            )
+
+            do {
+                return try ModelContainer(for: schema, configurations: [modelConfiguration])
+            } catch {
+                fatalError("Could not create ModelContainer: \(error)")
+            }
+        }()
+
+        let settingsSceneDependencies = SettingsSceneDependencies()
+
+        self.sharedModelContainer = sharedModelContainer
+        _settingsSceneDependencies = StateObject(wrappedValue: settingsSceneDependencies)
+        _appSession = StateObject(
+            wrappedValue: AppSessionHost(
+                modelContainer: sharedModelContainer,
+                settingsSceneDependencies: settingsSceneDependencies
+            )
+        )
+    }
 
     // MARK: - Body
 
     var body: some Scene {
         WindowGroup("") {
-            AppRootView(settingsSceneDependencies: settingsSceneDependencies)
+            AppRootView(appSession: appSession)
                 .frame(minWidth: 1100, minHeight: 600)
         }
         .modelContainer(sharedModelContainer)

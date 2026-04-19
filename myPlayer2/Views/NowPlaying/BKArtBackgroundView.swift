@@ -2840,7 +2840,7 @@ private final class BKArtBackgroundLayerView: NSView {
             solid2.frame = root.bounds
             solid2.path = CGPath(rect: root.bounds, transform: nil)
             solid2.fillColor = NSColor(white: 0.3, alpha: 1.0).cgColor
-            solid2.opacity = 0.58
+            solid2.opacity = 0.82
             solid2.zPosition = 0
             slot.rootLayer.addSublayer(solid2)
             slot.cellSmall = solid2
@@ -2848,12 +2848,13 @@ private final class BKArtBackgroundLayerView: NSView {
             let mask2 = CAGradientLayer()
             mask2.type = .radial
             mask2.colors = [
-                NSColor.black.withAlphaComponent(1.0).cgColor,
+                NSColor.black.withAlphaComponent(0.96).cgColor,
                 NSColor.black.withAlphaComponent(0.92).cgColor,
-                NSColor.black.withAlphaComponent(0.34).cgColor,
+                NSColor.black.withAlphaComponent(0.78).cgColor,
+                NSColor.black.withAlphaComponent(0.40).cgColor,
                 NSColor.clear.cgColor,
             ]
-            mask2.locations = [0.0, 0.68, 0.88, 1.0]
+            mask2.locations = [0.0, 0.60, 0.86, 0.97, 1.0]
             mask2.startPoint = CGPoint(x: 0.5, y: 0.5)
             mask2.endPoint = CGPoint(x: 1.0, y: 1.0)
             mask2.bounds = CGRect(

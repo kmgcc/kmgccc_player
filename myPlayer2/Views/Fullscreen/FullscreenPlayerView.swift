@@ -1152,6 +1152,7 @@ struct FullscreenPlayerView: View {
             screenWidth: screenWidth
         )
         return visibleCenterX - Self.baseCanvasWidth * 0.5
+            - adaptiveLyricsArtworkLeftBias(artworkWidth: artworkWidth)
     }
 
     private func visibleArtworkColumnCenterX(
@@ -1170,6 +1171,16 @@ struct FullscreenPlayerView: View {
         let artworkHorizCorrection =
             (artworkColumnCenterX - Self.baseCanvasWidth / 2) * (scaleX - scale) / scale
         return artworkColumnCenterX + artworkHorizCorrection
+    }
+
+    private func adaptiveLyricsArtworkLeftBias(artworkWidth: CGFloat) -> CGFloat {
+        guard isShowingRightPanel else { return 0 }
+        let metrics = layoutMetrics(showLyricsColumn: true)
+        let centeredMetrics = layoutMetrics(showLyricsColumn: false)
+        let widthCompression = max(0, centeredMetrics.artworkWidth - artworkWidth)
+        let panelOccupancy = metrics.lyricsWidth / max(Self.baseCanvasWidth, 1)
+        let biasFactor = 0.08 + panelOccupancy * 0.24
+        return widthCompression * biasFactor
     }
 
     @ViewBuilder
