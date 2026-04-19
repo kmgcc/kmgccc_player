@@ -389,6 +389,7 @@ private struct MainLyricsPanelShell: View, Equatable {
     let playbackService = StubAudioPlaybackService()
     let levelMeter = StubAudioLevelMeter()
     let playerVM = PlayerViewModel(playbackService: playbackService, levelMeter: levelMeter)
+    let playbackCoordinator = PlaybackCoordinator(playerVM: playerVM)
     let ledMeter = LEDMeterService()
     let skinManager = SkinManager()
 
@@ -400,6 +401,7 @@ private struct MainLyricsPanelShell: View, Equatable {
         .environment(uiState)
         .environment(libraryVM)
         .environment(playerVM)
+        .environment(playbackCoordinator)
         .environment(lyricsVM)
         .environment(ledMeter)
         .environment(skinManager)

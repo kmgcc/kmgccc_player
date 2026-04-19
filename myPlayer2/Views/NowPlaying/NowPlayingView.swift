@@ -31,6 +31,7 @@ struct NowPlayingView: View {
     let playbackService = StubAudioPlaybackService()
     let levelMeter = StubAudioLevelMeter()
     let playerVM = PlayerViewModel(playbackService: playbackService, levelMeter: levelMeter)
+    let playbackCoordinator = PlaybackCoordinator(playerVM: playerVM)
     let ledMeter = LEDMeterService()
     let skinManager = SkinManager()
     let uiState = UIStateViewModel()
@@ -41,6 +42,7 @@ struct NowPlayingView: View {
 
     NowPlayingView()
         .environment(playerVM)
+        .environment(playbackCoordinator)
         .environment(uiState)
         .environment(ledMeter)
         .environment(skinManager)

@@ -13,7 +13,7 @@ import SwiftUI
 /// The WebView is attached only when a track exists, to avoid eager WebKit startup.
 struct LyricsPanelView: View {
 
-    @Environment(PlayerViewModel.self) private var playerVM
+    @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(LyricsViewModel.self) private var lyricsVM
     @Environment(AppSettings.self) private var settings
@@ -44,14 +44,14 @@ struct LyricsPanelView: View {
                 // Report visibility to manager - manager will debounce/handle transient states
                 LyricsSurfaceManager.shared.reportMainVisible(false)
             }
-            .onChange(of: playerVM.currentTrack?.id, handleTrackIdChange)
+            .onChange(of: playbackCoordinator.presentation.lyricsIdentity, handleTrackIdentityChange)
             .onReceive(NotificationCenter.default.publisher(for: .playbackTrackDidChange)) { _ in
                 reloadLyricsSurface(reason: "playback track notification", forceLyricsReload: true)
             }
             .onReceive(NotificationCenter.default.publisher(for: .libraryTrackDidUpdate)) { notification in
                 guard
                     let trackID = notification.userInfo?["trackID"] as? UUID,
-                    trackID == playerVM.currentTrack?.id
+                    trackID == playbackCoordinator.presentation.localTrack?.id
                 else { return }
                 reloadLyricsSurface(reason: "library track enrichment update", forceLyricsReload: true)
             }
@@ -104,11 +104,11 @@ struct LyricsPanelView: View {
     @ViewBuilder
     private var panelContent: some View {
         ZStack {
-            if playerVM.currentTrack == nil {
+            if !playbackCoordinator.presentation.hasTrack {
                 emptyStateView
             }
 
-            if playerVM.currentTrack != nil {
+            if playbackCoordinator.presentation.hasTrack {
                 AMLLWebView(store: lyricsVM.webViewStore)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding(.horizontal, 24)
@@ -120,11 +120,11 @@ struct LyricsPanelView: View {
 
     private func setupSeekCallback() {
         lyricsVM.onSeekRequest = { seconds in
-            playerVM.seek(to: seconds)
+            playbackCoordinator.seek(to: seconds)
         }
     }
 
-    private func handleTrackIdChange(_ oldId: UUID?, _ newId: UUID?) {
+    private func handleTrackIdentityChange(_ oldId: String?, _ newId: String?) {
         guard oldId != newId else { return }
         LyricsRuntimeProfile.increment("LyricsPanelView.trackIDChange")
         switch libraryVM.currentSelection {
@@ -138,7 +138,7 @@ struct LyricsPanelView: View {
             LyricsRuntimeProfile.setMetadata("lyrics.selectionKind", value: "album-header")
         }
         print(
-            "[LyricsPanelView] Track changed: \(oldId?.uuidString.prefix(8) ?? "nil") -> \(newId?.uuidString.prefix(8) ?? "nil")"
+            "[LyricsPanelView] Track changed: \(oldId?.prefix(8) ?? "nil") -> \(newId?.prefix(8) ?? "nil")"
         )
         reloadLyricsSurface(reason: "track changed", forceLyricsReload: true)
     }
@@ -148,10 +148,11 @@ struct LyricsPanelView: View {
         forceWebReload: Bool = false,
         forceLyricsReload: Bool = false
     ) {
+        let presentation = playbackCoordinator.presentation
         lyricsVM.ensureAMLLLoaded(
-            track: playerVM.currentTrack,
-            currentTime: playerVM.currentTime,
-            isPlaying: playerVM.isPlaying,
+            track: presentation.localTrack,
+            currentTime: presentation.currentTime,
+            isPlaying: presentation.isPlaying,
             reason: reason,
             forceWebReload: forceWebReload,
             forceLyricsReload: forceLyricsReload
@@ -181,6 +182,7 @@ struct LyricsPanelView: View {
     let playbackService = StubAudioPlaybackService()
     let levelMeter = StubAudioLevelMeter()
     let playerVM = PlayerViewModel(playbackService: playbackService, levelMeter: levelMeter)
+    let playbackCoordinator = PlaybackCoordinator(playerVM: playerVM)
     let lyricsVM = LyricsViewModel()
 
     HStack(spacing: 0) {
@@ -189,6 +191,7 @@ struct LyricsPanelView: View {
 
         LyricsPanelView()
             .environment(playerVM)
+            .environment(playbackCoordinator)
             .environment(lyricsVM)
             .environmentObject(ThemeStore.shared)
     }
@@ -197,20 +200,20 @@ struct LyricsPanelView: View {
 }
 
 private struct LyricsRealtimeSyncObserver: View {
-    @Environment(PlayerViewModel.self) private var playerVM
+    @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(LyricsViewModel.self) private var lyricsVM
 
     let onPlaybackRestart: () -> Void
 
     var body: some View {
         Color.clear
-            .onChange(of: playerVM.currentTime) { oldTime, newTime in
+            .onChange(of: playbackCoordinator.presentation.currentTime) { oldTime, newTime in
                 lyricsVM.syncTime(newTime)
                 if oldTime > 1.0, newTime < 0.2 {
                     onPlaybackRestart()
                 }
             }
-            .onChange(of: playerVM.isPlaying) { _, newValue in
+            .onChange(of: playbackCoordinator.presentation.isPlaying) { _, newValue in
                 lyricsVM.setPlaying(newValue)
             }
     }
