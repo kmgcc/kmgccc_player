@@ -37,6 +37,7 @@ struct AppRootView: View {
         let rootContent = AppRootContentView(
             libraryVM: appSession.libraryVM,
             playerVM: appSession.playerVM,
+            playbackCoordinator: appSession.playbackCoordinator,
             lyricsVM: appSession.lyricsVM,
             ledMeterProvider: appSession.ledMeterProvider,
             importEnrichmentService: appSession.importEnrichmentService,
@@ -86,13 +87,13 @@ struct AppRootView: View {
 
         let commandHandlersView = appearanceSyncView
             .onReceive(NotificationCenter.default.publisher(for: .togglePlayPause)) { _ in
-                appSession.playerVM?.togglePlayPause()
+                appSession.playbackCoordinator?.playPause()
             }
             .onReceive(NotificationCenter.default.publisher(for: .nextTrack)) { _ in
-                appSession.playerVM?.next()
+                appSession.playbackCoordinator?.next()
             }
             .onReceive(NotificationCenter.default.publisher(for: .previousTrack)) { _ in
-                appSession.playerVM?.previous()
+                appSession.playbackCoordinator?.previous()
             }
             .onReceive(NotificationCenter.default.publisher(for: .toggleLyrics)) { _ in
                 uiState.toggleLyrics()
@@ -241,6 +242,7 @@ struct AppRootView: View {
 private struct AppRootContentView: View {
     let libraryVM: LibraryViewModel?
     let playerVM: PlayerViewModel?
+    let playbackCoordinator: PlaybackCoordinator?
     let lyricsVM: LyricsViewModel?
     let ledMeterProvider: LEDMeterServiceProvider?
     let importEnrichmentService: ImportEnrichmentService?
@@ -258,6 +260,7 @@ private struct AppRootContentView: View {
         Group {
             if let libraryVM = libraryVM,
                let playerVM = playerVM,
+               let playbackCoordinator = playbackCoordinator,
                let lyricsVM = lyricsVM,
                let ledMeterProvider = ledMeterProvider,
                let importEnrichmentService = importEnrichmentService,
@@ -265,12 +268,13 @@ private struct AppRootContentView: View {
 
                 let showArtBackground = uiState.contentMode == .nowPlaying
                     && settings.nowPlayingArtBackgroundEnabled
-                    && playerVM.currentTrack != nil
+                    && playbackCoordinator.presentation.hasTrack
                     && !fullscreenWindowManager.isFullscreenActive
 
                 MainAppContentView(
                     libraryVM: libraryVM,
                     playerVM: playerVM,
+                    playbackCoordinator: playbackCoordinator,
                     lyricsVM: lyricsVM,
                     ledMeterProvider: ledMeterProvider,
                     importEnrichmentService: importEnrichmentService,
@@ -295,6 +299,7 @@ private struct AppRootContentView: View {
 private struct MainAppContentView: View {
     let libraryVM: LibraryViewModel
     let playerVM: PlayerViewModel
+    let playbackCoordinator: PlaybackCoordinator
     let lyricsVM: LyricsViewModel
     let ledMeterProvider: LEDMeterServiceProvider
     let importEnrichmentService: ImportEnrichmentService
@@ -327,9 +332,9 @@ private struct MainAppContentView: View {
         if showArtBackground {
             BKArtBackgroundView(
                 controller: artBackgroundController,
-                trackID: playerVM.currentTrack?.id,
-                artworkData: playerVM.currentTrack?.artworkData,
-                isPlaying: playerVM.isPlaying,
+                trackID: playbackCoordinator.presentation.localTrack?.id,
+                artworkData: playbackCoordinator.presentation.artworkData,
+                isPlaying: playbackCoordinator.presentation.isPlaying,
                 resourceProfile: settings.selectedNowPlayingSkinID == "kmgccc.cassette"
                     ? .cassetteForeground
                     : .standard,
@@ -368,6 +373,7 @@ private struct MainAppContentView: View {
             .environment(uiState)
             .environment(libraryVM)
             .environment(playerVM)
+            .environment(playbackCoordinator)
             .environment(lyricsVM)
             .environment(ledMeterProvider)
             .environment(importEnrichmentService)
@@ -434,7 +440,7 @@ private struct MainAppContentView: View {
     }
 
     private func handleArtBackgroundEnabledChange(_ enabled: Bool) {
-        if enabled && uiState.contentMode == .nowPlaying && playerVM.currentTrack != nil {
+        if enabled && uiState.contentMode == .nowPlaying && playbackCoordinator.presentation.hasTrack {
             artBackgroundController.triggerTransition()
         }
     }
@@ -448,7 +454,7 @@ private struct MainAppContentView: View {
     private var shouldTriggerArtBackgroundTransition: Bool {
         uiState.contentMode == .nowPlaying
             && settings.nowPlayingArtBackgroundEnabled
-            && playerVM.currentTrack != nil
+            && playbackCoordinator.presentation.hasTrack
     }
 
     @discardableResult

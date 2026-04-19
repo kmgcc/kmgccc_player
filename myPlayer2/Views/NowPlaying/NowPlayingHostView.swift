@@ -12,7 +12,7 @@ import SwiftUI
 @MainActor
 struct NowPlayingHostView: View {
 
-    @Environment(PlayerViewModel.self) private var playerVM
+    @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(UIStateViewModel.self) private var uiState
     @Environment(LEDMeterServiceProvider.self) private var ledMeterProvider
     @Environment(AppSettings.self) private var settings
@@ -87,7 +87,7 @@ struct NowPlayingHostView: View {
         .onReceive(NotificationCenter.default.publisher(for: .libraryTrackDidUpdate)) { notification in
             guard
                 let trackID = notification.userInfo?["trackID"] as? UUID,
-                trackID == playerVM.currentTrack?.id
+                trackID == playbackCoordinator.presentation.localTrack?.id
             else { return }
             Task {
                 await loadArtworkSnapshot()
@@ -96,26 +96,27 @@ struct NowPlayingHostView: View {
     }
 
     private func makeContext(windowSize: CGSize, contentBounds: CGRect) -> SkinContext {
-        let track = playerVM.currentTrack
+        let presentation = playbackCoordinator.presentation
+        let track = presentation.localTrack
 
         let trackMeta: SkinContext.TrackMetadata? = track.map {
             SkinContext.TrackMetadata(
                 id: $0.id,
-                title: $0.title,
-                artist: $0.artist,
-                album: $0.album,
-                duration: $0.duration,
+                title: presentation.title,
+                artist: presentation.artist,
+                album: presentation.album ?? "",
+                duration: presentation.duration,
                 artworkChecksum: artworkSnapshot?.artworkChecksum ?? 0,
-                artworkData: $0.artworkData,
+                artworkData: presentation.artworkData,
                 artworkImage: artworkSnapshot?.fullImage
             )
         }
 
         let playback = SkinContext.PlaybackState(
-            isPlaying: playerVM.isPlaying,
-            currentTime: playerVM.currentTime,
-            duration: playerVM.duration,
-            progress: playerVM.duration > 0 ? playerVM.currentTime / playerVM.duration : 0
+            isPlaying: presentation.isPlaying,
+            currentTime: presentation.currentTime,
+            duration: presentation.duration,
+            progress: presentation.progress
         )
 
         let theme = SkinContext.ThemeTokens(
@@ -157,13 +158,18 @@ struct NowPlayingHostView: View {
     }
     
     private var currentArtworkTaskKey: String {
-        guard let track = playerVM.currentTrack else { return "none" }
-        let checksum = ArtworkAssetStore.checksum(for: track.artworkData)
+        let presentation = playbackCoordinator.presentation
+        guard let track = presentation.localTrack else { return "none" }
+        let checksum = ArtworkAssetStore.checksum(for: presentation.artworkData)
         return "\(track.id.uuidString)-\(checksum)-px:\(preferredArtworkFullImageMaxPixel)"
     }
     
     private func loadArtworkSnapshot() async {
-        guard let track = playerVM.currentTrack, let artworkData = track.artworkData, !artworkData.isEmpty
+        let presentation = playbackCoordinator.presentation
+        guard
+            let track = presentation.localTrack,
+            let artworkData = presentation.artworkData,
+            !artworkData.isEmpty
         else {
             artworkSnapshot = nil
             return

@@ -14,6 +14,7 @@ import SwiftUI
 struct MiniPlayerView: View {
 
     @Environment(PlayerViewModel.self) private var playerVM
+    @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(UIStateViewModel.self) private var uiState
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
@@ -45,6 +46,7 @@ struct MiniPlayerView: View {
     private var progressAreaMinWidth: CGFloat { 120 }
 
     var body: some View {
+        let presentation = playbackCoordinator.presentation
         return HStack(spacing: 12) {
             // MARK: - Left: Cover + Title/Artist (tappable)
             Button {
@@ -58,9 +60,9 @@ struct MiniPlayerView: View {
                     artworkView
 
                     VStack(alignment: .leading, spacing: 4) {
-                        if let track = playerVM.currentTrack {
+                        if presentation.hasTrack {
                             SeamlessMarqueeText(
-                                text: track.title,
+                                text: presentation.title,
                                 style: .subheadline,
                                 fontWeight: .medium,
                                 color: .primary,
@@ -68,9 +70,9 @@ struct MiniPlayerView: View {
                             )
 
                             SeamlessMarqueeText(
-                                text: track.artist.isEmpty
+                                text: presentation.artist.isEmpty
                                     ? NSLocalizedString("library.unknown_artist", comment: "")
-                                    : track.artist,
+                                    : presentation.artist,
                                 style: .caption,
                                 fontWeight: .regular,
                                 color: .secondary,
@@ -142,12 +144,13 @@ struct MiniPlayerView: View {
     // MARK: - Subviews
 
     private var controlsView: some View {
-        let isEnabled = playerVM.currentTrack != nil
+        let presentation = playbackCoordinator.presentation
+        let isEnabled = presentation.isControlEnabled
         return HStack(spacing: 14) {
             // Previous
             Button {
                 previousSymbolEffectTrigger += 1
-                playerVM.previous()
+                playbackCoordinator.previous()
             } label: {
                 ZStack {
                     Rectangle()
@@ -163,17 +166,17 @@ struct MiniPlayerView: View {
             .buttonStyle(.plain)
             .frame(width: controlHitSize, height: controlHitSize)
             .contentShape(Rectangle())
-            .disabled(playerVM.currentTrack == nil)
+            .disabled(!isEnabled)
 
             // Play/Pause
             Button {
                 playPauseSymbolEffectTrigger += 1
-                playerVM.togglePlayPause()
+                playbackCoordinator.playPause()
             } label: {
                 ZStack {
                     Rectangle()
                         .fill(Color.clear)
-                    Image(systemName: playerVM.isPlaying ? "pause.fill" : "play.fill")
+                    Image(systemName: presentation.isPlaying ? "pause.fill" : "play.fill")
                         .font(.title3)
                         .foregroundStyle(isEnabled ? controlPrimaryColor : controlDisabledColor)
                         .symbolEffect(.bounce, value: playPauseSymbolEffectTrigger)
@@ -184,12 +187,12 @@ struct MiniPlayerView: View {
             .buttonStyle(.plain)
             .frame(width: controlHitSize, height: controlHitSize)
             .contentShape(Rectangle())
-            .disabled(playerVM.currentTrack == nil)
+            .disabled(!isEnabled)
 
             // Next
             Button {
                 nextSymbolEffectTrigger += 1
-                playerVM.next()
+                playbackCoordinator.next()
             } label: {
                 ZStack {
                     Rectangle()
@@ -205,7 +208,7 @@ struct MiniPlayerView: View {
             .buttonStyle(.plain)
             .frame(width: controlHitSize, height: controlHitSize)
             .contentShape(Rectangle())
-            .disabled(playerVM.currentTrack == nil)
+            .disabled(!isEnabled)
         }
     }
 
@@ -213,7 +216,7 @@ struct MiniPlayerView: View {
 
     @ViewBuilder
     private var nowPlayingInfoContextMenu: some View {
-        if let track = playerVM.currentTrack {
+        if let track = playbackCoordinator.presentation.localTrack {
             Button {
                 trackToEdit = track
             } label: {
@@ -228,13 +231,13 @@ struct MiniPlayerView: View {
     }
 
     private var playbackModeView: some View {
-        let isEnabled = playerVM.currentTrack != nil
+        let isEnabled = playbackCoordinator.presentation.isControlEnabled
         return PlaybackModeSlider(
             mode: currentPlaybackMode,
             isEnabled: isEnabled,
             isExpanded: isPlaybackModeExpanded,
             onModeChange: { mode in
-                playerVM.setPlaybackOrderMode(mode)
+                playbackCoordinator.setPlaybackOrderMode(mode)
             },
             onCurrentModeRetap: { _ in }
         )
@@ -289,12 +292,12 @@ struct MiniPlayerView: View {
                     .onChanged { value in
                         isDragging = true
                         let progress = max(0, min(1, value.location.x / geometry.size.width))
-                        dragProgress = progress * playerVM.duration
+                        dragProgress = progress * playbackCoordinator.presentation.duration
                     }
                     .onEnded { value in
                         let progress = max(0, min(1, value.location.x / geometry.size.width))
-                        let seekTime = progress * playerVM.duration
-                        playerVM.seek(to: seekTime)
+                        let seekTime = progress * playbackCoordinator.presentation.duration
+                        playbackCoordinator.seek(to: seekTime)
                         isDragging = false
                     }
             )
@@ -319,7 +322,7 @@ struct MiniPlayerView: View {
                 Spacer()
 
                 NumericTimeText(
-                    time: playerVM.duration,
+                    time: playbackCoordinator.presentation.duration,
                     fontSize: 10,
                     fontWeight: .medium,
                     color: .secondary
@@ -336,17 +339,22 @@ struct MiniPlayerView: View {
     }
 
     private var progressDisplayTime: Double {
-        isDragging ? dragProgress : playerVM.currentTime
+        isDragging ? dragProgress : playbackCoordinator.presentation.currentTime
     }
     
     private var currentArtworkTaskKey: String {
-        guard let track = playerVM.currentTrack else { return "none" }
-        let checksum = ArtworkAssetStore.checksum(for: track.artworkData)
+        let presentation = playbackCoordinator.presentation
+        guard let track = presentation.localTrack else { return "none" }
+        let checksum = ArtworkAssetStore.checksum(for: presentation.artworkData)
         return "\(track.id.uuidString)-\(checksum)"
     }
     
     private func loadArtworkThumbnail() async {
-        guard let track = playerVM.currentTrack, let artworkData = track.artworkData, !artworkData.isEmpty
+        let presentation = playbackCoordinator.presentation
+        guard
+            let track = presentation.localTrack,
+            let artworkData = presentation.artworkData,
+            !artworkData.isEmpty
         else {
             artworkImage = nil
             return
@@ -369,9 +377,10 @@ struct MiniPlayerView: View {
     }
 
     private func progressWidth(in totalWidth: CGFloat) -> CGFloat {
-        guard playerVM.duration > 0 else { return 0 }
-        let time = isDragging ? dragProgress : playerVM.currentTime
-        let progress = time / playerVM.duration
+        let presentation = playbackCoordinator.presentation
+        guard presentation.duration > 0 else { return 0 }
+        let time = isDragging ? dragProgress : presentation.currentTime
+        let progress = time / presentation.duration
         return totalWidth * CGFloat(max(0, min(1, progress)))
     }
 
@@ -384,8 +393,8 @@ struct MiniPlayerView: View {
 
             Slider(
                 value: Binding(
-                    get: { playerVM.volume },
-                    set: { playerVM.setVolume($0) }
+                    get: { playbackCoordinator.presentation.volume },
+                    set: { playbackCoordinator.setVolume($0) }
                 ),
                 in: 0...1
             )
@@ -396,11 +405,12 @@ struct MiniPlayerView: View {
     }
 
     private var volumeIcon: String {
-        if playerVM.volume == 0 {
+        let volume = playbackCoordinator.presentation.volume
+        if volume == 0 {
             return "speaker.slash.fill"
-        } else if playerVM.volume < 0.33 {
+        } else if volume < 0.33 {
             return "speaker.wave.1.fill"
-        } else if playerVM.volume < 0.66 {
+        } else if volume < 0.66 {
             return "speaker.wave.2.fill"
         } else {
             return "speaker.wave.3.fill"
@@ -796,6 +806,7 @@ struct PlaybackModeSlider: View {
     let playbackService = StubAudioPlaybackService()
     let levelMeter = StubAudioLevelMeter()
     let playerVM = PlayerViewModel(playbackService: playbackService, levelMeter: levelMeter)
+    let playbackCoordinator = PlaybackCoordinator(playerVM: playerVM)
     let uiState = UIStateViewModel()
 
     let track = Track(
@@ -806,6 +817,7 @@ struct PlaybackModeSlider: View {
         Spacer()
         MiniPlayerView()
             .environment(playerVM)
+            .environment(playbackCoordinator)
             .environment(uiState)
             .environmentObject(ThemeStore.shared)
             .padding()

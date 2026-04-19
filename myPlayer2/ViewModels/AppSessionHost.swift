@@ -15,6 +15,7 @@ import SwiftData
 final class AppSessionHost: ObservableObject {
     @Published private(set) var libraryVM: LibraryViewModel?
     @Published private(set) var playerVM: PlayerViewModel?
+    @Published private(set) var playbackCoordinator: PlaybackCoordinator?
     @Published private(set) var lyricsVM: LyricsViewModel?
     @Published private(set) var ledMeterProvider: LEDMeterServiceProvider?
     @Published private(set) var importEnrichmentService: ImportEnrichmentService?
@@ -89,6 +90,7 @@ final class AppSessionHost: ObservableObject {
             playbackService: playbackService,
             levelMeter: ledMeterProvider
         )
+        let playbackCoordinator = PlaybackCoordinator(playerVM: playerVM)
         let libraryVM = LibraryViewModel(
             repository: repository,
             libraryService: libraryService
@@ -121,6 +123,7 @@ final class AppSessionHost: ObservableObject {
 
         self.libraryVM = libraryVM
         self.playerVM = playerVM
+        self.playbackCoordinator = playbackCoordinator
         self.lyricsVM = lyricsVM
         self.ledMeterProvider = ledMeterProvider
         self.importEnrichmentService = importEnrichmentService
