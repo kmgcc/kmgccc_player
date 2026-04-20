@@ -303,13 +303,14 @@ struct LyricsSearchHelper {
     // MARK: - Convenience: Search and Fetch Best
 
     /// Perform full search and fetch lyrics for the best candidate.
+    /// Falls back to subsequent candidates if the top candidate returns empty or fails.
     /// This is the one-shot method for import-time lyrics lookup.
     /// - Parameters:
     ///   - title: Song title to search
     ///   - artist: Artist name (optional)
     ///   - album: Album name (optional)
     ///   - duration: Duration in seconds (optional)
-    /// - Returns: TTML lyrics content for the best-ranked candidate, or nil
+    /// - Returns: TTML lyrics content for the first valid candidate, or nil if all fail
     static func searchAndFetchBestLyrics(
         title: String,
         artist: String?,
@@ -325,13 +326,24 @@ struct LyricsSearchHelper {
             duration: duration
         )
 
-        guard let bestCandidate = searchResult.topCandidate else {
-            Self.logger.warning("[LyricsSearchHelper] No best candidate found, returning nil")
+        let candidates = searchResult.candidates
+        guard !candidates.isEmpty else {
+            Self.logger.warning("[LyricsSearchHelper] No candidates found at all")
             return nil
         }
 
-        Self.logger.info("[LyricsSearchHelper] Best candidate: '\(bestCandidate.title)' source=\(bestCandidate.source) score=\(bestCandidate.normalizedScore())")
+        for (index, candidate) in candidates.enumerated() {
+            Self.logger.info("[LyricsSearchHelper] Trying candidate #\(index + 1)/\(candidates.count): '\(candidate.title)' source=\(candidate.source)")
+            let ttml = await fetchLyricsContent(candidate: candidate)
+            if let ttml, !ttml.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Self.logger.info("[LyricsSearchHelper] Candidate #\(index + 1) succeeded: '\(candidate.title)' source=\(candidate.source) length=\(ttml.count)")
+                return ttml
+            }
+            let reason = ttml == nil ? "fetch failed" : "content empty"
+            Self.logger.warning("[LyricsSearchHelper] Candidate #\(index + 1) rejected: \(reason) — '\(candidate.title)' source=\(candidate.source)")
+        }
 
-        return await fetchLyricsContent(candidate: bestCandidate)
+        Self.logger.warning("[LyricsSearchHelper] All \(candidates.count) candidates failed for '\(title)'")
+        return nil
     }
 }

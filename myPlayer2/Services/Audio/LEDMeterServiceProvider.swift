@@ -11,7 +11,7 @@ import Foundation
 import Observation
 
 /// Provider that wraps LEDMeterService with lazy initialization.
-/// Implements AudioLevelMeterProtocol with no-op defaults until the real service is created.
+/// In external playback mode, reads from the app-level simulator singleton.
 @Observable
 @MainActor
 final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
@@ -19,20 +19,46 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
     private var _service: LEDMeterService?
     private let config: LEDMeterConfig
     private let mixerProvider: () -> AVAudioMixerNode
+    private var externalPollTimer: Timer?
+    private var externalPulse: UInt64 = 0
 
-    /// Metrics from the real service, or zero if not yet created
+    /// Metrics from the real service or the external simulator.
     var metrics: LEDMeterMetrics {
-        _service?.metrics ?? LEDMeterMetrics.zero(count: config.ledCount)
+        if playbackSource == .appleMusic {
+            _ = externalPulse
+            return ExternalPlaybackSpectrumSimulator.shared.lastLedMetrics
+        }
+        return _service?.metrics ?? LEDMeterMetrics.zero(count: config.ledCount)
     }
 
-    /// Audio metrics from the real service, or zero if not yet created
+    /// Audio metrics from the real service or the external simulator.
     var audioMetrics: AudioMetrics {
-        _service?.audioMetrics ?? .zero
+        if playbackSource == .appleMusic {
+            _ = externalPulse
+            return ExternalPlaybackSpectrumSimulator.shared.lastAudioMetrics
+        }
+        return _service?.audioMetrics ?? .zero
     }
 
-    /// Normalized level from the real service, or 0 if not yet created
+    /// Normalized level from the real service or the external simulator.
     var normalizedLevel: Float {
-        _service?.normalizedLevel ?? 0
+        if playbackSource == .appleMusic {
+            _ = externalPulse
+            return ExternalPlaybackSpectrumSimulator.shared.lastAudioMetrics.smoothedLevel
+        }
+        return _service?.normalizedLevel ?? 0
+    }
+
+    /// Playback source used to decide between real meter and simulated meter.
+    var playbackSource: PlaybackSource = .local {
+        didSet {
+            guard oldValue != playbackSource else { return }
+            if playbackSource == .appleMusic {
+                startExternalPolling()
+            } else {
+                stopExternalPolling()
+            }
+        }
     }
 
     /// Creates a provider that will lazily instantiate LEDMeterService when needed.
@@ -64,18 +90,26 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
 
     // MARK: - AudioLevelMeterProtocol
 
-    /// No-op if service not created. Real service handles actual start.
     func start() {
-        _service?.start()
+        if playbackSource == .appleMusic {
+            startExternalPolling()
+        } else {
+            _service?.start()
+        }
     }
 
-    /// No-op if service not created.
     func stop() {
+        stopExternalPolling()
         _service?.stop()
+    }
+
+    func updatePlaybackState(isPlaying: Bool) {
+        _service?.updatePlaybackState(isPlaying: isPlaying)
     }
 
     /// Force-drop nowPlaying-only heavy state without changing provider lifetime.
     func releaseNowPlayingResources() {
+        stopExternalPolling()
         _service?.stop()
         _service = nil
     }
@@ -85,5 +119,24 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
         if let service = _service {
             service.updateConfig(newConfig)
         }
+    }
+
+    // MARK: - External Polling
+
+    private func startExternalPolling() {
+        guard externalPollTimer == nil else { return }
+        let timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.playbackSource == .appleMusic else { return }
+                self.externalPulse &+= 1
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        externalPollTimer = timer
+    }
+
+    private func stopExternalPolling() {
+        externalPollTimer?.invalidate()
+        externalPollTimer = nil
     }
 }

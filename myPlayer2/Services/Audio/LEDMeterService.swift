@@ -24,17 +24,13 @@ struct LEDMeterConfig: Sendable {
     var transientIntensity: Float = 2.5
     var transientCutoffHz: Float = 60.0
     var useActivityGate: Bool = false
-    // Reserved fields for audio metrics extensions.
     var lowSensitivity: Float = 1.0
-    /// Low-band pre-boost in dB (applies before mapping to 0...1).
     var lowPreBoostDb: Float = 0.0
     var lowAttack: Float = 0.09
     var lowRelease: Float = 0.28
     var kickAttack: Float = 0.05
     var kickRelease: Float = 0.22
-    /// 0=off, 1=mild, 2=strong
     var quietSuppressionMode: Int = 2
-
 }
 
 struct LEDMeterMetrics: Sendable {
@@ -57,7 +53,6 @@ final class LEDMeterService: AudioLevelMeterProtocol {
     private var isInstalled = false
     private var runGeneration: UInt64 = 0
 
-    // Hub reference (singleton)
     private let hub = AudioAnalysisHub.shared
 
     private(set) var metrics: LEDMeterMetrics
@@ -75,7 +70,6 @@ final class LEDMeterService: AudioLevelMeterProtocol {
     }
 
     func attachToMixer(_ mixer: AVAudioMixerNode) {
-        // Just forward to Hub
         hub.attachToMixer(mixer)
     }
 
@@ -85,15 +79,11 @@ final class LEDMeterService: AudioLevelMeterProtocol {
         let generation = runGeneration
 
         hub.targetHz = config.targetHz
-        // Start Hub
         hub.start()
 
         let processor = self.processor
-        // Subscribe to analysis data
         consumerID = hub.addConsumer { [weak self, processor] data in
-            // Run processing on a background task
             let result = processor.process(data: data)
-
             Task { @MainActor in
                 guard let self else { return }
                 guard self.isInstalled, self.runGeneration == generation else { return }
@@ -113,15 +103,16 @@ final class LEDMeterService: AudioLevelMeterProtocol {
             hub.removeConsumer(id)
             consumerID = nil
         }
-        hub.stop()  // Note: Single hub stop logic might be tricky if multiple consumers. Hub should probably count refs or just run.
-        // For now, assuming this is the primary controller of capture.
-        // Ideally Hub manages its own lifecycle or refcounting.
-        // As per user request "AudioAnalysisHub (tap + FFT magnitude)", we'll let this service control start/stop for now as it's the main driver.
+        hub.stop()
 
         isInstalled = false
         processor.reset()
         metrics = LEDMeterMetrics.zero(count: config.ledCount)
         audioMetrics = AudioMetrics.zero
+    }
+
+    func updatePlaybackState(isPlaying: Bool) {
+        // Local meter ignores external playback state
     }
 
     func updateConfig(_ newConfig: LEDMeterConfig) {
@@ -130,23 +121,13 @@ final class LEDMeterService: AudioLevelMeterProtocol {
         if metrics.leds.count != newConfig.ledCount {
             metrics = LEDMeterMetrics.zero(count: newConfig.ledCount)
         }
-        // Hub targetHz could be updated too if we wanted to sync it
         hub.targetHz = newConfig.targetHz
     }
-
-    // Removed old audio consumer logic as Hub handles raw data distribution if needed,
-    // but legacy consumers expected PCM buffer.
-    // If other parts of app use addAudioConsumer, they must be moved to Hub or we must bridge.
-    // Additional per-consumer routing can be added here if needed.
-
-    // Keeping method signature for protocol but warning/no-op or proxying to Hub?
-    // The protocol AudioLevelMeterProtocol doesn't enforce addAudioConsumer.
-    // Only internal usage. We will remove it from here.
 }
 
 // MARK: - Processor
 
-private final class LEDMeterProcessor: @unchecked Sendable {
+final class LEDMeterProcessor: @unchecked Sendable {
 
     let fftSize: Int = 2048
     private let bandCount: Int = 8
@@ -229,16 +210,13 @@ private final class LEDMeterProcessor: @unchecked Sendable {
             return (lastLed, lastAudio)
         }
 
-        // Time-domain metrics (before windowing)
         var rms: Float = 0
         vDSP_rmsqv(fftInput, 1, &rms, vDSP_Length(fftSize))
         var peak: Float = 0
         vDSP_maxmgv(fftInput, 1, &peak, vDSP_Length(fftSize))
 
-        // Hann window
         vDSP_vmul(fftInput, 1, window, 1, &fftInput, 1, vDSP_Length(fftSize))
 
-        // FFT (real)
         guard let fftSetup else {
             return (lastLed, lastAudio)
         }
@@ -264,7 +242,6 @@ private final class LEDMeterProcessor: @unchecked Sendable {
     }
 
     func process(data: AudioAnalysisData) -> (led: LEDMeterMetrics, audio: AudioMetrics) {
-        // When using Hub data, we have pre-computed info
         sampleRate = data.sampleRate
         return analyze(magnitudes: data.magnitudes, rms: data.rms, peak: data.peak)
     }
@@ -276,25 +253,17 @@ private final class LEDMeterProcessor: @unchecked Sendable {
         _ = max(1, currentConfig.targetHz)
         let rmsDb = 20.0 * log10f(max(rms, 1e-6))
 
-        // Ensure magnitudes buffer is accessible as reference
-        // (magnitudes passed in might be a copy, but we just need to read it)
-        // To keep logic identical, we use 'magnitudes' array.
-
-        // Low-frequency weighted energy (Skip DC)
         let binHz = sampleRate / Float(fftSize)
         let nyquistBins = max(1, magnitudes.count)
         let cutoffBin = min(Int(currentConfig.cutoffHz / binHz), nyquistBins)
 
-        // Define frequency bands (bin indices)
         let bin20 = min(max(1, Int(ceil(20.0 / binHz))), cutoffBin)
         let bin60 = min(max(1, Int(ceil(60.0 / binHz))), cutoffBin)
-        _ = min(max(1, Int(ceil(100.0 / binHz))), cutoffBin)
         let bin200 = min(max(1, Int(ceil(200.0 / binHz))), cutoffBin)
         let binTransient = min(
             max(1, Int(ceil(currentConfig.transientCutoffHz / binHz))), cutoffBin)
         let bin3000 = min(max(1, Int(ceil(3000.0 / binHz))), nyquistBins)
 
-        // Weights
         let wSubBass: Float = 1.0
         let wBass: Float = 1.0
         let wRest: Float = 1.0
@@ -304,28 +273,24 @@ private final class LEDMeterProcessor: @unchecked Sendable {
         magnitudes.withUnsafeBufferPointer { ptr in
             guard let base = ptr.baseAddress else { return }
 
-            // 0. <20Hz: bin 1 ..< bin20 (if any)
             if bin20 > 1 {
                 var p: Float = 0
                 vDSP_sve(base.advanced(by: 1), 1, &p, vDSP_Length(bin20 - 1))
                 bandPowerWeighted += p
             }
 
-            // 1. Sub-Bass: bin20 ..< bin60
             if bin60 > bin20 {
                 var p: Float = 0
                 vDSP_sve(base.advanced(by: bin20), 1, &p, vDSP_Length(bin60 - bin20))
                 bandPowerWeighted += p * wSubBass
             }
 
-            // 2. Bass: bin60 ..< bin200
             if bin200 > bin60 {
                 var p: Float = 0
                 vDSP_sve(base.advanced(by: bin60), 1, &p, vDSP_Length(bin200 - bin60))
                 bandPowerWeighted += p * wBass
             }
 
-            // 3. Rest: bin200 ..< cutoffBin
             if cutoffBin > bin200 {
                 var p: Float = 0
                 vDSP_sve(base.advanced(by: bin200), 1, &p, vDSP_Length(cutoffBin - bin200))
@@ -333,12 +298,9 @@ private final class LEDMeterProcessor: @unchecked Sendable {
             }
         }
 
-        // bandRMS = sqrt(weighted_sum(|X|^2)) / N
         let bandRMS = sqrt(bandPowerWeighted) / Float(fftSize)
         let db = 20 * log10(bandRMS + 1e-7)
 
-        // Transient Detection / Dynamic Emphasis
-        // Focus transient detection on sub-bass frequencies (<= 60Hz) for deep kick isolation
         var subBassPower: Float = 0
         magnitudes.withUnsafeBufferPointer { ptr in
             guard let base = ptr.baseAddress else { return }
@@ -349,12 +311,11 @@ private final class LEDMeterProcessor: @unchecked Sendable {
 
         let bassDiff = bassDb - avgBassDb
         if bassDiff > 0 {
-            avgBassDb += bassDiff * 0.005  // Use Float literal implicitly or explicitly
+            avgBassDb += bassDiff * 0.005
         } else {
             avgBassDb += bassDiff * 0.02
         }
 
-        // Standard overall volume tracking for context
         let diff = db - avgDb
         if diff > 0 {
             avgDb += diff * 0.05
@@ -362,30 +323,23 @@ private final class LEDMeterProcessor: @unchecked Sendable {
             avgDb += diff * 0.2
         }
 
-        // Calculate transient based on bass deviations
         let transientRaw = max(0, bassDb - avgBassDb - currentConfig.transientThreshold)
 
-        // Context scaling: if the overall song volume is low, suppress transients.
-        // Context scaling: if the overall song volume is low, suppress transients.
-        // If it's high (at climax), allow them to be very prominent.
         let volumeFactor = clamp((db - dbFloor) / (dbCeil - dbFloor))
-        let boostSensitivity = powf(volumeFactor, 2.5 as Float) * 4.0 as Float  // Relaxed curve to allow punch at medium volumes
+        let boostSensitivity = powf(volumeFactor, 2.5 as Float) * 4.0 as Float
 
-        // Soft noise gate: smoothly fade out transients in quiet passages.
         let gateStart: Float = -30
         let gateEnd: Float = -48
         let noiseGate = clamp((rmsDb - gateEnd) / (gateStart - gateEnd))
         let transient = transientRaw * boostSensitivity * noiseGate
-        let boost = transient * currentConfig.transientIntensity  // Base boost factor
+        let boost = transient * currentConfig.transientIntensity
         let boostedDb = db + boost
 
-        // Mapping (Use boostedDb)
         let t = clamp((boostedDb - dbFloor) / (dbCeil - dbFloor))
 
         let levelRaw = clamp(t * currentConfig.preGain)
         var levelAdj = clamp(powf(levelRaw, gamma) * currentConfig.sensitivity)
 
-        // Mid-range energy for quiet-passage detection (200Hz - 3000Hz)
         var midPower: Float = 0
         magnitudes.withUnsafeBufferPointer { ptr in
             guard let base = ptr.baseAddress else { return }
@@ -397,7 +351,6 @@ private final class LEDMeterProcessor: @unchecked Sendable {
         let midRMS = sqrt(midPower) / Float(fftSize)
         let midDb = 20 * log10(midRMS + 1e-7)
 
-        // Activity Gate: Based on Mid-range energy (200Hz - 3000Hz)
         if currentConfig.useActivityGate {
             let gateStart: Float = -45
             let gateEnd: Float = -55
@@ -405,7 +358,6 @@ private final class LEDMeterProcessor: @unchecked Sendable {
             levelAdj *= pow(gateLinear, 2.0)
         }
 
-        // Envelope smoothing
         let dt = 1.0 / Double(currentConfig.targetHz)
         let speed = max(0.1, Double(currentConfig.speed))
         let attackTime = baseAttack / speed
@@ -421,19 +373,15 @@ private final class LEDMeterProcessor: @unchecked Sendable {
 
         env = clamp(env)
 
-        // LED quantization
         let ledCount = max(1, currentConfig.ledCount)
         let levels = max(3, currentConfig.levels)
         let step = 1.0 / Float(levels - 1)
-        // Ensure x covers full range: 0 to ledCount
         let x = env * Float(ledCount)
 
         var leds = [Float](repeating: 0, count: ledCount)
         let order = centerOutOrder(count: ledCount)
 
         for i in 0..<ledCount {
-            // i=0 is center, i=count-1 is edge
-            // x represents magnitude. If x > i, the i-th LED (from center) lights up.
             let cont = clamp(x - Float(i))
             let softened = pow(cont, 1.6)
             let quant = round(softened / step) * step
@@ -446,7 +394,6 @@ private final class LEDMeterProcessor: @unchecked Sendable {
         let now = Date().timeIntervalSinceReferenceDate
         let ledMetrics = LEDMeterMetrics(timestamp: now, level: env, leds: leds)
 
-        // Audio metrics for skins
         let bands = computeBands(power: fftMagnitudes, bandCount: bandCount)
         let smoothing: Float = 0.25
         if smoothedBands.count != bands.count {

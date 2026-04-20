@@ -156,6 +156,7 @@ public final class AppSettings {
 
     private enum AppearanceKeys {
         static let globalArtworkTintEnabled = "globalArtworkTintEnabled"
+        static let dockProgressVisible = "dockProgressVisible"
         static let followSystemAppearance = "followSystemAppearance"
         static let manualAppearance = "manualAppearance"
         static let lyricsBackgroundMode = "lyricsBackgroundMode"
@@ -187,6 +188,26 @@ public final class AppSettings {
                 UserDefaults.standard.set(
                     newValue,
                     forKey: AppearanceKeys.globalArtworkTintEnabled
+                )
+            }
+        }
+    }
+
+    /// Whether the Dock icon shows the current playback progress bar.
+    var dockProgressVisible: Bool {
+        get {
+            access(keyPath: \.dockProgressVisible)
+            if UserDefaults.standard.object(forKey: AppearanceKeys.dockProgressVisible) == nil {
+                return true
+            }
+            return UserDefaults.standard.bool(forKey: AppearanceKeys.dockProgressVisible)
+        }
+        set {
+            withMutation(keyPath: \.dockProgressVisible) {
+                UserDefaults.standard.set(newValue, forKey: AppearanceKeys.dockProgressVisible)
+                NotificationCenter.default.post(
+                    name: .dockProgressVisibilityChanged,
+                    object: self
                 )
             }
         }

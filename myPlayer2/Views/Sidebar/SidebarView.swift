@@ -20,6 +20,7 @@ struct SidebarView: View {
 
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(ImportEnrichmentService.self) private var importEnrichmentService
+    @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(UIStateViewModel.self) private var uiState
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var themeStore: ThemeStore
@@ -39,23 +40,10 @@ struct SidebarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // App Header
-            Button {
-                uiState.showLibrary()
-            } label: {
-                Label(Constants.appName, systemImage: "music.pages.fill")
-                    .font(.headline)
-                    .foregroundStyle(.primary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
-                    .symbolRenderingMode(.palette)
-                    .foregroundStyle(
-                        .primary, themeStore.accentColor
-                    )
-            }
-            .buttonStyle(.plain)
+            playbackSourceSwitcher
+                .padding(.horizontal, 14)
+                .padding(.top, 5)
+                .padding(.bottom, 12)
 
             // Main Library Link
             Button {
@@ -326,6 +314,72 @@ struct SidebarView: View {
         .animation(.snappy(duration: 0.2), value: importEnrichmentService.hasOutstandingWork)
     }
 
+    private var playbackSourceSwitcher: some View {
+        let metrics = PlaybackSourceSwitcherMetrics.self
+
+        return SlidingSelector(
+            segments: PlaybackSource.allCases,
+            selection: Binding(
+                get: { playbackCoordinator.activeSource },
+                set: { source in
+                    withAnimation(.snappy(duration: 0.18)) {
+                        playbackCoordinator.setActiveSource(source)
+                    }
+                }
+            ),
+            animation: .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08),
+            hSpacing: 0,
+            background: {
+                Color.clear
+            },
+            knob: {
+                Capsule(style: .continuous)
+                    .fill(themeStore.accentColor.opacity(currentColorScheme == .dark ? 0.36 : 0.18))
+                    .overlay(
+                        Capsule(style: .continuous)
+                            .strokeBorder(themeStore.accentColor.opacity(0.32), lineWidth: 1)
+                    )
+            },
+            content: { source, isSelected in
+                playbackSourceSegment(source, isSelected: isSelected)
+            }
+        )
+        .frame(maxWidth: .infinity)
+        .frame(height: metrics.knobHeight)
+        .padding(metrics.knobInset)
+        .background(
+            Capsule(style: .continuous)
+                .fill(Color.primary.opacity(currentColorScheme == .dark ? 0.12 : 0.08))
+                .overlay(
+                    Capsule(style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
+                )
+        )
+        .frame(maxWidth: .infinity)
+        .frame(height: metrics.trayHeight)
+        .help(LocalizedStringKey("playback.source.help"))
+    }
+
+    private func playbackSourceSegment(_ source: PlaybackSource, isSelected: Bool) -> some View {
+        let title: LocalizedStringKey = source == .local
+            ? "playback.source.local"
+            : "playback.source.apple_music"
+        let foregroundColor = isSelected ? selectedPlaybackSourceTextColor : Color.secondary
+
+        return Text(title)
+            .font(.caption.weight(.semibold))
+            .lineLimit(1)
+            .minimumScaleFactor(0.86)
+            .foregroundStyle(foregroundColor)
+            .frame(maxWidth: .infinity)
+            .frame(height: PlaybackSourceSwitcherMetrics.knobHeight)
+            .contentShape(Rectangle())
+    }
+
+    private var selectedPlaybackSourceTextColor: Color {
+        currentColorScheme == .dark ? .primary : themeStore.accentColor
+    }
+
     private var settingsButton: some View {
         GlassIconButton(
             systemImage: "gear",
@@ -541,6 +595,12 @@ private enum SidebarDeletionRequest: Identifiable {
             )
         }
     }
+}
+
+private enum PlaybackSourceSwitcherMetrics {
+    static let trayHeight: CGFloat = 32
+    static let knobInset: CGFloat = 3
+    static let knobHeight: CGFloat = trayHeight - knobInset * 2
 }
 
 private struct SidebarWidthPreferenceKey: PreferenceKey {

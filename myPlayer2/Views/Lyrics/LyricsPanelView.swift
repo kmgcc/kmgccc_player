@@ -45,6 +45,10 @@ struct LyricsPanelView: View {
                 LyricsSurfaceManager.shared.reportMainVisible(false)
             }
             .onChange(of: playbackCoordinator.presentation.lyricsIdentity, handleTrackIdentityChange)
+            .onChange(of: playbackCoordinator.presentation.lyricsText) { _, _ in
+                guard playbackCoordinator.presentation.source == .appleMusic else { return }
+                reloadLyricsSurface(reason: "external lyrics updated", forceLyricsReload: true)
+            }
             .onReceive(NotificationCenter.default.publisher(for: .playbackTrackDidChange)) { _ in
                 reloadLyricsSurface(reason: "playback track notification", forceLyricsReload: true)
             }
@@ -149,14 +153,24 @@ struct LyricsPanelView: View {
         forceLyricsReload: Bool = false
     ) {
         let presentation = playbackCoordinator.presentation
-        lyricsVM.ensureAMLLLoaded(
-            track: presentation.localTrack,
-            currentTime: presentation.currentTime,
-            isPlaying: presentation.isPlaying,
-            reason: reason,
-            forceWebReload: forceWebReload,
-            forceLyricsReload: forceLyricsReload
-        )
+        switch presentation.source {
+        case .local:
+            lyricsVM.ensureAMLLLoaded(
+                track: presentation.localTrack,
+                currentTime: presentation.currentTime,
+                isPlaying: presentation.isPlaying,
+                reason: reason,
+                forceWebReload: forceWebReload,
+                forceLyricsReload: forceLyricsReload
+            )
+        case .appleMusic:
+            lyricsVM.ensureExternalAMLLLoaded(
+                presentation: presentation,
+                reason: reason,
+                forceWebReload: forceWebReload,
+                forceLyricsReload: forceLyricsReload
+            )
+        }
     }
 
     private var emptyStateView: some View {
@@ -182,7 +196,12 @@ struct LyricsPanelView: View {
     let playbackService = StubAudioPlaybackService()
     let levelMeter = StubAudioLevelMeter()
     let playerVM = PlayerViewModel(playbackService: playbackService, levelMeter: levelMeter)
-    let playbackCoordinator = PlaybackCoordinator(playerVM: playerVM)
+    let libraryVM = LibraryViewModel(repository: StubLibraryRepository())
+    let appleMusicAdapter = AppleMusicPlaybackAdapter(libraryVM: libraryVM)
+    let playbackCoordinator = PlaybackCoordinator(
+        playerVM: playerVM,
+        appleMusicAdapter: appleMusicAdapter
+    )
     let lyricsVM = LyricsViewModel()
 
     HStack(spacing: 0) {
@@ -192,6 +211,7 @@ struct LyricsPanelView: View {
         LyricsPanelView()
             .environment(playerVM)
             .environment(playbackCoordinator)
+            .environment(libraryVM)
             .environment(lyricsVM)
             .environmentObject(ThemeStore.shared)
     }

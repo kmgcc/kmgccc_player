@@ -18,7 +18,11 @@ struct LDDCSearchSection: View {
         case split
     }
     
-    let track: Track
+    let track: Track?
+    let initialTitle: String
+    let initialArtist: String
+    let initialAlbum: String
+    let duration: Double
     let layoutStyle: LayoutStyle
     let includeTranslationDefault: Bool
     let autoSearchToken: Int
@@ -87,6 +91,32 @@ struct LDDCSearchSection: View {
         onApplyLyrics: @escaping (String) -> Void
     ) {
         self.track = track
+        self.initialTitle = track.title
+        self.initialArtist = track.artist
+        self.initialAlbum = track.album
+        self.duration = track.duration
+        self.layoutStyle = layoutStyle
+        self.includeTranslationDefault = includeTranslationDefault
+        self.autoSearchToken = autoSearchToken
+        self.onApplyLyrics = onApplyLyrics
+        _includeTranslation = State(initialValue: includeTranslationDefault)
+    }
+
+    init(
+        title: String,
+        artist: String,
+        album: String,
+        duration: Double,
+        layoutStyle: LayoutStyle = .stacked,
+        includeTranslationDefault: Bool = true,
+        autoSearchToken: Int = 0,
+        onApplyLyrics: @escaping (String) -> Void
+    ) {
+        self.track = nil
+        self.initialTitle = title
+        self.initialArtist = artist
+        self.initialAlbum = album
+        self.duration = duration
         self.layoutStyle = layoutStyle
         self.includeTranslationDefault = includeTranslationDefault
         self.autoSearchToken = autoSearchToken
@@ -136,7 +166,7 @@ struct LDDCSearchSection: View {
             resetQueryForCurrentTrack()
             triggerAutoSearchIfNeeded(autoSearchToken, force: true)
         }
-        .onChange(of: track.id) { _, _ in
+        .onChange(of: track?.id) { _, _ in
             resetQueryForCurrentTrack()
         }
         .onChange(of: autoSearchToken) { _, newValue in
@@ -215,30 +245,33 @@ struct LDDCSearchSection: View {
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
 
-                    HStack(spacing: 4) {
-                        ForEach(LDDCMode.allCases) { mode in
-                            Button {
-                                selectedMode = mode
-                            } label: {
-                                Text(mode.displayName)
-                                    .font(.system(size: 11, weight: selectedMode == mode ? .medium : .regular))
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 4)
-                            }
-                            .buttonStyle(.plain)
-                            .background(
-                                Capsule()
-                                    .fill(selectedMode == mode ? themeStore.accentColor.opacity(0.18) : Color.clear)
-                            )
-                            .foregroundStyle(selectedMode == mode ? themeStore.accentColor : .secondary)
+                    SlidingSelector(
+                        segments: LDDCMode.allCases,
+                        selection: $selectedMode,
+                        animation: .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08),
+                        hSpacing: 0,
+                        background: {
+                            Color.clear
+                        },
+                        knob: {
+                            Capsule()
+                                .fill(themeStore.accentColor.opacity(0.18))
+                        },
+                        content: { mode, isSelected in
+                            Text(mode.displayName)
+                                .font(.system(size: 11, weight: isSelected ? .medium : .regular))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 4)
+                                .foregroundStyle(isSelected ? themeStore.accentColor : .secondary)
                         }
-                    }
+                    )
                     .padding(.horizontal, 4)
                     .padding(.vertical, 3)
                     .background(
                         Capsule()
                             .fill(Color.secondary.opacity(0.08))
                     )
+                    .fixedSize(horizontal: true, vertical: false)
                 }
 
                 HStack(spacing: 4) {
@@ -246,30 +279,33 @@ struct LDDCSearchSection: View {
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
 
-                    HStack(spacing: 4) {
-                        ForEach([true, false], id: \.self) { enabled in
-                            Button {
-                                includeTranslation = enabled
-                            } label: {
-                                Text(enabled ? "开" : "关")
-                                    .font(.system(size: 11, weight: includeTranslation == enabled ? .medium : .regular))
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 4)
-                            }
-                            .buttonStyle(.plain)
-                            .background(
-                                Capsule()
-                                    .fill(includeTranslation == enabled ? themeStore.accentColor.opacity(0.18) : Color.clear)
-                            )
-                            .foregroundStyle(includeTranslation == enabled ? themeStore.accentColor : .secondary)
+                    SlidingSelector(
+                        segments: [true, false],
+                        selection: $includeTranslation,
+                        animation: .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08),
+                        hSpacing: 0,
+                        background: {
+                            Color.clear
+                        },
+                        knob: {
+                            Capsule()
+                                .fill(themeStore.accentColor.opacity(0.18))
+                        },
+                        content: { enabled, isSelected in
+                            Text(enabled ? "开" : "关")
+                                .font(.system(size: 11, weight: isSelected ? .medium : .regular))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 4)
+                                .foregroundStyle(isSelected ? themeStore.accentColor : .secondary)
                         }
-                    }
+                    )
                     .padding(.horizontal, 4)
                     .padding(.vertical, 3)
                     .background(
                         Capsule()
                             .fill(Color.secondary.opacity(0.08))
                     )
+                    .fixedSize(horizontal: true, vertical: false)
                 }
 
                 Spacer()
@@ -644,9 +680,9 @@ struct LDDCSearchSection: View {
         currentSelectionTask?.cancel()
         currentSelectionTask = nil
 
-        searchTitle = track.title
-        searchArtist = track.artist
-        searchAlbum = track.album
+        searchTitle = initialTitle
+        searchArtist = initialArtist
+        searchAlbum = initialAlbum
         selectedCandidate = nil
         applyingCandidateId = nil
         autoApplySuccess = false
@@ -671,9 +707,9 @@ struct LDDCSearchSection: View {
             return
         }
         lastAutoSearchToken = token
-        searchTitle = track.title
-        searchArtist = track.artist
-        searchAlbum = track.album
+        searchTitle = initialTitle
+        searchArtist = initialArtist
+        searchAlbum = initialAlbum
         includeTranslation = includeTranslationDefault
         Task { await performSearch() }
     }
@@ -856,7 +892,7 @@ struct LDDCSearchSection: View {
             title: searchTitle,
             artist: searchArtist.isEmpty ? nil : searchArtist,
             album: searchAlbum.isEmpty ? nil : searchAlbum,
-            duration: track.duration > 0 ? track.duration : nil,
+            duration: duration > 0 ? duration : nil,
             limit: 20
         )
         

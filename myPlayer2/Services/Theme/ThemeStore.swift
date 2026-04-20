@@ -49,7 +49,7 @@ final class ThemeStore: ObservableObject {
     private let defaultBlueNS: NSColor
     private var rawDominantColor: NSColor
     private let dominantColorCache = NSCache<NSString, NSColorBox>()
-    private var activeTrackID: UUID?
+    private var activeArtworkIdentity: String?
     private var extractionToken = UUID()
     private let extractionQueue = DispatchQueue(
         label: "kmg.myPlayer2.theme.artwork.extraction",
@@ -59,7 +59,7 @@ final class ThemeStore: ObservableObject {
     private var currentArtworkData: Data?
     private var currentArtworkChecksum: UInt64 = 0
     private var lastProcessedChecksum: UInt64 = 0
-    private var lastProcessedTrackID: UUID?
+    private var lastProcessedArtworkIdentity: String?
     private var averageColorCache: NSColor?
 
     private init() {
@@ -88,27 +88,55 @@ final class ThemeStore: ObservableObject {
 
     /// Legacy entrypoint kept for compatibility with old call sites.
     func updateArtwork(_ data: Data?) async {
-        await updateThemeFromArtworkData(data, trackID: nil)
+        await updateThemeFromArtworkData(data, artworkIdentity: nil, assetTrackID: nil)
     }
 
     /// Primary entrypoint: update theme based on current track.
-    /// - Uses trackID cache to avoid repeated extraction on same song.
+    /// - Uses artwork identity cache to avoid repeated extraction on the same artwork.
     /// - Falls back to default blue when artwork is missing or extraction fails.
     func updateTheme(for track: Track?) async {
         let trackID = track?.id
         let artworkData = track?.artworkData
-        await updateThemeFromArtworkData(artworkData, trackID: trackID)
+        await updateThemeFromArtworkData(
+            artworkData,
+            artworkIdentity: trackID?.uuidString,
+            assetTrackID: trackID
+        )
     }
 
-    private func updateThemeFromArtworkData(_ data: Data?, trackID: UUID?) async {
+    /// Source-neutral artwork theme entrypoint.
+    /// Local playback supplies a Track; external playback supplies presentation artwork and identity.
+    func updateTheme(for presentation: NowPlayingPresentation) async {
+        if presentation.source == .local {
+            await updateTheme(for: presentation.localTrack)
+            return
+        }
+
+        let artworkIdentity =
+            presentation.artworkIdentity
+            ?? presentation.externalStableKey
+            ?? presentation.lyricsIdentity
+
+        await updateThemeFromArtworkData(
+            presentation.artworkData,
+            artworkIdentity: artworkIdentity,
+            assetTrackID: presentation.localTrack?.id
+        )
+    }
+
+    private func updateThemeFromArtworkData(
+        _ data: Data?,
+        artworkIdentity: String?,
+        assetTrackID: UUID?
+    ) async {
         let checksum = data.map(computeChecksum) ?? 0
-        let updateState = "track=\(trackID?.uuidString ?? "nil")|checksum=\(checksum)"
+        let updateState = "identity=\(artworkIdentity ?? "nil")|checksum=\(checksum)"
         if await LogStateTracker.shared.checkStateChanged(
             key: "theme.updateThemeFromArtworkData",
             value: updateState
         ) {
             Log.debug(
-                "updateThemeFromArtworkData called - trackID: \(trackID?.uuidString.prefix(8) ?? "nil"), dataSize: \(data?.count ?? 0)",
+                "updateThemeFromArtworkData called - identity: \(shortIdentity(artworkIdentity)), dataSize: \(data?.count ?? 0)",
                 category: .theme
             )
         }
@@ -118,7 +146,7 @@ final class ThemeStore: ObservableObject {
             value: updateState
         ) {
             Log.debug(
-                "checksum computed: \(checksum), lastProcessedChecksum: \(lastProcessedChecksum), lastProcessedTrackID: \(lastProcessedTrackID?.uuidString.prefix(8) ?? "nil")",
+                "checksum computed: \(checksum), lastProcessedChecksum: \(lastProcessedChecksum), lastProcessedIdentity: \(shortIdentity(lastProcessedArtworkIdentity))",
                 category: .theme
             )
         }
@@ -128,7 +156,7 @@ final class ThemeStore: ObservableObject {
             currentArtworkData = nil
             currentArtworkChecksum = 0
             lastProcessedChecksum = 0
-            lastProcessedTrackID = nil
+            lastProcessedArtworkIdentity = nil
             averageColorCache = nil
             rawDominantColor = defaultBlueNS
             usesFallbackThemeColor = true
@@ -136,9 +164,9 @@ final class ThemeStore: ObservableObject {
             return
         }
 
-        let cacheKey = makeCacheKey(trackID: trackID, checksum: checksum)
+        let cacheKey = makeCacheKey(artworkIdentity: artworkIdentity, checksum: checksum)
 
-        if trackID == activeTrackID, checksum == currentArtworkChecksum, checksum != 0 {
+        if artworkIdentity == activeArtworkIdentity, checksum == currentArtworkChecksum, checksum != 0 {
             Log.trace(
                 "Already processing artwork checksum \(checksum), skipping duplicate in-flight call",
                 category: .theme
@@ -146,15 +174,15 @@ final class ThemeStore: ObservableObject {
             return
         }
 
-        activeTrackID = trackID
+        activeArtworkIdentity = artworkIdentity
         extractionToken = UUID()
         let token = extractionToken
 
-        // Deduplication: Skip if same artwork AND same track already processed
-        // This prevents re-extraction on same song but allows theme updates on track change
-        if checksum == lastProcessedChecksum, checksum != 0, trackID == lastProcessedTrackID {
+        // Deduplication: palette extraction depends on artwork bytes; identity may change when AM upgrades source.
+        if checksum == lastProcessedChecksum, checksum != 0 {
+            lastProcessedArtworkIdentity = artworkIdentity
             Log.trace(
-                "Skipping duplicate artwork (same track, checksum match: \(checksum))",
+                "Skipping duplicate artwork (checksum match: \(checksum))",
                 category: .theme
             )
             return
@@ -171,10 +199,10 @@ final class ThemeStore: ObservableObject {
             rawDominantColor = cached
             usesFallbackThemeColor = false
             lastProcessedChecksum = checksum
-            lastProcessedTrackID = trackID
-            if let trackID {
+            lastProcessedArtworkIdentity = artworkIdentity
+            if let assetTrackID {
                 averageColorCache = await ArtworkAssetStore.shared
-                    .get(trackID: trackID, artworkChecksum: checksum)?
+                    .get(trackID: assetTrackID, artworkChecksum: checksum)?
                     .averageColor
             }
             await refreshPalette(reason: "track_artwork_cached")
@@ -182,19 +210,19 @@ final class ThemeStore: ObservableObject {
         }
 
         Log.debug(
-            "Extraction started for track \(trackID?.uuidString.prefix(8) ?? "nil")",
+            "Extraction started for identity \(shortIdentity(artworkIdentity))",
             category: .theme
         )
 
         // Quick color for immediate UI feedback, then full extraction
         async let quick = extractQuickColor(from: data)
         async let cachedArtworkSnapshot: ArtworkAssetSnapshot? = {
-            guard let trackID else { return nil }
-            return await ArtworkAssetStore.shared.snapshotMetadata(trackID: trackID, artworkData: data)
+            guard let assetTrackID else { return nil }
+            return await ArtworkAssetStore.shared.snapshotMetadata(trackID: assetTrackID, artworkData: data)
         }()
 
         // Apply quick color first for immediate feedback
-        if let quickColor = await quick, token == extractionToken, activeTrackID == trackID {
+        if let quickColor = await quick, token == extractionToken, activeArtworkIdentity == artworkIdentity {
             Log.trace("Applying quick color", category: .theme)
             rawDominantColor = quickColor
             usesFallbackThemeColor = false
@@ -210,9 +238,9 @@ final class ThemeStore: ObservableObject {
             extractedColor = await extractDominantColor(from: data)
         }
 
-        guard token == extractionToken, activeTrackID == trackID else {
+        guard token == extractionToken, activeArtworkIdentity == artworkIdentity else {
             Log.trace(
-                "Token/trackID mismatch, aborting. token match: \(token == extractionToken), activeTrackID match: \(activeTrackID == trackID), currentActiveTrackID: \(activeTrackID?.uuidString.prefix(8) ?? "nil"), expectedTrackID: \(trackID?.uuidString.prefix(8) ?? "nil")",
+                "Token/identity mismatch, aborting. token match: \(token == extractionToken), activeIdentity match: \(activeArtworkIdentity == artworkIdentity), currentActiveIdentity: \(shortIdentity(activeArtworkIdentity)), expectedIdentity: \(shortIdentity(artworkIdentity))",
                 category: .theme
             )
             return
@@ -227,7 +255,7 @@ final class ThemeStore: ObservableObject {
         rawDominantColor = resolved
         usesFallbackThemeColor = extractedColor == nil
         lastProcessedChecksum = checksum
-        lastProcessedTrackID = trackID
+        lastProcessedArtworkIdentity = artworkIdentity
         
         // Pre-extract and cache averageColor
         if extractedColor != nil {
@@ -507,9 +535,14 @@ final class ThemeStore: ObservableObject {
         return hash
     }
     
-    private func makeCacheKey(trackID: UUID?, checksum: UInt64) -> String? {
-        guard let trackID, checksum != 0 else { return nil }
-        return "\(trackID.uuidString)-\(checksum)"
+    private func makeCacheKey(artworkIdentity: String?, checksum: UInt64) -> String? {
+        guard let artworkIdentity, checksum != 0 else { return nil }
+        return "\(artworkIdentity)-\(checksum)"
+    }
+
+    private func shortIdentity(_ identity: String?) -> String {
+        guard let identity, !identity.isEmpty else { return "nil" }
+        return String(identity.prefix(16))
     }
 }
 

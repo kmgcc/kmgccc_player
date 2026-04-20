@@ -124,31 +124,34 @@ struct FullscreenSkinTabView: View {
         HStack(spacing: 8) {
             Text("Mini Player 自动隐藏")
             Spacer()
-            HStack(spacing: 4) {
-                ForEach(fullscreenMiniPlayerAutoHideOptions, id: \.seconds) { option in
-                    let selected = fullscreenMiniPlayerAutoHideSeconds == option.seconds
-                    Button {
-                        fullscreenMiniPlayerAutoHideSeconds = option.seconds
-                    } label: {
-                        Text(option.title)
-                            .font(.system(size: 11, weight: selected ? .medium : .regular))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                    }
-                    .buttonStyle(.plain)
-                    .background(
-                        Capsule()
-                            .fill(selected ? themeStore.accentColor.opacity(0.18) : Color.clear)
-                    )
-                    .foregroundStyle(selected ? themeStore.accentColor : .secondary)
+            SlidingSelector(
+                segments: fullscreenMiniPlayerAutoHideOptions.map(\.seconds),
+                selection: $fullscreenMiniPlayerAutoHideSeconds,
+                animation: .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08),
+                hSpacing: 0,
+                background: {
+                    Color.clear
+                },
+                knob: {
+                    Capsule()
+                        .fill(themeStore.accentColor.opacity(0.18))
+                },
+                content: { seconds, isSelected in
+                    let title = fullscreenMiniPlayerAutoHideOptions.first(where: { $0.seconds == seconds })?.title ?? ""
+                    Text(title)
+                        .font(.system(size: 11, weight: isSelected ? .medium : .regular))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .foregroundStyle(isSelected ? themeStore.accentColor : .secondary)
                 }
-            }
+            )
             .padding(.horizontal, 4)
             .padding(.vertical, 3)
             .background(
                 Capsule()
                     .fill(Color.secondary.opacity(0.08))
             )
+            .fixedSize(horizontal: true, vertical: false)
         }
     }
 
@@ -156,31 +159,34 @@ struct FullscreenSkinTabView: View {
         HStack(spacing: 8) {
             Text("Mini Player 材质")
             Spacer()
-            HStack(spacing: 4) {
-                ForEach(fullscreenMiniPlayerGlassMaterialOptions, id: \.material) { option in
-                    let selected = fullscreenMiniPlayerGlassMaterial == option.material
-                    Button {
-                        fullscreenMiniPlayerGlassMaterial = option.material
-                    } label: {
-                        Text(option.title)
-                            .font(.system(size: 11, weight: selected ? .medium : .regular))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                    }
-                    .buttonStyle(.plain)
-                    .background(
-                        Capsule()
-                            .fill(selected ? themeStore.accentColor.opacity(0.18) : Color.clear)
-                    )
-                    .foregroundStyle(selected ? themeStore.accentColor : .secondary)
+            SlidingSelector(
+                segments: fullscreenMiniPlayerGlassMaterialOptions.map(\.material),
+                selection: $fullscreenMiniPlayerGlassMaterial,
+                animation: .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08),
+                hSpacing: 0,
+                background: {
+                    Color.clear
+                },
+                knob: {
+                    Capsule()
+                        .fill(themeStore.accentColor.opacity(0.18))
+                },
+                content: { material, isSelected in
+                    let title = fullscreenMiniPlayerGlassMaterialOptions.first(where: { $0.material == material })?.title ?? ""
+                    Text(title)
+                        .font(.system(size: 11, weight: isSelected ? .medium : .regular))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .foregroundStyle(isSelected ? themeStore.accentColor : .secondary)
                 }
-            }
+            )
             .padding(.horizontal, 4)
             .padding(.vertical, 3)
             .background(
                 Capsule()
                     .fill(Color.secondary.opacity(0.08))
             )
+            .fixedSize(horizontal: true, vertical: false)
         }
     }
 

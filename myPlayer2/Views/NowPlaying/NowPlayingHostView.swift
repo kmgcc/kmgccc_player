@@ -25,6 +25,7 @@ struct NowPlayingHostView: View {
     @State private var artworkSnapshot: ArtworkAssetSnapshot?
 
     let mainContentWidth: CGFloat
+    private static let externalArtworkTrackID = UUID(uuidString: "9D7D2E53-8CC0-4E65-8B19-7D9E772E6D43")!
 
     var body: some View {
         let selectedSkinID = settings.selectedNowPlayingSkinID
@@ -97,11 +98,10 @@ struct NowPlayingHostView: View {
 
     private func makeContext(windowSize: CGSize, contentBounds: CGRect) -> SkinContext {
         let presentation = playbackCoordinator.presentation
-        let track = presentation.localTrack
 
-        let trackMeta: SkinContext.TrackMetadata? = track.map {
-            SkinContext.TrackMetadata(
-                id: $0.id,
+        let trackMeta: SkinContext.TrackMetadata? = presentation.hasTrack
+            ? SkinContext.TrackMetadata(
+                id: presentation.localTrack?.id ?? Self.externalArtworkTrackID,
                 title: presentation.title,
                 artist: presentation.artist,
                 album: presentation.album ?? "",
@@ -110,7 +110,7 @@ struct NowPlayingHostView: View {
                 artworkData: presentation.artworkData,
                 artworkImage: artworkSnapshot?.fullImage
             )
-        }
+            : nil
 
         let playback = SkinContext.PlaybackState(
             isPlaying: presentation.isPlaying,
@@ -159,24 +159,28 @@ struct NowPlayingHostView: View {
     
     private var currentArtworkTaskKey: String {
         let presentation = playbackCoordinator.presentation
-        guard let track = presentation.localTrack else { return "none" }
+        guard presentation.hasTrack else { return "none" }
         let checksum = ArtworkAssetStore.checksum(for: presentation.artworkData)
-        return "\(track.id.uuidString)-\(checksum)-px:\(preferredArtworkFullImageMaxPixel)"
+        let identity = presentation.artworkIdentity
+            ?? presentation.externalStableKey
+            ?? presentation.localTrack?.id.uuidString
+            ?? "unknown"
+        return "\(identity)-\(checksum)-px:\(preferredArtworkFullImageMaxPixel)"
     }
     
     private func loadArtworkSnapshot() async {
         let presentation = playbackCoordinator.presentation
         guard
-            let track = presentation.localTrack,
             let artworkData = presentation.artworkData,
             !artworkData.isEmpty
         else {
             artworkSnapshot = nil
             return
         }
+        let trackID = presentation.localTrack?.id ?? Self.externalArtworkTrackID
         
         let snapshot = await ArtworkAssetStore.shared.snapshot(
-            trackID: track.id,
+            trackID: trackID,
             artworkData: artworkData,
             fullImageMaxPixelSize: preferredArtworkFullImageMaxPixel
         )

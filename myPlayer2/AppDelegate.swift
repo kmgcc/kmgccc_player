@@ -7,11 +7,33 @@
 
 import AppKit
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    static weak var shared: AppDelegate?
+
+    private let dockController = DockController()
+
+    override init() {
+        super.init()
+        Self.shared = self
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         disableWindowTabbing()
         configureMainMenu()
+        dockController.installDockTile()
+    }
+
+    func configureDockPlayback(playbackCoordinator: PlaybackCoordinator) {
+        dockController.configure(playbackCoordinator: playbackCoordinator)
+    }
+
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        dockController.makeDockMenu()
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        dockController.applicationShouldHandleReopen(hasVisibleWindows: flag)
     }
 
     private func disableWindowTabbing() {

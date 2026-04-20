@@ -14,6 +14,7 @@ final class NowPlayingService {
     static let shared = NowPlayingService()
 
     private weak var player: PlayerViewModel?
+    private weak var coordinator: PlaybackCoordinator?
     private var progressTimer: Timer?
     private var isRegistered = false
     private var lastUpdateTime: TimeInterval = 0
@@ -30,8 +31,15 @@ final class NowPlayingService {
         startProgressTimer()
     }
 
+    func register(coordinator: PlaybackCoordinator) {
+        self.coordinator = coordinator
+        registerRemoteCommandsIfNeeded()
+        updateNowPlaying(force: true)
+        startProgressTimer()
+    }
+
     func updateNowPlaying(force: Bool = false) {
-        guard let player else { return }
+        guard coordinator != nil || player != nil else { return }
 
         let now = ProcessInfo.processInfo.systemUptime
         if !force, now - lastUpdateTime < progressInterval {
@@ -39,7 +47,12 @@ final class NowPlayingService {
         }
         lastUpdateTime = now
 
-        guard let track = player.currentTrack else {
+        if let coordinator {
+            updateNowPlaying(from: coordinator.presentation)
+            return
+        }
+
+        guard let player, let track = player.currentTrack else {
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
             if #available(macOS 12.0, *) {
                 MPNowPlayingInfoCenter.default().playbackState = .stopped
@@ -69,6 +82,40 @@ final class NowPlayingService {
         }
     }
 
+    private func updateNowPlaying(from presentation: NowPlayingPresentation) {
+        guard presentation.hasTrack else {
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+            if #available(macOS 12.0, *) {
+                MPNowPlayingInfoCenter.default().playbackState = .stopped
+            }
+            return
+        }
+
+        var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+        info[MPMediaItemPropertyTitle] = presentation.title
+        info[MPMediaItemPropertyArtist] = presentation.artist
+        if let album = presentation.album, !album.isEmpty {
+            info[MPMediaItemPropertyAlbumTitle] = album
+        } else {
+            info.removeValue(forKey: MPMediaItemPropertyAlbumTitle)
+        }
+        info[MPMediaItemPropertyPlaybackDuration] = presentation.duration
+        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = presentation.currentTime
+        info[MPNowPlayingInfoPropertyPlaybackRate] = presentation.isPlaying ? 1.0 : 0.0
+
+        if let artwork = mediaArtwork(for: presentation) {
+            info[MPMediaItemPropertyArtwork] = artwork
+        } else {
+            info.removeValue(forKey: MPMediaItemPropertyArtwork)
+        }
+
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        if #available(macOS 12.0, *) {
+            MPNowPlayingInfoCenter.default().playbackState =
+                presentation.isPlaying ? .playing : .paused
+        }
+    }
+
     // MARK: - Remote Commands
 
     private func registerRemoteCommandsIfNeeded() {
@@ -92,52 +139,88 @@ final class NowPlayingService {
         commandCenter.changePlaybackPositionCommand.isEnabled = true
 
         commandCenter.playCommand.addTarget { [weak self] _ in
-            guard let player = self?.player else { return .commandFailed }
+            guard let self, self.coordinator != nil || self.player != nil else {
+                return .commandFailed
+            }
             Task { @MainActor in
-                player.resume()
+                if let coordinator = self.coordinator {
+                    coordinator.resume()
+                } else {
+                    self.player?.resume()
+                }
             }
             return .success
         }
 
         commandCenter.pauseCommand.addTarget { [weak self] _ in
-            guard let player = self?.player else { return .commandFailed }
+            guard let self, self.coordinator != nil || self.player != nil else {
+                return .commandFailed
+            }
             Task { @MainActor in
-                player.pause()
+                if let coordinator = self.coordinator {
+                    coordinator.pause()
+                } else {
+                    self.player?.pause()
+                }
             }
             return .success
         }
 
         commandCenter.togglePlayPauseCommand.addTarget { [weak self] _ in
-            guard let player = self?.player else { return .commandFailed }
+            guard let self, self.coordinator != nil || self.player != nil else {
+                return .commandFailed
+            }
             Task { @MainActor in
-                player.togglePlayPause()
+                if let coordinator = self.coordinator {
+                    coordinator.playPause()
+                } else {
+                    self.player?.togglePlayPause()
+                }
             }
             return .success
         }
 
         commandCenter.nextTrackCommand.addTarget { [weak self] _ in
-            guard let player = self?.player else { return .commandFailed }
+            guard let self, self.coordinator != nil || self.player != nil else {
+                return .commandFailed
+            }
             Task { @MainActor in
-                player.next()
+                if let coordinator = self.coordinator {
+                    coordinator.next()
+                } else {
+                    self.player?.next()
+                }
             }
             return .success
         }
 
         commandCenter.previousTrackCommand.addTarget { [weak self] _ in
-            guard let player = self?.player else { return .commandFailed }
+            guard let self, self.coordinator != nil || self.player != nil else {
+                return .commandFailed
+            }
             Task { @MainActor in
-                player.previous()
+                if let coordinator = self.coordinator {
+                    coordinator.previous()
+                } else {
+                    self.player?.previous()
+                }
             }
             return .success
         }
 
         commandCenter.changePlaybackPositionCommand.addTarget { [weak self] event in
-            guard let player = self?.player else { return .commandFailed }
+            guard let self, self.coordinator != nil || self.player != nil else {
+                return .commandFailed
+            }
             guard let positionEvent = event as? MPChangePlaybackPositionCommandEvent else {
                 return .commandFailed
             }
             Task { @MainActor in
-                player.seek(to: positionEvent.positionTime)
+                if let coordinator = self.coordinator {
+                    coordinator.seek(to: positionEvent.positionTime)
+                } else {
+                    self.player?.seek(to: positionEvent.positionTime)
+                }
             }
             return .success
         }
@@ -183,6 +266,31 @@ final class NowPlayingService {
             return nil
         }
         
+        let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+        cachedArtwork = artwork
+        return artwork
+    }
+
+    private func mediaArtwork(for presentation: NowPlayingPresentation) -> MPMediaItemArtwork? {
+        let checksum = ArtworkAssetStore.checksum(for: presentation.artworkData)
+        let identity = presentation.lyricsIdentity ?? presentation.localTrack?.id.uuidString ?? presentation.title
+        let cacheKey = "\(presentation.source.rawValue)-\(identity)-\(checksum)"
+
+        if cachedArtworkKey == cacheKey {
+            return cachedArtwork
+        }
+
+        cachedArtworkKey = cacheKey
+        cachedArtwork = nil
+
+        guard
+            let data = presentation.artworkData,
+            !data.isEmpty,
+            let image = NSImage(data: data)
+        else {
+            return nil
+        }
+
         let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
         cachedArtwork = artwork
         return artwork

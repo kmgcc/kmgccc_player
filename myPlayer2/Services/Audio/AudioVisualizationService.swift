@@ -62,6 +62,10 @@ final class AudioVisualizationService {
     private var lastPublishTime: TimeInterval = 0
     private var lastRestartAttemptTime: TimeInterval = 0
 
+    // MARK: - External Simulation
+
+    private var isExternalMode = false
+
     static let shared = AudioVisualizationService()
 
     private init() {}
@@ -96,6 +100,20 @@ final class AudioVisualizationService {
                 self.pauseStartTime = nil
             } else if self.pauseStartTime == nil {
                 self.pauseStartTime = Date().timeIntervalSinceReferenceDate
+            }
+        }
+    }
+
+    func setExternalMode(_ enabled: Bool) {
+        processingQueue.async { [weak self] in
+            guard let self else { return }
+            let wasEnabled = self.isExternalMode
+            self.isExternalMode = enabled
+
+            if enabled && !wasEnabled {
+                self.lastDataTime = Date().timeIntervalSinceReferenceDate
+            } else if !enabled && wasEnabled {
+                self.hasPendingFFT = false
             }
         }
     }
@@ -227,7 +245,10 @@ final class AudioVisualizationService {
         let dt = Float(max(0.001, min(0.1, now - lastTickTime)))
         lastTickTime = now
 
-        if hasPendingFFT {
+        if isExternalMode {
+            liveWave = ExternalPlaybackSpectrumSimulator.shared.lastWave
+            lastDataTime = now
+        } else if hasPendingFFT {
             liveWave = processor.process(
                 magnitudes: pendingMagnitudes,
                 fftSize: pendingFFTSize,
@@ -242,7 +263,8 @@ final class AudioVisualizationService {
             )
         }
 
-        if isPlaying,
+        if !isExternalMode,
+           isPlaying,
            activeRefs > 0,
            now - lastDataTime > Constants.staleRestartThreshold,
            now - lastRestartAttemptTime > Constants.restartCooldown
@@ -312,7 +334,7 @@ final class AudioVisualizationService {
 
 // MARK: - Spectrum Processing
 
-private final class SpectrumProcessor: @unchecked Sendable {
+final class SpectrumProcessor: @unchecked Sendable {
 
     struct Constants {
         // 1. Upstream Gains & Headroom

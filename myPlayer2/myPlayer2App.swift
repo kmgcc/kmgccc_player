@@ -261,4 +261,5 @@ extension Notification.Name {
     static let newPlaylist = Notification.Name("kmgccc_player.newPlaylist")
     static let toggleSidebar = Notification.Name("kmgccc_player.toggleSidebar")
     static let playbackModeChanged = Notification.Name("kmgccc_player.playbackModeChanged")
+    static let dockProgressVisibilityChanged = Notification.Name("kmgccc_player.dockProgressVisibilityChanged")
 }

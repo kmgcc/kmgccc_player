@@ -64,6 +64,8 @@ struct SettingsView: View {
                     NowPlayingSettingsContainerView()
                 case .fullscreen:
                     FullscreenSettingsContainerView()
+                case .externalPlayback:
+                    ExternalPlaybackSettingsView()
                 case .led:
                     LEDMeterSettingsView()
                 case .data:

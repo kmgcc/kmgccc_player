@@ -23,6 +23,11 @@
 "sidebar.artists" = "歌手";
 "sidebar.albums" = "专辑";
 "sidebar.fullscreen" = "全屏播放";
+"playback.source.local" = "本地";
+"playback.source.apple_music" = "Apple Music";
+"playback.source.help" = "切换播放来源";
+"apple_music.not_running" = "Music 未运行";
+"apple_music.not_playing" = "Apple Music 未播放";
 
 // MARK: - Settings General
 "settings.title" = "设置";
@@ -242,9 +247,12 @@
 "menu.toggle_lyrics" = "切换歌词面板";
 "menu.open_fullscreen_player" = "打开全屏播放器";
 "menu.playback" = "播放控制";
+"menu.play" = "播放";
+"menu.pause" = "暂停";
 "menu.play_pause" = "播放/暂停";
 "menu.next_track" = "下一首";
 "menu.previous_track" = "上一首";
+"menu.show_main_window" = "显示主窗口";
 "menu.toggle_queue" = "切换播放队列";
 "menu.playback_order" = "播放顺序";
 "menu.sequence" = "顺序播放";

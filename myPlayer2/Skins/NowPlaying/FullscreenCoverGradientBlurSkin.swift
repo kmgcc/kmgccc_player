@@ -209,37 +209,37 @@ private struct CoverGradientBlurSettingsView: View {
 
             Spacer()
 
-            HStack(spacing: 4) {
-                ForEach(CoverEdgeFillMode.allCases, id: \.rawValue) { mode in
-                    modeButton(for: mode)
+            SlidingSelector(
+                segments: CoverEdgeFillMode.allCases,
+                selection: Binding(
+                    get: { currentEdgeFillMode },
+                    set: { edgeFillMode = $0.rawValue }
+                ),
+                animation: .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08),
+                hSpacing: 0,
+                background: {
+                    Color.clear
+                },
+                knob: {
+                    Capsule()
+                        .fill(themeStore.accentColor.opacity(0.18))
+                },
+                content: { mode, isSelected in
+                    Text(mode.displayName)
+                        .font(.system(size: 11, weight: isSelected ? .medium : .regular))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .foregroundStyle(isSelected ? themeStore.accentColor : .secondary)
                 }
-            }
+            )
             .padding(.horizontal, 4)
             .padding(.vertical, 3)
             .background(
                 Capsule()
                     .fill(Color.secondary.opacity(0.08))
             )
+            .fixedSize(horizontal: true, vertical: false)
         }
-    }
-
-    private func modeButton(for mode: CoverEdgeFillMode) -> some View {
-        Button {
-            edgeFillMode = mode.rawValue
-        } label: {
-            Text(mode.displayName)
-                .font(.system(size: 11, weight: currentEdgeFillMode == mode ? .medium : .regular))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-        }
-        .buttonStyle(.plain)
-        .background(
-            Capsule()
-                .fill(currentEdgeFillMode == mode ? themeStore.accentColor.opacity(0.18) : Color.clear)
-        )
-        .foregroundStyle(
-            currentEdgeFillMode == mode ? themeStore.accentColor : .secondary
-        )
     }
 
     private var blurRadiusSlider: some View {

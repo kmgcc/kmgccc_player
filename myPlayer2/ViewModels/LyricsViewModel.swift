@@ -30,6 +30,8 @@ final class LyricsViewModel {
     /// Current track (source of lyrics).
     private(set) var currentTrack: Track?
     private var lastAppliedTrackId: UUID?
+    private var lastAppliedExternalLyricsIdentity: String?
+    private var lastAppliedExternalLyricsSignature: String?
 
     /// Whether lyrics are available.
     var hasLyrics: Bool {
@@ -145,6 +147,57 @@ final class LyricsViewModel {
         }
     }
 
+    func ensureExternalAMLLLoaded(
+        presentation: NowPlayingPresentation,
+        reason: String,
+        forceWebReload: Bool = false,
+        forceLyricsReload: Bool = false,
+        recreateWebViewOnForceReload: Bool = false
+    ) {
+        currentTrack = presentation.localTrack
+        let identity = presentation.lyricsIdentity ?? "external.empty"
+        let lyricsText = presentation.lyricsText ?? ""
+        let lyricsSignature = "\(identity):\(lyricsText.count):\(lyricsText.hashValue)"
+        let trackID = presentation.localTrack?.id
+
+        LyricsSurfaceManager.shared.updatePlaybackSnapshot(
+            trackID: trackID,
+            lyricsTTML: lyricsText,
+            currentTime: presentation.currentTime,
+            isPlaying: presentation.isPlaying
+        )
+
+        Log.debug(
+            "[LyricsVM] ensureExternalAMLLLoaded: reason=\(reason), identity=\(identity.prefix(16)), lyricsLen=\(lyricsText.count), webViewObjectID=\(store.webViewObjectID)",
+            category: .lyrics
+        )
+
+        refreshConfigFromSettings()
+
+        if forceWebReload {
+            store.forceReload(recreateWebView: recreateWebViewOnForceReload)
+        }
+
+        if forceLyricsReload || lastAppliedExternalLyricsSignature != lyricsSignature {
+            lastAppliedExternalLyricsIdentity = identity
+            lastAppliedExternalLyricsSignature = lyricsSignature
+            store.applyTrack(
+                trackID: trackID,
+                ttml: lyricsText,
+                currentTime: presentation.currentTime,
+                isPlaying: presentation.isPlaying
+            )
+        } else {
+            if let palette = ThemeStore.shared.palette {
+                store.applyTheme(palette)
+            }
+            LyricsSurfaceManager.shared.updatePlaybackTime(presentation.currentTime)
+            LyricsSurfaceManager.shared.updatePlayingState(presentation.isPlaying)
+            store.setPlaying(presentation.isPlaying)
+            store.setCurrentTime(presentation.currentTime)
+        }
+    }
+
     private func shouldApplyTrack(_ track: Track?, forceLyricsReload: Bool) -> Bool {
         if forceLyricsReload { return true }
         return lastAppliedTrackId != track?.id
@@ -176,6 +229,8 @@ final class LyricsViewModel {
     func clearLyrics() {
         currentTrack = nil
         lastAppliedTrackId = nil
+        lastAppliedExternalLyricsIdentity = nil
+        lastAppliedExternalLyricsSignature = nil
         LyricsSurfaceManager.shared.updatePlaybackSnapshot(
             trackID: nil,
             lyricsTTML: "",
