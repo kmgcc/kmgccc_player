@@ -425,7 +425,7 @@ final class LibraryViewModel {
 
         // Only refresh if tracks were actually imported
         if count > 0 {
-            await refresh()
+            await syncVisibleStateFromRepositoryAfterImport()
         }
     }
 
@@ -444,7 +444,7 @@ final class LibraryViewModel {
         let count = await service.importSelectedURLs(selectedURLs, to: playlist)
 
         if count > 0 {
-            await refresh()
+            await syncVisibleStateFromRepositoryAfterImport()
         }
     }
 
@@ -755,6 +755,23 @@ final class LibraryViewModel {
         let formatter = DateFormatter()
         formatter.dateFormat = "MMM d"
         return formatter.string(from: Date())
+    }
+
+    private func syncVisibleStateFromRepositoryAfterImport() async {
+        playlists = await repository.fetchPlaylists()
+        allTracks = await repository.fetchTracks(in: nil)
+        playlistItemAddedAtMap = await repository.fetchPlaylistItemAddedAtMap()
+        totalTrackCount = allTracks.count
+        runtimeArtists = await repository.fetchArtistSections()
+        runtimeAlbums = await repository.fetchAlbumSections()
+        artistEntries = await repository.fetchArtistEntries()
+        albumEntries = await repository.fetchAlbumEntries()
+        reconcileSelectionAfterLoad()
+        refreshTrigger += 1
+        Log.info(
+            "Import synced visible library state without full disk reload, totalTracks=\(totalTrackCount)",
+            category: .library
+        )
     }
 
     // MARK: - Sorting Helpers

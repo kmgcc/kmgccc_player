@@ -111,6 +111,7 @@ struct FullscreenPlayerView: View {
     @State private var suppressFullscreenLyricsViewport = false
     @State private var fullscreenLyricsHostMounted = false
     @State private var isLeadingControlsExpanded = false
+    @State private var isQuickAppearancePanelPresented = false
     @State private var appearanceRotateTrigger = 0
     @State private var currentFullscreenScale: CGFloat = 1.0
     @State private var didHandleFullscreenAppear = false
@@ -118,13 +119,15 @@ struct FullscreenPlayerView: View {
     @State private var isFullscreenBottomControlsVisible = true
     @State private var isFullscreenBottomControlsHovered = false
     @State private var isFullscreenBottomControlsHotZoneHovered = false
-    @State private var isFullscreenBottomControlsMiniPlayerShieldHovered = false
+    @State private var isFullscreenBottomControlsAppearancePanelHovered = false
     @State private var isFullscreenBottomControlsLeadingHovered = false
     @State private var isFullscreenBottomControlsCenterHovered = false
     @State private var isFullscreenBottomControlsTrailingHovered = false
     @State private var isFullscreenBottomControlsProgressDragging = false
     @State private var isFullscreenBottomControlsVolumeAdjusting = false
+    @State private var isPointerOverMiniPlayerOcclusion = false
     @State private var pendingFullscreenBottomControlsHide: DispatchWorkItem?
+    @State private var fullscreenPointerOcclusionMonitor = FullscreenPointerOcclusionMonitor()
     @Namespace private var fullscreenLayoutNamespace
 
     var onExitFullscreen: (() -> Void)?
@@ -185,6 +188,14 @@ struct FullscreenPlayerView: View {
         GeometryReader { proxy in
             fullscreenContent(for: proxy, selectedSkin: selectedSkin, skinUsesCustomBackground: usesCustomBg)
         }
+        .background(
+            WindowToolbarAccessor(
+                configure: { window in
+                    fullscreenPointerOcclusionMonitor.setWindow(window)
+                },
+                configureContinuously: true
+            )
+        )
         .contentShape(Rectangle())
         .contextMenu {
             Button {
@@ -203,6 +214,9 @@ struct FullscreenPlayerView: View {
             guard !didHandleFullscreenAppear else { return }
             didHandleFullscreenAppear = true
             Log.info("FullscreenPlayerView appeared", category: .webview)
+            fullscreenPointerOcclusionMonitor.start { isOccluded in
+                setPointerOverMiniPlayerOcclusion(isOccluded, reason: "mouse-location")
+            }
 
             // Report visibility to manager - manager handles the switch with debouncing
             LyricsSurfaceManager.shared.reportFullscreenVisible(true)
@@ -223,6 +237,8 @@ struct FullscreenPlayerView: View {
         .onDisappear {
             Log.info("FullscreenPlayerView disappeared", category: .webview)
             didHandleFullscreenAppear = false
+            fullscreenPointerOcclusionMonitor.stop()
+            setPointerOverMiniPlayerOcclusion(false, reason: "fullscreen disappear")
             ledMeterProvider.releaseNowPlayingResources()
             artworkSnapshot = nil
             existingFullscreenStore?.onUserSeek = nil
@@ -237,6 +253,8 @@ struct FullscreenPlayerView: View {
             deferredTrackUpdateDeadline = nil
             suppressFullscreenLyricsViewport = false
             fullscreenLyricsHostMounted = false
+            isQuickAppearancePanelPresented = false
+            isFullscreenBottomControlsAppearancePanelHovered = false
             releaseFullscreenMiniPlayerSpectrumLease()
             cancelFullscreenBottomControlsAutoHide()
             deactivateCoverBlurHighlightSurface()
@@ -380,6 +398,10 @@ struct FullscreenPlayerView: View {
         let scaleX = proxy.size.width / Self.baseCanvasWidth
         let scaleY = proxy.size.height / Self.baseCanvasHeight
         let scale = min(scaleX, scaleY)
+        let miniPlayerOcclusionRegion = fullscreenMiniPlayerOcclusionRegion(
+            scale: scale,
+            screenSize: proxy.size
+        )
 
         ZStack {
             if skinUsesCustomBackground {
@@ -435,16 +457,24 @@ struct FullscreenPlayerView: View {
                 .scaleEffect(scale, anchor: .center)
 
             // Layer 3: Bottom bar at actual resolution - on top
-            fullscreenBottomBarLayer(scale: scale, screenHeight: proxy.size.height)
+            fullscreenBottomBarLayer(
+                scale: scale,
+                screenWidth: proxy.size.width,
+                screenHeight: proxy.size.height
+            )
                 .frame(width: proxy.size.width, height: proxy.size.height)
         }
         .id("fullscreen_\(settings.fullscreen.skinID)_\(skinRevision)")
         .frame(width: proxy.size.width, height: proxy.size.height)
         .onAppear {
             currentFullscreenScale = scale
+            updateFullscreenMiniPlayerOcclusionRegion(miniPlayerOcclusionRegion)
         }
         .onChange(of: scale) { _, newScale in
             currentFullscreenScale = newScale
+        }
+        .onChange(of: miniPlayerOcclusionRegion) { _, newRegion in
+            updateFullscreenMiniPlayerOcclusionRegion(newRegion)
         }
     }
 
@@ -756,10 +786,66 @@ struct FullscreenPlayerView: View {
     /// progress-bar area (which uses maxWidth: .infinity). Outer button spacing is
     /// unaffected; the group re-centers automatically.
     private let fullscreenMiniPlayerPillWidthReduction: CGFloat = 160
-    private let leadingControlsExpandedWidth: CGFloat = 180
+    private let leadingControlsExpandedWidth: CGFloat = 240
     private let leadingControlsCollapsedWidth: CGFloat = 120  // 2 buttons × 60pt
     private let volumeExpandedWidth: CGFloat = 180
     private let volumeCollapsedWidth: CGFloat = 60
+
+    private func fullscreenMiniPlayerOcclusionRegion(
+        scale: CGFloat,
+        screenSize: CGSize
+    ) -> FullscreenMiniPlayerOcclusionRegion {
+        guard isFullscreenBottomControlsVisible else {
+            return .inactive
+        }
+
+        let buttonSize = fullscreenControlButtonSize
+        let spacing = fullscreenControlSpacing
+        let windowWidth = Self.baseCanvasWidth
+
+        let leadingControlsWidth = isLeadingControlsExpanded ? leadingControlsExpandedWidth : leadingControlsCollapsedWidth
+        let leadingControlsExtraWidth = leadingControlsWidth - leadingControlsCollapsedWidth
+        let volumeWidth = isVolumeExpanded ? volumeExpandedWidth : volumeCollapsedWidth
+        let volumeExtraWidth = volumeWidth - volumeCollapsedWidth
+        let leadingMiniPlayerOriginX = leadingControlsCollapsedWidth + spacing
+        let fixedControlWidth = leadingControlsCollapsedWidth + spacing + spacing + volumeCollapsedWidth
+        let availableGroupWidth = max(0, windowWidth - fullscreenControlsHorizontalPadding * 2)
+        let collapsedMiniPlayerWidth = max(
+            0,
+            min(availableGroupWidth - fixedControlWidth, fullscreenMiniPlayerMaxWidth)
+                - fullscreenMiniPlayerPillWidthReduction
+        )
+        let groupWidth = fixedControlWidth + collapsedMiniPlayerWidth
+        let currentMiniPlayerWidth = max(
+            0,
+            collapsedMiniPlayerWidth - leadingControlsExtraWidth - volumeExtraWidth
+        )
+        let groupOriginX = max(0, (windowWidth - groupWidth) * 0.5)
+        let miniPlayerOriginX = groupOriginX + leadingMiniPlayerOriginX + leadingControlsExtraWidth
+
+        let scaledButtonSize = buttonSize * scale
+        let scaledMiniPlayerOriginX = miniPlayerOriginX * scale
+        let scaledMiniPlayerWidth = currentMiniPlayerWidth * scale
+        let scaledWindowWidth = windowWidth * scale
+        let canvasLeftMargin = max(0, (screenSize.width - scaledWindowWidth) * 0.5)
+        let canvasBottomMargin = max(0, (screenSize.height - Self.baseCanvasHeight * scale) * 0.5)
+        let scaledBottomPadding = fullscreenControlsBottomPadding * scale + canvasBottomMargin
+
+        guard scaledMiniPlayerWidth > 1, scaledButtonSize > 1 else {
+            return .inactive
+        }
+
+        return FullscreenMiniPlayerOcclusionRegion(
+            rect: CGRect(
+                x: canvasLeftMargin + scaledMiniPlayerOriginX,
+                y: scaledBottomPadding,
+                width: scaledMiniPlayerWidth,
+                height: scaledButtonSize
+            ),
+            cornerRadius: scaledButtonSize * 0.5,
+            isEnabled: true
+        )
+    }
 
     private func bottomControlsRow() -> some View {
         // Fixed layout for 1470x923 base canvas
@@ -834,6 +920,13 @@ struct FullscreenPlayerView: View {
         return .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08)
     }
 
+    private var quickAppearancePanelAnimation: Animation {
+        if reduceMotion {
+            return .easeInOut(duration: 0.14)
+        }
+        return .spring(response: 0.24, dampingFraction: 0.88, blendDuration: 0.05)
+    }
+
     /// Slower spring used specifically for the cover-element drop/rise when the
     /// fullscreen miniplayer hides or shows. Same damping and character as
     /// bottomControlsAnimation but a longer response so the motion feels
@@ -853,13 +946,32 @@ struct FullscreenPlayerView: View {
         shouldKeepFullscreenBottomControlsVisible
             || isFullscreenBottomControlsHovered
             || isLeadingControlsExpanded
+            || isQuickAppearancePanelPresented
             || isVolumeExpanded
             || isFullscreenBottomControlsProgressDragging
             || isFullscreenBottomControlsVolumeAdjusting
     }
 
     private var shouldKeepFullscreenBottomControlsVisible: Bool {
-        isShowingQueuePanel
+        isShowingQueuePanel || isQuickAppearancePanelPresented
+    }
+
+    private func updateFullscreenMiniPlayerOcclusionRegion(_ region: FullscreenMiniPlayerOcclusionRegion) {
+        fullscreenPointerOcclusionMonitor.updateRegion(region)
+    }
+
+    private func setPointerOverMiniPlayerOcclusion(_ isOccluded: Bool, reason: String) {
+        guard isPointerOverMiniPlayerOcclusion != isOccluded else { return }
+        isPointerOverMiniPlayerOcclusion = isOccluded
+        applyFullscreenLyricsMouseGate(reason: reason)
+    }
+
+    private func applyFullscreenLyricsMouseGate(reason: String) {
+        fullscreenStore.setMouseInteractionSuppressed(isPointerOverMiniPlayerOcclusion, reason: reason)
+        existingCoverBlurHighlightStore?.setMouseInteractionSuppressed(
+            isPointerOverMiniPlayerOcclusion,
+            reason: reason
+        )
     }
 
     private func handleFullscreenBottomControlsHover(_ hovering: Bool) {
@@ -878,7 +990,7 @@ struct FullscreenPlayerView: View {
 
     private func updateFullscreenBottomControlsHoverGate(
         hotZone: Bool? = nil,
-        miniPlayerShield: Bool? = nil,
+        appearancePanel: Bool? = nil,
         leading: Bool? = nil,
         center: Bool? = nil,
         trailing: Bool? = nil
@@ -886,8 +998,8 @@ struct FullscreenPlayerView: View {
         if let hotZone {
             isFullscreenBottomControlsHotZoneHovered = hotZone
         }
-        if let miniPlayerShield {
-            isFullscreenBottomControlsMiniPlayerShieldHovered = miniPlayerShield
+        if let appearancePanel {
+            isFullscreenBottomControlsAppearancePanelHovered = appearancePanel
         }
         if let leading {
             isFullscreenBottomControlsLeadingHovered = leading
@@ -901,7 +1013,7 @@ struct FullscreenPlayerView: View {
 
         let isPointerInsideFullscreenBottomControls =
             isFullscreenBottomControlsHotZoneHovered
-            || isFullscreenBottomControlsMiniPlayerShieldHovered
+            || isFullscreenBottomControlsAppearancePanelHovered
             || isFullscreenBottomControlsLeadingHovered
             || isFullscreenBottomControlsCenterHovered
             || isFullscreenBottomControlsTrailingHovered
@@ -934,6 +1046,26 @@ struct FullscreenPlayerView: View {
         scheduleFullscreenBottomControlsAutoHideIfNeeded()
     }
 
+    private func setQuickAppearancePanelPresented(_ isPresented: Bool) {
+        guard isQuickAppearancePanelPresented != isPresented else { return }
+
+        withAnimation(quickAppearancePanelAnimation) {
+            isQuickAppearancePanelPresented = isPresented
+        }
+
+        if isPresented {
+            cancelFullscreenBottomControlsAutoHide()
+            if isFullscreenBottomControlsVisible == false {
+                withAnimation(bottomControlsAnimation) {
+                    isFullscreenBottomControlsVisible = true
+                }
+            }
+        } else {
+            updateFullscreenBottomControlsHoverGate(appearancePanel: false)
+            scheduleFullscreenBottomControlsAutoHideIfNeeded()
+        }
+    }
+
     private func handleRightPanelDisplayStateChange(_ newState: RightPanelDisplayState) {
         syncFullscreenLyricsHostMount()
 
@@ -957,7 +1089,7 @@ struct FullscreenPlayerView: View {
         isFullscreenBottomControlsVolumeAdjusting = false
         isFullscreenBottomControlsHovered = false
         isFullscreenBottomControlsHotZoneHovered = false
-        isFullscreenBottomControlsMiniPlayerShieldHovered = false
+        isFullscreenBottomControlsAppearancePanelHovered = false
         isFullscreenBottomControlsLeadingHovered = false
         isFullscreenBottomControlsCenterHovered = false
         isFullscreenBottomControlsTrailingHovered = false
@@ -1000,7 +1132,11 @@ struct FullscreenPlayerView: View {
     // MARK: - Fullscreen Bottom Bar Layer (Actual Resolution - Crisp)
     
     @ViewBuilder
-    private func fullscreenBottomBarLayer(scale: CGFloat, screenHeight: CGFloat) -> some View {
+    private func fullscreenBottomBarLayer(
+        scale: CGFloat,
+        screenWidth: CGFloat,
+        screenHeight: CGFloat
+    ) -> some View {
         // Use the same base calculations as bottomControlsRow, then multiply by scale
         let baseScale = scale
         let buttonSize = fullscreenControlButtonSize
@@ -1052,8 +1188,38 @@ struct FullscreenPlayerView: View {
             0,
             scaledBottomPadding - (controlsRowHeight - scaledButtonSize) * 0.5
         )
+        let canvasLeadingMargin = max(0, (screenWidth - scaledWindowWidth) * 0.5)
+        let quickPanelWidth = 500 * baseScale
+        let quickPanelHeight = 520 * baseScale
+        let quickPanelSafeMargin = 20 * baseScale
+        let quickPanelGap = 12 * baseScale
+        let quickPanelBottomY = screenHeight - adjustedBottomPadding - controlsRowHeight - quickPanelGap
+        let quickPanelIdealCenterX =
+            canvasLeadingMargin + scaledLeadingControlsOriginX + quickPanelWidth * 0.5
+        let quickPanelCenterX = min(
+            max(quickPanelIdealCenterX, quickPanelSafeMargin + quickPanelWidth * 0.5),
+            max(
+                quickPanelSafeMargin + quickPanelWidth * 0.5,
+                screenWidth - quickPanelSafeMargin - quickPanelWidth * 0.5
+            )
+        )
+        let quickPanelCenterY = max(
+            quickPanelSafeMargin + quickPanelHeight * 0.5,
+            quickPanelBottomY - quickPanelHeight * 0.5
+        )
         
-        VStack {
+        ZStack(alignment: .topLeading) {
+            if isQuickAppearancePanelPresented {
+                Color.white.opacity(0.001)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        setQuickAppearancePanelPresented(false)
+                    }
+                    .transition(.opacity)
+                    .zIndex(0)
+            }
+
+            VStack {
             Spacer()
             ZStack(alignment: .leading) {
                 Color.white.opacity(0.001)
@@ -1073,24 +1239,6 @@ struct FullscreenPlayerView: View {
                             updateFullscreenBottomControlsHoverGate(hotZone: false)
                         }
                     }
-
-                FullscreenMiniPlayerHitShield(
-                    isEnabled: isFullscreenBottomControlsVisible
-                        && scaledMiniPlayerWidth > 1
-                        && scaledButtonSize > 1,
-                    cornerRadius: scaledButtonSize * 0.5,
-                    onHoverChanged: { hovering in
-                        updateFullscreenBottomControlsHoverGate(miniPlayerShield: hovering)
-                    }
-                )
-                .frame(width: scaledMiniPlayerWidth, height: scaledButtonSize)
-                .position(
-                    x: scaledMiniPlayerOriginX + scaledMiniPlayerWidth / 2,
-                    y: controlsCenterY
-                )
-                .opacity(isFullscreenBottomControlsVisible ? 1 : 0)
-                .allowsHitTesting(isFullscreenBottomControlsVisible)
-                .accessibilityHidden(true)
 
                 ZStack(alignment: .leading) {
                     leadingControlsPill(
@@ -1175,8 +1323,36 @@ struct FullscreenPlayerView: View {
             }
             .frame(width: scaledWindowWidth, height: controlsRowHeight, alignment: .leading)
             .padding(.bottom, adjustedBottomPadding)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .zIndex(1)
+
+            if isQuickAppearancePanelPresented {
+                FullscreenQuickAppearancePanel(
+                    glassStyle: fullscreenControlsGlassStyle,
+                    scale: scale,
+                    onDismiss: {
+                        setQuickAppearancePanelPresented(false)
+                    }
+                )
+                .frame(width: quickPanelWidth, height: quickPanelHeight)
+                .position(x: quickPanelCenterX, y: quickPanelCenterY)
+                .onContinuousHover { phase in
+                    switch phase {
+                    case .active:
+                        updateFullscreenBottomControlsHoverGate(appearancePanel: true)
+                    case .ended:
+                        updateFullscreenBottomControlsHoverGate(appearancePanel: false)
+                    }
+                }
+                .transition(
+                    .opacity.combined(with: .scale(scale: 0.98, anchor: .bottomLeading))
+                )
+                .zIndex(2)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .animation(quickAppearancePanelAnimation, value: isQuickAppearancePanelPresented)
         .animation(bottomControlsAnimation, value: isLeadingControlsExpanded)
         .animation(bottomControlsAnimation, value: isVolumeExpanded)
         .animation(bottomControlsAnimation, value: isFullscreenBottomControlsVisible)
@@ -1346,6 +1522,11 @@ struct FullscreenPlayerView: View {
                 .opacity(isLeadingControlsExpanded ? 1 : 0)
                 .allowsHitTesting(isLeadingControlsExpanded)
                 .accessibilityHidden(!isLeadingControlsExpanded)
+
+            quickAppearanceButton(size: size)
+                .opacity(isLeadingControlsExpanded ? 1 : 0)
+                .allowsHitTesting(isLeadingControlsExpanded)
+                .accessibilityHidden(!isLeadingControlsExpanded)
         }
         .frame(
             width: isLeadingControlsExpanded ? leadingControlsExpandedWidth * scaleFactor : leadingControlsCollapsedWidth * scaleFactor,
@@ -1413,6 +1594,25 @@ struct FullscreenPlayerView: View {
                 appearanceRotateTrigger += 1
             }
             cycleFullscreenAppearance(to: target)
+        }
+    }
+
+    private func quickAppearanceButton(size: CGFloat) -> some View {
+        let icon = isQuickAppearancePanelPresented ? "paintpalette.fill" : "paintpalette"
+
+        return leadingControlButton(size: size, help: "快速外观") {
+            Image(systemName: icon)
+                .id(icon)
+                .font(.system(size: size * 0.32, weight: .semibold))
+                .foregroundStyle(fullscreenMiniPlayerPrimaryColor)
+                .compositingGroup()
+                .blendMode(.screen)
+                .contentTransition(
+                    .symbolEffect(.replace.magic(fallback: .offUp.byLayer), options: .nonRepeating)
+                )
+                .animation(.snappy(duration: 0.20), value: icon)
+        } action: {
+            setQuickAppearancePanelPresented(!isQuickAppearancePanelPresented)
         }
     }
 
@@ -2968,160 +3168,116 @@ struct FullscreenPlayerView: View {
     }
 }
 
-private struct FullscreenMiniPlayerHitShield: NSViewRepresentable {
-    let isEnabled: Bool
+private struct FullscreenMiniPlayerOcclusionRegion: Equatable {
+    static let inactive = FullscreenMiniPlayerOcclusionRegion(
+        rect: .zero,
+        cornerRadius: 0,
+        isEnabled: false
+    )
+
+    let rect: CGRect
     let cornerRadius: CGFloat
-    let onHoverChanged: (Bool) -> Void
+    let isEnabled: Bool
 
-    func makeNSView(context: Context) -> FullscreenMiniPlayerHitShieldView {
-        let view = FullscreenMiniPlayerHitShieldView()
-        view.isEnabled = isEnabled
-        view.cornerRadius = cornerRadius
-        view.onHoverChanged = context.coordinator.handleHoverChanged
-        return view
-    }
+    func contains(_ point: CGPoint) -> Bool {
+        guard isEnabled, rect.contains(point) else { return false }
 
-    func updateNSView(_ nsView: FullscreenMiniPlayerHitShieldView, context: Context) {
-        context.coordinator.onHoverChanged = onHoverChanged
-        nsView.onHoverChanged = context.coordinator.handleHoverChanged
-        nsView.cornerRadius = cornerRadius
-        nsView.isEnabled = isEnabled
-        nsView.refreshHoverStateFromCurrentMouseLocation()
-    }
+        let radius = min(cornerRadius, rect.width * 0.5, rect.height * 0.5)
+        guard radius > 0 else { return true }
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator(onHoverChanged: onHoverChanged)
-    }
-
-    static func dismantleNSView(_ nsView: FullscreenMiniPlayerHitShieldView, coordinator: Coordinator) {
-        nsView.isEnabled = false
-        nsView.onHoverChanged = nil
-        coordinator.handleHoverChanged(false)
-    }
-
-    final class Coordinator {
-        var onHoverChanged: (Bool) -> Void
-        private var isHovering = false
-
-        init(onHoverChanged: @escaping (Bool) -> Void) {
-            self.onHoverChanged = onHoverChanged
-        }
-
-        func handleHoverChanged(_ hovering: Bool) {
-            guard hovering != isHovering else { return }
-            isHovering = hovering
-            DispatchQueue.main.async { [weak self] in
-                self?.onHoverChanged(hovering)
-            }
-        }
+        return CGPath(
+            roundedRect: rect,
+            cornerWidth: radius,
+            cornerHeight: radius,
+            transform: nil
+        ).contains(point)
     }
 }
 
-private final class FullscreenMiniPlayerHitShieldView: NSView {
-    var isEnabled = true {
-        didSet {
-            if isEnabled == false {
-                setHovering(false)
-            }
-            needsDisplay = true
-            updateTrackingAreas()
+@MainActor
+private final class FullscreenPointerOcclusionMonitor {
+    private weak var window: NSWindow?
+    private var region: FullscreenMiniPlayerOcclusionRegion = .inactive
+    private var eventMonitor: Any?
+    private var onOcclusionChanged: ((Bool) -> Void)?
+    private var isOccluded = false
+
+    func setWindow(_ window: NSWindow) {
+        guard self.window !== window else { return }
+        self.window = window
+        window.acceptsMouseMovedEvents = true
+        refreshFromCurrentMouseLocation()
+    }
+
+    func start(onOcclusionChanged: @escaping (Bool) -> Void) {
+        self.onOcclusionChanged = onOcclusionChanged
+        if window == nil, let keyWindow = NSApp.keyWindow {
+            setWindow(keyWindow)
         }
-    }
-
-    var cornerRadius: CGFloat = 0 {
-        didSet {
-            needsDisplay = true
-            updateTrackingAreas()
-        }
-    }
-
-    var onHoverChanged: ((Bool) -> Void)?
-    private var trackingArea: NSTrackingArea?
-    private var isHovering = false
-
-    override var isFlipped: Bool { true }
-    override var acceptsFirstResponder: Bool { false }
-
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
-        true
-    }
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        guard isEnabled, isHidden == false, alphaValue > 0.001 else { return nil }
-        guard containsVisibleShape(point) else { return nil }
-        return self
-    }
-
-    override func updateTrackingAreas() {
-        if let trackingArea {
-            removeTrackingArea(trackingArea)
-        }
-
-        guard isEnabled, bounds.isEmpty == false else {
-            trackingArea = nil
+        guard eventMonitor == nil else {
+            refreshFromCurrentMouseLocation()
             return
         }
 
-        let options: NSTrackingArea.Options = [
-            .activeInKeyWindow,
-            .mouseEnteredAndExited,
-            .mouseMoved,
-            .inVisibleRect
-        ]
-        let nextTrackingArea = NSTrackingArea(
-            rect: bounds,
-            options: options,
-            owner: self,
-            userInfo: nil
-        )
-        addTrackingArea(nextTrackingArea)
-        trackingArea = nextTrackingArea
-    }
-
-    override func layout() {
-        super.layout()
-        refreshHoverStateFromCurrentMouseLocation()
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-        setHovering(containsVisibleShape(convert(event.locationInWindow, from: nil)))
-    }
-
-    override func mouseMoved(with event: NSEvent) {
-        setHovering(containsVisibleShape(convert(event.locationInWindow, from: nil)))
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        setHovering(false)
-    }
-
-    func refreshHoverStateFromCurrentMouseLocation() {
-        guard isEnabled, let window else {
-            setHovering(false)
-            return
+        eventMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [
+                .mouseEntered,
+                .mouseExited,
+                .mouseMoved,
+                .leftMouseDown,
+                .rightMouseDown,
+                .otherMouseDown,
+                .leftMouseDragged,
+                .rightMouseDragged,
+                .otherMouseDragged
+            ]
+        ) { [weak self] event in
+            self?.handle(event)
+            return event
         }
 
-        let localPoint = convert(window.mouseLocationOutsideOfEventStream, from: nil)
-        setHovering(containsVisibleShape(localPoint))
+        refreshFromCurrentMouseLocation()
     }
 
-    private func setHovering(_ hovering: Bool) {
-        guard hovering != isHovering else { return }
-        isHovering = hovering
-        onHoverChanged?(hovering)
+    func stop() {
+        if let eventMonitor {
+            NSEvent.removeMonitor(eventMonitor)
+            self.eventMonitor = nil
+        }
+        updateOcclusion(false)
+        onOcclusionChanged = nil
+        window = nil
+        region = .inactive
     }
 
-    private func containsVisibleShape(_ point: NSPoint) -> Bool {
-        guard bounds.contains(point) else { return false }
+    func updateRegion(_ region: FullscreenMiniPlayerOcclusionRegion) {
+        self.region = region
+        refreshFromCurrentMouseLocation()
+    }
 
-        let radius = min(cornerRadius, bounds.width * 0.5, bounds.height * 0.5)
-        guard radius > 0 else { return true }
+    private func handle(_ event: NSEvent) {
+        if window == nil, let eventWindow = event.window {
+            setWindow(eventWindow)
+        }
+        guard let window, event.window === window else {
+            updateOcclusion(false)
+            return
+        }
+        updateOcclusion(region.contains(event.locationInWindow))
+    }
 
-        return NSBezierPath(
-            roundedRect: bounds,
-            xRadius: radius,
-            yRadius: radius
-        ).contains(point)
+    private func refreshFromCurrentMouseLocation() {
+        guard let window else {
+            updateOcclusion(false)
+            return
+        }
+        updateOcclusion(region.contains(window.mouseLocationOutsideOfEventStream))
+    }
+
+    private func updateOcclusion(_ nextValue: Bool) {
+        guard nextValue != isOccluded else { return }
+        isOccluded = nextValue
+        onOcclusionChanged?(nextValue)
     }
 }
 

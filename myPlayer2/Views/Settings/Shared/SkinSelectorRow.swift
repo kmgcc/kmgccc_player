@@ -28,18 +28,29 @@ func skinPreview(for id: String, isSelected: Bool, accentColor: Color) -> some V
 struct SkinSelectorRow: View {
     let skins: [SkinOption]
     @Binding var selectedSkinID: String
+    var cardSize: CGSize = CGSize(width: 104, height: 124)
+    var previewSize: CGFloat = 80
+    var cornerRadius: CGFloat = 12
+    var titleFontSize: CGFloat = 11
+    var itemSpacing: CGFloat = 10
+    var edgePadding: CGFloat = 10
+    var verticalPadding: CGFloat = 4
     @EnvironmentObject private var themeStore: ThemeStore
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
-                Color.clear.frame(width: 10)
+            HStack(spacing: itemSpacing) {
+                Color.clear.frame(width: edgePadding)
 
                 ForEach(skins) { skin in
                     let selected = selectedSkinID == skin.id
                     SkinPreviewCard(
                         title: skin.name,
                         isSelected: selected,
+                        cardSize: cardSize,
+                        previewSize: previewSize,
+                        cornerRadius: cornerRadius,
+                        titleFontSize: titleFontSize,
                         preview: {
                             skinPreview(for: skin.id, isSelected: selected, accentColor: themeStore.accentColor)
                         },
@@ -47,9 +58,9 @@ struct SkinSelectorRow: View {
                     )
                 }
 
-                Color.clear.frame(width: 10)
+                Color.clear.frame(width: edgePadding)
             }
-            .padding(.vertical, 4)
+            .padding(.vertical, verticalPadding)
         }
         .mask(
             HStack(spacing: 0) {

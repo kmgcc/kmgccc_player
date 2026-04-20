@@ -238,7 +238,10 @@ final class NCMConverter: @unchecked Sendable {
             guard let coverData = try fileHandle.read(upToCount: Int(coverDataLen)) else {
                 throw NCMConverterError.fileReadError
             }
-            self.imageData = coverData
+            self.imageData = ArtworkDataNormalizer.normalizedJPEGData(
+                from: coverData,
+                maxPixelSize: ArtworkDataNormalizer.importMaxPixelSize
+            )
         }
         
         let remainingSkip = Int(coverFrameLen) - Int(coverDataLen)
@@ -410,6 +413,12 @@ final class NCMConverter: @unchecked Sendable {
             throw NCMConverterError.networkError
         }
         
-        return data
+        guard let normalizedData = ArtworkDataNormalizer.normalizedJPEGData(
+            from: data,
+            maxPixelSize: ArtworkDataNormalizer.importMaxPixelSize
+        ) else {
+            throw NCMConverterError.networkError
+        }
+        return normalizedData
     }
 }

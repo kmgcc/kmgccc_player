@@ -214,6 +214,7 @@ struct AMLLWebView: NSViewRepresentable {
             webView.frame = hostView.bounds
             webView.autoresizingMask = [.width, .height]
             hostView.addSubview(webView)
+            store.refreshMouseInteractionSuppression(reason: "attachWebView")
             self.hostView = hostView
 
             Log.debug(
@@ -224,7 +225,7 @@ struct AMLLWebView: NSViewRepresentable {
 
         func detachWebView(from hostView: WebViewHostView) {
             LyricsRuntimeProfile.increment("AMLLWebView.detachWebView")
-            let webView = store.webView
+            guard let webView = store.preparedWebView else { return }
             guard webView.superview === hostView else { return }
             webView.removeFromSuperview()
             if self.hostView === hostView {
@@ -274,7 +275,20 @@ struct AMLLWebView: NSViewRepresentable {
 }
 
 final class WebViewHostView: NSView {
+    var isMouseInteractionSuppressed = false {
+        didSet {
+            if oldValue != isMouseInteractionSuppressed {
+                window?.invalidateCursorRects(for: self)
+            }
+        }
+    }
+
     override var isFlipped: Bool { true }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard !isMouseInteractionSuppressed else { return nil }
+        return super.hitTest(point)
+    }
 
     override func setFrameSize(_ newSize: NSSize) {
         let previousFrame = frame

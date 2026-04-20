@@ -868,10 +868,12 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         var failedTrackIDs: [UUID] = []
 
         for track in uniqueTracks {
-            if writer(track) {
-                persistedTrackIDs.append(track.id)
-            } else {
-                failedTrackIDs.append(track.id)
+            autoreleasepool {
+                if writer(track) {
+                    persistedTrackIDs.append(track.id)
+                } else {
+                    failedTrackIDs.append(track.id)
+                }
             }
         }
 
@@ -911,7 +913,9 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         )
 
         for track in uniqueTracks {
-            _ = libraryService.writeImportedTrackSidecar(for: track, reason: reason)
+            autoreleasepool {
+                _ = libraryService.writeImportedTrackSidecar(for: track, reason: reason)
+            }
         }
     }
 

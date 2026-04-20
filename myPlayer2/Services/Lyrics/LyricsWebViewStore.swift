@@ -112,8 +112,10 @@ final class LyricsWebViewStore: NSObject {
     private var pendingTrackDiagnosticsProbe: DispatchWorkItem?
     private var pendingTrackProfileCollection: DispatchWorkItem?
     private let applyTrackDebounceMs: Int = 50
+    private var applyTrackGeneration: Int = 0
     private var didRegisterMessageHandlers = false
     private var isShutDown = false
+    private var isMouseInteractionSuppressed = false
 
     // MARK: - Callbacks
 
@@ -127,6 +129,99 @@ final class LyricsWebViewStore: NSObject {
 
         super.init()
         Log.debug("Prepared store (WebView deferred), role=\(role)", category: .webview)
+    }
+
+    // MARK: - Native Mouse Event Gate
+
+    func setMouseInteractionSuppressed(_ suppressed: Bool, reason: String) {
+        guard isMouseInteractionSuppressed != suppressed else { return }
+
+        isMouseInteractionSuppressed = suppressed
+        applyMouseInteractionSuppression(reason: reason)
+    }
+
+    func refreshMouseInteractionSuppression(reason: String) {
+        applyMouseInteractionSuppression(reason: reason)
+    }
+
+    private func applyMouseInteractionSuppression(reason: String) {
+        guard let webView = retainedWebView else { return }
+
+        if let gatedWebView = webView as? LyricsMouseGatedWebView {
+            gatedWebView.isMouseInteractionSuppressed = isMouseInteractionSuppressed
+        }
+        if let hostView = webView.superview as? WebViewHostView {
+            hostView.isMouseInteractionSuppressed = isMouseInteractionSuppressed
+        }
+
+        Log.debug(
+            "Mouse interaction suppressed=\(isMouseInteractionSuppressed), role=\(role), reason=\(reason), objectID=\(webViewObjectID)",
+            category: .webview
+        )
+
+        updateWebContentPointerOcclusionState(isMouseInteractionSuppressed)
+    }
+
+    private func updateWebContentPointerOcclusionState(_ suppressed: Bool) {
+        guard isReady, let webView = retainedWebView else { return }
+        let role = role
+
+        let js = """
+            (function(suppressed) {
+                const className = 'amll-native-pointer-occluded';
+                let style = document.getElementById('amll-native-pointer-occlusion-style');
+                if (!style) {
+                    style = document.createElement('style');
+                    style.id = 'amll-native-pointer-occlusion-style';
+                    style.textContent = `
+                        html.amll-native-pointer-occluded .amll-lyric-player,
+                        html.amll-native-pointer-occluded .amll-lyric-player * {
+                            pointer-events: none !important;
+                        }
+                        html.amll-native-pointer-occluded .amll-lyric-player [class*="_lyricLine_"]:hover {
+                            background-color: transparent !important;
+                        }
+                    `;
+                    document.head.appendChild(style);
+                }
+
+                document.documentElement.classList.toggle(className, suppressed);
+
+                if (suppressed) {
+                    const hovered = [];
+                    let node = document.querySelector(':hover');
+                    while (node) {
+                        hovered.push(node);
+                        node = node.querySelector(':hover');
+                    }
+
+                    const init = {
+                        bubbles: true,
+                        cancelable: true,
+                        view: window,
+                        relatedTarget: null
+                    };
+                    for (const element of hovered.reverse()) {
+                        element.dispatchEvent(new MouseEvent('mouseout', init));
+                        element.dispatchEvent(new MouseEvent('mouseleave', init));
+                    }
+
+                    if (document.activeElement && typeof document.activeElement.blur === 'function') {
+                        document.activeElement.blur();
+                    }
+                }
+
+                return true;
+            })(\(suppressed ? "true" : "false"));
+            """
+        webView.evaluateJavaScript(js) { _, error in
+            if let error {
+                Log.debug(
+                    "Pointer occlusion JS error: \(error.localizedDescription), role=\(role)",
+                    category: .webview
+                )
+            }
+        }
     }
 
     // MARK: - Content Loading
@@ -264,7 +359,50 @@ final class LyricsWebViewStore: NSObject {
         Log.debug("Detach: attachmentID=\(requestingID.uuidString.prefix(8)), objectID=\(webViewObjectID)", category: .webview)
         activeAttachmentID = nil
         isAttached = false
-        // Note: We do NOT clear isReady or state here. The WebView persists.
+        releasePreparedWebViewPreservingSnapshot(reason: "detach")
+    }
+
+    /// Releases the concrete WKWebView while keeping the Swift-side playback snapshot.
+    /// The next attach will lazily create a new WebView and replay config/lyrics/time/playing.
+    func releasePreparedWebViewPreservingSnapshot(reason: String) {
+        pendingVisibleLayerProbe?.cancel()
+        pendingVisibleLayerProbe = nil
+        pendingTrackDiagnosticsProbe?.cancel()
+        pendingTrackDiagnosticsProbe = nil
+        pendingTrackProfileCollection?.cancel()
+        pendingTrackProfileCollection = nil
+        pendingCalls.removeAll()
+        queuedTimeSync = nil
+        isTimeSyncInFlight = false
+        lastDeliveredTime = nil
+        isReady = false
+        isRecoveryInProgress = false
+        didRegisterMessageHandlers = false
+
+        guard let webView = retainedWebView else {
+            Log.debug("Release skipped, no prepared WebView: role=\(role), reason=\(reason)", category: .webview)
+            return
+        }
+
+        let releasedObjectID = ObjectIdentifier(webView).hashValue
+        Log.info(
+            "Releasing WebView: role=\(role), reason=\(reason), objectID=\(releasedObjectID), snapshot(track=\(lastTrackID?.uuidString.prefix(8) ?? "nil"), ttmlLen=\(lastTTML?.count ?? 0), time=\(lastTime ?? -1), playing=\(lastIsPlaying ?? false))",
+            category: .webview
+        )
+
+        webView.stopLoading()
+        webView.navigationDelegate = nil
+        webView.uiDelegate = nil
+        webView.removeFromSuperview()
+
+        let contentController = webView.configuration.userContentController
+        contentController.removeScriptMessageHandler(forName: "onReady")
+        contentController.removeScriptMessageHandler(forName: "onUserSeek")
+        contentController.removeScriptMessageHandler(forName: "log")
+        contentController.removeAllUserScripts()
+
+        webView.loadHTMLString("", baseURL: nil)
+        retainedWebView = nil
     }
 
     // MARK: - JS Calls (Queued + Snapshot Preserved)
@@ -516,6 +654,8 @@ final class LyricsWebViewStore: NSObject {
 
         Log.info("Ready: version=\(version), caps=\(capabilities.count), objectID=\(webViewObjectID)", category: .webview)
 
+        updateWebContentPointerOcclusionState(isMouseInteractionSuppressed)
+
         // Flush pending calls
         flushPendingCalls()
 
@@ -743,12 +883,22 @@ final class LyricsWebViewStore: NSObject {
             ttmlLength: ttml?.count ?? 0
         )
 
+        applyTrackGeneration &+= 1
+        let generation = applyTrackGeneration
+
         // Step 1: Clear previous lyrics state to free memory
         clearLyricsState(
             trackID: trackID,
             nextTTMLLength: ttml?.count ?? 0
         ) { [weak self] in
             guard let self else { return }
+            guard generation == self.applyTrackGeneration else {
+                Log.debug(
+                    "applyTrack skipped stale completion: generation=\(generation), current=\(self.applyTrackGeneration), objectID=\(self.webViewObjectID)",
+                    category: .webview
+                )
+                return
+            }
 
             // Step 2: Pause
             self.setPlaying(false)
@@ -1242,9 +1392,10 @@ final class LyricsWebViewStore: NSObject {
             config.userContentController.addUserScript(roleUserScript)
         }
 
-        let webView = WKWebView(frame: .zero, configuration: config)
+        let webView = LyricsMouseGatedWebView(frame: .zero, configuration: config)
         webView.setValue(false, forKey: "drawsBackground")
         retainedWebView = webView
+        applyMouseInteractionSuppression(reason: "ensureWebView")
         registerMessageHandlers()
         print("[LyricsStore:\(role)] Created WebView instance: objectID=\(webViewObjectID)")
         loadAMLLContent()
@@ -1303,6 +1454,7 @@ final class LyricsWebViewStore: NSObject {
         if let hostView {
             hostView.addSubview(newWebView)
         }
+        applyMouseInteractionSuppression(reason: "rebuildWebViewForFreshContent")
 
         Log.debug("Recreated WebView for fresh AMLL bundle: role=\(role), objectID=\(webViewObjectID), rev=\(contentLoadRevision)", category: .webview)
     }
@@ -1372,6 +1524,86 @@ final class LyricsWebViewStore: NSObject {
                 self.dispatchTimeSync(nextTime)
             }
         }
+    }
+}
+
+private final class LyricsMouseGatedWebView: WKWebView {
+    var isMouseInteractionSuppressed = false {
+        didSet {
+            if oldValue != isMouseInteractionSuppressed {
+                window?.invalidateCursorRects(for: self)
+            }
+        }
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard !isMouseInteractionSuppressed else { return nil }
+        return super.hitTest(point)
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        guard !isMouseInteractionSuppressed else { return }
+        super.mouseEntered(with: event)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        guard !isMouseInteractionSuppressed else { return }
+        super.mouseExited(with: event)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        guard !isMouseInteractionSuppressed else { return }
+        super.mouseMoved(with: event)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard !isMouseInteractionSuppressed else { return }
+        super.mouseDown(with: event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard !isMouseInteractionSuppressed else { return }
+        super.mouseUp(with: event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard !isMouseInteractionSuppressed else { return }
+        super.mouseDragged(with: event)
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        guard !isMouseInteractionSuppressed else { return }
+        super.rightMouseDown(with: event)
+    }
+
+    override func rightMouseUp(with event: NSEvent) {
+        guard !isMouseInteractionSuppressed else { return }
+        super.rightMouseUp(with: event)
+    }
+
+    override func rightMouseDragged(with event: NSEvent) {
+        guard !isMouseInteractionSuppressed else { return }
+        super.rightMouseDragged(with: event)
+    }
+
+    override func otherMouseDown(with event: NSEvent) {
+        guard !isMouseInteractionSuppressed else { return }
+        super.otherMouseDown(with: event)
+    }
+
+    override func otherMouseUp(with event: NSEvent) {
+        guard !isMouseInteractionSuppressed else { return }
+        super.otherMouseUp(with: event)
+    }
+
+    override func otherMouseDragged(with event: NSEvent) {
+        guard !isMouseInteractionSuppressed else { return }
+        super.otherMouseDragged(with: event)
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        guard !isMouseInteractionSuppressed else { return }
+        super.scrollWheel(with: event)
     }
 }
 

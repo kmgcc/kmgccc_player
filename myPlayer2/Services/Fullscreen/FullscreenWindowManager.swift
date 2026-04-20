@@ -220,6 +220,9 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
                 return event
             }
             if event.keyCode == 53 {
+                if FullscreenTransientDismissCoordinator.shared.dismissTopmost() {
+                    return nil
+                }
                 self.closeFullscreenWindow()
                 return nil
             }

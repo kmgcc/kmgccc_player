@@ -666,6 +666,13 @@ public final class AppSettings {
         }
     }
 
+    // MARK: - External Playback Settings
+
+    /// Whether to show the playback source switcher (local / Apple Music) in the sidebar.
+    /// When false, shows the legacy app header (icon + app name) instead.
+    @ObservationIgnored
+    @AppStorage("showPlaybackSourceSwitcher") var showPlaybackSourceSwitcher: Bool = true
+
     // MARK: - Fullscreen Presentation Coordinator
 
     /// Access the fullscreen presentation coordinator for managing visualizer/skin state.

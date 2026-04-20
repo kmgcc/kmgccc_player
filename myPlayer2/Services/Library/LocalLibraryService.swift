@@ -689,29 +689,23 @@ final class LocalLibraryService {
             return existingArtworkFileName
         }
 
-        let dataToWrite: Data
-        let encoding: String
-        if isPNGData(data) {
-            if dataMatches(data, existingArtworkData), existingArtworkFileName == targetArtworkFileName {
-                logTrackPersistence(track: track, reason: reason, action: "artwork-skip", artwork: "encoded-unchanged")
-                return existingArtworkFileName
-            }
-            dataToWrite = data
-            encoding = "png-original"
-        } else if let image = NSImage(data: data), let png = image.pngData() {
-            if dataMatches(png, existingArtworkData), existingArtworkFileName == targetArtworkFileName {
-                logTrackPersistence(track: track, reason: reason, action: "artwork-skip", artwork: "encoded-unchanged")
-                return existingArtworkFileName
-            }
-            dataToWrite = png
-            encoding = "png"
-        } else {
-            logTrackPersistence(track: track, reason: reason, action: "artwork-error", artwork: "png-encode-failed")
+        guard
+            let dataToWrite = ArtworkDataNormalizer.normalizedJPEGData(
+                from: data,
+                maxPixelSize: ArtworkDataNormalizer.storedMaxPixelSize
+            )
+        else {
+            logTrackPersistence(track: track, reason: reason, action: "artwork-error", artwork: "normalize-failed")
             throw NSError(
                 domain: "LocalLibraryService.TrackPersistence",
                 code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Artwork could not be encoded as PNG"]
+                userInfo: [NSLocalizedDescriptionKey: "Artwork could not be downsampled and encoded"]
             )
+        }
+
+        if dataMatches(dataToWrite, existingArtworkData), existingArtworkFileName == targetArtworkFileName {
+            logTrackPersistence(track: track, reason: reason, action: "artwork-skip", artwork: "encoded-unchanged")
+            return existingArtworkFileName
         }
 
         try dataToWrite.write(to: targetArtworkURL, options: .atomic)
@@ -724,7 +718,7 @@ final class LocalLibraryService {
             track: track,
             reason: reason,
             action: "artwork-write",
-            artwork: "changed encoding=\(encoding)"
+            artwork: "changed encoding=jpeg-downsampled maxPixel=\(ArtworkDataNormalizer.storedMaxPixelSize)"
         )
         return targetArtworkFileName
     }

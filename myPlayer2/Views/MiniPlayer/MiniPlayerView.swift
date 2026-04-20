@@ -231,22 +231,15 @@ struct MiniPlayerView: View {
 
     @ViewBuilder
     private var nowPlayingInfoContextMenu: some View {
-        if let track = playbackCoordinator.presentation.localTrack {
-            Button {
+        NowPlayingInfoContextMenu(
+            presentation: playbackCoordinator.presentation,
+            onEditTrack: { track in
                 trackToEdit = track
-            } label: {
-                Label(
-                    "context.get_info", systemImage: "info.circle")
-            }
-        }
-        if playbackCoordinator.presentation.source == .appleMusic,
-           playbackCoordinator.presentation.externalStableKey != nil {
-            Button {
+            },
+            onEditExternalInfo: {
                 isShowingExternalMatchEditor = true
-            } label: {
-                Label("编辑 AM 匹配信息...", systemImage: "slider.horizontal.3")
             }
-        }
+        )
     }
 
     private var currentPlaybackMode: PlaybackOrderMode {
