@@ -51,61 +51,35 @@ struct TrackEditSheet: View {
     private let ttmlToolURL = URL(string: "https://amll-ttml-tool.stevexmh.net/")!
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Header
-            headerView
-
-            Divider()
-
-            // Content
-            ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    // Artwork section
-                    artworkSection
-
-                    Divider()
-
-                    // Metadata section
-                    metadataSection
-
-                    Divider()
-
-                    // Lyrics section
-                    lyricsSection
-
-                    // Extra scroll breathing room so the LDDC panel (results/preview/errors)
-                    // can be comfortably brought into view without fighting the footer.
-                    Color.clear.frame(height: 240)
-                }
-                .padding(24)
-            }
-
-            Divider()
-
-            // Footer buttons
-            footerView
-        }
-        .frame(width: 550, height: 750)
-        .tint(themeStore.accentColor)
-        .accentColor(themeStore.accentColor)
+        TrackInfoEditorCore(
+            mode: .local,
+            duration: track.duration,
+            rawReference: nil,
+            lyricsSearchTrack: track,
+            allowsArtworkImport: true,
+            allowsLyricsOffset: true,
+            canSave: trackEditChangeSet.hasChanges,
+            saveTitle: "edit.track.save",
+            onSave: {
+                saveChanges()
+            },
+            onCancel: {},
+            onClearOverride: nil,
+            onRestoreAutomatic: nil,
+            title: $title,
+            artist: $artist,
+            album: $album,
+            lyricsText: $lyricsText,
+            artworkData: $artworkData,
+            lyricsTimeOffsetMs: $lyricsTimeOffsetMs
+        )
         .onAppear {
-            // Initialize cover coordinator with injected services
-            coverCoordinator = CoverSearchCoordinator(
-                coverDownloadService: coverDownloadService,
-                netEaseCoverService: netEaseCoverService
-            )
             loadTrackData()
         }
         .onDisappear {
             coverFetchTask?.cancel()
             coverFetchTask = nil
             coverCoordinator?.cancelSearch()
-        }
-        .onChange(of: coverCoordinator?.selectedForPreview) { _, newValue in
-            // Reactively update artwork preview when coordinator selects a candidate
-            if let candidate = newValue {
-                artworkData = candidate.imageData
-            }
         }
     }
 

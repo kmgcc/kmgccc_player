@@ -18,6 +18,10 @@ struct FullscreenControlsGlassStyle {
 /// Enlarged mini player bar for fullscreen mode.
 /// Layout: Cover+Title | Controls | Playback Mode | Progress | Volume
 struct FullscreenMiniPlayerView: View {
+    private static let appleMusicArtworkCacheTrackID = UUID(
+        uuidString: "00000000-0000-0000-0000-0000000000A2"
+    )!
+
     // Scale factor for responsive sizing at different resolutions
     var scale: CGFloat = 1.0
     let glassStyle: FullscreenControlsGlassStyle
@@ -33,7 +37,7 @@ struct FullscreenMiniPlayerView: View {
     private static let fullscreenThemeMaxLightness: CGFloat = 0.98
     private static let fullscreenThemeMinSaturation: CGFloat = 0.88
 
-    @Environment(PlayerViewModel.self) private var playerVM
+    @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var themeStore: ThemeStore
 
@@ -58,7 +62,10 @@ struct FullscreenMiniPlayerView: View {
     private var playbackModeExpandedWidth: CGFloat { 178 * scale }
     private var playbackModeCollapsedWidth: CGFloat { 56 * scale }
     private var playbackModeOccupancyWidth: CGFloat {
-        isPlaybackModeExpanded ? playbackModeExpandedWidth : playbackModeCollapsedWidth
+        let expandedWidth = playbackCoordinator.presentation.source == .appleMusic
+            ? 160 * scale
+            : playbackModeExpandedWidth
+        return isPlaybackModeExpanded ? expandedWidth : playbackModeCollapsedWidth
     }
     private var minProgressWidth: CGFloat { 320 * scale }
     private var hStackSpacing: CGFloat { 18 * scale }
@@ -127,9 +134,10 @@ struct FullscreenMiniPlayerView: View {
             artworkView
 
             VStack(alignment: .leading, spacing: trackInfoVSpacing) {
-                if let track = playerVM.currentTrack {
+                let presentation = playbackCoordinator.presentation
+                if presentation.hasTrack {
                     SeamlessMarqueeText(
-                        text: track.title,
+                        text: presentation.title,
                         fontSize: titleFontSize,
                         fontWeight: .semibold,
                         color: lyricsDynamicPrimaryColor,
@@ -137,16 +145,16 @@ struct FullscreenMiniPlayerView: View {
                     )
 
                     SeamlessMarqueeText(
-                        text: track.artist.isEmpty
+                        text: presentation.artist.isEmpty
                             ? NSLocalizedString("library.unknown_artist", comment: "")
-                            : track.artist,
+                            : presentation.artist,
                         fontSize: artistFontSize,
                         fontWeight: .medium,
                         color: lyricsDynamicSecondaryColor,
                         enablesContentTransition: true
                     )
                 } else {
-                    Text("mini.not_playing")
+                    Text(LocalizedStringKey(presentation.emptyTitleKey))
                         .font(.system(size: titleFontSize, weight: .semibold))
                         .foregroundStyle(lyricsDynamicSecondaryColor)
                 }
@@ -163,38 +171,48 @@ struct FullscreenMiniPlayerView: View {
                 .aspectRatio(contentMode: .fill)
                 .frame(width: artworkSize, height: artworkSize)
                 .clipShape(RoundedRectangle(cornerRadius: artworkCornerRadius, style: .continuous))
+        } else if playbackCoordinator.presentation.isArtworkLoading {
+            ZStack {
+                ArtworkPlaceholderView.fullscreenMiniPlayer(artworkSize: 44, scale: scale)
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.78 * scale)
+            }
+            .frame(width: artworkSize, height: artworkSize)
         } else {
             ArtworkPlaceholderView.fullscreenMiniPlayer(artworkSize: 44, scale: scale)
         }
     }
 
     private var controlsView: some View {
-        let isEnabled = playerVM.currentTrack != nil
+        let presentation = playbackCoordinator.presentation
+        let isEnabled = presentation.isControlEnabled
+        let isTrackControlEnabled = isEnabled && presentation.hasTrack
         return HStack(spacing: controlsHSpacing) {
             // Previous
             Button {
                 onInteraction()
                 previousSymbolEffectTrigger += 1
-                playerVM.previous()
+                playbackCoordinator.previous()
             } label: {
                 Image(systemName: "backward.fill")
                     .font(.system(size: iconSize, weight: .semibold))
-                    .foregroundStyle(isEnabled ? controlPrimaryColor : controlDisabledColor)
+                    .foregroundStyle(isTrackControlEnabled ? controlPrimaryColor : controlDisabledColor)
                     .compositingGroup()
-                    .blendMode(isEnabled ? .screen : .normal)
+                    .blendMode(isTrackControlEnabled ? .screen : .normal)
                     .symbolEffect(.wiggle, value: previousSymbolEffectTrigger)
                     .frame(width: controlSize, height: controlSize)
             }
             .buttonStyle(.plain)
-            .disabled(!isEnabled)
+            .disabled(!isTrackControlEnabled)
 
             // Play/Pause
             Button {
                 onInteraction()
                 playPauseSymbolEffectTrigger += 1
-                playerVM.togglePlayPause()
+                playbackCoordinator.playPause()
             } label: {
-                Image(systemName: playerVM.isPlaying ? "pause.fill" : "play.fill")
+                Image(systemName: presentation.isPlaying ? "pause.fill" : "play.fill")
                     .font(.system(size: primaryIconSize, weight: .semibold))
                     .foregroundStyle(isEnabled ? controlPrimaryColor : controlDisabledColor)
                     .compositingGroup()
@@ -209,38 +227,64 @@ struct FullscreenMiniPlayerView: View {
             Button {
                 onInteraction()
                 nextSymbolEffectTrigger += 1
-                playerVM.next()
+                playbackCoordinator.next()
             } label: {
                 Image(systemName: "forward.fill")
                     .font(.system(size: iconSize, weight: .semibold))
-                    .foregroundStyle(isEnabled ? controlPrimaryColor : controlDisabledColor)
+                    .foregroundStyle(isTrackControlEnabled ? controlPrimaryColor : controlDisabledColor)
                     .compositingGroup()
-                    .blendMode(isEnabled ? .screen : .normal)
+                    .blendMode(isTrackControlEnabled ? .screen : .normal)
                     .symbolEffect(.wiggle, value: nextSymbolEffectTrigger)
                     .frame(width: controlSize, height: controlSize)
             }
             .buttonStyle(.plain)
-            .disabled(!isEnabled)
+            .disabled(!isTrackControlEnabled)
         }
     }
 
     private var playbackModeView: some View {
-        let isEnabled = playerVM.currentTrack != nil
-        return PlaybackModeSlider(
-            mode: playbackMode,
-            isEnabled: isEnabled,
-            isExpanded: isPlaybackModeExpanded,
-            iconSize: 16 * scale,
-            selectedColor: controlPrimaryColor,
-            unselectedColor: controlPrimaryColor.opacity(0.62),
-            useScreenBlend: true,
-            pillTintColor: themeStore.accentColor,
-            pillTintBlendMode: .normal,
-            onInteraction: onInteraction,
-            scale: scale,
-            onModeChange: onPlaybackModeChange,
-            onCurrentModeRetap: onCurrentPlaybackModeRetap
-        )
+        let presentation = playbackCoordinator.presentation
+        let isEnabled = presentation.isControlEnabled && presentation.hasTrack
+        return Group {
+            switch presentation.source {
+            case .local:
+                PlaybackModeSlider(
+                    mode: playbackMode,
+                    isEnabled: isEnabled,
+                    isExpanded: isPlaybackModeExpanded,
+                    iconSize: 16 * scale,
+                    selectedColor: controlPrimaryColor,
+                    unselectedColor: controlPrimaryColor.opacity(0.62),
+                    useScreenBlend: true,
+                    pillTintColor: themeStore.accentColor,
+                    pillTintBlendMode: .normal,
+                    onInteraction: onInteraction,
+                    scale: scale,
+                    onModeChange: { mode in
+                        playbackCoordinator.setPlaybackOrderMode(mode)
+                        onPlaybackModeChange(mode)
+                    },
+                    onCurrentModeRetap: onCurrentPlaybackModeRetap
+                )
+            case .appleMusic:
+                AppleMusicPlaybackModeSlider(
+                    mode: presentation.appleMusicPlaybackMode ?? .sequence,
+                    isEnabled: isEnabled,
+                    isExpanded: isPlaybackModeExpanded,
+                    iconSize: 16 * scale,
+                    selectedColor: controlPrimaryColor,
+                    unselectedColor: controlPrimaryColor.opacity(0.62),
+                    useScreenBlend: true,
+                    pillTintColor: themeStore.accentColor,
+                    pillTintBlendMode: .normal,
+                    onInteraction: onInteraction,
+                    scale: scale,
+                    onModeChange: { mode in
+                        playbackCoordinator.setAppleMusicPlaybackMode(mode)
+                    }
+                )
+            }
+        }
         .frame(width: playbackModeOccupancyWidth, height: 36 * scale, alignment: .leading)
         .contentShape(Capsule())
         .animation(layoutAnimation, value: isPlaybackModeExpanded)
@@ -264,10 +308,10 @@ struct FullscreenMiniPlayerView: View {
         MiniPlayerProgressSpectrumRow(
             scale: scale,
             isSpectrumEnabled: settings.fullscreen.isMiniPlayerSpectrumEnabled,
-            isPlaying: playerVM.isPlaying,
+            isPlaying: playbackCoordinator.presentation.isPlaying,
             accentColor: themeStore.usesFallbackThemeColor ? nil : themeStore.accentColor,
             progress: progressDisplayTime,
-            duration: playerVM.duration,
+            duration: playbackCoordinator.presentation.duration,
             onSeek: { seekTime in
                 onInteraction()
                 dragProgress = seekTime
@@ -279,7 +323,7 @@ struct FullscreenMiniPlayerView: View {
             },
             onDragEnd: {
                 onInteraction()
-                playerVM.seek(to: dragProgress)
+                playbackCoordinator.seek(to: dragProgress)
                 isDragging = false
                 onProgressDraggingChanged(false)
             },
@@ -301,20 +345,27 @@ struct FullscreenMiniPlayerView: View {
     }
     
     private var currentArtworkTaskKey: String {
-        guard let track = playerVM.currentTrack else { return "none" }
-        let checksum = ArtworkAssetStore.checksum(for: track.artworkData)
-        return "\(track.id.uuidString)-\(checksum)"
+        let presentation = playbackCoordinator.presentation
+        let checksum = ArtworkAssetStore.checksum(for: presentation.artworkData)
+        let identity = presentation.artworkIdentity
+            ?? presentation.lyricsIdentity
+            ?? presentation.localTrack?.id.uuidString
+            ?? "none"
+        return "\(identity)-\(checksum)"
     }
     
     private func loadArtworkThumbnail() async {
-        guard let track = playerVM.currentTrack, let artworkData = track.artworkData, !artworkData.isEmpty
+        let presentation = playbackCoordinator.presentation
+        guard
+            let artworkData = presentation.artworkData,
+            !artworkData.isEmpty
         else {
             artworkImage = nil
             return
         }
         
         let snapshot = await ArtworkAssetStore.shared.snapshotMetadata(
-            trackID: track.id,
+            trackID: presentation.localTrack?.id ?? Self.appleMusicArtworkCacheTrackID,
             artworkData: artworkData
         )
         guard !Task.isCancelled else { return }
@@ -322,7 +373,7 @@ struct FullscreenMiniPlayerView: View {
     }
 
     private var progressDisplayTime: Double {
-        isDragging ? dragProgress : playerVM.currentTime
+        isDragging ? dragProgress : playbackCoordinator.presentation.currentTime
     }
 
     private var progressFillColor: Color {
@@ -334,9 +385,10 @@ struct FullscreenMiniPlayerView: View {
     }
 
     private func progressWidth(in totalWidth: CGFloat) -> CGFloat {
-        guard playerVM.duration > 0 else { return 0 }
-        let time = isDragging ? dragProgress : playerVM.currentTime
-        let progress = time / playerVM.duration
+        let presentation = playbackCoordinator.presentation
+        guard presentation.duration > 0 else { return 0 }
+        let time = isDragging ? dragProgress : presentation.currentTime
+        let progress = time / presentation.duration
         return totalWidth * CGFloat(max(0, min(1, progress)))
     }
 
@@ -351,8 +403,8 @@ struct FullscreenMiniPlayerView: View {
 
             Slider(
                 value: Binding(
-                    get: { playerVM.volume },
-                    set: { playerVM.setVolume($0) }
+                    get: { playbackCoordinator.presentation.volume },
+                    set: { playbackCoordinator.setVolume($0) }
                 ),
                 in: 0...1
             )
@@ -364,11 +416,12 @@ struct FullscreenMiniPlayerView: View {
     }
 
     private var volumeIcon: String {
-        if playerVM.volume == 0 {
+        let volume = playbackCoordinator.presentation.volume
+        if volume == 0 {
             return "speaker.slash.fill"
-        } else if playerVM.volume < 0.33 {
+        } else if volume < 0.33 {
             return "speaker.wave.1.fill"
-        } else if playerVM.volume < 0.66 {
+        } else if volume < 0.66 {
             return "speaker.wave.2.fill"
         } else {
             return "speaker.wave.3.fill"
@@ -514,6 +567,12 @@ struct FullscreenMiniPlayerView: View {
     let playbackService = StubAudioPlaybackService()
     let levelMeter = StubAudioLevelMeter()
     let playerVM = PlayerViewModel(playbackService: playbackService, levelMeter: levelMeter)
+    let libraryVM = LibraryViewModel(repository: StubLibraryRepository())
+    let appleMusicAdapter = AppleMusicPlaybackAdapter(libraryVM: libraryVM)
+    let playbackCoordinator = PlaybackCoordinator(
+        playerVM: playerVM,
+        appleMusicAdapter: appleMusicAdapter
+    )
 
     let track = Track(
         title: "Blinding Lights",
@@ -536,6 +595,8 @@ struct FullscreenMiniPlayerView: View {
             onCurrentPlaybackModeRetap: { _ in }
         )
             .environment(playerVM)
+            .environment(playbackCoordinator)
+            .environment(libraryVM)
             .environmentObject(ThemeStore.shared)
             .padding(40)
     }

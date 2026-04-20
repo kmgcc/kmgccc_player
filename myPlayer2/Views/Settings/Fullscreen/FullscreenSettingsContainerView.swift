@@ -20,7 +20,7 @@ struct FullscreenSettingsContainerView: View {
             SettingsHeaderLabel("全屏播放", systemImage: "arrow.up.left.and.arrow.down.right")
 
             // Tab selector
-            SettingsTabSelector(tabs: tabs, selectedTab: $selectedTab)
+            SettingsTabSelector(tabs: tabs, selectedTab: $selectedTab, fillsWidth: true)
                 .environmentObject(themeStore)
 
             // Tab content

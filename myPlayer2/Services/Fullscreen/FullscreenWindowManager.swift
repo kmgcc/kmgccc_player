@@ -27,6 +27,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
 
     // References to shared dependencies (set from AppRootView)
     weak var playerVM: PlayerViewModel?
+    weak var playbackCoordinator: PlaybackCoordinator?
     weak var lyricsVM: LyricsViewModel?
     weak var ledMeterProvider: LEDMeterServiceProvider?
     weak var skinManager: SkinManager?
@@ -41,12 +42,14 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
     /// Configure the manager with shared dependencies.
     func configure(
         playerVM: PlayerViewModel,
+        playbackCoordinator: PlaybackCoordinator,
         lyricsVM: LyricsViewModel,
         ledMeterProvider: LEDMeterServiceProvider,
         skinManager: SkinManager,
         uiState: UIStateViewModel
     ) {
         self.playerVM = playerVM
+        self.playbackCoordinator = playbackCoordinator
         self.lyricsVM = lyricsVM
         self.ledMeterProvider = ledMeterProvider
         self.skinManager = skinManager
@@ -60,6 +63,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         }
 
         guard let playerVM = playerVM,
+              let playbackCoordinator = playbackCoordinator,
               let ledMeterProvider = ledMeterProvider,
               let skinManager = skinManager else {
             print("[FullscreenWindowManager] Error: Dependencies not configured")
@@ -125,6 +129,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
             self.closeFullscreenWindow()
         }
         .environment(playerVM)
+        .environment(playbackCoordinator)
         .environment(fullscreenLyricsVM)
         .environment(ledMeterProvider)
         .environment(AppSettings.shared)

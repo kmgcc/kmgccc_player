@@ -22,6 +22,7 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
 
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(PlayerViewModel.self) private var playerVM
+    @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(UIStateViewModel.self) private var uiState
     @Environment(\.colorScheme) private var colorScheme
 
@@ -230,13 +231,13 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
                     if pageController.isMultiselectMode && !pageController.selectedTrackIDs.isEmpty {
                         let selected = selectedTracksForBatchEditor()
                         guard !selected.isEmpty else { return }
-                        playerVM.playTracks(
+                        playbackCoordinator.playTracks(
                             selected,
                             libraryQueueSource: .librarySelection(selectionIdentity)
                         )
                     } else {
                         guard !queueTracks.isEmpty else { return }
-                        playerVM.playTracks(
+                        playbackCoordinator.playTracks(
                             queueTracks,
                             libraryQueueSource: .librarySelection(selectionIdentity)
                         )
@@ -478,7 +479,7 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             incomingOpacity: pageController.headerIncomingOpacity,
             onPlay: {
                 guard !queueTracks.isEmpty else { return }
-                playerVM.playTracks(
+                playbackCoordinator.playTracks(
                     queueTracks,
                     libraryQueueSource: .librarySelection(selectionIdentity)
                 )
@@ -683,7 +684,7 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
 
                 Button {
                     let startIndex = pageController.queueStartIndex(for: track.id)
-                    playerVM.playTracks(
+                    playbackCoordinator.playTracks(
                         queueTracks,
                         startingAt: startIndex,
                         libraryQueueSource: .librarySelection(selectionIdentity)
@@ -799,6 +800,7 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
 
 private struct PlaylistTrackRowsSection: View {
     @Environment(PlayerViewModel.self) private var playerVM
+    @Environment(PlaybackCoordinator.self) private var playbackCoordinator
 
     let rows: [PlaylistPageRowModel]
     let queueTracks: [Track]
@@ -824,7 +826,7 @@ private struct PlaylistTrackRowsSection: View {
                         }
                     } else {
                         let startIndex = pageController.queueStartIndex(for: row.id)
-                        playerVM.playTracks(
+                        playbackCoordinator.playTracks(
                             queueTracks,
                             startingAt: startIndex,
                             libraryQueueSource: .librarySelection(selectionIdentity)

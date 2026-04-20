@@ -12,6 +12,9 @@ import SwiftUI
 /// Mini player bar with true Liquid Glass capsule effect.
 /// Layout: Cover+Title | Controls | Playback Mode | Progress
 struct MiniPlayerView: View {
+    private static let appleMusicArtworkCacheTrackID = UUID(
+        uuidString: "00000000-0000-0000-0000-0000000000A1"
+    )!
 
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
@@ -31,11 +34,13 @@ struct MiniPlayerView: View {
     @State private var nextSymbolEffectTrigger = 0
     @State private var artworkImage: NSImage?
     @State private var isPlaybackModeExpanded = false
+    @State private var isShowingExternalMatchEditor = false
 
     private var playbackModeExpandedWidth: CGFloat { 168 }
     private var playbackModeCollapsedWidth: CGFloat { 44 }
     private var playbackModeWidth: CGFloat {
-        isPlaybackModeExpanded ? playbackModeExpandedWidth : playbackModeCollapsedWidth
+        let expandedWidth = playbackCoordinator.presentation.source == .appleMusic ? 150 : playbackModeExpandedWidth
+        return isPlaybackModeExpanded ? expandedWidth : playbackModeCollapsedWidth
     }
     private var layoutAnimation: Animation {
         .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08)
@@ -79,7 +84,7 @@ struct MiniPlayerView: View {
                                 enablesContentTransition: true
                             )
                         } else {
-                            Text("mini.not_playing")
+                            Text(LocalizedStringKey(presentation.emptyTitleKey))
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
                         }
@@ -108,7 +113,7 @@ struct MiniPlayerView: View {
 
             // MARK: - Playback Mode
             playbackModeView
-                .frame(width: playbackModeWidth, height: 26)
+                .frame(width: playbackModeWidth, height: 24)
                 .layoutPriority(2)
 
             // MARK: - Progress bar (draggable + hover time labels)
@@ -136,6 +141,15 @@ struct MiniPlayerView: View {
             TrackEditSheet(track: track)
                 .environmentObject(themeStore)
         }
+        .sheet(isPresented: $isShowingExternalMatchEditor) {
+            ExternalPlaybackInfoEditorView(
+                presentation: playbackCoordinator.presentation,
+                onSaved: {
+                    playbackCoordinator.invalidateExternalPlaybackResolution()
+                }
+            )
+            .environmentObject(themeStore)
+        }
         .task(id: currentArtworkTaskKey) {
             await loadArtworkThumbnail()
         }
@@ -146,6 +160,7 @@ struct MiniPlayerView: View {
     private var controlsView: some View {
         let presentation = playbackCoordinator.presentation
         let isEnabled = presentation.isControlEnabled
+        let isTrackControlEnabled = isEnabled && presentation.hasTrack
         return HStack(spacing: 14) {
             // Previous
             Button {
@@ -157,7 +172,7 @@ struct MiniPlayerView: View {
                         .fill(Color.clear)
                     Image(systemName: "backward.fill")
                         .font(.body)
-                        .foregroundStyle(isEnabled ? controlPrimaryColor : controlDisabledColor)
+                        .foregroundStyle(isTrackControlEnabled ? controlPrimaryColor : controlDisabledColor)
                         .symbolEffect(.wiggle, value: previousSymbolEffectTrigger)
                 }
                 .frame(width: controlHitSize, height: controlHitSize)
@@ -166,7 +181,7 @@ struct MiniPlayerView: View {
             .buttonStyle(.plain)
             .frame(width: controlHitSize, height: controlHitSize)
             .contentShape(Rectangle())
-            .disabled(!isEnabled)
+            .disabled(!isTrackControlEnabled)
 
             // Play/Pause
             Button {
@@ -199,7 +214,7 @@ struct MiniPlayerView: View {
                         .fill(Color.clear)
                     Image(systemName: "forward.fill")
                         .font(.body)
-                        .foregroundStyle(isEnabled ? controlPrimaryColor : controlDisabledColor)
+                        .foregroundStyle(isTrackControlEnabled ? controlPrimaryColor : controlDisabledColor)
                         .symbolEffect(.wiggle, value: nextSymbolEffectTrigger)
                 }
                 .frame(width: controlHitSize, height: controlHitSize)
@@ -208,7 +223,7 @@ struct MiniPlayerView: View {
             .buttonStyle(.plain)
             .frame(width: controlHitSize, height: controlHitSize)
             .contentShape(Rectangle())
-            .disabled(!isEnabled)
+            .disabled(!isTrackControlEnabled)
         }
     }
 
@@ -224,6 +239,14 @@ struct MiniPlayerView: View {
                     "context.get_info", systemImage: "info.circle")
             }
         }
+        if playbackCoordinator.presentation.source == .appleMusic,
+           playbackCoordinator.presentation.externalStableKey != nil {
+            Button {
+                isShowingExternalMatchEditor = true
+            } label: {
+                Label("编辑 AM 匹配信息...", systemImage: "slider.horizontal.3")
+            }
+        }
     }
 
     private var currentPlaybackMode: PlaybackOrderMode {
@@ -231,16 +254,33 @@ struct MiniPlayerView: View {
     }
 
     private var playbackModeView: some View {
-        let isEnabled = playbackCoordinator.presentation.isControlEnabled
-        return PlaybackModeSlider(
-            mode: currentPlaybackMode,
-            isEnabled: isEnabled,
-            isExpanded: isPlaybackModeExpanded,
-            onModeChange: { mode in
-                playbackCoordinator.setPlaybackOrderMode(mode)
-            },
-            onCurrentModeRetap: { _ in }
-        )
+        let presentation = playbackCoordinator.presentation
+        let isEnabled = presentation.isControlEnabled && presentation.hasTrack
+        return Group {
+            switch presentation.source {
+            case .local:
+                PlaybackModeSlider(
+                    mode: currentPlaybackMode,
+                    isEnabled: isEnabled,
+                    isExpanded: isPlaybackModeExpanded,
+                    scale: 0.75,
+                    onModeChange: { mode in
+                        playbackCoordinator.setPlaybackOrderMode(mode)
+                    },
+                    onCurrentModeRetap: { _ in }
+                )
+            case .appleMusic:
+                AppleMusicPlaybackModeSlider(
+                    mode: presentation.appleMusicPlaybackMode ?? .sequence,
+                    isEnabled: isEnabled,
+                    isExpanded: isPlaybackModeExpanded,
+                    scale: 0.75,
+                    onModeChange: { mode in
+                        playbackCoordinator.setAppleMusicPlaybackMode(mode)
+                    }
+                )
+            }
+        }
         .contentShape(Capsule())
         .onHover { hovering in
             guard isEnabled else {
@@ -263,6 +303,14 @@ struct MiniPlayerView: View {
                 .aspectRatio(contentMode: .fill)
                 .frame(width: 36, height: 36)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
+        } else if playbackCoordinator.presentation.isArtworkLoading {
+            ZStack {
+                ArtworkPlaceholderView.miniPlayer()
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.72)
+            }
+            .frame(width: 36, height: 36)
         } else {
             ArtworkPlaceholderView.miniPlayer()
         }
@@ -344,15 +392,17 @@ struct MiniPlayerView: View {
     
     private var currentArtworkTaskKey: String {
         let presentation = playbackCoordinator.presentation
-        guard let track = presentation.localTrack else { return "none" }
         let checksum = ArtworkAssetStore.checksum(for: presentation.artworkData)
-        return "\(track.id.uuidString)-\(checksum)"
+        let identity = presentation.artworkIdentity
+            ?? presentation.lyricsIdentity
+            ?? presentation.localTrack?.id.uuidString
+            ?? "none"
+        return "\(identity)-\(checksum)"
     }
     
     private func loadArtworkThumbnail() async {
         let presentation = playbackCoordinator.presentation
         guard
-            let track = presentation.localTrack,
             let artworkData = presentation.artworkData,
             !artworkData.isEmpty
         else {
@@ -361,7 +411,7 @@ struct MiniPlayerView: View {
         }
         
         let snapshot = await ArtworkAssetStore.shared.snapshotMetadata(
-            trackID: track.id,
+            trackID: presentation.localTrack?.id ?? Self.appleMusicArtworkCacheTrackID,
             artworkData: artworkData
         )
         guard !Task.isCancelled else { return }
@@ -567,7 +617,6 @@ struct PlaybackModeSlider: View {
         self.onCurrentModeRetap = onCurrentModeRetap
     }
 
-    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var dragTranslation: CGFloat = 0
     @State private var isDragging: Bool = false
@@ -629,8 +678,7 @@ struct PlaybackModeSlider: View {
             let segmentWidth = max(1, totalWidth / CGFloat(segmentCount))
             let baseOffset = isExpanded ? CGFloat(modeIndex) * segmentWidth : 0
             let effectiveDrag = (isDragging && isExpanded) ? dragTranslation : 0
-            let knobOffset = clampOffset(
-                baseOffset + effectiveDrag, maxValue: totalWidth - segmentWidth)
+            let knobOffset = clampOffset(baseOffset + effectiveDrag, maxValue: totalWidth - segmentWidth)
             let snap = Animation.spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08)
 
             ZStack(alignment: .leading) {
@@ -800,13 +848,283 @@ struct PlaybackModeSlider: View {
     }
 }
 
+struct AppleMusicPlaybackModeSlider: View {
+    let mode: AppleMusicPlaybackMode
+    let isEnabled: Bool
+    let isExpanded: Bool
+    let iconSize: CGFloat
+    let selectedColor: Color
+    let unselectedColor: Color
+    let useScreenBlend: Bool
+    let pillTintColor: Color?
+    let pillTintBlendMode: BlendMode?
+    let onInteraction: (() -> Void)?
+    let scale: CGFloat
+    let onModeChange: (AppleMusicPlaybackMode) -> Void
+
+    init(
+        mode: AppleMusicPlaybackMode,
+        isEnabled: Bool,
+        isExpanded: Bool = true,
+        iconSize: CGFloat = 12,
+        selectedColor: Color = .primary,
+        unselectedColor: Color = .secondary,
+        useScreenBlend: Bool = false,
+        pillTintColor: Color? = nil,
+        pillTintBlendMode: BlendMode? = nil,
+        onInteraction: (() -> Void)? = nil,
+        scale: CGFloat = 1.0,
+        onModeChange: @escaping (AppleMusicPlaybackMode) -> Void
+    ) {
+        self.mode = mode
+        self.isEnabled = isEnabled
+        self.isExpanded = isExpanded
+        self.iconSize = iconSize
+        self.selectedColor = selectedColor
+        self.unselectedColor = unselectedColor
+        self.useScreenBlend = useScreenBlend
+        self.pillTintColor = pillTintColor
+        self.pillTintBlendMode = pillTintBlendMode
+        self.onInteraction = onInteraction
+        self.scale = scale
+        self.onModeChange = onModeChange
+    }
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var dragTranslation: CGFloat = 0
+    @State private var isDragging: Bool = false
+    @State private var animatedMode: AppleMusicPlaybackMode?
+    @State private var modeAnimationTrigger = 0
+
+    private var modeIndex: Int {
+        index(for: mode)
+    }
+
+    private var visibleModes: [AppleMusicPlaybackMode] {
+        isExpanded ? AppleMusicPlaybackMode.allCases : [mode]
+    }
+
+    var body: some View {
+        GeometryReader { geometry in
+            let inset: CGFloat = 2 * scale
+            let totalWidth = geometry.size.width - inset * 2
+            let segmentCount = max(1, visibleModes.count)
+            let segmentWidth = max(1, totalWidth / CGFloat(segmentCount))
+            let baseOffset = isExpanded ? CGFloat(modeIndex) * segmentWidth : 0
+            let effectiveDrag = (isDragging && isExpanded) ? dragTranslation : 0
+            let knobOffset = clampOffset(baseOffset + effectiveDrag, maxValue: totalWidth - segmentWidth)
+            let snap = Animation.spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08)
+
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(trackFill)
+                    .overlay(Capsule().stroke(trackBorder, lineWidth: 1 * scale))
+                    .compositingGroup()
+                    .blendMode(pillTintBlendMode ?? .normal)
+                    .allowsHitTesting(false)
+
+                Capsule()
+                    .fill(knobFill)
+                    .overlay(Capsule().stroke(knobBorder, lineWidth: 1 * scale))
+                    .compositingGroup()
+                    .blendMode(pillTintBlendMode ?? .normal)
+                    .frame(width: segmentWidth, height: geometry.size.height - inset * 2)
+                    .offset(x: knobOffset + inset)
+                    .allowsHitTesting(false)
+                    .animation((reduceMotion || isDragging) ? .none : snap, value: modeIndex)
+
+                HStack(spacing: 0) {
+                    ForEach(Array(visibleModes.enumerated()), id: \.offset) { pair in
+                        let modeValue = pair.element
+                        segmentButton(
+                            systemImage: symbol(for: modeValue),
+                            mode: modeValue,
+                            isSelected: mode == modeValue,
+                            width: segmentWidth,
+                            snap: snap
+                        )
+                    }
+                }
+                .padding(.horizontal, inset)
+            }
+            .contentShape(Capsule())
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        guard isExpanded else { return }
+                        onInteraction?()
+                        isDragging = true
+                        dragTranslation = value.translation.width
+                    }
+                    .onEnded { value in
+                        guard isExpanded else { return }
+                        onInteraction?()
+                        let raw = baseOffset + value.translation.width
+                        let index = Int(round(raw / segmentWidth))
+                        dragTranslation = 0
+                        isDragging = false
+                        let clampedIndex = max(0, min(AppleMusicPlaybackMode.allCases.count - 1, index))
+                        let targetMode = modeForIndex(clampedIndex)
+                        guard targetMode != mode else { return }
+                        commitModeChange(targetMode, snap: snap)
+                    }
+            )
+        }
+        .opacity(isEnabled ? 1 : 0.4)
+        .disabled(!isEnabled)
+        .onChange(of: mode) { oldValue, newValue in
+            guard oldValue != newValue else { return }
+            animatedMode = newValue
+            DispatchQueue.main.async {
+                modeAnimationTrigger += 1
+            }
+        }
+    }
+
+    private func commitModeChange(_ newMode: AppleMusicPlaybackMode, snap: Animation) {
+        onInteraction?()
+        if reduceMotion {
+            var tx = Transaction()
+            tx.disablesAnimations = true
+            withTransaction(tx) {
+                onModeChange(newMode)
+            }
+        } else {
+            withAnimation(snap) {
+                onModeChange(newMode)
+            }
+        }
+    }
+
+    private func handleSegmentTap(_ tappedMode: AppleMusicPlaybackMode, snap: Animation) {
+        onInteraction?()
+        guard tappedMode != mode else { return }
+        commitModeChange(tappedMode, snap: snap)
+    }
+
+    private func segmentButton(
+        systemImage: String,
+        mode: AppleMusicPlaybackMode,
+        isSelected: Bool,
+        width: CGFloat,
+        snap: Animation
+    ) -> some View {
+        Button {
+            handleSegmentTap(mode, snap: snap)
+        } label: {
+            ZStack {
+                Rectangle()
+                    .fill(Color.clear)
+                segmentIcon(systemImage: systemImage, mode: mode, isSelected: isSelected)
+            }
+            .frame(width: width, height: 28 * scale)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .frame(width: width, height: 28 * scale)
+        .contentShape(Rectangle())
+    }
+
+    @ViewBuilder
+    private func segmentIcon(
+        systemImage: String,
+        mode: AppleMusicPlaybackMode,
+        isSelected: Bool
+    ) -> some View {
+        let icon = Image(systemName: systemImage)
+            .font(.system(size: iconSize, weight: .semibold))
+            .foregroundStyle(isSelected ? selectedColor : unselectedColor)
+
+        if isSelected, animatedMode == mode {
+            if useScreenBlend {
+                icon
+                    .symbolEffect(.bounce, value: modeAnimationTrigger)
+                    .compositingGroup()
+                    .blendMode(.screen)
+            } else {
+                icon.symbolEffect(.bounce, value: modeAnimationTrigger)
+            }
+        } else {
+            if useScreenBlend {
+                icon
+                    .compositingGroup()
+                    .blendMode(.screen)
+            } else {
+                icon
+            }
+        }
+    }
+
+    private func symbol(for mode: AppleMusicPlaybackMode) -> String {
+        switch mode {
+        case .sequence:
+            return "list.bullet"
+        case .shuffle:
+            return "shuffle"
+        case .repeatAll:
+            return "repeat"
+        case .repeatOne:
+            return "repeat.1"
+        }
+    }
+
+    private func index(for mode: AppleMusicPlaybackMode) -> Int {
+        switch mode {
+        case .sequence: return 0
+        case .shuffle: return 1
+        case .repeatAll: return 2
+        case .repeatOne: return 3
+        }
+    }
+
+    private func modeForIndex(_ index: Int) -> AppleMusicPlaybackMode {
+        switch index {
+        case 0: return .sequence
+        case 1: return .shuffle
+        case 2: return .repeatAll
+        default: return .repeatOne
+        }
+    }
+
+    private var trackFill: Color {
+        if let pillTintColor {
+            return pillTintColor.opacity(0.18)
+        }
+        return Color.secondary.opacity(0.2)
+    }
+
+    private var trackBorder: Color {
+        Color.primary.opacity(0.16)
+    }
+
+    private var knobFill: Color {
+        if let pillTintColor {
+            return pillTintColor.opacity(0.34)
+        }
+        return Color.primary.opacity(0.2)
+    }
+
+    private var knobBorder: Color {
+        Color.primary.opacity(0.24)
+    }
+
+    private func clampOffset(_ value: CGFloat, maxValue: CGFloat) -> CGFloat {
+        min(max(0, value), maxValue)
+    }
+}
+
 // MARK: - Preview
 
 #Preview("Mini Player") { @MainActor in
     let playbackService = StubAudioPlaybackService()
     let levelMeter = StubAudioLevelMeter()
     let playerVM = PlayerViewModel(playbackService: playbackService, levelMeter: levelMeter)
-    let playbackCoordinator = PlaybackCoordinator(playerVM: playerVM)
+    let libraryVM = LibraryViewModel(repository: StubLibraryRepository())
+    let appleMusicAdapter = AppleMusicPlaybackAdapter(libraryVM: libraryVM)
+    let playbackCoordinator = PlaybackCoordinator(
+        playerVM: playerVM,
+        appleMusicAdapter: appleMusicAdapter
+    )
     let uiState = UIStateViewModel()
 
     let track = Track(
@@ -818,6 +1136,7 @@ struct PlaybackModeSlider: View {
         MiniPlayerView()
             .environment(playerVM)
             .environment(playbackCoordinator)
+            .environment(libraryVM)
             .environment(uiState)
             .environmentObject(ThemeStore.shared)
             .padding()

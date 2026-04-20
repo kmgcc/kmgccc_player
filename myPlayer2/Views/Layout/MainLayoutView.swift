@@ -389,7 +389,11 @@ private struct MainLyricsPanelShell: View, Equatable {
     let playbackService = StubAudioPlaybackService()
     let levelMeter = StubAudioLevelMeter()
     let playerVM = PlayerViewModel(playbackService: playbackService, levelMeter: levelMeter)
-    let playbackCoordinator = PlaybackCoordinator(playerVM: playerVM)
+    let appleMusicAdapter = AppleMusicPlaybackAdapter(libraryVM: libraryVM)
+    let playbackCoordinator = PlaybackCoordinator(
+        playerVM: playerVM,
+        appleMusicAdapter: appleMusicAdapter
+    )
     let ledMeter = LEDMeterService()
     let skinManager = SkinManager()
 

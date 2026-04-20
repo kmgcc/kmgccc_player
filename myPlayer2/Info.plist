@@ -4,5 +4,7 @@
 <dict>
 	<key>NSAccentColorName</key>
 	<string>AccentColor</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>需要控制 Music.app，以便在 Apple Music 模式下读取当前播放、同步歌词并执行播放控制。</string>
 </dict>
 </plist>

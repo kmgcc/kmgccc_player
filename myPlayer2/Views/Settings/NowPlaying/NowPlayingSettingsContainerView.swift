@@ -21,7 +21,7 @@ struct NowPlayingSettingsContainerView: View {
             SettingsHeaderLabel("settings.section.now_playing", systemImage: "sparkles")
 
             // Tab selector
-            SettingsTabSelector(tabs: tabs, selectedTab: $selectedTab)
+            SettingsTabSelector(tabs: tabs, selectedTab: $selectedTab, fillsWidth: true)
                 .environmentObject(themeStore)
 
             // Tab content

@@ -20,6 +20,9 @@ struct FullscreenPlayerView: View {
     // The entire canvas is scaled as one unit using scaleEffect
     private static let baseCanvasWidth: CGFloat = 1470
     private static let baseCanvasHeight: CGFloat = 923
+    private static let fallbackExternalTrackID = UUID(
+        uuidString: "E4D3575E-97CA-41EF-8322-FC3D845E7F28"
+    )!
 
     private struct FullscreenLyricsColorSet {
         let mainActive: NSColor
@@ -84,6 +87,7 @@ struct FullscreenPlayerView: View {
     private let fullscreenLyricsSaturationCeiling: CGFloat = 0.58
 
     @Environment(PlayerViewModel.self) private var playerVM
+    @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(LEDMeterServiceProvider.self) private var ledMeterProvider
     @Environment(AppSettings.self) private var settings
     @Environment(\.colorScheme) private var colorScheme
@@ -151,6 +155,10 @@ struct FullscreenPlayerView: View {
         LyricsSurfaceManager.shared.existingStore(for: .fullscreenCoverBlurHighlight)
     }
 
+    private var currentDisplayContext: NowPlayingDisplayContext {
+        playbackCoordinator.presentation.displayContext
+    }
+
     private var shouldRenderCoverBlurHighlightOverlay: Bool {
         // A second AMLL surface introduces timing drift and visible ghosting.
         // Keep cover-blur fullscreen on a single AMLL surface only.
@@ -201,7 +209,7 @@ struct FullscreenPlayerView: View {
             syncCoverBlurHighlightActivation()
             resetFullscreenLyricsBackgroundSnapshot()
             scheduleFullscreenLyricsBackgroundCapture()
-            fullscreenLyricsHostMounted = isShowingLyricsPanel && playerVM.currentTrack != nil
+            fullscreenLyricsHostMounted = isShowingLyricsPanel && playbackCoordinator.presentation.hasTrack
             setupSeekCallback()
             reloadLyricsSurface(reason: "fullscreen appear", forceLyricsReload: true)
             resetFullscreenBottomControlsAutoHideState()
@@ -268,6 +276,7 @@ struct FullscreenPlayerView: View {
         }
         .onChange(of: playerVM.currentTime, handleCurrentTimeChange)
         .onChange(of: playerVM.isPlaying) { _, newValue in
+            guard playbackCoordinator.presentation.source == .local else { return }
             LyricsSurfaceManager.shared.updatePlayingState(newValue)
             fullscreenStore.setPlaying(newValue)
             if LyricsSurfaceManager.shared.isActive(.fullscreenCoverBlurHighlight) {
@@ -278,6 +287,20 @@ struct FullscreenPlayerView: View {
             }
         }
         .onChange(of: playerVM.currentTrack?.id, handleTrackIdChange)
+        .onChange(of: playbackCoordinator.presentation.currentTime, handlePresentationCurrentTimeChange)
+        .onChange(of: playbackCoordinator.presentation.isPlaying) { _, newValue in
+            guard playbackCoordinator.presentation.source == .appleMusic else { return }
+            LyricsSurfaceManager.shared.updatePlayingState(newValue)
+            fullscreenStore.setPlaying(newValue)
+            if LyricsSurfaceManager.shared.isActive(.fullscreenCoverBlurHighlight) {
+                coverBlurHighlightStore.setPlaying(newValue)
+            }
+        }
+        .onChange(of: playbackCoordinator.presentation.lyricsIdentity, handlePresentationLyricsIdentityChange)
+        .onChange(of: playbackCoordinator.presentation.lyricsText) { _, _ in
+            guard playbackCoordinator.presentation.source == .appleMusic else { return }
+            reloadLyricsSurface(reason: "fullscreen external lyrics updated", forceLyricsReload: true)
+        }
         .onChange(of: rightPanelDisplayState) { _, newValue in
             handleRightPanelDisplayStateChange(newValue)
         }
@@ -305,7 +328,7 @@ struct FullscreenPlayerView: View {
         }
         .onChange(of: bkController.lyricsColorSampleRevision) { _, _ in
             guard pendingFullscreenLyricsBackgroundCapture else { return }
-            guard bkController.lyricsColorTrackID == playerVM.currentTrack?.id else { return }
+            guard bkController.lyricsColorTrackID == currentDisplayContext.trackID else { return }
             scheduleFullscreenLyricsRefresh(preferLiveSurface: true)
         }
         .task(id: currentArtworkTaskKey) {
@@ -316,7 +339,23 @@ struct FullscreenPlayerView: View {
     // MARK: - Fullscreen Content (Extracted to simplify body type checking)
 
     private var fullscreenArtBackgroundSeedPalette: [NSColor] {
-        if let track = playerVM.currentTrack, let snapshot = currentArtworkSnapshot(for: track) {
+        if let snapshot = currentArtworkSnapshotForDisplay() {
+            let palette = !snapshot.richPalette.isEmpty ? snapshot.richPalette : snapshot.palette
+            if !palette.isEmpty {
+                return palette
+            }
+            if let accent = snapshot.accentColor {
+                return [accent]
+            }
+            if let average = snapshot.averageColor {
+                return [average]
+            }
+            if let dominant = snapshot.dominantColor {
+                return [dominant]
+            }
+        }
+
+        if let snapshot = currentArtworkSnapshot(forTrackID: currentDisplayContext.trackID) {
             let palette = !snapshot.richPalette.isEmpty ? snapshot.richPalette : snapshot.palette
             if !palette.isEmpty {
                 return palette
@@ -355,12 +394,12 @@ struct FullscreenPlayerView: View {
                 Color.black.opacity(effectiveDimmingIntensity * 0.7)
                     .ignoresSafeArea()
                     .allowsHitTesting(false)
-            } else if settings.nowPlayingArtBackgroundEnabled && playerVM.currentTrack != nil {
+            } else if settings.nowPlayingArtBackgroundEnabled && currentDisplayContext.hasTrack {
                 BKArtBackgroundView(
                     controller: bkController,
-                    trackID: playerVM.currentTrack?.id,
-                    artworkData: playerVM.currentTrack?.artworkData,
-                    isPlaying: playerVM.isPlaying,
+                    trackID: currentDisplayContext.trackID,
+                    artworkData: currentDisplayContext.artworkData,
+                    isPlaying: currentDisplayContext.isPlaying,
                     avoidanceRect: nil,
                     resourceProfile: settings.fullscreen.skinID == "kmgccc.cassette"
                         ? .cassetteForeground
@@ -782,8 +821,8 @@ struct FullscreenPlayerView: View {
 
     private var volumeBinding: Binding<Double> {
         Binding(
-            get: { playerVM.volume },
-            set: { playerVM.setVolume($0) }
+            get: { playbackCoordinator.presentation.volume },
+            set: { playbackCoordinator.setVolume($0) }
         )
     }
 
@@ -1216,7 +1255,7 @@ struct FullscreenPlayerView: View {
             fullscreenLyricsViewport
 
             // Empty state
-            if playerVM.currentTrack == nil {
+            if !currentDisplayContext.hasTrack {
                 VStack(spacing: 16) {
                     Image(systemName: "music.note")
                         .font(.system(size: 56))
@@ -1356,7 +1395,7 @@ struct FullscreenPlayerView: View {
         let isShowingLyrics = rightPanelDisplayState == .lyrics
         let icon = isShowingLyrics ? "quote.bubble.fill" : "quote.bubble"
         let helpText: LocalizedStringKey = isShowingLyrics ? "Hide Lyrics" : "Show Lyrics"
-        let canToggle = playerVM.currentTrack != nil
+        let canToggle = currentDisplayContext.hasTrack
 
         return leadingControlButton(size: size, help: helpText) {
             Image(systemName: icon)
@@ -1423,12 +1462,16 @@ struct FullscreenPlayerView: View {
     }
 
     private var shouldKeepFullscreenMiniPlayerSpectrumAlive: Bool {
-        settings.fullscreen.isMiniPlayerSpectrumEnabled && playerVM.currentTrack != nil
+        guard settings.fullscreen.isMiniPlayerSpectrumEnabled else { return false }
+        if playbackCoordinator.activeSource == .appleMusic {
+            return playbackCoordinator.presentation.hasTrack
+        }
+        return playerVM.currentTrack != nil
     }
 
     private var coverBlurBaseBlendMode: BlendMode {
         guard isCoverBlurFullscreenSkin else { return .normal }
-        guard coverBlurLyricsTheme?.trackID == playerVM.currentTrack?.id else { return .normal }
+        guard coverBlurLyricsTheme?.trackID == currentDisplayContext.trackID else { return .normal }
         switch coverBlurLyricsTheme?.profile {
         case .lighter:
             return .plusLighter
@@ -1475,7 +1518,7 @@ struct FullscreenPlayerView: View {
 
     private func setupSeekCallback() {
         fullscreenStore.onUserSeek = { seconds in
-            playerVM.seek(to: seconds)
+            playbackCoordinator.seek(to: seconds)
         }
     }
 
@@ -1559,7 +1602,7 @@ struct FullscreenPlayerView: View {
     }
 
     private func setRightPanelDisplayState(_ newState: RightPanelDisplayState) {
-        if newState == .lyrics, playerVM.currentTrack != nil {
+        if newState == .lyrics, playbackCoordinator.presentation.hasTrack {
             pendingFullscreenLyricsHostDetach?.cancel()
             pendingFullscreenLyricsHostDetach = nil
             fullscreenLyricsHostMounted = true
@@ -1571,14 +1614,15 @@ struct FullscreenPlayerView: View {
     }
 
     private func applyPlaybackMode(_ mode: PlaybackOrderMode) {
-        playerVM.setPlaybackOrderMode(mode)
+        playbackCoordinator.setPlaybackOrderMode(mode)
     }
 
     private func handleQueueTrackTap(_ track: Track) {
-        playerVM.playTrackFromQueue(track)
+        playbackCoordinator.playTrackFromQueue(track)
     }
 
     private func handleCurrentTimeChange(_ oldTime: Double, _ newTime: Double) {
+        guard playbackCoordinator.presentation.source == .local else { return }
         LyricsSurfaceManager.shared.updatePlaybackTime(newTime)
         fullscreenStore.setCurrentTime(newTime)
         if LyricsSurfaceManager.shared.isActive(.fullscreenCoverBlurHighlight) {
@@ -1603,11 +1647,35 @@ struct FullscreenPlayerView: View {
         reloadLyricsSurface(reason: "fullscreen track changed", forceLyricsReload: true)
     }
 
+    private func handlePresentationCurrentTimeChange(_ oldTime: Double, _ newTime: Double) {
+        guard playbackCoordinator.presentation.source == .appleMusic else { return }
+        LyricsSurfaceManager.shared.updatePlaybackTime(newTime)
+        fullscreenStore.setCurrentTime(newTime)
+        if LyricsSurfaceManager.shared.isActive(.fullscreenCoverBlurHighlight) {
+            coverBlurHighlightStore.setCurrentTime(newTime)
+        }
+
+        if oldTime > 1.0, newTime < 0.2 {
+            reloadLyricsSurface(reason: "fullscreen external playback restarted", forceLyricsReload: true)
+        }
+    }
+
+    private func handlePresentationLyricsIdentityChange(_ oldId: String?, _ newId: String?) {
+        guard playbackCoordinator.presentation.source == .appleMusic else { return }
+        guard oldId != newId else { return }
+        artworkSnapshot = nil
+        syncFullscreenLyricsHostMount()
+        reloadLyricsSurface(reason: "fullscreen external track changed", forceLyricsReload: true)
+    }
+
     private func syncFullscreenMiniPlayerSpectrumLease() {
         let shouldKeepAlive = shouldKeepFullscreenMiniPlayerSpectrumAlive
         guard shouldKeepAlive != isFullscreenMiniPlayerSpectrumLeaseActive else {
             if shouldKeepAlive {
-                miniPlayerSpectrumService.updatePlaybackState(isPlaying: playerVM.isPlaying)
+                let isPlaying = playbackCoordinator.activeSource == .appleMusic
+                    ? playbackCoordinator.presentation.isPlaying
+                    : playerVM.isPlaying
+                miniPlayerSpectrumService.updatePlaybackState(isPlaying: isPlaying)
             }
             return
         }
@@ -1615,7 +1683,10 @@ struct FullscreenPlayerView: View {
         isFullscreenMiniPlayerSpectrumLeaseActive = shouldKeepAlive
         if shouldKeepAlive {
             miniPlayerSpectrumService.start()
-            miniPlayerSpectrumService.updatePlaybackState(isPlaying: playerVM.isPlaying)
+            let isPlaying = playbackCoordinator.activeSource == .appleMusic
+                ? playbackCoordinator.presentation.isPlaying
+                : playerVM.isPlaying
+            miniPlayerSpectrumService.updatePlaybackState(isPlaying: isPlaying)
         } else {
             miniPlayerSpectrumService.stop()
         }
@@ -1641,21 +1712,41 @@ struct FullscreenPlayerView: View {
             store.forceReload(recreateWebView: recreateWebViewOnForceReload)
         }
 
-        let track = playerVM.currentTrack
-        let lyricsText = resolvedFullscreenLyricsText(for: track)
-        let ttmlForStore: String? = track == nil ? nil : lyricsText
-        LyricsSurfaceManager.shared.updatePlaybackSnapshot(
-            trackID: track?.id,
-            lyricsTTML: ttmlForStore ?? "",
-            currentTime: playerVM.currentTime,
-            isPlaying: playerVM.isPlaying
-        )
-        store.applyTrack(
-            trackID: track?.id,
-            ttml: ttmlForStore,
-            currentTime: playerVM.currentTime,
-            isPlaying: playerVM.isPlaying
-        )
+        let presentation = playbackCoordinator.presentation
+        switch presentation.source {
+        case .local:
+            let track = playerVM.currentTrack
+            let lyricsText = resolvedFullscreenLyricsText(for: track)
+            let ttmlForStore: String? = track == nil ? nil : lyricsText
+            LyricsSurfaceManager.shared.updatePlaybackSnapshot(
+                trackID: track?.id,
+                lyricsTTML: ttmlForStore ?? "",
+                currentTime: playerVM.currentTime,
+                isPlaying: playerVM.isPlaying
+            )
+            store.applyTrack(
+                trackID: track?.id,
+                ttml: ttmlForStore,
+                currentTime: playerVM.currentTime,
+                isPlaying: playerVM.isPlaying
+            )
+        case .appleMusic:
+            let lyricsText = presentation.lyricsText
+            let ttmlForStore: String? = lyricsText == nil ? nil : (lyricsText ?? "")
+            let trackID = presentation.displayTrackID
+            LyricsSurfaceManager.shared.updatePlaybackSnapshot(
+                trackID: trackID,
+                lyricsTTML: ttmlForStore ?? "",
+                currentTime: presentation.currentTime,
+                isPlaying: presentation.isPlaying
+            )
+            store.applyTrack(
+                trackID: trackID,
+                ttml: ttmlForStore,
+                currentTime: presentation.currentTime,
+                isPlaying: presentation.isPlaying
+            )
+        }
 
         if let palette = ThemeStore.shared.palette {
             store.applyTheme(palette)
@@ -1731,15 +1822,16 @@ struct FullscreenPlayerView: View {
 
 
     private var fullscreenLyricsHostOpacity: Double {
-        guard isShowingLyricsPanel, playerVM.currentTrack != nil else { return 0 }
-        if isCoverBlurFullscreenSkin && coverBlurLyricsTheme?.trackID != playerVM.currentTrack?.id {
+        guard isShowingLyricsPanel, playbackCoordinator.presentation.hasTrack else { return 0 }
+        if playbackCoordinator.presentation.source == .local,
+           isCoverBlurFullscreenSkin && coverBlurLyricsTheme?.trackID != playerVM.currentTrack?.id {
             return 0
         }
         return 1
     }
 
     private var shouldKeepFullscreenLyricsHostMounted: Bool {
-        fullscreenLyricsHostMounted && playerVM.currentTrack != nil
+        fullscreenLyricsHostMounted && playbackCoordinator.presentation.hasTrack
     }
 
     private var isFullscreenLyricsHostVisible: Bool {
@@ -1751,7 +1843,7 @@ struct FullscreenPlayerView: View {
     }
 
     private func syncFullscreenLyricsHostMount() {
-        let shouldShowLyricsHost = isShowingLyricsPanel && playerVM.currentTrack != nil
+        let shouldShowLyricsHost = isShowingLyricsPanel && playbackCoordinator.presentation.hasTrack
 
         pendingFullscreenLyricsHostDetach?.cancel()
         pendingFullscreenLyricsHostDetach = nil
@@ -1768,13 +1860,13 @@ struct FullscreenPlayerView: View {
     private func scheduleFullscreenLyricsHostDetach(after delay: TimeInterval) {
         pendingFullscreenLyricsHostDetach?.cancel()
 
-        let detachTrackID = playerVM.currentTrack?.id
+        let detachTrackID = currentDisplayContext.trackID
         let workItem = DispatchWorkItem {
             if isShowingLyricsPanel {
                 pendingFullscreenLyricsHostDetach = nil
                 return
             }
-            if playerVM.currentTrack?.id != detachTrackID {
+            if currentDisplayContext.trackID != detachTrackID {
                 pendingFullscreenLyricsHostDetach = nil
                 return
             }
@@ -1791,8 +1883,9 @@ struct FullscreenPlayerView: View {
     }
 
     private var fullscreenLyricsViewportOpacity: Double {
-        guard playerVM.currentTrack != nil else { return 0 }
-        if isCoverBlurFullscreenSkin && coverBlurLyricsTheme?.trackID != playerVM.currentTrack?.id {
+        guard currentDisplayContext.hasTrack else { return 0 }
+        if playbackCoordinator.presentation.source == .local,
+           isCoverBlurFullscreenSkin && coverBlurLyricsTheme?.trackID != currentDisplayContext.trackID {
             return 0
         }
         return suppressFullscreenLyricsViewport ? 0 : 1
@@ -1800,9 +1893,9 @@ struct FullscreenPlayerView: View {
     private func scheduleFullscreenLyricsViewportReveal(after delay: TimeInterval) {
         pendingFullscreenLyricsReveal?.cancel()
 
-        let revealTrackID = playerVM.currentTrack?.id
+        let revealTrackID = currentDisplayContext.trackID
         let workItem = DispatchWorkItem {
-            guard playerVM.currentTrack?.id == revealTrackID else { return }
+            guard currentDisplayContext.trackID == revealTrackID else { return }
             withAnimation(lyricsLayoutAnimation) {
                 suppressFullscreenLyricsViewport = false
             }
@@ -1829,9 +1922,9 @@ struct FullscreenPlayerView: View {
         let workItem = DispatchWorkItem {
             reloadLyricsSurface(reason: "fullscreen track changed", forceLyricsReload: true)
             if revealLyricsAfterRefresh {
-                let revealTrackID = playerVM.currentTrack?.id
+                let revealTrackID = currentDisplayContext.trackID
                 let revealWorkItem = DispatchWorkItem {
-                    guard playerVM.currentTrack?.id == revealTrackID else { return }
+                    guard currentDisplayContext.trackID == revealTrackID else { return }
                     suppressFullscreenLyricsViewport = false
                     pendingFullscreenLyricsReveal = nil
                 }
@@ -1858,9 +1951,10 @@ struct FullscreenPlayerView: View {
     private func applyFullscreenLyricsTheme(force: Bool = false, reason: String = "") {
         let baseStore = fullscreenStore
         let surfaceRole = LyricsSurfaceRole.fullscreen
-        let currentTrack = playerVM.currentTrack
+        let effectiveTrack = playbackCoordinator.presentation.localTrack
+        let displayTrackID = currentDisplayContext.trackID
         let readyCoverBlurTheme = isCoverBlurFullscreenSkin
-            ? updateCoverBlurLyricsThemeIfReady(for: currentTrack)
+            ? updateCoverBlurLyricsThemeIfReady(forTrackID: displayTrackID)
             : nil
         let heldCoverBlurTheme = coverBlurLyricsTheme
         let activeCoverBlurTheme: FullscreenCoverBlurLyricsTheme? = {
@@ -1868,12 +1962,12 @@ struct FullscreenPlayerView: View {
             if let readyCoverBlurTheme {
                 return readyCoverBlurTheme
             }
-            guard heldCoverBlurTheme?.trackID == currentTrack?.id else {
+            guard heldCoverBlurTheme?.trackID == displayTrackID else {
                 return nil
             }
             return heldCoverBlurTheme
         }()
-        let colorSet = activeCoverBlurTheme?.colors ?? makeFullscreenLyricsColorSet(for: currentTrack)
+        let colorSet = activeCoverBlurTheme?.colors ?? makeFullscreenLyricsColorSet(forTrackID: displayTrackID)
 
         if isCoverBlurFullscreenSkin, readyCoverBlurTheme == nil {
             if activeCoverBlurTheme == nil {
@@ -1940,7 +2034,7 @@ struct FullscreenPlayerView: View {
         let coverBlurThemeColor = activeCoverBlurTheme.map {
             ArtworkColorExtractor.cssRGBA($0.themeColor, alpha: 1.0)
         }
-        let trackOffsetMs = max(-15000, min(15000, currentTrack?.lyricsTimeOffsetMs ?? 0))
+        let trackOffsetMs = max(-15000, min(15000, effectiveTrack?.lyricsTimeOffsetMs ?? 0))
         let globalAdvanceMs = max(-5000, min(5000, settings.lyricsGlobalAdvanceMs))
         let combinedOffsetMs = max(-20000, min(20000, trackOffsetMs - globalAdvanceMs))
 
@@ -2089,7 +2183,7 @@ struct FullscreenPlayerView: View {
 
     private func scheduleFullscreenLyricsBackgroundCapture() {
         pendingFullscreenLyricsBackgroundCapture =
-            settings.nowPlayingArtBackgroundEnabled && playerVM.currentTrack != nil
+            settings.nowPlayingArtBackgroundEnabled && currentDisplayContext.hasTrack
     }
 
     private func captureFullscreenLyricsBackgroundSnapshot(preferLiveSurface: Bool = false) {
@@ -2098,8 +2192,8 @@ struct FullscreenPlayerView: View {
             return
         }
 
-        guard bkController.lyricsColorTrackID == playerVM.currentTrack?.id else {
-            pendingFullscreenLyricsBackgroundCapture = playerVM.currentTrack != nil
+        guard bkController.lyricsColorTrackID == currentDisplayContext.trackID else {
+            pendingFullscreenLyricsBackgroundCapture = currentDisplayContext.hasTrack
             return
         }
 
@@ -2157,26 +2251,26 @@ struct FullscreenPlayerView: View {
     }
 
     private func makeContext(windowSize: CGSize, artworkColumnWidth: CGFloat, fullscreenScale: CGFloat = 1.0) -> SkinContext {
-        let track = playerVM.currentTrack
+        let display = currentDisplayContext
 
-        let trackMeta: SkinContext.TrackMetadata? = track.map {
-            SkinContext.TrackMetadata(
-                id: $0.id,
-                title: $0.title,
-                artist: $0.artist,
-                album: $0.album,
-                duration: $0.duration,
+        let trackMeta: SkinContext.TrackMetadata? = display.hasTrack
+            ? SkinContext.TrackMetadata(
+                id: display.trackID ?? Self.fallbackExternalTrackID,
+                title: display.title,
+                artist: display.artist,
+                album: display.album ?? "",
+                duration: display.duration,
                 artworkChecksum: artworkSnapshot?.artworkChecksum ?? 0,
-                artworkData: $0.artworkData,
+                artworkData: display.artworkData,
                 artworkImage: artworkSnapshot?.fullImage
             )
-        }
+            : nil
 
         let playback = SkinContext.PlaybackState(
-            isPlaying: playerVM.isPlaying,
-            currentTime: playerVM.currentTime,
-            duration: playerVM.duration,
-            progress: playerVM.duration > 0 ? playerVM.currentTime / playerVM.duration : 0
+            isPlaying: display.isPlaying,
+            currentTime: display.currentTime,
+            duration: display.duration,
+            progress: display.duration > 0 ? display.currentTime / display.duration : 0
         )
 
         let theme = SkinContext.ThemeTokens(
@@ -2320,10 +2414,10 @@ struct FullscreenPlayerView: View {
         )
     }
 
-    private func makeFullscreenLyricsColorSet(for track: Track?) -> FullscreenLyricsColorSet {
-        let highlightBaseColor = resolveFullscreenLyricsBaseColor(for: track)
+    private func makeFullscreenLyricsColorSet(forTrackID trackID: UUID?) -> FullscreenLyricsColorSet {
+        let highlightBaseColor = resolveFullscreenLyricsBaseColor(forTrackID: trackID)
         let highlightHSL = hslComponents(from: highlightBaseColor)
-        let inactiveBaseColor = resolveFullscreenLyricsInactiveBaseColor(for: track)
+        let inactiveBaseColor = resolveFullscreenLyricsInactiveBaseColor(forTrackID: trackID)
         let inactiveHSL = hslComponents(from: inactiveBaseColor)
         let inactiveDarkModeShift: CGFloat = colorScheme == .dark ? 0.08 : 0
         let inactiveUltraDarkShift: CGFloat = lockedFullscreenLyricsUltraDark
@@ -2608,22 +2702,36 @@ struct FullscreenPlayerView: View {
     }
 
     private func currentArtworkSnapshot(for track: Track?) -> ArtworkAssetSnapshot? {
-        guard let track, let snapshot = artworkSnapshot, snapshot.trackID == track.id else {
+        guard let track else { return nil }
+        return currentArtworkSnapshot(forTrackID: track.id)
+    }
+
+    private func currentArtworkSnapshot(forTrackID trackID: UUID?) -> ArtworkAssetSnapshot? {
+        guard let trackID, let snapshot = artworkSnapshot, snapshot.trackID == trackID else {
             return nil
         }
         return snapshot
     }
 
-    private func resolveCoverBlurThemeColor(for track: Track?) -> NSColor? {
-        guard let snapshot = currentArtworkSnapshot(for: track) else {
+    private func currentArtworkSnapshotForDisplay() -> ArtworkAssetSnapshot? {
+        guard let trackID = currentDisplayContext.trackID,
+              let snapshot = artworkSnapshot,
+              snapshot.trackID == trackID else {
+            return nil
+        }
+        return snapshot
+    }
+
+    private func resolveCoverBlurThemeColor(forTrackID trackID: UUID?) -> NSColor? {
+        guard let snapshot = currentArtworkSnapshot(forTrackID: trackID) else {
             return nil
         }
 
         return snapshot.averageColor ?? snapshot.dominantColor ?? snapshot.accentColor
     }
 
-    private func makeCoverBlurLyricsTheme(for track: Track?) -> FullscreenCoverBlurLyricsTheme? {
-        guard let track, let themeColor = resolveCoverBlurThemeColor(for: track) else {
+    private func makeCoverBlurLyricsTheme(forTrackID trackID: UUID?) -> FullscreenCoverBlurLyricsTheme? {
+        guard let trackID, let themeColor = resolveCoverBlurThemeColor(forTrackID: trackID) else {
             return nil
         }
 
@@ -2633,7 +2741,7 @@ struct FullscreenPlayerView: View {
             : .lighter
 
         return FullscreenCoverBlurLyricsTheme(
-            trackID: track.id,
+            trackID: trackID,
             themeColor: themeColor,
             themeLightness: themeHSL.lightness,
             profile: profile,
@@ -2642,9 +2750,9 @@ struct FullscreenPlayerView: View {
     }
 
     private func updateCoverBlurLyricsThemeIfReady(
-        for track: Track?
+        forTrackID trackID: UUID?
     ) -> FullscreenCoverBlurLyricsTheme? {
-        guard let resolvedTheme = makeCoverBlurLyricsTheme(for: track) else {
+        guard let resolvedTheme = makeCoverBlurLyricsTheme(forTrackID: trackID) else {
             return nil
         }
 
@@ -2662,23 +2770,23 @@ struct FullscreenPlayerView: View {
         return resolvedTheme
     }
 
-    private func resolveFullscreenLyricsBaseColor(for track: Track?) -> NSColor {
-        if let accent = currentArtworkSnapshot(for: track)?.accentColor {
+    private func resolveFullscreenLyricsBaseColor(forTrackID trackID: UUID?) -> NSColor {
+        if let accent = currentArtworkSnapshot(forTrackID: trackID)?.accentColor {
             return accent
         }
-        if let base = currentArtworkSnapshot(for: track)?.averageColor {
+        if let base = currentArtworkSnapshot(forTrackID: trackID)?.averageColor {
             return base
         }
 
         return NSColor(AppSettings.shared.accentColor)
     }
 
-    private func resolveFullscreenLyricsInactiveBaseColor(for track: Track?) -> NSColor {
+    private func resolveFullscreenLyricsInactiveBaseColor(forTrackID trackID: UUID?) -> NSColor {
         if let backgroundColor = lockedFullscreenLyricsBackgroundColor {
             return backgroundColor
         }
 
-        if settings.nowPlayingArtBackgroundEnabled, bkController.lyricsColorTrackID == track?.id {
+        if settings.nowPlayingArtBackgroundEnabled, bkController.lyricsColorTrackID == trackID {
             if pendingFullscreenLyricsBackgroundCapture,
                 let backgroundColor = bkController.primaryBackgroundColor
             {
@@ -2694,31 +2802,36 @@ struct FullscreenPlayerView: View {
             }
         }
 
-        return resolveFullscreenLyricsBaseColor(for: track)
+        return resolveFullscreenLyricsBaseColor(forTrackID: trackID)
     }
     
     private var currentArtworkTaskKey: String {
-        guard let track = playerVM.currentTrack else { return "none" }
-        let checksum = ArtworkAssetStore.checksum(for: track.artworkData)
-        return "\(track.id.uuidString)-\(checksum)-px:\(preferredArtworkFullImageMaxPixel)"
+        let display = currentDisplayContext
+        guard display.hasTrack, let trackID = display.trackID else { return "none" }
+        let checksum = ArtworkAssetStore.checksum(for: display.artworkData)
+        let identity = display.artworkIdentity ?? display.lyricsIdentity ?? trackID.uuidString
+        return "\(trackID.uuidString)-\(identity)-\(checksum)-px:\(preferredArtworkFullImageMaxPixel)"
     }
     
     private func loadArtworkSnapshot() async {
-        guard let track = playerVM.currentTrack, let artworkData = track.artworkData, !artworkData.isEmpty
+        let display = currentDisplayContext
+        guard let trackID = display.trackID,
+              let artworkData = display.artworkData,
+              !artworkData.isEmpty
         else {
             artworkSnapshot = nil
             return
         }
 
-        let expectedTrackID = track.id
+        let expectedTrackID = trackID
         let expectedTaskKey = currentArtworkTaskKey
         let snapshot = await ArtworkAssetStore.shared.snapshot(
-            trackID: track.id,
+            trackID: trackID,
             artworkData: artworkData,
             fullImageMaxPixelSize: preferredArtworkFullImageMaxPixel
         )
         guard !Task.isCancelled else { return }
-        guard playerVM.currentTrack?.id == expectedTrackID else { return }
+        guard currentDisplayContext.trackID == expectedTrackID else { return }
         guard currentArtworkTaskKey == expectedTaskKey else { return }
         guard snapshot?.trackID == expectedTrackID else { return }
 

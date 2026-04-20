@@ -106,30 +106,33 @@ struct LEDMeterSettingsView: View {
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
             Spacer()
-            HStack(spacing: 4) {
-                ForEach([9, 11, 13, 15], id: \.self) { count in
-                    Button {
-                        ledCount = count
-                    } label: {
-                        Text("\(count)")
-                            .font(.system(size: 11, weight: ledCount == count ? .medium : .regular))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                    }
-                    .buttonStyle(.plain)
-                    .background(
-                        Capsule()
-                            .fill(ledCount == count ? themeStore.accentColor.opacity(0.18) : Color.clear)
-                    )
-                    .foregroundStyle(ledCount == count ? themeStore.accentColor : .secondary)
+            SlidingSelector(
+                segments: [9, 11, 13, 15],
+                selection: $ledCount,
+                animation: .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08),
+                hSpacing: 0,
+                background: {
+                    Color.clear
+                },
+                knob: {
+                    Capsule()
+                        .fill(themeStore.accentColor.opacity(0.18))
+                },
+                content: { count, isSelected in
+                    Text("\(count)")
+                        .font(.system(size: 11, weight: isSelected ? .medium : .regular))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .foregroundStyle(isSelected ? themeStore.accentColor : .secondary)
                 }
-            }
+            )
             .padding(.horizontal, 4)
             .padding(.vertical, 3)
             .background(
                 Capsule()
                     .fill(Color.secondary.opacity(0.08))
             )
+            .fixedSize(horizontal: true, vertical: false)
         }
     }
 
@@ -139,30 +142,33 @@ struct LEDMeterSettingsView: View {
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
             Spacer()
-            HStack(spacing: 4) {
-                ForEach([3, 5, 7], id: \.self) { level in
-                    Button {
-                        brightnessLevels = level
-                    } label: {
-                        Text("\(level)")
-                            .font(.system(size: 11, weight: brightnessLevels == level ? .medium : .regular))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                    }
-                    .buttonStyle(.plain)
-                    .background(
-                        Capsule()
-                            .fill(brightnessLevels == level ? themeStore.accentColor.opacity(0.18) : Color.clear)
-                    )
-                    .foregroundStyle(brightnessLevels == level ? themeStore.accentColor : .secondary)
+            SlidingSelector(
+                segments: [3, 5, 7],
+                selection: $brightnessLevels,
+                animation: .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08),
+                hSpacing: 0,
+                background: {
+                    Color.clear
+                },
+                knob: {
+                    Capsule()
+                        .fill(themeStore.accentColor.opacity(0.18))
+                },
+                content: { level, isSelected in
+                    Text("\(level)")
+                        .font(.system(size: 11, weight: isSelected ? .medium : .regular))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .foregroundStyle(isSelected ? themeStore.accentColor : .secondary)
                 }
-            }
+            )
             .padding(.horizontal, 4)
             .padding(.vertical, 3)
             .background(
                 Capsule()
                     .fill(Color.secondary.opacity(0.08))
             )
+            .fixedSize(horizontal: true, vertical: false)
         }
     }
 
@@ -269,30 +275,33 @@ struct LEDMeterSettingsView: View {
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
             Spacer()
-            HStack(spacing: 4) {
-                ForEach([30, 60], id: \.self) { hz in
-                    Button {
-                        targetHz = hz
-                    } label: {
-                        Text("\(hz) Hz")
-                            .font(.system(size: 11, weight: targetHz == hz ? .medium : .regular))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                    }
-                    .buttonStyle(.plain)
-                    .background(
-                        Capsule()
-                            .fill(targetHz == hz ? themeStore.accentColor.opacity(0.18) : Color.clear)
-                    )
-                    .foregroundStyle(targetHz == hz ? themeStore.accentColor : .secondary)
+            SlidingSelector(
+                segments: [30, 60],
+                selection: $targetHz,
+                animation: .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08),
+                hSpacing: 0,
+                background: {
+                    Color.clear
+                },
+                knob: {
+                    Capsule()
+                        .fill(themeStore.accentColor.opacity(0.18))
+                },
+                content: { hz, isSelected in
+                    Text("\(hz) Hz")
+                        .font(.system(size: 11, weight: isSelected ? .medium : .regular))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .foregroundStyle(isSelected ? themeStore.accentColor : .secondary)
                 }
-            }
+            )
             .padding(.horizontal, 4)
             .padding(.vertical, 3)
             .background(
                 Capsule()
                     .fill(Color.secondary.opacity(0.08))
             )
+            .fixedSize(horizontal: true, vertical: false)
         }
     }
 

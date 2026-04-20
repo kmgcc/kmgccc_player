@@ -297,6 +297,10 @@ private struct AppRootContentView: View {
 }
 
 private struct MainAppContentView: View {
+    private static let externalArtworkBackgroundTrackID = UUID(
+        uuidString: "3C7BB22E-1A57-4B8B-8461-A48B9646AA7C"
+    )!
+
     let libraryVM: LibraryViewModel
     let playerVM: PlayerViewModel
     let playbackCoordinator: PlaybackCoordinator
@@ -332,7 +336,7 @@ private struct MainAppContentView: View {
         if showArtBackground {
             BKArtBackgroundView(
                 controller: artBackgroundController,
-                trackID: playbackCoordinator.presentation.localTrack?.id,
+                trackID: artworkBackgroundTrackID,
                 artworkData: playbackCoordinator.presentation.artworkData,
                 isPlaying: playbackCoordinator.presentation.isPlaying,
                 resourceProfile: settings.selectedNowPlayingSkinID == "kmgccc.cassette"
@@ -346,6 +350,27 @@ private struct MainAppContentView: View {
         }
     }
 
+    private var artworkBackgroundTrackID: UUID? {
+        let presentation = playbackCoordinator.presentation
+        if let localID = presentation.localTrack?.id {
+            return localID
+        }
+        return presentation.source == .appleMusic && presentation.hasTrack
+            ? Self.externalArtworkBackgroundTrackID
+            : nil
+    }
+
+    private var playbackThemeArtworkIdentity: String {
+        let presentation = playbackCoordinator.presentation
+        let identity =
+            presentation.artworkIdentity
+            ?? presentation.externalStableKey
+            ?? presentation.lyricsIdentity
+            ?? presentation.localTrack?.id.uuidString
+            ?? "none"
+        return "\(presentation.source.rawValue)|track:\(presentation.hasTrack)|art:\(identity)"
+    }
+
     private var mainContentView: some View {
         contentView
             .onAppear {
@@ -356,6 +381,9 @@ private struct MainAppContentView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: .libraryTrackDidUpdate)) { notification in
                 handleLibraryTrackDidUpdate(notification)
+            }
+            .task(id: playbackThemeArtworkIdentity) {
+                await refreshThemeFromPlaybackPresentation()
             }
             .onChange(of: uiState.contentMode) { _, newValue in
                 handleContentModeChange(newValue)
@@ -409,6 +437,10 @@ private struct MainAppContentView: View {
                 ms: (ProcessInfo.processInfo.systemUptime - start) * 1000
             )
         }
+    }
+
+    private func refreshThemeFromPlaybackPresentation() async {
+        await themeStore.updateTheme(for: playbackCoordinator.presentation)
     }
 
     private func handleLibraryTrackDidUpdate(_ notification: Notification) {

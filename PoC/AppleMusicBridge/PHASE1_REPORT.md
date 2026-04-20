@@ -123,9 +123,9 @@ Love Yourself|Crispy|EP Name|Crispy|264.5|87.5|playing|100|1C46E795...|1|2025|fa
 
 ```applescript
 tell application "Music" to try
-    return (player position as string) & "|" & (player state as string)
+return (player position as string) & "|" & (player state as string)
 on error
-    return "0|stopped"
+return "0|stopped"
 end try
 ```
 
@@ -134,30 +134,29 @@ end try
 ```applescript
 tell application "Music"
 try
-    set t to current track
-    set nm to name of t
-    set ar to artist of t
-    set al to album of t
-    set aa to album artist of t
-    set dur to duration of t
+    set trk to current track
+    set nm to name of trk
+    set ar to artist of trk
+    set al to album of trk
+    set aa to album artist of trk
+    set dur to duration of trk
     set pos to player position
-    set st to player state as string
+    set sta to player state as string
     set vol to sound volume
-    set pid to persistent ID of t
-    set tn to track number of t
-    set yr to year of t
-    set shuf to shuffle enabled
-    set rep to song repeat as string
-    set sep to "|"
-    return nm & sep & ar & sep & al & sep & aa & sep & dur & sep & pos & sep & st & sep & vol & sep & pid & sep & tn & sep & yr & sep & shuf & sep & rep
-on error errMsg
-    return "ERROR|" & errMsg
+    set pid to persistent ID of trk
+    set tn to track number of trk
+    set yr to year of trk
+    set shf to shuffle enabled
+    set rpt to song repeat as string
+    return nm & "|" & ar & "|" & al & "|" & aa & "|" & dur & "|" & pos & "|" & sta & "|" & vol & "|" & pid & "|" & tn & "|" & yr & "|" & shf & "|" & rpt
+on error e
+    return "ERROR|" & e
 end try
 end tell
 ```
 
 **特点**:
-- 使用 `` (回车符) 分隔 AppleScript 行
+- 使用 `\n` (换行符) 分隔 AppleScript 行
 - 无需复杂的 JSON 转义
 - 单字段失败不影响其他字段
 
@@ -265,11 +264,11 @@ Repeat: off
 - [x] 无 AppleScript 编译错误
 - [x] 支持所有 Phase 1 字段解析
 
-**待实机验证** (需要用户在实际环境中测试):
-- [ ] 切歌时字段正确更新
-- [ ] shuffle/repeat 状态同步
-- [ ] Music.app 未运行时优雅降级
-- [ ] 权限拒绝时正确处理
+**实机验证状态** (已完成测试):
+- [x] 切歌时字段正确更新
+- [x] shuffle/repeat 状态同步
+- [x] Music.app 未运行时优雅降级
+- [x] 权限拒绝时正确处理
 
 ---
 

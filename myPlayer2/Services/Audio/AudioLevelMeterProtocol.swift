@@ -69,4 +69,9 @@ public protocol AudioLevelMeterProtocol: AnyObject {
     var audioMetrics: AudioMetrics { get }
     func start()
     func stop()
+    func updatePlaybackState(isPlaying: Bool)
+}
+
+public extension AudioLevelMeterProtocol {
+    func updatePlaybackState(isPlaying: Bool) {}
 }

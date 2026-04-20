@@ -7,7 +7,7 @@
 
 import Foundation
 
-enum PlaybackSource: String, CaseIterable, Identifiable {
+enum PlaybackSource: String, CaseIterable, Codable, Identifiable, Sendable {
     case local
     case appleMusic
 

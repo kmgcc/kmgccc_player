@@ -90,11 +90,23 @@ final class AppSessionHost: ObservableObject {
             playbackService: playbackService,
             levelMeter: ledMeterProvider
         )
-        let playbackCoordinator = PlaybackCoordinator(playerVM: playerVM)
         let libraryVM = LibraryViewModel(
             repository: repository,
             libraryService: libraryService
         )
+        let appleMusicAdapter = AppleMusicPlaybackAdapter(libraryVM: libraryVM)
+        let playbackCoordinator = PlaybackCoordinator(
+            playerVM: playerVM,
+            appleMusicAdapter: appleMusicAdapter,
+            meterProvider: ledMeterProvider
+        )
+
+        playbackCoordinator.onActiveSourceChanged = { [weak ledMeterProvider] source in
+            ledMeterProvider?.playbackSource = source
+            AudioVisualizationService.shared.setExternalMode(source == .appleMusic)
+        }
+        ledMeterProvider.playbackSource = playbackCoordinator.activeSource
+        AudioVisualizationService.shared.setExternalMode(playbackCoordinator.activeSource == .appleMusic)
         libraryVM.setImportService(fileImportService)
         libraryVM.currentTrackIDProvider = { [weak playerVM] in
             playerVM?.currentTrack?.id
@@ -132,11 +144,13 @@ final class AppSessionHost: ObservableObject {
 
         FullscreenWindowManager.shared.configure(
             playerVM: playerVM,
+            playbackCoordinator: playbackCoordinator,
             lyricsVM: lyricsVM,
             ledMeterProvider: ledMeterProvider,
             skinManager: skinManager,
             uiState: uiState
         )
+        AppDelegate.shared?.configureDockPlayback(playbackCoordinator: playbackCoordinator)
 
         settingsSceneDependencies.configure(
             libraryVM: libraryVM,

@@ -28,6 +28,7 @@ struct BatchTrackEditSheet: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(PlayerViewModel.self) private var playerVM
+    @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(LyricsViewModel.self) private var lyricsVM
     @Environment(CoverDownloadService.self) private var coverDownloadService
     @Environment(NetEaseCoverService.self) private var netEaseCoverService
@@ -811,7 +812,7 @@ struct BatchTrackEditSheet: View {
     }
 
     private func playCurrentTrackForEditing(_ track: Track) {
-        playerVM.play(track: track)
+        playbackCoordinator.play(track: track)
     }
 
     private func syncAMLLPreview(reason: String, forceLyricsReload: Bool) {
@@ -855,8 +856,8 @@ struct BatchTrackEditSheet: View {
         if previewLyricsVM == nil {
             previewLyricsVM = LyricsViewModel(settings: AppSettings.shared)
         }
-        previewLyricsVM?.onSeekRequest = { [weak playerVM] seconds in
-            playerVM?.seek(to: seconds)
+        previewLyricsVM?.onSeekRequest = { [weak playbackCoordinator] seconds in
+            playbackCoordinator?.seek(to: seconds)
         }
         LyricsSurfaceManager.shared.activate(role: .batchPreview)
     }
