@@ -40,10 +40,17 @@ struct SidebarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            playbackSourceSwitcher
-                .padding(.horizontal, 14)
-                .padding(.top, 5)
-                .padding(.bottom, 12)
+            if settings.showPlaybackSourceSwitcher {
+                playbackSourceSwitcher
+                    .padding(.horizontal, 14)
+                    .padding(.top, 5)
+                    .padding(.bottom, 12)
+            } else {
+                legacyAppHeader
+                    .padding(.horizontal, 14)
+                    .padding(.top, 5)
+                    .padding(.bottom, 12)
+            }
 
             // Main Library Link
             Button {
@@ -312,6 +319,23 @@ struct SidebarView: View {
             Text(request.message)
         }
         .animation(.snappy(duration: 0.2), value: importEnrichmentService.hasOutstandingWork)
+    }
+
+    private var legacyAppHeader: some View {
+        Button {
+            uiState.showLibrary()
+        } label: {
+            Label(Constants.appName, systemImage: "music.pages.fill")
+                .font(.headline)
+                .foregroundStyle(.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .symbolRenderingMode(.palette)
+                .foregroundStyle(.primary, themeStore.accentColor)
+        }
+        .buttonStyle(.plain)
     }
 
     private var playbackSourceSwitcher: some View {

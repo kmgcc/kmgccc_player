@@ -57,15 +57,19 @@ final class MusicLibraryScanner {
 
         var metas: [ScannedTrackMeta] = []
         for dir in dirs where dir.hasDirectoryPath {
-            guard let meta = parseTrackMeta(in: dir) else { continue }
-            metas.append(meta)
+            autoreleasepool {
+                guard let meta = parseTrackMeta(in: dir) else { return }
+                metas.append(meta)
+            }
         }
         return metas
     }
 
     func scanTracks(ids: [UUID]) -> [ScannedTrackMeta] {
         ids.compactMap { id in
-            parseTrackMeta(in: LocalLibraryPaths.trackFolderURL(for: id))
+            autoreleasepool {
+                parseTrackMeta(in: LocalLibraryPaths.trackFolderURL(for: id))
+            }
         }
     }
 

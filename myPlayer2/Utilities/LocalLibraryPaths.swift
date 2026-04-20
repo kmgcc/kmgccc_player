@@ -11,8 +11,8 @@ import Foundation
 nonisolated enum LocalLibraryPaths {
 
     static let libraryRootName = "kmgccc_player Library"
-    static let preferredTrackArtworkFileName = "artwork.png"
-    static let legacyTrackArtworkFileName = "artwork.jpg"
+    static let preferredTrackArtworkFileName = "artwork.jpg"
+    static let legacyTrackArtworkFileName = "artwork.png"
 
     static var libraryRootURL: URL {
         let base = FileManager.default.urls(for: .musicDirectory, in: .userDomainMask).first

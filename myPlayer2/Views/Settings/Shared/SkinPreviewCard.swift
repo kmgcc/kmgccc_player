@@ -12,30 +12,56 @@ import SwiftUI
 struct SkinPreviewCard<Preview: View>: View {
     let title: String
     let isSelected: Bool
+    let cardSize: CGSize
+    let previewSize: CGFloat
+    let cornerRadius: CGFloat
+    let titleFontSize: CGFloat
     @ViewBuilder let preview: () -> Preview
     let action: () -> Void
 
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
 
+    init(
+        title: String,
+        isSelected: Bool,
+        cardSize: CGSize = CGSize(width: 104, height: 124),
+        previewSize: CGFloat = 80,
+        cornerRadius: CGFloat = 12,
+        titleFontSize: CGFloat = 11,
+        @ViewBuilder preview: @escaping () -> Preview,
+        action: @escaping () -> Void
+    ) {
+        self.title = title
+        self.isSelected = isSelected
+        self.cardSize = cardSize
+        self.previewSize = previewSize
+        self.cornerRadius = cornerRadius
+        self.titleFontSize = titleFontSize
+        self.preview = preview
+        self.action = action
+    }
+
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 10) {
+            VStack(spacing: max(6, previewSize * 0.125)) {
                 preview()
                     .frame(width: 80, height: 80)
+                    .scaleEffect(previewSize / 80)
+                    .frame(width: previewSize, height: previewSize)
 
                 Text(title)
-                    .font(.system(size: 11, weight: isSelected ? .semibold : .medium))
+                    .font(.system(size: titleFontSize, weight: isSelected ? .semibold : .medium))
                     .foregroundStyle(isSelected ? themeStore.accentColor : Color.primary.opacity(0.7))
                     .lineLimit(1)
             }
-            .frame(width: 104, height: 124)
+            .frame(width: cardSize.width, height: cardSize.height)
             .background(background)
             .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .strokeBorder(borderColor, lineWidth: isSelected ? 2 : 1)
             )
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         }
         .buttonStyle(SkinCardButtonStyle())
     }
@@ -43,10 +69,10 @@ struct SkinPreviewCard<Preview: View>: View {
     // MARK: - Appearance
 
     private var background: some View {
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
             .fill(isSelected ? themeStore.accentColor.opacity(colorScheme == .dark ? 0.10 : 0.08) : Color.clear)
             .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .fill(Color.secondary.opacity(0.04))
             )
     }

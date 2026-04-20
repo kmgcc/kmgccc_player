@@ -48,6 +48,8 @@ struct FullscreenMiniPlayerView: View {
     @State private var nextSymbolEffectTrigger = 0
     @State private var artworkImage: NSImage?
     @State private var isPlaybackModeExpanded = false
+    @State private var trackToEdit: Track?
+    @State private var isShowingExternalMatchEditor = false
 
     // Computed properties based on settings and scale
     private var barHeight: CGFloat { fixedBarHeight * scale }
@@ -91,6 +93,10 @@ struct FullscreenMiniPlayerView: View {
             // Left: Cover + Title/Artist
             trackInfoView
                 .frame(width: trackInfoWidth, alignment: .leading)
+                .contentShape(Rectangle())
+                .contextMenu {
+                    nowPlayingInfoContextMenu
+                }
 
             // Center: Playback Controls
             controlsView
@@ -125,9 +131,37 @@ struct FullscreenMiniPlayerView: View {
         .task(id: currentArtworkTaskKey) {
             await loadArtworkThumbnail()
         }
+        .sheet(item: $trackToEdit) { track in
+            TrackEditSheet(track: track)
+                .environmentObject(themeStore)
+        }
+        .sheet(isPresented: $isShowingExternalMatchEditor) {
+            ExternalPlaybackInfoEditorView(
+                presentation: playbackCoordinator.presentation,
+                onSaved: {
+                    playbackCoordinator.invalidateExternalPlaybackResolution()
+                }
+            )
+            .environmentObject(themeStore)
+        }
     }
 
     // MARK: - Subviews
+
+    @ViewBuilder
+    private var nowPlayingInfoContextMenu: some View {
+        NowPlayingInfoContextMenu(
+            presentation: playbackCoordinator.presentation,
+            onEditTrack: { track in
+                onInteraction()
+                trackToEdit = track
+            },
+            onEditExternalInfo: {
+                onInteraction()
+                isShowingExternalMatchEditor = true
+            }
+        )
+    }
 
     private var trackInfoView: some View {
         HStack(spacing: trackInfoHSpacing) {

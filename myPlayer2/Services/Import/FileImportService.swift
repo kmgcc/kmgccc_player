@@ -531,11 +531,15 @@ nonisolated private enum ImportEnrichmentWorker {
             throw CoverDownloadError.outputMissing
         }
 
-        let imageData = try Data(contentsOf: tempURL)
-        guard !imageData.isEmpty, NSImage(data: imageData) != nil else {
+        guard
+            let normalizedData = ArtworkDataNormalizer.normalizedJPEGData(
+                from: tempURL,
+                maxPixelSize: ArtworkDataNormalizer.importMaxPixelSize
+            )
+        else {
             throw CoverDownloadError.invalidImageData
         }
-        return imageData
+        return normalizedData
     }
 
     private static func downloadNetEaseCover(
@@ -589,12 +593,17 @@ nonisolated private enum ImportEnrichmentWorker {
         do {
             let (imageData, response) = try await session.data(from: coverURL)
             try validateNetEaseHTTP(response: response)
-            guard !imageData.isEmpty, NSImage(data: imageData) != nil else {
+            guard
+                let normalizedData = ArtworkDataNormalizer.normalizedJPEGData(
+                    from: imageData,
+                    maxPixelSize: ArtworkDataNormalizer.importMaxPixelSize
+                )
+            else {
                 throw NetEaseCoverError.imageDownloadFailed(
                     underlying: CoverDownloadError.invalidImageData
                 )
             }
-            return imageData
+            return normalizedData
         } catch let error as NetEaseCoverError {
             throw error
         } catch {
@@ -1252,7 +1261,31 @@ final class ImportEnrichmentService {
 
         if pendingFlushPatches.isEmpty == false {
             scheduleFlushIfNeeded(reason: "post_flush")
+        } else {
+            releaseCompletedSessionIfIdle()
         }
+    }
+
+    private func releaseCompletedSessionIfIdle() {
+        guard queue.isEmpty, runningRequests.isEmpty, pendingFlushPatches.isEmpty, isFlushing == false
+        else { return }
+
+        trackByID.removeAll()
+        queuedRequests.removeAll()
+        runningRequests.removeAll()
+
+        guard itemStates.values.allSatisfy(\.isTerminal) else { return }
+        itemStates.removeAll()
+        progress = ImportEnrichmentProgressSnapshot(
+            totalEnqueued: 0,
+            completedCount: 0,
+            failedCount: 0,
+            pendingLyricsCount: 0,
+            pendingCoverCount: 0,
+            runningCount: 0,
+            flushPendingCount: 0
+        )
+        Log.info("[ImportEnrichment] idle session released", category: .import)
     }
 
     private func diagnoseStalledQueue(context: String) {
@@ -1285,6 +1318,7 @@ final class ImportEnrichmentService {
 
         if queue.isEmpty && runningRequests.isEmpty {
             scheduleFlushIfNeeded(reason: "queue_idle")
+            releaseCompletedSessionIfIdle()
         }
         drainQueueIfPossible()
     }
@@ -2088,6 +2122,12 @@ final class FileImportService: FileImportServiceProtocol {
     ) async -> CandidatePreparationResult {
         let preview: ImportPreview
         if let ncmResult = file.ncmResult {
+            let normalizedCoverData = ncmResult.coverData.flatMap {
+                ArtworkDataNormalizer.normalizedJPEGData(
+                    from: $0,
+                    maxPixelSize: ArtworkDataNormalizer.importMaxPixelSize
+                )
+            }
             preview = ImportPreview(
                 title: ncmResult.metadata.title,
                 artist: ncmResult.metadata.artistName,
@@ -2095,7 +2135,7 @@ final class FileImportService: FileImportServiceProtocol {
                 albumArtist: nil,
                 duration: ncmResult.metadata.durationSeconds,
                 lyrics: nil,
-                artworkData: ncmResult.coverData
+                artworkData: normalizedCoverData
             )
         } else {
             let raw = await Self.extractMetadata(from: file.fileURL)
@@ -2437,15 +2477,9 @@ final class FileImportService: FileImportServiceProtocol {
     ) {
         let asset = AVURLAsset(url: url)
 
-        // Default values
-        var title: String?
-        var artist: String?
-        var album: String?
-        var albumArtist: String?
-        var lyrics: String?
+        var fields = ExtractedMetadataFields()
         var duration: Double = 0
 
-        // Get duration
         do {
             let durationTime = try await asset.load(.duration)
             duration = CMTimeGetSeconds(durationTime)
@@ -2453,102 +2487,47 @@ final class FileImportService: FileImportServiceProtocol {
             print("⚠️ Failed to load duration: \(error)")
         }
 
-        // Collect all metadata items: common first, then full set as fallback
-        var allItems: [AVMetadataItem] = []
         if let common = try? await asset.load(.commonMetadata) {
-            allItems.append(contentsOf: common)
+            fields = await metadataFields(byApplying: common, to: fields)
         }
         if let full = try? await asset.load(.metadata) {
-            allItems.append(contentsOf: full)
-        }
-
-        for item in allItems {
-            // 1. Try Common Key
-            if let key = item.commonKey?.rawValue {
-                switch key {
-                case "title":
-                    if title == nil { title = try? await item.load(.stringValue) }
-                case "artist":
-                    if artist == nil { artist = try? await item.load(.stringValue) }
-                case "albumName":
-                    if album == nil { album = try? await item.load(.stringValue) }
-                case "albumArtist":
-                    if albumArtist == nil { albumArtist = try? await item.load(.stringValue) }
-                case "lyrics":
-                    if lyrics == nil { lyrics = try? await item.load(.stringValue) }
-                default:
-                    break
-                }
-            }
-
-            // 2. Try raw key string (fallback for FLAC / Vorbis Comment tags)
-            if let keyString = (item.key as? String)?.uppercased() {
-                if title == nil && keyString == "TITLE" {
-                    title = try? await item.load(.stringValue)
-                }
-                if artist == nil && keyString == "ARTIST" {
-                    artist = try? await item.load(.stringValue)
-                }
-                if album == nil && (keyString == "ALBUM" || keyString == "ALBUMTITLE") {
-                    album = try? await item.load(.stringValue)
-                }
-                if albumArtist == nil
-                    && (keyString == "ALBUMARTIST" || keyString == "ALBUM ARTIST"
-                        || keyString == "ALBUM_ARTIST")
-                {
-                    albumArtist = try? await item.load(.stringValue)
-                }
-                if lyrics == nil
-                    && (keyString == "LYRICS" || keyString == "UNSYNCEDLYRICS"
-                        || keyString == "USLT")
-                {
-                    lyrics = try? await item.load(.stringValue)
-                }
-            }
-
-            // 3. ID3 USLT via identifier
-            if lyrics == nil,
-                let identifier = item.identifier?.rawValue,
-                identifier == "id3/USLT"
-            {
-                lyrics = try? await item.load(.stringValue)
-            }
+            fields = await metadataFields(byApplying: full, to: fields)
         }
 
         // 4. Fallback: Try Spotlight Metadata (MDItem) if AVAsset failed
         // This handles cases where file has atypical tags or is only recognized by system indexers
-        if title == nil || artist == nil {
+        if fields.title == nil || fields.artist == nil {
             if let mdItem = MDItemCreateWithURL(kCFAllocatorDefault, url as CFURL) {
                 // Title
-                if title == nil {
+                if fields.title == nil {
                     if let mdTitle = MDItemCopyAttribute(mdItem, kMDItemTitle) as? String {
-                        title = mdTitle
+                        fields.title = mdTitle
                     }
                 }
 
                 // Artist (Authors)
-                if artist == nil {
+                if fields.artist == nil {
                     if let mdAuthors = MDItemCopyAttribute(mdItem, kMDItemAuthors) as? [String],
                         let firstAuthor = mdAuthors.first
                     {
-                        artist = firstAuthor
+                        fields.artist = firstAuthor
                     }
                 }
 
                 // Album
-                if album == nil {
+                if fields.album == nil {
                     if let mdAlbum = MDItemCopyAttribute(mdItem, kMDItemAlbum) as? String {
-                        album = mdAlbum
+                        fields.album = mdAlbum
                     }
                 }
             }
         }
 
         // Apply defaults
-        let finalTitle = title ?? url.deletingPathExtension().lastPathComponent
-        let finalArtist = artist ?? NSLocalizedString("library.unknown_artist", comment: "")
-        let finalAlbum = album ?? NSLocalizedString("library.unknown_album", comment: "")
-        let finalAlbumArtist = albumArtist?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let finalTitle = fields.title ?? url.deletingPathExtension().lastPathComponent
+        let finalArtist = fields.artist ?? NSLocalizedString("library.unknown_artist", comment: "")
+        let finalAlbum = fields.album ?? NSLocalizedString("library.unknown_album", comment: "")
+        let finalAlbumArtist = fields.albumArtist?.trimmingCharacters(in: .whitespacesAndNewlines)
 
         return (
             finalTitle,
@@ -2556,7 +2535,7 @@ final class FileImportService: FileImportServiceProtocol {
             finalAlbum,
             finalAlbumArtist?.isEmpty == true ? nil : finalAlbumArtist,
             duration,
-            lyrics
+            fields.lyrics
         )
     }
 
@@ -2564,21 +2543,94 @@ final class FileImportService: FileImportServiceProtocol {
     nonisolated static func extractArtwork(from url: URL) async -> Data? {
         let asset = AVURLAsset(url: url)
 
-        // Collect all metadata items
-        var allItems: [AVMetadataItem] = []
         if let common = try? await asset.load(.commonMetadata) {
-            allItems.append(contentsOf: common)
+            if let data = await normalizedArtworkData(in: common) {
+                return data
+            }
         }
         if let full = try? await asset.load(.metadata) {
-            allItems.append(contentsOf: full)
+            if let data = await normalizedArtworkData(in: full) {
+                return data
+            }
         }
 
-        for item in allItems {
-            if let key = item.commonKey?.rawValue, key == "artwork" {
-                if let data = try? await item.load(.dataValue) {
-                    return data
+        return nil
+    }
+
+    private struct ExtractedMetadataFields: Sendable {
+        var title: String?
+        var artist: String?
+        var album: String?
+        var albumArtist: String?
+        var lyrics: String?
+    }
+
+    nonisolated private static func metadataFields(
+        byApplying items: [AVMetadataItem],
+        to existingFields: ExtractedMetadataFields
+    ) async -> ExtractedMetadataFields {
+        var fields = existingFields
+
+        for item in items {
+            if let key = item.commonKey?.rawValue {
+                switch key {
+                case "title":
+                    if fields.title == nil { fields.title = try? await item.load(.stringValue) }
+                case "artist":
+                    if fields.artist == nil { fields.artist = try? await item.load(.stringValue) }
+                case "albumName":
+                    if fields.album == nil { fields.album = try? await item.load(.stringValue) }
+                case "albumArtist":
+                    if fields.albumArtist == nil { fields.albumArtist = try? await item.load(.stringValue) }
+                case "lyrics":
+                    if fields.lyrics == nil { fields.lyrics = try? await item.load(.stringValue) }
+                default:
+                    break
                 }
             }
+
+            if let keyString = (item.key as? String)?.uppercased() {
+                if fields.title == nil && keyString == "TITLE" {
+                    fields.title = try? await item.load(.stringValue)
+                }
+                if fields.artist == nil && keyString == "ARTIST" {
+                    fields.artist = try? await item.load(.stringValue)
+                }
+                if fields.album == nil && (keyString == "ALBUM" || keyString == "ALBUMTITLE") {
+                    fields.album = try? await item.load(.stringValue)
+                }
+                if fields.albumArtist == nil
+                    && (keyString == "ALBUMARTIST" || keyString == "ALBUM ARTIST"
+                        || keyString == "ALBUM_ARTIST")
+                {
+                    fields.albumArtist = try? await item.load(.stringValue)
+                }
+                if fields.lyrics == nil
+                    && (keyString == "LYRICS" || keyString == "UNSYNCEDLYRICS"
+                        || keyString == "USLT")
+                {
+                    fields.lyrics = try? await item.load(.stringValue)
+                }
+            }
+
+            if fields.lyrics == nil,
+               let identifier = item.identifier?.rawValue,
+               identifier == "id3/USLT" {
+                fields.lyrics = try? await item.load(.stringValue)
+            }
+        }
+
+        return fields
+    }
+
+    nonisolated private static func normalizedArtworkData(in items: [AVMetadataItem]) async -> Data? {
+        for item in items {
+            guard let key = item.commonKey?.rawValue, key == "artwork" else { continue }
+            guard let data = try? await item.load(.dataValue) else { continue }
+            return ArtworkDataNormalizer.normalizedJPEGData(
+                from: data,
+                maxPixelSize: ArtworkDataNormalizer.importMaxPixelSize
+            )
         }
 
         return nil
@@ -2601,8 +2653,10 @@ final class FileImportService: FileImportServiceProtocol {
         }
 
         for case let fileURL as URL in enumerator {
-            if Self.isAudioFile(fileURL) {
-                audioFiles.append(fileURL)
+            autoreleasepool {
+                if Self.isAudioFile(fileURL) {
+                    audioFiles.append(fileURL)
+                }
             }
         }
 
@@ -2764,7 +2818,10 @@ final class FileImportService: FileImportServiceProtocol {
 
         async let extractedArtworkTask: Data? = {
             if let preloadedArtworkData = candidate.metadata.artworkData {
-                return preloadedArtworkData
+                return ArtworkDataNormalizer.normalizedJPEGData(
+                    from: preloadedArtworkData,
+                    maxPixelSize: ArtworkDataNormalizer.importMaxPixelSize
+                )
             }
             return await Self.extractArtwork(from: candidate.fileURL)
         }()
@@ -3069,12 +3126,14 @@ private final class BatchImportProgressDialogController: NSObject, NSWindowDeleg
     func closeNow() {
         guard !isClosed else { return }
         isClosed = true
+        viewModel.items.removeAll()
         panel?.close()
         panel = nil
     }
 
     func windowWillClose(_ notification: Notification) {
         isClosed = true
+        viewModel.items.removeAll()
         panel = nil
     }
 }

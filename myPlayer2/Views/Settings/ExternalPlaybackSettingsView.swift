@@ -10,13 +10,28 @@ import SwiftUI
 @MainActor
 struct ExternalPlaybackSettingsView: View {
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+    @Environment(AppSettings.self) private var settings
 
     @State private var showClearCacheAlert = false
     @State private var isClearingCaches = false
+    @State private var showPlaybackSourceSwitcher: Bool = AppSettings.shared.showPlaybackSourceSwitcher
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             SettingsHeaderLabel("外部播放", systemImage: "music.note.tv")
+
+            GroupBox {
+                VStack(alignment: .leading, spacing: 16) {
+                    Toggle("从外部播放", isOn: $showPlaybackSourceSwitcher)
+                        .toggleStyle(.switch)
+                        .font(.headline)
+
+                    Text("开启后，侧边栏顶部显示「本地 / AM」切换滑块；关闭后显示应用图标和名称。仅影响侧边栏入口样式，不会中断当前播放。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(12)
+            }
 
             GroupBox {
                 VStack(alignment: .leading, spacing: 12) {
@@ -55,6 +70,12 @@ struct ExternalPlaybackSettingsView: View {
                 }
                 .padding(12)
             }
+        }
+        .onAppear {
+            showPlaybackSourceSwitcher = settings.showPlaybackSourceSwitcher
+        }
+        .onChange(of: showPlaybackSourceSwitcher) { _, newValue in
+            settings.showPlaybackSourceSwitcher = newValue
         }
         .alert("清理外部播放缓存？", isPresented: $showClearCacheAlert) {
             Button("取消", role: .cancel) {}
