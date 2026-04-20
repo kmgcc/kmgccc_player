@@ -35,51 +35,36 @@ struct NowPlayingGeneralTabView: View {
             }
 
             // Skin selection
-            Text("settings.now_playing.select_skin")
-                .font(.subheadline.bold())
-                .foregroundStyle(.secondary)
-
             GroupBox {
-                VStack(alignment: .leading, spacing: 20) {
-                    Picker("", selection: $nowPlayingSkin) {
-                        ForEach(SkinRegistry.nowPlayingOptions) { skin in
-                            Label(skin.name, systemImage: skin.systemImage)
-                                .tag(skin.id)
-                        }
-                    }
-                    .pickerStyle(.radioGroup)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("settings.now_playing.select_skin")
+                        .font(.subheadline.bold())
+                        .foregroundStyle(.secondary)
 
-                    if let selected = SkinRegistry.nowPlayingOptions.first(where: {
-                        $0.id == nowPlayingSkin
-                    }) {
-                        Text(LocalizedStringKey(selected.detail))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .padding(.leading, 24)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
+                    SkinSelectorRow(
+                        skins: SkinRegistry.nowPlayingOptions,
+                        selectedSkinID: $nowPlayingSkin
+                    )
                 }
-                .padding(8)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
             }
 
             // Skin-specific options
             if let selected = SkinRegistry.options.first(where: { $0.id == nowPlayingSkin }),
                let optionsView = SkinRegistry.skin(for: nowPlayingSkin).settingsView {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text(
-                        String(
-                            format: NSLocalizedString(
-                                "settings.now_playing.skin_options", comment: ""), selected.name)
-                    )
-                    .font(.subheadline.bold())
-                    .foregroundStyle(.secondary)
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text(
+                            String(
+                                format: NSLocalizedString(
+                                    "settings.now_playing.skin_options", comment: ""), selected.name)
+                        )
+                        .font(.subheadline.bold())
+                        .foregroundStyle(.secondary)
 
-                    GroupBox {
                         optionsView
-                            .padding(12)
                     }
+                    .padding(12)
                 }
             }
         }

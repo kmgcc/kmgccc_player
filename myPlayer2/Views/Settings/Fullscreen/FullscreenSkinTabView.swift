@@ -34,31 +34,31 @@ struct FullscreenSkinTabView: View {
         VStack(alignment: .leading, spacing: 20) {
             // Skin selection
             GroupBox {
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 14) {
                     Text("全屏皮肤")
-                        .font(.headline)
+                        .font(.subheadline.bold())
+                        .foregroundStyle(.secondary)
 
-                    Picker("", selection: Binding(
-                        get: { settings.fullscreen.skinID },
-                        set: { settings.fullscreen.setSkinID($0) }
-                    )) {
-                        ForEach(SkinRegistry.fullscreenOptions) { skin in
-                            Label(skin.name, systemImage: skin.systemImage)
-                                .tag(skin.id)
-                        }
-                    }
-                    .pickerStyle(.radioGroup)
+                    SkinSelectorRow(
+                        skins: SkinRegistry.fullscreenOptions,
+                        selectedSkinID: Binding(
+                            get: { settings.fullscreen.skinID },
+                            set: { settings.fullscreen.setSkinID($0) }
+                        )
+                    )
                 }
                 .padding(12)
             }
 
             // Skin-specific options
-            if let _ = SkinRegistry.fullscreenOptions.first(where: { $0.id == settings.fullscreen.skinID }),
+            if let selected = SkinRegistry.fullscreenOptions.first(where: { $0.id == settings.fullscreen.skinID }),
                let optionsView = SkinRegistry.fullscreenSkin(for: settings.fullscreen.skinID).fullscreenSettingsView {
                 GroupBox {
-                    VStack(alignment: .leading, spacing: 16) {
-                        Text("皮肤选项")
-                            .font(.headline)
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text("\(selected.name) 选项")
+                            .font(.subheadline.bold())
+                            .foregroundStyle(.secondary)
+
                         optionsView
                     }
                     .padding(12)
@@ -67,21 +67,23 @@ struct FullscreenSkinTabView: View {
 
             // MiniPlayer settings
             GroupBox {
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 14) {
                     Text("Mini Player")
-                        .font(.headline)
+                        .font(.subheadline.bold())
+                        .foregroundStyle(.secondary)
 
-                    Toggle("底栏频谱动画", isOn: Binding(
-                        get: { settings.fullscreen.isMiniPlayerSpectrumEnabled },
-                        set: { _ in settings.fullscreen.toggleMiniPlayerSpectrum() }
-                    ))
-                    .toggleStyle(.switch)
-
-                    Divider()
+                    HStack(spacing: 8) {
+                        Text("频谱动画")
+                        Spacer()
+                        Toggle("", isOn: Binding(
+                            get: { settings.fullscreen.isMiniPlayerSpectrumEnabled },
+                            set: { _ in settings.fullscreen.toggleMiniPlayerSpectrum() }
+                        ))
+                        .toggleStyle(.switch)
+                        .labelsHidden()
+                    }
 
                     miniPlayerAutoHidePicker
-
-                    Divider()
 
                     miniPlayerMaterialPicker
                 }
@@ -90,10 +92,12 @@ struct FullscreenSkinTabView: View {
 
             // Visual settings
             GroupBox {
-                VStack(alignment: .leading, spacing: 20) {
-                    artworkScaleSection
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("视觉效果")
+                        .font(.subheadline.bold())
+                        .foregroundStyle(.secondary)
 
-                    Divider()
+                    artworkScaleSection
 
                     dimmingIntensitySection
                 }
@@ -122,7 +126,7 @@ struct FullscreenSkinTabView: View {
 
     private var miniPlayerAutoHidePicker: some View {
         HStack(spacing: 8) {
-            Text("Mini Player 自动隐藏")
+            Text("自动隐藏")
             Spacer()
             SlidingSelector(
                 segments: fullscreenMiniPlayerAutoHideOptions.map(\.seconds),
@@ -157,7 +161,7 @@ struct FullscreenSkinTabView: View {
 
     private var miniPlayerMaterialPicker: some View {
         HStack(spacing: 8) {
-            Text("Mini Player 材质")
+            Text("材质")
             Spacer()
             SlidingSelector(
                 segments: fullscreenMiniPlayerGlassMaterialOptions.map(\.material),
