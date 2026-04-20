@@ -118,6 +118,7 @@ struct FullscreenPlayerView: View {
     @State private var isFullscreenBottomControlsVisible = true
     @State private var isFullscreenBottomControlsHovered = false
     @State private var isFullscreenBottomControlsHotZoneHovered = false
+    @State private var isFullscreenBottomControlsMiniPlayerShieldHovered = false
     @State private var isFullscreenBottomControlsLeadingHovered = false
     @State private var isFullscreenBottomControlsCenterHovered = false
     @State private var isFullscreenBottomControlsTrailingHovered = false
@@ -877,12 +878,16 @@ struct FullscreenPlayerView: View {
 
     private func updateFullscreenBottomControlsHoverGate(
         hotZone: Bool? = nil,
+        miniPlayerShield: Bool? = nil,
         leading: Bool? = nil,
         center: Bool? = nil,
         trailing: Bool? = nil
     ) {
         if let hotZone {
             isFullscreenBottomControlsHotZoneHovered = hotZone
+        }
+        if let miniPlayerShield {
+            isFullscreenBottomControlsMiniPlayerShieldHovered = miniPlayerShield
         }
         if let leading {
             isFullscreenBottomControlsLeadingHovered = leading
@@ -896,6 +901,7 @@ struct FullscreenPlayerView: View {
 
         let isPointerInsideFullscreenBottomControls =
             isFullscreenBottomControlsHotZoneHovered
+            || isFullscreenBottomControlsMiniPlayerShieldHovered
             || isFullscreenBottomControlsLeadingHovered
             || isFullscreenBottomControlsCenterHovered
             || isFullscreenBottomControlsTrailingHovered
@@ -951,6 +957,7 @@ struct FullscreenPlayerView: View {
         isFullscreenBottomControlsVolumeAdjusting = false
         isFullscreenBottomControlsHovered = false
         isFullscreenBottomControlsHotZoneHovered = false
+        isFullscreenBottomControlsMiniPlayerShieldHovered = false
         isFullscreenBottomControlsLeadingHovered = false
         isFullscreenBottomControlsCenterHovered = false
         isFullscreenBottomControlsTrailingHovered = false
@@ -1066,6 +1073,24 @@ struct FullscreenPlayerView: View {
                             updateFullscreenBottomControlsHoverGate(hotZone: false)
                         }
                     }
+
+                FullscreenMiniPlayerHitShield(
+                    isEnabled: isFullscreenBottomControlsVisible
+                        && scaledMiniPlayerWidth > 1
+                        && scaledButtonSize > 1,
+                    cornerRadius: scaledButtonSize * 0.5,
+                    onHoverChanged: { hovering in
+                        updateFullscreenBottomControlsHoverGate(miniPlayerShield: hovering)
+                    }
+                )
+                .frame(width: scaledMiniPlayerWidth, height: scaledButtonSize)
+                .position(
+                    x: scaledMiniPlayerOriginX + scaledMiniPlayerWidth / 2,
+                    y: controlsCenterY
+                )
+                .opacity(isFullscreenBottomControlsVisible ? 1 : 0)
+                .allowsHitTesting(isFullscreenBottomControlsVisible)
+                .accessibilityHidden(true)
 
                 ZStack(alignment: .leading) {
                     leadingControlsPill(
@@ -2940,6 +2965,163 @@ struct FullscreenPlayerView: View {
 
     private func clamp(_ value: CGFloat, min lower: CGFloat, max upper: CGFloat) -> CGFloat {
         Swift.min(upper, Swift.max(lower, value))
+    }
+}
+
+private struct FullscreenMiniPlayerHitShield: NSViewRepresentable {
+    let isEnabled: Bool
+    let cornerRadius: CGFloat
+    let onHoverChanged: (Bool) -> Void
+
+    func makeNSView(context: Context) -> FullscreenMiniPlayerHitShieldView {
+        let view = FullscreenMiniPlayerHitShieldView()
+        view.isEnabled = isEnabled
+        view.cornerRadius = cornerRadius
+        view.onHoverChanged = context.coordinator.handleHoverChanged
+        return view
+    }
+
+    func updateNSView(_ nsView: FullscreenMiniPlayerHitShieldView, context: Context) {
+        context.coordinator.onHoverChanged = onHoverChanged
+        nsView.onHoverChanged = context.coordinator.handleHoverChanged
+        nsView.cornerRadius = cornerRadius
+        nsView.isEnabled = isEnabled
+        nsView.refreshHoverStateFromCurrentMouseLocation()
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onHoverChanged: onHoverChanged)
+    }
+
+    static func dismantleNSView(_ nsView: FullscreenMiniPlayerHitShieldView, coordinator: Coordinator) {
+        nsView.isEnabled = false
+        nsView.onHoverChanged = nil
+        coordinator.handleHoverChanged(false)
+    }
+
+    final class Coordinator {
+        var onHoverChanged: (Bool) -> Void
+        private var isHovering = false
+
+        init(onHoverChanged: @escaping (Bool) -> Void) {
+            self.onHoverChanged = onHoverChanged
+        }
+
+        func handleHoverChanged(_ hovering: Bool) {
+            guard hovering != isHovering else { return }
+            isHovering = hovering
+            DispatchQueue.main.async { [weak self] in
+                self?.onHoverChanged(hovering)
+            }
+        }
+    }
+}
+
+private final class FullscreenMiniPlayerHitShieldView: NSView {
+    var isEnabled = true {
+        didSet {
+            if isEnabled == false {
+                setHovering(false)
+            }
+            needsDisplay = true
+            updateTrackingAreas()
+        }
+    }
+
+    var cornerRadius: CGFloat = 0 {
+        didSet {
+            needsDisplay = true
+            updateTrackingAreas()
+        }
+    }
+
+    var onHoverChanged: ((Bool) -> Void)?
+    private var trackingArea: NSTrackingArea?
+    private var isHovering = false
+
+    override var isFlipped: Bool { true }
+    override var acceptsFirstResponder: Bool { false }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard isEnabled, isHidden == false, alphaValue > 0.001 else { return nil }
+        guard containsVisibleShape(point) else { return nil }
+        return self
+    }
+
+    override func updateTrackingAreas() {
+        if let trackingArea {
+            removeTrackingArea(trackingArea)
+        }
+
+        guard isEnabled, bounds.isEmpty == false else {
+            trackingArea = nil
+            return
+        }
+
+        let options: NSTrackingArea.Options = [
+            .activeInKeyWindow,
+            .mouseEnteredAndExited,
+            .mouseMoved,
+            .inVisibleRect
+        ]
+        let nextTrackingArea = NSTrackingArea(
+            rect: bounds,
+            options: options,
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(nextTrackingArea)
+        trackingArea = nextTrackingArea
+    }
+
+    override func layout() {
+        super.layout()
+        refreshHoverStateFromCurrentMouseLocation()
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        setHovering(containsVisibleShape(convert(event.locationInWindow, from: nil)))
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        setHovering(containsVisibleShape(convert(event.locationInWindow, from: nil)))
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        setHovering(false)
+    }
+
+    func refreshHoverStateFromCurrentMouseLocation() {
+        guard isEnabled, let window else {
+            setHovering(false)
+            return
+        }
+
+        let localPoint = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        setHovering(containsVisibleShape(localPoint))
+    }
+
+    private func setHovering(_ hovering: Bool) {
+        guard hovering != isHovering else { return }
+        isHovering = hovering
+        onHoverChanged?(hovering)
+    }
+
+    private func containsVisibleShape(_ point: NSPoint) -> Bool {
+        guard bounds.contains(point) else { return false }
+
+        let radius = min(cornerRadius, bounds.width * 0.5, bounds.height * 0.5)
+        guard radius > 0 else { return true }
+
+        return NSBezierPath(
+            roundedRect: bounds,
+            xRadius: radius,
+            yRadius: radius
+        ).contains(point)
     }
 }
 

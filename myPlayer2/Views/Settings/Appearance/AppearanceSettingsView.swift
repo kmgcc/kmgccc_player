@@ -77,7 +77,7 @@ struct AppearanceSettingsView: View {
 
     private var lyricsBackgroundModePicker: some View {
         HStack(spacing: 8) {
-            Text("歌词背景")
+            Text("歌词卡片背景")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
 
