@@ -43,8 +43,11 @@ struct SettingsTabSelector: View {
                 Color.clear
             },
             knob: {
+                let knobBaseColor = presentationStyle.usesMaterialSectionCards
+                    ? FullscreenSelectionAccentStyle.dimmedAccentColor(from: themeStore.accentNSColor, lightnessDelta: 0.30)
+                    : themeStore.accentColor
                 Capsule()
-                    .fill(themeStore.accentColor.opacity(0.18))
+                    .fill(knobBaseColor.opacity(0.18))
             },
             content: { index, isSelected in
                 Text(tabs[index])
@@ -86,8 +89,23 @@ struct SettingsTabSelector: View {
                         .fill(Color.white.opacity(0.02))
                 )
         } else {
-            Capsule()
-                .fill(presentationStyle.segmentedTrackColor)
+            ZStack {
+                if presentationStyle.usesMaterialSectionCards {
+                    Capsule()
+                        .fill(.ultraThinMaterial)
+                }
+
+                Capsule()
+                    .fill(presentationStyle.segmentedTrackColor)
+                    .overlay(
+                        Capsule()
+                            .strokeBorder(
+                                presentationStyle.segmentedTrackStrokeColor,
+                                lineWidth: presentationStyle.segmentedTrackStrokeColor == .clear ? 0 : 0.5
+                            )
+                            .allowsHitTesting(false)
+                    )
+            }
         }
     }
 }

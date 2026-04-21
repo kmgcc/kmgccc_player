@@ -10,6 +10,7 @@ import Foundation
 struct NowPlayingDisplayContext: Equatable {
     var source: PlaybackSource
     var trackID: UUID?
+    var artworkTrackID: UUID?
     var hasTrack: Bool
     var title: String
     var artist: String
@@ -29,6 +30,7 @@ extension NowPlayingPresentation {
         NowPlayingDisplayContext(
             source: source,
             trackID: displayTrackID,
+            artworkTrackID: artworkDisplayTrackID ?? displayTrackID,
             hasTrack: hasTrack,
             title: title,
             artist: artist,
@@ -61,6 +63,10 @@ extension NowPlayingPresentation {
             bytes[8], bytes[9],
             bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
         ))
+    }
+
+    static func externalArtworkDisplayUUID(for key: String) -> UUID {
+        externalDisplayUUID(for: "artwork|\(key)")
     }
 
     private static func fnv128Bytes(for key: String) -> [UInt8] {

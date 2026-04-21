@@ -38,64 +38,7 @@ struct MainLayoutView: View {
     var body: some View {
         GeometryReader { proxy in
             ZStack {
-                NavigationSplitView(columnVisibility: $columnVisibility) {
-                    SidebarView()
-                        .navigationSplitViewColumnWidth(
-                            min: Constants.Layout.sidebarMinWidth,
-                            ideal: uiState.sidebarLastWidth,
-                            max: Constants.Layout.sidebarMaxWidth
-                        )
-                        .navigationTitle("")
-                } detail: {
-                    ZStack(alignment: .bottom) {
-                        detailBaseContent
-                            .allowsHitTesting(!fullscreenWindowManager.isWindowedFullscreenActive)
-
-                        if !fullscreenWindowManager.isWindowedFullscreenActive {
-                            GeometryReader { detailProxy in
-                                MiniPlayerView()
-                                    .frame(
-                                        width: miniPlayerAvailableWidth(in: detailProxy.size.width),
-                                        alignment: .leading
-                                    )
-                                    .padding(.leading, GlassStyleTokens.miniPlayerHorizontalPadding)
-                                    .padding(.bottom, 12)
-                                    .frame(
-                                        maxWidth: .infinity,
-                                        maxHeight: .infinity,
-                                        alignment: .bottomLeading
-                                    )
-                            }
-                        }
-
-                        if fullscreenWindowManager.isWindowedFullscreenActive {
-                            embeddedFullscreenPlayerRoute
-                        }
-                    }
-                    .ignoresSafeArea(.container, edges: .top)
-                    .overlay {
-                        ZStack {
-                            if uiState.contentMode == .nowPlaying
-                                && !fullscreenWindowManager.isWindowedFullscreenActive
-                            {
-                                GeometryReader { detailProxy in
-                                    lyricsToggleOverlay
-                                        .offset(y: -detailProxy.safeAreaInsets.top)
-                                        .frame(
-                                            maxWidth: .infinity,
-                                            maxHeight: .infinity,
-                                            alignment: .topTrailing
-                                        )
-                                }
-                            }
-                        }
-                    }
-                    .navigationTitle("")
-                    .id("main-detail-content")
-                }
-                .id("main-split-view")
-                .navigationSplitViewStyle(.balanced)
-                .ignoresSafeArea(.container, edges: [.top, .bottom])
+                splitViewContent
             }
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
 
@@ -120,7 +63,7 @@ struct MainLayoutView: View {
                 await libraryVM.load()
             }
             .onAppear {
-                columnVisibility = uiState.sidebarVisible ? .all : .detailOnly
+                syncColumnVisibility(animated: false)
                 updateWindowWidth(proxy.size.width)
             }
             .onChange(of: proxy.size.width) { _, newWidth in
@@ -132,18 +75,88 @@ struct MainLayoutView: View {
                     uiState.sidebarVisible = shouldShowSidebar
                 }
             }
-            .onChange(of: uiState.sidebarVisible) { _, newValue in
-                let desiredVisibility: NavigationSplitViewVisibility = newValue ? .all : .detailOnly
-                if columnVisibility != desiredVisibility {
-                    withAnimation(.easeInOut(duration: 0.25)) {
-                        columnVisibility = desiredVisibility
-                    }
-                }
+            .onChange(of: uiState.sidebarVisible) { _, _ in
+                syncColumnVisibility(animated: true)
                 uiState.lyricsWidth = clampLyricsWidth(uiState.lyricsWidth)
             }
             .onChange(of: uiState.sidebarLastWidth) { _, _ in
                 uiState.lyricsWidth = clampLyricsWidth(uiState.lyricsWidth)
             }
+            .onChange(of: fullscreenWindowManager.isWindowedFullscreenActive) { _, _ in
+                uiState.lyricsWidth = clampLyricsWidth(uiState.lyricsWidth)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var splitViewContent: some View {
+        let baseSplitView = NavigationSplitView(columnVisibility: $columnVisibility) {
+            SidebarView()
+                .navigationSplitViewColumnWidth(
+                    min: sidebarColumnMinWidth,
+                    ideal: sidebarColumnIdealWidth,
+                    max: sidebarColumnMaxWidth
+                )
+                .opacity(shouldForceSidebarHiddenInWindowedFullscreen ? 0 : 1)
+                .allowsHitTesting(!shouldForceSidebarHiddenInWindowedFullscreen)
+                .navigationTitle("")
+        } detail: {
+            ZStack(alignment: .bottom) {
+                detailBaseContent
+                    .allowsHitTesting(!fullscreenWindowManager.isWindowedFullscreenActive)
+
+                if !fullscreenWindowManager.isWindowedFullscreenActive {
+                    GeometryReader { detailProxy in
+                        MiniPlayerView()
+                            .frame(
+                                width: miniPlayerAvailableWidth(in: detailProxy.size.width),
+                                alignment: .leading
+                            )
+                            .padding(.leading, GlassStyleTokens.miniPlayerHorizontalPadding)
+                            .padding(.bottom, 12)
+                            .frame(
+                                maxWidth: .infinity,
+                                maxHeight: .infinity,
+                                alignment: .bottomLeading
+                            )
+                    }
+                }
+
+                if fullscreenWindowManager.isWindowedFullscreenActive {
+                    embeddedFullscreenPlayerRoute
+                }
+            }
+            .ignoresSafeArea(.container, edges: .top)
+            .overlay {
+                ZStack {
+                    if uiState.contentMode == .nowPlaying
+                        && !fullscreenWindowManager.isWindowedFullscreenActive
+                    {
+                        GeometryReader { detailProxy in
+                            lyricsToggleOverlay
+                                .offset(y: -detailProxy.safeAreaInsets.top)
+                                .frame(
+                                    maxWidth: .infinity,
+                                    maxHeight: .infinity,
+                                    alignment: .topTrailing
+                                )
+                        }
+                    }
+                }
+            }
+            .navigationTitle("")
+            .id("main-detail-content")
+        }
+        .id("main-split-view")
+        .navigationSplitViewStyle(.balanced)
+        .ignoresSafeArea(.container, edges: [.top, .bottom])
+
+        if shouldForceSidebarHiddenInWindowedFullscreen {
+            baseSplitView
+                .toolbar(removing: .sidebarToggle)
+                .toolbar(.hidden, for: .windowToolbar)
+        } else {
+            baseSplitView
         }
     }
 
@@ -164,6 +177,42 @@ struct MainLayoutView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .transition(.opacity)
         .zIndex(1)
+    }
+
+    private var shouldForceSidebarHiddenInWindowedFullscreen: Bool {
+        fullscreenWindowManager.isWindowedFullscreenActive
+    }
+
+    private var desiredColumnVisibility: NavigationSplitViewVisibility {
+        uiState.sidebarVisible ? .all : .detailOnly
+    }
+
+    private func syncColumnVisibility(animated: Bool) {
+        guard columnVisibility != desiredColumnVisibility else { return }
+        if animated {
+            withAnimation(.easeInOut(duration: 0.25)) {
+                columnVisibility = desiredColumnVisibility
+            }
+            return
+        }
+
+        var transaction = Transaction()
+        transaction.animation = nil
+        withTransaction(transaction) {
+            columnVisibility = desiredColumnVisibility
+        }
+    }
+
+    private var sidebarColumnMinWidth: CGFloat {
+        shouldForceSidebarHiddenInWindowedFullscreen ? 0 : Constants.Layout.sidebarMinWidth
+    }
+
+    private var sidebarColumnIdealWidth: CGFloat {
+        shouldForceSidebarHiddenInWindowedFullscreen ? 0 : uiState.sidebarLastWidth
+    }
+
+    private var sidebarColumnMaxWidth: CGFloat {
+        shouldForceSidebarHiddenInWindowedFullscreen ? 0 : Constants.Layout.sidebarMaxWidth
     }
 
     // MARK: - Lyrics Resizing

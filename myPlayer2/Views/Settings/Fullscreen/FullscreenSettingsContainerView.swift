@@ -12,6 +12,7 @@ struct FullscreenSettingsPresentationStyle: Equatable {
     let isCompact: Bool
     let forcesWhiteText: Bool
     let usesGlassSectionCards: Bool
+    let usesMaterialSectionCards: Bool
     let glassMaterialStyle: LiquidGlassPillMaterialStyle
     let controlSize: ControlSize
     let panelSize: CGSize
@@ -71,6 +72,7 @@ struct FullscreenSettingsPresentationStyle: Equatable {
         isCompact: false,
         forcesWhiteText: false,
         usesGlassSectionCards: false,
+        usesMaterialSectionCards: false,
         glassMaterialStyle: .clear,
         controlSize: .regular,
         panelSize: CGSize(width: 660, height: 760),
@@ -91,11 +93,11 @@ struct FullscreenSettingsPresentationStyle: Equatable {
         headerBottomPadding: 4,
         tabFontSize: 13,
         tabMinWidth: 72,
-        tabHeight: 30,
+        tabHeight: 26,
         tabHorizontalPadding: 0,
-        tabVerticalPadding: 6,
+        tabVerticalPadding: 4,
         tabTrackHorizontalPadding: 4,
-        tabTrackVerticalPadding: 3,
+        tabTrackVerticalPadding: 2,
         sectionTitleFontSize: 13,
         rowFontSize: 13,
         rowValueFontSize: 13,
@@ -127,39 +129,44 @@ struct FullscreenSettingsPresentationStyle: Equatable {
     )
 
     static func fullscreenOverlay(
-        scale: CGFloat,
-        glassMaterialStyle: LiquidGlassPillMaterialStyle
+        scale: CGFloat
     ) -> FullscreenSettingsPresentationStyle {
         FullscreenSettingsPresentationStyle(
             fullscreenScale: scale,
             isCompact: true,
+            // Quick panel readability is built around a white-text hierarchy.
             forcesWhiteText: true,
-            usesGlassSectionCards: true,
-            glassMaterialStyle: glassMaterialStyle,
-            controlSize: .large,
-            panelSize: CGSize(width: 760 * scale, height: 820 * scale),
+            usesGlassSectionCards: false,
+            usesMaterialSectionCards: true,
+            glassMaterialStyle: .clear,
+            // Keep quick panel compact; specifically shrinks .switch toggles without
+            // changing the material hierarchy.
+            controlSize: .regular,
+            // Narrower + slightly shorter to stay out of the Mini Player's way.
+            panelSize: CGSize(width: 560 * scale, height: 690 * scale),
             panelCornerRadius: 30 * scale,
-            panelContentPadding: 24 * scale,
-            panelBottomPadding: 18 * scale,
+            panelContentPadding: 20 * scale,
+            panelBottomPadding: 16 * scale,
             closeButtonSize: 30 * scale,
-            containerSpacing: 14 * scale,
-            contentSpacing: 14 * scale,
-            groupPadding: 10 * scale,
+            containerSpacing: 12 * scale,
+            contentSpacing: 12 * scale,
+            // Slightly larger horizontal padding inside each section for stability.
+            groupPadding: 14 * scale,
             groupSpacing: 10 * scale,
-            sectionSpacing: 12 * scale,
+            sectionSpacing: 10 * scale,
             sectionCornerRadius: 18 * scale,
             sectionLabelSpacing: 8 * scale,
-            scrollContentBottomPadding: 14 * scale,
+            scrollContentBottomPadding: 12 * scale,
             headerIconSize: 18 * scale,
             headerTitleFontSize: 22 * scale,
             headerBottomPadding: 2 * scale,
-            tabFontSize: 14.5 * scale,
+            tabFontSize: 13.0 * scale,
             tabMinWidth: 96 * scale,
-            tabHeight: 36 * scale,
+            tabHeight: 30 * scale,
             tabHorizontalPadding: 0,
-            tabVerticalPadding: 7 * scale,
-            tabTrackHorizontalPadding: 6 * scale,
-            tabTrackVerticalPadding: 4 * scale,
+            tabVerticalPadding: 4 * scale,
+            tabTrackHorizontalPadding: 5 * scale,
+            tabTrackVerticalPadding: 2 * scale,
             sectionTitleFontSize: 14 * scale,
             rowFontSize: 13.5 * scale,
             rowValueFontSize: 13 * scale,
@@ -191,6 +198,30 @@ struct FullscreenSettingsPresentationStyle: Equatable {
         )
     }
 
+    var sectionTitleFont: Font {
+        .system(size: sectionTitleFontSize, weight: .semibold)
+    }
+
+    var rowLabelFont: Font {
+        .system(size: rowFontSize, weight: .medium)
+    }
+
+    var rowValueFont: Font {
+        .system(size: rowValueFontSize, weight: .medium, design: .monospaced)
+    }
+
+    var captionFont: Font {
+        .system(size: captionFontSize)
+    }
+
+    var tabLabelFont: Font {
+        .system(size: tabFontSize, weight: .medium)
+    }
+
+    var segmentedLabelFont: Font {
+        .system(size: segmentedFontSize, weight: .regular)
+    }
+
     var primaryTextColor: Color {
         forcesWhiteText ? Color.white.opacity(0.98) : .primary
     }
@@ -204,7 +235,19 @@ struct FullscreenSettingsPresentationStyle: Equatable {
     }
 
     var segmentedTrackColor: Color {
-        forcesWhiteText ? Color.white.opacity(0.08) : Color.secondary.opacity(0.08)
+        // Quick panel runs in a light hierarchy, but the capsule tracks should stay neutral-dark
+        // so they read consistently on top of ultraThinMaterial section surfaces.
+        if usesMaterialSectionCards {
+            return Color.white.opacity(0.12)
+        }
+        return forcesWhiteText ? Color.white.opacity(0.08) : Color.secondary.opacity(0.08)
+    }
+
+    var segmentedTrackStrokeColor: Color {
+        if usesMaterialSectionCards {
+            return Color.white.opacity(0.16)
+        }
+        return .clear
     }
 
     func selectedTextColor(accentColor: Color) -> Color {
@@ -265,6 +308,48 @@ private struct FullscreenSettingsGlassGroupBoxStyle: GroupBoxStyle {
     }
 }
 
+private struct FullscreenSettingsMaterialGroupBoxStyle: GroupBoxStyle {
+    @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
+
+    func makeBody(configuration: Configuration) -> some View {
+        VStack(alignment: .leading, spacing: presentationStyle.sectionLabelSpacing) {
+            configuration.label
+            configuration.content
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(
+                cornerRadius: presentationStyle.sectionCornerRadius,
+                style: .continuous
+            )
+            .fill(.ultraThinMaterial)
+            .overlay(
+                // Light ultraThinMaterial can be too bright against white text; add a tiny tint
+                // without changing the material type.
+                RoundedRectangle(
+                    cornerRadius: presentationStyle.sectionCornerRadius,
+                    style: .continuous
+                )
+                .fill(Color.black.opacity(0.06))
+            )
+        )
+        .overlay(
+            RoundedRectangle(
+                cornerRadius: presentationStyle.sectionCornerRadius,
+                style: .continuous
+            )
+            .strokeBorder(Color.black.opacity(0.08), lineWidth: 0.5)
+            .allowsHitTesting(false)
+        )
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: presentationStyle.sectionCornerRadius,
+                style: .continuous
+            )
+        )
+    }
+}
+
 private struct FullscreenSettingsPresentationStyleKey: EnvironmentKey {
     static let defaultValue = FullscreenSettingsPresentationStyle.settingsWindow
 }
@@ -299,6 +384,9 @@ struct FullscreenSettingsContainerView: View {
             if presentationStyle.usesGlassSectionCards {
                 containerBody
                     .groupBoxStyle(FullscreenSettingsGlassGroupBoxStyle())
+            } else if presentationStyle.usesMaterialSectionCards {
+                containerBody
+                    .groupBoxStyle(FullscreenSettingsMaterialGroupBoxStyle())
             } else {
                 containerBody
             }

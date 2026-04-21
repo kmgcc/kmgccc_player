@@ -27,36 +27,29 @@ struct SkinPreviewCard<Preview: View>: View {
         FullscreenSelectionAccentStyle.adjustedAccentColor(from: themeStore.accentNSColor)
     }
 
-    private var contentInset: CGFloat {
-        presentationStyle.isCompact ? presentationStyle.skinContentInset : max(4, cornerRadius * 0.28)
-    }
-
-    private var contentCornerRadius: CGFloat {
-        max(8, cornerRadius - contentInset)
-    }
-
-    private var contentVerticalPadding: CGFloat {
-        presentationStyle.isCompact ? presentationStyle.skinContentVerticalPadding : max(8, previewSize * 0.18)
-    }
-
-    private var contentHorizontalPadding: CGFloat {
-        presentationStyle.isCompact ? presentationStyle.skinContentHorizontalPadding : max(8, previewSize * 0.16)
-    }
-
-    private var contentSpacing: CGFloat {
-        presentationStyle.isCompact ? presentationStyle.skinContentSpacing : max(6, previewSize * 0.125)
-    }
-
-    private var titleMinHeight: CGFloat {
-        presentationStyle.isCompact ? presentationStyle.skinTitleMinHeight : 16
-    }
-
     private var outerShape: RoundedRectangle {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
     }
 
-    private var contentShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: contentCornerRadius, style: .continuous)
+    private var innerInset: CGFloat {
+        // Keep the inner surface clearly separated from the outer frame to avoid "double frame" dirt.
+        presentationStyle.isCompact ? max(12, cornerRadius * 0.58) : max(12, cornerRadius * 0.62)
+    }
+
+    private var innerCornerRadius: CGFloat {
+        max(10, cornerRadius - innerInset * 0.55)
+    }
+
+    private var innerShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: innerCornerRadius, style: .continuous)
+    }
+
+    private var innerPaddingH: CGFloat { 12 }
+    private var innerPaddingV: CGFloat { 12 }
+    private var innerSpacing: CGFloat { 10 }
+
+    private var titleMinHeight: CGFloat {
+        presentationStyle.isCompact ? presentationStyle.skinTitleMinHeight : 16
     }
 
     init(
@@ -82,149 +75,78 @@ struct SkinPreviewCard<Preview: View>: View {
     var body: some View {
         Button(action: action) {
             ZStack {
-                background
+                outerShape
+                    .fill(Color.clear)
+                    .glassEffect(.clear, in: outerShape)
+                    .overlay(
+                        outerShape
+                            .fill(isSelected ? selectionAccentColor.opacity(0.10) : Color.clear)
+                            .allowsHitTesting(false)
+                    )
+                    .overlay(
+                        outerShape
+                            .strokeBorder(outerStrokeColor, lineWidth: isSelected ? 2 : 1)
+                            .allowsHitTesting(false)
+                    )
 
-                VStack(spacing: contentSpacing) {
+                VStack(spacing: innerSpacing) {
                     preview()
-                        .frame(width: 80, height: 80)
-                        .scaleEffect((isSelected ? 1.07 : 1.0) * previewSize / 80)
                         .frame(width: previewSize, height: previewSize)
-                        .shadow(
-                            color: isSelected ? selectionAccentColor.opacity(0.24) : .clear,
-                            radius: isSelected ? 12 : 0,
-                            x: 0,
-                            y: isSelected ? 4 : 0
-                        )
 
                     Text(title)
-                        .font(.system(size: titleFontSize, weight: isSelected ? .semibold : .medium))
-                        .foregroundStyle(
-                            presentationStyle.skinTitleColor(
-                                selected: isSelected,
-                                accentColor: selectionAccentColor,
-                                colorScheme: colorScheme
-                            )
-                        )
-                        .shadow(
-                            color: isSelected ? Color.black.opacity(0.18) : .clear,
-                            radius: 6,
-                            x: 0,
-                            y: 1
-                        )
+                        .font(.system(size: titleFontSize, weight: .medium))
+                        .foregroundStyle(titleColor)
                         .lineLimit(1)
                         .frame(maxWidth: .infinity, minHeight: titleMinHeight)
                 }
-                .padding(.horizontal, contentHorizontalPadding)
-                .padding(.vertical, contentVerticalPadding)
+                .padding(.horizontal, innerPaddingH)
+                .padding(.vertical, innerPaddingV)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                .background(contentSurface)
-                .clipShape(contentShape)
-                .padding(contentInset)
+                .background(innerSurface)
+                .clipShape(innerShape)
+                .padding(innerInset)
             }
             .frame(width: cardSize.width, height: cardSize.height)
-            .background(
-                outerShape
-                    .fill(Color.clear)
-            )
-            .liquidGlassRect(
-                cornerRadius: cornerRadius,
-                colorScheme: colorScheme,
-                accentColor: isSelected ? selectionAccentColor : nil,
-                prominence: isSelected ? .prominent : .standard,
-                materialStyle: presentationStyle.glassMaterialStyle,
-                isFloating: false
-            )
-            .overlay(
-                outerShape
-                    .strokeBorder(borderColor, lineWidth: isSelected ? 2 : 1)
-            )
             .clipShape(outerShape)
-            .shadow(
-                color: isSelected ? selectionAccentColor.opacity(0.20) : .clear,
-                radius: isSelected ? 16 : 0,
-                x: 0,
-                y: isSelected ? 7 : 0
-            )
         }
         .buttonStyle(SkinCardButtonStyle())
     }
 
     // MARK: - Appearance
 
-    private var contentSurface: some View {
-        contentShape
-            .fill(contentSurfaceFill)
-            .overlay(
-                contentShape
-                    .strokeBorder(contentSurfaceStroke, lineWidth: isSelected ? 1.3 : 0.7)
-            )
-            .overlay(
-                contentShape
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color.white.opacity(isSelected ? 0.08 : 0.04),
-                                Color.white.opacity(0.018),
-                                Color.clear,
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
-            )
-    }
-
-    private var contentSurfaceFill: Color {
-        let base = GlassStyleTokens.pillOverlay(
-            for: colorScheme,
-            materialStyle: presentationStyle.glassMaterialStyle
-        )
-        if isSelected {
-            return selectionAccentColor.opacity(0.09)
+    private var titleColor: Color {
+        // Always neutral gray; never theme-tinted.
+        if colorScheme == .dark {
+            return Color.white.opacity(0.82)
         }
-        return base.opacity(presentationStyle.forcesWhiteText ? 0.84 : 0.68)
+        return Color.black.opacity(0.62)
     }
 
-    private var contentSurfaceStroke: Color {
-        isSelected ? selectionAccentColor.opacity(0.42) : Color.white.opacity(0.10)
-    }
-
-    private var background: some View {
-        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            .fill(
-                isSelected
-                    ? selectionAccentColor.opacity(colorScheme == .dark ? 0.16 : 0.12)
-                    : Color.clear
-            )
-            .overlay(
-                outerShape
-                    .fill(
-                        presentationStyle.forcesWhiteText
-                            ? Color.white.opacity(isSelected ? 0.11 : 0.04)
-                            : Color.secondary.opacity(0.04)
-                    )
-            )
-            .overlay(
-                outerShape
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color.white.opacity(isSelected ? 0.12 : 0.05),
-                                Color.white.opacity(0.02),
-                                Color.clear,
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
-            )
-    }
-
-    private var borderColor: Color {
+    private var outerStrokeColor: Color {
         if isSelected {
-            return selectionAccentColor.opacity(0.96)
+            return selectionAccentColor.opacity(0.98)
         }
-        return Color.clear
+        if colorScheme == .dark {
+            return Color.white.opacity(0.10)
+        }
+        return Color.black.opacity(0.08)
+    }
+
+    private var innerSurface: some View {
+        innerShape
+            .fill(.ultraThinMaterial)
+            .overlay(
+                innerShape
+                    .strokeBorder(innerStrokeColor, lineWidth: 0.6)
+                    .allowsHitTesting(false)
+            )
+    }
+
+    private var innerStrokeColor: Color {
+        if colorScheme == .dark {
+            return Color.white.opacity(0.12)
+        }
+        return Color.black.opacity(0.10)
     }
 }
 

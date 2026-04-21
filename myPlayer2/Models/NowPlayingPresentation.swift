@@ -7,6 +7,12 @@
 
 import Foundation
 
+enum ExternalPlaybackConnectionState: String, Sendable {
+    case runningHasData
+    case runningTemporarilyUnavailable
+    case disconnected
+}
+
 struct NowPlayingPresentation {
     var source: PlaybackSource
     var localTrack: Track?
@@ -15,6 +21,7 @@ struct NowPlayingPresentation {
     var album: String?
     var artworkData: Data?
     var artworkIdentity: String?
+    var artworkDisplayTrackID: UUID?
     var isArtworkLoading: Bool
     var duration: Double
     var currentTime: Double
@@ -33,6 +40,7 @@ struct NowPlayingPresentation {
     var externalUsesOverride: Bool
     var externalMatchConfidence: Double?
     var externalLyricsStatusMessage: String?
+    var externalConnectionState: ExternalPlaybackConnectionState?
     var isControlEnabled: Bool
     var isSeekEnabled: Bool
     var emptyTitleKey: String
@@ -45,6 +53,7 @@ struct NowPlayingPresentation {
         album: nil,
         artworkData: nil,
         artworkIdentity: nil,
+        artworkDisplayTrackID: nil,
         isArtworkLoading: false,
         duration: 0,
         currentTime: 0,
@@ -63,6 +72,7 @@ struct NowPlayingPresentation {
         externalUsesOverride: false,
         externalMatchConfidence: nil,
         externalLyricsStatusMessage: nil,
+        externalConnectionState: nil,
         isControlEnabled: false,
         isSeekEnabled: false,
         emptyTitleKey: "mini.not_playing"
@@ -76,6 +86,7 @@ struct NowPlayingPresentation {
         album: nil,
         artworkData: nil,
         artworkIdentity: nil,
+        artworkDisplayTrackID: nil,
         isArtworkLoading: false,
         duration: 0,
         currentTime: 0,
@@ -94,6 +105,7 @@ struct NowPlayingPresentation {
         externalUsesOverride: false,
         externalMatchConfidence: nil,
         externalLyricsStatusMessage: nil,
+        externalConnectionState: .disconnected,
         isControlEnabled: false,
         isSeekEnabled: false,
         emptyTitleKey: "apple_music.not_running"
@@ -118,6 +130,7 @@ extension NowPlayingPresentation {
         artist == other.artist &&
         album == other.album &&
         artworkIdentity == other.artworkIdentity &&
+        artworkDisplayTrackID == other.artworkDisplayTrackID &&
         isArtworkLoading == other.isArtworkLoading &&
         duration == other.duration &&
         currentTime == other.currentTime &&
@@ -136,6 +149,7 @@ extension NowPlayingPresentation {
         externalUsesOverride == other.externalUsesOverride &&
         externalMatchConfidence == other.externalMatchConfidence &&
         externalLyricsStatusMessage == other.externalLyricsStatusMessage &&
+        externalConnectionState == other.externalConnectionState &&
         isControlEnabled == other.isControlEnabled &&
         isSeekEnabled == other.isSeekEnabled &&
         emptyTitleKey == other.emptyTitleKey

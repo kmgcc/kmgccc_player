@@ -12,6 +12,7 @@ struct NowPlayingLyricsTabView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(LyricsViewModel.self) private var lyricsVM
     @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
 
     // Font settings state
     @State private var lyricsFontNameZh: String = AppSettings.shared.lyricsFontNameZh
@@ -41,36 +42,34 @@ struct NowPlayingLyricsTabView: View {
     ]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            // Shared timing config
+        VStack(alignment: .leading, spacing: presentationStyle.sectionSpacing) {
             LyricsTimingConfigSection()
                 .environment(settings)
                 .environment(lyricsVM)
 
-            // Font configuration
             fontsSection
 
-            // Preview
             previewSection
         }
     }
 
     private var fontsSection: some View {
-        GroupBox(LocalizedStringKey("settings.lyrics.fonts")) {
-            VStack(alignment: .leading, spacing: 12) {
-                // Main font size
+        GroupBox {
+            VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
                 HStack {
                     Text("settings.lyrics.font_size")
+                        .font(presentationStyle.rowLabelFont)
                     Spacer()
                     Text("\(Int(lyricsFontSize)) px")
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
+                        .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))
+                        .font(presentationStyle.rowValueFont)
                 }
                 Slider(value: $lyricsFontSize, in: 16...48, step: 1)
+                    .frame(height: presentationStyle.tabHeight)
 
-                // Light mode weight
                 HStack {
                     Text("浅色模式字重")
+                        .font(presentationStyle.rowLabelFont)
                     Spacer()
                     Picker("", selection: $lyricsFontWeightLight) {
                         ForEach(fontWeights, id: \.value) { weight in
@@ -78,12 +77,13 @@ struct NowPlayingLyricsTabView: View {
                         }
                     }
                     .labelsHidden()
-                    .frame(width: 140)
+                    .font(presentationStyle.rowLabelFont)
+                    .frame(width: presentationStyle.compactPickerWidth)
                 }
 
-                // Dark mode weight
                 HStack {
                     Text("深色模式字重")
+                        .font(presentationStyle.rowLabelFont)
                     Spacer()
                     Picker("", selection: $lyricsFontWeightDark) {
                         ForEach(fontWeights, id: \.value) { weight in
@@ -91,24 +91,26 @@ struct NowPlayingLyricsTabView: View {
                         }
                     }
                     .labelsHidden()
-                    .frame(width: 140)
+                    .font(presentationStyle.rowLabelFont)
+                    .frame(width: presentationStyle.compactPickerWidth)
                 }
 
-                Divider()
+                Divider().padding(.vertical, presentationStyle.dividerVerticalPadding)
 
-                // Translation font size
                 HStack {
                     Text("settings.lyrics.translation_size")
+                        .font(presentationStyle.rowLabelFont)
                     Spacer()
                     Text("\(Int(lyricsTranslationFontSize)) px")
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
+                        .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))
+                        .font(presentationStyle.rowValueFont)
                 }
                 Slider(value: $lyricsTranslationFontSize, in: 12...36, step: 1)
+                    .frame(height: presentationStyle.tabHeight)
 
-                // Translation weights
                 HStack {
                     Text("翻译浅色字重")
+                        .font(presentationStyle.rowLabelFont)
                     Spacer()
                     Picker("", selection: $lyricsTranslationFontWeightLight) {
                         ForEach(fontWeights, id: \.value) { weight in
@@ -116,11 +118,13 @@ struct NowPlayingLyricsTabView: View {
                         }
                     }
                     .labelsHidden()
-                    .frame(width: 140)
+                    .font(presentationStyle.rowLabelFont)
+                    .frame(width: presentationStyle.compactPickerWidth)
                 }
 
                 HStack {
                     Text("翻译深色字重")
+                        .font(presentationStyle.rowLabelFont)
                     Spacer()
                     Picker("", selection: $lyricsTranslationFontWeightDark) {
                         ForEach(fontWeights, id: \.value) { weight in
@@ -128,14 +132,15 @@ struct NowPlayingLyricsTabView: View {
                         }
                     }
                     .labelsHidden()
-                    .frame(width: 140)
+                    .font(presentationStyle.rowLabelFont)
+                    .frame(width: presentationStyle.compactPickerWidth)
                 }
 
-                Divider()
+                Divider().padding(.vertical, presentationStyle.dividerVerticalPadding)
 
-                // Font family pickers
                 HStack {
                     Text("settings.lyrics.chinese_font")
+                        .font(presentationStyle.rowLabelFont)
                     Spacer()
                     Picker("", selection: $lyricsFontNameZh) {
                         ForEach(fontFamilies, id: \.self) { family in
@@ -146,11 +151,13 @@ struct NowPlayingLyricsTabView: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.menu)
-                    .frame(width: 220)
+                    .font(presentationStyle.rowLabelFont)
+                    .frame(width: presentationStyle.pickerWidth)
                 }
 
                 HStack {
                     Text("settings.lyrics.english_font")
+                        .font(presentationStyle.rowLabelFont)
                     Spacer()
                     Picker("", selection: $lyricsFontNameEn) {
                         ForEach(fontFamilies, id: \.self) { family in
@@ -161,11 +168,13 @@ struct NowPlayingLyricsTabView: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.menu)
-                    .frame(width: 220)
+                    .font(presentationStyle.rowLabelFont)
+                    .frame(width: presentationStyle.pickerWidth)
                 }
 
                 HStack {
                     Text("settings.lyrics.translation_font")
+                        .font(presentationStyle.rowLabelFont)
                     Spacer()
                     Picker("", selection: $lyricsTranslationFontName) {
                         ForEach(fontFamilies, id: \.self) { family in
@@ -176,10 +185,15 @@ struct NowPlayingLyricsTabView: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.menu)
-                    .frame(width: 220)
+                    .font(presentationStyle.rowLabelFont)
+                    .frame(width: presentationStyle.pickerWidth)
                 }
             }
-            .padding(.horizontal, 10)
+            .padding(presentationStyle.groupPadding)
+        } label: {
+            Text("settings.lyrics.fonts")
+                .font(presentationStyle.sectionTitleFont)
+                .foregroundStyle(.secondary)
         }
         .onAppear {
             syncStateFromSettings()
@@ -196,8 +210,8 @@ struct NowPlayingLyricsTabView: View {
     }
 
     private var previewSection: some View {
-        GroupBox(LocalizedStringKey("settings.lyrics.preview")) {
-            VStack(alignment: .leading, spacing: 12) {
+        GroupBox {
+            VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
                 LyricsPreviewCard(
                     title: "浅色模式预览",
                     isDarkCard: false,
@@ -221,6 +235,11 @@ struct NowPlayingLyricsTabView: View {
                     translationFontSize: lyricsTranslationFontSize
                 )
             }
+            .padding(presentationStyle.groupPadding)
+        } label: {
+            Text("settings.lyrics.preview")
+                .font(presentationStyle.sectionTitleFont)
+                .foregroundStyle(.secondary)
         }
     }
 

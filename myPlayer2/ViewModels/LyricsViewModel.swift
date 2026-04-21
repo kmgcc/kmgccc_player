@@ -18,6 +18,7 @@ final class LyricsViewModel {
     // MARK: - Dependencies
 
     private let settings: AppSettings
+    private var playbackSourceProvider: (() -> PlaybackSource)?
 
     // Don't cache store reference - always get from LyricsSurfaceManager
     // This ensures we always use the current active store after surface switches
@@ -63,6 +64,13 @@ final class LyricsViewModel {
         self.settings = settings ?? AppSettings.shared
 
         // Apply initial config
+        refreshConfigFromSettings()
+    }
+
+    /// Bind a runtime playback source provider so config can apply source-specific overlays.
+    /// Must not persist any overlay back to settings.
+    func setPlaybackSourceProvider(_ provider: @escaping () -> PlaybackSource) {
+        playbackSourceProvider = provider
         refreshConfigFromSettings()
     }
 
@@ -287,9 +295,18 @@ final class LyricsViewModel {
         let palette = ThemeStore.shared.palette
         let paletteMatchesScheme = palette?.scheme == resolvedScheme
 
+        let playbackSource = playbackSourceProvider?() ?? .local
+        let overlay = LyricsRuntimeOverlayResolver.overlay(
+            context: .mainPanel,
+            playbackSource: playbackSource
+        )
+
         let trackOffsetMs = max(-15000, min(15000, currentTrack?.lyricsTimeOffsetMs ?? 0))
-        let globalAdvanceMs = max(-5000, min(5000, settings.lyricsGlobalAdvanceMs))
-        let combinedOffsetMs = max(-20000, min(20000, trackOffsetMs - globalAdvanceMs))
+        let effectiveGlobalAdvanceMs = max(
+            -5000,
+            min(5000, settings.lyricsGlobalAdvanceMs + overlay.globalAdvanceDeltaMs)
+        )
+        let combinedOffsetMs = max(-20000, min(20000, trackOffsetMs - effectiveGlobalAdvanceMs))
         let mainFontFamily = cssFontFamily([
             settings.lyricsFontNameEn,
             settings.lyricsFontNameZh,

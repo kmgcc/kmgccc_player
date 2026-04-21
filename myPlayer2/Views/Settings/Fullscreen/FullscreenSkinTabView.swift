@@ -18,6 +18,16 @@ struct FullscreenSkinTabView: View {
     @State private var fullscreenMiniPlayerAutoHideSeconds: Double = AppSettings.shared.fullscreenMiniPlayerAutoHideSeconds
     @State private var fullscreenMiniPlayerGlassMaterial: AppSettings.FullscreenMiniPlayerGlassMaterial = AppSettings.shared.fullscreenMiniPlayerGlassMaterial
 
+    private var slidingKnobColor: Color {
+        if presentationStyle.usesMaterialSectionCards {
+            return FullscreenSelectionAccentStyle.dimmedAccentColor(
+                from: themeStore.accentNSColor,
+                lightnessDelta: 0.30
+            )
+        }
+        return themeStore.accentColor
+    }
+
     private let fullscreenMiniPlayerAutoHideOptions: [(title: String, seconds: Double)] = [
         ("关闭自动隐藏", 0),
         ("2 秒", 2),
@@ -36,7 +46,7 @@ struct FullscreenSkinTabView: View {
             GroupBox {
                 VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
                     Text("全屏皮肤")
-                        .font(.system(size: presentationStyle.sectionTitleFontSize, weight: .semibold))
+                        .font(presentationStyle.sectionTitleFont)
                         .foregroundStyle(presentationStyle.secondaryTextColor)
 
                     SkinSelectorRow(
@@ -62,7 +72,7 @@ struct FullscreenSkinTabView: View {
                 GroupBox {
                     VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
                         Text("\(selected.name) 选项")
-                            .font(.system(size: presentationStyle.sectionTitleFontSize, weight: .semibold))
+                            .font(presentationStyle.sectionTitleFont)
                             .foregroundStyle(presentationStyle.secondaryTextColor)
 
                         optionsView
@@ -74,12 +84,12 @@ struct FullscreenSkinTabView: View {
             GroupBox {
                 VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
                     Text("Mini Player")
-                        .font(.system(size: presentationStyle.sectionTitleFontSize, weight: .semibold))
+                        .font(presentationStyle.sectionTitleFont)
                         .foregroundStyle(presentationStyle.secondaryTextColor)
 
                     HStack(spacing: presentationStyle.compactInlineSpacing) {
                         Text("频谱动画")
-                            .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
+                            .font(presentationStyle.rowLabelFont)
                             .foregroundStyle(presentationStyle.primaryTextColor)
                         Spacer()
                         Toggle("", isOn: Binding(
@@ -100,7 +110,7 @@ struct FullscreenSkinTabView: View {
             GroupBox {
                 VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
                     Text("视觉效果")
-                        .font(.system(size: presentationStyle.sectionTitleFontSize, weight: .semibold))
+                        .font(presentationStyle.sectionTitleFont)
                         .foregroundStyle(presentationStyle.secondaryTextColor)
 
                     artworkScaleSection
@@ -133,7 +143,7 @@ struct FullscreenSkinTabView: View {
     private var miniPlayerAutoHidePicker: some View {
         HStack(spacing: presentationStyle.compactInlineSpacing) {
             Text("自动隐藏")
-                .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
+                .font(presentationStyle.rowLabelFont)
                 .foregroundStyle(presentationStyle.primaryTextColor)
             Spacer()
             SlidingSelector(
@@ -146,7 +156,7 @@ struct FullscreenSkinTabView: View {
                 },
                 knob: {
                     Capsule()
-                        .fill(themeStore.accentColor.opacity(0.18))
+                        .fill(slidingKnobColor.opacity(0.18))
                 },
                 content: { seconds, isSelected in
                     let title = fullscreenMiniPlayerAutoHideOptions.first(where: { $0.seconds == seconds })?.title ?? ""
@@ -171,7 +181,7 @@ struct FullscreenSkinTabView: View {
     private var miniPlayerMaterialPicker: some View {
         HStack(spacing: presentationStyle.compactInlineSpacing) {
             Text("材质")
-                .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
+                .font(presentationStyle.rowLabelFont)
                 .foregroundStyle(presentationStyle.primaryTextColor)
             Spacer()
             SlidingSelector(
@@ -184,7 +194,7 @@ struct FullscreenSkinTabView: View {
                 },
                 knob: {
                     Capsule()
-                        .fill(themeStore.accentColor.opacity(0.18))
+                        .fill(slidingKnobColor.opacity(0.18))
                 },
                 content: { material, isSelected in
                     let title = fullscreenMiniPlayerGlassMaterialOptions.first(where: { $0.material == material })?.title ?? ""
@@ -210,13 +220,13 @@ struct FullscreenSkinTabView: View {
         VStack(alignment: .leading, spacing: presentationStyle.sliderBlockSpacing) {
             HStack {
                 Text("封面缩放")
-                    .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
+                    .font(presentationStyle.rowLabelFont)
                     .foregroundStyle(presentationStyle.primaryTextColor)
                 Spacer()
                 let displayValue = fullscreenArtworkScale - 0.1
                 Text(String(format: "%.2f", displayValue))
                     .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))
-                    .font(.system(size: presentationStyle.rowValueFontSize, weight: .medium, design: .monospaced))
+                    .font(presentationStyle.rowValueFont)
             }
             Slider(
                 value: $fullscreenArtworkScale,
@@ -225,7 +235,7 @@ struct FullscreenSkinTabView: View {
             )
             .frame(height: presentationStyle.tabHeight)
             Text("调整全屏模式下歌曲封面的显示大小")
-                .font(.system(size: presentationStyle.captionFontSize))
+                .font(presentationStyle.captionFont)
                 .foregroundStyle(presentationStyle.secondaryTextColor)
         }
     }
@@ -234,12 +244,12 @@ struct FullscreenSkinTabView: View {
         VStack(alignment: .leading, spacing: presentationStyle.sliderBlockSpacing) {
             HStack {
                 Text("背景压暗强度")
-                    .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
+                    .font(presentationStyle.rowLabelFont)
                     .foregroundStyle(presentationStyle.primaryTextColor)
                 Spacer()
                 Text(String(format: "%.0f%%", fullscreenDimmingIntensity * 100))
                     .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))
-                    .font(.system(size: presentationStyle.rowValueFontSize, weight: .medium, design: .monospaced))
+                    .font(presentationStyle.rowValueFont)
             }
             Slider(
                 value: $fullscreenDimmingIntensity,
@@ -248,7 +258,7 @@ struct FullscreenSkinTabView: View {
             )
             .frame(height: presentationStyle.tabHeight)
             Text("调整全屏模式下背景压暗程度，提高可读性")
-                .font(.system(size: presentationStyle.captionFontSize))
+                .font(presentationStyle.captionFont)
                 .foregroundStyle(presentationStyle.secondaryTextColor)
         }
     }
@@ -272,6 +282,14 @@ struct FullscreenSkinTabView: View {
         } else {
             Capsule()
                 .fill(presentationStyle.segmentedTrackColor)
+                .overlay(
+                    Capsule()
+                        .strokeBorder(
+                            presentationStyle.segmentedTrackStrokeColor,
+                            lineWidth: presentationStyle.segmentedTrackStrokeColor == .clear ? 0 : 0.5
+                        )
+                        .allowsHitTesting(false)
+                )
         }
     }
 }

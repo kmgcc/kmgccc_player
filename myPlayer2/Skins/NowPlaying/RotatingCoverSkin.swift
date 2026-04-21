@@ -47,6 +47,7 @@ private enum RotatingCoverLayout {
     private static let classicFullscreenArtworkBoost: CGFloat = 1.22
     private static let classicFullscreenVisualScale: CGFloat = 1.2
     private static let baseExpansionRatio: CGFloat = 1.12
+    private static let fullscreenSharedBaseXOffset: CGFloat = -8
 
     static let discToBaseRatio: CGFloat = 0.75
     static let yOffsetWindow: CGFloat = 18
@@ -55,16 +56,22 @@ private enum RotatingCoverLayout {
     struct Metrics {
         let discSize: CGFloat
         let baseSize: CGFloat
+        let xOffset: CGFloat
         let yOffset: CGFloat
     }
 
     static func metrics(for context: SkinContext, isFullscreen: Bool) -> Metrics {
         let baseSize = expandedBaseVisualSize(for: context, isFullscreen: isFullscreen)
         let discSize = baseSize * discToBaseRatio
+        let xOffset = FullscreenCoverHorizontalOffset.artworkOffsetX(
+            for: context,
+            baseOffset: fullscreenSharedBaseXOffset
+        )
         let yOffset = isFullscreen ? yOffsetFullscreen : yOffsetWindow
         return Metrics(
             discSize: discSize,
             baseSize: baseSize,
+            xOffset: xOffset,
             yOffset: yOffset
         )
     }
@@ -864,7 +871,7 @@ private struct RotatingCoverArtwork: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .offset(y: layout.yOffset)
+        .offset(x: layout.xOffset, y: layout.yOffset)
         .onAppear {
             lastTrackID = context.track?.id
             rotation.setMode(discMode, isPlaying: context.playback.isPlaying)
@@ -956,10 +963,12 @@ private struct RotatingCoverSkinNormalSettingsView: View {
 
 private struct RotatingCoverSkinFullscreenSettingsView: View {
     @AppStorage("skin.rotatingCover.cdMode") private var cdMode: Bool = false
+    @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
             Toggle("CD 模式", isOn: $cdMode)
+                .font(presentationStyle.rowLabelFont)
                 .toggleStyle(.switch)
 
             Toggle("频谱动画", isOn: Binding(
@@ -976,6 +985,7 @@ private struct RotatingCoverSkinFullscreenSettingsView: View {
                     }
                 }
             ))
+            .font(presentationStyle.rowLabelFont)
             .toggleStyle(.switch)
         }
     }

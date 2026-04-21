@@ -12,19 +12,18 @@ struct NowPlayingSettingsContainerView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(PlayerViewModel.self) private var playerVM
     @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
 
     @State private var selectedTab = 0
     private let tabs = ["常规", "歌词"]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: presentationStyle.containerSpacing) {
             SettingsHeaderLabel("settings.section.now_playing", systemImage: "sparkles")
 
-            // Tab selector
             SettingsTabSelector(tabs: tabs, selectedTab: $selectedTab, fillsWidth: true)
                 .environmentObject(themeStore)
 
-            // Tab content
             switch selectedTab {
             case 0:
                 NowPlayingGeneralTabView()

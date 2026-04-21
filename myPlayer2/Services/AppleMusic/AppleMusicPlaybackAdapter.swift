@@ -11,6 +11,50 @@ import Observation
 @Observable
 @MainActor
 final class AppleMusicPlaybackAdapter {
+    private enum PollFailureReason: Equatable {
+        case processNotRunning
+        case scriptExecutionFailed(String)
+        case emptyResponse
+        case busy(String)
+        case timeout(String)
+        case noNowPlayingData
+
+        var logDescription: String {
+            switch self {
+            case .processNotRunning:
+                return "process_not_running"
+            case .scriptExecutionFailed(let detail):
+                return "script_execution_failed(\(detail))"
+            case .emptyResponse:
+                return "empty_response"
+            case .busy(let detail):
+                return "apple_music_busy(\(detail))"
+            case .timeout(let detail):
+                return "script_timeout(\(detail))"
+            case .noNowPlayingData:
+                return "no_now_playing_data"
+            }
+        }
+
+        var temporaryTitleKey: String {
+            switch self {
+            case .noNowPlayingData:
+                return "apple_music.not_playing"
+            case .processNotRunning, .scriptExecutionFailed, .emptyResponse, .busy, .timeout:
+                return "apple_music.temporarily_unavailable"
+            }
+        }
+
+        var disconnectedTitleKey: String {
+            switch self {
+            case .processNotRunning:
+                return "apple_music.not_running"
+            case .scriptExecutionFailed, .emptyResponse, .busy, .timeout, .noNowPlayingData:
+                return "apple_music.disconnected"
+            }
+        }
+    }
+
     private enum ControlAction: Sendable {
         case playPause
         case play
@@ -33,9 +77,14 @@ final class AppleMusicPlaybackAdapter {
         var identity: String?
         var source: Source
         var data: Data?
-        var isLoading: Bool
+        var displayTrackID: UUID?
 
-        static let none = ResolvedArtwork(identity: nil, source: .none, data: nil, isLoading: false)
+        static let none = ResolvedArtwork(
+            identity: nil,
+            source: .none,
+            data: nil,
+            displayTrackID: nil
+        )
 
         var checksum: UInt64 {
             ArtworkAssetStore.checksum(for: data)
@@ -59,6 +108,9 @@ final class AppleMusicPlaybackAdapter {
     private let artworkResolver: AppleMusicArtworkResolver
     private let metadataStore: ExternalPlaybackMetadataStore
     private let pollQueue = DispatchQueue(label: "myPlayer2.applemusic.poll", qos: .utility)
+    private let temporaryUnavailableThreshold = 2
+    private let disconnectedFailureThreshold = 8
+    private let processMissingDisconnectThreshold = 3
 
     private var pollTimer: Timer?
     private var isPollInFlight = false
@@ -79,12 +131,17 @@ final class AppleMusicPlaybackAdapter {
     private var latestMatchedTrack: Track?
     private var resolvedLyricsText: String?
     private var autoLyricsLookupState: AutoLyricsLookupState = .idle
-    private var resolvedArtwork: ResolvedArtwork = .none
+    private var displayedArtwork: ResolvedArtwork = .none
+    private var pendingArtworkIdentity: String?
     private var pendingPlaybackMode: AppleMusicPlaybackMode?
     private var pendingPlaybackModeStartedAt: Date?
     private var pendingVolume: Double?
     private var pendingVolumeStartedAt: Date?
     private var lastControlFailureLogAt: Date = .distantPast
+    private var connectionState: ExternalPlaybackConnectionState = .disconnected
+    private var consecutiveFailureCount = 0
+    private var consecutiveProcessMissingCount = 0
+    private var lastPollFailureReason: PollFailureReason?
 
     private(set) var presentation: NowPlayingPresentation = .emptyAppleMusic
 
@@ -156,7 +213,8 @@ final class AppleMusicPlaybackAdapter {
         latestMatchedTrack = nil
         resolvedLyricsText = nil
         autoLyricsLookupState = .idle
-        resolvedArtwork = .none
+        displayedArtwork = .none
+        pendingArtworkIdentity = nil
         schedulePoll()
     }
 
@@ -173,6 +231,7 @@ final class AppleMusicPlaybackAdapter {
         latestMatchResult = nil
         latestMatchedTrack = nil
         autoLyricsLookupState = .idle
+        pendingArtworkIdentity = identity
         startResolutionIfNeeded(for: info, raw: raw, identity: identity)
         updatePresentationFromLatestInfo()
     }
@@ -273,27 +332,106 @@ final class AppleMusicPlaybackAdapter {
         let bridge = self.bridge
         pollQueue.async { [weak self] in
             guard let self else { return }
-            let info: AppleMusicBridge.NowPlayingInfo?
-            if bridge.isMusicAppRunning() {
-                info = bridge.fetchFullInfo()
-            } else {
-                info = nil
-            }
+            let result = bridge.fetchFullInfoResult()
             DispatchQueue.main.async { [weak self] in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
-                    if let info {
-                        self.handlePolledInfo(info)
-                    } else {
-                        self.handleNotRunningPoll()
-                    }
+                    self.handlePollResult(result)
                     self.isPollInFlight = false
                 }
             }
         }
     }
 
-    private func handleNotRunningPoll() {
+    private func handlePollResult(_ result: AppleMusicBridge.FetchResult) {
+        switch result {
+        case .success(let info):
+            if let title = info.title, !title.isEmpty {
+                consecutiveFailureCount = 0
+                consecutiveProcessMissingCount = 0
+                lastPollFailureReason = nil
+                transitionConnectionState(to: .runningHasData, reason: "valid now playing data")
+                handlePolledInfo(info)
+            } else {
+                handleTransientPollFailure(.noNowPlayingData, snapshot: info)
+            }
+        case .failure(let issue):
+            switch issue {
+            case .appNotRunning:
+                handleTransientPollFailure(.processNotRunning, snapshot: nil)
+            case .emptyResponse, .invalidResponse:
+                handleTransientPollFailure(.emptyResponse, snapshot: nil)
+            case .noNowPlayingData(let snapshot):
+                handleTransientPollFailure(.noNowPlayingData, snapshot: snapshot)
+            case .busy(let message):
+                handleTransientPollFailure(.busy(message), snapshot: nil)
+            case .timeout(let message):
+                handleTransientPollFailure(.timeout(message), snapshot: nil)
+            case .scriptError(let message):
+                handleTransientPollFailure(.scriptExecutionFailed(message), snapshot: nil)
+            }
+        }
+    }
+
+    private func handleTransientPollFailure(
+        _ reason: PollFailureReason,
+        snapshot: AppleMusicBridge.NowPlayingInfo?
+    ) {
+        consecutiveFailureCount += 1
+        if reason == .processNotRunning {
+            consecutiveProcessMissingCount += 1
+        } else {
+            consecutiveProcessMissingCount = 0
+        }
+        lastPollFailureReason = reason
+
+        Log.warning(
+            "[AMAdapter] poll failure reason=\(reason.logDescription) consecutiveFailures=\(consecutiveFailureCount) consecutiveProcessMissing=\(consecutiveProcessMissingCount)",
+            category: .playback
+        )
+
+        if shouldTransitionToDisconnected(for: reason) {
+            handleDisconnectedPoll(reason: reason)
+            return
+        }
+
+        if shouldTransitionToTemporaryUnavailable() {
+            transitionConnectionState(to: .runningTemporarilyUnavailable, reason: reason.logDescription)
+        }
+        preserveLastKnownPresentationDuringFailure(reason: reason, snapshot: snapshot)
+    }
+
+    private func shouldTransitionToTemporaryUnavailable() -> Bool {
+        latestInfo == nil || consecutiveFailureCount >= temporaryUnavailableThreshold
+    }
+
+    private func shouldTransitionToDisconnected(for reason: PollFailureReason) -> Bool {
+        if reason == .processNotRunning {
+            return consecutiveProcessMissingCount >= processMissingDisconnectThreshold
+        }
+        return consecutiveFailureCount >= disconnectedFailureThreshold
+    }
+
+    private func preserveLastKnownPresentationDuringFailure(
+        reason: PollFailureReason,
+        snapshot: AppleMusicBridge.NowPlayingInfo?
+    ) {
+        if latestInfo != nil, presentation.source == .appleMusic, presentation.hasTrack {
+            var stalePresentation = presentation
+            stalePresentation.externalConnectionState = .runningTemporarilyUnavailable
+            updatePresentationIfNeeded(stalePresentation)
+            return
+        }
+
+        let fallbackInfo = snapshot ?? AppleMusicBridge.NowPlayingInfo(state: .unknown)
+        updateUnavailablePresentation(
+            from: fallbackInfo,
+            titleKey: reason.temporaryTitleKey,
+            connectionState: .runningTemporarilyUnavailable
+        )
+    }
+
+    private func handleDisconnectedPoll(reason: PollFailureReason) {
         latestInfo = nil
         latestRawMetadata = nil
         resolvedRawMetadata = nil
@@ -303,7 +441,8 @@ final class AppleMusicPlaybackAdapter {
         resolvedLyricsText = nil
         autoLyricsLookupState = .idle
         latestIdentity = nil
-        resolvedArtwork = .none
+        displayedArtwork = .none
+        pendingArtworkIdentity = nil
         resolutionTask?.cancel()
         resolutionTask = nil
         lyricsTask?.cancel()
@@ -312,30 +451,17 @@ final class AppleMusicPlaybackAdapter {
         artworkTask = nil
 
         var empty = NowPlayingPresentation.emptyAppleMusic
+        empty.externalConnectionState = .disconnected
+        empty.emptyTitleKey = reason.disconnectedTitleKey
         empty.isControlEnabled = true
+        transitionConnectionState(to: .disconnected, reason: reason.logDescription)
         updatePresentationIfNeeded(empty)
     }
 
     private func handlePolledInfo(_ info: AppleMusicBridge.NowPlayingInfo) {
         latestInfo = info
 
-        guard let title = info.title, !title.isEmpty else {
-            latestRawMetadata = nil
-            resolvedRawMetadata = nil
-            latestEffectiveMetadata = nil
-            latestMatchResult = nil
-            latestMatchedTrack = nil
-            resolvedLyricsText = nil
-            autoLyricsLookupState = .idle
-            latestIdentity = nil
-            resolvedArtwork = .none
-            resolutionTask?.cancel()
-            resolutionTask = nil
-            artworkTask?.cancel()
-            artworkTask = nil
-            updateEmptyPlayingPresentation(from: info)
-            return
-        }
+        guard let title = info.title, !title.isEmpty else { return }
 
         let raw = ExternalPlaybackRawMetadata(
             source: .appleMusic,
@@ -358,7 +484,7 @@ final class AppleMusicPlaybackAdapter {
             latestMatchedTrack = nil
             resolvedLyricsText = nil
             autoLyricsLookupState = .idle
-            resolvedArtwork = .none
+            pendingArtworkIdentity = identity
         }
 
         latestRawMetadata = raw
@@ -415,13 +541,6 @@ final class AppleMusicPlaybackAdapter {
             "\(manualLyrics != nil ? "manualLocked" : localLyrics != nil ? "localTrack" : autoLyrics != nil ? "cachedAuto" : "none")",
             category: .lyrics)
 
-        if didResolveDifferentRaw,
-           let cachedArtwork = metadataStore.cachedNetworkArtwork(for: identity),
-           !cachedArtwork.isEmpty {
-            publishArtwork(cachedArtwork, source: .network, identity: identity, loading: false)
-        }
-        publishLocalArtworkIfBetter(resolution.matchedTrack?.artworkData, identity: identity)
-
         updatePresentationFromLatestInfo()
 
         if didResolveDifferentRaw {
@@ -429,7 +548,8 @@ final class AppleMusicPlaybackAdapter {
                 for: info,
                 identity: identity,
                 effective: resolution.effective,
-                matchedTrack: resolution.matchedTrack
+                matchedTrack: resolution.matchedTrack,
+                cachedNetworkArtwork: metadataStore.cachedNetworkArtwork(for: identity)
             )
         }
 
@@ -449,11 +569,26 @@ final class AppleMusicPlaybackAdapter {
     }
 
     private func updateEmptyPlayingPresentation(from info: AppleMusicBridge.NowPlayingInfo) {
+        updateUnavailablePresentation(
+            from: info,
+            titleKey: "apple_music.not_playing",
+            connectionState: .runningTemporarilyUnavailable
+        )
+    }
+
+    private func updateUnavailablePresentation(
+        from info: AppleMusicBridge.NowPlayingInfo,
+        titleKey: String,
+        connectionState: ExternalPlaybackConnectionState
+    ) {
         lyricsTask?.cancel()
         lyricsTask = nil
         var empty = NowPlayingPresentation.emptyAppleMusic
-        empty.emptyTitleKey = "apple_music.not_playing"
+        empty.externalConnectionState = connectionState
+        empty.emptyTitleKey = titleKey
         empty.volume = visibleVolume(actual: Double(info.volume) / 100)
+        empty.isPlaying = info.state == .playing
+        empty.currentTime = info.position
         empty.isControlEnabled = true
         empty.appleMusicPlaybackMode = visiblePlaybackMode(actual: AppleMusicPlaybackMode(
             shuffleEnabled: info.shuffleEnabled,
@@ -483,6 +618,8 @@ final class AppleMusicPlaybackAdapter {
         let displayTitle = effective?.title ?? raw?.title ?? title
         let displayArtist = effective?.artist ?? raw?.artist ?? (info.artist ?? "")
         let displayAlbum = effective?.album ?? raw?.album ?? info.album
+        let displayedArtworkForPresentation = displayedArtwork
+        let isArtworkLoading = pendingArtworkIdentity == identity
 
         let newPresentation = NowPlayingPresentation(
             source: .appleMusic,
@@ -490,9 +627,10 @@ final class AppleMusicPlaybackAdapter {
             title: displayTitle,
             artist: displayArtist,
             album: displayAlbum,
-            artworkData: resolvedArtwork.data,
-            artworkIdentity: resolvedArtwork.presentationIdentity,
-            isArtworkLoading: resolvedArtwork.isLoading,
+            artworkData: displayedArtworkForPresentation.data,
+            artworkIdentity: displayedArtworkForPresentation.presentationIdentity,
+            artworkDisplayTrackID: displayedArtworkForPresentation.displayTrackID,
+            isArtworkLoading: isArtworkLoading,
             duration: info.duration,
             currentTime: info.position,
             isPlaying: info.state == .playing,
@@ -510,6 +648,7 @@ final class AppleMusicPlaybackAdapter {
             externalUsesOverride: effective?.usesOverride ?? false,
             externalMatchConfidence: latestMatchResult?.confidence,
             externalLyricsStatusMessage: externalLyricsStatusMessage(for: lyricsText),
+            externalConnectionState: connectionState,
             isControlEnabled: true,
             isSeekEnabled: info.duration > 0,
             emptyTitleKey: "apple_music.not_playing"
@@ -563,43 +702,61 @@ final class AppleMusicPlaybackAdapter {
         for info: AppleMusicBridge.NowPlayingInfo,
         identity: String,
         effective: ExternalPlaybackEffectiveMetadata,
-        matchedTrack: Track?
+        matchedTrack: Track?,
+        cachedNetworkArtwork: Data?
     ) {
-        if resolvedArtwork.data == nil {
-            resolvedArtwork = ResolvedArtwork(
-                identity: identity,
-                source: .none,
-                data: nil,
-                isLoading: true
-            )
-            updatePresentationFromLatestInfo()
-        }
+        pendingArtworkIdentity = identity
+        updatePresentationFromLatestInfo()
 
         let bridge = self.bridge
         let resolver = self.artworkResolver
         let metadataStore = self.metadataStore
+        let matchedTrackID = matchedTrack?.id
         let localArtwork = matchedTrack?.artworkData
         artworkTask = Task { [weak self] in
-            let directArtwork = await Self.fetchWithTimeout(seconds: 3.0) {
-                bridge.fetchCurrentArtworkData()
+            guard let self else { return }
+
+            if let localArtwork, !localArtwork.isEmpty {
+                let displayTrackID = matchedTrackID
+                    ?? NowPlayingPresentation.externalArtworkDisplayUUID(for: identity)
+                await self.prepareAndCommitArtwork(
+                    localArtwork,
+                    source: .localLibrary,
+                    identity: identity,
+                    displayTrackID: displayTrackID
+                )
+                await MainActor.run {
+                    metadataStore.updateArtworkSource("localLibrary", for: identity)
+                }
+                return
             }
+
+            let directArtwork = bridge.fetchCurrentArtworkData()
             guard !Task.isCancelled else { return }
             if let directArtwork, !directArtwork.isEmpty {
+                let displayTrackID = NowPlayingPresentation.externalArtworkDisplayUUID(for: identity)
+                await self.prepareAndCommitArtwork(
+                    directArtwork,
+                    source: .appleMusic,
+                    identity: identity,
+                    displayTrackID: displayTrackID
+                )
                 await MainActor.run {
-                    self?.publishArtwork(
-                        directArtwork,
-                        source: .appleMusic,
-                        identity: identity,
-                        loading: false
-                    )
                     metadataStore.updateArtworkSource("appleMusic", for: identity)
                 }
                 return
             }
 
-            guard localArtwork == nil || localArtwork?.isEmpty == true else {
+            if let cachedNetworkArtwork, !cachedNetworkArtwork.isEmpty {
+                let displayTrackID = NowPlayingPresentation.externalArtworkDisplayUUID(for: identity)
+                await self.prepareAndCommitArtwork(
+                    cachedNetworkArtwork,
+                    source: .network,
+                    identity: identity,
+                    displayTrackID: displayTrackID
+                )
                 await MainActor.run {
-                    self?.markArtworkResolutionFinished(identity: identity)
+                    metadataStore.updateArtworkSource("network-cache", for: identity)
                 }
                 return
             }
@@ -611,59 +768,76 @@ final class AppleMusicPlaybackAdapter {
                 album: effective.album
             )
             guard !Task.isCancelled else { return }
-            await MainActor.run {
-                if let networkArtwork, !networkArtwork.isEmpty {
-                    self?.publishArtwork(
-                        networkArtwork,
-                        source: .network,
-                        identity: identity,
-                        loading: false
-                    )
+            if let networkArtwork, !networkArtwork.isEmpty {
+                let displayTrackID = NowPlayingPresentation.externalArtworkDisplayUUID(for: identity)
+                await self.prepareAndCommitArtwork(
+                    networkArtwork,
+                    source: .network,
+                    identity: identity,
+                    displayTrackID: displayTrackID
+                )
+                await MainActor.run {
                     metadataStore.storeNetworkArtwork(networkArtwork, for: identity, source: "network")
-                } else {
-                    self?.markArtworkResolutionFinished(identity: identity)
                 }
+                return
+            }
+
+            await MainActor.run {
+                self.commitArtworkResolutionFinishedWithoutArtwork(identity: identity)
             }
         }
     }
 
-    private func publishLocalArtworkIfBetter(_ data: Data?, identity: String) {
-        guard let data, !data.isEmpty else { return }
-        publishArtwork(data, source: .localLibrary, identity: identity, loading: false)
-        metadataStore.updateArtworkSource("localLibrary", for: identity)
-    }
-
-    private func publishArtwork(
+    private func prepareAndCommitArtwork(
         _ data: Data,
         source: ResolvedArtwork.Source,
         identity: String,
-        loading: Bool
-    ) {
-        guard latestIdentity == identity else { return }
-        let incomingChecksum = ArtworkAssetStore.checksum(for: data)
-        let shouldReplace = source.rawValue > resolvedArtwork.source.rawValue
-            || resolvedArtwork.data == nil
-            || (source == resolvedArtwork.source && incomingChecksum != resolvedArtwork.checksum)
-        guard shouldReplace else {
-            if resolvedArtwork.isLoading != loading {
-                resolvedArtwork.isLoading = loading
-                updatePresentationFromLatestInfo()
+        displayTrackID: UUID
+    ) async {
+        guard !data.isEmpty else {
+            await MainActor.run {
+                self.commitArtworkResolutionFinishedWithoutArtwork(identity: identity)
             }
             return
         }
 
-        resolvedArtwork = ResolvedArtwork(
+        _ = await ArtworkAssetStore.shared.snapshot(
+            trackID: displayTrackID,
+            artworkData: data,
+            fullImageMaxPixelSize: 1_400
+        )
+        guard !Task.isCancelled else { return }
+        await MainActor.run {
+            self.commitArtwork(
+                data,
+                source: source,
+                identity: identity,
+                displayTrackID: displayTrackID
+            )
+        }
+    }
+
+    private func commitArtwork(
+        _ data: Data,
+        source: ResolvedArtwork.Source,
+        identity: String,
+        displayTrackID: UUID
+    ) {
+        guard latestIdentity == identity else { return }
+        pendingArtworkIdentity = nil
+        displayedArtwork = ResolvedArtwork(
             identity: identity,
             source: source,
             data: data,
-            isLoading: loading
+            displayTrackID: displayTrackID
         )
         updatePresentationFromLatestInfo()
     }
 
-    private func markArtworkResolutionFinished(identity: String) {
-        guard latestIdentity == identity, resolvedArtwork.isLoading else { return }
-        resolvedArtwork.isLoading = false
+    private func commitArtworkResolutionFinishedWithoutArtwork(identity: String) {
+        guard latestIdentity == identity else { return }
+        pendingArtworkIdentity = nil
+        displayedArtwork = .none
         updatePresentationFromLatestInfo()
     }
 
@@ -936,30 +1110,24 @@ final class AppleMusicPlaybackAdapter {
         }
     }
 
-    private static func fetchWithTimeout(
-        seconds: TimeInterval,
-        operation: @escaping @Sendable () -> Data?
-    ) async -> Data? {
-        await withTaskGroup(of: Data?.self) { group in
-            group.addTask {
-                operation()
-            }
-            group.addTask {
-                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-                return nil
-            }
-
-            let result = await group.next() ?? nil
-            group.cancelAll()
-            return result
-        }
-    }
-
     private func logControlFailureIfNeeded(_ action: ControlAction) {
         let now = Date()
         guard now.timeIntervalSince(lastControlFailureLogAt) > 5 else { return }
         lastControlFailureLogAt = now
         Log.warning("[AppleMusic] control failed: \(String(describing: action))", category: .playback)
+    }
+
+    private func transitionConnectionState(
+        to newState: ExternalPlaybackConnectionState,
+        reason: String
+    ) {
+        guard connectionState != newState else { return }
+        let oldState = connectionState
+        connectionState = newState
+        Log.info(
+            "[AMAdapter] connection state \(oldState.rawValue) -> \(newState.rawValue) reason=\(reason)",
+            category: .playback
+        )
     }
 
     // MARK: - Track Metadata

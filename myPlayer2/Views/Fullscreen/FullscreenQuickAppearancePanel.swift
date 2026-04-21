@@ -8,24 +8,19 @@
 import SwiftUI
 
 struct FullscreenQuickAppearancePanel: View {
-    let glassStyle: FullscreenControlsGlassStyle
     let scale: CGFloat
     let onDismiss: () -> Void
 
     @State private var dismissRegistrationID: UUID?
 
     private var presentationStyle: FullscreenSettingsPresentationStyle {
-        .fullscreenOverlay(scale: scale, glassMaterialStyle: glassStyle.materialStyle)
+        .fullscreenOverlay(scale: scale)
     }
 
     static func panelSize(
-        for scale: CGFloat,
-        glassMaterialStyle: LiquidGlassPillMaterialStyle
+        for scale: CGFloat
     ) -> CGSize {
-        FullscreenSettingsPresentationStyle.fullscreenOverlay(
-            scale: scale,
-            glassMaterialStyle: glassMaterialStyle
-        ).panelSize
+        FullscreenSettingsPresentationStyle.fullscreenOverlay(scale: scale).panelSize
     }
 
     private var panelWidth: CGFloat { presentationStyle.panelSize.width }
@@ -36,6 +31,12 @@ struct FullscreenQuickAppearancePanel: View {
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
+            // A very light scrim to improve readability over busy fullscreen artwork.
+            // Does not change the glass/material types; it only reduces background contrast.
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(Color.black.opacity(0.13))
+                .allowsHitTesting(false)
+
             FullscreenSettingsContainerView(
                 presentationStyle: presentationStyle,
                 embedsScrollView: true
@@ -43,44 +44,32 @@ struct FullscreenQuickAppearancePanel: View {
             .padding(.horizontal, contentPadding)
             .padding(.top, contentPadding)
             .padding(.bottom, presentationStyle.panelBottomPadding)
-            .environment(\.colorScheme, .dark)
+            .environment(\.colorScheme, .light)
 
             closeButton
                 .padding(.top, presentationStyle.panelBottomPadding)
                 .padding(.trailing, presentationStyle.panelBottomPadding)
         }
         .frame(width: panelWidth, height: panelHeight, alignment: .topLeading)
-        .background(panelBackdrop)
-        .liquidGlassRect(
-            cornerRadius: cornerRadius,
-            colorScheme: glassStyle.colorScheme,
-            accentColor: glassStyle.accentColor,
-            prominence: .prominent,
-            materialStyle: glassStyle.materialStyle,
-            isFloating: true
+        .glassEffect(
+            .clear,
+            in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         )
+        .overlay(
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .strokeBorder(GlassStyleTokens.glassBorderColor, lineWidth: GlassStyleTokens.hairlineWidth)
+                .allowsHitTesting(false)
+        )
+        .background(
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(Color.white.opacity(0.06))
+                .allowsHitTesting(false)
+        )
+        .subtleFloatingShadow()
         .controlSize(presentationStyle.controlSize)
-        .environment(\.colorScheme, .dark)
+        .environment(\.colorScheme, .light)
         .onAppear(perform: registerDismissHandler)
         .onDisappear(perform: unregisterDismissHandler)
-    }
-
-    private var panelBackdrop: some View {
-        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            .fill(glassBackdropMaterial)
-            .overlay(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(Color.white.opacity(0.035))
-            )
-    }
-
-    private var glassBackdropMaterial: AnyShapeStyle {
-        switch glassStyle.materialStyle {
-        case .clear:
-            return AnyShapeStyle(.thickMaterial)
-        case .darkGlass:
-            return AnyShapeStyle(.regularMaterial)
-        }
     }
 
     private var closeButton: some View {
@@ -92,7 +81,7 @@ struct FullscreenQuickAppearancePanel: View {
                 .contentShape(Circle())
                 .background(
                     Circle()
-                        .fill(Color.white.opacity(0.06))
+                        .fill(Color.white.opacity(0.10))
                 )
         }
         .buttonStyle(.plain)

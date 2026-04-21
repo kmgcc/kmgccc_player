@@ -11,6 +11,7 @@ import SwiftUI
 enum FullscreenSelectionAccentStyle {
     private static let brightTargetLightness: CGFloat = 0.92
     private static let darkTargetLightness: CGFloat = 0.18
+    private static let defaultDimLightnessDelta: CGFloat = 0.30
 
     static func adjustedAccent(from color: NSColor) -> NSColor {
         guard let hsl = hslComponents(from: color) else { return color }
@@ -23,6 +24,19 @@ enum FullscreenSelectionAccentStyle {
 
     static func adjustedAccentColor(from color: NSColor) -> Color {
         Color(nsColor: adjustedAccent(from: color))
+    }
+
+    /// Returns the accent color with HSL lightness reduced (darker), keeping hue/saturation stable.
+    /// Used for improving visibility of selection knobs on light ultra-thin materials.
+    static func dimmedAccentColor(from color: NSColor, lightnessDelta: CGFloat = defaultDimLightnessDelta) -> Color {
+        Color(nsColor: dimmedAccent(from: color, lightnessDelta: lightnessDelta))
+    }
+
+    static func dimmedAccent(from color: NSColor, lightnessDelta: CGFloat = defaultDimLightnessDelta) -> NSColor {
+        guard let hsl = hslComponents(from: color) else { return color }
+        let tunedSaturation = clamp(hsl.s, min: 0.22, max: 0.92)
+        let targetLightness = clamp(hsl.l - lightnessDelta, min: 0, max: 1)
+        return rgbColorFromHsl(h: hsl.h, s: tunedSaturation, l: targetLightness)
     }
 
     private static func hslComponents(from color: NSColor) -> (h: CGFloat, s: CGFloat, l: CGFloat)? {

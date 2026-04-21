@@ -11,13 +11,22 @@ import SwiftUI
 
 enum SkinPreviewStyle {
     static let strokeWidth: CGFloat = 1.5
-    static let primaryStroke = Color.primary.opacity(0.22)
-    static let primaryFill = Color.primary.opacity(0.06)
-    static let accentFill = Color.primary.opacity(0.14)
     static let cornerRadius: CGFloat = 8
-    static let selectedStrokeOpacity: Double = 0.92
-    static let selectedFillOpacity: Double = 0.26
-    static let selectedGlyphOpacity: Double = 0.99
+
+    static func stroke(_ scheme: ColorScheme, emphasis: Double = 1.0) -> Color {
+        let alpha = scheme == .dark ? 0.26 * emphasis : 0.22 * emphasis
+        return (scheme == .dark ? Color.white : Color.black).opacity(alpha)
+    }
+
+    static func fill(_ scheme: ColorScheme, emphasis: Double = 1.0) -> Color {
+        let alpha = scheme == .dark ? 0.08 * emphasis : 0.06 * emphasis
+        return (scheme == .dark ? Color.white : Color.black).opacity(alpha)
+    }
+
+    static func glyph(_ scheme: ColorScheme, emphasis: Double = 1.0) -> Color {
+        let alpha = scheme == .dark ? 0.36 * emphasis : 0.28 * emphasis
+        return (scheme == .dark ? Color.white : Color.black).opacity(alpha)
+    }
 }
 
 // MARK: - Classic Skin Preview
@@ -26,15 +35,16 @@ enum SkinPreviewStyle {
 struct ClassicSkinPreview: View {
     let isSelected: Bool
     let accentColor: Color
+    @Environment(\.colorScheme) private var colorScheme
 
     private var strokeColor: Color {
-        isSelected ? accentColor.opacity(SkinPreviewStyle.selectedStrokeOpacity) : SkinPreviewStyle.primaryStroke
+        SkinPreviewStyle.stroke(colorScheme, emphasis: isSelected ? 1.15 : 1.0)
     }
     private var fillColor: Color {
-        isSelected ? accentColor.opacity(SkinPreviewStyle.selectedFillOpacity) : SkinPreviewStyle.primaryFill
+        SkinPreviewStyle.fill(colorScheme, emphasis: isSelected ? 1.10 : 1.0)
     }
     private var dotColorBase: Double {
-        isSelected ? 0.40 : 0.12
+        isSelected ? 0.18 : 0.12
     }
 
     var body: some View {
@@ -47,18 +57,14 @@ struct ClassicSkinPreview: View {
                 .overlay(
                     Image(systemName: "music.note")
                         .font(.system(size: 14, weight: .light))
-                        .foregroundStyle(
-                            isSelected
-                                ? accentColor.opacity(SkinPreviewStyle.selectedGlyphOpacity)
-                                : Color.primary.opacity(0.25)
-                        )
+                        .foregroundStyle(SkinPreviewStyle.glyph(colorScheme, emphasis: isSelected ? 1.10 : 1.0))
                 )
 
             // LED dots
             HStack(spacing: 4) {
                 ForEach(0..<4) { index in
                     Circle()
-                        .fill((isSelected ? accentColor : Color.primary).opacity(dotColorBase + Double(index) * 0.06))
+                        .fill(SkinPreviewStyle.glyph(colorScheme).opacity(dotColorBase + Double(index) * 0.06))
                         .frame(width: 5, height: 5)
                 }
             }
@@ -73,12 +79,13 @@ struct ClassicSkinPreview: View {
 struct RotatingSkinPreview: View {
     let isSelected: Bool
     let accentColor: Color
+    @Environment(\.colorScheme) private var colorScheme
 
     private var strokeColor: Color {
-        isSelected ? accentColor.opacity(SkinPreviewStyle.selectedStrokeOpacity) : SkinPreviewStyle.primaryStroke
+        SkinPreviewStyle.stroke(colorScheme, emphasis: isSelected ? 1.15 : 1.0)
     }
     private var fillColor: Color {
-        isSelected ? accentColor.opacity(SkinPreviewStyle.selectedFillOpacity) : SkinPreviewStyle.primaryFill
+        SkinPreviewStyle.fill(colorScheme, emphasis: isSelected ? 1.10 : 1.0)
     }
 
     var body: some View {
@@ -105,7 +112,7 @@ struct RotatingSkinPreview: View {
 
             // Center hole
             Circle()
-                .fill(isSelected ? accentColor.opacity(0.92) : Color.primary.opacity(0.35))
+                .fill(SkinPreviewStyle.glyph(colorScheme, emphasis: isSelected ? 1.10 : 1.0))
                 .frame(width: 5, height: 5)
         }
     }
@@ -117,12 +124,13 @@ struct RotatingSkinPreview: View {
 struct CassetteSkinPreview: View {
     let isSelected: Bool
     let accentColor: Color
+    @Environment(\.colorScheme) private var colorScheme
 
     private var strokeColor: Color {
-        isSelected ? accentColor.opacity(SkinPreviewStyle.selectedStrokeOpacity) : SkinPreviewStyle.primaryStroke
+        SkinPreviewStyle.stroke(colorScheme, emphasis: isSelected ? 1.15 : 1.0)
     }
     private var fillColor: Color {
-        isSelected ? accentColor.opacity(SkinPreviewStyle.selectedFillOpacity) : SkinPreviewStyle.primaryFill
+        SkinPreviewStyle.fill(colorScheme, emphasis: isSelected ? 1.10 : 1.0)
     }
 
     var body: some View {
@@ -135,7 +143,7 @@ struct CassetteSkinPreview: View {
 
             // Capsule window — snug wrapper with equal padding around twin reels
             Capsule()
-                .fill(Color.primary.opacity(0.03))
+                .fill(SkinPreviewStyle.fill(colorScheme, emphasis: 0.65))
                 .stroke(strokeColor.opacity(0.60), lineWidth: 1)
                 .frame(width: 32, height: 15)
 
@@ -159,24 +167,25 @@ struct CassetteSkinPreview: View {
 struct CoverGradientBlurSkinPreview: View {
     let isSelected: Bool
     let accentColor: Color
+    @Environment(\.colorScheme) private var colorScheme
 
     private var strokeColor: Color {
-        isSelected ? accentColor.opacity(SkinPreviewStyle.selectedStrokeOpacity) : SkinPreviewStyle.primaryStroke
+        SkinPreviewStyle.stroke(colorScheme, emphasis: isSelected ? 1.15 : 1.0)
     }
     private var fillColor: Color {
-        isSelected ? accentColor.opacity(SkinPreviewStyle.selectedFillOpacity) : SkinPreviewStyle.primaryFill
+        SkinPreviewStyle.fill(colorScheme, emphasis: isSelected ? 1.10 : 1.0)
     }
 
     var body: some View {
         ZStack {
             // Outer blur halo
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(isSelected ? accentColor.opacity(0.12) : Color.primary.opacity(0.03))
+                .fill(SkinPreviewStyle.fill(colorScheme, emphasis: 0.65))
                 .frame(width: 62, height: 62)
 
             // Mid soft layer
             RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .fill(isSelected ? accentColor.opacity(0.16) : Color.primary.opacity(0.06))
+                .fill(SkinPreviewStyle.fill(colorScheme, emphasis: 0.95))
                 .frame(width: 56, height: 56)
 
             // Sharp cover
@@ -187,11 +196,7 @@ struct CoverGradientBlurSkinPreview: View {
                 .overlay(
                     Image(systemName: "photo")
                         .font(.system(size: 14, weight: .light))
-                        .foregroundStyle(
-                            isSelected
-                                ? accentColor.opacity(SkinPreviewStyle.selectedGlyphOpacity)
-                                : Color.primary.opacity(0.25)
-                        )
+                        .foregroundStyle(SkinPreviewStyle.glyph(colorScheme, emphasis: isSelected ? 1.10 : 1.0))
                 )
         }
     }

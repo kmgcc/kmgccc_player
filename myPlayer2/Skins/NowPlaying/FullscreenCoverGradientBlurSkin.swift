@@ -192,6 +192,16 @@ private struct CoverGradientBlurSettingsView: View {
         CoverEdgeFillMode(rawValue: edgeFillMode) ?? .pixelStretch
     }
 
+    private var slidingKnobColor: Color {
+        if presentationStyle.usesMaterialSectionCards {
+            return FullscreenSelectionAccentStyle.dimmedAccentColor(
+                from: themeStore.accentNSColor,
+                lightnessDelta: 0.30
+            )
+        }
+        return themeStore.accentColor
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
             edgeFillModePicker
@@ -204,8 +214,8 @@ private struct CoverGradientBlurSettingsView: View {
     private var edgeFillModePicker: some View {
         HStack(spacing: 8) {
             Text("右侧填充")
-                .font(.system(size: 12))
-                .foregroundStyle(presentationStyle.secondaryTextColor)
+                .font(presentationStyle.rowLabelFont)
+                .foregroundStyle(presentationStyle.primaryTextColor)
 
             Spacer()
 
@@ -222,13 +232,13 @@ private struct CoverGradientBlurSettingsView: View {
                 },
                 knob: {
                     Capsule()
-                        .fill(themeStore.accentColor.opacity(0.18))
+                        .fill(slidingKnobColor.opacity(0.18))
                 },
                 content: { mode, isSelected in
                     Text(mode.displayName)
-                        .font(.system(size: 11, weight: isSelected ? .medium : .regular))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
+                        .font(presentationStyle.segmentedLabelFont.weight(isSelected ? .medium : .regular))
+                        .padding(.horizontal, presentationStyle.segmentedHorizontalPadding)
+                        .padding(.vertical, presentationStyle.segmentedVerticalPadding)
                         .foregroundStyle(
                             isSelected
                                 ? presentationStyle.selectedTextColor(accentColor: themeStore.accentColor)
@@ -236,11 +246,19 @@ private struct CoverGradientBlurSettingsView: View {
                         )
                 }
             )
-            .padding(.horizontal, 4)
-            .padding(.vertical, 3)
+            .padding(.horizontal, presentationStyle.segmentedTrackHorizontalPadding)
+            .padding(.vertical, presentationStyle.segmentedTrackVerticalPadding)
             .background(
                 Capsule()
                     .fill(presentationStyle.segmentedTrackColor)
+                    .overlay(
+                        Capsule()
+                            .strokeBorder(
+                                presentationStyle.segmentedTrackStrokeColor,
+                                lineWidth: presentationStyle.segmentedTrackStrokeColor == .clear ? 0 : 0.5
+                            )
+                            .allowsHitTesting(false)
+                    )
             )
             .fixedSize(horizontal: true, vertical: false)
         }
@@ -249,8 +267,8 @@ private struct CoverGradientBlurSettingsView: View {
     private var blurRadiusSlider: some View {
         HStack(spacing: 12) {
             Text("模糊半径")
-                .font(.system(size: 12))
-                .foregroundStyle(presentationStyle.secondaryTextColor)
+                .font(presentationStyle.rowLabelFont)
+                .foregroundStyle(presentationStyle.primaryTextColor)
                 .frame(width: 56, alignment: .leading)
 
             Slider(value: $maxBlurRadius, in: 100...2500, step: 100)
@@ -258,10 +276,13 @@ private struct CoverGradientBlurSettingsView: View {
                 .frame(maxWidth: .infinity)
 
             Text("\(Int(maxBlurRadius))")
-                .font(.system(size: 11, weight: .medium).monospacedDigit())
+                .font(presentationStyle.rowValueFont)
                 .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))
                 .lineLimit(1)
-                .frame(width: 40, alignment: .trailing)
+                // Don't let the value collapse into an ellipsis on narrower settings windows.
+                .fixedSize(horizontal: true, vertical: false)
+                .layoutPriority(1)
+                .frame(minWidth: 52, alignment: .trailing)
         }
     }
 }

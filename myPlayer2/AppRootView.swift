@@ -366,6 +366,9 @@ private struct MainAppContentView: View {
 
     private var artworkBackgroundTrackID: UUID? {
         let presentation = playbackCoordinator.presentation
+        if let artworkTrackID = presentation.artworkDisplayTrackID {
+            return artworkTrackID
+        }
         if let localID = presentation.localTrack?.id {
             return localID
         }

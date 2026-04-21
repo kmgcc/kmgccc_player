@@ -12,6 +12,7 @@ struct NowPlayingGeneralTabView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(PlayerViewModel.self) private var playerVM
     @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
 
     @State private var nowPlayingSkin: String = AppSettings.shared.selectedNowPlayingSkinID
     @State private var nowPlayingArtBackgroundEnabled: Bool = AppSettings.shared.nowPlayingArtBackgroundEnabled
@@ -21,24 +22,22 @@ struct NowPlayingGeneralTabView: View {
     @AppStorage("skin.kmgcccCassette.showKmgLook") private var cassetteShowKmgLook: Bool = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            // Art background toggle
+        VStack(alignment: .leading, spacing: presentationStyle.sectionSpacing) {
             GroupBox {
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: presentationStyle.rowSpacing) {
                     Toggle("启用艺术背景 (Beta)", isOn: $nowPlayingArtBackgroundEnabled)
                         .toggleStyle(.switch)
                     Text("遇到性能问题时，可以关闭此选项。")
-                        .font(.caption)
+                        .font(presentationStyle.captionFont)
                         .foregroundStyle(.secondary)
                 }
-                .padding(12)
+                .padding(presentationStyle.groupPadding)
             }
 
-            // Skin selection
             GroupBox {
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
                     Text("settings.now_playing.select_skin")
-                        .font(.subheadline.bold())
+                        .font(presentationStyle.sectionTitleFont)
                         .foregroundStyle(.secondary)
 
                     SkinSelectorRow(
@@ -46,25 +45,24 @@ struct NowPlayingGeneralTabView: View {
                         selectedSkinID: $nowPlayingSkin
                     )
                 }
-                .padding(12)
+                .padding(presentationStyle.groupPadding)
             }
 
-            // Skin-specific options
             if let selected = SkinRegistry.options.first(where: { $0.id == nowPlayingSkin }),
                let optionsView = SkinRegistry.skin(for: nowPlayingSkin).settingsView {
                 GroupBox {
-                    VStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
                         Text(
                             String(
                                 format: NSLocalizedString(
                                     "settings.now_playing.skin_options", comment: ""), selected.name)
                         )
-                        .font(.subheadline.bold())
+                        .font(presentationStyle.sectionTitleFont)
                         .foregroundStyle(.secondary)
 
                         optionsView
                     }
-                    .padding(12)
+                    .padding(presentationStyle.groupPadding)
                 }
             }
         }

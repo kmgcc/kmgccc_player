@@ -34,6 +34,7 @@ struct MiniPlayerView: View {
     @State private var playPauseSymbolEffectTrigger = 0
     @State private var nextSymbolEffectTrigger = 0
     @State private var artworkImage: NSImage?
+    @State private var isArtworkHovering = false
     @State private var isPlaybackModeExpanded = false
     @State private var isShowingExternalMatchEditor = false
 
@@ -115,7 +116,7 @@ struct MiniPlayerView: View {
             Button {
                 fullscreenWindowManager.showFullscreenPlayerInWindow()
             } label: {
-                artworkView
+                artworkButtonContent
             }
             .buttonStyle(.plain)
             .disabled(
@@ -135,6 +136,33 @@ struct MiniPlayerView: View {
         }
         .contentShape(Rectangle())
         .offset(x: 4, y: 0)
+    }
+
+    @ViewBuilder
+    private var artworkButtonContent: some View {
+        let isEnabled = playbackCoordinator.presentation.hasTrack
+            && !fullscreenWindowManager.isFullscreenPlayerPresented
+
+        ZStack {
+            artworkView
+
+            if isArtworkHovering && isEnabled {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.black.opacity(0.18))
+                    .overlay(
+                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color.white.opacity(0.95))
+                    )
+                    .transition(.opacity)
+            }
+        }
+        .frame(width: 36, height: 36)
+        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .onHover { hovering in
+            isArtworkHovering = hovering && isEnabled
+        }
+        .animation(.easeOut(duration: 0.15), value: isArtworkHovering)
     }
 
     @ViewBuilder
@@ -421,7 +449,10 @@ struct MiniPlayerView: View {
         }
         
         let snapshot = await ArtworkAssetStore.shared.snapshotMetadata(
-            trackID: presentation.localTrack?.id ?? Self.appleMusicArtworkCacheTrackID,
+            trackID: presentation.artworkDisplayTrackID
+                ?? presentation.displayTrackID
+                ?? presentation.localTrack?.id
+                ?? Self.appleMusicArtworkCacheTrackID,
             artworkData: artworkData
         )
         guard !Task.isCancelled else { return }

@@ -101,9 +101,15 @@ final class AppSessionHost: ObservableObject {
             meterProvider: ledMeterProvider
         )
 
-        playbackCoordinator.onActiveSourceChanged = { [weak ledMeterProvider] source in
+        let lyricsVM = LyricsViewModel(settings: AppSettings.shared)
+        lyricsVM.setPlaybackSourceProvider { [weak playbackCoordinator] in
+            playbackCoordinator?.activeSource ?? .local
+        }
+
+        playbackCoordinator.onActiveSourceChanged = { [weak ledMeterProvider, weak lyricsVM] source in
             ledMeterProvider?.playbackSource = source
             AudioVisualizationService.shared.setExternalMode(source == .appleMusic)
+            lyricsVM?.refreshConfigFromSettings()
         }
         ledMeterProvider.playbackSource = playbackCoordinator.activeSource
         AudioVisualizationService.shared.setExternalMode(playbackCoordinator.activeSource == .appleMusic)
@@ -129,7 +135,6 @@ final class AppSessionHost: ObservableObject {
             }
         }
 
-        let lyricsVM = LyricsViewModel(settings: AppSettings.shared)
         let skinManager = SkinManager()
         let easterEggSFX = EasterEggSFXService()
 

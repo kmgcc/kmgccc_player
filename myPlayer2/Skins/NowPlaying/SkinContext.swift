@@ -15,6 +15,12 @@ struct SkinContext {
         case fullscreenPlayer
     }
 
+    enum FullscreenHostMode {
+        case none
+        case systemFullscreen
+        case embeddedWindow
+    }
+
     struct TrackMetadata {
         let id: UUID
         let title: String
@@ -89,6 +95,9 @@ struct SkinContext {
     /// regardless of whether it lives in a system fullscreen space or inside the main window.
     let presentationMode: PresentationMode
 
+    /// Distinguishes system fullscreen space vs embedded-window fullscreen host.
+    let fullscreenHostMode: FullscreenHostMode
+
     var contentSize: CGSize {
         contentBounds.size
     }
@@ -119,7 +128,8 @@ extension SkinContext {
             ),
             fullscreenScale: fullscreenScale,
             lyricsVisible: lyricsVisible,
-            presentationMode: presentationMode
+            presentationMode: presentationMode,
+            fullscreenHostMode: fullscreenHostMode
         )
     }
 }
