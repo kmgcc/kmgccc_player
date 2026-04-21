@@ -77,8 +77,12 @@ struct AppRootView: View {
             .onAppear {
                 applyAppearanceToWindows()
                 syncThemeStoreWithSwiftUIColorScheme(swiftUIColorScheme)
+                syncFullscreenWindowEditorDependencies()
                 presentedAccentColor = themeStore.accentColor
                 TintTimelineProbe.noteHeaderPublish(source: "AppRoot.onAppear")
+            }
+            .onChange(of: appSession.libraryVM.map(ObjectIdentifier.init)) { _, _ in
+                syncFullscreenWindowEditorDependencies()
             }
             .onReceive(themeStore.$accentColor) { newValue in
                 TintTimelineProbe.noteRootReceive(source: "AppRoot.onReceive")
@@ -104,9 +108,12 @@ struct AppRootView: View {
             .onReceive(NotificationCenter.default.publisher(for: .enterFullscreen)) { _ in
                 Log.debug("F-Key: Notification received", category: .fullscreen)
                 let manager = FullscreenWindowManager.shared
-                Log.trace("F-Key: isFullscreenActive=\(manager.isFullscreenActive), isTransitioning=\(manager.isTransitioning)", category: .fullscreen)
-                guard !manager.isFullscreenActive else {
-                    Log.debug("F-Key: Already in fullscreen, ignoring", category: .fullscreen)
+                Log.trace(
+                    "F-Key: presentationMode=\(String(describing: manager.presentationMode)), isTransitioning=\(manager.isTransitioning)",
+                    category: .fullscreen
+                )
+                guard !manager.isFullscreenPlayerPresented else {
+                    Log.debug("F-Key: Fullscreen player already presented, ignoring", category: .fullscreen)
                     return
                 }
                 guard !manager.isTransitioning else {
@@ -151,7 +158,7 @@ struct AppRootView: View {
         let lyricsWidth =
             (uiState.lyricsVisible
                 && !uiState.lyricsPanelSuppressedByModal
-                && !fullscreenWindowManager.isFullscreenActive)
+                && !fullscreenWindowManager.usesFullscreenPlayerUI)
             ? Constants.Layout.lyricsPanelMinWidth
             : 0
         let detailMinimumWidth = Constants.Layout.detailContentMinWidth
@@ -202,6 +209,13 @@ struct AppRootView: View {
         }
     }
 
+    private func syncFullscreenWindowEditorDependencies() {
+        fullscreenWindowManager.configureEditorServices(
+            coverDownloadService: coverDownloadService,
+            netEaseCoverService: netEaseCoverService
+        )
+    }
+
     private func schedulePresentedAccentColorUpdate(_ color: Color) {
         accentPresentationTask?.cancel()
 
@@ -225,7 +239,7 @@ struct AppRootView: View {
         let uiState = appSession.uiState
         guard uiState.contentMode == .library else { return false }
         guard uiState.lyricsVisible, !uiState.lyricsPanelSuppressedByModal else { return false }
-        guard !fullscreenWindowManager.isFullscreenActive else { return false }
+        guard !fullscreenWindowManager.usesFullscreenPlayerUI else { return false }
 
         switch appSession.libraryVM?.currentSelection {
         case .playlist, .artist, .album:
@@ -269,7 +283,7 @@ private struct AppRootContentView: View {
                 let showArtBackground = uiState.contentMode == .nowPlaying
                     && settings.nowPlayingArtBackgroundEnabled
                     && playbackCoordinator.presentation.hasTrack
-                    && !fullscreenWindowManager.isFullscreenActive
+                    && !fullscreenWindowManager.usesFullscreenPlayerUI
 
                 MainAppContentView(
                     libraryVM: libraryVM,
@@ -394,8 +408,8 @@ private struct MainAppContentView: View {
             .onChange(of: settings.nowPlayingArtBackgroundEnabled) { _, enabled in
                 handleArtBackgroundEnabledChange(enabled)
             }
-            .onChange(of: fullscreenWindowManager.isFullscreenActive) { _, isActive in
-                handleFullscreenActiveChange(isActive)
+            .onChange(of: fullscreenWindowManager.presentationMode) { _, newMode in
+                handleFullscreenPresentationModeChange(newMode)
             }
             .environment(settings)
             .environment(uiState)
@@ -477,8 +491,10 @@ private struct MainAppContentView: View {
         }
     }
 
-    private func handleFullscreenActiveChange(_ isActive: Bool) {
-        if !isActive && shouldTriggerArtBackgroundTransition {
+    private func handleFullscreenPresentationModeChange(
+        _ mode: FullscreenWindowManager.PresentationMode
+    ) {
+        if mode == .none && shouldTriggerArtBackgroundTransition {
             artBackgroundController.triggerTransition()
         }
     }
@@ -502,7 +518,7 @@ private struct MainAppContentView: View {
         guard LyricsRuntimeProfile.enabled else { return }
         guard uiState.contentMode == .library else { return }
         guard uiState.lyricsVisible, !uiState.lyricsPanelSuppressedByModal else { return }
-        guard !fullscreenWindowManager.isFullscreenActive else { return }
+        guard !fullscreenWindowManager.usesFullscreenPlayerUI else { return }
 
         let selectionLabel: String
         let hasHeader: Bool
@@ -539,7 +555,7 @@ private struct MainAppContentView: View {
         let lyricsWidth =
             (uiState.lyricsVisible
                 && !uiState.lyricsPanelSuppressedByModal
-                && !fullscreenWindowManager.isFullscreenActive)
+                && !fullscreenWindowManager.usesFullscreenPlayerUI)
             ? Constants.Layout.lyricsPanelMinWidth
             : 0
         let detailMinimumWidth = Constants.Layout.detailContentMinWidth

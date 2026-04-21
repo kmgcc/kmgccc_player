@@ -10,11 +10,16 @@ import AppKit
 import Foundation
 import SwiftUI
 
-/// Fullscreen player view with enlarged skin artwork (left), AMLL lyrics (right, no material),
-/// and enlarged miniplayer controls at bottom. Uses artbk background.
-/// Includes exit buttons at top-right and bottom-right.
+/// Reusable fullscreen-player content view with enlarged skin artwork (left),
+/// AMLL lyrics (right, no material), and enlarged miniplayer controls at bottom.
+/// The same content can be hosted in a system fullscreen space or embedded in the main window.
 @MainActor
 struct FullscreenPlayerView: View {
+    enum HostContext: String {
+        case systemFullscreenSpace = "system-fullscreen-space"
+        case embeddedWindow = "embedded-window"
+    }
+
     // MARK: - Fullscreen Base Canvas Constants
     // Base canvas size: 1470 x 923 is the reference design
     // The entire canvas is scaled as one unit using scaleEffect
@@ -126,11 +131,22 @@ struct FullscreenPlayerView: View {
     @State private var isFullscreenBottomControlsProgressDragging = false
     @State private var isFullscreenBottomControlsVolumeAdjusting = false
     @State private var isPointerOverMiniPlayerOcclusion = false
+    @State private var trackToEdit: Track?
+    @State private var isShowingExternalMatchEditor = false
     @State private var pendingFullscreenBottomControlsHide: DispatchWorkItem?
     @State private var fullscreenPointerOcclusionMonitor = FullscreenPointerOcclusionMonitor()
     @Namespace private var fullscreenLayoutNamespace
 
-    var onExitFullscreen: (() -> Void)?
+    let hostContext: HostContext
+    let onExitFullscreen: (() -> Void)?
+
+    init(
+        hostContext: HostContext = .systemFullscreenSpace,
+        onExitFullscreen: (() -> Void)? = nil
+    ) {
+        self.hostContext = hostContext
+        self.onExitFullscreen = onExitFullscreen
+    }
 
     private var isCoverBlurFullscreenSkin: Bool {
         settings.fullscreen.skinID == "fullscreen.coverGradientBlur"
@@ -210,10 +226,26 @@ struct FullscreenPlayerView: View {
                 )
             }
         }
+        .sheet(item: $trackToEdit) { track in
+            TrackEditSheet(track: track)
+                .environmentObject(themeStore)
+        }
+        .sheet(isPresented: $isShowingExternalMatchEditor) {
+            ExternalPlaybackInfoEditorView(
+                presentation: playbackCoordinator.presentation,
+                onSaved: {
+                    playbackCoordinator.invalidateExternalPlaybackResolution()
+                }
+            )
+            .environmentObject(themeStore)
+        }
         .onAppear {
             guard !didHandleFullscreenAppear else { return }
             didHandleFullscreenAppear = true
-            Log.info("FullscreenPlayerView appeared", category: .webview)
+            Log.info(
+                "FullscreenPlayerView appeared context=\(hostContext.rawValue)",
+                category: .webview
+            )
             fullscreenPointerOcclusionMonitor.start { isOccluded in
                 setPointerOverMiniPlayerOcclusion(isOccluded, reason: "mouse-location")
             }
@@ -235,7 +267,10 @@ struct FullscreenPlayerView: View {
             }
         }
         .onDisappear {
-            Log.info("FullscreenPlayerView disappeared", category: .webview)
+            Log.info(
+                "FullscreenPlayerView disappeared context=\(hostContext.rawValue)",
+                category: .webview
+            )
             didHandleFullscreenAppear = false
             fullscreenPointerOcclusionMonitor.stop()
             setPointerOverMiniPlayerOcclusion(false, reason: "fullscreen disappear")
@@ -886,7 +921,13 @@ struct FullscreenPlayerView: View {
                 glassStyle: fullscreenControlsGlassStyle,
                 playbackMode: currentPlaybackMode,
                 onPlaybackModeChange: handlePlaybackModeChange,
-                onCurrentPlaybackModeRetap: handleCurrentPlaybackModeRetap
+                onCurrentPlaybackModeRetap: handleCurrentPlaybackModeRetap,
+                onEditTrackRequested: { track in
+                    trackToEdit = track
+                },
+                onEditExternalInfoRequested: {
+                    isShowingExternalMatchEditor = true
+                }
             )
                 .frame(width: currentMiniPlayerWidth, height: buttonSize)
                 .environment(\.colorScheme, fullscreenControlsGlassStyle.colorScheme)
@@ -1189,8 +1230,12 @@ struct FullscreenPlayerView: View {
             scaledBottomPadding - (controlsRowHeight - scaledButtonSize) * 0.5
         )
         let canvasLeadingMargin = max(0, (screenWidth - scaledWindowWidth) * 0.5)
-        let quickPanelWidth = 500 * baseScale
-        let quickPanelHeight = 520 * baseScale
+        let quickPanelSize = FullscreenQuickAppearancePanel.panelSize(
+            for: baseScale,
+            glassMaterialStyle: fullscreenControlsGlassStyle.materialStyle
+        )
+        let quickPanelWidth = quickPanelSize.width
+        let quickPanelHeight = quickPanelSize.height
         let quickPanelSafeMargin = 20 * baseScale
         let quickPanelGap = 12 * baseScale
         let quickPanelBottomY = screenHeight - adjustedBottomPadding - controlsRowHeight - quickPanelGap
@@ -1274,6 +1319,14 @@ struct FullscreenPlayerView: View {
                             } else {
                                 scheduleFullscreenBottomControlsAutoHideIfNeeded()
                             }
+                        },
+                        onEditTrackRequested: { track in
+                            registerFullscreenBottomControlsInteraction()
+                            trackToEdit = track
+                        },
+                        onEditExternalInfoRequested: {
+                            registerFullscreenBottomControlsInteraction()
+                            isShowingExternalMatchEditor = true
                         }
                     )
                     .glassEffectTransition(.materialize)
@@ -1466,8 +1519,31 @@ struct FullscreenPlayerView: View {
                         .font(.system(size: 22, weight: .medium))
                         .foregroundStyle(.white.opacity(0.6))
                 }
+            } else if let message = fullscreenEmptyLyricsMessage {
+                VStack(spacing: 14) {
+                    Image(systemName: "text.quote")
+                        .font(.system(size: 44))
+                        .foregroundStyle(.white.opacity(0.55))
+
+                    Text(message)
+                        .font(.system(size: 20, weight: .medium))
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.white.opacity(0.72))
+                        .frame(maxWidth: 520)
+                }
+                .padding(.horizontal, 32)
             }
         }
+    }
+
+    private var fullscreenEmptyLyricsMessage: String? {
+        guard playbackCoordinator.presentation.source == .appleMusic else { return nil }
+        let lyricsText = playbackCoordinator.presentation.lyricsText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard lyricsText.isEmpty else { return nil }
+        if let externalMessage = playbackCoordinator.presentation.externalLyricsStatusMessage {
+            return externalMessage
+        }
+        return NSLocalizedString("lyrics.empty_state", comment: "")
     }
 
     private var fullscreenLyricsViewport: some View {
@@ -2537,7 +2613,8 @@ struct FullscreenPlayerView: View {
             windowSize: windowSize,
             contentBounds: contentBounds,
             fullscreenScale: fullscreenScale,
-            lyricsVisible: isShowingRightPanel
+            lyricsVisible: isShowingRightPanel,
+            presentationMode: .fullscreenPlayer
         )
     }
 

@@ -187,6 +187,14 @@ final class PreferenceStatsService {
         }
     }
 
+    func removeStats(for trackIDs: Set<UUID>) {
+        guard !trackIDs.isEmpty else { return }
+        for trackID in trackIDs {
+            statsCache.removeValue(forKey: trackID)
+            dirtyTrackIDs.remove(trackID)
+        }
+    }
+
     /// Save all dirty stats to their respective sidecars.
     /// - Parameter trackProvider: Optional closure to get Track objects for writing sidecars.
     func saveAllPending(trackProvider: ((UUID) -> Track?)? = nil) async {

@@ -13,16 +13,18 @@ struct SettingsHeaderLabel: View {
     let systemImage: String
     
     @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: presentationStyle.compactInlineSpacing) {
             Image(systemName: systemImage)
                 .foregroundStyle(themeStore.accentColor)
-                .font(.title3.bold())
+                .font(.system(size: presentationStyle.headerIconSize, weight: .bold))
             Text(title)
-                .font(.title2.bold())
+                .font(.system(size: presentationStyle.headerTitleFontSize, weight: .bold))
+                .foregroundStyle(presentationStyle.primaryTextColor)
         }
-        .padding(.bottom, 4)
+        .padding(.bottom, presentationStyle.headerBottomPadding)
     }
 }
 

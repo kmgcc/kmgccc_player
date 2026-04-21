@@ -10,6 +10,10 @@ import AppKit
 import SwiftUI
 
 struct SkinContext {
+    enum PresentationMode {
+        case nowPlaying
+        case fullscreenPlayer
+    }
 
     struct TrackMetadata {
         let id: UUID
@@ -80,8 +84,17 @@ struct SkinContext {
     /// When false, artwork should center itself; when true, artwork should leave room for lyrics.
     let lyricsVisible: Bool
 
+    /// UI layout semantics for the host surface.
+    /// `fullscreenPlayer` means the fullscreen-player artwork/control layout,
+    /// regardless of whether it lives in a system fullscreen space or inside the main window.
+    let presentationMode: PresentationMode
+
     var contentSize: CGSize {
         contentBounds.size
+    }
+
+    var usesFullscreenPlayerLayout: Bool {
+        presentationMode == .fullscreenPlayer
     }
 }
 
@@ -105,7 +118,8 @@ extension SkinContext {
                 )
             ),
             fullscreenScale: fullscreenScale,
-            lyricsVisible: lyricsVisible
+            lyricsVisible: lyricsVisible,
+            presentationMode: presentationMode
         )
     }
 }

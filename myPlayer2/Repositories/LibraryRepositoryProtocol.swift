@@ -11,6 +11,7 @@ import Foundation
 enum LibraryRepositoryChange: Sendable {
     case trackUpdated(UUID)
     case tracksUpdated([UUID])
+    case tracksDeleted([UUID])
 }
 
 typealias LibraryRepositoryChangeHandler = @MainActor @Sendable (LibraryRepositoryChange) -> Void
@@ -51,6 +52,9 @@ protocol LibraryRepositoryProtocol: AnyObject {
 
     /// Delete a track from the library.
     func deleteTrack(_ track: Track) async
+
+    /// Delete multiple tracks from the library in one pass.
+    func deleteTracks(_ tracks: [Track]) async
 
     /// Persist track sidecar metadata only, preserving existing artwork/lyrics file references.
     func persistTrackMetaOnly(_ track: Track, reason: String) async

@@ -36,7 +36,6 @@ struct ClassicLEDSkin: NowPlayingSkin {
 
 private struct ClassicLEDArtwork: View {
     let context: SkinContext
-    @StateObject private var fullscreenManager = FullscreenWindowManager.shared
 
     @AppStorage("skin.classicLED.visualizerMode") private var normalVisualizerMode: String = "off"
     @AppStorage("skin.classicLED.fullscreen.visualizerMode") private var fullscreenVisualizerMode: String = "led"
@@ -53,26 +52,26 @@ private struct ClassicLEDArtwork: View {
 
     var body: some View {
         let contentSize = context.contentSize
-        let isFullscreen = fullscreenManager.isFullscreenActive
+        let usesFullscreenLayout = context.usesFullscreenPlayerLayout
 
         // Apply fullscreen boost and left shift only in fullscreen mode
         // Only shift left when lyrics are visible; when no lyrics, artwork should center
-        let artworkBoost = isFullscreen ? fullscreenArtworkBoost : 1.0
-        let leftShift = (isFullscreen && context.lyricsVisible) ? fullscreenLeftShift : 0
+        let artworkBoost = usesFullscreenLayout ? fullscreenArtworkBoost : 1.0
+        let leftShift = (usesFullscreenLayout && context.lyricsVisible) ? fullscreenLeftShift : 0
 
-        let scaleFactor: CGFloat = isFullscreen ? 0.6 : 0.5
-        let maxSizeBase: CGFloat = isFullscreen ? 480 : 360
+        let scaleFactor: CGFloat = usesFullscreenLayout ? 0.6 : 0.5
+        let maxSizeBase: CGFloat = usesFullscreenLayout ? 480 : 360
         // Calculate base canvas size with boost, parent container handles the fullscreenScale
         let maxSize = maxSizeBase * artworkBoost
         let maxArtwork = min(contentSize.width * scaleFactor, contentSize.height * scaleFactor, maxSize)
         let artworkSize = max(180 * artworkBoost, maxArtwork)
-        let effectSpacing: CGFloat = isFullscreen ? 32 : 24
+        let effectSpacing: CGFloat = usesFullscreenLayout ? 32 : 24
         // yOffset should be fixed in base canvas coordinates, not scaled
-        let yOffset: CGFloat = isFullscreen ? 32 : 18
+        let yOffset: CGFloat = usesFullscreenLayout ? 32 : 18
 
-        let visualizerMode = isFullscreen ? fullscreenVisualizerMode : normalVisualizerMode
-        let dotSize: CGFloat = isFullscreen ? 12 : 10
-        let spacing: CGFloat = isFullscreen ? 8 : 6
+        let visualizerMode = usesFullscreenLayout ? fullscreenVisualizerMode : normalVisualizerMode
+        let dotSize: CGFloat = usesFullscreenLayout ? 12 : 10
+        let spacing: CGFloat = usesFullscreenLayout ? 8 : 6
 
         VStack(spacing: effectSpacing) {
             artworkView
@@ -94,12 +93,12 @@ private struct ClassicLEDArtwork: View {
                     dotSize: dotSize,
                     spacing: spacing,
                     pillTint: context.theme.artworkAccentColor,
-                    isFullscreen: isFullscreen
+                    isFullscreen: usesFullscreenLayout
                 )
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .scaleEffect(isFullscreen ? fullscreenCoverScaleEffect : 1.0)
+        .scaleEffect(usesFullscreenLayout ? fullscreenCoverScaleEffect : 1.0)
         .offset(x: leftShift, y: yOffset)
     }
 

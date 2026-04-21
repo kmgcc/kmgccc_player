@@ -219,6 +219,13 @@ final class Track {
     var isPlayable: Bool {
         availability != .missing
     }
+
+    /// Drop heavyweight in-memory payloads once a track is removed from the library.
+    func releaseTransientMediaResources() {
+        artworkData = nil
+        ttmlLyricText = nil
+        lyricsText = nil
+    }
 }
 
 enum TrackLyricsDraft {

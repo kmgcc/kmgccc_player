@@ -6,8 +6,57 @@
 //  SwiftData is used only for TrackIndexEntry cache.
 //
 
+import Darwin.Mach
 import Foundation
 import SwiftData
+
+private struct PlaylistPersistenceSnapshot: Sendable {
+    let playlistID: UUID
+    let name: String
+    let description: String
+    let createdAt: Date
+    let trackIDs: [UUID]
+    let itemAddedAt: [UUID: Date]
+}
+
+private struct TrackDeletionCleanupPlan: Sendable {
+    let reason: String
+    let deletedTrackIDs: [UUID]
+    let playlistSnapshots: [PlaylistPersistenceSnapshot]
+    let trackFolderIDs: [UUID]
+    let artistEntryIDsToDelete: [UUID]
+    let albumEntryIDsToDelete: [UUID]
+}
+
+private struct TrackDeletionMemorySnapshot {
+    let physicalFootprintBytes: UInt64
+
+    static func capture() -> TrackDeletionMemorySnapshot {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(
+            MemoryLayout<task_vm_info_data_t>.stride / MemoryLayout<natural_t>.stride
+        )
+        let result = withUnsafeMutablePointer(to: &info) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { rebound in
+                task_info(
+                    mach_task_self_,
+                    task_flavor_t(TASK_VM_INFO),
+                    rebound,
+                    &count
+                )
+            }
+        }
+
+        guard result == KERN_SUCCESS else {
+            return TrackDeletionMemorySnapshot(physicalFootprintBytes: 0)
+        }
+        return TrackDeletionMemorySnapshot(physicalFootprintBytes: UInt64(info.phys_footprint))
+    }
+
+    var megabytesText: String {
+        String(format: "%.1f", Double(physicalFootprintBytes) / 1_048_576)
+    }
+}
 
 @MainActor
 final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
@@ -141,23 +190,23 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     }
 
     func deleteTrack(_ track: Track) async {
-        allTracks.removeAll { $0.id == track.id }
-        for playlist in playlists {
-            playlist.tracks.removeAll { $0.id == track.id }
-            playlistItemAddedAtMap[playlist.id]?[track.id] = nil
-            writePlaylistToDisk(playlist)
+        await deleteTracks([track])
+    }
+
+    func deleteTracks(_ tracks: [Track]) async {
+        let uniqueTracks = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) }).values.sorted {
+            $0.id.uuidString < $1.id.uuidString
         }
-        libraryService.deleteTrackFiles(track)
-        rebuildRuntimeDerivedState()
-        rebuildTrackIndexCache()
-        let (artists, albums) = metadataSync.sync(
-            derivedArtists: runtimeArtists,
-            derivedAlbums: runtimeAlbums,
-            allTracks: allTracks,
-            libraryService: libraryService
+        let impactedArtists = Set(uniqueTracks.map {
+            LibraryNormalization.normalizeArtist($0.artist)
+        })
+        let impactedAlbums = Set(uniqueTracks.map(\.albumGroupKey))
+        await deleteTracksAndMetadata(
+            tracks: uniqueTracks,
+            cleanupArtistCanonicalNames: impactedArtists,
+            cleanupAlbumKeys: impactedAlbums,
+            reason: "trackDelete"
         )
-        artistEntries = artists
-        albumEntries = albums
     }
 
     func persistTrackMetaOnly(_ track: Track, reason: String) async {
@@ -520,29 +569,31 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     }
 
     func deleteArtist(_ entry: ArtistEntry) async {
-        libraryService.deleteArtistEntry(id: entry.id)
         let affectedTracks = allTracks.filter {
             LibraryNormalization.normalizeArtist($0.artist) == entry.canonicalName
         }
         let affectedAlbumKeys = Set(affectedTracks.map {
             $0.albumGroupKey
         })
-        deleteTracksAndMetadata(
+        await deleteTracksAndMetadata(
             tracks: affectedTracks,
             cleanupArtistCanonicalNames: [entry.canonicalName],
-            cleanupAlbumKeys: affectedAlbumKeys
+            cleanupAlbumKeys: affectedAlbumKeys,
+            forcedArtistDeletionIDs: [entry.id],
+            reason: "artistDelete"
         )
     }
 
     func deleteAlbum(_ entry: AlbumEntry) async {
-        libraryService.deleteAlbumEntry(id: entry.id)
         let affectedTracks = allTracks.filter {
             $0.albumGroupKey == entry.canonicalKey
         }
-        deleteTracksAndMetadata(
+        await deleteTracksAndMetadata(
             tracks: affectedTracks,
             cleanupArtistCanonicalNames: [entry.primaryArtistCanonicalName],
-            cleanupAlbumKeys: [entry.canonicalKey]
+            cleanupAlbumKeys: [entry.canonicalKey],
+            forcedAlbumDeletionIDs: [entry.id],
+            reason: "albumDelete"
         )
     }
 
@@ -776,73 +827,269 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     private func deleteTracksAndMetadata(
         tracks: [Track],
         cleanupArtistCanonicalNames: Set<String>,
-        cleanupAlbumKeys: Set<String>
-    ) {
+        cleanupAlbumKeys: Set<String>,
+        forcedArtistDeletionIDs: Set<UUID> = [],
+        forcedAlbumDeletionIDs: Set<UUID> = [],
+        reason: String
+    ) async {
+        let startedAt = ContinuousClock.now
+        let memoryBefore = TrackDeletionMemorySnapshot.capture()
         let uniqueTracks = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) }).values.sorted {
             $0.id.uuidString < $1.id.uuidString
         }
-        let trackIDs = Set(uniqueTracks.map(\.id))
+        let deletedTrackIDs = uniqueTracks.map(\.id)
+        let deletedTrackIDSet = Set(deletedTrackIDs)
 
-        if !trackIDs.isEmpty {
-            allTracks.removeAll { trackIDs.contains($0.id) }
+        Log.info(
+            "[LibraryDelete] reason=\(reason) start tracks=\(deletedTrackIDs.count) memoryMB=\(memoryBefore.megabytesText)",
+            category: .library
+        )
+
+        var playlistSnapshots: [PlaylistPersistenceSnapshot] = []
+        if !deletedTrackIDSet.isEmpty {
+            allTracks.removeAll { deletedTrackIDSet.contains($0.id) }
 
             for playlist in playlists {
                 let removedTrackIDs = playlist.tracks
-                    .filter { trackIDs.contains($0.id) }
+                    .filter { deletedTrackIDSet.contains($0.id) }
                     .map(\.id)
                 guard !removedTrackIDs.isEmpty else { continue }
-                playlist.tracks.removeAll { trackIDs.contains($0.id) }
+
+                playlist.tracks.removeAll { deletedTrackIDSet.contains($0.id) }
                 var dates = playlistItemAddedAtMap[playlist.id] ?? [:]
                 for trackID in removedTrackIDs {
                     dates[trackID] = nil
                 }
                 playlistItemAddedAtMap[playlist.id] = dates
-                writePlaylistToDisk(playlist)
+                playlistSnapshots.append(playlistPersistenceSnapshot(for: playlist))
             }
 
             for track in uniqueTracks {
-                libraryService.deleteTrackFiles(track)
+                track.releaseTransientMediaResources()
             }
+            PreferenceStatsService.shared.removeStats(for: deletedTrackIDSet)
+            deleteTrackIndexEntries(ids: deletedTrackIDs)
         }
-
-        cleanupMetadataSidecars(
-            impactedArtistCanonicalNames: cleanupArtistCanonicalNames,
-            impactedAlbumKeys: cleanupAlbumKeys
-        )
 
         rebuildRuntimeDerivedState()
-        rebuildTrackIndexCache()
-        let (artists, albums) = metadataSync.sync(
-            derivedArtists: runtimeArtists,
-            derivedAlbums: runtimeAlbums,
-            allTracks: allTracks,
-            libraryService: libraryService
+        let metadataCleanup = reconcileMetadataEntriesAfterDeletion(
+            impactedArtistCanonicalNames: cleanupArtistCanonicalNames,
+            impactedAlbumKeys: cleanupAlbumKeys,
+            forcedArtistDeletionIDs: forcedArtistDeletionIDs,
+            forcedAlbumDeletionIDs: forcedAlbumDeletionIDs
         )
-        artistEntries = artists
-        albumEntries = albums
-    }
 
-    private func cleanupMetadataSidecars(
-        impactedArtistCanonicalNames: Set<String>,
-        impactedAlbumKeys: Set<String>
-    ) {
-        let liveArtistKeys = Set(allTracks.map { LibraryNormalization.normalizeArtist($0.artist) })
-        let liveAlbumKeys = Set(allTracks.map {
-            $0.albumGroupKey
-        })
+        let afterMainMutation = TrackDeletionMemorySnapshot.capture()
+        Log.info(
+            "[LibraryDelete] reason=\(reason) mainStageComplete tracks=\(deletedTrackIDs.count) playlistWrites=\(playlistSnapshots.count) artistDeletes=\(metadataCleanup.artistEntryIDsToDelete.count) albumDeletes=\(metadataCleanup.albumEntryIDsToDelete.count) memoryMB=\(afterMainMutation.megabytesText)",
+            category: .library
+        )
 
-        for artist in artistEntries
-        where impactedArtistCanonicalNames.contains(artist.canonicalName)
-            && !liveArtistKeys.contains(artist.canonicalName)
-        {
-            libraryService.deleteArtistEntry(id: artist.id)
+        if !deletedTrackIDs.isEmpty {
+            changeHandler?(.tracksDeleted(deletedTrackIDs))
         }
 
-        for album in albumEntries
-        where impactedAlbumKeys.contains(album.canonicalKey)
-            && !liveAlbumKeys.contains(album.canonicalKey)
-        {
-            libraryService.deleteAlbumEntry(id: album.id)
+        let cleanupPlan = TrackDeletionCleanupPlan(
+            reason: reason,
+            deletedTrackIDs: deletedTrackIDs,
+            playlistSnapshots: playlistSnapshots,
+            trackFolderIDs: deletedTrackIDs,
+            artistEntryIDsToDelete: metadataCleanup.artistEntryIDsToDelete,
+            albumEntryIDsToDelete: metadataCleanup.albumEntryIDsToDelete
+        )
+        let failedFolderDeletes = await performBackgroundTrackDeletionCleanup(cleanupPlan)
+
+        await ArtworkLoader.clearMemoryCache()
+        await ArtworkDerivativeCacheStore.shared.clearMemory()
+        await ArtworkAssetStore.shared.clearTrackDeletionResidue()
+        await PlaylistArtworkPipeline.shared.clearMemory()
+
+        let memoryAfterCleanup = TrackDeletionMemorySnapshot.capture()
+        let elapsed = startedAt.duration(to: ContinuousClock.now)
+        let elapsedMs = Double(elapsed.components.seconds) * 1000
+            + Double(elapsed.components.attoseconds) / 1_000_000_000_000_000
+
+        Log.info(
+            "[LibraryDelete] reason=\(reason) complete tracks=\(deletedTrackIDs.count) totalMs=\(String(format: "%.1f", elapsedMs)) failedFolderDeletes=\(failedFolderDeletes) memoryBeforeMB=\(memoryBefore.megabytesText) memoryAfterMainMB=\(afterMainMutation.megabytesText) memoryAfterCleanupMB=\(memoryAfterCleanup.megabytesText)",
+            category: .library
+        )
+    }
+
+    private func playlistPersistenceSnapshot(for playlist: Playlist) -> PlaylistPersistenceSnapshot {
+        PlaylistPersistenceSnapshot(
+            playlistID: playlist.id,
+            name: playlist.name,
+            description: playlist.userDescription,
+            createdAt: playlist.createdAt,
+            trackIDs: playlist.tracks.map(\.id),
+            itemAddedAt: playlistItemAddedAtMap[playlist.id] ?? [:]
+        )
+    }
+
+    private func reconcileMetadataEntriesAfterDeletion(
+        impactedArtistCanonicalNames: Set<String>,
+        impactedAlbumKeys: Set<String>,
+        forcedArtistDeletionIDs: Set<UUID>,
+        forcedAlbumDeletionIDs: Set<UUID>
+    ) -> (artistEntryIDsToDelete: [UUID], albumEntryIDsToDelete: [UUID]) {
+        let artistSectionByKey = Dictionary(uniqueKeysWithValues: runtimeArtists.map { ($0.key, $0) })
+        let albumSectionByKey = Dictionary(uniqueKeysWithValues: runtimeAlbums.map { ($0.key, $0) })
+        let tracksByAlbumKey = Dictionary(grouping: allTracks, by: \.albumGroupKey)
+
+        var albumKeysByArtist: [String: Set<String>] = [:]
+        var totalDurationByArtist: [String: Double] = [:]
+        for track in allTracks {
+            let artistKey = LibraryNormalization.normalizeArtist(track.artist)
+            albumKeysByArtist[artistKey, default: []].insert(track.albumGroupKey)
+            totalDurationByArtist[artistKey, default: 0] += track.duration
+        }
+
+        var artistEntryIDsToDelete: [UUID] = []
+        var nextArtistEntries: [ArtistEntry] = []
+        nextArtistEntries.reserveCapacity(artistEntries.count)
+
+        for var entry in artistEntries {
+            if forcedArtistDeletionIDs.contains(entry.id) {
+                artistEntryIDsToDelete.append(entry.id)
+                continue
+            }
+
+            if let section = artistSectionByKey[entry.canonicalName] {
+                entry.displayName = section.name
+                entry.trackCount = section.trackCount
+                entry.albumCount = albumKeysByArtist[entry.canonicalName]?.count ?? 0
+                entry.totalDuration = totalDurationByArtist[entry.canonicalName] ?? 0
+                entry.isOrphaned = false
+                nextArtistEntries.append(entry)
+                continue
+            }
+
+            if impactedArtistCanonicalNames.contains(entry.canonicalName) {
+                if hasUserContent(entry) {
+                    entry.trackCount = 0
+                    entry.albumCount = 0
+                    entry.totalDuration = 0
+                    entry.isOrphaned = true
+                    nextArtistEntries.append(entry)
+                } else {
+                    artistEntryIDsToDelete.append(entry.id)
+                }
+                continue
+            }
+
+            nextArtistEntries.append(entry)
+        }
+
+        var albumEntryIDsToDelete: [UUID] = []
+        var nextAlbumEntries: [AlbumEntry] = []
+        nextAlbumEntries.reserveCapacity(albumEntries.count)
+
+        for var entry in albumEntries {
+            if forcedAlbumDeletionIDs.contains(entry.id) {
+                albumEntryIDsToDelete.append(entry.id)
+                continue
+            }
+
+            if let section = albumSectionByKey[entry.canonicalKey] {
+                let matchingTracks = tracksByAlbumKey[entry.canonicalKey] ?? []
+                entry.displayTitle = section.name
+                entry.primaryArtistCanonicalName = section.artistCanonicalName
+                entry.primaryArtistDisplayName = section.artistName
+                entry.trackCount = section.trackCount
+                entry.totalDuration = matchingTracks.reduce(0) { $0 + $1.duration }
+                entry.isOrphaned = false
+                if entry.artworkFileName == nil {
+                    entry.artworkData = matchingTracks.first(where: { $0.artworkData != nil })?.artworkData
+                        ?? matchingTracks.first?.artworkData
+                }
+                nextAlbumEntries.append(entry)
+                continue
+            }
+
+            if impactedAlbumKeys.contains(entry.canonicalKey) {
+                if hasUserContent(entry) {
+                    entry.trackCount = 0
+                    entry.totalDuration = 0
+                    entry.isOrphaned = true
+                    if entry.artworkFileName == nil {
+                        entry.artworkData = nil
+                    }
+                    nextAlbumEntries.append(entry)
+                } else {
+                    albumEntryIDsToDelete.append(entry.id)
+                }
+                continue
+            }
+
+            nextAlbumEntries.append(entry)
+        }
+
+        artistEntries = nextArtistEntries.sorted {
+            $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+        }
+        albumEntries = nextAlbumEntries.sorted {
+            $0.displayTitle.localizedCaseInsensitiveCompare($1.displayTitle) == .orderedAscending
+        }
+
+        return (
+            artistEntryIDsToDelete: artistEntryIDsToDelete.sorted { $0.uuidString < $1.uuidString },
+            albumEntryIDsToDelete: albumEntryIDsToDelete.sorted { $0.uuidString < $1.uuidString }
+        )
+    }
+
+    private func hasUserContent(_ entry: ArtistEntry) -> Bool {
+        !entry.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || entry.artworkFileName != nil
+    }
+
+    private func hasUserContent(_ entry: AlbumEntry) -> Bool {
+        !entry.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || entry.artworkFileName != nil
+            || entry.year != nil
+    }
+
+    private func performBackgroundTrackDeletionCleanup(_ cleanupPlan: TrackDeletionCleanupPlan) async -> Int {
+        await withCheckedContinuation { continuation in
+            let libraryService = self.libraryService
+            DispatchQueue.global(qos: .utility).async {
+                libraryService.suppressMonitorEvents(for: 3.0)
+
+                for snapshot in cleanupPlan.playlistSnapshots {
+                    autoreleasepool {
+                        libraryService.writePlaylistSidecar(
+                            playlistID: snapshot.playlistID,
+                            name: snapshot.name,
+                            description: snapshot.description,
+                            createdAt: snapshot.createdAt,
+                            trackIDs: snapshot.trackIDs,
+                            itemAddedAt: snapshot.itemAddedAt
+                        )
+                    }
+                }
+
+                var failedFolderDeletes = 0
+                for trackID in cleanupPlan.trackFolderIDs {
+                    autoreleasepool {
+                        if !libraryService.deleteTrackFolder(trackID: trackID) {
+                            failedFolderDeletes += 1
+                        }
+                    }
+                }
+
+                for artistID in cleanupPlan.artistEntryIDsToDelete {
+                    libraryService.deleteArtistEntry(id: artistID)
+                }
+
+                for albumID in cleanupPlan.albumEntryIDsToDelete {
+                    libraryService.deleteAlbumEntry(id: albumID)
+                }
+
+                Log.info(
+                    "[LibraryDelete] reason=\(cleanupPlan.reason) backgroundStageComplete tracks=\(cleanupPlan.deletedTrackIDs.count) failedFolderDeletes=\(failedFolderDeletes) onMainThread=\(Thread.isMainThread)",
+                    category: .library
+                )
+                continuation.resume(returning: failedFolderDeletes)
+            }
         }
     }
 
@@ -952,6 +1199,22 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             try indexContext.save()
         } catch {
             print("⚠️ 重建索引缓存失败: \(error)")
+        }
+    }
+
+    private func deleteTrackIndexEntries(ids: [UUID]) {
+        guard let indexContext else { return }
+        let idSet = Set(ids)
+        guard !idSet.isEmpty else { return }
+
+        do {
+            let entries = try indexContext.fetch(FetchDescriptor<TrackIndexEntry>())
+            for entry in entries where idSet.contains(entry.id) {
+                indexContext.delete(entry)
+            }
+            try indexContext.save()
+        } catch {
+            print("⚠️ 删除索引缓存条目失败: \(error)")
         }
     }
 }

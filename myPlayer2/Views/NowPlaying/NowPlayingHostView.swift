@@ -153,7 +153,8 @@ struct NowPlayingHostView: View {
             windowSize: windowSize,
             contentBounds: contentBounds,
             fullscreenScale: 1.0,
-            lyricsVisible: false  // Normal mode handles lyrics separately
+            lyricsVisible: false,  // Normal mode handles lyrics separately
+            presentationMode: .nowPlaying
         )
     }
     

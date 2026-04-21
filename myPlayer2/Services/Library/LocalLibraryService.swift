@@ -399,6 +399,8 @@ final class LocalLibraryService {
     private var monitors: [String: DispatchSourceFileSystemObject] = [:]
     private var monitorFDs: [String: Int32] = [:]
     private var pendingSync: DispatchWorkItem?
+    private let monitorSuppressionLock = NSLock()
+    private var monitorEventsSuppressedUntil: TimeInterval = 0
 
     private init() {
         encoder = JSONEncoder()
@@ -828,13 +830,28 @@ final class LocalLibraryService {
     // MARK: - Track Deletion
 
     func deleteTrackFiles(_ track: Track) {
-        let folder = LocalLibraryPaths.trackFolderURL(for: track.id)
-        if fileManager.fileExists(atPath: folder.path) {
-            do {
-                try fileManager.removeItem(at: folder)
-            } catch {
-                Log.error("Failed to delete track folder \(folder.lastPathComponent): \(error)", category: .library)
+        _ = deleteTrackFolder(trackID: track.id)
+    }
+
+    @discardableResult
+    func deleteTrackFolder(trackID: UUID) -> Bool {
+        let folder = LocalLibraryPaths.trackFolderURL(for: trackID)
+        guard fileManager.fileExists(atPath: folder.path) else { return true }
+
+        do {
+            try fileManager.removeItem(at: folder)
+            return true
+        } catch {
+            // Fallback: remove meta.json so a later full rescan cannot resurrect the deleted track.
+            let metaURL = folder.appendingPathComponent("meta.json")
+            if fileManager.fileExists(atPath: metaURL.path) {
+                try? fileManager.removeItem(at: metaURL)
             }
+            Log.error(
+                "Failed to delete track folder \(folder.lastPathComponent): \(error)",
+                category: .library
+            )
+            return false
         }
     }
 
@@ -842,19 +859,38 @@ final class LocalLibraryService {
 
     func writePlaylist(_ playlist: Playlist, itemAddedAt: [UUID: Date]? = nil) {
         ensureLibraryFolders()
-        let items = playlist.tracks.map { track in
+        writePlaylistSidecar(
+            playlistID: playlist.id,
+            name: playlist.name,
+            description: playlist.userDescription,
+            createdAt: playlist.createdAt,
+            trackIDs: playlist.tracks.map(\.id),
+            itemAddedAt: itemAddedAt ?? [:]
+        )
+    }
+
+    func writePlaylistSidecar(
+        playlistID: UUID,
+        name: String,
+        description: String,
+        createdAt: Date,
+        trackIDs: [UUID],
+        itemAddedAt: [UUID: Date]
+    ) {
+        ensureLibraryFolders()
+        let items = trackIDs.map { trackID in
             PlaylistItemSidecar(
-                trackID: track.id,
-                addedAt: itemAddedAt?[track.id] ?? Date()
+                trackID: trackID,
+                addedAt: itemAddedAt[trackID] ?? Date()
             )
         }
-        let desc = playlist.userDescription.isEmpty ? nil : playlist.userDescription
-        let existingSidecar = loadPlaylistSidecar(playlistID: playlist.id)
+        let desc = description.isEmpty ? nil : description
+        let existingSidecar = loadPlaylistSidecar(playlistID: playlistID)
         let sidecar = PlaylistSidecar(
-            id: playlist.id,
-            name: playlist.name,
+            id: playlistID,
+            name: name,
             description: desc,
-            createdAt: playlist.createdAt,
+            createdAt: createdAt,
             items: items,
             customHeaderArtworkFileName: existingSidecar?.customHeaderArtworkFileName,
             generatedHeaderArtworkFileName: existingSidecar?.generatedHeaderArtworkFileName,
@@ -865,10 +901,10 @@ final class LocalLibraryService {
 
         do {
             let data = try encoder.encode(sidecar)
-            let url = LocalLibraryPaths.playlistURL(for: playlist.id)
+            let url = LocalLibraryPaths.playlistURL(for: playlistID)
             try data.write(to: url, options: .atomic)
         } catch {
-            Log.error("Failed to write playlist sidecar '\(playlist.name)': \(error)", category: .library)
+            Log.error("Failed to write playlist sidecar '\(name)': \(error)", category: .library)
         }
     }
 
@@ -1593,8 +1629,13 @@ final class LocalLibraryService {
             )
 
             source.setEventHandler { [weak self] in
+                guard let self else { return }
+                if self.shouldIgnoreMonitorEvent() {
+                    Log.debug("Ignored self-induced monitor event in \(name)", category: .library)
+                    return
+                }
                 print("📝 Detected change in \(name) folder")
-                self?.scheduleAvailabilitySync(repository: repository)
+                self.scheduleAvailabilitySync(repository: repository)
             }
 
             source.setCancelHandler { [fd] in
@@ -1630,6 +1671,22 @@ final class LocalLibraryService {
         }
         pendingSync = work
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.5, execute: work)
+    }
+
+    func suppressMonitorEvents(for duration: TimeInterval = 1.5) {
+        monitorSuppressionLock.lock()
+        monitorEventsSuppressedUntil = max(
+            monitorEventsSuppressedUntil,
+            ProcessInfo.processInfo.systemUptime + duration
+        )
+        monitorSuppressionLock.unlock()
+    }
+
+    private func shouldIgnoreMonitorEvent() -> Bool {
+        monitorSuppressionLock.lock()
+        let ignored = ProcessInfo.processInfo.systemUptime < monitorEventsSuppressedUntil
+        monitorSuppressionLock.unlock()
+        return ignored
     }
 }
 

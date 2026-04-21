@@ -661,9 +661,7 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
 
                 Button(role: .destructive) {
                     processBatchAction { tracks in
-                        for track in tracks {
-                            await libraryVM.deleteTrack(track)
-                        }
+                        await libraryVM.deleteTracks(tracks)
                         await MainActor.run {
                             pageController.selectedTrackIDs.removeAll()
                         }

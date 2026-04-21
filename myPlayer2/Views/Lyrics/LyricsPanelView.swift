@@ -117,6 +117,11 @@ struct LyricsPanelView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding(.horizontal, 24)
             }
+
+            if playbackCoordinator.presentation.hasTrack,
+               let message = emptyLyricsMessage {
+                lyricsUnavailableOverlay(message: message)
+            }
         }
     }
 
@@ -187,6 +192,34 @@ struct LyricsPanelView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         .padding(.top, 12)
+    }
+
+    private var emptyLyricsMessage: String? {
+        guard playbackCoordinator.presentation.source == .appleMusic else { return nil }
+        let lyricsText = playbackCoordinator.presentation.lyricsText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard lyricsText.isEmpty else { return nil }
+        if let externalMessage = playbackCoordinator.presentation.externalLyricsStatusMessage {
+            return externalMessage
+        }
+        return NSLocalizedString("lyrics.empty_state", comment: "")
+    }
+
+    private func lyricsUnavailableOverlay(message: String) -> some View {
+        VStack(spacing: 8) {
+            Image("EmptyLyric")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 120, height: 120)
+                .accessibilityHidden(true)
+
+            Text(message)
+                .font(.subheadline)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(themeStore.secondaryTextColor)
+                .frame(maxWidth: 280)
+        }
+        .padding(.top, 12)
+        .allowsHitTesting(false)
     }
 }
 

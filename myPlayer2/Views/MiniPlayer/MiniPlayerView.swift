@@ -21,6 +21,7 @@ struct MiniPlayerView: View {
     @Environment(UIStateViewModel.self) private var uiState
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
+    @ObservedObject private var fullscreenWindowManager = FullscreenWindowManager.shared
 
     @State private var settings = AppSettings.shared
 
@@ -51,57 +52,9 @@ struct MiniPlayerView: View {
     private var progressAreaMinWidth: CGFloat { 120 }
 
     var body: some View {
-        let presentation = playbackCoordinator.presentation
         return HStack(spacing: 12) {
-            // MARK: - Left: Cover + Title/Artist (tappable)
-            Button {
-                if uiState.contentMode == .nowPlaying {
-                    uiState.returnToLibraryFromNowPlaying()
-                } else {
-                    uiState.showNowPlaying()
-                }
-            } label: {
-                HStack(spacing: 10) {
-                    artworkView
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        if presentation.hasTrack {
-                            SeamlessMarqueeText(
-                                text: presentation.title,
-                                style: .subheadline,
-                                fontWeight: .medium,
-                                color: .primary,
-                                enablesContentTransition: true
-                            )
-
-                            SeamlessMarqueeText(
-                                text: presentation.artist.isEmpty
-                                    ? NSLocalizedString("library.unknown_artist", comment: "")
-                                    : presentation.artist,
-                                style: .caption,
-                                fontWeight: .regular,
-                                color: .secondary,
-                                enablesContentTransition: true
-                            )
-                        } else {
-                            Text(LocalizedStringKey(presentation.emptyTitleKey))
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .frame(
-                        minWidth: trackInfoMinWidth,
-                        idealWidth: trackInfoIdealWidth,
-                        maxWidth: trackInfoMaxWidth,
-                        alignment: .leading
-                    )
-                    .clipped()
-
-                }
-                .contentShape(Rectangle())
-                .offset(x: 4, y: 0)
-            }
-            .buttonStyle(.plain)
+            // MARK: - Left: Cover enters embedded fullscreen player, text keeps library/now playing toggle
+            leftNowPlayingSection
             .layoutPriority(1)
             .contextMenu {
                 nowPlayingInfoContextMenu
@@ -156,6 +109,70 @@ struct MiniPlayerView: View {
     }
 
     // MARK: - Subviews
+
+    private var leftNowPlayingSection: some View {
+        HStack(spacing: 10) {
+            Button {
+                fullscreenWindowManager.showFullscreenPlayerInWindow()
+            } label: {
+                artworkView
+            }
+            .buttonStyle(.plain)
+            .disabled(
+                !playbackCoordinator.presentation.hasTrack || fullscreenWindowManager.isFullscreenPlayerPresented
+            )
+
+            Button {
+                if uiState.contentMode == .nowPlaying {
+                    uiState.returnToLibraryFromNowPlaying()
+                } else {
+                    uiState.showNowPlaying()
+                }
+            } label: {
+                trackInfoView
+            }
+            .buttonStyle(.plain)
+        }
+        .contentShape(Rectangle())
+        .offset(x: 4, y: 0)
+    }
+
+    @ViewBuilder
+    private var trackInfoView: some View {
+        let presentation = playbackCoordinator.presentation
+        VStack(alignment: .leading, spacing: 4) {
+            if presentation.hasTrack {
+                SeamlessMarqueeText(
+                    text: presentation.title,
+                    style: .subheadline,
+                    fontWeight: .medium,
+                    color: .primary,
+                    enablesContentTransition: true
+                )
+
+                SeamlessMarqueeText(
+                    text: presentation.artist.isEmpty
+                        ? NSLocalizedString("library.unknown_artist", comment: "")
+                        : presentation.artist,
+                    style: .caption,
+                    fontWeight: .regular,
+                    color: .secondary,
+                    enablesContentTransition: true
+                )
+            } else {
+                Text(LocalizedStringKey(presentation.emptyTitleKey))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(
+            minWidth: trackInfoMinWidth,
+            idealWidth: trackInfoIdealWidth,
+            maxWidth: trackInfoMaxWidth,
+            alignment: .leading
+        )
+        .clipped()
+    }
 
     private var controlsView: some View {
         let presentation = playbackCoordinator.presentation

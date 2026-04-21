@@ -215,6 +215,7 @@ final class LibraryViewModel {
     var onTracksDeleted: ((Set<UUID>) -> Void)?
     private var isApplyingSortPreference = false
     private var trackUpdateRevision = 0
+    private var pendingRepositoryDeletionTrackIDs: Set<UUID> = []
 
     private struct SortPreference: Codable {
         let key: String
@@ -260,6 +261,16 @@ final class LibraryViewModel {
             Task { @MainActor [weak self] in
                 await self?.applyRepositoryTrackUpdateBatch(trackIDs)
             }
+        case .tracksDeleted(let trackIDs):
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let deletedTrackIDs = Set(trackIDs)
+                if deletedTrackIDs.isSubset(of: self.pendingRepositoryDeletionTrackIDs) {
+                    self.pendingRepositoryDeletionTrackIDs.subtract(deletedTrackIDs)
+                    return
+                }
+                await self.applyRepositoryTrackDeletionBatch(trackIDs)
+            }
         }
     }
 
@@ -300,6 +311,24 @@ final class LibraryViewModel {
         Log.info(
             "[ImportEnrichmentReload] current detail/lyrics refreshed for current track if applicable",
             category: .library
+        )
+    }
+
+    private func applyRepositoryTrackDeletionBatch(_ trackIDs: [UUID]) async {
+        let deletedTrackIDs = Set(trackIDs)
+        guard !deletedTrackIDs.isEmpty else { return }
+
+        resetSelectionIfNeededAfterDeletingTracks(deletedTrackIDs)
+        cleanupPlaybackAfterDeletingTracks(deletedTrackIDs)
+        releaseTransientResources(for: allTracks.filter { deletedTrackIDs.contains($0.id) })
+        removeDeletedTracksFromVisibleState(deletedTrackIDs)
+        let invalidatedSelectionIdentities = selectionIdentitiesAffectedByDeletedTracks(
+            deletedTrackIDs
+        )
+        await invalidateSelectionCaches(invalidatedSelectionIdentities)
+        await syncVisibleStateFromRepository(
+            reason: "repositoryDeleteEvent",
+            invalidatedSelectionIdentities: invalidatedSelectionIdentities
         )
     }
 
@@ -535,8 +564,35 @@ final class LibraryViewModel {
     // MARK: - Track Operations
 
     func deleteTrack(_ track: Track) async {
-        await repository.deleteTrack(track)
-        await refresh()
+        await deleteTracks([track])
+    }
+
+    func deleteTracks(_ tracks: [Track]) async {
+        let uniqueTracks = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) }).values.sorted {
+            $0.id.uuidString < $1.id.uuidString
+        }
+        let deletedTrackIDs = Set(uniqueTracks.map(\.id))
+        guard !deletedTrackIDs.isEmpty else { return }
+
+        let invalidatedSelectionIdentities = selectionIdentitiesAffectedByDeletedTracks(
+            deletedTrackIDs
+        )
+
+        resetSelectionIfNeededAfterDeletingTracks(deletedTrackIDs)
+        await importService?.cancelEnrichment(for: deletedTrackIDs)
+        cleanupPlaybackAfterDeletingTracks(deletedTrackIDs)
+        releaseTransientResources(for: uniqueTracks)
+        removeDeletedTracksFromVisibleState(deletedTrackIDs)
+        await invalidateSelectionCaches(invalidatedSelectionIdentities)
+        refreshTrigger += 1
+
+        pendingRepositoryDeletionTrackIDs.formUnion(deletedTrackIDs)
+        await repository.deleteTracks(uniqueTracks)
+        pendingRepositoryDeletionTrackIDs.subtract(deletedTrackIDs)
+        await syncVisibleStateFromRepository(
+            reason: "trackDelete",
+            invalidatedSelectionIdentities: invalidatedSelectionIdentities
+        )
     }
 
     // MARK: - Artist/Album Entry Lookups
@@ -661,8 +717,22 @@ final class LibraryViewModel {
         }
 
         cleanupPlaybackAfterDeletingTracks(affectedTrackIDs)
+        await importService?.cancelEnrichment(for: affectedTrackIDs)
+        releaseTransientResources(for: allTracks.filter { affectedTrackIDs.contains($0.id) })
+        removeDeletedTracksFromVisibleState(affectedTrackIDs)
+        let invalidatedSelectionIdentities = selectionIdentitiesAffectedByDeletedTracks(
+            affectedTrackIDs
+        )
+        await invalidateSelectionCaches(invalidatedSelectionIdentities)
+        refreshTrigger += 1
+
+        pendingRepositoryDeletionTrackIDs.formUnion(affectedTrackIDs)
         await repository.deleteArtist(entry)
-        await refresh()
+        pendingRepositoryDeletionTrackIDs.subtract(affectedTrackIDs)
+        await syncVisibleStateFromRepository(
+            reason: "artistDelete",
+            invalidatedSelectionIdentities: invalidatedSelectionIdentities
+        )
     }
 
     func deleteAlbum(_ entry: AlbumEntry) async {
@@ -677,8 +747,22 @@ final class LibraryViewModel {
         }
 
         cleanupPlaybackAfterDeletingTracks(affectedTrackIDs)
+        await importService?.cancelEnrichment(for: affectedTrackIDs)
+        releaseTransientResources(for: allTracks.filter { affectedTrackIDs.contains($0.id) })
+        removeDeletedTracksFromVisibleState(affectedTrackIDs)
+        let invalidatedSelectionIdentities = selectionIdentitiesAffectedByDeletedTracks(
+            affectedTrackIDs
+        )
+        await invalidateSelectionCaches(invalidatedSelectionIdentities)
+        refreshTrigger += 1
+
+        pendingRepositoryDeletionTrackIDs.formUnion(affectedTrackIDs)
         await repository.deleteAlbum(entry)
-        await refresh()
+        pendingRepositoryDeletionTrackIDs.subtract(affectedTrackIDs)
+        await syncVisibleStateFromRepository(
+            reason: "albumDelete",
+            invalidatedSelectionIdentities: invalidatedSelectionIdentities
+        )
     }
 
     func savePlaylistDescription(_ playlist: Playlist, description: String) async {
@@ -758,6 +842,13 @@ final class LibraryViewModel {
     }
 
     private func syncVisibleStateFromRepositoryAfterImport() async {
+        await syncVisibleStateFromRepository(reason: "import", invalidatedSelectionIdentities: [])
+    }
+
+    private func syncVisibleStateFromRepository(
+        reason: String,
+        invalidatedSelectionIdentities: Set<String>
+    ) async {
         playlists = await repository.fetchPlaylists()
         allTracks = await repository.fetchTracks(in: nil)
         playlistItemAddedAtMap = await repository.fetchPlaylistItemAddedAtMap()
@@ -767,9 +858,10 @@ final class LibraryViewModel {
         artistEntries = await repository.fetchArtistEntries()
         albumEntries = await repository.fetchAlbumEntries()
         reconcileSelectionAfterLoad()
+        await invalidateSelectionCaches(invalidatedSelectionIdentities)
         refreshTrigger += 1
         Log.info(
-            "Import synced visible library state without full disk reload, totalTracks=\(totalTrackCount)",
+            "Synced visible library state without full disk reload reason=\(reason), totalTracks=\(totalTrackCount)",
             category: .library
         )
     }
@@ -855,6 +947,73 @@ final class LibraryViewModel {
 
         guard currentSelectionIdentity == selectionIdentity else { return }
         refreshTrigger += 1
+    }
+
+    private func invalidateSelectionCaches(_ selectionIdentities: Set<String>) async {
+        for selectionIdentity in selectionIdentities {
+            await PlaylistPageModelCacheService.shared.invalidate(selectionIdentity: selectionIdentity)
+        }
+    }
+
+    private func selectionIdentitiesAffectedByDeletedTracks(_ deletedTrackIDs: Set<UUID>) -> Set<String> {
+        guard !deletedTrackIDs.isEmpty else { return [] }
+
+        var identities: Set<String> = ["allSongs"]
+        for playlist in playlists where playlist.tracks.contains(where: { deletedTrackIDs.contains($0.id) }) {
+            identities.insert("playlist-\(playlist.id.uuidString)")
+        }
+        for track in allTracks where deletedTrackIDs.contains(track.id) {
+            identities.insert("artist-\(LibraryNormalization.normalizeArtist(track.artist))")
+            identities.insert("album-\(track.albumGroupKey)")
+        }
+        return identities
+    }
+
+    private func resetSelectionIfNeededAfterDeletingTracks(_ deletedTrackIDs: Set<UUID>) {
+        guard !deletedTrackIDs.isEmpty else { return }
+
+        switch currentSelection {
+        case .allSongs:
+            return
+        case .playlist:
+            return
+        case .artist(let key):
+            let hasRemaining = allTracks.contains {
+                !deletedTrackIDs.contains($0.id)
+                    && LibraryNormalization.normalizeArtist($0.artist) == key
+            }
+            if !hasRemaining {
+                currentSelection = .allSongs
+            }
+        case .album(let key):
+            let hasRemaining = allTracks.contains {
+                !deletedTrackIDs.contains($0.id) && $0.albumGroupKey == key
+            }
+            if !hasRemaining {
+                currentSelection = .allSongs
+            }
+        }
+    }
+
+    private func removeDeletedTracksFromVisibleState(_ deletedTrackIDs: Set<UUID>) {
+        guard !deletedTrackIDs.isEmpty else { return }
+
+        allTracks.removeAll { deletedTrackIDs.contains($0.id) }
+        for playlist in playlists {
+            playlist.tracks.removeAll { deletedTrackIDs.contains($0.id) }
+            guard var addedAt = playlistItemAddedAtMap[playlist.id] else { continue }
+            for trackID in deletedTrackIDs {
+                addedAt[trackID] = nil
+            }
+            playlistItemAddedAtMap[playlist.id] = addedAt
+        }
+        totalTrackCount = allTracks.count
+    }
+
+    private func releaseTransientResources(for tracks: [Track]) {
+        for track in tracks {
+            track.releaseTransientMediaResources()
+        }
     }
 
     private func reconcileSelectionAfterLoad() {

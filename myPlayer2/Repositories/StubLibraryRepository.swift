@@ -61,6 +61,19 @@ final class StubLibraryRepository: LibraryRepositoryProtocol {
 
     func deleteTrack(_ track: Track) async {
         allTracks.removeAll { $0.id == track.id }
+        for playlist in playlists {
+            playlist.tracks.removeAll { $0.id == track.id }
+        }
+        changeHandler?(.tracksDeleted([track.id]))
+    }
+
+    func deleteTracks(_ tracks: [Track]) async {
+        let trackIDs = Set(tracks.map(\.id))
+        allTracks.removeAll { trackIDs.contains($0.id) }
+        for playlist in playlists {
+            playlist.tracks.removeAll { trackIDs.contains($0.id) }
+        }
+        changeHandler?(.tracksDeleted(trackIDs.sorted { $0.uuidString < $1.uuidString }))
     }
 
     func persistTrackMetaOnly(_ track: Track, reason _: String) async {

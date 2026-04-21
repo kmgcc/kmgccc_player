@@ -20,4 +20,7 @@ protocol FileImportServiceProtocol: AnyObject {
     /// Import previously selected files/folders into a playlist.
     @discardableResult
     func importSelectedURLs(_ urls: [URL], to playlist: Playlist) async -> Int
+
+    /// Cancel background enrichment work and release strong references for deleted tracks.
+    func cancelEnrichment(for trackIDs: Set<UUID>) async
 }

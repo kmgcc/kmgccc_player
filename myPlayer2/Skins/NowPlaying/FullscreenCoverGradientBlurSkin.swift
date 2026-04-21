@@ -113,7 +113,6 @@ private struct CoverGradientBlurSkinBackground: View {
 
 private struct CoverGradientBlurArtwork: View {
     let context: SkinContext
-    @StateObject private var fullscreenManager = FullscreenWindowManager.shared
 
     // MARK: - Fullscreen Fine-tuning Constants
     private let fullscreenArtworkBoost: CGFloat = 1.15
@@ -121,17 +120,17 @@ private struct CoverGradientBlurArtwork: View {
 
     var body: some View {
         let contentSize = context.contentSize
-        let isFullscreen = fullscreenManager.isFullscreenActive
+        let usesFullscreenLayout = context.usesFullscreenPlayerLayout
 
-        let artworkBoost = isFullscreen ? fullscreenArtworkBoost : 1.0
-        let leftShift = (isFullscreen && context.lyricsVisible) ? fullscreenLeftShift : 0
+        let artworkBoost = usesFullscreenLayout ? fullscreenArtworkBoost : 1.0
+        let leftShift = (usesFullscreenLayout && context.lyricsVisible) ? fullscreenLeftShift : 0
 
-        let scaleFactor: CGFloat = isFullscreen ? 0.55 : 0.5
-        let maxSizeBase: CGFloat = isFullscreen ? 420 : 320
+        let scaleFactor: CGFloat = usesFullscreenLayout ? 0.55 : 0.5
+        let maxSizeBase: CGFloat = usesFullscreenLayout ? 420 : 320
         let maxSize = maxSizeBase * artworkBoost
         let maxArtwork = min(contentSize.width * scaleFactor, contentSize.height * scaleFactor, maxSize)
         let artworkSize = max(180 * artworkBoost, maxArtwork)
-        let yOffset: CGFloat = isFullscreen ? 24 : 16
+        let yOffset: CGFloat = usesFullscreenLayout ? 24 : 16
 
         artworkView
             .frame(width: artworkSize, height: artworkSize)
@@ -184,6 +183,7 @@ private struct CoverGradientBlurArtwork: View {
 private struct CoverGradientBlurSettingsView: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
 
     @AppStorage("skin.coverGradientBlur.maxBlurRadius") private var maxBlurRadius: Double = 1600
     @AppStorage("skin.coverGradientBlur.edgeFillMode") private var edgeFillMode: String = CoverEdgeFillMode.pixelStretch.rawValue
@@ -193,7 +193,7 @@ private struct CoverGradientBlurSettingsView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
             edgeFillModePicker
 
             blurRadiusSlider
@@ -205,7 +205,7 @@ private struct CoverGradientBlurSettingsView: View {
         HStack(spacing: 8) {
             Text("右侧填充")
                 .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(presentationStyle.secondaryTextColor)
 
             Spacer()
 
@@ -229,14 +229,18 @@ private struct CoverGradientBlurSettingsView: View {
                         .font(.system(size: 11, weight: isSelected ? .medium : .regular))
                         .padding(.horizontal, 10)
                         .padding(.vertical, 4)
-                        .foregroundStyle(isSelected ? themeStore.accentColor : .secondary)
+                        .foregroundStyle(
+                            isSelected
+                                ? presentationStyle.selectedTextColor(accentColor: themeStore.accentColor)
+                                : presentationStyle.secondaryTextColor
+                        )
                 }
             )
             .padding(.horizontal, 4)
             .padding(.vertical, 3)
             .background(
                 Capsule()
-                    .fill(Color.secondary.opacity(0.08))
+                    .fill(presentationStyle.segmentedTrackColor)
             )
             .fixedSize(horizontal: true, vertical: false)
         }
@@ -246,7 +250,7 @@ private struct CoverGradientBlurSettingsView: View {
         HStack(spacing: 12) {
             Text("模糊半径")
                 .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(presentationStyle.secondaryTextColor)
                 .frame(width: 56, alignment: .leading)
 
             Slider(value: $maxBlurRadius, in: 100...2500, step: 100)
@@ -255,7 +259,7 @@ private struct CoverGradientBlurSettingsView: View {
 
             Text("\(Int(maxBlurRadius))")
                 .font(.system(size: 11, weight: .medium).monospacedDigit())
-                .foregroundStyle(themeStore.accentColor)
+                .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))
                 .lineLimit(1)
                 .frame(width: 40, alignment: .trailing)
         }

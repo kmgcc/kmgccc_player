@@ -23,4 +23,8 @@ final class StubFileImportService: FileImportServiceProtocol {
         )
         return 0
     }
+
+    func cancelEnrichment(for trackIDs: Set<UUID>) async {
+        print("📁 StubFileImportService: cancelEnrichment(\(trackIDs.count)) (no-op)")
+    }
 }

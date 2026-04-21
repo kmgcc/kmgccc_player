@@ -31,6 +31,8 @@ struct FullscreenMiniPlayerView: View {
     var onInteraction: () -> Void = {}
     var onHoverStateChanged: (Bool) -> Void = { _ in }
     var onProgressDraggingChanged: (Bool) -> Void = { _ in }
+    var onEditTrackRequested: (Track) -> Void = { _ in }
+    var onEditExternalInfoRequested: () -> Void = {}
     
     private let fixedBarHeight: CGFloat = 60
     private static let fullscreenThemeMinLightness: CGFloat = 0.90
@@ -48,8 +50,6 @@ struct FullscreenMiniPlayerView: View {
     @State private var nextSymbolEffectTrigger = 0
     @State private var artworkImage: NSImage?
     @State private var isPlaybackModeExpanded = false
-    @State private var trackToEdit: Track?
-    @State private var isShowingExternalMatchEditor = false
 
     // Computed properties based on settings and scale
     private var barHeight: CGFloat { fixedBarHeight * scale }
@@ -131,19 +131,6 @@ struct FullscreenMiniPlayerView: View {
         .task(id: currentArtworkTaskKey) {
             await loadArtworkThumbnail()
         }
-        .sheet(item: $trackToEdit) { track in
-            TrackEditSheet(track: track)
-                .environmentObject(themeStore)
-        }
-        .sheet(isPresented: $isShowingExternalMatchEditor) {
-            ExternalPlaybackInfoEditorView(
-                presentation: playbackCoordinator.presentation,
-                onSaved: {
-                    playbackCoordinator.invalidateExternalPlaybackResolution()
-                }
-            )
-            .environmentObject(themeStore)
-        }
     }
 
     // MARK: - Subviews
@@ -154,11 +141,11 @@ struct FullscreenMiniPlayerView: View {
             presentation: playbackCoordinator.presentation,
             onEditTrack: { track in
                 onInteraction()
-                trackToEdit = track
+                onEditTrackRequested(track)
             },
             onEditExternalInfo: {
                 onInteraction()
-                isShowingExternalMatchEditor = true
+                onEditExternalInfoRequested()
             }
         )
     }

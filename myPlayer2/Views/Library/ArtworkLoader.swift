@@ -32,6 +32,10 @@ actor ArtworkImageCache {
     func setImage(_ image: NSImage, for key: String, cost: Int) {
         cache.setObject(CachedArtworkImage(image), forKey: key as NSString, cost: cost)
     }
+
+    func clear() {
+        cache.removeAllObjects()
+    }
 }
 
 enum PlaylistPerfDiagnostics {
@@ -134,6 +138,10 @@ enum ArtworkLoader {
 
     static func cachedImage(for cacheKey: String) async -> NSImage? {
         await cache.image(for: cacheKey)
+    }
+
+    static func clearMemoryCache() async {
+        await cache.clear()
     }
 
     static func loadImage(
