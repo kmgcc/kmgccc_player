@@ -72,16 +72,16 @@ struct FullscreenPlayerView: View {
     }
 
     private let topContentHorizontalPadding: CGFloat = 0
-    private let topContentLeftShift: CGFloat = 44
-    private let artworkLyricsColumnSpacing: CGFloat = -58
-    private let lyricsColumnLeftNudge: CGFloat = 80
-    private let lyricsRightMarginReserve: CGFloat = 88
     private let lyricsViewportTopLift: CGFloat = 22
     private let fullscreenBackgroundLyricsAvoidanceHorizontalInset: CGFloat = 28
     private let fullscreenBackgroundLyricsAvoidanceTopInset: CGFloat = 36
     private let fullscreenBackgroundLyricsAvoidanceBottomInset: CGFloat = 60
     private let fullscreenLyricsAlignPosition: Double = 0.18  // Current line higher in viewport (was 0.28)
-    private let coverSkinLyricsRightShift: CGFloat = 30
+    private let coverBlurLegacyTopContentLeftShift: CGFloat = 44
+    private let coverBlurLegacyArtworkLyricsColumnSpacing: CGFloat = -58
+    private let coverBlurLegacyLyricsColumnLeftNudge: CGFloat = 80
+    private let coverBlurLegacyLyricsRightShift: CGFloat = 30
+    private let coverBlurLegacyLeftExpansion: CGFloat = 80
     private let fullscreenLyricsMinimumBaseLightness: CGFloat = 0.52
     private let fullscreenLyricsMaximumBaseLightness: CGFloat = 0.66
     private let fullscreenLyricsMinimumSubActiveLightness: CGFloat = 0.88
@@ -90,6 +90,122 @@ struct FullscreenPlayerView: View {
     private let fullscreenLyricsMaximumMainActiveLightness: CGFloat = 0.98
     private let fullscreenLyricsSaturationFloor: CGFloat = 0.10
     private let fullscreenLyricsSaturationCeiling: CGFloat = 0.58
+
+    private struct FullscreenHorizontalSplitLayout {
+        let artworkWidth: CGFloat
+        let lyricsWidth: CGFloat
+        let safeGap: CGFloat
+        let artworkLeadingX: CGFloat
+        let lyricsLeadingX: CGFloat
+
+        private static let baseCanvasWidth: CGFloat = 1470
+        private static let sideInset: CGFloat = 24
+        private static let rightReserve: CGFloat = 88
+        private static let artworkIdealRatio: CGFloat = 0.54
+        private static let artworkMinWidth: CGFloat = 360
+        private static let artworkIdealMinWidth: CGFloat = 540
+        private static let artworkMaxRatio: CGFloat = 0.65
+        private static let lyricsIdealRatio: CGFloat = 0.34
+        private static let lyricsIdealMinWidth: CGFloat = 420
+        private static let lyricsMinReadableWidth: CGFloat = 340
+        private static let lyricsMaxRatio: CGFloat = 0.52
+        private static let safeGapRatio: CGFloat = 0.024
+        private static let safeGapMin: CGFloat = 12
+        private static let safeGapFloor: CGFloat = 4
+        private static let artworkVisualTrimWhenLyricsVisible: CGFloat = 32
+
+        static func resolve(
+            showLyricsColumn: Bool,
+            windowWidth: CGFloat? = nil
+        ) -> FullscreenHorizontalSplitLayout {
+            let canvasWidth = max(0, windowWidth ?? baseCanvasWidth)
+            let availableWidth = max(0, canvasWidth - sideInset * 2 - rightReserve)
+
+            if !showLyricsColumn {
+                let centeredAvailableWidth = max(0, canvasWidth - sideInset * 2)
+                let artworkWidth = min(
+                    max(centeredAvailableWidth * 0.78, lyricsIdealMinWidth),
+                    centeredAvailableWidth
+                )
+                let artworkLeadingX = sideInset + max(0, (centeredAvailableWidth - artworkWidth) * 0.5)
+                return FullscreenHorizontalSplitLayout(
+                    artworkWidth: artworkWidth,
+                    lyricsWidth: 0,
+                    safeGap: 0,
+                    artworkLeadingX: artworkLeadingX,
+                    lyricsLeadingX: artworkLeadingX + artworkWidth
+                )
+            }
+
+            let maxArtworkWidth = max(artworkMinWidth, availableWidth * artworkMaxRatio)
+            let maxLyricsWidth = max(
+                lyricsMinReadableWidth,
+                availableWidth * lyricsMaxRatio
+            )
+            var artworkWidth = min(
+                max(availableWidth * artworkIdealRatio, artworkIdealMinWidth),
+                maxArtworkWidth
+            )
+            var lyricsWidth = min(
+                max(availableWidth * lyricsIdealRatio, lyricsIdealMinWidth),
+                maxLyricsWidth
+            )
+            var safeGap = max(safeGapMin, availableWidth * safeGapRatio)
+
+            var overflow = artworkWidth + safeGap + lyricsWidth - availableWidth
+            if overflow > 0 {
+                let gapShrink = min(overflow, safeGap - safeGapFloor)
+                safeGap -= gapShrink
+                overflow -= gapShrink
+            }
+            if overflow > 0 {
+                let artworkShrink = min(overflow, artworkWidth - artworkMinWidth)
+                artworkWidth -= artworkShrink
+                overflow -= artworkShrink
+            }
+            if overflow > 0 {
+                let lyricsShrink = min(overflow, lyricsWidth - lyricsMinReadableWidth)
+                lyricsWidth -= lyricsShrink
+                overflow -= lyricsShrink
+            }
+            if overflow > 0 {
+                artworkWidth = max(artworkMinWidth, artworkWidth - overflow)
+            }
+
+            var remaining = availableWidth - (artworkWidth + safeGap + lyricsWidth)
+            if remaining > 0 {
+                let artworkGrowth = min(remaining * 0.40, maxArtworkWidth - artworkWidth)
+                artworkWidth += artworkGrowth
+                remaining -= artworkGrowth
+            }
+            if remaining > 0 {
+                let lyricsGrowth = min(remaining * 0.60, maxLyricsWidth - lyricsWidth)
+                lyricsWidth += lyricsGrowth
+                remaining -= lyricsGrowth
+            }
+
+            let effectiveArtworkZoneWidth = max(
+                artworkMinWidth,
+                artworkWidth - artworkVisualTrimWhenLyricsVisible
+            )
+            let groupWidth = effectiveArtworkZoneWidth + safeGap + lyricsWidth
+            let outerSlack = max(0, availableWidth - groupWidth)
+            let wideWindowLeftBias = outerSlack > 1 ? min(196, 36 + outerSlack * 0.60) : 0
+            let artworkLeadingX = max(
+                0,
+                sideInset + outerSlack * 0.5 - wideWindowLeftBias
+            )
+            let lyricsLeadingX = artworkLeadingX + effectiveArtworkZoneWidth + safeGap
+
+            return FullscreenHorizontalSplitLayout(
+                artworkWidth: artworkWidth,
+                lyricsWidth: lyricsWidth,
+                safeGap: safeGap,
+                artworkLeadingX: artworkLeadingX,
+                lyricsLeadingX: lyricsLeadingX
+            )
+        }
+    }
 
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
@@ -110,6 +226,8 @@ struct FullscreenPlayerView: View {
     @State private var pendingFullscreenLyricsReveal: DispatchWorkItem?
     @State private var pendingFullscreenLyricsHostDetach: DispatchWorkItem?
     @State private var pendingFullscreenTrackRefresh: DispatchWorkItem?
+    @State private var pendingFullscreenThemeReapply: DispatchWorkItem?
+    @State private var pendingEmbeddedInitialThemeReapply: DispatchWorkItem?
     @State private var artworkSnapshot: ArtworkAssetSnapshot?
     @State private var coverBlurLyricsTheme: FullscreenCoverBlurLyricsTheme?
     @State private var deferredTrackUpdateDeadline: Date?
@@ -117,8 +235,8 @@ struct FullscreenPlayerView: View {
     @State private var fullscreenLyricsHostMounted = false
     @State private var isLeadingControlsExpanded = false
     @State private var isQuickAppearancePanelPresented = false
-    @State private var appearanceRotateTrigger = 0
     @State private var currentFullscreenScale: CGFloat = 1.0
+    @State private var fullscreenViewportSize: CGSize = .zero
     @State private var didHandleFullscreenAppear = false
     @State private var isFullscreenMiniPlayerSpectrumLeaseActive = false
     @State private var isFullscreenBottomControlsVisible = true
@@ -177,6 +295,10 @@ struct FullscreenPlayerView: View {
 
     private var currentDisplayContext: NowPlayingDisplayContext {
         playbackCoordinator.presentation.displayContext
+    }
+
+    private var currentArtworkTrackID: UUID? {
+        currentDisplayContext.artworkTrackID
     }
 
     private var shouldRenderCoverBlurHighlightOverlay: Bool {
@@ -265,6 +387,19 @@ struct FullscreenPlayerView: View {
             if isLedEnabledForFullscreenSkin() {
                 ledMeterProvider.getOrCreate().start()
             }
+
+            // Embedded/window-simulated fullscreen: the first layout pass can produce an undersized
+            // AMLL viewport/scale, which later stabilizes without triggering a theme re-apply.
+            // As a pragmatic fallback, force a single re-apply after the window settles.
+            if hostContext == .embeddedWindow {
+                pendingEmbeddedInitialThemeReapply?.cancel()
+                let workItem = DispatchWorkItem {
+                    applyFullscreenLyricsTheme(force: true, reason: "embedded-initial-delayed")
+                    pendingEmbeddedInitialThemeReapply = nil
+                }
+                pendingEmbeddedInitialThemeReapply = workItem
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: workItem)
+            }
         }
         .onDisappear {
             Log.info(
@@ -285,6 +420,10 @@ struct FullscreenPlayerView: View {
             pendingFullscreenLyricsHostDetach = nil
             pendingFullscreenTrackRefresh?.cancel()
             pendingFullscreenTrackRefresh = nil
+            pendingFullscreenThemeReapply?.cancel()
+            pendingFullscreenThemeReapply = nil
+            pendingEmbeddedInitialThemeReapply?.cancel()
+            pendingEmbeddedInitialThemeReapply = nil
             deferredTrackUpdateDeadline = nil
             suppressFullscreenLyricsViewport = false
             fullscreenLyricsHostMounted = false
@@ -382,7 +521,7 @@ struct FullscreenPlayerView: View {
         }
         .onChange(of: bkController.lyricsColorSampleRevision) { _, _ in
             guard pendingFullscreenLyricsBackgroundCapture else { return }
-            guard bkController.lyricsColorTrackID == currentDisplayContext.trackID else { return }
+            guard bkController.lyricsColorTrackID == currentArtworkTrackID else { return }
             scheduleFullscreenLyricsRefresh(preferLiveSurface: true)
         }
         .task(id: currentArtworkTaskKey) {
@@ -409,7 +548,7 @@ struct FullscreenPlayerView: View {
             }
         }
 
-        if let snapshot = currentArtworkSnapshot(forTrackID: currentDisplayContext.trackID) {
+        if let snapshot = currentArtworkSnapshot(forTrackID: currentArtworkTrackID) {
             let palette = !snapshot.richPalette.isEmpty ? snapshot.richPalette : snapshot.palette
             if !palette.isEmpty {
                 return palette
@@ -443,7 +582,8 @@ struct FullscreenPlayerView: View {
                 selectedSkin.makeBackground(
                     context: makeContext(
                         windowSize: CGSize(width: Self.baseCanvasWidth, height: Self.baseCanvasHeight),
-                        artworkColumnWidth: layoutMetrics.artworkWidth
+                        artworkColumnWidth: layoutMetrics.artworkWidth,
+                        fullscreenScale: scale
                     )
                 )
                 .ignoresSafeArea()
@@ -455,7 +595,7 @@ struct FullscreenPlayerView: View {
             } else if settings.nowPlayingArtBackgroundEnabled && currentDisplayContext.hasTrack {
                 BKArtBackgroundView(
                     controller: bkController,
-                    trackID: currentDisplayContext.trackID,
+                    trackID: currentArtworkTrackID,
                     artworkData: currentDisplayContext.artworkData,
                     isPlaying: currentDisplayContext.isPlaying,
                     avoidanceRect: nil,
@@ -473,7 +613,8 @@ struct FullscreenPlayerView: View {
                 selectedSkin.makeBackground(
                     context: makeContext(
                         windowSize: CGSize(width: Self.baseCanvasWidth, height: Self.baseCanvasHeight),
-                        artworkColumnWidth: layoutMetrics.artworkWidth
+                        artworkColumnWidth: layoutMetrics.artworkWidth,
+                        fullscreenScale: scale
                     )
                 )
                 .ignoresSafeArea()
@@ -487,7 +628,7 @@ struct FullscreenPlayerView: View {
                 .frame(width: proxy.size.width, height: proxy.size.height)
 
             // Layer 2: Scaled container for artwork only
-            fullscreenScaledContainer(selectedSkin: selectedSkin, scale: scale, screenWidth: proxy.size.width)
+            fullscreenScaledContainer(selectedSkin: selectedSkin, scale: scale)
                 .frame(width: Self.baseCanvasWidth, height: Self.baseCanvasHeight)
                 .scaleEffect(scale, anchor: .center)
 
@@ -508,6 +649,9 @@ struct FullscreenPlayerView: View {
         .onChange(of: scale) { _, newScale in
             currentFullscreenScale = newScale
         }
+        .onChange(of: proxy.size) { _, newSize in
+            handleEmbeddedFullscreenViewportChange(newSize, reason: "embedded-viewport-size-change")
+        }
         .onChange(of: miniPlayerOcclusionRegion) { _, newRegion in
             updateFullscreenMiniPlayerOcclusionRegion(newRegion)
         }
@@ -516,13 +660,13 @@ struct FullscreenPlayerView: View {
     // MARK: - Fullscreen Scaled Container (Artwork + Controls Only)
 
     @ViewBuilder
-    private func fullscreenScaledContainer(selectedSkin: any NowPlayingSkin, scale: CGFloat, screenWidth: CGFloat) -> some View {
+    private func fullscreenScaledContainer(selectedSkin: any NowPlayingSkin, scale: CGFloat) -> some View {
         // Cover-element skins drop slightly when the miniplayer auto-hides
         let coverDropY: CGFloat = isCoverSkinWithMiniplayerMotion && !isFullscreenBottomControlsVisible ? 20 : 0
 
         ZStack {
             VStack(spacing: 0) {
-                artworkAndControlsArea(selectedSkin: selectedSkin, scale: scale, screenWidth: screenWidth)
+                artworkAndControlsArea(selectedSkin: selectedSkin, scale: scale)
                     .padding(.horizontal, topContentHorizontalPadding)
                     .padding(.top, 6)
                     .padding(.bottom, 12)
@@ -537,39 +681,50 @@ struct FullscreenPlayerView: View {
 
     // MARK: - Fullscreen Lyrics Layer (Actual Resolution - Crisp)
 
-    @ViewBuilder
     private func fullscreenLyricsLayer(scale: CGFloat, screenWidth: CGFloat) -> some View {
-        let hostMetrics = layoutMetrics(showLyricsColumn: true)
+        let hostLayout = layoutMetrics(showLyricsColumn: true)
         let lyricsPanelVisible = isShowingLyricsPanel
         let keepLyricsHostMounted = shouldKeepFullscreenLyricsHostMounted
 
-        let scaleX = screenWidth / Self.baseCanvasWidth
-        let hostBaseContentOffsetX: CGFloat = -topContentLeftShift
-        let hostArtworkColumnCenterX = hostBaseContentOffsetX + hostMetrics.artworkWidth / 2
-        let hostArtworkHorizCorrection =
-            (hostArtworkColumnCenterX - Self.baseCanvasWidth / 2) * (scaleX - scale) / scale
-        let hostArtworkX = hostBaseContentOffsetX + hostArtworkHorizCorrection
-        let baseLyricsX =
-            hostArtworkX + hostMetrics.artworkWidth + artworkLyricsColumnSpacing - lyricsColumnLeftNudge
-
-        // Expand left by 80pt (moves block left) for the lyrics viewport.
-        // Skin-specific right shift for the cover-gradient-blur skin.
-        let leftExpansion: CGFloat = 80
-        let coverSkinOffset: CGFloat = settings.fullscreen.skinID == "fullscreen.coverGradientBlur" ? coverSkinLyricsRightShift : 0
-        let finalLyricsX = baseLyricsX - leftExpansion + coverSkinOffset
+        let baseLyricsLeadingX: CGFloat
+        let minReadableLyricsWidth: CGFloat
+        if isCoverBlurFullscreenSkin {
+            let legacyLayout = coverBlurLegacyLayoutMetrics(showLyricsColumn: true)
+            let scaleX = screenWidth / Self.baseCanvasWidth
+            let hostBaseContentOffsetX = -coverBlurLegacyTopContentLeftShift
+            let hostArtworkColumnCenterX = hostBaseContentOffsetX + legacyLayout.artworkWidth / 2
+            let hostArtworkHorizCorrection =
+                (hostArtworkColumnCenterX - Self.baseCanvasWidth / 2) * (scaleX - scale) / scale
+            let hostArtworkX = hostBaseContentOffsetX + hostArtworkHorizCorrection
+            let legacyBaseLyricsX =
+                hostArtworkX
+                + legacyLayout.artworkWidth
+                + coverBlurLegacyArtworkLyricsColumnSpacing
+                - coverBlurLegacyLyricsColumnLeftNudge
+            baseLyricsLeadingX =
+                legacyBaseLyricsX
+                - coverBlurLegacyLeftExpansion
+                + coverBlurLegacyLyricsRightShift
+            minReadableLyricsWidth = legacyLayout.lyricsWidth
+        } else {
+            baseLyricsLeadingX = hostLayout.lyricsLeadingX
+            minReadableLyricsWidth = hostLayout.lyricsWidth
+        }
 
         // Canvas horizontal centering margin: on 16:9 screens the canvas is narrower than
-        // the screen; add the side margin so the lyrics block stays anchored to the cover
-        // image, not to the left screen edge.
+        // the screen; add the side margin so the lyrics block stays aligned to the
+        // shared artwork+lyrics split, not to the left screen edge.
         let canvasCenteringX = max(0, (screenWidth - Self.baseCanvasWidth * scale) / 2)
-        let visibleLyricsX = finalLyricsX * scale + canvasCenteringX
+        let visibleLyricsX = baseLyricsLeadingX * scale + canvasCenteringX
         let hiddenLyricsX = visibleLyricsX + 92 * scale
         let actualLyricsX = lyricsPanelVisible ? visibleLyricsX : hiddenLyricsX
 
-        // Right boundary: span to screen-edge minus an adaptive padding rather than a
-        // fixed canvas-fraction, so the region fills available space on all displays.
-        let lyricsRightScreenPad: CGFloat = 44 * scale
-        let actualLyricsWidth = max(100, screenWidth - visibleLyricsX - lyricsRightScreenPad)
+        // Keep a readable minimum (layout split width), while still letting the right
+        // column breathe on wide windows.
+        let lyricsRightScreenPad = max(44 * scale, minReadableLyricsWidth * scale * 0.08)
+        let layoutWidth = minReadableLyricsWidth * scale
+        let fillWidth = screenWidth - visibleLyricsX - lyricsRightScreenPad
+        let actualLyricsWidth = max(100, max(layoutWidth, fillWidth))
 
         // Fixed AMLL frame — always the full base canvas height. AMLL's DOM never resizes
         // during miniplayer hide/show, so setAlignPosition never chases a moving target.
@@ -587,7 +742,7 @@ struct FullscreenPlayerView: View {
             }
         }()
 
-        ZStack(alignment: .topLeading) {
+        return ZStack(alignment: .topLeading) {
             if keepLyricsHostMounted {
                 fullscreenLyricsCrispView(scale: scale, visibleClipHeight: visibleClipHeight)
                     .frame(width: actualLyricsWidth, height: actualLyricsHeight, alignment: .topLeading)
@@ -784,26 +939,34 @@ struct FullscreenPlayerView: View {
         }
     }
 
-    // MARK: - Fixed Layout Metrics (for 1470x923 base canvas)
+    // MARK: - Shared Horizontal Split Metrics
 
-    private var layoutMetrics: (artworkWidth: CGFloat, lyricsWidth: CGFloat) {
+    private var layoutMetrics: FullscreenHorizontalSplitLayout {
         layoutMetrics(showLyricsColumn: isShowingRightPanel)
     }
 
     private func layoutMetrics(
         showLyricsColumn: Bool,
         windowWidth: CGFloat? = nil
+    ) -> FullscreenHorizontalSplitLayout {
+        FullscreenHorizontalSplitLayout.resolve(
+            showLyricsColumn: showLyricsColumn,
+            windowWidth: windowWidth
+        )
+    }
+
+    private func coverBlurLegacyLayoutMetrics(
+        showLyricsColumn: Bool,
+        windowWidth: CGFloat? = nil
     ) -> (artworkWidth: CGFloat, lyricsWidth: CGFloat) {
         let resolvedWindowWidth = windowWidth ?? Self.baseCanvasWidth
         let availableWidth = max(0, resolvedWindowWidth - topContentHorizontalPadding * 2)
-
         if showLyricsColumn {
-            let constrainedWidth = max(0, availableWidth - lyricsRightMarginReserve)
+            let constrainedWidth = max(0, availableWidth - 88)
             let lyricsWidth = min(max(constrainedWidth * 0.30, 320), 560)
-            let artworkWidth = max(constrainedWidth - lyricsWidth - artworkLyricsColumnSpacing, 360)
+            let artworkWidth = max(constrainedWidth - lyricsWidth - (-58), 360)
             return (artworkWidth, lyricsWidth)
         }
-
         let lyricsWidth = min(max(availableWidth * 0.35, 340), 580)
         let centeredArtworkWidth = min(max(availableWidth * 0.78, 420), availableWidth)
         return (centeredArtworkWidth, lyricsWidth)
@@ -821,7 +984,7 @@ struct FullscreenPlayerView: View {
     /// progress-bar area (which uses maxWidth: .infinity). Outer button spacing is
     /// unaffected; the group re-centers automatically.
     private let fullscreenMiniPlayerPillWidthReduction: CGFloat = 160
-    private let leadingControlsExpandedWidth: CGFloat = 240
+    private let leadingControlsExpandedWidth: CGFloat = 180  // 3 buttons × 60pt
     private let leadingControlsCollapsedWidth: CGFloat = 120  // 2 buttons × 60pt
     private let volumeExpandedWidth: CGFloat = 180
     private let volumeCollapsedWidth: CGFloat = 60
@@ -1230,17 +1393,17 @@ struct FullscreenPlayerView: View {
             scaledBottomPadding - (controlsRowHeight - scaledButtonSize) * 0.5
         )
         let canvasLeadingMargin = max(0, (screenWidth - scaledWindowWidth) * 0.5)
-        let quickPanelSize = FullscreenQuickAppearancePanel.panelSize(
-            for: baseScale,
-            glassMaterialStyle: fullscreenControlsGlassStyle.materialStyle
-        )
+        let quickPanelSize = FullscreenQuickAppearancePanel.panelSize(for: baseScale)
         let quickPanelWidth = quickPanelSize.width
         let quickPanelHeight = quickPanelSize.height
         let quickPanelSafeMargin = 20 * baseScale
-        let quickPanelGap = 12 * baseScale
+        // Keep it close to the Mini Player, but never overlapping it.
+        let quickPanelGap = 22 * baseScale
         let quickPanelBottomY = screenHeight - adjustedBottomPadding - controlsRowHeight - quickPanelGap
+        // Anchor the panel above the bottom-left controls group (not centered on screen).
+        let quickPanelHorizontalInset = 10 * baseScale
         let quickPanelIdealCenterX =
-            canvasLeadingMargin + scaledLeadingControlsOriginX + quickPanelWidth * 0.5
+            canvasLeadingMargin + scaledLeadingControlsOriginX - quickPanelHorizontalInset + quickPanelWidth * 0.5
         let quickPanelCenterX = min(
             max(quickPanelIdealCenterX, quickPanelSafeMargin + quickPanelWidth * 0.5),
             max(
@@ -1382,11 +1545,8 @@ struct FullscreenPlayerView: View {
 
             if isQuickAppearancePanelPresented {
                 FullscreenQuickAppearancePanel(
-                    glassStyle: fullscreenControlsGlassStyle,
                     scale: scale,
-                    onDismiss: {
-                        setQuickAppearancePanelPresented(false)
-                    }
+                    onDismiss: { setQuickAppearancePanelPresented(false) }
                 )
                 .frame(width: quickPanelWidth, height: quickPanelHeight)
                 .position(x: quickPanelCenterX, y: quickPanelCenterY)
@@ -1414,66 +1574,22 @@ struct FullscreenPlayerView: View {
     // MARK: - Artwork and Controls Area (No Lyrics - Lyrics are in crisp layer)
 
     @ViewBuilder
-    private func artworkAndControlsArea(selectedSkin: any NowPlayingSkin, scale: CGFloat, screenWidth: CGFloat) -> some View {
-        let metrics = layoutMetrics
-        let artworkOffsetX = artworkColumnOffsetX(
-            artworkWidth: metrics.artworkWidth,
-            scale: scale,
-            screenWidth: screenWidth
-        )
+    private func artworkAndControlsArea(selectedSkin: any NowPlayingSkin, scale: CGFloat) -> some View {
+        let splitLayout = layoutMetrics
+        let artworkOffsetX =
+            splitLayout.artworkLeadingX
+            + splitLayout.artworkWidth * 0.5
+            - Self.baseCanvasWidth * 0.5
 
         skinArtworkArea(
             selectedSkin: selectedSkin,
-            artworkColumnWidth: metrics.artworkWidth,
+            artworkColumnWidth: splitLayout.artworkWidth,
             scale: scale
         )
-        .frame(width: metrics.artworkWidth)
+        .frame(width: splitLayout.artworkWidth)
         .frame(maxHeight: .infinity)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         .offset(x: artworkOffsetX)
-    }
-
-    private func artworkColumnOffsetX(
-        artworkWidth: CGFloat,
-        scale: CGFloat,
-        screenWidth: CGFloat
-    ) -> CGFloat {
-        guard isShowingRightPanel else { return 0 }
-        let visibleCenterX = visibleArtworkColumnCenterX(
-            artworkWidth: artworkWidth,
-            scale: scale,
-            screenWidth: screenWidth
-        )
-        return visibleCenterX - Self.baseCanvasWidth * 0.5
-            - adaptiveLyricsArtworkLeftBias(artworkWidth: artworkWidth)
-    }
-
-    private func visibleArtworkColumnCenterX(
-        artworkWidth: CGFloat,
-        scale: CGFloat,
-        screenWidth: CGFloat
-    ) -> CGFloat {
-        let contentOffsetX: CGFloat = -topContentLeftShift
-
-        // Shift the artwork column left to compensate for the canvas horizontal centering
-        // margin on screens wider than the 1470:923 aspect ratio (e.g. 16:9 at 1080p).
-        // Without this, the canvas margin shifts the cover right relative to the baseline
-        // composition. On baseline displays (canvas ≈ fills width) the correction is ~0.
-        let scaleX = screenWidth / Self.baseCanvasWidth
-        let artworkColumnCenterX = contentOffsetX + artworkWidth / 2
-        let artworkHorizCorrection =
-            (artworkColumnCenterX - Self.baseCanvasWidth / 2) * (scaleX - scale) / scale
-        return artworkColumnCenterX + artworkHorizCorrection
-    }
-
-    private func adaptiveLyricsArtworkLeftBias(artworkWidth: CGFloat) -> CGFloat {
-        guard isShowingRightPanel else { return 0 }
-        let metrics = layoutMetrics(showLyricsColumn: true)
-        let centeredMetrics = layoutMetrics(showLyricsColumn: false)
-        let widthCompression = max(0, centeredMetrics.artworkWidth - artworkWidth)
-        let panelOccupancy = metrics.lyricsWidth / max(Self.baseCanvasWidth, 1)
-        let biasFactor = 0.08 + panelOccupancy * 0.24
-        return widthCompression * biasFactor
     }
 
     @ViewBuilder
@@ -1594,11 +1710,6 @@ struct FullscreenPlayerView: View {
 
             lyricsVisibilityButton(size: size)
 
-            appearanceSwitchButton(size: size)
-                .opacity(isLeadingControlsExpanded ? 1 : 0)
-                .allowsHitTesting(isLeadingControlsExpanded)
-                .accessibilityHidden(!isLeadingControlsExpanded)
-
             quickAppearanceButton(size: size)
                 .opacity(isLeadingControlsExpanded ? 1 : 0)
                 .allowsHitTesting(isLeadingControlsExpanded)
@@ -1645,32 +1756,6 @@ struct FullscreenPlayerView: View {
         }
         .buttonStyle(.plain)
         .help(help)
-    }
-
-    private func appearanceSwitchButton(size: CGFloat) -> some View {
-        let icon = effectiveFullscreenAppearance == .dark ? "moon" : "sun.max"
-        let helpText: LocalizedStringKey =
-            effectiveFullscreenAppearance == .dark ? "sidebar.appearance_dark" : "sidebar.appearance_light"
-
-        return leadingControlButton(size: size, help: helpText) {
-            Image(systemName: icon)
-                .id(icon)
-                .font(.system(size: size * 0.32, weight: .semibold))
-                .foregroundStyle(fullscreenMiniPlayerPrimaryColor)
-                .compositingGroup()
-                .blendMode(.screen)
-                .symbolEffect(.rotate, value: appearanceRotateTrigger)
-                .contentTransition(
-                    .symbolEffect(.replace.magic(fallback: .offUp.byLayer), options: .nonRepeating)
-                )
-                .animation(.snappy(duration: 0.24), value: icon)
-        } action: {
-            let target = nextFullscreenAppearanceTarget()
-            if target == .light {
-                appearanceRotateTrigger += 1
-            }
-            cycleFullscreenAppearance(to: target)
-        }
     }
 
     private func quickAppearanceButton(size: CGFloat) -> some View {
@@ -1772,7 +1857,6 @@ struct FullscreenPlayerView: View {
 
     private var coverBlurBaseBlendMode: BlendMode {
         guard isCoverBlurFullscreenSkin else { return .normal }
-        guard coverBlurLyricsTheme?.trackID == currentDisplayContext.trackID else { return .normal }
         switch coverBlurLyricsTheme?.profile {
         case .lighter:
             return .plusLighter
@@ -1795,15 +1879,14 @@ struct FullscreenPlayerView: View {
         }
     }
 
-    private var effectiveFullscreenAppearance: AppSettings.ManualAppearance {
-        if settings.followSystemAppearance {
-            return colorScheme == .dark ? .dark : .light
-        }
-        return settings.manualAppearance
-    }
-
     private var fullscreenLyricsConfigSignature: String {
-        [
+        let overlayContext: LyricsRuntimePresentationContext =
+            hostContext == .embeddedWindow ? .fullscreenEmbedded : .fullscreenSystem
+        let overlay = LyricsRuntimeOverlayResolver.overlay(
+            context: overlayContext,
+            playbackSource: playbackCoordinator.presentation.source
+        )
+        return [
             settings.fullscreenLyricsFontNameZh,
             settings.fullscreenLyricsFontNameEn,
             settings.fullscreenLyricsTranslationFontName,
@@ -1814,6 +1897,9 @@ struct FullscreenPlayerView: View {
             String(format: "%.0f", settings.lyricsLeadInMs),
             String(format: "%.0f", settings.lyricsNearSwitchGapMs),
             String(format: "%.0f", settings.lyricsGlobalAdvanceMs),
+            playbackCoordinator.presentation.source.rawValue,
+            hostContext.rawValue,
+            overlay.signature,
         ].joined(separator: "|")
     }
 
@@ -1836,37 +1922,6 @@ struct FullscreenPlayerView: View {
             return false // Cassette doesn't support visualizer
         default:
             return false
-        }
-    }
-
-    private func cycleFullscreenAppearance(to target: AppSettings.ManualAppearance) {
-        withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
-            if settings.followSystemAppearance {
-                settings.followSystemAppearance = false
-            }
-            settings.manualAppearance = target
-        }
-        applyFullscreenAppearanceToAllWindows()
-    }
-
-    private func nextFullscreenAppearanceTarget() -> AppSettings.ManualAppearance {
-        effectiveFullscreenAppearance == .dark ? .light : .dark
-    }
-
-    private func applyFullscreenAppearanceToAllWindows() {
-        if settings.followSystemAppearance {
-            NSApp.appearance = nil
-            for window in NSApp.windows {
-                window.appearance = nil
-            }
-            return
-        }
-
-        let appearanceName: NSAppearance.Name = settings.manualAppearance == .dark ? .darkAqua : .aqua
-        let appearance = NSAppearance(named: appearanceName)
-        NSApp.appearance = appearance
-        for window in NSApp.windows {
-            window.appearance = appearance
         }
     }
 
@@ -1938,8 +1993,9 @@ struct FullscreenPlayerView: View {
     private func handleTrackIdChange(_ oldId: UUID?, _ newId: UUID?) {
         guard oldId != newId else { return }
 
-        // Clear artwork snapshot to prevent stale colors
-        artworkSnapshot = nil
+        if shouldClearDisplayedArtworkSnapshotOnTrackChange {
+            artworkSnapshot = nil
+        }
         syncFullscreenMiniPlayerSpectrumLease()
 
         // Simplified track change handling - matches window mode behavior
@@ -1964,7 +2020,9 @@ struct FullscreenPlayerView: View {
     private func handlePresentationLyricsIdentityChange(_ oldId: String?, _ newId: String?) {
         guard playbackCoordinator.presentation.source == .appleMusic else { return }
         guard oldId != newId else { return }
-        artworkSnapshot = nil
+        if shouldClearDisplayedArtworkSnapshotOnTrackChange {
+            artworkSnapshot = nil
+        }
         syncFullscreenLyricsHostMount()
         reloadLyricsSurface(reason: "fullscreen external track changed", forceLyricsReload: true)
     }
@@ -2125,7 +2183,7 @@ struct FullscreenPlayerView: View {
     private var fullscreenLyricsHostOpacity: Double {
         guard isShowingLyricsPanel, playbackCoordinator.presentation.hasTrack else { return 0 }
         if playbackCoordinator.presentation.source == .local,
-           isCoverBlurFullscreenSkin && coverBlurLyricsTheme?.trackID != playerVM.currentTrack?.id {
+           isCoverBlurFullscreenSkin && coverBlurLyricsTheme?.trackID != currentArtworkTrackID {
             return 0
         }
         return 1
@@ -2186,7 +2244,7 @@ struct FullscreenPlayerView: View {
     private var fullscreenLyricsViewportOpacity: Double {
         guard currentDisplayContext.hasTrack else { return 0 }
         if playbackCoordinator.presentation.source == .local,
-           isCoverBlurFullscreenSkin && coverBlurLyricsTheme?.trackID != currentDisplayContext.trackID {
+           isCoverBlurFullscreenSkin && coverBlurLyricsTheme?.trackID != currentArtworkTrackID {
             return 0
         }
         return suppressFullscreenLyricsViewport ? 0 : 1
@@ -2253,7 +2311,13 @@ struct FullscreenPlayerView: View {
         let baseStore = fullscreenStore
         let surfaceRole = LyricsSurfaceRole.fullscreen
         let effectiveTrack = playbackCoordinator.presentation.localTrack
-        let displayTrackID = currentDisplayContext.trackID
+        let displayTrackID = currentArtworkTrackID
+        let overlayContext: LyricsRuntimePresentationContext =
+            hostContext == .embeddedWindow ? .fullscreenEmbedded : .fullscreenSystem
+        let overlay = LyricsRuntimeOverlayResolver.overlay(
+            context: overlayContext,
+            playbackSource: playbackCoordinator.presentation.source
+        )
         let readyCoverBlurTheme = isCoverBlurFullscreenSkin
             ? updateCoverBlurLyricsThemeIfReady(forTrackID: displayTrackID)
             : nil
@@ -2263,10 +2327,15 @@ struct FullscreenPlayerView: View {
             if let readyCoverBlurTheme {
                 return readyCoverBlurTheme
             }
-            guard heldCoverBlurTheme?.trackID == displayTrackID else {
-                return nil
+            if let heldCoverBlurTheme {
+                if heldCoverBlurTheme.trackID == displayTrackID {
+                    return heldCoverBlurTheme
+                }
+                if currentArtworkSnapshot(forTrackID: displayTrackID) == nil {
+                    return heldCoverBlurTheme
+                }
             }
-            return heldCoverBlurTheme
+            return nil
         }()
         let colorSet = activeCoverBlurTheme?.colors ?? makeFullscreenLyricsColorSet(forTrackID: displayTrackID)
 
@@ -2336,14 +2405,20 @@ struct FullscreenPlayerView: View {
             ArtworkColorExtractor.cssRGBA($0.themeColor, alpha: 1.0)
         }
         let trackOffsetMs = max(-15000, min(15000, effectiveTrack?.lyricsTimeOffsetMs ?? 0))
-        let globalAdvanceMs = max(-5000, min(5000, settings.lyricsGlobalAdvanceMs))
-        let combinedOffsetMs = max(-20000, min(20000, trackOffsetMs - globalAdvanceMs))
+        let effectiveGlobalAdvanceMs = max(
+            -5000,
+            min(5000, settings.lyricsGlobalAdvanceMs + overlay.globalAdvanceDeltaMs)
+        )
+        let combinedOffsetMs = max(-20000, min(20000, trackOffsetMs - effectiveGlobalAdvanceMs))
 
         
 
         // Scale font sizes based on fullscreen scale for crisp rendering at all resolutions
-        let scaledFontSize = settings.fullscreenLyricsFontSize * currentFullscreenScale
-        let scaledTranslationFontSize = settings.fullscreenLyricsTranslationFontSize * currentFullscreenScale
+        let baseFontSize = settings.fullscreenLyricsFontSize + overlay.mainFontSizeDeltaPx
+        let baseTranslationFontSize =
+            settings.fullscreenLyricsTranslationFontSize + overlay.translationFontSizeDeltaPx
+        let scaledFontSize = baseFontSize * currentFullscreenScale
+        let scaledTranslationFontSize = baseTranslationFontSize * currentFullscreenScale
 
         var config: [String: Any] = [
             "fontSize": scaledFontSize,
@@ -2493,7 +2568,7 @@ struct FullscreenPlayerView: View {
             return
         }
 
-        guard bkController.lyricsColorTrackID == currentDisplayContext.trackID else {
+        guard bkController.lyricsColorTrackID == currentArtworkTrackID else {
             pendingFullscreenLyricsBackgroundCapture = currentDisplayContext.hasTrack
             return
         }
@@ -2551,12 +2626,38 @@ struct FullscreenPlayerView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.22, execute: workItem)
     }
 
+    private func handleEmbeddedFullscreenViewportChange(_ size: CGSize, reason: String) {
+        let sizeChanged =
+            abs(size.width - fullscreenViewportSize.width) > 0.5
+            || abs(size.height - fullscreenViewportSize.height) > 0.5
+        fullscreenViewportSize = size
+
+        guard hostContext == .embeddedWindow else { return }
+        guard size.width > 1, size.height > 1 else { return }
+        guard sizeChanged else { return }
+
+        currentFullscreenScale = min(
+            size.width / Self.baseCanvasWidth,
+            size.height / Self.baseCanvasHeight
+        )
+
+        pendingFullscreenThemeReapply?.cancel()
+
+        let workItem = DispatchWorkItem {
+            applyFullscreenLyricsTheme(force: true, reason: reason)
+            pendingFullscreenThemeReapply = nil
+        }
+
+        pendingFullscreenThemeReapply = workItem
+        DispatchQueue.main.async(execute: workItem)
+    }
+
     private func makeContext(windowSize: CGSize, artworkColumnWidth: CGFloat, fullscreenScale: CGFloat = 1.0) -> SkinContext {
         let display = currentDisplayContext
 
         let trackMeta: SkinContext.TrackMetadata? = display.hasTrack
             ? SkinContext.TrackMetadata(
-                id: display.trackID ?? Self.fallbackExternalTrackID,
+                id: display.artworkTrackID ?? display.trackID ?? Self.fallbackExternalTrackID,
                 title: display.title,
                 artist: display.artist,
                 album: display.album ?? "",
@@ -2614,7 +2715,8 @@ struct FullscreenPlayerView: View {
             contentBounds: contentBounds,
             fullscreenScale: fullscreenScale,
             lyricsVisible: isShowingRightPanel,
-            presentationMode: .fullscreenPlayer
+            presentationMode: .fullscreenPlayer,
+            fullscreenHostMode: hostContext == .embeddedWindow ? .embeddedWindow : .systemFullscreen
         )
     }
 
@@ -2648,23 +2750,19 @@ struct FullscreenPlayerView: View {
         return (sanitized + fallbacks).joined(separator: ", ")
     }
 
-    private func layoutMetrics(for windowSize: CGSize) -> (artworkWidth: CGFloat, lyricsWidth: CGFloat) {
+    private func layoutMetrics(for windowSize: CGSize) -> FullscreenHorizontalSplitLayout {
         layoutMetrics(showLyricsColumn: isShowingRightPanel, windowWidth: windowSize.width)
     }
 
     private func fullscreenBackgroundAvoidanceRect(in windowSize: CGSize) -> CGRect? {
         guard isShowingRightPanel else { return nil }
 
-        let metrics = layoutMetrics(for: windowSize)
-        let rectX =
-            metrics.artworkWidth
-            + artworkLyricsColumnSpacing
-            - lyricsColumnLeftNudge
-            + fullscreenBackgroundLyricsAvoidanceHorizontalInset
+        let splitLayout = layoutMetrics(for: windowSize)
+        let rectX = splitLayout.lyricsLeadingX + fullscreenBackgroundLyricsAvoidanceHorizontalInset
         let rectY = fullscreenBackgroundLyricsAvoidanceTopInset
         let rectWidth = max(
             0,
-            metrics.lyricsWidth - fullscreenBackgroundLyricsAvoidanceHorizontalInset * 2
+            splitLayout.lyricsWidth - fullscreenBackgroundLyricsAvoidanceHorizontalInset * 2
         )
         let rectHeight = max(
             0,
@@ -3016,7 +3114,7 @@ struct FullscreenPlayerView: View {
     }
 
     private func currentArtworkSnapshotForDisplay() -> ArtworkAssetSnapshot? {
-        guard let trackID = currentDisplayContext.trackID,
+        guard let trackID = currentArtworkTrackID,
               let snapshot = artworkSnapshot,
               snapshot.trackID == trackID else {
             return nil
@@ -3109,7 +3207,7 @@ struct FullscreenPlayerView: View {
     
     private var currentArtworkTaskKey: String {
         let display = currentDisplayContext
-        guard display.hasTrack, let trackID = display.trackID else { return "none" }
+        guard display.hasTrack, let trackID = display.artworkTrackID else { return "none" }
         let checksum = ArtworkAssetStore.checksum(for: display.artworkData)
         let identity = display.artworkIdentity ?? display.lyricsIdentity ?? trackID.uuidString
         return "\(trackID.uuidString)-\(identity)-\(checksum)-px:\(preferredArtworkFullImageMaxPixel)"
@@ -3117,11 +3215,13 @@ struct FullscreenPlayerView: View {
     
     private func loadArtworkSnapshot() async {
         let display = currentDisplayContext
-        guard let trackID = display.trackID,
+        guard let trackID = display.artworkTrackID,
               let artworkData = display.artworkData,
               !artworkData.isEmpty
         else {
-            artworkSnapshot = nil
+            if shouldClearDisplayedArtworkSnapshotOnTrackChange {
+                artworkSnapshot = nil
+            }
             return
         }
 
@@ -3133,7 +3233,7 @@ struct FullscreenPlayerView: View {
             fullImageMaxPixelSize: preferredArtworkFullImageMaxPixel
         )
         guard !Task.isCancelled else { return }
-        guard currentDisplayContext.trackID == expectedTrackID else { return }
+        guard currentArtworkTrackID == expectedTrackID else { return }
         guard currentArtworkTaskKey == expectedTaskKey else { return }
         guard snapshot?.trackID == expectedTrackID else { return }
 
@@ -3146,6 +3246,12 @@ struct FullscreenPlayerView: View {
 
     private var preferredArtworkFullImageMaxPixel: Int {
         1_400
+    }
+
+    private var shouldClearDisplayedArtworkSnapshotOnTrackChange: Bool {
+        let presentation = playbackCoordinator.presentation
+        guard presentation.source == .appleMusic else { return true }
+        return !presentation.isArtworkLoading
     }
 
     private func hslComponents(from color: NSColor) -> (hue: CGFloat, saturation: CGFloat, lightness: CGFloat)

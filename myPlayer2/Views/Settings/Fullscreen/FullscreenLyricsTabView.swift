@@ -47,7 +47,9 @@ struct FullscreenLyricsTabView: View {
 
             typographySection
 
-            previewSection
+            if !presentationStyle.usesMaterialSectionCards {
+                previewSection
+            }
         }
         .onAppear {
             syncStateFromSettings()

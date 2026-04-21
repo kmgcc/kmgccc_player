@@ -60,6 +60,11 @@ final class PlaybackCoordinator {
             return
         }
 
+        Log.info(
+            "[PlaybackCoordinator] source switch \(activeSource.rawValue) -> \(source.rawValue)",
+            category: .playback
+        )
+
         switch source {
         case .local:
             appleMusicAdapter.pause()
@@ -281,6 +286,7 @@ final class PlaybackCoordinator {
             album: track.album.isEmpty ? nil : track.album,
             artworkData: track.artworkData,
             artworkIdentity: "\(track.id.uuidString):\(ArtworkAssetStore.checksum(for: track.artworkData))",
+            artworkDisplayTrackID: track.id,
             isArtworkLoading: false,
             duration: playerVM.duration,
             currentTime: playerVM.currentTime,
@@ -299,6 +305,7 @@ final class PlaybackCoordinator {
             externalUsesOverride: false,
             externalMatchConfidence: nil,
             externalLyricsStatusMessage: nil,
+            externalConnectionState: nil,
             isControlEnabled: true,
             isSeekEnabled: playerVM.duration > 0,
             emptyTitleKey: "mini.not_playing"

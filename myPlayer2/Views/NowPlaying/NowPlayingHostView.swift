@@ -101,7 +101,9 @@ struct NowPlayingHostView: View {
 
         let trackMeta: SkinContext.TrackMetadata? = presentation.hasTrack
             ? SkinContext.TrackMetadata(
-                id: presentation.localTrack?.id ?? Self.externalArtworkTrackID,
+                id: presentation.artworkDisplayTrackID
+                    ?? presentation.displayTrackID
+                    ?? Self.externalArtworkTrackID,
                 title: presentation.title,
                 artist: presentation.artist,
                 album: presentation.album ?? "",
@@ -154,7 +156,8 @@ struct NowPlayingHostView: View {
             contentBounds: contentBounds,
             fullscreenScale: 1.0,
             lyricsVisible: false,  // Normal mode handles lyrics separately
-            presentationMode: .nowPlaying
+            presentationMode: .nowPlaying,
+            fullscreenHostMode: .none
         )
     }
     
@@ -181,7 +184,7 @@ struct NowPlayingHostView: View {
         let trackID = presentation.localTrack?.id ?? Self.externalArtworkTrackID
         
         let snapshot = await ArtworkAssetStore.shared.snapshot(
-            trackID: trackID,
+            trackID: presentation.artworkDisplayTrackID ?? presentation.displayTrackID ?? trackID,
             artworkData: artworkData,
             fullImageMaxPixelSize: preferredArtworkFullImageMaxPixel
         )

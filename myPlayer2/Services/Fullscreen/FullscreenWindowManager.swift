@@ -48,6 +48,10 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
     weak var netEaseCoverService: NetEaseCoverService?
 
     private var suspendedMainLyricsVisibility: Bool?
+    private weak var embeddedHostWindow: NSWindow?
+    private var embeddedHostWindowOriginalFrame: NSRect?
+    private var embeddedHostWindowOriginalMinSize: NSSize?
+    private var embeddedHostWindowOriginalContentMinSize: NSSize?
 
     private override init() {
         super.init()
@@ -224,6 +228,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
             return
         }
 
+        captureEmbeddedHostWindowFrame()
         LyricsSurfaceManager.shared.requestMode(.fullscreen)
         suspendMainLyricsIfNeeded()
         presentationMode = .embeddedInWindow
@@ -233,6 +238,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         guard presentationMode == .embeddedInWindow else { return }
         LyricsSurfaceManager.shared.requestMode(.main)
         presentationMode = .none
+        restoreEmbeddedHostWindowFrameIfNeeded()
         restoreSuspendedMainLyricsIfNeeded()
     }
 
@@ -295,6 +301,47 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         guard shouldRestoreLyrics else { return }
         DispatchQueue.main.async {
             self.uiState?.lyricsVisible = true
+        }
+    }
+
+    private func captureEmbeddedHostWindowFrame() {
+        guard embeddedHostWindowOriginalFrame == nil else { return }
+        let candidateWindow =
+            NSApp.keyWindow
+            ?? NSApp.mainWindow
+            ?? NSApp.windows.first(where: { window in
+                window.isVisible
+                    && window.canBecomeMain
+                    && !window.styleMask.contains(.fullScreen)
+            })
+        guard let window = candidateWindow else { return }
+        guard !window.styleMask.contains(.fullScreen) else { return }
+        embeddedHostWindow = window
+        embeddedHostWindowOriginalFrame = window.frame
+        embeddedHostWindowOriginalMinSize = window.minSize
+        embeddedHostWindowOriginalContentMinSize = window.contentMinSize
+    }
+
+    private func restoreEmbeddedHostWindowFrameIfNeeded() {
+        defer {
+            embeddedHostWindowOriginalFrame = nil
+            embeddedHostWindowOriginalMinSize = nil
+            embeddedHostWindowOriginalContentMinSize = nil
+            embeddedHostWindow = nil
+        }
+        guard let frame = embeddedHostWindowOriginalFrame else { return }
+        guard let window = embeddedHostWindow, window.isVisible else { return }
+        guard !window.styleMask.contains(.fullScreen) else { return }
+        if let contentMin = embeddedHostWindowOriginalContentMinSize,
+           window.contentMinSize != contentMin {
+            window.contentMinSize = contentMin
+        }
+        if let minSize = embeddedHostWindowOriginalMinSize,
+           window.minSize != minSize {
+            window.minSize = minSize
+        }
+        if window.frame != frame {
+            window.setFrame(frame, display: true)
         }
     }
 

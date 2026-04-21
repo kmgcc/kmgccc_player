@@ -67,12 +67,13 @@ private struct RenderKey: Equatable {
         artworkChecksum: UInt64,
         size: CGSize,
         config: CoverGradientBlurConfig,
-        dominantColor: NSColor?
+        dominantColor: NSColor?,
+        prefersAdaptiveArtworkSizing: Bool
     ) {
         self.artworkChecksum = artworkChecksum
         self.size = Self.quantized(size)
         self.configHash = String(
-            format: "%.1f-%.3f-%.3f-%.3f-%.3f-%.3f-%.3f-%.3f-%@",
+            format: "%.1f-%.3f-%.3f-%.3f-%.3f-%.3f-%.3f-%.3f-%@-%@",
             config.blurRadius,
             config.colorOverlayOpacity,
             config.edgeStripWidth,
@@ -81,7 +82,8 @@ private struct RenderKey: Equatable {
             config.overlayOffsetRatio,
             config.blurCurveGamma,
             config.overlayCurveGamma,
-            config.edgeFillMode.rawValue
+            config.edgeFillMode.rawValue,
+            prefersAdaptiveArtworkSizing ? "adaptive" : "fixed"
         )
         self.dominantColorHash = dominantColor?.hexString ?? "nil"
     }
@@ -110,11 +112,28 @@ struct CoverGradientBlurBackgroundView: View {
     let artworkChecksum: UInt64
     let dominantColor: NSColor?
     let config: CoverGradientBlurConfig
+    let preferAdaptiveArtworkSizing: Bool
 
     @State private var sourceCGImage: CGImage?
     @State private var renderedCGImage: CGImage?
     @State private var visibleRenderedImage: Bool = false
     @State private var lastRenderKey: RenderKey?
+
+    init(
+        artworkData: Data?,
+        artworkImage: NSImage?,
+        artworkChecksum: UInt64,
+        dominantColor: NSColor?,
+        config: CoverGradientBlurConfig,
+        preferAdaptiveArtworkSizing: Bool = false
+    ) {
+        self.artworkData = artworkData
+        self.artworkImage = artworkImage
+        self.artworkChecksum = artworkChecksum
+        self.dominantColor = dominantColor
+        self.config = config
+        self.preferAdaptiveArtworkSizing = preferAdaptiveArtworkSizing
+    }
 
     private var resolvedArtworkChecksum: UInt64 {
         if artworkChecksum != 0 {
@@ -128,7 +147,8 @@ struct CoverGradientBlurBackgroundView: View {
             artworkChecksum: resolvedArtworkChecksum,
             size: currentSize,
             config: config,
-            dominantColor: dominantColor
+            dominantColor: dominantColor,
+            prefersAdaptiveArtworkSizing: preferAdaptiveArtworkSizing
         )
     }
     
@@ -224,7 +244,6 @@ struct CoverGradientBlurBackgroundView: View {
         }.value
 
         guard !Task.isCancelled else { return }
-        updateSourceImage(preparedArtwork, forKey: key)
 
         let renderedBox = await CoverGradientBlurRenderStore.shared.image(for: key.cacheKey) {
             guard let preparedArtwork else { return nil }
@@ -235,7 +254,8 @@ struct CoverGradientBlurBackgroundView: View {
                             artworkCGImage: preparedArtwork,
                             targetSize: key.size,
                             dominantColor: dominantColor,
-                            config: config
+                            config: config,
+                            preferAdaptiveArtworkSizing: preferAdaptiveArtworkSizing
                         )
                     else { return nil }
                     return CoverGradientBlurRenderedImageBox(image: image)
@@ -244,7 +264,16 @@ struct CoverGradientBlurBackgroundView: View {
         }
 
         guard !Task.isCancelled else { return }
-        updateRenderedImage(renderedBox?.image, forKey: key)
+        if let renderedImage = renderedBox?.image {
+            updatePreparedAndRenderedImages(
+                preparedArtwork,
+                renderedImage: renderedImage,
+                forKey: key
+            )
+        } else {
+            updateSourceImage(preparedArtwork, forKey: key)
+            updateRenderedImage(nil, forKey: key)
+        }
     }
 
     private func updateCurrentSize(_ size: CGSize) {
@@ -266,6 +295,21 @@ struct CoverGradientBlurBackgroundView: View {
         lastRenderKey = key
         withAnimation(.easeInOut(duration: config.transitionDuration)) {
             visibleRenderedImage = image != nil
+        }
+    }
+
+    @MainActor
+    private func updatePreparedAndRenderedImages(
+        _ sourceImage: CGImage?,
+        renderedImage: CGImage,
+        forKey key: RenderKey
+    ) {
+        guard key == renderKey else { return }
+        sourceCGImage = sourceImage
+        renderedCGImage = renderedImage
+        lastRenderKey = key
+        withAnimation(.easeInOut(duration: config.transitionDuration)) {
+            visibleRenderedImage = true
         }
     }
 }
@@ -311,7 +355,8 @@ enum CoverGradientBlurRenderer {
         artworkCGImage: CGImage,
         targetSize: CGSize,
         dominantColor: NSColor?,
-        config: CoverGradientBlurConfig
+        config: CoverGradientBlurConfig,
+        preferAdaptiveArtworkSizing: Bool = false
     ) -> CGImage? {
 
         guard targetSize.width > 0, targetSize.height > 0,
@@ -329,7 +374,19 @@ enum CoverGradientBlurRenderer {
         let artworkWidth = CGFloat(artworkCGImage.width)
         let artworkHeight = CGFloat(artworkCGImage.height)
 
-        let scale = canvasLogicalHeight / artworkHeight
+        let scale: CGFloat
+        if preferAdaptiveArtworkSizing {
+            let baseCanvasWidth: CGFloat = 1470
+            let baseCanvasHeight: CGFloat = 923
+            let fullscreenScale = min(
+                canvasLogicalWidth / baseCanvasWidth,
+                canvasLogicalHeight / baseCanvasHeight
+            )
+            let adaptiveHeight = min(canvasLogicalHeight, baseCanvasHeight * fullscreenScale)
+            scale = adaptiveHeight / artworkHeight
+        } else {
+            scale = canvasLogicalHeight / artworkHeight
+        }
         let drawWidth = artworkWidth * scale
         let artworkRect = CGRect(x: 0, y: 0, width: drawWidth, height: canvasLogicalHeight)
         let artworkRightEdgeX = min(drawWidth, canvasLogicalWidth)

@@ -386,7 +386,10 @@ struct FullscreenMiniPlayerView: View {
         }
         
         let snapshot = await ArtworkAssetStore.shared.snapshotMetadata(
-            trackID: presentation.localTrack?.id ?? Self.appleMusicArtworkCacheTrackID,
+            trackID: presentation.artworkDisplayTrackID
+                ?? presentation.displayTrackID
+                ?? presentation.localTrack?.id
+                ?? Self.appleMusicArtworkCacheTrackID,
             artworkData: artworkData
         )
         guard !Task.isCancelled else { return }

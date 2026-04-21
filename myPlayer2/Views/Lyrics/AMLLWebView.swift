@@ -149,9 +149,30 @@ struct AMLLWebView: NSViewRepresentable {
             self.store = store
         }
 
+        private func installHostCallbacksIfNeeded(for hostView: WebViewHostView) {
+            if self.hostView !== hostView {
+                // Stop callbacks from an old host view after reparenting.
+                self.hostView?.frameDidChangeHandler = nil
+                self.hostView = hostView
+            }
+
+            if hostView.frameDidChangeHandler == nil {
+                hostView.frameDidChangeHandler = { [weak self] view in
+                    guard let self else { return }
+                    let isSystemFullscreen = view.window?.styleMask.contains(.fullScreen) == true
+                    self.store.noteHostViewportDidChange(
+                        viewportSize: view.bounds.size,
+                        isSystemFullscreen: isSystemFullscreen,
+                        reason: "host-frame-changed"
+                    )
+                }
+            }
+        }
+
         /// Try to attach WebView to host, with detailed logging
         func tryAttach(to hostView: WebViewHostView, context: String) {
             LyricsRuntimeProfile.increment("AMLLWebView.tryAttach")
+            installHostCallbacksIfNeeded(for: hostView)
             // Check conditions but don't block - just log
             let hasWindow = hostView.window != nil
             let hasFrame = hostView.frame.size.width > 0 && hostView.frame.size.height > 0
@@ -176,7 +197,12 @@ struct AMLLWebView: NSViewRepresentable {
                         next: webView.frame
                     )
                 }
-                self.hostView = hostView
+                let isSystemFullscreen = hostView.window?.styleMask.contains(.fullScreen) == true
+                store.noteHostViewportDidChange(
+                    viewportSize: hostView.bounds.size,
+                    isSystemFullscreen: isSystemFullscreen,
+                    reason: "tryAttach.frame-sync.\(context)"
+                )
                 return
             }
 
@@ -215,7 +241,12 @@ struct AMLLWebView: NSViewRepresentable {
             webView.autoresizingMask = [.width, .height]
             hostView.addSubview(webView)
             store.refreshMouseInteractionSuppression(reason: "attachWebView")
-            self.hostView = hostView
+            let isSystemFullscreen = hostView.window?.styleMask.contains(.fullScreen) == true
+            store.noteHostViewportDidChange(
+                viewportSize: hostView.bounds.size,
+                isSystemFullscreen: isSystemFullscreen,
+                reason: "attachWebView"
+            )
 
             Log.debug(
                 "Reparented WebView: objectID=\(store.webViewObjectID), attachmentID=\(attachmentID?.uuidString.prefix(8) ?? "nil"), frame=\(webView.frame), window=\(webView.window != nil)",
@@ -225,6 +256,7 @@ struct AMLLWebView: NSViewRepresentable {
 
         func detachWebView(from hostView: WebViewHostView) {
             LyricsRuntimeProfile.increment("AMLLWebView.detachWebView")
+            hostView.frameDidChangeHandler = nil
             guard let webView = store.preparedWebView else { return }
             guard webView.superview === hostView else { return }
             webView.removeFromSuperview()
@@ -275,6 +307,8 @@ struct AMLLWebView: NSViewRepresentable {
 }
 
 final class WebViewHostView: NSView {
+    var frameDidChangeHandler: ((WebViewHostView) -> Void)?
+
     var isMouseInteractionSuppressed = false {
         didSet {
             if oldValue != isMouseInteractionSuppressed {
@@ -298,6 +332,7 @@ final class WebViewHostView: NSView {
             previous: previousFrame,
             next: frame
         )
+        frameDidChangeHandler?(self)
     }
 
     override func setFrameOrigin(_ newOrigin: NSPoint) {
@@ -308,6 +343,7 @@ final class WebViewHostView: NSView {
             previous: previousFrame,
             next: frame
         )
+        frameDidChangeHandler?(self)
     }
 
     override func layout() {
@@ -327,6 +363,7 @@ final class WebViewHostView: NSView {
             "WebViewHostView.windowAttached",
             value: window != nil ? "true" : "false"
         )
+        frameDidChangeHandler?(self)
     }
 }
 

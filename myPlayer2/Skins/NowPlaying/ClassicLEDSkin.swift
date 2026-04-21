@@ -43,8 +43,6 @@ private struct ClassicLEDArtwork: View {
     // MARK: - Fullscreen Fine-tuning Constants
     /// Slight boost to artwork size in fullscreen (1.0 = no change)
     private let fullscreenArtworkBoost: CGFloat = 1.22
-    /// Horizontal shift for artwork in fullscreen (negative = left)
-    private let fullscreenLeftShift: CGFloat = -40
     /// Additional visual scale applied to the cover stack in fullscreen.
     /// Applied via scaleEffect inside the scaled canvas, so it is
     /// resolution-stable (proportional to the base canvas, not screen pixels).
@@ -54,10 +52,8 @@ private struct ClassicLEDArtwork: View {
         let contentSize = context.contentSize
         let usesFullscreenLayout = context.usesFullscreenPlayerLayout
 
-        // Apply fullscreen boost and left shift only in fullscreen mode
-        // Only shift left when lyrics are visible; when no lyrics, artwork should center
         let artworkBoost = usesFullscreenLayout ? fullscreenArtworkBoost : 1.0
-        let leftShift = (usesFullscreenLayout && context.lyricsVisible) ? fullscreenLeftShift : 0
+        let leftShift = FullscreenCoverHorizontalOffset.artworkOffsetX(for: context)
 
         let scaleFactor: CGFloat = usesFullscreenLayout ? 0.6 : 0.5
         let maxSizeBase: CGFloat = usesFullscreenLayout ? 480 : 360
@@ -158,9 +154,10 @@ private struct ClassicLEDSkinNormalSettingsView: View {
 
 private struct ClassicLEDSkinFullscreenSettingsView: View {
     @Environment(LEDMeterServiceProvider.self) private var ledMeterProvider
+    @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
             Toggle("LED 电平表", isOn: Binding(
                 get: {
                     FullscreenPresentationCoordinator.shared.isSkinVisualizerEnabled
@@ -175,6 +172,7 @@ private struct ClassicLEDSkinFullscreenSettingsView: View {
                     }
                 }
             ))
+            .font(presentationStyle.rowLabelFont)
             .toggleStyle(.switch)
 
             Toggle("频谱动画", isOn: Binding(
@@ -191,6 +189,7 @@ private struct ClassicLEDSkinFullscreenSettingsView: View {
                     }
                 }
             ))
+            .font(presentationStyle.rowLabelFont)
             .toggleStyle(.switch)
         }
     }

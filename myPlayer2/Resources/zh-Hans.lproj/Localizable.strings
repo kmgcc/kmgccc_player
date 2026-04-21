@@ -27,6 +27,8 @@
 "playback.source.apple_music" = "Apple Music";
 "playback.source.help" = "切换播放来源";
 "apple_music.not_running" = "Music 未运行";
+"apple_music.temporarily_unavailable" = "暂时无法读取 Music";
+"apple_music.disconnected" = "Music 监听已断开";
 "apple_music.not_playing" = "Apple Music 未播放";
 
 // MARK: - Settings General

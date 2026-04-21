@@ -9,6 +9,21 @@ import AppKit
 import Foundation
 
 final class AppleMusicBridge: @unchecked Sendable {
+    enum FetchIssue: Sendable {
+        case appNotRunning
+        case emptyResponse
+        case invalidResponse(itemCount: Int)
+        case noNowPlayingData(snapshot: NowPlayingInfo)
+        case busy(message: String)
+        case timeout(message: String)
+        case scriptError(message: String)
+    }
+
+    enum FetchResult: Sendable {
+        case success(NowPlayingInfo)
+        case failure(FetchIssue)
+    }
+
     enum PlayerState: String, Sendable {
         case playing
         case paused
@@ -77,29 +92,104 @@ final class AppleMusicBridge: @unchecked Sendable {
     }
 
     nonisolated func fetchFullInfo() -> NowPlayingInfo {
+        switch fetchFullInfoResult() {
+        case .success(let info):
+            return info
+        case .failure(let issue):
+            switch issue {
+            case .appNotRunning:
+                return NowPlayingInfo(state: .stopped)
+            case .noNowPlayingData(let snapshot):
+                return snapshot
+            case .emptyResponse, .invalidResponse, .busy, .timeout, .scriptError:
+                return NowPlayingInfo(state: .unknown)
+            }
+        }
+    }
+
+    nonisolated func fetchFullInfoResult() -> FetchResult {
         guard isMusicAppRunning() else {
-            return NowPlayingInfo(state: .stopped)
-        }
-        guard let descriptor = execute(fetchFullScript), descriptor.numberOfItems >= 13 else {
-            return NowPlayingInfo(state: .unknown)
+            return .failure(.appNotRunning)
         }
 
-        let stateRaw = descriptor.atIndex(7)?.stringValue ?? ""
-        let repeatRaw = descriptor.atIndex(13)?.stringValue ?? ""
+        let execution = executeDetailed(fetchFullScript)
+        if let errorNumber = execution.errorNumber,
+           let issue = classifyExecutionError(number: errorNumber, message: execution.errorMessage) {
+            return .failure(issue)
+        }
+        if let errorMessage = execution.errorMessage, !errorMessage.isEmpty {
+            return .failure(.scriptError(message: errorMessage))
+        }
+        guard let descriptor = execution.descriptor else {
+            return .failure(.emptyResponse)
+        }
+        guard descriptor.numberOfItems > 0 else {
+            return .failure(.emptyResponse)
+        }
 
+        let status = descriptor.atIndex(1)?.stringValue ?? ""
+        switch status {
+        case "ok":
+            guard descriptor.numberOfItems >= 14 else {
+                return .failure(.invalidResponse(itemCount: descriptor.numberOfItems))
+            }
+            return .success(parseFullInfo(from: descriptor, startIndex: 2))
+        case "trackError":
+            guard descriptor.numberOfItems >= 8 else {
+                return .failure(.invalidResponse(itemCount: descriptor.numberOfItems))
+            }
+            let errorNumber = Int(descriptor.atIndex(2)?.stringValue ?? "")
+            let message = descriptor.atIndex(3)?.stringValue ?? "unknown track error"
+            let snapshot = NowPlayingInfo(
+                title: nil,
+                artist: nil,
+                album: nil,
+                albumArtist: nil,
+                duration: 0,
+                position: descriptor.atIndex(8)?.doubleValue ?? 0,
+                state: PlayerState(rawValue: descriptor.atIndex(4)?.stringValue ?? "") ?? .unknown,
+                volume: Int(descriptor.atIndex(5)?.int32Value ?? 100),
+                persistentID: nil,
+                trackNumber: 0,
+                year: 0,
+                shuffleEnabled: descriptor.atIndex(6)?.booleanValue ?? false,
+                songRepeat: RepeatMode(rawValue: descriptor.atIndex(7)?.stringValue ?? "") ?? .unknown
+            )
+            if let issue = classifyTrackReadError(number: errorNumber, message: message, snapshot: snapshot) {
+                return .failure(issue)
+            }
+            return .failure(.scriptError(message: formattedError(number: errorNumber, message: message)))
+        case "error":
+            let errorNumber = Int(descriptor.atIndex(2)?.stringValue ?? "")
+            let message = descriptor.atIndex(3)?.stringValue ?? "unknown error"
+            if let issue = classifyExecutionError(number: errorNumber, message: message) {
+                return .failure(issue)
+            }
+            return .failure(.scriptError(message: formattedError(number: errorNumber, message: message)))
+        default:
+            return .failure(.scriptError(message: "unexpected fetch status: \(status)"))
+        }
+    }
+
+    private nonisolated func parseFullInfo(
+        from descriptor: NSAppleEventDescriptor,
+        startIndex: Int
+    ) -> NowPlayingInfo {
+        let stateRaw = descriptor.atIndex(startIndex + 6)?.stringValue ?? ""
+        let repeatRaw = descriptor.atIndex(startIndex + 12)?.stringValue ?? ""
         return NowPlayingInfo(
-            title: nonEmptyString(descriptor.atIndex(1)?.stringValue),
-            artist: nonEmptyString(descriptor.atIndex(2)?.stringValue),
-            album: nonEmptyString(descriptor.atIndex(3)?.stringValue),
-            albumArtist: nonEmptyString(descriptor.atIndex(4)?.stringValue),
-            duration: descriptor.atIndex(5)?.doubleValue ?? 0,
-            position: descriptor.atIndex(6)?.doubleValue ?? 0,
+            title: nonEmptyString(descriptor.atIndex(startIndex)?.stringValue),
+            artist: nonEmptyString(descriptor.atIndex(startIndex + 1)?.stringValue),
+            album: nonEmptyString(descriptor.atIndex(startIndex + 2)?.stringValue),
+            albumArtist: nonEmptyString(descriptor.atIndex(startIndex + 3)?.stringValue),
+            duration: descriptor.atIndex(startIndex + 4)?.doubleValue ?? 0,
+            position: descriptor.atIndex(startIndex + 5)?.doubleValue ?? 0,
             state: PlayerState(rawValue: stateRaw) ?? .unknown,
-            volume: Int(descriptor.atIndex(8)?.int32Value ?? 100),
-            persistentID: nonEmptyString(descriptor.atIndex(9)?.stringValue),
-            trackNumber: Int(descriptor.atIndex(10)?.int32Value ?? 0),
-            year: Int(descriptor.atIndex(11)?.int32Value ?? 0),
-            shuffleEnabled: descriptor.atIndex(12)?.booleanValue ?? false,
+            volume: Int(descriptor.atIndex(startIndex + 7)?.int32Value ?? 100),
+            persistentID: nonEmptyString(descriptor.atIndex(startIndex + 8)?.stringValue),
+            trackNumber: Int(descriptor.atIndex(startIndex + 9)?.int32Value ?? 0),
+            year: Int(descriptor.atIndex(startIndex + 10)?.int32Value ?? 0),
+            shuffleEnabled: descriptor.atIndex(startIndex + 11)?.booleanValue ?? false,
             songRepeat: RepeatMode(rawValue: repeatRaw) ?? .unknown
         )
     }
@@ -116,24 +206,26 @@ final class AppleMusicBridge: @unchecked Sendable {
 
         let path = appleScriptStringLiteral(tempURL.path)
         let source = """
-        tell application "Music"
-            try
-                set trk to current track
-                if (count of artworks of trk) is 0 then return false
-                set artworkData to data of artwork 1 of trk
-                set targetFile to POSIX file "\(path)"
-                set fileRef to open for access targetFile with write permission
-                set eof of fileRef to 0
-                write artworkData to fileRef
-                close access fileRef
-                return true
-            on error
+        with timeout of 8 seconds
+            tell application "Music"
                 try
-                    close access POSIX file "\(path)"
+                    set trk to current track
+                    if (count of artworks of trk) is 0 then return false
+                    set artworkData to data of artwork 1 of trk
+                    set targetFile to POSIX file "\(path)"
+                    set fileRef to open for access targetFile with write permission
+                    set eof of fileRef to 0
+                    write artworkData to fileRef
+                    close access fileRef
+                    return true
+                on error
+                    try
+                        close access POSIX file "\(path)"
+                    end try
+                    return false
                 end try
-                return false
-            end try
-        end tell
+            end tell
+        end timeout
         """
 
         guard runSource(source)?.booleanValue == true,
@@ -220,10 +312,35 @@ final class AppleMusicBridge: @unchecked Sendable {
             """
             tell application "Music"
                 try
-                    set trk to current track
-                    return {name of trk, artist of trk, album of trk, album artist of trk, duration of trk, player position, player state as string, sound volume, persistent ID of trk, track number of trk, year of trk, shuffle enabled, song repeat as string}
-                on error
-                    return {}
+                    set currentPlayerState to player state as string
+                    try
+                        set currentPosition to player position
+                    on error
+                        set currentPosition to 0
+                    end try
+                    try
+                        set currentSoundVolume to sound volume
+                    on error
+                        set currentSoundVolume to 100
+                    end try
+                    try
+                        set currentShuffle to shuffle enabled
+                    on error
+                        set currentShuffle to false
+                    end try
+                    try
+                        set currentRepeat to song repeat as string
+                    on error
+                        set currentRepeat to "unknown"
+                    end try
+                    try
+                        set trk to current track
+                        return {"ok", name of trk, artist of trk, album of trk, album artist of trk, duration of trk, currentPosition, currentPlayerState, currentSoundVolume, persistent ID of trk, track number of trk, year of trk, currentShuffle, currentRepeat}
+                    on error errMsg number errNum
+                        return {"trackError", errNum as string, errMsg, currentPlayerState, currentSoundVolume, currentShuffle, currentRepeat, currentPosition}
+                    end try
+                on error errMsg number errNum
+                    return {"error", errNum as string, errMsg}
                 end try
             end tell
             """
@@ -250,6 +367,25 @@ final class AppleMusicBridge: @unchecked Sendable {
         return script.executeAndReturnError(&error)
     }
 
+    private nonisolated func executeDetailed(
+        _ script: NSAppleScript?
+    ) -> (descriptor: NSAppleEventDescriptor?, errorNumber: Int?, errorMessage: String?) {
+        guard let script else {
+            return (
+                descriptor: nil,
+                errorNumber: nil,
+                errorMessage: "missing compiled AppleScript"
+            )
+        }
+        var error: NSDictionary?
+        let descriptor = script.executeAndReturnError(&error)
+        return (
+            descriptor: descriptor,
+            errorNumber: error?[NSAppleScript.errorNumber] as? Int,
+            errorMessage: error?[NSAppleScript.errorMessage] as? String
+        )
+    }
+
     @discardableResult
     private nonisolated func runSource(_ source: String) -> NSAppleEventDescriptor? {
         execute(compile(source))
@@ -265,6 +401,70 @@ final class AppleMusicBridge: @unchecked Sendable {
         value
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
+    }
+
+    private nonisolated func classifyExecutionError(number: Int?, message: String?) -> FetchIssue? {
+        if isTimeoutError(number: number, message: message) {
+            return .timeout(message: formattedError(number: number, message: message))
+        }
+        if isBusyError(number: number, message: message) {
+            return .busy(message: formattedError(number: number, message: message))
+        }
+        guard number != nil || message != nil else { return nil }
+        return .scriptError(message: formattedError(number: number, message: message))
+    }
+
+    private nonisolated func classifyTrackReadError(
+        number: Int?,
+        message: String?,
+        snapshot: NowPlayingInfo
+    ) -> FetchIssue? {
+        if isTimeoutError(number: number, message: message) {
+            return .timeout(message: formattedError(number: number, message: message))
+        }
+        if isBusyError(number: number, message: message) {
+            return .busy(message: formattedError(number: number, message: message))
+        }
+        if isNoCurrentTrackError(number: number, message: message) {
+            return .noNowPlayingData(snapshot: snapshot)
+        }
+        return nil
+    }
+
+    private nonisolated func isTimeoutError(number: Int?, message: String?) -> Bool {
+        let lowercased = message?.lowercased() ?? ""
+        return number == -1712 || lowercased.contains("timeout") || message?.contains("超时") == true
+    }
+
+    private nonisolated func isBusyError(number: Int?, message: String?) -> Bool {
+        let lowercased = message?.lowercased() ?? ""
+        return number == -1708
+            || lowercased.contains("busy")
+            || lowercased.contains("resource busy")
+            || message?.contains("忙") == true
+    }
+
+    private nonisolated func isNoCurrentTrackError(number: Int?, message: String?) -> Bool {
+        let lowercased = message?.lowercased() ?? ""
+        return number == -1728
+            || lowercased.contains("current track")
+            || lowercased.contains("can't get current track")
+            || message?.contains("当前音轨") == true
+            || message?.contains("无法取得 current track") == true
+    }
+
+    private nonisolated func formattedError(number: Int?, message: String?) -> String {
+        let messageText = message?.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch (number, messageText?.isEmpty == false ? messageText : nil) {
+        case let (.some(number), .some(message)):
+            return "code=\(number) message=\(message)"
+        case let (.some(number), nil):
+            return "code=\(number)"
+        case let (nil, .some(message)):
+            return message
+        case (nil, nil):
+            return "unknown AppleScript error"
+        }
     }
 
     nonisolated private enum ControlScript: Hashable, Sendable {

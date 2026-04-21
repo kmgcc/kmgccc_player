@@ -55,10 +55,6 @@ private enum CassetteLayout {
     /// `FullscreenPlayerView.skinArtworkArea` so the cassette maintains the same
     /// visual size as in window mode.
     static let fullscreenScaleAdjustment: CGFloat = 0.88
-    /// The cassette artwork's visual weight (window + labels) is slightly right-of-center.
-    /// This additional leftward nudge compensates for the wider fullscreen canvas and
-    /// lyrics-column displacement so the tape body remains visually centered.
-    static let fullscreenExtraLeftShift: CGFloat = 50
 
     struct Metrics {
         let size: CGSize
@@ -78,7 +74,7 @@ private enum CassetteLayout {
         let size = cassetteSize(for: adjustedContext)
         let visualizerMode = isFullscreen ? fullscreenVisualizerMode : normalVisualizerMode
         let centeredYOffset: CGFloat = visualizerMode == "led" ? 12 : max(22, min(36, size.height * 0.07))
-        let horizontalOffset: CGFloat = -(12 + (isFullscreen ? fullscreenExtraLeftShift : 0))
+        let horizontalOffset = FullscreenCoverHorizontalOffset.artworkOffsetX(for: context, baseOffset: -6)
         return Metrics(
             size: size,
             horizontalOffset: horizontalOffset,
@@ -1493,21 +1489,24 @@ private struct KmgcccCassetteNormalSettingsView: View {
 private struct KmgcccCassetteFullscreenSettingsView: View {
     @AppStorage("skin.kmgcccCassette.fullscreen.visualizerMode") private var visualizerMode: String = "off"
     @AppStorage("skin.kmgcccCassette.showKmgLook") private var showKmgLook: Bool = false
+    @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
             Toggle("LED 电平表", isOn: Binding(
                 get: { visualizerMode == "led" },
                 set: { isOn in
                     visualizerMode = isOn ? "led" : "off"
                 }
             ))
+            .font(presentationStyle.rowLabelFont)
             .toggleStyle(.switch)
 
             Toggle(
                 NSLocalizedString("skin.kmgccc_cassette.show_kmg", comment: ""),
                 isOn: $showKmgLook
             )
+            .font(presentationStyle.rowLabelFont)
             .toggleStyle(.switch)
         }
     }
