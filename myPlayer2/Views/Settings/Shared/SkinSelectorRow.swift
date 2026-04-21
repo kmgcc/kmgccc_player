@@ -38,6 +38,10 @@ struct SkinSelectorRow: View {
     @EnvironmentObject private var themeStore: ThemeStore
 
     var body: some View {
+        let selectionAccentColor = FullscreenSelectionAccentStyle.adjustedAccentColor(
+            from: themeStore.accentNSColor
+        )
+
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: itemSpacing) {
                 Color.clear.frame(width: edgePadding)
@@ -52,7 +56,11 @@ struct SkinSelectorRow: View {
                         cornerRadius: cornerRadius,
                         titleFontSize: titleFontSize,
                         preview: {
-                            skinPreview(for: skin.id, isSelected: selected, accentColor: themeStore.accentColor)
+                            skinPreview(
+                                for: skin.id,
+                                isSelected: selected,
+                                accentColor: selectionAccentColor
+                            )
                         },
                         action: { selectedSkinID = skin.id }
                     )

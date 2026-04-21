@@ -56,6 +56,10 @@ actor ArtworkAssetStore {
         }
         fullImageWaitingContinuations.removeAll()
     }
+
+    func clearTrackDeletionResidue() {
+        purgeHydratedImages()
+    }
     
     nonisolated static func checksum(for data: Data?) -> UInt64 {
         guard let data, !data.isEmpty else { return 0 }

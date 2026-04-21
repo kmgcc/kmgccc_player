@@ -143,6 +143,7 @@ final class AppSessionHost: ObservableObject {
         self.easterEggSFX = easterEggSFX
 
         FullscreenWindowManager.shared.configure(
+            libraryVM: libraryVM,
             playerVM: playerVM,
             playbackCoordinator: playbackCoordinator,
             lyricsVM: lyricsVM,

@@ -11,6 +11,7 @@ import SwiftUI
 struct FullscreenSkinTabView: View {
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
 
     @State private var fullscreenArtworkScale: Double = AppSettings.shared.fullscreenArtworkScale
     @State private var fullscreenDimmingIntensity: Double = AppSettings.shared.fullscreenDimmingIntensity
@@ -31,49 +32,55 @@ struct FullscreenSkinTabView: View {
         ]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            // Skin selection
+        VStack(alignment: .leading, spacing: presentationStyle.sectionSpacing) {
             GroupBox {
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
                     Text("全屏皮肤")
-                        .font(.subheadline.bold())
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: presentationStyle.sectionTitleFontSize, weight: .semibold))
+                        .foregroundStyle(presentationStyle.secondaryTextColor)
 
                     SkinSelectorRow(
                         skins: SkinRegistry.fullscreenOptions,
                         selectedSkinID: Binding(
                             get: { settings.fullscreen.skinID },
                             set: { settings.fullscreen.setSkinID($0) }
-                        )
+                        ),
+                        cardSize: presentationStyle.skinCardSize,
+                        previewSize: presentationStyle.skinPreviewSize,
+                        cornerRadius: presentationStyle.skinCornerRadius,
+                        titleFontSize: presentationStyle.skinTitleFontSize,
+                        itemSpacing: presentationStyle.skinItemSpacing,
+                        edgePadding: presentationStyle.skinEdgePadding,
+                        verticalPadding: presentationStyle.skinVerticalPadding
                     )
                 }
-                .padding(12)
+                .padding(presentationStyle.groupPadding)
             }
 
-            // Skin-specific options
             if let selected = SkinRegistry.fullscreenOptions.first(where: { $0.id == settings.fullscreen.skinID }),
                let optionsView = SkinRegistry.fullscreenSkin(for: settings.fullscreen.skinID).fullscreenSettingsView {
                 GroupBox {
-                    VStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
                         Text("\(selected.name) 选项")
-                            .font(.subheadline.bold())
-                            .foregroundStyle(.secondary)
+                            .font(.system(size: presentationStyle.sectionTitleFontSize, weight: .semibold))
+                            .foregroundStyle(presentationStyle.secondaryTextColor)
 
                         optionsView
                     }
-                    .padding(12)
+                    .padding(presentationStyle.groupPadding)
                 }
             }
 
-            // MiniPlayer settings
             GroupBox {
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
                     Text("Mini Player")
-                        .font(.subheadline.bold())
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: presentationStyle.sectionTitleFontSize, weight: .semibold))
+                        .foregroundStyle(presentationStyle.secondaryTextColor)
 
-                    HStack(spacing: 8) {
+                    HStack(spacing: presentationStyle.compactInlineSpacing) {
                         Text("频谱动画")
+                            .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
+                            .foregroundStyle(presentationStyle.primaryTextColor)
                         Spacer()
                         Toggle("", isOn: Binding(
                             get: { settings.fullscreen.isMiniPlayerSpectrumEnabled },
@@ -87,21 +94,20 @@ struct FullscreenSkinTabView: View {
 
                     miniPlayerMaterialPicker
                 }
-                .padding(12)
+                .padding(presentationStyle.groupPadding)
             }
 
-            // Visual settings
             GroupBox {
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
                     Text("视觉效果")
-                        .font(.subheadline.bold())
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: presentationStyle.sectionTitleFontSize, weight: .semibold))
+                        .foregroundStyle(presentationStyle.secondaryTextColor)
 
                     artworkScaleSection
 
                     dimmingIntensitySection
                 }
-                .padding(12)
+                .padding(presentationStyle.groupPadding)
             }
         }
         .onAppear {
@@ -125,8 +131,10 @@ struct FullscreenSkinTabView: View {
     }
 
     private var miniPlayerAutoHidePicker: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: presentationStyle.compactInlineSpacing) {
             Text("自动隐藏")
+                .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
+                .foregroundStyle(presentationStyle.primaryTextColor)
             Spacer()
             SlidingSelector(
                 segments: fullscreenMiniPlayerAutoHideOptions.map(\.seconds),
@@ -143,25 +151,28 @@ struct FullscreenSkinTabView: View {
                 content: { seconds, isSelected in
                     let title = fullscreenMiniPlayerAutoHideOptions.first(where: { $0.seconds == seconds })?.title ?? ""
                     Text(title)
-                        .font(.system(size: 11, weight: isSelected ? .medium : .regular))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .foregroundStyle(isSelected ? themeStore.accentColor : .secondary)
+                        .font(.system(size: presentationStyle.segmentedFontSize, weight: isSelected ? .medium : .regular))
+                        .padding(.horizontal, presentationStyle.segmentedHorizontalPadding)
+                        .padding(.vertical, presentationStyle.segmentedVerticalPadding)
+                        .foregroundStyle(
+                            isSelected
+                                ? presentationStyle.selectedTextColor(accentColor: themeStore.accentColor)
+                                : presentationStyle.secondaryTextColor
+                        )
                 }
             )
-            .padding(.horizontal, 4)
-            .padding(.vertical, 3)
-            .background(
-                Capsule()
-                    .fill(Color.secondary.opacity(0.08))
-            )
+            .padding(.horizontal, presentationStyle.segmentedTrackHorizontalPadding)
+            .padding(.vertical, presentationStyle.segmentedTrackVerticalPadding)
+            .background(segmentedTrackBackground)
             .fixedSize(horizontal: true, vertical: false)
         }
     }
 
     private var miniPlayerMaterialPicker: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: presentationStyle.compactInlineSpacing) {
             Text("材质")
+                .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
+                .foregroundStyle(presentationStyle.primaryTextColor)
             Spacer()
             SlidingSelector(
                 segments: fullscreenMiniPlayerGlassMaterialOptions.map(\.material),
@@ -178,60 +189,89 @@ struct FullscreenSkinTabView: View {
                 content: { material, isSelected in
                     let title = fullscreenMiniPlayerGlassMaterialOptions.first(where: { $0.material == material })?.title ?? ""
                     Text(title)
-                        .font(.system(size: 11, weight: isSelected ? .medium : .regular))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .foregroundStyle(isSelected ? themeStore.accentColor : .secondary)
+                        .font(.system(size: presentationStyle.segmentedFontSize, weight: isSelected ? .medium : .regular))
+                        .padding(.horizontal, presentationStyle.segmentedHorizontalPadding)
+                        .padding(.vertical, presentationStyle.segmentedVerticalPadding)
+                        .foregroundStyle(
+                            isSelected
+                                ? presentationStyle.selectedTextColor(accentColor: themeStore.accentColor)
+                                : presentationStyle.secondaryTextColor
+                        )
                 }
             )
-            .padding(.horizontal, 4)
-            .padding(.vertical, 3)
-            .background(
-                Capsule()
-                    .fill(Color.secondary.opacity(0.08))
-            )
+            .padding(.horizontal, presentationStyle.segmentedTrackHorizontalPadding)
+            .padding(.vertical, presentationStyle.segmentedTrackVerticalPadding)
+            .background(segmentedTrackBackground)
             .fixedSize(horizontal: true, vertical: false)
         }
     }
 
     private var artworkScaleSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: presentationStyle.sliderBlockSpacing) {
             HStack {
                 Text("封面缩放")
+                    .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
+                    .foregroundStyle(presentationStyle.primaryTextColor)
                 Spacer()
                 let displayValue = fullscreenArtworkScale - 0.1
                 Text(String(format: "%.2f", displayValue))
-                    .foregroundStyle(themeStore.accentColor)
-                    .font(.system(.subheadline, design: .monospaced))
+                    .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))
+                    .font(.system(size: presentationStyle.rowValueFontSize, weight: .medium, design: .monospaced))
             }
             Slider(
                 value: $fullscreenArtworkScale,
                 in: 0.9...1.6,
                 step: 0.05
             )
+            .frame(height: presentationStyle.tabHeight)
             Text("调整全屏模式下歌曲封面的显示大小")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(.system(size: presentationStyle.captionFontSize))
+                .foregroundStyle(presentationStyle.secondaryTextColor)
         }
     }
 
     private var dimmingIntensitySection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: presentationStyle.sliderBlockSpacing) {
             HStack {
                 Text("背景压暗强度")
+                    .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
+                    .foregroundStyle(presentationStyle.primaryTextColor)
                 Spacer()
                 Text(String(format: "%.0f%%", fullscreenDimmingIntensity * 100))
-                    .foregroundStyle(themeStore.accentColor)
-                    .font(.system(.subheadline, design: .monospaced))
+                    .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))
+                    .font(.system(size: presentationStyle.rowValueFontSize, weight: .medium, design: .monospaced))
             }
             Slider(
                 value: $fullscreenDimmingIntensity,
                 in: 0.0...0.5,
                 step: 0.05
             )
+            .frame(height: presentationStyle.tabHeight)
             Text("调整全屏模式下背景压暗程度，提高可读性")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(.system(size: presentationStyle.captionFontSize))
+                .foregroundStyle(presentationStyle.secondaryTextColor)
+        }
+    }
+
+    @ViewBuilder
+    private var segmentedTrackBackground: some View {
+        if presentationStyle.usesGlassSectionCards {
+            Capsule()
+                .fill(Color.clear)
+                .liquidGlassPill(
+                    colorScheme: .dark,
+                    accentColor: nil,
+                    prominence: .standard,
+                    materialStyle: presentationStyle.glassMaterialStyle,
+                    isFloating: false
+                )
+                .overlay(
+                    Capsule()
+                        .fill(Color.white.opacity(0.018))
+                )
+        } else {
+            Capsule()
+                .fill(presentationStyle.segmentedTrackColor)
         }
     }
 }

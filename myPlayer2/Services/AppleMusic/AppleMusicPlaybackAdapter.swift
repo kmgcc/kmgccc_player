@@ -47,6 +47,13 @@ final class AppleMusicPlaybackAdapter {
         }
     }
 
+    private enum AutoLyricsLookupState: Equatable {
+        case idle
+        case noResults
+        case thresholdRejected(bestScore: Double, threshold: Double)
+        case allCandidatesFailed
+    }
+
     private let bridge: AppleMusicBridge
     private let libraryVM: LibraryViewModel
     private let artworkResolver: AppleMusicArtworkResolver
@@ -71,6 +78,7 @@ final class AppleMusicPlaybackAdapter {
     private var latestMatchResult: ExternalPlaybackMatchResult?
     private var latestMatchedTrack: Track?
     private var resolvedLyricsText: String?
+    private var autoLyricsLookupState: AutoLyricsLookupState = .idle
     private var resolvedArtwork: ResolvedArtwork = .none
     private var pendingPlaybackMode: AppleMusicPlaybackMode?
     private var pendingPlaybackModeStartedAt: Date?
@@ -147,6 +155,7 @@ final class AppleMusicPlaybackAdapter {
         latestMatchResult = nil
         latestMatchedTrack = nil
         resolvedLyricsText = nil
+        autoLyricsLookupState = .idle
         resolvedArtwork = .none
         schedulePoll()
     }
@@ -163,6 +172,7 @@ final class AppleMusicPlaybackAdapter {
         latestEffectiveMetadata = nil
         latestMatchResult = nil
         latestMatchedTrack = nil
+        autoLyricsLookupState = .idle
         startResolutionIfNeeded(for: info, raw: raw, identity: identity)
         updatePresentationFromLatestInfo()
     }
@@ -291,6 +301,7 @@ final class AppleMusicPlaybackAdapter {
         latestMatchResult = nil
         latestMatchedTrack = nil
         resolvedLyricsText = nil
+        autoLyricsLookupState = .idle
         latestIdentity = nil
         resolvedArtwork = .none
         resolutionTask?.cancel()
@@ -315,6 +326,7 @@ final class AppleMusicPlaybackAdapter {
             latestMatchResult = nil
             latestMatchedTrack = nil
             resolvedLyricsText = nil
+            autoLyricsLookupState = .idle
             latestIdentity = nil
             resolvedArtwork = .none
             resolutionTask?.cancel()
@@ -345,6 +357,7 @@ final class AppleMusicPlaybackAdapter {
             latestMatchResult = nil
             latestMatchedTrack = nil
             resolvedLyricsText = nil
+            autoLyricsLookupState = .idle
             resolvedArtwork = .none
         }
 
@@ -394,6 +407,9 @@ final class AppleMusicPlaybackAdapter {
         let localLyrics = preferredLyricsText(for: resolution.matchedTrack)
         let autoLyrics = metadataStore.cachedAutoLyrics(for: identity)
         resolvedLyricsText = manualLyrics ?? localLyrics ?? autoLyrics
+        if manualLyrics != nil || localLyrics != nil || autoLyrics != nil {
+            autoLyricsLookupState = .idle
+        }
 
         Log.debug("[AMAdapter] applyResolution lyrics source for \(identity.prefix(16)): " +
             "\(manualLyrics != nil ? "manualLocked" : localLyrics != nil ? "localTrack" : autoLyrics != nil ? "cachedAuto" : "none")",
@@ -493,6 +509,7 @@ final class AppleMusicPlaybackAdapter {
             externalEffectiveAlbum: effective?.album,
             externalUsesOverride: effective?.usesOverride ?? false,
             externalMatchConfidence: latestMatchResult?.confidence,
+            externalLyricsStatusMessage: externalLyricsStatusMessage(for: lyricsText),
             isControlEnabled: true,
             isSeekEnabled: info.duration > 0,
             emptyTitleKey: "apple_music.not_playing"
@@ -660,9 +677,13 @@ final class AppleMusicPlaybackAdapter {
     ) {
         // Priority 1: Manually locked lyrics — never overwritten by auto search
         if let manualLyrics = metadataStore.manualLyrics(for: identity) {
+            let didClearStatus = autoLyricsLookupState != .idle
+            autoLyricsLookupState = .idle
             if resolvedLyricsText != manualLyrics {
                 resolvedLyricsText = manualLyrics
                 Log.debug("[AMAdapter] resolveLyrics: using manualLocked for \(identity.prefix(16))", category: .lyrics)
+                updatePresentationFromLatestInfo()
+            } else if didClearStatus {
                 updatePresentationFromLatestInfo()
             }
             return
@@ -670,16 +691,25 @@ final class AppleMusicPlaybackAdapter {
 
         // Priority 2: Matched local track lyrics
         if let localLyrics {
+            let didClearStatus = autoLyricsLookupState != .idle
             resolvedLyricsText = localLyrics
+            autoLyricsLookupState = .idle
             metadataStore.updateLyricsSource("localLibrary", for: identity)
+            if didClearStatus {
+                updatePresentationFromLatestInfo()
+            }
             return
         }
 
         // Priority 3: Previously auto-cached lyrics (non-empty only)
         if let autoLyrics = metadataStore.cachedAutoLyrics(for: identity) {
+            let didClearStatus = autoLyricsLookupState != .idle
+            autoLyricsLookupState = .idle
             if resolvedLyricsText != autoLyrics {
                 resolvedLyricsText = autoLyrics
                 Log.debug("[AMAdapter] resolveLyrics: using cachedAuto for \(identity.prefix(16))", category: .lyrics)
+                updatePresentationFromLatestInfo()
+            } else if didClearStatus {
                 updatePresentationFromLatestInfo()
             }
             return
@@ -699,7 +729,7 @@ final class AppleMusicPlaybackAdapter {
 
         let metadataStore = self.metadataStore
         lyricsTask = Task { [weak self] in
-            let ttml = await LyricsSearchHelper.searchAndFetchBestLyrics(
+            let result = await LyricsSearchHelper.searchAndFetchAutomaticallyMatchedLyrics(
                 title: effective.title,
                 artist: effective.artist,
                 album: effective.album,
@@ -715,34 +745,76 @@ final class AppleMusicPlaybackAdapter {
 
                 // Re-check manual lock after await (user may have selected lyrics while searching)
                 if let manualLyrics = metadataStore.manualLyrics(for: identity) {
+                    let didClearStatus = self.autoLyricsLookupState != .idle
+                    self.autoLyricsLookupState = .idle
                     Log.debug("[AMAdapter] resolveLyrics: manual lock appeared during search, discarding auto result", category: .lyrics)
                     if self.resolvedLyricsText != manualLyrics {
                         self.resolvedLyricsText = manualLyrics
                         if self.latestIdentity == identity {
                             self.updatePresentationFromLatestInfo()
                         }
+                    } else if didClearStatus, self.latestIdentity == identity {
+                        self.updatePresentationFromLatestInfo()
                     }
                     return
                 }
 
-                if let ttml, !ttml.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if let ttml = result.ttml, !ttml.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     metadataStore.storeNetworkLyrics(ttml, for: identity, source: "network")
                     self.resolvedLyricsText = ttml
-                    Log.info("[AMAdapter] resolveLyrics: auto search succeeded, length=\(ttml.count)", category: .lyrics)
+                    self.autoLyricsLookupState = .idle
+                    Log.info(
+                        "[AMAdapter] resolveLyrics: auto search succeeded, length=\(ttml.count), candidate='\(result.fetchedCandidate?.title ?? "unknown")', source=\(result.fetchedCandidate?.source ?? "unknown")",
+                        category: .lyrics
+                    )
                 } else {
-                    // Do NOT cache empty string — that blocks future retries.
-                    // Only mark timestamp so we retry after cooldown.
-                    Log.warning("[AMAdapter] resolveLyrics: auto search found no usable lyrics for '\(effective.title)'", category: .lyrics)
-                    // If previously resolved to something, don't wipe it to empty
-                    if self.resolvedLyricsText == nil {
-                        self.resolvedLyricsText = nil
+                    switch result.status {
+                    case .noCandidates:
+                        self.autoLyricsLookupState = .noResults
+                        Log.warning(
+                            "[AMAdapter] resolveLyrics: auto search found no candidates for '\(effective.title)'",
+                            category: .lyrics
+                        )
+                    case .thresholdRejected:
+                        let bestScore = result.topCandidate?.normalizedScore ?? 0
+                        let threshold = result.threshold ?? LyricsSearchHelper.automaticMatchMinimumScore
+                        self.autoLyricsLookupState = .thresholdRejected(bestScore: bestScore, threshold: threshold)
+                        Log.warning(
+                            "[AMAdapter] resolveLyrics: auto search blocked by threshold for '\(effective.title)' bestScore=\(String(format: "%.2f", bestScore)) threshold=\(String(format: "%.2f", threshold))",
+                            category: .lyrics
+                        )
+                    case .allCandidatesFailed:
+                        self.autoLyricsLookupState = .allCandidatesFailed
+                        Log.warning(
+                            "[AMAdapter] resolveLyrics: auto search found candidates but none produced usable lyrics for '\(effective.title)'",
+                            category: .lyrics
+                        )
+                    case .matched:
+                        self.autoLyricsLookupState = .idle
                     }
+                    // Do NOT cache empty string or threshold-rejected candidates.
+                    // Keep the current state empty so future retries or manual selection remain valid.
+                    self.resolvedLyricsText = nil
                 }
 
                 if self.latestIdentity == identity {
                     self.updatePresentationFromLatestInfo()
                 }
             }
+        }
+    }
+
+    private func externalLyricsStatusMessage(for lyricsText: String?) -> String? {
+        guard lyricsText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false else { return nil }
+        switch autoLyricsLookupState {
+        case .idle:
+            return nil
+        case .noResults:
+            return "未搜到任何歌词候选"
+        case .thresholdRejected(let bestScore, let threshold):
+            return "已搜到候选，但最高匹配分 \(Int(bestScore.rounded())) 不超过 \(Int(threshold.rounded()))，已阻止自动应用"
+        case .allCandidatesFailed:
+            return "已搜到候选，但未取回可用歌词"
         }
     }
 

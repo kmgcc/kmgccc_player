@@ -21,16 +21,10 @@ struct ExternalPlaybackSettingsView: View {
             SettingsHeaderLabel("外部播放", systemImage: "music.note.tv")
 
             GroupBox {
-                VStack(alignment: .leading, spacing: 16) {
-                    Toggle("从外部播放", isOn: $showPlaybackSourceSwitcher)
-                        .toggleStyle(.switch)
-                        .font(.headline)
-
-                    Text("开启后，侧边栏顶部显示「本地 / AM」切换滑块；关闭后显示应用图标和名称。仅影响侧边栏入口样式，不会中断当前播放。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(12)
+                Toggle("从外部播放", isOn: $showPlaybackSourceSwitcher)
+                    .toggleStyle(.switch)
+                    .font(.headline)
+                    .padding(12)
             }
 
             GroupBox {
@@ -59,17 +53,6 @@ struct ExternalPlaybackSettingsView: View {
                 .padding(12)
             }
 
-            GroupBox {
-                VStack(alignment: .leading, spacing: 10) {
-                    Label("预留结构", systemImage: "list.bullet.rectangle")
-                        .font(.headline)
-
-                    Text("后续可在这里扩展缓存统计、覆盖条目管理、调试信息开关和其它外部播放来源。")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(12)
-            }
         }
         .onAppear {
             showPlaybackSourceSwitcher = settings.showPlaybackSourceSwitcher

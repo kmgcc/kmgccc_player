@@ -24,6 +24,28 @@ struct LyricsSearchHelper {
 
     /// Default sources for LDDC search (nonisolated because it's just a configuration constant)
     nonisolated static let defaultLDDCSources: Set<LDDCSource> = [.QM, .KG, .NE]
+    nonisolated static let automaticMatchMinimumScore = 75.0
+
+    struct AutomaticFetchCandidateSummary: Sendable, Equatable {
+        let title: String
+        let source: String
+        let normalizedScore: Double
+    }
+
+    struct AutomaticFetchResult: Sendable, Equatable {
+        enum Status: String, Sendable, Equatable {
+            case matched
+            case noCandidates
+            case thresholdRejected
+            case allCandidatesFailed
+        }
+
+        let status: Status
+        let ttml: String?
+        let topCandidate: AutomaticFetchCandidateSummary?
+        let fetchedCandidate: AutomaticFetchCandidateSummary?
+        let threshold: Double?
+    }
 
     /// Search result containing merged and ranked candidates
     struct SearchResult: Sendable {
@@ -317,6 +339,40 @@ struct LyricsSearchHelper {
         album: String?,
         duration: Double?
     ) async -> String? {
+        let result = await searchAndFetchLyrics(
+            title: title,
+            artist: artist,
+            album: album,
+            duration: duration,
+            minimumTopCandidateScore: nil
+        )
+        return result.ttml
+    }
+
+    /// Perform search and fetch for AM automatic online matching only.
+    /// A minimum top-candidate score is enforced to avoid bad auto-applies.
+    static func searchAndFetchAutomaticallyMatchedLyrics(
+        title: String,
+        artist: String?,
+        album: String?,
+        duration: Double?
+    ) async -> AutomaticFetchResult {
+        await searchAndFetchLyrics(
+            title: title,
+            artist: artist,
+            album: album,
+            duration: duration,
+            minimumTopCandidateScore: automaticMatchMinimumScore
+        )
+    }
+
+    private static func searchAndFetchLyrics(
+        title: String,
+        artist: String?,
+        album: String?,
+        duration: Double?,
+        minimumTopCandidateScore: Double?
+    ) async -> AutomaticFetchResult {
         Self.logger.info("[LyricsSearchHelper] searchAndFetchBestLyrics called for: '\(title)' by '\(artist ?? "unknown")'")
 
         let searchResult = await performFullSearch(
@@ -329,7 +385,29 @@ struct LyricsSearchHelper {
         let candidates = searchResult.candidates
         guard !candidates.isEmpty else {
             Self.logger.warning("[LyricsSearchHelper] No candidates found at all")
-            return nil
+            return AutomaticFetchResult(
+                status: .noCandidates,
+                ttml: nil,
+                topCandidate: nil,
+                fetchedCandidate: nil,
+                threshold: minimumTopCandidateScore
+            )
+        }
+
+        let topCandidate = candidateSummary(for: candidates.first)
+        if let minimumTopCandidateScore,
+           let topCandidate,
+           topCandidate.normalizedScore <= minimumTopCandidateScore {
+            Self.logger.warning(
+                "[LyricsSearchHelper] Top candidate rejected by threshold: score=\(topCandidate.normalizedScore) threshold=\(minimumTopCandidateScore) title='\(topCandidate.title)' source=\(topCandidate.source)"
+            )
+            return AutomaticFetchResult(
+                status: .thresholdRejected,
+                ttml: nil,
+                topCandidate: topCandidate,
+                fetchedCandidate: nil,
+                threshold: minimumTopCandidateScore
+            )
         }
 
         for (index, candidate) in candidates.enumerated() {
@@ -337,13 +415,34 @@ struct LyricsSearchHelper {
             let ttml = await fetchLyricsContent(candidate: candidate)
             if let ttml, !ttml.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Self.logger.info("[LyricsSearchHelper] Candidate #\(index + 1) succeeded: '\(candidate.title)' source=\(candidate.source) length=\(ttml.count)")
-                return ttml
+                return AutomaticFetchResult(
+                    status: .matched,
+                    ttml: ttml,
+                    topCandidate: topCandidate,
+                    fetchedCandidate: candidateSummary(for: candidate),
+                    threshold: minimumTopCandidateScore
+                )
             }
             let reason = ttml == nil ? "fetch failed" : "content empty"
             Self.logger.warning("[LyricsSearchHelper] Candidate #\(index + 1) rejected: \(reason) — '\(candidate.title)' source=\(candidate.source)")
         }
 
         Self.logger.warning("[LyricsSearchHelper] All \(candidates.count) candidates failed for '\(title)'")
-        return nil
+        return AutomaticFetchResult(
+            status: .allCandidatesFailed,
+            ttml: nil,
+            topCandidate: topCandidate,
+            fetchedCandidate: nil,
+            threshold: minimumTopCandidateScore
+        )
+    }
+
+    private static func candidateSummary(for candidate: LDDCCandidate?) -> AutomaticFetchCandidateSummary? {
+        guard let candidate else { return nil }
+        return AutomaticFetchCandidateSummary(
+            title: candidate.title,
+            source: candidate.source,
+            normalizedScore: candidate.normalizedScore()
+        )
     }
 }

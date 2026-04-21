@@ -13,7 +13,8 @@ enum LyricsSurfaceRole: String, CaseIterable, Sendable {
     /// Main sidebar lyrics panel - shared with batch editing preview.
     case main = "main"
     
-    /// Fullscreen player lyrics - separate instance for isolation.
+    /// Fullscreen-player UI lyrics surface, shared by both system fullscreen-space
+    /// presentation and embedded-in-window presentation.
     case fullscreen = "fullscreen"
 
     /// Fullscreen cover-blur highlight overlay - transparent auxiliary layer.

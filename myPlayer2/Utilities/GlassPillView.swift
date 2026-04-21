@@ -67,10 +67,10 @@ extension View {
         self
             .glassEffect(
                 materialStyle == .darkGlass ? .regular : .clear,
-                in: RoundedRectangle(cornerRadius: cornerRadius)
+                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: cornerRadius)
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .strokeBorder(
                         GlassStyleTokens.glassBorderColor,
                         lineWidth: GlassStyleTokens.hairlineWidth
@@ -78,13 +78,13 @@ extension View {
                     .allowsHitTesting(false)
             )
             .background(
-                RoundedRectangle(cornerRadius: cornerRadius)
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .fill(GlassStyleTokens.pillOverlay(for: colorScheme, materialStyle: materialStyle))
                     .allowsHitTesting(false)
             )
             .background {
                 if let accentColor {
-                    RoundedRectangle(cornerRadius: cornerRadius)
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                         .fill(
                             accentColor.opacity(
                                 GlassStyleTokens.tintOpacity(

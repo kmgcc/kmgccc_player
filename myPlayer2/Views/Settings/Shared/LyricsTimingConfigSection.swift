@@ -13,6 +13,7 @@ struct LyricsTimingConfigSection: View {
     @Environment(AppSettings.self) private var settings
     @Environment(LyricsViewModel.self) private var lyricsVM
     @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
 
     // Local state for slider binding (fixes UI update issue with @ObservationIgnored properties)
     @State private var leadInMs: Double = 600
@@ -20,11 +21,11 @@ struct LyricsTimingConfigSection: View {
     @State private var globalAdvanceMs: Double = 0
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
             HStack {
                 Text("settings.lyrics.timing")
-                    .font(.subheadline.bold())
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: presentationStyle.sectionTitleFontSize, weight: .semibold))
+                    .foregroundStyle(presentationStyle.secondaryTextColor)
                 Spacer()
                 Button("恢复默认值") {
                     leadInMs = 600
@@ -33,24 +34,25 @@ struct LyricsTimingConfigSection: View {
                     syncToSettings()
                 }
                 .buttonStyle(.borderless)
-                .font(.caption)
+                .font(.system(size: presentationStyle.captionFontSize))
+                .foregroundStyle(presentationStyle.secondaryTextColor)
             }
             Text("参数仅供调试，正常使用无需调整")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+                .font(.system(size: presentationStyle.captionFontSize * 0.92))
+                .foregroundStyle(presentationStyle.tertiaryTextColor)
             Text("同时作用于窗口与全屏歌词")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                .font(.system(size: presentationStyle.captionFontSize * 0.92))
+                .foregroundStyle(presentationStyle.secondaryTextColor)
 
             GroupBox {
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
                     leadInSection
-                    Divider()
+                    Divider().padding(.vertical, presentationStyle.dividerVerticalPadding)
                     nearSwitchGapSection
-                    Divider()
+                    Divider().padding(.vertical, presentationStyle.dividerVerticalPadding)
                     globalAdvanceSection
                 }
-                .padding(12)
+                .padding(presentationStyle.groupPadding)
             }
         }
         .onAppear {
@@ -64,50 +66,59 @@ struct LyricsTimingConfigSection: View {
     }
 
     private var leadInSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: presentationStyle.sliderBlockSpacing) {
             HStack {
                 Text("settings.lyrics.leadin")
+                    .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
+                    .foregroundStyle(presentationStyle.primaryTextColor)
                 Spacer()
                 Text("\(Int(leadInMs)) ms")
-                    .foregroundStyle(themeStore.accentColor)
-                    .font(.system(.subheadline, design: .monospaced))
+                    .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))
+                    .font(.system(size: presentationStyle.rowValueFontSize, weight: .medium, design: .monospaced))
             }
             Slider(value: $leadInMs, in: 0...1200, step: 20)
+                .frame(height: presentationStyle.tabHeight)
             Text("settings.lyrics.leadin_desc")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(.system(size: presentationStyle.captionFontSize))
+                .foregroundStyle(presentationStyle.secondaryTextColor)
         }
     }
 
     private var nearSwitchGapSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: presentationStyle.sliderBlockSpacing) {
             HStack {
                 Text("settings.lyrics.near_switch_gap")
+                    .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
+                    .foregroundStyle(presentationStyle.primaryTextColor)
                 Spacer()
                 Text("\(Int(nearSwitchGapMs)) ms")
-                    .foregroundStyle(themeStore.accentColor)
-                    .font(.system(.subheadline, design: .monospaced))
+                    .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))
+                    .font(.system(size: presentationStyle.rowValueFontSize, weight: .medium, design: .monospaced))
             }
             Slider(value: $nearSwitchGapMs, in: 0...500, step: 5)
+                .frame(height: presentationStyle.tabHeight)
             Text("settings.lyrics.near_switch_gap_desc")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(.system(size: presentationStyle.captionFontSize))
+                .foregroundStyle(presentationStyle.secondaryTextColor)
         }
     }
 
     private var globalAdvanceSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: presentationStyle.sliderBlockSpacing) {
             HStack {
                 Text("歌词整体提前量")
+                    .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
+                    .foregroundStyle(presentationStyle.primaryTextColor)
                 Spacer()
                 Text("\(Int(globalAdvanceMs)) ms")
-                    .foregroundStyle(themeStore.accentColor)
-                    .font(.system(.subheadline, design: .monospaced))
+                    .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))
+                    .font(.system(size: presentationStyle.rowValueFontSize, weight: .medium, design: .monospaced))
             }
             Slider(value: $globalAdvanceMs, in: -1000...1000, step: 10)
+                .frame(height: presentationStyle.tabHeight)
             Text("全曲统一提前（正值=更早显示，负值=更晚显示）。会与单曲时间偏移共同作用。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(.system(size: presentationStyle.captionFontSize))
+                .foregroundStyle(presentationStyle.secondaryTextColor)
         }
     }
 

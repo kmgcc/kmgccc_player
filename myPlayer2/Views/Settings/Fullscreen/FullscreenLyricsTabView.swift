@@ -12,6 +12,7 @@ struct FullscreenLyricsTabView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(LyricsViewModel.self) private var lyricsVM
     @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
 
     // Fullscreen-specific font settings
     @State private var fullscreenLyricsFontNameZh: String = AppSettings.shared.fullscreenLyricsFontNameZh
@@ -39,16 +40,13 @@ struct FullscreenLyricsTabView: View {
     ]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            // Shared timing config
+        VStack(alignment: .leading, spacing: presentationStyle.sectionSpacing) {
             LyricsTimingConfigSection()
                 .environment(settings)
                 .environment(lyricsVM)
 
-            // Fullscreen-specific font configuration
             typographySection
 
-            // Preview
             previewSection
         }
         .onAppear {
@@ -65,34 +63,37 @@ struct FullscreenLyricsTabView: View {
 
     private var typographySection: some View {
         GroupBox {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
                 HStack {
                     Text("全屏歌词样式")
-                        .font(.subheadline.bold())
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: presentationStyle.sectionTitleFontSize, weight: .semibold))
+                        .foregroundStyle(presentationStyle.secondaryTextColor)
                     Spacer()
                     Text("仅影响全屏 AMLL")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
+                        .font(.system(size: presentationStyle.captionFontSize))
+                        .foregroundStyle(presentationStyle.tertiaryTextColor)
                 }
 
-                // Main font size
                 HStack {
                     Text("主歌词字号")
+                        .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
+                        .foregroundStyle(presentationStyle.primaryTextColor)
                     Spacer()
                     Text("\(Int(fullscreenLyricsFontSize)) px")
-                        .foregroundStyle(themeStore.accentColor)
-                        .monospacedDigit()
+                        .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))
+                        .font(.system(size: presentationStyle.rowValueFontSize, weight: .medium, design: .monospaced))
                 }
                 Slider(
                     value: $fullscreenLyricsFontSize,
                     in: 24...72,
                     step: 1
                 )
+                .frame(height: presentationStyle.tabHeight)
 
-                // Main font weight
                 HStack {
                     Text("主歌词字重")
+                        .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
+                        .foregroundStyle(presentationStyle.primaryTextColor)
                     Spacer()
                     Picker("", selection: $fullscreenLyricsFontWeight) {
                         ForEach(fontWeights, id: \.value) { weight in
@@ -100,28 +101,31 @@ struct FullscreenLyricsTabView: View {
                         }
                     }
                     .labelsHidden()
-                    .frame(width: 140)
+                    .frame(width: presentationStyle.compactPickerWidth)
                 }
 
-                Divider()
+                Divider().padding(.vertical, presentationStyle.dividerVerticalPadding)
 
-                // Translation font size
                 HStack {
                     Text("翻译字号")
+                        .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
+                        .foregroundStyle(presentationStyle.primaryTextColor)
                     Spacer()
                     Text("\(Int(fullscreenLyricsTranslationFontSize)) px")
-                        .foregroundStyle(themeStore.accentColor)
-                        .monospacedDigit()
+                        .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))
+                        .font(.system(size: presentationStyle.rowValueFontSize, weight: .medium, design: .monospaced))
                 }
                 Slider(
                     value: $fullscreenLyricsTranslationFontSize,
                     in: 14...40,
                     step: 1
                 )
+                .frame(height: presentationStyle.tabHeight)
 
-                // Translation font weight
                 HStack {
                     Text("翻译字重")
+                        .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
+                        .foregroundStyle(presentationStyle.primaryTextColor)
                     Spacer()
                     Picker("", selection: $fullscreenLyricsTranslationFontWeight) {
                         ForEach(fontWeights, id: \.value) { weight in
@@ -129,14 +133,15 @@ struct FullscreenLyricsTabView: View {
                         }
                     }
                     .labelsHidden()
-                    .frame(width: 140)
+                    .frame(width: presentationStyle.compactPickerWidth)
                 }
 
-                Divider()
+                Divider().padding(.vertical, presentationStyle.dividerVerticalPadding)
 
-                // Font family pickers
                 HStack {
                     Text("中文字体")
+                        .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
+                        .foregroundStyle(presentationStyle.primaryTextColor)
                     Spacer()
                     Picker("", selection: $fullscreenLyricsFontNameZh) {
                         ForEach(fontFamilies, id: \.self) { family in
@@ -145,11 +150,13 @@ struct FullscreenLyricsTabView: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.menu)
-                    .frame(width: 220)
+                    .frame(width: presentationStyle.pickerWidth)
                 }
 
                 HStack {
                     Text("英文字体")
+                        .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
+                        .foregroundStyle(presentationStyle.primaryTextColor)
                     Spacer()
                     Picker("", selection: $fullscreenLyricsFontNameEn) {
                         ForEach(fontFamilies, id: \.self) { family in
@@ -158,11 +165,13 @@ struct FullscreenLyricsTabView: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.menu)
-                    .frame(width: 220)
+                    .frame(width: presentationStyle.pickerWidth)
                 }
 
                 HStack {
                     Text("翻译字体")
+                        .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
+                        .foregroundStyle(presentationStyle.primaryTextColor)
                     Spacer()
                     Picker("", selection: $fullscreenLyricsTranslationFontName) {
                         ForEach(fontFamilies, id: \.self) { family in
@@ -171,15 +180,15 @@ struct FullscreenLyricsTabView: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.menu)
-                    .frame(width: 220)
+                    .frame(width: presentationStyle.pickerWidth)
                 }
             }
-            .padding(12)
+            .padding(presentationStyle.groupPadding)
         }
     }
 
     private var previewSection: some View {
-        GroupBox("全屏歌词预览") {
+        GroupBox {
             LyricsPreviewCard(
                 title: "",
                 isDarkCard: true,
@@ -191,6 +200,10 @@ struct FullscreenLyricsTabView: View {
                 mainFontSize: fullscreenLyricsFontSize,
                 translationFontSize: fullscreenLyricsTranslationFontSize
             )
+        } label: {
+            Text("全屏歌词预览")
+                .font(.system(size: presentationStyle.sectionTitleFontSize, weight: .semibold))
+                .foregroundStyle(presentationStyle.secondaryTextColor)
         }
     }
 

@@ -21,6 +21,43 @@ struct SkinPreviewCard<Preview: View>: View {
 
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
+
+    private var selectionAccentColor: Color {
+        FullscreenSelectionAccentStyle.adjustedAccentColor(from: themeStore.accentNSColor)
+    }
+
+    private var contentInset: CGFloat {
+        presentationStyle.isCompact ? presentationStyle.skinContentInset : max(4, cornerRadius * 0.28)
+    }
+
+    private var contentCornerRadius: CGFloat {
+        max(8, cornerRadius - contentInset)
+    }
+
+    private var contentVerticalPadding: CGFloat {
+        presentationStyle.isCompact ? presentationStyle.skinContentVerticalPadding : max(8, previewSize * 0.18)
+    }
+
+    private var contentHorizontalPadding: CGFloat {
+        presentationStyle.isCompact ? presentationStyle.skinContentHorizontalPadding : max(8, previewSize * 0.16)
+    }
+
+    private var contentSpacing: CGFloat {
+        presentationStyle.isCompact ? presentationStyle.skinContentSpacing : max(6, previewSize * 0.125)
+    }
+
+    private var titleMinHeight: CGFloat {
+        presentationStyle.isCompact ? presentationStyle.skinTitleMinHeight : 16
+    }
+
+    private var outerShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+    }
+
+    private var contentShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: contentCornerRadius, style: .continuous)
+    }
 
     init(
         title: String,
@@ -44,44 +81,150 @@ struct SkinPreviewCard<Preview: View>: View {
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: max(6, previewSize * 0.125)) {
-                preview()
-                    .frame(width: 80, height: 80)
-                    .scaleEffect(previewSize / 80)
-                    .frame(width: previewSize, height: previewSize)
+            ZStack {
+                background
 
-                Text(title)
-                    .font(.system(size: titleFontSize, weight: isSelected ? .semibold : .medium))
-                    .foregroundStyle(isSelected ? themeStore.accentColor : Color.primary.opacity(0.7))
-                    .lineLimit(1)
+                VStack(spacing: contentSpacing) {
+                    preview()
+                        .frame(width: 80, height: 80)
+                        .scaleEffect((isSelected ? 1.07 : 1.0) * previewSize / 80)
+                        .frame(width: previewSize, height: previewSize)
+                        .shadow(
+                            color: isSelected ? selectionAccentColor.opacity(0.24) : .clear,
+                            radius: isSelected ? 12 : 0,
+                            x: 0,
+                            y: isSelected ? 4 : 0
+                        )
+
+                    Text(title)
+                        .font(.system(size: titleFontSize, weight: isSelected ? .semibold : .medium))
+                        .foregroundStyle(
+                            presentationStyle.skinTitleColor(
+                                selected: isSelected,
+                                accentColor: selectionAccentColor,
+                                colorScheme: colorScheme
+                            )
+                        )
+                        .shadow(
+                            color: isSelected ? Color.black.opacity(0.18) : .clear,
+                            radius: 6,
+                            x: 0,
+                            y: 1
+                        )
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, minHeight: titleMinHeight)
+                }
+                .padding(.horizontal, contentHorizontalPadding)
+                .padding(.vertical, contentVerticalPadding)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .background(contentSurface)
+                .clipShape(contentShape)
+                .padding(contentInset)
             }
             .frame(width: cardSize.width, height: cardSize.height)
-            .background(background)
+            .background(
+                outerShape
+                    .fill(Color.clear)
+            )
+            .liquidGlassRect(
+                cornerRadius: cornerRadius,
+                colorScheme: colorScheme,
+                accentColor: isSelected ? selectionAccentColor : nil,
+                prominence: isSelected ? .prominent : .standard,
+                materialStyle: presentationStyle.glassMaterialStyle,
+                isFloating: false
+            )
             .overlay(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                outerShape
                     .strokeBorder(borderColor, lineWidth: isSelected ? 2 : 1)
             )
-            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .clipShape(outerShape)
+            .shadow(
+                color: isSelected ? selectionAccentColor.opacity(0.20) : .clear,
+                radius: isSelected ? 16 : 0,
+                x: 0,
+                y: isSelected ? 7 : 0
+            )
         }
         .buttonStyle(SkinCardButtonStyle())
     }
 
     // MARK: - Appearance
 
+    private var contentSurface: some View {
+        contentShape
+            .fill(contentSurfaceFill)
+            .overlay(
+                contentShape
+                    .strokeBorder(contentSurfaceStroke, lineWidth: isSelected ? 1.3 : 0.7)
+            )
+            .overlay(
+                contentShape
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(isSelected ? 0.08 : 0.04),
+                                Color.white.opacity(0.018),
+                                Color.clear,
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+            )
+    }
+
+    private var contentSurfaceFill: Color {
+        let base = GlassStyleTokens.pillOverlay(
+            for: colorScheme,
+            materialStyle: presentationStyle.glassMaterialStyle
+        )
+        if isSelected {
+            return selectionAccentColor.opacity(0.09)
+        }
+        return base.opacity(presentationStyle.forcesWhiteText ? 0.84 : 0.68)
+    }
+
+    private var contentSurfaceStroke: Color {
+        isSelected ? selectionAccentColor.opacity(0.42) : Color.white.opacity(0.10)
+    }
+
     private var background: some View {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            .fill(isSelected ? themeStore.accentColor.opacity(colorScheme == .dark ? 0.10 : 0.08) : Color.clear)
+            .fill(
+                isSelected
+                    ? selectionAccentColor.opacity(colorScheme == .dark ? 0.16 : 0.12)
+                    : Color.clear
+            )
             .overlay(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(Color.secondary.opacity(0.04))
+                outerShape
+                    .fill(
+                        presentationStyle.forcesWhiteText
+                            ? Color.white.opacity(isSelected ? 0.11 : 0.04)
+                            : Color.secondary.opacity(0.04)
+                    )
+            )
+            .overlay(
+                outerShape
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(isSelected ? 0.12 : 0.05),
+                                Color.white.opacity(0.02),
+                                Color.clear,
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
             )
     }
 
     private var borderColor: Color {
         if isSelected {
-            return themeStore.accentColor.opacity(0.65)
+            return selectionAccentColor.opacity(0.96)
         }
-        return Color.primary.opacity(colorScheme == .dark ? 0.12 : 0.10)
+        return Color.clear
     }
 }
 

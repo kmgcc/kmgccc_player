@@ -693,6 +693,32 @@ final class ImportEnrichmentService {
         Log.info("[ImportEnrichment] service deinit", category: .import)
     }
 
+    func cancelEnrichment(for trackIDs: Set<UUID>) async {
+        guard !trackIDs.isEmpty else { return }
+
+        queue.removeAll { trackIDs.contains($0.trackID) }
+        queuedRequests = queuedRequests.filter { !trackIDs.contains($0.trackID) }
+        runningRequests = runningRequests.filter { !trackIDs.contains($0.trackID) }
+
+        for trackID in trackIDs {
+            trackByID[trackID] = nil
+            itemStates[trackID] = nil
+            pendingFlushPatches[trackID] = nil
+        }
+
+        if queue.isEmpty, runningRequests.isEmpty, pendingFlushPatches.isEmpty {
+            flushTask?.cancel()
+            flushTask = nil
+            isFlushing = false
+        }
+
+        refreshProgress()
+        Log.info(
+            "[ImportEnrichment] cancelled deleted tracks count=\(trackIDs.count)",
+            category: .import
+        )
+    }
+
     func enqueueTracks(_ tracks: [Track]) {
         if hasOutstandingWork == false {
             resetProgressIfIdle()
@@ -1458,6 +1484,10 @@ final class FileImportService: FileImportServiceProtocol {
     }
 
     // MARK: - Public Methods
+
+    func cancelEnrichment(for trackIDs: Set<UUID>) async {
+        await importEnrichmentService.cancelEnrichment(for: trackIDs)
+    }
 
     func pickImportURLs(triggeredAt _: Date) async -> [URL]? {
         let panel = NSOpenPanel()

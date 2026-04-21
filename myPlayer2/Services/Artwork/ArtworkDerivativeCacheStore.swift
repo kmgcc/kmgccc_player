@@ -96,6 +96,10 @@ actor ArtworkDerivativeCacheStore {
         try? fileManager.createDirectory(at: diskRootURL, withIntermediateDirectories: true)
     }
 
+    func clearMemory() {
+        memoryCache.removeAllObjects()
+    }
+
     private func setMemoryImage(_ image: NSImage, cacheKey: String) {
         memoryCache.setObject(
             ArtworkDerivativeImageBox(image: image),

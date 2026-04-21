@@ -14,6 +14,7 @@ struct SettingsTabSelector: View {
     let fillsWidth: Bool
     @Binding var selectedTab: Int
     @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
 
     init(tabs: [String], selectedTab: Binding<Int>, fillsWidth: Bool = false) {
         self.tabs = tabs
@@ -47,19 +48,47 @@ struct SettingsTabSelector: View {
             },
             content: { index, isSelected in
                 Text(tabs[index])
-                    .font(.system(size: 13, weight: isSelected ? .medium : .regular))
-                    .foregroundStyle(isSelected ? themeStore.accentColor : .secondary)
-                    .frame(minWidth: 72, maxWidth: fillsWidth ? .infinity : nil)
-                    .padding(.vertical, 6)
+                    .font(.system(size: presentationStyle.tabFontSize, weight: isSelected ? .medium : .regular))
+                    .foregroundStyle(
+                        isSelected
+                            ? presentationStyle.selectedTextColor(accentColor: themeStore.accentColor)
+                            : presentationStyle.secondaryTextColor
+                    )
+                    .frame(
+                        minWidth: presentationStyle.tabMinWidth,
+                        maxWidth: fillsWidth ? .infinity : nil,
+                        minHeight: presentationStyle.tabHeight
+                    )
+                    .padding(.horizontal, presentationStyle.tabHorizontalPadding)
+                    .padding(.vertical, presentationStyle.tabVerticalPadding)
                     .contentShape(Rectangle())
             }
         )
-        .padding(.horizontal, 4)
-        .padding(.vertical, 3)
-        .background(
+        .padding(.horizontal, presentationStyle.tabTrackHorizontalPadding)
+        .padding(.vertical, presentationStyle.tabTrackVerticalPadding)
+        .background(tabTrackBackground)
+    }
+
+    @ViewBuilder
+    private var tabTrackBackground: some View {
+        if presentationStyle.usesGlassSectionCards {
             Capsule()
-                .fill(Color.secondary.opacity(0.08))
-        )
+                .fill(Color.clear)
+                .liquidGlassPill(
+                    colorScheme: .dark,
+                    accentColor: nil,
+                    prominence: .standard,
+                    materialStyle: presentationStyle.glassMaterialStyle,
+                    isFloating: false
+                )
+                .overlay(
+                    Capsule()
+                        .fill(Color.white.opacity(0.02))
+                )
+        } else {
+            Capsule()
+                .fill(presentationStyle.segmentedTrackColor)
+        }
     }
 }
 

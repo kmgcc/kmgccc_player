@@ -3,21 +3,32 @@
 //  myPlayer2
 //
 //  kmgccc_player - Fullscreen Window Manager
-//  Manages a separate fullscreen window for the player.
+//  Coordinates fullscreen-player presentation across a separate fullscreen window
+//  and an embedded main-window route.
 //
 
 import AppKit
 import Combine
 import SwiftUI
 
-/// Manages a separate fullscreen window for the player.
-/// Creates a new window that enters fullscreen mode automatically.
+/// Coordinates fullscreen-player presentation state and the dedicated system fullscreen window.
+/// The same fullscreen player UI can be hosted either in a separate fullscreen space
+/// or inside the main window detail area.
 @MainActor
 final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObject {
+    enum PresentationMode: Equatable {
+        case none
+        case systemFullscreenSpace
+        case embeddedInWindow
+
+        var usesFullscreenPlayerUI: Bool {
+            self != .none
+        }
+    }
 
     static let shared = FullscreenWindowManager()
 
-    @Published private(set) var isFullscreenActive = false
+    @Published private(set) var presentationMode: PresentationMode = .none
 
     private var fullscreenWindow: NSWindow?
     private(set) var isTransitioning = false
@@ -27,11 +38,14 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
 
     // References to shared dependencies (set from AppRootView)
     weak var playerVM: PlayerViewModel?
+    weak var libraryVM: LibraryViewModel?
     weak var playbackCoordinator: PlaybackCoordinator?
     weak var lyricsVM: LyricsViewModel?
     weak var ledMeterProvider: LEDMeterServiceProvider?
     weak var skinManager: SkinManager?
     weak var uiState: UIStateViewModel?
+    weak var coverDownloadService: CoverDownloadService?
+    weak var netEaseCoverService: NetEaseCoverService?
 
     private var suspendedMainLyricsVisibility: Bool?
 
@@ -39,8 +53,25 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         super.init()
     }
 
+    var isFullscreenPlayerPresented: Bool {
+        presentationMode.usesFullscreenPlayerUI
+    }
+
+    var usesFullscreenPlayerUI: Bool {
+        presentationMode.usesFullscreenPlayerUI
+    }
+
+    var isSystemFullscreenActive: Bool {
+        presentationMode == .systemFullscreenSpace
+    }
+
+    var isWindowedFullscreenActive: Bool {
+        presentationMode == .embeddedInWindow
+    }
+
     /// Configure the manager with shared dependencies.
     func configure(
+        libraryVM: LibraryViewModel,
         playerVM: PlayerViewModel,
         playbackCoordinator: PlaybackCoordinator,
         lyricsVM: LyricsViewModel,
@@ -48,6 +79,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         skinManager: SkinManager,
         uiState: UIStateViewModel
     ) {
+        self.libraryVM = libraryVM
         self.playerVM = playerVM
         self.playbackCoordinator = playbackCoordinator
         self.lyricsVM = lyricsVM
@@ -56,9 +88,21 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         self.uiState = uiState
     }
 
+    func configureEditorServices(
+        coverDownloadService: CoverDownloadService,
+        netEaseCoverService: NetEaseCoverService
+    ) {
+        self.coverDownloadService = coverDownloadService
+        self.netEaseCoverService = netEaseCoverService
+    }
+
     /// Show the fullscreen player window.
     func showFullscreenWindow() {
         guard !isTransitioning else {
+            return
+        }
+
+        guard presentationMode != .embeddedInWindow else {
             return
         }
 
@@ -77,7 +121,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         if let window = fullscreenWindow {
             suspendMainLyricsIfNeeded()
             previousKeyWindow = NSApp.keyWindow === window ? previousKeyWindow : NSApp.keyWindow
-            isFullscreenActive = true
+            presentationMode = .systemFullscreenSpace
             installEscapeMonitorIfNeeded()
             window.makeKeyAndOrderFront(nil)
             window.orderFrontRegardless()
@@ -89,7 +133,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         }
 
         isTransitioning = true
-        isFullscreenActive = true
+        presentationMode = .systemFullscreenSpace
 
         let targetScreen = NSScreen.main ?? NSScreen.screens.first
         let fullscreenLyricsVM = makeFullscreenLyricsViewModel()
@@ -125,7 +169,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         window.collectionBehavior = [.fullScreenPrimary, .canJoinAllSpaces, .fullScreenAllowsTiling]
 
         // Create the content view with all necessary environment injected
-        let contentView = FullscreenPlayerView {
+        let baseContentView = FullscreenPlayerView(hostContext: .systemFullscreenSpace) {
             self.closeFullscreenWindow()
         }
         .environment(playerVM)
@@ -135,6 +179,24 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         .environment(AppSettings.shared)
         .environment(skinManager)
         .environmentObject(ThemeStore.shared)
+
+        let contentView: AnyView
+        if let libraryVM,
+           let coverDownloadService,
+           let netEaseCoverService {
+            contentView = AnyView(
+                baseContentView
+                    .environment(libraryVM)
+                    .environment(coverDownloadService)
+                    .environment(netEaseCoverService)
+            )
+        } else {
+            Log.error(
+                "Fullscreen editor dependencies missing: libraryVM=\(libraryVM != nil), coverDownloadService=\(coverDownloadService != nil), netEaseCoverService=\(netEaseCoverService != nil)",
+                category: .fullscreen
+            )
+            contentView = AnyView(baseContentView)
+        }
 
         let hostingView = NSHostingView(rootView: contentView)
         window.contentView = hostingView
@@ -147,6 +209,31 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
 
         window.makeKeyAndOrderFront(nil)
         window.toggleFullScreen(nil)
+    }
+
+    /// Present the fullscreen player UI inside the main window detail area.
+    func showFullscreenPlayerInWindow() {
+        guard !isTransitioning else { return }
+        guard presentationMode == .none else { return }
+
+        guard playerVM != nil,
+              playbackCoordinator != nil,
+              ledMeterProvider != nil,
+              skinManager != nil else {
+            Log.error("Embedded fullscreen dependencies not configured", category: .fullscreen)
+            return
+        }
+
+        LyricsSurfaceManager.shared.requestMode(.fullscreen)
+        suspendMainLyricsIfNeeded()
+        presentationMode = .embeddedInWindow
+    }
+
+    func closeFullscreenPlayerInWindow() {
+        guard presentationMode == .embeddedInWindow else { return }
+        LyricsSurfaceManager.shared.requestMode(.main)
+        presentationMode = .none
+        restoreSuspendedMainLyricsIfNeeded()
     }
 
     /// Close the fullscreen window safely.
@@ -178,7 +265,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         window.delegate = nil
         fullscreenWindow = nil
         isTransitioning = false
-        isFullscreenActive = false
+        presentationMode = .none
         removeEscapeMonitor()
         teardownFullscreenLyricsIfNeeded()
 
@@ -189,18 +276,25 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
                 NSApp.windows.first(where: { $0 !== window && $0.isVisible })?.makeKeyAndOrderFront(
                     nil)
             }
-            if self.suspendedMainLyricsVisibility == true {
-                self.uiState?.lyricsVisible = true
-            }
-            self.suspendedMainLyricsVisibility = nil
             self.previousKeyWindow = nil
         }
+        restoreSuspendedMainLyricsIfNeeded()
     }
 
     private func suspendMainLyricsIfNeeded() {
         suspendedMainLyricsVisibility = uiState?.lyricsVisible
         if uiState?.lyricsVisible == true {
             uiState?.lyricsVisible = false
+        }
+    }
+
+    private func restoreSuspendedMainLyricsIfNeeded() {
+        let shouldRestoreLyrics = suspendedMainLyricsVisibility == true
+        suspendedMainLyricsVisibility = nil
+
+        guard shouldRestoreLyrics else { return }
+        DispatchQueue.main.async {
+            self.uiState?.lyricsVisible = true
         }
     }
 

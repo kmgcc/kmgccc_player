@@ -298,6 +298,7 @@ final class PlaybackCoordinator {
             externalEffectiveAlbum: nil,
             externalUsesOverride: false,
             externalMatchConfidence: nil,
+            externalLyricsStatusMessage: nil,
             isControlEnabled: true,
             isSeekEnabled: playerVM.duration > 0,
             emptyTitleKey: "mini.not_playing"

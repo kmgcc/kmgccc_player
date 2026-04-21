@@ -25,7 +25,7 @@ struct KmgcccCassetteSkin: NowPlayingSkin {
     }
 
     func makeArtwork(context: SkinContext) -> AnyView {
-        AnyView(CassetteArtwork(context: context))
+        AnyView(CassetteArtwork(context: context).equatable())
     }
 
     func makeOverlay(context: SkinContext) -> AnyView? {
@@ -292,11 +292,10 @@ private final class CassetteThemeAssetCache {
     }
 }
 
-private struct CassetteArtwork: View {
+private struct CassetteArtwork: View, Equatable {
     let context: SkinContext
     @AppStorage("skin.kmgcccCassette.showKmgLook") private var showKmgLook: Bool = false
     @Environment(\.displayScale) private var displayScale
-    @StateObject private var fullscreenManager = FullscreenWindowManager.shared
     @State private var adjustedArtworkImage: NSImage?
     @State private var adjustedArtworkKey: String?
     @State private var renderKey: String = ""
@@ -309,11 +308,25 @@ private struct CassetteArtwork: View {
     @AppStorage("skin.kmgcccCassette.visualizerMode") private var normalVisualizerMode: String = "off"
     @AppStorage("skin.kmgcccCassette.fullscreen.visualizerMode") private var fullscreenVisualizerMode: String = "off"
 
+    static func == (lhs: CassetteArtwork, rhs: CassetteArtwork) -> Bool {
+        lhs.showKmgLook == rhs.showKmgLook
+            && lhs.normalVisualizerMode == rhs.normalVisualizerMode
+            && lhs.fullscreenVisualizerMode == rhs.fullscreenVisualizerMode
+            && lhs.context.track?.id == rhs.context.track?.id
+            && lhs.context.track?.artworkChecksum == rhs.context.track?.artworkChecksum
+            && lhs.context.theme.colorScheme == rhs.context.theme.colorScheme
+            && lhs.context.playback.isPlaying == rhs.context.playback.isPlaying
+            && lhs.context.presentationMode == rhs.context.presentationMode
+            && lhs.context.lyricsVisible == rhs.context.lyricsVisible
+            && lhs.context.contentBounds.size == rhs.context.contentBounds.size
+            && waveformPaletteSignature(for: lhs.context) == waveformPaletteSignature(for: rhs.context)
+    }
+
     var body: some View {
-        let isFullscreen = fullscreenManager.isFullscreenActive
+        let usesFullscreenLayout = context.usesFullscreenPlayerLayout
         let metrics = CassetteLayout.metrics(
             for: context,
-            isFullscreen: isFullscreen,
+            isFullscreen: usesFullscreenLayout,
             normalVisualizerMode: normalVisualizerMode,
             fullscreenVisualizerMode: fullscreenVisualizerMode
         )
@@ -433,6 +446,26 @@ private struct CassetteArtwork: View {
     private func kmgLookWidth(for size: CGSize) -> CGFloat {
         let base = size.width * 0.22
         return min(max(60, base), 120)
+    }
+
+    private static func waveformPaletteSignature(for context: SkinContext) -> Int {
+        var hasher = Hasher()
+        for color in context.theme.artworkPalette.prefix(2) {
+            append(color: color, to: &hasher)
+        }
+        append(color: context.theme.artworkAverageColor, to: &hasher)
+        return hasher.finalize()
+    }
+
+    private static func append(color: NSColor?, to hasher: inout Hasher) {
+        guard let resolved = color?.usingColorSpace(.deviceRGB) ?? color else {
+            hasher.combine(0)
+            return
+        }
+        hasher.combine(Int(resolved.redComponent * 1_000))
+        hasher.combine(Int(resolved.greenComponent * 1_000))
+        hasher.combine(Int(resolved.blueComponent * 1_000))
+        hasher.combine(Int(resolved.alphaComponent * 1_000))
     }
 
     private func scheduleAdjustedArtworkProcessing(targetSize: CGSize) {
@@ -1396,15 +1429,14 @@ private struct HolesOverlay: View {
 
 private struct CassetteOverlay: View {
     let context: SkinContext
-    @StateObject private var fullscreenManager = FullscreenWindowManager.shared
     @AppStorage("skin.kmgcccCassette.visualizerMode") private var normalVisualizerMode: String = "off"
     @AppStorage("skin.kmgcccCassette.fullscreen.visualizerMode") private var fullscreenVisualizerMode: String = "off"
 
     var body: some View {
-        let isFullscreen = fullscreenManager.isFullscreenActive
+        let usesFullscreenLayout = context.usesFullscreenPlayerLayout
         let metrics = CassetteLayout.metrics(
             for: context,
-            isFullscreen: isFullscreen,
+            isFullscreen: usesFullscreenLayout,
             normalVisualizerMode: normalVisualizerMode,
             fullscreenVisualizerMode: fullscreenVisualizerMode
         )

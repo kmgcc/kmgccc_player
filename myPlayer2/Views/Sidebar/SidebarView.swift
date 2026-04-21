@@ -330,8 +330,8 @@ struct SidebarView: View {
                 .foregroundStyle(.primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
                 .symbolRenderingMode(.palette)
                 .foregroundStyle(.primary, themeStore.accentColor)
         }

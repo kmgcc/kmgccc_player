@@ -804,7 +804,6 @@ private final class RotatingCDDiscHostView: NSView {
 
 private struct RotatingCoverArtwork: View {
     let context: SkinContext
-    @StateObject private var fullscreenManager = FullscreenWindowManager.shared
     @StateObject private var rotation = RotatingCoverRotation()
     @StateObject private var cdMotionBlurCache = RotatingCoverCDMotionBlurCache()
 
@@ -823,9 +822,9 @@ private struct RotatingCoverArtwork: View {
     }
 
     var body: some View {
-        let isFullscreen = fullscreenManager.isFullscreenActive
-        let layout = RotatingCoverLayout.metrics(for: context, isFullscreen: isFullscreen)
-        let visualizerMode = isFullscreen ? fullscreenVisualizerMode : normalVisualizerMode
+        let usesFullscreenLayout = context.usesFullscreenPlayerLayout
+        let layout = RotatingCoverLayout.metrics(for: context, isFullscreen: usesFullscreenLayout)
+        let visualizerMode = usesFullscreenLayout ? fullscreenVisualizerMode : normalVisualizerMode
         let reduceMotion = context.theme.reduceMotion
 
         VStack(spacing: 32) {
@@ -860,7 +859,7 @@ private struct RotatingCoverArtwork: View {
                     dotSize: 12,
                     spacing: 8,
                     pillTint: context.theme.artworkAccentColor,
-                    isFullscreen: isFullscreen
+                    isFullscreen: usesFullscreenLayout
                 )
             }
         }

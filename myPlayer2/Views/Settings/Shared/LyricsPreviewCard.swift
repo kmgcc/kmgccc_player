@@ -18,6 +18,7 @@ struct LyricsPreviewCard: View {
     let translationFontName: String
     let mainFontSize: Double
     let translationFontSize: Double
+    @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
 
     init(
         title: String,
@@ -58,12 +59,12 @@ struct LyricsPreviewCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
             Text(title)
-                .font(.caption)
+                .font(.system(size: presentationStyle.captionFontSize))
                 .foregroundStyle(titleColor)
 
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: presentationStyle.sliderCaptionSpacing) {
                 Text("settings.lyrics.preview_zh")
                     .font(.custom(mainFontNameZh, size: CGFloat(mainFontSize)))
                     .fontWeight(fontWeight(mainWeight))
@@ -79,11 +80,20 @@ struct LyricsPreviewCard: View {
                 .fontWeight(fontWeight(translationWeight))
                 .foregroundStyle(translationColor)
         }
-        .padding(12)
+        .padding(presentationStyle.groupPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(backgroundColor, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(
+            backgroundColor,
+            in: RoundedRectangle(
+                cornerRadius: presentationStyle.sectionCornerRadius * 0.72,
+                style: .continuous
+            )
+        )
         .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(
+                cornerRadius: presentationStyle.sectionCornerRadius * 0.72,
+                style: .continuous
+            )
                 .strokeBorder(
                     isDarkCard ? Color.white.opacity(0.08) : Color.black.opacity(0.10),
                     lineWidth: 1

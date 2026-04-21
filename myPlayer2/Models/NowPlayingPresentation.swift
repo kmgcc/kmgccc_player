@@ -32,6 +32,7 @@ struct NowPlayingPresentation {
     var externalEffectiveAlbum: String?
     var externalUsesOverride: Bool
     var externalMatchConfidence: Double?
+    var externalLyricsStatusMessage: String?
     var isControlEnabled: Bool
     var isSeekEnabled: Bool
     var emptyTitleKey: String
@@ -61,6 +62,7 @@ struct NowPlayingPresentation {
         externalEffectiveAlbum: nil,
         externalUsesOverride: false,
         externalMatchConfidence: nil,
+        externalLyricsStatusMessage: nil,
         isControlEnabled: false,
         isSeekEnabled: false,
         emptyTitleKey: "mini.not_playing"
@@ -91,6 +93,7 @@ struct NowPlayingPresentation {
         externalEffectiveAlbum: nil,
         externalUsesOverride: false,
         externalMatchConfidence: nil,
+        externalLyricsStatusMessage: nil,
         isControlEnabled: false,
         isSeekEnabled: false,
         emptyTitleKey: "apple_music.not_running"
@@ -132,6 +135,7 @@ extension NowPlayingPresentation {
         externalEffectiveAlbum == other.externalEffectiveAlbum &&
         externalUsesOverride == other.externalUsesOverride &&
         externalMatchConfidence == other.externalMatchConfidence &&
+        externalLyricsStatusMessage == other.externalLyricsStatusMessage &&
         isControlEnabled == other.isControlEnabled &&
         isSeekEnabled == other.isSeekEnabled &&
         emptyTitleKey == other.emptyTitleKey

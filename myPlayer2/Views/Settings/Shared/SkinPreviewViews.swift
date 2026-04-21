@@ -15,6 +15,9 @@ enum SkinPreviewStyle {
     static let primaryFill = Color.primary.opacity(0.06)
     static let accentFill = Color.primary.opacity(0.14)
     static let cornerRadius: CGFloat = 8
+    static let selectedStrokeOpacity: Double = 0.92
+    static let selectedFillOpacity: Double = 0.26
+    static let selectedGlyphOpacity: Double = 0.99
 }
 
 // MARK: - Classic Skin Preview
@@ -25,13 +28,13 @@ struct ClassicSkinPreview: View {
     let accentColor: Color
 
     private var strokeColor: Color {
-        isSelected ? accentColor.opacity(0.40) : SkinPreviewStyle.primaryStroke
+        isSelected ? accentColor.opacity(SkinPreviewStyle.selectedStrokeOpacity) : SkinPreviewStyle.primaryStroke
     }
     private var fillColor: Color {
-        isSelected ? accentColor.opacity(0.10) : SkinPreviewStyle.primaryFill
+        isSelected ? accentColor.opacity(SkinPreviewStyle.selectedFillOpacity) : SkinPreviewStyle.primaryFill
     }
     private var dotColorBase: Double {
-        isSelected ? 0.22 : 0.12
+        isSelected ? 0.40 : 0.12
     }
 
     var body: some View {
@@ -44,7 +47,11 @@ struct ClassicSkinPreview: View {
                 .overlay(
                     Image(systemName: "music.note")
                         .font(.system(size: 14, weight: .light))
-                        .foregroundStyle(isSelected ? accentColor.opacity(0.45) : Color.primary.opacity(0.25))
+                        .foregroundStyle(
+                            isSelected
+                                ? accentColor.opacity(SkinPreviewStyle.selectedGlyphOpacity)
+                                : Color.primary.opacity(0.25)
+                        )
                 )
 
             // LED dots
@@ -68,10 +75,10 @@ struct RotatingSkinPreview: View {
     let accentColor: Color
 
     private var strokeColor: Color {
-        isSelected ? accentColor.opacity(0.40) : SkinPreviewStyle.primaryStroke
+        isSelected ? accentColor.opacity(SkinPreviewStyle.selectedStrokeOpacity) : SkinPreviewStyle.primaryStroke
     }
     private var fillColor: Color {
-        isSelected ? accentColor.opacity(0.10) : SkinPreviewStyle.primaryFill
+        isSelected ? accentColor.opacity(SkinPreviewStyle.selectedFillOpacity) : SkinPreviewStyle.primaryFill
     }
 
     var body: some View {
@@ -98,7 +105,7 @@ struct RotatingSkinPreview: View {
 
             // Center hole
             Circle()
-                .fill(isSelected ? accentColor.opacity(0.50) : Color.primary.opacity(0.35))
+                .fill(isSelected ? accentColor.opacity(0.92) : Color.primary.opacity(0.35))
                 .frame(width: 5, height: 5)
         }
     }
@@ -112,10 +119,10 @@ struct CassetteSkinPreview: View {
     let accentColor: Color
 
     private var strokeColor: Color {
-        isSelected ? accentColor.opacity(0.40) : SkinPreviewStyle.primaryStroke
+        isSelected ? accentColor.opacity(SkinPreviewStyle.selectedStrokeOpacity) : SkinPreviewStyle.primaryStroke
     }
     private var fillColor: Color {
-        isSelected ? accentColor.opacity(0.10) : SkinPreviewStyle.primaryFill
+        isSelected ? accentColor.opacity(SkinPreviewStyle.selectedFillOpacity) : SkinPreviewStyle.primaryFill
     }
 
     var body: some View {
@@ -154,22 +161,22 @@ struct CoverGradientBlurSkinPreview: View {
     let accentColor: Color
 
     private var strokeColor: Color {
-        isSelected ? accentColor.opacity(0.40) : SkinPreviewStyle.primaryStroke
+        isSelected ? accentColor.opacity(SkinPreviewStyle.selectedStrokeOpacity) : SkinPreviewStyle.primaryStroke
     }
     private var fillColor: Color {
-        isSelected ? accentColor.opacity(0.10) : SkinPreviewStyle.primaryFill
+        isSelected ? accentColor.opacity(SkinPreviewStyle.selectedFillOpacity) : SkinPreviewStyle.primaryFill
     }
 
     var body: some View {
         ZStack {
             // Outer blur halo
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color.primary.opacity(0.03))
+                .fill(isSelected ? accentColor.opacity(0.12) : Color.primary.opacity(0.03))
                 .frame(width: 62, height: 62)
 
             // Mid soft layer
             RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .fill(Color.primary.opacity(0.06))
+                .fill(isSelected ? accentColor.opacity(0.16) : Color.primary.opacity(0.06))
                 .frame(width: 56, height: 56)
 
             // Sharp cover
@@ -180,7 +187,11 @@ struct CoverGradientBlurSkinPreview: View {
                 .overlay(
                     Image(systemName: "photo")
                         .font(.system(size: 14, weight: .light))
-                        .foregroundStyle(isSelected ? accentColor.opacity(0.45) : Color.primary.opacity(0.25))
+                        .foregroundStyle(
+                            isSelected
+                                ? accentColor.opacity(SkinPreviewStyle.selectedGlyphOpacity)
+                                : Color.primary.opacity(0.25)
+                        )
                 )
         }
     }

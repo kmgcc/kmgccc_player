@@ -48,32 +48,36 @@ struct MainLayoutView: View {
                         .navigationTitle("")
                 } detail: {
                     ZStack(alignment: .bottom) {
-                        switch uiState.contentMode {
-                        case .library:
-                            libraryLayout
-                        case .nowPlaying:
-                            nowPlayingLayout
+                        detailBaseContent
+                            .allowsHitTesting(!fullscreenWindowManager.isWindowedFullscreenActive)
+
+                        if !fullscreenWindowManager.isWindowedFullscreenActive {
+                            GeometryReader { detailProxy in
+                                MiniPlayerView()
+                                    .frame(
+                                        width: miniPlayerAvailableWidth(in: detailProxy.size.width),
+                                        alignment: .leading
+                                    )
+                                    .padding(.leading, GlassStyleTokens.miniPlayerHorizontalPadding)
+                                    .padding(.bottom, 12)
+                                    .frame(
+                                        maxWidth: .infinity,
+                                        maxHeight: .infinity,
+                                        alignment: .bottomLeading
+                                    )
+                            }
                         }
 
-                        GeometryReader { detailProxy in
-                            MiniPlayerView()
-                                .frame(
-                                    width: miniPlayerAvailableWidth(in: detailProxy.size.width),
-                                    alignment: .leading
-                                )
-                                .padding(.leading, GlassStyleTokens.miniPlayerHorizontalPadding)
-                                .padding(.bottom, 12)
-                                .frame(
-                                    maxWidth: .infinity,
-                                    maxHeight: .infinity,
-                                    alignment: .bottomLeading
-                                )
+                        if fullscreenWindowManager.isWindowedFullscreenActive {
+                            embeddedFullscreenPlayerRoute
                         }
                     }
                     .ignoresSafeArea(.container, edges: .top)
                     .overlay {
                         ZStack {
-                            if uiState.contentMode == .nowPlaying {
+                            if uiState.contentMode == .nowPlaying
+                                && !fullscreenWindowManager.isWindowedFullscreenActive
+                            {
                                 GeometryReader { detailProxy in
                                     lyricsToggleOverlay
                                         .offset(y: -detailProxy.safeAreaInsets.top)
@@ -141,6 +145,25 @@ struct MainLayoutView: View {
                 uiState.lyricsWidth = clampLyricsWidth(uiState.lyricsWidth)
             }
         }
+    }
+
+    @ViewBuilder
+    private var detailBaseContent: some View {
+        switch uiState.contentMode {
+        case .library:
+            libraryLayout
+        case .nowPlaying:
+            nowPlayingLayout
+        }
+    }
+
+    private var embeddedFullscreenPlayerRoute: some View {
+        FullscreenPlayerView(hostContext: .embeddedWindow) {
+            fullscreenWindowManager.closeFullscreenPlayerInWindow()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .transition(.opacity)
+        .zIndex(1)
     }
 
     // MARK: - Lyrics Resizing
@@ -309,7 +332,7 @@ struct MainLayoutView: View {
     private var shouldShowMainLyricsPanel: Bool {
         uiState.lyricsVisible
             && !uiState.lyricsPanelSuppressedByModal
-            && !fullscreenWindowManager.isFullscreenActive
+            && !fullscreenWindowManager.usesFullscreenPlayerUI
     }
 
     private func resolvedLyricsPanelWidth(in detailWidth: CGFloat) -> CGFloat {
