@@ -37,6 +37,7 @@ struct AMLLWebView: NSViewRepresentable {
     func makeNSView(context: Context) -> WebViewHostView {
         LyricsRuntimeProfile.increment("AMLLWebView.makeNSView")
         let hostView = WebViewHostView()
+        hostView.traceRole = store.role
 
         Log.debug(
             "makeNSView: objectID=\(store.webViewObjectID)",
@@ -179,6 +180,13 @@ struct AMLLWebView: NSViewRepresentable {
             let isAttached = store.preparedWebView?.superview === hostView
 
             Log.debug("tryAttach [\(context)]: hasWindow=\(hasWindow), hasFrame=\(hasFrame), isAttached=\(isAttached), hostFrame=\(hostView.bounds)", category: .webview)
+            if EmbeddedFullscreenTrace.enabled, store.role == LyricsSurfaceRole.fullscreen.rawValue {
+                let isSystemFullscreen = hostView.window?.styleMask.contains(.fullScreen) == true
+                Log.info(
+                    "[EFS t=\(EmbeddedFullscreenTrace.stamp())] AMLL.tryAttach ctx=\(context) role=\(store.role) hasWindow=\(hasWindow) hasFrame=\(hasFrame) isAttached=\(isAttached) hostBounds=\(hostView.bounds.size) isSystemFullscreen=\(isSystemFullscreen)",
+                    category: .webview
+                )
+            }
 
             // If already attached to this host, just ensure frame is correct
             if isAttached {
@@ -247,6 +255,12 @@ struct AMLLWebView: NSViewRepresentable {
                 isSystemFullscreen: isSystemFullscreen,
                 reason: "attachWebView"
             )
+            if EmbeddedFullscreenTrace.enabled, store.role == LyricsSurfaceRole.fullscreen.rawValue {
+                Log.info(
+                    "[EFS t=\(EmbeddedFullscreenTrace.stamp())] AMLL.attachWebView role=\(store.role) webViewBounds=\(webView.bounds.size) hostBounds=\(hostView.bounds.size) isSystemFullscreen=\(isSystemFullscreen)",
+                    category: .webview
+                )
+            }
 
             Log.debug(
                 "Reparented WebView: objectID=\(store.webViewObjectID), attachmentID=\(attachmentID?.uuidString.prefix(8) ?? "nil"), frame=\(webView.frame), window=\(webView.window != nil)",
@@ -308,6 +322,7 @@ struct AMLLWebView: NSViewRepresentable {
 
 final class WebViewHostView: NSView {
     var frameDidChangeHandler: ((WebViewHostView) -> Void)?
+    var traceRole: String = "unknown"
 
     var isMouseInteractionSuppressed = false {
         didSet {
@@ -333,6 +348,13 @@ final class WebViewHostView: NSView {
             next: frame
         )
         frameDidChangeHandler?(self)
+        if EmbeddedFullscreenTrace.enabled, traceRole == LyricsSurfaceRole.fullscreen.rawValue {
+            let isSystemFullscreen = window?.styleMask.contains(.fullScreen) == true
+            Log.info(
+                "[EFS t=\(EmbeddedFullscreenTrace.stamp())] HostView.setFrameSize role=\(traceRole) new=\(newSize) bounds=\(bounds.size) hasWindow=\(window != nil) isSystemFullscreen=\(isSystemFullscreen)",
+                category: .webview
+            )
+        }
     }
 
     override func setFrameOrigin(_ newOrigin: NSPoint) {
@@ -344,6 +366,13 @@ final class WebViewHostView: NSView {
             next: frame
         )
         frameDidChangeHandler?(self)
+        if EmbeddedFullscreenTrace.enabled, traceRole == LyricsSurfaceRole.fullscreen.rawValue {
+            let isSystemFullscreen = window?.styleMask.contains(.fullScreen) == true
+            Log.info(
+                "[EFS t=\(EmbeddedFullscreenTrace.stamp())] HostView.setFrameOrigin role=\(traceRole) origin=\(newOrigin) bounds=\(bounds.size) hasWindow=\(window != nil) isSystemFullscreen=\(isSystemFullscreen)",
+                category: .webview
+            )
+        }
     }
 
     override func layout() {
@@ -364,6 +393,13 @@ final class WebViewHostView: NSView {
             value: window != nil ? "true" : "false"
         )
         frameDidChangeHandler?(self)
+        if EmbeddedFullscreenTrace.enabled, traceRole == LyricsSurfaceRole.fullscreen.rawValue {
+            let isSystemFullscreen = window?.styleMask.contains(.fullScreen) == true
+            Log.info(
+                "[EFS t=\(EmbeddedFullscreenTrace.stamp())] HostView.viewDidMoveToWindow role=\(traceRole) attached=\(window != nil) bounds=\(bounds.size) isSystemFullscreen=\(isSystemFullscreen)",
+                category: .webview
+            )
+        }
     }
 }
 

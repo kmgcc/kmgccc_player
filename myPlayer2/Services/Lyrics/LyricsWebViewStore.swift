@@ -652,6 +652,22 @@ final class LyricsWebViewStore: NSObject {
         let version = dict["version"] as? String ?? "unknown"
         let capabilities = dict["capabilities"] as? [String] ?? []
 
+        if EmbeddedFullscreenTrace.enabled, role == LyricsSurfaceRole.fullscreen.rawValue {
+            let webView = retainedWebView
+            let isSystemFullscreen = webView?.window?.styleMask.contains(.fullScreen) == true
+            let hostBounds = (webView?.superview as? NSView)?.bounds.size ?? .zero
+            let windowFrame = webView?.window?.frame
+            let fontSize: Double? = {
+                guard let json = lastConfigJSON else { return nil }
+                guard let obj = decodeJSONObject(json) as? [String: Any] else { return nil }
+                return obj["fontSize"] as? Double
+            }()
+            Log.info(
+                "[EFS t=\(EmbeddedFullscreenTrace.stamp())] Store.handleOnReady.pre role=\(role) objectID=\(webViewObjectID) isSystemFullscreen=\(isSystemFullscreen) hostBounds=\(hostBounds) webViewBounds=\(webView?.bounds.size ?? .zero) windowFrame=\(String(describing: windowFrame)) lastObservedViewport=\(lastObservedEmbeddedFullscreenViewportSize) fontSize=\(fontSize.map { String(format: "%.2f", $0) } ?? "nil") queuedPreReadyResize=\(hasQueuedEmbeddedFullscreenResizeBeforeReady)",
+                category: .webview
+            )
+        }
+
         // Windowed fullscreen first-entry fix:
         // AMLL (via Pixi) relies on a `window.resize` event to recompute its internal renderer size.
         // When a WKWebView finishes loading before its final host viewport is settled, AMLL can lock
@@ -686,6 +702,15 @@ final class LyricsWebViewStore: NSObject {
         isRecoveryInProgress = false
 
         Log.info("Ready: version=\(version), caps=\(capabilities.count), objectID=\(webViewObjectID)", category: .webview)
+        if EmbeddedFullscreenTrace.enabled, role == LyricsSurfaceRole.fullscreen.rawValue, let webView = retainedWebView {
+            let isSystemFullscreen = webView.window?.styleMask.contains(.fullScreen) == true
+            let hostBounds = (webView.superview as? NSView)?.bounds.size ?? .zero
+            let windowFrame = webView.window?.frame
+            Log.info(
+                "[EFS t=\(EmbeddedFullscreenTrace.stamp())] Store.handleOnReady.post role=\(role) objectID=\(webViewObjectID) isSystemFullscreen=\(isSystemFullscreen) hostBounds=\(hostBounds) webViewBounds=\(webView.bounds.size) windowFrame=\(String(describing: windowFrame)) lastObservedViewport=\(lastObservedEmbeddedFullscreenViewportSize)",
+                category: .webview
+            )
+        }
 
         updateWebContentPointerOcclusionState(isMouseInteractionSuppressed)
 
@@ -729,6 +754,12 @@ final class LyricsWebViewStore: NSObject {
         guard sizeChanged else { return }
 
         lastObservedEmbeddedFullscreenViewportSize = viewportSize
+        if EmbeddedFullscreenTrace.enabled {
+            Log.info(
+                "[EFS t=\(EmbeddedFullscreenTrace.stamp())] Store.noteHostViewportDidChange role=\(role) viewport=\(viewportSize) ready=\(isReady) isSystemFullscreen=\(isSystemFullscreen) reason=\(reason)",
+                category: .webview
+            )
+        }
 
         // If content isn't ready yet, queue the resize event at the front so the very first
         // onReady flush applies it before config/lyrics replay.

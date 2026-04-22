@@ -34,6 +34,8 @@ struct MainLayoutView: View {
     @State private var windowWidth: CGFloat = 0
     @State private var lyricsFlashFilled = false
     @State private var lyricsFlashTicket = 0
+    @State private var lastTracedDetailSize: CGSize = .zero
+    @State private var lastTracedDetailSafeAreaTop: CGFloat = -1
 
     var body: some View {
         GeometryReader { proxy in
@@ -65,25 +67,61 @@ struct MainLayoutView: View {
             .onAppear {
                 syncColumnVisibility(animated: false)
                 updateWindowWidth(proxy.size.width)
+                if EmbeddedFullscreenTrace.enabled {
+                    Log.info(
+                        "[EFS t=\(EmbeddedFullscreenTrace.stamp())] MainLayoutView.appear windowSize=\(proxy.size) sidebarVisible=\(uiState.sidebarVisible) sidebarLastWidth=\(uiState.sidebarLastWidth) columnVisibility=\(columnVisibility)",
+                        category: .fullscreen
+                    )
+                }
             }
             .onChange(of: proxy.size.width) { _, newWidth in
                 updateWindowWidth(newWidth)
+                if EmbeddedFullscreenTrace.enabled {
+                    Log.info(
+                        "[EFS t=\(EmbeddedFullscreenTrace.stamp())] MainLayoutView.windowWidthChanged width=\(String(format: "%.1f", newWidth)) columnVisibility=\(columnVisibility)",
+                        category: .fullscreen
+                    )
+                }
             }
             .onChange(of: columnVisibility) { _, newValue in
                 let shouldShowSidebar = newValue != .detailOnly
                 if shouldShowSidebar != uiState.sidebarVisible {
                     uiState.sidebarVisible = shouldShowSidebar
                 }
+                if EmbeddedFullscreenTrace.enabled {
+                    Log.info(
+                        "[EFS t=\(EmbeddedFullscreenTrace.stamp())] MainLayoutView.columnVisibilityChanged value=\(newValue) sidebarVisible=\(uiState.sidebarVisible)",
+                        category: .fullscreen
+                    )
+                }
             }
             .onChange(of: uiState.sidebarVisible) { _, _ in
                 syncColumnVisibility(animated: true)
                 uiState.lyricsWidth = clampLyricsWidth(uiState.lyricsWidth)
+                if EmbeddedFullscreenTrace.enabled {
+                    Log.info(
+                        "[EFS t=\(EmbeddedFullscreenTrace.stamp())] MainLayoutView.sidebarVisibleChanged sidebarVisible=\(uiState.sidebarVisible) sidebarLastWidth=\(uiState.sidebarLastWidth)",
+                        category: .fullscreen
+                    )
+                }
             }
             .onChange(of: uiState.sidebarLastWidth) { _, _ in
                 uiState.lyricsWidth = clampLyricsWidth(uiState.lyricsWidth)
+                if EmbeddedFullscreenTrace.enabled {
+                    Log.info(
+                        "[EFS t=\(EmbeddedFullscreenTrace.stamp())] MainLayoutView.sidebarLastWidthChanged sidebarLastWidth=\(String(format: "%.1f", uiState.sidebarLastWidth))",
+                        category: .fullscreen
+                    )
+                }
             }
             .onChange(of: fullscreenWindowManager.isWindowedFullscreenActive) { _, _ in
                 uiState.lyricsWidth = clampLyricsWidth(uiState.lyricsWidth)
+                if EmbeddedFullscreenTrace.enabled {
+                    Log.info(
+                        "[EFS t=\(EmbeddedFullscreenTrace.stamp())] MainLayoutView.windowedFullscreenActiveChanged active=\(fullscreenWindowManager.isWindowedFullscreenActive) sidebar(min/ideal/max)=\(String(format: "%.1f", sidebarColumnMinWidth))/\(String(format: "%.1f", sidebarColumnIdealWidth))/\(String(format: "%.1f", sidebarColumnMaxWidth))",
+                        category: .fullscreen
+                    )
+                }
             }
         }
     }
@@ -126,6 +164,17 @@ struct MainLayoutView: View {
                     embeddedFullscreenPlayerRoute
                 }
             }
+            .background(
+                GeometryReader { detailProxy in
+                    Color.clear
+                        .onAppear {
+                            traceDetailGeometry(detailProxy)
+                        }
+                        .onChange(of: detailProxy.size) { _, _ in
+                            traceDetailGeometry(detailProxy)
+                        }
+                }
+            )
             .ignoresSafeArea(.container, edges: .top)
             .overlay {
                 ZStack {
@@ -181,6 +230,23 @@ struct MainLayoutView: View {
 
     private var shouldForceSidebarHiddenInWindowedFullscreen: Bool {
         fullscreenWindowManager.isWindowedFullscreenActive
+    }
+
+    private func traceDetailGeometry(_ detailProxy: GeometryProxy) {
+        guard EmbeddedFullscreenTrace.enabled else { return }
+        let size = detailProxy.size
+        let safeTop = detailProxy.safeAreaInsets.top
+        let sizeChanged =
+            abs(size.width - lastTracedDetailSize.width) > 0.5
+            || abs(size.height - lastTracedDetailSize.height) > 0.5
+        let safeChanged = abs(safeTop - lastTracedDetailSafeAreaTop) > 0.5
+        guard sizeChanged || safeChanged else { return }
+        lastTracedDetailSize = size
+        lastTracedDetailSafeAreaTop = safeTop
+        Log.info(
+            "[EFS t=\(EmbeddedFullscreenTrace.stamp())] MainLayoutView.detailGeometry size=\(size) safeTop=\(String(format: "%.1f", safeTop)) windowedFullscreen=\(fullscreenWindowManager.isWindowedFullscreenActive)",
+            category: .fullscreen
+        )
     }
 
     private var desiredColumnVisibility: NavigationSplitViewVisibility {
