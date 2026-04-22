@@ -5,7 +5,7 @@
 //  kmgccc_player - Playlist Detail View
 //  Displays tracks in a playlist or all songs.
 //
-//  Import button is HERE (per-playlist), NOT in main toolbar.
+//  Playlist-scoped toolbar content is declared here and surfaced via the window toolbar.
 //
 
 import SwiftUI
@@ -13,7 +13,7 @@ import SwiftUI
 // MARK: - Playlist Detail View
 
 /// View displaying tracks in the selected playlist or all songs.
-struct PlaylistDetailView<HeaderAccessory: View>: View {
+struct PlaylistDetailView: View {
 
     private struct BatchEditRequest: Identifiable {
         let id = UUID()
@@ -24,25 +24,13 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(UIStateViewModel.self) private var uiState
-    @Environment(\.colorScheme) private var colorScheme
 
-    private let headerAccessory: HeaderAccessory
+    let pageController: PlaylistPageController
 
     // MARK: - State
 
     @State private var trackToEdit: Track?
-    @FocusState private var isSearchFocused: Bool
-    @State private var sortSymbolEffectTrigger = 0
     @State private var batchEditRequest: BatchEditRequest?
-    @State private var pageController = PlaylistPageController()
-
-    // MARK: - Init
-
-    init(
-        @ViewBuilder headerAccessory: () -> HeaderAccessory = { EmptyView() }
-    ) {
-        self.headerAccessory = headerAccessory()
-    }
 
     var body: some View {
         let _ = LyricsRuntimeProfile.markBody("PlaylistDetailView.body")
@@ -79,22 +67,6 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         // Fill available space, anchor content to top
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(PlaylistLayoutPassProbe(key: "PlaylistDetailView.root"))
-        // Overlay toolbar at top - reads width from parent's frame constraint
-        .overlay(alignment: .topLeading) {
-            GeometryReader { overlayGeo in
-                ZStack(alignment: .topLeading) {
-                    // Decorative fade background - can extend left, doesn't affect toolbar layout
-                    playlistTopFade(width: overlayGeo.size.width)
-                        .offset(x: -48)
-                        .allowsHitTesting(false)
-
-                    // Toolbar content row - strictly constrained to content width
-                    headerViewInternal(width: overlayGeo.size.width)
-                        .ignoresSafeArea(.container, edges: .top)
-                }
-            }
-            .frame(height: GlassStyleTokens.headerBarHeight + 8)
-        }
         .frame(minWidth: 320)
         .sheet(item: $trackToEdit) { track in
             TrackEditSheet(track: track)
@@ -121,11 +93,9 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             pageController.handleSearchChange()
         }
         .onChange(of: libraryVM.trackSortKey) { _, _ in
-            sortSymbolEffectTrigger += 1
             pageController.handleSortChange(reason: "sortKey")
         }
         .onChange(of: libraryVM.trackSortOrder) { _, _ in
-            sortSymbolEffectTrigger += 1
             pageController.handleSortChange(reason: "sortOrder")
         }
         .onChange(of: libraryVM.totalTrackCount) { _, _ in
@@ -136,7 +106,6 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         }
         .onChange(of: libraryVM.searchResetTrigger) { _, _ in
             pageController.searchText = ""
-            isSearchFocused = false
         }
         .onChange(of: libraryVM.state) { _, newVal in
             if newVal == .loaded {
@@ -186,13 +155,6 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         }
     }
 
-    private var searchBinding: Binding<String> {
-        Binding(
-            get: { pageController.searchText },
-            set: { pageController.searchText = $0 }
-        )
-    }
-
     private var scrollBinding: Binding<UUID?> {
         Binding(
             get: { pageController.listScrollPositionID },
@@ -214,185 +176,6 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
 
     // MARK: - Subviews
 
-    private func headerViewInternal(width: CGFloat) -> some View {
-        HStack(spacing: 12) {
-            sortMenu
-
-            GlassToolbarTriplePill(
-                isMultiselectActive: pageController.isMultiselectMode,
-                onToggleMultiselect: {
-                    pageController.isMultiselectMode.toggle()
-                    if !pageController.isMultiselectMode {
-                        pageController.selectedTrackIDs.removeAll()
-                    }
-                },
-                canPlay: !queueTracks.isEmpty,
-                onPlay: {
-                    if pageController.isMultiselectMode && !pageController.selectedTrackIDs.isEmpty {
-                        let selected = selectedTracksForBatchEditor()
-                        guard !selected.isEmpty else { return }
-                        playbackCoordinator.playTracks(
-                            selected,
-                            libraryQueueSource: .librarySelection(selectionIdentity)
-                        )
-                    } else {
-                        guard !queueTracks.isEmpty else { return }
-                        playbackCoordinator.playTracks(
-                            queueTracks,
-                            libraryQueueSource: .librarySelection(selectionIdentity)
-                        )
-                    }
-                },
-                onImport: {
-                    Task {
-                        await libraryVM.importToCurrentPlaylist()
-                    }
-                }
-            )
-
-            Spacer(minLength: 0)
-
-            GlassToolbarSearchField(
-                placeholder: "搜索",
-                text: searchBinding,
-                focused: $isSearchFocused
-            ) {
-                pageController.searchText = ""
-            }
-            .frame(minWidth: 96, idealWidth: 140, maxWidth: 140)
-
-            headerAccessory
-        }
-        .padding(.horizontal, GlassStyleTokens.headerHorizontalPadding)
-        .frame(width: width, height: GlassStyleTokens.headerBarHeight)
-    }
-
-    private func playlistTopFade(width: CGFloat) -> some View {
-        let fadeHeight: CGFloat = GlassStyleTokens.headerBarHeight + 8
-        let bg = Color(nsColor: .windowBackgroundColor)
-
-        return ZStack(alignment: .top) {
-            Rectangle()
-                .fill(Material.ultraThin)
-                .mask {
-                    LinearGradient(
-                        stops: [
-                            .init(color: .black, location: 0.0),
-                            .init(color: .clear, location: colorScheme == .dark ? 0.74 : 0.82),
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                }
-                .mask {
-                    playlistTopFadeHorizontalMask
-                }
-
-            Rectangle()
-                .fill(playlistTopFadeScrimGradient(bg: bg))
-                .mask {
-                    LinearGradient(
-                        stops: [
-                            .init(color: .black, location: 0.0),
-                            .init(color: .clear, location: colorScheme == .dark ? 0.68 : 0.62),
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                }
-                .mask {
-                    playlistTopFadeHorizontalMask
-                }
-        }
-        .frame(width: width + 48, height: fadeHeight)
-        .frame(maxWidth: .infinity, maxHeight: fadeHeight, alignment: .topLeading)
-        .allowsHitTesting(false)
-    }
-
-    private var playlistTopFadeHorizontalMask: some View {
-        HStack(spacing: 0) {
-            LinearGradient(
-                stops: [
-                    .init(color: .clear, location: 0.0),
-                    .init(color: .black.opacity(0.15), location: 0.35),
-                    .init(color: .black.opacity(0.45), location: 0.55),
-                    .init(color: .black, location: 1.0),
-                ],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-            .frame(width: 48)
-            Rectangle()
-        }
-    }
-
-    private func playlistTopFadeScrimGradient(bg: Color) -> LinearGradient {
-        if colorScheme == .dark {
-            return LinearGradient(
-                stops: [
-                    .init(color: bg.opacity(0.012), location: 0.0),
-                    .init(color: bg.opacity(0.006), location: 0.35),
-                    .init(color: bg.opacity(0.002), location: 0.60),
-                    .init(color: .clear, location: 1.0),
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        }
-        return LinearGradient(
-            stops: [
-                .init(color: bg.opacity(0.40), location: 0.0),
-                .init(color: bg.opacity(0.18), location: 0.30),
-                .init(color: bg.opacity(0.06), location: 0.56),
-                .init(color: .clear, location: 1.0),
-            ],
-            startPoint: .top,
-            endPoint: .bottom
-        )
-    }
-
-    private var sortMenu: some View {
-        GlassToolbarMenuButton(
-            systemImage: "arrow.up.arrow.down",
-            help: "sort.help",
-            style: .standard
-        ) {
-            Section("sort.by") {
-                ForEach(TrackSortKey.allCases) { key in
-                    Button {
-                        libraryVM.trackSortKey = key
-                    } label: {
-                        if libraryVM.trackSortKey == key {
-                            Label(key.title, systemImage: "checkmark")
-                        } else {
-                            Text(key.title)
-                        }
-                    }
-                }
-            }
-
-            Section("sort.order") {
-                ForEach(TrackSortOrder.allCases) { order in
-                    Button {
-                        libraryVM.trackSortOrder = order
-                    } label: {
-                        if libraryVM.trackSortOrder == order {
-                            Label(order.title, systemImage: "checkmark")
-                        } else {
-                            Text(order.title)
-                        }
-                    }
-                }
-            }
-        }
-        .symbolEffect(.bounce, value: sortSymbolEffectTrigger)
-        .simultaneousGesture(
-            TapGesture().onEnded {
-                sortSymbolEffectTrigger += 1
-            }
-        )
-    }
-
     @ViewBuilder
     private var trackRowsContent: some View {
         PlaylistTrackRowsSection(
@@ -410,17 +193,13 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
                 trackRowsContent
             }
             .scrollTargetLayout()
-            .padding(.top, listTopPadding)
+            .padding(.top, contentTopPadding)
             .padding(.bottom, listBottomPadding)
             .padding(.horizontal)
             .transaction { tx in tx.animation = nil }
         }
         .background(PlaylistLayoutPassProbe(key: "PlaylistDetailView.trackList"))
         .scrollPosition(id: scrollBinding, anchor: .top)
-        .scrollEdgeEffectStyle(.soft, for: .top)
-        .onTapGesture {
-            clearSearchFocus()
-        }
     }
 
     private var detailScrollView: some View {
@@ -440,7 +219,7 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
 
                 trackContentSection
             }
-            .padding(.top, listTopPadding)
+            .padding(.top, contentTopPadding)
             .padding(.bottom, listBottomPadding)
             .padding(.horizontal)
             .transaction { tx in tx.animation = nil }
@@ -448,10 +227,6 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         .background(PlaylistLayoutPassProbe(key: "PlaylistDetailView.detailScroll"))
         .coordinateSpace(name: "detailScroll")
         .scrollPosition(id: scrollBinding, anchor: .top)
-        .scrollEdgeEffectStyle(.soft, for: .top)
-        .onTapGesture {
-            clearSearchFocus()
-        }
     }
 
     private var haloLayer: some View {
@@ -558,7 +333,6 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onTapGesture { clearSearchFocus() }
     }
 
     private var noResultsView: some View {
@@ -580,7 +354,6 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onTapGesture { clearSearchFocus() }
     }
 
     private var songCountText: String {
@@ -782,17 +555,11 @@ struct PlaylistDetailView<HeaderAccessory: View>: View {
         pageController.clearMultiselectState()
     }
 
-    private func clearSearchFocus() {
-        if isSearchFocused {
-            isSearchFocused = false
-        }
-    }
-
     private func erasedTrackMenu(trackID: UUID) -> AnyView {
         AnyView(trackMenu(trackID: trackID))
     }
 
-    private var listTopPadding: CGFloat { GlassStyleTokens.headerBarHeight + 16 }
+    private var contentTopPadding: CGFloat { 16 }
     private var listBottomPadding: CGFloat { 16 }
 }
 
@@ -911,9 +678,14 @@ private struct ScrollOffsetSensor: View {
     let levelMeter = StubAudioLevelMeter()
     let playerVM = PlayerViewModel(playbackService: playbackService, levelMeter: levelMeter)
 
-    PlaylistDetailView()
+    PlaylistDetailView(pageController: PlaylistPageController())
         .environment(libraryVM)
         .environment(playerVM)
+        .environment(PlaybackCoordinator(
+            playerVM: playerVM,
+            appleMusicAdapter: AppleMusicPlaybackAdapter(libraryVM: libraryVM)
+        ))
+        .environment(UIStateViewModel())
         .environmentObject(ThemeStore.shared)
         .frame(width: 500, height: 400)
         .task {

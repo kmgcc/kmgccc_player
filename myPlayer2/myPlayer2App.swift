@@ -218,6 +218,12 @@ struct KmgcccPlayerApp: App {
                     }
                 }
             }
+
+            CommandMenu("Prototype") {
+                Button("Open AppKit Split Toolbar Prototype") {
+                    AppKitSplitToolbarPrototypeWindowController.showPrototypeWindow()
+                }
+            }
         }
 
         Settings {
