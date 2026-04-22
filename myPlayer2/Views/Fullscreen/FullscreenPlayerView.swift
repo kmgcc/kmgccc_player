@@ -645,9 +645,21 @@ struct FullscreenPlayerView: View {
         .onAppear {
             currentFullscreenScale = scale
             updateFullscreenMiniPlayerOcclusionRegion(miniPlayerOcclusionRegion)
+            if EmbeddedFullscreenTrace.enabled, hostContext == .embeddedWindow {
+                Log.info(
+                    "[EFS t=\(EmbeddedFullscreenTrace.stamp())] FullscreenPlayerView.appear embedded proxy=\(proxy.size) scale=\(String(format: "%.4f", scale))",
+                    category: .fullscreen
+                )
+            }
         }
         .onChange(of: scale) { _, newScale in
             currentFullscreenScale = newScale
+            if EmbeddedFullscreenTrace.enabled, hostContext == .embeddedWindow {
+                Log.info(
+                    "[EFS t=\(EmbeddedFullscreenTrace.stamp())] FullscreenPlayerView.scaleChanged embedded scale=\(String(format: "%.4f", newScale))",
+                    category: .fullscreen
+                )
+            }
         }
         .onChange(of: proxy.size) { _, newSize in
             handleEmbeddedFullscreenViewportChange(newSize, reason: "embedded-viewport-size-change")
@@ -2308,6 +2320,12 @@ struct FullscreenPlayerView: View {
     }
 
     private func applyFullscreenLyricsTheme(force: Bool = false, reason: String = "") {
+        if EmbeddedFullscreenTrace.enabled, hostContext == .embeddedWindow {
+            Log.info(
+                "[EFS t=\(EmbeddedFullscreenTrace.stamp())] FullscreenPlayerView.applyTheme embedded force=\(force) reason=\(reason) currentScale=\(String(format: "%.4f", currentFullscreenScale)) viewport=\(fullscreenViewportSize)",
+                category: .fullscreen
+            )
+        }
         let baseStore = fullscreenStore
         let surfaceRole = LyricsSurfaceRole.fullscreen
         let effectiveTrack = playbackCoordinator.presentation.localTrack

@@ -217,6 +217,12 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
 
     /// Present the fullscreen player UI inside the main window detail area.
     func showFullscreenPlayerInWindow() {
+        if EmbeddedFullscreenTrace.enabled {
+            Log.info(
+                "[EFS t=\(EmbeddedFullscreenTrace.stamp())] showFullscreenPlayerInWindow.begin mode=\(presentationMode) transitioning=\(isTransitioning)",
+                category: .fullscreen
+            )
+        }
         guard !isTransitioning else { return }
         guard presentationMode == .none else { return }
 
@@ -229,9 +235,30 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         }
 
         captureEmbeddedHostWindowFrame()
+        if EmbeddedFullscreenTrace.enabled {
+            let frame = embeddedHostWindowOriginalFrame
+            let minSize = embeddedHostWindowOriginalMinSize
+            let contentMin = embeddedHostWindowOriginalContentMinSize
+            Log.info(
+                "[EFS t=\(EmbeddedFullscreenTrace.stamp())] showFullscreenPlayerInWindow.captured frame=\(String(describing: frame)) min=\(String(describing: minSize)) contentMin=\(String(describing: contentMin))",
+                category: .fullscreen
+            )
+        }
         LyricsSurfaceManager.shared.requestMode(.fullscreen)
         suspendMainLyricsIfNeeded()
+        if EmbeddedFullscreenTrace.enabled {
+            Log.info(
+                "[EFS t=\(EmbeddedFullscreenTrace.stamp())] showFullscreenPlayerInWindow.setMode embeddedInWindow",
+                category: .fullscreen
+            )
+        }
         presentationMode = .embeddedInWindow
+        if EmbeddedFullscreenTrace.enabled {
+            Log.info(
+                "[EFS t=\(EmbeddedFullscreenTrace.stamp())] showFullscreenPlayerInWindow.end mode=\(presentationMode)",
+                category: .fullscreen
+            )
+        }
     }
 
     func closeFullscreenPlayerInWindow() {
