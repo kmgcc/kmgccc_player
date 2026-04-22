@@ -237,7 +237,6 @@ struct FullscreenPlayerView: View {
     @State private var currentFullscreenScale: CGFloat = 1.0
     @State private var fullscreenViewportSize: CGSize = .zero
     @State private var embeddedInitialThemeUnlocked = false
-    @State private var embeddedPendingLiveSurfaceColorRefresh = false
     @State private var didHandleFullscreenAppear = false
     @State private var isFullscreenMiniPlayerSpectrumLeaseActive = false
     @State private var isFullscreenBottomControlsVisible = true
@@ -308,6 +307,10 @@ struct FullscreenPlayerView: View {
         false
     }
 
+    private var allowsDirectEmbeddedSurfaceUpdates: Bool {
+        hostContext != .embeddedWindow || embeddedInitialThemeUnlocked
+    }
+
     /// Effective dimming intensity adjusted for color scheme.
     /// Light mode requires stronger dimming for readability.
     private var effectiveDimmingIntensity: Double {
@@ -331,6 +334,17 @@ struct FullscreenPlayerView: View {
             WindowToolbarAccessor(
                 configure: { window in
                     fullscreenPointerOcclusionMonitor.setWindow(window)
+                    if hostContext == .embeddedWindow {
+                        let contentSize = window.contentLayoutRect.size
+                        if contentSize.width > 1, contentSize.height > 1 {
+                            DispatchQueue.main.async {
+                                handleEmbeddedFullscreenViewportChange(
+                                    contentSize,
+                                    reason: "embedded-window-content-layout"
+                                )
+                            }
+                        }
+                    }
                 },
                 configureContinuously: true
             )
@@ -373,27 +387,28 @@ struct FullscreenPlayerView: View {
                 setPointerOverMiniPlayerOcclusion(isOccluded, reason: "mouse-location")
             }
 
-            // Report visibility to manager - manager handles the switch with debouncing
-            LyricsSurfaceManager.shared.reportFullscreenVisible(true)
-
             syncCoverBlurHighlightActivation()
             resetFullscreenLyricsBackgroundSnapshot()
             scheduleFullscreenLyricsBackgroundCapture()
             fullscreenLyricsHostMounted = isShowingLyricsPanel && playbackCoordinator.presentation.hasTrack
             setupSeekCallback()
-            reloadLyricsSurface(reason: "fullscreen appear", forceLyricsReload: true)
+            if hostContext == .embeddedWindow {
+                embeddedInitialThemeUnlocked = false
+            } else {
+                // Report visibility to manager - manager handles the switch with debouncing
+                LyricsSurfaceManager.shared.reportFullscreenVisible(true)
+                reloadLyricsSurface(reason: "fullscreen appear", forceLyricsReload: true)
+            }
             resetFullscreenBottomControlsAutoHideState()
             syncFullscreenMiniPlayerSpectrumLease()
 
             if isLedEnabledForFullscreenSkin() {
                 ledMeterProvider.getOrCreate().start()
             }
-            if hostContext == .embeddedWindow {
-                embeddedInitialThemeUnlocked = false
-                embeddedPendingLiveSurfaceColorRefresh = false
-            }
         }
         .onDisappear {
+            let shouldReportFullscreenHidden =
+                hostContext != .embeddedWindow || embeddedInitialThemeUnlocked
             Log.info(
                 "FullscreenPlayerView disappeared context=\(hostContext.rawValue)",
                 category: .webview
@@ -418,7 +433,6 @@ struct FullscreenPlayerView: View {
             suppressFullscreenLyricsViewport = false
             fullscreenLyricsHostMounted = false
             embeddedInitialThemeUnlocked = false
-            embeddedPendingLiveSurfaceColorRefresh = false
             isQuickAppearancePanelPresented = false
             isFullscreenBottomControlsAppearancePanelHovered = false
             releaseFullscreenMiniPlayerSpectrumLease()
@@ -430,8 +444,10 @@ struct FullscreenPlayerView: View {
                 await CassetteArtworkCache.shared.removeAll()
             }
 
-            // Report visibility to manager - manager will debounce to handle transient disappears
-            LyricsSurfaceManager.shared.reportFullscreenVisible(false)
+            if shouldReportFullscreenHidden {
+                // Report visibility to manager - manager will debounce to handle transient disappears
+                LyricsSurfaceManager.shared.reportFullscreenVisible(false)
+            }
         }
         .onChange(of: selectedSkinID) { oldValue, newValue in
             skinRevision &+= 1
@@ -463,6 +479,7 @@ struct FullscreenPlayerView: View {
         .onChange(of: playerVM.isPlaying) { _, newValue in
             guard playbackCoordinator.presentation.source == .local else { return }
             LyricsSurfaceManager.shared.updatePlayingState(newValue)
+            guard allowsDirectEmbeddedSurfaceUpdates else { return }
             fullscreenStore.setPlaying(newValue)
             if LyricsSurfaceManager.shared.isActive(.fullscreenCoverBlurHighlight) {
                 coverBlurHighlightStore.setPlaying(newValue)
@@ -476,6 +493,7 @@ struct FullscreenPlayerView: View {
         .onChange(of: playbackCoordinator.presentation.isPlaying) { _, newValue in
             guard playbackCoordinator.presentation.source == .appleMusic else { return }
             LyricsSurfaceManager.shared.updatePlayingState(newValue)
+            guard allowsDirectEmbeddedSurfaceUpdates else { return }
             fullscreenStore.setPlaying(newValue)
             if LyricsSurfaceManager.shared.isActive(.fullscreenCoverBlurHighlight) {
                 coverBlurHighlightStore.setPlaying(newValue)
@@ -512,32 +530,9 @@ struct FullscreenPlayerView: View {
             resetFullscreenBottomControlsAutoHideState()
         }
         .onChange(of: bkController.lyricsColorSampleRevision) { _, _ in
-            if hostContext == .embeddedWindow,
-               embeddedInitialThemeUnlocked,
-               embeddedPendingLiveSurfaceColorRefresh,
-               bkController.lyricsColorTrackID == currentArtworkTrackID
-            {
-                embeddedPendingLiveSurfaceColorRefresh = false
-                resetFullscreenLyricsBackgroundSnapshot()
-                captureFullscreenLyricsBackgroundSnapshot(preferLiveSurface: true)
-                applyFullscreenLyricsTheme(force: true, reason: "embedded-live-surface-color-ready")
-                return
-            }
             guard pendingFullscreenLyricsBackgroundCapture else { return }
             guard bkController.lyricsColorTrackID == currentArtworkTrackID else { return }
             scheduleFullscreenLyricsRefresh(preferLiveSurface: true)
-        }
-        .onChange(of: bkController.currentSurfaceBackgroundColor) { _, newValue in
-            guard hostContext == .embeddedWindow else { return }
-            guard embeddedInitialThemeUnlocked else { return }
-            guard embeddedPendingLiveSurfaceColorRefresh else { return }
-            guard bkController.lyricsColorTrackID == currentArtworkTrackID else { return }
-            guard newValue != nil else { return }
-
-            embeddedPendingLiveSurfaceColorRefresh = false
-            resetFullscreenLyricsBackgroundSnapshot()
-            captureFullscreenLyricsBackgroundSnapshot(preferLiveSurface: true)
-            applyFullscreenLyricsTheme(force: true, reason: "embedded-live-surface-color-ready")
         }
         .task(id: currentArtworkTaskKey) {
             await loadArtworkSnapshot()
@@ -664,6 +659,7 @@ struct FullscreenPlayerView: View {
         .frame(width: proxy.size.width, height: proxy.size.height)
         .onAppear {
             currentFullscreenScale = scale
+            fullscreenViewportSize = proxy.size
             updateFullscreenMiniPlayerOcclusionRegion(miniPlayerOcclusionRegion)
             if EmbeddedFullscreenTrace.enabled, hostContext == .embeddedWindow {
                 Log.info(
@@ -671,6 +667,7 @@ struct FullscreenPlayerView: View {
                     category: .fullscreen
                 )
             }
+            handleEmbeddedFullscreenViewportChange(proxy.size, reason: "embedded-initial-layout")
         }
         .onChange(of: scale) { _, newScale in
             currentFullscreenScale = newScale
@@ -2017,6 +2014,7 @@ struct FullscreenPlayerView: View {
     private func handleCurrentTimeChange(_ oldTime: Double, _ newTime: Double) {
         guard playbackCoordinator.presentation.source == .local else { return }
         LyricsSurfaceManager.shared.updatePlaybackTime(newTime)
+        guard allowsDirectEmbeddedSurfaceUpdates else { return }
         fullscreenStore.setCurrentTime(newTime)
         if LyricsSurfaceManager.shared.isActive(.fullscreenCoverBlurHighlight) {
             coverBlurHighlightStore.setCurrentTime(newTime)
@@ -2044,6 +2042,7 @@ struct FullscreenPlayerView: View {
     private func handlePresentationCurrentTimeChange(_ oldTime: Double, _ newTime: Double) {
         guard playbackCoordinator.presentation.source == .appleMusic else { return }
         LyricsSurfaceManager.shared.updatePlaybackTime(newTime)
+        guard allowsDirectEmbeddedSurfaceUpdates else { return }
         fullscreenStore.setCurrentTime(newTime)
         if LyricsSurfaceManager.shared.isActive(.fullscreenCoverBlurHighlight) {
             coverBlurHighlightStore.setCurrentTime(newTime)
@@ -2102,11 +2101,23 @@ struct FullscreenPlayerView: View {
     ) {
         syncCoverBlurHighlightActivation()
 
+        let playbackPayload = updateFullscreenPlaybackSnapshot()
+        if hostContext == .embeddedWindow && !embeddedInitialThemeUnlocked {
+            return
+        }
+
         // Apply to fullscreen store directly
         let store = fullscreenStore
         if forceWebReload {
             store.forceReload(recreateWebView: recreateWebViewOnForceReload)
         }
+
+        store.applyTrack(
+            trackID: playbackPayload.trackID,
+            ttml: playbackPayload.ttml,
+            currentTime: playbackPayload.currentTime,
+            isPlaying: playbackPayload.isPlaying
+        )
 
         if let palette = ThemeStore.shared.palette {
             store.applyTheme(palette)
@@ -2120,45 +2131,47 @@ struct FullscreenPlayerView: View {
             captureFullscreenLyricsBackgroundSnapshot()
         }
         applyFullscreenLyricsTheme()
+    }
 
-        // Build the fullscreen-specific AMLL visual path first, then load lyrics content.
-        // If lyrics load earlier, AMLL can instantiate the DOM using the main-panel route and
-        // only switch to the fullscreen plus-lighter path after a later resize/config change.
+    private struct FullscreenPlaybackPayload {
+        let trackID: UUID?
+        let ttml: String?
+        let currentTime: Double
+        let isPlaying: Bool
+    }
+
+    private func updateFullscreenPlaybackSnapshot() -> FullscreenPlaybackPayload {
         let presentation = playbackCoordinator.presentation
+        let payload: FullscreenPlaybackPayload
+
         switch presentation.source {
         case .local:
             let track = playerVM.currentTrack
             let lyricsText = resolvedFullscreenLyricsText(for: track)
-            let ttmlForStore: String? = track == nil ? nil : lyricsText
-            LyricsSurfaceManager.shared.updatePlaybackSnapshot(
+            payload = FullscreenPlaybackPayload(
                 trackID: track?.id,
-                lyricsTTML: ttmlForStore ?? "",
-                currentTime: playerVM.currentTime,
-                isPlaying: playerVM.isPlaying
-            )
-            store.applyTrack(
-                trackID: track?.id,
-                ttml: ttmlForStore,
+                ttml: track == nil ? nil : lyricsText,
                 currentTime: playerVM.currentTime,
                 isPlaying: playerVM.isPlaying
             )
         case .appleMusic:
             let lyricsText = presentation.lyricsText
-            let ttmlForStore: String? = lyricsText == nil ? nil : (lyricsText ?? "")
-            let trackID = presentation.displayTrackID
-            LyricsSurfaceManager.shared.updatePlaybackSnapshot(
-                trackID: trackID,
-                lyricsTTML: ttmlForStore ?? "",
-                currentTime: presentation.currentTime,
-                isPlaying: presentation.isPlaying
-            )
-            store.applyTrack(
-                trackID: trackID,
-                ttml: ttmlForStore,
+            payload = FullscreenPlaybackPayload(
+                trackID: presentation.displayTrackID,
+                ttml: lyricsText == nil ? nil : (lyricsText ?? ""),
                 currentTime: presentation.currentTime,
                 isPlaying: presentation.isPlaying
             )
         }
+
+        LyricsSurfaceManager.shared.updatePlaybackSnapshot(
+            trackID: payload.trackID,
+            lyricsTTML: payload.ttml ?? "",
+            currentTime: payload.currentTime,
+            isPlaying: payload.isPlaying
+        )
+
+        return payload
     }
 
     private func resolvedFullscreenLyricsText(for track: Track?) -> String {
@@ -2348,37 +2361,19 @@ struct FullscreenPlayerView: View {
     }
 
     private func applyFullscreenLyricsTheme(force: Bool = false, reason: String = "") {
-        var effectiveForce = force
         if hostContext == .embeddedWindow && !embeddedInitialThemeUnlocked {
-            guard isValidEmbeddedFullscreenGeometry(fullscreenViewportSize, scale: currentFullscreenScale) else {
-                if EmbeddedFullscreenTrace.enabled {
-                    Log.info(
-                        "[EFS t=\(EmbeddedFullscreenTrace.stamp())] FullscreenPlayerView.skipTheme invalid-embedded-geometry reason=\(reason) currentScale=\(String(format: "%.4f", currentFullscreenScale)) viewport=\(fullscreenViewportSize)",
-                        category: .fullscreen
-                    )
-                }
-                return
+            if EmbeddedFullscreenTrace.enabled {
+                Log.info(
+                    "[EFS t=\(EmbeddedFullscreenTrace.stamp())] FullscreenPlayerView.skipTheme embedded-startup-pending reason=\(reason) currentScale=\(String(format: "%.4f", currentFullscreenScale)) viewport=\(fullscreenViewportSize)",
+                    category: .fullscreen
+                )
             }
-
-            // The embedded route can lock a transient dark background sample while the split view is
-            // still collapsing. Re-sample once at the first valid geometry so the initial unlocked
-            // theme uses the settled live surface colors instead of the transitional placeholder.
-            if settings.nowPlayingArtBackgroundEnabled {
-                resetFullscreenLyricsBackgroundSnapshot()
-                scheduleFullscreenLyricsBackgroundCapture()
-                captureFullscreenLyricsBackgroundSnapshot(preferLiveSurface: true)
-            }
-
-            embeddedInitialThemeUnlocked = true
-            embeddedPendingLiveSurfaceColorRefresh =
-                settings.nowPlayingArtBackgroundEnabled
-                && currentDisplayContext.hasTrack
-            effectiveForce = true
+            return
         }
 
         if EmbeddedFullscreenTrace.enabled, hostContext == .embeddedWindow {
             Log.info(
-                "[EFS t=\(EmbeddedFullscreenTrace.stamp())] FullscreenPlayerView.applyTheme embedded force=\(effectiveForce) reason=\(reason) currentScale=\(String(format: "%.4f", currentFullscreenScale)) viewport=\(fullscreenViewportSize)",
+                "[EFS t=\(EmbeddedFullscreenTrace.stamp())] FullscreenPlayerView.applyTheme embedded force=\(force) reason=\(reason) currentScale=\(String(format: "%.4f", currentFullscreenScale)) viewport=\(fullscreenViewportSize)",
                 category: .fullscreen
             )
         }
@@ -2487,12 +2482,22 @@ struct FullscreenPlayerView: View {
 
         
 
-        // Scale font sizes based on fullscreen scale for crisp rendering at all resolutions
-        let baseFontSize = settings.fullscreenLyricsFontSize + overlay.mainFontSizeDeltaPx
-        let baseTranslationFontSize =
-            settings.fullscreenLyricsTranslationFontSize + overlay.translationFontSizeDeltaPx
-        let scaledFontSize = baseFontSize * currentFullscreenScale
-        let scaledTranslationFontSize = baseTranslationFontSize * currentFullscreenScale
+        // Scale base sizes with fullscreen metrics first, then apply runtime presentation overlay.
+        // For embedded fullscreen, this keeps +6/+4 as a visible on-screen delta instead of being
+        // attenuated by the scale factor.
+        let scaledBaseFontSize = settings.fullscreenLyricsFontSize * currentFullscreenScale
+        let scaledBaseTranslationFontSize =
+            settings.fullscreenLyricsTranslationFontSize * currentFullscreenScale
+        let scaledFontSize = scaledBaseFontSize + overlay.mainFontSizeDeltaPx
+        let scaledTranslationFontSize =
+            scaledBaseTranslationFontSize + overlay.translationFontSizeDeltaPx
+
+        if EmbeddedFullscreenTrace.enabled, hostContext == .embeddedWindow {
+            Log.info(
+                "[EFS t=\(EmbeddedFullscreenTrace.stamp())] FullscreenPlayerView.embeddedFont overlay=(\(String(format: "%.1f", overlay.mainFontSizeDeltaPx)),\(String(format: "%.1f", overlay.translationFontSizeDeltaPx))) baseSetting=(\(String(format: "%.1f", settings.fullscreenLyricsFontSize)),\(String(format: "%.1f", settings.fullscreenLyricsTranslationFontSize))) scaledBase=(\(String(format: "%.2f", scaledBaseFontSize)),\(String(format: "%.2f", scaledBaseTranslationFontSize))) scaled=(\(String(format: "%.2f", scaledFontSize)),\(String(format: "%.2f", scaledTranslationFontSize)))",
+                category: .fullscreen
+            )
+        }
 
         var config: [String: Any] = [
             "fontSize": scaledFontSize,
@@ -2571,7 +2576,7 @@ struct FullscreenPlayerView: View {
         pushFullscreenLyricsConfig(
             baseConfig,
             to: baseStore,
-            force: effectiveForce,
+            force: force,
             reason: reason,
             probeLabel: "fullscreen-\(probeMode)-base-\(probeReason)",
             probeDelay: probeDelay
@@ -2583,7 +2588,7 @@ struct FullscreenPlayerView: View {
         pushFullscreenLyricsConfig(
             config,
             to: coverBlurHighlightStore,
-            force: effectiveForce,
+            force: force,
             reason: reason,
             probeLabel: "fullscreen-\(probeMode)-highlight-\(probeReason)",
             probeDelay: probeDelay
@@ -2701,37 +2706,88 @@ struct FullscreenPlayerView: View {
     }
 
     private func handleEmbeddedFullscreenViewportChange(_ size: CGSize, reason: String) {
-        let sizeChanged =
-            abs(size.width - fullscreenViewportSize.width) > 0.5
-            || abs(size.height - fullscreenViewportSize.height) > 0.5
+        let previousViewportSize = fullscreenViewportSize
         fullscreenViewportSize = size
 
         guard hostContext == .embeddedWindow else { return }
         guard size.width > 1, size.height > 1 else { return }
-        guard sizeChanged else { return }
 
         currentFullscreenScale = min(
             size.width / Self.baseCanvasWidth,
             size.height / Self.baseCanvasHeight
         )
 
+        if !embeddedInitialThemeUnlocked {
+            if !isValidEmbeddedFullscreenGeometry(size, scale: currentFullscreenScale) {
+                if let fallbackSize = currentEmbeddedHostWindowContentSize(),
+                   fallbackSize != size
+                {
+                    let fallbackScale = min(
+                        fallbackSize.width / Self.baseCanvasWidth,
+                        fallbackSize.height / Self.baseCanvasHeight
+                    )
+                    if isValidEmbeddedFullscreenGeometry(fallbackSize, scale: fallbackScale) {
+                        fullscreenViewportSize = fallbackSize
+                        currentFullscreenScale = fallbackScale
+                        beginEmbeddedFullscreenStartupIfNeeded(reason: "embedded-first-valid-window-size")
+                    }
+                }
+                return
+            }
+            beginEmbeddedFullscreenStartupIfNeeded(reason: "embedded-first-valid-geometry")
+            return
+        }
+
         guard isValidEmbeddedFullscreenGeometry(size, scale: currentFullscreenScale) else {
             return
         }
 
+        let sizeChanged =
+            abs(size.width - previousViewportSize.width) > 0.5
+            || abs(size.height - previousViewportSize.height) > 0.5
+        guard sizeChanged else { return }
+
         pendingFullscreenThemeReapply?.cancel()
 
         let workItem = DispatchWorkItem {
-            let effectiveReason = self.embeddedInitialThemeUnlocked ? reason : "embedded-first-valid-geometry"
-            applyFullscreenLyricsTheme(force: true, reason: effectiveReason)
-            if effectiveReason == "embedded-first-valid-geometry" {
-                reloadLyricsSurface(reason: effectiveReason, forceLyricsReload: true)
-            }
+            applyFullscreenLyricsTheme(force: true, reason: reason)
             pendingFullscreenThemeReapply = nil
         }
 
         pendingFullscreenThemeReapply = workItem
         DispatchQueue.main.async(execute: workItem)
+    }
+
+    private func currentEmbeddedHostWindowContentSize() -> CGSize? {
+        guard hostContext == .embeddedWindow else { return nil }
+
+        let candidateWindow = NSApp.keyWindow ?? NSApp.mainWindow
+        guard let window = candidateWindow else { return nil }
+        let contentSize = window.contentLayoutRect.size
+        guard contentSize.width > 1, contentSize.height > 1 else { return nil }
+        return contentSize
+    }
+
+    private func beginEmbeddedFullscreenStartupIfNeeded(reason: String) {
+        guard hostContext == .embeddedWindow else { return }
+        guard !embeddedInitialThemeUnlocked else { return }
+        guard isValidEmbeddedFullscreenGeometry(fullscreenViewportSize, scale: currentFullscreenScale) else {
+            return
+        }
+
+        syncCoverBlurHighlightActivation()
+        resetFullscreenLyricsBackgroundSnapshot()
+        scheduleFullscreenLyricsBackgroundCapture()
+        captureFullscreenLyricsBackgroundSnapshot(preferLiveSurface: true)
+        _ = updateFullscreenPlaybackSnapshot()
+
+        if let palette = ThemeStore.shared.palette {
+            fullscreenStore.applyTheme(palette)
+        }
+
+        embeddedInitialThemeUnlocked = true
+        applyFullscreenLyricsTheme(force: true, reason: reason)
+        LyricsSurfaceManager.shared.reportFullscreenVisible(true)
     }
 
     private func isValidEmbeddedFullscreenGeometry(_ size: CGSize, scale: CGFloat) -> Bool {

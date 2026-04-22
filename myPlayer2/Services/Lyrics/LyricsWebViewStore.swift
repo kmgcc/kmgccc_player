@@ -116,10 +116,6 @@ final class LyricsWebViewStore: NSObject {
     private var didRegisterMessageHandlers = false
     private var isShutDown = false
     private var isMouseInteractionSuppressed = false
-    private var lastObservedEmbeddedFullscreenViewportSize: CGSize = .zero
-    private var lastDispatchedEmbeddedFullscreenViewportSize: CGSize = .zero
-    private var hasQueuedEmbeddedFullscreenResizeBeforeReady: Bool = false
-
     // MARK: - Callbacks
 
     var onUserSeek: ((Double) -> Void)?
@@ -652,71 +648,15 @@ final class LyricsWebViewStore: NSObject {
         let version = dict["version"] as? String ?? "unknown"
         let capabilities = dict["capabilities"] as? [String] ?? []
 
-        if EmbeddedFullscreenTrace.enabled, role == LyricsSurfaceRole.fullscreen.rawValue {
-            let webView = retainedWebView
-            let isSystemFullscreen = webView?.window?.styleMask.contains(.fullScreen) == true
-            let hostBounds = (webView?.superview as? NSView)?.bounds.size ?? .zero
-            let windowFrame = webView?.window?.frame
-            let fontSize: Double? = {
-                guard let json = lastConfigJSON else { return nil }
-                guard let obj = decodeJSONObject(json) as? [String: Any] else { return nil }
-                return obj["fontSize"] as? Double
-            }()
-            Log.info(
-                "[EFS t=\(EmbeddedFullscreenTrace.stamp())] Store.handleOnReady.pre role=\(role) objectID=\(webViewObjectID) isSystemFullscreen=\(isSystemFullscreen) hostBounds=\(hostBounds) webViewBounds=\(webView?.bounds.size ?? .zero) windowFrame=\(String(describing: windowFrame)) lastObservedViewport=\(lastObservedEmbeddedFullscreenViewportSize) fontSize=\(fontSize.map { String(format: "%.2f", $0) } ?? "nil") queuedPreReadyResize=\(hasQueuedEmbeddedFullscreenResizeBeforeReady)",
-                category: .webview
-            )
-        }
-
-        // Windowed fullscreen first-entry fix:
-        // AMLL (via Pixi) relies on a `window.resize` event to recompute its internal renderer size.
-        // When a WKWebView finishes loading before its final host viewport is settled, AMLL can lock
-        // into a tiny initial viewport until the user manually resizes the window.
-        //
-        // If we're already embedded in a non-system-fullscreen window and have a non-zero viewport,
-        // enqueue a synthetic resize event *ahead of* the first config/TTML replay so the initial
-        // AMLL layout is computed at the final size (equivalent to "drag window once").
-        if role == LyricsSurfaceRole.fullscreen.rawValue,
-           let webView = retainedWebView,
-           let window = webView.window,
-           window.styleMask.contains(.fullScreen) == false
-        {
-            let viewportSize = webView.bounds.size
-            if viewportSize.width > 1,
-               viewportSize.height > 1,
-               hasQueuedEmbeddedFullscreenResizeBeforeReady == false
-            {
-                hasQueuedEmbeddedFullscreenResizeBeforeReady = true
-                lastObservedEmbeddedFullscreenViewportSize = viewportSize
-                pendingCalls.insert(
-                    PendingJavaScriptCall(
-                        debugDescription: "window.dispatchEvent(resize).onReady.preReplay",
-                        call: .script("window.dispatchEvent(new Event('resize'));")
-                    ),
-                    at: 0
-                )
-            }
-        }
-
         isReady = true
         isRecoveryInProgress = false
 
         Log.info("Ready: version=\(version), caps=\(capabilities.count), objectID=\(webViewObjectID)", category: .webview)
-        if EmbeddedFullscreenTrace.enabled, role == LyricsSurfaceRole.fullscreen.rawValue, let webView = retainedWebView {
-            let isSystemFullscreen = webView.window?.styleMask.contains(.fullScreen) == true
-            let hostBounds = (webView.superview as? NSView)?.bounds.size ?? .zero
-            let windowFrame = webView.window?.frame
-            Log.info(
-                "[EFS t=\(EmbeddedFullscreenTrace.stamp())] Store.handleOnReady.post role=\(role) objectID=\(webViewObjectID) isSystemFullscreen=\(isSystemFullscreen) hostBounds=\(hostBounds) webViewBounds=\(webView.bounds.size) windowFrame=\(String(describing: windowFrame)) lastObservedViewport=\(lastObservedEmbeddedFullscreenViewportSize)",
-                category: .webview
-            )
-        }
 
         updateWebContentPointerOcclusionState(isMouseInteractionSuppressed)
 
         // Flush pending calls
         flushPendingCalls()
-        hasQueuedEmbeddedFullscreenResizeBeforeReady = false
 
         // Replay last state snapshot (strict order)
         replayStateSnapshot()
@@ -731,77 +671,6 @@ final class LyricsWebViewStore: NSObject {
         // Notify LyricsSurfaceManager that this store is ready
         if let surfaceRole = LyricsSurfaceRole(rawValue: role) {
             LyricsSurfaceManager.shared.notifyStoreReady(surfaceRole, store: self)
-        }
-    }
-
-    /// Observes the actual host viewport size for the fullscreen lyrics WebView and triggers an AMLL
-    /// viewport sync equivalent to a user window resize, but only for the windowed (embedded) fullscreen route.
-    ///
-    /// - Important: We intentionally ignore system fullscreen windows to avoid changing that branch.
-    func noteHostViewportDidChange(
-        viewportSize: CGSize,
-        isSystemFullscreen: Bool,
-        reason: String
-    ) {
-        guard !isShutDown else { return }
-        guard role == LyricsSurfaceRole.fullscreen.rawValue else { return }
-        guard !isSystemFullscreen else { return }
-        guard viewportSize.width > 1, viewportSize.height > 1 else { return }
-
-        let sizeChanged =
-            abs(viewportSize.width - lastObservedEmbeddedFullscreenViewportSize.width) > 0.5
-            || abs(viewportSize.height - lastObservedEmbeddedFullscreenViewportSize.height) > 0.5
-        guard sizeChanged else { return }
-
-        lastObservedEmbeddedFullscreenViewportSize = viewportSize
-        if EmbeddedFullscreenTrace.enabled {
-            Log.info(
-                "[EFS t=\(EmbeddedFullscreenTrace.stamp())] Store.noteHostViewportDidChange role=\(role) viewport=\(viewportSize) ready=\(isReady) isSystemFullscreen=\(isSystemFullscreen) reason=\(reason)",
-                category: .webview
-            )
-        }
-
-        // If content isn't ready yet, queue the resize event at the front so the very first
-        // onReady flush applies it before config/lyrics replay.
-        if !isReady {
-            if !hasQueuedEmbeddedFullscreenResizeBeforeReady {
-                hasQueuedEmbeddedFullscreenResizeBeforeReady = true
-                pendingCalls.insert(
-                    PendingJavaScriptCall(
-                        debugDescription: "window.dispatchEvent(resize).preReady.\(reason)",
-                        call: .script("window.dispatchEvent(new Event('resize'));")
-                    ),
-                    at: 0
-                )
-            }
-            return
-        }
-
-        dispatchEmbeddedFullscreenResizeEventIfNeeded(reason: reason)
-    }
-
-    private func dispatchEmbeddedFullscreenResizeEventIfNeeded(reason: String) {
-        guard isReady, let webView = retainedWebView else { return }
-        guard let window = webView.window, window.styleMask.contains(.fullScreen) == false else { return }
-
-        let viewportSize = lastObservedEmbeddedFullscreenViewportSize
-        guard viewportSize.width > 1, viewportSize.height > 1 else { return }
-
-        let shouldDispatch =
-            abs(viewportSize.width - lastDispatchedEmbeddedFullscreenViewportSize.width) > 0.5
-            || abs(viewportSize.height - lastDispatchedEmbeddedFullscreenViewportSize.height) > 0.5
-        guard shouldDispatch else { return }
-
-        lastDispatchedEmbeddedFullscreenViewportSize = viewportSize
-
-        let js = "window.dispatchEvent(new Event('resize'));"
-        webView.evaluateJavaScript(js) { _, error in
-            if let error {
-                Log.debug(
-                    "Embedded fullscreen resize dispatch error: \(error.localizedDescription), role=\(self.role), reason=\(reason)",
-                    category: .webview
-                )
-            }
         }
     }
 
