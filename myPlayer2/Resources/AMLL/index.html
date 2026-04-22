@@ -994,6 +994,9 @@
         let wordFadeWidth = defaultWordFadeWidth;
         let leadInMs = 300;
         let nearSwitchGapMs = 85;
+        let lastAppliedFontSizePx = null;
+        let lastAppliedTranslationFontSizePx = null;
+        let pendingFontMetricsLayoutRaf = 0;
         let fullscreenOpaqueLyricsMode = fullscreenForcedByHost;
         let fullscreenCoverBlurMode = false;
         let fullscreenCoverBlurProfile = null;
@@ -1140,6 +1143,19 @@
             }
         };
         syncLeadTimingConfig();
+
+        const scheduleFontMetricsLayout = () => {
+            if (pendingFontMetricsLayoutRaf) return;
+            if (typeof lyricPlayer.calcLayout !== "function") return;
+            pendingFontMetricsLayoutRaf = requestAnimationFrame(() => {
+                pendingFontMetricsLayoutRaf = 0;
+                try {
+                    lyricPlayer.calcLayout();
+                } catch (e) {
+                    console.warn("[LyricsRenderer] calcLayout after font metrics change failed", e);
+                }
+            });
+        };
 
         let lastSeekAt = 0;
         let lastSeekSeconds = null;
@@ -4163,8 +4179,13 @@
 		                        }
 		                    }
 		                    // Apply config to lyricPlayer
-		                    if (config.fontSize) {
-		                        lyricPlayer.getElement().style.setProperty("--amll-lp-font-size", `${config.fontSize}px`);
+		                    if (typeof config.fontSize === "number" && !Number.isNaN(config.fontSize)) {
+                                const nextFontSize = Math.max(6, Math.min(240, config.fontSize));
+		                        lyricPlayer.getElement().style.setProperty("--amll-lp-font-size", `${nextFontSize}px`);
+                                if (lastAppliedFontSizePx === null || Math.abs(nextFontSize - lastAppliedFontSizePx) > 0.25) {
+                                    lastAppliedFontSizePx = nextFontSize;
+                                    scheduleFontMetricsLayout();
+                                }
 		                    }
 	                    if (config.fontWeight) {
 	                        lyricPlayer.getElement().style.setProperty("--amll-lp-main-font-weight", `${config.fontWeight}`);
@@ -4175,11 +4196,19 @@
 	                            `${config.translationFontWeight}`
 	                        );
 	                    }
-	                    if (config.translationFontSize) {
+	                    if (typeof config.translationFontSize === "number" && !Number.isNaN(config.translationFontSize)) {
+                            const nextTranslationFontSize = Math.max(6, Math.min(240, config.translationFontSize));
 	                        lyricPlayer.getElement().style.setProperty(
 	                            "--amll-lp-translation-font-size",
-	                            `${config.translationFontSize}px`
+	                            `${nextTranslationFontSize}px`
 	                        );
+                            if (
+                                lastAppliedTranslationFontSizePx === null
+                                || Math.abs(nextTranslationFontSize - lastAppliedTranslationFontSizePx) > 0.25
+                            ) {
+                                lastAppliedTranslationFontSizePx = nextTranslationFontSize;
+                                scheduleFontMetricsLayout();
+                            }
 	                    }
 	                    if (config.fontFamilyMain) {
 	                        lyricPlayer.getElement().style.setProperty("--amll-lp-main-font-family", config.fontFamilyMain);

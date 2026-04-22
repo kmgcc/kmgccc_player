@@ -37,7 +37,6 @@ struct AMLLWebView: NSViewRepresentable {
     func makeNSView(context: Context) -> WebViewHostView {
         LyricsRuntimeProfile.increment("AMLLWebView.makeNSView")
         let hostView = WebViewHostView()
-        hostView.traceRole = store.role
 
         Log.debug(
             "makeNSView: objectID=\(store.webViewObjectID)",
@@ -150,30 +149,9 @@ struct AMLLWebView: NSViewRepresentable {
             self.store = store
         }
 
-        private func installHostCallbacksIfNeeded(for hostView: WebViewHostView) {
-            if self.hostView !== hostView {
-                // Stop callbacks from an old host view after reparenting.
-                self.hostView?.frameDidChangeHandler = nil
-                self.hostView = hostView
-            }
-
-            if hostView.frameDidChangeHandler == nil {
-                hostView.frameDidChangeHandler = { [weak self] view in
-                    guard let self else { return }
-                    let isSystemFullscreen = view.window?.styleMask.contains(.fullScreen) == true
-                    self.store.noteHostViewportDidChange(
-                        viewportSize: view.bounds.size,
-                        isSystemFullscreen: isSystemFullscreen,
-                        reason: "host-frame-changed"
-                    )
-                }
-            }
-        }
-
         /// Try to attach WebView to host, with detailed logging
         func tryAttach(to hostView: WebViewHostView, context: String) {
             LyricsRuntimeProfile.increment("AMLLWebView.tryAttach")
-            installHostCallbacksIfNeeded(for: hostView)
             // Check conditions but don't block - just log
             let hasWindow = hostView.window != nil
             let hasFrame = hostView.frame.size.width > 0 && hostView.frame.size.height > 0
@@ -205,12 +183,7 @@ struct AMLLWebView: NSViewRepresentable {
                         next: webView.frame
                     )
                 }
-                let isSystemFullscreen = hostView.window?.styleMask.contains(.fullScreen) == true
-                store.noteHostViewportDidChange(
-                    viewportSize: hostView.bounds.size,
-                    isSystemFullscreen: isSystemFullscreen,
-                    reason: "tryAttach.frame-sync.\(context)"
-                )
+                self.hostView = hostView
                 return
             }
 
@@ -249,18 +222,7 @@ struct AMLLWebView: NSViewRepresentable {
             webView.autoresizingMask = [.width, .height]
             hostView.addSubview(webView)
             store.refreshMouseInteractionSuppression(reason: "attachWebView")
-            let isSystemFullscreen = hostView.window?.styleMask.contains(.fullScreen) == true
-            store.noteHostViewportDidChange(
-                viewportSize: hostView.bounds.size,
-                isSystemFullscreen: isSystemFullscreen,
-                reason: "attachWebView"
-            )
-            if EmbeddedFullscreenTrace.enabled, store.role == LyricsSurfaceRole.fullscreen.rawValue {
-                Log.info(
-                    "[EFS t=\(EmbeddedFullscreenTrace.stamp())] AMLL.attachWebView role=\(store.role) webViewBounds=\(webView.bounds.size) hostBounds=\(hostView.bounds.size) isSystemFullscreen=\(isSystemFullscreen)",
-                    category: .webview
-                )
-            }
+            self.hostView = hostView
 
             Log.debug(
                 "Reparented WebView: objectID=\(store.webViewObjectID), attachmentID=\(attachmentID?.uuidString.prefix(8) ?? "nil"), frame=\(webView.frame), window=\(webView.window != nil)",
@@ -270,7 +232,6 @@ struct AMLLWebView: NSViewRepresentable {
 
         func detachWebView(from hostView: WebViewHostView) {
             LyricsRuntimeProfile.increment("AMLLWebView.detachWebView")
-            hostView.frameDidChangeHandler = nil
             guard let webView = store.preparedWebView else { return }
             guard webView.superview === hostView else { return }
             webView.removeFromSuperview()
@@ -321,9 +282,6 @@ struct AMLLWebView: NSViewRepresentable {
 }
 
 final class WebViewHostView: NSView {
-    var frameDidChangeHandler: ((WebViewHostView) -> Void)?
-    var traceRole: String = "unknown"
-
     var isMouseInteractionSuppressed = false {
         didSet {
             if oldValue != isMouseInteractionSuppressed {
@@ -347,14 +305,6 @@ final class WebViewHostView: NSView {
             previous: previousFrame,
             next: frame
         )
-        frameDidChangeHandler?(self)
-        if EmbeddedFullscreenTrace.enabled, traceRole == LyricsSurfaceRole.fullscreen.rawValue {
-            let isSystemFullscreen = window?.styleMask.contains(.fullScreen) == true
-            Log.info(
-                "[EFS t=\(EmbeddedFullscreenTrace.stamp())] HostView.setFrameSize role=\(traceRole) new=\(newSize) bounds=\(bounds.size) hasWindow=\(window != nil) isSystemFullscreen=\(isSystemFullscreen)",
-                category: .webview
-            )
-        }
     }
 
     override func setFrameOrigin(_ newOrigin: NSPoint) {
@@ -365,14 +315,6 @@ final class WebViewHostView: NSView {
             previous: previousFrame,
             next: frame
         )
-        frameDidChangeHandler?(self)
-        if EmbeddedFullscreenTrace.enabled, traceRole == LyricsSurfaceRole.fullscreen.rawValue {
-            let isSystemFullscreen = window?.styleMask.contains(.fullScreen) == true
-            Log.info(
-                "[EFS t=\(EmbeddedFullscreenTrace.stamp())] HostView.setFrameOrigin role=\(traceRole) origin=\(newOrigin) bounds=\(bounds.size) hasWindow=\(window != nil) isSystemFullscreen=\(isSystemFullscreen)",
-                category: .webview
-            )
-        }
     }
 
     override func layout() {
@@ -392,14 +334,6 @@ final class WebViewHostView: NSView {
             "WebViewHostView.windowAttached",
             value: window != nil ? "true" : "false"
         )
-        frameDidChangeHandler?(self)
-        if EmbeddedFullscreenTrace.enabled, traceRole == LyricsSurfaceRole.fullscreen.rawValue {
-            let isSystemFullscreen = window?.styleMask.contains(.fullScreen) == true
-            Log.info(
-                "[EFS t=\(EmbeddedFullscreenTrace.stamp())] HostView.viewDidMoveToWindow role=\(traceRole) attached=\(window != nil) bounds=\(bounds.size) isSystemFullscreen=\(isSystemFullscreen)",
-                category: .webview
-            )
-        }
     }
 }
 
