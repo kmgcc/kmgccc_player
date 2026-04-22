@@ -24,7 +24,7 @@ struct MainLayoutView: View {
     @Environment(UIStateViewModel.self) private var uiState
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(PlayerViewModel.self) private var playerVM
-    @Environment(LyricsViewModel.self) private var lyricsVM
+    @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @ObservedObject private var fullscreenWindowManager = FullscreenWindowManager.shared
 
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
@@ -32,8 +32,10 @@ struct MainLayoutView: View {
     @State private var dragWidthBounds: ClosedRange<CGFloat>?
     @State private var isHoveringResizeHandle = false
     @State private var windowWidth: CGFloat = 0
+    @State private var playlistPageController = PlaylistPageController()
     @State private var lyricsFlashFilled = false
     @State private var lyricsFlashTicket = 0
+    @State private var sortSymbolEffectTrigger = 0
     @State private var lastTracedDetailSize: CGSize = .zero
     @State private var lastTracedDetailSafeAreaTop: CGFloat = -1
 
@@ -123,6 +125,9 @@ struct MainLayoutView: View {
                     )
                 }
             }
+            .onChange(of: libraryVM.searchResetTrigger) { _, _ in
+                playlistPageController.searchText = ""
+            }
         }
     }
 
@@ -175,37 +180,26 @@ struct MainLayoutView: View {
                         }
                 }
             )
-            .ignoresSafeArea(.container, edges: .top)
-            .overlay {
-                ZStack {
-                    if uiState.contentMode == .nowPlaying
-                        && !fullscreenWindowManager.isWindowedFullscreenActive
-                    {
-                        GeometryReader { detailProxy in
-                            lyricsToggleOverlay
-                                .offset(y: -detailProxy.safeAreaInsets.top)
-                                .frame(
-                                    maxWidth: .infinity,
-                                    maxHeight: .infinity,
-                                    alignment: .topTrailing
-                                )
-                        }
-                    }
-                }
-            }
+            .modifier(TopSafeAreaMode(enabled: shouldIgnoreTopContainerSafeArea))
             .navigationTitle("")
             .id("main-detail-content")
         }
         .id("main-split-view")
         .navigationSplitViewStyle(.balanced)
-        .ignoresSafeArea(.container, edges: [.top, .bottom])
+        .modifier(SplitViewSafeAreaMode(ignoreTop: shouldIgnoreTopContainerSafeArea))
+
+        let removeSidebarToggle = shouldForceSidebarHiddenInWindowedFullscreen || uiState.sidebarVisible
 
         if shouldForceSidebarHiddenInWindowedFullscreen {
             baseSplitView
                 .toolbar(removing: .sidebarToggle)
                 .toolbar(.hidden, for: .windowToolbar)
+        } else if uiState.contentMode == .library {
+            baseSplitView
+                .toolbar(removing: removeSidebarToggle ? .sidebarToggle : nil)
         } else {
             baseSplitView
+                .toolbar(removing: removeSidebarToggle ? .sidebarToggle : nil)
         }
     }
 
@@ -230,6 +224,154 @@ struct MainLayoutView: View {
 
     private var shouldForceSidebarHiddenInWindowedFullscreen: Bool {
         fullscreenWindowManager.isWindowedFullscreenActive
+    }
+
+    private var librarySearchBinding: Binding<String> {
+        Binding(
+            get: { playlistPageController.searchText },
+            set: { playlistPageController.searchText = $0 }
+        )
+    }
+
+    @ToolbarContentBuilder
+    private var libraryToolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .navigation) {
+            sortToolbarMenu
+        }
+
+        ToolbarItem(placement: .navigation) {
+            libraryActionGroup
+        }
+
+        ToolbarSpacer(.flexible, placement: .automatic)
+
+        ToolbarItem(placement: .secondaryAction) {
+            lyricsToolbarButton
+        }
+    }
+
+    private var sortToolbarMenu: some View {
+        Menu {
+            Section("sort.by") {
+                ForEach(TrackSortKey.allCases) { key in
+                    Button {
+                        libraryVM.trackSortKey = key
+                        sortSymbolEffectTrigger += 1
+                    } label: {
+                        if libraryVM.trackSortKey == key {
+                            Label(key.title, systemImage: "checkmark")
+                        } else {
+                            Text(key.title)
+                        }
+                    }
+                }
+            }
+
+            Section("sort.order") {
+                ForEach(TrackSortOrder.allCases) { order in
+                    Button {
+                        libraryVM.trackSortOrder = order
+                        sortSymbolEffectTrigger += 1
+                    } label: {
+                        if libraryVM.trackSortOrder == order {
+                            Label(order.title, systemImage: "checkmark")
+                        } else {
+                            Text(order.title)
+                        }
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "arrow.up.arrow.down")
+                .symbolRenderingMode(.hierarchical)
+        }
+        .help("sort.help")
+        .symbolEffect(.bounce, value: sortSymbolEffectTrigger)
+    }
+
+    private var libraryActionGroup: some View {
+        ControlGroup {
+            Button {
+                toggleMultiselectMode()
+            } label: {
+                Image(systemName: playlistPageController.isMultiselectMode ? "checkmark.circle.fill" : "checkmark.circle")
+            }
+            .help("context.multiselect")
+
+            Button {
+                playFromToolbar()
+            } label: {
+                Image(systemName: "play.fill")
+            }
+            .help("context.play_all")
+            .disabled(toolbarQueueTracks.isEmpty)
+
+            Button {
+                Task {
+                    await libraryVM.importToCurrentPlaylist()
+                }
+            } label: {
+                Image(systemName: "plus")
+            }
+            .help("context.import")
+        }
+        .controlGroupStyle(.navigation)
+    }
+
+    private var toolbarQueueTracks: [Track] {
+        playlistPageController.page?.queueTracks ?? []
+    }
+
+    private var toolbarSelectionIdentity: String {
+        if let identity = playlistPageController.page?.selectionIdentity {
+            return identity
+        }
+        switch libraryVM.currentSelection {
+        case .allSongs:
+            return "allSongs"
+        case .playlist(let id):
+            return "playlist-\(id.uuidString)"
+        case .artist(let key):
+            return "artist-\(key)"
+        case .album(let key):
+            return "album-\(key)"
+        }
+    }
+
+    private func toggleMultiselectMode() {
+        guard let page = playlistPageController.page, !page.rows.isEmpty else { return }
+        playlistPageController.isMultiselectMode.toggle()
+        if !playlistPageController.isMultiselectMode {
+            playlistPageController.selectedTrackIDs.removeAll()
+        }
+    }
+
+    private func playFromToolbar() {
+        if playlistPageController.isMultiselectMode,
+           !playlistPageController.selectedTrackIDs.isEmpty
+        {
+            let selectedTracks = selectedTracksForToolbar()
+            guard !selectedTracks.isEmpty else { return }
+            playbackCoordinator.playTracks(
+                selectedTracks,
+                libraryQueueSource: .librarySelection(toolbarSelectionIdentity)
+            )
+            return
+        }
+
+        guard !toolbarQueueTracks.isEmpty else { return }
+        playbackCoordinator.playTracks(
+            toolbarQueueTracks,
+            libraryQueueSource: .librarySelection(toolbarSelectionIdentity)
+        )
+    }
+
+    private func selectedTracksForToolbar() -> [Track] {
+        guard let rows = playlistPageController.page?.rows else { return [] }
+        return rows.compactMap { row in
+            guard playlistPageController.selectedTrackIDs.contains(row.id) else { return nil }
+            return playlistPageController.latestTrackFromLibrary(trackID: row.id)
+        }
     }
 
     private func traceDetailGeometry(_ detailProxy: GeometryProxy) {
@@ -346,41 +488,29 @@ struct MainLayoutView: View {
         return minWidth...resolvedMax
     }
 
-    private var lyricsToggleButton: some View {
-        GlassIconButton(
-            systemImage: lyricsFlashFilled ? "quote.bubble.fill" : "quote.bubble",
-            size: GlassStyleTokens.headerControlHeight,
-            iconSize: GlassToolbarButton.iconSize(for: .standard),
-            isPrimary: false,
-            help: uiState.lyricsVisible ? "Hide Lyrics" : "Show Lyrics",
-            surfaceVariant: .defaultToolbar
-        ) {
-            lyricsFlashTicket += 1
-            let ticket = lyricsFlashTicket
-            lyricsFlashFilled = true
-            uiState.toggleLyrics()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.24) {
-                if lyricsFlashTicket == ticket {
-                    lyricsFlashFilled = false
-                }
-            }
+    private var lyricsToolbarButton: some View {
+        Button {
+            toggleLyrics()
+        } label: {
+            Image(systemName: lyricsFlashFilled ? "quote.bubble.fill" : "quote.bubble")
+                .symbolRenderingMode(.hierarchical)
         }
+        .help(uiState.lyricsVisible ? "Hide Lyrics" : "Show Lyrics")
         .contentTransition(
             .symbolEffect(.replace.magic(fallback: .offUp.byLayer), options: .nonRepeating)
         )
         .animation(.snappy(duration: 0.22), value: lyricsFlashFilled)
     }
 
-    private var lyricsToggleOverlay: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Spacer()
-                lyricsToggleButton
+    private func toggleLyrics() {
+        lyricsFlashTicket += 1
+        let ticket = lyricsFlashTicket
+        lyricsFlashFilled = true
+        uiState.toggleLyrics()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.24) {
+            if lyricsFlashTicket == ticket {
+                lyricsFlashFilled = false
             }
-            .cornerAvoidingHorizontalPadding(GlassStyleTokens.headerHorizontalPadding)
-            .frame(height: GlassStyleTokens.headerBarHeight)
-
-            Spacer(minLength: 0)
         }
     }
 
@@ -392,12 +522,16 @@ struct MainLayoutView: View {
             let lyricsWidth = resolvedLyricsPanelWidth(in: proxy.size.width)
 
             HStack(spacing: 0) {
-                PlaylistDetailView {
-                    lyricsToggleButton
-                }
-                .frame(width: mainContentWidth, alignment: .topLeading)
-                .frame(maxHeight: .infinity, alignment: .topLeading)
-                .layoutPriority(1)
+                PlaylistDetailView(pageController: playlistPageController)
+                    .frame(width: mainContentWidth, alignment: .topLeading)
+                    .frame(maxHeight: .infinity, alignment: .topLeading)
+                    .layoutPriority(1)
+                    .toolbar { libraryToolbarContent }
+                    .searchable(
+                        text: librarySearchBinding,
+                        placement: .toolbar,
+                        prompt: Text("搜索")
+                    )
 
                 if shouldShowMainLyricsPanel {
                     lyricsPanelView(width: lyricsWidth)
@@ -417,12 +551,10 @@ struct MainLayoutView: View {
             let lyricsWidth = resolvedLyricsPanelWidth(in: proxy.size.width)
 
             ZStack(alignment: .topLeading) {
-                // Now Playing skin only occupies the main content area (left portion, excluding lyrics)
                 NowPlayingHostView(mainContentWidth: mainContentWidth)
                     .frame(width: mainContentWidth, alignment: .topLeading)
                     .frame(maxHeight: .infinity, alignment: .topLeading)
 
-                // Lyrics panel positioned on the right
                 if shouldShowMainLyricsPanel {
                     lyricsPanelView(width: lyricsWidth)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
@@ -482,6 +614,10 @@ struct MainLayoutView: View {
         uiState.lyricsWidth = clampLyricsWidth(uiState.lyricsWidth)
     }
 
+    private var shouldIgnoreTopContainerSafeArea: Bool {
+        uiState.contentMode == .nowPlaying || fullscreenWindowManager.isWindowedFullscreenActive
+    }
+
     private func dynamicLyricsMaxWidth() -> CGFloat {
         let defaultMax = Constants.Layout.lyricsPanelMaxWidth
         guard windowWidth > 0 else { return defaultMax }
@@ -503,6 +639,32 @@ struct MainLayoutView: View {
         return min(defaultMax, compactMax)
     }
 
+}
+
+private struct TopSafeAreaMode: ViewModifier {
+    let enabled: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if enabled {
+            content.ignoresSafeArea(.container, edges: .top)
+        } else {
+            content
+        }
+    }
+}
+
+private struct SplitViewSafeAreaMode: ViewModifier {
+    let ignoreTop: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if ignoreTop {
+            content.ignoresSafeArea(.container, edges: [.top, .bottom])
+        } else {
+            content.ignoresSafeArea(.container, edges: .bottom)
+        }
+    }
 }
 
 private struct MainLyricsPanelShell: View, Equatable {

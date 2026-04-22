@@ -10,9 +10,10 @@ import SwiftUI
 
 /// Base icon button with Liquid Glass background and crisp foreground content.
 struct GlassIconButtonLabel: View {
-    enum SurfaceVariant {
+    enum SurfaceVariant: Equatable {
         case defaultToolbar
         case sidebarBottom
+        case systemToolbar
     }
 
     let systemImage: String
@@ -46,24 +47,21 @@ struct GlassIconButtonLabel: View {
 
     var body: some View {
         Group {
-            if let iconBlendMode {
-                Image(systemName: systemImage)
-                    .font(.system(size: iconSize, weight: .semibold))
-                    .foregroundStyle(iconColorOverride ?? iconForeground)
-                    .compositingGroup()
-                    .blendMode(iconBlendMode)
+            if surfaceVariant == .systemToolbar {
+                iconContent
+                    .frame(width: size, height: size)
+                    .contentShape(Circle())
+                    .background(systemToolbarCircleBackground)
             } else {
-                Image(systemName: systemImage)
-                    .font(.system(size: iconSize, weight: .semibold))
-                    .foregroundStyle(iconColorOverride ?? iconForeground)
+                iconContent
+                    .frame(width: size, height: size)
+                    .contentShape(Circle())
+                    .liquidGlassCircle(
+                        colorScheme: colorScheme,
+                        accentColor: nil as Color?
+                    )
             }
         }
-            .frame(width: size, height: size)
-            .contentShape(Circle())
-            .liquidGlassCircle(
-                colorScheme: colorScheme,
-                accentColor: nil as Color?
-            )
     }
 
     private var iconForeground: Color {
@@ -71,6 +69,33 @@ struct GlassIconButtonLabel: View {
             return themeStore.accentColor.opacity(colorScheme == .dark ? 0.98 : 0.90)
         }
         return themeStore.accentColor.opacity(colorScheme == .dark ? 0.94 : 0.84)
+    }
+
+    @ViewBuilder
+    private var iconContent: some View {
+        if let iconBlendMode {
+            Image(systemName: systemImage)
+                .font(.system(size: iconSize, weight: .semibold))
+                .foregroundStyle(iconColorOverride ?? iconForeground)
+                .compositingGroup()
+                .blendMode(iconBlendMode)
+        } else {
+            Image(systemName: systemImage)
+                .font(.system(size: iconSize, weight: .semibold))
+                .foregroundStyle(iconColorOverride ?? iconForeground)
+        }
+    }
+
+    private var systemToolbarCircleBackground: some View {
+        Circle()
+            .fill(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.045))
+            .overlay {
+                Circle()
+                    .strokeBorder(
+                        Color.primary.opacity(colorScheme == .dark ? 0.11 : 0.08),
+                        lineWidth: 0.5
+                    )
+            }
     }
 }
 
@@ -164,6 +189,7 @@ struct GlassToolbarMenuButton<Content: View>: View {
     let systemImage: String
     let help: LocalizedStringKey
     let style: GlassToolbarButton.Style
+    let surfaceVariant: GlassIconButtonLabel.SurfaceVariant
     @ViewBuilder let content: () -> Content
 
     var body: some View {
@@ -177,7 +203,7 @@ struct GlassToolbarMenuButton<Content: View>: View {
                     : GlassStyleTokens.headerControlHeight,
                 iconSize: GlassToolbarButton.iconSize(for: style),
                 isPrimary: style == .primary,
-                surfaceVariant: .defaultToolbar,
+                surfaceVariant: surfaceVariant,
                 iconBlendMode: nil
             )
         }
@@ -188,16 +214,35 @@ struct GlassToolbarMenuButton<Content: View>: View {
 }
 
 struct GlassToolbarTriplePill: View {
+    enum SurfaceVariant: Equatable {
+        case floatingHeader
+        case systemToolbar
+    }
+
     let isMultiselectActive: Bool
     let onToggleMultiselect: () -> Void
     let canPlay: Bool
     let onPlay: () -> Void
     let onImport: () -> Void
+    let surfaceVariant: SurfaceVariant
 
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
 
     var body: some View {
+        pillContent
+            .frame(height: GlassStyleTokens.headerControlHeight)
+            .background(pillBackground)
+            .clipShape(Capsule())
+            .overlay {
+                if surfaceVariant == .systemToolbar {
+                    Capsule()
+                        .strokeBorder(systemToolbarBorderColor, lineWidth: 0.5)
+                }
+            }
+    }
+
+    private var pillContent: some View {
         HStack(spacing: 0) {
             // Multiselect Button
             Button {
@@ -277,14 +322,11 @@ struct GlassToolbarTriplePill: View {
             .buttonStyle(.plain)
             .help("context.import")
         }
-        .frame(height: GlassStyleTokens.headerControlHeight)
-        .liquidGlassPill(colorScheme: colorScheme, accentColor: nil as Color?)
-        .clipShape(Capsule())
     }
 
     private var divider: some View {
         Rectangle()
-            .fill(Color.primary.opacity(0.10))
+            .fill(Color.primary.opacity(surfaceVariant == .systemToolbar ? 0.18 : 0.10))
             .frame(
                 width: 0.5,
                 height: GlassStyleTokens.headerControlHeight - 12
@@ -293,6 +335,22 @@ struct GlassToolbarTriplePill: View {
 
     private var activeIconColor: Color {
         themeStore.accentColor.opacity(colorScheme == .dark ? 0.96 : 0.88)
+    }
+
+    @ViewBuilder
+    private var pillBackground: some View {
+        if surfaceVariant == .systemToolbar {
+            Capsule()
+                .fill(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.045))
+        } else {
+            Capsule()
+                .fill(.clear)
+                .liquidGlassPill(colorScheme: colorScheme, accentColor: nil as Color?)
+        }
+    }
+
+    private var systemToolbarBorderColor: Color {
+        Color.primary.opacity(colorScheme == .dark ? 0.12 : 0.09)
     }
 }
 
@@ -361,51 +419,5 @@ struct GlassToolbarPlayImportPill: View {
 
     private var activeIconColor: Color {
         themeStore.accentColor.opacity(colorScheme == .dark ? 0.96 : 0.88)
-    }
-}
-
-/// Toolbar search field with Liquid Glass background.
-struct GlassToolbarSearchField: View {
-    let placeholder: LocalizedStringKey
-    @Binding var text: String
-    let focused: FocusState<Bool>.Binding
-    let onClear: () -> Void
-    @Environment(\.colorScheme) private var colorScheme
-    @EnvironmentObject private var themeStore: ThemeStore
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.secondary)
-
-            TextField(placeholder, text: $text)
-                .textFieldStyle(.plain)
-                .font(.system(size: 13))
-                .foregroundStyle(.primary)
-                .focused(focused)
-
-            if !text.isEmpty {
-                Button(action: onClear) {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 12))
-                        .foregroundStyle(themeStore.accentColor.opacity(colorScheme == .dark ? 0.92 : 0.84))
-                        .frame(width: 22, height: 22)
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .help("context.clear_search")
-            }
-        }
-        .padding(.horizontal, 12)
-        .frame(height: GlassStyleTokens.headerControlHeight)
-        .liquidGlassRect(
-            cornerRadius: GlassStyleTokens.headerControlCornerRadius,
-            colorScheme: colorScheme,
-            accentColor: nil as Color?
-        )
-        .onTapGesture {
-            focused.wrappedValue = true
-        }
     }
 }
