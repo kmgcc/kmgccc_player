@@ -249,6 +249,8 @@
 "menu.toggle_lyrics" = "切换歌词面板";
 "menu.open_fullscreen_player" = "打开全屏播放器";
 "menu.playback" = "播放控制";
+"menu.enter_window_now_playing" = "进入窗口播放";
+"menu.enter_windowed_fullscreen_now_playing" = "进入窗口全屏";
 "menu.play" = "播放";
 "menu.pause" = "暂停";
 "menu.play_pause" = "播放/暂停";

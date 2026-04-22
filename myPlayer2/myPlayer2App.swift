@@ -117,7 +117,7 @@ struct KmgcccPlayerApp: App {
     // MARK: - Body
 
     var body: some Scene {
-        WindowGroup("") {
+        WindowGroup("", id: "main") {
             AppRootView(appSession: appSession)
                 .frame(minWidth: 1100, minHeight: 600)
         }
@@ -194,6 +194,9 @@ struct KmgcccPlayerApp: App {
                 // 播放顺序模式 - 使用 Button 配合 checkmark 实现单选效果
                 PlaybackOrderMenuContent()
             }
+
+            // 3.1 显示菜单追加项（窗口播放 / 窗口模拟全屏）
+            PlaybackCommands(appSession: appSession)
 
             // 4. 帮助菜单
             CommandGroup(replacing: .help) {

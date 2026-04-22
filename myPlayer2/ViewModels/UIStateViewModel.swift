@@ -155,6 +155,23 @@ final class UIStateViewModel {
         showLibrary()
     }
 
+    /// Force the main window out of Now Playing before presenting fullscreen UI.
+    /// This uses a non-animated transaction so the page unmounts immediately and
+    /// does not briefly coexist with the fullscreen player.
+    @discardableResult
+    func dismissNowPlayingForFullscreenPresentation() -> Bool {
+        guard contentMode == .nowPlaying else { return false }
+
+        shouldRestoreLibraryScrollOnReturn = true
+
+        var transaction = Transaction()
+        transaction.animation = nil
+        withTransaction(transaction) {
+            contentMode = .library
+        }
+        return true
+    }
+
     /// Consume one-time restore request for the matching playlist.
     /// Returns nil when no restore is needed, so list falls back to default top.
     func consumeLibraryRestoreTarget(for playlistID: UUID?) -> UUID? {

@@ -42,8 +42,8 @@ enum LyricsRuntimeOverlayResolver {
         // Windowed (embedded) fullscreen: make lyrics slightly larger.
         // Applies only to the embedded presentation (NOT system fullscreen space).
         if context == .fullscreenEmbedded {
-            overlay.mainFontSizeDeltaPx += 6
-            overlay.translationFontSizeDeltaPx += 4
+            overlay.mainFontSizeDeltaPx += 4
+            overlay.translationFontSizeDeltaPx += 2
         }
 
         // Apple Music listening mode: advance lyrics globally by 350ms.
@@ -55,4 +55,3 @@ enum LyricsRuntimeOverlayResolver {
         return overlay
     }
 }
-

@@ -110,6 +110,12 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
             return
         }
 
+        if dismissMainWindowNowPlayingIfNeeded(before: { [weak self] in
+            self?.showFullscreenWindow()
+        }) {
+            return
+        }
+
         guard let playerVM = playerVM,
               let playbackCoordinator = playbackCoordinator,
               let ledMeterProvider = ledMeterProvider,
@@ -225,6 +231,12 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         }
         guard !isTransitioning else { return }
         guard presentationMode == .none else { return }
+
+        if dismissMainWindowNowPlayingIfNeeded(before: { [weak self] in
+            self?.showFullscreenPlayerInWindow()
+        }) {
+            return
+        }
 
         guard playerVM != nil,
               playbackCoordinator != nil,
@@ -377,6 +389,17 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         if !window.styleMask.contains(.fullScreen) {
             window.toggleFullScreen(nil)
         }
+    }
+
+    private func dismissMainWindowNowPlayingIfNeeded(
+        before retry: @escaping @MainActor () -> Void
+    ) -> Bool {
+        guard uiState?.dismissNowPlayingForFullscreenPresentation() == true else { return false }
+
+        DispatchQueue.main.async {
+            retry()
+        }
+        return true
     }
 
     private func installEscapeMonitorIfNeeded() {
