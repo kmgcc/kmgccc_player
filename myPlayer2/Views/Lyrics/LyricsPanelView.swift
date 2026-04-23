@@ -27,10 +27,12 @@ struct LyricsPanelView: View {
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(LyricsViewModel.self) private var lyricsVM
+    @Environment(UIStateViewModel.self) private var uiState
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var themeStore: ThemeStore
 
     private let hostContainer: HostContainer
+    @State private var attachAnimationToken = 0
 
     init(hostContainer: HostContainer = .swiftUIDetailColumn) {
         self.hostContainer = hostContainer
@@ -62,6 +64,16 @@ struct LyricsPanelView: View {
                 LyricsSurfaceManager.shared.reportMainVisible(false)
             }
             .onChange(of: playbackCoordinator.presentation.lyricsIdentity, handleTrackIdentityChange)
+            .onChange(of: uiState.lyricsVisible) { _, isVisible in
+                guard isVisible else { return }
+                attachAnimationToken &+= 1
+                LyricsSurfaceManager.shared.reportMainVisible(true)
+                reloadLyricsSurface(
+                    reason: "lyrics inspector expanded",
+                    forceWebReload: false,
+                    forceLyricsReload: false
+                )
+            }
             .onChange(of: playbackCoordinator.presentation.lyricsText) { _, _ in
                 guard playbackCoordinator.presentation.source == .appleMusic else { return }
                 reloadLyricsSurface(reason: "external lyrics updated", forceLyricsReload: true)
@@ -93,37 +105,54 @@ struct LyricsPanelView: View {
 
     @ViewBuilder
     private var lyricsBackgroundLayer: some View {
-        if hostContainer == .appKitInspector {
+        switch hostContainer {
+        case .appKitInspector:
+            appKitInspectorBackgroundLayer
+        case .swiftUIDetailColumn:
+            swiftUIDetailColumnBackgroundLayer
+        }
+    }
+
+    @ViewBuilder
+    private var appKitInspectorBackgroundLayer: some View {
+        switch settings.lyricsBackgroundMode {
+        case .sidebar:
             Color.clear
                 .allowsHitTesting(false)
-        } else {
-            switch settings.lyricsBackgroundMode {
-            case .sidebar:
-                ZStack(alignment: .leading) {
-                    // Liquid Glass base layer - .regular to match sidebar
-                    Color.clear
-                        .glassEffect(.regular, in: .rect(cornerRadius: 0))
-                    // Theme tint overlay
-                    themeStore.backgroundColor.opacity(0.10)
-                    // Separator line
-                    Rectangle()
-                        .fill(themeStore.secondaryTextColor.opacity(0.14))
-                        .frame(width: 1)
-                }
+        case .clear:
+            Rectangle()
+                .fill(.ultraThinMaterial)
                 .allowsHitTesting(false)
-            case .clear:
-                ZStack {
-                    Rectangle()
-                        .fill(.ultraThinMaterial)
+        }
+    }
 
-                    if themeStore.colorScheme == .dark {
-                        Color.black.opacity(0.3)
-                    } else {
-                        Color.white.opacity(0.3)
-                    }
-                }
-                .allowsHitTesting(false)
+    @ViewBuilder
+    private var swiftUIDetailColumnBackgroundLayer: some View {
+        switch settings.lyricsBackgroundMode {
+        case .sidebar:
+            ZStack(alignment: .leading) {
+                Color.clear
+                    .glassEffect(.regular, in: .rect(cornerRadius: 0))
+
+                themeStore.backgroundColor.opacity(0.10)
+
+                Rectangle()
+                    .fill(themeStore.secondaryTextColor.opacity(0.14))
+                    .frame(width: 1)
             }
+            .allowsHitTesting(false)
+        case .clear:
+            ZStack {
+                Rectangle()
+                    .fill(.ultraThinMaterial)
+
+                if themeStore.colorScheme == .dark {
+                    Color.black.opacity(0.3)
+                } else {
+                    Color.white.opacity(0.3)
+                }
+            }
+            .allowsHitTesting(false)
         }
     }
 
@@ -135,7 +164,8 @@ struct LyricsPanelView: View {
             }
 
             if playbackCoordinator.presentation.hasTrack {
-                AMLLWebView(store: lyricsVM.webViewStore)
+                AMLLWebView(store: lyricsVM.webViewStore, animatesAttachment: true)
+                    .id(attachAnimationToken)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding(.horizontal, 24)
             }

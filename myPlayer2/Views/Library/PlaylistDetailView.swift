@@ -83,6 +83,12 @@ struct PlaylistDetailView: View {
             .presentationSizing(.page)
         }
         .onAppear {
+            print(
+                "[PlaylistDetailView] appear pageController=\(ObjectIdentifier(pageController).hashValue) "
+                    + "libraryVM=\(ObjectIdentifier(libraryVM).hashValue) "
+                    + "playbackCoord=\(ObjectIdentifier(playbackCoordinator).hashValue) "
+                    + "uiState=\(ObjectIdentifier(uiState).hashValue)"
+            )
             pageController.bind(libraryVM: libraryVM, playerVM: playerVM, uiState: uiState)
             pageController.appear()
         }
@@ -206,7 +212,11 @@ struct PlaylistDetailView: View {
         ScrollView(.vertical) {
             VStack(spacing: 0) {
                 if pageController.isHeaderEffectsEnabled {
-                    haloLayer
+                    if pageController.rendersHeaderBackgroundInWindowLayer {
+                        haloScrollTrackingLayer
+                    } else {
+                        haloLayer
+                    }
                 } else {
                     Color.clear
                         .frame(height: 0)
@@ -227,6 +237,17 @@ struct PlaylistDetailView: View {
         .background(PlaylistLayoutPassProbe(key: "PlaylistDetailView.detailScroll"))
         .coordinateSpace(name: "detailScroll")
         .scrollPosition(id: scrollBinding, anchor: .top)
+    }
+
+    private var haloScrollTrackingLayer: some View {
+        Color.clear
+            .frame(height: 0)
+            .background(
+                ScrollOffsetSensor { offset in
+                    pageController.updateHaloScroll(offset: offset)
+                }
+            )
+            .allowsHitTesting(false)
     }
 
     private var haloLayer: some View {
@@ -654,20 +675,30 @@ private final class PlaylistLayoutPassProbeView: NSView {
 
 private struct ScrollOffsetSensor: View {
     let onChange: (CGFloat) -> Void
+    @State private var lastReportedOffset: CGFloat?
+
+    private let reportEpsilon: CGFloat = 6.0
 
     var body: some View {
         GeometryReader { geo in
             let offset = geo.frame(in: .named("detailScroll")).minY
             Color.clear
                 .onAppear {
-                    LyricsRuntimeProfile.increment("ScrollOffsetSensor.callback")
-                    onChange(offset)
+                    report(offset)
                 }
                 .onChange(of: offset) { _, newOffset in
-                    LyricsRuntimeProfile.increment("ScrollOffsetSensor.callback")
-                    onChange(newOffset)
+                    report(newOffset)
                 }
         }
+    }
+
+    private func report(_ offset: CGFloat) {
+        if let lastReportedOffset, abs(offset - lastReportedOffset) < reportEpsilon {
+            return
+        }
+        lastReportedOffset = offset
+        LyricsRuntimeProfile.increment("ScrollOffsetSensor.callback")
+        onChange(offset)
     }
 }
 

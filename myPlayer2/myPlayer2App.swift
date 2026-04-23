@@ -73,6 +73,28 @@ private struct PlaybackOrderMenuContent: View {
     }
 }
 
+@MainActor
+private struct PrototypeWindowCommands: Commands {
+    let appSession: AppSessionHost
+
+    var body: some Commands {
+        CommandMenu("Prototype") {
+            Button("Open AppKit Split Toolbar Prototype") {
+                AppKitSplitToolbarPrototypeWindowController.showPrototypeWindow()
+            }
+
+            Button("Open AppKit Main Split Template (Step 1)") {
+                _ = AppKitMainSplitWindowController.show(appSession: appSession)
+            }
+
+            Button("Open Legacy SwiftUI Main Window") {
+                NSApp.activate(ignoringOtherApps: true)
+                LegacyMainWindowController.show(appSession: appSession)
+            }
+        }
+    }
+}
+
 @main
 struct KmgcccPlayerApp: App {
 
@@ -106,41 +128,73 @@ struct KmgcccPlayerApp: App {
 
         self.sharedModelContainer = sharedModelContainer
         _settingsSceneDependencies = StateObject(wrappedValue: settingsSceneDependencies)
-        _appSession = StateObject(
-            wrappedValue: AppSessionHost(
-                modelContainer: sharedModelContainer,
-                settingsSceneDependencies: settingsSceneDependencies
-            )
+        let appSessionHost = AppSessionHost(
+            modelContainer: sharedModelContainer,
+            settingsSceneDependencies: settingsSceneDependencies
         )
+        _appSession = StateObject(wrappedValue: appSessionHost)
+        AppDelegate.launchMainWindowHandler = { @MainActor in
+            print("[AppLaunch] mainWindowHandler.begin")
+            Task { @MainActor in
+                await appSessionHost.setupIfNeeded()
+                print("[AppLaunch] mainWindowHandler.setupComplete")
+                _ = AppKitMainSplitWindowController.show(appSession: appSessionHost)
+            }
+        }
     }
 
     // MARK: - Body
 
     var body: some Scene {
-        WindowGroup("", id: "main") {
-            AppRootView(appSession: appSession)
-                .frame(minWidth: 1100, minHeight: 600)
+        Settings {
+            Group {
+                if let libraryVM = settingsSceneDependencies.libraryVM,
+                   let playerVM = settingsSceneDependencies.playerVM,
+                   let lyricsVM = settingsSceneDependencies.lyricsVM,
+                   let ledMeterProvider = settingsSceneDependencies.ledMeterProvider {
+                    SettingsRootView(
+                        libraryVM: libraryVM,
+                        playerVM: playerVM,
+                        lyricsVM: lyricsVM,
+                        ledMeterProvider: ledMeterProvider
+                    )
+                } else {
+                    VStack(spacing: 16) {
+                        ProgressView()
+                        Text("加载设置中...")
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(width: 400, height: 200)
+                }
+            }
+            .modelContainer(sharedModelContainer)
         }
-        .modelContainer(sharedModelContainer)
-        .windowStyle(.hiddenTitleBar)
-        .defaultSize(width: 1100, height: 680)
         .commands {
             // 1. 文件菜单
             CommandGroup(replacing: .newItem) {
                 Button(NSLocalizedString("menu.import_music", comment: "Import Music")) {
-                    NotificationCenter.default.post(name: .importMusic, object: nil)
+                    Task { @MainActor in
+                        await appSession.setupIfNeeded()
+                        await appSession.libraryVM?.importToCurrentPlaylist()
+                    }
                 }
                 .keyboardShortcut("o", modifiers: .command)
 
                 Button(NSLocalizedString("menu.new_playlist", comment: "New Playlist")) {
-                    NotificationCenter.default.post(name: .newPlaylist, object: nil)
+                    Task { @MainActor in
+                        await appSession.setupIfNeeded()
+                        _ = await appSession.libraryVM?.createNewPlaylist()
+                    }
                 }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
 
                 Divider()
 
                 Button(NSLocalizedString("menu.toggle_multiselect", comment: "Enter Multi-Select Mode")) {
-                    NotificationCenter.default.post(name: .toggleMultiselectMode, object: nil)
+                    Task { @MainActor in
+                        await appSession.setupIfNeeded()
+                        AppKitMainSplitWindowController.toggleMultiselect(appSession: appSession)
+                    }
                 }
                 .keyboardShortcut("a", modifiers: [.command, .shift])
             }
@@ -148,19 +202,29 @@ struct KmgcccPlayerApp: App {
             // 2. 显示菜单 - 替换系统默认的侧边栏命令，添加歌词和全屏播放器
             CommandGroup(replacing: .sidebar) {
                 Button(NSLocalizedString("menu.toggle_sidebar", comment: "Toggle Sidebar")) {
-                    NotificationCenter.default.post(name: .toggleSidebar, object: nil)
+                    Task { @MainActor in
+                        await appSession.setupIfNeeded()
+                        AppKitMainSplitWindowController.toggleSidebar(appSession: appSession)
+                    }
                 }
                 .keyboardShortcut("s", modifiers: [.command, .option])
 
                 Button(NSLocalizedString("menu.toggle_lyrics", comment: "Toggle Lyrics Panel")) {
-                    NotificationCenter.default.post(name: .toggleLyrics, object: nil)
+                    Task { @MainActor in
+                        await appSession.setupIfNeeded()
+                        AppKitMainSplitWindowController.toggleInspector(appSession: appSession)
+                    }
                 }
                 .keyboardShortcut("l", modifiers: [.command, .option])
 
                 Divider()
 
                 Button(NSLocalizedString("menu.open_fullscreen_player", comment: "Open Fullscreen Player")) {
-                    NotificationCenter.default.post(name: .enterFullscreen, object: nil)
+                    Task { @MainActor in
+                        await appSession.setupIfNeeded()
+                        AppKitMainSplitWindowController.reveal(appSession: appSession)
+                        FullscreenWindowManager.shared.showFullscreenWindow()
+                    }
                 }
                 .keyboardShortcut("f", modifiers: [])
             }
@@ -168,17 +232,26 @@ struct KmgcccPlayerApp: App {
             // 3. 播放控制菜单（新增顶级菜单）
             CommandMenu(NSLocalizedString("menu.playback", comment: "Playback")) {
                 Button(NSLocalizedString("menu.play_pause", comment: "Play/Pause")) {
-                    NotificationCenter.default.post(name: .togglePlayPause, object: nil)
+                    Task { @MainActor in
+                        await appSession.setupIfNeeded()
+                        appSession.playbackCoordinator?.playPause()
+                    }
                 }
                 .keyboardShortcut(.space, modifiers: [])
 
                 Button(NSLocalizedString("menu.next_track", comment: "Next Track")) {
-                    NotificationCenter.default.post(name: .nextTrack, object: nil)
+                    Task { @MainActor in
+                        await appSession.setupIfNeeded()
+                        appSession.playbackCoordinator?.next()
+                    }
                 }
                 .keyboardShortcut(.rightArrow, modifiers: .command)
 
                 Button(NSLocalizedString("menu.previous_track", comment: "Previous Track")) {
-                    NotificationCenter.default.post(name: .previousTrack, object: nil)
+                    Task { @MainActor in
+                        await appSession.setupIfNeeded()
+                        appSession.playbackCoordinator?.previous()
+                    }
                 }
                 .keyboardShortcut(.leftArrow, modifiers: .command)
 
@@ -219,39 +292,7 @@ struct KmgcccPlayerApp: App {
                 }
             }
 
-            CommandMenu("Prototype") {
-                Button("Open AppKit Split Toolbar Prototype") {
-                    AppKitSplitToolbarPrototypeWindowController.showPrototypeWindow()
-                }
-
-                Button("Open AppKit Main Split Template (Step 1)") {
-                    AppKitMainSplitWindowController.show(appSession: appSession)
-                }
-            }
-        }
-
-        Settings {
-            Group {
-                if let libraryVM = settingsSceneDependencies.libraryVM,
-                   let playerVM = settingsSceneDependencies.playerVM,
-                   let lyricsVM = settingsSceneDependencies.lyricsVM,
-                   let ledMeterProvider = settingsSceneDependencies.ledMeterProvider {
-                    SettingsRootView(
-                        libraryVM: libraryVM,
-                        playerVM: playerVM,
-                        lyricsVM: lyricsVM,
-                        ledMeterProvider: ledMeterProvider
-                    )
-                } else {
-                    VStack(spacing: 16) {
-                        ProgressView()
-                        Text("加载设置中...")
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(width: 400, height: 200)
-                }
-            }
-            .modelContainer(sharedModelContainer)
+            PrototypeWindowCommands(appSession: appSession)
         }
     }
 }

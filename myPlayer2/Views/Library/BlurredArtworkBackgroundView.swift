@@ -12,7 +12,7 @@ import SwiftUI
 @Observable
 final class HeaderHaloState {
     private static let anchorEpsilon: CGFloat = 0.5
-    private static let scrollEpsilon: CGFloat = 0.5
+    private static let scrollEpsilon: CGFloat = 6.0
 
     private(set) var selectionIdentity: String?
     private(set) var anchor: CGPoint?
@@ -108,6 +108,37 @@ struct HeaderHaloBackgroundView: View {
             }
         }
         .frame(height: 0)
+        .allowsHitTesting(false)
+    }
+}
+
+struct HeaderFullWindowBackgroundView: View {
+    let state: HeaderHaloState
+    let currentSource: NSImage?
+    let incomingSource: NSImage?
+    let sourceBlendOpacity: Double
+    let presentationOpacity: Double
+    var xOffset: CGFloat = 0
+    var yOffset: CGFloat = 0
+    var bloomSize: CGFloat = 220 * 4.0
+
+    var body: some View {
+        Group {
+            let hasSource = currentSource != nil || incomingSource != nil
+            if let anchor = state.anchor, hasSource {
+                let haloY = anchor.y + state.contentSpaceOffset + yOffset
+                LowCostHaloLayerView(
+                    currentSource: currentSource,
+                    incomingSource: incomingSource,
+                    sourceBlendOpacity: sourceBlendOpacity,
+                    bloomSize: bloomSize
+                )
+                .opacity(presentationOpacity)
+                .scaleEffect(state.scale)
+                .position(x: xOffset + anchor.x, y: haloY)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .allowsHitTesting(false)
     }
 }

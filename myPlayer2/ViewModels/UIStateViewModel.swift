@@ -28,6 +28,7 @@ final class UIStateViewModel {
         static let sidebarVisible = "ui.sidebarVisible"
         static let sidebarLastWidth = "ui.sidebarLastWidth"
         static let lyricsVisible = "ui.lyricsVisible"
+        static let lyricsWidth = "ui.lyricsWidth"
     }
 
     private let defaults = UserDefaults.standard
@@ -60,7 +61,11 @@ final class UIStateViewModel {
     var lyricsPanelSuppressedByModal: Bool = false
 
     /// Current lyrics panel width (user-resizable).
-    var lyricsWidth: CGFloat = Constants.Layout.lyricsPanelDefaultWidth
+    var lyricsWidth: CGFloat = Constants.Layout.lyricsPanelDefaultWidth {
+        didSet {
+            defaults.set(Double(lyricsWidth), forKey: StorageKey.lyricsWidth)
+        }
+    }
 
     // MARK: - Content Mode
 
@@ -99,6 +104,13 @@ final class UIStateViewModel {
 
         if defaults.object(forKey: StorageKey.lyricsVisible) != nil {
             lyricsVisible = defaults.bool(forKey: StorageKey.lyricsVisible)
+        }
+
+        let savedLyricsWidth = defaults.double(forKey: StorageKey.lyricsWidth)
+        if savedLyricsWidth >= Double(Constants.Layout.lyricsPanelMinWidth)
+            && savedLyricsWidth <= Double(Constants.Layout.lyricsPanelMaxWidth)
+        {
+            lyricsWidth = CGFloat(savedLyricsWidth)
         }
     }
 

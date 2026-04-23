@@ -8,6 +8,7 @@
 //
 
 import AppKit
+import QuartzCore
 import SwiftUI
 import WebKit
 
@@ -18,20 +19,27 @@ struct AMLLWebView: NSViewRepresentable {
     let store: LyricsWebViewStore
     @Environment(AppSettings.self) private var settings
     var forcedAppearanceMode: AppSettings.AppearanceMode?
+    var animatesAttachment: Bool
 
     @MainActor
-    init(forcedAppearanceMode: AppSettings.AppearanceMode? = nil) {
+    init(
+        forcedAppearanceMode: AppSettings.AppearanceMode? = nil,
+        animatesAttachment: Bool = false
+    ) {
         self.store = .shared
         self.forcedAppearanceMode = forcedAppearanceMode
+        self.animatesAttachment = animatesAttachment
     }
 
     @MainActor
     init(
         store: LyricsWebViewStore,
-        forcedAppearanceMode: AppSettings.AppearanceMode? = nil
+        forcedAppearanceMode: AppSettings.AppearanceMode? = nil,
+        animatesAttachment: Bool = false
     ) {
         self.store = store
         self.forcedAppearanceMode = forcedAppearanceMode
+        self.animatesAttachment = animatesAttachment
     }
 
     func makeNSView(context: Context) -> WebViewHostView {
@@ -112,7 +120,7 @@ struct AMLLWebView: NSViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(store: store)
+        Coordinator(store: store, animatesAttachment: animatesAttachment)
     }
 
     static func dismantleNSView(_ nsView: WebViewHostView, coordinator: Coordinator) {
@@ -136,6 +144,7 @@ struct AMLLWebView: NSViewRepresentable {
     class Coordinator: NSObject, WKNavigationDelegate {
 
         let store: LyricsWebViewStore
+        let animatesAttachment: Bool
         var attachmentID: UUID?
         var lastLoggedReady: Bool = false
         var lastLoggedAppearanceMode: AppSettings.AppearanceMode?
@@ -145,8 +154,9 @@ struct AMLLWebView: NSViewRepresentable {
         private weak var hostView: WebViewHostView?
         private var hasAttemptedAttach = false
 
-        init(store: LyricsWebViewStore) {
+        init(store: LyricsWebViewStore, animatesAttachment: Bool) {
             self.store = store
+            self.animatesAttachment = animatesAttachment
         }
 
         /// Try to attach WebView to host, with detailed logging
@@ -195,6 +205,8 @@ struct AMLLWebView: NSViewRepresentable {
 
         func attachWebView(to hostView: WebViewHostView) {
             LyricsRuntimeProfile.increment("AMLLWebView.attachWebView")
+            let shouldAnimateAttachment = animatesAttachment
+                && store.preparedWebView?.superview !== hostView
             if attachmentID == nil || store.activeAttachmentID != attachmentID {
                 attachmentID = store.attach()
                 Log.debug("Attached store, attachmentID=\(attachmentID?.uuidString.prefix(8) ?? "nil")", category: .webview)
@@ -221,6 +233,14 @@ struct AMLLWebView: NSViewRepresentable {
             webView.frame = hostView.bounds
             webView.autoresizingMask = [.width, .height]
             hostView.addSubview(webView)
+            if shouldAnimateAttachment {
+                webView.alphaValue = 0
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.24
+                    context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                    webView.animator().alphaValue = 1
+                }
+            }
             store.refreshMouseInteractionSuppression(reason: "attachWebView")
             self.hostView = hostView
 

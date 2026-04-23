@@ -14,16 +14,22 @@ final class AppKitMainSplitViewController: NSSplitViewController {
     static let mainLyricsDividerIndex = 1
 
     private let appSession: AppSessionHost
+    let artBackgroundController = BKArtBackgroundController()
+    let playlistPageController = PlaylistPageController()
     private let sidebarItem: NSSplitViewItem
     private let mainItem: NSSplitViewItem
     private let lyricsItem: NSSplitViewItem
 
     private var didApplyInitialLayout = false
+    private(set) var isReadyForToolbarTracking = false
+    var onToolbarTrackingReady: (() -> Void)?
     private var lastMirroredSidebarWidth: CGFloat = -1
     private var lastMirroredLyricsWidth: CGFloat = -1
+    private var suspendedSidebarVisibilityForEmbeddedFullscreen: Bool?
 
     init(appSession: AppSessionHost) {
         self.appSession = appSession
+        playlistPageController.rendersHeaderBackgroundInWindowLayer = true
 
         let sidebarController = NSHostingController(
             rootView: AppKitMainSidebarPaneRoot(appSession: appSession)
@@ -31,7 +37,11 @@ final class AppKitMainSplitViewController: NSSplitViewController {
         sidebarController.title = "sidebar"
 
         let mainController = NSHostingController(
-            rootView: AppKitMainContentPaneRoot(appSession: appSession)
+            rootView: AppKitMainContentPaneRoot(
+                appSession: appSession,
+                artBackgroundController: artBackgroundController,
+                pageController: playlistPageController
+            )
         )
         mainController.title = "main"
 
@@ -47,7 +57,7 @@ final class AppKitMainSplitViewController: NSSplitViewController {
         sidebarItem.preferredThicknessFraction = 0.18
 
         let mainItem = NSSplitViewItem(viewController: mainController)
-        mainItem.minimumThickness = Constants.Layout.detailContentMinWidth
+        mainItem.minimumThickness = 560
         mainItem.canCollapse = false
 
         let lyricsItem = NSSplitViewItem(inspectorWithViewController: lyricsController)
@@ -89,7 +99,13 @@ final class AppKitMainSplitViewController: NSSplitViewController {
         applyInitialLayoutFromMirroredState()
         mirrorSplitStateToUIState(reason: "initial")
 
+        // Mark ready only after initial layout is applied and the split view has had a chance to lay out
+        // its subviews, so tracking separator items can bind to divider indices without throwing.
+        isReadyForToolbarTracking = true
+        onToolbarTrackingReady?()
+
         print("[AppKitMainSplit] \(runtimeVerificationSnapshot())")
+        print(debugIdentitySnapshot(prefix: "[AppKitMainSplit] identities"))
     }
 
     func runtimeVerificationSnapshot() -> String {
@@ -107,8 +123,66 @@ final class AppKitMainSplitViewController: NSSplitViewController {
         ].joined(separator: " ")
     }
 
+    func debugIdentitySnapshot(prefix: String) -> String {
+        let session = String(ObjectIdentifier(appSession).hashValue)
+        let pageController = String(ObjectIdentifier(playlistPageController).hashValue)
+        let library = appSession.libraryVM.map { String(ObjectIdentifier($0).hashValue) } ?? "nil"
+        let playback = appSession.playbackCoordinator.map { String(ObjectIdentifier($0).hashValue) } ?? "nil"
+        let uiState = String(ObjectIdentifier(appSession.uiState).hashValue)
+        let windowID = view.window.map { String(ObjectIdentifier($0).hashValue) } ?? "nil"
+        return "\(prefix) window=\(windowID) appSession=\(session) pageController=\(pageController) uiState=\(uiState) libraryVM=\(library) playbackCoord=\(playback) contentMode=\(appSession.uiState.contentMode)"
+    }
+
     override func splitViewDidResizeSubviews(_ notification: Notification) {
         mirrorSplitStateToUIState(reason: "resize")
+    }
+
+    override func toggleSidebar(_ sender: Any?) {
+        super.toggleSidebar(sender)
+        mirrorSplitStateToUIState(reason: "toggleSidebar")
+    }
+
+    override func toggleInspector(_ sender: Any?) {
+        super.toggleInspector(sender)
+        mirrorSplitStateToUIState(reason: "toggleInspector")
+    }
+
+    var isSidebarVisible: Bool {
+        !sidebarItem.isCollapsed
+    }
+
+    var isLyricsVisible: Bool {
+        !lyricsItem.isCollapsed
+    }
+
+    func setSidebarVisible(_ visible: Bool) {
+        guard visible != isSidebarVisible else { return }
+        sidebarItem.animator().isCollapsed = !visible
+        splitView.adjustSubviews()
+        mirrorSplitStateToUIState(reason: "setSidebarVisible")
+    }
+
+    func setLyricsVisible(_ visible: Bool) {
+        guard visible != isLyricsVisible else { return }
+        lyricsItem.animator().isCollapsed = !visible
+        splitView.adjustSubviews()
+        mirrorSplitStateToUIState(reason: "setLyricsVisible")
+    }
+
+    func setEmbeddedFullscreenActive(_ active: Bool) {
+        if active {
+            guard suspendedSidebarVisibilityForEmbeddedFullscreen == nil else { return }
+            suspendedSidebarVisibilityForEmbeddedFullscreen = isSidebarVisible
+            if isSidebarVisible {
+                setSidebarVisible(false)
+            }
+            return
+        }
+
+        let shouldRestoreSidebar = suspendedSidebarVisibilityForEmbeddedFullscreen == true
+        suspendedSidebarVisibilityForEmbeddedFullscreen = nil
+        guard shouldRestoreSidebar else { return }
+        setSidebarVisible(true)
     }
 
     private func applyInitialLayoutFromMirroredState() {
