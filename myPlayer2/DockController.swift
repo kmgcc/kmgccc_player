@@ -152,17 +152,12 @@ final class DockController: NSObject, NSMenuItemValidation {
         NSApp.unhide(nil)
         NSApp.activate(ignoringOtherApps: true)
 
-        let candidateWindow = NSApp.windows.first { window in
-            window.canBecomeKey && !window.isMiniaturized && window.isVisible
-        } ?? NSApp.windows.first { window in
-            window.canBecomeKey
+        if AppKitMainSplitWindowController.bringToFrontIfPossible() {
+            return true
         }
 
-        guard let candidateWindow else { return false }
-        if candidateWindow.isMiniaturized {
-            candidateWindow.deminiaturize(nil)
-        }
-        candidateWindow.makeKeyAndOrderFront(nil)
+        guard AppDelegate.launchMainWindowHandler != nil else { return false }
+        AppDelegate.showMainWindow()
         return true
     }
 

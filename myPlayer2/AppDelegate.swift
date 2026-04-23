@@ -10,6 +10,13 @@ import AppKit
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     static weak var shared: AppDelegate?
+    static var launchMainWindowHandler: (@MainActor () -> Void)?
+
+    static func showMainWindow() {
+        Task { @MainActor in
+            launchMainWindowHandler?()
+        }
+    }
 
     private let dockController = DockController()
 
@@ -19,9 +26,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        print("[AppDelegate] didFinishLaunching")
         disableWindowTabbing()
         configureMainMenu()
         dockController.installDockTile()
+        DispatchQueue.main.async {
+            print("[AppDelegate] launchMainWindowHandler.invoke")
+            Self.showMainWindow()
+        }
     }
 
     func configureDockPlayback(playbackCoordinator: PlaybackCoordinator) {

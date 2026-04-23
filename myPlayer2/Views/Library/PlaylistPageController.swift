@@ -72,6 +72,7 @@ final class PlaylistPageController {
     var listScrollPositionID: UUID?
     var isMultiselectMode = false
     var selectedTrackIDs: Set<UUID> = []
+    var rendersHeaderBackgroundInWindowLayer = false
 
     let haloState = HeaderHaloState()
 

@@ -50,7 +50,7 @@ struct MiniPlayerView: View {
     private var trackInfoIdealWidth: CGFloat { 100 }
     private var trackInfoMinWidth: CGFloat { 56 }
     private var trackInfoMaxWidth: CGFloat { 136 }
-    private var progressAreaMinWidth: CGFloat { 120 }
+    private var progressAreaMinWidth: CGFloat { 72 }
 
     var body: some View {
         return HStack(spacing: 12) {
@@ -131,8 +131,18 @@ struct MiniPlayerView: View {
                 }
             } label: {
                 trackInfoView
+                    .frame(height: 36, alignment: .leading)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .frame(
+                minWidth: trackInfoMinWidth,
+                idealWidth: trackInfoIdealWidth,
+                maxWidth: trackInfoMaxWidth,
+                minHeight: 36,
+                alignment: .leading
+            )
+            .contentShape(Rectangle())
         }
         .contentShape(Rectangle())
         .offset(x: 4, y: 0)

@@ -48,6 +48,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
     weak var netEaseCoverService: NetEaseCoverService?
 
     private var suspendedMainLyricsVisibility: Bool?
+    private var suspendedMainSidebarVisibility: Bool?
     private weak var embeddedHostWindow: NSWindow?
     private var embeddedHostWindowOriginalFrame: NSRect?
     private var embeddedHostWindowOriginalMinSize: NSSize?
@@ -258,6 +259,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         }
         LyricsSurfaceManager.shared.requestMode(.fullscreen)
         suspendMainLyricsIfNeeded()
+        suspendMainSidebarForEmbeddedFullscreenIfNeeded()
         if EmbeddedFullscreenTrace.enabled {
             Log.info(
                 "[EFS t=\(EmbeddedFullscreenTrace.stamp())] showFullscreenPlayerInWindow.setMode embeddedInWindow",
@@ -278,6 +280,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         LyricsSurfaceManager.shared.requestMode(.main)
         presentationMode = .none
         restoreEmbeddedHostWindowFrameIfNeeded()
+        restoreSuspendedMainSidebarForEmbeddedFullscreenIfNeeded()
         restoreSuspendedMainLyricsIfNeeded()
     }
 
@@ -327,9 +330,10 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
     }
 
     private func suspendMainLyricsIfNeeded() {
-        suspendedMainLyricsVisibility = uiState?.lyricsVisible
-        if uiState?.lyricsVisible == true {
-            uiState?.lyricsVisible = false
+        let isVisible = AppKitMainSplitWindowController.isLyricsVisible() || uiState?.lyricsVisible == true
+        suspendedMainLyricsVisibility = isVisible
+        if isVisible {
+            AppKitMainSplitWindowController.setLyricsVisible(false)
         }
     }
 
@@ -339,7 +343,24 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
 
         guard shouldRestoreLyrics else { return }
         DispatchQueue.main.async {
-            self.uiState?.lyricsVisible = true
+            AppKitMainSplitWindowController.setLyricsVisible(true)
+        }
+    }
+
+    private func suspendMainSidebarForEmbeddedFullscreenIfNeeded() {
+        let isVisible = AppKitMainSplitWindowController.isSidebarVisible() || uiState?.sidebarVisible == true
+        suspendedMainSidebarVisibility = isVisible
+        AppKitMainSplitWindowController.setEmbeddedFullscreenActive(true)
+    }
+
+    private func restoreSuspendedMainSidebarForEmbeddedFullscreenIfNeeded() {
+        let shouldRestoreSidebar = suspendedMainSidebarVisibility == true
+        suspendedMainSidebarVisibility = nil
+        AppKitMainSplitWindowController.setEmbeddedFullscreenActive(false)
+
+        guard shouldRestoreSidebar else { return }
+        DispatchQueue.main.async {
+            AppKitMainSplitWindowController.setSidebarVisible(true)
         }
     }
 

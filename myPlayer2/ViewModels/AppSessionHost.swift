@@ -28,6 +28,7 @@ final class AppSessionHost: ObservableObject {
     private let modelContainer: ModelContainer
     private let settingsSceneDependencies: SettingsSceneDependencies
     private var hasSetupDependencies = false
+    private var playbackModeObserver: NSObjectProtocol?
 
     init(
         modelContainer: ModelContainer,
@@ -35,6 +36,10 @@ final class AppSessionHost: ObservableObject {
     ) {
         self.modelContainer = modelContainer
         self.settingsSceneDependencies = settingsSceneDependencies
+    }
+
+    var sharedModelContainer: ModelContainer {
+        modelContainer
     }
 
     func setupIfNeeded() async {
@@ -165,6 +170,19 @@ final class AppSessionHost: ObservableObject {
             ledMeterProvider: ledMeterProvider
         )
 
+        if playbackModeObserver == nil {
+            playbackModeObserver = NotificationCenter.default.addObserver(
+                forName: .playbackModeChanged,
+                object: nil,
+                queue: .main
+            ) { [weak playerVM] _ in
+                let playerViewModel = playerVM
+                Task { @MainActor in
+                    playerViewModel?.syncPlaybackOrderModeFromSettings()
+                }
+            }
+        }
+
         libraryService.startMonitoring(repository: repository)
 
         if let scenario = DebugLaunchScenario.current {
@@ -176,6 +194,12 @@ final class AppSessionHost: ObservableObject {
                     playerVM: playerVM
                 )
             }
+        }
+    }
+
+    deinit {
+        if let playbackModeObserver {
+            NotificationCenter.default.removeObserver(playbackModeObserver)
         }
     }
 
