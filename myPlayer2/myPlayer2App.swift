@@ -223,6 +223,10 @@ struct KmgcccPlayerApp: App {
                 Button("Open AppKit Split Toolbar Prototype") {
                     AppKitSplitToolbarPrototypeWindowController.showPrototypeWindow()
                 }
+
+                Button("Open AppKit Main Split Template (Step 1)") {
+                    AppKitMainSplitWindowController.show(appSession: appSession)
+                }
             }
         }
 
