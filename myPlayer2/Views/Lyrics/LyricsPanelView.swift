@@ -13,11 +13,28 @@ import SwiftUI
 /// The WebView is attached only when a track exists, to avoid eager WebKit startup.
 struct LyricsPanelView: View {
 
+    enum HostContainer: Sendable {
+        /// Hosted inside the SwiftUI main detail column, where we may need to provide
+        /// our own background separation.
+        case swiftUIDetailColumn
+
+        /// Hosted inside an AppKit `NSSplitViewItem(inspectorWithViewController:)`.
+        /// In this mode we should not paint our own Liquid Glass/materials or fake separators,
+        /// and instead let the system inspector container provide them.
+        case appKitInspector
+    }
+
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(LyricsViewModel.self) private var lyricsVM
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var themeStore: ThemeStore
+
+    private let hostContainer: HostContainer
+
+    init(hostContainer: HostContainer = .swiftUIDetailColumn) {
+        self.hostContainer = hostContainer
+    }
 
     var body: some View {
         let _ = LyricsRuntimeProfile.markBody("LyricsPanelView.body")
@@ -76,32 +93,37 @@ struct LyricsPanelView: View {
 
     @ViewBuilder
     private var lyricsBackgroundLayer: some View {
-        switch settings.lyricsBackgroundMode {
-        case .sidebar:
-            ZStack(alignment: .leading) {
-                // Liquid Glass base layer - .regular to match sidebar
-                Color.clear
-                    .glassEffect(.regular, in: .rect(cornerRadius: 0))
-                // Theme tint overlay
-                themeStore.backgroundColor.opacity(0.10)
-                // Separator line
-                Rectangle()
-                    .fill(themeStore.secondaryTextColor.opacity(0.14))
-                    .frame(width: 1)
-            }
-            .allowsHitTesting(false)
-        case .clear:
-            ZStack {
-                Rectangle()
-                    .fill(.ultraThinMaterial)
-
-                if themeStore.colorScheme == .dark {
-                    Color.black.opacity(0.3)
-                } else {
-                    Color.white.opacity(0.3)
+        if hostContainer == .appKitInspector {
+            Color.clear
+                .allowsHitTesting(false)
+        } else {
+            switch settings.lyricsBackgroundMode {
+            case .sidebar:
+                ZStack(alignment: .leading) {
+                    // Liquid Glass base layer - .regular to match sidebar
+                    Color.clear
+                        .glassEffect(.regular, in: .rect(cornerRadius: 0))
+                    // Theme tint overlay
+                    themeStore.backgroundColor.opacity(0.10)
+                    // Separator line
+                    Rectangle()
+                        .fill(themeStore.secondaryTextColor.opacity(0.14))
+                        .frame(width: 1)
                 }
+                .allowsHitTesting(false)
+            case .clear:
+                ZStack {
+                    Rectangle()
+                        .fill(.ultraThinMaterial)
+
+                    if themeStore.colorScheme == .dark {
+                        Color.black.opacity(0.3)
+                    } else {
+                        Color.white.opacity(0.3)
+                    }
+                }
+                .allowsHitTesting(false)
             }
-            .allowsHitTesting(false)
         }
     }
 
