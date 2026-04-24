@@ -236,7 +236,7 @@ struct AppKitMainContentPaneRoot: View {
         if let localID = presentation.localTrack?.id {
             return localID
         }
-        return presentation.source == .appleMusic && presentation.hasTrack
+        return presentation.source.isExternal && presentation.hasTrack
             ? UUID(uuidString: "3C7BB22E-1A57-4B8B-8461-A48B9646AA7C")
             : nil
     }
@@ -392,7 +392,7 @@ struct AppKitMainWindowArtBackgroundLayer: View {
         if let localID = presentation.localTrack?.id {
             return localID
         }
-        return presentation.source == .appleMusic && presentation.hasTrack
+        return presentation.source.isExternal && presentation.hasTrack
             ? UUID(uuidString: "3C7BB22E-1A57-4B8B-8461-A48B9646AA7C")
             : nil
     }

@@ -29,7 +29,7 @@ struct ExternalPlaybackSettingsView: View {
 
             GroupBox {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("清理外部 Apple Music 播放的歌曲元数据缓存。")
+                    Text("清理外部播放的歌曲元数据缓存。")
                         .font(.headline)
 
                     Text("会清除手动匹配覆盖、匹配结果缓存、联网封面缓存、联网歌词缓存，以及其它按外部曲目标识绑定的解析结果。当前播放状态会回退到自动重新匹配。")
@@ -43,7 +43,7 @@ struct ExternalPlaybackSettingsView: View {
                             ProgressView()
                                 .controlSize(.small)
                         } else {
-                            Text("清理 Apple Music 元数据缓存")
+                            Text("清理外部播放元数据缓存")
                         }
                     }
                     .buttonStyle(.borderedProminent)
@@ -66,7 +66,7 @@ struct ExternalPlaybackSettingsView: View {
                 clearExternalPlaybackCaches()
             }
         } message: {
-            Text("将清除 Apple Music 外部播放的手动匹配覆盖、匹配结果、联网封面、联网歌词和相关解析缓存。不会删除本地资料库歌曲。")
+            Text("将清除外部播放的手动匹配覆盖、匹配结果、联网封面、联网歌词和相关解析缓存。不会删除本地资料库歌曲。")
         }
     }
 

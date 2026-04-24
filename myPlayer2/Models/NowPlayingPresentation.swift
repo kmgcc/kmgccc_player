@@ -8,8 +8,11 @@
 import Foundation
 
 enum ExternalPlaybackConnectionState: String, Sendable {
+    case waitingForData
+    case connectedNoMetadata
     case runningHasData
     case runningTemporarilyUnavailable
+    case unavailable
     case disconnected
 }
 
@@ -43,6 +46,8 @@ struct NowPlayingPresentation {
     var externalConnectionState: ExternalPlaybackConnectionState?
     var isControlEnabled: Bool
     var isSeekEnabled: Bool
+    var isVolumeControlEnabled: Bool
+    var isPlaybackModeControlEnabled: Bool
     var emptyTitleKey: String
 
     static let emptyLocal = NowPlayingPresentation(
@@ -75,6 +80,8 @@ struct NowPlayingPresentation {
         externalConnectionState: nil,
         isControlEnabled: false,
         isSeekEnabled: false,
+        isVolumeControlEnabled: true,
+        isPlaybackModeControlEnabled: true,
         emptyTitleKey: "mini.not_playing"
     )
 
@@ -108,7 +115,44 @@ struct NowPlayingPresentation {
         externalConnectionState: .disconnected,
         isControlEnabled: false,
         isSeekEnabled: false,
+        isVolumeControlEnabled: true,
+        isPlaybackModeControlEnabled: true,
         emptyTitleKey: "apple_music.not_running"
+    )
+
+    static let emptySystemNowPlaying = NowPlayingPresentation(
+        source: .systemNowPlaying,
+        localTrack: nil,
+        title: "",
+        artist: "",
+        album: nil,
+        artworkData: nil,
+        artworkIdentity: nil,
+        artworkDisplayTrackID: nil,
+        isArtworkLoading: false,
+        duration: 0,
+        currentTime: 0,
+        isPlaying: false,
+        volume: 1,
+        lyricsText: nil,
+        lyricsIdentity: nil,
+        appleMusicPlaybackMode: nil,
+        externalStableKey: nil,
+        externalRawTitle: nil,
+        externalRawArtist: nil,
+        externalRawAlbum: nil,
+        externalEffectiveTitle: nil,
+        externalEffectiveArtist: nil,
+        externalEffectiveAlbum: nil,
+        externalUsesOverride: false,
+        externalMatchConfidence: nil,
+        externalLyricsStatusMessage: nil,
+        externalConnectionState: .disconnected,
+        isControlEnabled: false,
+        isSeekEnabled: false,
+        isVolumeControlEnabled: false,
+        isPlaybackModeControlEnabled: false,
+        emptyTitleKey: "system_now_playing.disconnected"
     )
 
     var hasTrack: Bool {
@@ -152,6 +196,8 @@ extension NowPlayingPresentation {
         externalConnectionState == other.externalConnectionState &&
         isControlEnabled == other.isControlEnabled &&
         isSeekEnabled == other.isSeekEnabled &&
+        isVolumeControlEnabled == other.isVolumeControlEnabled &&
+        isPlaybackModeControlEnabled == other.isPlaybackModeControlEnabled &&
         emptyTitleKey == other.emptyTitleKey
     }
 }
