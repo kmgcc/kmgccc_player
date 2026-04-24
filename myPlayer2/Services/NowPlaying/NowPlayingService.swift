@@ -21,6 +21,7 @@ final class NowPlayingService {
     private let progressInterval: TimeInterval = 0.5
     private var cachedArtworkKey: String?
     private var cachedArtwork: MPMediaItemArtwork?
+    private static let artworkSignatureSampleBytes = 12
 
     private init() {}
 
@@ -252,8 +253,7 @@ final class NowPlayingService {
     }
     
     private func mediaArtwork(for track: Track) -> MPMediaItemArtwork? {
-        let checksum = ArtworkAssetStore.checksum(for: track.artworkData)
-        let cacheKey = "\(track.id.uuidString)-\(checksum)"
+        let cacheKey = "track-\(track.id.uuidString)-\(artworkSignature(for: track.artworkData))"
         
         if cachedArtworkKey == cacheKey {
             return cachedArtwork
@@ -272,9 +272,12 @@ final class NowPlayingService {
     }
 
     private func mediaArtwork(for presentation: NowPlayingPresentation) -> MPMediaItemArtwork? {
-        let checksum = ArtworkAssetStore.checksum(for: presentation.artworkData)
-        let identity = presentation.lyricsIdentity ?? presentation.localTrack?.id.uuidString ?? presentation.title
-        let cacheKey = "\(presentation.source.rawValue)-\(identity)-\(checksum)"
+        let identity = presentation.artworkIdentity
+            ?? presentation.lyricsIdentity
+            ?? presentation.localTrack?.id.uuidString
+            ?? presentation.title
+        let cacheKey =
+            "\(presentation.source.rawValue)-\(identity)-\(artworkSignature(for: presentation.artworkData))"
 
         if cachedArtworkKey == cacheKey {
             return cachedArtwork
@@ -294,5 +297,18 @@ final class NowPlayingService {
         let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
         cachedArtwork = artwork
         return artwork
+    }
+
+    private func artworkSignature(for data: Data?) -> String {
+        guard let data, !data.isEmpty else { return "none" }
+
+        let sampleSize = min(Self.artworkSignatureSampleBytes, data.count)
+        let prefix = sampleHex(data.prefix(sampleSize))
+        let suffix = sampleHex(data.suffix(sampleSize))
+        return "\(data.count)-\(prefix)-\(suffix)"
+    }
+
+    private func sampleHex(_ bytes: Data.SubSequence) -> String {
+        bytes.map { String(format: "%02x", $0) }.joined()
     }
 }

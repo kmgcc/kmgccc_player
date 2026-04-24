@@ -151,12 +151,13 @@ extension PlaylistArtworkPipeline {
     nonisolated static func rowLowRequest(
         trackID: UUID,
         artworkData: Data?,
+        artworkIdentity: String? = nil,
         logicalSize: CGFloat,
         scale: CGFloat
     ) -> PlaylistArtworkRequest {
         let side = max(22, logicalSize * 0.55) * max(1, scale)
         return PlaylistArtworkRequest(
-            sourceIdentity: rowSourceIdentity(trackID: trackID, artworkData: artworkData),
+            sourceIdentity: artworkIdentity ?? rowSourceIdentity(trackID: trackID, artworkData: artworkData),
             variant: .rowLow,
             artworkData: artworkData,
             fileURL: nil,
@@ -167,12 +168,13 @@ extension PlaylistArtworkPipeline {
     nonisolated static func rowHighRequest(
         trackID: UUID,
         artworkData: Data?,
+        artworkIdentity: String? = nil,
         logicalSize: CGFloat,
         scale: CGFloat
     ) -> PlaylistArtworkRequest {
         let side = max(1, logicalSize) * max(1, scale)
         return PlaylistArtworkRequest(
-            sourceIdentity: rowSourceIdentity(trackID: trackID, artworkData: artworkData),
+            sourceIdentity: artworkIdentity ?? rowSourceIdentity(trackID: trackID, artworkData: artworkData),
             variant: .rowHigh,
             artworkData: artworkData,
             fileURL: nil,

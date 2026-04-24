@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Home — Wireframes v2</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<style>
+  :root {
+    --ink: #1a1c1f;
+    --ink-soft: #3a3e44;
+    --ink-faint: #70757c;
+    --line: #1a1c1f;
+    --line-soft: #b7bcc2;
+    --paper: #f4f1ea;
+    --paper-2: #ebe7de;
+    --accent: #3b6a8f; /* cool graphite-blue */
+    --note: #b5532a;  /* muted red-orange for annotations */
+    --rule-weight: 1.5px;
+  }
+  html, body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: 'Inter', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  /* subtle paper texture */
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background-image:
+      radial-gradient(rgba(0,0,0,0.025) 1px, transparent 1px),
+      radial-gradient(rgba(0,0,0,0.018) 1px, transparent 1px);
+    background-size: 3px 3px, 7px 7px;
+    background-position: 0 0, 1px 2px;
+    pointer-events: none;
+    z-index: 0;
+    opacity: 0.7;
+  }
+  #root { position: relative; z-index: 1; }
+
+  .sketch { font-family: 'Caveat', cursive; }
+  .mono   { font-family: 'JetBrains Mono', monospace; }
+
+  /* hand-drawn stroke — using irregular border via filter-free approach */
+  .stroke {
+    border: var(--rule-weight) solid var(--line);
+    border-radius: 6px;
+    background: var(--paper);
+    position: relative;
+  }
+  .stroke-soft {
+    border: 1.25px solid var(--line-soft);
+    border-radius: 6px;
+    background: var(--paper);
+  }
+  .stroke-dashed {
+    border: 1.25px dashed var(--line-soft);
+    border-radius: 6px;
+    background: transparent;
+  }
+
+  /* hatched placeholder (album art) */
+  .hatch {
+    background-color: var(--paper-2);
+    background-image: repeating-linear-gradient(
+      45deg,
+      rgba(26,28,31,0.18) 0 1px,
+      transparent 1px 7px
+    );
+  }
+  .hatch-b {
+    background-color: var(--paper-2);
+    background-image: repeating-linear-gradient(
+      -45deg,
+      rgba(26,28,31,0.14) 0 1px,
+      transparent 1px 9px
+    );
+  }
+  .hatch-dense {
+    background-color: #dcd6c8;
+    background-image:
+      repeating-linear-gradient(45deg, rgba(26,28,31,0.22) 0 1px, transparent 1px 5px),
+      repeating-linear-gradient(-45deg, rgba(26,28,31,0.12) 0 1px, transparent 1px 5px);
+  }
+
+  /* blurred-dissolve placeholder for hero background */
+  .dissolve {
+    background:
+      radial-gradient(120% 120% at 0% 50%, rgba(26,28,31,0.35) 0%, rgba(26,28,31,0.18) 18%, rgba(26,28,31,0.06) 40%, transparent 65%),
+      repeating-linear-gradient(45deg, rgba(26,28,31,0.10) 0 1px, transparent 1px 11px);
+    background-color: var(--paper-2);
+  }
+
+  /* dark mode card preview */
+  .dark-card {
+    --ink: #e8e6e1;
+    --ink-soft: #b4b2ad;
+    --ink-faint: #7a7873;
+    --line: #e8e6e1;
+    --line-soft: #4a4c50;
+    --paper: #1b1d20;
+    --paper-2: #2a2d31;
+    background: var(--paper);
+    color: var(--ink);
+  }
+  .dark-card .hatch {
+    background-color: #2a2d31;
+    background-image: repeating-linear-gradient(45deg, rgba(232,230,225,0.18) 0 1px, transparent 1px 7px);
+  }
+  .dark-card .hatch-b {
+    background-color: #2a2d31;
+    background-image: repeating-linear-gradient(-45deg, rgba(232,230,225,0.14) 0 1px, transparent 1px 9px);
+  }
+  .dark-card .hatch-dense {
+    background-color: #2e3135;
+    background-image:
+      repeating-linear-gradient(45deg, rgba(232,230,225,0.22) 0 1px, transparent 1px 5px),
+      repeating-linear-gradient(-45deg, rgba(232,230,225,0.12) 0 1px, transparent 1px 5px);
+  }
+  .dark-card .dissolve {
+    background:
+      radial-gradient(120% 120% at 0% 50%, rgba(232,230,225,0.28) 0%, rgba(232,230,225,0.14) 18%, rgba(232,230,225,0.05) 40%, transparent 65%),
+      repeating-linear-gradient(45deg, rgba(232,230,225,0.08) 0 1px, transparent 1px 11px);
+    background-color: #23262a;
+  }
+  .dark-card .stroke, .dark-card .stroke-soft {
+    background: var(--paper);
+    border-color: var(--line);
+  }
+  .dark-card .stroke-soft { border-color: var(--line-soft); }
+  .dark-card .stroke-dashed { border-color: var(--line-soft); }
+
+  /* annotation style */
+  .note-text {
+    font-family: 'Caveat', cursive;
+    color: var(--note);
+    font-size: 18px;
+    line-height: 1.15;
+  }
+  .note-line {
+    stroke: var(--note);
+    stroke-width: 1.4;
+    fill: none;
+  }
+
+  /* page shell */
+  .page-shell {
+    max-width: 1480px;
+    margin: 0 auto;
+    padding: 48px 56px 96px;
+  }
+
+  /* faux macOS window edge (not chrome, just a subtle hint the content sits inside an app region) */
+  .canvas {
+    border: 1.5px solid var(--line);
+    border-radius: 14px;
+    background: var(--paper);
+    padding: 22px 24px 28px;
+    position: relative;
+    box-shadow: 4px 6px 0 rgba(26,28,31,0.06);
+  }
+  .canvas-tag {
+    position: absolute;
+    top: -14px; left: 22px;
+    background: var(--paper);
+    padding: 0 10px;
+    font-family: 'Caveat', cursive;
+    font-size: 20px;
+    color: var(--ink);
+  }
+  .canvas-tag .chip {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 2px 8px;
+    border: 1.25px solid var(--line-soft);
+    border-radius: 999px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--ink-soft);
+    vertical-align: middle;
+  }
+
+  /* generic text scales */
+  .h-eyebrow { font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-faint); }
+  .h-title   { font-family: 'Caveat', cursive; font-size: 30px; line-height: 1; color: var(--ink); }
+  .h-sub     { font-family: 'Inter', sans-serif; font-size: 13px; color: var(--ink-soft); }
+
+  /* block label inside wireframe rects */
+  .blk-label { font-family: 'Caveat', cursive; color: var(--ink-soft); font-size: 18px; }
+  .blk-tag   { font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--ink-faint); letter-spacing: 0.08em; text-transform: uppercase; }
+
+  /* play button sketch */
+  .play-btn {
+    width: 44px; height: 44px; border-radius: 50%;
+    border: 1.5px solid var(--line);
+    display: inline-flex; align-items: center; justify-content: center;
+    background: var(--paper);
+  }
+  .play-tri {
+    width: 0; height: 0;
+    border-left: 10px solid var(--line);
+    border-top: 6px solid transparent;
+    border-bottom: 6px solid transparent;
+    margin-left: 3px;
+  }
+
+  /* small helpers */
+  .row { display:flex; }
+  .col { display:flex; flex-direction:column; }
+  .gap-4 { gap: 4px; } .gap-6{gap:6px;} .gap-8{gap:8px;} .gap-10{gap:10px;}
+  .gap-12{gap:12px;} .gap-14{gap:14px;} .gap-16{gap:16px;} .gap-20{gap:20px;} .gap-24{gap:24px;} .gap-32{gap:32px;}
+  .mt-8{margin-top:8px;} .mt-12{margin-top:12px;} .mt-16{margin-top:16px;} .mt-20{margin-top:20px;} .mt-24{margin-top:24px;} .mt-32{margin-top:32px;} .mt-40{margin-top:40px;} .mt-56{margin-top:56px;}
+  .grow{flex:1;}
+  .center{align-items:center;justify-content:center;}
+
+  /* section divider — hand-drawn zigzag */
+  .divider {
+    height: 18px;
+    background-image: linear-gradient(135deg, transparent 47%, var(--line-soft) 47% 53%, transparent 53%);
+    background-size: 12px 12px;
+    background-repeat: repeat-x;
+    opacity: 0.6;
+  }
+
+  /* page header */
+  .page-hd {
+    display:flex; align-items:flex-end; justify-content:space-between;
+    padding-bottom: 14px;
+    border-bottom: 1.5px solid var(--line);
+    margin-bottom: 40px;
+  }
+  .page-hd h1 {
+    font-family: 'Caveat', cursive;
+    font-weight: 600;
+    font-size: 52px;
+    margin: 0;
+    line-height: 0.95;
+  }
+  .page-hd .sub {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--ink-soft);
+    max-width: 520px;
+    text-align: right;
+    letter-spacing: 0.04em;
+  }
+
+  /* pair wrapper: light + dark side by side */
+  .pair {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+  }
+  @media (max-width: 1180px) { .pair { grid-template-columns: 1fr; } }
+
+  /* annotation layer */
+  .anno {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+  .anno > * { pointer-events: auto; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script>
+  const TWEAK_DEFAULS = /*EDITMODE-BEGIN*/{
+    "showAnnotations": true,
+    "heroSize": "balanced",
+    "cardDensity": "standard"
+  }/*EDITMODE-END*/;
+  window.__TWEAK_DEFAULTS__ = TWEAK_DEFAULS;
+</script>
+
+<script type="text/babel" src="tweaks-panel.jsx"></script>
+<script type="text/babel" src="wireframes-v2.jsx"></script>
+</body>
+</html>

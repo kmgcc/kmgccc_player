@@ -44,7 +44,6 @@ struct TrackRowView<MenuContent: View>: View {
     @State private var isArtworkReady = false
 
     @Environment(\.colorScheme) private var colorScheme
-    @EnvironmentObject private var themeStore: ThemeStore
 
     init(
         model: TrackRowModel,
@@ -236,12 +235,14 @@ struct TrackRowView<MenuContent: View>: View {
         let lowRequest = PlaylistArtworkPipeline.rowLowRequest(
             trackID: model.id,
             artworkData: data,
+            artworkIdentity: model.artworkIdentity,
             logicalSize: Constants.Layout.artworkSmallSize,
             scale: scale
         )
         let highRequest = PlaylistArtworkPipeline.rowHighRequest(
             trackID: model.id,
             artworkData: data,
+            artworkIdentity: model.artworkIdentity,
             logicalSize: Constants.Layout.artworkSmallSize,
             scale: scale
         )

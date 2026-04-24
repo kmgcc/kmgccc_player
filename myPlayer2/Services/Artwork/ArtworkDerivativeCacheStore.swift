@@ -48,7 +48,8 @@ actor ArtworkDerivativeCacheStore {
         }
 
         let diskURL = fileURL(for: cacheKey)
-        if let diskImage = readImage(at: diskURL) {
+        let maxPixel = max(1, Int(max(targetPixelSize.width, targetPixelSize.height)))
+        if let diskImage = readImage(at: diskURL, maxPixelSize: maxPixel) {
             setMemoryImage(diskImage, cacheKey: cacheKey)
             touchItem(at: diskURL)
             return diskImage
@@ -74,7 +75,7 @@ actor ArtworkDerivativeCacheStore {
         }
 
         let diskURL = fileURL(for: cacheKey)
-        if let diskImage = readImage(at: diskURL) {
+        if let diskImage = readImage(at: diskURL, maxPixelSize: max(1, maxPixelSize)) {
             setMemoryImage(diskImage, cacheKey: cacheKey)
             touchItem(at: diskURL)
             return diskImage
@@ -123,9 +124,15 @@ actor ArtworkDerivativeCacheStore {
         return diskRootURL.appendingPathComponent("\(digest).png")
     }
 
-    private func readImage(at url: URL) -> NSImage? {
+    private func readImage(at url: URL, maxPixelSize: Int) -> NSImage? {
         guard fileManager.fileExists(atPath: url.path) else { return nil }
-        return NSImage(contentsOf: url)
+        guard
+            let source = CGImageSourceCreateWithURL(
+                url as CFURL,
+                [kCGImageSourceShouldCache: false] as CFDictionary
+            )
+        else { return nil }
+        return downsampledImage(source: source, maxPixelSize: maxPixelSize)
     }
 
     private func touchItem(at url: URL) {

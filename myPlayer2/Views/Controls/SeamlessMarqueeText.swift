@@ -129,6 +129,12 @@ struct SeamlessMarqueeText: View {
         let duration = Double(distance / max(1, speed))    // seconds for one scroll pass
 
         loopTask = Task { @MainActor in
+            // Let SwiftUI first render the overflowing marquee content at offset 0.
+            // Otherwise textWidth and offset can be committed in the same frame,
+            // making the first pass appear to start already at the end position.
+            await Task.yield()
+            await Task.yield()
+
             while !Task.isCancelled {
 
                 // Phase 1 — Scroll: animate offset 0 → -(textWidth + gap) linearly

@@ -179,7 +179,6 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             Identifier.pillGroup,
             .flexibleSpace,
             Identifier.search,
-            .space,
             Identifier.lyricsToggle,
             .inspectorTrackingSeparator,
         ]
@@ -193,7 +192,6 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             Identifier.pillGroup,
             .flexibleSpace,
             Identifier.search,
-            .space,
             Identifier.lyricsToggle,
             .inspectorTrackingSeparator,
         ]
@@ -291,6 +289,8 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             let height: CGFloat = 28
             let container = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
             container.translatesAutoresizingMaskIntoConstraints = false
+            container.setContentHuggingPriority(.required, for: .horizontal)
+            container.setContentCompressionResistancePriority(.required, for: .horizontal)
 
             let field = NSSearchField(frame: container.bounds)
             field.translatesAutoresizingMaskIntoConstraints = false
@@ -310,8 +310,6 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             ])
 
             item.view = container
-            item.minSize = NSSize(width: width, height: height)
-            item.maxSize = NSSize(width: width, height: height)
             self.searchItem = item
             self.searchField = field
             syncSearchFieldFromModel()
@@ -589,8 +587,8 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         guard let pageController = currentPageController else { return }
         withObservationTracking {
             _ = pageController.searchText
-        } onChange: { [weak self] in
-            Task { @MainActor in
+        } onChange: {
+            DispatchQueue.main.async { [weak self] in
                 self?.syncSearchFieldFromModel()
                 self?.window?.toolbar?.validateVisibleItems()
                 self?.observeSearchText()
@@ -603,8 +601,8 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         withObservationTracking {
             _ = pageController.isMultiselectMode
             _ = pageController.selectedTrackIDs.count
-        } onChange: { [weak self] in
-            Task { @MainActor in
+        } onChange: {
+            DispatchQueue.main.async { [weak self] in
                 self?.syncMultiselectItemPresentation()
                 self?.window?.toolbar?.validateVisibleItems()
                 if let snapshot = self?.debugIdentitySnapshot(prefix: "[AppKitMainToolbar] multiselect.observe") {
@@ -619,8 +617,8 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         guard let uiState = appSession?.uiState else { return }
         withObservationTracking {
             _ = uiState.contentMode
-        } onChange: { [weak self] in
-            Task { @MainActor in
+        } onChange: {
+            DispatchQueue.main.async { [weak self] in
                 self?.applyToolbarLayoutForCurrentState()
                 self?.syncSidebarToggleItemPresentation()
                 self?.window?.toolbar?.validateVisibleItems()
@@ -633,8 +631,8 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         guard let uiState = appSession?.uiState else { return }
         withObservationTracking {
             _ = uiState.lyricsVisible
-        } onChange: { [weak self] in
-            Task { @MainActor in
+        } onChange: {
+            DispatchQueue.main.async { [weak self] in
                 self?.syncLyricsToggleItemPresentation()
                 self?.window?.toolbar?.validateVisibleItems()
                 self?.observeLyricsVisibility()
@@ -646,9 +644,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         fullscreenModeCancellable = FullscreenWindowManager.shared.$presentationMode
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
-                Task { @MainActor in
-                    self?.applyToolbarLayoutForCurrentState()
-                }
+                self?.applyToolbarLayoutForCurrentState()
             }
     }
 
@@ -695,6 +691,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
                 .sidebarTrackingSeparator,
                 .flexibleSpace,
                 .inspectorTrackingSeparator,
+                .flexibleSpace,
                 Identifier.lyricsToggle
             ]
         }
@@ -706,8 +703,8 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         guard let libraryVM = currentLibraryVM else { return }
         withObservationTracking {
             _ = libraryVM.searchResetTrigger
-        } onChange: { [weak self] in
-            Task { @MainActor in
+        } onChange: {
+            DispatchQueue.main.async { [weak self] in
                 self?.syncSearchFieldFromModel()
                 self?.observeLibrarySearchResetTrigger()
             }
@@ -721,8 +718,8 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             _ = pageController.page?.queueTracks.count
             _ = pageController.page?.selectionIdentity
             _ = pageController.phase
-        } onChange: { [weak self] in
-            Task { @MainActor in
+        } onChange: {
+            DispatchQueue.main.async { [weak self] in
                 if let snapshot = self?.debugIdentitySnapshot(prefix: "[AppKitMainToolbar] page.observe") {
                     print(snapshot)
                 }

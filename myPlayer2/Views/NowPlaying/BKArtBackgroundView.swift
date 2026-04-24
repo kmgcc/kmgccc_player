@@ -884,8 +884,8 @@ private final class BKArtBackgroundLayerView: NSView {
 
             for slot in container.dotSlots {
                 slot.rootLayer.frame = dotRoot.bounds
-                slot.maskBig?.frame = dotRoot.bounds
-                slot.maskSmall?.frame = dotRoot.bounds
+                // Dot masks are intentionally local circles that move along the path.
+                // Resizing them to the root bounds turns the masked fill into a visible rectangle.
                 slot.rootLayer.sublayers?.forEach { sublayer in
                     sublayer.frame = dotRoot.bounds
                 }

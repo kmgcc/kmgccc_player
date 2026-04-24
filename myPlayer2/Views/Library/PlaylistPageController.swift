@@ -85,6 +85,7 @@ final class PlaylistPageController {
     private var prefetchTask: Task<Void, Never>?
     private var headerResolveTask: Task<Void, Never>?
     private var headerUpgradeTask: Task<Void, Never>?
+    private var headerHaloSeedTask: Task<Void, Never>?
     private var headerFadeTask: Task<Void, Never>?
     private var haloFadeTask: Task<Void, Never>?
     private var phaseTask: Task<Void, Never>?
@@ -96,6 +97,12 @@ final class PlaylistPageController {
     private var currentArtworkPresentationIdentity: String?
     private var didFadeHeaderIdentity: String?
     private var didFadeHaloIdentity: String?
+    @ObservationIgnored
+    private var artworkPrefetchTasks: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored
+    private var prefetchedArtworkKeys: Set<String> = []
+    @ObservationIgnored
+    private var latestTrackLookup: [UUID: Track] = [:]
     @ObservationIgnored
     private var lastPlaybackTrackChangeUptime: TimeInterval = 0
     @ObservationIgnored
@@ -210,27 +217,39 @@ final class PlaylistPageController {
         guard now.timeIntervalSince(lastPrefetchTime) >= prefetchDebounceInterval else { return }
         lastPrefetchTime = now
         
-        let bucket = startIndex / 4
+        let bucket = startIndex / 8
         guard bucket != lastPrefetchBucket else { return }
         lastPrefetchBucket = bucket
 
         let scale = NSScreen.main?.backingScaleFactor ?? 2.0
         
-        let windowSize = 8
-        let start = max(0, startIndex - windowSize)
-        let end = min(page.rows.count, startIndex + windowSize + 1)
+        let start = max(0, startIndex - 12)
+        let end = min(page.rows.count, startIndex + 40)
         guard start < end else { return }
 
-        let requests = page.rows[start..<end].map {
-            PlaylistArtworkPipeline.rowHighRequest(
+        let rows = Array(page.rows[start..<end])
+        var requests = rows.map {
+            PlaylistArtworkPipeline.rowLowRequest(
                 trackID: $0.id,
                 artworkData: $0.artworkData,
+                artworkIdentity: $0.artworkIdentity,
                 logicalSize: Constants.Layout.artworkSmallSize,
                 scale: scale
             )
         }
-        prefetchTask?.cancel()
-        prefetchTask = PlaylistArtworkPipeline.shared.prefetch(Array(requests))
+        requests.append(contentsOf: rows.prefix(24).map {
+            PlaylistArtworkPipeline.rowHighRequest(
+                trackID: $0.id,
+                artworkData: $0.artworkData,
+                artworkIdentity: $0.artworkIdentity,
+                logicalSize: Constants.Layout.artworkSmallSize,
+                scale: scale
+            )
+        })
+        startArtworkPrefetch(
+            key: "\(page.selectionIdentity)-bucket-\(bucket)-\(page.sourceFingerprint)",
+            requests: requests
+        )
     }
 
     func applyTargetedTrackRefresh(trackID _: UUID) {
@@ -238,6 +257,9 @@ final class PlaylistPageController {
     }
 
     func latestTrackFromLibrary(trackID: UUID) -> Track? {
+        if let track = latestTrackLookup[trackID] {
+            return track
+        }
         guard let libraryVM else { return nil }
         if let track = libraryVM.allTracks.first(where: { $0.id == trackID }) {
             return track
@@ -266,9 +288,16 @@ final class PlaylistPageController {
         phaseTask?.cancel()
         headerResolveTask?.cancel()
         headerUpgradeTask?.cancel()
+        headerHaloSeedTask?.cancel()
         headerFadeTask?.cancel()
         haloFadeTask?.cancel()
         prefetchTask?.cancel()
+        for task in artworkPrefetchTasks.values {
+            task.cancel()
+        }
+        artworkPrefetchTasks.removeAll()
+        prefetchedArtworkKeys.removeAll()
+        latestTrackLookup.removeAll()
         snapshotUpdateTask?.cancel()
         rebuildTask?.cancel()
         phaseToken = UUID()
@@ -482,6 +511,7 @@ final class PlaylistPageController {
         )
         LyricsRuntimeProfile.setMetadata("page.queue.count", value: "\(pageModel.queueTracks.count)")
         selectedTrackIDs.formIntersection(Set(pageModel.rows.map(\.id)))
+        latestTrackLookup = Dictionary(uniqueKeysWithValues: pageModel.queueTracks.map { ($0.id, $0) })
         lastPrefetchBucket = nil
         isSelectionTransitioning = false
         phase = .ready
@@ -497,6 +527,7 @@ final class PlaylistPageController {
             with: pageModel.queueTracks,
             selectionIdentity: pageModel.selectionIdentity
         )
+        scheduleInitialArtworkWarmup(for: pageModel)
         loadHeaderArtwork()
     }
 
@@ -536,6 +567,7 @@ final class PlaylistPageController {
 
         headerResolveTask?.cancel()
         headerUpgradeTask?.cancel()
+        headerHaloSeedTask?.cancel()
         let request = header.config.artworkRequest
         let selectionIdentity = page.selectionIdentity
         let loadToken = UUID()
@@ -583,28 +615,13 @@ final class PlaylistPageController {
         resolveToken: UUID
     ) {
         LyricsRuntimeProfile.increment("header.applyResolvedArtwork")
-        guard var currentPage = page, currentPage.selectionIdentity == selectionIdentity else { return }
-        guard var currentHeader = currentPage.header else { return }
+        guard let currentPage = page, currentPage.selectionIdentity == selectionIdentity else { return }
+        guard let currentHeader = currentPage.header else { return }
 
         // Immediate stage: publish what we have right away.
         if let image = resolved?.image {
             LyricsRuntimeProfile.increment("header.applyResolvedArtwork.image")
-            currentHeader.artwork = image
-            currentPage.header = currentHeader
-            page = currentPage
             publishHeaderImage(image, identity: artworkIdentity, resolveToken: resolveToken)
-            let haloSeedStart = ProcessInfo.processInfo.systemUptime
-            let haloSeed = immediateHaloSeed(from: image)
-            LyricsRuntimeProfile.increment("header.immediateHaloSeed.count")
-            LyricsRuntimeProfile.addDuration(
-                "header.immediateHaloSeed",
-                ms: (ProcessInfo.processInfo.systemUptime - haloSeedStart) * 1000
-            )
-            publishHaloImage(
-                haloSeed,
-                identity: artworkIdentity,
-                resolveToken: resolveToken
-            )
         }
 
         let payload = headerArtworkPayload(
@@ -612,6 +629,13 @@ final class PlaylistPageController {
             resolved: resolved
         )
         guard payload.data != nil || payload.fileURL != nil else { return }
+
+        startImmediateHaloSeedLoad(
+            payload: payload,
+            artworkIdentity: artworkIdentity,
+            selectionIdentity: selectionIdentity,
+            resolveToken: resolveToken
+        )
 
         headerUpgradeTask?.cancel()
         let shouldDeferHeavyUpgrade = shouldDeferHeaderHeavyWork
@@ -627,17 +651,24 @@ final class PlaylistPageController {
                 artworkData: payload.data,
                 fileURL: payload.fileURL
             )
-            let haloSeedRequest = PlaylistArtworkPipeline.haloSeedRequest(
-                artworkIdentity: artworkIdentity,
-                artworkData: payload.data,
-                fileURL: payload.fileURL,
-                pixelSide: FadeTiming.haloSeedPixelSide
-            )
-
+            let shouldLoadHaloSeed = self.isHeaderEffectsEnabled
+            let haloSeedPixelSide = FadeTiming.haloSeedPixelSide
+            let haloSeedRequest = shouldLoadHaloSeed
+                ? PlaylistArtworkPipeline.haloSeedRequest(
+                    artworkIdentity: artworkIdentity,
+                    artworkData: payload.data,
+                    fileURL: payload.fileURL,
+                    pixelSide: haloSeedPixelSide
+                )
+                : nil
             async let upgradedHeader = PlaylistArtworkPipeline.shared.load(headerRequest)
-            async let upgradedHaloSeed = PlaylistArtworkPipeline.shared.load(haloSeedRequest)
+            async let upgradedHaloSeed: NSImage? = {
+                guard let haloSeedRequest else { return nil }
+                return await PlaylistArtworkPipeline.shared.load(haloSeedRequest)
+            }()
 
-            let (headerImage, haloSeedImage) = await (upgradedHeader, upgradedHaloSeed)
+            let headerImage = await upgradedHeader
+            let haloSeedImage = await upgradedHaloSeed
             LyricsRuntimeProfile.increment("header.pipelineUpgrade.count")
             LyricsRuntimeProfile.addDuration(
                 "header.pipelineUpgrade",
@@ -645,14 +676,7 @@ final class PlaylistPageController {
             )
             guard !Task.isCancelled else { return }
             guard self.headerResolveToken == resolveToken else { return }
-            guard var currentPage = self.page, currentPage.selectionIdentity == selectionIdentity else { return }
-            guard var currentHeader = currentPage.header else { return }
-
-            if let headerImage {
-                currentHeader.artwork = headerImage
-            }
-            currentPage.header = currentHeader
-            self.page = currentPage
+            guard self.page?.selectionIdentity == selectionIdentity else { return }
 
             if let headerImage {
                 self.publishHeaderImage(
@@ -661,11 +685,90 @@ final class PlaylistPageController {
                     resolveToken: resolveToken
                 )
             }
-            self.publishHaloImage(
-                haloSeedImage ?? headerImage,
-                identity: artworkIdentity,
-                resolveToken: resolveToken
+            if self.isHeaderEffectsEnabled {
+                self.publishHaloImage(
+                    haloSeedImage ?? headerImage,
+                    identity: artworkIdentity,
+                    resolveToken: resolveToken
+                )
+            }
+        }
+    }
+
+    private func scheduleInitialArtworkWarmup(for pageModel: PlaylistPageModel) {
+        let scale = NSScreen.main?.backingScaleFactor ?? 2.0
+        let rows = Array(pageModel.rows.prefix(72))
+        var requests: [PlaylistArtworkRequest] = []
+        requests.reserveCapacity(rows.count + min(rows.count, 32))
+
+        requests.append(contentsOf: rows.map {
+            PlaylistArtworkPipeline.rowLowRequest(
+                trackID: $0.id,
+                artworkData: $0.artworkData,
+                artworkIdentity: $0.artworkIdentity,
+                logicalSize: Constants.Layout.artworkSmallSize,
+                scale: scale
             )
+        })
+
+        requests.append(contentsOf: rows.prefix(32).map {
+            PlaylistArtworkPipeline.rowHighRequest(
+                trackID: $0.id,
+                artworkData: $0.artworkData,
+                artworkIdentity: $0.artworkIdentity,
+                logicalSize: Constants.Layout.artworkSmallSize,
+                scale: scale
+            )
+        })
+
+        startArtworkPrefetch(
+            key: "\(pageModel.selectionIdentity)-initial-\(pageModel.sourceFingerprint)",
+            requests: requests
+        )
+
+        if let currentTrackID = playerVM?.currentTrack?.id {
+            prefetchAroundTrackID(currentTrackID)
+        }
+    }
+
+    private func startImmediateHaloSeedLoad(
+        payload: HeaderArtworkPayload,
+        artworkIdentity: String,
+        selectionIdentity: String,
+        resolveToken: UUID
+    ) {
+        headerHaloSeedTask?.cancel()
+        let request = PlaylistArtworkPipeline.haloSeedRequest(
+            artworkIdentity: artworkIdentity,
+            artworkData: payload.data,
+            fileURL: payload.fileURL,
+            pixelSide: FadeTiming.haloSeedPixelSide
+        )
+
+        headerHaloSeedTask = Task { @MainActor in
+            let seed = await PlaylistArtworkPipeline.shared.load(request)
+            guard !Task.isCancelled else { return }
+            guard self.headerResolveToken == resolveToken else { return }
+            guard self.page?.selectionIdentity == selectionIdentity else { return }
+            self.publishHaloImage(seed, identity: artworkIdentity, resolveToken: resolveToken)
+        }
+    }
+
+    private func startArtworkPrefetch(key: String, requests: [PlaylistArtworkRequest]) {
+        guard !requests.isEmpty, !prefetchedArtworkKeys.contains(key) else { return }
+        prefetchedArtworkKeys.insert(key)
+
+        if artworkPrefetchTasks.count >= 6, let oldestKey = artworkPrefetchTasks.keys.first {
+            artworkPrefetchTasks[oldestKey]?.cancel()
+            artworkPrefetchTasks.removeValue(forKey: oldestKey)
+        }
+
+        guard let task = PlaylistArtworkPipeline.shared.prefetch(requests) else { return }
+        artworkPrefetchTasks[key] = task
+
+        Task { @MainActor in
+            await task.value
+            self.artworkPrefetchTasks.removeValue(forKey: key)
         }
     }
 
@@ -713,6 +816,7 @@ final class PlaylistPageController {
         didFadeHaloIdentity = nil
         headerFadeTask?.cancel()
         haloFadeTask?.cancel()
+        headerHaloSeedTask?.cancel()
         headerCurrentArtwork = nil
         headerIncomingArtwork = nil
         headerIncomingOpacity = 0
@@ -832,19 +936,15 @@ final class PlaylistPageController {
         }
     }
 
-    private func immediateHaloSeed(from image: NSImage) -> NSImage? {
-        ArtworkLoader.headerPreviewImage(
-            data: image.tiffRepresentation,
-            maxPixelSize: FadeTiming.haloSeedPixelSide
-        )
-    }
-
     private func headerArtworkPayload(
         request: DetailHeaderArtworkRequest,
         resolved: ResolvedHeaderArtwork?
     ) -> HeaderArtworkPayload {
         switch request {
         case .playlist:
+            if let fileURL = resolved?.fileURL {
+                return HeaderArtworkPayload(data: nil, fileURL: fileURL)
+            }
             return HeaderArtworkPayload(
                 data: resolved?.image?.tiffRepresentation,
                 fileURL: resolved?.fileURL

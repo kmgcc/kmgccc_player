@@ -63,7 +63,11 @@ private struct ClassicLEDArtwork: View {
         let artworkSize = max(180 * artworkBoost, maxArtwork)
         let effectSpacing: CGFloat = usesFullscreenLayout ? 32 : 24
         // yOffset should be fixed in base canvas coordinates, not scaled
-        let yOffset: CGFloat = usesFullscreenLayout ? 32 : 18
+        // Embedded fullscreen sits slightly lower than the dedicated fullscreen space,
+        // so trim the fullscreen cover stack offset only for that host.
+        let yOffset: CGFloat = usesFullscreenLayout
+            ? (context.fullscreenHostMode == .embeddedWindow ? 12 : 32)
+            : 18
 
         let visualizerMode = usesFullscreenLayout ? fullscreenVisualizerMode : normalVisualizerMode
         let dotSize: CGFloat = usesFullscreenLayout ? 12 : 10
