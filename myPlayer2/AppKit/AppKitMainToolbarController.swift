@@ -234,47 +234,46 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             return item
 
         case Identifier.pillGroup:
-            let multiselectItem = NSToolbarItem(itemIdentifier: Identifier.multiselect)
-            multiselectItem.label = NSLocalizedString("context.multiselect", comment: "Select")
-            multiselectItem.target = self
-            multiselectItem.action = #selector(handlePillItemAction(_:))
-            multiselectItem.autovalidates = false
-            multiselectItem.isEnabled = true
-            self.multiselectItem = multiselectItem
+            let multiselectLabel = NSLocalizedString("context.multiselect", comment: "Select")
+            let playLabel = NSLocalizedString("context.play_all", comment: "Play All")
+            let importLabel = NSLocalizedString("context.import", comment: "Import")
+            let multiselectSymbol = currentPageController?.isMultiselectMode == true
+                ? "checkmark.circle.fill"
+                : "checkmark.circle"
 
-            let playItem = NSToolbarItem(itemIdentifier: Identifier.play)
-            playItem.label = NSLocalizedString("context.play_all", comment: "Play All")
-            playItem.image = NSImage(
-                systemSymbolName: "play.fill",
-                accessibilityDescription: playItem.label
+            let group = NSToolbarItemGroup(
+                itemIdentifier: itemIdentifier,
+                images: [
+                    NSImage(systemSymbolName: multiselectSymbol, accessibilityDescription: multiselectLabel)
+                        ?? NSImage(),
+                    NSImage(systemSymbolName: "play.fill", accessibilityDescription: playLabel)
+                        ?? NSImage(),
+                    NSImage(systemSymbolName: "plus", accessibilityDescription: importLabel)
+                        ?? NSImage()
+                ],
+                selectionMode: .momentary,
+                labels: [multiselectLabel, playLabel, importLabel],
+                target: self,
+                action: #selector(handlePillGroupAction(_:))
             )
-            playItem.target = self
-            playItem.action = #selector(handlePillItemAction(_:))
-            playItem.autovalidates = false
-            playItem.isEnabled = true
-            self.playItem = playItem
-
-            let importItem = NSToolbarItem(itemIdentifier: Identifier.import)
-            importItem.label = NSLocalizedString("context.import", comment: "Import")
-            importItem.image = NSImage(
-                systemSymbolName: "plus",
-                accessibilityDescription: importItem.label
-            )
-            importItem.target = self
-            importItem.action = #selector(handlePillItemAction(_:))
-            importItem.autovalidates = false
-            importItem.isEnabled = true
-            self.importItem = importItem
-
-            let group = NSToolbarItemGroup(itemIdentifier: itemIdentifier)
             group.label = "Actions"
             group.paletteLabel = group.label
-            group.subitems = [multiselectItem, playItem, importItem]
-            group.selectionMode = .momentary
             group.controlRepresentation = .expanded
             group.autovalidates = false
             group.isEnabled = true
             self.pillGroupItem = group
+            if group.subitems.indices.contains(0) {
+                self.multiselectItem = group.subitems[0]
+                group.subitems[0].toolTip = multiselectLabel
+            }
+            if group.subitems.indices.contains(1) {
+                self.playItem = group.subitems[1]
+                group.subitems[1].toolTip = playLabel
+            }
+            if group.subitems.indices.contains(2) {
+                self.importItem = group.subitems[2]
+                group.subitems[2].toolTip = importLabel
+            }
 
             syncMultiselectItemPresentation()
             return group
@@ -527,6 +526,31 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             handlePlayFromToolbar(sender)
         case Identifier.import:
             handleImportToPlaylist(sender)
+        default:
+            break
+        }
+    }
+
+    @objc
+    private func handlePillGroupAction(_ sender: Any) {
+        let selectedIndex: Int
+        if let group = sender as? NSToolbarItemGroup {
+            selectedIndex = group.selectedIndex
+        } else if let segmentedControl = sender as? NSSegmentedControl {
+            selectedIndex = segmentedControl.selectedSegment
+        } else {
+            selectedIndex = pillGroupItem?.selectedIndex ?? -1
+        }
+
+        print(debugIdentitySnapshot(prefix: "[AppKitMainToolbar] pillGroup.action"))
+        print("[AppKitMainToolbar] pillGroup.selectedIndex=\(selectedIndex)")
+        switch selectedIndex {
+        case 0:
+            handleToggleMultiselect(multiselectItem ?? NSToolbarItem(itemIdentifier: Identifier.multiselect))
+        case 1:
+            handlePlayFromToolbar(playItem ?? NSToolbarItem(itemIdentifier: Identifier.play))
+        case 2:
+            handleImportToPlaylist(importItem ?? NSToolbarItem(itemIdentifier: Identifier.import))
         default:
             break
         }

@@ -45,6 +45,9 @@ struct TrackRowView<MenuContent: View>: View {
 
     @Environment(\.colorScheme) private var colorScheme
 
+    private var artistColumnWidth: CGFloat { 164 }
+    private var playingIndicatorColumnWidth: CGFloat { 20 }
+
     init(
         model: TrackRowModel,
         isPlaying: Bool,
@@ -88,6 +91,7 @@ struct TrackRowView<MenuContent: View>: View {
                     shouldAnimate: isPlaying || isHovering
                 )
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .layoutPriority(1)
 
                 SeamlessMarqueeText(
                     text: artistText,
@@ -96,7 +100,7 @@ struct TrackRowView<MenuContent: View>: View {
                     color: textSecondaryColor,
                     shouldAnimate: isPlaying || isHovering
                 )
-                .frame(width: 220, alignment: .leading)
+                .frame(width: artistColumnWidth, alignment: .leading)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .frame(height: 24)
@@ -105,10 +109,15 @@ struct TrackRowView<MenuContent: View>: View {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.yellow)
                     .help("library.file_missing")
+                    .frame(width: playingIndicatorColumnWidth)
             } else if isPlaying {
                 Image(systemName: "speaker.wave.2.fill")
                     .font(.caption)
                     .foregroundStyle(Color.accentColor)
+                    .frame(width: playingIndicatorColumnWidth)
+            } else {
+                Color.clear
+                    .frame(width: playingIndicatorColumnWidth)
             }
 
             Text(model.durationText)
