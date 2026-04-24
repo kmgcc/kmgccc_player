@@ -8,6 +8,7 @@
 //  Playlist-scoped toolbar content is declared here and surfaced via the window toolbar.
 //
 
+import AppKit
 import SwiftUI
 
 // MARK: - Playlist Detail View
@@ -31,6 +32,9 @@ struct PlaylistDetailView: View {
 
     @State private var trackToEdit: Track?
     @State private var batchEditRequest: BatchEditRequest?
+    @State private var trackScrollFadeState = PlaylistScrollFadeState()
+    @State private var detailScrollFadeState = PlaylistScrollFadeState()
+    @State private var scrollFadeTopChromeInset: CGFloat = 0
 
     var body: some View {
         let _ = LyricsRuntimeProfile.markBody("PlaylistDetailView.body")
@@ -67,6 +71,10 @@ struct PlaylistDetailView: View {
         // Fill available space, anchor content to top
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(PlaylistLayoutPassProbe(key: "PlaylistDetailView.root"))
+        .background(
+            PlaylistTopChromeInsetReader(topInset: $scrollFadeTopChromeInset)
+                .allowsHitTesting(false)
+        )
         .frame(minWidth: 320)
         .sheet(item: $trackToEdit) { track in
             TrackEditSheet(track: track)
@@ -187,49 +195,79 @@ struct PlaylistDetailView: View {
     }
 
     private var trackListView: some View {
-        ScrollView(.vertical) {
-            LazyVStack(spacing: 0) {
-                trackRowsContent
+        GeometryReader { proxy in
+            ScrollView(.vertical) {
+                LazyVStack(spacing: 0) {
+                    trackRowsContent
+                }
+                .scrollTargetLayout()
+                .padding(.top, scrollContentTopPadding)
+                .padding(.bottom, listBottomPadding)
+                .padding(.horizontal)
+                .transaction { tx in tx.animation = nil }
             }
-            .scrollTargetLayout()
-            .padding(.top, contentTopPadding)
-            .padding(.bottom, listBottomPadding)
-            .padding(.horizontal)
-            .transaction { tx in tx.animation = nil }
+            .frame(width: proxy.size.width, height: proxy.size.height + scrollFadeTopChromeInset)
+            .background(PlaylistLayoutPassProbe(key: "PlaylistDetailView.trackList"))
+            .onScrollGeometryChange(for: PlaylistScrollFadeState.self) { geometry in
+                PlaylistScrollFadeState(geometry: geometry)
+            } action: { _, newState in
+                trackScrollFadeState = newState
+            }
+            .playlistVerticalEdgeFade(
+                trackScrollFadeState,
+                topFadeHeight: topFadeHeight,
+                bottomFadeHeight: bottomFadeHeight,
+                topChromeInset: scrollFadeTopChromeInset
+            )
+            .offset(y: -scrollFadeTopChromeInset)
+            .scrollPosition(id: scrollBinding, anchor: .top)
         }
-        .background(PlaylistLayoutPassProbe(key: "PlaylistDetailView.trackList"))
-        .scrollPosition(id: scrollBinding, anchor: .top)
     }
 
     private var detailScrollView: some View {
-        ScrollView(.vertical) {
-            VStack(spacing: 0) {
-                if pageController.isHeaderEffectsEnabled {
-                    if pageController.rendersHeaderBackgroundInWindowLayer {
-                        haloScrollTrackingLayer
+        GeometryReader { proxy in
+            ScrollView(.vertical) {
+                VStack(spacing: 0) {
+                    if pageController.isHeaderEffectsEnabled {
+                        if pageController.rendersHeaderBackgroundInWindowLayer {
+                            haloScrollTrackingLayer
+                        } else {
+                            haloLayer
+                        }
                     } else {
-                        haloLayer
+                        Color.clear
+                            .frame(height: 0)
+                            .allowsHitTesting(false)
                     }
-                } else {
-                    Color.clear
-                        .frame(height: 0)
-                        .allowsHitTesting(false)
-                }
 
-                if let header = detailHeaderModel {
-                    headerContentSection(model: header)
-                }
+                    if let header = detailHeaderModel {
+                        headerContentSection(model: header)
+                    }
 
-                trackContentSection
+                    trackContentSection
+                }
+                .padding(.top, scrollContentTopPadding)
+                .padding(.bottom, listBottomPadding)
+                .padding(.horizontal)
+                .transaction { tx in tx.animation = nil }
             }
-            .padding(.top, contentTopPadding)
-            .padding(.bottom, listBottomPadding)
-            .padding(.horizontal)
-            .transaction { tx in tx.animation = nil }
+            .frame(width: proxy.size.width, height: proxy.size.height + scrollFadeTopChromeInset)
+            .background(PlaylistLayoutPassProbe(key: "PlaylistDetailView.detailScroll"))
+            .onScrollGeometryChange(for: PlaylistScrollFadeState.self) { geometry in
+                PlaylistScrollFadeState(geometry: geometry)
+            } action: { _, newState in
+                detailScrollFadeState = newState
+            }
+            .playlistVerticalEdgeFade(
+                detailScrollFadeState,
+                topFadeHeight: topFadeHeight,
+                bottomFadeHeight: bottomFadeHeight,
+                topChromeInset: scrollFadeTopChromeInset
+            )
+            .coordinateSpace(name: "detailScroll")
+            .offset(y: -scrollFadeTopChromeInset)
+            .scrollPosition(id: scrollBinding, anchor: .top)
         }
-        .background(PlaylistLayoutPassProbe(key: "PlaylistDetailView.detailScroll"))
-        .coordinateSpace(name: "detailScroll")
-        .scrollPosition(id: scrollBinding, anchor: .top)
     }
 
     private var haloScrollTrackingLayer: some View {
@@ -574,7 +612,132 @@ struct PlaylistDetailView: View {
     }
 
     private var contentTopPadding: CGFloat { 16 }
+    private var scrollContentTopPadding: CGFloat { contentTopPadding + scrollFadeTopChromeInset }
     private var listBottomPadding: CGFloat { 16 }
+    private var topFadeHeight: CGFloat { 32 }
+    private var bottomFadeHeight: CGFloat { 32 }
+}
+
+private final class PlaylistTopChromeInsetReaderView: NSView {
+    var onTopInsetChange: ((CGFloat) -> Void)?
+    private var lastTopInset: CGFloat = -1
+
+    override func layout() {
+        super.layout()
+        updateTopInsetIfNeeded()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        updateTopInsetIfNeeded()
+    }
+
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        updateTopInsetIfNeeded()
+    }
+
+    private func updateTopInsetIfNeeded() {
+        guard bounds.width > 0, bounds.height > 0, let contentView = window?.contentView else { return }
+
+        let frameInContent = convert(bounds, to: contentView)
+        let topInset = max(0, contentView.bounds.maxY - frameInContent.maxY)
+        guard abs(topInset - lastTopInset) >= 0.5 else { return }
+
+        lastTopInset = topInset
+        onTopInsetChange?(topInset)
+    }
+}
+
+private struct PlaylistTopChromeInsetReader: NSViewRepresentable {
+    @Binding var topInset: CGFloat
+
+    func makeNSView(context: Context) -> PlaylistTopChromeInsetReaderView {
+        let view = PlaylistTopChromeInsetReaderView()
+        view.onTopInsetChange = { topInset = $0 }
+        return view
+    }
+
+    func updateNSView(_ nsView: PlaylistTopChromeInsetReaderView, context: Context) {
+        nsView.onTopInsetChange = { topInset = $0 }
+        nsView.needsLayout = true
+    }
+}
+
+private struct PlaylistScrollFadeState: Equatable {
+    var showsTopFade = false
+    var showsBottomFade = false
+
+    init() {}
+
+    init(geometry: ScrollGeometry) {
+        let epsilon: CGFloat = 1
+        let topOffset = -geometry.contentInsets.top
+        let bottomOffset = max(
+            topOffset,
+            geometry.contentSize.height - geometry.containerSize.height + geometry.contentInsets.bottom
+        )
+        let canScroll = bottomOffset - topOffset > epsilon
+        showsTopFade = canScroll && geometry.contentOffset.y > topOffset + epsilon
+        showsBottomFade = canScroll && geometry.contentOffset.y < bottomOffset - epsilon
+    }
+}
+
+private extension View {
+    func playlistVerticalEdgeFade(
+        _ state: PlaylistScrollFadeState,
+        topFadeHeight: CGFloat,
+        bottomFadeHeight: CGFloat,
+        topChromeInset: CGFloat
+    ) -> some View {
+        mask {
+            VerticalEdgeFadeMask(
+                showsTopFade: state.showsTopFade,
+                showsBottomFade: state.showsBottomFade,
+                topFadeHeight: topFadeHeight,
+                bottomFadeHeight: bottomFadeHeight,
+                topChromeInset: topChromeInset
+            )
+        }
+    }
+}
+
+private struct VerticalEdgeFadeMask: View {
+    let showsTopFade: Bool
+    let showsBottomFade: Bool
+    let topFadeHeight: CGFloat
+    let bottomFadeHeight: CGFloat
+    let topChromeInset: CGFloat
+
+    var body: some View {
+        GeometryReader { proxy in
+            let maxFadeHeight = max(0, proxy.size.height / 2)
+            let resolvedTopHeight = min(max(topFadeHeight, topChromeInset), maxFadeHeight)
+            let resolvedBottomHeight = min(bottomFadeHeight, maxFadeHeight)
+
+            VStack(spacing: 0) {
+                if showsTopFade {
+                    LinearGradient(
+                        colors: [.clear, .black],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .frame(height: resolvedTopHeight)
+                }
+
+                Color.black
+
+                if showsBottomFade {
+                    LinearGradient(
+                        colors: [.black, .clear],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .frame(height: resolvedBottomHeight)
+                }
+            }
+        }
+    }
 }
 
 private struct PlaylistTrackRowsSection: View {
