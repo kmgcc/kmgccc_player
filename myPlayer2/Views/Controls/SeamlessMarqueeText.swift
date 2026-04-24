@@ -5,10 +5,8 @@
 // Drives animation via withAnimation(.linear) + async Task state machine.
 // Renders two text copies so the loop reset is invisible.
 //
-// Measurement risk: textWidth uses NSString.size(withAttributes: [.font: nsFont]).
-// This assumes nsFont (NSFont.systemFont) matches SwiftUI's Text rendering exactly.
-// If a visible seam appears at the loop boundary, replace measureTextWidth() with
-// a hidden Text + background(GeometryReader) approach.
+// Measures rendered SwiftUI text with a hidden fixed-size copy so overflow
+// detection matches the actual row rendering.
 
 import AppKit
 import SwiftUI
@@ -52,6 +50,10 @@ struct SeamlessMarqueeText: View {
                 .onChange(of: width) { _, newWidth in syncContainerWidth(newWidth) }
         }
         .frame(height: lineHeight)
+        .background(textMeasurementView)
+        .onPreferenceChange(MarqueeTextWidthPreferenceKey.self) { width in
+            syncMeasuredTextWidth(width)
+        }
         .onChange(of: text)          { _, _ in refreshAndRestart() }
         .onChange(of: style)         { _, _ in refreshAndRestart() }
         .onChange(of: fontWeight)    { _, _ in refreshAndRestart() }
@@ -102,6 +104,20 @@ struct SeamlessMarqueeText: View {
         }
     }
 
+    private var textMeasurementView: some View {
+        textLabel
+            .fixedSize(horizontal: true, vertical: false)
+            .hidden()
+            .background(
+                GeometryReader { proxy in
+                    Color.clear.preference(
+                        key: MarqueeTextWidthPreferenceKey.self,
+                        value: ceil(proxy.size.width)
+                    )
+                }
+            )
+    }
+
     // MARK: - Measurement
 
     private func syncContainerWidth(_ width: CGFloat) {
@@ -110,13 +126,13 @@ struct SeamlessMarqueeText: View {
         refreshAndRestart()
     }
 
-    private func measureTextWidth() {
-        let attrs: [NSAttributedString.Key: Any] = [.font: nsFont]
-        textWidth = ceil((text as NSString).size(withAttributes: attrs).width)
+    private func syncMeasuredTextWidth(_ width: CGFloat) {
+        guard abs(textWidth - width) > 0.5 else { return }
+        textWidth = width
+        refreshAndRestart()
     }
 
     private func refreshAndRestart() {
-        measureTextWidth()
         stopLoop()
         guard shouldAnimate, containerWidth > 0, textWidth > containerWidth + 2.0 else { return }
         startLoop()
@@ -226,6 +242,14 @@ struct SeamlessMarqueeText: View {
     private var lineHeight: CGFloat {
         let f = nsFont
         return max(1, f.ascender - f.descender + f.leading)
+    }
+}
+
+private struct MarqueeTextWidthPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 
