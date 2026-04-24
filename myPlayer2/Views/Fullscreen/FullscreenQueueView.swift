@@ -24,11 +24,6 @@ struct FullscreenQueueView: View {
 
     @EnvironmentObject private var themeStore: ThemeStore
     @State private var hasPerformedInitialScroll = false
-    @State private var visibleRowFrames: [UUID: CGRect] = [:]
-    @State private var scrollViewportHeight: CGFloat = 0
-    @State private var lastObservedTrackIDs: [UUID] = []
-    @State private var pendingQueueMutation: QueueScrollTrigger?
-    @State private var pendingScrollCommand: QueueScrollCommand?
 
     init(
         tracks: [Track],
@@ -277,10 +272,9 @@ struct FullscreenQueueView: View {
                         .frame(height: listTopSafeSpacing)
                         .accessibilityHidden(true)
 
-                    ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
+                    ForEach(tracks) { track in
                         QueueRow(
                             track: track,
-                            index: index,
                             isPlaying: track.id == currentTrackID,
                             textPalette: textPalette,
                             scale: scale,
@@ -289,14 +283,6 @@ struct FullscreenQueueView: View {
                             accentColor: processedThemeColor
                         )
                         .id(track.id)
-                        .background {
-                            GeometryReader { geometry in
-                                Color.clear.preference(
-                                    key: QueueRowFramePreferenceKey.self,
-                                    value: [track.id: geometry.frame(in: .named(Self.scrollCoordinateSpaceName))]
-                                )
-                            }
-                        }
                         .onTapGesture {
                             onTrackTap(track)
                         }
@@ -310,26 +296,14 @@ struct FullscreenQueueView: View {
             }
             .coordinateSpace(name: Self.scrollCoordinateSpaceName)
             .mask(trackListMask)
-            .animation(.spring(response: 0.52, dampingFraction: 0.80, blendDuration: 0.15), value: tracks.map(\.id))
-            .background {
-                GeometryReader { geometry in
-                    Color.clear.preference(
-                        key: QueueViewportHeightPreferenceKey.self,
-                        value: geometry.size.height
-                    )
-                }
-            }
             .onAppear {
-                handleQueueTrigger(.openQueue, using: proxy, animatedOverride: false)
+                revealCurrentTrack(using: proxy, animated: false)
                 hasPerformedInitialScroll = true
-                lastObservedTrackIDs = tracks.map(\.id)
             }
-            .onChange(of: currentTrackID) { oldTrackID, newTrackID in
-                handleCurrentTrackChange(
-                    oldTrackID: oldTrackID,
-                    newTrackID: newTrackID,
-                    using: proxy
-                )
+            .onChange(of: currentTrackID) { _, newTrackID in
+                guard hasPerformedInitialScroll else { return }
+                guard let newTrackID, tracks.contains(where: { $0.id == newTrackID }) else { return }
+                scrollToTrack(newTrackID, using: proxy, animated: true)
             }
             .onChange(of: tracks.map(\.id)) { oldTrackIDs, newTrackIDs in
                 handleTrackIDsChange(
@@ -337,12 +311,6 @@ struct FullscreenQueueView: View {
                     newTrackIDs: newTrackIDs,
                     using: proxy
                 )
-            }
-            .onPreferenceChange(QueueRowFramePreferenceKey.self) { frames in
-                visibleRowFrames = frames
-            }
-            .onPreferenceChange(QueueViewportHeightPreferenceKey.self) { height in
-                scrollViewportHeight = height
             }
         }
     }
@@ -412,104 +380,31 @@ struct FullscreenQueueView: View {
         )
     }
 
-    private var playbackAdvanceTriggerBottomEdge: CGFloat {
-        max(rowHeight * 4.0, scrollViewportHeight - rowHeight * 1.15)
-    }
-
-    private var playbackAdvanceComfortBottomEdge: CGFloat {
-        max(rowHeight * 4.4, scrollViewportHeight - rowHeight * 0.55)
-    }
-
     private var queueScrollAnimation: Animation {
         .timingCurve(0.22, 0.88, 0.24, 1.0, duration: 0.42)
     }
 
-    private func executeScrollCommand(
-        _ command: QueueScrollCommand,
+    private func scrollToTrack(
+        _ trackID: UUID,
         using proxy: ScrollViewProxy,
         animated: Bool
     ) {
-        pendingScrollCommand = command
-
         DispatchQueue.main.async {
-            guard pendingScrollCommand == command else { return }
-            pendingScrollCommand = nil
-
-            let targetTrackID = command.targetTrackID
-            guard tracks.contains(where: { $0.id == targetTrackID }) else { return }
+            guard tracks.contains(where: { $0.id == trackID }) else { return }
 
             if animated {
                 withAnimation(queueScrollAnimation) {
-                    proxy.scrollTo(targetTrackID, anchor: command.anchor)
+                    proxy.scrollTo(trackID, anchor: UnitPoint(x: 0.5, y: 0.14))
                 }
             } else {
-                proxy.scrollTo(targetTrackID, anchor: command.anchor)
+                proxy.scrollTo(trackID, anchor: UnitPoint(x: 0.5, y: 0.14))
             }
         }
     }
 
-    private func handleQueueTrigger(
-        _ trigger: QueueScrollTrigger,
-        using proxy: ScrollViewProxy,
-        animatedOverride: Bool? = nil
-    ) {
-        let command: QueueScrollCommand?
-        let animated: Bool
-
-        switch trigger {
-        case .none:
-            command = nil
-            animated = false
-        case .openQueue:
-            guard let currentTrackID else { return }
-            command = .revealCurrentTop(currentTrackID)
-            animated = animatedOverride ?? false
-        case .queueRebuildOrReplace:
-            guard let currentTrackID else { return }
-            command = .revealCurrentTop(currentTrackID)
-            animated = animatedOverride ?? hasPerformedInitialScroll
-        case .queueAppend:
-            command = nil
-            animated = false
-        case .playbackAdvance(let currentTrackID):
-            command = playbackAdvanceCommand(for: currentTrackID)
-            animated = animatedOverride ?? true
-        }
-
-        guard let command else { return }
-        guard pendingScrollCommand != command else { return }
-        executeScrollCommand(command, using: proxy, animated: animated)
-    }
-
-    private func handleCurrentTrackChange(
-        oldTrackID: UUID?,
-        newTrackID: UUID?,
-        using proxy: ScrollViewProxy
-    ) {
-        guard hasPerformedInitialScroll else {
-            handleQueueTrigger(.openQueue, using: proxy, animatedOverride: false)
-            return
-        }
-        guard let newTrackID, tracks.contains(where: { $0.id == newTrackID }) else { return }
-
-        let liveTrackIDs = tracks.map(\.id)
-        let queueMutation = pendingQueueMutation ?? classifyQueueMutation(
-            from: lastObservedTrackIDs,
-            to: liveTrackIDs
-        )
-
-        guard queueMutation != .queueRebuildOrReplace else { return }
-
-        if let oldTrackID,
-           let oldFrame = visibleRowFrames[oldTrackID],
-           oldFrame.maxY < playbackAdvanceTriggerBottomEdge {
-            return
-        }
-
-        if let command = playbackAdvanceCommand(for: newTrackID),
-           pendingScrollCommand != command {
-            handleQueueTrigger(.playbackAdvance(currentTrackID: newTrackID), using: proxy)
-        }
+    private func revealCurrentTrack(using proxy: ScrollViewProxy, animated: Bool) {
+        guard let currentTrackID, tracks.contains(where: { $0.id == currentTrackID }) else { return }
+        scrollToTrack(currentTrackID, using: proxy, animated: animated)
     }
 
     private func handleTrackIDsChange(
@@ -518,41 +413,10 @@ struct FullscreenQueueView: View {
         using proxy: ScrollViewProxy
     ) {
         let trigger = classifyQueueMutation(from: oldTrackIDs, to: newTrackIDs)
-        lastObservedTrackIDs = newTrackIDs
 
-        guard trigger != .none else { return }
-        pendingQueueMutation = trigger
-        DispatchQueue.main.async {
-            pendingQueueMutation = nil
-        }
-
-        handleQueueTrigger(trigger, using: proxy)
-    }
-
-    private func playbackAdvanceCommand(for currentTrackID: UUID) -> QueueScrollCommand? {
-        guard let currentIndex = tracks.firstIndex(where: { $0.id == currentTrackID }) else { return nil }
-
-        let currentFrame = visibleRowFrames[currentTrackID]
-        let nextTrackID = tracks[safe: currentIndex + 1]?.id
-        let nextFrame = nextTrackID.flatMap { visibleRowFrames[$0] }
-
-        if let nextFrame,
-           nextFrame.minY >= 0,
-           nextFrame.maxY <= playbackAdvanceComfortBottomEdge {
-            return nil
-        }
-
-        if let currentFrame,
-           currentFrame.maxY < playbackAdvanceTriggerBottomEdge {
-            return nil
-        }
-
-        if let nextTrackID {
-            return .keepTrackVisibleNearBottom(nextTrackID)
-        }
-
-        guard let currentFrame, currentFrame.maxY > scrollViewportHeight else { return nil }
-        return .keepTrackVisibleNearBottom(currentTrackID)
+        guard hasPerformedInitialScroll else { return }
+        guard trigger == .queueRebuildOrReplace else { return }
+        revealCurrentTrack(using: proxy, animated: true)
     }
 
     private func classifyQueueMutation(
@@ -573,31 +437,8 @@ struct FullscreenQueueView: View {
 
 private enum QueueScrollTrigger: Equatable {
     case none
-    case openQueue
-    case playbackAdvance(currentTrackID: UUID)
     case queueAppend
     case queueRebuildOrReplace
-}
-
-private enum QueueScrollCommand: Equatable {
-    case revealCurrentTop(UUID)
-    case keepTrackVisibleNearBottom(UUID)
-
-    var targetTrackID: UUID {
-        switch self {
-        case .revealCurrentTop(let trackID), .keepTrackVisibleNearBottom(let trackID):
-            return trackID
-        }
-    }
-
-    var anchor: UnitPoint {
-        switch self {
-        case .revealCurrentTop:
-            return UnitPoint(x: 0.5, y: 0.10)
-        case .keepTrackVisibleNearBottom:
-            return UnitPoint(x: 0.5, y: 0.94)
-        }
-    }
 }
 
 private struct FullscreenQueueTextPalette {
@@ -607,34 +448,10 @@ private struct FullscreenQueueTextPalette {
     let hoverFill: Color
 }
 
-private struct QueueRowFramePreferenceKey: PreferenceKey {
-    static var defaultValue: [UUID: CGRect] = [:]
-
-    static func reduce(value: inout [UUID: CGRect], nextValue: () -> [UUID: CGRect]) {
-        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
-    }
-}
-
-private struct QueueViewportHeightPreferenceKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
-private extension Array {
-    subscript(safe index: Int) -> Element? {
-        guard indices.contains(index) else { return nil }
-        return self[index]
-    }
-}
-
 // MARK: - Queue Row
 
 private struct QueueRow: View {
     let track: Track
-    let index: Int
     let isPlaying: Bool
     let textPalette: FullscreenQueueTextPalette
     let scale: CGFloat
@@ -653,10 +470,14 @@ private struct QueueRow: View {
 
             // Track info
             VStack(alignment: .leading, spacing: 2 * scale) {
-                Text(track.title)
-                    .font(.system(size: 14 * scale, weight: isPlaying ? .semibold : .medium))
-                    .foregroundStyle(isPlaying ? accentColor : textPalette.primary)
-                    .lineLimit(1)
+                SeamlessMarqueeText(
+                    text: track.title,
+                    fontSize: 14 * scale,
+                    fontWeight: isPlaying ? .semibold : .medium,
+                    color: isPlaying ? accentColor : textPalette.primary,
+                    shouldAnimate: isPlaying
+                )
+                .frame(maxWidth: .infinity, alignment: .leading)
 
                 Text(artistText)
                     .font(.system(size: 12 * scale, weight: .regular))
@@ -704,7 +525,11 @@ private struct QueueRow: View {
                 .frame(width: artworkSize, height: artworkSize)
                 .clipShape(RoundedRectangle(cornerRadius: 6 * scale, style: .continuous))
         } else {
-            ArtworkPlaceholderView.queueRow(artworkSize: 44, scale: scale)
+            ArtworkPlaceholderView.queueRow(
+                artworkSize: 44,
+                scale: scale,
+                themeColor: accentColor
+            )
         }
     }
 

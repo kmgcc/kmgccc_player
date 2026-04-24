@@ -128,14 +128,6 @@ struct PlaylistDetailView: View {
         .onReceive(NotificationCenter.default.publisher(for: .playbackTrackDidChange)) { _ in
             pageController.notePlaybackTrackDidChange()
         }
-        .onReceive(NotificationCenter.default.publisher(for: .toggleMultiselectMode)) { _ in
-            // Only enable multi-select if there are tracks to select
-            guard let page = pageController.page, !page.rows.isEmpty else { return }
-            pageController.isMultiselectMode.toggle()
-            if !pageController.isMultiselectMode {
-                pageController.selectedTrackIDs.removeAll()
-            }
-        }
     }
 
     // MARK: - Computed Properties
@@ -188,6 +180,7 @@ struct PlaylistDetailView: View {
             rows: currentRows,
             queueTracks: queueTracks,
             selectionIdentity: selectionIdentity,
+            currentTrackID: playerVM.currentTrack?.id,
             pageController: pageController,
             menuBuilder: erasedTrackMenu(trackID:)
         )
@@ -585,12 +578,12 @@ struct PlaylistDetailView: View {
 }
 
 private struct PlaylistTrackRowsSection: View {
-    @Environment(PlayerViewModel.self) private var playerVM
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
 
     let rows: [PlaylistPageRowModel]
     let queueTracks: [Track]
     let selectionIdentity: String
+    let currentTrackID: UUID?
     let pageController: PlaylistPageController
     let menuBuilder: (UUID) -> AnyView
 
@@ -599,7 +592,7 @@ private struct PlaylistTrackRowsSection: View {
         ForEach(rows) { row in
             TrackRowView(
                 model: row.trackRowModel,
-                isPlaying: playerVM.currentTrack?.id == row.id,
+                isPlaying: currentTrackID == row.id,
                 isSelected: pageController.isMultiselectMode && pageController.selectedTrackIDs.contains(row.id),
                 enableSecondaryInteractions: pageController.areRowSecondaryInteractionsEnabled,
                 enableArtworkLoading: pageController.areRowArtworkLoadsEnabled,
@@ -625,6 +618,7 @@ private struct PlaylistTrackRowsSection: View {
             ) {
                 menuBuilder(row.id)
             }
+            .equatable()
             .contextMenu {
                 if pageController.areRowSecondaryInteractionsEnabled {
                     menuBuilder(row.id)
@@ -676,8 +670,10 @@ private final class PlaylistLayoutPassProbeView: NSView {
 private struct ScrollOffsetSensor: View {
     let onChange: (CGFloat) -> Void
     @State private var lastReportedOffset: CGFloat?
+    @State private var lastReportUptime: TimeInterval = 0
 
-    private let reportEpsilon: CGFloat = 6.0
+    private let reportEpsilon: CGFloat = 18.0
+    private let minReportInterval: TimeInterval = 1.0 / 30.0
 
     var body: some View {
         GeometryReader { geo in
@@ -696,7 +692,10 @@ private struct ScrollOffsetSensor: View {
         if let lastReportedOffset, abs(offset - lastReportedOffset) < reportEpsilon {
             return
         }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastReportUptime >= minReportInterval else { return }
         lastReportedOffset = offset
+        lastReportUptime = now
         LyricsRuntimeProfile.increment("ScrollOffsetSensor.callback")
         onChange(offset)
     }

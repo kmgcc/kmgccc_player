@@ -73,28 +73,6 @@ private struct PlaybackOrderMenuContent: View {
     }
 }
 
-@MainActor
-private struct PrototypeWindowCommands: Commands {
-    let appSession: AppSessionHost
-
-    var body: some Commands {
-        CommandMenu("Prototype") {
-            Button("Open AppKit Split Toolbar Prototype") {
-                AppKitSplitToolbarPrototypeWindowController.showPrototypeWindow()
-            }
-
-            Button("Open AppKit Main Split Template (Step 1)") {
-                _ = AppKitMainSplitWindowController.show(appSession: appSession)
-            }
-
-            Button("Open Legacy SwiftUI Main Window") {
-                NSApp.activate(ignoringOtherApps: true)
-                LegacyMainWindowController.show(appSession: appSession)
-            }
-        }
-    }
-}
-
 @main
 struct KmgcccPlayerApp: App {
 
@@ -291,8 +269,6 @@ struct KmgcccPlayerApp: App {
                     }
                 }
             }
-
-            PrototypeWindowCommands(appSession: appSession)
         }
     }
 }
@@ -300,20 +276,10 @@ struct KmgcccPlayerApp: App {
 // MARK: - Notification Names
 
 extension Notification.Name {
-    static let togglePlayPause = Notification.Name("kmgccc_player.togglePlayPause")
-    static let nextTrack = Notification.Name("kmgccc_player.nextTrack")
-    static let previousTrack = Notification.Name("kmgccc_player.previousTrack")
-    static let toggleLyrics = Notification.Name("kmgccc_player.toggleLyrics")
     static let playbackTrackDidChange = Notification.Name("kmgccc_player.playbackTrackDidChange")
     static let libraryTrackDidUpdate = Notification.Name("kmgccc_player.libraryTrackDidUpdate")
     static let aboutEasterEggTriggered = Notification.Name("kmgccc_player.aboutEasterEggTriggered")
-    static let enterFullscreen = Notification.Name("kmgccc_player.enterFullscreen")
-    static let mainLayoutReady = Notification.Name("kmgccc_player.mainLayoutReady")
-    static let toggleMultiselectMode = Notification.Name("kmgccc_player.toggleMultiselectMode")
     static let toggleQueuePanel = Notification.Name("kmgccc_player.toggleQueuePanel")
-    static let importMusic = Notification.Name("kmgccc_player.importMusic")
-    static let newPlaylist = Notification.Name("kmgccc_player.newPlaylist")
-    static let toggleSidebar = Notification.Name("kmgccc_player.toggleSidebar")
     static let playbackModeChanged = Notification.Name("kmgccc_player.playbackModeChanged")
     static let dockProgressVisibilityChanged = Notification.Name("kmgccc_player.dockProgressVisibilityChanged")
 }

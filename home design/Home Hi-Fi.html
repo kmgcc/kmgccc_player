@@ -1,0 +1,422 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Home — Hi-Fi</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Inter+Tight:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<style>
+  /* ───────── tokens ───────── */
+  :root, .theme-light {
+    --bg:          #F4EFE8;
+    --panel:       rgba(255,255,255,0.72);
+    --panel-solid: #FBF8F3;
+    --panel-2:     rgba(255,255,255,0.48);
+    --ink:         #161518;
+    --ink-2:       #3A3A40;
+    --ink-3:       #6C6C73;
+    --ink-4:       #9A9AA0;
+    --hair:        rgba(20,20,25,0.08);
+    --hair-strong: rgba(20,20,25,0.14);
+    --shadow-1:    0 1px 0 rgba(255,255,255,0.6) inset, 0 0.5px 0 rgba(0,0,0,0.04);
+    --shadow-2:    0 1px 2px rgba(0,0,0,0.04), 0 8px 24px -12px rgba(0,0,0,0.18);
+    --shadow-3:    0 2px 6px rgba(0,0,0,0.06), 0 24px 56px -24px rgba(0,0,0,0.22);
+    --accent:      #2E6A9E;
+    --scrim:       rgba(255,255,255,0.55);
+    --bg-texture:  radial-gradient(1200px 800px at 20% 0%, rgba(255,255,255,0.55), transparent 60%),
+                   radial-gradient(1000px 700px at 100% 100%, rgba(0,0,0,0.03), transparent 60%);
+  }
+  .theme-dark {
+    --bg:          #0E1013;
+    --panel:       rgba(32,34,38,0.66);
+    --panel-solid: #1A1C20;
+    --panel-2:     rgba(255,255,255,0.04);
+    --ink:         #ECEAE4;
+    --ink-2:       #BDBBB5;
+    --ink-3:       #8A887F;
+    --ink-4:       #5E5D55;
+    --hair:        rgba(255,255,255,0.08);
+    --hair-strong: rgba(255,255,255,0.14);
+    --shadow-1:    0 1px 0 rgba(255,255,255,0.04) inset, 0 0.5px 0 rgba(0,0,0,0.4);
+    --shadow-2:    0 1px 2px rgba(0,0,0,0.4), 0 10px 28px -12px rgba(0,0,0,0.6);
+    --shadow-3:    0 2px 6px rgba(0,0,0,0.5), 0 28px 64px -24px rgba(0,0,0,0.7);
+    --accent:      #6BA3D4;
+    --scrim:       rgba(0,0,0,0.4);
+    --bg-texture:  radial-gradient(1200px 800px at 10% 0%, rgba(255,255,255,0.04), transparent 60%),
+                   radial-gradient(1000px 700px at 100% 100%, rgba(0,0,0,0.5), transparent 60%);
+  }
+
+  html, body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  * { box-sizing: border-box; }
+
+  .stage {
+    min-height: 100vh;
+    background: var(--bg-texture), var(--bg);
+    padding: 40px;
+  }
+
+  /* macOS-ish window card so the content reads as central panel */
+  .window {
+    max-width: 1280px;
+    margin: 0 auto;
+    background: var(--bg);
+    border: 1px solid var(--hair);
+    border-radius: 22px;
+    box-shadow: var(--shadow-3);
+    overflow: hidden;
+  }
+  .content {
+    padding: 28px 32px 40px;
+  }
+
+  /* ───────── type ───────── */
+  .t-display { font-family: 'Inter Tight', Inter, sans-serif; letter-spacing: -0.022em; font-weight: 600; }
+  .t-mono    { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+
+  .eyebrow {
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    font-weight: 600;
+    color: var(--ink-3);
+  }
+  .section-title {
+    font-family: 'Inter Tight', Inter, sans-serif;
+    font-weight: 600;
+    font-size: 22px;
+    letter-spacing: -0.01em;
+    color: var(--ink);
+    white-space: nowrap;
+  }
+  .section-link {
+    font-size: 12px;
+    color: var(--ink-3);
+    font-weight: 500;
+    white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .section-hd {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 14px;
+  }
+
+  /* ───────── shared card ───────── */
+  .card {
+    background: var(--panel-solid);
+    border: 1px solid var(--hair);
+    border-radius: 18px;
+    box-shadow: var(--shadow-2), var(--shadow-1);
+  }
+  .card-glass {
+    background: var(--panel);
+    backdrop-filter: blur(24px) saturate(140%);
+    -webkit-backdrop-filter: blur(24px) saturate(140%);
+    border: 1px solid var(--hair);
+    border-radius: 18px;
+    box-shadow: var(--shadow-2), var(--shadow-1);
+  }
+
+  /* ───────── theme toggle (design-time control) ───────── */
+  .theme-toolbar {
+    max-width: 1280px;
+    margin: 0 auto 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    color: var(--ink-3);
+    font-size: 12px;
+  }
+  .theme-toolbar .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 4px;
+    border-radius: 999px;
+    background: var(--panel);
+    border: 1px solid var(--hair);
+    backdrop-filter: blur(14px);
+  }
+  .theme-toolbar .pill button {
+    border: none;
+    background: transparent;
+    color: var(--ink-2);
+    font: inherit;
+    font-weight: 500;
+    padding: 6px 12px;
+    border-radius: 999px;
+    cursor: pointer;
+  }
+  .theme-toolbar .pill button.on {
+    background: var(--ink);
+    color: var(--bg);
+  }
+
+  /* scrollbar polish within rows */
+  .hrow {
+    display: flex;
+    gap: 18px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    padding-bottom: 4px;
+    margin: 0 -4px;
+    padding-left: 4px; padding-right: 4px;
+  }
+  .hrow::-webkit-scrollbar { display: none; }
+
+  /* album art — render via inline style on .cover, each has its own gradient stack */
+  .cover {
+    position: relative;
+    border-radius: 14px;
+    overflow: hidden;
+    isolation: isolate;
+    box-shadow:
+      0 0 0 1px rgba(0,0,0,0.06),
+      0 8px 18px -10px rgba(0,0,0,0.35),
+      0 2px 4px rgba(0,0,0,0.08);
+  }
+  .theme-dark .cover {
+    box-shadow:
+      0 0 0 1px rgba(255,255,255,0.06),
+      0 10px 24px -10px rgba(0,0,0,0.7),
+      0 2px 4px rgba(0,0,0,0.3);
+  }
+  /* subtle grain on covers for editorial feel */
+  .cover::after {
+    content: "";
+    position: absolute; inset: 0;
+    background-image: radial-gradient(rgba(255,255,255,0.04) 1px, transparent 1px);
+    background-size: 3px 3px;
+    mix-blend-mode: overlay;
+    pointer-events: none;
+  }
+
+  /* primary play button */
+  .btn-play {
+    display: inline-flex; align-items: center; gap: 10px;
+    height: 40px;
+    padding: 0 18px 0 8px;
+    border-radius: 999px;
+    background: var(--ink);
+    color: var(--bg);
+    border: none;
+    cursor: pointer;
+    font: 600 14px/1 Inter, sans-serif;
+    letter-spacing: -0.005em;
+    box-shadow: var(--shadow-2);
+  }
+  .btn-play .dot {
+    width: 28px; height: 28px; border-radius: 50%;
+    background: var(--bg); color: var(--ink);
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .btn-ghost {
+    display: inline-flex; align-items: center; gap: 8px;
+    height: 36px; padding: 0 14px;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--ink-2);
+    border: 1px solid var(--hair-strong);
+    font: 500 13px/1 Inter, sans-serif;
+    cursor: pointer;
+  }
+  .btn-icon {
+    width: 36px; height: 36px; border-radius: 50%;
+    display: inline-flex; align-items: center; justify-content: center;
+    border: 1px solid var(--hair-strong);
+    background: transparent;
+    color: var(--ink-2);
+    cursor: pointer;
+  }
+
+  /* hero */
+  .hero {
+    position: relative;
+    border-radius: 24px;
+    overflow: hidden;
+    border: 1px solid var(--hair);
+    box-shadow: var(--shadow-3);
+    isolation: isolate;
+  }
+  /* hero backdrop = scaled-up album art behind a blur + scrim */
+  .hero-bg {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    filter: blur(60px) saturate(140%);
+    transform: scale(1.25);
+    opacity: 1;
+  }
+  .hero-scrim {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    background:
+      linear-gradient(90deg, var(--scrim) 0%, transparent 45%, transparent 100%),
+      linear-gradient(0deg, var(--scrim) 0%, transparent 55%);
+    pointer-events: none;
+  }
+  .theme-dark .hero-scrim {
+    background:
+      linear-gradient(90deg, rgba(14,16,19,0.55) 0%, rgba(14,16,19,0.15) 55%, rgba(14,16,19,0.0) 100%),
+      linear-gradient(0deg, rgba(14,16,19,0.55) 0%, transparent 60%);
+  }
+  .hero-inner {
+    position: relative;
+    z-index: 2;
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 32px;
+    padding: 28px 32px;
+    align-items: center;
+  }
+
+  /* playlist card — softened backdrop */
+  .pcard {
+    position: relative;
+    display: flex;
+    gap: 14px;
+    padding: 12px;
+    border-radius: 18px;
+    border: 1px solid var(--hair);
+    overflow: hidden;
+    isolation: isolate;
+    box-shadow: var(--shadow-2), var(--shadow-1);
+  }
+  .pcard-bg {
+    position: absolute; inset: 0;
+    z-index: 0;
+    filter: blur(40px) saturate(150%);
+    transform: scale(1.4);
+    opacity: 1;
+  }
+  .pcard-scrim {
+    position: absolute; inset: 0;
+    z-index: 1;
+    background: linear-gradient(180deg, rgba(255,255,255,0.62), rgba(255,255,255,0.78));
+    pointer-events: none;
+  }
+  .theme-dark .pcard-scrim {
+    background: linear-gradient(180deg, rgba(14,16,19,0.62), rgba(14,16,19,0.78));
+  }
+  .pcard-inner {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    gap: 14px;
+    align-items: center;
+    width: 100%;
+  }
+
+  /* insights */
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+  }
+  .stat {
+    padding: 16px 18px 18px;
+    border-radius: 18px;
+    border: 1px solid var(--hair);
+    background: var(--panel-solid);
+    box-shadow: var(--shadow-2), var(--shadow-1);
+    display: flex; flex-direction: column; gap: 10px;
+    min-height: 104px;
+  }
+  .stat .num {
+    font-family: 'Inter Tight', Inter, sans-serif;
+    font-weight: 600;
+    font-size: 30px;
+    letter-spacing: -0.02em;
+    color: var(--ink);
+    line-height: 1;
+  }
+  .stat .unit { font-size: 12px; color: var(--ink-3); }
+
+  /* ranking list */
+  .rank {
+    border-radius: 20px;
+    border: 1px solid var(--hair);
+    background: var(--panel-solid);
+    box-shadow: var(--shadow-2), var(--shadow-1);
+    overflow: hidden;
+  }
+  .rank-row {
+    display: grid;
+    grid-template-columns: 32px 48px 1fr 220px 80px;
+    gap: 16px;
+    align-items: center;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--hair);
+  }
+  .rank-row:last-child { border-bottom: none; }
+  .rank-row.head {
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-4);
+    padding: 14px 20px 10px;
+    font-weight: 600;
+  }
+  .rank-num {
+    font-family: 'Inter Tight', Inter, sans-serif;
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--ink-3);
+    text-align: center;
+  }
+  .bar-track {
+    flex: 1;
+    height: 6px;
+    background: var(--hair);
+    border-radius: 999px;
+    overflow: hidden;
+  }
+  .bar-fill {
+    height: 100%;
+    background: var(--ink);
+    opacity: 0.78;
+    border-radius: 999px;
+  }
+  .theme-dark .bar-fill { opacity: 0.9; background: var(--ink-2); }
+
+  /* tidy link rows */
+  .meta-dot { color: var(--ink-4); padding: 0 6px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script>
+  const TWEAK_DEFAULS = /*EDITMODE-BEGIN*/{
+    "theme": "light",
+    "heroSize": "balanced"
+  }/*EDITMODE-END*/;
+  window.__TWEAK_DEFAULTS__ = TWEAK_DEFAULS;
+</script>
+
+<script type="text/babel" src="tweaks-panel.jsx"></script>
+<script type="text/babel" src="hifi-data.jsx"></script>
+<script type="text/babel" src="hifi.jsx"></script>
+</body>
+</html>

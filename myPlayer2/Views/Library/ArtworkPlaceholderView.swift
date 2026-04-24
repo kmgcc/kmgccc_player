@@ -24,7 +24,6 @@ struct ArtworkPlaceholderView: View {
 
     // MARK: - Environment
 
-    @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
 
     // MARK: - Initialization
@@ -99,8 +98,7 @@ struct ArtworkPlaceholderView: View {
 
     /// The background color - uses theme accent color from ThemeStore
     private var themeBackgroundColor: Color {
-        // Use explicit theme color if provided, otherwise from theme store
-        let baseColor = themeColor ?? themeStore.accentColor
+        let baseColor = themeColor ?? ThemeStore.shared.accentColor
         return baseColor.opacity(colorScheme == .dark ? 0.6 : 0.5)
     }
 

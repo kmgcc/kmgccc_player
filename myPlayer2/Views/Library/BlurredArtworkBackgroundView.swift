@@ -30,7 +30,7 @@ final class HeaderHaloState {
     }
 
     var contentSpaceOffset: CGFloat {
-        scrollDelta * (Self.parallaxFraction - 1.0)
+        scrollDelta * Self.parallaxFraction
     }
 
     var scale: CGFloat {
@@ -58,11 +58,10 @@ final class HeaderHaloState {
     func updateAnchor(bounds: CGRect?) -> Bool {
         guard let bounds, bounds.width > 0, bounds.height > 0 else { return false }
         let nextAnchor = CGPoint(x: bounds.midX, y: bounds.midY)
-        if let anchor,
-            abs(anchor.x - nextAnchor.x) < Self.anchorEpsilon,
-            abs(anchor.y - nextAnchor.y) < Self.anchorEpsilon
-        {
-            return false
+        if let anchor {
+            guard abs(anchor.x - nextAnchor.x) >= Self.anchorEpsilon else { return false }
+            self.anchor = CGPoint(x: nextAnchor.x, y: anchor.y)
+            return true
         }
         anchor = nextAnchor
         return true

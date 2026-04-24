@@ -36,7 +36,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
     private var escapeEventMonitor: Any?
     private var fullscreenLyricsVM: LyricsViewModel?
 
-    // References to shared dependencies (set from AppRootView)
+    // References to shared dependencies configured by the app session.
     weak var playerVM: PlayerViewModel?
     weak var libraryVM: LibraryViewModel?
     weak var playbackCoordinator: PlaybackCoordinator?
@@ -267,6 +267,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
             )
         }
         presentationMode = .embeddedInWindow
+        installEscapeMonitorIfNeeded()
         if EmbeddedFullscreenTrace.enabled {
             Log.info(
                 "[EFS t=\(EmbeddedFullscreenTrace.stamp())] showFullscreenPlayerInWindow.end mode=\(presentationMode)",
@@ -279,6 +280,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         guard presentationMode == .embeddedInWindow else { return }
         LyricsSurfaceManager.shared.requestMode(.main)
         presentationMode = .none
+        removeEscapeMonitor()
         restoreEmbeddedHostWindowFrameIfNeeded()
         restoreSuspendedMainSidebarForEmbeddedFullscreenIfNeeded()
         restoreSuspendedMainLyricsIfNeeded()
@@ -427,18 +429,31 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         guard escapeEventMonitor == nil else { return }
         escapeEventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
             guard let self = self else { return event }
-            guard let window = self.fullscreenWindow else { return event }
-            guard window.isVisible, window.styleMask.contains(.fullScreen), window.isKeyWindow else {
-                return event
-            }
-            if event.keyCode == 53 {
+            guard event.keyCode == 53 else { return event }
+
+            switch self.presentationMode {
+            case .systemFullscreenSpace:
+                guard let window = self.fullscreenWindow else { return event }
+                guard window.isVisible, window.styleMask.contains(.fullScreen), window.isKeyWindow else {
+                    return event
+                }
                 if FullscreenTransientDismissCoordinator.shared.dismissTopmost() {
                     return nil
                 }
                 self.closeFullscreenWindow()
                 return nil
+            case .embeddedInWindow:
+                let window = self.embeddedHostWindow ?? NSApp.keyWindow ?? NSApp.mainWindow
+                guard let window else { return event }
+                guard window.isVisible, window.isKeyWindow else { return event }
+                if FullscreenTransientDismissCoordinator.shared.dismissTopmost() {
+                    return nil
+                }
+                self.closeFullscreenPlayerInWindow()
+                return nil
+            case .none:
+                return event
             }
-            return event
         }
     }
 

@@ -48,6 +48,7 @@ private enum RotatingCoverLayout {
     private static let classicFullscreenVisualScale: CGFloat = 1.2
     private static let baseExpansionRatio: CGFloat = 1.12
     private static let fullscreenSharedBaseXOffset: CGFloat = -8
+    private static let embeddedFullscreenYOffset: CGFloat = 12
 
     static let discToBaseRatio: CGFloat = 0.75
     static let yOffsetWindow: CGFloat = 18
@@ -67,7 +68,14 @@ private enum RotatingCoverLayout {
             for: context,
             baseOffset: fullscreenSharedBaseXOffset
         )
-        let yOffset = isFullscreen ? yOffsetFullscreen : yOffsetWindow
+        let yOffset: CGFloat
+        if isFullscreen {
+            yOffset = context.fullscreenHostMode == .embeddedWindow
+                ? embeddedFullscreenYOffset
+                : yOffsetFullscreen
+        } else {
+            yOffset = yOffsetWindow
+        }
         return Metrics(
             discSize: discSize,
             baseSize: baseSize,
