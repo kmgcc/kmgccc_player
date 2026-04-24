@@ -159,6 +159,11 @@ final class ExternalPlaybackMetadataStore {
         return try? Data(contentsOf: artworkCacheDirectory().appendingPathComponent(fileName))
     }
 
+    func cachedArtwork(for stableKey: String, source: String) -> Data? {
+        guard records[stableKey]?.artworkSource == source else { return nil }
+        return cachedNetworkArtwork(for: stableKey)
+    }
+
     func storeNetworkArtwork(_ data: Data, for stableKey: String, source: String) {
         guard !data.isEmpty else { return }
         let fileName = "\(sanitize(stableKey))-\(ArtworkAssetStore.checksum(for: data)).img"

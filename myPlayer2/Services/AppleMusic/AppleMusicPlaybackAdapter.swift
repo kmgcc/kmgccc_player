@@ -72,6 +72,7 @@ final class AppleMusicPlaybackAdapter {
             case network = 1
             case localLibrary = 2
             case appleMusic = 3
+            case manualOverride = 4
         }
 
         var identity: String?
@@ -549,6 +550,7 @@ final class AppleMusicPlaybackAdapter {
                 identity: identity,
                 effective: resolution.effective,
                 matchedTrack: resolution.matchedTrack,
+                manualOverrideArtwork: metadataStore.cachedArtwork(for: identity, source: "manualOverride"),
                 cachedNetworkArtwork: metadataStore.cachedNetworkArtwork(for: identity)
             )
         }
@@ -703,6 +705,7 @@ final class AppleMusicPlaybackAdapter {
         identity: String,
         effective: ExternalPlaybackEffectiveMetadata,
         matchedTrack: Track?,
+        manualOverrideArtwork: Data?,
         cachedNetworkArtwork: Data?
     ) {
         pendingArtworkIdentity = identity
@@ -715,6 +718,20 @@ final class AppleMusicPlaybackAdapter {
         let localArtwork = matchedTrack?.artworkData
         artworkTask = Task { [weak self] in
             guard let self else { return }
+
+            if let manualOverrideArtwork, !manualOverrideArtwork.isEmpty {
+                let displayTrackID = NowPlayingPresentation.externalArtworkDisplayUUID(for: identity)
+                await self.prepareAndCommitArtwork(
+                    manualOverrideArtwork,
+                    source: .manualOverride,
+                    identity: identity,
+                    displayTrackID: displayTrackID
+                )
+                await MainActor.run {
+                    metadataStore.updateArtworkSource("manualOverride", for: identity)
+                }
+                return
+            }
 
             if let localArtwork, !localArtwork.isEmpty {
                 let displayTrackID = matchedTrackID
