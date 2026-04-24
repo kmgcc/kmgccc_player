@@ -21,12 +21,12 @@ struct NowPlayingInfoContextMenu: View {
             }
         }
 
-        if presentation.source == .appleMusic,
+        if presentation.source.isExternal,
            presentation.externalStableKey != nil {
             Button {
                 onEditExternalInfo()
             } label: {
-                Label("AM 覆盖信息", systemImage: "slider.horizontal.3")
+                Label("编辑外部播放覆盖信息", systemImage: "slider.horizontal.3")
             }
         }
     }

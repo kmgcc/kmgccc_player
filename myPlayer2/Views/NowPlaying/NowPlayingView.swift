@@ -35,7 +35,8 @@ struct NowPlayingView: View {
     let appleMusicAdapter = AppleMusicPlaybackAdapter(libraryVM: libraryVM)
     let playbackCoordinator = PlaybackCoordinator(
         playerVM: playerVM,
-        appleMusicAdapter: appleMusicAdapter
+        appleMusicAdapter: appleMusicAdapter,
+        systemNowPlayingProvider: SystemNowPlayingProvider(libraryVM: libraryVM)
     )
     let ledMeter = LEDMeterService()
     let skinManager = SkinManager()

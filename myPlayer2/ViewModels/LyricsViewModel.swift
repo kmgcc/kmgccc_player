@@ -54,7 +54,7 @@ final class LyricsViewModel {
     /// Callback for when user seeks via lyrics UI.
     var onSeekRequest: ((TimeInterval) -> Void)? {
         didSet {
-            store.onUserSeek = onSeekRequest
+            rebindSeekCallback()
         }
     }
 
@@ -78,6 +78,7 @@ final class LyricsViewModel {
 
     /// Apply a new track with correct sequence (Task F).
     func applyTrack(_ track: Track?, currentTime: TimeInterval = 0, isPlaying: Bool = false) {
+        rebindSeekCallback()
         currentTrack = track
         lastAppliedTrackId = track?.id
 
@@ -104,6 +105,7 @@ final class LyricsViewModel {
             ttml: ttmlForStore,
             currentTime: currentTime,
             isPlaying: isPlaying)
+        rebindSeekCallback()
     }
 
     /// Unified AMLL state sync entrypoint.
@@ -118,6 +120,7 @@ final class LyricsViewModel {
     ) {
         // 短路：如果 track 为 nil 且已经处理过 nil，避免重复空转
         if track == nil && lastAppliedTrackId == nil && !forceLyricsReload {
+            rebindSeekCallback()
             // 仅同步必要的播放状态，不做重复歌词应用
             LyricsSurfaceManager.shared.updatePlaybackTime(currentTime)
             LyricsSurfaceManager.shared.updatePlayingState(isPlaying)
@@ -138,6 +141,7 @@ final class LyricsViewModel {
         if forceWebReload {
             store.forceReload(recreateWebView: recreateWebViewOnForceReload)
         }
+        rebindSeekCallback()
 
         if shouldApplyTrack(track, forceLyricsReload: forceLyricsReload) {
             applyTrack(track, currentTime: currentTime, isPlaying: isPlaying)
@@ -162,6 +166,7 @@ final class LyricsViewModel {
         forceLyricsReload: Bool = false,
         recreateWebViewOnForceReload: Bool = false
     ) {
+        rebindSeekCallback()
         currentTrack = presentation.localTrack
         let identity = presentation.lyricsIdentity ?? "external.empty"
         let lyricsText = presentation.lyricsText ?? ""
@@ -185,6 +190,7 @@ final class LyricsViewModel {
         if forceWebReload {
             store.forceReload(recreateWebView: recreateWebViewOnForceReload)
         }
+        rebindSeekCallback()
 
         if forceLyricsReload || lastAppliedExternalLyricsSignature != lyricsSignature {
             lastAppliedExternalLyricsIdentity = identity
@@ -195,6 +201,7 @@ final class LyricsViewModel {
                 currentTime: presentation.currentTime,
                 isPlaying: presentation.isPlaying
             )
+            rebindSeekCallback()
         } else {
             if let palette = ThemeStore.shared.palette {
                 store.applyTheme(palette)
@@ -235,6 +242,7 @@ final class LyricsViewModel {
 
     /// Clear current lyrics.
     func clearLyrics() {
+        rebindSeekCallback()
         currentTrack = nil
         lastAppliedTrackId = nil
         lastAppliedExternalLyricsIdentity = nil
@@ -273,14 +281,20 @@ final class LyricsViewModel {
 
     /// Sync current playback time to lyrics.
     func syncTime(_ seconds: TimeInterval) {
+        rebindSeekCallback()
         LyricsSurfaceManager.shared.updatePlaybackTime(seconds)
         store.setCurrentTime(seconds)
     }
 
     /// Set playback state.
     func setPlaying(_ isPlaying: Bool) {
+        rebindSeekCallback()
         LyricsSurfaceManager.shared.updatePlayingState(isPlaying)
         store.setPlaying(isPlaying)
+    }
+
+    private func rebindSeekCallback() {
+        store.onUserSeek = onSeekRequest
     }
 
     // MARK: - Configuration

@@ -17,6 +17,7 @@ final class PlaybackCoordinator {
 
     private let playerVM: PlayerViewModel
     private let appleMusicAdapter: AppleMusicPlaybackAdapter
+    private let systemNowPlayingProvider: SystemNowPlayingProvider
     private let settings: AppSettings
     private let meterProvider: AudioLevelMeterProtocol?
     private var presentationTimer: Timer?
@@ -32,18 +33,21 @@ final class PlaybackCoordinator {
     init(
         playerVM: PlayerViewModel,
         appleMusicAdapter: AppleMusicPlaybackAdapter,
+        systemNowPlayingProvider: SystemNowPlayingProvider,
         settings: AppSettings? = nil,
         meterProvider: AudioLevelMeterProtocol? = nil
     ) {
         self.playerVM = playerVM
         self.appleMusicAdapter = appleMusicAdapter
+        self.systemNowPlayingProvider = systemNowPlayingProvider
         self.settings = settings ?? AppSettings.shared
         self.meterProvider = meterProvider
         self.activeSource = PlaybackSource(
             rawValue: UserDefaults.standard.string(forKey: Keys.activeSource) ?? ""
         ) ?? .local
-        if activeSource == .appleMusic {
-            appleMusicAdapter.start()
+        if activeSource.isExternal {
+            externalProvider(for: activeSource)?.start()
+            ExternalPlaybackSpectrumSimulator.shared.start()
         }
         refreshPresentation()
         startPresentationTimer()
@@ -52,8 +56,8 @@ final class PlaybackCoordinator {
 
     func setActiveSource(_ source: PlaybackSource) {
         guard activeSource != source else {
-            if source == .appleMusic {
-                appleMusicAdapter.start()
+            if source.isExternal {
+                externalProvider(for: source)?.start()
             }
             refreshPresentation()
             NowPlayingService.shared.updateNowPlaying(force: true)
@@ -65,16 +69,21 @@ final class PlaybackCoordinator {
             category: .playback
         )
 
+        let previousSource = activeSource
+        if previousSource.isExternal, previousSource != source {
+            externalProvider(for: previousSource)?.pause()
+            externalProvider(for: previousSource)?.stop()
+        }
+
         switch source {
         case .local:
-            appleMusicAdapter.pause()
-            appleMusicAdapter.stop()
+            stopExternalProviders()
             ExternalPlaybackSpectrumSimulator.shared.stop()
-        case .appleMusic:
+        case .appleMusic, .systemNowPlaying:
             if playerVM.isPlaying {
                 playerVM.pause()
             }
-            appleMusicAdapter.start()
+            externalProvider(for: source)?.start()
             ExternalPlaybackSpectrumSimulator.shared.start()
         }
 
@@ -90,8 +99,8 @@ final class PlaybackCoordinator {
         switch activeSource {
         case .local:
             playerVM.togglePlayPause()
-        case .appleMusic:
-            appleMusicAdapter.playPause()
+        case .appleMusic, .systemNowPlaying:
+            activeExternalProvider?.playPause()
         }
         refreshPresentation()
         NowPlayingService.shared.updateNowPlaying(force: true)
@@ -101,8 +110,8 @@ final class PlaybackCoordinator {
         switch activeSource {
         case .local:
             playerVM.pause()
-        case .appleMusic:
-            appleMusicAdapter.pause()
+        case .appleMusic, .systemNowPlaying:
+            activeExternalProvider?.pause()
         }
         refreshPresentation()
         NowPlayingService.shared.updateNowPlaying(force: true)
@@ -112,8 +121,8 @@ final class PlaybackCoordinator {
         switch activeSource {
         case .local:
             playerVM.resume()
-        case .appleMusic:
-            appleMusicAdapter.play()
+        case .appleMusic, .systemNowPlaying:
+            activeExternalProvider?.play()
         }
         refreshPresentation()
         NowPlayingService.shared.updateNowPlaying(force: true)
@@ -123,8 +132,8 @@ final class PlaybackCoordinator {
         switch activeSource {
         case .local:
             playerVM.stop()
-        case .appleMusic:
-            appleMusicAdapter.pause()
+        case .appleMusic, .systemNowPlaying:
+            activeExternalProvider?.pause()
         }
         refreshPresentation()
         NowPlayingService.shared.updateNowPlaying(force: true)
@@ -134,8 +143,8 @@ final class PlaybackCoordinator {
         switch activeSource {
         case .local:
             playerVM.next()
-        case .appleMusic:
-            appleMusicAdapter.next()
+        case .appleMusic, .systemNowPlaying:
+            activeExternalProvider?.next()
         }
         refreshPresentation()
         NowPlayingService.shared.updateNowPlaying(force: true)
@@ -145,8 +154,8 @@ final class PlaybackCoordinator {
         switch activeSource {
         case .local:
             playerVM.previous()
-        case .appleMusic:
-            appleMusicAdapter.previous()
+        case .appleMusic, .systemNowPlaying:
+            activeExternalProvider?.previous()
         }
         refreshPresentation()
         NowPlayingService.shared.updateNowPlaying(force: true)
@@ -158,6 +167,13 @@ final class PlaybackCoordinator {
             playerVM.seek(to: seconds)
         case .appleMusic:
             appleMusicAdapter.seek(to: seconds)
+        case .systemNowPlaying:
+            guard systemNowPlayingProvider.capabilities.canSeek,
+                  systemNowPlayingProvider.presentation.isSeekEnabled else {
+                Log.debug("[PlaybackCoordinator] system now playing seek ignored; capability disabled", category: .playback)
+                return
+            }
+            systemNowPlayingProvider.seek(to: seconds)
         }
         refreshPresentation()
         NowPlayingService.shared.updateNowPlaying(force: true)
@@ -169,6 +185,9 @@ final class PlaybackCoordinator {
             playerVM.setVolume(volume)
         case .appleMusic:
             appleMusicAdapter.setVolume(volume)
+        case .systemNowPlaying:
+            guard systemNowPlayingProvider.capabilities.canSetVolume else { return }
+            systemNowPlayingProvider.setVolume(volume)
         }
         refreshPresentation()
         NowPlayingService.shared.updateNowPlaying(force: true)
@@ -180,28 +199,39 @@ final class PlaybackCoordinator {
             playerVM.setPlaybackOrderMode(mode, announceChange: announceChange)
         case .appleMusic:
             appleMusicAdapter.setPlaybackOrderMode(mode)
+        case .systemNowPlaying:
+            guard systemNowPlayingProvider.capabilities.canSetPlaybackMode else { return }
+            systemNowPlayingProvider.setPlaybackOrderMode(mode)
         }
         refreshPresentation()
         NowPlayingService.shared.updateNowPlaying(force: true)
     }
 
     func setAppleMusicPlaybackMode(_ mode: AppleMusicPlaybackMode) {
-        guard activeSource == .appleMusic else { return }
-        appleMusicAdapter.setAppleMusicPlaybackMode(mode)
+        guard activeSource.isExternal else { return }
+        switch activeSource {
+        case .local:
+            return
+        case .appleMusic:
+            appleMusicAdapter.setAppleMusicPlaybackMode(mode)
+        case .systemNowPlaying:
+            guard systemNowPlayingProvider.capabilities.canSetPlaybackMode else { return }
+            systemNowPlayingProvider.setAppleMusicPlaybackMode(mode)
+        }
         refreshPresentation()
         NowPlayingService.shared.updateNowPlaying(force: true)
     }
 
     func invalidateExternalPlaybackResolution() {
-        guard activeSource == .appleMusic else { return }
-        appleMusicAdapter.invalidateCurrentResolution()
+        guard activeSource.isExternal else { return }
+        activeExternalProvider?.invalidateCurrentResolution()
         refreshPresentation()
         NowPlayingService.shared.updateNowPlaying(force: true)
     }
 
     func clearExternalPlaybackRuntimeCaches() {
-        guard activeSource == .appleMusic else { return }
-        appleMusicAdapter.clearRuntimeResolutionCaches()
+        guard activeSource.isExternal else { return }
+        activeExternalProvider?.clearRuntimeResolutionCaches()
         refreshPresentation()
         NowPlayingService.shared.updateNowPlaying(force: true)
     }
@@ -240,11 +270,13 @@ final class PlaybackCoordinator {
         switch activeSource {
         case .local:
             newPresentation = makeLocalPresentation()
-        case .appleMusic:
-            newPresentation = appleMusicAdapter.presentation
+        case .appleMusic, .systemNowPlaying:
+            activeExternalProvider?.tickPresentation()
+            newPresentation = activeExternalProvider?.presentation
+                ?? NowPlayingPresentation.emptySystemNowPlaying
         }
 
-        if activeSource == .appleMusic {
+        if activeSource.isExternal {
             let isPlaying = newPresentation.isPlaying
             ExternalPlaybackSpectrumSimulator.shared.setPlaying(isPlaying)
             if lastSyncedPlayingState != isPlaying {
@@ -255,6 +287,27 @@ final class PlaybackCoordinator {
 
         guard !newPresentation.isEffectivelyEqual(to: presentation) else { return }
         presentation = newPresentation
+    }
+
+    private var activeExternalProvider: (any ExternalPlaybackProvider)? {
+        externalProvider(for: activeSource)
+    }
+
+    private func externalProvider(for source: PlaybackSource) -> (any ExternalPlaybackProvider)? {
+        switch source {
+        case .local:
+            return nil
+        case .appleMusic:
+            return appleMusicAdapter
+        case .systemNowPlaying:
+            return systemNowPlayingProvider
+        }
+    }
+
+    private func stopExternalProviders(except retainedSource: PlaybackSource? = nil) {
+        for source in PlaybackSource.allCases where source.isExternal && source != retainedSource {
+            externalProvider(for: source)?.stop()
+        }
     }
 
     private func startPresentationTimer() {
@@ -308,6 +361,8 @@ final class PlaybackCoordinator {
             externalConnectionState: nil,
             isControlEnabled: true,
             isSeekEnabled: playerVM.duration > 0,
+            isVolumeControlEnabled: true,
+            isPlaybackModeControlEnabled: true,
             emptyTitleKey: "mini.not_playing"
         )
     }

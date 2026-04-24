@@ -19,6 +19,7 @@ struct ExpandableVolumeControl: View {
     var onHoverStateChanged: (Bool) -> Void = { _ in }
     var onAdjustingChanged: (Bool) -> Void = { _ in }
     var materialStyle: LiquidGlassPillMaterialStyle = .clear
+    var isEnabled: Bool = true
     
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
@@ -54,6 +55,11 @@ struct ExpandableVolumeControl: View {
             isFloating: true
         )
         .onHover { hovering in
+            guard isEnabled else {
+                isExpanded = false
+                onHoverStateChanged(false)
+                return
+            }
             isExpanded = hovering
             onHoverStateChanged(hovering)
             if hovering {
@@ -68,12 +74,14 @@ struct ExpandableVolumeControl: View {
             Image(systemName: volumeIcon)
                 .font(.system(size: scaledIconSize, weight: .semibold))
                 .foregroundStyle(controlPrimaryColor)
+                .opacity(isEnabled ? 1 : 0.4)
                 .compositingGroup()
-                .blendMode(.screen)
+                .blendMode(isEnabled ? .screen : .normal)
                 .frame(width: scaledIconAreaWidth, height: scaledControlHeight)
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
+        .disabled(!isEnabled)
         .help("volume")
     }
 
@@ -95,6 +103,7 @@ struct ExpandableVolumeControl: View {
             .padding(.trailing, sliderTrailingPadding)
             .opacity(isExpanded ? 1 : 0)
             .allowsHitTesting(isExpanded)
+            .disabled(!isEnabled)
             .accessibilityHidden(!isExpanded)
             .onChange(of: volume) { _, _ in
                 onInteraction()
@@ -129,6 +138,7 @@ struct ExpandableVolumeControl: View {
     }
 
     private func toggleMute() {
+        guard isEnabled else { return }
         onInteraction()
         if volume > 0 {
             UserDefaults.standard.set(volume, forKey: "_expandableVolume_lastVolume")

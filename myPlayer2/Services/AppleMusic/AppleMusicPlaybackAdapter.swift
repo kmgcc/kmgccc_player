@@ -653,6 +653,8 @@ final class AppleMusicPlaybackAdapter {
             externalConnectionState: connectionState,
             isControlEnabled: true,
             isSeekEnabled: info.duration > 0,
+            isVolumeControlEnabled: true,
+            isPlaybackModeControlEnabled: true,
             emptyTitleKey: "apple_music.not_playing"
         )
 

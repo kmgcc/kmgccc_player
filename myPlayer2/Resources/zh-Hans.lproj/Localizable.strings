@@ -25,11 +25,18 @@
 "sidebar.fullscreen" = "全屏播放";
 "playback.source.local" = "本地";
 "playback.source.apple_music" = "Apple Music";
+"playback.source.system_now_playing" = "其他";
 "playback.source.help" = "切换播放来源";
 "apple_music.not_running" = "Music 未运行";
 "apple_music.temporarily_unavailable" = "暂时无法读取 Music";
 "apple_music.disconnected" = "Music 监听已断开";
 "apple_music.not_playing" = "Apple Music 未播放";
+"system_now_playing.disconnected" = "系统播放监听未连接";
+"system_now_playing.temporarily_unavailable" = "暂时无法读取系统播放";
+"system_now_playing.not_playing" = "其他播放源未播放";
+"system_now_playing.waiting" = "正在等待系统播放信息";
+"system_now_playing.connected_empty" = "已连接系统播放源，暂未读到曲目信息";
+"system_now_playing.adapter_unavailable" = "系统播放桥接器不可启动";
 
 // MARK: - Settings General
 "settings.title" = "设置";

@@ -75,7 +75,7 @@ struct LyricsPanelView: View {
                 )
             }
             .onChange(of: playbackCoordinator.presentation.lyricsText) { _, _ in
-                guard playbackCoordinator.presentation.source == .appleMusic else { return }
+                guard playbackCoordinator.presentation.source.isExternal else { return }
                 reloadLyricsSurface(reason: "external lyrics updated", forceLyricsReload: true)
             }
             .onReceive(NotificationCenter.default.publisher(for: .playbackTrackDidChange)) { _ in
@@ -220,7 +220,7 @@ struct LyricsPanelView: View {
                 forceWebReload: forceWebReload,
                 forceLyricsReload: forceLyricsReload
             )
-        case .appleMusic:
+        case .appleMusic, .systemNowPlaying:
             lyricsVM.ensureExternalAMLLLoaded(
                 presentation: presentation,
                 reason: reason,
@@ -247,7 +247,7 @@ struct LyricsPanelView: View {
     }
 
     private var emptyLyricsMessage: String? {
-        guard playbackCoordinator.presentation.source == .appleMusic else { return nil }
+        guard playbackCoordinator.presentation.source.isExternal else { return nil }
         let lyricsText = playbackCoordinator.presentation.lyricsText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard lyricsText.isEmpty else { return nil }
         if let externalMessage = playbackCoordinator.presentation.externalLyricsStatusMessage {
@@ -285,7 +285,8 @@ struct LyricsPanelView: View {
     let appleMusicAdapter = AppleMusicPlaybackAdapter(libraryVM: libraryVM)
     let playbackCoordinator = PlaybackCoordinator(
         playerVM: playerVM,
-        appleMusicAdapter: appleMusicAdapter
+        appleMusicAdapter: appleMusicAdapter,
+        systemNowPlayingProvider: SystemNowPlayingProvider(libraryVM: libraryVM)
     )
     let lyricsVM = LyricsViewModel()
 
