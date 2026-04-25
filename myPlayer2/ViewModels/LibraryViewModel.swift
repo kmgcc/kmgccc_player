@@ -119,6 +119,7 @@ enum LibraryLoadingPhase: Equatable {
 /// Explicit selection type for library content.
 /// Replaces the ambiguous nil-based selection with explicit cases.
 enum LibrarySelection: Hashable {
+    case home
     case allSongs
     case playlist(UUID)
     case artist(String)
@@ -204,10 +205,14 @@ final class LibraryViewModel {
     
     /// Explicit current selection (replaces ambiguous nil-based selection).
     /// Default is .allSongs, never nil.
-    var currentSelection: LibrarySelection = .allSongs {
+    var currentSelection: LibrarySelection = .home {
         didSet {
             // Sync legacy properties for backward compatibility during transition
             switch currentSelection {
+            case .home:
+                selectedPlaylistId = nil
+                selectedArtistKey = nil
+                selectedAlbumKey = nil
             case .allSongs:
                 selectedPlaylistId = nil
                 selectedArtistKey = nil
@@ -1185,7 +1190,7 @@ final class LibraryViewModel {
         guard !deletedTrackIDs.isEmpty else { return }
 
         switch currentSelection {
-        case .allSongs:
+        case .home, .allSongs:
             return
         case .playlist:
             return
@@ -1230,7 +1235,7 @@ final class LibraryViewModel {
 
     private func reconcileSelectionAfterLoad() {
         switch currentSelection {
-        case .allSongs:
+        case .home, .allSongs:
             break
         case .playlist(let id):
             guard playlists.contains(where: { $0.id == id }) else {
@@ -1258,6 +1263,8 @@ final class LibraryViewModel {
 
     private var currentSelectionIdentity: String {
         switch currentSelection {
+        case .home:
+            return "home"
         case .allSongs:
             return "allSongs"
         case .playlist(let id):
