@@ -20,7 +20,7 @@ struct TrackInfoEditorRawReference: Equatable {
 struct TrackInfoEditorCore: View {
     enum Mode {
         case local
-        case externalAppleMusic
+        case externalPlayback
     }
 
     @Environment(\.dismiss) private var dismiss
@@ -65,7 +65,7 @@ struct TrackInfoEditorCore: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
-                    if mode == .externalAppleMusic {
+                    if mode == .externalPlayback {
                         externalNoticeSection
                     }
 
@@ -116,7 +116,7 @@ struct TrackInfoEditorCore: View {
 
     private var headerView: some View {
         HStack {
-            Text(mode == .local ? "edit.track.title" : "外部 Apple Music 播放匹配信息")
+            Text(mode == .local ? "edit.track.title" : "编辑外部播放覆盖信息")
                 .font(.title2)
                 .fontWeight(.bold)
 
@@ -144,7 +144,7 @@ struct TrackInfoEditorCore: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("这里编辑的是外部播放匹配和展示信息")
                     .font(.headline)
-                Text("修改会保存为本 app 的匹配覆盖与解析缓存，不会回写 Apple Music 原始元数据。")
+                Text("修改会保存为本 app 的匹配覆盖与解析缓存，不会回写外部播放源的原始元数据。")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
@@ -156,7 +156,7 @@ struct TrackInfoEditorCore: View {
 
     private func rawReferenceSection(_ reference: TrackInfoEditorRawReference) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("当前 AM 原始信息", systemImage: "music.note")
+            Label("当前外部播放原始信息", systemImage: "music.note")
                 .font(.headline)
 
             HStack(alignment: .top, spacing: 16) {

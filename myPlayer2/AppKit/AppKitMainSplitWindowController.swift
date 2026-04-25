@@ -27,31 +27,22 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
     private let appSession: AppSessionHost
     private var didInstallToolbar = false
     private var didReachPresentedState = false
-#if DEBUG
-    private var hitTestMonitor: Any?
-#endif
 
     static func show(appSession: AppSessionHost) -> AppKitMainSplitWindowController {
-        print("[AppKitMainWindow] show.request mainThread=\(Thread.isMainThread)")
         let controller: AppKitMainSplitWindowController
         if let existing = sharedController {
-            print("[AppKitMainWindow] show.reuse controller=\(ObjectIdentifier(existing).hashValue)")
             controller = existing
         } else {
             controller = AppKitMainSplitWindowController(appSession: appSession)
             sharedController = controller
-            print("[AppKitMainWindow] show.create controller=\(ObjectIdentifier(controller).hashValue)")
         }
 
-        print("[AppKitMainWindow] show.showWindow controller=\(ObjectIdentifier(controller).hashValue)")
         controller.showWindow(nil)
-        print("[AppKitMainWindow] show.makeKey window=\(controller.window.map { ObjectIdentifier($0).hashValue } ?? -1)")
         controller.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         DispatchQueue.main.async {
             controller.installToolbarIfReady(reason: "show.async")
         }
-        controller.printVerificationSnapshot()
         return controller
     }
 
@@ -104,7 +95,6 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
     }
 
     init(appSession: AppSessionHost) {
-        print("[AppKitMainWindow] init.begin session=\(ObjectIdentifier(appSession).hashValue)")
         self.appSession = appSession
         let splitViewController = AppKitMainSplitViewController(appSession: appSession)
         self.splitViewController = splitViewController
@@ -119,8 +109,6 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
             backing: .buffered,
             defer: false
         )
-
-        print("[AppKitMainWindow] init.createWindow window=\(ObjectIdentifier(window).hashValue)")
 
         super.init(window: window)
 
@@ -149,12 +137,6 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
                 self?.installToolbarIfReady(reason: "splitVC.ready.async")
             }
         }
-
-#if DEBUG
-        installHitTestMonitor()
-#endif
-
-        print("[AppKitMainWindow] init.end controller=\(ObjectIdentifier(self).hashValue) window=\(ObjectIdentifier(window).hashValue)")
     }
 
     @available(*, unavailable)
@@ -162,19 +144,8 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
         fatalError("init(coder:) has not been implemented")
     }
 
-    deinit {
-        print("[AppKitMainWindow] deinit controller=\(ObjectIdentifier(self).hashValue)")
-    }
-
     func windowWillClose(_ notification: Notification) {
-        print("[AppKitMainWindow] windowWillClose controller=\(ObjectIdentifier(self).hashValue)")
         Self.sharedController = nil
-#if DEBUG
-        if let hitTestMonitor {
-            NSEvent.removeMonitor(hitTestMonitor)
-            self.hitTestMonitor = nil
-        }
-#endif
     }
 
     func windowDidBecomeMain(_ notification: Notification) {
@@ -195,22 +166,6 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
     private func markPresented(reason: String) {
         guard !didReachPresentedState else { return }
         didReachPresentedState = true
-        print(
-            "[AppKitMainWindow] presented reason=\(reason) controller=\(ObjectIdentifier(self).hashValue) "
-                + "window=\(window.map { ObjectIdentifier($0).hashValue } ?? -1)"
-        )
-    }
-
-    private func printVerificationSnapshot() {
-        let usesFullSizeContent = window?.styleMask.contains(.fullSizeContentView) == true
-        let transparentTitlebar = window?.titlebarAppearsTransparent == true
-        let movableByBackground = window?.isMovableByWindowBackground == true
-        print("[AppKitMainWindow] \(splitViewController.runtimeVerificationSnapshot()) fullSizeContent=\(usesFullSizeContent) titlebarTransparent=\(transparentTitlebar) movableByBackground=\(movableByBackground) toolbarStyle=\(window?.toolbarStyle.rawValue ?? -1)")
-        if didInstallToolbar {
-            print("[AppKitMainToolbar] \(toolbarController.runtimeVerificationSnapshot())")
-        } else {
-            print("[AppKitMainToolbar] notInstalledYet")
-        }
     }
 
     @discardableResult
@@ -234,37 +189,13 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
         let splitLayoutReady = splitViewController.isReadyForToolbarTracking
         let splitSubviewCount = splitViewController.splitView.subviews.count
 
-        print("[AppKitMainToolbar] installCheck reason=\(reason) splitInWindow=\(splitInWindow) splitViewInWindow=\(splitViewInWindow) splitLayoutReady=\(splitLayoutReady) splitSubviews=\(splitSubviewCount)")
         guard splitInWindow, splitViewInWindow, splitLayoutReady, splitSubviewCount >= 3 else { return }
 
-        print("[AppKitMainToolbar] assignToolbar.begin")
         window.toolbar = toolbarController.toolbar
-        print("[AppKitMainToolbar] assignToolbar.end")
         window.toolbar?.validateVisibleItems()
         toolbarController.attachToWindow(window)
         didInstallToolbar = true
-
-        // Snapshot after install so we can verify tracking separator binding time.
-        DispatchQueue.main.async {
-            self.printVerificationSnapshot()
-        }
     }
-
-#if DEBUG
-    private func installHitTestMonitor() {
-        guard hitTestMonitor == nil else { return }
-        hitTestMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] event in
-            guard let self, let window = self.window, event.window === window else { return event }
-            let location = event.locationInWindow
-            if let view = window.contentView?.hitTest(location) {
-                print("[AppKitMainWindow] hitTest view=\(type(of: view)) mouseDownCanMoveWindow=\(view.mouseDownCanMoveWindow)")
-            } else {
-                print("[AppKitMainWindow] hitTest view=nil")
-            }
-            return event
-        }
-    }
-#endif
 }
 
 @MainActor

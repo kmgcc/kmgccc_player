@@ -491,7 +491,7 @@ struct FullscreenPlayerView: View {
         .onChange(of: playerVM.currentTrack?.id, handleTrackIdChange)
         .onChange(of: playbackCoordinator.presentation.currentTime, handlePresentationCurrentTimeChange)
         .onChange(of: playbackCoordinator.presentation.isPlaying) { _, newValue in
-            guard playbackCoordinator.presentation.source == .appleMusic else { return }
+            guard playbackCoordinator.presentation.source.isExternal else { return }
             LyricsSurfaceManager.shared.updatePlayingState(newValue)
             guard allowsDirectEmbeddedSurfaceUpdates else { return }
             fullscreenStore.setPlaying(newValue)
@@ -501,7 +501,7 @@ struct FullscreenPlayerView: View {
         }
         .onChange(of: playbackCoordinator.presentation.lyricsIdentity, handlePresentationLyricsIdentityChange)
         .onChange(of: playbackCoordinator.presentation.lyricsText) { _, _ in
-            guard playbackCoordinator.presentation.source == .appleMusic else { return }
+            guard playbackCoordinator.presentation.source.isExternal else { return }
             reloadLyricsSurface(reason: "fullscreen external lyrics updated", forceLyricsReload: true)
         }
         .onChange(of: rightPanelDisplayState) { _, newValue in
@@ -1132,7 +1132,8 @@ struct FullscreenPlayerView: View {
 
             ExpandableVolumeControl(
                 volume: volumeBinding,
-                isExpanded: $isVolumeExpanded
+                isExpanded: $isVolumeExpanded,
+                isEnabled: playbackCoordinator.presentation.isVolumeControlEnabled
             )
             .frame(width: volumeWidth, height: buttonSize)
             .environment(\.colorScheme, fullscreenControlsColorScheme)
@@ -1557,7 +1558,8 @@ struct FullscreenPlayerView: View {
                                 scheduleFullscreenBottomControlsAutoHideIfNeeded()
                             }
                         },
-                        materialStyle: fullscreenControlsGlassStyle.materialStyle
+                        materialStyle: fullscreenControlsGlassStyle.materialStyle,
+                        isEnabled: playbackCoordinator.presentation.isVolumeControlEnabled
                     )
                     .glassEffectTransition(.materialize)
                     .frame(width: scaledVolumeWidth, height: scaledButtonSize)
@@ -1687,7 +1689,7 @@ struct FullscreenPlayerView: View {
     }
 
     private var fullscreenEmptyLyricsMessage: String? {
-        guard playbackCoordinator.presentation.source == .appleMusic else { return nil }
+        guard playbackCoordinator.presentation.source.isExternal else { return nil }
         let lyricsText = playbackCoordinator.presentation.lyricsText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard lyricsText.isEmpty else { return nil }
         if let externalMessage = playbackCoordinator.presentation.externalLyricsStatusMessage {
@@ -1883,7 +1885,7 @@ struct FullscreenPlayerView: View {
 
     private var shouldKeepFullscreenMiniPlayerSpectrumAlive: Bool {
         guard settings.fullscreen.isMiniPlayerSpectrumEnabled else { return false }
-        if playbackCoordinator.activeSource == .appleMusic {
+        if playbackCoordinator.activeSource.isExternal {
             return playbackCoordinator.presentation.hasTrack
         }
         return playerVM.currentTrack != nil
@@ -2040,7 +2042,7 @@ struct FullscreenPlayerView: View {
     }
 
     private func handlePresentationCurrentTimeChange(_ oldTime: Double, _ newTime: Double) {
-        guard playbackCoordinator.presentation.source == .appleMusic else { return }
+        guard playbackCoordinator.presentation.source.isExternal else { return }
         LyricsSurfaceManager.shared.updatePlaybackTime(newTime)
         guard allowsDirectEmbeddedSurfaceUpdates else { return }
         fullscreenStore.setCurrentTime(newTime)
@@ -2054,7 +2056,7 @@ struct FullscreenPlayerView: View {
     }
 
     private func handlePresentationLyricsIdentityChange(_ oldId: String?, _ newId: String?) {
-        guard playbackCoordinator.presentation.source == .appleMusic else { return }
+        guard playbackCoordinator.presentation.source.isExternal else { return }
         guard oldId != newId else { return }
         if shouldClearDisplayedArtworkSnapshotOnTrackChange {
             artworkSnapshot = nil
@@ -2067,7 +2069,7 @@ struct FullscreenPlayerView: View {
         let shouldKeepAlive = shouldKeepFullscreenMiniPlayerSpectrumAlive
         guard shouldKeepAlive != isFullscreenMiniPlayerSpectrumLeaseActive else {
             if shouldKeepAlive {
-                let isPlaying = playbackCoordinator.activeSource == .appleMusic
+                let isPlaying = playbackCoordinator.activeSource.isExternal
                     ? playbackCoordinator.presentation.isPlaying
                     : playerVM.isPlaying
                 miniPlayerSpectrumService.updatePlaybackState(isPlaying: isPlaying)
@@ -2078,7 +2080,7 @@ struct FullscreenPlayerView: View {
         isFullscreenMiniPlayerSpectrumLeaseActive = shouldKeepAlive
         if shouldKeepAlive {
             miniPlayerSpectrumService.start()
-            let isPlaying = playbackCoordinator.activeSource == .appleMusic
+            let isPlaying = playbackCoordinator.activeSource.isExternal
                 ? playbackCoordinator.presentation.isPlaying
                 : playerVM.isPlaying
             miniPlayerSpectrumService.updatePlaybackState(isPlaying: isPlaying)
@@ -2111,6 +2113,7 @@ struct FullscreenPlayerView: View {
         if forceWebReload {
             store.forceReload(recreateWebView: recreateWebViewOnForceReload)
         }
+        setupSeekCallback()
 
         store.applyTrack(
             trackID: playbackPayload.trackID,
@@ -2118,6 +2121,7 @@ struct FullscreenPlayerView: View {
             currentTime: playbackPayload.currentTime,
             isPlaying: playbackPayload.isPlaying
         )
+        setupSeekCallback()
 
         if let palette = ThemeStore.shared.palette {
             store.applyTheme(palette)
@@ -2154,7 +2158,7 @@ struct FullscreenPlayerView: View {
                 currentTime: playerVM.currentTime,
                 isPlaying: playerVM.isPlaying
             )
-        case .appleMusic:
+        case .appleMusic, .systemNowPlaying:
             let lyricsText = presentation.lyricsText
             payload = FullscreenPlaybackPayload(
                 trackID: presentation.displayTrackID,
@@ -3406,7 +3410,7 @@ struct FullscreenPlayerView: View {
 
     private var shouldClearDisplayedArtworkSnapshotOnTrackChange: Bool {
         let presentation = playbackCoordinator.presentation
-        guard presentation.source == .appleMusic else { return true }
+        guard presentation.source.isExternal else { return true }
         return !presentation.isArtworkLoading
     }
 

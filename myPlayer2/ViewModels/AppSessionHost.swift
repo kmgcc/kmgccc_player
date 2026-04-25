@@ -100,9 +100,11 @@ final class AppSessionHost: ObservableObject {
             libraryService: libraryService
         )
         let appleMusicAdapter = AppleMusicPlaybackAdapter(libraryVM: libraryVM)
+        let systemNowPlayingProvider = SystemNowPlayingProvider(libraryVM: libraryVM)
         let playbackCoordinator = PlaybackCoordinator(
             playerVM: playerVM,
             appleMusicAdapter: appleMusicAdapter,
+            systemNowPlayingProvider: systemNowPlayingProvider,
             meterProvider: ledMeterProvider
         )
 
@@ -113,11 +115,11 @@ final class AppSessionHost: ObservableObject {
 
         playbackCoordinator.onActiveSourceChanged = { [weak ledMeterProvider, weak lyricsVM] source in
             ledMeterProvider?.playbackSource = source
-            AudioVisualizationService.shared.setExternalMode(source == .appleMusic)
+            AudioVisualizationService.shared.setExternalMode(source.isExternal)
             lyricsVM?.refreshConfigFromSettings()
         }
         ledMeterProvider.playbackSource = playbackCoordinator.activeSource
-        AudioVisualizationService.shared.setExternalMode(playbackCoordinator.activeSource == .appleMusic)
+        AudioVisualizationService.shared.setExternalMode(playbackCoordinator.activeSource.isExternal)
         libraryVM.setImportService(fileImportService)
         libraryVM.currentTrackIDProvider = { [weak playerVM] in
             playerVM?.currentTrack?.id

@@ -104,10 +104,6 @@ struct AppKitMainContentPaneRoot: View {
                 }
             }
             .onAppear {
-                let session = String(ObjectIdentifier(appSession).hashValue)
-                let library = appSession.libraryVM.map { String(ObjectIdentifier($0).hashValue) } ?? "nil"
-                let playback = appSession.playbackCoordinator.map { String(ObjectIdentifier($0).hashValue) } ?? "nil"
-                print("[AppKitMainContentPane] appear appSession=\(session) pageController=\(ObjectIdentifier(pageController).hashValue) libraryVM=\(library) playbackCoord=\(playback) contentMode=\(uiState.contentMode)")
                 applyAppearanceToWindows()
                 syncThemeStoreWithSwiftUIColorScheme(swiftUIColorScheme)
                 syncFullscreenWindowEditorDependencies()
@@ -128,12 +124,7 @@ struct AppKitMainContentPaneRoot: View {
             }
             .task(id: libraryVM.state) {
                 guard libraryVM.state == .loading else { return }
-                print("[AppKitMainContentPane] library.load.begin state=\(libraryVM.state)")
                 await libraryVM.load()
-                print(
-                    "[AppKitMainContentPane] library.load.end state=\(libraryVM.state) "
-                        + "playlists=\(libraryVM.playlists.count) tracks=\(libraryVM.totalTrackCount)"
-                )
             }
             .onChange(of: swiftUIColorScheme) { _, newScheme in
                 syncThemeStoreWithSwiftUIColorScheme(newScheme)
@@ -236,7 +227,7 @@ struct AppKitMainContentPaneRoot: View {
         if let localID = presentation.localTrack?.id {
             return localID
         }
-        return presentation.source == .appleMusic && presentation.hasTrack
+        return presentation.source.isExternal && presentation.hasTrack
             ? UUID(uuidString: "3C7BB22E-1A57-4B8B-8461-A48B9646AA7C")
             : nil
     }
@@ -392,7 +383,7 @@ struct AppKitMainWindowArtBackgroundLayer: View {
         if let localID = presentation.localTrack?.id {
             return localID
         }
-        return presentation.source == .appleMusic && presentation.hasTrack
+        return presentation.source.isExternal && presentation.hasTrack
             ? UUID(uuidString: "3C7BB22E-1A57-4B8B-8461-A48B9646AA7C")
             : nil
     }

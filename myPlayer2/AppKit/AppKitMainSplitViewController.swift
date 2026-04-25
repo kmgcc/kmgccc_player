@@ -103,34 +103,6 @@ final class AppKitMainSplitViewController: NSSplitViewController {
         // its subviews, so tracking separator items can bind to divider indices without throwing.
         isReadyForToolbarTracking = true
         onToolbarTrackingReady?()
-
-        print("[AppKitMainSplit] \(runtimeVerificationSnapshot())")
-        print(debugIdentitySnapshot(prefix: "[AppKitMainSplit] identities"))
-    }
-
-    func runtimeVerificationSnapshot() -> String {
-        let order = splitViewItems.map { item in
-            let title = item.viewController.title ?? "untitled"
-            return title.isEmpty ? "untitled" : title
-        }
-
-        return [
-            "root=\(type(of: self))",
-            "items=\(splitViewItems.count)",
-            "order=\(order.joined(separator: ","))",
-            "dividerCount=\(max(splitViewItems.count - 1, 0))",
-            "dividerIndex(main|lyrics)=\(Self.mainLyricsDividerIndex)"
-        ].joined(separator: " ")
-    }
-
-    func debugIdentitySnapshot(prefix: String) -> String {
-        let session = String(ObjectIdentifier(appSession).hashValue)
-        let pageController = String(ObjectIdentifier(playlistPageController).hashValue)
-        let library = appSession.libraryVM.map { String(ObjectIdentifier($0).hashValue) } ?? "nil"
-        let playback = appSession.playbackCoordinator.map { String(ObjectIdentifier($0).hashValue) } ?? "nil"
-        let uiState = String(ObjectIdentifier(appSession.uiState).hashValue)
-        let windowID = view.window.map { String(ObjectIdentifier($0).hashValue) } ?? "nil"
-        return "\(prefix) window=\(windowID) appSession=\(session) pageController=\(pageController) uiState=\(uiState) libraryVM=\(library) playbackCoord=\(playback) contentMode=\(appSession.uiState.contentMode)"
     }
 
     override func splitViewDidResizeSubviews(_ notification: Notification) {
@@ -254,8 +226,6 @@ final class AppKitMainSplitViewController: NSSplitViewController {
                 uiState.lyricsWidth = width
             }
         }
-
-        print("[AppKitMainSplit] mirror reason=\(reason) sidebarVisible=\(sidebarVisible) lyricsVisible=\(lyricsVisible) sidebarWidth=\(Int(lastMirroredSidebarWidth)) lyricsWidth=\(Int(lastMirroredLyricsWidth))")
     }
 
     private func clamp(_ value: CGFloat, min: CGFloat, max: CGFloat) -> CGFloat {

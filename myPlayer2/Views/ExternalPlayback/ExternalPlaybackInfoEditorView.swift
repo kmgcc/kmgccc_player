@@ -53,7 +53,7 @@ struct ExternalPlaybackInfoEditorView: View {
 
     var body: some View {
         TrackInfoEditorCore(
-            mode: .externalAppleMusic,
+            mode: .externalPlayback,
             duration: presentation.duration,
             rawReference: rawReference,
             lyricsSearchTrack: nil,
@@ -104,10 +104,13 @@ struct ExternalPlaybackInfoEditorView: View {
 
     private func saveExternalEdits() {
         guard let stableKey else { return }
+        let existingOverride = ExternalPlaybackMetadataStore.shared.override(for: stableKey)
         let override = ExternalPlaybackMatchOverride(
             title: overrideValue(title, raw: rawTitle),
             artist: overrideValue(artist, raw: rawArtist),
             album: overrideValue(album, raw: rawAlbum),
+            manuallySelectedLyrics: existingOverride?.manuallySelectedLyrics,
+            manuallySelectedLyricsSource: existingOverride?.manuallySelectedLyricsSource,
             updatedAt: Date()
         )
         ExternalPlaybackMetadataStore.shared.saveOverride(override, for: stableKey)

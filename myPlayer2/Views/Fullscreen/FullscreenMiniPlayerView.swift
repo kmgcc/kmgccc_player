@@ -64,7 +64,7 @@ struct FullscreenMiniPlayerView: View {
     private var playbackModeExpandedWidth: CGFloat { 178 * scale }
     private var playbackModeCollapsedWidth: CGFloat { 56 * scale }
     private var playbackModeOccupancyWidth: CGFloat {
-        let expandedWidth = playbackCoordinator.presentation.source == .appleMusic
+        let expandedWidth = playbackCoordinator.presentation.source.isExternal
             ? 160 * scale
             : playbackModeExpandedWidth
         return isPlaybackModeExpanded ? expandedWidth : playbackModeCollapsedWidth
@@ -265,7 +265,7 @@ struct FullscreenMiniPlayerView: View {
 
     private var playbackModeView: some View {
         let presentation = playbackCoordinator.presentation
-        let isEnabled = presentation.isControlEnabled && presentation.hasTrack
+        let isEnabled = presentation.isPlaybackModeControlEnabled && presentation.hasTrack
         return Group {
             switch presentation.source {
             case .local:
@@ -287,7 +287,7 @@ struct FullscreenMiniPlayerView: View {
                     },
                     onCurrentModeRetap: onCurrentPlaybackModeRetap
                 )
-            case .appleMusic:
+            case .appleMusic, .systemNowPlaying:
                 AppleMusicPlaybackModeSlider(
                     mode: presentation.appleMusicPlaybackMode ?? .sequence,
                     isEnabled: isEnabled,
@@ -333,6 +333,7 @@ struct FullscreenMiniPlayerView: View {
             accentColor: themeStore.usesFallbackThemeColor ? nil : themeStore.accentColor,
             progress: progressDisplayTime,
             duration: playbackCoordinator.presentation.duration,
+            isSeekEnabled: playbackCoordinator.presentation.isSeekEnabled,
             onSeek: { seekTime in
                 onInteraction()
                 dragProgress = seekTime
@@ -417,12 +418,13 @@ struct FullscreenMiniPlayerView: View {
     }
 
     private var volumeView: some View {
-        HStack(spacing: 10) {
+        let isEnabled = playbackCoordinator.presentation.isVolumeControlEnabled
+        return HStack(spacing: 10) {
             Image(systemName: volumeIcon)
                 .font(.system(size: 16, weight: .medium))
-                .foregroundStyle(controlPrimaryColor)
+                .foregroundStyle(isEnabled ? controlPrimaryColor : controlDisabledColor)
                 .compositingGroup()
-                .blendMode(.screen)
+                .blendMode(isEnabled ? .screen : .normal)
                 .frame(width: 24)
 
             Slider(
@@ -435,7 +437,9 @@ struct FullscreenMiniPlayerView: View {
             .controlSize(.regular)
             .tint(controlPrimaryColor)
             .compositingGroup()
-            .blendMode(.screen)
+            .blendMode(isEnabled ? .screen : .normal)
+            .disabled(!isEnabled)
+            .opacity(isEnabled ? 1 : 0.45)
         }
     }
 
@@ -595,7 +599,8 @@ struct FullscreenMiniPlayerView: View {
     let appleMusicAdapter = AppleMusicPlaybackAdapter(libraryVM: libraryVM)
     let playbackCoordinator = PlaybackCoordinator(
         playerVM: playerVM,
-        appleMusicAdapter: appleMusicAdapter
+        appleMusicAdapter: appleMusicAdapter,
+        systemNowPlayingProvider: SystemNowPlayingProvider(libraryVM: libraryVM)
     )
 
     let track = Track(
