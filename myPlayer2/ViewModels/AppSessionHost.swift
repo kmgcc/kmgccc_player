@@ -29,6 +29,9 @@ final class AppSessionHost: ObservableObject {
     private let settingsSceneDependencies: SettingsSceneDependencies
     private var hasSetupDependencies = false
     private var playbackModeObserver: NSObjectProtocol?
+    private var libraryLocationObserver: NSObjectProtocol?
+    private var libraryService: LocalLibraryService?
+    private var repository: LibraryRepositoryProtocol?
 
     init(
         modelContainer: ModelContainer,
@@ -153,6 +156,8 @@ final class AppSessionHost: ObservableObject {
         self.importEnrichmentService = importEnrichmentService
         self.skinManager = skinManager
         self.easterEggSFX = easterEggSFX
+        self.libraryService = libraryService
+        self.repository = repository
 
         FullscreenWindowManager.shared.configure(
             libraryVM: libraryVM,
@@ -187,6 +192,21 @@ final class AppSessionHost: ObservableObject {
 
         libraryService.startMonitoring(repository: repository)
 
+        if libraryLocationObserver == nil {
+            libraryLocationObserver = NotificationCenter.default.addObserver(
+                forName: .libraryLocationChanged,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                guard let self, let repository = self.repository else { return }
+                self.libraryService?.restartMonitoring(repository: repository)
+                Log.info(
+                    "[AppSessionHost] Restarted library monitoring after location change",
+                    category: .library
+                )
+            }
+        }
+
         if let scenario = DebugLaunchScenario.current {
             Task { @MainActor in
                 await runDebugLaunchScenarioIfNeeded(
@@ -202,6 +222,9 @@ final class AppSessionHost: ObservableObject {
     deinit {
         if let playbackModeObserver {
             NotificationCenter.default.removeObserver(playbackModeObserver)
+        }
+        if let libraryLocationObserver {
+            NotificationCenter.default.removeObserver(libraryLocationObserver)
         }
     }
 
