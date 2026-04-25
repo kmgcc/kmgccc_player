@@ -30,6 +30,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         var album: String?
         var duration: Double?
         var elapsedTime: Double?
+        var elapsedTimeNow: Double?
         var timestamp: String?
         var artworkMimeType: String?
         var artworkData: String?
@@ -53,6 +54,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             album != nil ||
             duration != nil ||
             elapsedTime != nil ||
+            elapsedTimeNow != nil ||
             timestamp != nil ||
             artworkMimeType != nil ||
             artworkData != nil ||
@@ -226,6 +228,15 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
     private let decoder = JSONDecoder()
     private let streamQueue = DispatchQueue(label: "myPlayer2.systemNowPlaying.stream", qos: .utility)
     private let controlQueue = DispatchQueue(label: "myPlayer2.systemNowPlaying.control", qos: .utility)
+    private let systemProgressDisplayDelay: TimeInterval = 0.5
+    private let blockedExternalOwnerPrefixes = [
+        "com.apple.safari",
+        "com.google.chrome",
+        "com.microsoft.edgemac",
+        "org.mozilla.firefox",
+        "com.brave.browser",
+        "com.operasoftware.opera"
+    ]
 
     private var process: Process?
     private var stdoutPipe: Pipe?
@@ -293,6 +304,27 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
     private var acceptedExternalPayloadCount = 0
     private var activeExternalOwnerBundle: String?
     private var hasLoggedSelfBundleID = false
+    private var lockedExternalOwner: String?
+    private var lockedExternalOwnerSince: Date?
+    private var lastNonLockedOwnerLogAt: [String: Date] = [:]
+    private var lastBlockedOwnerLogAt: [String: Date] = [:]
+    private var hasLoggedProgressDisplayOffset = false
+    private var lastControlAction: ControlAction?
+    private var controlIssuedAt: Date?
+    private var suppressStateRollbackUntil: Date?
+    private var expectedPostControlPlaying: Bool?
+    private var expectedPostControlCore: String?
+    private var expectedPostControlSeek: Double?
+    private var preControlCore: String?
+    private var lastCommittedCore: String?
+    private var recentRetiredCores: [String: Date] = [:]
+    private var suppressedPreControlCores: [String: Date] = [:]
+    private var preControlRestoreTask: Task<Void, Never>?
+    private var lastRetiredCoreLogAt: [String: Date] = [:]
+    private var lastSuppressedRollbackLogAt: [String: Date] = [:]
+    private var lastPausedStableRetainedLogAt: Date = .distantPast
+    private var lastPausedEmptyIgnoredLogAt: Date = .distantPast
+    private var isInvalidatingCurrentResolution = false
 
     private(set) var presentation: NowPlayingPresentation = .emptySystemNowPlaying
     var capabilities: ExternalPlaybackCapabilities { currentCapabilities }
@@ -324,8 +356,15 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         isInEmptyPayloadWindow = false
         latestStableMetadataKey = nil
         progressBaseline = nil
+        lastCommittedCore = nil
+        recentRetiredCores.removeAll()
+        suppressedPreControlCores.removeAll()
+        preControlRestoreTask?.cancel()
+        preControlRestoreTask = nil
         optimisticPlayingState = nil
         controlCooldownUntil = .distantPast
+        clearControlExpectation()
+        unlockExternalOwner(reason: "provider_start")
         clearReliabilityTracking(to: .unavailable)
         logSelfBundleIDIfNeeded()
         updateUnavailablePresentation(
@@ -378,6 +417,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
     func stop() {
         Log.info("[SystemNowPlaying] stopping stream", category: .playback)
         streamGeneration &+= 1
+        unlockExternalOwner(reason: "provider_stop")
         isStarting = false
         healthTask?.cancel()
         healthTask = nil
@@ -389,6 +429,8 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         pendingHeavyPresentationTask = nil
         controlCooldownTask?.cancel()
         controlCooldownTask = nil
+        preControlRestoreTask?.cancel()
+        preControlRestoreTask = nil
         unidentifiedTrackCandidateTask?.cancel()
         unidentifiedTrackCandidateTask = nil
         progressPollTask?.cancel()
@@ -459,7 +501,14 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         autoLyricsLookupState = .idle
         displayedArtwork = .none
         pendingArtworkIdentity = latestIdentity
-        handlePayload(lastPayload, source: .stream)
+        guard let raw = latestRawMetadata,
+              let identity = latestIdentity else {
+            handlePayload(lastPayload, source: .stream)
+            return
+        }
+        isInvalidatingCurrentResolution = true
+        updatePresentationFromLatestPayload(force: true)
+        startResolutionIfNeeded(raw: raw, identity: identity)
     }
 
     func clearRuntimeResolutionCaches() {
@@ -599,16 +648,15 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         progressPollTask?.cancel()
         progressPollTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                let interval = await MainActor.run { self?.currentPollInterval() ?? 1_000_000_000 }
+                try? await Task.sleep(nanoseconds: interval)
                 if Task.isCancelled { break }
                 guard let self else { break }
-                let (genMatch, paths, coolingDown) = await MainActor.run { () -> (Bool, AdapterPaths?, Bool) in
-                    (self.streamGeneration == generation, self.resolveAdapterPaths(), self.isControlCoolingDown)
+                let (genMatch, paths) = await MainActor.run { () -> (Bool, AdapterPaths?) in
+                    (self.streamGeneration == generation, self.resolveAdapterPaths())
                 }
                 guard genMatch else { break }
                 guard let paths else { continue }
-                // 冷却期内跳过,避免轮询干扰命令收敛。
-                if coolingDown { continue }
                 guard let payload = await Self.fetchGetPayload(paths: paths) else {
                     await MainActor.run {
                         guard self.streamGeneration == generation else { return }
@@ -624,6 +672,16 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         }
     }
 
+    private func currentPollInterval() -> UInt64 {
+        if isControlCoolingDown {
+            return 500_000_000
+        }
+        if reliability == .reliable {
+            return 700_000_000
+        }
+        return 1_000_000_000
+    }
+
     private func handlePayload(_ payload: Payload?, source: PayloadSource) {
         guard let payload, payload.hasAnyValue else {
             handleEmptyPayload(source: source)
@@ -634,10 +692,16 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             handleSelfOwnedPayload(payload, source: source)
             return
         }
+        if shouldIgnoreExternalOwner(payload, source: source) {
+            return
+        }
 
         let mergedPayload = mergePayload(payload)
         if isSelfOwnedPayload(mergedPayload) {
             handleSelfOwnedPayload(mergedPayload, source: source)
+            return
+        }
+        if shouldIgnoreExternalOwner(mergedPayload, source: source) {
             return
         }
 
@@ -666,6 +730,9 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         consecutiveSelfOwnedPayloadCount = 0
 
         let stableKey = stableMetadataKey(for: mergedPayload, title: title)
+        if shouldIgnoreSuppressedCore(stableKey.identifier, source: source) {
+            return
+        }
         let observation = recordValidObservation(
             source: source,
             payload: mergedPayload,
@@ -720,10 +787,16 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         pendingStableCommitTask?.cancel()
         pendingStableCommitTask = nil
         setReliability(.reliable, reason: reason)
+        lockExternalOwnerIfNeeded(from: payload, reason: reason)
 
         let previousStableKey = latestStableMetadataKey
         let didChangeTrack = previousStableKey?.trackIdentity != stableKey.trackIdentity
         let didChangeStableMetadata = previousStableKey != stableKey
+        if didChangeTrack {
+            retireCommittedCore(previousStableKey?.identifier, replacing: stableKey.identifier)
+            clearCoreSuppression(for: stableKey.identifier)
+            lastCommittedCore = stableKey.identifier
+        }
         lastPayload = payload
         latestStableMetadataKey = stableKey
         updateProgressBaselineIfNeeded(
@@ -732,6 +805,9 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             force: didChangeTrack || progressBaseline == nil,
             source: source
         )
+        if stableKey.playing == false {
+            logPausedStableTrackRetainedIfNeeded()
+        }
 
         // Deliberately avoid using the upstream uniqueIdentifier / contentItemIdentifier as the
         // persistentID. For the system-now-playing source those fields are frequently rotated
@@ -766,6 +842,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
 
         latestRawMetadata = raw
         if didChangeTrack {
+            resolveControlConvergenceAfterTrackChange(newCore: stableKey.identifier)
             // Track identity path: presentation refresh + (gated) resolve.
             updatePresentationFromLatestPayload(force: true)
             if reliability == .reliable {
@@ -796,6 +873,9 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
                 force: forceProgress || stableKey.playing == false,
                 source: source
             )
+            if stableKey.playing == false {
+                logPausedStableTrackRetainedIfNeeded()
+            }
         } else {
             freezeProgressBaseline(reason: "unreliable same-track update")
         }
@@ -891,6 +971,53 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         ownerBundleCandidates(for: payload).first
     }
 
+    private func shouldIgnoreExternalOwner(_ payload: Payload, source: PayloadSource) -> Bool {
+        guard let owner = effectiveExternalBundleId(for: payload) else {
+            if let lockedExternalOwner {
+                if isSameCoreAsStablePayload(payload) {
+                    return false
+                }
+                logIgnoredNonLockedOwnerIfNeeded(incoming: "unknown", locked: lockedExternalOwner, source: source)
+                return true
+            }
+            return false
+        }
+
+        if isBlockedExternalOwner(owner) {
+            logIgnoredBlockedOwnerIfNeeded(owner: owner, source: source)
+            return true
+        }
+
+        if let lockedExternalOwner, owner != lockedExternalOwner {
+            logIgnoredNonLockedOwnerIfNeeded(incoming: owner, locked: lockedExternalOwner, source: source)
+            return true
+        }
+
+        return false
+    }
+
+    private func isBlockedExternalOwner(_ owner: String) -> Bool {
+        let lowercased = owner.lowercased()
+        return blockedExternalOwnerPrefixes.contains { lowercased.hasPrefix($0) }
+    }
+
+    private func lockExternalOwnerIfNeeded(from payload: Payload, reason: String) {
+        guard lockedExternalOwner == nil,
+              let owner = effectiveExternalBundleId(for: payload),
+              !isBlockedExternalOwner(owner) else { return }
+        lockedExternalOwner = owner
+        lockedExternalOwnerSince = Date()
+        Log.info("[SystemNowPlaying] owner locked=\(owner) reason=\(reason)", category: .playback)
+    }
+
+    private func unlockExternalOwner(reason: String) {
+        guard let owner = lockedExternalOwner else { return }
+        lockedExternalOwner = nil
+        lockedExternalOwnerSince = nil
+        lastNonLockedOwnerLogAt.removeAll()
+        Log.info("[SystemNowPlaying] owner unlocked reason=\(reason) owner=\(owner)", category: .playback)
+    }
+
     private func logIgnoredSelfOwnedPayloadIfNeeded(_ payload: Payload, source: PayloadSource) {
         let now = Date()
         if let last = lastSelfOwnedPayloadLogAt[source],
@@ -904,9 +1031,34 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         )
     }
 
+    private func logIgnoredNonLockedOwnerIfNeeded(incoming: String, locked: String, source: PayloadSource) {
+        let key = "\(source.rawValue)|\(incoming)|\(locked)"
+        let now = Date()
+        if let last = lastNonLockedOwnerLogAt[key],
+           now.timeIntervalSince(last) < 1 {
+            return
+        }
+        lastNonLockedOwnerLogAt[key] = now
+        Log.warning(
+            "[SystemNowPlaying] ignored non-locked owner incoming=\(incoming) locked=\(locked) source=\(source.rawValue)",
+            category: .playback
+        )
+    }
+
+    private func logIgnoredBlockedOwnerIfNeeded(owner: String, source: PayloadSource) {
+        let key = "\(source.rawValue)|\(owner)"
+        let now = Date()
+        if let last = lastBlockedOwnerLogAt[key],
+           now.timeIntervalSince(last) < 1 {
+            return
+        }
+        lastBlockedOwnerLogAt[key] = now
+        Log.warning("[SystemNowPlaying] ignored blocked owner=\(owner) source=\(source.rawValue)", category: .playback)
+    }
+
     private func logAcceptedExternalPayload(_ payload: Payload, source: PayloadSource) {
         acceptedExternalPayloadCount += 1
-        let owner = effectiveExternalBundleId(for: payload) ?? rawOwnerBundle(for: payload) ?? "unknown"
+        let owner = effectiveExternalBundleId(for: payload) ?? lockedExternalOwner ?? rawOwnerBundle(for: payload) ?? "unknown"
         if activeExternalOwnerBundle != owner {
             activeExternalOwnerBundle = owner
             Log.info(
@@ -1027,6 +1179,76 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         schedulePendingStableCommit(core: core)
     }
 
+    private func shouldIgnoreSuppressedCore(_ core: String?, source: PayloadSource) -> Bool {
+        guard let core else { return false }
+        pruneExpiredCoreSuppressions()
+
+        if let expiry = suppressedPreControlCores[core],
+           Date() < expiry {
+            logRetiredCoreIgnoredIfNeeded(core: core, source: source)
+            return true
+        }
+
+        if let expiry = recentRetiredCores[core],
+           Date() < expiry,
+           core != latestStableMetadataKey?.identifier {
+            logRetiredCoreIgnoredIfNeeded(core: core, source: source)
+            return true
+        }
+
+        return false
+    }
+
+    private func retireCommittedCore(_ core: String?, replacing newCore: String?) {
+        guard let core,
+              core != newCore else { return }
+        recentRetiredCores[core] = Date().addingTimeInterval(3)
+    }
+
+    private func suppressPreControlCore(_ core: String, action: ControlAction) {
+        suppressedPreControlCores[core] = Date().addingTimeInterval(2)
+        Log.info("[SystemNowPlaying] suppressed pre-control core=\(core) action=\(action.throttleKey)", category: .playback)
+        preControlRestoreTask?.cancel()
+        let generation = controlGeneration
+        preControlRestoreTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            await MainActor.run {
+                guard let self,
+                      self.controlGeneration == generation else { return }
+                self.suppressedPreControlCores.removeValue(forKey: core)
+                guard self.latestStableMetadataKey?.identifier == core,
+                      self.expectedPostControlCore == nil else { return }
+                Log.info("[SystemNowPlaying] restored pre-control core after no new state core=\(core)", category: .playback)
+            }
+        }
+    }
+
+    private func clearCoreSuppression(for core: String?) {
+        guard let core else { return }
+        recentRetiredCores.removeValue(forKey: core)
+        suppressedPreControlCores.removeValue(forKey: core)
+    }
+
+    private func pruneExpiredCoreSuppressions() {
+        let now = Date()
+        recentRetiredCores = recentRetiredCores.filter { $0.value > now }
+        suppressedPreControlCores = suppressedPreControlCores.filter { $0.value > now }
+    }
+
+    private func logRetiredCoreIgnoredIfNeeded(core: String, source: PayloadSource) {
+        let key = "\(source.rawValue)|\(core)"
+        let now = Date()
+        if let last = lastRetiredCoreLogAt[key],
+           now.timeIntervalSince(last) < 0.8 {
+            return
+        }
+        lastRetiredCoreLogAt[key] = now
+        Log.info(
+            "[SystemNowPlaying] ignored retired core=\(core) current=\(latestStableMetadataKey?.identifier ?? "nil") source=\(source.rawValue)",
+            category: .playback
+        )
+    }
+
     private func schedulePendingStableCommit(core: String) {
         pendingStableCommitTask?.cancel()
         let generation = streamGeneration
@@ -1041,10 +1263,12 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
                     self.setReliability(.inconsistent, reason: "pending timeout saw cross-source conflict core=\(core)")
                     return
                 }
+                let source: PayloadSource = pending.sources.contains(.get) ? .get : .stream
+                guard !self.shouldIgnoreSuppressedCore(core, source: source) else { return }
                 self.commitStablePayload(
                     pending.payload,
                     stableKey: pending.stableKey,
-                    source: pending.sources.contains(.get) ? .get : .stream,
+                    source: source,
                     reason: "pending unique timeout core=\(core)"
                 )
             }
@@ -1063,9 +1287,12 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
     }
 
     private func refreshReliabilityForAge() {
-        guard reliability != .unavailable else { return }
         guard let lastValidPayloadAt else { return }
         let age = Date().timeIntervalSince(lastValidPayloadAt)
+        if lockedExternalOwner != nil, age > 30 {
+            unlockExternalOwner(reason: "locked_owner_timeout age=\(formatTime(age))s")
+        }
+        guard reliability != .unavailable else { return }
         if age > 3 {
             setReliability(.stale, reason: "no_valid_state_for=\(formatTime(age))s")
         }
@@ -1123,6 +1350,17 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
 
     private func handleEmptyPayload(source: PayloadSource = .stream) {
         emptyPayloadCount += 1
+        refreshReliabilityForAge()
+        if isPausedStableTrackActive {
+            if source == .get {
+                consecutiveEmptyGetCount = 0
+            }
+            logPausedEmptyIgnoredIfNeeded()
+            setReliability(.stale, reason: "empty_payload_while_paused_stable source=\(source.rawValue)")
+            freezeProgressBaseline(reason: "empty payload while paused stable track active")
+            updateProgressPresentationFromBaseline()
+            return
+        }
         if source == .get {
             consecutiveEmptyGetCount += 1
             if consecutiveEmptyGetCount >= 3 {
@@ -1143,9 +1381,10 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         }
 
         let generation = streamGeneration
+        let clearDelay: TimeInterval = lockedExternalOwner != nil ? 30 : 15
         pendingEmptyPayloadTask?.cancel()
         pendingEmptyPayloadTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 9_000_000_000)
+            try? await Task.sleep(nanoseconds: UInt64(clearDelay * 1_000_000_000))
             await MainActor.run {
                 guard let self,
                       self.streamGeneration == generation,
@@ -1156,9 +1395,42 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         }
     }
 
+    private var isPausedStableTrackActive: Bool {
+        guard latestStableMetadataKey != nil,
+              latestIdentity != nil,
+              presentation.source == source,
+              presentation.hasTrack else { return false }
+        if progressBaseline?.isPlaying == false {
+            return true
+        }
+        if latestStableMetadataKey?.playing == false {
+            return true
+        }
+        return false
+    }
+
+    private func logPausedEmptyIgnoredIfNeeded() {
+        let now = Date()
+        guard now.timeIntervalSince(lastPausedEmptyIgnoredLogAt) >= 1 else { return }
+        lastPausedEmptyIgnoredLogAt = now
+        Log.info("[SystemNowPlaying] empty payload ignored while paused stable track active", category: .playback)
+    }
+
+    private func logPausedStableTrackRetainedIfNeeded() {
+        let now = Date()
+        guard now.timeIntervalSince(lastPausedStableRetainedLogAt) >= 1 else { return }
+        lastPausedStableRetainedLogAt = now
+        Log.info("[SystemNowPlaying] paused stable track retained", category: .playback)
+    }
+
     private func clearTemporarilyUnavailable() {
         lastPayload = nil
         latestStableMetadataKey = nil
+        lastCommittedCore = nil
+        recentRetiredCores.removeAll()
+        suppressedPreControlCores.removeAll()
+        preControlRestoreTask?.cancel()
+        preControlRestoreTask = nil
         progressBaseline = nil
         isInEmptyPayloadWindow = false
         clearReliabilityTracking(to: .stale)
@@ -1173,6 +1445,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         autoLyricsLookupState = .idle
         displayedArtwork = .none
         pendingArtworkIdentity = nil
+        isInvalidatingCurrentResolution = false
         resolutionTask?.cancel()
         resolutionTask = nil
         updateUnavailablePresentation(titleKey: "system_now_playing.connected_empty", connectionState: .connectedNoMetadata)
@@ -1200,11 +1473,17 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         var merged = payload
         merged.bundleIdentifier = nonEmpty(merged.bundleIdentifier) ?? previous.bundleIdentifier
         merged.parentApplicationBundleIdentifier = nonEmpty(merged.parentApplicationBundleIdentifier) ?? previous.parentApplicationBundleIdentifier
+        merged.clientBundleIdentifier = nonEmpty(merged.clientBundleIdentifier) ?? previous.clientBundleIdentifier
+        merged.ownerBundleIdentifier = nonEmpty(merged.ownerBundleIdentifier) ?? previous.ownerBundleIdentifier
+        merged.applicationBundleIdentifier = nonEmpty(merged.applicationBundleIdentifier) ?? previous.applicationBundleIdentifier
+        merged.processIdentifier = merged.processIdentifier ?? previous.processIdentifier
+        merged.pid = merged.pid ?? previous.pid
         merged.title = nonEmpty(merged.title) ?? previous.title
         merged.artist = nonEmpty(merged.artist) ?? previous.artist
         merged.album = nonEmpty(merged.album) ?? previous.album
         merged.duration = merged.duration ?? previous.duration
         merged.elapsedTime = merged.elapsedTime ?? previous.elapsedTime
+        merged.elapsedTimeNow = merged.elapsedTimeNow ?? previous.elapsedTimeNow
         merged.timestamp = merged.timestamp ?? previous.timestamp
         merged.artworkMimeType = nonEmpty(merged.artworkMimeType) ?? previous.artworkMimeType
         merged.artworkData = nonEmpty(merged.artworkData) ?? previous.artworkData
@@ -1367,7 +1646,10 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
     }
 
     private func applyResolution(_ resolution: ExternalPlaybackResolution, identity: String) {
-        guard reliability == .reliable else { return }
+        guard canApplyCurrentResolution(identity: identity) else {
+            isInvalidatingCurrentResolution = false
+            return
+        }
         let didChangeResolvedIdentity = resolvedTrackIdentity != identity
         resolvedRawMetadata = resolution.raw
         resolvedTrackIdentity = identity
@@ -1403,6 +1685,10 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             effective: resolution.effective,
             localLyrics: preferredLyricsText(for: resolution.matchedTrack)
         )
+    }
+
+    private func canApplyCurrentResolution(identity: String) -> Bool {
+        latestIdentity == identity && (reliability == .reliable || isInvalidatingCurrentResolution)
     }
 
     private func updatePresentationFromLatestPayload(force: Bool = false) {
@@ -1457,7 +1743,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             artworkDisplayTrackID: artwork.displayTrackID,
             isArtworkLoading: pendingArtworkIdentity == identity,
             duration: progressBaseline?.duration ?? payload.duration ?? 0,
-            currentTime: estimatedCurrentTimeFromBaseline(),
+            currentTime: displayCurrentTimeFromBaseline(),
             isPlaying: progressBaseline?.isPlaying ?? isPayloadPlaying(payload),
             volume: presentation.volume,
             lyricsText: resolvedLyricsText,
@@ -1475,7 +1761,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             externalLyricsStatusMessage: externalLyricsStatusMessage(for: resolvedLyricsText),
             externalConnectionState: presentationConnectionState,
             isControlEnabled: capabilities.canControlPlayback,
-            isSeekEnabled: capabilities.canSeek && (progressBaseline?.duration ?? payload.duration ?? 0) > 0,
+            isSeekEnabled: false,
             isVolumeControlEnabled: capabilities.canSetVolume,
             isPlaybackModeControlEnabled: capabilities.canSetPlaybackMode,
             emptyTitleKey: source.notPlayingTitleKey
@@ -1489,12 +1775,12 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
               presentation.hasTrack,
               progressBaseline != nil else { return }
         var updated = presentation
-        updated.currentTime = estimatedCurrentTimeFromBaseline()
+        updated.currentTime = displayCurrentTimeFromBaseline()
         updated.isPlaying = progressBaseline?.isPlaying ?? updated.isPlaying
         updated.duration = progressBaseline?.duration ?? updated.duration
         updated.externalConnectionState = presentationConnectionState
         updated.isControlEnabled = currentCapabilities.canControlPlayback
-        updated.isSeekEnabled = currentCapabilities.canSeek && updated.duration > 0
+        updated.isSeekEnabled = false
         updated.isVolumeControlEnabled = currentCapabilities.canSetVolume
         updated.isPlaybackModeControlEnabled = currentCapabilities.canSetPlaybackMode
         updatePresentationIfNeeded(updated)
@@ -1509,8 +1795,13 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         let isPlaying = stableKey.playing
         let playbackRate = stableKey.playbackRate
         let duration = payload.duration ?? progressBaseline?.duration ?? 0
-        let incomingElapsed = payload.elapsedTime ?? progressBaseline?.estimatedTime() ?? 0
-        let incomingTimestamp = payload.timestamp.flatMap(Self.parseTimestamp) ?? Date()
+        let incomingElapsed = currentElapsedTime(from: payload) ?? progressBaseline?.estimatedTime() ?? 0
+        let incomingTimestamp: Date
+        if payload.elapsedTimeNow != nil {
+            incomingTimestamp = Date()
+        } else {
+            incomingTimestamp = payload.timestamp.flatMap(Self.parseTimestamp) ?? Date()
+        }
         let localEstimate = progressBaseline?.estimatedTime(at: incomingTimestamp) ?? incomingElapsed
         let correctionDelta = abs(incomingElapsed - localEstimate)
         let shouldCorrectTime = correctionDelta > 0.75
@@ -1542,6 +1833,16 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         progressBaseline?.estimatedTime() ?? 0
     }
 
+    private func displayCurrentTimeFromBaseline() -> Double {
+        let estimated = estimatedCurrentTimeFromBaseline()
+        guard estimated > 0 else { return 0 }
+        if !hasLoggedProgressDisplayOffset {
+            hasLoggedProgressDisplayOffset = true
+            Log.info("[SystemNowPlaying] progress display delay applied delay=0.5", category: .playback)
+        }
+        return max(0, estimated - systemProgressDisplayDelay)
+    }
+
     private func capabilities(for payload: Payload) -> ExternalPlaybackCapabilities {
         guard connectionState == .runningHasData,
               reliability != .unavailable else { return .unavailable }
@@ -1556,6 +1857,9 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         return ExternalPlaybackCapabilities(
             canControlPlayback: hasTrack && !playbackControlDisabled,
             canSkip: hasTrack && !skipDisabled,
+            // mediaremote-adapter seek currently uses global MRMediaRemoteSetElapsedTime
+            // and fails to target the visible Control Center session for some players;
+            // keep disabled until adapter-level seek is fixed.
             canSeek: false,
             canSetVolume: false,
             canSetPlaybackMode: false
@@ -1582,8 +1886,16 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         cancelPerTrackTasks()
         pendingHeavyPresentationTask?.cancel()
         pendingHeavyPresentationTask = nil
+        if connectionState == .unavailable || connectionState == .disconnected || connectionState == .connectedNoMetadata {
+            unlockExternalOwner(reason: "unavailable_presentation state=\(connectionState.rawValue)")
+        }
         lastPayload = nil
         latestStableMetadataKey = nil
+        lastCommittedCore = nil
+        recentRetiredCores.removeAll()
+        suppressedPreControlCores.removeAll()
+        preControlRestoreTask?.cancel()
+        preControlRestoreTask = nil
         progressBaseline = nil
         clearReliabilityTracking(to: connectionState == .unavailable ? .unavailable : .stale)
         latestIdentity = nil
@@ -1628,6 +1940,8 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         isInEmptyPayloadWindow = false
         optimisticPlayingState = nil
         controlCooldownUntil = .distantPast
+        clearControlExpectation()
+        unlockExternalOwner(reason: "disconnected")
         pendingUnidentifiedPayload = nil
         pendingUnidentifiedKey = nil
         isCommittingUnidentifiedCandidate = false
@@ -1646,6 +1960,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         autoLyricsLookupState = .idle
         displayedArtwork = .none
         pendingArtworkIdentity = nil
+        isInvalidatingCurrentResolution = false
         resolutionTask?.cancel()
         resolutionTask = nil
         cancelPerTrackTasks()
@@ -1670,7 +1985,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         cachedNetworkArtwork: Data?,
         providerArtwork: Data?
     ) {
-        guard reliability == .reliable else { return }
+        guard canApplyCurrentResolution(identity: identity) else { return }
         pendingArtworkIdentity = identity
         updatePresentationFromLatestPayload()
 
@@ -1754,16 +2069,18 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
     }
 
     private func commitArtwork(_ data: Data, source: ResolvedArtwork.Source, identity: String, displayTrackID: UUID) {
-        guard latestIdentity == identity, reliability == .reliable else { return }
+        guard canApplyCurrentResolution(identity: identity) else { return }
         pendingArtworkIdentity = nil
         displayedArtwork = ResolvedArtwork(identity: identity, source: source, data: data, displayTrackID: displayTrackID)
+        isInvalidatingCurrentResolution = false
         updatePresentationFromLatestPayload()
     }
 
     private func commitArtworkResolutionFinishedWithoutArtwork(identity: String) {
-        guard latestIdentity == identity, reliability == .reliable else { return }
+        guard canApplyCurrentResolution(identity: identity) else { return }
         pendingArtworkIdentity = nil
         displayedArtwork = .none
+        isInvalidatingCurrentResolution = false
         updatePresentationFromLatestPayload()
     }
 
@@ -1772,7 +2089,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         effective: ExternalPlaybackEffectiveMetadata,
         localLyrics: String?
     ) {
-        guard reliability == .reliable else { return }
+        guard canApplyCurrentResolution(identity: identity) else { return }
         if let manualLyrics = metadataStore.manualLyrics(for: identity) {
             autoLyricsLookupState = .idle
             if resolvedLyricsText != manualLyrics {
@@ -1816,7 +2133,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             await MainActor.run {
                 guard let self else { return }
                 self.lyricsTask = nil
-                guard self.latestIdentity == identity, self.reliability == .reliable else { return }
+                guard self.canApplyCurrentResolution(identity: identity) else { return }
 
                 if let manualLyrics = metadataStore.manualLyrics(for: identity) {
                     self.autoLyricsLookupState = .idle
@@ -1878,9 +2195,10 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         let prePlaying: Bool? = rollbackState.payload.map { isPayloadPlaying($0) }
         controlGeneration &+= 1
         let generation = controlGeneration
+        configureControlExpectation(for: action, preCore: preCore, prePlaying: prePlaying)
         enterControlCooldown(for: action)
         applyOptimisticState(for: action)
-        Log.info("[SystemNowPlaying] command send action=\(action)", category: .playback)
+        logControlSend(action)
         controlTask = Task { [weak self] in
             let success = await Self.performControl(action, paths: paths)
             await MainActor.run {
@@ -1890,6 +2208,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
                     if self.controlGeneration == generation {
                         self.rollbackOptimisticState(rollbackState)
                     }
+                    self.logSeekVerificationUnavailableIfNeeded(action)
                     self.logCommandVerification(
                         action: action,
                         processSuccess: false,
@@ -1912,6 +2231,17 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         }
     }
 
+    private func logControlSend(_ action: ControlAction) {
+        switch action {
+        case .seek(let seconds):
+            let target = max(0, seconds)
+            let micros = Self.seekMicros(for: target)
+            Log.info("[SystemNowPlaying] command send action=seek target=\(formatTime(target))s micros=\(micros)", category: .playback)
+        default:
+            Log.info("[SystemNowPlaying] command send action=\(action)", category: .playback)
+        }
+    }
+
     private func scheduleCommandVerification(
         action: ControlAction,
         generation: UInt64,
@@ -1920,28 +2250,44 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         rollbackState: ControlRollbackState
     ) {
         switch action {
-        case .seek, .playbackMode:
+        case .playbackMode:
             return
-        case .playPause, .play, .pause, .next, .previous:
+        case .playPause, .play, .pause, .next, .previous, .seek:
             break
         }
         Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 900_000_000)
-            guard let self else { return }
-            let shouldRun = await MainActor.run { self.controlGeneration == generation }
-            guard shouldRun else { return }
-            let paths = await MainActor.run { self.resolveAdapterPaths() }
-            guard let paths else { return }
-            let actual = await Self.fetchGetPayload(paths: paths)
-            await MainActor.run {
-                guard self.controlGeneration == generation else { return }
-                self.verifyControl(
-                    action: action,
-                    preCore: preCore,
-                    prePlaying: prePlaying,
-                    actual: actual,
-                    rollbackState: rollbackState
-                )
+            let checkpoints: [UInt64]
+            switch action {
+            case .next, .previous:
+                checkpoints = [800_000_000, 2_000_000_000]
+            case .seek:
+                checkpoints = [900_000_000]
+            default:
+                checkpoints = [700_000_000, 1_500_000_000]
+            }
+            var elapsed: UInt64 = 0
+            for (index, checkpoint) in checkpoints.enumerated() {
+                let delay = checkpoint > elapsed ? checkpoint - elapsed : 0
+                elapsed = checkpoint
+                try? await Task.sleep(nanoseconds: delay)
+                guard let self else { return }
+                let shouldRun = await MainActor.run { self.controlGeneration == generation }
+                guard shouldRun else { return }
+                let paths = await MainActor.run { self.resolveAdapterPaths() }
+                guard let paths else { return }
+                let actual = await Self.fetchGetPayload(paths: paths)
+                let shouldContinue = await MainActor.run { () -> Bool in
+                    guard self.controlGeneration == generation else { return false }
+                    return !self.verifyControl(
+                        action: action,
+                        preCore: preCore,
+                        prePlaying: prePlaying,
+                        actual: actual,
+                        rollbackState: rollbackState,
+                        isFinalAttempt: index == checkpoints.count - 1
+                    )
+                }
+                guard shouldContinue else { return }
             }
         }
     }
@@ -1951,9 +2297,15 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         preCore: String?,
         prePlaying: Bool?,
         actual: Payload?,
-        rollbackState: ControlRollbackState
-    ) {
+        rollbackState: ControlRollbackState,
+        isFinalAttempt: Bool
+    ) -> Bool {
         guard let actual, actual.hasAnyValue else {
+            guard isFinalAttempt else {
+                Log.info("[SystemNowPlaying] command verify delayed action=\(action)", category: .playback)
+                return false
+            }
+            logSeekVerificationUnavailableIfNeeded(action)
             logCommandVerification(
                 action: action,
                 processSuccess: true,
@@ -1963,10 +2315,15 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             )
             rollbackOptimisticState(rollbackState)
             recordControlVerificationFailure(action, reason: "no_verification_payload")
-            return
+            return true
         }
         if isSelfOwnedPayload(actual) {
             Log.warning("[SystemNowPlaying] command verify ignored self-owned payload action=\(action)", category: .playback)
+            guard isFinalAttempt else {
+                Log.info("[SystemNowPlaying] command verify delayed action=\(action)", category: .playback)
+                return false
+            }
+            logSeekVerificationUnavailableIfNeeded(action)
             logCommandVerification(
                 action: action,
                 processSuccess: true,
@@ -1976,7 +2333,24 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             )
             rollbackOptimisticState(rollbackState)
             recordControlVerificationFailure(action, reason: "sentButNoExternalState")
-            return
+            return true
+        }
+        if shouldIgnoreExternalOwner(actual, source: .get) {
+            guard isFinalAttempt else {
+                Log.info("[SystemNowPlaying] command verify delayed action=\(action)", category: .playback)
+                return false
+            }
+            logSeekVerificationUnavailableIfNeeded(action)
+            logCommandVerification(
+                action: action,
+                processSuccess: true,
+                stateChanged: false,
+                pre: preCore,
+                actual: nil
+            )
+            rollbackOptimisticState(rollbackState)
+            recordControlVerificationFailure(action, reason: "sentButNoExternalState")
+            return true
         }
         let actualPlaying = isPayloadPlaying(actual)
         let actualCore = trackCoreIdentity(for: actual)
@@ -2002,27 +2376,81 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         case .next, .previous:
             stateChanged = preCore != nil && actualCore != nil && preCore != actualCore
             matched = stateChanged
-        case .seek, .playbackMode:
+        case .seek(let expected):
+            let actualElapsed = currentElapsedTime(from: actual) ?? progressBaseline?.estimatedTime() ?? 0
+            matched = abs(actualElapsed - max(0, expected)) <= 1.5
+            stateChanged = matched
+            logSeekCommandVerification(expected: max(0, expected), actual: actualElapsed, matched: matched)
+        case .playbackMode:
             matched = true
             stateChanged = false
         }
 
-        logCommandVerification(
-            action: action,
-            processSuccess: true,
-            stateChanged: stateChanged,
-            pre: preCore,
-            actual: actualCore
-        )
+        if case .seek = action {
+            // Seek has a target/elapsed verification log above; avoid the generic core log.
+        } else {
+            logCommandVerification(
+                action: action,
+                processSuccess: true,
+                stateChanged: stateChanged,
+                pre: preCore,
+                actual: actualCore
+            )
+        }
 
         if matched {
-            clearControlCooldown(reason: "verified action=\(action)")
+            Log.info("[SystemNowPlaying] control converged action=\(action)", category: .playback)
             recordControlVerificationSuccess(action)
+            if isSkipControlAction(action) {
+                lastStreamObservation = nil
+            } else if case .seek = action {
+                clearControlCooldown(reason: "verified action=\(action)")
+            } else {
+                clearControlCooldown(reason: "verified action=\(action)")
+            }
             handlePayload(actual, source: .get)
+            return true
         } else {
-            rollbackOptimisticState(rollbackState)
+            guard isFinalAttempt else {
+                Log.info("[SystemNowPlaying] command verify delayed action=\(action)", category: .playback)
+                return false
+            }
+            if case .seek = action {
+                if actualCore == latestStableMetadataKey?.identifier {
+                    handlePayload(actual, source: .get)
+                } else {
+                    rollbackOptimisticState(rollbackState)
+                }
+                clearControlCooldown(reason: "seek_verification_failed")
+            } else {
+                rollbackOptimisticState(rollbackState)
+            }
             recordControlVerificationFailure(action, reason: "sentButNoStateChange")
+            return true
         }
+    }
+
+    private func logSeekCommandVerification(expected: Double, actual: Double, matched: Bool) {
+        Log.info(
+            "[SystemNowPlaying] command verify action=seek expected=\(formatTime(expected)) actual=\(formatTime(actual)) matched=\(matched)",
+            category: .playback
+        )
+    }
+
+    private func logSeekVerificationUnavailableIfNeeded(_ action: ControlAction) {
+        guard case .seek(let expected) = action else { return }
+        Log.info(
+            "[SystemNowPlaying] command verify action=seek expected=\(formatTime(max(0, expected))) actual=nil matched=false",
+            category: .playback
+        )
+    }
+
+    private func logSeekUnsupportedIfNeeded(reason: String) {
+        guard let owner = lockedExternalOwner ?? activeExternalOwnerBundle else { return }
+        Log.warning(
+            "[SystemNowPlaying] seek unsupported by owner=\(owner) reason=\(reason)",
+            category: .playback
+        )
     }
 
     private func logCommandVerification(
@@ -2042,19 +2470,39 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         let key = action.throttleKey
         let failures = (controlFailureCounts[key] ?? 0) + 1
         controlFailureCounts[key] = failures
-        let duration: TimeInterval = failures >= 3 ? 30 : 10
-        controlDisabledUntil[key] = Date().addingTimeInterval(duration)
+        if case .seek = action {
+            Log.warning("[SystemNowPlaying] seek failed count=\(failures)", category: .playback)
+            if failures >= 3 {
+                controlDisabledUntil[key] = Date().addingTimeInterval(3)
+                Log.warning("[SystemNowPlaying] seek temporarily disabled reason=consecutive_failures", category: .playback)
+                logSeekUnsupportedIfNeeded(reason: reason)
+            } else {
+                controlDisabledUntil.removeValue(forKey: key)
+            }
+            Log.warning("[SystemNowPlaying] command \(reason) action=\(action) failures=\(failures)", category: .playback)
+            refreshCapabilitiesFromLatestPayload()
+            return
+        } else if failures >= 5 {
+            controlDisabledUntil[key] = Date().addingTimeInterval(9)
+        } else {
+            controlDisabledUntil.removeValue(forKey: key)
+        }
         setReliability(.stale, reason: "command_\(reason) action=\(action)")
-        Log.warning("[SystemNowPlaying] command \(reason) action=\(action)", category: .playback)
-        if failures >= 3 {
+        Log.warning("[SystemNowPlaying] command \(reason) action=\(action) failures=\(failures)", category: .playback)
+        if failures >= 5 {
             Log.warning("[SystemNowPlaying] capability degraded action=\(action) reason=consecutive_failures", category: .playback)
         }
         refreshCapabilitiesFromLatestPayload()
     }
 
     private func recordControlVerificationSuccess(_ action: ControlAction) {
+        let wasDisabled = isControlKeyTemporarilyDisabled(action.throttleKey)
+        let previousFailures = controlFailureCounts[action.throttleKey] ?? 0
         controlFailureCounts[action.throttleKey] = 0
         controlDisabledUntil.removeValue(forKey: action.throttleKey)
+        if case .seek = action, wasDisabled || previousFailures > 0 {
+            Log.info("[SystemNowPlaying] seek re-enabled reason=success", category: .playback)
+        }
         refreshCapabilitiesFromLatestPayload()
     }
 
@@ -2100,8 +2548,74 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         case .pause:
             presentation.isPlaying = false
             applyOptimisticPlayingState(false)
-        case .next, .previous, .seek, .playbackMode:
+        case .seek(let seconds):
+            applyOptimisticSeek(to: seconds)
+        case .next, .previous, .playbackMode:
             break
+        }
+    }
+
+    private func configureControlExpectation(for action: ControlAction, preCore: String?, prePlaying: Bool?) {
+        let now = Date()
+        lastControlAction = action
+        controlIssuedAt = now
+        preControlCore = preCore
+        expectedPostControlCore = nil
+        switch action {
+        case .play:
+            expectedPostControlPlaying = true
+            suppressStateRollbackUntil = now.addingTimeInterval(1.2)
+        case .pause:
+            expectedPostControlPlaying = false
+            suppressStateRollbackUntil = now.addingTimeInterval(1.2)
+        case .playPause:
+            expectedPostControlPlaying = prePlaying.map { !$0 }
+            suppressStateRollbackUntil = now.addingTimeInterval(1.2)
+        case .next, .previous:
+            expectedPostControlPlaying = nil
+            suppressStateRollbackUntil = now.addingTimeInterval(1.5)
+            if let preCore {
+                suppressPreControlCore(preCore, action: action)
+            }
+        case .seek(let seconds):
+            expectedPostControlPlaying = nil
+            expectedPostControlSeek = max(0, seconds)
+            suppressStateRollbackUntil = now.addingTimeInterval(0.8)
+        case .playbackMode:
+            expectedPostControlPlaying = nil
+            expectedPostControlSeek = nil
+            suppressStateRollbackUntil = nil
+        }
+    }
+
+    private func clearControlExpectation() {
+        lastControlAction = nil
+        controlIssuedAt = nil
+        suppressStateRollbackUntil = nil
+        expectedPostControlPlaying = nil
+        expectedPostControlCore = nil
+        expectedPostControlSeek = nil
+        preControlCore = nil
+        lastSuppressedRollbackLogAt.removeAll()
+    }
+
+    private func isPlaybackControlAction(_ action: ControlAction?) -> Bool {
+        guard let action else { return false }
+        switch action {
+        case .playPause, .play, .pause:
+            return true
+        case .next, .previous, .seek, .playbackMode:
+            return false
+        }
+    }
+
+    private func isSkipControlAction(_ action: ControlAction?) -> Bool {
+        guard let action else { return false }
+        switch action {
+        case .next, .previous:
+            return true
+        case .playPause, .play, .pause, .seek, .playbackMode:
+            return false
         }
     }
 
@@ -2112,11 +2626,11 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
     private func cooldownDuration(for action: ControlAction) -> TimeInterval {
         switch action {
         case .playPause, .play, .pause:
-            return 0.7
+            return 1.5
         case .next, .previous:
-            return 1.2
+            return 2.0
         case .seek:
-            return 0.4
+            return 0.8
         case .playbackMode:
             return 0.5
         }
@@ -2135,6 +2649,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
                 self.controlCooldownTask = nil
                 self.optimisticPlayingState = nil
                 self.controlCooldownUntil = .distantPast
+                self.clearControlExpectation()
                 Log.info("[SystemNowPlaying] control cooldown end action=\(action) reason=timeout", category: .playback)
             }
         }
@@ -2144,7 +2659,23 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         guard isControlCoolingDown,
               let desired = optimisticPlayingState,
               desired == incomingPlaying else { return }
+        if let action = lastControlAction {
+            Log.info("[SystemNowPlaying] control converged action=\(action)", category: .playback)
+            recordControlVerificationSuccess(action)
+        }
         clearControlCooldown(reason: "converged desired=\(desired)")
+    }
+
+    private func resolveControlConvergenceAfterTrackChange(newCore: String?) {
+        guard isControlCoolingDown,
+              isSkipControlAction(lastControlAction),
+              let action = lastControlAction,
+              let newCore,
+              newCore != preControlCore else { return }
+        expectedPostControlCore = newCore
+        Log.info("[SystemNowPlaying] control converged action=\(action)", category: .playback)
+        recordControlVerificationSuccess(action)
+        clearControlCooldown(reason: "converged core=\(newCore)")
     }
 
     private func clearControlCooldown(reason: String) {
@@ -2152,6 +2683,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         controlCooldownTask = nil
         optimisticPlayingState = nil
         controlCooldownUntil = .distantPast
+        clearControlExpectation()
         Log.info("[SystemNowPlaying] control cooldown end reason=\(reason)", category: .playback)
     }
 
@@ -2175,6 +2707,24 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         updateProgressPresentationFromBaseline()
     }
 
+    private func applyOptimisticSeek(to seconds: Double) {
+        let target = max(0, seconds)
+        Log.info("[SystemNowPlaying] optimistic seek target=\(formatTime(target))", category: .playback)
+        if var payload = lastPayload {
+            payload.elapsedTime = target
+            payload.timestamp = nil
+            lastPayload = payload
+        }
+        progressBaseline = ProgressBaseline(
+            baseElapsedTime: target,
+            baseTimestamp: Date(),
+            playbackRate: progressBaseline?.playbackRate ?? (presentation.isPlaying ? 1 : 0),
+            isPlaying: progressBaseline?.isPlaying ?? presentation.isPlaying,
+            duration: progressBaseline?.duration ?? presentation.duration
+        )
+        updateProgressPresentationFromBaseline()
+    }
+
     private func rollbackOptimisticState(_ rollbackState: ControlRollbackState) {
         lastPayload = rollbackState.payload
         latestStableMetadataKey = rollbackState.stableKey
@@ -2184,21 +2734,73 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         controlCooldownTask?.cancel()
         controlCooldownTask = nil
         controlCooldownUntil = .distantPast
+        clearControlExpectation()
         refreshCapabilitiesFromLatestPayload()
     }
 
     private func shouldIgnorePayloadDuringControlCooldown(_ payload: Payload) -> Bool {
-        guard isControlCoolingDown else { return false }
-        guard let desiredPlaying = optimisticPlayingState else { return false }
-        guard isSameTrackAsStablePayload(payload) else { return false }
-        guard let incomingPlaying = payload.playing ?? ((payload.playbackRate ?? 0) > 0 ? true : nil) else { return false }
-        return incomingPlaying != desiredPlaying
+        guard isControlCoolingDown,
+              let action = lastControlAction,
+              let suppressUntil = suppressStateRollbackUntil,
+              Date() < suppressUntil else { return false }
+
+        if isPlaybackControlAction(action),
+           let expectedPostControlPlaying,
+           isSameTrackAsStablePayload(payload),
+           let incomingPlaying = payload.playing ?? ((payload.playbackRate ?? 0) > 0 ? true : nil),
+           incomingPlaying != expectedPostControlPlaying {
+            logSuppressingRollback(action: action, incoming: "\(incomingPlaying)", expected: "\(expectedPostControlPlaying)")
+            return true
+        }
+
+        if isSkipControlAction(action),
+           let incomingCore = trackCoreIdentity(for: payload),
+           let oldCore = preControlCore,
+           incomingCore == oldCore {
+            logSuppressingRollback(action: action, incoming: incomingCore, expected: "new_core")
+            return true
+        }
+
+        if case .seek = action,
+           let expectedPostControlSeek,
+           isSameTrackAsStablePayload(payload),
+           let incomingElapsed = currentElapsedTime(from: payload),
+           abs(incomingElapsed - expectedPostControlSeek) > 1.5 {
+            logSuppressingRollback(
+                action: action,
+                incoming: formatTime(incomingElapsed),
+                expected: formatTime(expectedPostControlSeek)
+            )
+            return true
+        }
+
+        return false
+    }
+
+    private func logSuppressingRollback(action: ControlAction, incoming: String, expected: String) {
+        let key = "\(action.throttleKey)|\(incoming)|\(expected)"
+        let now = Date()
+        if let last = lastSuppressedRollbackLogAt[key],
+           now.timeIntervalSince(last) < 0.8 {
+            return
+        }
+        lastSuppressedRollbackLogAt[key] = now
+        Log.info(
+            "[SystemNowPlaying] suppressing rollback action=\(action) incoming=\(incoming) expected=\(expected)",
+            category: .playback
+        )
     }
 
     private func isSameTrackAsStablePayload(_ payload: Payload) -> Bool {
         guard let latestStableMetadataKey else { return false }
         let incoming = stableMetadataKey(for: payload)
         return incoming.trackIdentity == latestStableMetadataKey.trackIdentity
+    }
+
+    private func isSameCoreAsStablePayload(_ payload: Payload) -> Bool {
+        guard let stableCore = latestStableMetadataKey?.identifier,
+              let incomingCore = trackCoreIdentity(for: payload) else { return false }
+        return incomingCore == stableCore
     }
 
     private static func performControl(_ action: ControlAction, paths: AdapterPaths) async -> Bool {
@@ -2213,14 +2815,17 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             return await runAdapterCommand(paths: paths, arguments: ["send", "4"])
         case .previous:
             return await runAdapterCommand(paths: paths, arguments: ["send", "5"])
-        case .seek(let seconds):
-            let micros = max(0, Int64((seconds * 1_000_000).rounded()))
-            return await runAdapterCommand(paths: paths, arguments: ["seek", "\(micros)"])
+        case .seek:
+            return false
         case .playbackMode(let mode):
             let shuffleOK = await runAdapterCommand(paths: paths, arguments: ["shuffle", "\(shuffleModeID(for: mode))"])
             let repeatOK = await runAdapterCommand(paths: paths, arguments: ["repeat", "\(repeatModeID(for: mode))"])
             return shuffleOK || repeatOK
         }
+    }
+
+    private static func seekMicros(for seconds: Double) -> Int64 {
+        Int64((max(0, seconds) * 1_000_000).rounded())
     }
 
     private static func runHealthTest(paths: AdapterPaths) async -> Int32 {
@@ -2249,14 +2854,35 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         await Task.detached(priority: .utility) {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
-            process.arguments = [paths.script, paths.framework] + arguments
-            process.standardOutput = Pipe()
-            process.standardError = Pipe()
+            let processArguments = [paths.script, paths.framework] + arguments
+            process.arguments = processArguments
+            if arguments.first == "seek" {
+                Log.info("[SystemNowPlaying] seek command args=\(processArguments)", category: .playback)
+            }
+            let stdoutPipe = Pipe()
+            let stderrPipe = Pipe()
+            process.standardOutput = stdoutPipe
+            process.standardError = stderrPipe
             do {
                 try process.run()
                 process.waitUntilExit()
-                return process.terminationStatus == 0
+                let success = process.terminationStatus == 0
+                if !success, arguments.first == "seek" {
+                    let stderr = String(
+                        data: stderrPipe.fileHandleForReading.readDataToEndOfFile(),
+                        encoding: .utf8
+                    )?
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    Log.warning(
+                        "[SystemNowPlaying] seek command failed exit=\(process.terminationStatus) stderr=\(stderr)",
+                        category: .playback
+                    )
+                }
+                return success
             } catch {
+                if arguments.first == "seek" {
+                    Log.warning("[SystemNowPlaying] seek command launch failed error=\(error.localizedDescription)", category: .playback)
+                }
                 return false
             }
         }.value
@@ -2266,7 +2892,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         await Task.detached(priority: .utility) {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
-            process.arguments = [paths.script, paths.framework, "get"]
+            process.arguments = [paths.script, paths.framework, "get", "--no-artwork", "--now"]
             let stdoutPipe = Pipe()
             process.standardOutput = stdoutPipe
             process.standardError = Pipe()
@@ -2419,6 +3045,14 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         return max(elapsed, 0)
     }
 
+    private func currentElapsedTime(from payload: Payload) -> Double? {
+        if let elapsedTimeNow = payload.elapsedTimeNow {
+            return max(0, elapsedTimeNow)
+        }
+        guard payload.elapsedTime != nil else { return nil }
+        return estimatedCurrentTime(from: payload)
+    }
+
     private func isPayloadPlaying(_ payload: Payload) -> Bool {
         if let playing = payload.playing {
             return playing
@@ -2511,6 +3145,8 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         isInEmptyPayloadWindow = false
         optimisticPlayingState = nil
         controlCooldownUntil = .distantPast
+        clearControlExpectation()
+        unlockExternalOwner(reason: "runtime_cancel")
         pendingUnidentifiedPayload = nil
         pendingUnidentifiedKey = nil
         isCommittingUnidentifiedCandidate = false
@@ -2529,6 +3165,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         autoLyricsLookupState = .idle
         displayedArtwork = .none
         pendingArtworkIdentity = nil
+        isInvalidatingCurrentResolution = false
         if clearPresentation {
             transitionConnectionState(to: .disconnected, reason: "stopped")
             presentation = .emptySystemNowPlaying
