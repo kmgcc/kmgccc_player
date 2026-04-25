@@ -1450,6 +1450,11 @@ final class LocalLibraryService {
         monitorFDs.removeAll()
     }
 
+    func restartMonitoring(repository: LibraryRepositoryProtocol) {
+        stopMonitoring()
+        startMonitoring(repository: repository)
+    }
+
     private func scheduleAvailabilitySync(repository: LibraryRepositoryProtocol) {
         pendingSync?.cancel()
         let work = DispatchWorkItem { [weak self] in
