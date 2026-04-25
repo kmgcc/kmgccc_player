@@ -673,6 +673,16 @@ public final class AppSettings {
     @ObservationIgnored
     @AppStorage("showPlaybackSourceSwitcher") var showPlaybackSourceSwitcher: Bool = true
 
+    /// Whether the "System Now Playing" (其他) playback mode is available.
+    /// When enabled, the sidebar shows three modes: Local / Apple Music / Other.
+    /// When disabled, only Local and Apple Music are shown.
+    /// This is an opt-in because System Now Playing relies on macOS MediaRemote,
+    /// which may be unstable (spotty metadata, no reliable progress control,
+    /// and limited pause/resume support). Users who only need local library
+    /// or Apple Music can safely disable it to declutter the UI.
+    @ObservationIgnored
+    @AppStorage("enableSystemNowPlayingMode") var enableSystemNowPlayingMode: Bool = true
+
     // MARK: - Fullscreen Presentation Coordinator
 
     /// Access the fullscreen presentation coordinator for managing visualizer/skin state.

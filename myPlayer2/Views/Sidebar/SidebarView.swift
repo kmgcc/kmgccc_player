@@ -318,6 +318,13 @@ struct SidebarView: View {
         } message: { request in
             Text(request.message)
         }
+        .onChange(of: settings.enableSystemNowPlayingMode) { _, enabled in
+            if !enabled, playbackCoordinator.activeSource == .systemNowPlaying {
+                withAnimation(.snappy(duration: 0.18)) {
+                    playbackCoordinator.setActiveSource(.local)
+                }
+            }
+        }
         .animation(.snappy(duration: 0.2), value: importEnrichmentService.hasOutstandingWork)
     }
 
@@ -340,9 +347,12 @@ struct SidebarView: View {
 
     private var playbackSourceSwitcher: some View {
         let metrics = PlaybackSourceSwitcherMetrics.self
+        let availableSources: [PlaybackSource] = settings.enableSystemNowPlayingMode
+            ? PlaybackSource.allCases
+            : [.local, .appleMusic]
 
         return SlidingSelector(
-            segments: PlaybackSource.allCases,
+            segments: availableSources,
             selection: Binding(
                 get: { playbackCoordinator.activeSource },
                 set: { source in
@@ -387,11 +397,14 @@ struct SidebarView: View {
     private func playbackSourceSegment(_ source: PlaybackSource, isSelected: Bool) -> some View {
         let title = LocalizedStringKey(source.localizedTitleKey)
         let foregroundColor = isSelected ? selectedPlaybackSourceTextColor : Color.secondary
+        let isTwoSegmentMode = !settings.enableSystemNowPlayingMode
         let minWidth: CGFloat = {
             switch source {
             case .appleMusic:
-                return 88
-            case .local, .systemNowPlaying:
+                return isTwoSegmentMode ? 118 : 88
+            case .local:
+                return isTwoSegmentMode ? 58 : 46
+            case .systemNowPlaying:
                 return 46
             }
         }()
