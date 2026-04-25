@@ -10,8 +10,8 @@
 		933AAE3F2F3CCBBB0081B59C /* BKArt.bundle in Resources */ = {isa = PBXBuildFile; fileRef = 933AADFD2F3CC8D40081B59C /* BKArt.bundle */; };
 		933AAE422F3CCCDF0081B59C /* BKThemes in Resources */ = {isa = PBXBuildFile; fileRef = 933AAE412F3CCCDF0081B59C /* BKThemes */; };
 		9351198E2F33149A00766A5F /* AMLL in Resources */ = {isa = PBXBuildFile; fileRef = 9351198D2F33149A00766A5F /* AMLL */; };
-		9396ADAB2FA12C0100000002 /* mediaremote-adapter in Resources */ = {isa = PBXBuildFile; fileRef = 9396ADAB2FA12C0100000001 /* mediaremote-adapter */; };
 		938818D32F7925E800880C23 /* WhatsNewKit in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000002 /* WhatsNewKit */; };
+		9396ADAB2FA12C0100000002 /* mediaremote-adapter in Resources */ = {isa = PBXBuildFile; fileRef = 9396ADAB2FA12C0100000001 /* mediaremote-adapter */; };
 		93CF3F832F344E9F0004C8E3 /* lddc-server in Resources */ = {isa = PBXBuildFile; fileRef = 93CF3F822F344E9F0004C8E3 /* lddc-server */; };
 /* End PBXBuildFile section */
 
@@ -76,12 +76,12 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
+				"Resources/mediaremote-adapter/bin/mediaremote-adapter.pl",
+				"Resources/mediaremote-adapter/build/MediaRemoteAdapter.framework",
+				"Resources/mediaremote-adapter/build/MediaRemoteAdapterTestClient",
+				"Resources/mediaremote-adapter/LICENSE",
+				"Resources/mediaremote-adapter/README.md",
 				scan_ui.py,
-				Resources/mediaremote-adapter/bin/mediaremote-adapter.pl,
-				Resources/mediaremote-adapter/build/MediaRemoteAdapter.framework,
-				Resources/mediaremote-adapter/build/MediaRemoteAdapterTestClient,
-				Resources/mediaremote-adapter/LICENSE,
-				Resources/mediaremote-adapter/README.md,
 			);
 			target = 935118912F3231C500766A5F /* kmgccc_player */;
 		};
@@ -477,6 +477,10 @@
 				ENABLE_HARDENED_RUNTIME = NO;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/myPlayer2/Resources/mediaremote-adapter/build",
+				);
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = myPlayer2/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = kmgccc_player;
@@ -524,6 +528,10 @@
 				ENABLE_HARDENED_RUNTIME = NO;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/myPlayer2/Resources/mediaremote-adapter/build",
+				);
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = myPlayer2/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = kmgccc_player;
