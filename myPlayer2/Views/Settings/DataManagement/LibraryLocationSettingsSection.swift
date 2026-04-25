@@ -39,10 +39,10 @@ struct LibraryLocationSettingsSection: View {
                     .help(currentPath)
 
                 HStack(spacing: 12) {
-                    Button("更改位置…") {
+                    Button("更改位置") {
                         chooseNewLocation()
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.borderedProminent)
                     .clipShape(Capsule())
 
                     Button("在访达中显示") {
@@ -69,7 +69,7 @@ struct LibraryLocationSettingsSection: View {
                 }
             }
         } message: {
-            Text("确认将音乐资料库位置更改为 \(pendingURL?.path ?? "") 吗？应用将重新加载资料库。")
+            Text("将把音乐资料库存放在所选文件夹下的 “kmgccc_player Library” 子文件夹中。APP 会重新加载该位置中的歌曲、播放列表、专辑和歌手信息。")
         }
         .alert("恢复默认位置？", isPresented: $showRestoreConfirmAlert) {
             Button("取消", role: .cancel) {}
@@ -88,17 +88,32 @@ struct LibraryLocationSettingsSection: View {
 
     // MARK: - Actions
 
+    // MARK: - Parent → Active Root
+
+    private static let libraryFolderName = "kmgccc_player Library"
+
+    /// Convert a user-selected parent directory into the actual library root.
+    /// If the user already selected a folder named exactly `libraryFolderName`, use it as-is.
+    private func resolvedLibraryRoot(from selectedURL: URL) -> URL {
+        let lastComponent = selectedURL.lastPathComponent
+        if lastComponent == Self.libraryFolderName {
+            return selectedURL
+        }
+        return selectedURL.appendingPathComponent(Self.libraryFolderName, isDirectory: true)
+    }
+
     private func chooseNewLocation() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
-        panel.message = "选择新的音乐资料库文件夹"
+        panel.message = "选择音乐资料库的存放位置"
         panel.prompt = "选择"
 
         panel.begin { result in
             guard result == .OK, let url = panel.urls.first else { return }
-            self.pendingURL = url
+            self.pendingURL = self.resolvedLibraryRoot(from: url)
             self.showChangeConfirmAlert = true
         }
     }
