@@ -79,62 +79,11 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         observeLibrarySearchResetTrigger()
         observeToolbarState()
         applyToolbarLayoutForCurrentState()
-
-        print(debugIdentitySnapshot(prefix: "[AppKitMainToolbar] attach"))
-        if let splitViewController {
-            print(splitViewController.debugIdentitySnapshot(prefix: "[AppKitMainToolbar] splitVC"))
-        }
     }
 
     func toggleMultiselectFromCommand() {
         let commandItem = multiselectItem ?? NSToolbarItem(itemIdentifier: Identifier.multiselect)
         handleToggleMultiselect(commandItem)
-    }
-
-    func runtimeVerificationSnapshot() -> String {
-        let identifiers = toolbar.items.map(\.itemIdentifier.rawValue).joined(separator: ",")
-        let searchClass = toolbar.items.first { $0.itemIdentifier == Identifier.search }
-            .map { String(describing: type(of: $0)) } ?? "missing"
-
-        let sidebarTrackingDescription: String
-        if let trackingItem = toolbar.items.first(where: { $0.itemIdentifier == .sidebarTrackingSeparator }) as? NSTrackingSeparatorToolbarItem {
-            let splitWindow = trackingItem.splitView.window
-            let vcWindow = splitViewController?.view.window
-            let sameWindow = (splitWindow != nil && splitWindow === vcWindow)
-            sidebarTrackingDescription = "class=\(type(of: trackingItem)) dividerIndex=\(trackingItem.dividerIndex) splitViewWindowNil=\(splitWindow == nil) vcWindowNil=\(vcWindow == nil) splitViewSameWindow=\(sameWindow)"
-        } else {
-            sidebarTrackingDescription = "missing"
-        }
-
-        let inspectorTrackingDescription: String
-        if let trackingItem = toolbar.items.first(where: { $0.itemIdentifier == .inspectorTrackingSeparator }) as? NSTrackingSeparatorToolbarItem {
-            let splitWindow = trackingItem.splitView.window
-            let vcWindow = splitViewController?.view.window
-            let sameWindow = (splitWindow != nil && splitWindow === vcWindow)
-            inspectorTrackingDescription = "class=\(type(of: trackingItem)) dividerIndex=\(trackingItem.dividerIndex) splitViewWindowNil=\(splitWindow == nil) vcWindowNil=\(vcWindow == nil) splitViewSameWindow=\(sameWindow)"
-        } else {
-            inspectorTrackingDescription = "missing"
-        }
-
-        let toggleSidebarClass = toolbar.items.first { $0.itemIdentifier == .toggleSidebar }
-            .map { String(describing: type(of: $0)) } ?? "missing"
-        let customSidebarClass = toolbar.items.first { $0.itemIdentifier == Identifier.sidebarToggle }
-            .map { String(describing: type(of: $0)) } ?? "missing"
-        let toggleInspectorClass = toolbar.items.first { $0.itemIdentifier == .toggleInspector }
-            .map { String(describing: type(of: $0)) } ?? "missing"
-        let lyricsToggleClass = toolbar.items.first { $0.itemIdentifier == Identifier.lyricsToggle }
-            .map { String(describing: type(of: $0)) } ?? "missing"
-
-        return [
-            "items=\(identifiers)",
-            "searchClass=\(searchClass)",
-            "toggleSidebarClass=\(toggleSidebarClass)",
-            "customSidebarClass=\(customSidebarClass)",
-            "toggleInspectorClass=\(toggleInspectorClass)",
-            "lyricsToggleClass=\(lyricsToggleClass)",
-            "sidebarTracking=\(sidebarTrackingDescription)",
-            "inspectorTracking=\(inspectorTrackingDescription)"
-        ].joined(separator: " ")
     }
 
     func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
@@ -202,9 +151,6 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
         willBeInsertedIntoToolbar flag: Bool
     ) -> NSToolbarItem? {
-#if DEBUG
-        print("[AppKitMainToolbar] itemFor identifier=\(itemIdentifier.rawValue) willInsert=\(flag)")
-#endif
         switch itemIdentifier {
         case Identifier.sidebarToggle:
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
@@ -394,7 +340,6 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             let key = TrackSortKey(rawValue: raw),
             let libraryVM = currentLibraryVM
         else { return }
-        print(debugIdentitySnapshot(prefix: "[AppKitMainToolbar] sortKey.action"))
         libraryVM.trackSortKey = key
         currentPageController?.handleSortChange(reason: "toolbar.sortKey")
         window?.toolbar?.validateVisibleItems()
@@ -407,7 +352,6 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             let order = TrackSortOrder(rawValue: raw),
             let libraryVM = currentLibraryVM
         else { return }
-        print(debugIdentitySnapshot(prefix: "[AppKitMainToolbar] sortOrder.action"))
         libraryVM.trackSortOrder = order
         currentPageController?.handleSortChange(reason: "toolbar.sortOrder")
         window?.toolbar?.validateVisibleItems()
@@ -417,8 +361,6 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
 
     @objc
     private func handleSearchChange(_ sender: NSSearchField) {
-        print(debugIdentitySnapshot(prefix: "[AppKitMainToolbar] search.action"))
-        print("[AppKitMainToolbar] search.write value=\"\(sender.stringValue)\"")
         currentPageController?.searchText = sender.stringValue
         currentPageController?.handleSearchChange()
         window?.toolbar?.validateVisibleItems()
@@ -426,7 +368,6 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
 
     @objc
     private func handleSidebarToggle(_ sender: NSToolbarItem) {
-        print(debugIdentitySnapshot(prefix: "[AppKitMainToolbar] sidebarToggle.action"))
         guard let splitViewController else { return }
         splitViewController.setSidebarVisible(!splitViewController.isSidebarVisible)
         syncSidebarToggleItemPresentation()
@@ -434,7 +375,6 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
 
     @objc
     private func handleLyricsToggle(_ sender: NSToolbarItem) {
-        print(debugIdentitySnapshot(prefix: "[AppKitMainToolbar] lyricsToggle.action"))
         guard let splitViewController else { return }
         lyricsFlashTicket += 1
         let ticket = lyricsFlashTicket
@@ -452,7 +392,6 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
 
     @objc
     private func handleToggleMultiselect(_ sender: NSToolbarItem) {
-        print(debugIdentitySnapshot(prefix: "[AppKitMainToolbar] multiselect.action"))
         guard let pageController = currentPageController else { return }
         guard let page = pageController.page, !page.rows.isEmpty else { return }
         pageController.isMultiselectMode.toggle()
@@ -465,7 +404,6 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
 
     @objc
     private func handlePlayFromToolbar(_ sender: NSToolbarItem) {
-        print(debugIdentitySnapshot(prefix: "[AppKitMainToolbar] play.action"))
         guard
             let pageController = currentPageController,
             let playbackCoordinator = currentPlaybackCoordinator,
@@ -508,7 +446,6 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
 
     @objc
     private func handleImportToPlaylist(_ sender: NSToolbarItem) {
-        print(debugIdentitySnapshot(prefix: "[AppKitMainToolbar] import.action"))
         guard let libraryVM = currentLibraryVM else { return }
         Task { @MainActor in
             await libraryVM.importToCurrentPlaylist()
@@ -517,8 +454,6 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
 
     @objc
     private func handlePillItemAction(_ sender: NSToolbarItem) {
-        print(debugIdentitySnapshot(prefix: "[AppKitMainToolbar] pillItem.action"))
-        print("[AppKitMainToolbar] pillItem.identifier=\(sender.itemIdentifier.rawValue)")
         switch sender.itemIdentifier {
         case Identifier.multiselect:
             handleToggleMultiselect(sender)
@@ -542,8 +477,6 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             selectedIndex = pillGroupItem?.selectedIndex ?? -1
         }
 
-        print(debugIdentitySnapshot(prefix: "[AppKitMainToolbar] pillGroup.action"))
-        print("[AppKitMainToolbar] pillGroup.selectedIndex=\(selectedIndex)")
         switch selectedIndex {
         case 0:
             handleToggleMultiselect(multiselectItem ?? NSToolbarItem(itemIdentifier: Identifier.multiselect))
@@ -576,7 +509,6 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         guard let pageController = currentPageController else { return }
         let modelValue = pageController.searchText
         if searchField.stringValue != modelValue {
-            print("[AppKitMainToolbar] search.sync model=\"\(modelValue)\"")
             searchField.stringValue = modelValue
         }
     }
@@ -594,17 +526,6 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: item.label)
         item.toolTip = appSession?.uiState.lyricsVisible == true ? "Hide Lyrics" : "Show Lyrics"
         item.isEnabled = true
-    }
-
-    private func debugIdentitySnapshot(prefix: String) -> String {
-        let session = appSession.map { String(ObjectIdentifier($0).hashValue) } ?? "nil"
-        let splitVC = splitViewController.map { String(ObjectIdentifier($0).hashValue) } ?? "nil"
-        let page = currentPageController.map { String(ObjectIdentifier($0).hashValue) } ?? "nil"
-        let library = currentLibraryVM.map { String(ObjectIdentifier($0).hashValue) } ?? "nil"
-        let playback = currentPlaybackCoordinator.map { String(ObjectIdentifier($0).hashValue) } ?? "nil"
-        let uiState = appSession.map { String(ObjectIdentifier($0.uiState).hashValue) } ?? "nil"
-        let windowID = window.map { String(ObjectIdentifier($0).hashValue) } ?? "nil"
-        return "\(prefix) window=\(windowID) appSession=\(session) splitVC=\(splitVC) pageController=\(page) uiState=\(uiState) libraryVM=\(library) playbackCoord=\(playback)"
     }
 
     private func observeSearchText() {
@@ -629,9 +550,6 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             DispatchQueue.main.async { [weak self] in
                 self?.syncMultiselectItemPresentation()
                 self?.window?.toolbar?.validateVisibleItems()
-                if let snapshot = self?.debugIdentitySnapshot(prefix: "[AppKitMainToolbar] multiselect.observe") {
-                    print(snapshot)
-                }
                 self?.observeMultiselectState()
             }
         }
@@ -744,9 +662,6 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             _ = pageController.phase
         } onChange: {
             DispatchQueue.main.async { [weak self] in
-                if let snapshot = self?.debugIdentitySnapshot(prefix: "[AppKitMainToolbar] page.observe") {
-                    print(snapshot)
-                }
                 self?.window?.toolbar?.validateVisibleItems()
                 self?.observeToolbarState()
             }

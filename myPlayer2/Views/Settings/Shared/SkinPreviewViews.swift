@@ -169,35 +169,10 @@ struct CoverGradientBlurSkinPreview: View {
     let accentColor: Color
     @Environment(\.colorScheme) private var colorScheme
 
-    private var strokeColor: Color {
-        SkinPreviewStyle.stroke(colorScheme, emphasis: isSelected ? 1.15 : 1.0)
-    }
-    private var fillColor: Color {
-        SkinPreviewStyle.fill(colorScheme, emphasis: isSelected ? 1.10 : 1.0)
-    }
-
     var body: some View {
-        ZStack {
-            // Outer blur halo
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(SkinPreviewStyle.fill(colorScheme, emphasis: 0.65))
-                .frame(width: 62, height: 62)
-
-            // Mid soft layer
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .fill(SkinPreviewStyle.fill(colorScheme, emphasis: 0.95))
-                .frame(width: 56, height: 56)
-
-            // Sharp cover
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(fillColor)
-                .stroke(strokeColor, lineWidth: SkinPreviewStyle.strokeWidth)
-                .frame(width: 46, height: 46)
-                .overlay(
-                    Image(systemName: "photo")
-                        .font(.system(size: 14, weight: .light))
-                        .foregroundStyle(SkinPreviewStyle.glyph(colorScheme, emphasis: isSelected ? 1.10 : 1.0))
-                )
-        }
+        Image(systemName: "photo")
+            .font(.system(size: 16, weight: .light))
+            .foregroundStyle(SkinPreviewStyle.glyph(colorScheme, emphasis: isSelected ? 1.10 : 1.0))
+            .frame(width: 46, height: 46)
     }
 }

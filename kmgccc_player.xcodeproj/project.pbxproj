@@ -10,6 +10,7 @@
 		933AAE3F2F3CCBBB0081B59C /* BKArt.bundle in Resources */ = {isa = PBXBuildFile; fileRef = 933AADFD2F3CC8D40081B59C /* BKArt.bundle */; };
 		933AAE422F3CCCDF0081B59C /* BKThemes in Resources */ = {isa = PBXBuildFile; fileRef = 933AAE412F3CCCDF0081B59C /* BKThemes */; };
 		9351198E2F33149A00766A5F /* AMLL in Resources */ = {isa = PBXBuildFile; fileRef = 9351198D2F33149A00766A5F /* AMLL */; };
+		9396ADAB2FA12C0100000002 /* mediaremote-adapter in Resources */ = {isa = PBXBuildFile; fileRef = 9396ADAB2FA12C0100000001 /* mediaremote-adapter */; };
 		938818D32F7925E800880C23 /* WhatsNewKit in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000002 /* WhatsNewKit */; };
 		93CF3F832F344E9F0004C8E3 /* lddc-server in Resources */ = {isa = PBXBuildFile; fileRef = 93CF3F822F344E9F0004C8E3 /* lddc-server */; };
 /* End PBXBuildFile section */
@@ -29,6 +30,7 @@
 		933AAE412F3CCCDF0081B59C /* BKThemes */ = {isa = PBXFileReference; lastKnownFileType = folder; path = BKThemes; sourceTree = "<group>"; };
 		935118922F3231C500766A5F /* kmgccc_player.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = kmgccc_player.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		9351198D2F33149A00766A5F /* AMLL */ = {isa = PBXFileReference; lastKnownFileType = folder; name = AMLL; path = myPlayer2/Resources/AMLL; sourceTree = "<group>"; };
+		9396ADAB2FA12C0100000001 /* mediaremote-adapter */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "mediaremote-adapter"; path = "myPlayer2/Resources/mediaremote-adapter"; sourceTree = "<group>"; };
 		93CF3F822F344E9F0004C8E3 /* lddc-server */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "lddc-server"; path = "Tools/lddc-server"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -75,6 +77,11 @@
 			membershipExceptions = (
 				Info.plist,
 				scan_ui.py,
+				Resources/mediaremote-adapter/bin/mediaremote-adapter.pl,
+				Resources/mediaremote-adapter/build/MediaRemoteAdapter.framework,
+				Resources/mediaremote-adapter/build/MediaRemoteAdapterTestClient,
+				Resources/mediaremote-adapter/LICENSE,
+				Resources/mediaremote-adapter/README.md,
 			);
 			target = 935118912F3231C500766A5F /* kmgccc_player */;
 		};
@@ -124,6 +131,7 @@
 				933AAE412F3CCCDF0081B59C /* BKThemes */,
 				93CF3F822F344E9F0004C8E3 /* lddc-server */,
 				9351198D2F33149A00766A5F /* AMLL */,
+				9396ADAB2FA12C0100000001 /* mediaremote-adapter */,
 				935118942F3231C500766A5F /* myPlayer2 */,
 				935118932F3231C500766A5F /* Products */,
 				93EBF7BA2F8A113D007F15E3 /* Recovered References */,
@@ -253,6 +261,7 @@
 			files = (
 				933AAE3F2F3CCBBB0081B59C /* BKArt.bundle in Resources */,
 				9351198E2F33149A00766A5F /* AMLL in Resources */,
+				9396ADAB2FA12C0100000002 /* mediaremote-adapter in Resources */,
 				93CF3F832F344E9F0004C8E3 /* lddc-server in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -468,7 +477,6 @@
 				ENABLE_HARDENED_RUNTIME = NO;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
-				FRAMEWORK_SEARCH_PATHS = "$(inherited)";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = myPlayer2/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = kmgccc_player;
@@ -516,7 +524,6 @@
 				ENABLE_HARDENED_RUNTIME = NO;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
-				FRAMEWORK_SEARCH_PATHS = "$(inherited)";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = myPlayer2/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = kmgccc_player;

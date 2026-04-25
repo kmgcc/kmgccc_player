@@ -31,21 +31,8 @@ struct SkinPreviewCard<Preview: View>: View {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
     }
 
-    private var innerInset: CGFloat {
-        // Keep the inner surface clearly separated from the outer frame to avoid "double frame" dirt.
-        presentationStyle.isCompact ? max(12, cornerRadius * 0.58) : max(12, cornerRadius * 0.62)
-    }
-
-    private var innerCornerRadius: CGFloat {
-        max(10, cornerRadius - innerInset * 0.55)
-    }
-
-    private var innerShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: innerCornerRadius, style: .continuous)
-    }
-
-    private var innerPaddingH: CGFloat { 12 }
-    private var innerPaddingV: CGFloat { 12 }
+    private var contentPaddingH: CGFloat { 12 }
+    private var contentPaddingV: CGFloat { 12 }
     private var innerSpacing: CGFloat { 10 }
 
     private var titleMinHeight: CGFloat {
@@ -83,11 +70,6 @@ struct SkinPreviewCard<Preview: View>: View {
                             .fill(isSelected ? selectionAccentColor.opacity(0.10) : Color.clear)
                             .allowsHitTesting(false)
                     )
-                    .overlay(
-                        outerShape
-                            .strokeBorder(outerStrokeColor, lineWidth: isSelected ? 2 : 1)
-                            .allowsHitTesting(false)
-                    )
 
                 VStack(spacing: innerSpacing) {
                     preview()
@@ -99,12 +81,13 @@ struct SkinPreviewCard<Preview: View>: View {
                         .lineLimit(1)
                         .frame(maxWidth: .infinity, minHeight: titleMinHeight)
                 }
-                .padding(.horizontal, innerPaddingH)
-                .padding(.vertical, innerPaddingV)
+                .padding(.horizontal, contentPaddingH)
+                .padding(.vertical, contentPaddingV)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                .background(innerSurface)
-                .clipShape(innerShape)
-                .padding(innerInset)
+
+                outerShape
+                    .strokeBorder(outerStrokeColor, lineWidth: isSelected ? 2 : 1)
+                    .allowsHitTesting(false)
             }
             .frame(width: cardSize.width, height: cardSize.height)
             .clipShape(outerShape)
@@ -132,22 +115,6 @@ struct SkinPreviewCard<Preview: View>: View {
         return Color.black.opacity(0.08)
     }
 
-    private var innerSurface: some View {
-        innerShape
-            .fill(.ultraThinMaterial)
-            .overlay(
-                innerShape
-                    .strokeBorder(innerStrokeColor, lineWidth: 0.6)
-                    .allowsHitTesting(false)
-            )
-    }
-
-    private var innerStrokeColor: Color {
-        if colorScheme == .dark {
-            return Color.white.opacity(0.12)
-        }
-        return Color.black.opacity(0.10)
-    }
 }
 
 // MARK: - Button Style
