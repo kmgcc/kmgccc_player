@@ -3,7 +3,7 @@
 //  myPlayer2
 //
 //  kmgccc_player - Local Library Paths
-//  Fixed library root under ~/Music/kmgccc_player Library
+//  Library root is resolved via LibraryLocationStore.
 //
 
 import Foundation
@@ -15,9 +15,7 @@ nonisolated enum LocalLibraryPaths {
     static let legacyTrackArtworkFileName = "artwork.png"
 
     static var libraryRootURL: URL {
-        let base = FileManager.default.urls(for: .musicDirectory, in: .userDomainMask).first
-        return (base ?? URL(fileURLWithPath: NSHomeDirectory()))
-            .appendingPathComponent(libraryRootName, isDirectory: true)
+        LibraryLocationStore.activeLibraryRootURL
     }
 
     static var tracksRootURL: URL {
