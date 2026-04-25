@@ -21,6 +21,9 @@ struct DataManagementSettingsView: View {
         VStack(alignment: .leading, spacing: 20) {
             SettingsHeaderLabel("数据", systemImage: "arrow.counterclockwise.circle")
 
+            // Library location
+            LibraryLocationSettingsSection()
+
             // Import settings
             GroupBox {
                 VStack(alignment: .leading, spacing: 12) {
