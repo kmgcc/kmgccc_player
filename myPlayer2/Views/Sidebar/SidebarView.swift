@@ -401,9 +401,9 @@ struct SidebarView: View {
         let minWidth: CGFloat = {
             switch source {
             case .appleMusic:
-                return isTwoSegmentMode ? 118 : 88
+                return isTwoSegmentMode ? 80 : 88
             case .local:
-                return isTwoSegmentMode ? 58 : 46
+                return isTwoSegmentMode ? 80 : 46
             case .systemNowPlaying:
                 return 46
             }
