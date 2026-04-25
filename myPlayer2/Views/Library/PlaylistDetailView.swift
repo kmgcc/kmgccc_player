@@ -41,9 +41,11 @@ struct PlaylistDetailView: View {
         let _ = TintTimelineProbe.noteRootConsumer("PlaylistDetailView.body")
         Group {
             if libraryVM.currentSelection == .allSongs {
-                if libraryVM.state == .loading
-                    || pageController.isSelectionTransitioning
-                {
+                if libraryVM.loadingPhase.isLoading && libraryVM.allTracks.isEmpty {
+                    loadingView
+                } else if libraryVM.loadingPhase.isFailed && libraryVM.allTracks.isEmpty {
+                    errorView(message: libraryVM.lastLoadingError ?? "未知错误")
+                } else if pageController.isSelectionTransitioning {
                     ProgressView()
                         .controlSize(.large)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -56,7 +58,11 @@ struct PlaylistDetailView: View {
                         .id("rows-\(selectionIdentity)")
                 }
             } else {
-                if pageController.isSelectionTransitioning
+                if libraryVM.loadingPhase.isLoading && pageController.page == nil && libraryVM.allTracks.isEmpty {
+                    loadingView
+                } else if libraryVM.loadingPhase.isFailed && pageController.page == nil {
+                    errorView(message: libraryVM.lastLoadingError ?? "未知错误")
+                } else if pageController.isSelectionTransitioning
                     || (libraryVM.state == .loading && pageController.page == nil)
                 {
                     ProgressView()
@@ -352,6 +358,43 @@ struct PlaylistDetailView: View {
                 .padding(.horizontal, 16)
             }
         }
+    }
+
+    private var loadingView: some View {
+        VStack(spacing: 16) {
+            Spacer()
+            ProgressView()
+                .controlSize(.large)
+            Text(libraryVM.loadingPhase.displayText)
+                .font(.body)
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func errorView(message: String) -> some View {
+        VStack(spacing: 16) {
+            Spacer()
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 48))
+                .foregroundStyle(.secondary)
+            Text("加载失败")
+                .font(.title3)
+            Text(message)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button("重试") {
+                Task {
+                    await libraryVM.reloadLibrary()
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .clipShape(Capsule())
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var emptyStateView: some View {
