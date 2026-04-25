@@ -70,6 +70,16 @@ enum LibraryLoadState {
     case loaded
 }
 
+enum LibraryLoadingPhase: Equatable {
+    case idle
+    case preparing
+    case scanning
+    case applying
+    case rebuildingIndex
+    case loaded
+    case failed(String)
+}
+
 /// Explicit selection type for library content.
 /// Replaces the ambiguous nil-based selection with explicit cases.
 enum LibrarySelection: Hashable {
@@ -91,8 +101,14 @@ final class LibraryViewModel {
 
     // MARK: - Published State
 
-    /// Data loading state.
+    /// Legacy data loading state (preserved for backward compatibility).
     var state: LibraryLoadState = .loading
+
+    /// Granular loading phase for UI observation.
+    var loadingPhase: LibraryLoadingPhase = .idle
+
+    /// Last loading error message (nil when no error).
+    private(set) var lastLoadingError: String?
 
     /// All playlists in the library.
     private(set) var playlists: [Playlist] = []
@@ -217,6 +233,13 @@ final class LibraryViewModel {
     private var trackUpdateRevision = 0
     private var pendingRepositoryDeletionTrackIDs: Set<UUID> = []
 
+    // MARK: - Loading Task Management
+
+    private var loadTask: Task<Void, Never>?
+    private var loadGeneration: UInt64 = 0
+    private var currentTaskID: UUID?
+    private var libraryLocationObserver: NSObjectProtocol?
+
     private struct SortPreference: Codable {
         let key: String
         let order: String
@@ -243,11 +266,17 @@ final class LibraryViewModel {
         self.repository.setChangeHandler { [weak self] change in
             self?.handleRepositoryChange(change)
         }
+        setupLibraryLocationObserver()
         print("[Lifecycle] LibraryViewModel.init, id: \(ObjectIdentifier(self))")
         Log.debug("LibraryViewModel initialized", category: .library)
     }
 
     deinit {
+        // deinit runs nonisolated; schedule cleanup on MainActor.
+        Task { @MainActor [weak self] in
+            self?.cancelCurrentLoad()
+            self?.removeLibraryLocationObserver()
+        }
         print("[Lifecycle] LibraryViewModel.deinit, id: \(ObjectIdentifier(self))")
     }
 
@@ -353,26 +382,11 @@ final class LibraryViewModel {
 
     // MARK: - Loading
 
-    /// Load all library data.
+    /// Legacy entry point: delegates to `reloadLibrary()`.
     func load() async {
         Log.debug("load() called", category: .library)
-        state = .loading
+        await reloadLibrary()
 
-        await repository.reloadFromLibrary()
-        playlists = await repository.fetchPlaylists()
-        allTracks = await repository.fetchTracks(in: nil)
-        playlistItemAddedAtMap = await repository.fetchPlaylistItemAddedAtMap()
-        totalTrackCount = allTracks.count
-        runtimeArtists = await repository.fetchArtistSections()
-        runtimeAlbums = await repository.fetchAlbumSections()
-        artistEntries = await repository.fetchArtistEntries()
-        albumEntries = await repository.fetchAlbumEntries()
-        reconcileSelectionAfterLoad()
-
-        Log.info("Loaded \(playlists.count) playlists, \(totalTrackCount) total tracks, \(runtimeArtists.count) artists, \(runtimeAlbums.count) albums", category: .library)
-
-        state = .loaded
-        
         // Explicitly set default selection to All Songs after load completes
         // This ensures the main content area shows All Songs by default
         if currentSelection == .allSongs {
@@ -381,9 +395,118 @@ final class LibraryViewModel {
         }
     }
 
+    /// Unified reload entry point with phase tracking, cancellation, and stale-root guard.
+    func reloadLibrary() async {
+        cancelCurrentLoad()
+
+        let capturedRoot = LocalLibraryPaths.libraryRootURL
+        loadGeneration &+= 1
+        let generation = loadGeneration
+        let taskID = UUID()
+        currentTaskID = taskID
+
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.performReload(capturedRoot: capturedRoot, generation: generation)
+        }
+        loadTask = task
+
+        await task.value
+        if currentTaskID == taskID {
+            loadTask = nil
+            currentTaskID = nil
+        }
+    }
+
+    private func performReload(capturedRoot: URL, generation: UInt64) async {
+        guard loadGeneration == generation else { return }
+
+        state = .loading
+        loadingPhase = .preparing
+        lastLoadingError = nil
+
+        do {
+            // Phase: preparing
+            loadingPhase = .preparing
+            try Task.checkCancellation()
+
+            // Phase: scanning
+            loadingPhase = .scanning
+            try Task.checkCancellation()
+            await repository.reloadFromLibrary()
+
+            // Stale-root guard after repository reload
+            guard LocalLibraryPaths.libraryRootURL == capturedRoot else {
+                Log.info(
+                    "[LibraryVM] Stale root after repository reload; discarding (generation=\(generation))",
+                    category: .library
+                )
+                throw CancellationError()
+            }
+            guard loadGeneration == generation else {
+                throw CancellationError()
+            }
+            try Task.checkCancellation()
+
+            // Phase: applying
+            loadingPhase = .applying
+            try Task.checkCancellation()
+            playlists = await repository.fetchPlaylists()
+            allTracks = await repository.fetchTracks(in: nil)
+            playlistItemAddedAtMap = await repository.fetchPlaylistItemAddedAtMap()
+            totalTrackCount = allTracks.count
+            runtimeArtists = await repository.fetchArtistSections()
+            runtimeAlbums = await repository.fetchAlbumSections()
+            artistEntries = await repository.fetchArtistEntries()
+            albumEntries = await repository.fetchAlbumEntries()
+            reconcileSelectionAfterLoad()
+
+            // Phase: rebuilding index
+            loadingPhase = .rebuildingIndex
+            try Task.checkCancellation()
+            // Repository already rebuilt index during reloadFromLibrary();
+            // this phase exists for UI observation.
+
+            // Final guards before marking loaded
+            guard loadGeneration == generation else {
+                throw CancellationError()
+            }
+            guard LocalLibraryPaths.libraryRootURL == capturedRoot else {
+                Log.info(
+                    "[LibraryVM] Stale root before marking loaded; discarding (generation=\(generation))",
+                    category: .library
+                )
+                throw CancellationError()
+            }
+            try Task.checkCancellation()
+
+            loadingPhase = .loaded
+            state = .loaded
+
+            Log.info(
+                "Library loaded: \(playlists.count) playlists, \(totalTrackCount) tracks",
+                category: .library
+            )
+
+        } catch is CancellationError {
+            Log.debug("[LibraryVM] Load cancelled (generation=\(generation))", category: .library)
+            if loadGeneration == generation {
+                loadingPhase = .idle
+                // Do not set state = .loaded on cancellation.
+            }
+        } catch {
+            Log.error("[LibraryVM] Load failed: \(error.localizedDescription)", category: .library)
+            if loadGeneration == generation {
+                lastLoadingError = error.localizedDescription
+                loadingPhase = .failed(error.localizedDescription)
+                state = .loaded
+            }
+        }
+    }
+
     /// Refresh all data and trigger UI update.
     func refresh() async {
-        await load()
+        await reloadLibrary()
         refreshTrigger += 1
         Log.debug("Refresh triggered, refreshTrigger=\(refreshTrigger)", category: .library)
     }
@@ -831,6 +954,59 @@ final class LibraryViewModel {
     /// Whether import is available.
     var canImport: Bool {
         importService != nil
+    }
+
+    // MARK: - Library Location Change
+
+    private func setupLibraryLocationObserver() {
+        libraryLocationObserver = NotificationCenter.default.addObserver(
+            forName: .libraryLocationChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.handleLibraryLocationChanged()
+            }
+        }
+    }
+
+    private func removeLibraryLocationObserver() {
+        if let observer = libraryLocationObserver {
+            NotificationCenter.default.removeObserver(observer)
+            libraryLocationObserver = nil
+        }
+    }
+
+    private func handleLibraryLocationChanged() {
+        Log.info(
+            "[LibraryVM] Library location changed, cancelling current load and resetting",
+            category: .library
+        )
+        cancelCurrentLoad()
+        resetLibraryData()
+        Task { @MainActor [weak self] in
+            await self?.reloadLibrary()
+        }
+    }
+
+    private func cancelCurrentLoad() {
+        loadTask?.cancel()
+        loadTask = nil
+        currentTaskID = nil
+    }
+
+    private func resetLibraryData() {
+        playlists = []
+        allTracks = []
+        playlistItemAddedAtMap = [:]
+        runtimeArtists = []
+        runtimeAlbums = []
+        artistEntries = []
+        albumEntries = []
+        totalTrackCount = 0
+        currentSelection = .allSongs
+        loadingPhase = .idle
+        // Do not touch `state` here; reloadLibrary() manages it.
     }
 
     // MARK: - Private Helpers
