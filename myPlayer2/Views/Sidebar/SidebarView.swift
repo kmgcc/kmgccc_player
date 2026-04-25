@@ -52,6 +52,28 @@ struct SidebarView: View {
                     .padding(.bottom, 12)
             }
 
+            // Home Link
+            Button {
+                libraryVM.currentSelection = .home
+                uiState.showLibrary()
+            } label: {
+                HStack {
+                    Label(
+                        NSLocalizedString("sidebar.home", comment: "Home"),
+                        systemImage: "house")
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(
+                    selectionFill(isSelected: currentSelection == .home)
+                )
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 14)
+            .padding(.top, 4)
+
             // Main Library Link
             Button {
                 libraryVM.currentSelection = .allSongs
@@ -72,7 +94,6 @@ struct SidebarView: View {
             }
             .buttonStyle(.plain)
             .padding(.horizontal, 14)
-            .padding(.top, 4)
             .padding(.bottom, 16)
 
             // Playlists List
@@ -508,6 +529,8 @@ struct SidebarView: View {
 
     private func handleSelection(_ item: SidebarSelection) {
         switch item {
+        case .home:
+            libraryVM.currentSelection = .home
         case .allSongs:
             libraryVM.currentSelection = .allSongs
         case .playlist(let id):
@@ -523,6 +546,8 @@ struct SidebarView: View {
     private var currentSelection: SidebarSelection {
         // Use the explicit currentSelection from LibraryViewModel
         switch libraryVM.currentSelection {
+        case .home:
+            return .home
         case .allSongs:
             return .allSongs
         case .playlist(let id):
@@ -576,6 +601,7 @@ struct SidebarView: View {
 // MARK: - Sidebar Selection
 
 private enum SidebarSelection: Hashable {
+    case home
     case allSongs
     case playlist(UUID)
     case artist(String)
