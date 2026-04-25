@@ -3,8 +3,7 @@
 //  myPlayer2
 //
 //  Hero card for the Home page.
-//  Phase 1: basic structure with artwork and track info.
-//  Phase 3 will add blurred backdrop effect.
+//  Blurred artwork backdrop with track info and play button.
 //
 
 import AppKit
@@ -15,8 +14,10 @@ struct HomeHeroView: View {
 
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var themeStore: ThemeStore
 
     @State private var coverImage: NSImage?
+    @State private var isHovering = false
 
     private let heroHeight: CGFloat = 300
     private let coverSize: CGFloat = 244
@@ -24,11 +25,24 @@ struct HomeHeroView: View {
 
     var body: some View {
         ZStack {
-            // Background — Phase 3 will add blurred artwork
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .fill(colorScheme == .dark
-                      ? Color.white.opacity(0.04)
-                      : Color.black.opacity(0.03))
+            // Blurred artwork backdrop
+            if let coverImage {
+                Image(nsImage: coverImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(height: heroHeight)
+                    .blur(radius: 50, opaque: true)
+                    .saturation(colorScheme == .dark ? 1.2 : 1.1)
+                    .brightness(colorScheme == .dark ? -0.15 : 0.05)
+                    .overlay(
+                        Color.black.opacity(colorScheme == .dark ? 0.35 : 0.15)
+                    )
+            } else {
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .fill(colorScheme == .dark
+                          ? Color.white.opacity(0.04)
+                          : Color.black.opacity(0.03))
+            }
 
             HStack(spacing: 28) {
                 artworkView
@@ -39,21 +53,22 @@ struct HomeHeroView: View {
                         .font(.caption)
                         .textCase(.uppercase)
                         .tracking(0.8)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(coverImage != nil ? .white.opacity(0.7) : .secondary)
 
                     Text(track.title)
                         .font(.system(size: 36, weight: .semibold))
                         .tracking(-0.5)
                         .lineLimit(2)
+                        .foregroundStyle(coverImage != nil ? .white : .primary)
 
                     HStack(spacing: 0) {
                         Text(track.artist)
-                            .foregroundStyle(.primary)
+                            .foregroundStyle(coverImage != nil ? .white.opacity(0.9) : .primary)
                         if !track.album.isEmpty {
                             Text(" \u{00B7} ")
-                                .foregroundStyle(.tertiary)
+                                .foregroundStyle(coverImage != nil ? .white.opacity(0.4) : .tertiary)
                             Text(track.album)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(coverImage != nil ? .white.opacity(0.7) : .secondary)
                         }
                     }
                     .font(.system(size: 15, weight: .medium))
@@ -68,7 +83,7 @@ struct HomeHeroView: View {
                         }
                     }
                     .font(.caption)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(coverImage != nil ? .white.opacity(0.5) : .tertiary)
 
                     Spacer(minLength: 8)
 
@@ -83,8 +98,8 @@ struct HomeHeroView: View {
                         }
                         .padding(.horizontal, 16)
                         .padding(.vertical, 10)
-                        .background(colorScheme == .dark ? Color.white : Color.black)
-                        .foregroundStyle(colorScheme == .dark ? Color.black : Color.white)
+                        .background(coverImage != nil ? Color.white : (colorScheme == .dark ? Color.white : Color.black))
+                        .foregroundStyle(coverImage != nil ? Color.black : (colorScheme == .dark ? Color.black : Color.white))
                         .clipShape(Capsule())
                     }
                     .buttonStyle(.plain)
@@ -99,9 +114,18 @@ struct HomeHeroView: View {
         .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .strokeBorder(Color.white.opacity(coverImage != nil ? 0.12 : 0.0), lineWidth: 0.5)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
                 .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
         )
         .shadow(color: .black.opacity(colorScheme == .dark ? 0.3 : 0.1), radius: 20, y: 6)
+        .scaleEffect(isHovering ? 1.005 : 1.0)
+        .animation(.easeOut(duration: 0.2), value: isHovering)
+        .onHover { hovering in
+            isHovering = hovering
+        }
         .task {
             await loadCoverImage()
         }

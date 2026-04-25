@@ -54,6 +54,7 @@ private struct HomeArtistCircle: View {
     let artist: ArtistEntry
 
     @State private var image: NSImage?
+    @State private var isHovering = false
     @Environment(\.colorScheme) private var colorScheme
 
     private let circleSize: CGFloat = 128
@@ -78,7 +79,7 @@ private struct HomeArtistCircle: View {
             .clipShape(Circle())
             .shadow(
                 color: .black.opacity(colorScheme == .dark ? 0.35 : 0.15),
-                radius: 10, y: 4
+                radius: isHovering ? 14 : 10, y: isHovering ? 6 : 4
             )
 
             VStack(spacing: 3) {
@@ -92,6 +93,11 @@ private struct HomeArtistCircle: View {
             }
         }
         .frame(width: circleSize + 20)
+        .scaleEffect(isHovering ? 1.05 : 1.0)
+        .animation(.easeOut(duration: 0.2), value: isHovering)
+        .onHover { hovering in
+            isHovering = hovering
+        }
         .task {
             await loadImage()
         }
