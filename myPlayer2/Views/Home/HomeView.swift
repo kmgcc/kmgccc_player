@@ -16,6 +16,7 @@ struct HomeView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     @State private var homeVM = HomeViewModel()
+    @State private var hasAppeared = false
 
     var body: some View {
         Group {
@@ -27,11 +28,17 @@ struct HomeView: View {
                 emptyLibraryView
             } else {
                 scrollContent
+                    .opacity(hasAppeared ? 1 : 0)
+                    .offset(y: hasAppeared ? 0 : 12)
+                    .animation(.easeOut(duration: 0.4), value: hasAppeared)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .task {
             homeVM.refresh(from: libraryVM)
+            // Small delay so the animation plays after content is populated
+            try? await Task.sleep(for: .milliseconds(50))
+            hasAppeared = true
         }
         .onChange(of: libraryVM.refreshTrigger) { _, _ in
             homeVM.refresh(from: libraryVM)

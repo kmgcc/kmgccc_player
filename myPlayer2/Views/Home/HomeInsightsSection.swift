@@ -235,7 +235,9 @@ private struct HomePreferenceRankingView: View {
 private struct HomeRankRow: View {
     let rank: Int
     let item: HomeViewModel.PreferenceRankItem
+    @State private var isHovering = false
     @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var themeStore: ThemeStore
 
     // Normalize score: preferenceScoreCache can range roughly -100..+100
     private var normalizedScore: Double {
@@ -264,9 +266,9 @@ private struct HomeRankRow: View {
                 GeometryReader { proxy in
                     ZStack(alignment: .leading) {
                         RoundedRectangle(cornerRadius: 3)
-                            .fill(Color.primary.opacity(0.08))
+                            .fill(themeStore.accentColor.opacity(0.12))
                         RoundedRectangle(cornerRadius: 3)
-                            .fill(Color.primary.opacity(colorScheme == .dark ? 0.5 : 0.35))
+                            .fill(themeStore.accentColor.opacity(colorScheme == .dark ? 0.7 : 0.55))
                             .frame(width: proxy.size.width * normalizedScore)
                     }
                 }
@@ -287,6 +289,14 @@ private struct HomeRankRow: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(themeStore.accentColor.opacity(isHovering ? 0.06 : 0))
+        )
+        .onHover { hovering in
+            isHovering = hovering
+        }
+        .animation(.easeOut(duration: 0.15), value: isHovering)
     }
 }
 

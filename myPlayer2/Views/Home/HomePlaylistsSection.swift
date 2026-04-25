@@ -57,6 +57,7 @@ private struct HomePlaylistCard: View {
     let playlist: Playlist
 
     @State private var coverImage: NSImage?
+    @State private var isHovering = false
     @Environment(\.colorScheme) private var colorScheme
 
     private let cardHeight: CGFloat = 96
@@ -124,8 +125,13 @@ private struct HomePlaylistCard: View {
         )
         .shadow(
             color: .black.opacity(colorScheme == .dark ? 0.2 : 0.06),
-            radius: 6, y: 2
+            radius: isHovering ? 10 : 6, y: isHovering ? 4 : 2
         )
+        .scaleEffect(isHovering ? 1.015 : 1.0)
+        .animation(.easeOut(duration: 0.2), value: isHovering)
+        .onHover { hovering in
+            isHovering = hovering
+        }
         .task {
             await loadCover()
         }

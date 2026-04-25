@@ -55,6 +55,7 @@ private struct HomeAlbumCard: View {
     let album: AlbumEntry
 
     @State private var image: NSImage?
+    @State private var isHovering = false
     @Environment(\.colorScheme) private var colorScheme
 
     private let cardSize: CGFloat = 168
@@ -81,7 +82,7 @@ private struct HomeAlbumCard: View {
             .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
             .shadow(
                 color: .black.opacity(colorScheme == .dark ? 0.35 : 0.12),
-                radius: 8, y: 4
+                radius: isHovering ? 12 : 8, y: isHovering ? 6 : 4
             )
 
             VStack(alignment: .leading, spacing: 2) {
@@ -102,6 +103,11 @@ private struct HomeAlbumCard: View {
             }
         }
         .frame(width: cardSize)
+        .scaleEffect(isHovering ? 1.03 : 1.0)
+        .animation(.easeOut(duration: 0.2), value: isHovering)
+        .onHover { hovering in
+            isHovering = hovering
+        }
         .task {
             await loadImage()
         }
