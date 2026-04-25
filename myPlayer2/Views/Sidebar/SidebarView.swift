@@ -387,13 +387,21 @@ struct SidebarView: View {
     private func playbackSourceSegment(_ source: PlaybackSource, isSelected: Bool) -> some View {
         let title = LocalizedStringKey(source.localizedTitleKey)
         let foregroundColor = isSelected ? selectedPlaybackSourceTextColor : Color.secondary
+        let minWidth: CGFloat = {
+            switch source {
+            case .appleMusic:
+                return 88
+            case .local, .systemNowPlaying:
+                return 46
+            }
+        }()
 
         return Text(title)
             .font(.caption.weight(.semibold))
             .lineLimit(1)
             .minimumScaleFactor(0.86)
             .foregroundStyle(foregroundColor)
-            .frame(maxWidth: .infinity)
+            .frame(minWidth: minWidth, maxWidth: .infinity)
             .frame(height: PlaybackSourceSwitcherMetrics.knobHeight)
             .contentShape(Rectangle())
     }
