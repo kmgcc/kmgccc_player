@@ -224,6 +224,10 @@ final class PlaybackCoordinator {
 
     func invalidateExternalPlaybackResolution() {
         guard activeSource.isExternal else { return }
+        Log.info(
+            "[ExternalPlayback] override saved; invalidating current resolution source=\(activeSource.rawValue) identity=\(presentation.externalStableKey ?? "nil")",
+            category: .playback
+        )
         activeExternalProvider?.invalidateCurrentResolution()
         refreshPresentation()
         NowPlayingService.shared.updateNowPlaying(force: true)
