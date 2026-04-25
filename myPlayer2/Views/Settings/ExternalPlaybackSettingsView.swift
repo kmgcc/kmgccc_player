@@ -15,6 +15,7 @@ struct ExternalPlaybackSettingsView: View {
     @State private var showClearCacheAlert = false
     @State private var isClearingCaches = false
     @State private var showPlaybackSourceSwitcher: Bool = AppSettings.shared.showPlaybackSourceSwitcher
+    @State private var enableSystemNowPlaying: Bool = AppSettings.shared.enableSystemNowPlayingMode
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -25,6 +26,24 @@ struct ExternalPlaybackSettingsView: View {
                     .toggleStyle(.switch)
                     .font(.headline)
                     .padding(12)
+            }
+
+            GroupBox {
+                VStack(alignment: .leading, spacing: 12) {
+                    Toggle("启用\"其他\"播放模式", isOn: $enableSystemNowPlaying)
+                        .toggleStyle(.switch)
+                        .font(.headline)
+
+                    Text("开启后，Sidebar 底部会出现 \"本地 / Apple Music / 其他\" 三种播放模式。关闭后仅保留 \"本地\" 和 \"Apple Music\"。")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+
+                    Text("\"其他\" 模式通过 macOS MediaRemote 读取系统当前播放的第三方 App（如 Spotify、QQ音乐等）的元数据。该模式依赖私有 API，稳定性有限：可能出现元数据缺失、封面无法获取、播放进度控制不可用、暂停/恢复延迟等问题。如果您只使用本地资料库或 Apple Music，建议关闭此选项以保持界面简洁。")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(12)
             }
 
             GroupBox {
@@ -56,9 +75,18 @@ struct ExternalPlaybackSettingsView: View {
         }
         .onAppear {
             showPlaybackSourceSwitcher = settings.showPlaybackSourceSwitcher
+            enableSystemNowPlaying = settings.enableSystemNowPlayingMode
         }
         .onChange(of: showPlaybackSourceSwitcher) { _, newValue in
             settings.showPlaybackSourceSwitcher = newValue
+        }
+        .onChange(of: enableSystemNowPlaying) { _, newValue in
+            settings.enableSystemNowPlayingMode = newValue
+            // If the user disables "其他" while currently using it,
+            // fall back to local playback to avoid a dangling state.
+            if !newValue, playbackCoordinator.activeSource == .systemNowPlaying {
+                playbackCoordinator.setActiveSource(.local)
+            }
         }
         .alert("清理外部播放缓存？", isPresented: $showClearCacheAlert) {
             Button("取消", role: .cancel) {}
