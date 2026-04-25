@@ -510,7 +510,7 @@ struct LibraryDetailHeaderView: View {
             case .playlist(let playlist, let data):
                 let tracks = data.tracks
                 let snapshots: [(id: UUID, artworkData: Data?)] = tracks.map {
-                    (id: $0.id, artworkData: $0.artworkData)
+                    (id: $0.id, artworkData: $0.loadArtworkDataIfNeeded())
                 }
                 let variationSeed = Int.random(in: 0...Int.max)
 

@@ -335,14 +335,15 @@ final class PlaybackCoordinator {
         }
 
         let lyricsText = preferredLyricsText(for: track)
+        let artworkData = track.loadArtworkDataIfNeeded()
         return NowPlayingPresentation(
             source: .local,
             localTrack: track,
             title: track.title,
             artist: track.artist,
             album: track.album.isEmpty ? nil : track.album,
-            artworkData: track.artworkData,
-            artworkIdentity: "\(track.id.uuidString):\(ArtworkAssetStore.checksum(for: track.artworkData))",
+            artworkData: artworkData,
+            artworkIdentity: "\(track.id.uuidString):\(ArtworkAssetStore.checksum(for: artworkData))",
             artworkDisplayTrackID: track.id,
             isArtworkLoading: false,
             duration: playerVM.duration,
@@ -375,7 +376,9 @@ final class PlaybackCoordinator {
         if cachedLyricsTrackID == track.id {
             return cachedLyricsText
         }
-        let candidates = [track.lyricsText, track.ttmlLyricText]
+        let plain = track.loadLyricsIfNeeded()
+        let ttml = track.loadTTMLLyricsIfNeeded()
+        let candidates = [plain, ttml]
         for candidate in candidates {
             guard let candidate else { continue }
             let trimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)

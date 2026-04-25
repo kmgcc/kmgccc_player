@@ -429,7 +429,7 @@ final class DetailHeaderArtworkResolver {
 
             // No artwork exists - generate for first-time initialization only
             let snapshots: [(id: UUID, artworkData: Data?)] = tracks.map {
-                (id: $0.id, artworkData: $0.artworkData)
+                (id: $0.id, artworkData: $0.loadArtworkDataIfNeeded())
             }
 
             guard let image = await generator.generateArtwork(

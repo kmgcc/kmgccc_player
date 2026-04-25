@@ -314,8 +314,8 @@ final class ExternalPlaybackMetadataStore {
         let count = tracks.count
         let checksum = tracks.prefix(64).reduce(UInt64(count)) { partial, track in
             partial ^ UInt64(bitPattern: Int64(track.id.uuidString.hashValue))
-                ^ UInt64(ArtworkAssetStore.checksum(for: track.artworkData))
-                ^ UInt64((track.lyricsText?.count ?? 0) + (track.ttmlLyricText?.count ?? 0))
+                ^ UInt64(ArtworkAssetStore.checksum(for: track.loadArtworkDataIfNeeded()))
+                ^ UInt64((track.loadLyricsIfNeeded()?.count ?? 0) + (track.loadTTMLLyricsIfNeeded()?.count ?? 0))
         }
         return "\(count)-\(checksum)"
     }

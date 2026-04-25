@@ -15,16 +15,20 @@ final class LibraryMetadataSync {
         derivedArtists: [ArtistSection],
         derivedAlbums: [AlbumSection],
         allTracks: [Track],
+        artistSidecars: [(sidecar: ArtistSidecar, folderURL: URL)],
+        albumSidecars: [(sidecar: AlbumSidecar, folderURL: URL)],
         libraryService: LocalLibraryService
     ) -> (artists: [ArtistEntry], albums: [AlbumEntry]) {
         let artists = syncArtists(
             derived: derivedArtists,
             allTracks: allTracks,
+            sidecars: artistSidecars,
             libraryService: libraryService
         )
         let albums = syncAlbums(
             derived: derivedAlbums,
             allTracks: allTracks,
+            sidecars: albumSidecars,
             libraryService: libraryService
         )
         return (artists, albums)
@@ -35,11 +39,11 @@ final class LibraryMetadataSync {
     private func syncArtists(
         derived: [ArtistSection],
         allTracks: [Track],
+        sidecars: [(sidecar: ArtistSidecar, folderURL: URL)],
         libraryService: LocalLibraryService
     ) -> [ArtistEntry] {
-        let loaded = libraryService.loadArtistSidecarsFromDisk()
         var existing: [String: (sidecar: ArtistSidecar, folderURL: URL)] =
-            Dictionary(uniqueKeysWithValues: loaded.map { ($0.sidecar.canonicalName, $0) })
+            Dictionary(uniqueKeysWithValues: sidecars.map { ($0.sidecar.canonicalName, $0) })
         let now = Date()
 
         // Compute album counts per artist canonical key
@@ -141,11 +145,11 @@ final class LibraryMetadataSync {
     private func syncAlbums(
         derived: [AlbumSection],
         allTracks: [Track],
+        sidecars: [(sidecar: AlbumSidecar, folderURL: URL)],
         libraryService: LocalLibraryService
     ) -> [AlbumEntry] {
-        let loaded = libraryService.loadAlbumSidecarsFromDisk()
         var existing: [String: (sidecar: AlbumSidecar, folderURL: URL)] =
-            Dictionary(uniqueKeysWithValues: loaded.map { ($0.sidecar.canonicalKey, $0) })
+            Dictionary(uniqueKeysWithValues: sidecars.map { ($0.sidecar.canonicalKey, $0) })
         let now = Date()
 
         var result: [AlbumEntry] = []

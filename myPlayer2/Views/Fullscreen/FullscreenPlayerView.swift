@@ -2181,14 +2181,16 @@ struct FullscreenPlayerView: View {
     private func resolvedFullscreenLyricsText(for track: Track?) -> String {
         guard let track else { return "" }
 
-        let userText = track.lyricsText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !userText.isEmpty, let original = track.lyricsText {
-            return original
+        let plain = track.loadLyricsIfNeeded()
+        let userText = plain?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !userText.isEmpty {
+            return plain!
         }
 
-        let ttmlText = track.ttmlLyricText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !ttmlText.isEmpty, let original = track.ttmlLyricText {
-            return original
+        let ttml = track.loadTTMLLyricsIfNeeded()
+        let ttmlText = ttml?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !ttmlText.isEmpty {
+            return ttml!
         }
 
         return ""

@@ -15,6 +15,7 @@ struct TrackRowModel: Identifiable, Equatable {
     let artist: String
     let durationText: String
     let artworkData: Data?
+    let artworkFileURL: URL?
     let artworkIdentity: String
     let isMissing: Bool
 
@@ -234,7 +235,9 @@ struct TrackRowView<MenuContent: View>: View {
     private func loadArtwork() async {
         guard enableArtworkLoading else { return }
 
-        guard let data = model.artworkData, !data.isEmpty else {
+        let hasData = model.artworkData != nil && !model.artworkData!.isEmpty
+        let hasFileURL = model.artworkFileURL != nil
+        guard hasData || hasFileURL else {
             artworkImage = nil
             isArtworkReady = false
             return
@@ -243,14 +246,16 @@ struct TrackRowView<MenuContent: View>: View {
         let scale = NSScreen.main?.backingScaleFactor ?? 2.0
         let lowRequest = PlaylistArtworkPipeline.rowLowRequest(
             trackID: model.id,
-            artworkData: data,
+            artworkData: model.artworkData,
+            artworkFileURL: model.artworkFileURL,
             artworkIdentity: model.artworkIdentity,
             logicalSize: Constants.Layout.artworkSmallSize,
             scale: scale
         )
         let highRequest = PlaylistArtworkPipeline.rowHighRequest(
             trackID: model.id,
-            artworkData: data,
+            artworkData: model.artworkData,
+            artworkFileURL: model.artworkFileURL,
             artworkIdentity: model.artworkIdentity,
             logicalSize: Constants.Layout.artworkSmallSize,
             scale: scale
@@ -307,6 +312,7 @@ extension TrackRowView: Equatable where MenuContent: View {
                 artist: "The Weeknd",
                 durationText: "3:23",
                 artworkData: nil,
+                artworkFileURL: nil,
                 artworkIdentity: "demo",
                 isMissing: false
             ),
@@ -326,6 +332,7 @@ extension TrackRowView: Equatable where MenuContent: View {
                 artist: "Unknown Artist",
                 durationText: "0:00",
                 artworkData: nil,
+                artworkFileURL: nil,
                 artworkIdentity: "missing",
                 isMissing: true
             ),

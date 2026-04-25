@@ -222,12 +222,12 @@ final class LyricsViewModel {
         guard let track = track else { return "" }
 
         // Priority 1: User imported text/file
-        if let t1 = nonEmptyLyricsText(track.lyricsText) {
+        if let t1 = nonEmptyLyricsText(track.loadLyricsIfNeeded()) {
             return t1
         }
 
         // Priority 2: Embedded/pasted TTML
-        if let t2 = nonEmptyLyricsText(track.ttmlLyricText) {
+        if let t2 = nonEmptyLyricsText(track.loadTTMLLyricsIfNeeded()) {
             return t2
         }
 
