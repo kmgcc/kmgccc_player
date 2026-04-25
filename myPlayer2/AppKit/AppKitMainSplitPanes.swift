@@ -68,9 +68,15 @@ struct AppKitMainContentPaneRoot: View {
                 Group {
                     switch uiState.contentMode {
                     case .library:
-                        PlaylistDetailView(pageController: pageController)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                            .id("appkit-main-library")
+                        if libraryVM.currentSelection == .home {
+                            HomeView()
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                                .id("appkit-main-home")
+                        } else {
+                            PlaylistDetailView(pageController: pageController)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                                .id("appkit-main-library")
+                        }
                     case .nowPlaying:
                         GeometryReader { proxy in
                             NowPlayingHostView(mainContentWidth: proxy.size.width)
@@ -357,6 +363,7 @@ struct AppKitMainWindowArtBackgroundLayer: View {
 
     private var shouldShowPlaylistHeaderBackground: Bool {
         appSession.uiState.contentMode == .library
+            && (appSession.libraryVM?.currentSelection ?? .allSongs) != .home
             && playlistPageController.rendersHeaderBackgroundInWindowLayer
             && playlistPageController.isHeaderEffectsEnabled
             && (playlistPageController.haloCurrentImage != nil || playlistPageController.haloIncomingImage != nil)

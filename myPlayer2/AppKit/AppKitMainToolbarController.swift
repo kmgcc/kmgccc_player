@@ -415,6 +415,8 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
                 return identity
             }
             switch libraryVM.currentSelection {
+            case .home:
+                return "home"
             case .allSongs:
                 return "allSongs"
             case .playlist(let id):

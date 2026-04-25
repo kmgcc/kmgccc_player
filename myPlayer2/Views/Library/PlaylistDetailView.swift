@@ -150,6 +150,8 @@ struct PlaylistDetailView: View {
 
     private var fallbackSelectionIdentity: String {
         switch libraryVM.currentSelection {
+        case .home:
+            return "home"
         case .allSongs:
             return "allSongs"
         case .playlist(let id):
