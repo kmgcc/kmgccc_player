@@ -7,6 +7,20 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0348EEACCF8A4D879E0CB89E /* HomeInsightsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 901EBFFC58244F73835A86D4 /* HomeInsightsSection.swift */; };
+
+		BACF482A15BA4A52A31676B4 /* HomePlaylistsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5CC7C2464C0499283679FD5 /* HomePlaylistsSection.swift */; };
+
+		9F8E3DA14ABE457F9CA43ADF /* HomeArtistsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 997FE774169F45A6BF95F869 /* HomeArtistsSection.swift */; };
+
+		56CEE0970018461FB444D872 /* HomeAlbumsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E665CA903414AE0B0F3495F /* HomeAlbumsSection.swift */; };
+
+		405DAF78B193407393CBCD28 /* HomeHeroView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1AAABD18CD344AAC9E53AB4E /* HomeHeroView.swift */; };
+
+		EF74857C636A4531A95CBFD7 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FE4DDFCE16C4D628BC690F4 /* HomeView.swift */; };
+
+		0BC67E98B951484983145973 /* HomeViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD5058938A36490E856DBBF2 /* HomeViewModel.swift */; };
+
 		933AAE3F2F3CCBBB0081B59C /* BKArt.bundle in Resources */ = {isa = PBXBuildFile; fileRef = 933AADFD2F3CC8D40081B59C /* BKArt.bundle */; };
 		933AAE422F3CCCDF0081B59C /* BKThemes in Resources */ = {isa = PBXBuildFile; fileRef = 933AAE412F3CCCDF0081B59C /* BKThemes */; };
 		9351198E2F33149A00766A5F /* AMLL in Resources */ = {isa = PBXBuildFile; fileRef = 9351198D2F33149A00766A5F /* AMLL */; };
@@ -26,6 +40,20 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		901EBFFC58244F73835A86D4 /* HomeInsightsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeInsightsSection.swift; sourceTree = "<group>"; };
+
+		F5CC7C2464C0499283679FD5 /* HomePlaylistsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomePlaylistsSection.swift; sourceTree = "<group>"; };
+
+		997FE774169F45A6BF95F869 /* HomeArtistsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeArtistsSection.swift; sourceTree = "<group>"; };
+
+		6E665CA903414AE0B0F3495F /* HomeAlbumsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeAlbumsSection.swift; sourceTree = "<group>"; };
+
+		1AAABD18CD344AAC9E53AB4E /* HomeHeroView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeHeroView.swift; sourceTree = "<group>"; };
+
+		9FE4DDFCE16C4D628BC690F4 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
+
+		DD5058938A36490E856DBBF2 /* HomeViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeViewModel.swift; sourceTree = "<group>"; };
+
 		933AADFD2F3CC8D40081B59C /* BKArt.bundle */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BKArt.bundle; sourceTree = BUILT_PRODUCTS_DIR; };
 		933AAE412F3CCCDF0081B59C /* BKThemes */ = {isa = PBXFileReference; lastKnownFileType = folder; path = BKThemes; sourceTree = "<group>"; };
 		935118922F3231C500766A5F /* kmgccc_player.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = kmgccc_player.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -273,6 +301,13 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				0BC67E98B951484983145973 /* HomeViewModel.swift in Sources */,
+				EF74857C636A4531A95CBFD7 /* HomeView.swift in Sources */,
+				405DAF78B193407393CBCD28 /* HomeHeroView.swift in Sources */,
+				56CEE0970018461FB444D872 /* HomeAlbumsSection.swift in Sources */,
+				9F8E3DA14ABE457F9CA43ADF /* HomeArtistsSection.swift in Sources */,
+				BACF482A15BA4A52A31676B4 /* HomePlaylistsSection.swift in Sources */,
+				0348EEACCF8A4D879E0CB89E /* HomeInsightsSection.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

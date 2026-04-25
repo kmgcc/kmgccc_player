@@ -371,6 +371,9 @@ final class AppSessionHost: ObservableObject {
             let selectionLabel: String
             let hasHeader: Bool
             switch libraryVM.currentSelection {
+            case .home:
+                selectionLabel = "home"
+                hasHeader = false
             case .allSongs:
                 selectionLabel = "allSongs"
                 hasHeader = false
