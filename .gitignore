@@ -56,3 +56,4 @@ Tools/lddc-server/
 *.bak
 .claude/worktrees/
 .worktrees/
+.worktrees/
