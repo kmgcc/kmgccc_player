@@ -78,6 +78,42 @@ enum LibraryLoadingPhase: Equatable {
     case rebuildingIndex
     case loaded
     case failed(String)
+
+    var isIdle: Bool {
+        if case .idle = self { return true }
+        return false
+    }
+
+    var isLoading: Bool {
+        switch self {
+        case .preparing, .scanning, .applying, .rebuildingIndex:
+            return true
+        case .idle, .loaded, .failed:
+            return false
+        }
+    }
+
+    var isFailed: Bool {
+        if case .failed = self { return true }
+        return false
+    }
+
+    var displayText: String {
+        switch self {
+        case .preparing:
+            return "正在准备资料库"
+        case .scanning:
+            return "正在扫描歌曲"
+        case .applying:
+            return "正在加载资料库"
+        case .rebuildingIndex:
+            return "正在建立索引"
+        case .idle, .loaded:
+            return ""
+        case .failed:
+            return "加载失败"
+        }
+    }
 }
 
 /// Explicit selection type for library content.

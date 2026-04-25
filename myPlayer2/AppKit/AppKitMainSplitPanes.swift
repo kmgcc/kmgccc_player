@@ -64,45 +64,73 @@ struct AppKitMainContentPaneRoot: View {
            let ledMeterProvider = appSession.ledMeterProvider,
            let importEnrichmentService = appSession.importEnrichmentService,
            let skinManager = appSession.skinManager {
-            ZStack(alignment: .bottomLeading) {
-                Group {
-                    switch uiState.contentMode {
-                    case .library:
-                        PlaylistDetailView(pageController: pageController)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                            .id("appkit-main-library")
-                    case .nowPlaying:
-                        GeometryReader { proxy in
-                            NowPlayingHostView(mainContentWidth: proxy.size.width)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                                .ignoresSafeArea(.container, edges: .top)
-                        }
-                        .ignoresSafeArea(.container, edges: .top)
-                        .id("appkit-main-nowplaying")
-                    }
-                }
+            contentView(
+                uiState: uiState,
+                libraryVM: libraryVM,
+                playerVM: playerVM,
+                playbackCoordinator: playbackCoordinator,
+                lyricsVM: lyricsVM,
+                ledMeterProvider: ledMeterProvider,
+                importEnrichmentService: importEnrichmentService,
+                skinManager: skinManager
+            )
+        } else {
+            ProgressView()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
 
-                if !FullscreenWindowManager.shared.isWindowedFullscreenActive {
+    private func contentView(
+        uiState: UIStateViewModel,
+        libraryVM: LibraryViewModel,
+        playerVM: PlayerViewModel,
+        playbackCoordinator: PlaybackCoordinator,
+        lyricsVM: LyricsViewModel,
+        ledMeterProvider: LEDMeterServiceProvider,
+        importEnrichmentService: ImportEnrichmentService,
+        skinManager: SkinManager
+    ) -> some View {
+        let base = ZStack(alignment: .bottomLeading) {
+            Group {
+                switch uiState.contentMode {
+                case .library:
+                    PlaylistDetailView(pageController: pageController)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        .id("appkit-main-library")
+                case .nowPlaying:
                     GeometryReader { proxy in
-                        MiniPlayerView()
-                            .frame(maxWidth: proxy.size.width, alignment: .leading)
-                            .padding(.leading, GlassStyleTokens.miniPlayerHorizontalPadding)
-                            .padding(.trailing, GlassStyleTokens.miniPlayerHorizontalPadding)
-                            .padding(.bottom, 12)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                        NowPlayingHostView(mainContentWidth: proxy.size.width)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                            .ignoresSafeArea(.container, edges: .top)
                     }
-                    .allowsHitTesting(true)
-                }
-
-                if fullscreenWindowManager.isWindowedFullscreenActive {
-                    FullscreenPlayerView(hostContext: .embeddedWindow) {
-                        fullscreenWindowManager.closeFullscreenPlayerInWindow()
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .transition(.opacity)
-                    .zIndex(1)
+                    .ignoresSafeArea(.container, edges: .top)
+                    .id("appkit-main-nowplaying")
                 }
             }
+
+            if !FullscreenWindowManager.shared.isWindowedFullscreenActive {
+                GeometryReader { proxy in
+                    MiniPlayerView()
+                        .frame(maxWidth: proxy.size.width, alignment: .leading)
+                        .padding(.leading, GlassStyleTokens.miniPlayerHorizontalPadding)
+                        .padding(.trailing, GlassStyleTokens.miniPlayerHorizontalPadding)
+                        .padding(.bottom, 12)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                }
+                .allowsHitTesting(true)
+            }
+
+            if fullscreenWindowManager.isWindowedFullscreenActive {
+                FullscreenPlayerView(hostContext: .embeddedWindow) {
+                    fullscreenWindowManager.closeFullscreenPlayerInWindow()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .transition(.opacity)
+                .zIndex(1)
+            }
+        }
+
+        let withAppear: some View = base
             .onAppear {
                 applyAppearanceToWindows()
                 syncThemeStoreWithSwiftUIColorScheme(swiftUIColorScheme)
@@ -111,22 +139,28 @@ struct AppKitMainContentPaneRoot: View {
                     _ = markNowPlayingArtBackgroundPresentationIfNeeded()
                 }
             }
-            .onChange(of: settings.followSystemAppearance) { _, _ in
+
+        let withSettingsChanges: some View = withAppear
+            .onChange(of: settings.followSystemAppearance) { (_: Bool, _: Bool) in
                 applyAppearanceToWindows()
             }
-            .onChange(of: settings.manualAppearance) { _, _ in
+            .onChange(of: settings.manualAppearance) { (_: AppSettings.ManualAppearance, _: AppSettings.ManualAppearance) in
                 applyAppearanceToWindows()
             }
-            .onChange(of: settings.globalArtworkTintEnabled) { _, _ in
+            .onChange(of: settings.globalArtworkTintEnabled) { (_: Bool, _: Bool) in
                 Task { @MainActor in
                     await themeStore.refreshPalette(reason: "global_artwork_tint_toggle")
                 }
             }
+
+        let withTasks: some View = withSettingsChanges
             .task(id: libraryVM.state) {
                 guard libraryVM.state == .loading else { return }
+                // Avoid double-reload when reloadLibrary() is already in progress.
+                guard libraryVM.loadingPhase.isIdle || libraryVM.loadingPhase.isFailed else { return }
                 await libraryVM.load()
             }
-            .onChange(of: swiftUIColorScheme) { _, newScheme in
+            .onChange(of: swiftUIColorScheme) { (_: ColorScheme, newScheme: ColorScheme) in
                 syncThemeStoreWithSwiftUIColorScheme(newScheme)
             }
             .onReceive(NotificationCenter.default.publisher(for: .playbackTrackDidChange)) { _ in
@@ -144,31 +178,28 @@ struct AppKitMainContentPaneRoot: View {
             .task(id: playbackThemeArtworkIdentity(playbackCoordinator: playbackCoordinator)) {
                 await themeStore.updateTheme(for: playbackCoordinator.presentation)
             }
-            .onChange(of: uiState.contentMode) { _, newValue in
-                guard newValue == .nowPlaying else { return }
-                guard shouldTriggerArtBackgroundTransition(playbackCoordinator: playbackCoordinator, uiState: uiState) else {
-                    return
-                }
-                if markNowPlayingArtBackgroundPresentationIfNeeded() {
-                    return
-                }
-                artBackgroundController.triggerTransition()
+
+        let withEvents: some View = withTasks
+            .onChange(of: uiState.contentMode) { (_: ContentMode, newValue: ContentMode) in
+                handleContentModeChange(newValue, playbackCoordinator: playbackCoordinator, uiState: uiState)
             }
-            .onChange(of: playerVM.currentTrack?.id) { _, _ in
+            .onChange(of: playerVM.currentTrack?.id) { (_: UUID?, _: UUID?) in
                 if shouldTriggerArtBackgroundTransition(playbackCoordinator: playbackCoordinator, uiState: uiState) {
                     artBackgroundController.triggerTransition()
                 }
             }
-            .onChange(of: settings.nowPlayingArtBackgroundEnabled) { _, enabled in
+            .onChange(of: settings.nowPlayingArtBackgroundEnabled) { (_: Bool, enabled: Bool) in
                 if enabled && shouldTriggerArtBackgroundTransition(playbackCoordinator: playbackCoordinator, uiState: uiState) {
                     artBackgroundController.triggerTransition()
                 }
             }
-            .onChange(of: fullscreenWindowManager.presentationMode) { _, mode in
+            .onChange(of: fullscreenWindowManager.presentationMode) { (_: FullscreenWindowManager.PresentationMode, mode: FullscreenWindowManager.PresentationMode) in
                 if mode == .none && shouldTriggerArtBackgroundTransition(playbackCoordinator: playbackCoordinator, uiState: uiState) {
                     artBackgroundController.triggerTransition()
                 }
             }
+
+        return withEvents
             .environment(AppSettings.shared)
             .environment(appSession.uiState)
             .environment(libraryVM)
@@ -185,10 +216,21 @@ struct AppKitMainContentPaneRoot: View {
             .modelContainer(appSession.sharedModelContainer)
             .tint(themeStore.accentColor)
             .accentColor(themeStore.accentColor)
-        } else {
-            ProgressView()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func handleContentModeChange(
+        _ newValue: ContentMode,
+        playbackCoordinator: PlaybackCoordinator,
+        uiState: UIStateViewModel
+    ) {
+        guard newValue == .nowPlaying else { return }
+        guard shouldTriggerArtBackgroundTransition(playbackCoordinator: playbackCoordinator, uiState: uiState) else {
+            return
         }
+        if markNowPlayingArtBackgroundPresentationIfNeeded() {
+            return
+        }
+        artBackgroundController.triggerTransition()
     }
 
     private func playbackThemeArtworkIdentity(playbackCoordinator: PlaybackCoordinator) -> String {
