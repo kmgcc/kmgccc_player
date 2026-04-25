@@ -143,24 +143,26 @@ actor PlaylistArtworkPipeline {
 }
 
 extension PlaylistArtworkPipeline {
-    nonisolated static func rowSourceIdentity(trackID: UUID, artworkData: Data?) -> String {
+    nonisolated static func rowSourceIdentity(trackID: UUID, artworkData: Data?, artworkFileURL: URL? = nil) -> String {
         let checksum = ArtworkLoader.checksum(for: artworkData)
-        return "row-\(trackID.uuidString)-\(checksum)"
+        let fileHash = artworkFileURL?.path.hashValue ?? 0
+        return "row-\(trackID.uuidString)-\(checksum)-\(fileHash)"
     }
 
     nonisolated static func rowLowRequest(
         trackID: UUID,
         artworkData: Data?,
+        artworkFileURL: URL? = nil,
         artworkIdentity: String? = nil,
         logicalSize: CGFloat,
         scale: CGFloat
     ) -> PlaylistArtworkRequest {
         let side = max(22, logicalSize * 0.55) * max(1, scale)
         return PlaylistArtworkRequest(
-            sourceIdentity: artworkIdentity ?? rowSourceIdentity(trackID: trackID, artworkData: artworkData),
+            sourceIdentity: artworkIdentity ?? rowSourceIdentity(trackID: trackID, artworkData: artworkData, artworkFileURL: artworkFileURL),
             variant: .rowLow,
             artworkData: artworkData,
-            fileURL: nil,
+            fileURL: artworkFileURL,
             pixelSize: CGSize(width: side, height: side)
         )
     }
@@ -168,16 +170,17 @@ extension PlaylistArtworkPipeline {
     nonisolated static func rowHighRequest(
         trackID: UUID,
         artworkData: Data?,
+        artworkFileURL: URL? = nil,
         artworkIdentity: String? = nil,
         logicalSize: CGFloat,
         scale: CGFloat
     ) -> PlaylistArtworkRequest {
         let side = max(1, logicalSize) * max(1, scale)
         return PlaylistArtworkRequest(
-            sourceIdentity: artworkIdentity ?? rowSourceIdentity(trackID: trackID, artworkData: artworkData),
+            sourceIdentity: artworkIdentity ?? rowSourceIdentity(trackID: trackID, artworkData: artworkData, artworkFileURL: artworkFileURL),
             variant: .rowHigh,
             artworkData: artworkData,
-            fileURL: nil,
+            fileURL: artworkFileURL,
             pixelSize: CGSize(width: side, height: side)
         )
     }

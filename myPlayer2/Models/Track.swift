@@ -68,8 +68,27 @@ final class Track {
     // MARK: - Artwork
 
     /// Embedded or user-edited cover art (JPEG/PNG data).
+    /// Lazily loaded from disk via `loadArtworkDataIfNeeded()`.
     @Attribute(.externalStorage)
     var artworkData: Data?
+
+    // MARK: - Persistence References (lightweight, for lazy loading)
+
+    /// Snapshot of the library root URL at the time this track was created/scanned.
+    /// Used to prevent path drift when the active library root changes.
+    var libraryRootSnapshot: String = ""
+
+    /// Audio file name inside the track folder (e.g. "audio.m4a").
+    var audioFileName: String = ""
+
+    /// Artwork file name inside the track folder (e.g. "artwork.jpg").
+    var artworkFileName: String?
+
+    /// Lyrics file name inside the track folder (e.g. "lyrics.txt").
+    var lyricsFileName: String?
+
+    /// TTML lyrics file name inside the track folder (e.g. "lyrics.ttml").
+    var ttmlLyricsFileName: String?
 
     // MARK: - Playback Stats (Deprecated)
     /// DEPRECATED: All playback stats now live in preferenceStats via PreferenceStatsService.
@@ -115,6 +134,11 @@ final class Track {
         artworkData: Data? = nil,
         ttmlLyricText: String? = nil,
         lyricsText: String? = nil,
+        libraryRootSnapshot: String = "",
+        audioFileName: String = "",
+        artworkFileName: String? = nil,
+        lyricsFileName: String? = nil,
+        ttmlLyricsFileName: String? = nil,
         playCount: Int? = nil  // DEPRECATED: Ignored, use PreferenceStatsService instead
     ) {
         self.id = id
@@ -134,6 +158,11 @@ final class Track {
         self.artworkData = artworkData
         self.ttmlLyricText = ttmlLyricText
         self.lyricsText = lyricsText
+        self.libraryRootSnapshot = libraryRootSnapshot
+        self.audioFileName = audioFileName
+        self.artworkFileName = artworkFileName
+        self.lyricsFileName = lyricsFileName
+        self.ttmlLyricsFileName = ttmlLyricsFileName
         // NOTE: playCount parameter is deprecated. If provided, it's stored in preferenceStats via sidecar.
     }
 
@@ -226,6 +255,83 @@ final class Track {
         ttmlLyricText = nil
         lyricsText = nil
     }
+
+    // MARK: - Persistence URL Resolution (root-snapshot aware)
+
+    /// Resolve the track folder URL using the stored root snapshot.
+    /// Falls back to the current active library root if no snapshot is stored.
+    func resolvedTrackFolderURL() -> URL? {
+        let root: URL
+        if !libraryRootSnapshot.isEmpty {
+            root = URL(fileURLWithPath: libraryRootSnapshot)
+        } else {
+            root = LocalLibraryPaths.libraryRootURL
+        }
+        return root.appendingPathComponent("Tracks", isDirectory: true)
+            .appendingPathComponent(id.uuidString, isDirectory: true)
+    }
+
+    func resolvedAudioURL() -> URL? {
+        guard !audioFileName.isEmpty else {
+            guard !libraryRelativePath.isEmpty else { return nil }
+            return LocalLibraryPaths.libraryURL(from: libraryRelativePath)
+        }
+        return resolvedTrackFolderURL()?.appendingPathComponent(audioFileName)
+    }
+
+    func resolvedArtworkURL() -> URL? {
+        guard let artworkFileName else { return nil }
+        return resolvedTrackFolderURL()?.appendingPathComponent(artworkFileName)
+    }
+
+    func resolvedLyricsURL() -> URL? {
+        guard let lyricsFileName else { return nil }
+        return resolvedTrackFolderURL()?.appendingPathComponent(lyricsFileName)
+    }
+
+    func resolvedTTMLURL() -> URL? {
+        guard let ttmlLyricsFileName else { return nil }
+        return resolvedTrackFolderURL()?.appendingPathComponent(ttmlLyricsFileName)
+    }
+
+    // MARK: - Lazy Loading
+
+    /// Load artwork data from disk if not already in memory.
+    func loadArtworkDataIfNeeded() -> Data? {
+        if let data = artworkData, !data.isEmpty { return data }
+        guard let url = resolvedArtworkURL() else { return nil }
+        let data = try? Data(contentsOf: url)
+        artworkData = data
+        return data
+    }
+
+    /// Load plain lyrics from disk if not already in memory.
+    func loadLyricsIfNeeded() -> String? {
+        if let text = lyricsText, !text.isEmpty { return text }
+        guard let url = resolvedLyricsURL() else { return nil }
+        let text = try? String(contentsOf: url, encoding: .utf8)
+        lyricsText = text
+        return text
+    }
+
+    /// Load TTML lyrics from disk if not already in memory.
+    func loadTTMLLyricsIfNeeded() -> String? {
+        if let text = ttmlLyricText, !text.isEmpty { return text }
+        // Try dedicated TTML file first
+        if let ttmlURL = resolvedTTMLURL(),
+           let text = try? String(contentsOf: ttmlURL, encoding: .utf8), !text.isEmpty {
+            ttmlLyricText = text
+            return text
+        }
+        // Fallback: lyrics file might be TTML
+        if let lyricsURL = resolvedLyricsURL(),
+           let text = try? String(contentsOf: lyricsURL, encoding: .utf8), !text.isEmpty,
+           lyricsURL.lastPathComponent.lowercased().hasSuffix(".ttml") {
+            ttmlLyricText = text
+            return text
+        }
+        return nil
+    }
 }
 
 enum TrackLyricsDraft {
@@ -249,7 +355,7 @@ enum TrackLyricsDraft {
 
     static func differs(from track: Track, editorText: String) -> Bool {
         let draft = storage(from: editorText)
-        return draft.ttmlText != track.ttmlLyricText || draft.plainText != track.lyricsText
+        return draft.ttmlText != track.loadTTMLLyricsIfNeeded() || draft.plainText != track.loadLyricsIfNeeded()
     }
 
     static func assign(editorText: String, to track: Track) {

@@ -276,19 +276,20 @@ final class NowPlayingService {
     }
     
     private func mediaArtwork(for track: Track) -> MPMediaItemArtwork? {
-        let cacheKey = "track-\(track.id.uuidString)-\(artworkSignature(for: track.artworkData))"
-        
+        let artworkData = track.loadArtworkDataIfNeeded()
+        let cacheKey = "track-\(track.id.uuidString)-\(artworkSignature(for: artworkData))"
+
         if cachedArtworkKey == cacheKey {
             return cachedArtwork
         }
-        
+
         cachedArtworkKey = cacheKey
         cachedArtwork = nil
-        
-        guard let data = track.artworkData, !data.isEmpty, let image = NSImage(data: data) else {
+
+        guard let data = artworkData, !data.isEmpty, let image = NSImage(data: data) else {
             return nil
         }
-        
+
         let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
         cachedArtwork = artwork
         return artwork

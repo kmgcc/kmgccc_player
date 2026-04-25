@@ -560,7 +560,8 @@ private struct QueueRow: View {
     // MARK: - Load Artwork
 
     private func loadArtwork() async {
-        guard let artworkData = track.artworkData, !artworkData.isEmpty else {
+        let artworkData = track.loadArtworkDataIfNeeded()
+        guard let artworkData, !artworkData.isEmpty else {
             await MainActor.run {
                 artworkImage = nil
             }

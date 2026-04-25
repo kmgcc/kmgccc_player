@@ -91,12 +91,15 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     func reloadFromLibrary() async {
         libraryService.ensureLibraryFolders()
         playlistItemAddedAtMap.removeAll()
-        let metas = scanner.scanTracks()
-        let tracks = metas.map { buildTrack(from: $0) }
+
+        let snapshot = await Task.detached { @Sendable in
+            await LibraryDiskScanner().scanAll()
+        }.value
+
+        let tracks = snapshot.trackMetas.map { buildTrack(from: $0) }
         let tracksById = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) })
 
-        let sidecars = libraryService.loadPlaylistSidecarsFromDisk()
-        let loadedPlaylists: [Playlist] = sidecars.map { sidecar in
+        let loadedPlaylists: [Playlist] = snapshot.playlistSidecars.map { sidecar in
             let resolvedTrackIDs: [UUID]
             let addedAtByTrackID: [UUID: Date]
 
@@ -133,6 +136,8 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             derivedArtists: runtimeArtists,
             derivedAlbums: runtimeAlbums,
             allTracks: allTracks,
+            artistSidecars: snapshot.artistSidecars,
+            albumSidecars: snapshot.albumSidecars,
             libraryService: libraryService
         )
         artistEntries = artists
@@ -157,10 +162,16 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         persistImportedTrackResources([track], reason: "initialImport")
         rebuildRuntimeDerivedState()
         rebuildTrackIndexCache()
+        let (artistSidecars, albumSidecars) = await Task.detached { @Sendable in
+            let scanner = LibraryDiskScanner()
+            return (scanner.loadArtistSidecars(), scanner.loadAlbumSidecars())
+        }.value
         let (artists, albums) = metadataSync.sync(
             derivedArtists: runtimeArtists,
             derivedAlbums: runtimeAlbums,
             allTracks: allTracks,
+            artistSidecars: artistSidecars,
+            albumSidecars: albumSidecars,
             libraryService: libraryService
         )
         artistEntries = artists
@@ -172,10 +183,16 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         persistImportedTrackResources(tracks, reason: "initialImport")
         rebuildRuntimeDerivedState()
         rebuildTrackIndexCache()
+        let (artistSidecars, albumSidecars) = await Task.detached { @Sendable in
+            let scanner = LibraryDiskScanner()
+            return (scanner.loadArtistSidecars(), scanner.loadAlbumSidecars())
+        }.value
         let (artists, albums) = metadataSync.sync(
             derivedArtists: runtimeArtists,
             derivedAlbums: runtimeAlbums,
             allTracks: allTracks,
+            artistSidecars: artistSidecars,
+            albumSidecars: albumSidecars,
             libraryService: libraryService
         )
         artistEntries = artists
@@ -274,7 +291,9 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             category: .library
         )
 
-        let metas = scanner.scanTracks(ids: uniqueIDs)
+        let metas = await Task.detached { @Sendable in
+            await MusicLibraryScanner().scanTracks(ids: uniqueIDs)
+        }.value
         let refreshedTracks = metas.map(buildTrack)
         let refreshedByID = Dictionary(uniqueKeysWithValues: refreshedTracks.map { ($0.id, $0) })
 
@@ -292,10 +311,16 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         }
         rebuildRuntimeDerivedState()
         rebuildTrackIndexCache()
+        let (artistSidecars, albumSidecars) = await Task.detached { @Sendable in
+            let scanner = LibraryDiskScanner()
+            return (scanner.loadArtistSidecars(), scanner.loadAlbumSidecars())
+        }.value
         let (artists, albums) = metadataSync.sync(
             derivedArtists: runtimeArtists,
             derivedAlbums: runtimeAlbums,
             allTracks: allTracks,
+            artistSidecars: artistSidecars,
+            albumSidecars: albumSidecars,
             libraryService: libraryService
         )
         artistEntries = artists
@@ -639,33 +664,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
 
         PreferenceStatsService.shared.replaceStats(for: meta.id, with: persistedStats)
 
-        let artworkData: Data? = meta.artworkFileName.flatMap { fileName in
-            let artworkURL = meta.folderURL.appendingPathComponent(fileName)
-            return try? Data(contentsOf: artworkURL)
-        }
-
-        var ttmlText: String?
-        var lyricsText: String?
-
-        if let ttmlFileName = meta.ttmlLyricsFileName {
-            let ttmlURL = meta.folderURL.appendingPathComponent(ttmlFileName)
-            if let text = try? String(contentsOf: ttmlURL, encoding: .utf8), !text.isEmpty {
-                ttmlText = text
-            }
-        }
-
-        if ttmlText == nil, let lyricsFileName = meta.lyricsFileName {
-            let lyricsURL = meta.folderURL.appendingPathComponent(lyricsFileName)
-            if let text = try? String(contentsOf: lyricsURL, encoding: .utf8) {
-                if lyricsFileName.lowercased().hasSuffix(".ttml") {
-                    ttmlText = text
-                } else {
-                    lyricsText = text
-                }
-            }
-        }
-
-        return Track(
+        let track = Track(
             id: meta.id,
             title: meta.title,
             artist: meta.artist,
@@ -679,10 +678,18 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             originalFilePath: meta.originalFilePath,
             libraryRelativePath: meta.libraryRelativePath,
             availability: isAvailable ? .available : .missing,
-            artworkData: artworkData,
-            ttmlLyricText: ttmlText,
-            lyricsText: lyricsText
+            artworkData: nil,
+            ttmlLyricText: nil,
+            lyricsText: nil
         )
+
+        track.libraryRootSnapshot = LocalLibraryPaths.libraryRootURL.path
+        track.audioFileName = meta.audioFileName
+        track.artworkFileName = meta.artworkFileName
+        track.lyricsFileName = meta.lyricsFileName
+        track.ttmlLyricsFileName = meta.ttmlLyricsFileName
+
+        return track
     }
 
     private func rebuildRuntimeDerivedState() {

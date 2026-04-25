@@ -134,10 +134,11 @@ actor ArtistArtworkGenerator {
         let sortedTracks = tracks.sorted { $0.id.uuidString < $1.id.uuidString }
 
         if let representative = sortedTracks.first(where: {
-            guard let artworkData = $0.artworkData else { return false }
+            let artworkData = $0.loadArtworkDataIfNeeded()
+            guard let artworkData else { return false }
             return !artworkData.isEmpty
         }) {
-            let checksum = ArtworkLoader.checksum(for: representative.artworkData)
+            let checksum = ArtworkLoader.checksum(for: representative.loadArtworkDataIfNeeded())
             return "\(text)|\(representative.id.uuidString)|\(checksum)|\(sortedTracks.count)"
         }
 
@@ -151,7 +152,8 @@ actor ArtistArtworkGenerator {
         let sortedTracks = tracks.sorted { $0.id.uuidString < $1.id.uuidString }
 
         for track in sortedTracks {
-            guard let artworkData = track.artworkData, !artworkData.isEmpty else { continue }
+            let artworkData = track.loadArtworkDataIfNeeded()
+            guard let artworkData, !artworkData.isEmpty else { continue }
             let palette = ArtworkColorExtractor.uiThemePalette(from: artworkData, maxColors: 3)
             if let spec = gradientSpec(from: palette, artistName: artistName) {
                 return spec

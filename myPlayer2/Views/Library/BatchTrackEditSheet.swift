@@ -592,8 +592,8 @@ struct BatchTrackEditSheet: View {
         title = track.title
         artist = track.artist
         album = track.album
-        lyricsText = track.lyricsText ?? track.ttmlLyricText ?? ""
-        artworkData = track.artworkData
+        lyricsText = track.loadTTMLLyricsIfNeeded() ?? track.loadLyricsIfNeeded() ?? ""
+        artworkData = track.loadArtworkDataIfNeeded()
         lyricsTimeOffsetMs = track.lyricsTimeOffsetMs
         statusMessage = nil
         isLoadingDraft = false

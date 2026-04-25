@@ -232,6 +232,7 @@ final class PlaylistPageController {
             PlaylistArtworkPipeline.rowLowRequest(
                 trackID: $0.id,
                 artworkData: $0.artworkData,
+                artworkFileURL: $0.artworkFileURL,
                 artworkIdentity: $0.artworkIdentity,
                 logicalSize: Constants.Layout.artworkSmallSize,
                 scale: scale
@@ -241,6 +242,7 @@ final class PlaylistPageController {
             PlaylistArtworkPipeline.rowHighRequest(
                 trackID: $0.id,
                 artworkData: $0.artworkData,
+                artworkFileURL: $0.artworkFileURL,
                 artworkIdentity: $0.artworkIdentity,
                 logicalSize: Constants.Layout.artworkSmallSize,
                 scale: scale
@@ -705,6 +707,7 @@ final class PlaylistPageController {
             PlaylistArtworkPipeline.rowLowRequest(
                 trackID: $0.id,
                 artworkData: $0.artworkData,
+                artworkFileURL: $0.artworkFileURL,
                 artworkIdentity: $0.artworkIdentity,
                 logicalSize: Constants.Layout.artworkSmallSize,
                 scale: scale
@@ -715,6 +718,7 @@ final class PlaylistPageController {
             PlaylistArtworkPipeline.rowHighRequest(
                 trackID: $0.id,
                 artworkData: $0.artworkData,
+                artworkFileURL: $0.artworkFileURL,
                 artworkIdentity: $0.artworkIdentity,
                 logicalSize: Constants.Layout.artworkSmallSize,
                 scale: scale
@@ -1051,7 +1055,8 @@ final class PlaylistPageController {
             guard let entry = libraryVM.albumEntries.first(where: { $0.canonicalKey == key }) else {
                 return nil
             }
-            let fallbackArtwork = displayedTracks.first?.artworkData.flatMap {
+            let fallbackArtworkData = displayedTracks.first?.loadArtworkDataIfNeeded()
+            let fallbackArtwork = fallbackArtworkData.flatMap {
                 ArtworkLoader.squareHeaderPreviewImage(data: $0, maxPixelSize: 320)
             }
             config = .album(
@@ -1217,6 +1222,7 @@ final class PlaylistPageController {
             let displayedTrackByID = Dictionary(uniqueKeysWithValues: displayedTracks.map { ($0.id, $0) })
             let rowRecords = sortedFiltered.compactMap { entry -> PlaylistPageRowRecord? in
                 guard let track = displayedTrackByID[entry.id] else { return nil }
+                let artworkFileURL = track.resolvedArtworkURL()
                 return PlaylistPageRowRecord(
                     id: track.id,
                     title: track.title,
@@ -1224,8 +1230,10 @@ final class PlaylistPageController {
                     durationText: formatDuration(track.duration),
                     artworkIdentity: PlaylistArtworkPipeline.rowSourceIdentity(
                         trackID: track.id,
-                        artworkData: track.artworkData
+                        artworkData: track.artworkData,
+                        artworkFileURL: artworkFileURL
                     ),
+                    artworkFileURL: artworkFileURL,
                     isMissing: track.availability == .missing
                 )
             }

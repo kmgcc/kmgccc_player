@@ -7,7 +7,7 @@
 
 import Foundation
 
-struct ScannedTrackMeta {
+struct ScannedTrackMeta: Sendable {
     let schemaVersion: Int
     let id: UUID
     let title: String
@@ -34,20 +34,10 @@ struct ScannedTrackMeta {
     }
 }
 
-@MainActor
-final class MusicLibraryScanner {
-    private let fileManager = FileManager.default
-    private let iso8601WithFractional: ISO8601DateFormatter
-    private let iso8601: ISO8601DateFormatter
-
-    init() {
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        self.iso8601WithFractional = fractional
-        self.iso8601 = ISO8601DateFormatter()
-    }
+struct MusicLibraryScanner: Sendable {
 
     func scanTracks() -> [ScannedTrackMeta] {
+        let fileManager = FileManager()
         let dirs =
             (try? fileManager.contentsOfDirectory(
                 at: LocalLibraryPaths.tracksRootURL,
@@ -192,6 +182,9 @@ final class MusicLibraryScanner {
 
     private func parseDate(_ raw: Any?) -> Date? {
         guard let value = raw as? String, !value.isEmpty else { return nil }
+        let iso8601WithFractional = ISO8601DateFormatter()
+        iso8601WithFractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let iso8601 = ISO8601DateFormatter()
         return iso8601WithFractional.date(from: value) ?? iso8601.date(from: value)
     }
 
@@ -223,6 +216,7 @@ final class MusicLibraryScanner {
     }
 
     private func findAudioFileName(in folder: URL) -> String? {
+        let fileManager = FileManager()
         let files =
             (try? fileManager.contentsOfDirectory(
                 at: folder,
@@ -243,6 +237,7 @@ final class MusicLibraryScanner {
     }
 
     private func resolveArtworkFileName(in folder: URL, preferredFileName: String?) -> String? {
+        let fileManager = FileManager()
         for fileName in LocalLibraryPaths.trackArtworkCandidateFileNames(preferredFileName: preferredFileName) {
             let artworkURL = folder.appendingPathComponent(fileName)
             if fileManager.fileExists(atPath: artworkURL.path) {
