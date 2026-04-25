@@ -876,7 +876,8 @@ private struct ScrollOffsetSensor: View {
         .environment(playerVM)
         .environment(PlaybackCoordinator(
             playerVM: playerVM,
-            appleMusicAdapter: AppleMusicPlaybackAdapter(libraryVM: libraryVM)
+            appleMusicAdapter: AppleMusicPlaybackAdapter(libraryVM: libraryVM),
+            systemNowPlayingProvider: SystemNowPlayingProvider(libraryVM: libraryVM)
         ))
         .environment(UIStateViewModel())
         .environmentObject(ThemeStore.shared)

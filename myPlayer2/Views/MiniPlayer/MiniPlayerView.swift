@@ -41,7 +41,7 @@ struct MiniPlayerView: View {
     private var playbackModeExpandedWidth: CGFloat { 168 }
     private var playbackModeCollapsedWidth: CGFloat { 44 }
     private var playbackModeWidth: CGFloat {
-        let expandedWidth = playbackCoordinator.presentation.source == .appleMusic ? 150 : playbackModeExpandedWidth
+        let expandedWidth = playbackCoordinator.presentation.source.isExternal ? 150 : playbackModeExpandedWidth
         return isPlaybackModeExpanded ? expandedWidth : playbackModeCollapsedWidth
     }
     private var layoutAnimation: Animation {
@@ -303,7 +303,7 @@ struct MiniPlayerView: View {
 
     private var playbackModeView: some View {
         let presentation = playbackCoordinator.presentation
-        let isEnabled = presentation.isControlEnabled && presentation.hasTrack
+        let isEnabled = presentation.isPlaybackModeControlEnabled && presentation.hasTrack
         return Group {
             switch presentation.source {
             case .local:
@@ -317,7 +317,7 @@ struct MiniPlayerView: View {
                     },
                     onCurrentModeRetap: { _ in }
                 )
-            case .appleMusic:
+            case .appleMusic, .systemNowPlaying:
                 AppleMusicPlaybackModeSlider(
                     mode: presentation.appleMusicPlaybackMode ?? .sequence,
                     isEnabled: isEnabled,
@@ -369,6 +369,7 @@ struct MiniPlayerView: View {
             let barHeight: CGFloat = 5
             let fill = progressFillColor
             let track = progressTrackColor
+            let isSeekEnabled = playbackCoordinator.presentation.isSeekEnabled
 
             ZStack {
                 ZStack(alignment: .leading) {
@@ -386,11 +387,16 @@ struct MiniPlayerView: View {
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
+                        guard isSeekEnabled else { return }
                         isDragging = true
                         let progress = max(0, min(1, value.location.x / geometry.size.width))
                         dragProgress = progress * playbackCoordinator.presentation.duration
                     }
                     .onEnded { value in
+                        guard isSeekEnabled else {
+                            isDragging = false
+                            return
+                        }
                         let progress = max(0, min(1, value.location.x / geometry.size.width))
                         let seekTime = progress * playbackCoordinator.presentation.duration
                         playbackCoordinator.seek(to: seekTime)
@@ -399,6 +405,7 @@ struct MiniPlayerView: View {
             )
         }
         .frame(height: 18)
+        .opacity(playbackCoordinator.presentation.isSeekEnabled ? 1 : 0.55)
     }
 
     private var progressArea: some View {
@@ -486,10 +493,11 @@ struct MiniPlayerView: View {
     }
 
     private var volumeView: some View {
-        HStack(spacing: 6) {
+        let isEnabled = playbackCoordinator.presentation.isVolumeControlEnabled
+        return HStack(spacing: 6) {
             Image(systemName: volumeIcon)
                 .font(.caption)
-                .foregroundStyle(Color.secondary)
+                .foregroundStyle(isEnabled ? Color.secondary : Color.secondary.opacity(0.4))
                 .frame(width: 14)
 
             Slider(
@@ -502,6 +510,8 @@ struct MiniPlayerView: View {
             .frame(width: 80)
             .controlSize(.small)
             .tint(themeStore.accentColor)
+            .disabled(!isEnabled)
+            .opacity(isEnabled ? 1 : 0.45)
         }
     }
 
@@ -1174,7 +1184,8 @@ struct AppleMusicPlaybackModeSlider: View {
     let appleMusicAdapter = AppleMusicPlaybackAdapter(libraryVM: libraryVM)
     let playbackCoordinator = PlaybackCoordinator(
         playerVM: playerVM,
-        appleMusicAdapter: appleMusicAdapter
+        appleMusicAdapter: appleMusicAdapter,
+        systemNowPlayingProvider: SystemNowPlayingProvider(libraryVM: libraryVM)
     )
     let uiState = UIStateViewModel()
 

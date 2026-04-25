@@ -23,6 +23,7 @@ struct MiniPlayerProgressSpectrumRow: View {
     // Progress bar state
     let progress: Double
     let duration: Double
+    let isSeekEnabled: Bool
     let onSeek: (Double) -> Void
     let onDragStart: () -> Void
     let onDragEnd: () -> Void
@@ -49,6 +50,7 @@ struct MiniPlayerProgressSpectrumRow: View {
         accentColor: Color?,
         progress: Double,
         duration: Double,
+        isSeekEnabled: Bool = true,
         onSeek: @escaping (Double) -> Void,
         onDragStart: @escaping () -> Void,
         onDragEnd: @escaping () -> Void,
@@ -61,6 +63,7 @@ struct MiniPlayerProgressSpectrumRow: View {
         self.accentColor = accentColor
         self.progress = progress
         self.duration = duration
+        self.isSeekEnabled = isSeekEnabled
         self.onSeek = onSeek
         self.onDragStart = onDragStart
         self.onDragEnd = onDragEnd
@@ -120,6 +123,7 @@ struct MiniPlayerProgressSpectrumRow: View {
                 .gesture(
                     DragGesture(minimumDistance: 0)
                         .onChanged { value in
+                            guard isSeekEnabled else { return }
                             onInteraction()
                             onDragStart()
                             onDragStateChanged(true)
@@ -127,6 +131,10 @@ struct MiniPlayerProgressSpectrumRow: View {
                             onSeek(progress * duration)
                         }
                         .onEnded { value in
+                            guard isSeekEnabled else {
+                                onDragStateChanged(false)
+                                return
+                            }
                             onInteraction()
                             let progress = max(0, min(1, value.location.x / geometry.size.width))
                             onSeek(progress * duration)
@@ -197,7 +205,7 @@ struct MiniPlayerProgressSpectrumRow: View {
 
     private var progressFillColor: Color {
         let base = accentColor ?? Color.primary
-        return enforceMinLightness(base, minLightness: Self.minLightness).opacity(0.9)
+        return enforceMinLightness(base, minLightness: Self.minLightness).opacity(isSeekEnabled ? 0.9 : 0.5)
     }
 
     private var progressTrackColor: Color {

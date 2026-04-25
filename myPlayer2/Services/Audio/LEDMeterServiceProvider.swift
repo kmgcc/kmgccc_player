@@ -24,7 +24,7 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
 
     /// Metrics from the real service or the external simulator.
     var metrics: LEDMeterMetrics {
-        if playbackSource == .appleMusic {
+        if playbackSource.isExternal {
             _ = externalPulse
             return ExternalPlaybackSpectrumSimulator.shared.lastLedMetrics
         }
@@ -33,7 +33,7 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
 
     /// Audio metrics from the real service or the external simulator.
     var audioMetrics: AudioMetrics {
-        if playbackSource == .appleMusic {
+        if playbackSource.isExternal {
             _ = externalPulse
             return ExternalPlaybackSpectrumSimulator.shared.lastAudioMetrics
         }
@@ -42,7 +42,7 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
 
     /// Normalized level from the real service or the external simulator.
     var normalizedLevel: Float {
-        if playbackSource == .appleMusic {
+        if playbackSource.isExternal {
             _ = externalPulse
             return ExternalPlaybackSpectrumSimulator.shared.lastAudioMetrics.smoothedLevel
         }
@@ -53,7 +53,7 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
     var playbackSource: PlaybackSource = .local {
         didSet {
             guard oldValue != playbackSource else { return }
-            if playbackSource == .appleMusic {
+            if playbackSource.isExternal {
                 startExternalPolling()
             } else {
                 stopExternalPolling()
@@ -91,7 +91,7 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
     // MARK: - AudioLevelMeterProtocol
 
     func start() {
-        if playbackSource == .appleMusic {
+        if playbackSource.isExternal {
             startExternalPolling()
         } else {
             _service?.start()
@@ -127,7 +127,7 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
         guard externalPollTimer == nil else { return }
         let timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self, self.playbackSource == .appleMusic else { return }
+                guard let self, self.playbackSource.isExternal else { return }
                 self.externalPulse &+= 1
             }
         }

@@ -46,9 +46,9 @@ enum LyricsRuntimeOverlayResolver {
             overlay.translationFontSizeDeltaPx += 4
         }
 
-        // Apple Music listening mode: advance lyrics globally by 350ms.
+        // External listening mode: advance lyrics globally by 350ms.
         // Reuses the existing "global advance" chain by increasing the effective advance.
-        if playbackSource == .appleMusic {
+        if playbackSource.isExternal {
             overlay.globalAdvanceDeltaMs += 350
         }
 

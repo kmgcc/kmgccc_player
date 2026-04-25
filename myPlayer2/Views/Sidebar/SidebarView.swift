@@ -385,9 +385,7 @@ struct SidebarView: View {
     }
 
     private func playbackSourceSegment(_ source: PlaybackSource, isSelected: Bool) -> some View {
-        let title: LocalizedStringKey = source == .local
-            ? "playback.source.local"
-            : "playback.source.apple_music"
+        let title = LocalizedStringKey(source.localizedTitleKey)
         let foregroundColor = isSelected ? selectedPlaybackSourceTextColor : Color.secondary
 
         return Text(title)
