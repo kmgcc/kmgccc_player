@@ -160,6 +160,10 @@ struct PlaylistDetailView: View {
             return "home"
         case .allSongs:
             return "allSongs"
+        case .allAlbums:
+            return "allAlbums"
+        case .allArtists:
+            return "allArtists"
         case .playlist(let id):
             return "playlist-\(id.uuidString)"
         case .artist(let key):

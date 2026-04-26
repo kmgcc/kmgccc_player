@@ -54,13 +54,12 @@ struct SidebarView: View {
 
             // Home Link
             Button {
+                uiState.clearHomeNavigationContext()
                 libraryVM.currentSelection = .home
                 uiState.showLibrary()
             } label: {
                 HStack {
-                    Label(
-                        NSLocalizedString("sidebar.home", comment: "Home"),
-                        systemImage: "house")
+                    Label("主页", systemImage: "house")
                     Spacer()
                 }
                 .padding(.horizontal, 16)
@@ -528,6 +527,7 @@ struct SidebarView: View {
     }
 
     private func handleSelection(_ item: SidebarSelection) {
+        uiState.clearHomeNavigationContext()
         switch item {
         case .home:
             libraryVM.currentSelection = .home
@@ -546,7 +546,7 @@ struct SidebarView: View {
     private var currentSelection: SidebarSelection {
         // Use the explicit currentSelection from LibraryViewModel
         switch libraryVM.currentSelection {
-        case .home:
+        case .home, .allAlbums, .allArtists:
             return .home
         case .allSongs:
             return .allSongs

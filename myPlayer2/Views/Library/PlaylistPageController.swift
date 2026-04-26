@@ -1024,7 +1024,7 @@ final class PlaylistPageController {
 
         let config: DetailHeaderConfig?
         switch selection {
-        case .home, .allSongs:
+        case .home, .allSongs, .allAlbums, .allArtists:
             config = nil
         case .playlist(let id):
             guard let playlist = libraryVM.playlists.first(where: { $0.id == id }) else { return nil }
@@ -1125,7 +1125,7 @@ final class PlaylistPageController {
         libraryVM: LibraryViewModel
     ) -> [Track] {
         switch selection {
-        case .home:
+        case .home, .allAlbums, .allArtists:
             return []
         case .allSongs:
             return libraryVM.allTracks.filter { $0.availability != .missing }
@@ -1188,6 +1188,10 @@ final class PlaylistPageController {
             return "home"
         case .allSongs:
             return "allSongs"
+        case .allAlbums:
+            return "allAlbums"
+        case .allArtists:
+            return "allArtists"
         case .playlist(let id):
             return "playlist-\(id.uuidString)"
         case .artist(let key):
