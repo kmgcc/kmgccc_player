@@ -65,6 +65,50 @@ enum TrackSortOrder: String, CaseIterable, Identifiable {
     }
 }
 
+/// Sort key for the All Albums page.
+/// Reuses the toolbar sort control via `LibraryViewModel.albumSortKey`.
+enum AlbumSortKey: String, CaseIterable, Identifiable {
+    case title
+    case artist
+    case trackCount
+    case totalDuration
+    case updatedAt
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .title:         return "标题"
+        case .artist:        return "艺人"
+        case .trackCount:    return "歌曲数"
+        case .totalDuration: return "总时长"
+        case .updatedAt:     return "最近更新"
+        }
+    }
+}
+
+/// Sort key for the All Artists page.
+/// Reuses the toolbar sort control via `LibraryViewModel.artistSortKey`.
+enum ArtistSortKey: String, CaseIterable, Identifiable {
+    case name
+    case trackCount
+    case albumCount
+    case totalDuration
+    case updatedAt
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .name:          return "名称"
+        case .trackCount:    return "歌曲数"
+        case .albumCount:    return "专辑数"
+        case .totalDuration: return "总时长"
+        case .updatedAt:     return "最近更新"
+        }
+    }
+}
+
 enum LibraryLoadState {
     case loading
     case loaded
@@ -266,6 +310,34 @@ final class LibraryViewModel {
         }
     }
 
+    /// Sort key for the All Albums page. Persists globally (not per-context),
+    /// since the All Albums page is a single shared view rather than a
+    /// per-playlist drilldown. Sort order is shared with `trackSortOrder`.
+    var albumSortKey: AlbumSortKey {
+        didSet {
+            if albumSortKey != oldValue {
+                UserDefaults.standard.set(
+                    albumSortKey.rawValue,
+                    forKey: DefaultsKey.albumSortKey
+                )
+            }
+        }
+    }
+
+    /// Sort key for the All Artists page. Persists globally (not per-context),
+    /// since the All Artists page is a single shared view rather than a
+    /// per-playlist drilldown. Sort order is shared with `trackSortOrder`.
+    var artistSortKey: ArtistSortKey {
+        didSet {
+            if artistSortKey != oldValue {
+                UserDefaults.standard.set(
+                    artistSortKey.rawValue,
+                    forKey: DefaultsKey.artistSortKey
+                )
+            }
+        }
+    }
+
     // MARK: - Dependencies
 
     private let repository: LibraryRepositoryProtocol
@@ -304,6 +376,18 @@ final class LibraryViewModel {
                     forKey: DefaultsKey.trackSortOrder
                 ) ?? ""
             ) ?? .descending
+        self.albumSortKey =
+            AlbumSortKey(
+                rawValue: UserDefaults.standard.string(
+                    forKey: DefaultsKey.albumSortKey
+                ) ?? ""
+            ) ?? .title
+        self.artistSortKey =
+            ArtistSortKey(
+                rawValue: UserDefaults.standard.string(
+                    forKey: DefaultsKey.artistSortKey
+                ) ?? ""
+            ) ?? .name
         migrateLegacySortPreferenceIfNeeded()
         applySortPreferenceForCurrentSelection()
         self.repository.setChangeHandler { [weak self] change in
@@ -1092,6 +1176,8 @@ final class LibraryViewModel {
         static let trackSortOrder = "trackSortOrder"
         static let trackSortPreferencesByPlaylist = "trackSortPreferencesByPlaylist"
         static let trackSortMigrationDone = "trackSortMigrationDone"
+        static let albumSortKey = "albumSortKey"
+        static let artistSortKey = "artistSortKey"
     }
 
     private var sortContextKey: String {
@@ -1106,6 +1192,16 @@ final class LibraryViewModel {
     }
 
     private func persistSortPreferenceForCurrentSelection() {
+        // Track sort preferences (key + order) only persist for selections
+        // backed by a track list. Album / artist / home pages have their
+        // own dedicated sort keys and reuse `trackSortOrder` in-memory only,
+        // so they should not contaminate the per-playlist preference map.
+        switch currentSelection {
+        case .home, .allAlbums, .allArtists:
+            return
+        default:
+            break
+        }
         var preferences = loadSortPreferencesMap()
         preferences[sortContextKey] = SortPreference(
             key: trackSortKey.rawValue,
@@ -1115,6 +1211,14 @@ final class LibraryViewModel {
     }
 
     private func applySortPreferenceForCurrentSelection() {
+        // Mirror the persistence guard: home / all-albums / all-artists
+        // do not own a track preference entry, so there's nothing to apply.
+        switch currentSelection {
+        case .home, .allAlbums, .allArtists:
+            return
+        default:
+            break
+        }
         let preferences = loadSortPreferencesMap()
         guard let preference = preferences[sortContextKey] else { return }
         guard

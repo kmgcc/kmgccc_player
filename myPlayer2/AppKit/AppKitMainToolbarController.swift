@@ -358,12 +358,46 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         keyHeader.isEnabled = false
         sortMenu.addItem(keyHeader)
 
-        for key in TrackSortKey.allCases {
-            let item = NSMenuItem(title: key.title, action: #selector(handleSortKey(_:)), keyEquivalent: "")
-            item.representedObject = key.rawValue
-            item.state = (libraryVM.trackSortKey == key) ? .on : .off
-            item.target = self
-            sortMenu.addItem(item)
+        // Context-aware sort keys: All Albums and All Artists pages
+        // expose their own sort dimensions (track count, album count, etc.),
+        // while track-list selections continue to use TrackSortKey.
+        switch libraryVM.currentSelection {
+        case .allAlbums:
+            for key in AlbumSortKey.allCases {
+                let item = NSMenuItem(
+                    title: key.title,
+                    action: #selector(handleSortKey(_:)),
+                    keyEquivalent: ""
+                )
+                item.representedObject = key.rawValue
+                item.state = (libraryVM.albumSortKey == key) ? .on : .off
+                item.target = self
+                sortMenu.addItem(item)
+            }
+        case .allArtists:
+            for key in ArtistSortKey.allCases {
+                let item = NSMenuItem(
+                    title: key.title,
+                    action: #selector(handleSortKey(_:)),
+                    keyEquivalent: ""
+                )
+                item.representedObject = key.rawValue
+                item.state = (libraryVM.artistSortKey == key) ? .on : .off
+                item.target = self
+                sortMenu.addItem(item)
+            }
+        default:
+            for key in TrackSortKey.allCases {
+                let item = NSMenuItem(
+                    title: key.title,
+                    action: #selector(handleSortKey(_:)),
+                    keyEquivalent: ""
+                )
+                item.representedObject = key.rawValue
+                item.state = (libraryVM.trackSortKey == key) ? .on : .off
+                item.target = self
+                sortMenu.addItem(item)
+            }
         }
 
         sortMenu.addItem(.separator())
@@ -385,11 +419,24 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
     private func handleSortKey(_ sender: NSMenuItem) {
         guard
             let raw = sender.representedObject as? String,
-            let key = TrackSortKey(rawValue: raw),
             let libraryVM = currentLibraryVM
         else { return }
-        libraryVM.trackSortKey = key
-        currentPageController?.handleSortChange(reason: "toolbar.sortKey")
+
+        // Dispatch the selected raw value into the right model property based
+        // on the current selection. This lets the same toolbar menu item
+        // action serve TrackSortKey, AlbumSortKey, and ArtistSortKey.
+        switch libraryVM.currentSelection {
+        case .allAlbums:
+            guard let key = AlbumSortKey(rawValue: raw) else { return }
+            libraryVM.albumSortKey = key
+        case .allArtists:
+            guard let key = ArtistSortKey(rawValue: raw) else { return }
+            libraryVM.artistSortKey = key
+        default:
+            guard let key = TrackSortKey(rawValue: raw) else { return }
+            libraryVM.trackSortKey = key
+            currentPageController?.handleSortChange(reason: "toolbar.sortKey")
+        }
         window?.toolbar?.validateVisibleItems()
     }
 

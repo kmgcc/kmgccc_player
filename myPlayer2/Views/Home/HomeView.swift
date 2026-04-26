@@ -15,7 +15,7 @@ struct HomeView: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
 
-    @State private var homeVM = HomeViewModel()
+    @Environment(HomeViewModel.self) private var homeVM
     @State private var hasAppeared = false
 
     var body: some View {
@@ -36,41 +36,71 @@ struct HomeView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .task {
             homeVM.refresh(from: libraryVM)
-            // Small delay so the animation plays after content is populated
             try? await Task.sleep(for: .milliseconds(50))
             hasAppeared = true
         }
         .onChange(of: libraryVM.refreshTrigger) { _, _ in
             homeVM.refresh(from: libraryVM)
         }
+        .onChange(of: libraryVM.state) { old, new in
+            if new == .loaded {
+                homeVM.refresh(from: libraryVM)
+                if old == .loading {
+                    hasAppeared = false
+                    Task {
+                        try? await Task.sleep(for: .milliseconds(80))
+                        hasAppeared = true
+                    }
+                }
+            }
+        }
     }
 
     private var scrollContent: some View {
-        ScrollView(.vertical, showsIndicators: true) {
-            VStack(spacing: 36) {
-                if let heroTrack = homeVM.heroTrack {
-                    HomeHeroView(track: heroTrack)
+        GeometryReader { geo in
+            let mode = HomeLayoutMode.mode(for: geo.size.width)
+            let hPad = mode.horizontalPadding
+            let contentWidth = max(200, geo.size.width - hPad * 2)
+            ScrollView(.vertical, showsIndicators: true) {
+                VStack(spacing: mode.sectionSpacing) {
+                    if let heroTrack = homeVM.heroTrack {
+                        HomeHeroView(track: heroTrack, containerWidth: contentWidth, mode: mode)
+                    }
+
+                    if !homeVM.albums.isEmpty {
+                        HomeAlbumsSection(
+                            albums: homeVM.albums,
+                            mode: mode
+                        )
+                    }
+
+                    if !homeVM.artists.isEmpty {
+                        HomeArtistsSection(
+                            artists: homeVM.artists,
+                            mode: mode
+                        )
+                    }
+
+                    if !homeVM.playlists.isEmpty {
+                        HomePlaylistsSection(playlists: homeVM.playlists, mode: mode)
+                    }
+
+                    HomeInsightsSection(
+                        homeVM: homeVM,
+                        mode: mode,
+                        containerWidth: contentWidth
+                    )
+
+                    footer
+
+                    // Bottom safe space so the Mini Player doesn't cover footer text.
+                    Color.clear.frame(height: 120)
                 }
-
-                if !homeVM.albums.isEmpty {
-                    HomeAlbumsSection(albums: homeVM.albums)
-                }
-
-                if !homeVM.artists.isEmpty {
-                    HomeArtistsSection(artists: homeVM.artists)
-                }
-
-                if !homeVM.playlists.isEmpty {
-                    HomePlaylistsSection(playlists: homeVM.playlists)
-                }
-
-                HomeInsightsSection(homeVM: homeVM)
-
-                footer
+                .padding(.horizontal, hPad)
+                .padding(.top, 28)
+                .padding(.bottom, 24)
+                .frame(maxWidth: .infinity, alignment: .top)
             }
-            .padding(.horizontal, 32)
-            .padding(.top, 28)
-            .padding(.bottom, 40)
         }
     }
 
@@ -79,10 +109,10 @@ struct HomeView: View {
             Image(systemName: "music.note.house")
                 .font(.system(size: 48, weight: .light))
                 .foregroundStyle(.secondary)
-            Text(NSLocalizedString("home.empty_library", comment: "Your library is empty"))
+            Text("你的音乐库是空的")
                 .font(.title3)
                 .foregroundStyle(.secondary)
-            Text(NSLocalizedString("home.empty_library_hint", comment: "Import some music to get started"))
+            Text("导入一些音乐来开始吧")
                 .font(.callout)
                 .foregroundStyle(.tertiary)
         }
@@ -107,5 +137,48 @@ struct HomeView: View {
         }
         .padding(.top, 36)
         .padding(.bottom, 24)
+    }
+}
+
+// MARK: - Layout Mode
+
+enum HomeLayoutMode {
+    case wide      // >= 980
+    case medium    // 720..<980
+    case compact   // 560..<720
+    case narrow    // < 560
+
+    static func mode(for width: CGFloat) -> HomeLayoutMode {
+        if width >= 980 { return .wide }
+        if width >= 720 { return .medium }
+        if width >= 560 { return .compact }
+        return .narrow
+    }
+
+    var horizontalPadding: CGFloat {
+        switch self {
+        case .wide:    return 40
+        case .medium:  return 32
+        case .compact: return 24
+        case .narrow:  return 18
+        }
+    }
+
+    var sectionSpacing: CGFloat {
+        switch self {
+        case .wide: return 36
+        case .medium: return 32
+        case .compact: return 26
+        case .narrow: return 22
+        }
+    }
+
+    var sectionTitleFontSize: CGFloat {
+        switch self {
+        case .wide: return 22
+        case .medium: return 20
+        case .compact: return 18
+        case .narrow: return 17
+        }
     }
 }

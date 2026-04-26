@@ -24,7 +24,7 @@ struct ExternalPlaybackSettingsView: View {
             GroupBox {
                 Toggle("从外部播放", isOn: $showPlaybackSourceSwitcher)
                     .toggleStyle(.switch)
-                    .font(.headline)
+                    .font(.default)
                     .padding(12)
             }
 
@@ -32,13 +32,9 @@ struct ExternalPlaybackSettingsView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     Toggle("启用\"其他\"播放模式", isOn: $enableSystemNowPlaying)
                         .toggleStyle(.switch)
-                        .font(.headline)
+                        .font(.default)
 
-                    Text("开启后，Sidebar 底部会出现 \"本地 / Apple Music / 其他\" 三种播放模式。关闭后仅保留 \"本地\" 和 \"Apple Music\"。")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-
-                    Text("\"其他\" 模式通过 macOS MediaRemote 读取系统当前播放的第三方 App（如 Spotify、QQ音乐等）的元数据。该模式依赖私有 API，稳定性有限：可能出现元数据缺失、封面无法获取、播放进度控制不可用、暂停/恢复延迟等问题。如果您只使用本地资料库或 Apple Music，建议关闭此选项以保持界面简洁。")
+                    Text("\"其他\" 模式通过 macOS MediaRemote 读取系统当前播放的第三方 App 的元数据，可能出现元数据缺失、封面无法获取、播放进度控制不可用、暂停/恢复延迟等问题。如果您只使用本地播放或 Apple Music，可以关闭此选项以保持界面简洁。")
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -49,7 +45,7 @@ struct ExternalPlaybackSettingsView: View {
             GroupBox {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("清理外部播放的歌曲元数据缓存。")
-                        .font(.headline)
+                        .font(.default)
 
                     Text("会清除手动匹配覆盖、匹配结果缓存、联网封面缓存、联网歌词缓存，以及其它按外部曲目标识绑定的解析结果。当前播放状态会回退到自动重新匹配。")
                         .font(.subheadline)

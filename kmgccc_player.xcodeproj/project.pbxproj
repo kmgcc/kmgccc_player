@@ -7,13 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-
-
-
-
-
-
-
 		933AAE3F2F3CCBBB0081B59C /* BKArt.bundle in Resources */ = {isa = PBXBuildFile; fileRef = 933AADFD2F3CC8D40081B59C /* BKArt.bundle */; };
 		933AAE422F3CCCDF0081B59C /* BKThemes in Resources */ = {isa = PBXBuildFile; fileRef = 933AAE412F3CCCDF0081B59C /* BKThemes */; };
 		9351198E2F33149A00766A5F /* AMLL in Resources */ = {isa = PBXBuildFile; fileRef = 9351198D2F33149A00766A5F /* AMLL */; };
@@ -33,13 +26,6 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-
-
-
-
-
-
-
 		933AADFD2F3CC8D40081B59C /* BKArt.bundle */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BKArt.bundle; sourceTree = BUILT_PRODUCTS_DIR; };
 		933AAE412F3CCCDF0081B59C /* BKThemes */ = {isa = PBXFileReference; lastKnownFileType = folder; path = BKThemes; sourceTree = "<group>"; };
 		935118922F3231C500766A5F /* kmgccc_player.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = kmgccc_player.app; sourceTree = BUILT_PRODUCTS_DIR; };

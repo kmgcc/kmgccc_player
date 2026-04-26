@@ -12,6 +12,10 @@ import SwiftUI
 
 struct HomeInsightsSection: View {
     let homeVM: HomeViewModel
+    var mode: HomeLayoutMode = .wide
+    /// Actual content width for the page. Used so we can stack vertically when
+    /// the side-by-side ranking + calendar would otherwise crowd each other.
+    var containerWidth: CGFloat = 0
 
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
@@ -20,96 +24,115 @@ struct HomeInsightsSection: View {
         VStack(alignment: .leading, spacing: 14) {
             sectionHeader
             statsRow
+            insightsColumns
+                .padding(.top, 4)
+        }
+    }
 
-            HStack(alignment: .top, spacing: 14) {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text(NSLocalizedString("home.insights.preference_ranking", comment: "Preference ranking"))
-                        .font(.caption)
-                        .textCase(.uppercase)
-                        .tracking(0.8)
-                        .foregroundStyle(.secondary)
-                    HomePreferenceRankingView(items: homeVM.preferenceRanking)
-                }
-                .frame(maxWidth: .infinity)
+    private var stacksVertically: Bool {
+        // Switch to vertical layout when ranking + calendar would crowd.
+        // 820pt is a comfortable side-by-side floor.
+        if containerWidth > 0 { return containerWidth < 820 }
+        return mode == .compact || mode == .narrow
+    }
 
-                VStack(alignment: .leading, spacing: 10) {
-                    Text(NSLocalizedString("home.insights.daily_listening", comment: "Daily listening"))
-                        .font(.caption)
-                        .textCase(.uppercase)
-                        .tracking(0.8)
-                        .foregroundStyle(.secondary)
-                    HomeListeningHeatmapView(dailyMap: homeVM.dailyListeningMap)
-                }
-                .frame(maxWidth: .infinity)
+    @ViewBuilder
+    private var insightsColumns: some View {
+        if stacksVertically {
+            VStack(alignment: .leading, spacing: 14) {
+                HomePreferenceRankingView(items: homeVM.preferenceRanking)
+                    .frame(maxWidth: .infinity)
+                HomeListeningHeatmapView(dailyMap: homeVM.dailyListeningMap)
+                    .frame(maxWidth: .infinity)
             }
-            .padding(.top, 4)
+        } else {
+            // Capped at 380, never less than 300, otherwise ~36% of width.
+            let dynamic = containerWidth > 0 ? containerWidth * 0.36 : 360
+            let heatmapWidth = min(max(dynamic, 300), 380)
+            HStack(alignment: .top, spacing: 16) {
+                HomePreferenceRankingView(items: homeVM.preferenceRanking)
+                    .frame(maxWidth: .infinity)
+                HomeListeningHeatmapView(dailyMap: homeVM.dailyListeningMap)
+                    .frame(width: heatmapWidth)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
     private var sectionHeader: some View {
         HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(NSLocalizedString("home.section.you", comment: "You"))
-                    .font(.caption)
-                    .textCase(.uppercase)
-                    .tracking(0.8)
-                    .foregroundStyle(.secondary)
-                Text(NSLocalizedString("home.section.listening_insights", comment: "Listening Insights"))
-                    .font(.system(size: 22, weight: .semibold))
-                    .tracking(-0.3)
-            }
+            Text("听歌记录")
+                .font(.system(size: mode.sectionTitleFontSize, weight: .semibold))
+                .tracking(-0.3)
             Spacer()
         }
     }
 
+    @ViewBuilder
     private var statsRow: some View {
-        HStack(spacing: 14) {
-            HomeStatCard(
-                label: NSLocalizedString("home.stat.total_songs", comment: "Total songs"),
+        let cards: [AnyView] = [
+            AnyView(HomeStatCard(
+                label: "总歌曲",
                 value: "\(homeVM.totalTrackCount)",
-                unit: NSLocalizedString("home.stat.tracks", comment: "tracks"),
-                subtitle: NSLocalizedString("home.stat.in_library", comment: "in your library")
-            )
-
-            HomeStatCard(
-                label: NSLocalizedString("home.stat.total_plays", comment: "Total plays"),
+                unit: "首",
+                subtitle: "音乐库"
+            )),
+            AnyView(HomeStatCard(
+                label: "总播放",
                 value: formattedNumber(homeVM.totalPlayCount),
-                unit: NSLocalizedString("home.stat.plays", comment: "plays"),
-                subtitle: NSLocalizedString("home.stat.all_time", comment: "all-time")
-            )
-
-            HomeStatCard(
-                label: NSLocalizedString("home.stat.listening_time", comment: "Listening time"),
+                unit: "次",
+                subtitle: "累计"
+            )),
+            AnyView(HomeStatCard(
+                label: "播放时长",
                 value: "\(Int(homeVM.totalListeningSeconds / 3600))",
-                unit: NSLocalizedString("home.stat.hours", comment: "hours"),
-                subtitle: NSLocalizedString("home.stat.this_year", comment: "this year")
-            )
+                unit: "小时",
+                subtitle: "今年"
+            )),
+            AnyView(favoriteArtistCard)
+        ]
 
-            // Favorite artist card
-            HomeInsightsCardContainer {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(NSLocalizedString("home.stat.favorite_artist", comment: "Favorite artist"))
-                        .font(.caption2)
-                        .textCase(.uppercase)
-                        .tracking(0.6)
-                        .foregroundStyle(.secondary)
+        let columnCount: Int = {
+            switch mode {
+            case .wide:    return 4
+            case .medium:  return 4
+            case .compact: return 2
+            case .narrow:  return 2
+            }
+        }()
+        let spacing: CGFloat = mode == .narrow ? 10 : 14
+        let columns = Array(repeating: GridItem(.flexible(), spacing: spacing), count: columnCount)
+        LazyVGrid(columns: columns, spacing: spacing) {
+            ForEach(cards.indices, id: \.self) { index in
+                cards[index]
+            }
+        }
+    }
 
-                    Spacer(minLength: 0)
+    private var favoriteArtistCard: some View {
+        HomeInsightsCardContainer {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("常听歌手")
+                    .font(.caption2)
+                    .textCase(.uppercase)
+                    .tracking(0.6)
+                    .foregroundStyle(.secondary)
 
-                    if let name = homeVM.favoriteArtistName {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(name)
-                                .font(.system(size: 15, weight: .semibold))
-                                .lineLimit(1)
-                            Text("\(homeVM.favoriteArtistAlbumCount) \(NSLocalizedString("home.albums", comment: "albums"))")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                        }
-                    } else {
-                        Text("\u{2014}")
-                            .font(.title2)
+                Spacer(minLength: 0)
+
+                if let name = homeVM.favoriteArtistName {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(name)
+                            .font(.system(size: 15, weight: .semibold))
+                            .lineLimit(1)
+                        Text("\(homeVM.favoriteArtistAlbumCount) 张专辑")
+                            .font(.caption2)
                             .foregroundStyle(.tertiary)
                     }
+                } else {
+                    Text("\u{2014}")
+                        .font(.title2)
+                        .foregroundStyle(.tertiary)
                 }
             }
         }
@@ -195,7 +218,7 @@ private struct HomePreferenceRankingView: View {
         HomeInsightsCardContainer {
             VStack(spacing: 0) {
                 if items.isEmpty {
-                    Text(NSLocalizedString("home.insights.no_data", comment: "Not enough listening data yet"))
+                    Text("暂无足够的听歌数据")
                         .font(.callout)
                         .foregroundStyle(.tertiary)
                         .frame(maxWidth: .infinity, minHeight: 100)
@@ -204,11 +227,11 @@ private struct HomePreferenceRankingView: View {
                     HStack {
                         Text("#")
                             .frame(width: 28)
-                        Text(NSLocalizedString("home.insights.song_artist", comment: "Song \u{00B7} Artist"))
+                        Text("歌曲 \u{00B7} 歌手")
                             .frame(maxWidth: .infinity, alignment: .leading)
-                        Text(NSLocalizedString("home.insights.preference", comment: "Preference"))
+                        Text("偏好度")
                             .frame(width: 120)
-                        Text(NSLocalizedString("home.insights.plays", comment: "Plays"))
+                        Text("播放")
                             .frame(width: 50, alignment: .trailing)
                     }
                     .font(.caption2)
@@ -300,7 +323,7 @@ private struct HomeRankRow: View {
     }
 }
 
-// MARK: - Listening Heatmap
+// MARK: - Listening Heatmap (3-month compact calendar)
 
 struct HomeListeningHeatmapView: View {
     let dailyMap: [Date: Int]
@@ -308,121 +331,206 @@ struct HomeListeningHeatmapView: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
 
-    private let monthLabels = ["J", "F", "M", "A", "M", "J", "J", "A", "S", "O", "N", "D"]
-    private let rows = 7
-    private let cols = 52
+    private let calendar: Calendar = {
+        var cal = Calendar(identifier: .gregorian)
+        cal.firstWeekday = 2 // Monday
+        return cal
+    }()
+
+    private let weekdayLabels = ["一", "二", "三", "四", "五", "六", "日"]
+    private let cellSpacing: CGFloat = 4
+    private let cellSize: CGFloat = 30
 
     var body: some View {
         HomeInsightsCardContainer {
-            VStack(spacing: 10) {
-                HStack {
-                    Text(NSLocalizedString("home.insights.daily_listening", comment: "Daily listening"))
-                        .font(.system(size: 14, weight: .semibold))
-                    Spacer()
-                    Text(yearMonthLabel)
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.tertiary)
-                }
+            VStack(alignment: .leading, spacing: 12) {
+                header
 
-                let cells = buildCells()
-                let gridRows = Array(repeating: GridItem(.flexible(), spacing: 2), count: rows)
-
-                LazyHGrid(rows: gridRows, spacing: 2) {
-                    ForEach(0..<cells.count, id: \.self) { i in
-                        RoundedRectangle(cornerRadius: 2, style: .continuous)
-                            .fill(cellColor(for: cells[i]))
-                            .frame(minWidth: 8, minHeight: 8)
-                    }
+                VStack(alignment: .center, spacing: cellSpacing) {
+                    weekdayHeader
+                    calendarGrid
                 }
-                .frame(minHeight: 80)
-
-                HStack(spacing: 0) {
-                    ForEach(0..<12, id: \.self) { i in
-                        Text(monthLabels[i])
-                            .font(.system(size: 10))
-                            .foregroundStyle(i == currentMonth ? .primary : .tertiary)
-                            .fontWeight(i == currentMonth ? .semibold : .regular)
-                            .frame(maxWidth: .infinity)
-                    }
-                }
-
-                HStack {
-                    Text(NSLocalizedString("home.insights.less", comment: "Less"))
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                    Spacer()
-                    HStack(spacing: 3) {
-                        ForEach(0..<5) { level in
-                            RoundedRectangle(cornerRadius: 2)
-                                .fill(cellColor(for: level))
-                                .frame(width: 10, height: 10)
-                        }
-                    }
-                    Spacer()
-                    Text(NSLocalizedString("home.insights.more", comment: "More"))
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
+                .frame(maxWidth: .infinity, alignment: .center)
             }
-            .padding(4)
+            .padding(2)
         }
     }
 
-    private var currentMonth: Int {
-        Calendar.current.component(.month, from: Date()) - 1
+    private var header: some View {
+        HStack {
+            Text("听歌日历")
+                .font(.system(size: 14, weight: .semibold))
+            Spacer()
+            Text(monthLabel)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.tertiary)
+        }
     }
 
-    private var yearMonthLabel: String {
-        let year = Calendar.current.component(.year, from: Date())
+    private var monthLabel: String {
         let formatter = DateFormatter()
-        formatter.dateFormat = "MMM"
-        let monthStr = formatter.string(from: Date()).uppercased()
-        return "\(year) \u{00B7} \(monthStr)"
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy 年 M 月"
+        return formatter.string(from: Date())
     }
 
-    private func buildCells() -> [Int] {
-        let calendar = Calendar.current
-        let now = Date()
-        guard let yearStart = calendar.date(from: calendar.dateComponents([.year], from: now)) else {
-            return Array(repeating: 0, count: rows * cols)
+    @ViewBuilder
+    private var weekdayHeader: some View {
+        HStack(spacing: cellSpacing) {
+            ForEach(weekdayLabels.indices, id: \.self) { i in
+                Text(weekdayLabels[i])
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: cellSize, height: 14)
+            }
         }
+    }
+
+    @ViewBuilder
+    private var calendarGrid: some View {
+        let weeks = buildWeeks()
+        VStack(alignment: .leading, spacing: cellSpacing) {
+            ForEach(weeks.indices, id: \.self) { i in
+                weekRow(weeks[i])
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func weekRow(_ week: [DayCell]) -> some View {
+        HStack(spacing: cellSpacing) {
+            ForEach(week.indices, id: \.self) { i in
+                dayView(week[i])
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func dayView(_ cell: DayCell) -> some View {
+        let cornerRadius: CGFloat = cellSize * 0.3
+        ZStack {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(cellFillColor(for: cell.intensity, isCurrentMonth: cell.isCurrentMonth))
+
+            // Today indicator only on current-month dates.
+            if cell.isCurrentMonth, cell.isToday {
+                Circle()
+                    .strokeBorder(themeStore.accentColor.opacity(0.8), lineWidth: 1.4)
+                    .frame(width: cellSize - 4, height: cellSize - 4)
+            }
+
+            Text("\(cell.dayNumber)")
+                .font(.system(
+                    size: 11,
+                    weight: cell.isCurrentMonth && cell.isToday ? .semibold : .regular
+                ))
+                .foregroundStyle(cellTextColor(for: cell))
+        }
+        // Adjacent-month cells are drawn faintly and softly blurred so the
+        // current month stays visually anchored.
+        .opacity(cell.isCurrentMonth ? 1.0 : 0.18)
+        .blur(radius: cell.isCurrentMonth ? 0 : 0.6)
+        .frame(width: cellSize, height: cellSize)
+    }
+
+    private func cellFillColor(for intensity: Int, isCurrentMonth: Bool) -> Color {
+        if !isCurrentMonth {
+            // Very low-key adjacent-month rectangle — no accent color even
+            // if the same date has play history, so the eye stays on the
+            // current month.
+            return Color.primary.opacity(colorScheme == .dark ? 0.05 : 0.04)
+        }
+        if intensity == 0 {
+            return Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.05)
+        }
+        let baseOpacity = 0.18 + Double(intensity) * 0.18
+        return themeStore.accentColor.opacity(baseOpacity)
+    }
+
+    private func cellTextColor(for cell: DayCell) -> Color {
+        if !cell.isCurrentMonth {
+            return Color(nsColor: .secondaryLabelColor)
+        }
+        if cell.intensity >= 3 { return .white }
+        return Color(nsColor: .secondaryLabelColor)
+    }
+
+    // MARK: - Data shaping
+
+    private struct DayCell {
+        let dayNumber: Int
+        let isCurrentMonth: Bool
+        let isToday: Bool
+        let intensity: Int  // 0..4
+    }
+
+    /// Show a sliding 3-month window: trailing half of previous month, the
+    /// current month in full, and leading half of next month — assembled into
+    /// 7-day weekly rows aligned to the calendar's first weekday.
+    private func buildWeeks() -> [[DayCell]] {
+        let now = Date()
+        let today = calendar.startOfDay(for: now)
+        guard
+            let monthStart = calendar.date(from: calendar.dateComponents([.year, .month], from: now)),
+            let monthRange = calendar.range(of: .day, in: .month, for: monthStart)
+        else {
+            return []
+        }
+
+        // Window: ~14 days before this month start, end ~14 days into next month
+        let windowStartRaw = calendar.date(byAdding: .day, value: -14, to: monthStart) ?? monthStart
+        let monthEnd = calendar.date(byAdding: .day, value: monthRange.count - 1, to: monthStart) ?? monthStart
+        let windowEndRaw = calendar.date(byAdding: .day, value: 14, to: monthEnd) ?? monthEnd
+
+        // Snap to week boundaries based on firstWeekday
+        let windowStart = startOfWeek(for: windowStartRaw)
+        let windowEnd = endOfWeek(for: windowEndRaw)
 
         let maxCount = max(1, dailyMap.values.max() ?? 1)
 
-        var cells: [Int] = []
-        for week in 0..<cols {
-            for dayOfWeek in 0..<rows {
-                let dayOffset = week * 7 + dayOfWeek
-                guard let date = calendar.date(byAdding: .day, value: dayOffset, to: yearStart) else {
-                    cells.append(0)
-                    continue
-                }
-                let day = calendar.startOfDay(for: date)
+        var weeks: [[DayCell]] = []
+        var cursor = windowStart
+        while cursor <= windowEnd {
+            var week: [DayCell] = []
+            for _ in 0..<7 {
+                let day = calendar.startOfDay(for: cursor)
+                let isCurrentMonth = calendar.isDate(day, equalTo: monthStart, toGranularity: .month)
                 let count = dailyMap[day] ?? 0
-                let normalized = Double(count) / Double(maxCount)
-                let intensity: Int
-                if count == 0 {
-                    intensity = 0
-                } else if normalized < 0.25 {
-                    intensity = 1
-                } else if normalized < 0.5 {
-                    intensity = 2
-                } else if normalized < 0.75 {
-                    intensity = 3
-                } else {
-                    intensity = 4
-                }
-                cells.append(intensity)
+                let intensity = intensityFor(count: count, maxCount: maxCount)
+                week.append(
+                    DayCell(
+                        dayNumber: calendar.component(.day, from: day),
+                        isCurrentMonth: isCurrentMonth,
+                        isToday: calendar.isDate(day, inSameDayAs: today),
+                        intensity: intensity
+                    )
+                )
+                guard let next = calendar.date(byAdding: .day, value: 1, to: cursor) else { break }
+                cursor = next
             }
+            weeks.append(week)
         }
-        return cells
+        return weeks
     }
 
-    private func cellColor(for intensity: Int) -> Color {
-        if intensity == 0 {
-            return Color.primary.opacity(0.06)
-        }
-        let opacity = 0.15 + Double(intensity) * 0.18
-        return themeStore.accentColor.opacity(opacity)
+    private func startOfWeek(for date: Date) -> Date {
+        let dayStart = calendar.startOfDay(for: date)
+        let weekday = calendar.component(.weekday, from: dayStart) // 1...7
+        let offset = (weekday - calendar.firstWeekday + 7) % 7
+        return calendar.date(byAdding: .day, value: -offset, to: dayStart) ?? dayStart
+    }
+
+    private func endOfWeek(for date: Date) -> Date {
+        let start = startOfWeek(for: date)
+        return calendar.date(byAdding: .day, value: 6, to: start) ?? date
+    }
+
+    private func intensityFor(count: Int, maxCount: Int) -> Int {
+        if count == 0 { return 0 }
+        let n = Double(count) / Double(maxCount)
+        if n < 0.25 { return 1 }
+        if n < 0.5 { return 2 }
+        if n < 0.75 { return 3 }
+        return 4
     }
 }

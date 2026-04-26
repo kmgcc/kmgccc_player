@@ -6,31 +6,15 @@
 //  Lives in the main content area; reuses existing artistEntries,
 //  deleteArtist, and ArtistArtworkGenerator pipelines.
 //
+//  Search and sort are driven by the existing top toolbar, not by any
+//  page-level controls. Toolbar search writes into
+//  `PlaylistPageController.searchText`; toolbar sort writes into
+//  `LibraryViewModel.artistSortKey` / `trackSortOrder`. This view simply
+//  reads those values to filter and order its rows.
+//
 
 import AppKit
 import SwiftUI
-
-// MARK: - Sort Key
-
-enum ArtistSortKey: String, CaseIterable, Identifiable {
-    case name
-    case trackCount
-    case albumCount
-    case totalDuration
-    case updatedAt
-
-    var id: String { rawValue }
-
-    var localizedTitle: String {
-        switch self {
-        case .name:          return "名称"
-        case .trackCount:    return "歌曲数"
-        case .albumCount:    return "专辑数"
-        case .totalDuration: return "总时长"
-        case .updatedAt:     return "最近更新"
-        }
-    }
-}
 
 // MARK: - Deletion Request
 
@@ -43,21 +27,16 @@ private struct ArtistDeletionRequest: Identifiable {
 // MARK: - View
 
 struct AllArtistsView: View {
+    let pageController: PlaylistPageController
+
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(UIStateViewModel.self) private var uiState
 
-    @State private var searchText: String = ""
-    @State private var sortKey: ArtistSortKey = .name
-    @State private var sortAscending: Bool = true
     @State private var deletionRequest: ArtistDeletionRequest?
 
     var body: some View {
         let artists = filteredArtists
-        return VStack(spacing: 0) {
-            header(artists.count)
-            Divider().opacity(0.5)
-            list(artists)
-        }
+        return list(artists)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .alert(
             NSLocalizedString("sidebar.delete_artist_confirm_title", comment: ""),
@@ -90,93 +69,11 @@ struct AllArtistsView: View {
         }
     }
 
-    // MARK: Header
-
-    private func header(_ count: Int) -> some View {
-        HStack(spacing: 12) {
-            Text("所有艺人")
-                .font(.system(size: 22, weight: .semibold))
-                .tracking(-0.3)
-
-            Text("\(count)")
-                .font(.callout)
-                .foregroundStyle(.tertiary)
-
-            Spacer()
-
-            searchField
-                .frame(maxWidth: 240)
-
-            sortMenu
-        }
-        .padding(.horizontal, 32)
-        .padding(.top, 24)
-        .padding(.bottom, 14)
-    }
-
-    private var searchField: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-            TextField("搜索艺人", text: $searchText)
-                .textFieldStyle(.plain)
-                .font(.callout)
-            if !searchText.isEmpty {
-                Button {
-                    searchText = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.tertiary)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.secondary.opacity(0.08))
-        )
-    }
-
-    private var sortMenu: some View {
-        Menu {
-            ForEach(ArtistSortKey.allCases) { key in
-                Button {
-                    if sortKey == key {
-                        sortAscending.toggle()
-                    } else {
-                        sortKey = key
-                        sortAscending = true
-                    }
-                } label: {
-                    HStack {
-                        Text(key.localizedTitle)
-                        if sortKey == key {
-                            Spacer()
-                            Image(systemName: sortAscending ? "chevron.up" : "chevron.down")
-                        }
-                    }
-                }
-            }
-        } label: {
-            Image(systemName: "arrow.up.arrow.down")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.secondary)
-                .frame(width: 28, height: 28)
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .frame(width: 28, height: 28)
-    }
-
     // MARK: List
 
     private func list(_ artists: [ArtistEntry]) -> some View {
         ScrollView(.vertical) {
-            LazyVStack(spacing: 4) {
+            LazyVStack(spacing: 2) {
                 ForEach(artists) { artist in
                     ArtistListRow(
                         artist: artist,
@@ -189,14 +86,16 @@ struct AllArtistsView: View {
                 Color.clear.frame(height: 120) // mini-player headroom
             }
             .padding(.horizontal, 24)
-            .padding(.top, 8)
+            .padding(.top, 16)
         }
     }
 
     // MARK: Data
 
     private var filteredArtists: [ArtistEntry] {
-        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let trimmed = pageController.searchText
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
         let base: [ArtistEntry]
         if trimmed.isEmpty {
             base = libraryVM.artistEntries
@@ -205,9 +104,10 @@ struct AllArtistsView: View {
                 $0.displayName.lowercased().contains(trimmed)
             }
         }
+        let ascending = (libraryVM.trackSortOrder == .ascending)
         return base.sorted { lhs, rhs in
             let result: ComparisonResult
-            switch sortKey {
+            switch libraryVM.artistSortKey {
             case .name:
                 result = lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName)
             case .trackCount:
@@ -223,7 +123,7 @@ struct AllArtistsView: View {
                 return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName)
                     == .orderedAscending
             }
-            return sortAscending
+            return ascending
                 ? result == .orderedAscending
                 : result == .orderedDescending
         }
@@ -285,20 +185,20 @@ private struct ArtistListRow: View {
     @State private var image: NSImage?
     @State private var isHovering = false
 
-    private let artworkSize: CGFloat = 76
+    private let artworkSize: CGFloat = 60
 
     var body: some View {
-        HStack(spacing: 16) {
+        HStack(spacing: 14) {
             artworkView
             textBlock
             Spacer(minLength: 8)
             trailingActions
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .frame(minHeight: 96)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(minHeight: 76)
         .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(isHovering
                       ? Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.04)
                       : Color.clear)
@@ -329,7 +229,7 @@ private struct ArtistListRow: View {
                     size: artworkSize,
                     cornerRadius: artworkSize / 2,
                     clipShape: .circle,
-                    iconSize: 26,
+                    iconSize: 22,
                     iconOpacity: 0.4
                 )
             }
@@ -338,14 +238,14 @@ private struct ArtistListRow: View {
         .clipShape(Circle())
         .shadow(
             color: .black.opacity(colorScheme == .dark ? 0.3 : 0.1),
-            radius: 5, y: 2
+            radius: 4, y: 2
         )
     }
 
     private var textBlock: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 2) {
             Text(artist.displayName)
-                .font(.system(size: 15, weight: .semibold))
+                .font(.system(size: 14, weight: .semibold))
                 .lineLimit(1)
             HStack(spacing: 6) {
                 Text("\(trackCount) 首歌曲")
@@ -358,7 +258,7 @@ private struct ArtistListRow: View {
                     Text(formattedDuration(artist.totalDuration))
                 }
             }
-            .font(.callout)
+            .font(.system(size: 12))
             .foregroundStyle(.secondary)
             .lineLimit(1)
         }
@@ -375,14 +275,14 @@ private struct ArtistListRow: View {
             }
         } label: {
             Image(systemName: "ellipsis")
-                .font(.system(size: 14, weight: .semibold))
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.secondary)
-                .frame(width: 28, height: 28)
+                .frame(width: 24, height: 24)
                 .contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .frame(width: 28, height: 28)
+        .frame(width: 24, height: 24)
         .opacity(isHovering ? 1 : 0.4)
     }
 
@@ -400,12 +300,12 @@ private struct ArtistListRow: View {
             let key = ArtworkLoader.cacheKey(
                 trackID: artist.id,
                 checksum: checksum,
-                targetPixelSize: CGSize(width: 168, height: 168)
+                targetPixelSize: CGSize(width: 132, height: 132)
             )
             image = await ArtworkLoader.loadImage(
                 artworkData: data,
                 cacheKey: key,
-                targetPixelSize: CGSize(width: 168, height: 168)
+                targetPixelSize: CGSize(width: 132, height: 132)
             )
             return
         }
