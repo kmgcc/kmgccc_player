@@ -15,6 +15,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
     enum Identifier {
         static let toolbar = NSToolbar.Identifier("AppKitMainToolbar")
         static let sidebarToggle = NSToolbarItem.Identifier("AppKitMainToolbar.sidebarToggle")
+        static let homeNavPill = NSToolbarItem.Identifier("AppKitMainToolbar.homeNavPill")
         static let sort = NSToolbarItem.Identifier("AppKitMainToolbar.sort")
         static let pillGroup = NSToolbarItem.Identifier("AppKitMainToolbar.pillGroup")
         static let search = NSToolbarItem.Identifier("AppKitMainToolbar.search")
@@ -37,6 +38,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
     private weak var pillGroupItem: NSToolbarItemGroup?
     private weak var sidebarToggleItem: NSToolbarItem?
     private weak var lyricsToggleItem: NSToolbarItem?
+    private weak var homeNavPillItem: NSToolbarItemGroup?
 
     private var fullscreenModeCancellable: AnyCancellable?
     private var lyricsFlashTicket = 0
@@ -78,6 +80,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         observeEmbeddedFullscreenMode()
         observeLibrarySearchResetTrigger()
         observeToolbarState()
+        observeHomeNavigationState()
         applyToolbarLayoutForCurrentState()
     }
 
@@ -113,9 +116,18 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             return isLibraryMode && hasLibrary
         case Identifier.sidebarToggle, Identifier.lyricsToggle:
             return true
+        case Identifier.homeNavPill:
+            return shouldShowHomeNavPill()
         default:
             return true
         }
+    }
+
+    private func shouldShowHomeNavPill() -> Bool {
+        guard let appSession else { return false }
+        guard appSession.uiState.contentMode == .library else { return false }
+        guard let libraryVM = appSession.libraryVM else { return false }
+        return appSession.uiState.shouldShowHomeNavigationPill(libraryVM: libraryVM)
     }
 
     // MARK: - NSToolbarDelegate
@@ -124,6 +136,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         [
             Identifier.sidebarToggle,
             .sidebarTrackingSeparator,
+            Identifier.homeNavPill,
             Identifier.sort,
             Identifier.pillGroup,
             .flexibleSpace,
@@ -137,6 +150,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         [
             Identifier.sidebarToggle,
             .sidebarTrackingSeparator,
+            Identifier.homeNavPill,
             Identifier.sort,
             Identifier.pillGroup,
             .flexibleSpace,
@@ -164,6 +178,40 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             item.isEnabled = true
             self.sidebarToggleItem = item
             return item
+
+        case Identifier.homeNavPill:
+            let backLabel = "后退"
+            let forwardLabel = "前进"
+            let group = NSToolbarItemGroup(
+                itemIdentifier: itemIdentifier,
+                images: [
+                    NSImage(systemSymbolName: "chevron.left", accessibilityDescription: backLabel)
+                        ?? NSImage(),
+                    NSImage(systemSymbolName: "chevron.right", accessibilityDescription: forwardLabel)
+                        ?? NSImage()
+                ],
+                selectionMode: .momentary,
+                labels: [backLabel, forwardLabel],
+                target: self,
+                action: #selector(handleHomeNavPillAction(_:))
+            )
+            group.label = "Home Navigation"
+            group.paletteLabel = group.label
+            group.controlRepresentation = .expanded
+            group.isNavigational = true
+            group.autovalidates = false
+            group.isEnabled = true
+            if group.subitems.indices.contains(0) {
+                group.subitems[0].toolTip = backLabel
+                group.subitems[0].isNavigational = true
+            }
+            if group.subitems.indices.contains(1) {
+                group.subitems[1].toolTip = forwardLabel
+                group.subitems[1].isNavigational = true
+            }
+            self.homeNavPillItem = group
+            syncHomeNavPillPresentation()
+            return group
 
         case Identifier.sort:
             let item = NSMenuToolbarItem(itemIdentifier: itemIdentifier)
@@ -419,6 +467,10 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
                 return "home"
             case .allSongs:
                 return "allSongs"
+            case .allAlbums:
+                return "allAlbums"
+            case .allArtists:
+                return "allArtists"
             case .playlist(let id):
                 return "playlist-\(id.uuidString)"
             case .artist(let key):
@@ -466,6 +518,47 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         default:
             break
         }
+    }
+
+    @objc
+    private func handleHomeNavPillAction(_ sender: Any) {
+        let selectedIndex: Int
+        if let group = sender as? NSToolbarItemGroup {
+            selectedIndex = group.selectedIndex
+        } else if let segmentedControl = sender as? NSSegmentedControl {
+            selectedIndex = segmentedControl.selectedSegment
+        } else {
+            selectedIndex = homeNavPillItem?.selectedIndex ?? -1
+        }
+        guard let appSession, let libraryVM = appSession.libraryVM else { return }
+
+        switch selectedIndex {
+        case 0:
+            appSession.uiState.goBackInHomeContext(libraryVM: libraryVM)
+        case 1:
+            appSession.uiState.goForwardInHomeContext(libraryVM: libraryVM)
+        default:
+            break
+        }
+        syncHomeNavPillPresentation()
+        window?.toolbar?.validateVisibleItems()
+    }
+
+    private func syncHomeNavPillPresentation() {
+        guard let group = homeNavPillItem else { return }
+        guard let appSession = appSession else {
+            group.subitems.forEach { $0.isEnabled = false }
+            return
+        }
+        let canBack = !appSession.uiState.homeBackStack.isEmpty
+        let canForward = !appSession.uiState.homeForwardStack.isEmpty
+        if group.subitems.indices.contains(0) {
+            group.subitems[0].isEnabled = canBack
+        }
+        if group.subitems.indices.contains(1) {
+            group.subitems[1].isEnabled = canForward
+        }
+        group.isEnabled = canBack || canForward
     }
 
     @objc
@@ -608,6 +701,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         pillGroupItem = nil
         sidebarToggleItem = nil
         lyricsToggleItem = nil
+        homeNavPillItem = nil
 
         while !toolbar.items.isEmpty {
             toolbar.removeItem(at: toolbar.items.count - 1)
@@ -622,6 +716,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         syncSidebarToggleItemPresentation()
         syncMultiselectItemPresentation()
         syncLyricsToggleItemPresentation()
+        syncHomeNavPillPresentation()
     }
 
     private func desiredToolbarIdentifiersForCurrentState() -> [NSToolbarItem.Identifier] {
@@ -640,7 +735,11 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             ]
         }
 
-        return toolbarDefaultItemIdentifiers(toolbar)
+        var ids = toolbarDefaultItemIdentifiers(toolbar)
+        if !shouldShowHomeNavPill() {
+            ids.removeAll { $0 == Identifier.homeNavPill }
+        }
+        return ids
     }
 
     private func observeLibrarySearchResetTrigger() {
@@ -651,6 +750,23 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             DispatchQueue.main.async { [weak self] in
                 self?.syncSearchFieldFromModel()
                 self?.observeLibrarySearchResetTrigger()
+            }
+        }
+    }
+
+    private func observeHomeNavigationState() {
+        guard let appSession else { return }
+        withObservationTracking {
+            _ = appSession.uiState.isHomeDrilldown
+            _ = appSession.uiState.homeBackStack.count
+            _ = appSession.uiState.homeForwardStack.count
+            _ = appSession.libraryVM?.currentSelection
+        } onChange: {
+            DispatchQueue.main.async { [weak self] in
+                self?.applyToolbarLayoutForCurrentState()
+                self?.syncHomeNavPillPresentation()
+                self?.window?.toolbar?.validateVisibleItems()
+                self?.observeHomeNavigationState()
             }
         }
     }

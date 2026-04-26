@@ -189,7 +189,7 @@ struct LyricsPanelView: View {
         guard oldId != newId else { return }
         LyricsRuntimeProfile.increment("LyricsPanelView.trackIDChange")
         switch libraryVM.currentSelection {
-        case .home:
+        case .home, .allAlbums, .allArtists:
             LyricsRuntimeProfile.setMetadata("lyrics.selectionKind", value: "home")
         case .allSongs:
             LyricsRuntimeProfile.setMetadata("lyrics.selectionKind", value: "allSongs")

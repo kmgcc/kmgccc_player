@@ -24,6 +24,8 @@ final class AppSessionHost: ObservableObject {
     private(set) var easterEggSFX: EasterEggSFXService?
 
     let uiState = UIStateViewModel()
+    /// Stable across HomeView lifetime so the random Hero pick survives navigation.
+    let homeVM = HomeViewModel()
 
     private let modelContainer: ModelContainer
     private let settingsSceneDependencies: SettingsSceneDependencies
@@ -399,6 +401,12 @@ final class AppSessionHost: ObservableObject {
                 hasHeader = false
             case .allSongs:
                 selectionLabel = "allSongs"
+                hasHeader = false
+            case .allAlbums:
+                selectionLabel = "allAlbums"
+                hasHeader = false
+            case .allArtists:
+                selectionLabel = "allArtists"
                 hasHeader = false
             case .playlist(let id):
                 selectionLabel = "playlist:\(id.uuidString)"
