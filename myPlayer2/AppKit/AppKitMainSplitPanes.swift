@@ -94,11 +94,20 @@ struct AppKitMainContentPaneRoot: View {
             Group {
                 switch uiState.contentMode {
                 case .library:
-                    if libraryVM.currentSelection == .home {
+                    switch libraryVM.currentSelection {
+                    case .home:
                         HomeView()
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                             .id("appkit-main-home")
-                    } else {
+                    case .allAlbums:
+                        AllAlbumsView()
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                            .id("appkit-main-all-albums")
+                    case .allArtists:
+                        AllArtistsView()
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                            .id("appkit-main-all-artists")
+                    case .allSongs, .playlist, .artist, .album:
                         PlaylistDetailView(pageController: pageController)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                             .id("appkit-main-library")
@@ -208,6 +217,7 @@ struct AppKitMainContentPaneRoot: View {
         return withEvents
             .environment(AppSettings.shared)
             .environment(appSession.uiState)
+            .environment(appSession.homeVM)
             .environment(libraryVM)
             .environment(playerVM)
             .environment(playbackCoordinator)
@@ -404,8 +414,16 @@ struct AppKitMainWindowArtBackgroundLayer: View {
     }
 
     private var shouldShowPlaylistHeaderBackground: Bool {
-        appSession.uiState.contentMode == .library
-            && (appSession.libraryVM?.currentSelection ?? .allSongs) != .home
+        let selection = appSession.libraryVM?.currentSelection ?? .allSongs
+        let isPlaylistContext: Bool
+        switch selection {
+        case .home, .allAlbums, .allArtists:
+            isPlaylistContext = false
+        case .allSongs, .playlist, .artist, .album:
+            isPlaylistContext = true
+        }
+        return appSession.uiState.contentMode == .library
+            && isPlaylistContext
             && playlistPageController.rendersHeaderBackgroundInWindowLayer
             && playlistPageController.isHeaderEffectsEnabled
             && (playlistPageController.haloCurrentImage != nil || playlistPageController.haloIncomingImage != nil)
