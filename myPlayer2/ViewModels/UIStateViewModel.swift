@@ -90,6 +90,18 @@ final class UIStateViewModel {
 
     /// One-shot flag to request restoring library scroll after leaving Now Playing.
     var shouldRestoreLibraryScrollOnReturn: Bool = false
+
+    // MARK: - Home Navigation Context
+
+    /// Back stack for navigation that originated from Home (most recent at end).
+    private(set) var homeBackStack: [LibrarySelection] = []
+
+    /// Forward stack for Home-context back/forward (most recent at end).
+    private(set) var homeForwardStack: [LibrarySelection] = []
+
+    /// True when the current selection was reached by drilling in from Home.
+    var isHomeDrilldown: Bool = false
+
     init() {
         if defaults.object(forKey: StorageKey.sidebarVisible) != nil {
             sidebarVisible = defaults.bool(forKey: StorageKey.sidebarVisible)
@@ -194,5 +206,56 @@ final class UIStateViewModel {
             return nil
         }
         return lastLibraryScrollTrackID
+    }
+
+    // MARK: - Home Navigation Actions
+
+    /// Push the current selection onto the Home back stack and switch to `target`.
+    /// Used both when starting drill-down from Home and when drilling further
+    /// from "All Albums" / "All Artists".
+    func pushSelectionInHomeContext(_ target: LibrarySelection, libraryVM: LibraryViewModel) {
+        homeBackStack.append(libraryVM.currentSelection)
+        homeForwardStack.removeAll()
+        isHomeDrilldown = (target != .home)
+        libraryVM.currentSelection = target
+        showLibrary()
+    }
+
+    /// Navigate from Home to a target. Equivalent to `pushSelectionInHomeContext`
+    /// when the current selection is already `.home`.
+    func navigateFromHome(to target: LibrarySelection, libraryVM: LibraryViewModel) {
+        pushSelectionInHomeContext(target, libraryVM: libraryVM)
+    }
+
+    /// Move back one step within the Home navigation context.
+    func goBackInHomeContext(libraryVM: LibraryViewModel) {
+        guard let previous = homeBackStack.popLast() else { return }
+        homeForwardStack.append(libraryVM.currentSelection)
+        libraryVM.currentSelection = previous
+        isHomeDrilldown = (previous != .home)
+        showLibrary()
+    }
+
+    /// Move forward one step within the Home navigation context.
+    func goForwardInHomeContext(libraryVM: LibraryViewModel) {
+        guard let next = homeForwardStack.popLast() else { return }
+        homeBackStack.append(libraryVM.currentSelection)
+        libraryVM.currentSelection = next
+        isHomeDrilldown = (next != .home)
+        showLibrary()
+    }
+
+    /// Whether the toolbar pill should be visible (current page is Home or a Home drilldown).
+    func shouldShowHomeNavigationPill(libraryVM: LibraryViewModel) -> Bool {
+        if libraryVM.currentSelection == .home { return true }
+        return isHomeDrilldown
+    }
+
+    /// Drop all Home navigation history. Used when the user navigates from the
+    /// Sidebar (which exits the Home context entirely).
+    func clearHomeNavigationContext() {
+        homeBackStack.removeAll()
+        homeForwardStack.removeAll()
+        isHomeDrilldown = false
     }
 }
