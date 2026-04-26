@@ -121,6 +121,8 @@ enum LibraryLoadingPhase: Equatable {
 enum LibrarySelection: Hashable {
     case home
     case allSongs
+    case allAlbums
+    case allArtists
     case playlist(UUID)
     case artist(String)
     case album(String)
@@ -209,7 +211,7 @@ final class LibraryViewModel {
         didSet {
             // Sync legacy properties for backward compatibility during transition
             switch currentSelection {
-            case .home:
+            case .home, .allAlbums, .allArtists:
                 selectedPlaylistId = nil
                 selectedArtistKey = nil
                 selectedAlbumKey = nil
@@ -1190,7 +1192,7 @@ final class LibraryViewModel {
         guard !deletedTrackIDs.isEmpty else { return }
 
         switch currentSelection {
-        case .home, .allSongs:
+        case .home, .allSongs, .allAlbums, .allArtists:
             return
         case .playlist:
             return
@@ -1235,7 +1237,7 @@ final class LibraryViewModel {
 
     private func reconcileSelectionAfterLoad() {
         switch currentSelection {
-        case .home, .allSongs:
+        case .home, .allSongs, .allAlbums, .allArtists:
             break
         case .playlist(let id):
             guard playlists.contains(where: { $0.id == id }) else {
@@ -1267,6 +1269,10 @@ final class LibraryViewModel {
             return "home"
         case .allSongs:
             return "allSongs"
+        case .allAlbums:
+            return "allAlbums"
+        case .allArtists:
+            return "allArtists"
         case .playlist(let id):
             return "playlist-\(id.uuidString)"
         case .artist(let key):
