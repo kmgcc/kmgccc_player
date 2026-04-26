@@ -100,11 +100,11 @@ struct AppKitMainContentPaneRoot: View {
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                             .id("appkit-main-home")
                     case .allAlbums:
-                        AllAlbumsView()
+                        AllAlbumsView(pageController: pageController)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                             .id("appkit-main-all-albums")
                     case .allArtists:
-                        AllArtistsView()
+                        AllArtistsView(pageController: pageController)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                             .id("appkit-main-all-artists")
                     case .allSongs, .playlist, .artist, .album:

@@ -15,7 +15,12 @@ final class HomeViewModel {
 
     // MARK: - Hero
 
+    /// Minimum time between hero rerolls (runtime only, not persisted).
+    private static let heroRefreshInterval: TimeInterval = 6 * 60 * 60
+
     private(set) var heroTrack: Track?
+    private var selectedHeroTrackID: UUID?
+    private var selectedHeroGeneratedAt: Date?
 
     // MARK: - Sections
 
@@ -53,9 +58,7 @@ final class HomeViewModel {
             return
         }
 
-        // Hero: pick a random track (prefer one that has an artwork file reference)
-        let tracksWithArt = allTracks.filter { $0.artworkFileName != nil }
-        heroTrack = tracksWithArt.randomElement() ?? allTracks.randomElement()
+        heroTrack = resolveHeroTrack(in: allTracks)
 
         // Albums (up to 20, sorted by track count)
         albums = libraryVM.albumEntries
@@ -140,6 +143,8 @@ final class HomeViewModel {
 
     private func clearAll() {
         heroTrack = nil
+        selectedHeroTrackID = nil
+        selectedHeroGeneratedAt = nil
         albums = []
         artists = []
         playlists = []
@@ -150,5 +155,24 @@ final class HomeViewModel {
         favoriteArtistAlbumCount = 0
         preferenceRanking = []
         dailyListeningMap = [:]
+    }
+
+    /// Reuse the previously chosen hero unless it disappeared, the cooldown
+    /// elapsed, or no hero has been chosen yet.
+    private func resolveHeroTrack(in allTracks: [Track]) -> Track? {
+        let now = Date()
+        if let id = selectedHeroTrackID,
+           let pickedAt = selectedHeroGeneratedAt,
+           now.timeIntervalSince(pickedAt) < Self.heroRefreshInterval,
+           let existing = allTracks.first(where: { $0.id == id })
+        {
+            return existing
+        }
+
+        let tracksWithArt = allTracks.filter { $0.artworkFileName != nil }
+        let pick = tracksWithArt.randomElement() ?? allTracks.randomElement()
+        selectedHeroTrackID = pick?.id
+        selectedHeroGeneratedAt = pick == nil ? nil : now
+        return pick
     }
 }

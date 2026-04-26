@@ -2,11 +2,12 @@
 //  HomeArtistsSection.swift
 //  myPlayer2
 //
-//  Section header + invisible row placeholder for the Home Artists carousel.
-//  The actual horizontally-scrolling circles are rendered by the wide overlay
-//  hosted at the AppKit root level (see `HomeWideCarouselOverlay.swift`),
-//  because NSSplitView clips every split item to its column and would
-//  prevent the circles from passing under the Sidebar / right pane.
+//  Horizontal scrolling artist circles for the Home page.
+//
+//  Renders an interactive horizontal carousel inside the center content pane,
+//  bounded by the pane (no full-window overlay). Edge fades come from
+//  `HorizontalFadeScrollContainer` and only appear when the row actually
+//  overflows.
 //
 
 import AppKit
@@ -15,50 +16,48 @@ import SwiftUI
 struct HomeArtistsSection: View {
     let artists: [ArtistEntry]
     var mode: HomeLayoutMode = .wide
-    /// Total outer container width (= HomeView's geo.size.width). Forwarded
-    /// to the overlay state so the wide carousel can size itself to the
-    /// window. (Kept for API compatibility with HomeView.)
-    var outerContainerWidth: CGFloat = 0
-    /// The Home page's normal horizontal content inset (= HomeView's hPad).
-    /// Forwarded to the overlay state so the first circle lines up with the
-    /// Home content left edge at scroll offset zero.
-    var contentHorizontalPadding: CGFloat = 0
 
-    @ObservedObject private var overlayState = HomeCarouselOverlayState.shared
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(UIStateViewModel.self) private var uiState
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             sectionHeader
-            carouselPlaceholder
+            carousel
         }
     }
 
-    /// Reserves the same vertical band that the overlay carousel will paint
-    /// into and reports its frame in window coordinates to the shared state.
-    /// The placeholder itself is fully transparent and never intercepts
-    /// pointer events.
     @ViewBuilder
-    private var carouselPlaceholder: some View {
-        Color.clear
-            .frame(height: HomeWideCarouselMetrics.artistsRowHeight(for: mode))
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .overlay(
-                HomeCarouselFrameProbe { frame in
-                    let windowNumber = NSApp.keyWindow?.windowNumber
-                        ?? NSApp.mainWindow?.windowNumber
-                        ?? 0
-                    overlayState.setArtistsAnchor(
-                        HomeCarouselRowAnchor(
-                            frameInWindow: frame,
-                            windowNumber: windowNumber
-                        )
-                    )
-                }
-                .allowsHitTesting(false)
-            )
-            .allowsHitTesting(false)
+    private var carousel: some View {
+        HorizontalFadeScrollContainer(
+            spacing: rowSpacing,
+            fadeWidth: fadeWidth,
+            verticalPadding: 12,
+            leadingScrollPadding: 4,
+            trailingScrollPadding: 4
+        ) {
+            ForEach(artists) { artist in
+                HomeArtistCircle(artist: artist, mode: mode)
+            }
+        }
+    }
+
+    private var rowSpacing: CGFloat {
+        switch mode {
+        case .wide:    return 16
+        case .medium:  return 12
+        case .compact: return 10
+        case .narrow:  return 10
+        }
+    }
+
+    private var fadeWidth: CGFloat {
+        switch mode {
+        case .wide:    return 22
+        case .medium:  return 18
+        case .compact: return 16
+        case .narrow:  return 14
+        }
     }
 
     private var sectionHeader: some View {
@@ -87,5 +86,112 @@ struct HomeArtistsSection: View {
             .foregroundStyle(.secondary)
         }
         .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Artist circle
+
+private struct HomeArtistCircle: View {
+    let artist: ArtistEntry
+    let mode: HomeLayoutMode
+
+    @Environment(LibraryViewModel.self) private var libraryVM
+    @Environment(UIStateViewModel.self) private var uiState
+    @State private var image: NSImage?
+    @State private var isHovering = false
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var circleSize: CGFloat {
+        switch mode {
+        case .wide:    return 136
+        case .medium:  return 120
+        case .compact: return 104
+        case .narrow:  return 90
+        }
+    }
+
+    private var titleFontSize: CGFloat {
+        switch mode {
+        case .wide, .medium: return 14
+        case .compact:       return 13
+        case .narrow:        return 12
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: mode == .narrow ? 8 : 12) {
+            Group {
+                if let image {
+                    Image(nsImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                } else {
+                    ArtworkPlaceholderView(
+                        size: circleSize,
+                        clipShape: .circle,
+                        iconSize: 28,
+                        iconOpacity: 0.4
+                    )
+                }
+            }
+            .frame(width: circleSize, height: circleSize)
+            .clipShape(Circle())
+            .shadow(
+                color: .black.opacity(colorScheme == .dark ? 0.35 : 0.15),
+                radius: isHovering ? 14 : 10, y: isHovering ? 6 : 4
+            )
+
+            VStack(spacing: 3) {
+                Text(artist.displayName)
+                    .font(.system(size: titleFontSize, weight: .semibold))
+                    .lineLimit(1)
+
+                Text("\(artist.albumCount) 张专辑 \u{00B7} \(artist.trackCount) 首歌曲")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
+        }
+        .frame(width: circleSize + (mode == .narrow ? 10 : 16))
+        .scaleEffect(isHovering ? 1.05 : 1.0)
+        .animation(.easeOut(duration: 0.2), value: isHovering)
+        .onHover { hovering in
+            isHovering = hovering
+        }
+        .onTapGesture {
+            uiState.navigateFromHome(
+                to: .artist(artist.canonicalName),
+                libraryVM: libraryVM
+            )
+        }
+        .task {
+            await loadImage()
+        }
+    }
+
+    private func loadImage() async {
+        if let data = artist.artworkData, !data.isEmpty {
+            let checksum = ArtworkLoader.checksum(for: data)
+            let key = ArtworkLoader.cacheKey(
+                trackID: artist.id,
+                checksum: checksum,
+                targetPixelSize: CGSize(width: 256, height: 256)
+            )
+            image = await ArtworkLoader.loadImage(
+                artworkData: data,
+                cacheKey: key,
+                targetPixelSize: CGSize(width: 256, height: 256)
+            )
+            return
+        }
+
+        let canonicalName = artist.canonicalName
+        let tracks = libraryVM.allTracks.filter {
+            LibraryNormalization.normalizeArtist($0.artist) == canonicalName
+        }
+        image = await ArtistArtworkGenerator.shared.generateArtwork(
+            artistName: artist.displayName,
+            tracks: tracks
+        )
     }
 }

@@ -29,7 +29,7 @@ struct LibraryLocationSettingsSection: View {
         GroupBox {
             VStack(alignment: .leading, spacing: 12) {
                 Text("音乐资料库位置")
-                    .font(.headline)
+                    .font(.default)
 
                 Text(currentPath)
                     .font(.system(.body, design: .monospaced))

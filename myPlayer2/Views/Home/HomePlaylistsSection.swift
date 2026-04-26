@@ -3,7 +3,6 @@
 //  myPlayer2
 //
 //  Playlist cards for the Home page.
-//  Phase 1: basic layout. Phase 3 will add blurred backdrop.
 //
 
 import AppKit
@@ -11,43 +10,61 @@ import SwiftUI
 
 struct HomePlaylistsSection: View {
     let playlists: [Playlist]
+    var mode: HomeLayoutMode = .wide
 
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(UIStateViewModel.self) private var uiState
+
+    private var columnCount: Int {
+        switch mode {
+        case .wide:    return 3
+        case .medium:  return 2
+        case .compact: return 2
+        case .narrow:  return 1
+        }
+    }
+
+    private var gridSpacing: CGFloat {
+        switch mode {
+        case .wide, .medium: return 14
+        case .compact:       return 12
+        case .narrow:        return 10
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             sectionHeader
 
+            let count = max(1, min(columnCount, max(playlists.count, 1)))
             let columns = Array(
-                repeating: GridItem(.flexible(), spacing: 14),
-                count: min(3, max(1, playlists.count))
+                repeating: GridItem(.flexible(), spacing: gridSpacing, alignment: .top),
+                count: count
             )
 
-            LazyVGrid(columns: columns, spacing: 14) {
+            LazyVGrid(columns: columns, alignment: .leading, spacing: gridSpacing) {
                 ForEach(playlists) { playlist in
-                    HomePlaylistCard(playlist: playlist)
+                    HomePlaylistCard(playlist: playlist, mode: mode)
                         .onTapGesture {
-                            libraryVM.currentSelection = .playlist(playlist.id)
-                            uiState.showLibrary()
+                            uiState.navigateFromHome(
+                                to: .playlist(playlist.id),
+                                libraryVM: libraryVM
+                            )
                         }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            // Vertical padding so hover lift / shadow has headroom and isn't
+            // clipped by neighbouring sections.
+            .padding(.vertical, 4)
         }
     }
 
     private var sectionHeader: some View {
         HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(NSLocalizedString("home.section.curated", comment: "Curated"))
-                    .font(.caption)
-                    .textCase(.uppercase)
-                    .tracking(0.8)
-                    .foregroundStyle(.secondary)
-                Text(NSLocalizedString("home.section.playlists", comment: "Playlists"))
-                    .font(.system(size: 22, weight: .semibold))
-                    .tracking(-0.3)
-            }
+            Text("播放列表")
+                .font(.system(size: mode.sectionTitleFontSize, weight: .semibold))
+                .tracking(-0.3)
             Spacer()
         }
     }
@@ -55,18 +72,29 @@ struct HomePlaylistsSection: View {
 
 private struct HomePlaylistCard: View {
     let playlist: Playlist
+    let mode: HomeLayoutMode
 
     @State private var coverImage: NSImage?
     @State private var isHovering = false
     @Environment(\.colorScheme) private var colorScheme
 
-    private let cardHeight: CGFloat = 96
-    private let coverSize: CGFloat = 68
     private let radius: CGFloat = 18
+
+    private var coverSize: CGFloat {
+        switch mode {
+        case .wide:    return 68
+        case .medium:  return 60
+        case .compact: return 56
+        case .narrow:  return 52
+        }
+    }
+
+    private var cardHeight: CGFloat {
+        coverSize + 28
+    }
 
     var body: some View {
         HStack(spacing: 14) {
-            // Playlist cover
             Group {
                 if let coverImage {
                     Image(nsImage: coverImage)
@@ -87,11 +115,11 @@ private struct HomePlaylistCard: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(playlist.name)
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.system(size: mode == .narrow ? 14 : 15, weight: .semibold))
                     .lineLimit(1)
 
                 HStack(spacing: 0) {
-                    Text("\(playlist.trackCount) \(NSLocalizedString("home.songs", comment: "songs"))")
+                    Text("\(playlist.trackCount) 首歌曲")
                     Text(" \u{00B7} ")
                         .foregroundStyle(.tertiary)
                     Text(formattedDuration)
@@ -142,13 +170,12 @@ private struct HomePlaylistCard: View {
         let hours = totalSeconds / 3600
         let minutes = (totalSeconds % 3600) / 60
         if hours > 0 {
-            return "\(hours) hr \(minutes) min"
+            return "\(hours) 小时 \(minutes) 分"
         }
-        return "\(minutes) min"
+        return "\(minutes) 分"
     }
 
     private func loadCover() async {
-        // Use first track's artwork as playlist cover
         guard let firstTrack = playlist.tracks.first else { return }
         guard let data = firstTrack.loadArtworkDataIfNeeded(), !data.isEmpty else { return }
         let checksum = ArtworkLoader.checksum(for: data)
