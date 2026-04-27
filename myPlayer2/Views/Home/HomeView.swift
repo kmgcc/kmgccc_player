@@ -3,7 +3,12 @@
 //  myPlayer2
 //
 //  Home page root container.
-//  Composes Hero, Albums, Artists, Playlists, and Insights sections.
+//
+//  Mounted by `HomeFullWindowRoot` inside the AppKit window's full-window
+//  Home host (a sibling layer between the art background and the split
+//  view). Reads `HomeWindowLayoutState.shared` to decide which sections
+//  align inside the center column (Hero / Playlists / Insights / footer)
+//  and which extend to full window width (album / artist carousels).
 //
 
 import SwiftUI
@@ -17,6 +22,7 @@ struct HomeView: View {
 
     @Environment(HomeViewModel.self) private var homeVM
     @State private var hasAppeared = false
+    @State private var layout = HomeWindowLayoutState.shared
 
     var body: some View {
         Group {
@@ -57,32 +63,61 @@ struct HomeView: View {
     }
 
     private var scrollContent: some View {
-        GeometryReader { geo in
-            let mode = HomeLayoutMode.mode(for: geo.size.width)
-            let hPad = mode.horizontalPadding
-            let contentWidth = max(200, geo.size.width - hPad * 2)
+        let g = layout.geometry
+        // While the center-pane geometry probe hasn't published a valid
+        // rect yet (very brief at mount time), render nothing rather than
+        // briefly aligning content against the window's left edge. The
+        // center pane mounts on the same frame, so this empty state is
+        // only visible for ~1 layout pass before real geometry arrives.
+        guard g.hasValidLayout else {
+            return AnyView(
+                Color.clear
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            )
+        }
+
+        let centerW = g.centerWidth
+        // Layout mode follows the center column width so card sizes match
+        // the visible center area, not the full window width.
+        let mode = HomeLayoutMode.mode(for: max(320, centerW))
+        let hPad = mode.horizontalPadding
+        let leftInset = g.leftInset
+        let rightInset = g.rightInset
+        let centerLeftPad = leftInset + hPad
+        let centerRightPad = rightInset + hPad
+        let contentWidth = max(200, centerW - hPad * 2)
+
+        return AnyView(
             ScrollView(.vertical, showsIndicators: true) {
                 VStack(spacing: mode.sectionSpacing) {
                     if let heroTrack = homeVM.heroTrack {
                         HomeHeroView(track: heroTrack, containerWidth: contentWidth, mode: mode)
+                            .padding(.leading, centerLeftPad)
+                            .padding(.trailing, centerRightPad)
                     }
 
                     if !homeVM.albums.isEmpty {
                         HomeAlbumsSection(
                             albums: homeVM.albums,
-                            mode: mode
+                            mode: mode,
+                            centerLeftPad: centerLeftPad,
+                            centerRightPad: centerRightPad
                         )
                     }
 
                     if !homeVM.artists.isEmpty {
                         HomeArtistsSection(
                             artists: homeVM.artists,
-                            mode: mode
+                            mode: mode,
+                            centerLeftPad: centerLeftPad,
+                            centerRightPad: centerRightPad
                         )
                     }
 
                     if !homeVM.playlists.isEmpty {
                         HomePlaylistsSection(playlists: homeVM.playlists, mode: mode)
+                            .padding(.leading, centerLeftPad)
+                            .padding(.trailing, centerRightPad)
                     }
 
                     HomeInsightsSection(
@@ -90,18 +125,26 @@ struct HomeView: View {
                         mode: mode,
                         containerWidth: contentWidth
                     )
+                    .padding(.leading, centerLeftPad)
+                    .padding(.trailing, centerRightPad)
 
                     footer
+                        .padding(.leading, centerLeftPad)
+                        .padding(.trailing, centerRightPad)
 
                     // Bottom safe space so the Mini Player doesn't cover footer text.
                     Color.clear.frame(height: 120)
                 }
-                .padding(.horizontal, hPad)
-                .padding(.top, 28)
+                // Top safe-area inset so the Hero card clears the unified
+                // titlebar/toolbar at the initial scroll position. The
+                // window uses `.fullSizeContentView`, so the toolbar
+                // occupies the top ~52pt of the content area; 56pt gives
+                // the Hero a comfortable cushion below it.
+                .padding(.top, 56)
                 .padding(.bottom, 24)
                 .frame(maxWidth: .infinity, alignment: .top)
             }
-        }
+        )
     }
 
     private var emptyLibraryView: some View {

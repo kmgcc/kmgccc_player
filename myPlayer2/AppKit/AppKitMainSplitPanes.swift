@@ -80,6 +80,14 @@ struct AppKitMainContentPaneRoot: View {
         }
     }
 
+    /// True when the active library selection is `.home` and content mode is
+    /// `.library`. The center pane renders a transparent placeholder in that
+    /// case (the real `HomeView` lives in the full-window Home host) and the
+    /// passthrough hosting view forwards clicks to the host below.
+    private func isHomeMode(uiState: UIStateViewModel, libraryVM: LibraryViewModel) -> Bool {
+        uiState.contentMode == .library && libraryVM.currentSelection == .home
+    }
+
     private func contentView(
         uiState: UIStateViewModel,
         libraryVM: LibraryViewModel,
@@ -90,14 +98,34 @@ struct AppKitMainContentPaneRoot: View {
         importEnrichmentService: ImportEnrichmentService,
         skinManager: SkinManager
     ) -> some View {
+        let homeMode = isHomeMode(uiState: uiState, libraryVM: libraryVM)
+
         let base = ZStack(alignment: .bottomLeading) {
+            // Transparent center-rect probe. Reports the center pane's
+            // window-coordinate frame to `HomeWindowLayoutState` regardless
+            // of the active page so the full-window Home layer can keep its
+            // inner sections aligned to the center column.
+            Color.clear
+                .allowsHitTesting(false)
+                .onGeometryChange(for: CGRect.self) { proxy in
+                    proxy.frame(in: .global)
+                } action: { newRect in
+                    HomeWindowLayoutState.shared.setCenterRect(newRect)
+                }
+
             Group {
                 switch uiState.contentMode {
                 case .library:
                     switch libraryVM.currentSelection {
                     case .home:
-                        HomeView()
+                        // The real HomeView is rendered by
+                        // HomeFullWindowRoot in the AppKit window's
+                        // full-window Home host. The center pane only
+                        // contributes a transparent passthrough here so
+                        // hits/scrolls fall through to that host below.
+                        Color.clear
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                            .allowsHitTesting(false)
                             .id("appkit-main-home")
                     case .allAlbums:
                         AllAlbumsView(pageController: pageController)
@@ -126,6 +154,11 @@ struct AppKitMainContentPaneRoot: View {
             if !FullscreenWindowManager.shared.isWindowedFullscreenActive {
                 GeometryReader { proxy in
                     MiniPlayerView()
+                        .onGeometryChange(for: CGRect.self) { geometry in
+                            geometry.frame(in: .global)
+                        } action: { newRect in
+                            HomeWindowLayoutState.shared.setMiniPlayerFrame(newRect)
+                        }
                         .frame(maxWidth: proxy.size.width, alignment: .leading)
                         .padding(.leading, GlassStyleTokens.miniPlayerHorizontalPadding)
                         .padding(.trailing, GlassStyleTokens.miniPlayerHorizontalPadding)
@@ -150,9 +183,13 @@ struct AppKitMainContentPaneRoot: View {
                 applyAppearanceToWindows()
                 syncThemeStoreWithSwiftUIColorScheme(swiftUIColorScheme)
                 syncFullscreenWindowEditorDependencies()
+                HomeWindowLayoutState.shared.setHomeMode(homeMode)
                 if shouldTriggerArtBackgroundTransition(playbackCoordinator: playbackCoordinator, uiState: uiState) {
                     _ = markNowPlayingArtBackgroundPresentationIfNeeded()
                 }
+            }
+            .onChange(of: homeMode) { _, newValue in
+                HomeWindowLayoutState.shared.setHomeMode(newValue)
             }
 
         let withSettingsChanges: some View = withAppear
