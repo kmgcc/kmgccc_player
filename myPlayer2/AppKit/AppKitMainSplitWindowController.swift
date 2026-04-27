@@ -2,8 +2,20 @@
 //  AppKitMainSplitWindowController.swift
 //  myPlayer2
 //
-//  AppKit-driven main window template (three-column split).
-//  Step 1: Root split only (no NSToolbar wiring yet).
+//  AppKit-driven main window template (three-column split) with a
+//  full-window Home layer mounted between the art background and the
+//  split view. The full-window Home host renders the real `HomeView`
+//  only when the active selection is `.home`; otherwise it yields all
+//  hit-testing so events fall straight through.
+//
+//  Z-order in window-content coordinates:
+//      1. backgroundView           – art / playlist halo background
+//      2. fullWindowHomeHost       – real HomeView (when in Home mode)
+//      3. splitView                – sidebar | center pane | inspector
+//                                    (center pane uses a passthrough
+//                                    hosting view so a transparent Home
+//                                    placeholder forwards hits to the
+//                                    full-window host below).
 //
 
 import AppKit
@@ -200,11 +212,13 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
 
 @MainActor
 private final class AppKitMainRootViewController: NSViewController {
+    private let appSession: AppSessionHost
     private let splitViewController: AppKitMainSplitViewController
     private let backgroundController: NSHostingController<AppKitMainWindowArtBackgroundLayer>
-    private let homeUnderlayHost: NonInteractiveUnderlayView
+    private let homeFullWindowHost: PassthroughHostingView<HomeFullWindowRoot>
 
     init(appSession: AppSessionHost, splitViewController: AppKitMainSplitViewController) {
+        self.appSession = appSession
         self.splitViewController = splitViewController
         self.backgroundController = NSHostingController(
             rootView: AppKitMainWindowArtBackgroundLayer(
@@ -213,7 +227,9 @@ private final class AppKitMainRootViewController: NSViewController {
                 artBackgroundController: splitViewController.artBackgroundController
             )
         )
-        self.homeUnderlayHost = NonInteractiveUnderlayView()
+        self.homeFullWindowHost = PassthroughHostingView(
+            rootView: HomeFullWindowRoot(appSession: appSession)
+        )
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -223,7 +239,13 @@ private final class AppKitMainRootViewController: NSViewController {
     }
 
     override func loadView() {
-        let rootView = NSView()
+        // Use a custom NSView subclass that performs smart hit-test routing
+        // between `splitViewController.view` and `homeFullWindowHost`. This
+        // is the primary mechanism that delivers clicks to Home content
+        // while leaving sidebar / inspector / divider / Mini Player hits
+        // untouched. The custom view is documented in detail near
+        // `HomeRoutingRootView` below.
+        let rootView = HomeRoutingRootView()
         rootView.wantsLayer = true
         rootView.layer?.backgroundColor = NSColor.clear.cgColor
         view = rootView
@@ -240,7 +262,7 @@ private final class AppKitMainRootViewController: NSViewController {
 
         backgroundView.translatesAutoresizingMaskIntoConstraints = true
         splitView.translatesAutoresizingMaskIntoConstraints = true
-        homeUnderlayHost.translatesAutoresizingMaskIntoConstraints = true
+        homeFullWindowHost.translatesAutoresizingMaskIntoConstraints = true
 
         backgroundView.wantsLayer = true
         backgroundView.layer?.backgroundColor = NSColor.clear.cgColor
@@ -248,41 +270,50 @@ private final class AppKitMainRootViewController: NSViewController {
         splitView.layer?.backgroundColor = NSColor.clear.cgColor
         splitViewController.splitView.wantsLayer = true
         splitViewController.splitView.layer?.backgroundColor = NSColor.clear.cgColor
-        homeUnderlayHost.wantsLayer = true
-        homeUnderlayHost.layer?.backgroundColor = NSColor.clear.cgColor
+        homeFullWindowHost.wantsLayer = true
+        homeFullWindowHost.layer?.backgroundColor = NSColor.clear.cgColor
 
-        // Z-order: art background → home carousel underlay → split view (with
-        // its sidebar/main/inspector/mini player). The underlay must live
-        // BELOW the split view so it never blocks pointer events or overlaps
-        // sibling panes' interactive content.
+        // Z-order: art background → full-window Home host → split view.
+        // The Home host sits BELOW the split view in subview order so that
+        // sidebar / inspector glass (rendered inside the split view) blur
+        // Home content beneath them.
+        //
+        // Hit-test routing is done by `HomeRoutingRootView.hitTest(_:)`:
+        // when the split view would have claimed itself (no real pane
+        // child / divider / Mini Player / real content claimed), the root
+        // view diverts the hit to `homeFullWindowHost` so Home cards and
+        // buttons receive `mouseDown`. Sidebar / inspector / Mini Player /
+        // dividers all return non-self subviews from the split view's
+        // hit-test and are routed normally without diversion.
         view.addSubview(backgroundView)
-        view.addSubview(homeUnderlayHost)
+        view.addSubview(homeFullWindowHost)
         view.addSubview(splitView)
 
+        if let routingRoot = view as? HomeRoutingRootView {
+            routingRoot.splitViewRef = splitView
+            routingRoot.homeHostRef = homeFullWindowHost
+        }
+
         backgroundView.frame = view.bounds
-        homeUnderlayHost.frame = view.bounds
+        homeFullWindowHost.frame = view.bounds
         splitView.frame = view.bounds
         backgroundView.autoresizingMask = [.width, .height]
-        homeUnderlayHost.autoresizingMask = [.width, .height]
+        homeFullWindowHost.autoresizingMask = [.width, .height]
         splitView.autoresizingMask = [.width, .height]
-
-        homeUnderlayHost.installRootView(
-            HomeCarouselUnderlayView()
-        )
     }
 
     override func viewDidLayout() {
         super.viewDidLayout()
         backgroundController.view.frame = view.bounds
-        homeUnderlayHost.frame = view.bounds
+        homeFullWindowHost.frame = view.bounds
         splitViewController.view.frame = view.bounds
 
-        HomeCarouselUnderlayState.shared.setWindowWidth(view.bounds.width)
+        HomeWindowLayoutState.shared.setWindowSize(view.bounds.size)
 
         // Switch sidebar/inspector glass blendingMode to `.withinWindow` so
-        // the underlay sibling (rendered below the split view) shows through
-        // the panes' translucent material. `.behindWindow` (the default) only
-        // samples the desktop, which would hide the underlay completely.
+        // the Home content (rendered below the split view) shows through the
+        // panes' translucent material. `.behindWindow` (the default) only
+        // samples the desktop, which would hide the Home layer completely.
         applyWithinWindowBlendingModeToPaneGlass()
     }
 
@@ -306,40 +337,151 @@ private final class AppKitMainRootViewController: NSViewController {
     }
 }
 
-/// AppKit container that hosts the SwiftUI `HomeCarouselUnderlayView` and
-/// always passes pointer events through to whatever is below in the window
-/// (i.e., the split view). This guarantees the underlay never intercepts
-/// clicks from sidebar / main / inspector / mini player.
+// MARK: - Passthrough hosting view
+
+/// `NSHostingView` subclass that returns nil from `hitTest(_:)` when SwiftUI
+/// yields hit-testing for the queried point (i.e. when only the hosting view
+/// itself would have claimed it). This lets AppKit cascade the click / scroll
+/// to the next sibling in the parent view's subview list — used both:
+///
+/// 1. By the full-window Home host, so non-Home modes (where the SwiftUI
+///    root renders an empty `Color.clear`) don't capture window clicks.
+/// 2. By the center pane (`AppKitMainContentPaneRoot`), so when a transparent
+///    `Color.clear.allowsHitTesting(false)` placeholder is rendered for the
+///    Home selection, the click can fall through to the full-window Home
+///    host underneath the split view.
 @MainActor
-private final class NonInteractiveUnderlayView: NSView {
-    private var hostingView: NSHostingView<HomeCarouselUnderlayView>?
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
+final class PassthroughHostingView<Content: View>: NSHostingView<Content> {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        return (hit === self) ? nil : hit
     }
 
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
+    override var mouseDownCanMoveWindow: Bool { false }
+}
 
-    func installRootView(_ rootView: HomeCarouselUnderlayView) {
-        let host = NSHostingView(rootView: rootView)
-        host.translatesAutoresizingMaskIntoConstraints = true
-        host.frame = bounds
-        host.autoresizingMask = [.width, .height]
-        host.wantsLayer = true
-        host.layer?.backgroundColor = NSColor.clear.cgColor
-        addSubview(host)
-        hostingView = host
+/// `NSHostingController` whose backing view is a `PassthroughHostingView`.
+/// Used for the split view's center pane so a transparent Home placeholder
+/// can forward hits to the full-window Home host below.
+@MainActor
+final class PassthroughHostingController<Content: View>: NSHostingController<Content> {
+    override func loadView() {
+        view = PassthroughHostingView(rootView: rootView)
     }
+}
+
+// MARK: - Home routing root view
+
+/// Custom NSView used as `AppKitMainRootViewController.view`. Its only job is
+/// to redirect `mouseDown` / scroll hit-tests to the full-window Home host
+/// when the click falls inside the center column AND outside the Mini Player
+/// rect, while in Home mode. Sidebar / inspector / dividers / Mini Player
+/// hits all pass through to the standard subview walk.
+///
+/// Why this layer exists:
+///   • The split view sits ON TOP of `homeFullWindowHost` in the root view's
+///     subview list (so sidebar / inspector glass can blur Home content
+///     beneath them).
+///   • When the active selection is `.home`, the center pane's
+///     `CenterPanePassthroughHostingView` yields `nil` outside the actual
+///     Mini Player rect. But `NSSplitView`'s default hit-test still walks
+///     its own subviews — including the inner framework-built `NSSplitView`
+///     that `NSSplitViewController` synthesizes — and ends up returning
+///     a fall-through hit on that inner background. The click then dies
+///     in an empty NSSplitView.
+///   • This view's `hitTest` detects clicks that *are inside the Home
+///     content area* (in Home mode + center column + outside the actual
+///     Mini Player rect) and asks `homeFullWindowHost` to claim them
+///     directly, bypassing the split view's default fall-through behavior.
+///
+/// Hits in sidebar / inspector / divider / Mini Player regions are *not*
+/// diverted — they go through the standard subview walk, which lets the
+/// split view route them normally to their respective SwiftUI subviews.
+/// The Mini Player rect is the live frame published by an
+/// `.onGeometryChange` probe wrapped around `MiniPlayerView()` (see
+/// `HomeWindowLayoutState.miniPlayerFrameInWindow`), so the routing
+/// matches the visible Mini Player exactly with only a small safety
+/// margin around the edges.
+@MainActor
+final class HomeRoutingRootView: NSView {
+    weak var splitViewRef: NSView?
+    weak var homeHostRef: NSView?
+
+    /// Small inset around the published Mini Player frame, in points. Acts as
+    /// a tiny safety cushion (e.g. for hover-grow overshoot at the visible
+    /// edges of the Mini Player) without re-introducing a wide invisible
+    /// strip that would block Home content. The Mini Player owns hit-testing
+    /// inside (frame ∪ this margin); Home owns everything outside it.
+    private let miniPlayerHitMargin: CGFloat = 6
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        // Passthrough: never claim hit-testing. Clicks on the sidebar /
-        // inspector / mini player / center pane proceed normally.
-        nil
+        let layoutState = HomeWindowLayoutState.shared
+        let isHomeMode = layoutState.isHomeMode
+        let geometry = layoutState.geometry
+
+        let inMiniPlayer = isPointInsideMiniPlayer(point, layoutState: layoutState)
+
+        // Home-mode region routing: when the point is inside the center
+        // column AND outside the Mini Player's actual hit rect, ask the
+        // Home host to claim the hit before the split view gets a chance.
+        // The center pane host yields nil for these points anyway, so
+        // without this diversion the click would die in the split view's
+        // inner background.
+        if isHomeMode,
+           geometry.hasValidLayout,
+           let host = homeHostRef {
+            let inCenterX = point.x >= geometry.centerMinXInWindow
+                         && point.x <= geometry.centerMaxXInWindow
+
+            if inCenterX, !inMiniPlayer {
+                if let homeHit = host.hitTest(point), homeHit !== host {
+                    return homeHit
+                }
+            }
+        }
+
+        // Default reverse-z walk: last-added subview is topmost. Inside
+        // the Mini Player rect we always end up here, which lets the
+        // split view → center pane → CenterPanePassthroughHostingView
+        // cascade claim the click for Mini Player.
+        for sub in subviews.reversed() {
+            if let hit = sub.hitTest(point) {
+                #if DEBUG
+                if inMiniPlayer {
+                    MiniPlayerHitDiag.shared.log(
+                        "[RoutingRoot] inside MP. point=\(MiniPlayerHitDiag.format(point))"
+                        + " path=\(sub === splitViewRef ? "split" : (sub === homeHostRef ? "home" : "background"))"
+                        + " hit=\(MiniPlayerHitDiag.describe(hit))"
+                    )
+                }
+                #endif
+                return hit
+            }
+        }
+        return nil
     }
 
-    override var acceptsFirstResponder: Bool { false }
-    override var mouseDownCanMoveWindow: Bool { false }
+    /// Tests whether the AppKit hit-test point (window-content, bottom-left
+    /// origin on this non-flipped root view) lies inside the published
+    /// Mini Player frame. The published frame is captured in SwiftUI
+    /// `.global` coordinates (top-left origin), so we y-flip into the
+    /// root view's bounds before comparing.
+    private func isPointInsideMiniPlayer(_ point: NSPoint, layoutState: HomeWindowLayoutState) -> Bool {
+        let swiftUIRect = layoutState.miniPlayerFrameInWindow
+        guard swiftUIRect.width > 0.5, swiftUIRect.height > 0.5 else { return false }
+
+        let appkitRect: CGRect
+        if isFlipped {
+            appkitRect = swiftUIRect
+        } else {
+            appkitRect = CGRect(
+                x: swiftUIRect.minX,
+                y: bounds.height - swiftUIRect.maxY,
+                width: swiftUIRect.width,
+                height: swiftUIRect.height
+            )
+        }
+
+        return appkitRect.insetBy(dx: -miniPlayerHitMargin, dy: -miniPlayerHitMargin).contains(point)
+    }
 }
