@@ -7,7 +7,7 @@
 
 import Foundation
 
-enum ExternalPlaybackTextNormalizer {
+nonisolated enum ExternalPlaybackTextNormalizer {
     private static let versionNoiseWords: Set<String> = [
         "live", "remaster", "remastered", "deluxe", "edition", "version", "single",
         "ep", "mono", "stereo", "radio", "edit", "instrumental", "karaoke",

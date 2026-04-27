@@ -16,7 +16,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         var payload: Payload
     }
 
-    private struct Payload: Decodable, Equatable, Sendable {
+    nonisolated private struct Payload: Decodable, Equatable, Sendable {
         var bundleIdentifier: String?
         var parentApplicationBundleIdentifier: String?
         var clientBundleIdentifier: String?
