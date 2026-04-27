@@ -20,6 +20,9 @@ struct HorizontalFadeScrollContainer<Content: View>: View {
     let verticalPadding: CGFloat
     let leadingScrollPadding: CGFloat
     let trailingScrollPadding: CGFloat
+    let showsEdgeFade: Bool
+    let onHorizontalScrollOffsetChange: ((CGFloat) -> Void)?
+    let onScrollMetricsChange: ((CGFloat, CGFloat, CGFloat) -> Void)?
     @ViewBuilder var content: () -> Content
 
     @State private var contentWidth: CGFloat = 0
@@ -33,6 +36,9 @@ struct HorizontalFadeScrollContainer<Content: View>: View {
         verticalPadding: CGFloat = 12,
         leadingScrollPadding: CGFloat = 16,
         trailingScrollPadding: CGFloat = 16,
+        showsEdgeFade: Bool = true,
+        onHorizontalScrollOffsetChange: ((CGFloat) -> Void)? = nil,
+        onScrollMetricsChange: ((CGFloat, CGFloat, CGFloat) -> Void)? = nil,
         @ViewBuilder content: @escaping () -> Content
     ) {
         self.spacing = spacing
@@ -40,6 +46,9 @@ struct HorizontalFadeScrollContainer<Content: View>: View {
         self.verticalPadding = verticalPadding
         self.leadingScrollPadding = leadingScrollPadding
         self.trailingScrollPadding = trailingScrollPadding
+        self.showsEdgeFade = showsEdgeFade
+        self.onHorizontalScrollOffsetChange = onHorizontalScrollOffsetChange
+        self.onScrollMetricsChange = onScrollMetricsChange
         self.content = content
     }
 
@@ -93,31 +102,37 @@ struct HorizontalFadeScrollContainer<Content: View>: View {
             contentWidth = newValue.contentWidth
             viewportWidth = newValue.viewportWidth
             scrollX = newValue.offsetX
+            onHorizontalScrollOffsetChange?(newValue.offsetX)
+            onScrollMetricsChange?(newValue.contentWidth, newValue.viewportWidth, newValue.offsetX)
         }
         .overlay(alignment: .leading) {
-            LinearGradient(
-                colors: [fadeBaseColor, fadeBaseColor.opacity(0)],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-            .frame(width: fadeWidth)
-            .frame(maxHeight: .infinity)
-            .opacity(leftFadeOpacity)
-            .allowsHitTesting(false)
+            if showsEdgeFade {
+                LinearGradient(
+                    colors: [fadeBaseColor, fadeBaseColor.opacity(0)],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+                .frame(width: fadeWidth)
+                .frame(maxHeight: .infinity)
+                .opacity(leftFadeOpacity)
+                .allowsHitTesting(false)
+            }
         }
         .overlay(alignment: .trailing) {
-            LinearGradient(
-                colors: [fadeBaseColor.opacity(0), fadeBaseColor],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-            .frame(width: fadeWidth)
-            .frame(maxHeight: .infinity)
-            .opacity(rightFadeOpacity)
-            .allowsHitTesting(false)
+            if showsEdgeFade {
+                LinearGradient(
+                    colors: [fadeBaseColor.opacity(0), fadeBaseColor],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+                .frame(width: fadeWidth)
+                .frame(maxHeight: .infinity)
+                .opacity(rightFadeOpacity)
+                .allowsHitTesting(false)
+            }
         }
-        .animation(.easeOut(duration: 0.18), value: leftFadeOpacity)
-        .animation(.easeOut(duration: 0.18), value: rightFadeOpacity)
+        .animation(showsEdgeFade ? .easeOut(duration: 0.18) : nil, value: leftFadeOpacity)
+        .animation(showsEdgeFade ? .easeOut(duration: 0.18) : nil, value: rightFadeOpacity)
     }
 }
 
