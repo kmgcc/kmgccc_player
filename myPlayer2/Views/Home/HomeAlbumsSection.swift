@@ -23,26 +23,103 @@ struct HomeAlbumsSection: View {
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(UIStateViewModel.self) private var uiState
 
+    private let underlayState = HomeCarouselUnderlayState.shared
+    private let cardCornerRadius: CGFloat = 16
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             sectionHeader
             carousel
         }
+        .onAppear {
+            pushSnapshot()
+            underlayState.setAlbumsActive(true)
+        }
+        .onDisappear {
+            underlayState.setAlbumsActive(false)
+        }
+        .onChange(of: snapshotItems) { _, _ in
+            pushSnapshot()
+        }
+        .onChange(of: mode) { _, _ in
+            pushSnapshot()
+        }
     }
 
     @ViewBuilder
     private var carousel: some View {
+        let hPad = mode.horizontalPadding
         HorizontalFadeScrollContainer(
             spacing: rowSpacing,
-            fadeWidth: fadeWidth,
+            fadeWidth: 0,
             verticalPadding: 12,
-            leadingScrollPadding: 4,
-            trailingScrollPadding: 4
+            leadingScrollPadding: hPad + 4,
+            trailingScrollPadding: 4,
+            showsEdgeFade: false,
+            onHorizontalScrollOffsetChange: { offset in
+                underlayState.updateAlbumsHorizontalOffset(offset)
+            }
         ) {
             ForEach(albums) { album in
                 HomeAlbumCard(album: album, mode: mode)
             }
         }
+        // Negate the parent VStack's horizontal padding so the row's
+        // viewport reaches the center pane's left and right edges. The
+        // section title above keeps the parent padding (so it stays aligned
+        // with Hero / Playlists / Insights), only the carousel extends.
+        .padding(.horizontal, -hPad)
+        .onGeometryChange(for: CGRect.self) { proxy in
+            proxy.frame(in: .global)
+        } action: { newFrame in
+            underlayState.updateAlbumsRowOrigin(
+                minX: newFrame.minX,
+                minY: newFrame.minY
+            )
+            // The carousel's horizontal extent IS the center mask. Beyond
+            // its left/right edges (under sidebar / inspector glass) the
+            // underlay continues drawing.
+            HomeCarouselUnderlayState.shared.setCenterRange(
+                minX: newFrame.minX,
+                maxX: newFrame.maxX
+            )
+        }
+    }
+
+    // MARK: - Snapshot push
+
+    private var snapshotItems: [HomeCarouselUnderlayState.Item] {
+        albums.map { album in
+            HomeCarouselUnderlayState.Item.album(id: album.id, artwork: album.artworkData)
+        }
+    }
+
+    private var cardSize: CGFloat {
+        switch mode {
+        case .wide:    return 164
+        case .medium:  return 146
+        case .compact: return 124
+        case .narrow:  return 110
+        }
+    }
+
+    private func pushSnapshot() {
+        var snapshot = HomeCarouselUnderlayState.RowSnapshot.empty
+        snapshot.isActive = true
+        snapshot.items = snapshotItems
+        snapshot.rowMinXInWindow = underlayState.albums.rowMinXInWindow
+        snapshot.rowMinYInWindow = underlayState.albums.rowMinYInWindow
+        snapshot.rowHeight = cardSize + 24
+        snapshot.cardWidth = cardSize
+        snapshot.cardHeight = cardSize
+        snapshot.spacing = rowSpacing
+        // Mirror the real carousel's leading padding so the underlay's
+        // first card is co-located with the real first card at offset 0.
+        snapshot.leadingScrollPadding = mode.horizontalPadding + 4
+        snapshot.verticalPadding = 12
+        snapshot.horizontalScrollOffset = underlayState.albums.horizontalScrollOffset
+        snapshot.clipShape = .roundedRect(radius: cardCornerRadius)
+        underlayState.updateAlbums(snapshot)
     }
 
     private var rowSpacing: CGFloat {
@@ -197,10 +274,20 @@ private struct HomeAlbumCard: View {
             checksum: checksum,
             targetPixelSize: CGSize(width: 336, height: 336)
         )
-        image = await ArtworkLoader.loadImage(
+        let loaded = await ArtworkLoader.loadImage(
             artworkData: data,
             cacheKey: key,
             targetPixelSize: CGSize(width: 336, height: 336)
         )
+        image = loaded
+        // Mirror the same NSImage into the underlay's shared cache so the
+        // off-screen continuation under sidebar / inspector glass renders
+        // the SAME pixels as the real card. Without this, most underlay
+        // cards would fall back to a placeholder (because `album.artworkData`
+        // is frequently empty, with the real cover living on a track) and
+        // the user would see "blurry gray blobs" through the glass.
+        if let loaded {
+            HomeCarouselUnderlayState.shared.setLoadedImage(loaded, for: album.id)
+        }
     }
 }

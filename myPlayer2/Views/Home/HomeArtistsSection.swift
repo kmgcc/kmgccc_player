@@ -20,26 +20,112 @@ struct HomeArtistsSection: View {
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(UIStateViewModel.self) private var uiState
 
+    private let underlayState = HomeCarouselUnderlayState.shared
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             sectionHeader
             carousel
         }
+        .onAppear {
+            pushSnapshot()
+            underlayState.setArtistsActive(true)
+        }
+        .onDisappear {
+            underlayState.setArtistsActive(false)
+        }
+        .onChange(of: snapshotItems) { _, _ in
+            pushSnapshot()
+        }
+        .onChange(of: mode) { _, _ in
+            pushSnapshot()
+        }
     }
 
     @ViewBuilder
     private var carousel: some View {
+        let hPad = mode.horizontalPadding
         HorizontalFadeScrollContainer(
             spacing: rowSpacing,
-            fadeWidth: fadeWidth,
+            fadeWidth: 0,
             verticalPadding: 12,
-            leadingScrollPadding: 4,
-            trailingScrollPadding: 4
+            leadingScrollPadding: hPad + 4,
+            trailingScrollPadding: 4,
+            showsEdgeFade: false,
+            onHorizontalScrollOffsetChange: { offset in
+                underlayState.updateArtistsHorizontalOffset(offset)
+            }
         ) {
             ForEach(artists) { artist in
                 HomeArtistCircle(artist: artist, mode: mode)
             }
         }
+        // Negate the parent VStack's horizontal padding so the row's
+        // viewport reaches the center pane's left and right edges. The
+        // section title above keeps the parent padding (so it stays aligned
+        // with Hero / Playlists / Insights).
+        .padding(.horizontal, -hPad)
+        .onGeometryChange(for: CGRect.self) { proxy in
+            proxy.frame(in: .global)
+        } action: { newFrame in
+            underlayState.updateArtistsRowOrigin(
+                minX: newFrame.minX,
+                minY: newFrame.minY
+            )
+            HomeCarouselUnderlayState.shared.setCenterRange(
+                minX: newFrame.minX,
+                maxX: newFrame.maxX
+            )
+        }
+    }
+
+    // MARK: - Snapshot push
+
+    private var snapshotItems: [HomeCarouselUnderlayState.Item] {
+        artists.map { artist in
+            HomeCarouselUnderlayState.Item.artist(id: artist.id, artwork: artist.artworkData)
+        }
+    }
+
+    private var circleSize: CGFloat {
+        switch mode {
+        case .wide:    return 136
+        case .medium:  return 120
+        case .compact: return 104
+        case .narrow:  return 90
+        }
+    }
+
+    private func pushSnapshot() {
+        var snapshot = HomeCarouselUnderlayState.RowSnapshot.empty
+        snapshot.isActive = true
+        snapshot.items = snapshotItems
+        snapshot.rowMinXInWindow = underlayState.artists.rowMinXInWindow
+        snapshot.rowMinYInWindow = underlayState.artists.rowMinYInWindow
+        snapshot.rowHeight = circleSize + 24
+        snapshot.cardWidth = circleSize
+        snapshot.cardHeight = circleSize
+        snapshot.spacing = rowSpacing + extraSpacingForCircleContainer
+        // Mirror the real carousel's leading padding (hPad + 4) and add the
+        // half-container slack so the underlay's first circle is co-located
+        // with the real first circle at offset 0.
+        snapshot.leadingScrollPadding = mode.horizontalPadding + 4 + halfExtraContainerSlack
+        snapshot.verticalPadding = 12
+        snapshot.horizontalScrollOffset = underlayState.artists.horizontalScrollOffset
+        snapshot.clipShape = .circle
+        underlayState.updateArtists(snapshot)
+    }
+
+    /// `HomeArtistCircle` wraps each circle in a frame of width
+    /// `circleSize + (mode == .narrow ? 10 : 16)`. The underlay places cards
+    /// at `circleSize` and steps by `cardWidth + spacing`, so we add the
+    /// container's extra horizontal slack to the spacing instead.
+    private var extraSpacingForCircleContainer: CGFloat {
+        mode == .narrow ? 10 : 16
+    }
+
+    private var halfExtraContainerSlack: CGFloat {
+        extraSpacingForCircleContainer / 2
     }
 
     private var rowSpacing: CGFloat {
@@ -177,11 +263,15 @@ private struct HomeArtistCircle: View {
                 checksum: checksum,
                 targetPixelSize: CGSize(width: 256, height: 256)
             )
-            image = await ArtworkLoader.loadImage(
+            let loaded = await ArtworkLoader.loadImage(
                 artworkData: data,
                 cacheKey: key,
                 targetPixelSize: CGSize(width: 256, height: 256)
             )
+            image = loaded
+            if let loaded {
+                HomeCarouselUnderlayState.shared.setLoadedImage(loaded, for: artist.id)
+            }
             return
         }
 
@@ -189,9 +279,13 @@ private struct HomeArtistCircle: View {
         let tracks = libraryVM.allTracks.filter {
             LibraryNormalization.normalizeArtist($0.artist) == canonicalName
         }
-        image = await ArtistArtworkGenerator.shared.generateArtwork(
+        let generated = await ArtistArtworkGenerator.shared.generateArtwork(
             artistName: artist.displayName,
             tracks: tracks
         )
+        image = generated
+        if let generated {
+            HomeCarouselUnderlayState.shared.setLoadedImage(generated, for: artist.id)
+        }
     }
 }
