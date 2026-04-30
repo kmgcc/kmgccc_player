@@ -19,23 +19,25 @@ struct HomeHeroView: View {
     @EnvironmentObject private var themeStore: ThemeStore
 
     @State private var coverImage: NSImage?
+    @State private var artworkData: Data?
+    @State private var heroArtworkChecksum: UInt64 = 0
+    @State private var artworkDominantColor: NSColor?
     @State private var isHovering = false
 
     private var heroHeight: CGFloat {
         switch mode {
-        case .wide:    return 230
-        case .medium:  return 210
-        case .compact: return 196
-        case .narrow:  return 176
+        case .wide:    return 320
+        case .medium:  return 295
+        case .compact: return 270
+        case .narrow:  return 250
         }
     }
 
-    private var coverSize: CGFloat {
+    private var heroTopPadding: CGFloat {
         switch mode {
-        case .wide:    return 170
-        case .medium:  return 154
-        case .compact: return 130
-        case .narrow:  return 108
+        case .wide, .medium: return 36
+        case .compact:       return 28
+        case .narrow:        return 24
         }
     }
 
@@ -55,8 +57,6 @@ struct HomeHeroView: View {
         case .narrow:        return 14
         }
     }
-
-    private let coverRadius: CGFloat = 16
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -86,19 +86,45 @@ struct HomeHeroView: View {
         }
     }
 
+    private var heroBlurConfig: CoverGradientBlurConfig {
+        CoverGradientBlurConfig(
+            blurRadius: 80,
+            colorOverlayOpacity: 0.40,
+            transitionDuration: 0.35,
+            edgeStripWidth: 3.0,
+            blurStartRatio: 0.1,
+            blurEndRatio: 0.9,
+            overlayOffsetRatio: 0.0,
+            blurCurveGamma: 5.0,
+            overlayCurveGamma: 3.0,
+            edgeFillMode: .pixelStretch,
+            // Start blur slightly inside the artwork's right half
+            blurStartRatioFromEdge: 0.35,
+            // More linear ramp: reaches large blur values earlier than the default cubic
+            blurAlphaCoefficients: (0, 0.50, 0.30, 0.20)
+        )
+    }
+
+    /// Width the background renderer draws the artwork at (scale-to-height).
+    /// Used to push the text content past the visible cover art.
+    private var artworkLeadingWidth: CGFloat {
+        guard artworkData != nil else { return 0 }
+        if let img = coverImage {
+            return heroHeight * (img.size.width / max(1, img.size.height))
+        }
+        return heroHeight  // assume square while image is loading
+    }
+
     @ViewBuilder
     private var backdropView: some View {
-        if let coverImage {
-            Image(nsImage: coverImage)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-                .blur(radius: 50, opaque: true)
-                .saturation(colorScheme == .dark ? 1.2 : 1.1)
-                .brightness(colorScheme == .dark ? -0.15 : 0.05)
-                .overlay(
-                    Color.black.opacity(colorScheme == .dark ? 0.35 : 0.15)
-                )
-                .clipped()
+        if let artworkData {
+            CoverGradientBlurBackgroundView(
+                artworkData: artworkData,
+                artworkImage: coverImage,
+                artworkChecksum: heroArtworkChecksum,
+                dominantColor: artworkDominantColor,
+                config: heroBlurConfig
+            )
         } else {
             RoundedRectangle(cornerRadius: 22, style: .continuous)
                 .fill(colorScheme == .dark
@@ -108,19 +134,13 @@ struct HomeHeroView: View {
     }
 
     private var heroContent: some View {
-        HStack(alignment: .center, spacing: heroPadding) {
-            artworkView
-                .frame(width: coverSize, height: coverSize)
-
-            trackInfoView
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(heroPadding)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        // Make sure we never let the foreground content collapse — without
-        // this guard, a stack-layout race could give trackInfoView zero
-        // height and hide the title/play button under the artwork.
-        .layoutPriority(1)
+        trackInfoView
+            .padding(.top, heroTopPadding)
+            .padding(.leading, heroPadding + artworkLeadingWidth)
+            .padding(.trailing, heroPadding)
+            .padding(.bottom, heroPadding)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .layoutPriority(1)
     }
 
     @ViewBuilder
@@ -172,49 +192,31 @@ struct HomeHeroView: View {
     }
 
     private var playButton: some View {
-        let bgColor: Color = coverImage != nil
-            ? Color.white
-            : (colorScheme == .dark ? Color.white : Color.black)
-        let fgColor: Color = coverImage != nil
-            ? Color.black
-            : (colorScheme == .dark ? Color.black : Color.white)
-
-        return Button {
+        Button {
             playerVM.play(track: track)
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "play.fill")
-                    .font(.system(size: 10, weight: .bold))
+                    .font(.system(size: 12, weight: .semibold))
                 Text("播放")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 13, weight: .medium))
             }
-            .foregroundStyle(fgColor)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(bgColor, in: Capsule())
+            .foregroundStyle(.white.opacity(colorScheme == .dark ? 0.95 : 0.90))
+            .padding(.horizontal, 16)
+            .frame(height: 36)
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-    }
-
-    @ViewBuilder
-    private var artworkView: some View {
-        if let coverImage {
-            Image(nsImage: coverImage)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-                .frame(width: coverSize, height: coverSize)
-                .clipShape(RoundedRectangle(cornerRadius: coverRadius, style: .continuous))
-                .shadow(color: .black.opacity(0.25), radius: 10, y: 3)
-        } else {
-            ArtworkPlaceholderView(
-                size: coverSize,
-                cornerRadius: coverRadius,
-                clipShape: .continuous,
-                iconSize: 40,
-                iconOpacity: 0.4
-            )
+        .background {
+            Capsule()
+                .fill(Color.black.opacity(colorScheme == .dark ? 0.22 : 0.15))
         }
+        .glassEffect(.clear, in: Capsule())
+        .overlay {
+            Capsule()
+                .strokeBorder(Color.white.opacity(0.22), lineWidth: 0.5)
+        }
+        .clipShape(Capsule())
     }
 
     private var formattedDuration: String {
@@ -225,9 +227,15 @@ struct HomeHeroView: View {
 
     private func loadCoverImage() async {
         coverImage = nil
+        artworkData = nil
+        heroArtworkChecksum = 0
+        artworkDominantColor = nil
         let data = track.loadArtworkDataIfNeeded()
         guard let data, !data.isEmpty else { return }
         let checksum = ArtworkLoader.checksum(for: data)
+        artworkData = data
+        heroArtworkChecksum = checksum
+        artworkDominantColor = ArtworkColorExtractor.averageColor(from: data)
         let key = ArtworkLoader.cacheKey(
             trackID: track.id,
             checksum: checksum,

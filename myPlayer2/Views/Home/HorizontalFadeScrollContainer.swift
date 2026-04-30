@@ -92,19 +92,16 @@ struct HorizontalFadeScrollContainer<Content: View>: View {
             .padding(.trailing, trailingScrollPadding)
             .padding(.vertical, verticalPadding)
         }
-        .onScrollGeometryChange(for: ScrollMetrics.self) { geo in
-            ScrollMetrics(
-                contentWidth: geo.contentSize.width,
-                viewportWidth: geo.containerSize.width,
-                offsetX: max(0, geo.contentOffset.x)
+        .modifier(
+            HorizontalScrollMetricsModifier(
+                isEnabled: needsScrollMetrics,
+                contentWidth: $contentWidth,
+                viewportWidth: $viewportWidth,
+                scrollX: $scrollX,
+                onHorizontalScrollOffsetChange: onHorizontalScrollOffsetChange,
+                onScrollMetricsChange: onScrollMetricsChange
             )
-        } action: { _, newValue in
-            contentWidth = newValue.contentWidth
-            viewportWidth = newValue.viewportWidth
-            scrollX = newValue.offsetX
-            onHorizontalScrollOffsetChange?(newValue.offsetX)
-            onScrollMetricsChange?(newValue.contentWidth, newValue.viewportWidth, newValue.offsetX)
-        }
+        )
         .overlay(alignment: .leading) {
             if showsEdgeFade {
                 LinearGradient(
@@ -134,10 +131,50 @@ struct HorizontalFadeScrollContainer<Content: View>: View {
         .animation(showsEdgeFade ? .easeOut(duration: 0.18) : nil, value: leftFadeOpacity)
         .animation(showsEdgeFade ? .easeOut(duration: 0.18) : nil, value: rightFadeOpacity)
     }
+
+    private var needsScrollMetrics: Bool {
+        showsEdgeFade || onHorizontalScrollOffsetChange != nil || onScrollMetricsChange != nil
+    }
 }
 
 private struct ScrollMetrics: Equatable {
     var contentWidth: CGFloat
     var viewportWidth: CGFloat
     var offsetX: CGFloat
+}
+
+private struct HorizontalScrollMetricsModifier: ViewModifier {
+    let isEnabled: Bool
+    @Binding var contentWidth: CGFloat
+    @Binding var viewportWidth: CGFloat
+    @Binding var scrollX: CGFloat
+    let onHorizontalScrollOffsetChange: ((CGFloat) -> Void)?
+    let onScrollMetricsChange: ((CGFloat, CGFloat, CGFloat) -> Void)?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if isEnabled {
+            content
+                .onScrollGeometryChange(for: ScrollMetrics.self) { geo in
+                    ScrollMetrics(
+                        contentWidth: geo.contentSize.width,
+                        viewportWidth: geo.containerSize.width,
+                        offsetX: max(0, geo.contentOffset.x)
+                    )
+                } action: { _, newValue in
+                    guard
+                        contentWidth != newValue.contentWidth
+                            || viewportWidth != newValue.viewportWidth
+                            || scrollX != newValue.offsetX
+                    else { return }
+                    contentWidth = newValue.contentWidth
+                    viewportWidth = newValue.viewportWidth
+                    scrollX = newValue.offsetX
+                    onHorizontalScrollOffsetChange?(newValue.offsetX)
+                    onScrollMetricsChange?(newValue.contentWidth, newValue.viewportWidth, newValue.offsetX)
+                }
+        } else {
+            content
+        }
+    }
 }
