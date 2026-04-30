@@ -123,10 +123,10 @@ struct HomeView: View {
                     HomeInsightsSection(
                         homeVM: homeVM,
                         mode: mode,
-                        containerWidth: contentWidth
+                        containerWidth: contentWidth,
+                        centerLeftPad: centerLeftPad,
+                        centerRightPad: centerRightPad
                     )
-                    .padding(.leading, centerLeftPad)
-                    .padding(.trailing, centerRightPad)
 
                     footer
                         .padding(.leading, centerLeftPad)

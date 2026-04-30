@@ -40,6 +40,14 @@ struct CoverGradientBlurConfig: Sendable {
     var overlayCurveGamma: CGFloat = 3.0
     var edgeFillMode: CoverEdgeFillMode = .pixelStretch
 
+    // How far left of the artwork's right edge the blur begins, expressed as
+    // a fraction of the visible artwork width. 0.48 = legacy fullscreen default.
+    var blurStartRatioFromEdge: CGFloat = 0.48
+
+    // CIColorPolynomial alpha channel coefficients (const, linear, quadratic, cubic).
+    // nil = use the renderer's built-in default (0, 0.10, 0.34, 0.56).
+    var blurAlphaCoefficients: (CGFloat, CGFloat, CGFloat, CGFloat)? = nil
+
     static let `default` = CoverGradientBlurConfig()
     static let fullscreen = CoverGradientBlurConfig(
         blurRadius: 50.0,
@@ -72,8 +80,14 @@ private struct RenderKey: Equatable {
     ) {
         self.artworkChecksum = artworkChecksum
         self.size = Self.quantized(size)
+        let alphaCoeffStr: String
+        if let a = config.blurAlphaCoefficients {
+            alphaCoeffStr = String(format: "%.3f-%.3f-%.3f-%.3f", a.0, a.1, a.2, a.3)
+        } else {
+            alphaCoeffStr = "default"
+        }
         self.configHash = String(
-            format: "%.1f-%.3f-%.3f-%.3f-%.3f-%.3f-%.3f-%.3f-%@-%@",
+            format: "%.1f-%.3f-%.3f-%.3f-%.3f-%.3f-%.3f-%.3f-%@-%@-%.3f-%@",
             config.blurRadius,
             config.colorOverlayOpacity,
             config.edgeStripWidth,
@@ -83,7 +97,9 @@ private struct RenderKey: Equatable {
             config.blurCurveGamma,
             config.overlayCurveGamma,
             config.edgeFillMode.rawValue,
-            prefersAdaptiveArtworkSizing ? "adaptive" : "fixed"
+            prefersAdaptiveArtworkSizing ? "adaptive" : "fixed",
+            config.blurStartRatioFromEdge,
+            alphaCoeffStr
         )
         self.dominantColorHash = dominantColor?.hexString ?? "nil"
     }
@@ -406,8 +422,7 @@ enum CoverGradientBlurRenderer {
 
         let visibleArtworkWidth = artworkRightEdgeX
 
-        let blurStartRatioFromEdge: CGFloat = 0.48
-        let blurStartX = artworkRightEdgeX - (visibleArtworkWidth * blurStartRatioFromEdge)
+        let blurStartX = artworkRightEdgeX - (visibleArtworkWidth * config.blurStartRatioFromEdge)
         let blurEndInsetRatioFromRight: CGFloat = 0.04
         let blurEndX = max(
             blurStartX + 1,
@@ -452,7 +467,12 @@ enum CoverGradientBlurRenderer {
         let rCoeff = CIVector(x: 0, y: 0, z: 0, w: 1)
         let gCoeff = CIVector(x: 0, y: 0, z: 0, w: 1)
         let bCoeff = CIVector(x: 0, y: 0, z: 0, w: 1)
-        let aCoeff = CIVector(x: 0, y: 0.10, z: 0.34, w: 0.56)
+        let aCoeff: CIVector
+        if let c = config.blurAlphaCoefficients {
+            aCoeff = CIVector(x: c.0, y: c.1, z: c.2, w: c.3)
+        } else {
+            aCoeff = CIVector(x: 0, y: 0.10, z: 0.34, w: 0.56)
+        }
         
         polynomialFilter.setValue(linearMask, forKey: kCIInputImageKey)
         polynomialFilter.setValue(rCoeff, forKey: "inputRedCoefficients")

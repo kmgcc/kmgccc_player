@@ -954,10 +954,12 @@ final class PlaylistPageController {
                 fileURL: resolved?.fileURL
             )
         case .artist(_, let entry, _):
+            // Use saved data first, then any resolved image (including the
+            // placeholder mosaic). Placeholder is a real track-collage image,
+            // so it's a valid halo seed — without this the halo never loads
+            // for artists that have no persisted artworkData.
             return HeaderArtworkPayload(
-                data: resolved?.source == .placeholder
-                    ? nil
-                    : entry.artworkData ?? resolved?.image?.tiffRepresentation,
+                data: entry.artworkData ?? resolved?.image?.tiffRepresentation,
                 fileURL: resolved?.fileURL
             )
         case .album(_, let entry, let fallbackImage):
@@ -1195,8 +1197,19 @@ final class PlaylistPageController {
         case .playlist(let id):
             return "playlist-\(id.uuidString)"
         case .artist(let key):
+            // Must match DetailHeaderConfig.selectionIdentity ("artist-<UUID>").
+            // The haloState session identity and the bounds-update identity must
+            // agree or updateHeaderArtworkBounds always early-returns, leaving
+            // the anchor unset and the window-layer halo invisible.
+            if let entry = libraryVM?.artistEntries.first(where: { $0.canonicalName == key }) {
+                return "artist-\(entry.id)"
+            }
             return "artist-\(key)"
         case .album(let key):
+            // Same fix for album.
+            if let entry = libraryVM?.albumEntries.first(where: { $0.canonicalKey == key }) {
+                return "album-\(entry.id)"
+            }
             return "album-\(key)"
         }
     }
