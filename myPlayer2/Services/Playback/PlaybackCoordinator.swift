@@ -242,13 +242,47 @@ final class PlaybackCoordinator {
 
     // MARK: - Local Track Playback (auto-switches source)
 
-    func playTracks(_ tracks: [Track], startingAt index: Int = 0, libraryQueueSource: PlayerViewModel.LibraryQueueSource? = nil) {
+    func playTracks(
+        _ tracks: [Track],
+        startingAt index: Int = 0,
+        libraryQueueSource: PlayerViewModel.LibraryQueueSource? = nil,
+        playbackOrderMode: PlaybackOrderMode? = nil
+    ) {
         if activeSource != .local {
             setActiveSource(.local)
+        }
+        if let playbackOrderMode {
+            playerVM.setPlaybackOrderMode(playbackOrderMode, announceChange: true)
         }
         playerVM.playTracks(tracks, startingAt: index, libraryQueueSource: libraryQueueSource)
         refreshPresentation()
         NowPlayingService.shared.updateNowPlaying(force: true)
+    }
+
+    func playRandomTracks(_ tracks: [Track], libraryQueueSource: PlayerViewModel.LibraryQueueSource? = nil) {
+        let queue = Self.randomQueue(from: tracks)
+        guard !queue.isEmpty else { return }
+        playTracks(
+            queue,
+            startingAt: 0,
+            libraryQueueSource: libraryQueueSource,
+            playbackOrderMode: .shuffle
+        )
+    }
+
+    func playTrack(
+        _ track: Track,
+        inRandomQueueFrom tracks: [Track],
+        libraryQueueSource: PlayerViewModel.LibraryQueueSource? = nil
+    ) {
+        let queue = Self.randomQueue(from: tracks, startingWith: track)
+        guard !queue.isEmpty else { return }
+        playTracks(
+            queue,
+            startingAt: 0,
+            libraryQueueSource: libraryQueueSource,
+            playbackOrderMode: .shuffle
+        )
     }
 
     func play(track: Track) {
@@ -295,6 +329,25 @@ final class PlaybackCoordinator {
 
     private var activeExternalProvider: (any ExternalPlaybackProvider)? {
         externalProvider(for: activeSource)
+    }
+
+    private static func randomQueue(from tracks: [Track], startingWith startTrack: Track? = nil) -> [Track] {
+        var seenIDs = Set<UUID>()
+        let uniqueTracks = tracks.filter { track in
+            guard !seenIDs.contains(track.id) else { return false }
+            seenIDs.insert(track.id)
+            return track.availability != .missing
+        }
+
+        if let startTrack {
+            let resolvedStart = uniqueTracks.first { $0.id == startTrack.id } ?? startTrack
+            let rest = uniqueTracks.filter { $0.id != resolvedStart.id }.shuffled()
+            return [resolvedStart] + rest
+        }
+
+        guard let start = uniqueTracks.randomElement() else { return [] }
+        let rest = uniqueTracks.filter { $0.id != start.id }.shuffled()
+        return [start] + rest
     }
 
     private func externalProvider(for source: PlaybackSource) -> (any ExternalPlaybackProvider)? {

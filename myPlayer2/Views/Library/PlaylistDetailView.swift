@@ -35,6 +35,7 @@ struct PlaylistDetailView: View {
     @State private var trackScrollFadeState = PlaylistScrollFadeState()
     @State private var detailScrollFadeState = PlaylistScrollFadeState()
     @State private var scrollFadeTopChromeInset: CGFloat = 0
+    @State private var lifecycleToken = UUID()
 
     var body: some View {
         let _ = LyricsRuntimeProfile.markBody("PlaylistDetailView.body")
@@ -49,9 +50,13 @@ struct PlaylistDetailView: View {
                     ProgressView()
                         .controlSize(.large)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if (pageController.page?.displayedTrackCount ?? 0) == 0 {
+                } else if activePage == nil {
+                    ProgressView()
+                        .controlSize(.large)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if playableSourceTrackCount == 0 {
                     emptyStateView
-                } else if (pageController.page?.rows.isEmpty ?? true) {
+                } else if currentRows.isEmpty && isFiltering {
                     noResultsView
                 } else {
                     trackListView
@@ -65,6 +70,10 @@ struct PlaylistDetailView: View {
                 } else if pageController.isSelectionTransitioning
                     || (libraryVM.state == .loading && pageController.page == nil)
                 {
+                    ProgressView()
+                        .controlSize(.large)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if activePage == nil {
                     ProgressView()
                         .controlSize(.large)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -104,10 +113,10 @@ struct PlaylistDetailView: View {
                     + "uiState=\(ObjectIdentifier(uiState).hashValue)"
             )
             pageController.bind(libraryVM: libraryVM, playerVM: playerVM, uiState: uiState)
-            pageController.appear()
+            pageController.appear(token: lifecycleToken)
         }
         .onDisappear {
-            pageController.disappear()
+            pageController.disappear(token: lifecycleToken)
         }
         .onChange(of: pageController.searchText) { _, _ in
             pageController.handleSearchChange()
@@ -125,7 +134,7 @@ struct PlaylistDetailView: View {
             pageController.handleLibraryRefresh(reason: "refresh", restoreScroll: true)
         }
         .onChange(of: libraryVM.searchResetTrigger) { _, _ in
-            pageController.searchText = ""
+            pageController.clearSearchAndRebuildIfNeeded(reason: "search-reset")
         }
         .onChange(of: libraryVM.state) { _, newVal in
             if newVal == .loaded {
@@ -150,8 +159,15 @@ struct PlaylistDetailView: View {
         !pageController.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    private var activePage: PlaylistPageModel? {
+        guard let page = pageController.page, page.selection == libraryVM.currentSelection else {
+            return nil
+        }
+        return page
+    }
+
     private var selectionIdentity: String {
-        pageController.page?.selectionIdentity ?? fallbackSelectionIdentity
+        activePage?.selectionIdentity ?? fallbackSelectionIdentity
     }
 
     private var fallbackSelectionIdentity: String {
@@ -181,15 +197,38 @@ struct PlaylistDetailView: View {
     }
 
     private var currentRows: [PlaylistPageRowModel] {
-        pageController.page?.rows ?? []
+        activePage?.rows ?? []
     }
 
     private var queueTracks: [Track] {
-        pageController.page?.queueTracks ?? []
+        activePage?.queueTracks ?? []
     }
 
     private var detailHeaderModel: PlaylistPageHeaderModel? {
-        pageController.page?.header
+        activePage?.header
+    }
+
+    private var playableSourceTrackCount: Int {
+        switch libraryVM.currentSelection {
+        case .home, .allSongs:
+            return libraryVM.allTracks.filter { $0.availability != .missing }.count
+        case .playlist(let id):
+            return libraryVM.playlists.first(where: { $0.id == id })?.tracks.filter {
+                $0.availability != .missing
+            }.count ?? 0
+        case .artist(let key):
+            return libraryVM.allTracks.filter {
+                LibraryNormalization.normalizeArtist($0.artist) == key
+                    && $0.availability != .missing
+            }.count
+        case .album(let key):
+            return libraryVM.allTracks.filter {
+                $0.albumGroupKey == key
+                    && $0.availability != .missing
+            }.count
+        case .allAlbums, .allArtists:
+            return 0
+        }
     }
 
     // MARK: - Subviews
@@ -199,6 +238,7 @@ struct PlaylistDetailView: View {
         PlaylistTrackRowsSection(
             rows: currentRows,
             queueTracks: queueTracks,
+            selection: libraryVM.currentSelection,
             selectionIdentity: selectionIdentity,
             currentTrackID: playerVM.currentTrack?.id,
             pageController: pageController,
@@ -318,7 +358,15 @@ struct PlaylistDetailView: View {
             incomingOpacity: pageController.headerIncomingOpacity,
             onPlay: {
                 guard !queueTracks.isEmpty else { return }
-                playbackCoordinator.playTracks(
+                if case .album = libraryVM.currentSelection {
+                    playbackCoordinator.playTracks(
+                        queueTracks,
+                        libraryQueueSource: .librarySelection(selectionIdentity),
+                        playbackOrderMode: .sequence
+                    )
+                    return
+                }
+                playbackCoordinator.playRandomTracks(
                     queueTracks,
                     libraryQueueSource: .librarySelection(selectionIdentity)
                 )
@@ -458,8 +506,8 @@ struct PlaylistDetailView: View {
     }
 
     private var songCountText: String {
-        let displayedCount = pageController.page?.displayedTrackCount ?? 0
-        let filteredCount = pageController.page?.filteredTrackCount ?? 0
+        let displayedCount = activePage?.displayedTrackCount ?? 0
+        let filteredCount = activePage?.filteredTrackCount ?? 0
         if isFiltering {
             return String(
                 format: NSLocalizedString("library.song_count_filtered", comment: ""),
@@ -554,10 +602,19 @@ struct PlaylistDetailView: View {
                         pageController.selectedTrackIDs.insert(trackID)
                     },
                     onPlay: {
-                        let startIndex = pageController.queueStartIndex(for: track.id)
-                        playbackCoordinator.playTracks(
-                            queueTracks,
-                            startingAt: startIndex,
+                        if case .album = libraryVM.currentSelection {
+                            let startIndex = pageController.queueStartIndex(for: track.id)
+                            playbackCoordinator.playTracks(
+                                queueTracks,
+                                startingAt: startIndex,
+                                libraryQueueSource: .librarySelection(selectionIdentity),
+                                playbackOrderMode: .sequence
+                            )
+                            return
+                        }
+                        playbackCoordinator.playTrack(
+                            track,
+                            inRandomQueueFrom: queueTracks,
                             libraryQueueSource: .librarySelection(selectionIdentity)
                         )
                     },
@@ -742,6 +799,7 @@ private struct PlaylistTrackRowsSection: View {
 
     let rows: [PlaylistPageRowModel]
     let queueTracks: [Track]
+    let selection: LibrarySelection
     let selectionIdentity: String
     let currentTrackID: UUID?
     let pageController: PlaylistPageController
@@ -764,10 +822,20 @@ private struct PlaylistTrackRowsSection: View {
                             pageController.selectedTrackIDs.insert(row.id)
                         }
                     } else {
-                        let startIndex = pageController.queueStartIndex(for: row.id)
-                        playbackCoordinator.playTracks(
-                            queueTracks,
-                            startingAt: startIndex,
+                        guard let track = pageController.latestTrackFromLibrary(trackID: row.id) else { return }
+                        if case .album = selection {
+                            let startIndex = pageController.queueStartIndex(for: row.id)
+                            playbackCoordinator.playTracks(
+                                queueTracks,
+                                startingAt: startIndex,
+                                libraryQueueSource: .librarySelection(selectionIdentity),
+                                playbackOrderMode: .sequence
+                            )
+                            return
+                        }
+                        playbackCoordinator.playTrack(
+                            track,
+                            inRandomQueueFrom: queueTracks,
                             libraryQueueSource: .librarySelection(selectionIdentity)
                         )
                     }

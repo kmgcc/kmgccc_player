@@ -95,8 +95,12 @@ final class HomeWindowLayoutState {
     /// not receive or be routed any mouse events.
     var isEmbeddedFullscreenActive: Bool = false
 
+    /// True while the Home toolbar search field has text and the center pane
+    /// is showing all-song search results instead of routing events to Home.
+    var isHomeSearchActive: Bool = false
+
     var allowsHomeInteraction: Bool {
-        isHomeMode && !isEmbeddedFullscreenActive
+        isHomeMode && !isEmbeddedFullscreenActive && !isHomeSearchActive
     }
 
     /// Live frame of the Mini Player view in SwiftUI `.global` coordinates
@@ -152,6 +156,11 @@ final class HomeWindowLayoutState {
     func setEmbeddedFullscreenActive(_ active: Bool) {
         guard isEmbeddedFullscreenActive != active else { return }
         isEmbeddedFullscreenActive = active
+    }
+
+    func setHomeSearchActive(_ active: Bool) {
+        guard isHomeSearchActive != active else { return }
+        isHomeSearchActive = active
     }
 
     func setMiniPlayerFrame(_ rect: CGRect) {

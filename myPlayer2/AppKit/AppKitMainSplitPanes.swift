@@ -99,6 +99,8 @@ struct AppKitMainContentPaneRoot: View {
         skinManager: SkinManager
     ) -> some View {
         let homeMode = isHomeMode(uiState: uiState, libraryVM: libraryVM)
+        let homeSearchActive = homeMode
+            && !pageController.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
 
         let base = ZStack(alignment: .bottomLeading) {
             // Transparent center-rect probe. Reports the center pane's
@@ -118,15 +120,21 @@ struct AppKitMainContentPaneRoot: View {
                 case .library:
                     switch libraryVM.currentSelection {
                     case .home:
-                        // The real HomeView is rendered by
-                        // HomeFullWindowRoot in the AppKit window's
-                        // full-window Home host. The center pane only
-                        // contributes a transparent passthrough here so
-                        // hits/scrolls fall through to that host below.
-                        Color.clear
-                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                            .allowsHitTesting(false)
-                            .id("appkit-main-home")
+                        if homeSearchActive {
+                            PlaylistDetailView(pageController: pageController)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                                .id("appkit-main-home-search")
+                        } else {
+                            // The real HomeView is rendered by
+                            // HomeFullWindowRoot in the AppKit window's
+                            // full-window Home host. The center pane only
+                            // contributes a transparent passthrough here so
+                            // hits/scrolls fall through to that host below.
+                            Color.clear
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                                .allowsHitTesting(false)
+                                .id("appkit-main-home")
+                        }
                     case .allAlbums:
                         AllAlbumsView(pageController: pageController)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -187,12 +195,19 @@ struct AppKitMainContentPaneRoot: View {
                     fullscreenWindowManager.isWindowedFullscreenActive
                 )
                 HomeWindowLayoutState.shared.setHomeMode(homeMode)
+                HomeWindowLayoutState.shared.setHomeSearchActive(homeSearchActive)
                 if shouldTriggerArtBackgroundTransition(playbackCoordinator: playbackCoordinator, uiState: uiState) {
                     _ = markNowPlayingArtBackgroundPresentationIfNeeded()
                 }
             }
             .onChange(of: homeMode) { _, newValue in
                 HomeWindowLayoutState.shared.setHomeMode(newValue)
+            }
+            .onChange(of: homeSearchActive) { _, newValue in
+                HomeWindowLayoutState.shared.setHomeSearchActive(newValue)
+            }
+            .onChange(of: libraryVM.searchResetTrigger) { _, _ in
+                pageController.clearSearchAndRebuildIfNeeded(reason: "search-reset")
             }
 
         let withSettingsChanges: some View = withAppear
