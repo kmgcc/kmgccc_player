@@ -39,6 +39,10 @@ struct SkinPreviewCard<Preview: View>: View {
         presentationStyle.isCompact ? presentationStyle.skinTitleMinHeight : 16
     }
 
+    private var outerStrokeLineWidth: CGFloat {
+        isSelected ? 2 : 1
+    }
+
     init(
         title: String,
         isSelected: Bool,
@@ -85,12 +89,16 @@ struct SkinPreviewCard<Preview: View>: View {
                 .padding(.vertical, contentPaddingV)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
-                outerShape
-                    .strokeBorder(outerStrokeColor, lineWidth: isSelected ? 2 : 1)
-                    .allowsHitTesting(false)
             }
             .frame(width: cardSize.width, height: cardSize.height)
             .clipShape(outerShape)
+            .overlay(
+                outerShape
+                    .inset(by: outerStrokeLineWidth / 2)
+                    .stroke(outerStrokeColor, lineWidth: outerStrokeLineWidth)
+                    .allowsHitTesting(false)
+            )
+            .contentShape(outerShape)
         }
         .buttonStyle(SkinCardButtonStyle())
     }

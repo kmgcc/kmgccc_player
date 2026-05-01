@@ -358,6 +358,10 @@ final class LyricsWebViewStore: NSObject {
         Log.debug("Detach: attachmentID=\(requestingID.uuidString.prefix(8)), objectID=\(webViewObjectID)", category: .webview)
         activeAttachmentID = nil
         isAttached = false
+        if LyricsSurfaceRole(rawValue: role)?.persistsState == true {
+            Log.debug("Detach preserved WebView for persistent role=\(role), objectID=\(webViewObjectID)", category: .webview)
+            return
+        }
         releasePreparedWebViewPreservingSnapshot(reason: "detach")
     }
 
