@@ -7,6 +7,7 @@ import SwiftUI
 
 enum LiquidGlassPillMaterialStyle {
     case clear
+    case regular
     case darkGlass
 }
 
@@ -28,11 +29,11 @@ extension View {
         isFloating: Bool = false
     ) -> some View {
         self
-            .glassEffect(materialStyle == .darkGlass ? .regular : .clear, in: Capsule())
+            .glassEffect(materialStyle == .clear ? .clear : .regular, in: Capsule())
             .overlay(
                 Capsule()
                     .strokeBorder(
-                        GlassStyleTokens.glassBorderColor,
+                        GlassStyleTokens.glassBorderColor(for: colorScheme),
                         lineWidth: GlassStyleTokens.hairlineWidth
                     )
                     .allowsHitTesting(false)
@@ -66,13 +67,13 @@ extension View {
     ) -> some View {
         self
             .glassEffect(
-                materialStyle == .darkGlass ? .regular : .clear,
+                materialStyle == .clear ? .clear : .regular,
                 in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .strokeBorder(
-                        GlassStyleTokens.glassBorderColor,
+                        GlassStyleTokens.glassBorderColor(for: colorScheme),
                         lineWidth: GlassStyleTokens.hairlineWidth
                     )
                     .allowsHitTesting(false)
@@ -100,21 +101,22 @@ extension View {
         colorScheme: ColorScheme,
         accentColor: Color? = nil,
         prominence: GlassStyleTokens.Prominence = .standard,
+        materialStyle: LiquidGlassPillMaterialStyle = .clear,
         isFloating: Bool = false
     ) -> some View {
         self
-            .glassEffect(.clear, in: Circle())
+            .glassEffect(materialStyle == .clear ? .clear : .regular, in: Circle())
             .overlay(
                 Circle()
                     .strokeBorder(
-                        GlassStyleTokens.glassBorderColor,
+                        GlassStyleTokens.glassBorderColor(for: colorScheme),
                         lineWidth: GlassStyleTokens.hairlineWidth
                     )
                     .allowsHitTesting(false)
             )
             .background(
                 Circle()
-                    .fill(GlassStyleTokens.darkNeutralOverlay(for: colorScheme))
+                    .fill(GlassStyleTokens.pillOverlay(for: colorScheme, materialStyle: materialStyle))
                     .allowsHitTesting(false)
             )
             .background {
@@ -130,6 +132,90 @@ extension View {
             }
             .modifier(FloatingShadowModifier(isEnabled: isFloating))
     }
+
+    @ViewBuilder
+    func homeGlassCardBackground(
+        cornerRadius: CGFloat = 18,
+        colorScheme: ColorScheme,
+        prominence: GlassStyleTokens.Prominence = .standard,
+        isFloating: Bool = true
+    ) -> some View {
+        self.homeUnifiedGlassCard(
+            cornerRadius: cornerRadius,
+            colorScheme: colorScheme,
+            prominence: prominence,
+            isFloating: isFloating
+        )
+    }
+
+    func homeUnifiedGlassCard(
+        cornerRadius: CGFloat = 18,
+        colorScheme: ColorScheme,
+        prominence: GlassStyleTokens.Prominence = .standard,
+        isFloating: Bool = true
+    ) -> some View {
+        self.modifier(
+            HomeUnifiedGlassCardModifier(
+                cornerRadius: cornerRadius,
+                colorScheme: colorScheme,
+                prominence: prominence,
+                isFloating: isFloating
+            )
+        )
+    }
+
+    fileprivate func homeGlassCardEdgeTreatment(
+        shape: RoundedRectangle,
+        colorScheme: ColorScheme
+    ) -> some View {
+        self
+            .overlay(
+                shape
+                    .strokeBorder(
+                        GlassStyleTokens.highlightGradient,
+                        lineWidth: 1
+                    )
+                    .allowsHitTesting(false)
+            )
+            .overlay(
+                shape
+                    .strokeBorder(
+                        GlassStyleTokens.glassBorderColor(for: colorScheme),
+                        lineWidth: GlassStyleTokens.hairlineWidth
+                    )
+                    .allowsHitTesting(false)
+            )
+    }
+}
+
+private struct HomeUnifiedGlassCardModifier: ViewModifier {
+    let cornerRadius: CGFloat
+    let colorScheme: ColorScheme
+    let prominence: GlassStyleTokens.Prominence
+    let isFloating: Bool
+
+    private var shape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+    }
+
+    private var stabilizingTreatment: Color {
+        colorScheme == .dark
+            ? GlassStyleTokens.darkNeutralOverlay(for: colorScheme)
+            : Color.primary.opacity(0.028)
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .background(
+                shape
+                    .fill(stabilizingTreatment)
+                    .allowsHitTesting(false)
+            )
+            .glassEffect(colorScheme == .dark ? .clear : .regular, in: shape)
+            .homeGlassCardEdgeTreatment(shape: shape, colorScheme: colorScheme)
+            .modifier(HomeGlassCardShadowModifier(isEnabled: isFloating, colorScheme: colorScheme))
+            .contentShape(shape)
+    }
 }
 
 private struct FloatingShadowModifier: ViewModifier {
@@ -137,6 +223,24 @@ private struct FloatingShadowModifier: ViewModifier {
     func body(content: Content) -> some View {
         if isEnabled {
             content.subtleFloatingShadow()
+        } else {
+            content
+        }
+    }
+}
+
+private struct HomeGlassCardShadowModifier: ViewModifier {
+    let isEnabled: Bool
+    let colorScheme: ColorScheme
+
+    func body(content: Content) -> some View {
+        if isEnabled {
+            content.shadow(
+                color: Color.black.opacity(colorScheme == .dark ? 0.028 : 0.016),
+                radius: colorScheme == .dark ? 4 : 2.5,
+                x: 0,
+                y: colorScheme == .dark ? 0.75 : 0.5
+            )
         } else {
             content
         }

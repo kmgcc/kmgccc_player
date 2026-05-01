@@ -35,7 +35,7 @@ struct HomeArtistsSection: View {
         HorizontalFadeScrollContainer(
             spacing: rowSpacing,
             fadeWidth: 0,
-            verticalPadding: 12,
+            verticalPadding: 22,
             leadingScrollPadding: centerLeftPad + 4,
             trailingScrollPadding: max(4, centerRightPad - 8),
             showsEdgeFade: false
@@ -140,10 +140,6 @@ private struct HomeArtistCircle: View {
             }
             .frame(width: circleSize, height: circleSize)
             .clipShape(Circle())
-            .shadow(
-                color: .black.opacity(colorScheme == .dark ? 0.35 : 0.15),
-                radius: isHovering ? 14 : 10, y: isHovering ? 6 : 4
-            )
 
             VStack(spacing: 3) {
                 Text(artist.displayName)
@@ -156,7 +152,14 @@ private struct HomeArtistCircle: View {
                     .lineLimit(1)
             }
         }
-        .frame(width: circleSize + (mode == .narrow ? 10 : 16))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 10)
+        .frame(width: circleSize + (mode == .narrow ? 26 : 32))
+        .homeUnifiedGlassCard(
+            cornerRadius: 18,
+            colorScheme: colorScheme,
+            isFloating: true
+        )
         .scaleEffect(isHovering ? 1.05 : 1.0)
         .animation(.easeOut(duration: 0.2), value: isHovering)
         .onHover { hovering in

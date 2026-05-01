@@ -73,6 +73,21 @@ final class AppleMusicPlaybackAdapter {
             case localLibrary = 2
             case appleMusic = 3
             case manualOverride = 4
+
+            var logSource: String {
+                switch self {
+                case .none:
+                    return "failed/noArtwork"
+                case .network:
+                    return "onlineFallback"
+                case .localLibrary:
+                    return "localMatchedArtwork"
+                case .appleMusic:
+                    return "appleMusicArtwork"
+                case .manualOverride:
+                    return "metadataOverride"
+                }
+            }
         }
 
         var identity: String?
@@ -95,6 +110,8 @@ final class AppleMusicPlaybackAdapter {
             guard let identity, let data, !data.isEmpty else { return nil }
             return "\(identity):\(source):\(checksum)"
         }
+
+        var logSource: String { source.logSource }
     }
 
     private enum AutoLyricsLookupState: Equatable {
@@ -710,6 +727,18 @@ final class AppleMusicPlaybackAdapter {
         manualOverrideArtwork: Data?,
         cachedNetworkArtwork: Data?
     ) {
+        if displayedArtwork.identity == identity,
+           displayedArtwork.source == .appleMusic,
+           displayedArtwork.data?.isEmpty == false {
+            pendingArtworkIdentity = nil
+            Log.info(
+                "[AMAdapter] artwork finalSource=appleMusicArtwork identity=\(identity.prefix(16)) action=keep-existing",
+                category: .playback
+            )
+            updatePresentationFromLatestInfo()
+            return
+        }
+
         pendingArtworkIdentity = identity
         updatePresentationFromLatestInfo()
 
@@ -721,16 +750,40 @@ final class AppleMusicPlaybackAdapter {
         artworkTask = Task { [weak self] in
             guard let self else { return }
 
+            let directArtwork = bridge.fetchCurrentArtworkData()
+            guard !Task.isCancelled else { return }
+            if let directArtwork, !directArtwork.isEmpty {
+                let displayTrackID = NowPlayingPresentation.externalArtworkDisplayUUID(for: identity)
+                let didCommit = await self.prepareAndCommitArtwork(
+                    directArtwork,
+                    source: .appleMusic,
+                    identity: identity,
+                    displayTrackID: displayTrackID
+                )
+                if didCommit {
+                    await MainActor.run {
+                        metadataStore.updateArtworkSource("appleMusicArtwork", for: identity)
+                    }
+                }
+                return
+            }
+            Log.info(
+                "[AMAdapter] artwork source=appleMusicArtwork identity=\(identity.prefix(16)) result=unavailable fallback=enabled",
+                category: .playback
+            )
+
             if let manualOverrideArtwork, !manualOverrideArtwork.isEmpty {
                 let displayTrackID = NowPlayingPresentation.externalArtworkDisplayUUID(for: identity)
-                await self.prepareAndCommitArtwork(
+                let didCommit = await self.prepareAndCommitArtwork(
                     manualOverrideArtwork,
                     source: .manualOverride,
                     identity: identity,
                     displayTrackID: displayTrackID
                 )
-                await MainActor.run {
-                    metadataStore.updateArtworkSource("manualOverride", for: identity)
+                if didCommit {
+                    await MainActor.run {
+                        metadataStore.updateArtworkSource("manualOverride", for: identity)
+                    }
                 }
                 return
             }
@@ -738,44 +791,32 @@ final class AppleMusicPlaybackAdapter {
             if let localArtwork, !localArtwork.isEmpty {
                 let displayTrackID = matchedTrackID
                     ?? NowPlayingPresentation.externalArtworkDisplayUUID(for: identity)
-                await self.prepareAndCommitArtwork(
+                let didCommit = await self.prepareAndCommitArtwork(
                     localArtwork,
                     source: .localLibrary,
                     identity: identity,
                     displayTrackID: displayTrackID
                 )
-                await MainActor.run {
-                    metadataStore.updateArtworkSource("localLibrary", for: identity)
-                }
-                return
-            }
-
-            let directArtwork = bridge.fetchCurrentArtworkData()
-            guard !Task.isCancelled else { return }
-            if let directArtwork, !directArtwork.isEmpty {
-                let displayTrackID = NowPlayingPresentation.externalArtworkDisplayUUID(for: identity)
-                await self.prepareAndCommitArtwork(
-                    directArtwork,
-                    source: .appleMusic,
-                    identity: identity,
-                    displayTrackID: displayTrackID
-                )
-                await MainActor.run {
-                    metadataStore.updateArtworkSource("appleMusic", for: identity)
+                if didCommit {
+                    await MainActor.run {
+                        metadataStore.updateArtworkSource("localMatchedArtwork", for: identity)
+                    }
                 }
                 return
             }
 
             if let cachedNetworkArtwork, !cachedNetworkArtwork.isEmpty {
                 let displayTrackID = NowPlayingPresentation.externalArtworkDisplayUUID(for: identity)
-                await self.prepareAndCommitArtwork(
+                let didCommit = await self.prepareAndCommitArtwork(
                     cachedNetworkArtwork,
                     source: .network,
                     identity: identity,
                     displayTrackID: displayTrackID
                 )
-                await MainActor.run {
-                    metadataStore.updateArtworkSource("network-cache", for: identity)
+                if didCommit {
+                    await MainActor.run {
+                        metadataStore.updateArtworkSource("onlineFallback", for: identity)
+                    }
                 }
                 return
             }
@@ -789,14 +830,16 @@ final class AppleMusicPlaybackAdapter {
             guard !Task.isCancelled else { return }
             if let networkArtwork, !networkArtwork.isEmpty {
                 let displayTrackID = NowPlayingPresentation.externalArtworkDisplayUUID(for: identity)
-                await self.prepareAndCommitArtwork(
+                let didCommit = await self.prepareAndCommitArtwork(
                     networkArtwork,
                     source: .network,
                     identity: identity,
                     displayTrackID: displayTrackID
                 )
-                await MainActor.run {
-                    metadataStore.storeNetworkArtwork(networkArtwork, for: identity, source: "network")
+                if didCommit {
+                    await MainActor.run {
+                        metadataStore.storeNetworkArtwork(networkArtwork, for: identity, source: "onlineFallback")
+                    }
                 }
                 return
             }
@@ -812,12 +855,12 @@ final class AppleMusicPlaybackAdapter {
         source: ResolvedArtwork.Source,
         identity: String,
         displayTrackID: UUID
-    ) async {
+    ) async -> Bool {
         guard !data.isEmpty else {
             await MainActor.run {
                 self.commitArtworkResolutionFinishedWithoutArtwork(identity: identity)
             }
-            return
+            return false
         }
 
         _ = await ArtworkAssetStore.shared.snapshot(
@@ -825,8 +868,8 @@ final class AppleMusicPlaybackAdapter {
             artworkData: data,
             fullImageMaxPixelSize: 1_400
         )
-        guard !Task.isCancelled else { return }
-        await MainActor.run {
+        guard !Task.isCancelled else { return false }
+        return await MainActor.run {
             self.commitArtwork(
                 data,
                 source: source,
@@ -841,8 +884,15 @@ final class AppleMusicPlaybackAdapter {
         source: ResolvedArtwork.Source,
         identity: String,
         displayTrackID: UUID
-    ) {
-        guard latestIdentity == identity else { return }
+    ) -> Bool {
+        guard latestIdentity == identity else {
+            let skippedLatest = latestIdentity.map { String($0.prefix(16)) } ?? "nil"
+            Log.info(
+                "[AMAdapter] artwork source=\(source.logSource) identity=\(identity.prefix(16)) result=stale skippedLatest=\(skippedLatest)",
+                category: .playback
+            )
+            return false
+        }
         pendingArtworkIdentity = nil
         displayedArtwork = ResolvedArtwork(
             identity: identity,
@@ -850,13 +900,22 @@ final class AppleMusicPlaybackAdapter {
             data: data,
             displayTrackID: displayTrackID
         )
+        Log.info(
+            "[AMAdapter] artwork finalSource=\(source.logSource) identity=\(identity.prefix(16)) bytes=\(data.count) checksum=\(displayedArtwork.checksum)",
+            category: .playback
+        )
         updatePresentationFromLatestInfo()
+        return true
     }
 
     private func commitArtworkResolutionFinishedWithoutArtwork(identity: String) {
         guard latestIdentity == identity else { return }
         pendingArtworkIdentity = nil
         displayedArtwork = .none
+        Log.info(
+            "[AMAdapter] artwork finalSource=failed/noArtwork identity=\(identity.prefix(16))",
+            category: .playback
+        )
         updatePresentationFromLatestInfo()
     }
 

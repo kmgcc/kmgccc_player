@@ -103,6 +103,7 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
     }
 
     static func setEmbeddedFullscreenActive(_ active: Bool) {
+        HomeWindowLayoutState.shared.setEmbeddedFullscreenActive(active)
         sharedController?.splitViewController.setEmbeddedFullscreenActive(active)
     }
 
@@ -227,9 +228,13 @@ private final class AppKitMainRootViewController: NSViewController {
                 artBackgroundController: splitViewController.artBackgroundController
             )
         )
-        self.homeFullWindowHost = PassthroughHostingView(
+        let homeFullWindowHost = PassthroughHostingView(
             rootView: HomeFullWindowRoot(appSession: appSession)
         )
+        homeFullWindowHost.shouldAcceptHitTest = {
+            HomeWindowLayoutState.shared.allowsHomeInteraction
+        }
+        self.homeFullWindowHost = homeFullWindowHost
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -352,7 +357,10 @@ private final class AppKitMainRootViewController: NSViewController {
 ///    host underneath the split view.
 @MainActor
 final class PassthroughHostingView<Content: View>: NSHostingView<Content> {
+    var shouldAcceptHitTest: () -> Bool = { true }
+
     override func hitTest(_ point: NSPoint) -> NSView? {
+        guard shouldAcceptHitTest() else { return nil }
         let hit = super.hitTest(point)
         return (hit === self) ? nil : hit
     }
@@ -416,7 +424,7 @@ final class HomeRoutingRootView: NSView {
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         let layoutState = HomeWindowLayoutState.shared
-        let isHomeMode = layoutState.isHomeMode
+        let allowsHomeInteraction = layoutState.allowsHomeInteraction
         let geometry = layoutState.geometry
 
         let inMiniPlayer = isPointInsideMiniPlayer(point, layoutState: layoutState)
@@ -427,7 +435,7 @@ final class HomeRoutingRootView: NSView {
         // The center pane host yields nil for these points anyway, so
         // without this diversion the click would die in the split view's
         // inner background.
-        if isHomeMode,
+        if allowsHomeInteraction,
            geometry.hasValidLayout,
            let host = homeHostRef {
             let inCenterX = point.x >= geometry.centerMinXInWindow

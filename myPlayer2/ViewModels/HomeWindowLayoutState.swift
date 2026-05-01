@@ -84,10 +84,20 @@ final class HomeWindowLayoutState {
     var geometry: Geometry = .empty
 
     /// True when the active library selection is `.home` and content mode is
-    /// `.library`. The full-window Home host uses this to decide whether to
-    /// display itself and accept events; the center-pane passthrough hosting
-    /// view uses it as a hint that hits should fall through.
+    /// `.library`. This records navigation state only; AppKit hit-test
+    /// routing must also check `allowsHomeInteraction` so modal/fullscreen
+    /// surfaces can sit above Home without being bypassed.
     var isHomeMode: Bool = false
+
+    /// True while the fullscreen player is hosted inside the main window's
+    /// center pane. During this mode the full-window Home host may still exist
+    /// in the AppKit hierarchy for background/sampling purposes, but it must
+    /// not receive or be routed any mouse events.
+    var isEmbeddedFullscreenActive: Bool = false
+
+    var allowsHomeInteraction: Bool {
+        isHomeMode && !isEmbeddedFullscreenActive
+    }
 
     /// Live frame of the Mini Player view in SwiftUI `.global` coordinates
     /// (top-left origin, matching the topmost `NSHostingView`'s bounds).
@@ -137,6 +147,11 @@ final class HomeWindowLayoutState {
     func setHomeMode(_ active: Bool) {
         guard isHomeMode != active else { return }
         isHomeMode = active
+    }
+
+    func setEmbeddedFullscreenActive(_ active: Bool) {
+        guard isEmbeddedFullscreenActive != active else { return }
+        isEmbeddedFullscreenActive = active
     }
 
     func setMiniPlayerFrame(_ rect: CGRect) {

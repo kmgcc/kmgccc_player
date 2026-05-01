@@ -66,7 +66,7 @@ struct HomeFullWindowRoot: View {
     }
 
     private var shouldRenderHome: Bool {
-        guard layout.isHomeMode else { return false }
+        guard layout.allowsHomeInteraction else { return false }
         guard let libraryVM = appSession.libraryVM else { return false }
         return appSession.uiState.contentMode == .library
             && libraryVM.currentSelection == .home

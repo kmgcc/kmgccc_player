@@ -545,83 +545,31 @@ struct PlaylistDetailView: View {
                 }
 
             } else {
-                Button {
-                    pageController.isMultiselectMode = true
-                    pageController.selectedTrackIDs.insert(trackID)
-                } label: {
-                    Label("多选歌曲…", systemImage: "checkmark.circle")
-                }
-
-                Divider()
-
-                Button {
-                    let startIndex = pageController.queueStartIndex(for: track.id)
-                    playbackCoordinator.playTracks(
-                        queueTracks,
-                        startingAt: startIndex,
-                        libraryQueueSource: .librarySelection(selectionIdentity)
-                    )
-                } label: {
-                    Label("播放", systemImage: "play")
-                }
-
-                Divider()
-
-                Menu {
-                    ForEach(libraryVM.playlists) { playlist in
-                        if libraryVM.selectedPlaylist?.id != playlist.id {
-                            Button {
-                                Task {
-                                    await libraryVM.addTracksToPlaylist([track], playlist: playlist)
-                                }
-                            } label: {
-                                Label(playlist.name, systemImage: "music.note.list")
+                TrackActionMenuContent(
+                    track: track,
+                    canSelectMultiple: true,
+                    selectedPlaylistID: libraryVM.selectedPlaylist?.id,
+                    onSelectMultiple: {
+                        pageController.isMultiselectMode = true
+                        pageController.selectedTrackIDs.insert(trackID)
+                    },
+                    onPlay: {
+                        let startIndex = pageController.queueStartIndex(for: track.id)
+                        playbackCoordinator.playTracks(
+                            queueTracks,
+                            startingAt: startIndex,
+                            libraryQueueSource: .librarySelection(selectionIdentity)
+                        )
+                    },
+                    onEditTrack: { trackToEdit = $0 },
+                    onRemoveFromCurrentPlaylist: libraryVM.selectedPlaylist.map { currentPlaylist in
+                        { track in
+                            Task {
+                                await libraryVM.removeTracksFromPlaylist([track], playlist: currentPlaylist)
                             }
                         }
                     }
-
-                    Divider()
-
-                    Button {
-                        Task {
-                            let playlist = await libraryVM.createNewPlaylist()
-                            await libraryVM.addTracksToPlaylist([track], playlist: playlist)
-                        }
-                    } label: {
-                        Label("新建播放列表", systemImage: "plus")
-                    }
-                } label: {
-                    Label("添加到播放列表...", systemImage: "plus.circle")
-                }
-                .id("single_add_to_playlist_\(libraryVM.playlists.count)")
-
-                if let currentPlaylist = libraryVM.selectedPlaylist {
-                    Button {
-                        Task {
-                            await libraryVM.removeTracksFromPlaylist([track], playlist: currentPlaylist)
-                        }
-                    } label: {
-                        Label("从当前播放列表移除", systemImage: "minus.circle")
-                    }
-                }
-
-                Divider()
-
-                Button {
-                    trackToEdit = track
-                } label: {
-                    Label("编辑歌曲信息", systemImage: "info.circle")
-                }
-
-                Divider()
-
-                Button(role: .destructive) {
-                    Task {
-                        await libraryVM.deleteTrack(track)
-                    }
-                } label: {
-                    Label("从资料库删除", systemImage: "trash")
-                }
+                )
             }
         } else {
             Text("library.track_unavailable")

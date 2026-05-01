@@ -286,10 +286,12 @@ final class CenterPanePassthroughHostingView: NSHostingView<AppKitMainContentPan
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         let layoutState = HomeWindowLayoutState.shared
-        let isHomeMode = layoutState.isHomeMode
+        let allowsHomeInteraction = layoutState.allowsHomeInteraction
 
-        guard isHomeMode else {
-            // Non-Home mode: standard SwiftUI hit-testing.
+        guard allowsHomeInteraction else {
+            // Non-interactive Home states, including Embedded Full Screen:
+            // standard SwiftUI hit-testing so the visible center-pane
+            // surface owns its controls.
             return super.hitTest(point)
         }
 

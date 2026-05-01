@@ -47,6 +47,12 @@ struct GlassStyleTokens {
         Color.white.opacity(hairlineBorderOpacity)
     }
 
+    static func glassBorderColor(for colorScheme: ColorScheme) -> Color {
+        colorScheme == .dark
+            ? Color.white.opacity(hairlineBorderOpacity)
+            : Color.primary.opacity(0.07)
+    }
+
     static var subtleShadowColor: Color {
         Color.black.opacity(subtleShadowOpacity)
     }
@@ -73,6 +79,8 @@ struct GlassStyleTokens {
         switch materialStyle {
         case .clear:
             return darkNeutralOverlay(for: colorScheme)
+        case .regular:
+            return .clear
         case .darkGlass:
             return colorScheme == .dark ? Color.black.opacity(0.30) : Color.black.opacity(0.14)
         }

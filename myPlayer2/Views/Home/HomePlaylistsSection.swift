@@ -78,9 +78,15 @@ private struct HomePlaylistCard: View {
     @State private var isHovering = false
     @Environment(\.colorScheme) private var colorScheme
 
-    private let radius: CGFloat = 18
+    // Outer card geometry. Cover radius is derived so the cover and card
+    // form concentric rounded rectangles: innerR = outerR − inset.
+    private let outerCornerRadius: CGFloat = 18
+    private let cardInset: CGFloat = 12
+    private var coverCornerRadius: CGFloat {
+        max(0, outerCornerRadius - cardInset)
+    }
 
-    private var coverSize: CGFloat {
+    private var baseCoverSize: CGFloat {
         switch mode {
         case .wide:    return 68
         case .medium:  return 60
@@ -89,8 +95,19 @@ private struct HomePlaylistCard: View {
         }
     }
 
+    private var tier: HomePlaylistHeightTier {
+        HomePlaylistHeightTier.tier(for: playlist.trackCount)
+    }
+
+    /// Cover grows slightly with tier so taller cards still feel proportional.
+    private var coverSize: CGFloat {
+        baseCoverSize + tier.coverBoost
+    }
+
+    /// Card grows more than cover, giving larger playlists more visual presence
+    /// (extra breathing room around the cover/text).
     private var cardHeight: CGFloat {
-        coverSize + 28
+        baseCoverSize + 28 + tier.heightBoost
     }
 
     var body: some View {
@@ -103,7 +120,7 @@ private struct HomePlaylistCard: View {
                 } else {
                     ArtworkPlaceholderView(
                         size: coverSize,
-                        cornerRadius: 12,
+                        cornerRadius: coverCornerRadius,
                         clipShape: .continuous,
                         iconSize: 20,
                         iconOpacity: 0.4
@@ -111,7 +128,7 @@ private struct HomePlaylistCard: View {
                 }
             }
             .frame(width: coverSize, height: coverSize)
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: coverCornerRadius, style: .continuous))
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(playlist.name)
@@ -138,22 +155,12 @@ private struct HomePlaylistCard: View {
 
             Spacer(minLength: 0)
         }
-        .padding(12)
+        .padding(cardInset)
         .frame(height: cardHeight)
-        .background(
-            RoundedRectangle(cornerRadius: radius, style: .continuous)
-                .fill(colorScheme == .dark
-                      ? Color.white.opacity(0.04)
-                      : Color.black.opacity(0.03))
-        )
-        .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: radius, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
-        )
-        .shadow(
-            color: .black.opacity(colorScheme == .dark ? 0.2 : 0.06),
-            radius: isHovering ? 10 : 6, y: isHovering ? 4 : 2
+        .homeUnifiedGlassCard(
+            cornerRadius: outerCornerRadius,
+            colorScheme: colorScheme,
+            isFloating: true
         )
         .scaleEffect(isHovering ? 1.015 : 1.0)
         .animation(.easeOut(duration: 0.2), value: isHovering)
@@ -189,5 +196,44 @@ private struct HomePlaylistCard: View {
             cacheKey: key,
             targetPixelSize: CGSize(width: 136, height: 136)
         )
+    }
+}
+
+// MARK: - Height tiers
+//
+// Discrete tiers (rather than a continuous curve) keep the LazyVGrid stable:
+// row heights still align to the tallest card in the row, but the set of
+// heights stays small so the layout doesn't feel chaotic.
+private enum HomePlaylistHeightTier {
+    case small, medium, large, huge
+
+    static func tier(for trackCount: Int) -> HomePlaylistHeightTier {
+        switch trackCount {
+        case ..<10:    return .small
+        case 10..<25:  return .medium
+        case 25..<60:  return .large
+        default:       return .huge
+        }
+    }
+
+    /// Extra card height (pt) on top of the base card height.
+    var heightBoost: CGFloat {
+        switch self {
+        case .small:  return 0
+        case .medium: return 16
+        case .large:  return 32
+        case .huge:   return 44
+        }
+    }
+
+    /// Cover grows by less than the card so larger playlists pick up extra
+    /// breathing room around the artwork in addition to a slightly bigger cover.
+    var coverBoost: CGFloat {
+        switch self {
+        case .small:  return 0
+        case .medium: return 6
+        case .large:  return 12
+        case .huge:   return 18
+        }
     }
 }
