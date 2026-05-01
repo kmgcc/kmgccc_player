@@ -521,22 +521,41 @@ private struct HomePlaylistCard: View {
     }
 
     private func loadCover() async {
-        guard let firstTrack = playlist.tracks.first else { return }
-        guard let data = firstTrack.loadArtworkDataIfNeeded(), !data.isEmpty else { return }
-        // Featured artwork is larger than normal/compact, so fetch a
-        // higher-resolution render.
-        let pixelSide: CGFloat = isFeatured ? 320 : 136
-        let target = CGSize(width: pixelSide, height: pixelSide)
-        let checksum = ArtworkLoader.checksum(for: data)
-        let key = ArtworkLoader.cacheKey(
-            trackID: firstTrack.id,
-            checksum: checksum,
-            targetPixelSize: target
+        let request = DetailHeaderArtworkRequest.playlist(
+            selectionIdentity: "playlist-\(playlist.id)",
+            playlistID: playlist.id,
+            tracks: playlist.tracks
         )
-        coverImage = await ArtworkLoader.loadImage(
-            artworkData: data,
-            cacheKey: key,
-            targetPixelSize: target
+
+        let immediate = DetailHeaderArtworkResolver.shared.resolveImmediately(for: request)
+        if let image = await loadHeaderImage(from: immediate) {
+            coverImage = image
+        }
+
+        let resolved = await DetailHeaderArtworkResolver.shared.resolveDeferredArtwork(for: request)
+        if let image = await loadHeaderImage(from: resolved ?? immediate) {
+            coverImage = image
+        }
+    }
+
+    private func loadHeaderImage(from resolved: ResolvedHeaderArtwork?) async -> NSImage? {
+        guard let resolved else { return nil }
+        let request = PlaylistArtworkPipeline.headerRequest(
+            artworkIdentity: headerArtworkIdentity,
+            artworkData: resolved.image?.tiffRepresentation,
+            fileURL: resolved.fileURL
         )
+        return await PlaylistArtworkPipeline.shared.load(request) ?? resolved.image
+    }
+
+    private var headerArtworkIdentity: String {
+        let selectionIdentity = "playlist-\(playlist.id)"
+        if let revision = LocalLibraryService.shared.playlistArtworkRevision(playlistID: playlist.id),
+           !revision.isEmpty
+        {
+            return "\(selectionIdentity)-artwork-\(revision)"
+        }
+        let signature = PlaylistArtworkGenerator.contentSignature(tracks: playlist.tracks)
+        return "\(selectionIdentity)-unresolved-\(signature)"
     }
 }

@@ -24,6 +24,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         static let multiselect = NSToolbarItem.Identifier("AppKitMainToolbar.multiselect")
         static let play = NSToolbarItem.Identifier("AppKitMainToolbar.play")
         static let `import` = NSToolbarItem.Identifier("AppKitMainToolbar.import")
+        static let homePillGroup = NSToolbarItem.Identifier("AppKitMainToolbar.homePillGroup")
     }
 
     private weak var splitViewController: AppKitMainSplitViewController?
@@ -36,6 +37,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
     private weak var searchItem: NSToolbarItem?
     private weak var searchField: NSSearchField?
     private weak var pillGroupItem: NSToolbarItemGroup?
+    private weak var homePillGroupItem: NSToolbarItemGroup?
     private weak var sidebarToggleItem: NSToolbarItem?
     private weak var lyricsToggleItem: NSToolbarItem?
     private weak var homeNavPillItem: NSToolbarItemGroup?
@@ -95,6 +97,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         let isLibraryMode = (appSession.uiState.contentMode == .library)
         let hasLibrary = (appSession.libraryVM != nil)
         let hasPlayback = (appSession.playbackCoordinator != nil)
+        let isHomeSelection = currentLibraryVM?.currentSelection == .home
 
         let queueTracks = currentPageController?.page?.queueTracks ?? []
         let hasRows = (currentPageController?.page?.rows.isEmpty == false)
@@ -102,18 +105,23 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
 
         switch item.itemIdentifier {
         case Identifier.sort:
-            return isLibraryMode && hasLibrary
+            return isLibraryMode && hasLibrary && !isHomeSelection
         case Identifier.search:
             return isLibraryMode && hasLibrary
         case Identifier.multiselect:
-            return isLibraryMode && hasLibrary && hasRows
+            return isLibraryMode && hasLibrary && !isHomeSelection && hasRows
         case Identifier.play:
             if !(isLibraryMode && hasLibrary && hasPlayback) { return false }
+            if isHomeSelection {
+                return !(currentLibraryVM?.allTracks.filter { $0.availability != .missing }.isEmpty ?? true)
+            }
             return !queueTracks.isEmpty || hasSelection
         case Identifier.import:
             return isLibraryMode && hasLibrary
         case Identifier.pillGroup:
-            return isLibraryMode && hasLibrary
+            return isLibraryMode && hasLibrary && !isHomeSelection
+        case Identifier.homePillGroup:
+            return isLibraryMode && hasLibrary && isHomeSelection
         case Identifier.sidebarToggle, Identifier.lyricsToggle:
             return true
         case Identifier.homeNavPill:
@@ -139,6 +147,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             Identifier.homeNavPill,
             Identifier.sort,
             Identifier.pillGroup,
+            Identifier.homePillGroup,
             .flexibleSpace,
             Identifier.search,
             Identifier.lyricsToggle,
@@ -272,6 +281,39 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             syncMultiselectItemPresentation()
             return group
 
+        case Identifier.homePillGroup:
+            let playLabel = NSLocalizedString("context.play_all", comment: "Play All")
+            let importLabel = NSLocalizedString("context.import", comment: "Import")
+
+            let group = NSToolbarItemGroup(
+                itemIdentifier: itemIdentifier,
+                images: [
+                    NSImage(systemSymbolName: "play.fill", accessibilityDescription: playLabel)
+                        ?? NSImage(),
+                    NSImage(systemSymbolName: "plus", accessibilityDescription: importLabel)
+                        ?? NSImage()
+                ],
+                selectionMode: .momentary,
+                labels: [playLabel, importLabel],
+                target: self,
+                action: #selector(handleHomePillGroupAction(_:))
+            )
+            group.label = "Home Actions"
+            group.paletteLabel = group.label
+            group.controlRepresentation = .expanded
+            group.autovalidates = false
+            group.isEnabled = true
+            self.homePillGroupItem = group
+            if group.subitems.indices.contains(0) {
+                self.playItem = group.subitems[0]
+                group.subitems[0].toolTip = playLabel
+            }
+            if group.subitems.indices.contains(1) {
+                self.importItem = group.subitems[1]
+                group.subitems[1].toolTip = importLabel
+            }
+            return group
+
         case Identifier.search:
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
             item.label = NSLocalizedString("library.search", comment: "Search")
@@ -306,6 +348,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             self.searchItem = item
             self.searchField = field
             syncSearchFieldFromModel()
+            syncSearchPlaceholder()
             return item
 
         case Identifier.lyricsToggle:
@@ -401,10 +444,6 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         }
 
         sortMenu.addItem(.separator())
-
-        let orderHeader = NSMenuItem(title: NSLocalizedString("sort.order", comment: "Order"), action: nil, keyEquivalent: "")
-        orderHeader.isEnabled = false
-        sortMenu.addItem(orderHeader)
 
         for order in TrackSortOrder.allCases {
             let item = NSMenuItem(title: order.title, action: #selector(handleSortOrder(_:)), keyEquivalent: "")
@@ -527,10 +566,28 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             }
         }()
 
+        if libraryVM.currentSelection == .home {
+            let tracks = libraryVM.allTracks.filter { $0.availability != .missing }
+            guard !tracks.isEmpty else { return }
+            playbackCoordinator.playRandomTracks(
+                tracks,
+                libraryQueueSource: .librarySelection(toolbarSelectionIdentity)
+            )
+            return
+        }
+
         if pageController.isMultiselectMode, !pageController.selectedTrackIDs.isEmpty {
             let selectedTracks = selectedTracksForToolbar(pageController: pageController)
             guard !selectedTracks.isEmpty else { return }
-            playbackCoordinator.playTracks(
+            if case .album = libraryVM.currentSelection {
+                playbackCoordinator.playTracks(
+                    selectedTracks,
+                    libraryQueueSource: .librarySelection(toolbarSelectionIdentity),
+                    playbackOrderMode: .sequence
+                )
+                return
+            }
+            playbackCoordinator.playRandomTracks(
                 selectedTracks,
                 libraryQueueSource: .librarySelection(toolbarSelectionIdentity)
             )
@@ -539,7 +596,15 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
 
         let queueTracks = pageController.page?.queueTracks ?? []
         guard !queueTracks.isEmpty else { return }
-        playbackCoordinator.playTracks(
+        if case .album = libraryVM.currentSelection {
+            playbackCoordinator.playTracks(
+                queueTracks,
+                libraryQueueSource: .librarySelection(toolbarSelectionIdentity),
+                playbackOrderMode: .sequence
+            )
+            return
+        }
+        playbackCoordinator.playRandomTracks(
             queueTracks,
             libraryQueueSource: .librarySelection(toolbarSelectionIdentity)
         )
@@ -631,6 +696,27 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         }
     }
 
+    @objc
+    private func handleHomePillGroupAction(_ sender: Any) {
+        let selectedIndex: Int
+        if let group = sender as? NSToolbarItemGroup {
+            selectedIndex = group.selectedIndex
+        } else if let segmentedControl = sender as? NSSegmentedControl {
+            selectedIndex = segmentedControl.selectedSegment
+        } else {
+            selectedIndex = homePillGroupItem?.selectedIndex ?? -1
+        }
+
+        switch selectedIndex {
+        case 0:
+            handlePlayFromToolbar(playItem ?? NSToolbarItem(itemIdentifier: Identifier.play))
+        case 1:
+            handleImportToPlaylist(importItem ?? NSToolbarItem(itemIdentifier: Identifier.import))
+        default:
+            break
+        }
+    }
+
     private func selectedTracksForToolbar(pageController: PlaylistPageController) -> [Track] {
         guard let rows = pageController.page?.rows else { return [] }
         return rows.compactMap { row in
@@ -652,6 +738,36 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         let modelValue = pageController.searchText
         if searchField.stringValue != modelValue {
             searchField.stringValue = modelValue
+        }
+        syncSearchPlaceholder()
+    }
+
+    private func syncSearchPlaceholder() {
+        guard let searchField else { return }
+        switch currentLibraryVM?.currentSelection {
+        case .home, .allSongs:
+            searchField.placeholderString = "在所有歌曲中搜索"
+        case .playlist:
+            searchField.placeholderString = "在播放列表中搜索"
+        case .album:
+            searchField.placeholderString = "在专辑中搜索"
+        case .artist:
+            searchField.placeholderString = "在歌手中搜索"
+        case .allAlbums:
+            searchField.placeholderString = "在所有专辑中搜索"
+        case .allArtists:
+            searchField.placeholderString = "在所有歌手中搜索"
+        case nil:
+            searchField.placeholderString = "在播放列表中搜索"
+        }
+    }
+
+    private func resignSearchFocusIfNeeded() {
+        guard let searchField else { return }
+        guard let window = searchField.window ?? window else { return }
+        let firstResponder = window.firstResponder
+        if firstResponder === searchField || firstResponder === searchField.currentEditor() {
+            window.makeFirstResponder(nil)
         }
     }
 
@@ -705,6 +821,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             DispatchQueue.main.async { [weak self] in
                 self?.applyToolbarLayoutForCurrentState()
                 self?.syncSidebarToggleItemPresentation()
+                self?.syncSearchPlaceholder()
                 self?.window?.toolbar?.validateVisibleItems()
                 self?.observeContentMode()
             }
@@ -746,6 +863,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         playItem = nil
         importItem = nil
         pillGroupItem = nil
+        homePillGroupItem = nil
         sidebarToggleItem = nil
         lyricsToggleItem = nil
         homeNavPillItem = nil
@@ -786,6 +904,14 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         if !shouldShowHomeNavPill() {
             ids.removeAll { $0 == Identifier.homeNavPill }
         }
+        if currentLibraryVM?.currentSelection == .home {
+            ids.removeAll { $0 == Identifier.sort || $0 == Identifier.pillGroup }
+            if let flexibleIndex = ids.firstIndex(of: .flexibleSpace) {
+                ids.insert(Identifier.homePillGroup, at: flexibleIndex)
+            } else {
+                ids.append(Identifier.homePillGroup)
+            }
+        }
         return ids
     }
 
@@ -795,8 +921,16 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             _ = libraryVM.searchResetTrigger
         } onChange: {
             DispatchQueue.main.async { [weak self] in
-                self?.syncSearchFieldFromModel()
-                self?.observeLibrarySearchResetTrigger()
+                guard let self else { return }
+                let hadSearch = !(self.currentPageController?.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+                    || !(self.searchField?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+                self.currentPageController?.clearSearchAndRebuildIfNeeded(reason: "search-reset")
+                if hadSearch {
+                    self.resignSearchFocusIfNeeded()
+                }
+                self.syncSearchFieldFromModel()
+                self.syncSearchPlaceholder()
+                self.observeLibrarySearchResetTrigger()
             }
         }
     }
@@ -811,6 +945,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         } onChange: {
             DispatchQueue.main.async { [weak self] in
                 self?.applyToolbarLayoutForCurrentState()
+                self?.syncSearchPlaceholder()
                 self?.syncHomeNavPillPresentation()
                 self?.window?.toolbar?.validateVisibleItems()
                 self?.observeHomeNavigationState()

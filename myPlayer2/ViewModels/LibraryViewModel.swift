@@ -253,6 +253,9 @@ final class LibraryViewModel {
     /// Default is .allSongs, never nil.
     var currentSelection: LibrarySelection = .home {
         didSet {
+            if currentSelection != oldValue {
+                searchResetTrigger += 1
+            }
             // Sync legacy properties for backward compatibility during transition
             switch currentSelection {
             case .home, .allAlbums, .allArtists:

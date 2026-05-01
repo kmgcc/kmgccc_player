@@ -24,6 +24,7 @@ struct HomeInsightsSection: View {
     var centerRightPad: CGFloat = 0
 
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @EnvironmentObject private var themeStore: ThemeStore
 
     /// Width threshold below which the side-by-side ranking + calendar would
@@ -66,7 +67,8 @@ struct HomeInsightsSection: View {
         HStack(alignment: .top, spacing: 16) {
             HomePreferenceRankingView(
                 items: homeVM.preferenceRanking,
-                fixedHeight: insightsRowHeight
+                fixedHeight: insightsRowHeight,
+                playbackCoordinator: playbackCoordinator
             )
                 .frame(maxWidth: .infinity)
                 .frame(height: insightsRowHeight)
@@ -94,7 +96,10 @@ struct HomeInsightsSection: View {
                 .padding(.leading, centerLeftPad)
                 .padding(.trailing, centerRightPad)
 
-            HomePreferenceRankingView(items: homeVM.preferenceRanking)
+            HomePreferenceRankingView(
+                items: homeVM.preferenceRanking,
+                playbackCoordinator: playbackCoordinator
+            )
                 .frame(maxWidth: .infinity)
                 .padding(.leading, centerLeftPad)
                 .padding(.trailing, centerRightPad)
@@ -157,7 +162,7 @@ struct HomeInsightsSection: View {
 
     private var sectionHeader: some View {
         HStack(alignment: .firstTextBaseline) {
-            Text("听歌记录")
+            Text("音乐足迹")
                 .font(.system(size: mode.sectionTitleFontSize, weight: .semibold))
                 .tracking(-0.3)
             Spacer()
@@ -190,6 +195,8 @@ private struct ListeningStatsRow: View {
     let homeVM: HomeViewModel
 
     var body: some View {
+        let weeklyDuration = formattedDurationParts(homeVM.weeklyListeningSeconds)
+
         HStack(alignment: .top, spacing: 14) {
             HomeStatCard(
                 label: "总歌曲",
@@ -198,16 +205,16 @@ private struct ListeningStatsRow: View {
                 subtitle: "音乐库"
             )
             HomeStatCard(
-                label: "总播放",
-                value: formattedNumber(homeVM.totalPlayCount),
+                label: "本周播放",
+                value: formattedNumber(homeVM.weeklyPlayCount),
                 unit: "次",
-                subtitle: "累计"
+                subtitle: "本周"
             )
             HomeStatCard(
-                label: "播放时长",
-                value: "\(Int(homeVM.totalListeningSeconds / 3600))",
-                unit: "小时",
-                subtitle: "今年"
+                label: "本周时长",
+                value: weeklyDuration.value,
+                unit: weeklyDuration.unit,
+                subtitle: "本周"
             )
             FavoriteArtistCard(homeVM: homeVM)
         }
@@ -220,6 +227,8 @@ private struct ListeningStatsGridCompact: View {
     let cardSize: CGSize
 
     var body: some View {
+        let weeklyDuration = formattedDurationParts(homeVM.weeklyListeningSeconds)
+
         VStack(alignment: .leading, spacing: CompactSummaryRowMetrics.gridSpacing) {
             HStack(spacing: CompactSummaryRowMetrics.gridSpacing) {
                 HomeStatCard(
@@ -231,10 +240,10 @@ private struct ListeningStatsGridCompact: View {
                     compact: true
                 )
                 HomeStatCard(
-                    label: "总播放",
-                    value: formattedNumber(homeVM.totalPlayCount),
+                    label: "本周播放",
+                    value: formattedNumber(homeVM.weeklyPlayCount),
                     unit: "次",
-                    subtitle: "累计",
+                    subtitle: "本周",
                     fixedSize: cardSize,
                     compact: true
                 )
@@ -242,10 +251,10 @@ private struct ListeningStatsGridCompact: View {
 
             HStack(spacing: CompactSummaryRowMetrics.gridSpacing) {
                 HomeStatCard(
-                    label: "播放时长",
-                    value: "\(Int(homeVM.totalListeningSeconds / 3600))",
-                    unit: "小时",
-                    subtitle: "今年",
+                    label: "本周时长",
+                    value: weeklyDuration.value,
+                    unit: weeklyDuration.unit,
+                    subtitle: "本周",
                     fixedSize: cardSize,
                     compact: true
                 )
@@ -272,22 +281,21 @@ private struct FavoriteArtistCard: View {
     var body: some View {
         HomeInsightsCardContainer(fixedSize: fixedSize, compact: compact) {
             VStack(alignment: .leading, spacing: compact ? 4 : 8) {
-                Text("常听歌手")
-                    .font(.caption2)
+                Text("本周常听")
+                    .font(.system(size: compact ? 11 : 12, weight: .medium))
                     .textCase(.uppercase)
-                    .tracking(0.6)
                     .foregroundStyle(.secondary)
 
                 Spacer(minLength: 0)
 
-                if let name = homeVM.favoriteArtistName {
+                if let name = homeVM.weeklyFavoriteArtistName {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(name)
-                            .font(.system(size: compact ? 13 : 15, weight: .semibold))
+                            .font(.system(size: compact ? 15 : 17, weight: .semibold))
                             .lineLimit(1)
                             .minimumScaleFactor(0.78)
-                        Text("\(homeVM.favoriteArtistAlbumCount) 张专辑")
-                            .font(.caption2)
+                        Text("\(homeVM.weeklyFavoriteArtistPlayCount) 次播放")
+                            .font(.system(size: compact ? 10 : 11))
                             .foregroundStyle(.tertiary)
                             .lineLimit(1)
                     }
@@ -303,6 +311,13 @@ private struct FavoriteArtistCard: View {
 
 private func formattedNumber(_ n: Int) -> String {
     n.formatted(.number)
+}
+
+private func formattedDurationParts(_ seconds: Double) -> (value: String, unit: String) {
+    if seconds < 3600 {
+        return (String(max(0, Int((seconds / 60).rounded()))), "分钟")
+    }
+    return (String(Int((seconds / 3600).rounded())), "小时")
 }
 
 // MARK: - Stat Card
@@ -321,26 +336,25 @@ private struct HomeStatCard: View {
         HomeInsightsCardContainer(fixedSize: fixedSize, compact: compact) {
             VStack(alignment: .leading, spacing: compact ? 4 : 8) {
                 Text(label)
-                    .font(.caption2)
+                    .font(.system(size: compact ? 11 : 12, weight: .medium))
                     .textCase(.uppercase)
-                    .tracking(0.6)
                     .foregroundStyle(.secondary)
 
                 Spacer(minLength: 0)
 
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(value)
-                        .font(.system(size: compact ? 20 : 28, weight: .semibold))
+                        .font(.system(size: compact ? 22 : 30, weight: .semibold))
                         .tracking(-0.5)
                         .lineLimit(1)
                         .minimumScaleFactor(0.7)
                     Text(unit)
-                        .font(.caption)
+                        .font(.system(size: compact ? 11 : 12))
                         .foregroundStyle(.secondary)
                 }
 
                 Text(subtitle)
-                    .font(.caption2)
+                    .font(.system(size: compact ? 10 : 11))
                     .foregroundStyle(.tertiary)
             }
         }
@@ -386,16 +400,23 @@ private struct HomeInsightsCardContainer<Content: View>: View {
 private struct HomePreferenceRankingView: View {
     let items: [HomeViewModel.PreferenceRankItem]
     var fixedHeight: CGFloat? = nil
+    let playbackCoordinator: PlaybackCoordinator
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         let isHeightConstrained = fixedHeight != nil
-        let visibleItems = isHeightConstrained ? Array(items.prefix(6)) : items
+        let visibleItems = Array(items.prefix(30))
         let horizontalPadding: CGFloat = isHeightConstrained ? 10 : 12
         let scoreWidth: CGFloat = isHeightConstrained ? 108 : 120
         let playWidth: CGFloat = isHeightConstrained ? 44 : 50
+        let artworkSide: CGFloat = isHeightConstrained ? 30 : 34
+        let rankArtworkSpacing: CGFloat = isHeightConstrained ? 12 : 14
+        let artworkTitleSpacing: CGFloat = isHeightConstrained ? 8 : 10
+        let scoreRange = HomePreferenceScoreRange(items: visibleItems)
+        let cardHeight = fixedHeight ?? 360
+        let queueTracks = visibleItems.map(\.track)
 
-        HomeInsightsCardContainer(fixedHeight: fixedHeight) {
+        HomeInsightsCardContainer(fixedHeight: cardHeight) {
             VStack(spacing: 0) {
                 if visibleItems.isEmpty {
                     Text("暂无足够的听歌数据")
@@ -407,10 +428,12 @@ private struct HomePreferenceRankingView: View {
                     HStack {
                         Text("#")
                             .frame(width: 28)
+                        Spacer()
+                            .frame(width: rankArtworkSpacing + artworkSide + artworkTitleSpacing)
                         Text("歌曲 \u{00B7} 歌手")
                             .frame(maxWidth: .infinity, alignment: .leading)
-                        Text("偏好度")
-                            .frame(width: scoreWidth)
+                        Text("爱听")
+                            .frame(width: scoreWidth, alignment: .leading)
                         Text("播放")
                             .frame(width: playWidth, alignment: .trailing)
                     }
@@ -419,19 +442,30 @@ private struct HomePreferenceRankingView: View {
                     .tracking(0.6)
                     .foregroundStyle(.tertiary)
                     .padding(.horizontal, horizontalPadding)
-                    .padding(.bottom, isHeightConstrained ? 5 : 8)
+                    .padding(.bottom, isHeightConstrained ? 4 : 6)
+                    .frame(height: isHeightConstrained ? 18 : 20, alignment: .top)
 
-                    ForEach(Array(visibleItems.enumerated()), id: \.element.id) { index, item in
-                        HomeRankRow(
-                            rank: index + 1,
-                            item: item,
-                            dense: isHeightConstrained
-                        )
-                        if index < visibleItems.count - 1 {
-                            Divider()
-                                .padding(.horizontal, horizontalPadding)
+                    ScrollView(.vertical) {
+                        LazyVStack(spacing: 0) {
+                            ForEach(Array(visibleItems.enumerated()), id: \.element.id) { index, item in
+                                HomeRankRow(
+                                    rank: index + 1,
+                                    item: item,
+                                    dense: isHeightConstrained,
+                                    scoreRange: scoreRange,
+                                    queueTracks: queueTracks,
+                                    playbackCoordinator: playbackCoordinator
+                                )
+                                if index < visibleItems.count - 1 {
+                                    Divider()
+                                        .padding(.horizontal, horizontalPadding)
+                                }
+                            }
                         }
+                        .padding(.bottom, 2)
                     }
+                    .scrollIndicators(.automatic)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
             .padding(.vertical, isHeightConstrained ? 1 : 4)
@@ -443,27 +477,34 @@ private struct HomeRankRow: View {
     let rank: Int
     let item: HomeViewModel.PreferenceRankItem
     var dense: Bool = false
+    let scoreRange: HomePreferenceScoreRange
+    let queueTracks: [Track]
+    let playbackCoordinator: PlaybackCoordinator
     @State private var isHovering = false
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
 
-    // Normalize score: preferenceScoreCache can range roughly -100..+100
-    private var normalizedScore: Double {
-        max(0, min(1, (item.score + 100) / 200))
+    private var scoreBarRatio: Double {
+        scoreRange.barRatio(for: item.score)
     }
 
     var body: some View {
         let rowHorizontalPadding: CGFloat = dense ? 10 : 12
         let scoreColumnWidth: CGFloat = dense ? 108 : 120
-        let scoreBarWidth: CGFloat = dense ? 56 : 70
+        let scoreBarWidth: CGFloat = dense ? 78 : 92
         let scoreBarHeight: CGFloat = dense ? 5 : 6
         let playColumnWidth: CGFloat = dense ? 44 : 50
+        let rankArtworkSpacing: CGFloat = dense ? 12 : 14
 
         HStack(spacing: 0) {
             Text("\(rank)")
                 .font(.system(size: dense ? 14 : 15, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .frame(width: 28)
+
+            HomeRankArtworkView(item: item, side: dense ? 30 : 34)
+                .padding(.leading, rankArtworkSpacing)
+                .padding(.trailing, dense ? 8 : 10)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.title)
@@ -482,16 +523,11 @@ private struct HomeRankRow: View {
                         .fill(themeStore.accentColor.opacity(0.12))
                     RoundedRectangle(cornerRadius: 3)
                         .fill(themeStore.accentColor.opacity(colorScheme == .dark ? 0.7 : 0.55))
-                        .frame(width: scoreBarWidth * normalizedScore)
+                        .frame(width: scoreBarWidth * scoreBarRatio)
                 }
                 .frame(width: scoreBarWidth, height: scoreBarHeight)
-
-                Text(String(format: "%.0f", item.score))
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 32, alignment: .trailing)
             }
-            .frame(width: scoreColumnWidth)
+            .frame(width: scoreColumnWidth, alignment: .leading)
 
             Text("\(item.playCount)")
                 .font(.system(size: 12, design: .monospaced))
@@ -507,7 +543,89 @@ private struct HomeRankRow: View {
         .onHover { hovering in
             isHovering = hovering
         }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            playbackCoordinator.playTrack(
+                item.track,
+                inRandomQueueFrom: queueTracks,
+                libraryQueueSource: .librarySelection("home")
+            )
+        }
         .animation(.easeOut(duration: 0.15), value: isHovering)
+    }
+}
+
+private struct HomeRankArtworkView: View {
+    let item: HomeViewModel.PreferenceRankItem
+    let side: CGFloat
+    @State private var image: NSImage?
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(.quaternary)
+
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Image(systemName: "music.note")
+                    .font(.system(size: side * 0.42, weight: .medium))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .frame(width: side, height: side)
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .task(id: item.id) {
+            await loadImage()
+        }
+    }
+
+    private func loadImage() async {
+        var data = item.track.artworkData
+        if data == nil || data!.isEmpty {
+            let track = item.track
+            data = await Task.detached {
+                track.loadArtworkDataIfNeeded()
+            }.value
+        }
+        guard let data, !data.isEmpty else {
+            image = nil
+            return
+        }
+
+        let targetSize = CGSize(width: side * 2, height: side * 2)
+        let checksum = ArtworkLoader.checksum(for: data)
+        let key = ArtworkLoader.cacheKey(
+            trackID: item.id,
+            checksum: checksum,
+            targetPixelSize: targetSize
+        )
+        image = await ArtworkLoader.loadImage(
+            artworkData: data,
+            cacheKey: key,
+            targetPixelSize: targetSize
+        )
+    }
+}
+
+private struct HomePreferenceScoreRange {
+    private let lowerBound: Double
+    private let upperBound: Double
+
+    init(items: [HomeViewModel.PreferenceRankItem]) {
+        let scores = items.map(\.score)
+        lowerBound = scores.min() ?? 0
+        upperBound = scores.max() ?? 0
+    }
+
+    func barRatio(for score: Double) -> Double {
+        let range = upperBound - lowerBound
+        guard range > 0.0001 else { return 0.72 }
+
+        let normalized = max(0, min(1, (score - lowerBound) / range))
+        return 0.18 + pow(normalized, 1.25) * 0.74
     }
 }
 
@@ -726,7 +844,7 @@ private final class ListeningCalendarNSView: NSView {
         metrics: Metrics,
         model: ListeningCalendarRenderModel
     ) {
-        let cornerRadius = layout.cellSize * 0.3
+        let cornerRadius = layout.cellSize / 2
         let fontSize = min(
             metrics.maxDateFontSize,
             max(metrics.minDateFontSize, layout.cellSize * 0.42)
@@ -742,8 +860,12 @@ private final class ListeningCalendarNSView: NSView {
 
             let pillRect = rect
 
-            cellFillColor(for: day, model: model).setFill()
-            NSBezierPath(roundedRect: pillRect, xRadius: cornerRadius, yRadius: cornerRadius).fill()
+            drawDayCellFill(
+                for: day,
+                in: pillRect,
+                cornerRadius: cornerRadius,
+                model: model
+            )
 
             if day.isCurrentMonth, day.isToday {
                 model.accent.nsColor(alpha: 0.8).setStroke()
@@ -760,8 +882,67 @@ private final class ListeningCalendarNSView: NSView {
                 "\(day.dayNumber)",
                 font: font,
                 color: textColor(for: day, model: model),
-                in: pillRect
+                in: pillRect,
+                softened: !day.isCurrentMonth
             )
+        }
+    }
+
+    private func drawDayCellFill(
+        for day: ListeningCalendarRenderModel.Day,
+        in rect: CGRect,
+        cornerRadius: CGFloat,
+        model: ListeningCalendarRenderModel
+    ) {
+        let color = cellFillColor(for: day, model: model)
+        guard !day.isCurrentMonth else {
+            color.setFill()
+            NSBezierPath(ovalIn: rect).fill()
+            return
+        }
+
+        let base = baseColor(isDark: model.isDark, alpha: model.isDark ? 0.024 : 0.018)
+        drawSoftenedRoundedRect(
+            rect,
+            cornerRadius: cornerRadius,
+            color: base,
+            radius: 1.1
+        )
+
+        guard day.intensity > 0 else { return }
+
+        let heatAlpha = model.isDark
+            ? 0.035 + day.intensity * 0.11
+            : 0.028 + day.intensity * 0.095
+        drawSoftenedRoundedRect(
+            rect,
+            cornerRadius: cornerRadius,
+            color: model.accent.nsColor(alpha: heatAlpha),
+            radius: 1.1
+        )
+    }
+
+    private func drawSoftenedRoundedRect(
+        _ rect: CGRect,
+        cornerRadius: CGFloat,
+        color: NSColor,
+        radius: CGFloat
+    ) {
+        let passes: [(dx: CGFloat, dy: CGFloat, alpha: CGFloat)] = [
+            (0, 0, 0.44),
+            (-radius, 0, 0.10),
+            (radius, 0, 0.10),
+            (0, -radius, 0.10),
+            (0, radius, 0.10),
+            (-radius * 0.7, -radius * 0.7, 0.04),
+            (radius * 0.7, -radius * 0.7, 0.04),
+            (-radius * 0.7, radius * 0.7, 0.04),
+            (radius * 0.7, radius * 0.7, 0.04)
+        ]
+
+        for pass in passes {
+            colorByScalingAlpha(color, by: pass.alpha).setFill()
+            NSBezierPath(ovalIn: rect.offsetBy(dx: pass.dx, dy: pass.dy)).fill()
         }
     }
 
@@ -770,7 +951,7 @@ private final class ListeningCalendarNSView: NSView {
         model: ListeningCalendarRenderModel
     ) -> NSColor {
         if !day.isCurrentMonth {
-            return baseColor(isDark: model.isDark, alpha: model.isDark ? 0.026 : 0.02)
+            return baseColor(isDark: model.isDark, alpha: model.isDark ? 0.024 : 0.018)
         }
         if day.intensity == 0 {
             return baseColor(isDark: model.isDark, alpha: model.isDark ? 0.06 : 0.05)
@@ -821,7 +1002,8 @@ private final class ListeningCalendarNSView: NSView {
         _ text: String,
         font: NSFont,
         color: NSColor,
-        in rect: CGRect
+        in rect: CGRect,
+        softened: Bool = false
     ) {
         let string = text as NSString
         let attributes: [NSAttributedString.Key: Any] = [
@@ -833,8 +1015,48 @@ private final class ListeningCalendarNSView: NSView {
         let y = pixelRound(rect.midY - size.height / 2 + dayNumberVisualCorrectionY)
         let textRect = CGRect(origin: CGPoint(x: x, y: y), size: size)
 
-        string.draw(at: textRect.origin, withAttributes: attributes)
+        if softened {
+            drawSoftenedText(string, at: textRect.origin, attributes: attributes, color: color)
+        } else {
+            string.draw(at: textRect.origin, withAttributes: attributes)
+        }
         drawTextAlignmentDebug(in: rect, textRect: textRect, baselineY: y + font.ascender)
+    }
+
+    private func drawSoftenedText(
+        _ string: NSString,
+        at origin: CGPoint,
+        attributes: [NSAttributedString.Key: Any],
+        color: NSColor
+    ) {
+        let radius: CGFloat = 1.1
+        let passes: [(dx: CGFloat, dy: CGFloat, alpha: CGFloat)] = [
+            (0, 0, 0.38),
+            (-radius, 0, 0.10),
+            (radius, 0, 0.10),
+            (0, -radius, 0.10),
+            (0, radius, 0.10),
+            (-radius * 0.7, -radius * 0.7, 0.04),
+            (radius * 0.7, -radius * 0.7, 0.04),
+            (-radius * 0.7, radius * 0.7, 0.04),
+            (radius * 0.7, radius * 0.7, 0.04)
+        ]
+
+        for pass in passes {
+            var passAttributes = attributes
+            passAttributes[.foregroundColor] = colorByScalingAlpha(color, by: pass.alpha)
+            string.draw(
+                at: CGPoint(x: origin.x + pass.dx, y: origin.y + pass.dy),
+                withAttributes: passAttributes
+            )
+        }
+    }
+
+    private func colorByScalingAlpha(_ color: NSColor, by multiplier: CGFloat) -> NSColor {
+        guard let resolved = color.usingColorSpace(NSColorSpace.deviceRGB) else {
+            return color.withAlphaComponent(multiplier)
+        }
+        return resolved.withAlphaComponent(resolved.alphaComponent * multiplier)
     }
 
     private func drawTextAlignmentDebug(in cellRect: CGRect, textRect: CGRect, baselineY: CGFloat) {

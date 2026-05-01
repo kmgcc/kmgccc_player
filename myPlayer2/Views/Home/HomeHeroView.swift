@@ -14,7 +14,8 @@ struct HomeHeroView: View {
     var containerWidth: CGFloat = 700
     var mode: HomeLayoutMode = .wide
 
-    @Environment(PlayerViewModel.self) private var playerVM
+    @Environment(LibraryViewModel.self) private var libraryVM
+    @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
 
@@ -108,6 +109,10 @@ struct HomeHeroView: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             backdropView
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    playHeroTrackInHomeQueue()
+                }
             heroContent
                 .zIndex(1)
         }
@@ -196,14 +201,20 @@ struct HomeHeroView: View {
     @ViewBuilder
     private var trackInfoView: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(track.title)
-                .font(.system(size: titleFontSize, weight: .semibold))
-                .tracking(0)
-                .lineLimit(2)
-                .foregroundStyle(coverImage != nil ? .white : .primary)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(track.title)
+                    .font(.system(size: titleFontSize, weight: .semibold))
+                    .tracking(0)
+                    .lineLimit(2)
+                    .foregroundStyle(coverImage != nil ? .white : .primary)
 
-            artistAlbumLine
-            statsLine
+                artistAlbumLine
+                statsLine
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                playHeroTrackInHomeQueue()
+            }
 
             Spacer(minLength: 6)
 
@@ -259,7 +270,7 @@ struct HomeHeroView: View {
 
     private var playButton: some View {
         Button {
-            playerVM.play(track: track)
+            playHeroTrackInHomeQueue()
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "play.fill")
@@ -285,7 +296,7 @@ struct HomeHeroView: View {
                 track: track,
                 selectedPlaylistID: nil,
                 onPlay: {
-                    playerVM.play(track: track)
+                    playHeroTrackInHomeQueue()
                 },
                 onEditTrack: { trackToEdit = $0 }
             )
@@ -334,6 +345,20 @@ struct HomeHeroView: View {
         let minutes = Int(track.duration) / 60
         let seconds = Int(track.duration) % 60
         return String(format: "%d:%02d", minutes, seconds)
+    }
+
+    private var homePlayableTracks: [Track] {
+        libraryVM.allTracks.filter { $0.availability != .missing }
+    }
+
+    private func playHeroTrackInHomeQueue() {
+        let tracks = homePlayableTracks
+        guard !tracks.isEmpty else { return }
+        playbackCoordinator.playTrack(
+            track,
+            inRandomQueueFrom: tracks,
+            libraryQueueSource: .librarySelection("home")
+        )
     }
 
     private func loadCoverImage() async {

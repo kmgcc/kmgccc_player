@@ -33,13 +33,18 @@ final class HomeViewModel {
     private(set) var totalTrackCount: Int = 0
     private(set) var totalPlayCount: Int = 0
     private(set) var totalListeningSeconds: Double = 0
+    private(set) var weeklyPlayCount: Int = 0
+    private(set) var weeklyListeningSeconds: Double = 0
     private(set) var favoriteArtistName: String?
     private(set) var favoriteArtistAlbumCount: Int = 0
+    private(set) var weeklyFavoriteArtistName: String?
+    private(set) var weeklyFavoriteArtistPlayCount: Int = 0
     private(set) var preferenceRanking: [PreferenceRankItem] = []
     private(set) var dailyListeningMap: [Date: Int] = [:]
 
     struct PreferenceRankItem: Identifiable {
         let id: UUID
+        let track: Track
         let title: String
         let artist: String
         let score: Double
@@ -83,8 +88,13 @@ final class HomeViewModel {
 
         var totalPlays = 0
         var totalSeconds: Double = 0
+        var weekPlays = 0
+        var weekSeconds: Double = 0
         var artistPlayCounts: [String: Int] = [:]
-        var ranked: [(id: UUID, title: String, artist: String, stats: TrackPreferenceStats)] = []
+        var weeklyArtistPlayCounts: [String: Int] = [:]
+        var ranked: [(track: Track, stats: TrackPreferenceStats)] = []
+        let calendar = Calendar.current
+        let weekInterval = calendar.dateInterval(of: .weekOfYear, for: Date())
 
         for track in allTracks {
             let stats = statsService.getStats(for: track.id)
@@ -94,13 +104,24 @@ final class HomeViewModel {
             let artistKey = track.artist
             artistPlayCounts[artistKey, default: 0] += stats.playCount
 
+            if let lastPlayedAt = stats.lastPlayedAt,
+               let weekInterval,
+               weekInterval.contains(lastPlayedAt)
+            {
+                weekPlays += stats.playCount
+                weekSeconds += stats.totalPlayedSeconds
+                weeklyArtistPlayCounts[artistKey, default: 0] += stats.playCount
+            }
+
             if stats.playCount > 0 {
-                ranked.append((track.id, track.title, track.artist, stats))
+                ranked.append((track, stats))
             }
         }
 
         totalPlayCount = totalPlays
         totalListeningSeconds = totalSeconds
+        weeklyPlayCount = weekPlays
+        weeklyListeningSeconds = weekSeconds
 
         // Favorite artist
         if let topArtist = artistPlayCounts.max(by: { $0.value < $1.value }) {
@@ -114,15 +135,24 @@ final class HomeViewModel {
             favoriteArtistAlbumCount = 0
         }
 
-        // Preference ranking (top 8, by preference score)
+        if let topWeeklyArtist = weeklyArtistPlayCounts.max(by: { $0.value < $1.value }) {
+            weeklyFavoriteArtistName = topWeeklyArtist.key
+            weeklyFavoriteArtistPlayCount = topWeeklyArtist.value
+        } else {
+            weeklyFavoriteArtistName = nil
+            weeklyFavoriteArtistPlayCount = 0
+        }
+
+        // Preference ranking (top 30, by preference score)
         preferenceRanking = ranked
             .sorted { $0.stats.preferenceScoreCache > $1.stats.preferenceScoreCache }
-            .prefix(8)
+            .prefix(30)
             .map { item in
                 PreferenceRankItem(
-                    id: item.id,
-                    title: item.title,
-                    artist: item.artist,
+                    id: item.track.id,
+                    track: item.track,
+                    title: item.track.title,
+                    artist: item.track.artist,
                     score: item.stats.preferenceScoreCache,
                     playCount: item.stats.playCount
                 )
@@ -130,7 +160,6 @@ final class HomeViewModel {
 
         // Daily listening map: aggregate by day from lastPlayedAt
         var dayMap: [Date: Int] = [:]
-        let calendar = Calendar.current
         for track in allTracks {
             let stats = statsService.getStats(for: track.id)
             if let lastPlayed = stats.lastPlayedAt {
@@ -151,8 +180,12 @@ final class HomeViewModel {
         totalTrackCount = 0
         totalPlayCount = 0
         totalListeningSeconds = 0
+        weeklyPlayCount = 0
+        weeklyListeningSeconds = 0
         favoriteArtistName = nil
         favoriteArtistAlbumCount = 0
+        weeklyFavoriteArtistName = nil
+        weeklyFavoriteArtistPlayCount = 0
         preferenceRanking = []
         dailyListeningMap = [:]
     }

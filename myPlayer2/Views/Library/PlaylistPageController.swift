@@ -89,6 +89,7 @@ final class PlaylistPageController {
     private var headerFadeTask: Task<Void, Never>?
     private var haloFadeTask: Task<Void, Never>?
     private var phaseTask: Task<Void, Never>?
+    private var deferredDisappearTask: Task<Void, Never>?
     private var activeLoadToken = UUID()
     private var phaseToken = UUID()
     private var headerResolveToken = UUID()
@@ -103,6 +104,8 @@ final class PlaylistPageController {
     private var prefetchedArtworkKeys: Set<String> = []
     @ObservationIgnored
     private var latestTrackLookup: [UUID: Track] = [:]
+    @ObservationIgnored
+    private var activeViewTokens: Set<UUID> = []
     @ObservationIgnored
     private var lastPlaybackTrackChangeUptime: TimeInterval = 0
     @ObservationIgnored
@@ -120,22 +123,35 @@ final class PlaylistPageController {
         self.uiState = uiState
     }
 
-    func appear() {
+    func appear(token: UUID) {
         guard let libraryVM else { return }
+        activeViewTokens.insert(token)
+        deferredDisappearTask?.cancel()
+        deferredDisappearTask = nil
         haloState.beginSession(selectionIdentity: selectionIdentity(for: libraryVM.currentSelection))
         resetHeaderHeavyWorkDeferralBaseline()
         activateFirstPaintPhases(for: libraryVM.currentSelection)
         scheduleRebuild(reason: "appear", restoreScroll: true)
     }
 
-    func disappear() {
-        cancelAllTasks(clearPage: true)
-        phase = .idle
-        page = nil
-        lastQueueTrackIDs = []
-        resetArtworkPresentation(force: true, identity: nil)
-        resetHeaderHeavyWorkDeferralBaseline()
-        haloState.clear()
+    func disappear(token: UUID) {
+        activeViewTokens.remove(token)
+        guard activeViewTokens.isEmpty else { return }
+        deferredDisappearTask?.cancel()
+        deferredDisappearTask = Task { @MainActor in
+            await Task.yield()
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            guard !Task.isCancelled else { return }
+            guard self.activeViewTokens.isEmpty else { return }
+            self.cancelAllTasks(clearPage: true)
+            self.phase = .idle
+            self.page = nil
+            self.lastQueueTrackIDs = []
+            self.resetArtworkPresentation(force: true, identity: nil)
+            self.resetHeaderHeavyWorkDeferralBaseline()
+            self.haloState.clear()
+            self.deferredDisappearTask = nil
+        }
     }
 
     func handleSelectionChange(_ selection: LibrarySelection) {
@@ -146,6 +162,14 @@ final class PlaylistPageController {
 
     func handleSearchChange() {
         scheduleRebuild(reason: "search", debounceNanoseconds: 150_000_000)
+    }
+
+    func clearSearchAndRebuildIfNeeded(reason: String) {
+        let hadSearch = !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if hadSearch {
+            searchText = ""
+            scheduleRebuild(reason: reason, restoreScroll: true)
+        }
     }
 
     func handleSortChange(reason: String) {
@@ -1127,8 +1151,10 @@ final class PlaylistPageController {
         libraryVM: LibraryViewModel
     ) -> [Track] {
         switch selection {
-        case .home, .allAlbums, .allArtists:
+        case .allAlbums, .allArtists:
             return []
+        case .home:
+            return libraryVM.allTracks.filter { $0.availability != .missing }
         case .allSongs:
             return libraryVM.allTracks.filter { $0.availability != .missing }
         case .playlist(let id):
