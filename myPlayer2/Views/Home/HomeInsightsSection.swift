@@ -70,7 +70,6 @@ struct HomeInsightsSection: View {
             )
                 .frame(maxWidth: .infinity)
                 .frame(height: insightsRowHeight)
-                .clipped()
             ListeningCalendarCard(
                 dailyMap: homeVM.dailyListeningMap,
                 renderWidth: heatmapWidth,
@@ -374,20 +373,10 @@ private struct HomeInsightsCardContainer<Content: View>: View {
                 height: fixedSize?.height ?? fixedHeight,
                 alignment: .topLeading
             )
-            .background(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(colorScheme == .dark
-                          ? Color.white.opacity(0.04)
-                          : Color.white.opacity(0.7))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
-            )
-            .shadow(
-                color: .black.opacity(colorScheme == .dark ? 0.15 : 0.05),
-                radius: drawsShadow ? 6 : 0,
-                y: drawsShadow ? 2 : 0
+            .homeUnifiedGlassCard(
+                cornerRadius: 18,
+                colorScheme: colorScheme,
+                isFloating: drawsShadow
             )
     }
 }
@@ -447,7 +436,6 @@ private struct HomePreferenceRankingView: View {
             }
             .padding(.vertical, isHeightConstrained ? 1 : 4)
         }
-        .clipped()
     }
 }
 
@@ -580,7 +568,7 @@ struct HomeListeningHeatmapView: View {
             accent: ListeningCalendarRenderModel.RGBA.resolved(from: themeStore.accentColor)
         )
 
-        HomeInsightsCardContainer(fixedSize: nil, fixedHeight: fixedHeight, drawsShadow: false) {
+        HomeInsightsCardContainer(fixedSize: nil, fixedHeight: fixedHeight) {
             VStack(alignment: .leading, spacing: headerGridSpacing) {
                 header
                 ListeningCalendarRenderView(model: resolvedModel)
@@ -613,6 +601,7 @@ private struct ListeningCalendarRenderView: NSViewRepresentable {
     func makeNSView(context: Context) -> ListeningCalendarNSView {
         let view = ListeningCalendarNSView()
         view.wantsLayer = true
+        view.layer?.backgroundColor = NSColor.clear.cgColor
         view.layerContentsRedrawPolicy = .onSetNeedsDisplay
         view.layer?.needsDisplayOnBoundsChange = true
         view.model = model
@@ -620,6 +609,7 @@ private struct ListeningCalendarRenderView: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: ListeningCalendarNSView, context: Context) {
+        nsView.layer?.backgroundColor = NSColor.clear.cgColor
         guard nsView.model != model else { return }
         nsView.model = model
         nsView.needsDisplay = true
@@ -769,7 +759,7 @@ private final class ListeningCalendarNSView: NSView {
             drawCenteredDayNumber(
                 "\(day.dayNumber)",
                 font: font,
-                color: textColor(for: day),
+                color: textColor(for: day, model: model),
                 in: pillRect
             )
         }
@@ -788,7 +778,20 @@ private final class ListeningCalendarNSView: NSView {
         return model.accent.nsColor(alpha: 0.18 + day.intensity * 0.72)
     }
 
-    private func textColor(for day: ListeningCalendarRenderModel.Day) -> NSColor {
+    private func textColor(
+        for day: ListeningCalendarRenderModel.Day,
+        model: ListeningCalendarRenderModel
+    ) -> NSColor {
+        if model.isDark {
+            if !day.isCurrentMonth {
+                return NSColor(calibratedWhite: 0.86, alpha: 0.46)
+            }
+            if day.intensity >= 0.75 {
+                return NSColor(calibratedWhite: 0.98, alpha: 0.94)
+            }
+            return NSColor(calibratedWhite: 0.94, alpha: 0.88)
+        }
+
         if !day.isCurrentMonth {
             return secondaryTextColor(alpha: 0.18)
         }

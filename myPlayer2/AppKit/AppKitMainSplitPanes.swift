@@ -183,6 +183,9 @@ struct AppKitMainContentPaneRoot: View {
                 applyAppearanceToWindows()
                 syncThemeStoreWithSwiftUIColorScheme(swiftUIColorScheme)
                 syncFullscreenWindowEditorDependencies()
+                HomeWindowLayoutState.shared.setEmbeddedFullscreenActive(
+                    fullscreenWindowManager.isWindowedFullscreenActive
+                )
                 HomeWindowLayoutState.shared.setHomeMode(homeMode)
                 if shouldTriggerArtBackgroundTransition(playbackCoordinator: playbackCoordinator, uiState: uiState) {
                     _ = markNowPlayingArtBackgroundPresentationIfNeeded()
@@ -246,6 +249,7 @@ struct AppKitMainContentPaneRoot: View {
                 }
             }
             .onChange(of: fullscreenWindowManager.presentationMode) { (_: FullscreenWindowManager.PresentationMode, mode: FullscreenWindowManager.PresentationMode) in
+                HomeWindowLayoutState.shared.setEmbeddedFullscreenActive(mode == .embeddedInWindow)
                 if mode == .none && shouldTriggerArtBackgroundTransition(playbackCoordinator: playbackCoordinator, uiState: uiState) {
                     artBackgroundController.triggerTransition()
                 }

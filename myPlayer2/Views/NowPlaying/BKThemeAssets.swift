@@ -22,6 +22,19 @@ final class BKThemeAssets: @unchecked Sendable {
         var images: [CGImage]
         var scaleByIndex: [Int: CGFloat]
         var edgePinnedIndices: Set<Int>
+        var fileNames: [String]
+
+        init(
+            images: [CGImage],
+            scaleByIndex: [Int: CGFloat],
+            edgePinnedIndices: Set<Int>,
+            fileNames: [String] = []
+        ) {
+            self.images = images
+            self.scaleByIndex = scaleByIndex
+            self.edgePinnedIndices = edgePinnedIndices
+            self.fileNames = fileNames
+        }
     }
 
     private final class ImageArrayBox: NSObject {
@@ -113,12 +126,14 @@ final class BKThemeAssets: @unchecked Sendable {
         var images: [CGImage] = []
         var scaleByIndex: [Int: CGFloat] = [:]
         var edgePinnedIndices = Set<Int>()
+        var fileNames: [String] = []
 
         for entry in shapeEntries {
             guard let image = Self.downsampledImage(from: entry.url, maxPixel: maxPixel) else {
                 continue
             }
             images.append(image)
+            fileNames.append(entry.url.lastPathComponent)
             if entry.sourceIndex == 10 {
                 scaleByIndex[images.count - 1] = 3.0
                 edgePinnedIndices.insert(images.count - 1)
@@ -131,7 +146,8 @@ final class BKThemeAssets: @unchecked Sendable {
         let result = ShapeLoadResult(
             images: images,
             scaleByIndex: scaleByIndex,
-            edgePinnedIndices: edgePinnedIndices
+            edgePinnedIndices: edgePinnedIndices,
+            fileNames: fileNames
         )
         let box = ShapeLoadResultBox(result: result)
         shapeCache.setObject(box, forKey: key, cost: Self.byteCost(for: images))

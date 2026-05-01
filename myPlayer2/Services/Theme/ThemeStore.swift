@@ -41,6 +41,8 @@ final class ThemeStore: ObservableObject {
     @Published private(set) var baseColor: Color
     @Published private(set) var accentColor: Color
     @Published private(set) var accentNSColor: NSColor
+    @Published private(set) var artworkBaseNSColor: NSColor
+    @Published private(set) var hasArtworkThemeColor: Bool = false
     @Published private(set) var selectionFill: Color
     @Published private(set) var usesFallbackThemeColor: Bool = true
 
@@ -76,6 +78,7 @@ final class ThemeStore: ObservableObject {
         self.baseColor = Color(nsColor: fallback)
         self.accentColor = Color(nsColor: fallback)
         self.accentNSColor = fallback
+        self.artworkBaseNSColor = fallback
         self.selectionFill = Color(nsColor: fallback).opacity(0.14)
         
         dominantColorCache.countLimit = 50
@@ -159,6 +162,7 @@ final class ThemeStore: ObservableObject {
             lastProcessedArtworkIdentity = nil
             averageColorCache = nil
             rawDominantColor = defaultBlueNS
+            hasArtworkThemeColor = false
             usesFallbackThemeColor = true
             await refreshPalette(reason: "track_missing_artwork")
             return
@@ -191,12 +195,14 @@ final class ThemeStore: ObservableObject {
         currentArtworkData = data
         currentArtworkChecksum = checksum
         averageColorCache = nil
+        hasArtworkThemeColor = false
         
         Log.trace("Cleared averageColorCache for new track", category: .theme)
 
         if let cacheKey, let cached = dominantColorCache.object(forKey: cacheKey as NSString)?.color {
             Log.debug("Cache hit for dominant color cache key \(cacheKey)", category: .theme)
             rawDominantColor = cached
+            hasArtworkThemeColor = true
             usesFallbackThemeColor = false
             lastProcessedChecksum = checksum
             lastProcessedArtworkIdentity = artworkIdentity
@@ -225,6 +231,7 @@ final class ThemeStore: ObservableObject {
         if let quickColor = await quick, token == extractionToken, activeArtworkIdentity == artworkIdentity {
             Log.trace("Applying quick color", category: .theme)
             rawDominantColor = quickColor
+            hasArtworkThemeColor = true
             usesFallbackThemeColor = false
             await refreshPalette(reason: "track_artwork_quick")
         }
@@ -253,7 +260,8 @@ final class ThemeStore: ObservableObject {
             dominantColorCache.setObject(NSColorBox(resolved), forKey: cacheKey as NSString)
         }
         rawDominantColor = resolved
-        usesFallbackThemeColor = extractedColor == nil
+        hasArtworkThemeColor = extractedColor != nil || hasArtworkThemeColor
+        usesFallbackThemeColor = !hasArtworkThemeColor
         lastProcessedChecksum = checksum
         lastProcessedArtworkIdentity = artworkIdentity
         
@@ -320,6 +328,7 @@ final class ThemeStore: ObservableObject {
             baseColor = Color(nsColor: rawDominantColor)
             accentColor = Color(nsColor: resolvedAccentNS)
             accentNSColor = resolvedAccentNS
+            artworkBaseNSColor = rawDominantColor
             selectionFill = Color(nsColor: resolvedAccentNS).opacity(fillAlpha)
         }
 

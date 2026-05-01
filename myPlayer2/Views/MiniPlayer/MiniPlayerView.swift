@@ -86,6 +86,7 @@ struct MiniPlayerView: View {
             colorScheme: colorScheme,
             accentColor: themeStore.usesFallbackThemeColor ? nil : themeStore.accentColor,
             prominence: .prominent,
+            materialStyle: .regular,
             isFloating: true
         )
         .contentShape(Capsule())

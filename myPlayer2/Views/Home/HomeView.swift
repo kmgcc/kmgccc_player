@@ -23,6 +23,7 @@ struct HomeView: View {
     @Environment(HomeViewModel.self) private var homeVM
     @State private var hasAppeared = false
     @State private var layout = HomeWindowLayoutState.shared
+    @State private var homeScrollY: CGFloat = 0
 
     var body: some View {
         Group {
@@ -34,9 +35,6 @@ struct HomeView: View {
                 emptyLibraryView
             } else {
                 scrollContent
-                    .opacity(hasAppeared ? 1 : 0)
-                    .offset(y: hasAppeared ? 0 : 12)
-                    .animation(.easeOut(duration: 0.4), value: hasAppeared)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -87,64 +85,106 @@ struct HomeView: View {
         let centerRightPad = rightInset + hPad
         let contentWidth = max(200, centerW - hPad * 2)
 
+        let sourceColor = themeStore.hasArtworkThemeColor ? themeStore.artworkBaseNSColor : nil
+
         return AnyView(
-            ScrollView(.vertical, showsIndicators: true) {
-                VStack(spacing: mode.sectionSpacing) {
-                    if let heroTrack = homeVM.heroTrack {
-                        HomeHeroView(track: heroTrack, containerWidth: contentWidth, mode: mode)
-                            .padding(.leading, centerLeftPad)
-                            .padding(.trailing, centerRightPad)
-                    }
+            ZStack(alignment: .topLeading) {
+                HomeAmbientShapesBackground(
+                    geometry: g,
+                    mode: mode,
+                    scrollOffsetY: homeScrollY,
+                    sourceColor: sourceColor
+                )
+                .transaction { transaction in
+                    transaction.animation = nil
+                }
 
-                    if !homeVM.albums.isEmpty {
-                        HomeAlbumsSection(
-                            albums: homeVM.albums,
-                            mode: mode,
-                            centerLeftPad: centerLeftPad,
-                            centerRightPad: centerRightPad
-                        )
-                    }
+                homeScrollView(
+                    mode: mode,
+                    contentWidth: contentWidth,
+                    centerLeftPad: centerLeftPad,
+                    centerRightPad: centerRightPad
+                )
+                .opacity(hasAppeared ? 1 : 0)
+                .offset(y: hasAppeared ? 0 : 12)
+                .animation(.easeOut(duration: 0.4), value: hasAppeared)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        )
+    }
 
-                    if !homeVM.artists.isEmpty {
-                        HomeArtistsSection(
-                            artists: homeVM.artists,
-                            mode: mode,
-                            centerLeftPad: centerLeftPad,
-                            centerRightPad: centerRightPad
-                        )
-                    }
+    private func homeScrollView(
+        mode: HomeLayoutMode,
+        contentWidth: CGFloat,
+        centerLeftPad: CGFloat,
+        centerRightPad: CGFloat
+    ) -> some View {
+        ScrollView(.vertical, showsIndicators: true) {
+            VStack(spacing: mode.sectionSpacing) {
+                if let heroTrack = homeVM.heroTrack {
+                    HomeHeroView(track: heroTrack, containerWidth: contentWidth, mode: mode)
+                        .padding(.leading, centerLeftPad)
+                        .padding(.trailing, centerRightPad)
+                }
 
-                    if !homeVM.playlists.isEmpty {
-                        HomePlaylistsSection(playlists: homeVM.playlists, mode: mode)
-                            .padding(.leading, centerLeftPad)
-                            .padding(.trailing, centerRightPad)
-                    }
+                if !homeVM.playlists.isEmpty {
+                    HomePlaylistsSection(playlists: homeVM.playlists, mode: mode)
+                        .padding(.leading, centerLeftPad)
+                        .padding(.trailing, centerRightPad)
+                }
 
-                    HomeInsightsSection(
-                        homeVM: homeVM,
+                if !homeVM.artists.isEmpty {
+                    HomeArtistsSection(
+                        artists: homeVM.artists,
                         mode: mode,
-                        containerWidth: contentWidth,
                         centerLeftPad: centerLeftPad,
                         centerRightPad: centerRightPad
                     )
-
-                    footer
-                        .padding(.leading, centerLeftPad)
-                        .padding(.trailing, centerRightPad)
-
-                    // Bottom safe space so the Mini Player doesn't cover footer text.
-                    Color.clear.frame(height: 120)
                 }
-                // Top safe-area inset so the Hero card clears the unified
-                // titlebar/toolbar at the initial scroll position. The
-                // window uses `.fullSizeContentView`, so the toolbar
-                // occupies the top ~52pt of the content area; 56pt gives
-                // the Hero a comfortable cushion below it.
-                .padding(.top, 56)
-                .padding(.bottom, 24)
-                .frame(maxWidth: .infinity, alignment: .top)
+
+                if !homeVM.albums.isEmpty {
+                    HomeAlbumsSection(
+                        albums: homeVM.albums,
+                        mode: mode,
+                        centerLeftPad: centerLeftPad,
+                        centerRightPad: centerRightPad
+                    )
+                }
+
+                HomeInsightsSection(
+                    homeVM: homeVM,
+                    mode: mode,
+                    containerWidth: contentWidth,
+                    centerLeftPad: centerLeftPad,
+                    centerRightPad: centerRightPad
+                )
+
+                footer
+                    .padding(.leading, centerLeftPad)
+                    .padding(.trailing, centerRightPad)
+
+                // Bottom safe space so the Mini Player doesn't cover footer text.
+                Color.clear.frame(height: 120)
             }
-        )
+            // Top safe-area inset so the Hero card clears the unified
+            // titlebar/toolbar at the initial scroll position. The
+            // window uses `.fullSizeContentView`, so the toolbar
+            // occupies the top ~52pt of the content area; 56pt gives
+            // the Hero a comfortable cushion below it.
+            .padding(.top, 56)
+            .padding(.bottom, 24)
+            .frame(maxWidth: .infinity, alignment: .top)
+        }
+        .onScrollGeometryChange(for: CGFloat.self) { geometry in
+            let rawOffset = max(0, geometry.contentOffset.y + geometry.contentInsets.top)
+            return (rawOffset * 2).rounded() / 2
+        } action: { _, newValue in
+            guard abs(homeScrollY - newValue) >= 0.5 else { return }
+            homeScrollY = newValue
+        }
+        .transaction { transaction in
+            transaction.animation = nil
+        }
     }
 
     private var emptyLibraryView: some View {
@@ -165,14 +205,13 @@ struct HomeView: View {
     private var footer: some View {
         VStack(spacing: 8) {
             Text("\u{201C}Where words fail, music speaks.\u{201D}")
-                .font(.system(size: 20, weight: .medium, design: .serif))
-                .italic()
+                .font(.system(size: 20, weight: .ultraLight))
                 .foregroundStyle(.secondary)
             Text("\u{8A00}\u{6240}\u{4E0D}\u{53CA}\u{5904}\u{FF0C}\u{7B19}\u{7BAB}\u{76F8}\u{7EE7}\u{3002}")
-                .font(.callout)
+                .font(.system(.callout, weight: .ultraLight))
                 .foregroundStyle(.tertiary)
             Text("— Hans Christian Andersen")
-                .font(.caption2)
+                .font(.system(.caption2, weight: .ultraLight))
                 .textCase(.uppercase)
                 .tracking(0.8)
                 .foregroundStyle(.quaternary)

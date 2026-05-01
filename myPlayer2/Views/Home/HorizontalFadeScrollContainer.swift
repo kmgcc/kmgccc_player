@@ -92,6 +92,7 @@ struct HorizontalFadeScrollContainer<Content: View>: View {
             .padding(.trailing, trailingScrollPadding)
             .padding(.vertical, verticalPadding)
         }
+        .scrollClipDisabled(true)
         .modifier(
             HorizontalScrollMetricsModifier(
                 isEnabled: needsScrollMetrics,

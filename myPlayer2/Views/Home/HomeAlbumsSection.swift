@@ -44,7 +44,7 @@ struct HomeAlbumsSection: View {
         HorizontalFadeScrollContainer(
             spacing: rowSpacing,
             fadeWidth: 0,
-            verticalPadding: 12,
+            verticalPadding: 22,
             // First card's leading edge starts at the center column's
             // visual left edge (sidebar width + center horizontal padding).
             leadingScrollPadding: centerLeftPad + 4,
@@ -116,7 +116,13 @@ private struct HomeAlbumCard: View {
     @State private var isHovering = false
     @Environment(\.colorScheme) private var colorScheme
 
-    private let radius: CGFloat = 16
+    // Outer card geometry. Cover radius is derived so the cover and card
+    // form concentric rounded rectangles: innerR = outerR − inset.
+    private let outerCornerRadius: CGFloat = 18
+    private let cardInset: CGFloat = 10
+    private var coverCornerRadius: CGFloat {
+        max(0, outerCornerRadius - cardInset)
+    }
 
     private var cardSize: CGFloat {
         switch mode {
@@ -145,7 +151,7 @@ private struct HomeAlbumCard: View {
                 } else {
                     ArtworkPlaceholderView(
                         size: cardSize,
-                        cornerRadius: radius,
+                        cornerRadius: coverCornerRadius,
                         clipShape: .continuous,
                         iconSize: 32,
                         iconOpacity: 0.4
@@ -153,11 +159,7 @@ private struct HomeAlbumCard: View {
                 }
             }
             .frame(width: cardSize, height: cardSize)
-            .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
-            .shadow(
-                color: .black.opacity(colorScheme == .dark ? 0.35 : 0.12),
-                radius: isHovering ? 12 : 8, y: isHovering ? 6 : 4
-            )
+            .clipShape(RoundedRectangle(cornerRadius: coverCornerRadius, style: .continuous))
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(album.displayTitle)
@@ -176,7 +178,13 @@ private struct HomeAlbumCard: View {
                     .padding(.top, 2)
             }
         }
-        .frame(width: cardSize)
+        .padding(cardInset)
+        .frame(width: cardSize + cardInset * 2)
+        .homeUnifiedGlassCard(
+            cornerRadius: outerCornerRadius,
+            colorScheme: colorScheme,
+            isFloating: true
+        )
         .scaleEffect(isHovering ? 1.03 : 1.0)
         .animation(.easeOut(duration: 0.2), value: isHovering)
         .onHover { hovering in

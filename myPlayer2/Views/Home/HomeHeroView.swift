@@ -23,14 +23,19 @@ struct HomeHeroView: View {
     @State private var heroArtworkChecksum: UInt64 = 0
     @State private var artworkDominantColor: NSColor?
     @State private var isHovering = false
+    @State private var trackToEdit: Track?
 
-    private var heroHeight: CGFloat {
+    private var baseHeroHeight: CGFloat {
         switch mode {
         case .wide:    return 320
         case .medium:  return 295
         case .compact: return 270
         case .narrow:  return 250
         }
+    }
+
+    private var heroHeight: CGFloat {
+        baseHeroHeight + wideExpansion * 56
     }
 
     private var heroTopPadding: CGFloat {
@@ -42,11 +47,53 @@ struct HomeHeroView: View {
     }
 
     private var titleFontSize: CGFloat {
+        let extra = wideExpansion * 5
         switch mode {
-        case .wide:    return 26
-        case .medium:  return 22
-        case .compact: return 19
-        case .narrow:  return 17
+        case .wide:    return 31 + extra
+        case .medium:  return 27
+        case .compact: return 23
+        case .narrow:  return 20
+        }
+    }
+
+    private var wideExpansion: CGFloat {
+        guard mode == .wide else { return 0 }
+        return min(max((containerWidth - 920) / 520, 0), 1)
+    }
+
+    private var heroButtonHeight: CGFloat {
+        switch mode {
+        case .wide:    return 36 + wideExpansion * 8
+        case .medium:  return 36
+        case .compact: return 34
+        case .narrow:  return 32
+        }
+    }
+
+    private var heroButtonHorizontalPadding: CGFloat {
+        switch mode {
+        case .wide:    return 16 + wideExpansion * 4
+        case .medium:  return 16
+        case .compact: return 14
+        case .narrow:  return 13
+        }
+    }
+
+    private var heroButtonIconSize: CGFloat {
+        switch mode {
+        case .wide:    return 12 + wideExpansion * 2
+        case .medium:  return 12
+        case .compact: return 11
+        case .narrow:  return 10.5
+        }
+    }
+
+    private var heroButtonTextSize: CGFloat {
+        switch mode {
+        case .wide:    return 13 + wideExpansion * 1.5
+        case .medium:  return 13
+        case .compact: return 12
+        case .narrow:  return 12
         }
     }
 
@@ -67,19 +114,24 @@ struct HomeHeroView: View {
         .frame(height: heroHeight)
         .frame(maxWidth: .infinity)
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .overlay(
+        .overlay {
             RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .strokeBorder(Color.white.opacity(coverImage != nil ? 0.12 : 0.0), lineWidth: 0.5)
-        )
-        .overlay(
+                .strokeBorder(GlassStyleTokens.highlightGradient, lineWidth: 1)
+                .allowsHitTesting(false)
+        }
+        .overlay {
             RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
-        )
-        .shadow(color: .black.opacity(colorScheme == .dark ? 0.28 : 0.10), radius: 18, y: 6)
+                .strokeBorder(Color.white.opacity(colorScheme == .dark ? 0.12 : 0.08), lineWidth: 0.5)
+                .allowsHitTesting(false)
+        }
         .scaleEffect(isHovering ? 1.005 : 1.0)
         .animation(.easeOut(duration: 0.2), value: isHovering)
         .onHover { hovering in
             isHovering = hovering
+        }
+        .sheet(item: $trackToEdit) { track in
+            TrackEditSheet(track: track)
+                .environmentObject(themeStore)
         }
         .task(id: track.id) {
             await loadCoverImage()
@@ -88,20 +140,20 @@ struct HomeHeroView: View {
 
     private var heroBlurConfig: CoverGradientBlurConfig {
         CoverGradientBlurConfig(
-            blurRadius: 80,
+            blurRadius: 90,
             colorOverlayOpacity: 0.40,
             transitionDuration: 0.35,
             edgeStripWidth: 3.0,
-            blurStartRatio: 0.1,
+            blurStartRatio: 0.08,
             blurEndRatio: 0.9,
             overlayOffsetRatio: 0.0,
             blurCurveGamma: 5.0,
             overlayCurveGamma: 3.0,
             edgeFillMode: .pixelStretch,
             // Start blur slightly inside the artwork's right half
-            blurStartRatioFromEdge: 0.35,
+            blurStartRatioFromEdge: 0.42,
             // More linear ramp: reaches large blur values earlier than the default cubic
-            blurAlphaCoefficients: (0, 0.50, 0.30, 0.20)
+            blurAlphaCoefficients: (0, 0.54, 0.30, 0.24)
         )
     }
 
@@ -110,9 +162,9 @@ struct HomeHeroView: View {
     private var artworkLeadingWidth: CGFloat {
         guard artworkData != nil else { return 0 }
         if let img = coverImage {
-            return heroHeight * (img.size.width / max(1, img.size.height))
+            return baseHeroHeight * (img.size.width / max(1, img.size.height))
         }
-        return heroHeight  // assume square while image is loading
+        return baseHeroHeight  // assume square while image is loading
     }
 
     @ViewBuilder
@@ -127,9 +179,7 @@ struct HomeHeroView: View {
             )
         } else {
             RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(colorScheme == .dark
-                      ? Color.white.opacity(0.04)
-                      : Color.black.opacity(0.03))
+                .fill(Color.clear)
         }
     }
 
@@ -148,7 +198,7 @@ struct HomeHeroView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(track.title)
                 .font(.system(size: titleFontSize, weight: .semibold))
-                .tracking(-0.5)
+                .tracking(0)
                 .lineLimit(2)
                 .foregroundStyle(coverImage != nil ? .white : .primary)
 
@@ -157,7 +207,23 @@ struct HomeHeroView: View {
 
             Spacer(minLength: 6)
 
+            actionButtons
+                .padding(.bottom, actionBottomPadding)
+        }
+    }
+
+    private var actionBottomPadding: CGFloat {
+        switch mode {
+        case .wide, .medium: return 8
+        case .compact:       return 6
+        case .narrow:        return 4
+        }
+    }
+
+    private var actionButtons: some View {
+        HStack(spacing: 10) {
             playButton
+            moreButton
         }
     }
 
@@ -197,26 +263,71 @@ struct HomeHeroView: View {
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "play.fill")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.system(size: heroButtonIconSize, weight: .semibold))
                 Text("播放")
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: heroButtonTextSize, weight: .medium))
             }
-            .foregroundStyle(.white.opacity(colorScheme == .dark ? 0.95 : 0.90))
-            .padding(.horizontal, 16)
-            .frame(height: 36)
+            .foregroundStyle(heroButtonForeground)
+            .padding(.horizontal, heroButtonHorizontalPadding)
+            .frame(height: heroButtonHeight)
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .background {
-            Capsule()
-                .fill(Color.black.opacity(colorScheme == .dark ? 0.22 : 0.15))
+        .homeHeroHeaderGlassCapsule(colorScheme: colorScheme)
+        .transaction { transaction in
+            transaction.animation = nil
         }
-        .glassEffect(.clear, in: Capsule())
-        .overlay {
-            Capsule()
-                .strokeBorder(Color.white.opacity(0.22), lineWidth: 0.5)
+    }
+
+    private var moreButton: some View {
+        Menu {
+            TrackActionMenuContent(
+                track: track,
+                selectedPlaylistID: nil,
+                onPlay: {
+                    playerVM.play(track: track)
+                },
+                onEditTrack: { trackToEdit = $0 }
+            )
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: heroButtonIconSize + 3, weight: .semibold))
+                .foregroundStyle(heroButtonForeground)
+                .frame(width: heroButtonHeight, height: heroButtonHeight)
+                .contentShape(Circle())
         }
-        .clipShape(Capsule())
+        .buttonStyle(.plain)
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .frame(width: heroButtonHeight, height: heroButtonHeight)
+        .fixedSize()
+        .homeHeroHeaderGlassCircle(colorScheme: colorScheme)
+        .transaction { transaction in
+            transaction.animation = nil
+        }
+    }
+
+    private var heroButtonForeground: Color {
+        if heroButtonNeedsDarkForeground {
+            return Color.black.opacity(colorScheme == .dark ? 0.80 : 0.74)
+        }
+
+        if coverImage != nil {
+            return Color.white.opacity(colorScheme == .dark ? 0.95 : 0.90)
+        }
+        return Color.primary.opacity(colorScheme == .dark ? 0.92 : 0.82)
+    }
+
+    private var heroButtonNeedsDarkForeground: Bool {
+        guard let color = heroButtonContrastSourceColor else { return false }
+        return Self.perceivedBrightness(of: color) > 0.68
+    }
+
+    private var heroButtonContrastSourceColor: NSColor? {
+        if themeStore.hasArtworkThemeColor {
+            return themeStore.artworkBaseNSColor
+        }
+        return coverImage == nil ? nil : artworkDominantColor
     }
 
     private var formattedDuration: String {
@@ -246,5 +357,48 @@ struct HomeHeroView: View {
             cacheKey: key,
             targetPixelSize: CGSize(width: 480, height: 480)
         )
+    }
+
+    private static func perceivedBrightness(of color: NSColor) -> CGFloat {
+        guard let rgb = color.usingColorSpace(.deviceRGB) else { return 0 }
+        return 0.2126 * rgb.redComponent
+            + 0.7152 * rgb.greenComponent
+            + 0.0722 * rgb.blueComponent
+    }
+}
+
+private extension View {
+    func homeHeroHeaderGlassCapsule(colorScheme: ColorScheme) -> some View {
+        let shape = Capsule()
+        return self
+            .glassEffect(.clear, in: shape)
+            .overlay {
+                shape
+                    .strokeBorder(GlassStyleTokens.highlightGradient, lineWidth: 1)
+                    .allowsHitTesting(false)
+            }
+            .overlay {
+                shape
+                    .strokeBorder(Color.white.opacity(0.15), lineWidth: 0.5)
+                    .allowsHitTesting(false)
+            }
+            .clipShape(shape)
+    }
+
+    func homeHeroHeaderGlassCircle(colorScheme: ColorScheme) -> some View {
+        let shape = Circle()
+        return self
+            .glassEffect(.clear, in: shape)
+            .overlay {
+                shape
+                    .strokeBorder(GlassStyleTokens.highlightGradient, lineWidth: 1)
+                    .allowsHitTesting(false)
+            }
+            .overlay {
+                shape
+                    .strokeBorder(Color.white.opacity(0.15), lineWidth: 0.5)
+                    .allowsHitTesting(false)
+            }
+            .clipShape(shape)
     }
 }
