@@ -230,6 +230,7 @@ struct FullscreenPlayerView: View {
     @State private var artworkSnapshot: ArtworkAssetSnapshot?
     @State private var coverBlurLyricsTheme: FullscreenCoverBlurLyricsTheme?
     @State private var deferredTrackUpdateDeadline: Date?
+    @State private var autoHiddenFullscreenLyricsForEmptyContent = false
     @State private var suppressFullscreenLyricsViewport = false
     @State private var fullscreenLyricsHostMounted = false
     @State private var isLeadingControlsExpanded = false
@@ -1962,6 +1963,8 @@ struct FullscreenPlayerView: View {
     }
 
     private func handleLyricsButtonTap() {
+        autoHiddenFullscreenLyricsForEmptyContent = false
+
         let nextState: RightPanelDisplayState
         switch rightPanelDisplayState {
         case .queue:
@@ -1972,6 +1975,26 @@ struct FullscreenPlayerView: View {
             nextState = .lyrics
         }
         setRightPanelDisplayState(nextState)
+    }
+
+    private func syncFullscreenLyricsAvailability(with payload: FullscreenPlaybackPayload) {
+        guard currentDisplayContext.hasTrack else {
+            autoHiddenFullscreenLyricsForEmptyContent = false
+            return
+        }
+
+        if payload.hasDisplayableLyrics {
+            if autoHiddenFullscreenLyricsForEmptyContent && rightPanelDisplayState == .hidden {
+                handleLyricsButtonTap()
+            } else {
+                autoHiddenFullscreenLyricsForEmptyContent = false
+            }
+            return
+        }
+
+        guard rightPanelDisplayState == .lyrics else { return }
+        handleLyricsButtonTap()
+        autoHiddenFullscreenLyricsForEmptyContent = true
     }
 
     private func handlePlaybackModeChange(_ tappedMode: PlaybackOrderMode) {
@@ -2104,6 +2127,7 @@ struct FullscreenPlayerView: View {
         syncCoverBlurHighlightActivation()
 
         let playbackPayload = updateFullscreenPlaybackSnapshot()
+        syncFullscreenLyricsAvailability(with: playbackPayload)
         if hostContext == .embeddedWindow && !embeddedInitialThemeUnlocked {
             return
         }
@@ -2142,6 +2166,10 @@ struct FullscreenPlayerView: View {
         let ttml: String?
         let currentTime: Double
         let isPlaying: Bool
+
+        var hasDisplayableLyrics: Bool {
+            ttml?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        }
     }
 
     private func updateFullscreenPlaybackSnapshot() -> FullscreenPlaybackPayload {

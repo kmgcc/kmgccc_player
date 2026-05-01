@@ -110,12 +110,18 @@ struct HomePlaylistsSection: View {
                     sideB: selection.sideB
                 )
                 if !selection.remaining.isEmpty {
-                    grid(of: selection.remaining)
+                    grid(
+                        of: selection.remaining,
+                        expandsSingleTrailingItem: playlists.count > 3
+                    )
                 }
             }
         } else {
             // Narrow mode or too few playlists for a cluster: plain grid.
-            grid(of: playlists)
+            grid(
+                of: playlists,
+                expandsSingleTrailingItem: playlists.count > 3
+            )
         }
     }
 
@@ -186,9 +192,15 @@ struct HomePlaylistsSection: View {
     private var staggeredRightRatio: CGFloat { 1.16 / 2.0 }  // = 0.58
 
     @ViewBuilder
-    private func grid(of items: [Playlist]) -> some View {
+    private func grid(
+        of items: [Playlist],
+        expandsSingleTrailingItem: Bool = false
+    ) -> some View {
         if columnCount >= 2 {
-            staggeredGrid(of: items)
+            staggeredGrid(
+                of: items,
+                expandsSingleTrailingItem: expandsSingleTrailingItem
+            )
         } else {
             plainSingleColumnGrid(of: items)
         }
@@ -210,17 +222,24 @@ struct HomePlaylistsSection: View {
     }
 
     @ViewBuilder
-    private func staggeredGrid(of items: [Playlist]) -> some View {
+    private func staggeredGrid(
+        of items: [Playlist],
+        expandsSingleTrailingItem: Bool
+    ) -> some View {
         let normalH = HomePlaylistCard.normalHeight(for: mode)
+        let expandedTrailingH = HomePlaylistCard.expandedTrailingHeight(for: mode)
         let rowCount = (items.count + 1) / 2
+        let hasExpandedTrailingRow = expandsSingleTrailingItem && items.count % 2 == 1
         let totalHeight =
             CGFloat(rowCount) * normalH
             + CGFloat(max(0, rowCount - 1)) * gridSpacing
+            - (hasExpandedTrailingRow ? normalH - expandedTrailingH : 0)
 
         GeometryReader { geo in
             let availableWidth = max(0, geo.size.width - gridSpacing)
             let leftWidth = floor(availableWidth * staggeredLeftRatio)
             let rightWidth = availableWidth - leftWidth
+            let rowWidth = geo.size.width
 
             VStack(alignment: .leading, spacing: gridSpacing) {
                 ForEach(0..<rowCount, id: \.self) { row in
@@ -228,7 +247,10 @@ struct HomePlaylistsSection: View {
                         items: items,
                         rowIndex: row,
                         leftWidth: leftWidth,
-                        rightWidth: rightWidth
+                        rightWidth: rightWidth,
+                        rowWidth: rowWidth,
+                        expandedTrailingHeight: expandedTrailingH,
+                        expandsSingleTrailingItem: expandsSingleTrailingItem
                     )
                 }
             }
@@ -242,20 +264,32 @@ struct HomePlaylistsSection: View {
         items: [Playlist],
         rowIndex: Int,
         leftWidth: CGFloat,
-        rightWidth: CGFloat
+        rightWidth: CGFloat,
+        rowWidth: CGFloat,
+        expandedTrailingHeight: CGFloat,
+        expandsSingleTrailingItem: Bool
     ) -> some View {
         let leftIndex = rowIndex * 2
         let rightIndex = leftIndex + 1
+        let isSingleTrailingItem = rightIndex >= items.count
+        let shouldExpandTrailingItem = isSingleTrailingItem && expandsSingleTrailingItem
+        let leftCardWidth = shouldExpandTrailingItem ? rowWidth : leftWidth
 
         HStack(alignment: .top, spacing: gridSpacing) {
-            HomePlaylistCard(playlist: items[leftIndex], mode: mode, kind: .normal)
-                .frame(width: leftWidth)
+            HomePlaylistCard(
+                playlist: items[leftIndex],
+                mode: mode,
+                kind: shouldExpandTrailingItem ? .expandedTrailing(height: expandedTrailingHeight) : .normal
+            )
+                .frame(width: leftCardWidth)
                 .onTapGesture { navigate(to: items[leftIndex]) }
 
             if rightIndex < items.count {
                 HomePlaylistCard(playlist: items[rightIndex], mode: mode, kind: .normal)
                     .frame(width: rightWidth)
                     .onTapGesture { navigate(to: items[rightIndex]) }
+            } else if shouldExpandTrailingItem {
+                EmptyView()
             } else {
                 // Single trailing item on the last row keeps the wide-side
                 // slot empty rather than stretching the lone card across.
@@ -292,6 +326,7 @@ private struct ClusterSelection {
 
 private enum HomePlaylistCardKind {
     case normal
+    case expandedTrailing(height: CGFloat)
     case featured(height: CGFloat)
     case compact(height: CGFloat)
 }
@@ -327,10 +362,16 @@ private struct HomePlaylistCard: View {
         baseCoverSize(for: mode) + cardInset * 2
     }
 
+    static func expandedTrailingHeight(for mode: HomeLayoutMode) -> CGFloat {
+        max(normalHeight(for: mode) - 8, cardInset * 2 + 44)
+    }
+
     private var cardHeight: CGFloat {
         switch kind {
         case .normal:
             return Self.normalHeight(for: mode)
+        case .expandedTrailing(let h):
+            return h
         case .featured(let h), .compact(let h):
             return h
         }
@@ -344,7 +385,7 @@ private struct HomePlaylistCard: View {
     var body: some View {
         Group {
             switch kind {
-            case .normal:
+            case .normal, .expandedTrailing:
                 normalBody
             case .featured:
                 featuredBody
