@@ -35,7 +35,11 @@ final class LyricsSurfaceManager {
 
     private struct SurfaceSnapshot {
         var configJSON: String? = nil
+        var configTrackID: UUID? = nil
+        var isConfigTrackGuarded: Bool = false
         var themeOverridePalette: ThemePalette? = nil
+        var themeOverrideTrackID: UUID? = nil
+        var isThemeOverrideTrackGuarded: Bool = false
     }
 
     static let shared = LyricsSurfaceManager()
@@ -424,15 +428,29 @@ final class LyricsSurfaceManager {
         currentPlaybackSnapshot.isPlaying = isPlaying
     }
 
-    func updateSurfaceConfigSnapshot(_ json: String, for role: LyricsSurfaceRole) {
+    func updateSurfaceConfigSnapshot(
+        _ json: String,
+        for role: LyricsSurfaceRole,
+        trackID: UUID? = nil,
+        trackGuarded: Bool = false
+    ) {
         var snapshot = surfaceSnapshots[role] ?? SurfaceSnapshot()
         snapshot.configJSON = json
+        snapshot.configTrackID = trackID
+        snapshot.isConfigTrackGuarded = trackGuarded
         surfaceSnapshots[role] = snapshot
     }
 
-    func updateThemeOverrideSnapshot(_ palette: ThemePalette?, for role: LyricsSurfaceRole) {
+    func updateThemeOverrideSnapshot(
+        _ palette: ThemePalette?,
+        for role: LyricsSurfaceRole,
+        trackID: UUID? = nil,
+        trackGuarded: Bool = false
+    ) {
         var snapshot = surfaceSnapshots[role] ?? SurfaceSnapshot()
         snapshot.themeOverridePalette = palette
+        snapshot.themeOverrideTrackID = trackID
+        snapshot.isThemeOverrideTrackGuarded = trackGuarded
         surfaceSnapshots[role] = snapshot
     }
 
@@ -446,9 +464,17 @@ final class LyricsSurfaceManager {
         }
 
         let surfaceSnapshot = surfaceSnapshots[role]
-        store.setThemePaletteOverride(surfaceSnapshot?.themeOverridePalette)
+        let currentTrackID = currentPlaybackSnapshot.trackID
+        if surfaceSnapshot?.isThemeOverrideTrackGuarded != true
+            || surfaceSnapshot?.themeOverrideTrackID == currentTrackID {
+            store.setThemePaletteOverride(surfaceSnapshot?.themeOverridePalette)
+        } else {
+            store.setThemePaletteOverride(nil)
+        }
 
-        if let configJSON = surfaceSnapshot?.configJSON {
+        if let configJSON = surfaceSnapshot?.configJSON,
+           surfaceSnapshot?.isConfigTrackGuarded != true
+            || surfaceSnapshot?.configTrackID == currentTrackID {
             store.forceSetConfigJSON(
                 configJSON,
                 reason: "replay current snapshot for \(role.rawValue)"
