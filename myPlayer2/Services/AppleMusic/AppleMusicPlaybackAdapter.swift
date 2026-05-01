@@ -548,16 +548,22 @@ final class AppleMusicPlaybackAdapter {
         // 2. Matched local track lyrics
         // 3. Auto-cached network lyrics
         let manualLyrics = metadataStore.manualLyrics(for: identity)
-        let localLyrics = preferredLyricsText(for: resolution.matchedTrack)
-        let autoLyrics = metadataStore.cachedAutoLyrics(for: identity)
-        resolvedLyricsText = manualLyrics ?? localLyrics ?? autoLyrics
-        if manualLyrics != nil || localLyrics != nil || autoLyrics != nil {
+        let localLyrics = preferredLocalLyrics(for: resolution.matchedTrack)
+        let autoLyrics = manualLyrics == nil && localLyrics.text == nil
+            ? metadataStore.cachedAutoLyrics(for: identity)
+            : nil
+        resolvedLyricsText = manualLyrics ?? localLyrics.text ?? autoLyrics
+        if manualLyrics != nil || localLyrics.text != nil || autoLyrics != nil {
             autoLyricsLookupState = .idle
         }
 
-        Log.debug("[AMAdapter] applyResolution lyrics source for \(identity.prefix(16)): " +
-            "\(manualLyrics != nil ? "manualLocked" : localLyrics != nil ? "localTrack" : autoLyrics != nil ? "cachedAuto" : "none")",
-            category: .lyrics)
+        logLocalMatchResolution(
+            resolution,
+            identity: identity,
+            localLyricsSource: localLyrics.source,
+            manualLyricsAvailable: manualLyrics != nil,
+            cachedAutoLyricsAvailable: autoLyrics != nil
+        )
 
         updatePresentationFromLatestInfo()
 
@@ -576,7 +582,9 @@ final class AppleMusicPlaybackAdapter {
             for: info,
             identity: identity,
             effective: resolution.effective,
-            localLyrics: preferredLyricsText(for: resolution.matchedTrack)
+            localLyrics: localLyrics.text,
+            localLyricsSource: localLyrics.source,
+            matchedTrack: resolution.matchedTrack
         )
     }
 
@@ -633,16 +641,30 @@ final class AppleMusicPlaybackAdapter {
         let volume = visibleVolume(actual: Double(info.volume) / 100)
         let raw = latestRawMetadata
         let effective = latestEffectiveMetadata
+        let override = metadataStore.override(for: identity)
+        let matchedTrack = latestMatchedTrack
 
-        let displayTitle = effective?.title ?? raw?.title ?? title
-        let displayArtist = effective?.artist ?? raw?.artist ?? (info.artist ?? "")
-        let displayAlbum = effective?.album ?? raw?.album ?? info.album
+        let displayTitle = nonEmpty(override?.title)
+            ?? matchedTrack?.title
+            ?? effective?.title
+            ?? raw?.title
+            ?? title
+        let displayArtist = nonEmpty(override?.artist)
+            ?? matchedTrack?.artist
+            ?? effective?.artist
+            ?? raw?.artist
+            ?? (info.artist ?? "")
+        let displayAlbum = nonEmpty(override?.album)
+            ?? nonEmpty(matchedTrack?.album)
+            ?? effective?.album
+            ?? raw?.album
+            ?? info.album
         let displayedArtworkForPresentation = displayedArtwork
         let isArtworkLoading = pendingArtworkIdentity == identity
 
         let newPresentation = NowPlayingPresentation(
             source: .appleMusic,
-            localTrack: latestMatchedTrack,
+            localTrack: matchedTrack,
             title: displayTitle,
             artist: displayArtist,
             album: displayAlbum,
@@ -727,6 +749,54 @@ final class AppleMusicPlaybackAdapter {
         manualOverrideArtwork: Data?,
         cachedNetworkArtwork: Data?
     ) {
+        let bridge = self.bridge
+        let resolver = self.artworkResolver
+        let metadataStore = self.metadataStore
+        let matchedTrackID = matchedTrack?.id
+        let localArtwork = matchedTrack?.loadArtworkDataIfNeeded()
+        if let matchedTrack, let localArtwork, !localArtwork.isEmpty {
+            let localMatchedTrackID = matchedTrack.id
+            if displayedArtwork.identity == identity,
+               displayedArtwork.source == .localLibrary,
+               displayedArtwork.data?.isEmpty == false {
+                pendingArtworkIdentity = nil
+                Log.info(
+                    "[AMAdapter] artwork finalSource=localMatchedArtwork identity=\(identity.prefix(16)) trackID=\(localMatchedTrackID) action=keep-existing skipAutoSearch=true",
+                    category: .playback
+                )
+                updatePresentationFromLatestInfo()
+                return
+            }
+
+            pendingArtworkIdentity = identity
+            updatePresentationFromLatestInfo()
+            artworkTask = Task { [weak self] in
+                guard let self else { return }
+                let displayTrackID = matchedTrackID ?? NowPlayingPresentation.externalArtworkDisplayUUID(for: identity)
+                let didCommit = await self.prepareAndCommitArtwork(
+                    localArtwork,
+                    source: .localLibrary,
+                    identity: identity,
+                    displayTrackID: displayTrackID
+                )
+                if didCommit {
+                    await MainActor.run {
+                        metadataStore.updateArtworkSource("localMatchedArtwork", for: identity)
+                        Log.info(
+                            "[AMAdapter] artwork local match trackID=\(localMatchedTrackID) identity=\(identity.prefix(16)) used=artwork skipOnlineFallback=true",
+                            category: .playback
+                        )
+                    }
+                }
+            }
+            return
+        } else if let matchedTrack {
+            Log.info(
+                "[AMAdapter] artwork local match trackID=\(matchedTrack.id) identity=\(identity.prefix(16)) missing=artwork fallback=enabled",
+                category: .playback
+            )
+        }
+
         if displayedArtwork.identity == identity,
            displayedArtwork.source == .appleMusic,
            displayedArtwork.data?.isEmpty == false {
@@ -742,11 +812,6 @@ final class AppleMusicPlaybackAdapter {
         pendingArtworkIdentity = identity
         updatePresentationFromLatestInfo()
 
-        let bridge = self.bridge
-        let resolver = self.artworkResolver
-        let metadataStore = self.metadataStore
-        let matchedTrackID = matchedTrack?.id
-        let localArtwork = matchedTrack?.artworkData
         artworkTask = Task { [weak self] in
             guard let self else { return }
 
@@ -783,23 +848,6 @@ final class AppleMusicPlaybackAdapter {
                 if didCommit {
                     await MainActor.run {
                         metadataStore.updateArtworkSource("manualOverride", for: identity)
-                    }
-                }
-                return
-            }
-
-            if let localArtwork, !localArtwork.isEmpty {
-                let displayTrackID = matchedTrackID
-                    ?? NowPlayingPresentation.externalArtworkDisplayUUID(for: identity)
-                let didCommit = await self.prepareAndCommitArtwork(
-                    localArtwork,
-                    source: .localLibrary,
-                    identity: identity,
-                    displayTrackID: displayTrackID
-                )
-                if didCommit {
-                    await MainActor.run {
-                        metadataStore.updateArtworkSource("localMatchedArtwork", for: identity)
                     }
                 }
                 return
@@ -925,7 +973,9 @@ final class AppleMusicPlaybackAdapter {
         for info: AppleMusicBridge.NowPlayingInfo,
         identity: String,
         effective: ExternalPlaybackEffectiveMetadata,
-        localLyrics: String?
+        localLyrics: String?,
+        localLyricsSource: String?,
+        matchedTrack: Track?
     ) {
         // Priority 1: Manually locked lyrics — never overwritten by auto search
         if let manualLyrics = metadataStore.manualLyrics(for: identity) {
@@ -947,10 +997,21 @@ final class AppleMusicPlaybackAdapter {
             resolvedLyricsText = localLyrics
             autoLyricsLookupState = .idle
             metadataStore.updateLyricsSource("localLibrary", for: identity)
+            Log.info(
+                "[AMAdapter] resolveLyrics: local match used=\(localLyricsSource ?? "localTrack") identity=\(identity.prefix(16)) skipAutoSearch=true",
+                category: .lyrics
+            )
             if didClearStatus {
                 updatePresentationFromLatestInfo()
             }
             return
+        }
+
+        if let matchedTrack {
+            Log.info(
+                "[AMAdapter] resolveLyrics: local match trackID=\(matchedTrack.id) identity=\(identity.prefix(16)) missing=lyrics fallback=enabled",
+                category: .lyrics
+            )
         }
 
         // Priority 3: Previously auto-cached lyrics (non-empty only)
@@ -1211,15 +1272,59 @@ final class AppleMusicPlaybackAdapter {
     // MARK: - Track Metadata
 
     private func preferredLyricsText(for track: Track?) -> String? {
-        guard let track else { return nil }
-        let candidates = [track.lyricsText, track.ttmlLyricText]
-        for candidate in candidates {
+        preferredLocalLyrics(for: track).text
+    }
+
+    private func preferredLocalLyrics(for track: Track?) -> (text: String?, source: String?) {
+        guard let track else { return (nil, nil) }
+        let candidates: [(String, String?)] = [
+            ("lyricsFile", track.loadLyricsIfNeeded()),
+            ("ttmlLyricsFile", track.loadTTMLLyricsIfNeeded())
+        ]
+        for (source, candidate) in candidates {
             guard let candidate else { continue }
             let trimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty {
-                return candidate
+                return (candidate, source)
             }
         }
-        return nil
+        return (nil, nil)
+    }
+
+    private func nonEmpty(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : value
+    }
+
+    private func logLocalMatchResolution(
+        _ resolution: ExternalPlaybackResolution,
+        identity: String,
+        localLyricsSource: String?,
+        manualLyricsAvailable: Bool,
+        cachedAutoLyricsAvailable: Bool
+    ) {
+        guard let track = resolution.matchedTrack else {
+            Log.info(
+                "[AMAdapter] local match identity=\(identity.prefix(16)) hit=false fallback=enabled reason=\(resolution.matchResult.reason)",
+                category: .playback
+            )
+            return
+        }
+
+        let hasArtwork = track.loadArtworkDataIfNeeded()?.isEmpty == false
+        let resourceSummary = [
+            "metadata",
+            hasArtwork ? "artwork" : nil,
+            localLyricsSource
+        ].compactMap { $0 }.joined(separator: ",")
+        let missing = [
+            hasArtwork ? nil : "artwork",
+            localLyricsSource == nil ? "lyrics" : nil
+        ].compactMap { $0 }.joined(separator: ",")
+        Log.info(
+            "[AMAdapter] local match identity=\(identity.prefix(16)) hit=true trackID=\(track.id) confidence=\(String(format: "%.2f", resolution.matchResult.confidence)) resources=\(resourceSummary) missing=\(missing.isEmpty ? "none" : missing) manualLyrics=\(manualLyricsAvailable) cachedAutoLyrics=\(cachedAutoLyricsAvailable)",
+            category: .playback
+        )
     }
 }

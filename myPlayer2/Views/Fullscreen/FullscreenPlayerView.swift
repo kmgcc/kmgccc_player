@@ -60,6 +60,14 @@ struct FullscreenPlayerView: View {
         let colors: FullscreenLyricsColorSet
     }
 
+    private struct FullscreenLyricsThemeIdentity: Equatable {
+        let source: PlaybackSource
+        let displayTrackID: UUID?
+        let artworkTrackID: UUID?
+        let artworkSignature: String
+        let hostContext: HostContext
+    }
+
     private enum FullscreenCoverBlurRenderLayer: String {
         case base
         case highlight
@@ -300,6 +308,30 @@ struct FullscreenPlayerView: View {
 
     private var currentArtworkTrackID: UUID? {
         currentDisplayContext.artworkTrackID
+    }
+
+    private var currentFullscreenLyricsThemeIdentity: FullscreenLyricsThemeIdentity {
+        let display = currentDisplayContext
+        let artworkChecksum = ArtworkAssetStore.checksum(for: display.artworkData)
+        let artworkSignature = [
+            display.artworkIdentity ?? "nil",
+            display.lyricsIdentity ?? "nil",
+            "\(artworkChecksum)",
+            "\(display.isArtworkLoading ? 1 : 0)",
+        ].joined(separator: "|")
+        return FullscreenLyricsThemeIdentity(
+            source: display.source,
+            displayTrackID: display.trackID,
+            artworkTrackID: display.artworkTrackID,
+            artworkSignature: artworkSignature,
+            hostContext: hostContext
+        )
+    }
+
+    private func isCurrentFullscreenLyricsThemeIdentity(
+        _ identity: FullscreenLyricsThemeIdentity
+    ) -> Bool {
+        currentFullscreenLyricsThemeIdentity == identity
     }
 
     private var shouldRenderCoverBlurHighlightOverlay: Bool {
@@ -2053,6 +2085,8 @@ struct FullscreenPlayerView: View {
     private func handleTrackIdChange(_ oldId: UUID?, _ newId: UUID?) {
         guard oldId != newId else { return }
 
+        cancelPendingFullscreenLyricsThemeWork()
+        coverBlurLyricsTheme = nil
         if shouldClearDisplayedArtworkSnapshotOnTrackChange {
             artworkSnapshot = nil
         }
@@ -2081,11 +2115,20 @@ struct FullscreenPlayerView: View {
     private func handlePresentationLyricsIdentityChange(_ oldId: String?, _ newId: String?) {
         guard playbackCoordinator.presentation.source.isExternal else { return }
         guard oldId != newId else { return }
+        cancelPendingFullscreenLyricsThemeWork()
+        coverBlurLyricsTheme = nil
         if shouldClearDisplayedArtworkSnapshotOnTrackChange {
             artworkSnapshot = nil
         }
         syncFullscreenLyricsHostMount()
         reloadLyricsSurface(reason: "fullscreen external track changed", forceLyricsReload: true)
+    }
+
+    private func cancelPendingFullscreenLyricsThemeWork() {
+        pendingFullscreenLyricsRefresh?.cancel()
+        pendingFullscreenLyricsRefresh = nil
+        pendingFullscreenThemeReapply?.cancel()
+        pendingFullscreenThemeReapply = nil
     }
 
     private func syncFullscreenMiniPlayerSpectrumLease() {
@@ -2395,6 +2438,8 @@ struct FullscreenPlayerView: View {
     }
 
     private func applyFullscreenLyricsTheme(force: Bool = false, reason: String = "") {
+        let themeIdentity = currentFullscreenLyricsThemeIdentity
+
         if hostContext == .embeddedWindow && !embeddedInitialThemeUnlocked {
             if EmbeddedFullscreenTrace.enabled {
                 Log.info(
@@ -2434,9 +2479,6 @@ struct FullscreenPlayerView: View {
                 if heldCoverBlurTheme.trackID == displayTrackID {
                     return heldCoverBlurTheme
                 }
-                if currentArtworkSnapshot(forTrackID: displayTrackID) == nil {
-                    return heldCoverBlurTheme
-                }
             }
             return nil
         }()
@@ -2444,13 +2486,24 @@ struct FullscreenPlayerView: View {
 
         if isCoverBlurFullscreenSkin, readyCoverBlurTheme == nil {
             if activeCoverBlurTheme == nil {
-                LyricsSurfaceManager.shared.updateThemeOverrideSnapshot(nil, for: .fullscreen)
+                guard isCurrentFullscreenLyricsThemeIdentity(themeIdentity) else {
+                    Log.debug("FullscreenPlayerView: skipped stale lyrics theme clear reason=\(reason)", category: .webview)
+                    return
+                }
+                LyricsSurfaceManager.shared.updateThemeOverrideSnapshot(
+                    nil,
+                    for: .fullscreen,
+                    trackID: themeIdentity.displayTrackID,
+                    trackGuarded: true
+                )
                 baseStore.setThemePaletteOverride(nil)
                 deactivateCoverBlurHighlightSurface()
                 if let highlightStore = existingCoverBlurHighlightStore {
                     LyricsSurfaceManager.shared.updateThemeOverrideSnapshot(
                         nil,
-                        for: .fullscreenCoverBlurHighlight
+                        for: .fullscreenCoverBlurHighlight,
+                        trackID: themeIdentity.displayTrackID,
+                        trackGuarded: true
                     )
                     highlightStore.setThemePaletteOverride(nil)
                 }
@@ -2460,12 +2513,24 @@ struct FullscreenPlayerView: View {
 
         let activePalette = activeCoverBlurTheme.map { makeCoverBlurLyricsPalette(from: $0) }
             ?? makeFullscreenLyricsPalette(from: colorSet)
-        LyricsSurfaceManager.shared.updateThemeOverrideSnapshot(activePalette, for: .fullscreen)
+        guard isCurrentFullscreenLyricsThemeIdentity(themeIdentity) else {
+            Log.debug("FullscreenPlayerView: skipped stale lyrics theme reason=\(reason)", category: .webview)
+            return
+        }
+
+        LyricsSurfaceManager.shared.updateThemeOverrideSnapshot(
+            activePalette,
+            for: .fullscreen,
+            trackID: themeIdentity.displayTrackID,
+            trackGuarded: true
+        )
         baseStore.setThemePaletteOverride(activePalette)
         if shouldRenderCoverBlurHighlightOverlay, let highlightStore = existingCoverBlurHighlightStore {
             LyricsSurfaceManager.shared.updateThemeOverrideSnapshot(
                 activePalette,
-                for: .fullscreenCoverBlurHighlight
+                for: .fullscreenCoverBlurHighlight,
+                trackID: themeIdentity.displayTrackID,
+                trackGuarded: true
             )
             highlightStore.setThemePaletteOverride(activePalette)
         }
@@ -2582,13 +2647,17 @@ struct FullscreenPlayerView: View {
             syncCoverBlurHighlightSurface()
             LyricsSurfaceManager.shared.updateThemeOverrideSnapshot(
                 activePalette,
-                for: .fullscreenCoverBlurHighlight
+                for: .fullscreenCoverBlurHighlight,
+                trackID: themeIdentity.displayTrackID,
+                trackGuarded: true
             )
             coverBlurHighlightStore.setThemePaletteOverride(activePalette)
         } else {
             LyricsSurfaceManager.shared.updateThemeOverrideSnapshot(
                 nil,
-                for: .fullscreenCoverBlurHighlight
+                for: .fullscreenCoverBlurHighlight,
+                trackID: themeIdentity.displayTrackID,
+                trackGuarded: true
             )
             deactivateCoverBlurHighlightSurface()
         }
@@ -2610,6 +2679,7 @@ struct FullscreenPlayerView: View {
         pushFullscreenLyricsConfig(
             baseConfig,
             to: baseStore,
+            identity: themeIdentity,
             force: force,
             reason: reason,
             probeLabel: "fullscreen-\(probeMode)-base-\(probeReason)",
@@ -2622,6 +2692,7 @@ struct FullscreenPlayerView: View {
         pushFullscreenLyricsConfig(
             config,
             to: coverBlurHighlightStore,
+            identity: themeIdentity,
             force: force,
             reason: reason,
             probeLabel: "fullscreen-\(probeMode)-highlight-\(probeReason)",
@@ -2632,16 +2703,31 @@ struct FullscreenPlayerView: View {
     private func pushFullscreenLyricsConfig(
         _ config: [String: Any],
         to store: LyricsWebViewStore,
+        identity: FullscreenLyricsThemeIdentity,
         force: Bool,
         reason: String,
         probeLabel: String,
         probeDelay: TimeInterval
     ) {
+        guard isCurrentFullscreenLyricsThemeIdentity(identity) else {
+            Log.debug("FullscreenPlayerView: skipped stale lyrics config role=\(store.role) reason=\(reason)", category: .webview)
+            return
+        }
+
         if let data = try? JSONSerialization.data(withJSONObject: config),
             let json = String(data: data, encoding: .utf8)
         {
             if let role = LyricsSurfaceRole(rawValue: store.role) {
-                LyricsSurfaceManager.shared.updateSurfaceConfigSnapshot(json, for: role)
+                LyricsSurfaceManager.shared.updateSurfaceConfigSnapshot(
+                    json,
+                    for: role,
+                    trackID: identity.displayTrackID,
+                    trackGuarded: true
+                )
+            }
+            guard isCurrentFullscreenLyricsThemeIdentity(identity) else {
+                Log.debug("FullscreenPlayerView: skipped stale lyrics config delivery role=\(store.role) reason=\(reason)", category: .webview)
+                return
             }
             if force {
                 store.forceSetConfigJSON(json, reason: reason)
