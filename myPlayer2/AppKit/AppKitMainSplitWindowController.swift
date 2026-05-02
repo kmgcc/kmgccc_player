@@ -125,7 +125,7 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
 
         super.init(window: window)
 
-        window.title = "kmgccc_player (AppKit Split Template)"
+        window.title = "kmgccc_player"
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         // Important: avoid allowing the split content area (including dividers) to move the window.
