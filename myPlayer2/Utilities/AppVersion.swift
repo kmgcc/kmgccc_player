@@ -28,6 +28,11 @@ struct AppVersion: Comparable, Codable {
         self.minor = components.count > 1 ? components[1] : 0
         self.patch = components.count > 2 ? components[2] : 0
     }
+
+    static var current: AppVersion {
+        let versionString = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        return versionString.flatMap { AppVersion(from: $0) } ?? AppVersion(major: 0)
+    }
     
     var stringValue: String {
         if patch == 0 && minor == 0 {

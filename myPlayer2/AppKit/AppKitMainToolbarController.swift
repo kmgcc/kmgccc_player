@@ -9,9 +9,16 @@
 import AppKit
 import Combine
 import Observation
+import SwiftUI
 
 @MainActor
 final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarItemValidation, NSMenuDelegate {
+    private enum FeatureTips {
+        static let shiftRangeSelectionKey = "playlist.shiftRangeSelection"
+        static let shiftRangeSelectionIntroducedVersion = AppVersion(major: 1, minor: 4, patch: 1)
+        static let shiftRangeSelectionMaxDisplayCount = 4
+    }
+
     enum Identifier {
         static let toolbar = NSToolbar.Identifier("AppKitMainToolbar")
         static let sidebarToggle = NSToolbarItem.Identifier("AppKitMainToolbar.sidebarToggle")
@@ -43,6 +50,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
     private weak var homeNavPillItem: NSToolbarItemGroup?
 
     private var fullscreenModeCancellable: AnyCancellable?
+    private var featureTipPopover: NSPopover?
     private var lyricsFlashTicket = 0
     private var lyricsFlashFilled = false
 
@@ -531,9 +539,133 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         pageController.isMultiselectMode.toggle()
         if !pageController.isMultiselectMode {
             pageController.selectedTrackIDs.removeAll()
+            closeFeatureTipPopover()
         }
         syncMultiselectItemPresentation()
         window?.toolbar?.validateVisibleItems()
+        if pageController.isMultiselectMode {
+            DispatchQueue.main.async { [weak self] in
+                self?.showShiftRangeSelectionTipIfNeeded()
+            }
+        }
+    }
+
+    private func showShiftRangeSelectionTipIfNeeded() {
+        guard featureTipPopover?.isShown != true else { return }
+        guard AppVersionGate.shared.shouldShowFeatureTip(
+            featureKey: FeatureTips.shiftRangeSelectionKey,
+            introducedVersion: FeatureTips.shiftRangeSelectionIntroducedVersion,
+            maxDisplayCount: FeatureTips.shiftRangeSelectionMaxDisplayCount
+        ) else { return }
+        guard let anchor = multiselectTipAnchor() else { return }
+
+        let popover = NSPopover()
+        popover.behavior = .semitransient
+        popover.animates = true
+        popover.contentSize = NSSize(width: 288, height: 118)
+        popover.contentViewController = NSHostingController(
+            rootView: ShiftRangeSelectionTipView { [weak self] in
+                AppVersionGate.shared.markFeatureTipDismissed(
+                    featureKey: FeatureTips.shiftRangeSelectionKey
+                )
+                self?.featureTipPopover?.performClose(nil)
+                self?.featureTipPopover = nil
+            }
+        )
+
+        featureTipPopover = popover
+        popover.show(relativeTo: anchor.rect, of: anchor.view, preferredEdge: .minY)
+        AppVersionGate.shared.recordFeatureTipDisplayed(
+            featureKey: FeatureTips.shiftRangeSelectionKey
+        )
+    }
+
+    private func closeFeatureTipPopover() {
+        featureTipPopover?.close()
+        featureTipPopover = nil
+    }
+
+    private func multiselectAnchorRect(in view: NSView) -> NSRect {
+        if let segmentedControl = view as? NSSegmentedControl {
+            let segmentCount = max(segmentedControl.segmentCount, 1)
+            return NSRect(
+                x: segmentedControl.bounds.minX,
+                y: segmentedControl.bounds.minY,
+                width: segmentedControl.bounds.width / CGFloat(segmentCount),
+                height: segmentedControl.bounds.height
+            )
+        }
+
+        let segmentWidth = max(view.bounds.width / 3, 28)
+        return NSRect(
+            x: view.bounds.minX,
+            y: view.bounds.minY,
+            width: segmentWidth,
+            height: view.bounds.height
+        )
+    }
+
+    private func multiselectTipAnchor() -> (view: NSView, rect: NSRect)? {
+        if let itemView = multiselectItem?.view {
+            return (itemView, itemView.bounds)
+        }
+
+        if let groupView = pillGroupItem?.view {
+            return (groupView, multiselectAnchorRect(in: groupView))
+        }
+
+        guard let rootView = window?.contentView?.superview ?? window?.contentView else { return nil }
+        if let segmentedControl = firstSubview(
+            in: rootView,
+            matching: { view in
+                guard let control = view as? NSSegmentedControl else { return false }
+                return control.segmentCount == 3
+            }
+        ) as? NSSegmentedControl {
+            return (segmentedControl, multiselectAnchorRect(in: segmentedControl))
+        }
+
+        if let toolbarView = firstSubview(
+            in: rootView,
+            matching: { view in
+                let className = String(describing: type(of: view))
+                return className.localizedCaseInsensitiveContains("toolbar")
+                    && view.bounds.width > 80
+                    && view.bounds.height > 20
+            }
+        ) {
+            let width = min(toolbarView.bounds.width, 360)
+            let rect = NSRect(
+                x: toolbarView.bounds.midX - width / 2,
+                y: toolbarView.bounds.minY,
+                width: width,
+                height: toolbarView.bounds.height
+            )
+            return (toolbarView, rect)
+        }
+
+        guard let contentView = window?.contentView else { return nil }
+        let width = min(contentView.bounds.width - 32, 320)
+        let rect = NSRect(
+            x: contentView.bounds.minX + 16,
+            y: contentView.bounds.maxY - 1,
+            width: max(width, 80),
+            height: 1
+        )
+        return (contentView, rect)
+    }
+
+    private func firstSubview(
+        in view: NSView,
+        matching predicate: (NSView) -> Bool
+    ) -> NSView? {
+        if predicate(view) { return view }
+        for subview in view.subviews {
+            if let match = firstSubview(in: subview, matching: predicate) {
+                return match
+            }
+        }
+        return nil
     }
 
     @objc
@@ -726,10 +858,9 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
     }
 
     private func syncMultiselectItemPresentation() {
-        guard let item = multiselectItem else { return }
         let isOn = currentPageController?.isMultiselectMode == true
         let symbol = isOn ? "checkmark.circle.fill" : "checkmark.circle"
-        item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: item.label)
+        multiselectItem?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: multiselectItem?.label)
     }
 
     private func syncSearchFieldFromModel() {
@@ -806,6 +937,9 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             _ = pageController.selectedTrackIDs.count
         } onChange: {
             DispatchQueue.main.async { [weak self] in
+                if self?.currentPageController?.isMultiselectMode != true {
+                    self?.closeFeatureTipPopover()
+                }
                 self?.syncMultiselectItemPresentation()
                 self?.window?.toolbar?.validateVisibleItems()
                 self?.observeMultiselectState()
@@ -857,6 +991,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             return
         }
 
+        closeFeatureTipPopover()
         searchItem = nil
         searchField = nil
         multiselectItem = nil
@@ -976,5 +1111,34 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         toolbar.allowsUserCustomization = false
         toolbar.autosavesConfiguration = false
         return toolbar
+    }
+}
+
+private struct ShiftRangeSelectionTipView: View {
+    let onClose: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text("连续选择")
+                    .font(.headline)
+                Spacer(minLength: 8)
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 22, height: 22)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("关闭")
+            }
+
+            Text("按住 Shift 点击歌曲，可以一次选择一段连续歌曲。")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .frame(width: 288, alignment: .leading)
     }
 }
