@@ -955,16 +955,14 @@ private struct RotatingCoverSkinNormalSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Toggle("CD 模式", isOn: $cdMode)
-                .toggleStyle(.switch)
+            SettingsSwitchRow(title: "CD 模式", isOn: $cdMode)
 
-            Toggle("频谱动画", isOn: Binding(
+            SettingsSwitchRow(title: "频谱动画", isOn: Binding(
                 get: { visualizerMode == "spectrum" },
                 set: { isOn in
                     visualizerMode = isOn ? "spectrum" : "off"
                 }
             ))
-            .toggleStyle(.switch)
         }
     }
 }
@@ -975,11 +973,14 @@ private struct RotatingCoverSkinFullscreenSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
-            Toggle("CD 模式", isOn: $cdMode)
-                .font(presentationStyle.rowLabelFont)
-                .toggleStyle(.switch)
+            SettingsSwitchRow(
+                title: "CD 模式",
+                isOn: $cdMode,
+                titleFont: presentationStyle.rowLabelFont,
+                titleColor: presentationStyle.primaryTextColor
+            )
 
-            Toggle("频谱动画", isOn: Binding(
+            SettingsSwitchRow(title: "频谱动画", isOn: Binding(
                 get: {
                     FullscreenPresentationCoordinator.shared.isSkinVisualizerEnabled
                     && UserDefaults.standard.string(forKey: "skin.rotatingCover.fullscreen.visualizerMode") == "spectrum"
@@ -992,9 +993,7 @@ private struct RotatingCoverSkinFullscreenSettingsView: View {
                         FullscreenPresentationCoordinator.shared.setVisualizerMode(.off)
                     }
                 }
-            ))
-            .font(presentationStyle.rowLabelFont)
-            .toggleStyle(.switch)
+            ), titleFont: presentationStyle.rowLabelFont, titleColor: presentationStyle.primaryTextColor)
         }
     }
 }

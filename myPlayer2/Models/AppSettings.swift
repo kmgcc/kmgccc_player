@@ -154,12 +154,29 @@ public final class AppSettings {
         }
     }
 
+    enum HomeCardMaterialMode: String, CaseIterable, Identifiable {
+        case liquidGlass
+        case frostedGlass
+        case solid
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .liquidGlass: return "液态玻璃"
+            case .frostedGlass: return "磨砂玻璃"
+            case .solid: return "普通"
+            }
+        }
+    }
+
     private enum AppearanceKeys {
         static let globalArtworkTintEnabled = "globalArtworkTintEnabled"
         static let dockProgressVisible = "dockProgressVisible"
         static let followSystemAppearance = "followSystemAppearance"
         static let manualAppearance = "manualAppearance"
         static let lyricsBackgroundMode = "lyricsBackgroundMode"
+        static let homeCardMaterialMode = "homeCardMaterialMode"
     }
 
     private enum ImportKeys {
@@ -283,6 +300,23 @@ public final class AppSettings {
             withMutation(keyPath: \.lyricsBackgroundMode) {
                 UserDefaults.standard.set(
                     newValue.rawValue, forKey: AppearanceKeys.lyricsBackgroundMode)
+            }
+        }
+    }
+
+    /// Home card material mode.
+    var homeCardMaterialMode: HomeCardMaterialMode {
+        get {
+            access(keyPath: \.homeCardMaterialMode)
+            let raw =
+                UserDefaults.standard.string(forKey: AppearanceKeys.homeCardMaterialMode)
+                ?? HomeCardMaterialMode.liquidGlass.rawValue
+            return HomeCardMaterialMode(rawValue: raw) ?? .liquidGlass
+        }
+        set {
+            withMutation(keyPath: \.homeCardMaterialMode) {
+                UserDefaults.standard.set(
+                    newValue.rawValue, forKey: AppearanceKeys.homeCardMaterialMode)
             }
         }
     }

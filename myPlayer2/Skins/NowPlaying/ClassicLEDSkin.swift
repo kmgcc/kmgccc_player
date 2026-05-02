@@ -126,7 +126,7 @@ private struct ClassicLEDSkinNormalSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Toggle("LED 电平表", isOn: Binding(
+            SettingsSwitchRow(title: "LED 电平表", isOn: Binding(
                 get: { visualizerMode == "led" },
                 set: { isOn in
                     if isOn {
@@ -138,9 +138,8 @@ private struct ClassicLEDSkinNormalSettingsView: View {
                     }
                 }
             ))
-            .toggleStyle(.switch)
 
-            Toggle("频谱动画", isOn: Binding(
+            SettingsSwitchRow(title: "频谱动画", isOn: Binding(
                 get: { visualizerMode == "spectrum" },
                 set: { isOn in
                     if isOn {
@@ -151,7 +150,6 @@ private struct ClassicLEDSkinNormalSettingsView: View {
                     }
                 }
             ))
-            .toggleStyle(.switch)
         }
     }
 }
@@ -162,7 +160,7 @@ private struct ClassicLEDSkinFullscreenSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
-            Toggle("LED 电平表", isOn: Binding(
+            SettingsSwitchRow(title: "LED 电平表", isOn: Binding(
                 get: {
                     FullscreenPresentationCoordinator.shared.isSkinVisualizerEnabled
                     && UserDefaults.standard.string(forKey: "skin.classicLED.fullscreen.visualizerMode") == "led"
@@ -175,11 +173,9 @@ private struct ClassicLEDSkinFullscreenSettingsView: View {
                         FullscreenPresentationCoordinator.shared.setVisualizerMode(.off)
                     }
                 }
-            ))
-            .font(presentationStyle.rowLabelFont)
-            .toggleStyle(.switch)
+            ), titleFont: presentationStyle.rowLabelFont, titleColor: presentationStyle.primaryTextColor)
 
-            Toggle("频谱动画", isOn: Binding(
+            SettingsSwitchRow(title: "频谱动画", isOn: Binding(
                 get: {
                     FullscreenPresentationCoordinator.shared.isSkinVisualizerEnabled
                     && UserDefaults.standard.string(forKey: "skin.classicLED.fullscreen.visualizerMode") == "spectrum"
@@ -192,9 +188,7 @@ private struct ClassicLEDSkinFullscreenSettingsView: View {
                         FullscreenPresentationCoordinator.shared.setVisualizerMode(.off)
                     }
                 }
-            ))
-            .font(presentationStyle.rowLabelFont)
-            .toggleStyle(.switch)
+            ), titleFont: presentationStyle.rowLabelFont, titleColor: presentationStyle.primaryTextColor)
         }
     }
 }

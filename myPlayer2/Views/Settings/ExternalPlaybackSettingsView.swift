@@ -22,17 +22,13 @@ struct ExternalPlaybackSettingsView: View {
             SettingsHeaderLabel("外部播放", systemImage: "music.note.tv")
 
             GroupBox {
-                Toggle("从外部播放", isOn: $showPlaybackSourceSwitcher)
-                    .toggleStyle(.switch)
-                    .font(.default)
+                SettingsSwitchRow(title: "从外部播放", isOn: $showPlaybackSourceSwitcher)
                     .padding(12)
             }
 
             GroupBox {
                 VStack(alignment: .leading, spacing: 12) {
-                    Toggle("启用\"其他\"播放模式", isOn: $enableSystemNowPlaying)
-                        .toggleStyle(.switch)
-                        .font(.default)
+                    SettingsSwitchRow(title: "启用\"其他\"播放模式", isOn: $enableSystemNowPlaying)
 
                     Text("\"其他\" 模式通过 macOS MediaRemote 读取系统当前播放的第三方 App 的元数据，可能出现元数据缺失、封面无法获取、播放进度控制不可用、暂停/恢复延迟等问题。如果您只使用本地播放或 Apple Music，可以关闭此选项以保持界面简洁。")
                         .font(.caption)

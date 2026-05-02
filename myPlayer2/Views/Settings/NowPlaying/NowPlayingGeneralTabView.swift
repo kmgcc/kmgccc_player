@@ -25,11 +25,12 @@ struct NowPlayingGeneralTabView: View {
         VStack(alignment: .leading, spacing: presentationStyle.sectionSpacing) {
             GroupBox {
                 VStack(alignment: .leading, spacing: presentationStyle.rowSpacing) {
-                    Toggle("启用艺术背景 (Beta)", isOn: $nowPlayingArtBackgroundEnabled)
-                        .toggleStyle(.switch)
-                    Text("遇到性能问题时，可以关闭此选项。")
-                        .font(presentationStyle.captionFont)
-                        .foregroundStyle(.secondary)
+                    SettingsSwitchRow(
+                        title: "启用艺术背景 (Beta)",
+                        isOn: $nowPlayingArtBackgroundEnabled,
+                        detail: "遇到性能问题时，可以关闭此选项。",
+                        detailFont: presentationStyle.captionFont
+                    )
                 }
                 .padding(presentationStyle.groupPadding)
             }

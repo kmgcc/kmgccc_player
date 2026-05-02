@@ -1463,7 +1463,7 @@ private struct KmgcccCassetteNormalSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Toggle("LED 电平表", isOn: Binding(
+            SettingsSwitchRow(title: "LED 电平表", isOn: Binding(
                 get: { visualizerMode == "led" },
                 set: { isOn in
                     if isOn {
@@ -1475,13 +1475,11 @@ private struct KmgcccCassetteNormalSettingsView: View {
                     }
                 }
             ))
-            .toggleStyle(.switch)
 
-            Toggle(
-                NSLocalizedString("skin.kmgccc_cassette.show_kmg", comment: ""),
+            SettingsSwitchRow(
+                title: NSLocalizedString("skin.kmgccc_cassette.show_kmg", comment: ""),
                 isOn: $showKmgLook
             )
-            .toggleStyle(.switch)
         }
     }
 }
@@ -1493,21 +1491,19 @@ private struct KmgcccCassetteFullscreenSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
-            Toggle("LED 电平表", isOn: Binding(
+            SettingsSwitchRow(title: "LED 电平表", isOn: Binding(
                 get: { visualizerMode == "led" },
                 set: { isOn in
                     visualizerMode = isOn ? "led" : "off"
                 }
-            ))
-            .font(presentationStyle.rowLabelFont)
-            .toggleStyle(.switch)
+            ), titleFont: presentationStyle.rowLabelFont, titleColor: presentationStyle.primaryTextColor)
 
-            Toggle(
-                NSLocalizedString("skin.kmgccc_cassette.show_kmg", comment: ""),
-                isOn: $showKmgLook
+            SettingsSwitchRow(
+                title: NSLocalizedString("skin.kmgccc_cassette.show_kmg", comment: ""),
+                isOn: $showKmgLook,
+                titleFont: presentationStyle.rowLabelFont,
+                titleColor: presentationStyle.primaryTextColor
             )
-            .font(presentationStyle.rowLabelFont)
-            .toggleStyle(.switch)
         }
     }
 }
