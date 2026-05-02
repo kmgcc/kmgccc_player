@@ -36,7 +36,7 @@ struct TrackRowView<MenuContent: View>: View {
     let isSelected: Bool
     let enableSecondaryInteractions: Bool
     let enableArtworkLoading: Bool
-    let onTap: () -> Void
+    let onTap: (_ isShiftPressed: Bool) -> Void
     let onRowAppear: (() -> Void)?
     @ViewBuilder let menuContent: () -> MenuContent
 
@@ -55,7 +55,7 @@ struct TrackRowView<MenuContent: View>: View {
         isSelected: Bool = false,
         enableSecondaryInteractions: Bool = true,
         enableArtworkLoading: Bool = true,
-        onTap: @escaping () -> Void,
+        onTap: @escaping (_ isShiftPressed: Bool) -> Void,
         onRowAppear: (() -> Void)? = nil,
         @ViewBuilder menuContent: @escaping () -> MenuContent
     ) {
@@ -156,7 +156,7 @@ struct TrackRowView<MenuContent: View>: View {
         }
         .onTapGesture {
             if !model.isMissing {
-                onTap()
+                onTap(Self.isShiftPressed)
             }
         }
         .onAppear {
@@ -207,6 +207,13 @@ struct TrackRowView<MenuContent: View>: View {
             .foregroundStyle(.secondary)
             .frame(width: 28, height: 28)
             .contentShape(Rectangle())
+    }
+
+    private static var isShiftPressed: Bool {
+        if let currentEvent = NSApp.currentEvent {
+            return currentEvent.modifierFlags.contains(.shift)
+        }
+        return NSEvent.modifierFlags.contains(.shift)
     }
 
     @ViewBuilder
@@ -317,7 +324,7 @@ extension TrackRowView: Equatable where MenuContent: View {
                 isMissing: false
             ),
             isPlaying: true,
-            onTap: {}
+            onTap: { _ in }
         ) {
             Button("Play") {}
             Button("Delete", role: .destructive) {}
@@ -337,7 +344,7 @@ extension TrackRowView: Equatable where MenuContent: View {
                 isMissing: true
             ),
             isPlaying: false,
-            onTap: {}
+            onTap: { _ in }
         ) {
             Button("Info") {}
         }
