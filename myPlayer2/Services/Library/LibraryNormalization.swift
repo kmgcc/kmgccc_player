@@ -63,6 +63,76 @@ nonisolated enum LibraryNormalization {
         display(value, fallback: unknownArtist)
     }
 
+    static func artistComponents(_ value: String?) -> [(canonicalName: String, displayName: String)] {
+        let displayName = displayArtist(value)
+        let unknownKey = normalizeArtist(nil)
+        guard normalizeArtist(displayName) != unknownKey else {
+            return [(unknownKey, unknownArtist)]
+        }
+
+        let names = splitArtistDisplayNames(displayName)
+        var seen: Set<String> = []
+        var components: [(canonicalName: String, displayName: String)] = []
+        for name in names {
+            let key = normalizeArtist(name)
+            guard key != unknownKey, !seen.contains(key) else { continue }
+            seen.insert(key)
+            components.append((key, name))
+        }
+
+        if components.isEmpty {
+            return [(normalizeArtist(displayName), displayName)]
+        }
+        return components
+    }
+
+    static func artistCanonicalNames(_ value: String?) -> [String] {
+        artistComponents(value).map { $0.canonicalName }
+    }
+
+    static func containsArtist(_ canonicalName: String, in value: String?) -> Bool {
+        artistCanonicalNames(value).contains(canonicalName)
+    }
+
+    static func replacingArtistComponent(
+        in value: String,
+        matching canonicalName: String,
+        with replacementDisplayName: String
+    ) -> String {
+        let replacement = displayArtist(replacementDisplayName)
+        let parts = artistSplitPattern
+            .matches(in: value, range: NSRange(value.startIndex..., in: value))
+
+        guard !parts.isEmpty else {
+            return containsArtist(canonicalName, in: value) ? replacement : value
+        }
+
+        var result = ""
+        var cursor = value.startIndex
+        var replaced = false
+        for match in parts {
+            guard let range = Range(match.range, in: value) else { continue }
+            let segment = String(value[cursor..<range.lowerBound])
+            result += replacementSegmentIfNeeded(
+                segment,
+                canonicalName: canonicalName,
+                replacement: replacement,
+                didReplace: &replaced
+            )
+            result += String(value[range])
+            cursor = range.upperBound
+        }
+
+        let segment = String(value[cursor...])
+        result += replacementSegmentIfNeeded(
+            segment,
+            canonicalName: canonicalName,
+            replacement: replacement,
+            didReplace: &replaced
+        )
+        return replaced ? result : value
+    }
+
     static func displayAlbum(_ value: String?) -> String {
         canonicalAlbumTitle(value)
     }
@@ -147,6 +217,67 @@ nonisolated enum LibraryNormalization {
         (value ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+    }
+
+    private static var artistSplitPattern: NSRegularExpression {
+        // Common collaboration separators used in local tags, including the
+        // slash/semicolon forms from imported Chinese metadata.
+        try! NSRegularExpression(
+            pattern: #"\s*(?:[;/／、，；×]|\\|\b(?:feat\.?|ft\.?|featuring|with|vs\.?)\b)\s*"#,
+            options: [.caseInsensitive]
+        )
+    }
+
+    private static func splitArtistDisplayNames(_ value: String) -> [String] {
+        let prepared = value
+            .replacingOccurrences(
+                of: "[（(]\\s*(?:feat\\.?|ft\\.?|featuring|with)\\b",
+                with: "; ",
+                options: [.regularExpression, .caseInsensitive]
+            )
+        let matches = artistSplitPattern.matches(
+            in: prepared,
+            range: NSRange(prepared.startIndex..., in: prepared)
+        )
+        guard !matches.isEmpty else { return [collapsedArtistComponent(prepared)].filter { !$0.isEmpty } }
+
+        var names: [String] = []
+        var cursor = prepared.startIndex
+        for match in matches {
+            guard let range = Range(match.range, in: prepared) else { continue }
+            names.append(collapsedArtistComponent(String(prepared[cursor..<range.lowerBound])))
+            cursor = range.upperBound
+        }
+        names.append(collapsedArtistComponent(String(prepared[cursor...])))
+        return names.filter { !$0.isEmpty }
+    }
+
+    private static func collapsedArtistComponent(_ value: String) -> String {
+        collapsedWhitespace(value)
+            .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(
+                CharacterSet(charactersIn: "（）()[]【】")
+            ))
+    }
+
+    private static func replacementSegmentIfNeeded(
+        _ segment: String,
+        canonicalName: String,
+        replacement: String,
+        didReplace: inout Bool
+    ) -> String {
+        let component = collapsedArtistComponent(segment)
+        guard !component.isEmpty, normalizeArtist(component) == canonicalName else {
+            return segment
+        }
+
+        didReplace = true
+        guard
+            let start = segment.firstIndex(where: { !$0.isWhitespace }),
+            let end = segment.lastIndex(where: { !$0.isWhitespace })
+        else {
+            return replacement
+        }
+        return String(segment[..<start]) + replacement + String(segment[segment.index(after: end)...])
     }
 
     private static func canonicalAlbumTitle(_ value: String?) -> String {
@@ -282,7 +413,7 @@ nonisolated enum LibraryNormalization {
     }
 
     private static func memberArtistCanonicalNames(for tracks: [Track]) -> [String] {
-        Set(tracks.map { normalizeArtist($0.artist) }).sorted()
+        Set(tracks.flatMap { artistCanonicalNames($0.artist) }).sorted()
     }
 
     private static func representativeArtist(

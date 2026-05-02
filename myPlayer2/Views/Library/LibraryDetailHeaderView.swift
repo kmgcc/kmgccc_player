@@ -534,7 +534,7 @@ struct LibraryDetailHeaderView: View {
                 }
             case .artist(let entry, _):
                 let artistTracks = libraryVM.allTracks.filter {
-                    LibraryNormalization.normalizeArtist($0.artist) == entry.canonicalName
+                    LibraryNormalization.containsArtist(entry.canonicalName, in: $0.artist)
                         && $0.availability != .missing
                 }
                 guard let generatedArtwork = await ArtistArtworkGenerator.shared.generateArtwork(

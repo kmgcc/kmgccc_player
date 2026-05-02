@@ -1201,7 +1201,7 @@ final class PlaylistPageController {
             } ?? []
         case .artist(let key):
             return libraryVM.allTracks.filter {
-                LibraryNormalization.normalizeArtist($0.artist) == key
+                LibraryNormalization.containsArtist(key, in: $0.artist)
                     && $0.availability != .missing
             }
         case .album(let key):

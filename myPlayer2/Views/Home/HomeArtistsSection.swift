@@ -195,7 +195,7 @@ private struct HomeArtistCircle: View {
 
         let canonicalName = artist.canonicalName
         let tracks = libraryVM.allTracks.filter {
-            LibraryNormalization.normalizeArtist($0.artist) == canonicalName
+            LibraryNormalization.containsArtist(canonicalName, in: $0.artist)
         }
         let generated = await ArtistArtworkGenerator.shared.generateArtwork(
             artistName: artist.displayName,
