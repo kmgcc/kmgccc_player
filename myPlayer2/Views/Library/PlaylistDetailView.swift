@@ -598,8 +598,7 @@ struct PlaylistDetailView: View {
                     canSelectMultiple: true,
                     selectedPlaylistID: libraryVM.selectedPlaylist?.id,
                     onSelectMultiple: {
-                        pageController.isMultiselectMode = true
-                        pageController.selectedTrackIDs.insert(trackID)
+                        pageController.beginMultiselectSelection(at: trackID)
                     },
                     onPlay: {
                         if case .album = libraryVM.currentSelection {
@@ -814,13 +813,12 @@ private struct PlaylistTrackRowsSection: View {
                 isSelected: pageController.isMultiselectMode && pageController.selectedTrackIDs.contains(row.id),
                 enableSecondaryInteractions: pageController.areRowSecondaryInteractionsEnabled,
                 enableArtworkLoading: pageController.areRowArtworkLoadsEnabled,
-                onTap: {
+                onTap: { isShiftPressed in
                     if pageController.isMultiselectMode {
-                        if pageController.selectedTrackIDs.contains(row.id) {
-                            pageController.selectedTrackIDs.remove(row.id)
-                        } else {
-                            pageController.selectedTrackIDs.insert(row.id)
-                        }
+                        pageController.handleMultiselectRowTap(
+                            trackID: row.id,
+                            extendingRange: isShiftPressed
+                        )
                     } else {
                         guard let track = pageController.latestTrackFromLibrary(trackID: row.id) else { return }
                         if case .album = selection {

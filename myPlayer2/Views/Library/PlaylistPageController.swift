@@ -72,6 +72,7 @@ final class PlaylistPageController {
     var listScrollPositionID: UUID?
     var isMultiselectMode = false
     var selectedTrackIDs: Set<UUID> = []
+    var selectionAnchorTrackID: UUID?
     var rendersHeaderBackgroundInWindowLayer = false
 
     let haloState = HeaderHaloState()
@@ -201,13 +202,45 @@ final class PlaylistPageController {
         uiState?.lyricsPanelSuppressedByModal = false
         isMultiselectMode = false
         selectedTrackIDs.removeAll()
+        selectionAnchorTrackID = nil
     }
 
     func releaseSelectionStateForTeardown() {
         isMultiselectMode = false
         selectedTrackIDs.removeAll()
+        selectionAnchorTrackID = nil
         listScrollPositionID = nil
         lastPrefetchBucket = nil
+    }
+
+    func beginMultiselectSelection(at trackID: UUID) {
+        isMultiselectMode = true
+        selectedTrackIDs.insert(trackID)
+        selectionAnchorTrackID = trackID
+    }
+
+    func handleMultiselectRowTap(trackID: UUID, extendingRange: Bool) {
+        guard isMultiselectMode else { return }
+
+        if extendingRange,
+           let anchorTrackID = selectionAnchorTrackID,
+           let visibleRows = page?.rows,
+           let anchorIndex = visibleRows.firstIndex(where: { $0.id == anchorTrackID }),
+           let currentIndex = visibleRows.firstIndex(where: { $0.id == trackID })
+        {
+            let bounds = anchorIndex <= currentIndex
+                ? anchorIndex...currentIndex
+                : currentIndex...anchorIndex
+            selectedTrackIDs.formUnion(visibleRows[bounds].map(\.id))
+            return
+        }
+
+        if selectedTrackIDs.contains(trackID) {
+            selectedTrackIDs.remove(trackID)
+        } else {
+            selectedTrackIDs.insert(trackID)
+        }
+        selectionAnchorTrackID = trackID
     }
 
     func updateHeaderArtworkBounds(_ bounds: CGRect, selectionIdentity: String) {
@@ -537,6 +570,11 @@ final class PlaylistPageController {
         )
         LyricsRuntimeProfile.setMetadata("page.queue.count", value: "\(pageModel.queueTracks.count)")
         selectedTrackIDs.formIntersection(Set(pageModel.rows.map(\.id)))
+        if let selectionAnchorTrackID,
+           !pageModel.rows.contains(where: { $0.id == selectionAnchorTrackID })
+        {
+            self.selectionAnchorTrackID = nil
+        }
         latestTrackLookup = Dictionary(uniqueKeysWithValues: pageModel.queueTracks.map { ($0.id, $0) })
         lastPrefetchBucket = nil
         isSelectionTransitioning = false
