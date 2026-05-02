@@ -4100,6 +4100,11 @@
 	                if (timeDelta > 500) {
 	                    clearFullscreenCompletedHighlightState();
 	                }
+                    const isFullscreenSurface =
+                        fullscreenOpaqueLyricsMode === true || fullscreenCoverBlurMode === true;
+                    if (!externalIsPlaying && !needsForce && !isFullscreenSurface && timeDelta <= 500) {
+                        return;
+                    }
 	                
 	                originalSetCurrentTime(timeInMs, needsForce);
                     externalTimeMs = timeInMs;

@@ -322,6 +322,9 @@ private struct LyricsRealtimeSyncObserver: View {
                 }
             }
             .onChange(of: playbackCoordinator.presentation.isPlaying) { _, newValue in
+                if !newValue {
+                    lyricsVM.syncTime(playbackCoordinator.presentation.currentTime)
+                }
                 lyricsVM.setPlaying(newValue)
             }
     }

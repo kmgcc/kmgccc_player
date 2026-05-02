@@ -49,16 +49,16 @@ final class LibraryMetadataSync {
         // Compute album counts per artist canonical key
         var albumCountByArtist: [String: Set<String>] = [:]
         for track in allTracks {
-            let artistKey = LibraryNormalization.normalizeArtist(track.artist)
-            let albumKey = track.albumGroupKey
-            albumCountByArtist[artistKey, default: []].insert(albumKey)
+            for artistKey in LibraryNormalization.artistCanonicalNames(track.artist) {
+                albumCountByArtist[artistKey, default: []].insert(track.albumGroupKey)
+            }
         }
 
         var result: [ArtistEntry] = []
 
         for section in derived {
             let totalDuration = allTracks
-                .filter { LibraryNormalization.normalizeArtist($0.artist) == section.key }
+                .filter { LibraryNormalization.containsArtist(section.key, in: $0.artist) }
                 .reduce(0) { $0 + $1.duration }
             let albumCount = albumCountByArtist[section.key]?.count ?? 0
 

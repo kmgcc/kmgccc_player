@@ -215,8 +215,8 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             $0.id.uuidString < $1.id.uuidString
         }
         let impactedArtists = Set(uniqueTracks.map {
-            LibraryNormalization.normalizeArtist($0.artist)
-        })
+            LibraryNormalization.artistCanonicalNames($0.artist)
+        }.flatMap { $0 })
         let impactedAlbums = Set(uniqueTracks.map(\.albumGroupKey))
         await deleteTracksAndMetadata(
             tracks: uniqueTracks,
@@ -531,10 +531,14 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         }
 
         let affectedTracks = allTracks.filter {
-            LibraryNormalization.normalizeArtist($0.artist) == original.canonicalName
+            LibraryNormalization.containsArtist(original.canonicalName, in: $0.artist)
         }
         for track in affectedTracks {
-            track.artist = resolvedName
+            track.artist = LibraryNormalization.replacingArtistComponent(
+                in: track.artist,
+                matching: original.canonicalName,
+                with: resolvedName
+            )
         }
         _ = await persistTrackMetaOnly(affectedTracks, reason: "artistRename")
     }
@@ -595,7 +599,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
 
     func deleteArtist(_ entry: ArtistEntry) async {
         let affectedTracks = allTracks.filter {
-            LibraryNormalization.normalizeArtist($0.artist) == entry.canonicalName
+            LibraryNormalization.containsArtist(entry.canonicalName, in: $0.artist)
         }
         let affectedAlbumKeys = Set(affectedTracks.map {
             $0.albumGroupKey
@@ -697,21 +701,20 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         var artistBucket: [String: (name: String, count: Int)] = [:]
 
         for track in allTracks {
-            let artistDisplay = LibraryNormalization.displayArtist(track.artist)
-
             let dedupKey = LibraryNormalization.normalizedDedupKey(
                 title: track.title,
                 artist: track.artist
             )
             dedup[dedupKey, default: 0] += 1
 
-            let artistKey = LibraryNormalization.normalizeArtist(track.artist)
-            var artistValue = artistBucket[artistKey] ?? (artistDisplay, 0)
-            artistValue.count += 1
-            if artistValue.name == LibraryNormalization.unknownArtist {
-                artistValue.name = artistDisplay
+            for component in LibraryNormalization.artistComponents(track.artist) {
+                var artistValue = artistBucket[component.canonicalName] ?? (component.displayName, 0)
+                artistValue.count += 1
+                if artistValue.name == LibraryNormalization.unknownArtist {
+                    artistValue.name = component.displayName
+                }
+                artistBucket[component.canonicalName] = artistValue
             }
-            artistBucket[artistKey] = artistValue
         }
 
         dedupCountByKey = dedup
@@ -946,9 +949,10 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         var albumKeysByArtist: [String: Set<String>] = [:]
         var totalDurationByArtist: [String: Double] = [:]
         for track in allTracks {
-            let artistKey = LibraryNormalization.normalizeArtist(track.artist)
-            albumKeysByArtist[artistKey, default: []].insert(track.albumGroupKey)
-            totalDurationByArtist[artistKey, default: 0] += track.duration
+            for artistKey in LibraryNormalization.artistCanonicalNames(track.artist) {
+                albumKeysByArtist[artistKey, default: []].insert(track.albumGroupKey)
+                totalDurationByArtist[artistKey, default: 0] += track.duration
+            }
         }
 
         var artistEntryIDsToDelete: [UUID] = []

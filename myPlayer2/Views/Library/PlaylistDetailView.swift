@@ -218,7 +218,7 @@ struct PlaylistDetailView: View {
             }.count ?? 0
         case .artist(let key):
             return libraryVM.allTracks.filter {
-                LibraryNormalization.normalizeArtist($0.artist) == key
+                LibraryNormalization.containsArtist(key, in: $0.artist)
                     && $0.availability != .missing
             }.count
         case .album(let key):

@@ -954,12 +954,12 @@ final class LibraryViewModel {
     func deleteArtist(_ entry: ArtistEntry) async {
         let affectedTrackIDs = Set(
             allTracks
-                .filter { LibraryNormalization.normalizeArtist($0.artist) == entry.canonicalName }
+                .filter { LibraryNormalization.containsArtist(entry.canonicalName, in: $0.artist) }
                 .map(\.id)
         )
         let affectedAlbumKeys = Set(
             allTracks
-                .filter { LibraryNormalization.normalizeArtist($0.artist) == entry.canonicalName }
+                .filter { LibraryNormalization.containsArtist(entry.canonicalName, in: $0.artist) }
                 .map(\.albumGroupKey)
         )
 
@@ -1289,7 +1289,9 @@ final class LibraryViewModel {
             identities.insert("playlist-\(playlist.id.uuidString)")
         }
         for track in allTracks where deletedTrackIDs.contains(track.id) {
-            identities.insert("artist-\(LibraryNormalization.normalizeArtist(track.artist))")
+            for artistKey in LibraryNormalization.artistCanonicalNames(track.artist) {
+                identities.insert("artist-\(artistKey)")
+            }
             identities.insert("album-\(track.albumGroupKey)")
         }
         return identities
@@ -1306,7 +1308,7 @@ final class LibraryViewModel {
         case .artist(let key):
             let hasRemaining = allTracks.contains {
                 !deletedTrackIDs.contains($0.id)
-                    && LibraryNormalization.normalizeArtist($0.artist) == key
+                    && LibraryNormalization.containsArtist(key, in: $0.artist)
             }
             if !hasRemaining {
                 currentSelection = .allSongs

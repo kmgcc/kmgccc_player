@@ -205,12 +205,21 @@ final class StubLibraryRepository: LibraryRepositoryProtocol {
     }
 
     func fetchArtistSections() async -> [ArtistSection] {
-        Dictionary(grouping: allTracks, by: { LibraryNormalization.normalizeArtist($0.artist) })
-            .map { key, tracks in
+        var buckets: [String: (name: String, tracks: [Track])] = [:]
+        for track in allTracks {
+            for component in LibraryNormalization.artistComponents(track.artist) {
+                var bucket = buckets[component.canonicalName] ?? (component.displayName, [])
+                bucket.tracks.append(track)
+                buckets[component.canonicalName] = bucket
+            }
+        }
+
+        return buckets
+            .map { key, value in
                 ArtistSection(
                     key: key,
-                    name: LibraryNormalization.displayArtist(tracks.first?.artist),
-                    trackCount: tracks.count
+                    name: value.name,
+                    trackCount: value.tracks.count
                 )
             }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
