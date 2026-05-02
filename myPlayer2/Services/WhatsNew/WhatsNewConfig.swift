@@ -12,28 +12,17 @@ enum WhatsNewConfig {
 
     static let targetVersion = AppVersion(major: 1, minor: 3, patch: 1)
     static let whatsNewVersion = WhatsNew.Version(major: 1, minor: 3, patch: 1)
-    static let userDefaultsKey = "kmgccc_player.lastSeenWhatsNewVersion"
     
     static var lastSeenVersion: AppVersion? {
-        get {
-            guard let string = UserDefaults.standard.string(forKey: userDefaultsKey) else { return nil }
-            return AppVersion(from: string)
-        }
-        set {
-            if let version = newValue {
-                UserDefaults.standard.set(version.stringValue, forKey: userDefaultsKey)
-            } else {
-                UserDefaults.standard.removeObject(forKey: userDefaultsKey)
-            }
-        }
+        get { AppVersionGate.shared.lastSeenWhatsNewVersion }
+        set { AppVersionGate.shared.lastSeenWhatsNewVersion = newValue }
     }
     
     static func shouldShowWhatsNew() -> Bool {
-        guard let lastSeen = lastSeenVersion else { return true }
-        return lastSeen < targetVersion
+        AppVersionGate.shared.shouldShowWhatsNew(targetVersion: targetVersion)
     }
     
     static func markAsSeen() {
-        lastSeenVersion = targetVersion
+        AppVersionGate.shared.markWhatsNewSeen(targetVersion: targetVersion)
     }
 }

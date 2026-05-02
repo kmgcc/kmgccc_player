@@ -141,6 +141,7 @@ struct DataManagementSettingsView: View {
     }
 
     private func resetAppDataExceptMusicLibrary() {
+        AppVersionGate.shared.resetStoredState()
         guard let bundleIdentifier = Bundle.main.bundleIdentifier else { return }
         UserDefaults.standard.removePersistentDomain(forName: bundleIdentifier)
         UserDefaults.standard.synchronize()

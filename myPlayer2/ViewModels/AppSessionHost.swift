@@ -54,6 +54,7 @@ final class AppSessionHost: ObservableObject {
         print("[Lifecycle] AppSessionHost initial setup")
         setupDependencies()
 
+        AppVersionGate.shared.recordCurrentAppLaunch()
         WhatsNewWindowManager.shared.showIfNeeded()
         print("[Lifecycle] WhatsNew window check completed")
 
