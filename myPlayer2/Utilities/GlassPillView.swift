@@ -193,6 +193,7 @@ private struct HomeUnifiedGlassCardModifier: ViewModifier {
     let colorScheme: ColorScheme
     let prominence: GlassStyleTokens.Prominence
     let isFloating: Bool
+    @Environment(AppSettings.self) private var settings
 
     private var shape: RoundedRectangle {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
@@ -204,17 +205,41 @@ private struct HomeUnifiedGlassCardModifier: ViewModifier {
             : Color.primary.opacity(0.028)
     }
 
+    private var solidTreatment: Color {
+        Color(nsColor: .controlBackgroundColor)
+    }
+
+    @ViewBuilder
     func body(content: Content) -> some View {
-        content
-            .background(
-                shape
-                    .fill(stabilizingTreatment)
-                    .allowsHitTesting(false)
-            )
-            .glassEffect(colorScheme == .dark ? .clear : .regular, in: shape)
-            .homeGlassCardEdgeTreatment(shape: shape, colorScheme: colorScheme)
-            .modifier(HomeGlassCardShadowModifier(isEnabled: isFloating, colorScheme: colorScheme))
-            .contentShape(shape)
+        switch settings.homeCardMaterialMode {
+        case .liquidGlass:
+            content
+                .background(
+                    shape
+                        .fill(stabilizingTreatment)
+                        .allowsHitTesting(false)
+                )
+                .glassEffect(colorScheme == .dark ? .clear : .regular, in: shape)
+                .homeGlassCardEdgeTreatment(shape: shape, colorScheme: colorScheme)
+                .modifier(HomeGlassCardShadowModifier(isEnabled: isFloating, colorScheme: colorScheme))
+                .contentShape(shape)
+        case .frostedGlass:
+            content
+                .background(.ultraThinMaterial, in: shape)
+                .homeGlassCardEdgeTreatment(shape: shape, colorScheme: colorScheme)
+                .modifier(HomeGlassCardShadowModifier(isEnabled: isFloating, colorScheme: colorScheme))
+                .contentShape(shape)
+        case .solid:
+            content
+                .background(
+                    shape
+                        .fill(solidTreatment)
+                        .allowsHitTesting(false)
+                )
+                .homeGlassCardEdgeTreatment(shape: shape, colorScheme: colorScheme)
+                .modifier(HomeGlassCardShadowModifier(isEnabled: isFloating, colorScheme: colorScheme))
+                .contentShape(shape)
+        }
     }
 }
 

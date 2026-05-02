@@ -87,18 +87,15 @@ struct FullscreenSkinTabView: View {
                         .font(presentationStyle.sectionTitleFont)
                         .foregroundStyle(presentationStyle.secondaryTextColor)
 
-                    HStack(spacing: presentationStyle.compactInlineSpacing) {
-                        Text("频谱动画")
-                            .font(presentationStyle.rowLabelFont)
-                            .foregroundStyle(presentationStyle.primaryTextColor)
-                        Spacer()
-                        Toggle("", isOn: Binding(
+                    SettingsSwitchRow(
+                        title: "频谱动画",
+                        isOn: Binding(
                             get: { settings.fullscreen.isMiniPlayerSpectrumEnabled },
                             set: { _ in settings.fullscreen.toggleMiniPlayerSpectrum() }
-                        ))
-                        .toggleStyle(.switch)
-                        .labelsHidden()
-                    }
+                        ),
+                        titleFont: presentationStyle.rowLabelFont,
+                        titleColor: presentationStyle.primaryTextColor
+                    )
 
                     miniPlayerAutoHidePicker
 
