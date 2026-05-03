@@ -97,14 +97,17 @@ struct BKColorEngine {
         let diagnostics: ShapeSwatchDiagnostics
     }
 
-    nonisolated static func make(extracted: [NSColor], fallback: [NSColor], isDark: Bool)
-        -> HarmonizedPalette
-    {
+    nonisolated static func make(
+        extracted: [NSColor],
+        fallback: [NSColor],
+        isDark: Bool,
+        analysis: ArtworkColorAnalysis? = nil
+    ) -> HarmonizedPalette {
         let paletteInput = (extracted.isEmpty ? fallback : extracted)
             .compactMap(hsb(from:))
             .map(normalizeCandidateColor(_:))
         let stats = analyzePalette(paletteInput)
-        let tier = tierRanges(
+        var tier = tierRanges(
             isDark: isDark,
             complexity: stats.complexity,
             isNearGray: stats.isNearGray,
@@ -116,6 +119,15 @@ struct BKColorEngine {
             areaDominantS: stats.areaDominantS,
             areaDominantB: stats.areaDominantB
         )
+
+        // Gate background saturation on artwork analysis (only narrows, never widens).
+        let adjustedBgS = applyAnalysisBgSGating(tier.bgS, analysis: analysis)
+        if adjustedBgS != tier.bgS {
+            tier = TierRanges(
+                bgB: tier.bgB, fgB: tier.fgB, dotB: tier.dotB,
+                bgS: adjustedBgS, fgS: tier.fgS, dotS: tier.dotS
+            )
+        }
         let lumaTargetBg = lumaTarget(coverLuma: stats.imageCoverLuma, isDark: isDark)
         let lumaTargetFg = lumaTarget(coverLuma: stats.coverLuma, isDark: isDark)
         let lumaKBg: CGFloat = isDark ? 0.82 : lumaBlendK(coverKind: stats.coverKind)
@@ -1244,6 +1256,51 @@ extension BKColorEngine {
         fgS = makeRange(lower: fgLower, upper: fgS.upperBound)
 
         return TierRanges(bgB: bgB, fgB: fgB, dotB: dotB, bgS: bgS, fgS: fgS, dotS: dotS)
+    }
+
+    /// Intersects the engine's existing background-saturation range with an
+    /// analysis-derived ceiling/floor.  Only ever narrows — never widens.
+    fileprivate nonisolated static func applyAnalysisBgSGating(
+        _ existing: ClosedRange<CGFloat>,
+        analysis: ArtworkColorAnalysis?
+    ) -> ClosedRange<CGFloat> {
+        let colorfulness = analysis?.colorfulness ?? 0.5
+        let isMono = analysis?.isMonochrome ?? false
+        let confidence = analysis?.dominantHueConfidence ?? 0.5
+
+        let ceiling: CGFloat
+        if isMono {
+            ceiling = 0.10
+        } else if colorfulness < 0.20 {
+            ceiling = 0.32
+        } else if colorfulness < 0.45 {
+            ceiling = 0.55
+        } else {
+            ceiling = 0.78
+        }
+        let floor: CGFloat = isMono ? 0.0 : 0.06
+
+        // Intersect: never widen the engine's own range.
+        let intersectedLower = max(existing.lowerBound, floor)
+        let intersectedUpper = min(existing.upperBound, ceiling)
+        var result = existing
+        if intersectedLower <= intersectedUpper {
+            result = intersectedLower...intersectedUpper
+        }
+
+        // Low dominant-hue confidence → further narrow by 40% to avoid muddy mixes.
+        if confidence < 0.20 {
+            let span = result.upperBound - result.lowerBound
+            if span > 0 {
+                let narrowed = span * 0.6
+                let newUpper = result.lowerBound + narrowed
+                if newUpper > result.lowerBound {
+                    result = result.lowerBound...newUpper
+                }
+            }
+        }
+
+        return result
     }
 
     fileprivate nonisolated static func makeRange(lower: CGFloat, upper: CGFloat) -> ClosedRange<

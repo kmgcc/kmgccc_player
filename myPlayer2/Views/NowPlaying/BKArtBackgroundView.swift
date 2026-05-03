@@ -186,6 +186,7 @@ struct BKArtBackgroundView: View {
 
         paletteRefreshTask = Task(priority: .userInitiated) {
             let extracted: (base: [NSColor], rich: [NSColor])
+            let analysis: ArtworkColorAnalysis?
 
             if let currentTrackID,
                 let snapshot = await ArtworkAssetStore.shared.snapshotMetadata(
@@ -194,14 +195,18 @@ struct BKArtBackgroundView: View {
                 )
             {
                 extracted = (snapshot.palette, snapshot.richPalette)
+                analysis = nil
             } else {
-                async let basePalette = Task.detached(priority: .userInitiated) {
-                    ArtworkColorExtractor.uiThemePalette(from: data, maxColors: 4)
+                let resolvedAnalysis = await Task.detached(priority: .userInitiated) {
+                    ArtworkColorExtractor.analyze(from: data)
                 }.value
-                async let richPalette = Task.detached(priority: .userInitiated) {
-                    ArtworkColorExtractor.uiThemePaletteRich(from: data, desiredCount: 8)
-                }.value
-                extracted = await (basePalette, richPalette)
+                extracted = (
+                    resolvedAnalysis?.topPalette ?? ArtworkColorExtractor.uiThemePalette(
+                        from: data, maxColors: 4),
+                    resolvedAnalysis?.richPalette ?? ArtworkColorExtractor.uiThemePaletteRich(
+                        from: data, desiredCount: 8)
+                )
+                analysis = resolvedAnalysis
             }
 
             guard !Task.isCancelled else { return }
@@ -211,6 +216,7 @@ struct BKArtBackgroundView: View {
                 applyResolvedPalette(
                     basePalette: extracted.base,
                     richPalette: extracted.rich,
+                    analysis: analysis,
                     signature: currentSignature,
                     trackID: currentTrackID
                 )
@@ -236,6 +242,7 @@ struct BKArtBackgroundView: View {
     private func applyResolvedPalette(
         basePalette: [NSColor],
         richPalette: [NSColor],
+        analysis: ArtworkColorAnalysis? = nil,
         signature: Int,
         trackID: UUID?
     ) {
@@ -250,7 +257,8 @@ struct BKArtBackgroundView: View {
         let harmonized = BKColorEngine.make(
             extracted: resolvedPalette,
             fallback: Self.fallbackPalette,
-            isDark: colorScheme == .dark
+            isDark: colorScheme == .dark,
+            analysis: analysis
         )
         let primaryBackgroundColor = stableLyricsBackgroundColor(from: harmonized)
             ?? predictedInitialBackgroundColor(from: harmonized)
