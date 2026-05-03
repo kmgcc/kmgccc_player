@@ -51,14 +51,7 @@ public enum ArtworkColorExtractor {
     }
     
     private nonisolated static func computeChecksum(_ data: Data) -> UInt64 {
-        var hash: UInt64 = 1_469_598_103_934_665_603
-        data.withUnsafeBytes { rawBuffer in
-            for byte in rawBuffer {
-                hash ^= UInt64(byte)
-                hash &*= 1_099_511_628_211
-            }
-        }
-        return hash
+        ColorMath.fnv1a(data)
     }
     
     private nonisolated static func cacheKey(for checksum: UInt64, side: Int) -> NSString {
@@ -264,7 +257,7 @@ extension ArtworkColorExtractor {
         let profile = ArtworkProfile(
             avgSaturation: saturationWeightedSum / fallbackWeight,
             avgBrightness: brightnessWeightedSum / fallbackWeight,
-            vividness: clamp(vividWeight / fallbackWeight, min: 0, max: 1)
+            vividness: ColorMath.clamp(vividWeight / fallbackWeight, 0, 1)
         )
 
         var candidates: [PaletteCandidate] = []
@@ -305,7 +298,7 @@ extension ArtworkColorExtractor {
                 selected.append(candidate.color)
             } else {
                 let isDistinct = selected.allSatisfy { existing in
-                    let hueGap = circularHueDistance(candidate.hue, hueValue(of: existing))
+                    let hueGap = ColorMath.circularHueDistance(candidate.hue, hueValue(of: existing))
                     let rgbGap = rgbDistance(candidate.color, existing)
                     return hueGap > 0.08 || rgbGap > 0.17
                 }
@@ -384,9 +377,9 @@ extension ArtworkColorExtractor {
             var a: CGFloat = 0
             rgb.getHue(&h, saturation: &s, brightness: &v, alpha: &a)
             let normalized = NSColor(
-                calibratedHue: normalizedHue(h),
-                saturation: clamp(s, min: 0.01, max: 0.95),
-                brightness: clamp(v, min: 0.03, max: 0.96),
+                calibratedHue: ColorMath.normalizedHue(h),
+                saturation: ColorMath.clamp(s, 0.01, 0.95),
+                brightness: ColorMath.clamp(v, 0.03, 0.96),
                 alpha: 1
             )
             let score = bucket.weight * (0.90 + s * 0.35)
@@ -399,7 +392,7 @@ extension ArtworkColorExtractor {
         var selected: [NSColor] = []
         for candidate in candidates {
             let distinct = selected.allSatisfy { existing in
-                let hueGap = circularHueDistance(
+                let hueGap = ColorMath.circularHueDistance(
                     hueValue(of: candidate.color), hueValue(of: existing))
                 let rgbGap = rgbDistance(candidate.color, existing)
                 return hueGap >= 0.05 || rgbGap >= 0.14
@@ -414,7 +407,7 @@ extension ArtworkColorExtractor {
         if selected.count < targetCount {
             for candidate in candidates where saturationValue(of: candidate.color) >= 0.45 {
                 let distinct = selected.allSatisfy {
-                    circularHueDistance(hueValue(of: candidate.color), hueValue(of: $0)) >= 0.05
+                    ColorMath.circularHueDistance(hueValue(of: candidate.color), hueValue(of: $0)) >= 0.05
                 }
                 if distinct {
                     selected.append(candidate.color)
@@ -489,7 +482,7 @@ extension ArtworkColorExtractor {
         let coverHslLightness = weightedHslLightness / areaWeight
         let coverLuma = weightedLuma / areaWeight
         let avgSaturation = weightedSaturation / areaWeight
-        let vividness = clamp(vividWeight / areaWeight, min: 0, max: 1)
+        let vividness = ColorMath.clamp(vividWeight / areaWeight, 0, 1)
         let usesDarkForeground = coverHslLightness >= 0.58
             || (coverHslLightness >= 0.52 && coverLuma >= 0.48)
 
@@ -506,21 +499,21 @@ extension ArtworkColorExtractor {
         let saturation: CGFloat
         let brightness: CGFloat
         if usesDarkForeground {
-            let lightPressure = clamp((coverHslLightness - 0.52) / 0.42, min: 0, max: 1)
+            let lightPressure = ColorMath.clamp((coverHslLightness - 0.52) / 0.42, 0, 1)
             saturation = isNearlyGray
                 ? 0.025
-                : clamp(0.12 + avgSaturation * 0.42 + vividness * 0.08, min: 0.10, max: 0.34)
-            brightness = clamp(0.18 - lightPressure * 0.10, min: 0.075, max: 0.18)
+                : ColorMath.clamp(0.12 + avgSaturation * 0.42 + vividness * 0.08, 0.10, 0.34)
+            brightness = ColorMath.clamp(0.18 - lightPressure * 0.10, 0.075, 0.18)
         } else {
-            let darkPressure = clamp((0.54 - coverHslLightness) / 0.46, min: 0, max: 1)
+            let darkPressure = ColorMath.clamp((0.54 - coverHslLightness) / 0.46, 0, 1)
             saturation = isNearlyGray
                 ? 0.035
-                : clamp(0.08 + avgSaturation * 0.28 + vividness * 0.10, min: 0.075, max: 0.28)
-            brightness = clamp(0.88 + darkPressure * 0.10, min: 0.88, max: 0.985)
+                : ColorMath.clamp(0.08 + avgSaturation * 0.28 + vividness * 0.10, 0.075, 0.28)
+            brightness = ColorMath.clamp(0.88 + darkPressure * 0.10, 0.88, 0.985)
         }
 
         let base = NSColor(
-            calibratedHue: normalizedHue(hue),
+            calibratedHue: ColorMath.normalizedHue(hue),
             saturation: saturation,
             brightness: brightness,
             alpha: 1
@@ -632,15 +625,15 @@ extension ArtworkColorExtractor {
         var a: CGFloat = 0
         rgb.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
 
-        let avgSat = clamp(profile.avgSaturation, min: 0, max: 1)
-        let satMin = clamp(avgSat * 0.55, min: 0.02, max: 0.18)
-        let satMax = clamp(0.16 + avgSat * 0.88 + profile.vividness * 0.08, min: 0.24, max: 0.80)
+        let avgSat = ColorMath.clamp(profile.avgSaturation, 0, 1)
+        let satMin = ColorMath.clamp(avgSat * 0.55, 0.02, 0.18)
+        let satMax = ColorMath.clamp(0.16 + avgSat * 0.88 + profile.vividness * 0.08, 0.24, 0.80)
         let satScale = 0.92 + profile.vividness * 0.08 + avgSat * 0.03
-        s = clamp(s * satScale, min: satMin, max: satMax)
+        s = ColorMath.clamp(s * satScale, satMin, satMax)
 
         let pull =
             profile.avgBrightness < 0.42 ? 0.76 : (profile.avgBrightness > 0.66 ? 0.90 : 0.83)
-        b = clamp(0.5 + (b - 0.5) * pull, min: 0.18, max: 0.84)
+        b = ColorMath.clamp(0.5 + (b - 0.5) * pull, 0.18, 0.84)
 
         return NSColor(calibratedHue: h, saturation: s, brightness: b, alpha: 1)
     }
@@ -660,13 +653,13 @@ extension ArtworkColorExtractor {
         let shiftBase = 0.014 + profile.avgSaturation * 0.026
         let hueShift: CGFloat = index == 1 ? shiftBase : -shiftBase * 0.82
         let brightnessShift: CGFloat = index == 1 ? -0.035 : 0.028
-        let newHue = normalizedHue(h + hueShift)
-        let satMin = clamp(profile.avgSaturation * 0.55, min: 0.02, max: 0.18)
-        let satMax = clamp(
-            0.16 + profile.avgSaturation * 0.88 + profile.vividness * 0.08, min: 0.24, max: 0.80)
+        let newHue = ColorMath.normalizedHue(h + hueShift)
+        let satMin = ColorMath.clamp(profile.avgSaturation * 0.55, 0.02, 0.18)
+        let satMax = ColorMath.clamp(
+            0.16 + profile.avgSaturation * 0.88 + profile.vividness * 0.08, 0.24, 0.80)
         let satBoost = 0.95 + profile.vividness * 0.04
-        let newSat = clamp(s * satBoost, min: satMin, max: satMax)
-        let newBri = clamp(b + brightnessShift, min: 0.18, max: 0.84)
+        let newSat = ColorMath.clamp(s * satBoost, satMin, satMax)
+        let newBri = ColorMath.clamp(b + brightnessShift, 0.18, 0.84)
 
         return NSColor(calibratedHue: newHue, saturation: newSat, brightness: newBri, alpha: 1)
     }
@@ -689,11 +682,6 @@ extension ArtworkColorExtractor {
         var a: CGFloat = 0
         rgb.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
         return s
-    }
-
-    fileprivate nonisolated static func circularHueDistance(_ a: CGFloat, _ b: CGFloat) -> CGFloat {
-        let d = abs(a - b)
-        return min(d, 1 - d)
     }
 
     fileprivate nonisolated static func rgbDistance(_ lhs: NSColor, _ rhs: NSColor) -> CGFloat {
@@ -745,7 +733,7 @@ extension ArtworkColorExtractor {
         rgb.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
 
         for _ in 0..<10 {
-            let fgLuma = relativeLuminance(of: rgb)
+            let fgLuma = ColorMath.relativeLuminance(of: rgb)
             guard contrastRatio(fgLuma, backgroundLuma) < minimumRatio else {
                 return rgb.withAlphaComponent(1)
             }
@@ -774,15 +762,6 @@ extension ArtworkColorExtractor {
         return (lighter + 0.05) / (darker + 0.05)
     }
 
-    fileprivate nonisolated static func relativeLuminance(of color: NSColor) -> CGFloat {
-        let rgb = color.usingColorSpace(.deviceRGB) ?? color
-        return relativeLuminance(
-            red: rgb.redComponent,
-            green: rgb.greenComponent,
-            blue: rgb.blueComponent
-        )
-    }
-
     fileprivate nonisolated static func relativeLuminance(
         red: CGFloat,
         green: CGFloat,
@@ -796,17 +775,4 @@ extension ArtworkColorExtractor {
         return 0.2126 * linearize(red) + 0.7152 * linearize(green) + 0.0722 * linearize(blue)
     }
 
-    fileprivate nonisolated static func normalizedHue(_ value: CGFloat) -> CGFloat {
-        var h = value.truncatingRemainder(dividingBy: 1)
-        if h < 0 { h += 1 }
-        return h
-    }
-
-    fileprivate nonisolated static func clamp(
-        _ value: CGFloat, min minValue: CGFloat, max maxValue: CGFloat
-    )
-        -> CGFloat
-    {
-        Swift.min(maxValue, Swift.max(minValue, value))
-    }
 }
