@@ -71,22 +71,25 @@ public enum ArtworkColorExtractor {
         var saturation: CGFloat = 0
         var brightness: CGFloat = 0
         var alpha: CGFloat = 0
-
         rgb.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
 
-        // Keep color soft and readable (avoid heavy saturation).
-        saturation = min(max(saturation, 0.08), 0.22)
-
         if isDarkMode {
-            // Near-white in dark mode.
-            brightness = min(max(brightness, 0.98), 1.0)
-        } else {
-            // Near-black in light mode.
-            brightness = min(max(brightness, 0.08), 0.15)
+            // Near-white tinted: keep dark-mode behaviour as-is.
+            saturation = ColorMath.clamp(saturation, 0.08, 0.22)
+            brightness = ColorMath.clamp(max(brightness, 0.98), 0.98, 1.0)
+            return NSColor(
+                calibratedHue: hue,
+                saturation: saturation,
+                brightness: brightness,
+                alpha: 1.0
+            )
         }
 
-        return NSColor(
-            calibratedHue: hue, saturation: saturation, brightness: brightness, alpha: 1.0)
+        // Light mode: tinted dark ink. Keep cover hue, push saturation up, target HSL
+        // lightness around 0.22 so text reads as ink rather than pure black.
+        let s = ColorMath.clamp(saturation, 0.18, 0.38)
+        let l: CGFloat = 0.22
+        return ColorMath.color(h: hue, s: s, l: l)
     }
 
     /// Theme palette for UI backgrounds. Returns 2-3 distinct artwork colors by default.

@@ -79,23 +79,38 @@ enum SemanticPaletteFactory {
         for scheme: ColorScheme,
         analysis: ArtworkColorAnalysis
     ) -> NSColor {
-        // Behaviour-equivalent to ThemeStore.optimizeAccentColor pre-refactor.
         let raw = analysis.dominantColor
-        guard let rgb = raw.usingColorSpace(.deviceRGB) else { return raw }
-        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        rgb.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
-        s = max(s, 0.24)
-        b = max(b, 0.22)
+        let comp = ColorMath.hsl(of: raw)
+        var h = comp.h, s = comp.s, l = comp.l
+
+        // Hue-aware minimum lightness on dark surfaces. Yellow/orange already glow
+        // at lower L; blue/violet/red need higher L to remain readable.
+        let darkMinL: CGFloat = {
+            switch h {
+            case 0.10..<0.18: return 0.66   // yellow / orange
+            case 0.18..<0.42: return 0.70   // green
+            case 0.42..<0.72: return 0.74   // cyan / blue
+            case 0.72..<0.85: return 0.76   // violet
+            default:           return 0.72  // red / magenta / pink
+            }
+        }()
+        let darkMaxL: CGFloat = 0.82
+
         if scheme == .dark {
-            s = min(max(s * 1.06, 0.30), 0.90)
-            b = min(max(b * 1.10, 0.62), 0.88)
-            let pre = NSColor(deviceHue: h, saturation: s, brightness: b, alpha: 1)
-            return ColorMath.clampLightness(pre, lo: 0.56, hi: 1.0)
+            s = ColorMath.clamp(max(s * 1.06, 0.32), 0.32, 0.86)
+            l = ColorMath.clamp(max(l, darkMinL), darkMinL, darkMaxL)
         } else {
-            s = min(max(s * 1.02, 0.28), 0.78)
-            b = min(max(b * 0.88, 0.28), 0.68)
-            return NSColor(deviceHue: h, saturation: s, brightness: b, alpha: 1)
+            s = ColorMath.clamp(max(s * 1.02, 0.30), 0.30, 0.72)
+            l = ColorMath.clamp(min(l * 0.78, 0.50), 0.30, 0.50)
         }
+
+        if analysis.isMonochrome {
+            s = min(s, scheme == .dark ? 0.18 : 0.14)
+        } else if analysis.dominantHueConfidence < 0.18 {
+            s = min(s, scheme == .dark ? 0.40 : 0.32)
+        }
+
+        return ColorMath.color(h: h, s: s, l: l)
     }
 
     fileprivate static func ambientSurface(
