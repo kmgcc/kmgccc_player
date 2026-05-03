@@ -10,7 +10,7 @@ import Foundation
 
 /// Manually set like/dislike state for a track.
 /// This directly influences the preference score.
-enum ManualLikeState: String, Codable, CaseIterable {
+nonisolated enum ManualLikeState: String, Codable, CaseIterable, Sendable {
     case none = "none"
     case liked = "liked"
     case disliked = "disliked"
@@ -18,7 +18,7 @@ enum ManualLikeState: String, Codable, CaseIterable {
 
 /// Comprehensive playback statistics for a track.
 /// Stored in meta.json sidecar and used for preference scoring.
-struct TrackPreferenceStats: Codable, Equatable {
+nonisolated struct TrackPreferenceStats: Codable, Equatable, Sendable {
     // MARK: - Basic Counts
 
     /// Total number of times playback started (playCount >= 2 seconds).

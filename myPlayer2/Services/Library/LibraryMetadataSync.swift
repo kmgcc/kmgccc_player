@@ -310,7 +310,8 @@ final class LibraryMetadataSync {
         }.first
         let mergedYear = sortedCandidates.compactMap { $0.sidecar.year }.first
 
-        let mergedSidecar = AlbumSidecar(
+        let hasMergedCandidates = sortedCandidates.count > 1
+        let candidateSidecar = AlbumSidecar(
             id: keeper.sidecar.id,
             canonicalKey: section.key,
             displayTitle: section.name,
@@ -319,12 +320,39 @@ final class LibraryMetadataSync {
             description: mergedDescription,
             year: mergedYear,
             createdAt: sortedCandidates.map { $0.sidecar.createdAt }.min() ?? keeper.sidecar.createdAt,
-            updatedAt: now
+            updatedAt: keeper.sidecar.updatedAt
         )
-        libraryService.writeAlbumSidecar(
-            mergedSidecar,
-            artworkData: mergedSidecar.artworkFileName != nil ? artworkData : nil
-        )
+
+        let needsSidecarWrite =
+            hasMergedCandidates
+            || keeper.sidecar.canonicalKey != candidateSidecar.canonicalKey
+            || keeper.sidecar.displayTitle != candidateSidecar.displayTitle
+            || keeper.sidecar.primaryArtistCanonicalName != candidateSidecar.primaryArtistCanonicalName
+            || keeper.sidecar.artworkFileName != candidateSidecar.artworkFileName
+            || keeper.sidecar.description != candidateSidecar.description
+            || keeper.sidecar.year != candidateSidecar.year
+            || keeper.sidecar.createdAt != candidateSidecar.createdAt
+
+        let mergedSidecar: AlbumSidecar
+        if needsSidecarWrite {
+            mergedSidecar = AlbumSidecar(
+                id: candidateSidecar.id,
+                canonicalKey: candidateSidecar.canonicalKey,
+                displayTitle: candidateSidecar.displayTitle,
+                primaryArtistCanonicalName: candidateSidecar.primaryArtistCanonicalName,
+                artworkFileName: candidateSidecar.artworkFileName,
+                description: candidateSidecar.description,
+                year: candidateSidecar.year,
+                createdAt: candidateSidecar.createdAt,
+                updatedAt: now
+            )
+            libraryService.writeAlbumSidecar(
+                mergedSidecar,
+                artworkData: mergedSidecar.artworkFileName != nil ? artworkData : nil
+            )
+        } else {
+            mergedSidecar = keeper.sidecar
+        }
 
         for candidate in sortedCandidates.dropFirst() {
             libraryService.deleteAlbumEntry(id: candidate.sidecar.id)

@@ -840,9 +840,14 @@ final class LocalLibraryService {
         playlistID: UUID,
         tracks: [Track],
         image: NSImage
-    ) {
+    ) -> Bool {
         let fileURL = LocalLibraryPaths.playlistGeneratedArtworkURL(for: playlistID)
-        guard writePNGArtwork(image, to: fileURL) else { return }
+        guard writePNGArtwork(image, to: fileURL) else {
+            debugArtworkPersistence(
+                "selectionIdentity=\(playlistID) source=generated filePath=\(fileURL.path) phase=regenerate save=failed reason=png-write-failed tracks=\(tracks.count)"
+            )
+            return false
+        }
 
         let existing = loadPlaylistSidecar(playlistID: playlistID)
 
@@ -854,7 +859,7 @@ final class LocalLibraryService {
         }
 
         // Clear custom artwork (set to nil) and set active source to generated
-        updatePlaylistArtworkMetadata(
+        let metadataSaved = updatePlaylistArtworkMetadata(
             playlistID: playlistID,
             customFileName: nil,
             generatedFileName: fileURL.lastPathComponent,
@@ -863,8 +868,9 @@ final class LocalLibraryService {
             artworkRevision: UUID().uuidString
         )
         debugArtworkPersistence(
-            "selectionIdentity=\(playlistID) source=generated filePath=\(fileURL.path) phase=regenerate save=accepted oldCustomDeleted=true"
+            "selectionIdentity=\(playlistID) source=generated filePath=\(fileURL.path) phase=regenerate save=\(metadataSaved ? "accepted" : "failed") oldCustomDeleted=true tracks=\(tracks.count) revision=\(playlistArtworkRevision(playlistID: playlistID) ?? "nil")"
         )
+        return metadataSaved
     }
 
     func loadPlaylistSidecar(playlistID: UUID) -> PlaylistSidecar? {
@@ -875,6 +881,7 @@ final class LocalLibraryService {
         return sidecar
     }
 
+    @discardableResult
     private func updatePlaylistArtworkMetadata(
         playlistID: UUID,
         customFileName: String?,
@@ -882,8 +889,8 @@ final class LocalLibraryService {
         activeSource: PlaylistArtworkSource,
         generatedSignature: String?,
         artworkRevision: String?
-    ) {
-        guard let sidecar = loadPlaylistSidecar(playlistID: playlistID) else { return }
+    ) -> Bool {
+        guard let sidecar = loadPlaylistSidecar(playlistID: playlistID) else { return false }
         let updated = PlaylistSidecar(
             schemaVersion: sidecar.schemaVersion,
             id: sidecar.id,
@@ -901,8 +908,10 @@ final class LocalLibraryService {
             let data = try encoder.encode(updated)
             let url = LocalLibraryPaths.playlistURL(for: playlistID)
             try data.write(to: url, options: .atomic)
+            return true
         } catch {
             Log.error("Failed to update playlist artwork metadata: \(error)", category: .library)
+            return false
         }
     }
 
