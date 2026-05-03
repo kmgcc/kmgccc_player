@@ -418,6 +418,6 @@ struct GlassToolbarPlayImportPill: View {
     }
 
     private var activeIconColor: Color {
-        themeStore.accentColor.opacity(colorScheme == .dark ? 0.96 : 0.88)
+        themeStore.accentColor
     }
 }
