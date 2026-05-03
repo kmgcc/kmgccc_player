@@ -10,6 +10,7 @@ import AppKit
 
 /// Settings section for configuring the music library root path.
 struct LibraryLocationSettingsSection: View {
+    @Environment(LibraryViewModel.self) private var libraryVM
 
     @State private var showChangeConfirmAlert = false
     @State private var showRestoreConfirmAlert = false
@@ -50,6 +51,15 @@ struct LibraryLocationSettingsSection: View {
                     }
                     .buttonStyle(.bordered)
                     .clipShape(Capsule())
+
+                    Button(libraryVM.loadingPhase.isLoading ? "正在扫描" : "重新扫描资料库") {
+                        Task {
+                            await libraryVM.reloadLibrary()
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .clipShape(Capsule())
+                    .disabled(libraryVM.loadingPhase.isLoading)
 
                     Button("恢复默认位置") {
                         showRestoreConfirmAlert = true

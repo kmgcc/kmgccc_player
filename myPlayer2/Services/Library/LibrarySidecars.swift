@@ -7,7 +7,7 @@
 
 import Foundation
 
-struct PlaylistSidecar: Codable, Sendable {
+nonisolated struct PlaylistSidecar: Codable, Sendable {
     let schemaVersion: Int
     let id: UUID
     let name: String
@@ -124,18 +124,18 @@ struct PlaylistSidecar: Codable, Sendable {
     }
 }
 
-struct PlaylistItemSidecar: Codable, Sendable {
+nonisolated struct PlaylistItemSidecar: Codable, Sendable {
     let trackID: UUID
     let addedAt: Date
 }
 
-enum PlaylistArtworkSource: String, Codable {
+nonisolated enum PlaylistArtworkSource: String, Codable, Sendable {
     case none
     case custom
     case generated
 }
 
-struct ArtistSidecar: Codable, Sendable {
+nonisolated struct ArtistSidecar: Codable, Sendable {
     var schemaVersion: Int
     var id: UUID
     var canonicalName: String
@@ -166,7 +166,7 @@ struct ArtistSidecar: Codable, Sendable {
     }
 }
 
-struct AlbumSidecar: Codable, Sendable {
+nonisolated struct AlbumSidecar: Codable, Sendable {
     var schemaVersion: Int
     var id: UUID
     var canonicalKey: String

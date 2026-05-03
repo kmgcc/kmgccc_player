@@ -7,7 +7,7 @@
 
 import Foundation
 
-struct ScannedTrackMeta: Sendable {
+nonisolated struct ScannedTrackMeta: Sendable {
     let schemaVersion: Int
     let id: UUID
     let title: String
@@ -35,7 +35,7 @@ struct ScannedTrackMeta: Sendable {
     }
 }
 
-struct MusicLibraryScanner: Sendable {
+nonisolated struct MusicLibraryScanner: Sendable {
 
     func scanTracks() -> [ScannedTrackMeta] {
         let fileManager = FileManager()
@@ -62,6 +62,10 @@ struct MusicLibraryScanner: Sendable {
                 parseTrackMeta(in: LocalLibraryPaths.trackFolderURL(for: id))
             }
         }
+    }
+
+    func scanTrackFolder(_ folderURL: URL) -> ScannedTrackMeta? {
+        parseTrackMeta(in: folderURL)
     }
 
     private func parseTrackMeta(in folderURL: URL) -> ScannedTrackMeta? {
