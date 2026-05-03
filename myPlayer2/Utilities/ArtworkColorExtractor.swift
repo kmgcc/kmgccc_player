@@ -269,6 +269,10 @@ extension ArtworkColorExtractor {
         let totalBucketWeight = buckets.reduce(CGFloat(0)) { $0 + $1.weight }
         let minimumBucketWeight = totalBucketWeight * 0.030
         let noiseFloor = totalBucketWeight * 0.012
+        // Near-monochrome covers: the only colourful buckets are likely noise
+        // (skin tones, logos, compression artefacts). Require a much larger
+        // area share before such a bucket can compete for dominance.
+        let isNearMono = profile.avgSaturation < 0.12 || profile.vividness < 0.10
 
         for bucket in buckets where bucket.weight > noiseFloor {
             let inv = 1 / bucket.weight
@@ -283,6 +287,11 @@ extension ArtworkColorExtractor {
 
             // Reject tiny but highly saturated buckets — usually watermarks or sticker noise.
             if areaShare < 0.030 && bucketSat > 0.55 {
+                continue
+            }
+
+            // On near-mono covers any saturated region needs to be substantial.
+            if isNearMono && bucketSat > 0.35 && areaShare < 0.12 {
                 continue
             }
 

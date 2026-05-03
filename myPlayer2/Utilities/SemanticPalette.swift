@@ -83,6 +83,20 @@ enum SemanticPaletteFactory {
         let comp = ColorMath.hsl(of: raw)
         var h = comp.h, s = comp.s, l = comp.l
 
+        // Hue guard: covers whose average hue sits in the warm-yellow / beige /
+        // ochre band must not produce a red or pink accent — small brown spots
+        // can drift the dominant bucket past the band, so snap back to avgHue.
+        let avg = analysis.avgHue
+        let isWarmAvg = avg >= 0.07 && avg <= 0.20
+        let isWarmConfident = analysis.dominantHueConfidence >= 0.16
+        if isWarmAvg && isWarmConfident {
+            let inWarmBand = (h >= 0.06 && h <= 0.20)
+            let drifted = ColorMath.circularHueDistance(h, avg) > 0.06
+            if !inWarmBand || drifted {
+                h = avg
+            }
+        }
+
         // Hue-aware minimum lightness on dark surfaces. Yellow/orange already glow
         // at lower L; blue/violet/red need higher L to remain readable.
         let darkMinL: CGFloat = {
@@ -100,12 +114,51 @@ enum SemanticPaletteFactory {
             s = ColorMath.clamp(max(s * 1.06, 0.32), 0.32, 0.86)
             l = ColorMath.clamp(max(l, darkMinL), darkMinL, darkMaxL)
         } else {
-            s = ColorMath.clamp(max(s * 1.02, 0.30), 0.30, 0.72)
+            // Light mode: hue-aware saturation ceiling. Cheap/garish hues
+            // (medical green, magenta, industrial blue) cap lower; warm yellow
+            // / orange can stay richer. Use a soft shoulder so colours just
+            // above the ceiling compress smoothly instead of clipping.
+            let lightSatCeiling: CGFloat = {
+                switch h {
+                case 0.83..<1.00, 0.00..<0.03:
+                    return 0.46                                 // pink / magenta / red-pink
+                case 0.72..<0.83:
+                    return 0.50                                 // purple / violet
+                case 0.30..<0.50:
+                    return 0.48                                 // medical green / cyan-green
+                case 0.50..<0.65:
+                    return 0.54                                 // industrial blue / cyan-blue
+                case 0.65..<0.72:
+                    return 0.58                                 // deep blue
+                case 0.03..<0.10:
+                    return 0.66                                 // warm red-orange
+                case 0.10..<0.20:
+                    return 0.68                                 // yellow / amber
+                case 0.20..<0.30:
+                    return 0.56                                 // yellow-green / chartreuse
+                default:
+                    return 0.54
+                }
+            }()
+            let raised = max(s * 1.02, 0.30)
+            let softened = ColorMath.softShoulder(
+                raised,
+                ceiling: lightSatCeiling,
+                softness: 0.10
+            )
+            s = ColorMath.clamp(softened, 0.30, 0.72)
             l = ColorMath.clamp(min(l * 0.78, 0.50), 0.30, 0.50)
         }
 
+        // Saturation safety net for low-colour covers — the dominant bucket on a
+        // grey/black/white cover with a few pink/red noise pixels will *look*
+        // saturated; cap it so the noise can't paint the accent neon.
         if analysis.isMonochrome {
             s = min(s, scheme == .dark ? 0.18 : 0.14)
+        } else if analysis.colorfulness < 0.10 || analysis.avgSaturation < 0.12 {
+            // Near-monochrome but not strict mono: low-sat photo, off-white
+            // sleeve with a small logo, dim duo-tone, etc.
+            s = min(s, scheme == .dark ? 0.26 : 0.20)
         } else if analysis.dominantHueConfidence < 0.18 {
             s = min(s, scheme == .dark ? 0.40 : 0.32)
         }
