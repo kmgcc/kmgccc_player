@@ -23,18 +23,31 @@ struct HomeHeroView: View {
     @State private var coverImage: NSImage?
     @State private var artworkData: Data?
     @State private var heroArtworkChecksum: UInt64 = 0
+    @State private var heroAnalysis: ArtworkColorAnalysis?
     @State private var isHovering = false
 
+    /// Hero palette is derived from this hero card's own track artwork — it
+    /// must NOT follow current playback when those differ. SemanticPaletteFactory
+    /// is shared, but the analysis input is local.
+    private var heroPalette: SemanticPalette {
+        SemanticPaletteFactory.make(
+            from: heroAnalysis ?? .neutralFallback,
+            scheme: colorScheme,
+            userFallbackAccent: NSColor(AppSettings.shared.accentColor),
+            useArtworkTint: AppSettings.shared.globalArtworkTintEnabled && heroAnalysis != nil
+        )
+    }
+
     private var artworkTextPrimary: Color {
-        Color(nsColor: themeStore.semanticPalette.readableTextOnArtwork)
+        Color(nsColor: heroPalette.readableTextOnArtwork)
     }
 
     private var artworkTextSecondary: Color {
-        Color(nsColor: themeStore.semanticPalette.readableTextOnArtwork.withAlphaComponent(0.78))
+        Color(nsColor: heroPalette.readableTextOnArtwork.withAlphaComponent(0.78))
     }
 
     private var artworkDominantColor: NSColor {
-        themeStore.semanticPalette.coverGradientDominant
+        heroPalette.coverGradientDominant
     }
 
     @State private var trackToEdit: Track?
@@ -457,6 +470,7 @@ struct HomeHeroView: View {
         coverImage = nil
         artworkData = nil
         heroArtworkChecksum = 0
+        heroAnalysis = nil
         let data = track.loadArtworkDataIfNeeded()
         guard let data, !data.isEmpty else { return }
         let checksum = ArtworkLoader.checksum(for: data)
@@ -467,11 +481,23 @@ struct HomeHeroView: View {
             checksum: checksum,
             targetPixelSize: CGSize(width: 480, height: 480)
         )
-        coverImage = await ArtworkLoader.loadImage(
+        async let imageTask = ArtworkLoader.loadImage(
             artworkData: data,
             cacheKey: key,
             targetPixelSize: CGSize(width: 480, height: 480)
         )
+        // Analyze locally so the hero's text/dominant colours track this card's
+        // artwork, not the currently-playing track's ThemeStore palette.
+        async let analysisTask: ArtworkColorAnalysis? = Task.detached(priority: .userInitiated) {
+            ArtworkColorExtractor.analyze(from: data)
+        }.value
+        let image = await imageTask
+        let analysis = await analysisTask
+        // Guard against a stale completion from a previous track — only apply
+        // the result if this hero card's artwork hasn't changed underneath us.
+        guard heroArtworkChecksum == checksum else { return }
+        coverImage = image
+        heroAnalysis = analysis
     }
 }
 

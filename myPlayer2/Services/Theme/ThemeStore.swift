@@ -10,9 +10,13 @@ import AppKit
 import Combine
 import SwiftUI
 
-private final class NSColorBox: NSObject {
+private final class CachedArtworkBox: NSObject {
     let color: NSColor
-    init(_ color: NSColor) { self.color = color }
+    let analysis: ArtworkColorAnalysis
+    init(color: NSColor, analysis: ArtworkColorAnalysis) {
+        self.color = color
+        self.analysis = analysis
+    }
 }
 
 /// Final computed colors for the application theme.
@@ -49,7 +53,7 @@ final class ThemeStore: ObservableObject {
 
     private let defaultBlueNS: NSColor
     private var rawDominantColor: NSColor
-    private let dominantColorCache = NSCache<NSString, NSColorBox>()
+    private let dominantColorCache = NSCache<NSString, CachedArtworkBox>()
     private var activeArtworkIdentity: String?
     private var extractionToken = UUID()
     private let extractionQueue = DispatchQueue(
@@ -205,9 +209,10 @@ final class ThemeStore: ObservableObject {
         
         Log.trace("Cleared averageColorCache for new track", category: .theme)
 
-        if let cacheKey, let cached = dominantColorCache.object(forKey: cacheKey as NSString)?.color {
+        if let cacheKey, let cached = dominantColorCache.object(forKey: cacheKey as NSString) {
             Log.debug("Cache hit for dominant color cache key \(cacheKey)", category: .theme)
-            rawDominantColor = cached
+            rawDominantColor = cached.color
+            self.analysis = cached.analysis
             hasArtworkThemeColor = true
             usesFallbackThemeColor = false
             lastProcessedChecksum = checksum
@@ -263,11 +268,15 @@ final class ThemeStore: ObservableObject {
         Log.trace("Applying extracted color", category: .theme)
         
         let resolved = extractedColor ?? rawDominantColor
+        let resolvedAnalysis = extractedAnalysis ?? .neutralFallback
         if let cacheKey {
-            dominantColorCache.setObject(NSColorBox(resolved), forKey: cacheKey as NSString)
+            dominantColorCache.setObject(
+                CachedArtworkBox(color: resolved, analysis: resolvedAnalysis),
+                forKey: cacheKey as NSString
+            )
         }
         rawDominantColor = resolved
-        self.analysis = extractedAnalysis ?? .neutralFallback
+        self.analysis = resolvedAnalysis
         hasArtworkThemeColor = extractedColor != nil || hasArtworkThemeColor
         usesFallbackThemeColor = !hasArtworkThemeColor
         lastProcessedChecksum = checksum
