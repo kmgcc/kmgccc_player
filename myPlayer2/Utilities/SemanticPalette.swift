@@ -135,7 +135,20 @@ enum SemanticPaletteFactory {
     }
 
     fileprivate static func readableTextOnArtwork(analysis: ArtworkColorAnalysis) -> NSColor {
-        analysis.bestTextSourceColor
+        let hsl = ColorMath.hsl(of: analysis.bestTextSourceColor)
+        if analysis.usesDarkForeground {
+            return ColorMath.color(
+                h: hsl.h,
+                s: ColorMath.clamp(hsl.s + 0.04, 0.10, 0.34),
+                l: 0.12
+            )
+        } else {
+            return ColorMath.color(
+                h: hsl.h,
+                s: ColorMath.clamp(hsl.s, 0.04, 0.24),
+                l: 0.92
+            )
+        }
     }
 
     fileprivate static func secondaryTextOnArtwork(analysis: ArtworkColorAnalysis) -> NSColor {
@@ -168,10 +181,30 @@ enum SemanticPaletteFactory {
         analysis: ArtworkColorAnalysis,
         isDark: Bool
     ) -> NSColor {
-        analysis.dominantColor
+        // Drive cover-overlay tint from dominant hue. Keep moderate saturation
+        // and never push past the cover's own brightness band.
+        let hsl = ColorMath.hsl(of: analysis.dominantColor)
+        let s = ColorMath.clamp(hsl.s * 0.92, 0.10, 0.62)
+        let l = ColorMath.clamp(hsl.l, 0.22, 0.78)
+        return ColorMath.color(h: hsl.h, s: s, l: l)
     }
 
     fileprivate static func coverGradientText(analysis: ArtworkColorAnalysis) -> NSColor {
-        analysis.bestTextSourceColor
+        // Stronger contrast bias than readableTextOnArtwork — used over a blurred
+        // cover, not a solid surface.
+        let hsl = ColorMath.hsl(of: analysis.bestTextSourceColor)
+        if analysis.usesDarkForeground {
+            return ColorMath.color(
+                h: hsl.h,
+                s: ColorMath.clamp(hsl.s, 0.18, 0.36),
+                l: 0.16
+            )
+        } else {
+            return ColorMath.color(
+                h: hsl.h,
+                s: ColorMath.clamp(hsl.s, 0.06, 0.20),
+                l: 0.94
+            )
+        }
     }
 }

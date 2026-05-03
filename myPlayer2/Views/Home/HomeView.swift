@@ -98,15 +98,13 @@ struct HomeView: View {
         let centerRightPad = rightInset + hPad
         let contentWidth = max(200, centerW - hPad * 2)
 
-        let sourceColor = themeStore.hasArtworkThemeColor ? themeStore.artworkBaseNSColor : nil
-
         return AnyView(
             ZStack(alignment: .topLeading) {
                 HomeAmbientShapesBackground(
                     geometry: g,
                     mode: mode,
                     scrollOffsetY: homeScrollY,
-                    sourceColor: sourceColor
+                    sourceColor: themeStore.semanticPalette.ambientSurface
                 )
                 .transaction { transaction in
                     transaction.animation = nil
