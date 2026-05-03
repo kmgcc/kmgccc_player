@@ -32,9 +32,6 @@ struct ThemePalette: Equatable {
 final class ThemeStore: ObservableObject {
 
     static let shared = ThemeStore()
-    // Keep dynamic accent bright enough in dark mode so icon glyphs stay readable.
-    static let darkModeMinimumThemeBrightness: CGFloat = 0.56
-    static let darkModeMinimumThemeLightness: CGFloat = 0.56
 
     @Published var colorScheme: ColorScheme = .dark
     @Published var palette: ThemePalette?
@@ -455,14 +452,6 @@ final class ThemeStore: ObservableObject {
             return Color(nsColor: .windowBackgroundColor)
         }
         return color
-    }
-
-    private func enforceMinimumLightnessForDarkMode(_ color: NSColor) -> NSColor {
-        ColorMath.clampLightness(
-            color,
-            lo: Self.darkModeMinimumThemeLightness,
-            hi: 1.0
-        )
     }
 
     private nonisolated func computeChecksum(_ data: Data) -> UInt64 {
