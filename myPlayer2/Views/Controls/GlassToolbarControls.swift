@@ -66,9 +66,9 @@ struct GlassIconButtonLabel: View {
 
     private var iconForeground: Color {
         if isPrimary {
-            return themeStore.accentColor.opacity(colorScheme == .dark ? 0.98 : 0.90)
+            return themeStore.accentColor
         }
-        return themeStore.accentColor.opacity(colorScheme == .dark ? 0.94 : 0.84)
+        return themeStore.accentColor.opacity(colorScheme == .dark ? 0.88 : 0.80)
     }
 
     @ViewBuilder
@@ -334,7 +334,7 @@ struct GlassToolbarTriplePill: View {
     }
 
     private var activeIconColor: Color {
-        themeStore.accentColor.opacity(colorScheme == .dark ? 0.96 : 0.88)
+        themeStore.accentColor
     }
 
     @ViewBuilder
