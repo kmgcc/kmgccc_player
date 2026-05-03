@@ -509,9 +509,19 @@ struct LibraryDetailHeaderView: View {
             switch config {
             case .playlist(let playlist, let data):
                 let tracks = data.tracks
-                let snapshots: [(id: UUID, artworkData: Data?)] = tracks.map {
-                    (id: $0.id, artworkData: $0.loadArtworkDataIfNeeded())
-                }
+                let snapshots = tracks.map { PlaylistArtworkSnapshot(track: $0) }
+                let artworkDataCount = snapshots.filter { $0.artworkData?.isEmpty == false }.count
+                let artworkFileURLCount = snapshots.filter { $0.artworkFileURL != nil }.count
+                let existingArtworkFileCount = snapshots.filter {
+                    guard let url = $0.artworkFileURL else { return false }
+                    return FileManager.default.fileExists(atPath: url.path)
+                }.count
+                print(
+                    "🎨 [HeaderGenerateClick] phase=clicked playlistID=\(playlist.id) "
+                        + "name=\"\(playlist.name)\" tracks=\(tracks.count) "
+                        + "artworkData=\(artworkDataCount) artworkFileURL=\(artworkFileURLCount) "
+                        + "fileExists=\(existingArtworkFileCount)"
+                )
                 let variationSeed = Int.random(in: 0...Int.max)
 
                 guard let image = await PlaylistArtworkGenerator.shared.generateArtwork(
@@ -519,17 +529,34 @@ struct LibraryDetailHeaderView: View {
                     snapshots: snapshots,
                     variationSeed: variationSeed
                 ) else {
-                    await MainActor.run { isArtworkActionInFlight = false }
+                    await MainActor.run {
+                        print(
+                            "🎨 [HeaderGenerateClick] phase=generator-failed playlistID=\(playlist.id) "
+                                + "tracks=\(tracks.count) artworkData=\(artworkDataCount) "
+                                + "artworkFileURL=\(artworkFileURLCount) fileExists=\(existingArtworkFileCount)"
+                        )
+                        isArtworkActionInFlight = false
+                    }
                     return
                 }
 
                 await MainActor.run {
-                    LocalLibraryService.shared.regeneratePlaylistArtwork(
+                    print(
+                        "🎨 [HeaderGenerateClick] phase=generator-succeeded playlistID=\(playlist.id) "
+                            + "imageSize=\(Int(image.size.width))x\(Int(image.size.height))"
+                    )
+                    let didSave = LocalLibraryService.shared.regeneratePlaylistArtwork(
                         playlistID: playlist.id,
                         tracks: tracks,
                         image: image
                     )
-                    onArtworkMutation()
+                    print(
+                        "🎨 [HeaderGenerateClick] phase=writeback-finished playlistID=\(playlist.id) "
+                            + "success=\(didSave)"
+                    )
+                    if didSave {
+                        onArtworkMutation()
+                    }
                     isArtworkActionInFlight = false
                 }
             case .artist(let entry, _):

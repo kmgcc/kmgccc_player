@@ -283,8 +283,17 @@ final class Track {
     }
 
     func resolvedArtworkURL() -> URL? {
-        guard let artworkFileName else { return nil }
-        return resolvedTrackFolderURL()?.appendingPathComponent(artworkFileName)
+        guard let folder = resolvedTrackFolderURL() else { return nil }
+        let fileManager = FileManager.default
+        for fileName in LocalLibraryPaths.trackArtworkCandidateFileNames(preferredFileName: artworkFileName) {
+            let url = folder.appendingPathComponent(fileName)
+            if fileManager.fileExists(atPath: url.path) {
+                return url
+            }
+        }
+
+        guard let artworkFileName, !artworkFileName.isEmpty else { return nil }
+        return folder.appendingPathComponent(artworkFileName)
     }
 
     func resolvedLyricsURL() -> URL? {
