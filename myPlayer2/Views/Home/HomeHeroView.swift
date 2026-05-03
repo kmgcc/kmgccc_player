@@ -23,9 +23,20 @@ struct HomeHeroView: View {
     @State private var coverImage: NSImage?
     @State private var artworkData: Data?
     @State private var heroArtworkChecksum: UInt64 = 0
-    @State private var artworkDominantColor: NSColor?
-    @State private var artworkTextPalette: ArtworkColorExtractor.TextPalette?
     @State private var isHovering = false
+
+    private var artworkTextPrimary: Color {
+        Color(nsColor: themeStore.semanticPalette.readableTextOnArtwork)
+    }
+
+    private var artworkTextSecondary: Color {
+        Color(nsColor: themeStore.semanticPalette.readableTextOnArtwork.withAlphaComponent(0.78))
+    }
+
+    private var artworkDominantColor: NSColor {
+        themeStore.semanticPalette.coverGradientDominant
+    }
+
     @State private var trackToEdit: Track?
 
     private var baseHeroHeight: CGFloat {
@@ -403,38 +414,23 @@ struct HomeHeroView: View {
     }
 
     private var heroPrimaryForeground: Color {
-        if let artworkTextPalette {
-            return Color(nsColor: artworkTextPalette.primary)
-        }
-        return Color.primary.opacity(colorScheme == .dark ? 0.92 : 0.82)
+        artworkTextPrimary
     }
 
     private var heroSecondaryForeground: Color {
-        if let artworkTextPalette {
-            return Color(nsColor: artworkTextPalette.secondary)
-        }
-        return Color.secondary
+        artworkTextSecondary
     }
 
     private var heroDescriptionForeground: Color {
-        if let artworkTextPalette {
-            return Color(nsColor: artworkTextPalette.description)
-        }
-        return Color.secondary
+        artworkTextPrimary.opacity(0.80)
     }
 
     private var heroTertiaryForeground: Color {
-        if let artworkTextPalette {
-            return Color(nsColor: artworkTextPalette.tertiary)
-        }
-        return Color(nsColor: .tertiaryLabelColor)
+        artworkTextPrimary.opacity(0.68)
     }
 
     private var heroQuaternaryForeground: Color {
-        if let artworkTextPalette {
-            return Color(nsColor: artworkTextPalette.quaternary)
-        }
-        return Color(nsColor: .tertiaryLabelColor)
+        artworkTextPrimary.opacity(0.54)
     }
 
     private var formattedDuration: String {
@@ -461,15 +457,11 @@ struct HomeHeroView: View {
         coverImage = nil
         artworkData = nil
         heroArtworkChecksum = 0
-        artworkDominantColor = nil
-        artworkTextPalette = nil
         let data = track.loadArtworkDataIfNeeded()
         guard let data, !data.isEmpty else { return }
         let checksum = ArtworkLoader.checksum(for: data)
         artworkData = data
         heroArtworkChecksum = checksum
-        artworkDominantColor = ArtworkColorExtractor.averageColor(from: data)
-        artworkTextPalette = ArtworkColorExtractor.textPalette(from: data)
         let key = ArtworkLoader.cacheKey(
             trackID: track.id,
             checksum: checksum,

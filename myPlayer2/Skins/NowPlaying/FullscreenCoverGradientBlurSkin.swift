@@ -18,13 +18,7 @@ struct FullscreenCoverGradientBlurSkin: NowPlayingSkin {
 
     func makeBackground(context: SkinContext) -> AnyView {
         AnyView(
-            CoverGradientBlurBackgroundView(
-                artworkData: context.track?.artworkData,
-                artworkImage: context.track?.artworkImage,
-                artworkChecksum: context.track?.artworkChecksum ?? 0,
-                dominantColor: context.theme.artworkAverageColor ?? context.theme.artworkPalette.first,
-                config: makeConfigFromSettings()
-            )
+            CoverGradientBlurSkinBackgroundBridge(context: context, config: makeConfigFromSettings())
         )
     }
 
@@ -71,6 +65,28 @@ struct FullscreenCoverGradientBlurSkin: NowPlayingSkin {
     }
 }
 
+// MARK: - Background View Wrapper (SemanticPalette bridge)
+
+/// Thin wrapper that reads `themeStore.semanticPalette.coverGradientDominant` from the
+/// SwiftUI environment and forwards it as the dominant color, replacing the old
+/// `context.theme.artworkAverageColor` source.
+private struct CoverGradientBlurSkinBackgroundBridge: View {
+    let context: SkinContext
+    let config: CoverGradientBlurConfig
+
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    var body: some View {
+        CoverGradientBlurBackgroundView(
+            artworkData: context.track?.artworkData,
+            artworkImage: context.track?.artworkImage,
+            artworkChecksum: context.track?.artworkChecksum ?? 0,
+            dominantColor: themeStore.semanticPalette.coverGradientDominant,
+            config: config
+        )
+    }
+}
+
 // MARK: - Background View Wrapper
 
 private struct CoverGradientBlurSkinBackground: View {
@@ -84,7 +100,7 @@ private struct CoverGradientBlurSkinBackground: View {
         let colorOverlayIntensity: CGFloat = 0.5
         let blurStartRatio = max(0, min(1, 0.5 - transitionW * 0.5))
         let blurEndRatio = max(0, min(1, 0.5 + transitionW * 0.5))
-        
+
         return CoverGradientBlurConfig(
             blurRadius: CGFloat(maxBlurRadius),
             colorOverlayOpacity: colorOverlayIntensity,
@@ -102,11 +118,13 @@ private struct CoverGradientBlurSkinBackground: View {
             artworkData: context.track?.artworkData,
             artworkImage: context.track?.artworkImage,
             artworkChecksum: context.track?.artworkChecksum ?? 0,
-            dominantColor: context.theme.artworkAverageColor,
+            dominantColor: themeStore.semanticPalette.coverGradientDominant,
             config: config
         )
         .ignoresSafeArea()
     }
+
+    @EnvironmentObject private var themeStore: ThemeStore
 }
 
 // MARK: - Artwork View
