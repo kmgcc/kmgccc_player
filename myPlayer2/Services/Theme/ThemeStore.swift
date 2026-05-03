@@ -45,6 +45,8 @@ final class ThemeStore: ObservableObject {
     @Published private(set) var hasArtworkThemeColor: Bool = false
     @Published private(set) var selectionFill: Color
     @Published private(set) var usesFallbackThemeColor: Bool = true
+    @Published private(set) var analysis: ArtworkColorAnalysis = .neutralFallback
+    @Published private(set) var semanticPalette: SemanticPalette
 
     let defaultBlue: Color
 
@@ -80,7 +82,13 @@ final class ThemeStore: ObservableObject {
         self.accentNSColor = fallback
         self.artworkBaseNSColor = fallback
         self.selectionFill = Color(nsColor: fallback).opacity(0.14)
-        
+        self.semanticPalette = SemanticPaletteFactory.make(
+            from: .neutralFallback,
+            scheme: .dark,
+            userFallbackAccent: fallback,
+            useArtworkTint: AppSettings.shared.globalArtworkTintEnabled
+        )
+
         dominantColorCache.countLimit = 50
 
         // Initial palette generation
@@ -161,6 +169,7 @@ final class ThemeStore: ObservableObject {
             lastProcessedChecksum = 0
             lastProcessedArtworkIdentity = nil
             averageColorCache = nil
+            analysis = .neutralFallback
             rawDominantColor = defaultBlueNS
             hasArtworkThemeColor = false
             usesFallbackThemeColor = true
@@ -244,6 +253,7 @@ final class ThemeStore: ObservableObject {
         } else {
             extractedColor = await extractDominantColor(from: data)
         }
+        let extractedAnalysis = await extractAnalysis(from: data)
 
         guard token == extractionToken, activeArtworkIdentity == artworkIdentity else {
             Log.trace(
@@ -260,6 +270,7 @@ final class ThemeStore: ObservableObject {
             dominantColorCache.setObject(NSColorBox(resolved), forKey: cacheKey as NSString)
         }
         rawDominantColor = resolved
+        self.analysis = extractedAnalysis ?? .neutralFallback
         hasArtworkThemeColor = extractedColor != nil || hasArtworkThemeColor
         usesFallbackThemeColor = !hasArtworkThemeColor
         lastProcessedChecksum = checksum
@@ -304,6 +315,14 @@ final class ThemeStore: ObservableObject {
         }
     }
 
+    private func extractAnalysis(from data: Data) async -> ArtworkColorAnalysis? {
+        await withCheckedContinuation { continuation in
+            extractionQueue.async {
+                continuation.resume(returning: ArtworkColorExtractor.analyze(from: data))
+            }
+        }
+    }
+
     /// Re-calculate the palette based on scheme and artwork.
     func refreshPalette(reason: String) async {
         let isDark = colorScheme == .dark
@@ -319,10 +338,13 @@ final class ThemeStore: ObservableObject {
             )
         }
 
-        let optimizedArtworkAccent = optimizeAccentColor(rawDominantColor, scheme: colorScheme)
-        let defaultAccentNS = NSColor(AppSettings.shared.accentColor)
-        let resolvedAccentNS =
-            AppSettings.shared.globalArtworkTintEnabled ? optimizedArtworkAccent : defaultAccentNS
+        let semantic = SemanticPaletteFactory.make(
+            from: analysis,
+            scheme: colorScheme,
+            userFallbackAccent: NSColor(AppSettings.shared.accentColor),
+            useArtworkTint: AppSettings.shared.globalArtworkTintEnabled && hasArtworkThemeColor
+        )
+        let resolvedAccentNS = semantic.globalAccent
         let fillAlpha = colorScheme == .dark ? 0.20 : 0.14
         withAnimation(.easeInOut(duration: 0.20)) {
             baseColor = Color(nsColor: rawDominantColor)
@@ -330,6 +352,7 @@ final class ThemeStore: ObservableObject {
             accentNSColor = resolvedAccentNS
             artworkBaseNSColor = rawDominantColor
             selectionFill = Color(nsColor: resolvedAccentNS).opacity(fillAlpha)
+            semanticPalette = semantic
         }
 
         // Default fallbacks
@@ -432,41 +455,6 @@ final class ThemeStore: ObservableObject {
             return Color(nsColor: .windowBackgroundColor)
         }
         return color
-    }
-
-    private func optimizeAccentColor(_ color: NSColor, scheme: ColorScheme) -> NSColor {
-        guard let rgb = color.usingColorSpace(.deviceRGB) else { return defaultBlueNS }
-
-        var hue: CGFloat = 0
-        var saturation: CGFloat = 0
-        var brightness: CGFloat = 0
-        var alpha: CGFloat = 0
-        rgb.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
-
-        // Step 1: remove dirty/gray and over-dark colors.
-        saturation = max(saturation, 0.24)
-        brightness = max(brightness, 0.22)
-
-        // Step 2: visibility optimization by mode.
-        if scheme == .dark {
-            saturation = min(max(saturation * 1.06, 0.30), 0.90)
-            brightness = min(max(brightness * 1.10, 0.62), 0.88)
-            brightness = max(brightness, Self.darkModeMinimumThemeBrightness)
-        } else {
-            saturation = min(max(saturation * 1.02, 0.28), 0.78)
-            brightness = min(max(brightness * 0.88, 0.28), 0.68)
-        }
-
-        let optimized = NSColor(
-            calibratedHue: hue,
-            saturation: saturation,
-            brightness: brightness,
-            alpha: 1.0
-        )
-        if scheme == .dark {
-            return enforceMinimumLightnessForDarkMode(optimized)
-        }
-        return optimized
     }
 
     private func enforceMinimumLightnessForDarkMode(_ color: NSColor) -> NSColor {
