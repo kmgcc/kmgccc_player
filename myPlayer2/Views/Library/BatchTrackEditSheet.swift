@@ -43,6 +43,7 @@ struct BatchTrackEditSheet: View {
     @State private var title = ""
     @State private var artist = ""
     @State private var album = ""
+    @State private var trackDescription = ""
     @State private var lyricsText = ""
     @State private var artworkData: Data?
     @State private var lyricsTimeOffsetMs: Double = 0
@@ -133,6 +134,7 @@ struct BatchTrackEditSheet: View {
         .onChange(of: title) { _, _ in draftDidChange() }
         .onChange(of: artist) { _, _ in draftDidChange() }
         .onChange(of: album) { _, _ in draftDidChange() }
+        .onChange(of: trackDescription) { _, _ in draftDidChange() }
         .onChange(of: lyricsText) { _, _ in draftDidChange() }
         .onChange(of: artworkData) { _, _ in draftDidChange() }
         .onChange(of: lyricsTimeOffsetMs) { _, _ in draftDidChange() }
@@ -423,6 +425,31 @@ struct BatchTrackEditSheet: View {
                         .textFieldStyle(.roundedBorder)
                 }
             }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("歌曲描述")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                ZStack(alignment: .topLeading) {
+                    TextEditor(text: $trackDescription)
+                        .frame(height: 64)
+                        .scrollContentBackground(.hidden)
+
+                    if trackDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text("可选，用于主页歌曲卡片横幅展示")
+                            .foregroundStyle(.tertiary)
+                            .font(.callout)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 8)
+                            .allowsHitTesting(false)
+                    }
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(Color.secondary.opacity(0.3), lineWidth: 1)
+                }
+            }
         }
         .padding(14)
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.36))
@@ -592,6 +619,7 @@ struct BatchTrackEditSheet: View {
         title = track.title
         artist = track.artist
         album = track.album
+        trackDescription = track.userDescription
         lyricsText = track.loadTTMLLyricsIfNeeded() ?? track.loadLyricsIfNeeded() ?? ""
         artworkData = track.loadArtworkDataIfNeeded()
         lyricsTimeOffsetMs = track.lyricsTimeOffsetMs
@@ -676,6 +704,7 @@ struct BatchTrackEditSheet: View {
         track.title = title.isEmpty ? NSLocalizedString("library.unknown_title", comment: "") : title
         track.artist = artist.isEmpty ? NSLocalizedString("library.unknown_artist", comment: "") : artist
         track.album = album.isEmpty ? NSLocalizedString("library.unknown_album", comment: "") : album
+        track.userDescription = trackDescription
         track.artworkData = artworkData
         track.lyricsTimeOffsetMs = lyricsTimeOffsetMs
 
@@ -720,6 +749,7 @@ struct BatchTrackEditSheet: View {
             savedTitle != track.title
             || savedArtist != track.artist
             || savedAlbum != track.album
+            || trackDescription != track.userDescription
             || abs(lyricsTimeOffsetMs - track.lyricsTimeOffsetMs) > 0.000_1
 
         let lyricsChanged = TrackLyricsDraft.differs(from: track, editorText: lyricsText)

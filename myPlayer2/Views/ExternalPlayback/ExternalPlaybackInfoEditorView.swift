@@ -59,6 +59,7 @@ struct ExternalPlaybackInfoEditorView: View {
             lyricsSearchTrack: nil,
             allowsArtworkImport: true,
             allowsLyricsOffset: false,
+            allowsDescriptionEditing: false,
             canSave: canSave,
             saveTitle: LocalizedStringKey("保存外部播放匹配"),
             onSave: {
@@ -70,6 +71,7 @@ struct ExternalPlaybackInfoEditorView: View {
             title: $title,
             artist: $artist,
             album: $album,
+            trackDescription: .constant(""),
             lyricsText: $lyricsText,
             artworkData: $artworkData,
             lyricsTimeOffsetMs: $lyricsTimeOffsetMs

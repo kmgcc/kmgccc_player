@@ -402,6 +402,7 @@ private struct HomePreferenceRankingView: View {
     var fixedHeight: CGFloat? = nil
     let playbackCoordinator: PlaybackCoordinator
     @Environment(\.colorScheme) private var colorScheme
+    @State private var trackToEdit: Track?
 
     var body: some View {
         let isHeightConstrained = fixedHeight != nil
@@ -425,7 +426,7 @@ private struct HomePreferenceRankingView: View {
                         .frame(maxWidth: .infinity, minHeight: 100)
                 } else {
                     // Header row
-                    HStack {
+                    HStack(spacing: 0) {
                         Text("#")
                             .frame(width: 28)
                         Spacer()
@@ -454,7 +455,8 @@ private struct HomePreferenceRankingView: View {
                                     dense: isHeightConstrained,
                                     scoreRange: scoreRange,
                                     queueTracks: queueTracks,
-                                    playbackCoordinator: playbackCoordinator
+                                    playbackCoordinator: playbackCoordinator,
+                                    onEditTrack: { trackToEdit = $0 }
                                 )
                                 if index < visibleItems.count - 1 {
                                     Divider()
@@ -470,7 +472,11 @@ private struct HomePreferenceRankingView: View {
             }
             .padding(.vertical, isHeightConstrained ? 1 : 4)
         }
+        .sheet(item: $trackToEdit) { track in
+            TrackEditSheet(track: track)
+        }
     }
+
 }
 
 private struct HomeRankRow: View {
@@ -480,6 +486,7 @@ private struct HomeRankRow: View {
     let scoreRange: HomePreferenceScoreRange
     let queueTracks: [Track]
     let playbackCoordinator: PlaybackCoordinator
+    let onEditTrack: (Track) -> Void
     @State private var isHovering = false
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
@@ -545,13 +552,25 @@ private struct HomeRankRow: View {
         }
         .contentShape(Rectangle())
         .onTapGesture {
-            playbackCoordinator.playTrack(
-                item.track,
-                inRandomQueueFrom: queueTracks,
-                libraryQueueSource: .librarySelection("home")
+            play()
+        }
+        .contextMenu {
+            TrackActionMenuContent(
+                track: item.track,
+                selectedPlaylistID: nil,
+                onPlay: play,
+                onEditTrack: onEditTrack
             )
         }
         .animation(.easeOut(duration: 0.15), value: isHovering)
+    }
+
+    private func play() {
+        playbackCoordinator.playTrack(
+            item.track,
+            inRandomQueueFrom: queueTracks,
+            libraryQueueSource: .librarySelection("home")
+        )
     }
 }
 
@@ -657,8 +676,8 @@ struct HomeListeningHeatmapView: View {
 
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
-
-    private let renderModel: ListeningCalendarRenderModel
+    @State private var displayedMonth: Date
+    @State private var monthDirection: Int = 0
 
     private var headerGridSpacing: CGFloat { compact ? 8 : 12 }
 
@@ -672,43 +691,115 @@ struct HomeListeningHeatmapView: View {
         self.compact = compact
         self.renderWidth = renderWidth
         self.fixedHeight = fixedHeight
-        self.renderModel = CalendarHeatmapData.build(
-            dailyMap: dailyMap,
-            compact: compact,
-            isDark: false,
-            accent: .fallback
-        )
+        _displayedMonth = State(initialValue: CalendarHeatmapData.currentMonthStart())
     }
 
     var body: some View {
-        let resolvedModel = renderModel.replacing(
+        let model = CalendarHeatmapData.build(
+            dailyMap: dailyMap,
+            month: displayedMonth,
+            compact: compact,
             isDark: colorScheme == .dark,
             accent: ListeningCalendarRenderModel.RGBA.resolved(from: themeStore.accentColor)
         )
 
         HomeInsightsCardContainer(fixedSize: nil, fixedHeight: fixedHeight) {
             VStack(alignment: .leading, spacing: headerGridSpacing) {
-                header
-                ListeningCalendarRenderView(model: resolvedModel)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .allowsHitTesting(false)
+                header(monthTitle: model.monthTitle)
+                ZStack {
+                    ListeningCalendarRenderView(model: model)
+                        .id(model.monthIdentity)
+                        .transition(monthTransition)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
+                .allowsHitTesting(false)
+                .animation(.smooth(duration: 0.32), value: model.monthIdentity)
             }
             .padding(compact ? 0 : 2)
         }
-        .transaction { transaction in
-            transaction.animation = nil
+        .onChange(of: dailyMap) { _, _ in
+            if displayedMonth > CalendarHeatmapData.currentMonthStart() {
+                displayedMonth = CalendarHeatmapData.currentMonthStart()
+            }
         }
     }
 
-    private var header: some View {
+    private func header(monthTitle: String) -> some View {
         HStack {
             Text("听歌日历")
                 .font(.system(size: compact ? 12 : 14, weight: .semibold))
             Spacer()
-            Text(renderModel.monthTitle)
-                .font(.system(size: compact ? 10 : 11, design: .monospaced))
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
+            HStack(spacing: compact ? 5 : 6) {
+                Text(monthTitle)
+                    .font(.system(size: compact ? 10 : 11, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+
+                monthButton(systemImage: "chevron.up", delta: -1, help: "上个月")
+                monthButton(
+                    systemImage: "chevron.down",
+                    delta: 1,
+                    help: "下个月",
+                    isDisabled: !canMoveToNextMonth
+                )
+            }
+        }
+    }
+
+    private var canMoveToNextMonth: Bool {
+        displayedMonth < CalendarHeatmapData.currentMonthStart()
+    }
+
+    private var monthTransition: AnyTransition {
+        let insertionEdge: Edge = monthDirection >= 0 ? .bottom : .top
+        let removalEdge: Edge = monthDirection >= 0 ? .top : .bottom
+        return .asymmetric(
+            insertion: .move(edge: insertionEdge).combined(with: .opacity),
+            removal: .move(edge: removalEdge).combined(with: .opacity)
+        )
+    }
+
+    private func monthButton(
+        systemImage: String,
+        delta: Int,
+        help: String,
+        isDisabled: Bool = false
+    ) -> some View {
+        Button {
+            moveMonth(delta)
+        } label: {
+            Image(systemName: systemImage)
+                .font(.system(size: compact ? 8 : 9, weight: .bold))
+                .foregroundStyle(
+                    isDisabled ? Color.secondary.opacity(0.35) : themeStore.accentColor.opacity(0.88)
+                )
+                .frame(width: compact ? 18 : 20, height: compact ? 18 : 20)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .background(
+            Circle()
+                .fill(Color.secondary.opacity(isDisabled ? 0.045 : 0.08))
+        )
+        .disabled(isDisabled)
+        .help(help)
+    }
+
+    private func moveMonth(_ delta: Int) {
+        guard delta != 0 else { return }
+        if delta > 0, !canMoveToNextMonth { return }
+        guard let nextMonth = CalendarHeatmapData.month(byAdding: delta, to: displayedMonth) else {
+            return
+        }
+        let clampedMonth = min(nextMonth, CalendarHeatmapData.currentMonthStart())
+        var directionTransaction = Transaction()
+        directionTransaction.disablesAnimations = true
+        withTransaction(directionTransaction) {
+            monthDirection = delta
+        }
+        withAnimation(.smooth(duration: 0.32)) {
+            displayedMonth = clampedMonth
         }
     }
 }
@@ -1182,6 +1273,7 @@ private struct ListeningCalendarRenderModel: Equatable {
     }
 
     let monthTitle: String
+    let monthIdentity: String
     let weekdaySymbols: [String]
     let days: [Day]
     let isCompact: Bool
@@ -1192,6 +1284,7 @@ private struct ListeningCalendarRenderModel: Equatable {
     func replacing(isDark: Bool, accent: RGBA) -> ListeningCalendarRenderModel {
         ListeningCalendarRenderModel(
             monthTitle: monthTitle,
+            monthIdentity: monthIdentity,
             weekdaySymbols: weekdaySymbols,
             days: days,
             isCompact: isCompact,
@@ -1225,18 +1318,20 @@ private enum CalendarHeatmapData {
 
     static func build(
         dailyMap: [Date: Int],
+        month: Date = Date(),
         compact: Bool,
         isDark: Bool,
         accent: ListeningCalendarRenderModel.RGBA
     ) -> ListeningCalendarRenderModel {
         let now = Date()
-        let monthLabel = makeMonthLabel(for: now, compact: compact)
+        let monthLabel = makeMonthLabel(for: month, compact: compact)
         let today = calendar.startOfDay(for: now)
         guard
-            let monthStart = calendar.date(from: calendar.dateComponents([.year, .month], from: now))
+            let monthStart = calendar.date(from: calendar.dateComponents([.year, .month], from: month))
         else {
             return ListeningCalendarRenderModel(
                 monthTitle: monthLabel,
+                monthIdentity: makeMonthIdentity(for: month),
                 weekdaySymbols: weekdayLabels,
                 days: [],
                 isCompact: compact,
@@ -1281,6 +1376,7 @@ private enum CalendarHeatmapData {
 
         return ListeningCalendarRenderModel(
             monthTitle: monthLabel,
+            monthIdentity: makeMonthIdentity(for: monthStart),
             weekdaySymbols: weekdayLabels,
             days: days,
             isCompact: compact,
@@ -1291,6 +1387,16 @@ private enum CalendarHeatmapData {
     }
 
     private static let weekdayLabels = ["一", "二", "三", "四", "五", "六", "日"]
+
+    static func currentMonthStart() -> Date {
+        let now = Date()
+        return calendar.date(from: calendar.dateComponents([.year, .month], from: now)) ?? now
+    }
+
+    static func month(byAdding value: Int, to date: Date) -> Date? {
+        let monthStart = calendar.date(from: calendar.dateComponents([.year, .month], from: date)) ?? date
+        return calendar.date(byAdding: .month, value: value, to: monthStart)
+    }
 
     private static func displayRowCount(compact: Bool) -> Int {
         compact ? 6 : 7
@@ -1303,6 +1409,11 @@ private enum CalendarHeatmapData {
 
     private static func makeMonthLabel(for date: Date, compact: Bool) -> String {
         (compact ? compactMonthFormatter : regularMonthFormatter).string(from: date)
+    }
+
+    private static func makeMonthIdentity(for date: Date) -> String {
+        let components = calendar.dateComponents([.year, .month], from: date)
+        return "\(components.year ?? 0)-\(components.month ?? 0)"
     }
 
     private static func startOfWeek(for date: Date) -> Date {

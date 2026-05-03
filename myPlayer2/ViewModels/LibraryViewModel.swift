@@ -451,6 +451,10 @@ final class LibraryViewModel {
             playlist.tracks = playlist.tracks.map { refreshedByID[$0.id] ?? $0 }
         }
         totalTrackCount = allTracks.count
+        runtimeArtists = await repository.fetchArtistSections()
+        runtimeAlbums = await repository.fetchAlbumSections()
+        artistEntries = await repository.fetchArtistEntries()
+        albumEntries = await repository.fetchAlbumEntries()
 
         Log.info(
             "[ImportEnrichmentReload] visible playlist rows refreshed for \(refreshedTracks.count) tracks",
@@ -798,20 +802,35 @@ final class LibraryViewModel {
 
     func deletePlaylist(_ playlist: Playlist) async {
         await repository.deletePlaylist(playlist)
+        playlists.removeAll { $0.id == playlist.id }
+        playlistItemAddedAtMap[playlist.id] = nil
         if currentSelection == .playlist(playlist.id) {
             currentSelection = .allSongs
         }
-        await refresh()
+        await invalidateDetailSelectionCacheIfNeeded(
+            selectionIdentity: "playlist-\(playlist.id.uuidString)"
+        )
+        refreshTrigger += 1
     }
 
     func addTracksToPlaylist(_ tracks: [Track], playlist: Playlist) async {
         await repository.addTracks(tracks, to: playlist)
-        await refresh()
+        playlists = await repository.fetchPlaylists()
+        playlistItemAddedAtMap = await repository.fetchPlaylistItemAddedAtMap()
+        await invalidateDetailSelectionCacheIfNeeded(
+            selectionIdentity: "playlist-\(playlist.id.uuidString)"
+        )
+        refreshTrigger += 1
     }
 
     func removeTracksFromPlaylist(_ tracks: [Track], playlist: Playlist) async {
         await repository.removeTracks(tracks, from: playlist)
-        await refresh()
+        playlists = await repository.fetchPlaylists()
+        playlistItemAddedAtMap = await repository.fetchPlaylistItemAddedAtMap()
+        await invalidateDetailSelectionCacheIfNeeded(
+            selectionIdentity: "playlist-\(playlist.id.uuidString)"
+        )
+        refreshTrigger += 1
     }
 
     // MARK: - Track Operations
@@ -1048,7 +1067,6 @@ final class LibraryViewModel {
         case .metaLyricsAndArtwork:
             await repository.persistTrackMetaLyricsAndArtwork(track, reason: reason)
         }
-        await refresh()
     }
 
     func clearIndexCacheAndRebuild() async {

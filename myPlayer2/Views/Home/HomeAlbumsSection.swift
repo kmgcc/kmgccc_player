@@ -27,6 +27,8 @@ struct HomeAlbumsSection: View {
 
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(UIStateViewModel.self) private var uiState
+    @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+    @State private var deletionRequest: HomeAlbumDeletionRequest?
 
     private let cardCornerRadius: CGFloat = 16
 
@@ -36,6 +38,35 @@ struct HomeAlbumsSection: View {
                 .padding(.leading, centerLeftPad)
                 .padding(.trailing, centerRightPad)
             carousel
+        }
+        .alert(
+            NSLocalizedString("sidebar.delete_album_confirm_title", comment: ""),
+            isPresented: Binding(
+                get: { deletionRequest != nil },
+                set: { if !$0 { deletionRequest = nil } }
+            ),
+            presenting: deletionRequest
+        ) { request in
+            Button(
+                NSLocalizedString("sidebar.delete_album", comment: ""),
+                role: .destructive
+            ) {
+                let entry = request.entry
+                deletionRequest = nil
+                Task { await libraryVM.deleteAlbum(entry) }
+            }
+            Button(
+                NSLocalizedString("edit.track.cancel", comment: ""),
+                role: .cancel
+            ) { deletionRequest = nil }
+        } message: { request in
+            Text(
+                String(
+                    format: NSLocalizedString("sidebar.delete_album_confirm_message", comment: ""),
+                    request.entry.displayTitle,
+                    request.trackCount
+                )
+            )
         }
     }
 
@@ -49,10 +80,19 @@ struct HomeAlbumsSection: View {
             // visual left edge (sidebar width + center horizontal padding).
             leadingScrollPadding: centerLeftPad + 4,
             trailingScrollPadding: max(4, centerRightPad - 8),
-            showsEdgeFade: false
+            showsEdgeFade: false,
+            showsScrollButtons: true,
+            scrollButtonLeadingInset: centerLeftPad + 8,
+            scrollButtonTrailingInset: max(12, centerRightPad + 8)
         ) {
             ForEach(albums) { album in
-                HomeAlbumCard(album: album, mode: mode)
+                HomeAlbumCard(
+                    album: album,
+                    mode: mode,
+                    onOpen: { open(album) },
+                    onPlay: { play(album) },
+                    onDelete: { requestDelete(album) }
+                )
             }
         }
     }
@@ -102,6 +142,37 @@ struct HomeAlbumsSection: View {
         }
         .buttonStyle(.plain)
     }
+
+    private func open(_ album: AlbumEntry) {
+        libraryVM.selectedAlbumName = album.displayTitle
+        uiState.navigateFromHome(
+            to: .album(album.canonicalKey),
+            libraryVM: libraryVM
+        )
+    }
+
+    private func play(_ album: AlbumEntry) {
+        let tracks = libraryVM.allTracks.filter { $0.albumGroupKey == album.canonicalKey }
+        playbackCoordinator.playTracks(
+            tracks,
+            startingAt: 0,
+            libraryQueueSource: .librarySelection("home-album-\(album.canonicalKey)"),
+            playbackOrderMode: .sequence
+        )
+    }
+
+    private func requestDelete(_ album: AlbumEntry) {
+        deletionRequest = HomeAlbumDeletionRequest(
+            entry: album,
+            trackCount: album.trackCount
+        )
+    }
+}
+
+private struct HomeAlbumDeletionRequest: Identifiable {
+    let entry: AlbumEntry
+    let trackCount: Int
+    var id: UUID { entry.id }
 }
 
 // MARK: - Album card
@@ -109,9 +180,11 @@ struct HomeAlbumsSection: View {
 private struct HomeAlbumCard: View {
     let album: AlbumEntry
     let mode: HomeLayoutMode
+    let onOpen: () -> Void
+    let onPlay: () -> Void
+    let onDelete: () -> Void
 
     @Environment(LibraryViewModel.self) private var libraryVM
-    @Environment(UIStateViewModel.self) private var uiState
     @State private var image: NSImage?
     @State private var isHovering = false
     @Environment(\.colorScheme) private var colorScheme
@@ -171,11 +244,6 @@ private struct HomeAlbumCard: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-
-                Text("\(album.trackCount) 首歌曲")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .padding(.top, 2)
             }
         }
         .padding(cardInset)
@@ -190,12 +258,21 @@ private struct HomeAlbumCard: View {
         .onHover { hovering in
             isHovering = hovering
         }
-        .onTapGesture {
-            libraryVM.selectedAlbumName = album.displayTitle
-            uiState.navigateFromHome(
-                to: .album(album.canonicalKey),
-                libraryVM: libraryVM
-            )
+        .onTapGesture(perform: onOpen)
+        .contextMenu {
+            Button(action: onPlay) {
+                Label("播放该专辑", systemImage: "play.fill")
+            }
+
+            Button(action: onOpen) {
+                Label("打开专辑", systemImage: "square.stack")
+            }
+
+            Divider()
+
+            Button(role: .destructive, action: onDelete) {
+                Label("删除专辑", systemImage: "trash")
+            }
         }
         .task {
             await loadImage()

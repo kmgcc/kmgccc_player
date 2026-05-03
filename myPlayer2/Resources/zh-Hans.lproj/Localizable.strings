@@ -176,6 +176,8 @@
 "edit.track.artist_name" = "歌手名称";
 "edit.track.album" = "专辑";
 "edit.track.album_name" = "专辑名称";
+"edit.track.description" = "歌曲描述";
+"edit.track.description_placeholder" = "可选，用于主页歌曲卡片横幅展示";
 "edit.track.duration" = "时长";
 "edit.track.lyrics" = "歌词 (TTML/LRC)";
 "edit.track.import_lyrics" = "导入...";

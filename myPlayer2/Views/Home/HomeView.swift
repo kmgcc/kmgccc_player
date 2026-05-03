@@ -44,7 +44,20 @@ struct HomeView: View {
             hasAppeared = true
         }
         .onChange(of: libraryVM.refreshTrigger) { _, _ in
-            homeVM.refresh(from: libraryVM)
+            homeVM.refreshChangedSections(from: libraryVM)
+        }
+        .onChange(of: libraryVM.trackUpdateEvent) { _, event in
+            guard let event else { return }
+            homeVM.applyTrackUpdates(from: libraryVM, trackIDs: [event.trackID])
+        }
+        .onChange(of: libraryVM.artistSortKey) { _, _ in
+            homeVM.refreshArtistAlbumSort(from: libraryVM)
+        }
+        .onChange(of: libraryVM.albumSortKey) { _, _ in
+            homeVM.refreshArtistAlbumSort(from: libraryVM)
+        }
+        .onChange(of: libraryVM.trackSortOrder) { _, _ in
+            homeVM.refreshArtistAlbumSort(from: libraryVM)
         }
         .onChange(of: libraryVM.state) { old, new in
             if new == .loaded {
@@ -122,7 +135,14 @@ struct HomeView: View {
         ScrollView(.vertical, showsIndicators: true) {
             VStack(spacing: mode.sectionSpacing) {
                 if let heroTrack = homeVM.heroTrack {
-                    HomeHeroView(track: heroTrack, containerWidth: contentWidth, mode: mode)
+                    HomeHeroView(
+                        track: heroTrack,
+                        containerWidth: contentWidth,
+                        mode: mode,
+                        onSwitchTrack: {
+                            homeVM.switchHeroTrack(from: libraryVM)
+                        }
+                    )
                         .padding(.leading, centerLeftPad)
                         .padding(.trailing, centerRightPad)
                 }

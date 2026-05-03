@@ -28,6 +28,7 @@ struct TrackEditSheet: View {
     @State private var title: String = ""
     @State private var artist: String = ""
     @State private var album: String = ""
+    @State private var trackDescription: String = ""
     @State private var lyricsText: String = ""
     @State private var artworkData: Data?
     @State private var lyricsTimeOffsetMs: Double = 0
@@ -58,6 +59,7 @@ struct TrackEditSheet: View {
             lyricsSearchTrack: track,
             allowsArtworkImport: true,
             allowsLyricsOffset: true,
+            allowsDescriptionEditing: true,
             canSave: trackEditChangeSet.hasChanges,
             saveTitle: "edit.track.save",
             onSave: {
@@ -69,6 +71,7 @@ struct TrackEditSheet: View {
             title: $title,
             artist: $artist,
             album: $album,
+            trackDescription: $trackDescription,
             lyricsText: $lyricsText,
             artworkData: $artworkData,
             lyricsTimeOffsetMs: $lyricsTimeOffsetMs
@@ -373,6 +376,7 @@ struct TrackEditSheet: View {
         title = track.title
         artist = track.artist
         album = track.album
+        trackDescription = track.userDescription
         lyricsText = track.loadTTMLLyricsIfNeeded() ?? track.loadLyricsIfNeeded() ?? ""
         artworkData = track.loadArtworkDataIfNeeded()
         lyricsTimeOffsetMs = track.lyricsTimeOffsetMs
@@ -390,6 +394,7 @@ struct TrackEditSheet: View {
             savedTitle != track.title
             || savedArtist != track.artist
             || savedAlbum != track.album
+            || trackDescription != track.userDescription
             || abs(lyricsTimeOffsetMs - track.lyricsTimeOffsetMs) > 0.000_1
 
         let lyricsChanged = TrackLyricsDraft.differs(from: track, editorText: lyricsText)
@@ -434,6 +439,7 @@ struct TrackEditSheet: View {
             artist.isEmpty ? NSLocalizedString("library.unknown_artist", comment: "") : artist
         track.album =
             album.isEmpty ? NSLocalizedString("library.unknown_album", comment: "") : album
+        track.userDescription = trackDescription
         TrackLyricsDraft.assign(editorText: lyricsText, to: track)
         track.artworkData = artworkData
         track.lyricsTimeOffsetMs = lyricsTimeOffsetMs

@@ -19,6 +19,7 @@ struct TrackSidecar: Codable {
     let artist: String
     let album: String
     let albumArtist: String?
+    let description: String?
     let duration: Double
     let addedAt: Date
     let importedAt: Date?
@@ -41,6 +42,7 @@ struct TrackSidecar: Codable {
         case artist
         case album
         case albumArtist
+        case description
         case duration
         case addedAt
         case importedAt
@@ -57,12 +59,13 @@ struct TrackSidecar: Codable {
     }
 
     init(
-        schemaVersion: Int = 4,
+        schemaVersion: Int = 5,
         id: UUID,
         title: String,
         artist: String,
         album: String,
         albumArtist: String? = nil,
+        description: String? = nil,
         duration: Double,
         addedAt: Date,
         importedAt: Date?,
@@ -83,6 +86,7 @@ struct TrackSidecar: Codable {
         self.artist = artist
         self.album = album
         self.albumArtist = albumArtist
+        self.description = description
         self.duration = duration
         self.addedAt = addedAt
         self.importedAt = importedAt
@@ -109,6 +113,7 @@ struct TrackSidecar: Codable {
         artist = try container.decode(String.self, forKey: .artist)
         album = try container.decode(String.self, forKey: .album)
         albumArtist = try container.decodeIfPresent(String.self, forKey: .albumArtist)
+        description = try container.decodeIfPresent(String.self, forKey: .description)
         duration = try container.decode(Double.self, forKey: .duration)
         addedAt = try container.decode(Date.self, forKey: .addedAt)
         importedAt = try container.decodeIfPresent(Date.self, forKey: .importedAt)
@@ -136,12 +141,13 @@ struct TrackSidecar: Codable {
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(4, forKey: .schemaVersion)
+        try container.encode(5, forKey: .schemaVersion)
         try container.encode(id, forKey: .id)
         try container.encode(title, forKey: .title)
         try container.encode(artist, forKey: .artist)
         try container.encode(album, forKey: .album)
         try container.encodeIfPresent(albumArtist, forKey: .albumArtist)
+        try container.encodeIfPresent(description, forKey: .description)
         try container.encode(duration, forKey: .duration)
         try container.encode(addedAt, forKey: .addedAt)
         try container.encodeIfPresent(importedAt, forKey: .importedAt)
@@ -423,7 +429,7 @@ final class LocalLibraryService {
         let audioFileName = URL(fileURLWithPath: track.libraryRelativePath).lastPathComponent
         let preferenceStats = PreferenceStatsService.shared.getStats(for: track.id)
         let sidecar = TrackSidecar(
-            schemaVersion: 4,
+            schemaVersion: 5,
             id: track.id,
             title: track.title,
             artist: track.artist,
@@ -431,6 +437,10 @@ final class LocalLibraryService {
             albumArtist: {
                 let trimmed = track.albumArtist?.trimmingCharacters(in: .whitespacesAndNewlines)
                 return (trimmed?.isEmpty ?? true) ? nil : trimmed
+            }(),
+            description: {
+                let trimmed = track.userDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? nil : trimmed
             }(),
             duration: track.duration,
             addedAt: track.addedAt,
@@ -1311,6 +1321,7 @@ final class LocalLibraryService {
                 artist: sidecar.artist,
                 album: sidecar.album,
                 albumArtist: sidecar.albumArtist,
+                userDescription: sidecar.description ?? "",
                 duration: sidecar.duration,
                 addedAt: sidecar.addedAt,
                 importedAt: sidecar.importedAt ?? sidecar.addedAt,
