@@ -470,78 +470,15 @@ final class ThemeStore: ObservableObject {
     }
 
     private func enforceMinimumLightnessForDarkMode(_ color: NSColor) -> NSColor {
-        guard let rgb = color.usingColorSpace(.deviceRGB) else { return color }
-        let r = clamp(rgb.redComponent, min: 0, max: 1)
-        let g = clamp(rgb.greenComponent, min: 0, max: 1)
-        let b = clamp(rgb.blueComponent, min: 0, max: 1)
-
-        let maxV = max(r, max(g, b))
-        let minV = min(r, min(g, b))
-        var h: CGFloat = 0
-        let l = (maxV + minV) * 0.5
-        let delta = maxV - minV
-
-        if delta > 0.000_001 {
-            if maxV == r {
-                h = ((g - b) / delta).truncatingRemainder(dividingBy: 6)
-            } else if maxV == g {
-                h = ((b - r) / delta) + 2
-            } else {
-                h = ((r - g) / delta) + 4
-            }
-            h /= 6
-            if h < 0 { h += 1 }
-        }
-
-        var s: CGFloat = 0
-        if delta > 0.000_001 {
-            s = delta / (1 - abs(2 * l - 1))
-        }
-
-        let targetL = max(l, Self.darkModeMinimumThemeLightness)
-        if targetL <= l + 0.000_001 { return color }
-
-        let c = (1 - abs(2 * targetL - 1)) * s
-        let hPrime = h * 6
-        let x = c * (1 - abs(hPrime.truncatingRemainder(dividingBy: 2) - 1))
-
-        var rp: CGFloat = 0
-        var gp: CGFloat = 0
-        var bp: CGFloat = 0
-
-        switch hPrime {
-        case 0..<1:
-            rp = c; gp = x; bp = 0
-        case 1..<2:
-            rp = x; gp = c; bp = 0
-        case 2..<3:
-            rp = 0; gp = c; bp = x
-        case 3..<4:
-            rp = 0; gp = x; bp = c
-        case 4..<5:
-            rp = x; gp = 0; bp = c
-        default:
-            rp = c; gp = 0; bp = x
-        }
-
-        let m = targetL - c * 0.5
-        return NSColor(
-            calibratedRed: clamp(rp + m, min: 0, max: 1),
-            green: clamp(gp + m, min: 0, max: 1),
-            blue: clamp(bp + m, min: 0, max: 1),
-            alpha: 1.0
+        ColorMath.clampLightness(
+            color,
+            lo: Self.darkModeMinimumThemeLightness,
+            hi: 1.0
         )
     }
 
     private nonisolated func computeChecksum(_ data: Data) -> UInt64 {
-        var hash: UInt64 = 1_469_598_103_934_665_603
-        data.withUnsafeBytes { rawBuffer in
-            for byte in rawBuffer {
-                hash ^= UInt64(byte)
-                hash &*= 1_099_511_628_211
-            }
-        }
-        return hash
+        ColorMath.fnv1a(data)
     }
     
     private func makeCacheKey(artworkIdentity: String?, checksum: UInt64) -> String? {
@@ -553,10 +490,6 @@ final class ThemeStore: ObservableObject {
         guard let identity, !identity.isEmpty else { return "nil" }
         return String(identity.prefix(16))
     }
-}
-
-private func clamp(_ value: CGFloat, min minValue: CGFloat, max maxValue: CGFloat) -> CGFloat {
-    Swift.min(Swift.max(value, minValue), maxValue)
 }
 
 // MARK: - Color Extension (RGBA Parser)

@@ -10,7 +10,8 @@ import AppKit
 
 enum ColorMath {
     static func fnv1a(_ data: Data) -> UInt64 {
-        var hash: UInt64 = 1_469_598_103_934_665_603
+        // FNV-1a 64-bit. http://www.isthe.com/chongo/tech/comp/fnv/
+        var hash: UInt64 = 14_695_981_039_346_656_037
         data.withUnsafeBytes { rawBuffer in
             for byte in rawBuffer {
                 hash ^= UInt64(byte)
@@ -31,7 +32,7 @@ enum ColorMath {
     }
 
     static func circularHueDistance(_ a: CGFloat, _ b: CGFloat) -> CGFloat {
-        let d = abs(a - b)
+        let d = abs(normalizedHue(a) - normalizedHue(b))
         return Swift.min(d, 1 - d)
     }
 
@@ -74,7 +75,7 @@ enum ColorMath {
         }
         let m = l - c * 0.5
         return NSColor(
-            calibratedRed: clamp(r + m, 0, 1),
+            deviceRed: clamp(r + m, 0, 1),
             green: clamp(g + m, 0, 1),
             blue: clamp(b + m, 0, 1),
             alpha: alpha
