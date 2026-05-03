@@ -331,23 +331,86 @@ final class PlaybackCoordinator {
         externalProvider(for: activeSource)
     }
 
-    private static func randomQueue(from tracks: [Track], startingWith startTrack: Track? = nil) -> [Track] {
+    static func smartRandomQueue(from tracks: [Track], startingWith startTrack: Track? = nil) -> [Track] {
         var seenIDs = Set<UUID>()
         let uniqueTracks = tracks.filter { track in
             guard !seenIDs.contains(track.id) else { return false }
             seenIDs.insert(track.id)
             return track.availability != .missing
         }
+        guard !uniqueTracks.isEmpty else { return [] }
 
-        if let startTrack {
-            let resolvedStart = uniqueTracks.first { $0.id == startTrack.id } ?? startTrack
-            let rest = uniqueTracks.filter { $0.id != resolvedStart.id }.shuffled()
-            return [resolvedStart] + rest
+        let trackByID = Dictionary(uniqueKeysWithValues: uniqueTracks.map { ($0.id, $0) })
+        let weights = Dictionary(uniqueKeysWithValues: uniqueTracks.map { track in
+            let stats = PreferenceStatsService.shared.getStats(for: track.id)
+            let score = PreferenceScorerV2.calculateScore(
+                stats: stats,
+                duration: track.duration,
+                manualLikeState: stats.manualLikeState
+            )
+            return (track.id, score.baseWeight)
+        })
+
+        let start = startTrack.flatMap { requested in
+            uniqueTracks.first { $0.id == requested.id }
+        } ?? weightedSample(
+            from: uniqueTracks,
+            weights: weights,
+            recentHistory: [],
+            trackByID: trackByID
+        )
+        guard let start else { return [] }
+
+        var result: [Track] = [start]
+        var recentHistory: [UUID] = [start.id]
+        var remaining = uniqueTracks.filter { $0.id != start.id }
+
+        while !remaining.isEmpty {
+            guard let next = weightedSample(
+                from: remaining,
+                weights: weights,
+                recentHistory: recentHistory,
+                trackByID: trackByID
+            ) else { break }
+
+            result.append(next)
+            recentHistory.append(next.id)
+            if recentHistory.count > ShuffleSession.maxHistorySize {
+                recentHistory.removeFirst(recentHistory.count - ShuffleSession.maxHistorySize)
+            }
+            remaining.removeAll { $0.id == next.id }
         }
 
-        guard let start = uniqueTracks.randomElement() else { return [] }
-        let rest = uniqueTracks.filter { $0.id != start.id }.shuffled()
-        return [start] + rest
+        return result
+    }
+
+    private static func randomQueue(from tracks: [Track], startingWith startTrack: Track? = nil) -> [Track] {
+        smartRandomQueue(from: tracks, startingWith: startTrack)
+    }
+
+    private static func weightedSample(
+        from tracks: [Track],
+        weights: [UUID: Double],
+        recentHistory: [UUID],
+        trackByID: [UUID: Track]
+    ) -> Track? {
+        let adjustedWeights = Dictionary(uniqueKeysWithValues: tracks.map { track in
+            let baseWeight = weights[track.id] ?? 1
+            let runtimeWeight = PreferenceScorerV2.applyRuntimePenalties(
+                baseWeight: baseWeight,
+                track: track,
+                recentHistory: recentHistory,
+                tracks: trackByID
+            )
+            return (track.id, runtimeWeight)
+        })
+
+        guard let selectedID = WeightedRandomSampler.sample(
+            from: tracks.map(\.id),
+            weights: adjustedWeights
+        ) else { return nil }
+
+        return trackByID[selectedID]
     }
 
     private func externalProvider(for source: PlaybackSource) -> (any ExternalPlaybackProvider)? {

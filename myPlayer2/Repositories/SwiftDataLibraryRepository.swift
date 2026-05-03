@@ -674,6 +674,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             artist: meta.artist,
             album: meta.album,
             albumArtist: meta.albumArtist,
+            userDescription: meta.description,
             duration: meta.duration,
             addedAt: meta.addedAt,
             importedAt: meta.importedAt,

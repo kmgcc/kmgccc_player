@@ -14,6 +14,8 @@ struct HomePlaylistsSection: View {
 
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(UIStateViewModel.self) private var uiState
+    @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+    @State private var deletionRequest: HomePlaylistDeletionRequest?
 
     private var columnCount: Int {
         switch mode {
@@ -92,6 +94,29 @@ struct HomePlaylistsSection: View {
             sectionHeader
             contentBlock
         }
+        .alert(
+            NSLocalizedString("edit.playlist.delete_confirm_title", comment: ""),
+            isPresented: Binding(
+                get: { deletionRequest != nil },
+                set: { if !$0 { deletionRequest = nil } }
+            ),
+            presenting: deletionRequest
+        ) { request in
+            Button(
+                NSLocalizedString("edit.playlist.delete_confirm", comment: ""),
+                role: .destructive
+            ) {
+                let playlist = request.playlist
+                deletionRequest = nil
+                Task { await libraryVM.deletePlaylist(playlist) }
+            }
+            Button(
+                NSLocalizedString("edit.track.cancel", comment: ""),
+                role: .cancel
+            ) { deletionRequest = nil }
+        } message: { _ in
+            Text(NSLocalizedString("edit.playlist.delete_desc", comment: ""))
+        }
     }
 
     // MARK: - Content dispatch
@@ -156,10 +181,14 @@ struct HomePlaylistsSection: View {
                 HomePlaylistCard(
                     playlist: featured,
                     mode: mode,
-                    kind: .featured(height: featuredH)
+                    kind: .featured(height: featuredH),
+                    onFeaturedTrackPlay: { track in
+                        play(track, in: featured)
+                    }
                 )
                 .frame(width: featuredW)
                 .onTapGesture { navigate(to: featured) }
+                .contextMenu { playlistContextMenu(for: featured) }
 
                 VStack(spacing: gridSpacing) {
                     HomePlaylistCard(
@@ -168,12 +197,14 @@ struct HomePlaylistsSection: View {
                         kind: .compact(height: smallH)
                     )
                     .onTapGesture { navigate(to: sideA) }
+                    .contextMenu { playlistContextMenu(for: sideA) }
                     HomePlaylistCard(
                         playlist: sideB,
                         mode: mode,
                         kind: .compact(height: smallH)
                     )
                     .onTapGesture { navigate(to: sideB) }
+                    .contextMenu { playlistContextMenu(for: sideB) }
                 }
                 .frame(width: sideW, height: featuredH)
             }
@@ -216,6 +247,7 @@ struct HomePlaylistsSection: View {
             ForEach(items) { playlist in
                 HomePlaylistCard(playlist: playlist, mode: mode, kind: .normal)
                     .onTapGesture { navigate(to: playlist) }
+                    .contextMenu { playlistContextMenu(for: playlist) }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -283,11 +315,13 @@ struct HomePlaylistsSection: View {
             )
                 .frame(width: leftCardWidth)
                 .onTapGesture { navigate(to: items[leftIndex]) }
+                .contextMenu { playlistContextMenu(for: items[leftIndex]) }
 
             if rightIndex < items.count {
                 HomePlaylistCard(playlist: items[rightIndex], mode: mode, kind: .normal)
                     .frame(width: rightWidth)
                     .onTapGesture { navigate(to: items[rightIndex]) }
+                    .contextMenu { playlistContextMenu(for: items[rightIndex]) }
             } else if shouldExpandTrailingItem {
                 EmptyView()
             } else {
@@ -303,6 +337,44 @@ struct HomePlaylistsSection: View {
             to: .playlist(playlist.id),
             libraryVM: libraryVM
         )
+    }
+
+    private func play(_ playlist: Playlist) {
+        playbackCoordinator.playRandomTracks(
+            playlist.tracks,
+            libraryQueueSource: .librarySelection("home-playlist-\(playlist.id.uuidString)")
+        )
+    }
+
+    private func play(_ track: Track, in playlist: Playlist) {
+        playbackCoordinator.playTrack(
+            track,
+            inRandomQueueFrom: playlist.tracks,
+            libraryQueueSource: .librarySelection("home-playlist-\(playlist.id.uuidString)")
+        )
+    }
+
+    @ViewBuilder
+    private func playlistContextMenu(for playlist: Playlist) -> some View {
+        Button {
+            play(playlist)
+        } label: {
+            Label("播放该播放列表", systemImage: "play.fill")
+        }
+
+        Button {
+            navigate(to: playlist)
+        } label: {
+            Label("打开播放列表", systemImage: "music.note.list")
+        }
+
+        Divider()
+
+        Button(role: .destructive) {
+            deletionRequest = HomePlaylistDeletionRequest(playlist: playlist)
+        } label: {
+            Label(NSLocalizedString("edit.playlist.delete", comment: ""), systemImage: "trash")
+        }
     }
 
     private var sectionHeader: some View {
@@ -322,6 +394,11 @@ private struct ClusterSelection {
     let remaining: [Playlist]
 }
 
+private struct HomePlaylistDeletionRequest: Identifiable {
+    let playlist: Playlist
+    var id: UUID { playlist.id }
+}
+
 // MARK: - Card
 
 private enum HomePlaylistCardKind {
@@ -335,6 +412,7 @@ private struct HomePlaylistCard: View {
     let playlist: Playlist
     let mode: HomeLayoutMode
     let kind: HomePlaylistCardKind
+    var onFeaturedTrackPlay: ((Track) -> Void)? = nil
 
     @State private var coverImage: NSImage?
     @State private var isHovering = false
@@ -382,6 +460,43 @@ private struct HomePlaylistCard: View {
         return false
     }
 
+    private var featuredTrackPreviewLimit: Int {
+        switch mode {
+        case .wide, .medium: return 5
+        case .compact, .narrow: return 4
+        }
+    }
+
+    private var featuredTrackPreviewSide: CGFloat {
+        switch mode {
+        case .wide: return 42
+        case .medium: return 38
+        case .compact, .narrow: return 34
+        }
+    }
+
+    private var featuredDescriptionLineLimit: Int {
+        2
+    }
+
+    private var featuredTrackPreviews: [Track] {
+        Array(
+            playlist.tracks
+                .enumerated()
+                .filter { $0.element.isPlayable && $0.element.hasArtworkSource }
+                .sorted { lhs, rhs in
+                    let lhsScore = preferenceScore(for: lhs.element)
+                    let rhsScore = preferenceScore(for: rhs.element)
+                    if lhsScore != rhsScore {
+                        return lhsScore > rhsScore
+                    }
+                    return lhs.offset < rhs.offset
+                }
+                .map(\.element)
+                .prefix(featuredTrackPreviewLimit)
+        )
+    }
+
     var body: some View {
         Group {
             switch kind {
@@ -421,17 +536,10 @@ private struct HomePlaylistCard: View {
                     .font(.system(size: mode == .narrow ? 14 : 15, weight: .semibold))
                     .lineLimit(1)
 
-                metaLine
+                trackCountLine
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-
-                if !playlist.userDescription.isEmpty {
-                    Text(playlist.userDescription)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                }
             }
 
             Spacer(minLength: 0)
@@ -454,30 +562,61 @@ private struct HomePlaylistCard: View {
     @ViewBuilder
     private var featuredBody: some View {
         let artworkSide = max(0, cardHeight - Self.cardInset * 2)
-        HStack(alignment: .center, spacing: 14) {
+        let previewTracks = featuredTrackPreviews
+        HStack(alignment: .top, spacing: 14) {
             artwork(side: artworkSide, iconSize: 32)
                 .frame(width: artworkSide, height: artworkSide)
                 .clipShape(RoundedRectangle(cornerRadius: coverCornerRadius, style: .continuous))
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text(playlist.name)
-                    .font(.system(size: mode == .narrow ? 16 : 18, weight: .semibold))
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
+            VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        Text(playlist.name)
+                            .font(.system(size: mode == .narrow ? 16 : 18, weight: .semibold))
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
 
-                metaLine
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                        trackCountLine
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .frame(alignment: .trailing)
+                    }
 
-                if !playlist.userDescription.isEmpty {
-                    Text(playlist.userDescription)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(2)
+                    if !playlist.userDescription.isEmpty {
+                        Text(playlist.userDescription)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(featuredDescriptionLineLimit)
+                            .multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(.top, 4)
+
+                Spacer(minLength: 0)
+
+                if !previewTracks.isEmpty {
+                    HStack(spacing: 7) {
+                        ForEach(previewTracks) { track in
+                            HomeFeaturedPlaylistTrackArtwork(
+                                track: track,
+                                side: featuredTrackPreviewSide,
+                                cornerRadius: 7
+                            ) {
+                                onFeaturedTrackPlay?(track)
+                            }
+                        }
+
+                        Spacer(minLength: 0)
+                    }
                 }
             }
+            .frame(height: artworkSide, alignment: .top)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.trailing, 6)
         }
         .padding(Self.cardInset)
         .frame(height: cardHeight)
@@ -506,7 +645,7 @@ private struct HomePlaylistCard: View {
                     .font(.system(size: 13, weight: .semibold))
                     .lineLimit(1)
 
-                Text("\(playlist.trackCount) 首歌曲")
+                trackCountLine
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -542,23 +681,18 @@ private struct HomePlaylistCard: View {
         }
     }
 
-    private var metaLine: some View {
-        HStack(spacing: 0) {
-            Text("\(playlist.trackCount) 首歌曲")
-            Text(" \u{00B7} ")
-                .foregroundStyle(.tertiary)
-            Text(formattedDuration)
-        }
+    private var trackCountLine: some View {
+        Text("\(playlist.trackCount) 首")
     }
 
-    private var formattedDuration: String {
-        let totalSeconds = Int(playlist.totalDuration)
-        let hours = totalSeconds / 3600
-        let minutes = (totalSeconds % 3600) / 60
-        if hours > 0 {
-            return "\(hours) 小时 \(minutes) 分"
-        }
-        return "\(minutes) 分"
+    private func preferenceScore(for track: Track) -> Double {
+        let stats = PreferenceStatsService.shared.getStats(for: track.id)
+        let result = PreferenceScorerV2.calculateScore(
+            stats: stats,
+            duration: track.duration,
+            manualLikeState: stats.manualLikeState
+        )
+        return result.finalPreference
     }
 
     private func loadCover() async {
@@ -598,5 +732,80 @@ private struct HomePlaylistCard: View {
         }
         let signature = PlaylistArtworkGenerator.contentSignature(tracks: playlist.tracks)
         return "\(selectionIdentity)-unresolved-\(signature)"
+    }
+}
+
+private struct HomeFeaturedPlaylistTrackArtwork: View {
+    let track: Track
+    let side: CGFloat
+    let cornerRadius: CGFloat
+    let onPlay: () -> Void
+
+    @State private var image: NSImage?
+
+    var body: some View {
+        Button(action: onPlay) {
+            ZStack {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(.quaternary)
+
+                if let image {
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    Image(systemName: "music.note")
+                        .font(.system(size: side * 0.36, weight: .medium))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .frame(width: side, height: side)
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .help(track.title)
+        .task(id: track.id) {
+            await loadImage()
+        }
+    }
+
+    private func loadImage() async {
+        var data = track.artworkData
+        if data == nil || data!.isEmpty {
+            let artworkURL = track.resolvedArtworkURL()
+            if let artworkURL {
+                data = await Task.detached {
+                    try? Data(contentsOf: artworkURL)
+                }.value
+                if let data, !data.isEmpty {
+                    track.artworkData = data
+                }
+            }
+        }
+        guard let data, !data.isEmpty else {
+            image = nil
+            return
+        }
+
+        let targetSize = CGSize(width: side * 2, height: side * 2)
+        let checksum = ArtworkLoader.checksum(for: data)
+        let key = ArtworkLoader.cacheKey(
+            trackID: track.id,
+            checksum: checksum,
+            targetPixelSize: targetSize
+        )
+        image = await ArtworkLoader.loadImage(
+            artworkData: data,
+            cacheKey: key,
+            targetPixelSize: targetSize
+        )
+    }
+}
+
+private extension Track {
+    var hasArtworkSource: Bool {
+        if let artworkData, !artworkData.isEmpty { return true }
+        return artworkFileName?.isEmpty == false
     }
 }

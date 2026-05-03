@@ -13,6 +13,7 @@ struct HomeHeroView: View {
     let track: Track
     var containerWidth: CGFloat = 700
     var mode: HomeLayoutMode = .wide
+    var onSwitchTrack: (() -> Void)?
 
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
@@ -23,6 +24,7 @@ struct HomeHeroView: View {
     @State private var artworkData: Data?
     @State private var heroArtworkChecksum: UInt64 = 0
     @State private var artworkDominantColor: NSColor?
+    @State private var artworkTextPalette: ArtworkColorExtractor.TextPalette?
     @State private var isHovering = false
     @State private var trackToEdit: Track?
 
@@ -98,6 +100,15 @@ struct HomeHeroView: View {
         }
     }
 
+    private var descriptionLineLimit: Int {
+        switch mode {
+        case .wide:    return 9 + Int(wideExpansion.rounded())
+        case .medium:  return 8
+        case .compact: return 6
+        case .narrow:  return 4
+        }
+    }
+
     private var heroPadding: CGFloat {
         switch mode {
         case .wide, .medium: return 20
@@ -106,13 +117,18 @@ struct HomeHeroView: View {
         }
     }
 
+    private var statsTrailingPadding: CGFloat {
+        heroPadding + 6
+    }
+
+    private var statsBottomPadding: CGFloat {
+        heroPadding + actionBottomPadding + 4
+    }
+
     var body: some View {
         ZStack(alignment: .topLeading) {
             backdropView
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    playHeroTrackInHomeQueue()
-                }
+                .allowsHitTesting(false)
             heroContent
                 .zIndex(1)
         }
@@ -189,37 +205,47 @@ struct HomeHeroView: View {
     }
 
     private var heroContent: some View {
-        trackInfoView
-            .padding(.top, heroTopPadding)
-            .padding(.leading, heroPadding + artworkLeadingWidth)
-            .padding(.trailing, heroPadding)
-            .padding(.bottom, heroPadding)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .layoutPriority(1)
+        ZStack(alignment: .topLeading) {
+            trackInfoView
+                .padding(.top, heroTopPadding)
+                .padding(.leading, heroPadding + artworkLeadingWidth)
+                .padding(.trailing, heroPadding)
+                .padding(.bottom, heroPadding)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    playHeroTrackInHomeQueue()
+                }
+                .zIndex(1)
+
+            statsLine
+                .padding(.trailing, statsTrailingPadding)
+                .padding(.bottom, statsBottomPadding)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                .allowsHitTesting(false)
+                .zIndex(2)
+
+            actionButtons
+                .padding(.leading, heroPadding + artworkLeadingWidth)
+                .padding(.bottom, heroPadding + actionBottomPadding)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                .allowsHitTesting(true)
+                .zIndex(3)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .layoutPriority(1)
     }
 
     @ViewBuilder
     private var trackInfoView: some View {
         VStack(alignment: .leading, spacing: 6) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(track.title)
-                    .font(.system(size: titleFontSize, weight: .semibold))
-                    .tracking(0)
-                    .lineLimit(2)
-                    .foregroundStyle(coverImage != nil ? .white : .primary)
+            Text(track.title)
+                .font(.system(size: titleFontSize, weight: .semibold))
+                .tracking(0)
+                .lineLimit(2)
+                .foregroundStyle(heroPrimaryForeground)
 
-                artistAlbumLine
-                statsLine
-            }
-            .contentShape(Rectangle())
-            .onTapGesture {
-                playHeroTrackInHomeQueue()
-            }
-
-            Spacer(minLength: 6)
-
-            actionButtons
-                .padding(.bottom, actionBottomPadding)
+            artistAlbumLine
+            descriptionLine
         }
     }
 
@@ -235,6 +261,7 @@ struct HomeHeroView: View {
         HStack(spacing: 10) {
             playButton
             moreButton
+            switchTrackButton
         }
     }
 
@@ -242,16 +269,32 @@ struct HomeHeroView: View {
     private var artistAlbumLine: some View {
         HStack(spacing: 0) {
             Text(track.artist)
-                .foregroundStyle(coverImage != nil ? .white.opacity(0.9) : .primary)
+                .foregroundStyle(heroSecondaryForeground)
             if !track.album.isEmpty {
                 Text(" \u{00B7} ")
-                    .foregroundStyle(coverImage != nil ? .white.opacity(0.4) : Color(nsColor: .tertiaryLabelColor))
+                    .foregroundStyle(heroQuaternaryForeground)
                 Text(track.album)
-                    .foregroundStyle(coverImage != nil ? .white.opacity(0.7) : .secondary)
+                    .foregroundStyle(heroSecondaryForeground)
             }
         }
         .font(.system(size: mode == .narrow ? 12 : 14, weight: .medium))
         .lineLimit(1)
+    }
+
+    @ViewBuilder
+    private var descriptionLine: some View {
+        let description = track.userDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !description.isEmpty {
+            Text(description)
+                .font(.system(size: mode == .narrow ? 11.5 : 13, weight: .ultraLight))
+                .lineSpacing(1.5)
+                .lineLimit(descriptionLineLimit)
+                .truncationMode(.tail)
+                .foregroundStyle(heroDescriptionForeground)
+                .fixedSize(horizontal: false, vertical: true)
+                .layoutPriority(1)
+                .padding(.top, 4)
+        }
     }
 
     @ViewBuilder
@@ -265,7 +308,7 @@ struct HomeHeroView: View {
             }
         }
         .font(.caption)
-        .foregroundStyle(coverImage != nil ? .white.opacity(0.55) : Color(nsColor: .tertiaryLabelColor))
+        .foregroundStyle(heroTertiaryForeground)
     }
 
     private var playButton: some View {
@@ -301,44 +344,97 @@ struct HomeHeroView: View {
                 onEditTrack: { trackToEdit = $0 }
             )
         } label: {
-            Image(systemName: "ellipsis")
-                .font(.system(size: heroButtonIconSize + 3, weight: .semibold))
-                .foregroundStyle(heroButtonForeground)
-                .frame(width: heroButtonHeight, height: heroButtonHeight)
-                .contentShape(Circle())
+            ZStack {
+                Circle()
+                    .fill(Color.clear)
+
+                HStack(spacing: max(2.5, heroButtonIconSize * 0.22)) {
+                    ForEach(0..<3, id: \.self) { _ in
+                        Circle()
+                            .fill(heroButtonForeground)
+                            .frame(
+                                width: max(3.2, heroButtonIconSize * 0.34),
+                                height: max(3.2, heroButtonIconSize * 0.34)
+                            )
+                    }
+                }
+                .frame(width: heroButtonHeight, height: heroButtonHeight, alignment: .center)
+                .transaction { transaction in
+                    transaction.animation = nil
+                }
+            }
+            .frame(width: heroButtonHeight, height: heroButtonHeight, alignment: .center)
+            .contentShape(Circle())
+            .homeHeroHeaderGlassCircle(colorScheme: colorScheme)
         }
         .buttonStyle(.plain)
-        .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .frame(width: heroButtonHeight, height: heroButtonHeight)
         .fixedSize()
-        .homeHeroHeaderGlassCircle(colorScheme: colorScheme)
+        .tint(heroButtonForeground)
         .transaction { transaction in
             transaction.animation = nil
         }
     }
 
-    private var heroButtonForeground: Color {
-        if heroButtonNeedsDarkForeground {
-            return Color.black.opacity(colorScheme == .dark ? 0.80 : 0.74)
+    @ViewBuilder
+    private var switchTrackButton: some View {
+        if let onSwitchTrack {
+            Button {
+                onSwitchTrack()
+            } label: {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .font(.system(size: heroButtonIconSize, weight: .semibold))
+                    .foregroundStyle(heroButtonForeground)
+                    .frame(width: heroButtonHeight, height: heroButtonHeight, alignment: .center)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .homeHeroHeaderGlassCircle(colorScheme: colorScheme)
+            .help("切换顶部横幅歌曲")
+            .transaction { transaction in
+                transaction.animation = nil
+            }
         }
+    }
 
-        if coverImage != nil {
-            return Color.white.opacity(colorScheme == .dark ? 0.95 : 0.90)
+    private var heroButtonForeground: Color {
+        heroPrimaryForeground
+    }
+
+    private var heroPrimaryForeground: Color {
+        if let artworkTextPalette {
+            return Color(nsColor: artworkTextPalette.primary)
         }
         return Color.primary.opacity(colorScheme == .dark ? 0.92 : 0.82)
     }
 
-    private var heroButtonNeedsDarkForeground: Bool {
-        guard let color = heroButtonContrastSourceColor else { return false }
-        return Self.perceivedBrightness(of: color) > 0.68
+    private var heroSecondaryForeground: Color {
+        if let artworkTextPalette {
+            return Color(nsColor: artworkTextPalette.secondary)
+        }
+        return Color.secondary
     }
 
-    private var heroButtonContrastSourceColor: NSColor? {
-        if themeStore.hasArtworkThemeColor {
-            return themeStore.artworkBaseNSColor
+    private var heroDescriptionForeground: Color {
+        if let artworkTextPalette {
+            return Color(nsColor: artworkTextPalette.description)
         }
-        return coverImage == nil ? nil : artworkDominantColor
+        return Color.secondary
+    }
+
+    private var heroTertiaryForeground: Color {
+        if let artworkTextPalette {
+            return Color(nsColor: artworkTextPalette.tertiary)
+        }
+        return Color(nsColor: .tertiaryLabelColor)
+    }
+
+    private var heroQuaternaryForeground: Color {
+        if let artworkTextPalette {
+            return Color(nsColor: artworkTextPalette.quaternary)
+        }
+        return Color(nsColor: .tertiaryLabelColor)
     }
 
     private var formattedDuration: String {
@@ -366,12 +462,14 @@ struct HomeHeroView: View {
         artworkData = nil
         heroArtworkChecksum = 0
         artworkDominantColor = nil
+        artworkTextPalette = nil
         let data = track.loadArtworkDataIfNeeded()
         guard let data, !data.isEmpty else { return }
         let checksum = ArtworkLoader.checksum(for: data)
         artworkData = data
         heroArtworkChecksum = checksum
         artworkDominantColor = ArtworkColorExtractor.averageColor(from: data)
+        artworkTextPalette = ArtworkColorExtractor.textPalette(from: data)
         let key = ArtworkLoader.cacheKey(
             trackID: track.id,
             checksum: checksum,
@@ -382,13 +480,6 @@ struct HomeHeroView: View {
             cacheKey: key,
             targetPixelSize: CGSize(width: 480, height: 480)
         )
-    }
-
-    private static func perceivedBrightness(of color: NSColor) -> CGFloat {
-        guard let rgb = color.usingColorSpace(.deviceRGB) else { return 0 }
-        return 0.2126 * rgb.redComponent
-            + 0.7152 * rgb.greenComponent
-            + 0.0722 * rgb.blueComponent
     }
 }
 

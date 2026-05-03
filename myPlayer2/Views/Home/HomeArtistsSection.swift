@@ -20,6 +20,8 @@ struct HomeArtistsSection: View {
 
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(UIStateViewModel.self) private var uiState
+    @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+    @State private var deletionRequest: HomeArtistDeletionRequest?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -27,6 +29,35 @@ struct HomeArtistsSection: View {
                 .padding(.leading, centerLeftPad)
                 .padding(.trailing, centerRightPad)
             carousel
+        }
+        .alert(
+            NSLocalizedString("sidebar.delete_artist_confirm_title", comment: ""),
+            isPresented: Binding(
+                get: { deletionRequest != nil },
+                set: { if !$0 { deletionRequest = nil } }
+            ),
+            presenting: deletionRequest
+        ) { request in
+            Button(
+                NSLocalizedString("sidebar.delete_artist", comment: ""),
+                role: .destructive
+            ) {
+                let entry = request.entry
+                deletionRequest = nil
+                Task { await libraryVM.deleteArtist(entry) }
+            }
+            Button(
+                NSLocalizedString("edit.track.cancel", comment: ""),
+                role: .cancel
+            ) { deletionRequest = nil }
+        } message: { request in
+            Text(
+                String(
+                    format: NSLocalizedString("sidebar.delete_artist_confirm_message", comment: ""),
+                    request.entry.displayName,
+                    request.trackCount
+                )
+            )
         }
     }
 
@@ -38,10 +69,19 @@ struct HomeArtistsSection: View {
             verticalPadding: 22,
             leadingScrollPadding: centerLeftPad + 4,
             trailingScrollPadding: max(4, centerRightPad - 8),
-            showsEdgeFade: false
+            showsEdgeFade: false,
+            showsScrollButtons: true,
+            scrollButtonLeadingInset: centerLeftPad + 8,
+            scrollButtonTrailingInset: max(12, centerRightPad + 8)
         ) {
             ForEach(artists) { artist in
-                HomeArtistCircle(artist: artist, mode: mode)
+                HomeArtistCircle(
+                    artist: artist,
+                    mode: mode,
+                    onOpen: { open(artist) },
+                    onPlay: { play(artist) },
+                    onDelete: { requestDelete(artist) }
+                )
             }
         }
     }
@@ -91,6 +131,36 @@ struct HomeArtistsSection: View {
         }
         .buttonStyle(.plain)
     }
+
+    private func open(_ artist: ArtistEntry) {
+        uiState.navigateFromHome(
+            to: .artist(artist.canonicalName),
+            libraryVM: libraryVM
+        )
+    }
+
+    private func play(_ artist: ArtistEntry) {
+        let tracks = libraryVM.allTracks.filter {
+            LibraryNormalization.containsArtist(artist.canonicalName, in: $0.artist)
+        }
+        playbackCoordinator.playRandomTracks(
+            tracks,
+            libraryQueueSource: .librarySelection("home-artist-\(artist.canonicalName)")
+        )
+    }
+
+    private func requestDelete(_ artist: ArtistEntry) {
+        deletionRequest = HomeArtistDeletionRequest(
+            entry: artist,
+            trackCount: artist.trackCount
+        )
+    }
+}
+
+private struct HomeArtistDeletionRequest: Identifiable {
+    let entry: ArtistEntry
+    let trackCount: Int
+    var id: UUID { entry.id }
 }
 
 // MARK: - Artist circle
@@ -98,9 +168,11 @@ struct HomeArtistsSection: View {
 private struct HomeArtistCircle: View {
     let artist: ArtistEntry
     let mode: HomeLayoutMode
+    let onOpen: () -> Void
+    let onPlay: () -> Void
+    let onDelete: () -> Void
 
     @Environment(LibraryViewModel.self) private var libraryVM
-    @Environment(UIStateViewModel.self) private var uiState
     @State private var image: NSImage?
     @State private var isHovering = false
     @Environment(\.colorScheme) private var colorScheme
@@ -145,11 +217,6 @@ private struct HomeArtistCircle: View {
                 Text(artist.displayName)
                     .font(.system(size: titleFontSize, weight: .semibold))
                     .lineLimit(1)
-
-                Text("\(artist.albumCount) 张专辑 \u{00B7} \(artist.trackCount) 首歌曲")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
             }
         }
         .padding(.horizontal, 8)
@@ -165,11 +232,21 @@ private struct HomeArtistCircle: View {
         .onHover { hovering in
             isHovering = hovering
         }
-        .onTapGesture {
-            uiState.navigateFromHome(
-                to: .artist(artist.canonicalName),
-                libraryVM: libraryVM
-            )
+        .onTapGesture(perform: onOpen)
+        .contextMenu {
+            Button(action: onPlay) {
+                Label("播放该歌手", systemImage: "play.fill")
+            }
+
+            Button(action: onOpen) {
+                Label("打开艺人", systemImage: "person.crop.circle")
+            }
+
+            Divider()
+
+            Button(role: .destructive, action: onDelete) {
+                Label("删除艺人", systemImage: "trash")
+            }
         }
         .task {
             await loadImage()

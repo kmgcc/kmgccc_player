@@ -30,6 +30,7 @@ final class Track {
     var artist: String
     var album: String
     var albumArtist: String?
+    var userDescription: String
     var albumGroupKey: String
     var duration: Double  // seconds
     var addedAt: Date
@@ -122,6 +123,7 @@ final class Track {
         artist: String = "",
         album: String = "",
         albumArtist: String? = nil,
+        userDescription: String = "",
         albumGroupKey: String = "",
         duration: Double = 0,
         addedAt: Date = Date(),
@@ -146,6 +148,7 @@ final class Track {
         self.artist = artist
         self.album = album
         self.albumArtist = albumArtist
+        self.userDescription = userDescription
         self.albumGroupKey = albumGroupKey
         self.duration = duration
         self.addedAt = addedAt

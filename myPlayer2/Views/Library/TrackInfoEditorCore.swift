@@ -35,6 +35,7 @@ struct TrackInfoEditorCore: View {
     let lyricsSearchTrack: Track?
     let allowsArtworkImport: Bool
     let allowsLyricsOffset: Bool
+    let allowsDescriptionEditing: Bool
     let canSave: Bool
     let saveTitle: LocalizedStringKey
     let onSave: () -> Void
@@ -45,6 +46,7 @@ struct TrackInfoEditorCore: View {
     @Binding var title: String
     @Binding var artist: String
     @Binding var album: String
+    @Binding var trackDescription: String
     @Binding var lyricsText: String
     @Binding var artworkData: Data?
     @Binding var lyricsTimeOffsetMs: Double
@@ -279,6 +281,13 @@ struct TrackInfoEditorCore: View {
                 labeledField("edit.track.track_title", prompt: "edit.track.track_title", text: $title)
                 labeledField("edit.track.artist", prompt: "edit.track.artist_name", text: $artist)
                 labeledField("edit.track.album", prompt: "edit.track.album_name", text: $album)
+                if allowsDescriptionEditing {
+                    labeledEditor(
+                        "edit.track.description",
+                        prompt: "edit.track.description_placeholder",
+                        text: $trackDescription
+                    )
+                }
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text("edit.track.duration")
@@ -302,6 +311,36 @@ struct TrackInfoEditorCore: View {
                 .foregroundStyle(.secondary)
             TextField(prompt, text: text)
                 .textFieldStyle(.roundedBorder)
+        }
+    }
+
+    private func labeledEditor(
+        _ label: LocalizedStringKey,
+        prompt: LocalizedStringKey,
+        text: Binding<String>
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            ZStack(alignment: .topLeading) {
+                TextEditor(text: text)
+                    .frame(height: 72)
+                    .scrollContentBackground(.hidden)
+
+                if text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text(prompt)
+                        .foregroundStyle(.tertiary)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 8)
+                        .allowsHitTesting(false)
+                }
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(Color.secondary.opacity(0.3), lineWidth: 1)
+            }
         }
     }
 

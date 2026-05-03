@@ -14,6 +14,7 @@ struct ScannedTrackMeta: Sendable {
     let artist: String
     let album: String
     let albumArtist: String?
+    let description: String
     let duration: Double
     let addedAt: Date
     let importedAt: Date
@@ -80,6 +81,8 @@ struct MusicLibraryScanner: Sendable {
         let album = LibraryNormalization.displayAlbum(json["album"] as? String)
         let albumArtist = (json["albumArtist"] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        let description = ((json["description"] as? String) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         let duration = parseDouble(json["duration"]) ?? 0
 
         let now = Date()
@@ -128,6 +131,7 @@ struct MusicLibraryScanner: Sendable {
             artist: artist,
             album: album,
             albumArtist: albumArtist?.isEmpty == true ? nil : albumArtist,
+            description: description,
             duration: duration,
             addedAt: addedAt,
             importedAt: importedAt,

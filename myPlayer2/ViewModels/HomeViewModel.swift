@@ -42,6 +42,12 @@ final class HomeViewModel {
     private(set) var preferenceRanking: [PreferenceRankItem] = []
     private(set) var dailyListeningMap: [Date: Int] = [:]
 
+    private var trackIdentitySignature = 0
+    private var trackMetadataSignature = 0
+    private var playlistSignature = 0
+    private var artistSignature = 0
+    private var albumSignature = 0
+
     struct PreferenceRankItem: Identifiable {
         let id: UUID
         let track: Track
@@ -65,19 +71,8 @@ final class HomeViewModel {
 
         heroTrack = resolveHeroTrack(in: allTracks)
 
-        // Albums (up to 20, sorted by track count)
-        albums = libraryVM.albumEntries
-            .filter { !$0.isOrphaned }
-            .sorted { $0.trackCount > $1.trackCount }
-            .prefix(20)
-            .map { $0 }
-
-        // Artists (up to 15, sorted by track count)
-        artists = libraryVM.artistEntries
-            .filter { !$0.isOrphaned }
-            .sorted { $0.trackCount > $1.trackCount }
-            .prefix(15)
-            .map { $0 }
+        albums = topAlbums(from: libraryVM)
+        artists = topArtists(from: libraryVM)
 
         // Playlists
         playlists = libraryVM.playlists
@@ -168,6 +163,121 @@ final class HomeViewModel {
             }
         }
         dailyListeningMap = dayMap
+        updateCachedSignatures(from: libraryVM, allTracks: allTracks)
+    }
+
+    /// Incremental refresh for ordinary visible-state changes. This avoids
+    /// reassigning stable Home sections when only playlists or one track's
+    /// metadata changed.
+    func refreshChangedSections(from libraryVM: LibraryViewModel) {
+        let allTracks = libraryVM.allTracks
+        guard !allTracks.isEmpty else {
+            clearAll()
+            return
+        }
+
+        let newTrackIdentitySignature = makeTrackIdentitySignature(allTracks)
+        guard newTrackIdentitySignature == trackIdentitySignature else {
+            refresh(from: libraryVM)
+            return
+        }
+
+        refreshHeroReference(in: allTracks)
+
+        let newPlaylistSignature = makePlaylistSignature(libraryVM.playlists)
+        if newPlaylistSignature != playlistSignature {
+            playlists = libraryVM.playlists
+            playlistSignature = newPlaylistSignature
+        }
+
+        let newArtistSignature = makeArtistSignature(libraryVM.artistEntries)
+        if newArtistSignature != artistSignature {
+            artists = topArtists(from: libraryVM)
+            artistSignature = newArtistSignature
+        }
+
+        let newAlbumSignature = makeAlbumSignature(libraryVM.albumEntries)
+        if newAlbumSignature != albumSignature {
+            albums = topAlbums(from: libraryVM)
+            albumSignature = newAlbumSignature
+        }
+
+        let newTrackMetadataSignature = makeTrackMetadataSignature(allTracks)
+        if newTrackMetadataSignature != trackMetadataSignature {
+            refreshStats(from: libraryVM, allTracks: allTracks)
+            trackMetadataSignature = newTrackMetadataSignature
+        }
+    }
+
+    func applyTrackUpdates(from libraryVM: LibraryViewModel, trackIDs: [UUID]) {
+        let allTracks = libraryVM.allTracks
+        guard !allTracks.isEmpty else {
+            clearAll()
+            return
+        }
+
+        let newTrackIdentitySignature = makeTrackIdentitySignature(allTracks)
+        guard newTrackIdentitySignature == trackIdentitySignature else {
+            refresh(from: libraryVM)
+            return
+        }
+
+        let changedIDs = Set(trackIDs)
+        let updatedByID = Dictionary(uniqueKeysWithValues: allTracks.map { ($0.id, $0) })
+        if let heroID = heroTrack?.id, changedIDs.contains(heroID), let updatedHero = updatedByID[heroID] {
+            heroTrack = updatedHero
+        }
+
+        let newTrackMetadataSignature = makeTrackMetadataSignature(allTracks)
+        if newTrackMetadataSignature != trackMetadataSignature
+            || preferenceRanking.contains(where: { changedIDs.contains($0.id) })
+        {
+            refreshStats(from: libraryVM, allTracks: allTracks)
+        }
+
+        let newArtistSignature = makeArtistSignature(libraryVM.artistEntries)
+        if newArtistSignature != artistSignature {
+            artists = topArtists(from: libraryVM)
+            artistSignature = newArtistSignature
+        }
+
+        let newAlbumSignature = makeAlbumSignature(libraryVM.albumEntries)
+        if newAlbumSignature != albumSignature {
+            albums = topAlbums(from: libraryVM)
+            albumSignature = newAlbumSignature
+        }
+
+        trackMetadataSignature = newTrackMetadataSignature
+    }
+
+    func refreshArtistAlbumSort(from libraryVM: LibraryViewModel) {
+        artists = topArtists(from: libraryVM)
+        albums = topAlbums(from: libraryVM)
+        artistSignature = makeArtistSignature(libraryVM.artistEntries)
+        albumSignature = makeAlbumSignature(libraryVM.albumEntries)
+    }
+
+    func switchHeroTrack(from libraryVM: LibraryViewModel) {
+        let allTracks = libraryVM.allTracks
+        guard !allTracks.isEmpty else {
+            heroTrack = nil
+            selectedHeroTrackID = nil
+            selectedHeroGeneratedAt = nil
+            return
+        }
+
+        let tracksWithArt = allTracks.filter { $0.artworkFileName != nil }
+        let preferredPool = tracksWithArt.isEmpty ? allTracks : tracksWithArt
+        let currentID = heroTrack?.id ?? selectedHeroTrackID
+        let candidates = preferredPool.filter { $0.id != currentID }
+        let fallbackCandidates = allTracks.filter { $0.id != currentID }
+        let pick = PlaybackCoordinator.smartRandomQueue(
+            from: candidates.isEmpty ? fallbackCandidates : candidates
+        ).first ?? fallbackCandidates.first ?? allTracks.first
+
+        selectedHeroTrackID = pick?.id
+        selectedHeroGeneratedAt = pick == nil ? nil : Date()
+        heroTrack = pick
     }
 
     private func clearAll() {
@@ -188,6 +298,258 @@ final class HomeViewModel {
         weeklyFavoriteArtistPlayCount = 0
         preferenceRanking = []
         dailyListeningMap = [:]
+        trackIdentitySignature = 0
+        trackMetadataSignature = 0
+        playlistSignature = 0
+        artistSignature = 0
+        albumSignature = 0
+    }
+
+    private func topAlbums(from libraryVM: LibraryViewModel) -> [AlbumEntry] {
+        libraryVM.albumEntries
+            .filter { !$0.isOrphaned }
+            .sorted { compareAlbums($0, $1, libraryVM: libraryVM) }
+            .prefix(20)
+            .map { $0 }
+    }
+
+    private func topArtists(from libraryVM: LibraryViewModel) -> [ArtistEntry] {
+        libraryVM.artistEntries
+            .filter { !$0.isOrphaned }
+            .sorted { compareArtists($0, $1, libraryVM: libraryVM) }
+            .prefix(15)
+            .map { $0 }
+    }
+
+    private func compareArtists(
+        _ lhs: ArtistEntry,
+        _ rhs: ArtistEntry,
+        libraryVM: LibraryViewModel
+    ) -> Bool {
+        let result: ComparisonResult
+        switch libraryVM.artistSortKey {
+        case .name:
+            result = lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName)
+        case .trackCount:
+            result = compareInt(lhs.trackCount, rhs.trackCount)
+        case .albumCount:
+            result = compareInt(lhs.albumCount, rhs.albumCount)
+        case .totalDuration:
+            result = compareDouble(lhs.totalDuration, rhs.totalDuration)
+        case .updatedAt:
+            result = compareDate(lhs.updatedAt, rhs.updatedAt)
+        }
+        if result == .orderedSame {
+            return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
+        }
+        return libraryVM.trackSortOrder == .ascending
+            ? result == .orderedAscending
+            : result == .orderedDescending
+    }
+
+    private func compareAlbums(
+        _ lhs: AlbumEntry,
+        _ rhs: AlbumEntry,
+        libraryVM: LibraryViewModel
+    ) -> Bool {
+        let result: ComparisonResult
+        switch libraryVM.albumSortKey {
+        case .title:
+            result = lhs.displayTitle.localizedCaseInsensitiveCompare(rhs.displayTitle)
+        case .artist:
+            result = lhs.primaryArtistDisplayName
+                .localizedCaseInsensitiveCompare(rhs.primaryArtistDisplayName)
+        case .trackCount:
+            result = compareInt(lhs.trackCount, rhs.trackCount)
+        case .totalDuration:
+            result = compareDouble(lhs.totalDuration, rhs.totalDuration)
+        case .updatedAt:
+            result = compareDate(lhs.updatedAt, rhs.updatedAt)
+        }
+        if result == .orderedSame {
+            return lhs.displayTitle.localizedCaseInsensitiveCompare(rhs.displayTitle) == .orderedAscending
+        }
+        return libraryVM.trackSortOrder == .ascending
+            ? result == .orderedAscending
+            : result == .orderedDescending
+    }
+
+    private func compareInt(_ a: Int, _ b: Int) -> ComparisonResult {
+        a == b ? .orderedSame : (a < b ? .orderedAscending : .orderedDescending)
+    }
+
+    private func compareDouble(_ a: Double, _ b: Double) -> ComparisonResult {
+        a == b ? .orderedSame : (a < b ? .orderedAscending : .orderedDescending)
+    }
+
+    private func compareDate(_ a: Date, _ b: Date) -> ComparisonResult {
+        a == b ? .orderedSame : (a < b ? .orderedAscending : .orderedDescending)
+    }
+
+    private func refreshStats(from libraryVM: LibraryViewModel, allTracks: [Track]) {
+        let statsService = PreferenceStatsService.shared
+        totalTrackCount = allTracks.count
+
+        var totalPlays = 0
+        var totalSeconds: Double = 0
+        var weekPlays = 0
+        var weekSeconds: Double = 0
+        var artistPlayCounts: [String: Int] = [:]
+        var weeklyArtistPlayCounts: [String: Int] = [:]
+        var ranked: [(track: Track, stats: TrackPreferenceStats)] = []
+        let calendar = Calendar.current
+        let weekInterval = calendar.dateInterval(of: .weekOfYear, for: Date())
+
+        for track in allTracks {
+            let stats = statsService.getStats(for: track.id)
+            totalPlays += stats.playCount
+            totalSeconds += stats.totalPlayedSeconds
+
+            let artistKey = track.artist
+            artistPlayCounts[artistKey, default: 0] += stats.playCount
+
+            if let lastPlayedAt = stats.lastPlayedAt,
+               let weekInterval,
+               weekInterval.contains(lastPlayedAt)
+            {
+                weekPlays += stats.playCount
+                weekSeconds += stats.totalPlayedSeconds
+                weeklyArtistPlayCounts[artistKey, default: 0] += stats.playCount
+            }
+
+            if stats.playCount > 0 {
+                ranked.append((track, stats))
+            }
+        }
+
+        totalPlayCount = totalPlays
+        totalListeningSeconds = totalSeconds
+        weeklyPlayCount = weekPlays
+        weeklyListeningSeconds = weekSeconds
+
+        if let topArtist = artistPlayCounts.max(by: { $0.value < $1.value }) {
+            favoriteArtistName = topArtist.key
+            let entry = libraryVM.artistEntries.first {
+                $0.displayName == topArtist.key || $0.canonicalName == topArtist.key
+            }
+            favoriteArtistAlbumCount = entry?.albumCount ?? 0
+        } else {
+            favoriteArtistName = nil
+            favoriteArtistAlbumCount = 0
+        }
+
+        if let topWeeklyArtist = weeklyArtistPlayCounts.max(by: { $0.value < $1.value }) {
+            weeklyFavoriteArtistName = topWeeklyArtist.key
+            weeklyFavoriteArtistPlayCount = topWeeklyArtist.value
+        } else {
+            weeklyFavoriteArtistName = nil
+            weeklyFavoriteArtistPlayCount = 0
+        }
+
+        preferenceRanking = ranked
+            .sorted { $0.stats.preferenceScoreCache > $1.stats.preferenceScoreCache }
+            .prefix(30)
+            .map { item in
+                PreferenceRankItem(
+                    id: item.track.id,
+                    track: item.track,
+                    title: item.track.title,
+                    artist: item.track.artist,
+                    score: item.stats.preferenceScoreCache,
+                    playCount: item.stats.playCount
+                )
+            }
+
+        var dayMap: [Date: Int] = [:]
+        for track in allTracks {
+            let stats = statsService.getStats(for: track.id)
+            if let lastPlayed = stats.lastPlayedAt {
+                let day = calendar.startOfDay(for: lastPlayed)
+                dayMap[day, default: 0] += stats.playCount
+            }
+        }
+        dailyListeningMap = dayMap
+    }
+
+    private func refreshHeroReference(in allTracks: [Track]) {
+        guard let heroID = heroTrack?.id ?? selectedHeroTrackID,
+              let updatedHero = allTracks.first(where: { $0.id == heroID })
+        else { return }
+        heroTrack = updatedHero
+    }
+
+    private func updateCachedSignatures(from libraryVM: LibraryViewModel, allTracks: [Track]) {
+        trackIdentitySignature = makeTrackIdentitySignature(allTracks)
+        trackMetadataSignature = makeTrackMetadataSignature(allTracks)
+        playlistSignature = makePlaylistSignature(libraryVM.playlists)
+        artistSignature = makeArtistSignature(libraryVM.artistEntries)
+        albumSignature = makeAlbumSignature(libraryVM.albumEntries)
+    }
+
+    private func makeTrackIdentitySignature(_ tracks: [Track]) -> Int {
+        var hasher = Hasher()
+        hasher.combine(tracks.count)
+        for track in tracks {
+            hasher.combine(track.id)
+        }
+        return hasher.finalize()
+    }
+
+    private func makeTrackMetadataSignature(_ tracks: [Track]) -> Int {
+        var hasher = Hasher()
+        hasher.combine(tracks.count)
+        for track in tracks {
+            hasher.combine(track.id)
+            hasher.combine(track.title)
+            hasher.combine(track.artist)
+            hasher.combine(track.album)
+            hasher.combine(track.albumGroupKey)
+            hasher.combine(track.artworkFileName)
+        }
+        return hasher.finalize()
+    }
+
+    private func makePlaylistSignature(_ playlists: [Playlist]) -> Int {
+        var hasher = Hasher()
+        hasher.combine(playlists.count)
+        for playlist in playlists {
+            hasher.combine(playlist.id)
+            hasher.combine(playlist.name)
+            hasher.combine(playlist.userDescription)
+            hasher.combine(playlist.tracks.count)
+            for track in playlist.tracks {
+                hasher.combine(track.id)
+            }
+        }
+        return hasher.finalize()
+    }
+
+    private func makeArtistSignature(_ artists: [ArtistEntry]) -> Int {
+        var hasher = Hasher()
+        hasher.combine(artists.count)
+        for artist in artists {
+            hasher.combine(artist.id)
+            hasher.combine(artist.displayName)
+            hasher.combine(artist.canonicalName)
+            hasher.combine(artist.albumCount)
+            hasher.combine(artist.trackCount)
+            hasher.combine(artist.artworkFileName)
+        }
+        return hasher.finalize()
+    }
+
+    private func makeAlbumSignature(_ albums: [AlbumEntry]) -> Int {
+        var hasher = Hasher()
+        hasher.combine(albums.count)
+        for album in albums {
+            hasher.combine(album.id)
+            hasher.combine(album.displayTitle)
+            hasher.combine(album.canonicalKey)
+            hasher.combine(album.primaryArtistDisplayName)
+            hasher.combine(album.trackCount)
+            hasher.combine(album.artworkFileName)
+        }
+        return hasher.finalize()
     }
 
     /// Reuse the previously chosen hero unless it disappeared, the cooldown
@@ -203,7 +565,8 @@ final class HomeViewModel {
         }
 
         let tracksWithArt = allTracks.filter { $0.artworkFileName != nil }
-        let pick = tracksWithArt.randomElement() ?? allTracks.randomElement()
+        let preferredPool = tracksWithArt.isEmpty ? allTracks : tracksWithArt
+        let pick = PlaybackCoordinator.smartRandomQueue(from: preferredPool).first
         selectedHeroTrackID = pick?.id
         selectedHeroGeneratedAt = pick == nil ? nil : now
         return pick

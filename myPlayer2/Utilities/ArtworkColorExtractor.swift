@@ -10,6 +10,15 @@ import AppKit
 import ImageIO
 
 public enum ArtworkColorExtractor {
+    struct TextPalette {
+        let primary: NSColor
+        let secondary: NSColor
+        let description: NSColor
+        let tertiary: NSColor
+        let quaternary: NSColor
+        let coverHslLightness: CGFloat
+        let usesDarkForeground: Bool
+    }
 
     // Pixel data cache to avoid repeated decode + CGContext creation.
     private final class PixelCacheBox: @unchecked Sendable {
@@ -100,6 +109,15 @@ public enum ArtworkColorExtractor {
     /// dead-black / near-white extremes.
     public nonisolated static func uiAccentColor(from data: Data) -> NSColor? {
         uiThemePalette(from: data, maxColors: 3).first
+    }
+
+    /// Foreground palette for text and icon glyphs rendered over artwork-derived
+    /// surfaces. It intentionally chooses an opposite tone from the cover:
+    /// bright covers get very dark, artwork-harmonized ink; dark covers get
+    /// luminous tinted white.
+    nonisolated static func textPalette(from data: Data) -> TextPalette? {
+        guard let sample = sampledBitmap(from: data, side: 64) else { return nil }
+        return textPalette(from: sample)
     }
 
     /// Rich palette for artistic backgrounds.
@@ -407,6 +425,123 @@ extension ArtworkColorExtractor {
 
         return Array(selected.prefix(targetCount))
     }
+
+    nonisolated static func textPalette(from sample: ArtworkBitmapSample) -> TextPalette? {
+        let pixels = sample.pixels
+        guard !pixels.isEmpty else { return nil }
+
+        let bucketCount = 48
+        var buckets = [HueBucket](repeating: .zero, count: bucketCount)
+        var areaWeight: CGFloat = 0
+        var weightedR: CGFloat = 0
+        var weightedG: CGFloat = 0
+        var weightedB: CGFloat = 0
+        var weightedHslLightness: CGFloat = 0
+        var weightedLuma: CGFloat = 0
+        var weightedSaturation: CGFloat = 0
+        var vividWeight: CGFloat = 0
+
+        for i in stride(from: 0, to: pixels.count, by: 4) {
+            let r = CGFloat(pixels[i]) / 255.0
+            let g = CGFloat(pixels[i + 1]) / 255.0
+            let b = CGFloat(pixels[i + 2]) / 255.0
+            let a = CGFloat(pixels[i + 3]) / 255.0
+            if a < 0.08 { continue }
+
+            let maxRGB = max(r, g, b)
+            let minRGB = min(r, g, b)
+            let hslLightness = (maxRGB + minRGB) * 0.5
+            let luma = relativeLuminance(red: r, green: g, blue: b)
+            let color = NSColor(calibratedRed: r, green: g, blue: b, alpha: 1)
+            guard let rgb = color.usingColorSpace(.deviceRGB) else { continue }
+
+            var hue: CGFloat = 0
+            var saturation: CGFloat = 0
+            var brightness: CGFloat = 0
+            var alpha: CGFloat = 0
+            rgb.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
+
+            areaWeight += a
+            weightedR += r * a
+            weightedG += g * a
+            weightedB += b * a
+            weightedHslLightness += hslLightness * a
+            weightedLuma += luma * a
+            weightedSaturation += saturation * a
+            if saturation > 0.22 {
+                vividWeight += a * saturation
+            }
+
+            let midToneBoost = 0.72 + max(0, 1 - abs(hslLightness - 0.52) * 1.7) * 0.18
+            let colorfulnessBoost = 0.78 + saturation * 0.34
+            let bucketWeight = a * midToneBoost * colorfulnessBoost
+            guard bucketWeight > 0.000_1 else { continue }
+
+            let idx = min(bucketCount - 1, max(0, Int(floor(hue * CGFloat(bucketCount)))))
+            buckets[idx].weight += bucketWeight
+            buckets[idx].r += r * bucketWeight
+            buckets[idx].g += g * bucketWeight
+            buckets[idx].b += b * bucketWeight
+        }
+
+        guard areaWeight > 0 else { return nil }
+
+        let coverHslLightness = weightedHslLightness / areaWeight
+        let coverLuma = weightedLuma / areaWeight
+        let avgSaturation = weightedSaturation / areaWeight
+        let vividness = clamp(vividWeight / areaWeight, min: 0, max: 1)
+        let usesDarkForeground = coverHslLightness >= 0.58
+            || (coverHslLightness >= 0.52 && coverLuma >= 0.48)
+
+        let averageColor = NSColor(
+            calibratedRed: weightedR / areaWeight,
+            green: weightedG / areaWeight,
+            blue: weightedB / areaWeight,
+            alpha: 1
+        )
+        let sourceColor = textSourceColor(from: buckets, fallback: averageColor)
+        let hue = hueValue(of: sourceColor)
+
+        let isNearlyGray = avgSaturation < 0.075 || vividness < 0.035
+        let saturation: CGFloat
+        let brightness: CGFloat
+        if usesDarkForeground {
+            let lightPressure = clamp((coverHslLightness - 0.52) / 0.42, min: 0, max: 1)
+            saturation = isNearlyGray
+                ? 0.025
+                : clamp(0.12 + avgSaturation * 0.42 + vividness * 0.08, min: 0.10, max: 0.34)
+            brightness = clamp(0.18 - lightPressure * 0.10, min: 0.075, max: 0.18)
+        } else {
+            let darkPressure = clamp((0.54 - coverHslLightness) / 0.46, min: 0, max: 1)
+            saturation = isNearlyGray
+                ? 0.035
+                : clamp(0.08 + avgSaturation * 0.28 + vividness * 0.10, min: 0.075, max: 0.28)
+            brightness = clamp(0.88 + darkPressure * 0.10, min: 0.88, max: 0.985)
+        }
+
+        let base = NSColor(
+            calibratedHue: normalizedHue(hue),
+            saturation: saturation,
+            brightness: brightness,
+            alpha: 1
+        )
+        let primary = enforceTextContrast(
+            base,
+            backgroundLuma: coverLuma,
+            usesDarkForeground: usesDarkForeground,
+            minimumRatio: 7.0
+        )
+
+        return TextPalette(
+            primary: primary,
+            secondary: primary.withAlphaComponent(0.86),
+            description: primary.withAlphaComponent(0.80),
+            tertiary: primary.withAlphaComponent(0.68),
+            quaternary: primary.withAlphaComponent(0.54),
+            coverHslLightness: coverHslLightness,
+            usesDarkForeground: usesDarkForeground
+        )
+    }
 }
 
 extension ArtworkColorExtractor {
@@ -568,6 +703,97 @@ extension ArtworkColorExtractor {
         let dg = l.greenComponent - r.greenComponent
         let db = l.blueComponent - r.blueComponent
         return sqrt(dr * dr + dg * dg + db * db)
+    }
+
+    fileprivate nonisolated static func textSourceColor(
+        from buckets: [HueBucket],
+        fallback: NSColor
+    ) -> NSColor {
+        let totalWeight = buckets.reduce(CGFloat(0)) { $0 + $1.weight }
+        guard totalWeight > 0 else { return fallback }
+
+        var bestColor = fallback
+        var bestScore: CGFloat = 0
+        for bucket in buckets where bucket.weight > totalWeight * 0.01 {
+            let inv = 1 / bucket.weight
+            let color = NSColor(
+                calibratedRed: bucket.r * inv,
+                green: bucket.g * inv,
+                blue: bucket.b * inv,
+                alpha: 1
+            )
+            let score = bucket.weight * (0.82 + saturationValue(of: color) * 0.36)
+            if score > bestScore {
+                bestScore = score
+                bestColor = color
+            }
+        }
+        return bestColor
+    }
+
+    fileprivate nonisolated static func enforceTextContrast(
+        _ color: NSColor,
+        backgroundLuma: CGFloat,
+        usesDarkForeground: Bool,
+        minimumRatio: CGFloat
+    ) -> NSColor {
+        guard var rgb = color.usingColorSpace(.deviceRGB) else { return color }
+        var hue: CGFloat = 0
+        var saturation: CGFloat = 0
+        var brightness: CGFloat = 0
+        var alpha: CGFloat = 0
+        rgb.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
+
+        for _ in 0..<10 {
+            let fgLuma = relativeLuminance(of: rgb)
+            guard contrastRatio(fgLuma, backgroundLuma) < minimumRatio else {
+                return rgb.withAlphaComponent(1)
+            }
+
+            if usesDarkForeground {
+                brightness = max(0.035, brightness - 0.018)
+                saturation = min(0.42, saturation + 0.012)
+            } else {
+                brightness = min(1.0, brightness + 0.014)
+                saturation = max(0.02, saturation - 0.008)
+            }
+            rgb = NSColor(
+                calibratedHue: hue,
+                saturation: saturation,
+                brightness: brightness,
+                alpha: 1
+            )
+        }
+
+        return rgb.withAlphaComponent(1)
+    }
+
+    fileprivate nonisolated static func contrastRatio(_ lhs: CGFloat, _ rhs: CGFloat) -> CGFloat {
+        let lighter = max(lhs, rhs)
+        let darker = min(lhs, rhs)
+        return (lighter + 0.05) / (darker + 0.05)
+    }
+
+    fileprivate nonisolated static func relativeLuminance(of color: NSColor) -> CGFloat {
+        let rgb = color.usingColorSpace(.deviceRGB) ?? color
+        return relativeLuminance(
+            red: rgb.redComponent,
+            green: rgb.greenComponent,
+            blue: rgb.blueComponent
+        )
+    }
+
+    fileprivate nonisolated static func relativeLuminance(
+        red: CGFloat,
+        green: CGFloat,
+        blue: CGFloat
+    ) -> CGFloat {
+        func linearize(_ component: CGFloat) -> CGFloat {
+            component <= 0.03928
+                ? component / 12.92
+                : pow((component + 0.055) / 1.055, 2.4)
+        }
+        return 0.2126 * linearize(red) + 0.7152 * linearize(green) + 0.0722 * linearize(blue)
     }
 
     fileprivate nonisolated static func normalizedHue(_ value: CGFloat) -> CGFloat {
