@@ -7,6 +7,25 @@
 
 import AppKit
 
+struct PlaylistArtworkSnapshot: Sendable {
+    let id: UUID
+    let artworkData: Data?
+    let artworkFileURL: URL?
+
+    @MainActor
+    init(track: Track) {
+        self.id = track.id
+        self.artworkData = track.artworkData
+        self.artworkFileURL = track.resolvedArtworkURL()
+    }
+
+    nonisolated init(id: UUID, artworkData: Data?, artworkFileURL: URL? = nil) {
+        self.id = id
+        self.artworkData = artworkData
+        self.artworkFileURL = artworkFileURL
+    }
+}
+
 actor PlaylistArtworkGenerator {
 
     static let shared = PlaylistArtworkGenerator()
@@ -16,7 +35,7 @@ actor PlaylistArtworkGenerator {
     ///              when provided, uses that seed for varied regeneration (for manual refresh).
     func generateArtwork(
         playlistID: UUID,
-        snapshots: [(id: UUID, artworkData: Data?)],
+        snapshots: [PlaylistArtworkSnapshot],
         variationSeed: Int? = nil
     ) async -> NSImage? {
         return await Task.detached(priority: .userInitiated) {
@@ -28,11 +47,23 @@ actor PlaylistArtworkGenerator {
         }.value
     }
 
+    func generateArtwork(
+        playlistID: UUID,
+        snapshots: [(id: UUID, artworkData: Data?)],
+        variationSeed: Int? = nil
+    ) async -> NSImage? {
+        await generateArtwork(
+            playlistID: playlistID,
+            snapshots: snapshots.map { PlaylistArtworkSnapshot(id: $0.id, artworkData: $0.artworkData) },
+            variationSeed: variationSeed
+        )
+    }
+
     // MARK: - Generation (nonisolated, runs off main thread)
 
     private static nonisolated func generate(
         playlistID: UUID,
-        snapshots: [(id: UUID, artworkData: Data?)],
+        snapshots: [PlaylistArtworkSnapshot],
         variationSeed: Int? = nil
     ) -> NSImage? {
         // Use variation seed if provided (manual regenerate), otherwise deterministic hash
@@ -44,7 +75,20 @@ actor PlaylistArtworkGenerator {
             return nil
         }
 
-        let artSnapshots = snapshots.filter { $0.artworkData != nil }
+        let artworkDataCount = snapshots.filter { $0.artworkData?.isEmpty == false }.count
+        let artworkFileURLCount = snapshots.filter { $0.artworkFileURL != nil }.count
+        let existingArtworkFileCount = snapshots.filter {
+            guard let url = $0.artworkFileURL else { return false }
+            return FileManager.default.fileExists(atPath: url.path)
+        }.count
+        let artSnapshots = snapshots.filter {
+            ($0.artworkData?.isEmpty == false) || $0.artworkFileURL != nil
+        }
+        logGenerator(
+            "playlistID=\(playlistID) phase=generate-start snapshots=\(snapshots.count) "
+                + "artworkData=\(artworkDataCount) artworkFileURL=\(artworkFileURLCount) "
+                + "fileExists=\(existingArtworkFileCount) usable=\(artSnapshots.count)"
+        )
         guard !artSnapshots.isEmpty else {
             let baseNames = ["cov1", "cov2", "cov3", "cov4"]
             logGenerator("playlistID=\(playlistID) phase=empty-playlist-fallback baseName=\(baseNames[hash % 4])")
@@ -64,11 +108,12 @@ actor PlaylistArtworkGenerator {
 
         var colors: [NSColor] = []
         for idx in indices {
-            guard let data = artSnapshots[idx].artworkData else { continue }
+            guard let data = artworkData(for: artSnapshots[idx]) else { continue }
             let palette = ArtworkColorExtractor.uiThemePalette(from: data, maxColors: 3)
             colors.append(contentsOf: palette)
         }
         guard !colors.isEmpty else {
+            logGenerator("playlistID=\(playlistID) phase=no-colors fallback=tinted")
             return tintedFallback(baseImage: baseImage)
         }
 
@@ -76,7 +121,19 @@ actor PlaylistArtworkGenerator {
         let representative = deduped(sorted, maxCount: 5)
         let normalized = ensureLuminanceSpread(representative)
         let lut = buildLUT(from: normalized)
-        return recolor(baseImage: baseImage, lut: lut) ?? tintedFallback(baseImage: baseImage)
+        let image = recolor(baseImage: baseImage, lut: lut) ?? tintedFallback(baseImage: baseImage)
+        logGenerator(
+            "playlistID=\(playlistID) phase=generate-finished success=\(image != nil) colors=\(colors.count)"
+        )
+        return image
+    }
+
+    private static nonisolated func artworkData(for snapshot: PlaylistArtworkSnapshot) -> Data? {
+        if let artworkData = snapshot.artworkData, !artworkData.isEmpty {
+            return artworkData
+        }
+        guard let artworkFileURL = snapshot.artworkFileURL else { return nil }
+        return try? Data(contentsOf: artworkFileURL)
     }
 
     // MARK: - Stable Hash
@@ -428,9 +485,7 @@ final class DetailHeaderArtworkResolver {
             }
 
             // No artwork exists - generate for first-time initialization only
-            let snapshots: [(id: UUID, artworkData: Data?)] = tracks.map {
-                (id: $0.id, artworkData: $0.loadArtworkDataIfNeeded())
-            }
+            let snapshots = tracks.map { PlaylistArtworkSnapshot(track: $0) }
 
             guard let image = await generator.generateArtwork(
                 playlistID: playlistID,
