@@ -267,20 +267,38 @@ extension ArtworkColorExtractor {
         candidates.reserveCapacity(bucketCount)
 
         let totalBucketWeight = buckets.reduce(CGFloat(0)) { $0 + $1.weight }
-        let minimumBucketWeight = totalBucketWeight * 0.012
+        let minimumBucketWeight = totalBucketWeight * 0.030
+        let noiseFloor = totalBucketWeight * 0.012
 
-        for bucket in buckets where bucket.weight > minimumBucketWeight {
+        for bucket in buckets where bucket.weight > noiseFloor {
             let inv = 1 / bucket.weight
-            let color = NSColor(
+            let bucketColor = NSColor(
                 calibratedRed: bucket.r * inv,
                 green: bucket.g * inv,
                 blue: bucket.b * inv,
                 alpha: 1
             )
-            let tuned = tuneUI(color, profile: profile)
+            let bucketSat = saturationValue(of: bucketColor)
+            let areaShare = bucket.weight / totalBucketWeight
+
+            // Reject tiny but highly saturated buckets — usually watermarks or sticker noise.
+            if areaShare < 0.030 && bucketSat > 0.55 {
+                continue
+            }
+
+            // Below the substantial-region threshold, the bucket may still contribute,
+            // but only if it is large enough to represent a meaningful colour family.
+            if bucket.weight <= minimumBucketWeight && bucketSat < 0.25 {
+                continue
+            }
+
+            let satBonus = areaShare >= 0.10 ? bucketSat * 0.30 : bucketSat * 0.10
+            let tuned = tuneUI(bucketColor, profile: profile)
             let hue = hueValue(of: tuned)
-            let score = bucket.weight * (0.85 + saturationValue(of: tuned) * 0.25)
-            candidates.append(PaletteCandidate(color: tuned, hue: hue, score: score))
+            let score = bucket.weight * (0.85 + satBonus)
+            candidates.append(
+                PaletteCandidate(color: tuned, hue: hue, score: score, areaShare: areaShare)
+            )
         }
 
         if candidates.isEmpty {
@@ -294,6 +312,22 @@ extension ArtworkColorExtractor {
         }
 
         candidates.sort { $0.score > $1.score }
+
+        // If a single hue dominates clearly, reject far-complementary candidates whose
+        // own area share is too small to justify a competing accent.
+        if let primary = candidates.first {
+            let dominantHue = primary.hue
+            let primaryShare = primary.areaShare
+            if primaryShare >= 0.35 {
+                candidates = candidates.filter { cand in
+                    if cand.hue == dominantHue { return true }
+                    let hueGap = ColorMath.circularHueDistance(cand.hue, dominantHue)
+                    // Far-complementary (>=0.40 hue distance) needs >=0.25 area to compete.
+                    if hueGap >= 0.40 && cand.areaShare < 0.25 { return false }
+                    return true
+                }
+            }
+        }
 
         var selected: [NSColor] = []
         for candidate in candidates {
@@ -312,6 +346,20 @@ extension ArtworkColorExtractor {
             if selected.count >= targetCount {
                 break
             }
+        }
+
+        // Monochrome / nearly-grey covers should not synthesize colourful variants.
+        if profile.avgSaturation < 0.10 && profile.vividness < 0.04 {
+            if selected.isEmpty {
+                let fallback = NSColor(
+                    calibratedRed: fallbackR / fallbackWeight,
+                    green: fallbackG / fallbackWeight,
+                    blue: fallbackB / fallbackWeight,
+                    alpha: 1
+                )
+                return [tuneUI(fallback, profile: profile)]
+            }
+            return selected
         }
 
         // Ensure we always expose multi-color themes for mesh gradients.
@@ -386,7 +434,7 @@ extension ArtworkColorExtractor {
                 alpha: 1
             )
             let score = bucket.weight * (0.90 + s * 0.35)
-            candidates.append(PaletteCandidate(color: normalized, hue: h, score: score))
+            candidates.append(PaletteCandidate(color: normalized, hue: h, score: score, areaShare: bucket.weight / totalWeight))
         }
 
         guard !candidates.isEmpty else { return [] }
@@ -554,6 +602,7 @@ extension ArtworkColorExtractor {
         let color: NSColor
         let hue: CGFloat
         let score: CGFloat
+        let areaShare: CGFloat
     }
 
     fileprivate struct ArtworkProfile {
