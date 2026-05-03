@@ -538,7 +538,7 @@ extension ArtworkColorExtractor {
 }
 
 extension ArtworkColorExtractor {
-    fileprivate struct HueBucket {
+    struct HueBucket {
         var weight: CGFloat
         var r: CGFloat
         var g: CGFloat
@@ -674,7 +674,7 @@ extension ArtworkColorExtractor {
         return h
     }
 
-    fileprivate nonisolated static func saturationValue(of color: NSColor) -> CGFloat {
+    nonisolated static func saturationValue(of color: NSColor) -> CGFloat {
         guard let rgb = color.usingColorSpace(.deviceRGB) else { return 0 }
         var h: CGFloat = 0
         var s: CGFloat = 0
@@ -693,7 +693,7 @@ extension ArtworkColorExtractor {
         return sqrt(dr * dr + dg * dg + db * db)
     }
 
-    fileprivate nonisolated static func textSourceColor(
+    nonisolated static func textSourceColor(
         from buckets: [HueBucket],
         fallback: NSColor
     ) -> NSColor {
