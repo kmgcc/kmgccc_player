@@ -187,21 +187,9 @@ final class PlaylistPageController {
     }
 
     func refreshHeaderArtwork() {
-        guard page?.header != nil else {
-            print("🎨 [HeaderGenerateClick] phase=header-refresh-skipped reason=no-header")
-            return
-        }
-        let oldIdentity = page?.header?.artworkIdentity ?? "nil"
-        let selectionIdentity = page?.selectionIdentity ?? "nil"
-        print(
-            "🎨 [HeaderGenerateClick] phase=header-refresh-request selectionIdentity=\(selectionIdentity) oldIdentity=\(oldIdentity)"
-        )
+        guard page?.header != nil else { return }
         LyricsRuntimeProfile.increment("header.refreshHeaderArtwork")
         rebuildCurrentHeaderModel(forceResetArtworkPresentation: true)
-        print(
-            "🎨 [HeaderGenerateClick] phase=header-model-rebuilt selectionIdentity=\(page?.selectionIdentity ?? "nil") "
-                + "newIdentity=\(page?.header?.artworkIdentity ?? "nil")"
-        )
         loadHeaderArtwork()
     }
 
@@ -645,12 +633,6 @@ final class PlaylistPageController {
         headerUpgradeTask?.cancel()
         headerHaloSeedTask?.cancel()
         let request = header.config.artworkRequest
-        if case .playlist(_, let playlistID, let tracks) = request {
-            print(
-                "🎨 [HeaderGenerateClick] phase=load-header-artwork playlistID=\(playlistID) "
-                    + "tracks=\(tracks.count) artworkIdentity=\(header.artworkIdentity)"
-            )
-        }
         let selectionIdentity = page.selectionIdentity
         let loadToken = UUID()
         headerResolveToken = loadToken
@@ -699,13 +681,6 @@ final class PlaylistPageController {
         LyricsRuntimeProfile.increment("header.applyResolvedArtwork")
         guard let currentPage = page, currentPage.selectionIdentity == selectionIdentity else { return }
         guard let currentHeader = currentPage.header else { return }
-        if currentHeader.config.selectionTypeLabel == DetailHeaderArtworkSelectionType.playlist.rawValue {
-            print(
-                "🎨 [HeaderGenerateClick] phase=apply-resolved selectionIdentity=\(selectionIdentity) "
-                    + "source=\(resolved?.source.rawValue ?? "nil") hasImage=\(resolved?.image != nil) "
-                    + "fileURL=\(resolved?.fileURL?.path ?? "nil") artworkIdentity=\(artworkIdentity)"
-            )
-        }
 
         // Immediate stage: publish what we have right away.
         if let image = resolved?.image {
@@ -920,12 +895,6 @@ final class PlaylistPageController {
     private func publishHeaderImage(_ image: NSImage, identity: String, resolveToken: UUID) {
         guard currentArtworkPresentationIdentity == identity else { return }
         LyricsRuntimeProfile.increment("header.publishHeaderImage")
-        if page?.header?.config.selectionTypeLabel == DetailHeaderArtworkSelectionType.playlist.rawValue {
-            print(
-                "🎨 [HeaderGenerateClick] phase=publish-header-image identity=\(identity) "
-                    + "imageSize=\(Int(image.size.width))x\(Int(image.size.height))"
-            )
-        }
         if didFadeHeaderIdentity == identity {
             if headerIncomingArtwork != nil {
                 headerIncomingArtwork = image

@@ -75,20 +75,9 @@ actor PlaylistArtworkGenerator {
             return nil
         }
 
-        let artworkDataCount = snapshots.filter { $0.artworkData?.isEmpty == false }.count
-        let artworkFileURLCount = snapshots.filter { $0.artworkFileURL != nil }.count
-        let existingArtworkFileCount = snapshots.filter {
-            guard let url = $0.artworkFileURL else { return false }
-            return FileManager.default.fileExists(atPath: url.path)
-        }.count
         let artSnapshots = snapshots.filter {
             ($0.artworkData?.isEmpty == false) || $0.artworkFileURL != nil
         }
-        logGenerator(
-            "playlistID=\(playlistID) phase=generate-start snapshots=\(snapshots.count) "
-                + "artworkData=\(artworkDataCount) artworkFileURL=\(artworkFileURLCount) "
-                + "fileExists=\(existingArtworkFileCount) usable=\(artSnapshots.count)"
-        )
         guard !artSnapshots.isEmpty else {
             let baseNames = ["cov1", "cov2", "cov3", "cov4"]
             logGenerator("playlistID=\(playlistID) phase=empty-playlist-fallback baseName=\(baseNames[hash % 4])")
@@ -121,11 +110,7 @@ actor PlaylistArtworkGenerator {
         let representative = deduped(sorted, maxCount: 5)
         let normalized = ensureLuminanceSpread(representative)
         let lut = buildLUT(from: normalized)
-        let image = recolor(baseImage: baseImage, lut: lut) ?? tintedFallback(baseImage: baseImage)
-        logGenerator(
-            "playlistID=\(playlistID) phase=generate-finished success=\(image != nil) colors=\(colors.count)"
-        )
-        return image
+        return recolor(baseImage: baseImage, lut: lut) ?? tintedFallback(baseImage: baseImage)
     }
 
     private static nonisolated func artworkData(for snapshot: PlaylistArtworkSnapshot) -> Data? {
@@ -211,8 +196,6 @@ actor PlaylistArtworkGenerator {
 
         // If spread is already decent, return as-is
         if spread >= 0.25 { return colors }
-
-        logGenerator("phase=palette-normalization spread=\(String(format: "%.3f", spread)) injecting dark/light anchors")
 
         // Derive dark and light anchors from the midpoint color
         let midColor = colors[colors.count / 2]
@@ -322,9 +305,6 @@ actor PlaylistArtworkGenerator {
         for offset in 0..<4 {
             let name = baseNames[(primaryIndex + offset) % 4]
             if let image = NSImage(named: name) {
-                if offset > 0 {
-                    logGenerator("phase=base-image-fallback primary=\(baseNames[primaryIndex]) loaded=\(name)")
-                }
                 return image
             }
         }
@@ -343,8 +323,6 @@ actor PlaylistArtworkGenerator {
         let result = recolor(baseImage: baseImage, lut: lut)
         if result == nil {
             logGenerator("phase=tinted-fallback-recolor-failed")
-        } else {
-            logGenerator("phase=tinted-fallback-applied paletteSize=\(fallbackColors.count)")
         }
         return result
     }
@@ -365,14 +343,11 @@ final class DetailHeaderArtworkResolver {
     private let generator = PlaylistArtworkGenerator.shared
 
     func resolveImmediately(for request: DetailHeaderArtworkRequest) -> ResolvedHeaderArtwork? {
-        logResolver("selectionType=\(request.selectionType.rawValue) selectionIdentity=\(request.debugSelectionID) phase=immediate-start")
-
         switch request {
         case .playlist(let selectionIdentity, let playlistID, _):
             let record = libraryService.loadPlaylistArtworkRecord(playlistID: playlistID)
 
             if let custom = record.customArtwork {
-                logResolver("selectionType=playlist selectionIdentity=\(playlistID) source=custom filePath=\(custom.fileURL.path) phase=immediate-accepted")
                 return ResolvedHeaderArtwork(
                     selectionIdentity: selectionIdentity,
                     selectionType: .playlist,
@@ -386,7 +361,6 @@ final class DetailHeaderArtworkResolver {
             // Rule: Once generated artwork exists, it stays stable regardless of content changes.
             // Only manual user action can change it (import custom or explicit regenerate).
             if let generated = record.generatedArtwork {
-                logResolver("selectionType=playlist selectionIdentity=\(playlistID) source=persisted-generated filePath=\(generated.fileURL.path) phase=immediate-accepted")
                 return ResolvedHeaderArtwork(
                     selectionIdentity: selectionIdentity,
                     selectionType: .playlist,
@@ -397,7 +371,6 @@ final class DetailHeaderArtworkResolver {
                 )
             }
 
-            logResolver("selectionType=playlist selectionIdentity=\(playlistID) phase=immediate-miss noArtworkExists")
             return nil
 
         case .artist(let selectionIdentity, let entry, let tracks):
@@ -407,7 +380,6 @@ final class DetailHeaderArtworkResolver {
                 let fileURL = entry.artworkFileName.map {
                     LocalLibraryPaths.artistFolderURL(for: entry.id).appendingPathComponent($0)
                 }
-                logResolver("selectionType=artist selectionIdentity=\(entry.id) source=custom filePath=\(fileURL?.path ?? "nil") phase=immediate-accepted")
                 return ResolvedHeaderArtwork(
                     selectionIdentity: selectionIdentity,
                     selectionType: .artist,
@@ -422,7 +394,6 @@ final class DetailHeaderArtworkResolver {
                 artistName: entry.displayName,
                 tracks: tracks
             )
-            logResolver("selectionType=artist selectionIdentity=\(entry.id) source=placeholder phase=immediate-accepted")
             return ResolvedHeaderArtwork(
                 selectionIdentity: selectionIdentity,
                 selectionType: .artist,
@@ -438,7 +409,6 @@ final class DetailHeaderArtworkResolver {
                let image = ArtworkLoader.squareHeaderPreviewImage(data: data, maxPixelSize: 320)
             {
                 let fileURL = LocalLibraryPaths.albumFolderURL(for: entry.id).appendingPathComponent(fileName)
-                logResolver("selectionType=album selectionIdentity=\(entry.id) source=custom filePath=\(fileURL.path) phase=immediate-accepted")
                 return ResolvedHeaderArtwork(
                     selectionIdentity: selectionIdentity,
                     selectionType: .album,
@@ -453,7 +423,6 @@ final class DetailHeaderArtworkResolver {
                 ArtworkLoader.squareHeaderPreviewImage(data: $0, maxPixelSize: 320)
             } ?? fallbackImage
             if let image = fallbackPreview {
-                logResolver("selectionType=album selectionIdentity=\(entry.id) source=album-fallback filePath=nil phase=immediate-accepted")
                 return ResolvedHeaderArtwork(
                     selectionIdentity: selectionIdentity,
                     selectionType: .album,
@@ -464,7 +433,6 @@ final class DetailHeaderArtworkResolver {
                 )
             }
 
-            logResolver("selectionType=album selectionIdentity=\(entry.id) source=placeholder phase=immediate-accepted")
             return ResolvedHeaderArtwork(
                 selectionIdentity: selectionIdentity,
                 selectionType: .album,
@@ -498,7 +466,6 @@ final class DetailHeaderArtworkResolver {
             // Double-check if artwork was created while we were generating (race condition)
             let postGenerationRecord = libraryService.loadPlaylistArtworkRecord(playlistID: playlistID)
             if let custom = postGenerationRecord.customArtwork {
-                logResolver("selectionType=playlist selectionIdentity=\(playlistID) source=custom filePath=\(custom.fileURL.path) generationSkipped=custom-became-available")
                 return ResolvedHeaderArtwork(
                     selectionIdentity: selectionIdentity,
                     selectionType: .playlist,
@@ -509,7 +476,6 @@ final class DetailHeaderArtworkResolver {
                 )
             }
             if let generated = postGenerationRecord.generatedArtwork {
-                logResolver("selectionType=playlist selectionIdentity=\(playlistID) source=persisted-generated filePath=\(generated.fileURL.path) generationSkipped=generated-became-available")
                 return ResolvedHeaderArtwork(
                     selectionIdentity: selectionIdentity,
                     selectionType: .playlist,
@@ -529,7 +495,6 @@ final class DetailHeaderArtworkResolver {
             )
 
             let generatedURL = LocalLibraryPaths.playlistGeneratedArtworkURL(for: playlistID)
-            logResolver("selectionType=playlist selectionIdentity=\(playlistID) source=first-generated filePath=\(generatedURL.path) phase=publish-ready")
             return ResolvedHeaderArtwork(
                 selectionIdentity: selectionIdentity,
                 selectionType: .playlist,

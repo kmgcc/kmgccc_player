@@ -802,9 +802,6 @@ final class LocalLibraryService {
             generatedSignature: nil, // Clear signature since we're using custom
             artworkRevision: UUID().uuidString
         )
-        debugArtworkPersistence(
-            "selectionIdentity=\(playlistID) source=custom filePath=\(fileURL.path) save=accepted oldGeneratedDeleted=true"
-        )
     }
 
     func savePlaylistGeneratedArtwork(
@@ -828,9 +825,6 @@ final class LocalLibraryService {
             artworkRevision: shouldActivateGenerated
                 ? UUID().uuidString
                 : existing?.artworkRevision
-        )
-        debugArtworkPersistence(
-            "selectionIdentity=\(playlistID) source=generated filePath=\(fileURL.path) save=accepted generatedSignature=\(signature)"
         )
     }
 
@@ -867,9 +861,11 @@ final class LocalLibraryService {
             generatedSignature: nil, // Signature not used for stability anymore
             artworkRevision: UUID().uuidString
         )
-        debugArtworkPersistence(
-            "selectionIdentity=\(playlistID) source=generated filePath=\(fileURL.path) phase=regenerate save=\(metadataSaved ? "accepted" : "failed") oldCustomDeleted=true tracks=\(tracks.count) revision=\(playlistArtworkRevision(playlistID: playlistID) ?? "nil")"
-        )
+        if !metadataSaved {
+            debugArtworkPersistence(
+                "selectionIdentity=\(playlistID) source=generated filePath=\(fileURL.path) phase=regenerate save=failed reason=metadata-write-failed tracks=\(tracks.count)"
+            )
+        }
         return metadataSaved
     }
 
@@ -960,10 +956,6 @@ final class LocalLibraryService {
             activeSource: legacySource == .none ? .custom : legacySource,
             generatedSignature: sidecar.generatedArtworkSignature,
             artworkRevision: sidecar.artworkRevision ?? UUID().uuidString
-        )
-
-        debugArtworkPersistence(
-            "selectionIdentity=\(playlistID) source=\((legacySource == .generated) ? "generated" : "custom") filePath=\(destinationURL.path) migration=legacy-single-file"
         )
 
         return loadPlaylistSidecar(playlistID: playlistID)
