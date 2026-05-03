@@ -3447,14 +3447,7 @@ struct FullscreenPlayerView: View {
     }
 
     private func resolveFullscreenLyricsBaseColor(forTrackID trackID: UUID?) -> NSColor {
-        if let accent = currentArtworkSnapshot(forTrackID: trackID)?.accentColor {
-            return accent
-        }
-        if let base = currentArtworkSnapshot(forTrackID: trackID)?.averageColor {
-            return base
-        }
-
-        return NSColor(AppSettings.shared.accentColor)
+        themeStore.semanticPalette.fullscreenLyricBase
     }
 
     private func resolveFullscreenLyricsInactiveBaseColor(forTrackID trackID: UUID?) -> NSColor {
@@ -3478,7 +3471,7 @@ struct FullscreenPlayerView: View {
             }
         }
 
-        return resolveFullscreenLyricsBaseColor(forTrackID: trackID)
+        return themeStore.semanticPalette.fullscreenLyricInactiveBase
     }
     
     private var currentArtworkTaskKey: String {

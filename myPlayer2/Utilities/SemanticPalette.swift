@@ -170,11 +170,18 @@ enum SemanticPaletteFactory {
     }
 
     fileprivate static func fullscreenLyricBase(analysis: ArtworkColorAnalysis) -> NSColor {
-        analysis.bestTextSourceColor
+        // High colorfulness + clear hue dominance → use the dominant cover hue.
+        // Otherwise fall back to the best text source colour (already mid-tone, hue-rich).
+        if analysis.colorfulness >= 0.20 && analysis.dominantHueConfidence >= 0.20 {
+            return analysis.dominantColor
+        }
+        return analysis.bestTextSourceColor
     }
 
     fileprivate static func fullscreenLyricInactiveBase(analysis: ArtworkColorAnalysis) -> NSColor {
-        analysis.bestTextSourceColor
+        // Inactive uses the average colour — more stable than dominantColor on
+        // covers with strong but small high-saturation regions.
+        analysis.averageColor
     }
 
     fileprivate static func coverGradientDominant(
