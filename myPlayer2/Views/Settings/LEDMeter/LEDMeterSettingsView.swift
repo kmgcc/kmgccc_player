@@ -15,15 +15,10 @@ struct LEDMeterSettingsView: View {
 
     @State private var sensitivity: Float = AppSettings.shared.ledSensitivity
     @State private var cutoffHz: Double = AppSettings.shared.ledCutoffHz
-    @State private var preGain: Double = AppSettings.shared.ledPreGain
     @State private var speed: Double = AppSettings.shared.ledSpeed
     @State private var targetHz: Int = AppSettings.shared.ledTargetHz
     @State private var ledCount: Int = AppSettings.shared.ledCount
     @State private var brightnessLevels: Int = AppSettings.shared.ledBrightnessLevels
-    @State private var lookaheadMs: Double = AppSettings.shared.lookaheadMs
-
-    @AppStorage("ledTransientThreshold") private var transientThreshold: Double = 12.0
-    @AppStorage("ledTransientIntensity") private var transientIntensity: Double = 4.0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -61,23 +56,17 @@ struct LEDMeterSettingsView: View {
         .onAppear {
             sensitivity = settings.ledSensitivity
             cutoffHz = settings.ledCutoffHz
-            preGain = settings.ledPreGain
             speed = settings.ledSpeed
             targetHz = settings.ledTargetHz
             ledCount = settings.ledCount
             brightnessLevels = settings.ledBrightnessLevels
-            lookaheadMs = settings.lookaheadMs
         }
         .onChange(of: sensitivity) { _, _ in applyLedConfig() }
         .onChange(of: cutoffHz) { _, _ in applyLedConfig() }
-        .onChange(of: preGain) { _, _ in applyLedConfig() }
         .onChange(of: speed) { _, _ in applyLedConfig() }
         .onChange(of: targetHz) { _, _ in applyLedConfig() }
         .onChange(of: ledCount) { _, _ in applyLedConfig() }
         .onChange(of: brightnessLevels) { _, _ in applyLedConfig() }
-        .onChange(of: lookaheadMs) { _, newValue in settings.lookaheadMs = newValue }
-        .onChange(of: transientThreshold) { _, _ in applyLedConfig() }
-        .onChange(of: transientIntensity) { _, _ in applyLedConfig() }
     }
 
     private var visualConfigSection: some View {
@@ -180,7 +169,7 @@ struct LEDMeterSettingsView: View {
                 Text(String(format: "%.1fx", sensitivity))
                     .foregroundStyle(.secondary)
             }
-            Slider(value: $sensitivity, in: 0.5...3.0)
+            Slider(value: $sensitivity, in: 0.5...1.5)
             Text("settings.led.sensitivity_desc")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
@@ -212,36 +201,6 @@ struct LEDMeterSettingsView: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
-                    Text("settings.led.pregain")
-                    Spacer()
-                    Text(String(format: "%.2fx", preGain))
-                        .foregroundStyle(.secondary)
-                }
-                Slider(value: $preGain, in: 0.0...2.0, step: 0.05)
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text("settings.led.transient_threshold")
-                    Spacer()
-                    Text(String(format: "%.1f dB", transientThreshold))
-                        .foregroundStyle(.secondary)
-                }
-                Slider(value: $transientThreshold, in: 1.0...12.0, step: 0.5)
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text("settings.led.transient_intensity")
-                    Spacer()
-                    Text(String(format: "%.1fx", transientIntensity))
-                        .foregroundStyle(.secondary)
-                }
-                Slider(value: $transientIntensity, in: 0.0...4.0, step: 0.1)
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
                     Text("settings.led.speed")
                     Spacer()
                     Text(String(format: "%.2fx", speed))
@@ -251,19 +210,6 @@ struct LEDMeterSettingsView: View {
             }
 
             refreshRatePicker
-
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text("settings.led.lookahead")
-                    Spacer()
-                    Text(String(format: "%.0f ms", lookaheadMs))
-                        .foregroundStyle(.secondary)
-                }
-                Slider(value: $lookaheadMs, in: 0...500, step: 10)
-                Text("settings.led.lookahead_desc")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
         }
         .font(.subheadline)
         .padding(.horizontal, 10)
@@ -308,24 +254,19 @@ struct LEDMeterSettingsView: View {
     private func applyLedConfig() {
         settings.ledSensitivity = sensitivity
         settings.ledCutoffHz = cutoffHz
-        settings.ledPreGain = preGain
         settings.ledSpeed = speed
         settings.ledTargetHz = targetHz
         settings.ledCount = ledCount
         settings.ledBrightnessLevels = brightnessLevels
-        settings.lookaheadMs = lookaheadMs
 
         ledMeterProvider.getOrCreate().updateConfig(
             LEDMeterConfig(
                 ledCount: ledCount,
                 levels: brightnessLevels,
                 cutoffHz: Float(cutoffHz),
-                preGain: Float(preGain),
                 sensitivity: sensitivity,
                 speed: Float(speed),
-                targetHz: targetHz,
-                transientThreshold: Float(transientThreshold),
-                transientIntensity: Float(transientIntensity)
+                targetHz: targetHz
             )
         )
     }

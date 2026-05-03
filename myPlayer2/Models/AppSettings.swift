@@ -86,11 +86,11 @@ public final class AppSettings {
 
     /// Brightness levels per LED (default 5)
     @ObservationIgnored
-    @AppStorage("ledBrightnessLevels") var ledBrightnessLevels: Int = 3
+    @AppStorage("ledBrightnessLevels") var ledBrightnessLevels: Int = 5
 
-    /// LED sensitivity (0.5 to 2.0, default 1.0)
+    /// LED sensitivity (0.5 to 1.5, default 1.0)
     @ObservationIgnored
-    @AppStorage("ledSensitivity") private var _ledSensitivity: Double = 2.3
+    @AppStorage("ledSensitivity") private var _ledSensitivity: Double = 1.0
 
     var ledSensitivity: Float {
         get { Float(_ledSensitivity) }
@@ -101,10 +101,6 @@ public final class AppSettings {
     @ObservationIgnored
     @AppStorage("ledCutoffHz") var ledCutoffHz: Double = 900
 
-    /// LED pre-gain (0.25 to 8.0)
-    @ObservationIgnored
-    @AppStorage("ledPreGain") var ledPreGain: Double = 0.35
-
     /// LED response speed (0.5 to 2.0)
     @ObservationIgnored
     @AppStorage("ledSpeed") var ledSpeed: Double = 1.4
@@ -113,15 +109,21 @@ public final class AppSettings {
     @ObservationIgnored
     @AppStorage("ledTargetHz") var ledTargetHz: Int = 30
 
-    /// Threshold to trigger transient boost (dB above average)
+    // MARK: - Deprecated LED parameters (kept for storage compatibility, no longer used by algorithm)
+
+    /// Deprecated: pre-gain was replaced by internal perceptual curve.
+    @ObservationIgnored
+    @AppStorage("ledPreGain") var ledPreGain: Double = 1.0
+
+    /// Deprecated: transient boost removed from LED algorithm.
     @ObservationIgnored
     @AppStorage("ledTransientThreshold") var ledTransientThreshold: Double = 12.0
 
-    /// Intensity of the transient boost effect (0.0 to 4.0)
+    /// Deprecated: transient boost removed from LED algorithm.
     @ObservationIgnored
     @AppStorage("ledTransientIntensity") var ledTransientIntensity: Double = 4.0
 
-    /// Transient cutoff frequency for LED meter (Hz)
+    /// Deprecated: transient boost removed from LED algorithm.
     @ObservationIgnored
     @AppStorage("ledTransientCutoffHz") var ledTransientCutoffHz: Double = 60.0
 
@@ -477,85 +479,7 @@ public final class AppSettings {
     @ObservationIgnored
     @AppStorage("nowPlayingMeshBassImpact") var nowPlayingMeshBassImpact: Double = 0.7
 
-    // MARK: - Now Playing Background Meter
-
-    @ObservationIgnored
-    @AppStorage("bgMeterCutoffHz") var bgMeterCutoffHz: Double = 1200
-
-    @ObservationIgnored
-    @AppStorage("bgMeterPreGain") var bgMeterPreGain: Double = 1.0
-
-    @ObservationIgnored
-    @AppStorage("bgMeterSensitivity") private var _bgMeterSensitivity: Double = 1.0
-
-    var bgMeterSensitivity: Float {
-        get { Float(_bgMeterSensitivity) }
-        set { _bgMeterSensitivity = Double(newValue) }
-    }
-
-    @ObservationIgnored
-    @AppStorage("bgMeterSpeed") var bgMeterSpeed: Double = 1.0
-
-    @ObservationIgnored
-    @AppStorage("bgMeterTargetHz") var bgMeterTargetHz: Int = 30
-
-    @ObservationIgnored
-    @AppStorage("bgMeterTransientThreshold") var bgMeterTransientThreshold: Double = 1.5
-
-    @ObservationIgnored
-    @AppStorage("bgMeterTransientIntensity") var bgMeterTransientIntensity: Double = 2.5
-
-    @ObservationIgnored
-    @AppStorage("bgMeterTransientCutoffHz") var bgMeterTransientCutoffHz: Double = 40.0
-
-    // MARK: - Now Playing Background Dynamics (New)
-
-    /// One-time migration flag from legacy bgMeter* keys.
-    @ObservationIgnored
-    @AppStorage("bgDynamicsMigrated") var bgDynamicsMigrated: Bool = false
-
-    /// Low-band loudness cutoff (Hz).
-    @ObservationIgnored
-    @AppStorage("bgLowCutoffHz") var bgLowCutoffHz: Double = 650
-
-    /// Low-band sensitivity (persisted as Double, exposed as Float for processors).
-    @ObservationIgnored
-    @AppStorage("bgLowSensitivity") private var _bgLowSensitivity: Double = 1.4
-
-    var bgLowSensitivity: Float {
-        get { Float(_bgLowSensitivity) }
-        set { _bgLowSensitivity = Double(newValue) }
-    }
-
-    /// Low-band pre-boost (dB). Positive makes background respond earlier; negative makes it calmer.
-    @ObservationIgnored
-    @AppStorage("bgLowPreBoostDb") var bgLowPreBoostDb: Double = -0.5
-
-    /// Low-band envelope timing (seconds).
-    @ObservationIgnored
-    @AppStorage("bgLowAttack") var bgLowAttack: Double = 0.18
-
-    @ObservationIgnored
-    @AppStorage("bgLowRelease") var bgLowRelease: Double = 0.50
-
-    /// Kick (transient) cutoff (Hz).
-    @ObservationIgnored
-    @AppStorage("bgKickCutoffHz") var bgKickCutoffHz: Double = 39
-
-    /// Kick trigger threshold (dB above baseline).
-    @ObservationIgnored
-    @AppStorage("bgKickThresholdDb") var bgKickThresholdDb: Double = 18.7
-
-    /// Kick intensity multiplier.
-    @ObservationIgnored
-    @AppStorage("bgKickIntensity") var bgKickIntensity: Double = 4.0
-
-    /// Kick envelope timing (seconds).
-    @ObservationIgnored
-    @AppStorage("bgKickAttack") var bgKickAttack: Double = 0.04
-
-    @ObservationIgnored
-    @AppStorage("bgKickRelease") var bgKickRelease: Double = 0.45
+    // MARK: - Now Playing Background Dynamics
 
     /// Optional transient brightness overlay mix (0...0.80).
     @ObservationIgnored
@@ -964,36 +888,9 @@ public final class AppSettings {
 
     // MARK: - Migrations
 
-    /// Migrates legacy bgMeter* settings to the new bg* dynamics keys once.
-    func migrateBackgroundDynamicsIfNeeded() {
-        guard bgDynamicsMigrated == false else { return }
-
-        // Map existing legacy values as a starting point.
-        bgLowCutoffHz = bgMeterCutoffHz
-        bgLowSensitivity = bgMeterSensitivity
-        bgKickCutoffHz = bgMeterTransientCutoffHz
-        bgKickThresholdDb = bgMeterTransientThreshold
-        bgKickIntensity = bgMeterTransientIntensity
-
-        // Derive default timing from legacy speed (faster speed -> shorter times).
-        let speed = max(0.1, bgMeterSpeed)
-        bgLowAttack = clamp(0.09 / speed, min: 0.05, max: 0.20)
-        bgLowRelease = clamp(0.28 / speed, min: 0.15, max: 0.50)
-        bgKickAttack = clamp(0.05 / speed, min: 0.02, max: 0.12)
-        bgKickRelease = clamp(0.22 / speed, min: 0.12, max: 0.45)
-
-        // New knobs default values.
-        bgKickToBrightnessMix = 0.0
-        bgKickDisplaceAmount = 1.0
-        bgKickScaleAmount = 0.02
-        bgQuietSuppressionMode = "strong"
-
-        bgDynamicsMigrated = true
-    }
-
-    private func clamp(_ value: Double, min: Double, max: Double) -> Double {
-        Swift.min(max, Swift.max(min, value))
-    }
+    // NOTE: Legacy bgMeter* / bgLow* / bgKick* migration removed.
+    // The remaining actively-used background parameters are:
+    // bgKickToBrightnessMix, bgKickDisplaceAmount, bgKickScaleAmount, bgQuietSuppressionMode.
 }
 
 // MARK: - Color Extension

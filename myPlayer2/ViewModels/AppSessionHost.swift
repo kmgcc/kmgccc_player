@@ -79,11 +79,9 @@ final class AppSessionHost: ObservableObject {
                 ledCount: AppSettings.shared.ledCount,
                 levels: AppSettings.shared.ledBrightnessLevels,
                 cutoffHz: Float(AppSettings.shared.ledCutoffHz),
-                preGain: Float(AppSettings.shared.ledPreGain),
                 sensitivity: AppSettings.shared.ledSensitivity,
                 speed: Float(AppSettings.shared.ledSpeed),
-                targetHz: AppSettings.shared.ledTargetHz,
-                transientThreshold: Float(AppSettings.shared.ledTransientThreshold)
+                targetHz: AppSettings.shared.ledTargetHz
             ),
             mixerProvider: { [weak playbackService] in
                 playbackService?.mainMixerNode ?? AVAudioEngine().mainMixerNode

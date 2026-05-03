@@ -16,21 +16,9 @@ struct LEDMeterConfig: Sendable {
     var ledCount: Int = 11
     var levels: Int = 7
     var cutoffHz: Float = 1200
-    var preGain: Float = 1.0
     var sensitivity: Float = 1.0
     var speed: Float = 1.0
     var targetHz: Int = 30
-    var transientThreshold: Float = 1.5
-    var transientIntensity: Float = 2.5
-    var transientCutoffHz: Float = 60.0
-    var useActivityGate: Bool = false
-    var lowSensitivity: Float = 1.0
-    var lowPreBoostDb: Float = 0.0
-    var lowAttack: Float = 0.09
-    var lowRelease: Float = 0.28
-    var kickAttack: Float = 0.05
-    var kickRelease: Float = 0.22
-    var quietSuppressionMode: Int = 2
 }
 
 struct LEDMeterMetrics: Sendable {
@@ -132,10 +120,9 @@ final class LEDMeterProcessor: @unchecked Sendable {
     let fftSize: Int = 2048
     private let bandCount: Int = 8
     private let dbFloor: Float = -60
-    private let dbCeil: Float = 0.0
-    private let gamma: Float = 0.95
-    private let baseAttack: Double = 0.02
-    private let baseRelease: Double = 0.12
+    private let dbCeil: Float = -6.0
+    private let baseAttack: Double = 0.015
+    private let baseRelease: Double = 0.08
 
     private var config: LEDMeterConfig
 
@@ -145,8 +132,6 @@ final class LEDMeterProcessor: @unchecked Sendable {
     private var log2n: vDSP_Length = 0
     private var ringBuffer: LEDRingBuffer
     private var env: Float = 0
-    private var avgDb: Float = -60
-    private var avgBassDb: Float = -60
     private var smoothedBands: [Float]
     private var lastLed: LEDMeterMetrics
     private var lastAudio: AudioMetrics = AudioMetrics.zero
@@ -180,8 +165,6 @@ final class LEDMeterProcessor: @unchecked Sendable {
 
     func reset() {
         env = 0
-        avgDb = -60
-        avgBassDb = -60
         smoothedBands = [Float](repeating: 0, count: bandCount)
         ringBuffer.reset()
     }
@@ -250,7 +233,6 @@ final class LEDMeterProcessor: @unchecked Sendable {
         led: LEDMeterMetrics, audio: AudioMetrics
     ) {
         let currentConfig = withConfig()
-        _ = max(1, currentConfig.targetHz)
         let rmsDb = 20.0 * log10f(max(rms, 1e-6))
 
         let binHz = sampleRate / Float(fftSize)
@@ -260,104 +242,70 @@ final class LEDMeterProcessor: @unchecked Sendable {
         let bin20 = min(max(1, Int(ceil(20.0 / binHz))), cutoffBin)
         let bin60 = min(max(1, Int(ceil(60.0 / binHz))), cutoffBin)
         let bin200 = min(max(1, Int(ceil(200.0 / binHz))), cutoffBin)
-        let binTransient = min(
-            max(1, Int(ceil(currentConfig.transientCutoffHz / binHz))), cutoffBin)
         let bin3000 = min(max(1, Int(ceil(3000.0 / binHz))), nyquistBins)
 
-        let wSubBass: Float = 1.0
-        let wBass: Float = 1.0
-        let wRest: Float = 1.0
-
         var bandPowerWeighted: Float = 0
-
         magnitudes.withUnsafeBufferPointer { ptr in
             guard let base = ptr.baseAddress else { return }
-
             if bin20 > 1 {
                 var p: Float = 0
                 vDSP_sve(base.advanced(by: 1), 1, &p, vDSP_Length(bin20 - 1))
                 bandPowerWeighted += p
             }
-
             if bin60 > bin20 {
                 var p: Float = 0
                 vDSP_sve(base.advanced(by: bin20), 1, &p, vDSP_Length(bin60 - bin20))
-                bandPowerWeighted += p * wSubBass
+                bandPowerWeighted += p
             }
-
             if bin200 > bin60 {
                 var p: Float = 0
                 vDSP_sve(base.advanced(by: bin60), 1, &p, vDSP_Length(bin200 - bin60))
-                bandPowerWeighted += p * wBass
+                bandPowerWeighted += p
             }
-
             if cutoffBin > bin200 {
                 var p: Float = 0
                 vDSP_sve(base.advanced(by: bin200), 1, &p, vDSP_Length(cutoffBin - bin200))
-                bandPowerWeighted += p * wRest
+                bandPowerWeighted += p
             }
         }
 
         let bandRMS = sqrt(bandPowerWeighted) / Float(fftSize)
         let db = 20 * log10(bandRMS + 1e-7)
 
-        var subBassPower: Float = 0
-        magnitudes.withUnsafeBufferPointer { ptr in
-            guard let base = ptr.baseAddress else { return }
-            vDSP_sve(base.advanced(by: 1), 1, &subBassPower, vDSP_Length(binTransient - 1))
-        }
-        let bassRMS = sqrt(subBassPower) / Float(fftSize)
-        let bassDb = 20 * log10(bassRMS + 1e-7)
+        // ── Perceptual volume mapping ──
+        // 1. Linear position in dB range
+        var t = (db - dbFloor) / (dbCeil - dbFloor)
 
-        let bassDiff = bassDb - avgBassDb
-        if bassDiff > 0 {
-            avgBassDb += bassDiff * 0.005
+        // 2. Soft-knee S-curve:
+        //    low: gentle lift   mid: linear-ish   high: soft compression
+        let mapped: Float
+        if t <= 0 {
+            mapped = 0
+        } else if t < 0.35 {
+            mapped = 0.35 * pow(t / 0.35, 1.7)
+        } else if t < 0.75 {
+            let midProgress = (t - 0.35) / 0.40
+            mapped = 0.35 + midProgress * 0.45
         } else {
-            avgBassDb += bassDiff * 0.02
+            let highProgress = (t - 0.75) / 0.25
+            mapped = 0.80 + (1.0 - exp(-highProgress * 3.5)) * 0.12 / (1.0 - exp(-3.5))
         }
 
-        let diff = db - avgDb
-        if diff > 0 {
-            avgDb += diff * 0.05
-        } else {
-            avgDb += diff * 0.2
+        // 3. Sensitivity multiplier with soft limit (never hard-clamp to 1.0)
+        var levelAdj = mapped * currentConfig.sensitivity
+        if levelAdj > 0.9 {
+            levelAdj = 0.9 + (levelAdj - 0.9) * 0.3
         }
+        levelAdj = min(levelAdj, 0.98)
 
-        let transientRaw = max(0, bassDb - avgBassDb - currentConfig.transientThreshold)
+        // 4. Smooth noise gate (smoothstep)
+        let gateStart: Float = -42
+        let gateEnd: Float = -54
+        let gateRaw = clamp((rmsDb - gateEnd) / (gateStart - gateEnd))
+        let noiseGate = gateRaw * gateRaw * (3.0 - 2.0 * gateRaw)
+        let gatedLevel = levelAdj * noiseGate
 
-        let volumeFactor = clamp((db - dbFloor) / (dbCeil - dbFloor))
-        let boostSensitivity = powf(volumeFactor, 2.5 as Float) * 4.0 as Float
-
-        let gateStart: Float = -30
-        let gateEnd: Float = -48
-        let noiseGate = clamp((rmsDb - gateEnd) / (gateStart - gateEnd))
-        let transient = transientRaw * boostSensitivity * noiseGate
-        let boost = transient * currentConfig.transientIntensity
-        let boostedDb = db + boost
-
-        let t = clamp((boostedDb - dbFloor) / (dbCeil - dbFloor))
-
-        let levelRaw = clamp(t * currentConfig.preGain)
-        var levelAdj = clamp(powf(levelRaw, gamma) * currentConfig.sensitivity)
-
-        var midPower: Float = 0
-        magnitudes.withUnsafeBufferPointer { ptr in
-            guard let base = ptr.baseAddress else { return }
-            let len = max(0, bin3000 - bin200)
-            if len > 0 {
-                vDSP_sve(base.advanced(by: bin200), 1, &midPower, vDSP_Length(len))
-            }
-        }
-        let midRMS = sqrt(midPower) / Float(fftSize)
-        let midDb = 20 * log10(midRMS + 1e-7)
-
-        if currentConfig.useActivityGate {
-            let gateStart: Float = -45
-            let gateEnd: Float = -55
-            let gateLinear = clamp((midDb - gateEnd) / (gateStart - gateEnd))
-            levelAdj *= pow(gateLinear, 2.0)
-        }
-
+        // 5. Envelope smoothing
         let dt = 1.0 / Double(currentConfig.targetHz)
         let speed = max(0.1, Double(currentConfig.speed))
         let attackTime = baseAttack / speed
@@ -365,14 +313,14 @@ final class LEDMeterProcessor: @unchecked Sendable {
         let aAtt = 1 - exp(-dt / attackTime)
         let aRel = 1 - exp(-dt / releaseTime)
 
-        if levelAdj > env {
-            env += Float(aAtt) * (levelAdj - env)
+        if gatedLevel > env {
+            env += Float(aAtt) * (gatedLevel - env)
         } else {
-            env += Float(aRel) * (levelAdj - env)
+            env += Float(aRel) * (gatedLevel - env)
         }
-
         env = clamp(env)
 
+        // 6. LED quantization
         let ledCount = max(1, currentConfig.ledCount)
         let levels = max(3, currentConfig.levels)
         let step = 1.0 / Float(levels - 1)
@@ -385,7 +333,6 @@ final class LEDMeterProcessor: @unchecked Sendable {
             let cont = clamp(x - Float(i))
             let softened = pow(cont, 1.6)
             let quant = round(softened / step) * step
-
             if i < order.count {
                 leds[order[i]] = clamp(quant)
             }
@@ -394,6 +341,7 @@ final class LEDMeterProcessor: @unchecked Sendable {
         let now = Date().timeIntervalSinceReferenceDate
         let ledMetrics = LEDMeterMetrics(timestamp: now, level: env, leds: leds)
 
+        // AudioMetrics (bands for skins)
         let bands = computeBands(power: fftMagnitudes, bandCount: bandCount)
         let smoothing: Float = 0.25
         if smoothedBands.count != bands.count {
@@ -412,6 +360,18 @@ final class LEDMeterProcessor: @unchecked Sendable {
             bassEnergy = (smoothedBands[0] + smoothedBands[1]) * 0.5
         }
 
+        // Mid-band dB for downstream consumers (not used for gating anymore)
+        var midPower: Float = 0
+        magnitudes.withUnsafeBufferPointer { ptr in
+            guard let base = ptr.baseAddress else { return }
+            let len = max(0, bin3000 - bin200)
+            if len > 0 {
+                vDSP_sve(base.advanced(by: bin200), 1, &midPower, vDSP_Length(len))
+            }
+        }
+        let midRMS = sqrt(midPower) / Float(fftSize)
+        let midDb = 20 * log10(midRMS + 1e-7)
+
         let audio = AudioMetrics(
             rms: rms,
             peak: peak,
@@ -421,7 +381,7 @@ final class LEDMeterProcessor: @unchecked Sendable {
             smoothedLevel: env,
             bassEnergy: bassEnergy,
             waveform: downsampleWaveform(samples: fftInput, target: 64),
-            transientLevel: transient,
+            transientLevel: 0,
             midEnergy: midDb,
             lowBandDb: db,
             lowBandLoudness: 0,
