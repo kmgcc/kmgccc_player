@@ -98,6 +98,20 @@ enum ColorMath {
         return self.color(h: comp.h, s: target, l: comp.l)
     }
 
+    /// Reinhard-style soft shoulder above `ceiling`. Returns identity below
+    /// the ceiling; above, compresses asymptotically toward `ceiling + softness`
+    /// so input values can never overshoot by more than `softness`.
+    /// Use when a hard clamp would create visible jumps at the boundary.
+    static func softShoulder(
+        _ value: CGFloat,
+        ceiling: CGFloat,
+        softness: CGFloat
+    ) -> CGFloat {
+        if value <= ceiling || softness <= 0 { return value }
+        let excess = value - ceiling
+        return ceiling + softness * (excess / (excess + softness))
+    }
+
     static func relativeLuminance(of color: NSColor) -> CGFloat {
         let rgb = color.usingColorSpace(.deviceRGB) ?? color
         func lin(_ c: CGFloat) -> CGFloat {
