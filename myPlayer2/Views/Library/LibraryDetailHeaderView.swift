@@ -516,12 +516,6 @@ struct LibraryDetailHeaderView: View {
                     guard let url = $0.artworkFileURL else { return false }
                     return FileManager.default.fileExists(atPath: url.path)
                 }.count
-                print(
-                    "🎨 [HeaderGenerateClick] phase=clicked playlistID=\(playlist.id) "
-                        + "name=\"\(playlist.name)\" tracks=\(tracks.count) "
-                        + "artworkData=\(artworkDataCount) artworkFileURL=\(artworkFileURLCount) "
-                        + "fileExists=\(existingArtworkFileCount)"
-                )
                 let variationSeed = Int.random(in: 0...Int.max)
 
                 guard let image = await PlaylistArtworkGenerator.shared.generateArtwork(
@@ -541,20 +535,17 @@ struct LibraryDetailHeaderView: View {
                 }
 
                 await MainActor.run {
-                    print(
-                        "🎨 [HeaderGenerateClick] phase=generator-succeeded playlistID=\(playlist.id) "
-                            + "imageSize=\(Int(image.size.width))x\(Int(image.size.height))"
-                    )
                     let didSave = LocalLibraryService.shared.regeneratePlaylistArtwork(
                         playlistID: playlist.id,
                         tracks: tracks,
                         image: image
                     )
-                    print(
-                        "🎨 [HeaderGenerateClick] phase=writeback-finished playlistID=\(playlist.id) "
-                            + "success=\(didSave)"
-                    )
-                    if didSave {
+                    if !didSave {
+                        print(
+                            "🎨 [HeaderGenerateClick] phase=writeback-failed playlistID=\(playlist.id) "
+                                + "tracks=\(tracks.count)"
+                        )
+                    } else {
                         onArtworkMutation()
                     }
                     isArtworkActionInFlight = false
