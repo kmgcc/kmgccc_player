@@ -1765,7 +1765,11 @@ struct FullscreenPlayerView: View {
     ) -> some View {
         // Scale factor relative to base button size (60)
         let scaleFactor = size / fullscreenControlButtonSize
-        
+        // When dark glass is selected, the capsule must use a dark colorScheme
+        // so .glassEffect renders dark material; otherwise respect ambient.
+        let controlColorScheme: ColorScheme =
+            materialStyle == .darkGlass ? .dark : fullscreenControlsColorScheme
+
         return HStack(spacing: 0) {
             leadingControlButton(size: size, help: "fullscreen.exit") {
                 Image(systemName: "arrow.down.right.and.arrow.up.left")
@@ -1791,13 +1795,13 @@ struct FullscreenPlayerView: View {
         )
         .contentShape(Capsule())
         .liquidGlassPill(
-            colorScheme: fullscreenControlsColorScheme,
+            colorScheme: controlColorScheme,
             accentColor: nil as Color?,
             prominence: .standard,
             materialStyle: materialStyle,
             isFloating: true
         )
-        .environment(\.colorScheme, fullscreenControlsColorScheme)
+        .environment(\.colorScheme, controlColorScheme)
         .onHover { hovering in
             updateFullscreenBottomControlsHoverGate(leading: hovering)
             isLeadingControlsExpanded = hovering
@@ -1923,10 +1927,16 @@ struct FullscreenPlayerView: View {
     }
 
     private var fullscreenControlsGlassStyle: FullscreenControlsGlassStyle {
-        FullscreenControlsGlassStyle(
-            colorScheme: fullscreenControlsColorScheme,
+        let materialStyle: LiquidGlassPillMaterialStyle =
+            settings.fullscreenMiniPlayerGlassMaterial == .darkGlass ? .darkGlass : .clear
+        // Dark glass requires a dark colorScheme for the material
+        // to render correctly regardless of ambient mode.
+        let effectiveColorScheme: ColorScheme =
+            materialStyle == .darkGlass ? .dark : fullscreenControlsColorScheme
+        return FullscreenControlsGlassStyle(
+            colorScheme: effectiveColorScheme,
             accentColor: themeStore.usesFallbackThemeColor ? nil : themeStore.accentColor,
-            materialStyle: settings.fullscreenMiniPlayerGlassMaterial == .darkGlass ? .darkGlass : .clear
+            materialStyle: materialStyle
         )
     }
 

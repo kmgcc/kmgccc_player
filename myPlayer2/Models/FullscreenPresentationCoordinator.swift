@@ -60,7 +60,7 @@ public enum FullscreenSkinID: String, CaseIterable, Identifiable {
         switch self {
         case .coverLed: return true
         case .kmgcccCassette: return true
-        case .rotatingCover: return false
+        case .rotatingCover: return true
         case .coverGradientBlur: return false
         }
     }

@@ -891,7 +891,7 @@ struct PlaybackModeSlider: View {
 
     private var trackFill: Color {
         if let pillTintColor {
-            return pillTintColor.opacity(0.18)
+            return pillTintColor.opacity(0.12)
         }
         return Color.secondary.opacity(0.2)
     }
@@ -902,7 +902,7 @@ struct PlaybackModeSlider: View {
 
     private var knobFill: Color {
         if let pillTintColor {
-            return pillTintColor.opacity(0.34)
+            return pillTintColor.opacity(0.24)
         }
         return Color.primary.opacity(0.2)
     }
@@ -1156,7 +1156,7 @@ struct AppleMusicPlaybackModeSlider: View {
 
     private var trackFill: Color {
         if let pillTintColor {
-            return pillTintColor.opacity(0.18)
+            return pillTintColor.opacity(0.12)
         }
         return Color.secondary.opacity(0.2)
     }
@@ -1167,7 +1167,7 @@ struct AppleMusicPlaybackModeSlider: View {
 
     private var knobFill: Color {
         if let pillTintColor {
-            return pillTintColor.opacity(0.34)
+            return pillTintColor.opacity(0.24)
         }
         return Color.primary.opacity(0.2)
     }

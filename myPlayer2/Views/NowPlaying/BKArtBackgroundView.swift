@@ -573,6 +573,7 @@ private final class BKArtBackgroundLayerView: NSView {
     private var isTransitionInFlight = false
     private var didPauseBackgroundTimerForTransition = false
     private var didPauseDotTimerForTransition = false
+    private var rebuildDebounceTask: Task<Void, Never>?
     private var deferredPaletteUpdate: ([NSColor], Bool)?
     private let ultraDarkOverlayOpacity: Float = 0.50
     private var activeAvoidanceRect: CGRect?
@@ -616,6 +617,7 @@ private final class BKArtBackgroundLayerView: NSView {
             solidCircleDotTimer?.cancel()
             maskWarmupTask?.cancel()
             initialResourceUpgradeTask?.cancel()
+            rebuildDebounceTask?.cancel()
             backgroundRenderTasks.values.forEach { $0.cancel() }
         }
     }
@@ -660,6 +662,8 @@ private final class BKArtBackgroundLayerView: NSView {
         }
     }
 
+    private static let resizeRebuildThreshold: CGFloat = 48
+
     override func layout() {
         super.layout()
         guard !bounds.isEmpty else { return }
@@ -670,12 +674,12 @@ private final class BKArtBackgroundLayerView: NSView {
             ensureBaseContainer(seed: rebuildSeed)
         }
 
-        if lastLayoutSize == .zero {
-            lastLayoutSize = bounds.size
-        } else if abs(lastLayoutSize.width - bounds.width) > 4
-            || abs(lastLayoutSize.height - bounds.height) > 4
-        {
-            lastLayoutSize = bounds.size
+        let isInitialLayout = lastLayoutSize == .zero
+        let deltaW = abs(lastLayoutSize.width - bounds.width)
+        let deltaH = abs(lastLayoutSize.height - bounds.height)
+        lastLayoutSize = bounds.size
+
+        if !isInitialLayout && (deltaW > Self.resizeRebuildThreshold || deltaH > Self.resizeRebuildThreshold) {
             if isTransitionInFlight || toContainer != nil {
                 pendingBoundsRebuild = true
                 layoutContainer(fromContainer)
@@ -683,13 +687,26 @@ private final class BKArtBackgroundLayerView: NSView {
                 transitionMaskLayer?.frame = expandedBounds
                 return
             }
-            rebuildForCurrentBounds()
+            // During live resize, layout existing container and debounce the rebuild
+            // to avoid repeated random-layout rebuilds causing flicker.
+            layoutContainer(fromContainer)
+            transitionMaskLayer?.frame = expandedBounds
+            scheduleBoundsRebuildDebounce()
             return
         }
 
         layoutContainer(fromContainer)
         layoutContainer(toContainer)
         transitionMaskLayer?.frame = expandedBounds
+    }
+
+    private func scheduleBoundsRebuildDebounce() {
+        rebuildDebounceTask?.cancel()
+        rebuildDebounceTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(0.45))
+            guard let self, !Task.isCancelled else { return }
+            self.rebuildForCurrentBounds()
+        }
     }
 
     func updatePalette(_ colors: [NSColor], isDark: Bool) {
@@ -2583,6 +2600,8 @@ private final class BKArtBackgroundLayerView: NSView {
 
     private func releaseHeavyResources() {
         cancelInitialResourceUpgradeTask()
+        rebuildDebounceTask?.cancel()
+        rebuildDebounceTask = nil
         maskWarmupTask?.cancel()
         maskWarmupTask = nil
         cancelBackgroundRenderTasks()
@@ -2623,9 +2642,11 @@ private final class BKArtBackgroundLayerView: NSView {
         if layer == nil {
             let rootLayer = CALayer()
             rootLayer.masksToBounds = true
+            rootLayer.backgroundColor = NSColor.black.cgColor
             layer = rootLayer
         } else {
             layer?.masksToBounds = true
+            layer?.backgroundColor = NSColor.black.cgColor
         }
     }
 
@@ -2831,7 +2852,7 @@ private final class BKArtBackgroundLayerView: NSView {
             solid1.position = anim.start
             solid1.anchorPoint = CGPoint(x: 0.5, y: 0.5)
             solid1.fillColor = NSColor(white: 0.3, alpha: 1.0).cgColor
-            solid1.opacity = 0.88
+            solid1.opacity = 0.68
             solid1.zPosition = 1
             slot.rootLayer.addSublayer(solid1)
             slot.cellBig = solid1
@@ -2848,7 +2869,7 @@ private final class BKArtBackgroundLayerView: NSView {
             solid2.position = anim.start
             solid2.anchorPoint = CGPoint(x: 0.5, y: 0.5)
             solid2.fillColor = NSColor(white: 0.3, alpha: 1.0).cgColor
-            solid2.opacity = 0.62
+            solid2.opacity = 0.48
             solid2.zPosition = 0
             slot.rootLayer.addSublayer(solid2)
             slot.cellSmall = solid2
