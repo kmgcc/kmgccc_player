@@ -8,12 +8,14 @@
 //  Liquid Glass material for unlit state and outline.
 //
 
+import AppKit
 import SwiftUI
 
 /// 11-dot LED level meter with symmetric lighting from center.
 /// Uses Liquid Glass material for unlit dots and outline highlights.
 struct LedMeterView: View {
     @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var themeStore: ThemeStore
 
     /// Normalized level (0.0 to 1.0)
     let level: Double
@@ -30,6 +32,11 @@ struct LedMeterView: View {
     /// Optional pill tint (very subtle, above glass)
     var pillTint: Color? = nil
 
+    var isPlaying: Bool = false
+
+    @State private var statusOpacity: Double = 0
+    @State private var phase: Double = 0
+
     // MARK: - Settings (from AppSettings)
 
     private var numLEDs: Int {
@@ -44,44 +51,109 @@ struct LedMeterView: View {
         colorScheme == .dark ? 0.55 : 0.35
     }
 
-    // MARK: - Colors
+    // MARK: - Colors (from artwork theme)
 
-    /// Colors from center (index 0) to edge
-    /// Brighter, more vivid colors (no glow effect)
-    private var dotColors: [Color] {
-        [
-            Color(hue: 0.24, saturation: 0.10, brightness: 1.00),  // Center: Green (Low Sat)
-            Color(hue: 0.19, saturation: 0.15, brightness: 1.00),  // Yellow-Green (Low-Mid)
-            Color(hue: 0.17, saturation: 0.5, brightness: 1.00),  // Yellow (High Sat transition)
-            Color(hue: 0.12, saturation: 0.63, brightness: 1.00),  // Orange-Yellow (Peak Sat ~80%+)
-            Color(hue: 0.08, saturation: 0.68, brightness: 1.00),  // Orange (Sides ~70%+)
-            Color(hue: 0.05, saturation: 0.67, brightness: 1.00),  // Red (Sides ~70%)
-        ]
+    private var ledFillColor: Color {
+        adjustColor(themeStore.accentColor, brightnessMult: 1.15, saturationMult: 1.2)
+    }
+
+    private var ledStrokeColor: Color {
+        adjustColor(themeStore.accentColor, brightnessMult: 0.35, saturationMult: 1.4, opacity: 0.7)
+    }
+
+    private var statusFillColor: Color {
+        themeStore.accentColor
+    }
+
+    private var statusStrokeColor: Color {
+        adjustColor(themeStore.accentColor, brightnessMult: 0.4, saturationMult: 1.3, opacity: 0.6)
+    }
+
+    private func adjustColor(
+        _ color: Color,
+        brightnessMult: Double = 1.0,
+        saturationMult: Double = 1.0,
+        opacity: Double = 1.0
+    ) -> Color {
+        let nsColor = NSColor(color)
+        guard let hsb = nsColor.usingColorSpace(.deviceRGB) else {
+            return color.opacity(opacity)
+        }
+        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        hsb.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+        let newS = min(1.0, Double(s) * saturationMult)
+        let newB = min(1.0, Double(b) * brightnessMult)
+        return Color(hue: Double(h), saturation: newS, brightness: newB, opacity: opacity)
     }
 
     var body: some View {
         let baseOffsetY: CGFloat = 4
-        ZStack {
-            LEDPillBase(
-                ledCount: numLEDs,
-                dotSize: dotSize,
-                dotSpacing: spacing,
-                horizontalPadding: 14,
-                heightPadding: 14,
-                tint: pillTint
-            )
-            .offset(y: baseOffsetY)
-            .zIndex(0)
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !isPlaying)) { _ in
+            ZStack {
+                LEDPillBase(
+                    ledCount: numLEDs + 1,
+                    dotSize: dotSize,
+                    dotSpacing: spacing,
+                    horizontalPadding: 14,
+                    heightPadding: 14,
+                    tint: pillTint
+                )
+                .offset(y: baseOffsetY)
+                .zIndex(0)
 
-            HStack(spacing: spacing) {
-                ForEach(0..<numLEDs, id: \.self) { index in
-                    ledDot(at: index)
+                HStack(spacing: spacing) {
+                    statusLed
+                    divider
+                    ForEach(0..<numLEDs, id: \.self) { index in
+                        ledDot(at: index)
+                    }
                 }
+                .offset(y: baseOffsetY)
+                .zIndex(1)
             }
-            .offset(y: baseOffsetY)
-            .zIndex(1)
         }
         .animation(.easeInOut(duration: 0.25), value: numLEDs)
+        .onAppear {
+            if isPlaying {
+                withAnimation(.linear(duration: 2.5).repeatForever(autoreverses: true)) {
+                    phase = 1.0
+                }
+            }
+        }
+        .onChange(of: isPlaying) { _, playing in
+            if playing {
+                withAnimation(.linear(duration: 2.5).repeatForever(autoreverses: true)) {
+                    phase = 1.0
+                }
+            } else {
+                phase = 0
+            }
+        }
+    }
+
+    private var statusLed: some View {
+        let levelIndex = quantizedLevelIndex(phase: phase)
+        let opacity = opacityForState(levelIndex)
+
+        return ZStack {
+            Circle()
+                .fill(Color.primary.opacity(0.06))
+                .frame(width: dotSize, height: dotSize)
+
+            Circle()
+                .fill(statusFillColor.opacity(opacity))
+                .frame(width: dotSize, height: dotSize)
+
+            Circle()
+                .stroke(statusStrokeColor, lineWidth: 0.8)
+                .frame(width: dotSize, height: dotSize)
+        }
+    }
+
+    private var divider: some View {
+        Rectangle()
+            .fill(Color.primary.opacity(0.12))
+            .frame(width: 1, height: dotSize * 0.6)
     }
 
     // MARK: - LED Dot
@@ -89,36 +161,19 @@ struct LedMeterView: View {
     @ViewBuilder
     private func ledDot(at index: Int) -> some View {
         let brightnessState = calculateBrightnessState(for: index)
-        let color = colorForDot(at: index)
         let opacity = opacityForState(brightnessState)
 
         ZStack {
-            // Base: Liquid Glass material (always visible)
             Circle()
-                .fill(.ultraThinMaterial)
+                .fill(Color.primary.opacity(0.06))
                 .frame(width: dotSize, height: dotSize)
 
-            // LED color overlay (opacity based on brightness)
-            if brightnessState > 0 {
-                Circle()
-                    .fill(color.opacity(opacity))
-                    .frame(width: dotSize, height: dotSize)
-            }
-
-            // Liquid Glass outline highlight
             Circle()
-                .strokeBorder(
-                    LinearGradient(
-                        colors: [
-                            .white.opacity(0.4 * outlineIntensity),
-                            .clear,
-                            .white.opacity(0.15 * outlineIntensity),
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    lineWidth: 1
-                )
+                .fill(ledFillColor.opacity(opacity))
+                .frame(width: dotSize, height: dotSize)
+
+            Circle()
+                .stroke(ledStrokeColor, lineWidth: 0.8)
                 .frame(width: dotSize, height: dotSize)
         }
         .animation(.easeOut(duration: 0.03), value: brightnessState)
@@ -161,6 +216,15 @@ struct LedMeterView: View {
         }
     }
 
+    /// Ease phase 0...1 with easeInOutSine, then quantize to discrete brightness levels.
+    private func quantizedLevelIndex(phase: Double) -> Int {
+        guard isPlaying, brightnessLevels > 1 else { return 0 }
+        let eased = -0.5 * (cos(Double.pi * phase) - 1.0) // easeInOutSine
+        let levels = brightnessLevels - 1
+        let index = Int(round(eased * Double(levels)))
+        return max(0, min(levels, index))
+    }
+
     /// Map brightness state to opacity (0 = glass only, max = full brightness).
     private func opacityForState(_ state: Int) -> Double {
         guard state > 0, brightnessLevels > 1 else { return 0 }
@@ -172,15 +236,6 @@ struct LedMeterView: View {
         return minOpacity + fraction * (maxOpacity - minOpacity)
     }
 
-    /// Get color for LED based on distance from center.
-    private func colorForDot(at index: Int) -> Color {
-        let centerIndex = numLEDs / 2
-        let distanceFromCenter = abs(index - centerIndex)
-
-        // Clamp to available colors
-        let colorIndex = min(distanceFromCenter, dotColors.count - 1)
-        return dotColors[colorIndex]
-    }
 }
 
 // MARK: - LED Pill Base
@@ -236,7 +291,7 @@ private struct LEDPillBase: View {
                     .font(.caption)
                     .foregroundStyle(.white)
 
-                LedMeterView(level: level, dotSize: 14, spacing: 8)
+                LedMeterView(level: level, dotSize: 14, spacing: 8, isPlaying: true)
             }
         }
     }
@@ -246,9 +301,9 @@ private struct LEDPillBase: View {
 
 #Preview("LED Meter - Light Mode") {
     VStack(spacing: 20) {
-        LedMeterView(level: 0.0, dotSize: 14, spacing: 8)
-        LedMeterView(level: 0.5, dotSize: 14, spacing: 8)
-        LedMeterView(level: 1.0, dotSize: 14, spacing: 8)
+        LedMeterView(level: 0.0, dotSize: 14, spacing: 8, isPlaying: true)
+        LedMeterView(level: 0.5, dotSize: 14, spacing: 8, isPlaying: true)
+        LedMeterView(level: 1.0, dotSize: 14, spacing: 8, isPlaying: true)
     }
     .padding(30)
     .background(Color.gray.opacity(0.2))
@@ -261,7 +316,7 @@ private struct LEDPillBase: View {
 
         var body: some View {
             VStack(spacing: 30) {
-                LedMeterView(level: level, dotSize: 16, spacing: 10)
+                LedMeterView(level: level, dotSize: 16, spacing: 10, isPlaying: true)
 
                 Slider(value: $level, in: 0...1)
                     .frame(width: 250)
