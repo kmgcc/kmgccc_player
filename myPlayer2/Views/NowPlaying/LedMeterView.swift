@@ -57,20 +57,30 @@ struct LedMeterView: View {
 
     // MARK: - Discrete Breath Timing
 
-    private let breathHoldTime: Double = 0.20
+    private let breathHoldTime: Double = 0.32
+    private let peakHoldTime: Double   = 0.30
+    private let zeroHoldTime: Double   = 0.30
 
     private func breathStep(at date: Date) -> Int {
         guard isPlaying, brightnessLevels > 1 else { return 0 }
-        let levels = brightnessLevels - 1
-        let cycle = Double(levels) * breathHoldTime * 2
-        let t = date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: cycle)
-        if t < Double(levels) * breathHoldTime {
+        let maxStep = brightnessLevels - 1
+        let riseDuration  = Double(maxStep) * breathHoldTime
+        let fallDuration  = Double(maxStep) * breathHoldTime
+        let cycleDuration = riseDuration + peakHoldTime + fallDuration + zeroHoldTime
+
+        let t = date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: cycleDuration)
+
+        if t < riseDuration {
             let step = Int(t / breathHoldTime)
-            return min(levels, step)
-        } else {
-            let dt = t - Double(levels) * breathHoldTime
+            return min(maxStep, step)
+        } else if t < riseDuration + peakHoldTime {
+            return maxStep
+        } else if t < riseDuration + peakHoldTime + fallDuration {
+            let dt = t - (riseDuration + peakHoldTime)
             let step = Int(dt / breathHoldTime)
-            return max(0, levels - step)
+            return max(0, maxStep - step)
+        } else {
+            return 0
         }
     }
 
@@ -112,12 +122,19 @@ struct LedMeterView: View {
                 .fill(Color.primary.opacity(0.06))
                 .frame(width: dotSize, height: dotSize)
 
-            Circle()
-                .fill(resolver.statusLightColor(level: level))
-                .frame(width: dotSize, height: dotSize)
+            if resolver.usePlusLighter {
+                Circle()
+                    .fill(resolver.statusLightColor(level: level))
+                    .frame(width: dotSize, height: dotSize)
+                    .blendMode(.plusLighter)
+            } else {
+                Circle()
+                    .fill(resolver.statusLightColor(level: level))
+                    .frame(width: dotSize, height: dotSize)
+            }
 
             Circle()
-                .stroke(resolver.statusLightStrokeColor(level: level), lineWidth: 0.6)
+                .stroke(resolver.statusLightStrokeColor(level: level), lineWidth: 0.7)
                 .frame(width: dotSize, height: dotSize)
         }
     }
@@ -142,21 +159,21 @@ struct LedMeterView: View {
                 .fill(Color.primary.opacity(0.06))
                 .frame(width: dotSize, height: dotSize)
 
-            // Lit LED with inner hotspot via plusLighter
-            Circle()
-                .fill(ledColor)
-                .frame(width: dotSize, height: dotSize)
-                .overlay(
-                    Circle()
-                        .fill(ledColor.opacity(0.45))
-                        .frame(width: dotSize * 0.6, height: dotSize * 0.6)
-                        .blendMode(resolver.usePlusLighter ? .plusLighter : .normal)
-                )
-                .compositingGroup()
+            // Lit LED fill with optional plusLighter
+            if resolver.usePlusLighter {
+                Circle()
+                    .fill(ledColor)
+                    .frame(width: dotSize, height: dotSize)
+                    .blendMode(.plusLighter)
+            } else {
+                Circle()
+                    .fill(ledColor)
+                    .frame(width: dotSize, height: dotSize)
+            }
 
             // Subtle stroke
             Circle()
-                .stroke(strokeColor, lineWidth: 0.6)
+                .stroke(strokeColor, lineWidth: 0.7)
                 .frame(width: dotSize, height: dotSize)
         }
         .animation(.easeOut(duration: 0.03), value: brightnessState)

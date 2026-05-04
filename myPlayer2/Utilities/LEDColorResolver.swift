@@ -43,10 +43,10 @@ struct LEDColorResolver {
     var centerColor: NSColor {
         let hsl = ColorMath.hsl(of: rawBase)
         if colorScheme == .dark {
-            let l = ColorMath.clamp(hsl.l, 0.45, 0.72)
+            let l = ColorMath.clamp(hsl.l, 0.32, 0.52)
             return ColorMath.color(h: hsl.h, s: hsl.s, l: l)
         }
-        let l = ColorMath.clamp(hsl.l * 1.30, 0.70, 0.85)
+        let l = ColorMath.clamp(hsl.l * 1.30, 0.78, 0.90)
         return ColorMath.color(h: hsl.h, s: hsl.s, l: l)
     }
 
@@ -67,8 +67,8 @@ struct LEDColorResolver {
         }
         let s = ColorMath.clamp(hsl.s * 0.92, 0.30, 0.90)
         let l = colorScheme == .dark
-            ? ColorMath.clamp(hsl.l * 0.92, 0.40, 0.68)
-            : ColorMath.clamp(hsl.l * 1.08, 0.68, 0.80)
+            ? ColorMath.clamp(hsl.l * 0.92, 0.28, 0.48)
+            : ColorMath.clamp(hsl.l * 1.08, 0.72, 0.82)
         return ColorMath.color(h: h, s: s, l: l)
     }
 
@@ -124,16 +124,16 @@ struct LEDColorResolver {
         s = min(1.0, s * (1.0 + 0.12 * oneMinus))
 
         if colorScheme == .dark {
-            l = l * (0.45 + 0.55 * levelRatio)
-            l = min(l, 0.78)
+            l = l * (0.40 + 0.40 * levelRatio)
+            l = min(l, 0.55)
         } else {
-            l = l * (0.82 + 0.18 * levelRatio)
+            l = l * (0.88 + 0.12 * levelRatio)
             l = min(l, 0.92)
         }
 
         if isStroke {
-            s = min(1.0, s + 0.10)
-            l = l * 0.85
+            s = min(1.0, s + 0.08)
+            l = l * 0.80
         }
 
         return ColorMath.color(h: h, s: s, l: l)
@@ -143,7 +143,7 @@ struct LEDColorResolver {
         guard level > 0, brightnessLevels > 1 else { return 0 }
         let maxLevel = brightnessLevels - 1
         let fraction = Double(level) / Double(maxLevel)
-        let minOpacity = colorScheme == .dark ? 0.30 : 0.45
+        let minOpacity = colorScheme == .dark ? 0.20 : 0.60
         let maxOpacity = 1.0
         return minOpacity + fraction * (maxOpacity - minOpacity)
     }
@@ -157,7 +157,7 @@ struct LEDColorResolver {
 
     func statusLightStrokeColor(level: Int) -> Color {
         let ns = colorForLevel(base: centerColor, level: level, isStroke: true)
-        return Color(nsColor: ns).opacity(min(0.75, opacityForLevel(level: level) * 0.85))
+        return Color(nsColor: ns).opacity(min(0.60, opacityForLevel(level: level) * 0.70))
     }
 
     // MARK: - Volume LED
@@ -171,7 +171,7 @@ struct LEDColorResolver {
     func volumeLEDStrokeColor(index: Int, count: Int, level: Int) -> Color {
         let base = baseColorForIndex(index: index, count: count)
         let ns = colorForLevel(base: base, level: level, isStroke: true)
-        return Color(nsColor: ns).opacity(min(0.75, opacityForLevel(level: level) * 0.85))
+        return Color(nsColor: ns).opacity(min(0.60, opacityForLevel(level: level) * 0.70))
     }
 
     var usePlusLighter: Bool {
