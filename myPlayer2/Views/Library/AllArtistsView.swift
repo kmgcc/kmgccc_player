@@ -313,9 +313,10 @@ private struct ArtistListRow: View {
         let tracks = libraryVM.allTracks.filter {
             LibraryNormalization.containsArtist(canonical, in: $0.artist)
         }
+        let trackSources = tracks.map { $0.artistArtworkSource() }
         image = await ArtistArtworkGenerator.shared.generateArtwork(
             artistName: artist.displayName,
-            tracks: tracks
+            trackSources: trackSources
         )
     }
 }

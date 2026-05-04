@@ -275,7 +275,9 @@ struct HorizontalFadeScrollContainer<Content: View>: View {
             context.timingFunction = CAMediaTimingFunction(controlPoints: 0.20, 0.00, 0.12, 1.00)
             clipView.animator().setBoundsOrigin(targetOrigin)
         } completionHandler: {
-            scrollView.reflectScrolledClipView(clipView)
+            Task { @MainActor in
+                scrollView.reflectScrolledClipView(clipView)
+            }
         }
     }
 }

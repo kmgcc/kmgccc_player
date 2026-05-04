@@ -12,7 +12,7 @@ import Foundation
 /// Spectrum source for Apple Music / external playback.
 /// Consumes offline-recorded app-chain spectrum frames and loops them at runtime.
 /// Thread-safe snapshot for main-thread consumers.
-final class ExternalPlaybackSpectrumSimulator: @unchecked Sendable {
+nonisolated final class ExternalPlaybackSpectrumSimulator: @unchecked Sendable {
 
     static let shared = ExternalPlaybackSpectrumSimulator()
 

@@ -8,6 +8,22 @@
 import AppKit
 import Foundation
 
+nonisolated struct ArtistArtworkTrackSource: Sendable {
+    let id: UUID
+    let artworkData: Data?
+    let artworkURL: URL?
+}
+
+extension Track {
+    func artistArtworkSource() -> ArtistArtworkTrackSource {
+        ArtistArtworkTrackSource(
+            id: id,
+            artworkData: artworkData,
+            artworkURL: resolvedArtworkURL()
+        )
+    }
+}
+
 actor ArtistArtworkGenerator {
     static let shared = ArtistArtworkGenerator()
 
@@ -30,21 +46,24 @@ actor ArtistArtworkGenerator {
     private nonisolated static let placeholderCache = PlaceholderCacheBox()
     private nonisolated static let placeholderPixelSide = 640
 
-    func generateArtwork(artistName: String, tracks: [Track]) async -> NSImage? {
-        await Task.detached(priority: .userInitiated) {
-            Self.placeholderArtwork(artistName: artistName, tracks: tracks)
+    func generateArtwork(artistName: String, trackSources: [ArtistArtworkTrackSource]) async -> NSImage? {
+        await Task.detached(priority: .userInitiated) { @Sendable in
+            Self.placeholderArtwork(artistName: artistName, trackSources: trackSources)
         }.value
     }
 
-    nonisolated static func placeholderArtwork(artistName: String, tracks: [Track]) -> NSImage? {
-        let cacheKey = placeholderCacheKey(artistName: artistName, tracks: tracks) as NSString
+    nonisolated static func placeholderArtwork(
+        artistName: String,
+        trackSources: [ArtistArtworkTrackSource]
+    ) -> NSImage? {
+        let cacheKey = placeholderCacheKey(artistName: artistName, trackSources: trackSources) as NSString
         if let cached = placeholderCache.cache.object(forKey: cacheKey) {
             return cached
         }
 
         guard let image = renderArtwork(
             artistName: artistName,
-            tracks: tracks,
+            trackSources: trackSources,
             pixelSide: placeholderPixelSide
         ) else {
             return nil
@@ -60,12 +79,12 @@ actor ArtistArtworkGenerator {
 
     private nonisolated static func renderArtwork(
         artistName: String,
-        tracks: [Track],
+        trackSources: [ArtistArtworkTrackSource],
         pixelSide: Int
     ) -> NSImage? {
         let side = CGFloat(max(256, pixelSide))
         let canvasSize = CGSize(width: side, height: side)
-        let gradient = resolveGradientSpec(artistName: artistName, tracks: tracks)
+        let gradient = resolveGradientSpec(artistName: artistName, trackSources: trackSources)
 
         let image = NSImage(size: canvasSize)
         image.lockFocus()
@@ -126,19 +145,19 @@ actor ArtistArtworkGenerator {
 
     private nonisolated static func placeholderCacheKey(
         artistName: String,
-        tracks: [Track]
+        trackSources: [ArtistArtworkTrackSource]
     ) -> String {
         let text = artistName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? LibraryNormalization.unknownArtist
             : artistName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let sortedTracks = tracks.sorted { $0.id.uuidString < $1.id.uuidString }
+        let sortedTracks = trackSources.sorted { $0.id.uuidString < $1.id.uuidString }
 
         if let representative = sortedTracks.first(where: {
-            let artworkData = $0.loadArtworkDataIfNeeded()
+            let artworkData = artworkData(for: $0)
             guard let artworkData else { return false }
             return !artworkData.isEmpty
         }) {
-            let checksum = ArtworkLoader.checksum(for: representative.loadArtworkDataIfNeeded())
+            let checksum = ArtworkLoader.checksum(for: artworkData(for: representative))
             return "\(text)|\(representative.id.uuidString)|\(checksum)|\(sortedTracks.count)"
         }
 
@@ -147,12 +166,12 @@ actor ArtistArtworkGenerator {
 
     private nonisolated static func resolveGradientSpec(
         artistName: String,
-        tracks: [Track]
+        trackSources: [ArtistArtworkTrackSource]
     ) -> GradientSpec {
-        let sortedTracks = tracks.sorted { $0.id.uuidString < $1.id.uuidString }
+        let sortedTracks = trackSources.sorted { $0.id.uuidString < $1.id.uuidString }
 
-        for track in sortedTracks {
-            let artworkData = track.loadArtworkDataIfNeeded()
+        for source in sortedTracks {
+            let artworkData = artworkData(for: source)
             guard let artworkData, !artworkData.isEmpty else { continue }
             let palette = ArtworkColorExtractor.uiThemePalette(from: artworkData, maxColors: 3)
             if let spec = gradientSpec(from: palette, artistName: artistName) {
@@ -164,6 +183,14 @@ actor ArtistArtworkGenerator {
         }
 
         return fallbackGradient(for: artistName)
+    }
+
+    private nonisolated static func artworkData(for source: ArtistArtworkTrackSource) -> Data? {
+        if let data = source.artworkData, !data.isEmpty {
+            return data
+        }
+        guard let url = source.artworkURL else { return nil }
+        return try? Data(contentsOf: url)
     }
 
     private nonisolated static func gradientSpec(

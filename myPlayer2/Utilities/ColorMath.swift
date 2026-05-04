@@ -8,7 +8,7 @@
 
 import AppKit
 
-enum ColorMath {
+nonisolated enum ColorMath {
     static func fnv1a(_ data: Data) -> UInt64 {
         // FNV-1a 64-bit. http://www.isthe.com/chongo/tech/comp/fnv/
         var hash: UInt64 = 14_695_981_039_346_656_037

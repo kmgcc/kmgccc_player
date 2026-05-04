@@ -9,7 +9,7 @@
 
 import AppKit
 
-struct ArtworkColorAnalysis: Equatable, Sendable {
+nonisolated struct ArtworkColorAnalysis: Equatable, Sendable {
     let avgHue: CGFloat                 // circular [0,1)
     let dominantHue: CGFloat
     let dominantHueConfidence: CGFloat  // top bucket weight / total

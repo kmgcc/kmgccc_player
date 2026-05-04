@@ -10,7 +10,7 @@ import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
 
-enum ArtworkDataNormalizer {
+nonisolated enum ArtworkDataNormalizer {
     static let importMaxPixelSize = 1_200
     static let storedMaxPixelSize = 1_200
 

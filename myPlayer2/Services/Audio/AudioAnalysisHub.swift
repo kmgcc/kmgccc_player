@@ -13,7 +13,7 @@ import Foundation
 
 /// Raw FFT data provided to consumers.
 /// Raw FFT data provided to consumers.
-public struct AudioAnalysisData: Sendable {
+nonisolated public struct AudioAnalysisData: Sendable {
     public let magnitudes: [Float]  // Frequency domain (0...Nyquist)
     public let sampleRate: Float
     public let fftSize: Int
@@ -22,7 +22,7 @@ public struct AudioAnalysisData: Sendable {
     public let peak: Float
 }
 
-public final class AudioAnalysisHub: @unchecked Sendable {
+nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
 
     private let processingQueue = DispatchQueue(
         label: "AudioAnalysisHub.processing",

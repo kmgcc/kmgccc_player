@@ -9,28 +9,28 @@ import AppKit
 import Observation
 import Foundation
 
+private actor CoverDownloadContinuationState {
+    private var continuation: CheckedContinuation<Void, Error>?
+
+    init(_ continuation: CheckedContinuation<Void, Error>) {
+        self.continuation = continuation
+    }
+
+    func resume(_ result: Result<Void, Error>) {
+        guard let continuation else { return }
+        self.continuation = nil
+        switch result {
+        case .success:
+            continuation.resume()
+        case .failure(let error):
+            continuation.resume(throwing: error)
+        }
+    }
+}
+
 @Observable
 @MainActor
 final class CoverDownloadService: CoverDownloadServiceProtocol {
-    private actor ContinuationState {
-        private var continuation: CheckedContinuation<Void, Error>?
-
-        init(_ continuation: CheckedContinuation<Void, Error>) {
-            self.continuation = continuation
-        }
-
-        func resume(_ result: Result<Void, Error>) {
-            guard let continuation else { return }
-            self.continuation = nil
-            switch result {
-            case .success:
-                continuation.resume()
-            case .failure(let error):
-                continuation.resume(throwing: error)
-            }
-        }
-    }
-
     private let executablePath: String
     private let fileManager: FileManager
 
@@ -46,118 +46,133 @@ final class CoverDownloadService: CoverDownloadServiceProtocol {
         try Task.checkCancellation()
 
         let executablePath = executablePath
-        let fileManager = fileManager
 
-        return try await Task.detached(priority: .userInitiated) {
-            if Task.isCancelled {
-                throw CoverDownloadError.cancelled
-            }
+        guard fileManager.isExecutableFile(atPath: executablePath) else {
+            throw CoverDownloadError.executableMissing(path: executablePath)
+        }
 
-            guard fileManager.isExecutableFile(atPath: executablePath) else {
-                throw CoverDownloadError.executableMissing(path: executablePath)
-            }
+        return try await Task.detached(priority: .userInitiated) { @Sendable in
+            try await Self.downloadCoverData(
+                artist: artist,
+                album: album,
+                size: size,
+                executablePath: executablePath
+            )
+        }.value
+    }
 
-            let tempURL = URL(fileURLWithPath: NSTemporaryDirectory())
-                .appendingPathComponent("temp_\(UUID().uuidString).jpg")
+    nonisolated private static func downloadCoverData(
+        artist: String,
+        album: String,
+        size: Int,
+        executablePath: String
+    ) async throws -> Data {
+        let fileManager = FileManager.default
 
-            defer {
-                try? fileManager.removeItem(at: tempURL)
-            }
+        if Task.isCancelled {
+            throw CoverDownloadError.cancelled
+        }
 
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: executablePath)
-            process.arguments = [artist, album, String(size), tempURL.path]
+        let tempURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("temp_\(UUID().uuidString).jpg")
 
-            let errorPipe = Pipe()
-            process.standardOutput = Pipe()
-            process.standardError = errorPipe
+        defer {
+            try? fileManager.removeItem(at: tempURL)
+        }
 
-            do {
-                try await withTaskCancellationHandler {
-                    try await withCheckedThrowingContinuation {
-                        (continuation: CheckedContinuation<Void, Error>) in
-                        let state = ContinuationState(continuation)
-                        process.terminationHandler = { process in
-                            let stderrData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-                            guard process.terminationStatus == 0 else {
-                                let stderrText = String(data: stderrData, encoding: .utf8)?
-                                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                                Task {
-                                    await state.resume(
-                                        .failure(
-                                            CoverDownloadError.processFailed(
-                                                exitCode: process.terminationStatus,
-                                                message: stderrText?.isEmpty == false
-                                                    ? stderrText!
-                                                    : "sacad exited with an error"
-                                            )
-                                        )
-                                    )
-                                }
-                                return
-                            }
-                            Task {
-                                await state.resume(.success(()))
-                            }
-                        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executablePath)
+        process.arguments = [artist, album, String(size), tempURL.path]
 
-                        do {
-                            try process.run()
-                        } catch {
+        let errorPipe = Pipe()
+        process.standardOutput = Pipe()
+        process.standardError = errorPipe
+
+        do {
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation {
+                    (continuation: CheckedContinuation<Void, Error>) in
+                    let state = CoverDownloadContinuationState(continuation)
+                    process.terminationHandler = { process in
+                        let stderrData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                        guard process.terminationStatus == 0 else {
+                            let stderrText = String(data: stderrData, encoding: .utf8)?
+                                .trimmingCharacters(in: .whitespacesAndNewlines)
                             Task {
                                 await state.resume(
                                     .failure(
                                         CoverDownloadError.processFailed(
-                                            exitCode: -1,
-                                            message: error.localizedDescription
+                                            exitCode: process.terminationStatus,
+                                            message: stderrText?.isEmpty == false
+                                                ? stderrText!
+                                                : "sacad exited with an error"
                                         )
                                     )
                                 )
                             }
+                            return
+                        }
+                        Task {
+                            await state.resume(.success(()))
                         }
                     }
-                } onCancel: {
-                    if process.isRunning {
-                        process.terminate()
+
+                    do {
+                        try process.run()
+                    } catch {
+                        Task {
+                            await state.resume(
+                                .failure(
+                                    CoverDownloadError.processFailed(
+                                        exitCode: -1,
+                                        message: error.localizedDescription
+                                    )
+                                )
+                            )
+                        }
                     }
                 }
-            } catch let error as CoverDownloadError {
-                throw error
-            } catch is CancellationError {
+            } onCancel: {
                 if process.isRunning {
                     process.terminate()
                 }
-                throw CoverDownloadError.cancelled
-            } catch {
-                throw CoverDownloadError.processFailed(
-                    exitCode: -1,
-                    message: error.localizedDescription
-                )
             }
-
-            guard process.terminationStatus == 0 else {
-                throw CoverDownloadError.processFailed(
-                    exitCode: process.terminationStatus,
-                    message: "sacad exited with an error"
-                )
+        } catch let error as CoverDownloadError {
+            throw error
+        } catch is CancellationError {
+            if process.isRunning {
+                process.terminate()
             }
+            throw CoverDownloadError.cancelled
+        } catch {
+            throw CoverDownloadError.processFailed(
+                exitCode: -1,
+                message: error.localizedDescription
+            )
+        }
 
-            guard fileManager.fileExists(atPath: tempURL.path) else {
-                throw CoverDownloadError.outputMissing
-            }
+        guard process.terminationStatus == 0 else {
+            throw CoverDownloadError.processFailed(
+                exitCode: process.terminationStatus,
+                message: "sacad exited with an error"
+            )
+        }
 
-            let imageData: Data
-            do {
-                imageData = try Data(contentsOf: tempURL)
-            } catch {
-                throw CoverDownloadError.outputMissing
-            }
+        guard fileManager.fileExists(atPath: tempURL.path) else {
+            throw CoverDownloadError.outputMissing
+        }
 
-            guard !imageData.isEmpty, NSImage(data: imageData) != nil else {
-                throw CoverDownloadError.invalidImageData
-            }
+        let imageData: Data
+        do {
+            imageData = try Data(contentsOf: tempURL)
+        } catch {
+            throw CoverDownloadError.outputMissing
+        }
 
-            return imageData
-        }.value
+        guard !imageData.isEmpty, NSImage(data: imageData) != nil else {
+            throw CoverDownloadError.invalidImageData
+        }
+
+        return imageData
     }
 }

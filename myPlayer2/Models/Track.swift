@@ -317,6 +317,17 @@ final class Track {
         return data
     }
 
+    /// Read the artwork file off the main actor, then preserve the existing lazy in-memory cache behavior.
+    func loadArtworkDataOffMainIfNeeded() async -> Data? {
+        if let data = artworkData, !data.isEmpty { return data }
+        guard let url = resolvedArtworkURL() else { return nil }
+        let data = await Task.detached(priority: .utility) { @Sendable in
+            try? Data(contentsOf: url)
+        }.value
+        artworkData = data
+        return data
+    }
+
     /// Load plain lyrics from disk if not already in memory.
     func loadLyricsIfNeeded() -> String? {
         if let text = lyricsText, !text.isEmpty { return text }

@@ -93,7 +93,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         playlistItemAddedAtMap.removeAll()
 
         let snapshot = await Task.detached { @Sendable in
-            await LibraryDiskScanner().scanAll()
+            LibraryDiskScanner().scanAll()
         }.value
 
         let tracks = snapshot.trackMetas.map { buildTrack(from: $0) }
@@ -292,7 +292,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         )
 
         let metas = await Task.detached { @Sendable in
-            await MusicLibraryScanner().scanTracks(ids: uniqueIDs)
+            MusicLibraryScanner().scanTracks(ids: uniqueIDs)
         }.value
         let refreshedTracks = metas.map(buildTrack)
         let refreshedByID = Dictionary(uniqueKeysWithValues: refreshedTracks.map { ($0.id, $0) })

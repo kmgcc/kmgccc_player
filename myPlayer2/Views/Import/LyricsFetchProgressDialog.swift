@@ -298,110 +298,114 @@ final class LyricsFetchProgressDialogPresenter: NSObject, NSWindowDelegate {
             )
         }
         
-        fetchTask = Task.detached(priority: .userInitiated) {
-            let client = LDDCClient()
-            let totalCount = snapshots.count
-            
-            actor ProgressState {
-                var completedCount = 0
-                var pendingUpdates: [(id: String, title: String, artist: String, step: LyricsFetchStep, trackIndex: Int, ttml: String?)] = []
-                
-                func addCompleted(id: String, title: String, artist: String, step: LyricsFetchStep, trackIndex: Int, ttml: String?) {
-                    completedCount += 1
-                    pendingUpdates.append((id: id, title: title, artist: artist, step: step, trackIndex: trackIndex, ttml: ttml))
-                }
-                
-                func getAndClearPendingUpdates() -> [(id: String, title: String, artist: String, step: LyricsFetchStep, trackIndex: Int, ttml: String?)] {
-                    let updates = pendingUpdates
-                    pendingUpdates.removeAll()
-                    return updates
-                }
-                
-                func getProgress(totalCount: Int) -> Double {
-                    return Double(completedCount) / Double(totalCount)
-                }
-            }
-            
-            let state = ProgressState()
-            
-            await withTaskGroup(of: Void.self) { group in
-                for (index, snapshot) in snapshots.enumerated() {
-                    group.addTask {
-                        let itemId = snapshot.id
-                        
-                        do {
-                            await MainActor.run {
-                                viewModel.updateItem(id: itemId, title: snapshot.title, artist: snapshot.artist, step: .searching)
-                            }
-                            
-                            let response = try await client.search(
-                                title: snapshot.title,
-                                artist: snapshot.artist.isEmpty ? nil : snapshot.artist,
-                                sources: [.QM, .KG, .NE],
-                                mode: .verbatim,
-                                translation: true,
-                                limitPerSource: 5
-                            )
-                            
-                            guard let firstCandidate = response.results.first else {
-                                await state.addCompleted(id: itemId, title: snapshot.title, artist: snapshot.artist, step: .noResults, trackIndex: index, ttml: nil)
-                                return
-                            }
-                            
-                            await MainActor.run {
-                                viewModel.updateItem(id: itemId, title: snapshot.title, artist: snapshot.artist, step: .found)
-                            }
-                            
-                            let (origLyrics, transLyrics) = try await client.fetchByIdSeparate(
-                                candidate: firstCandidate,
-                                mode: .verbatim
-                            )
-                            
-                            await MainActor.run {
-                                viewModel.updateItem(id: itemId, title: snapshot.title, artist: snapshot.artist, step: .converting)
-                            }
-                            
-                            let ttml: String
-                            if let transLyrics = transLyrics, !transLyrics.isEmpty {
-                                ttml = try await TTMLConverter.shared.convertToTTMLWithTranslation(
-                                    origLyrics: origLyrics,
-                                    transLyrics: transLyrics,
-                                    stripMetadata: false
-                                )
-                            } else {
-                                ttml = try await TTMLConverter.shared.convertToTTML(
-                                    rawLyrics: origLyrics,
-                                    stripMetadata: false
-                                )
-                            }
-                            
-                            await MainActor.run {
-                                viewModel.updateItem(id: itemId, title: snapshot.title, artist: snapshot.artist, step: .savingTTML)
-                            }
-                            
-                            await MainActor.run {
-                                if let track = tracks.first(where: { $0.id.uuidString == itemId }) {
-                                    track.ttmlLyricText = ttml
-                                }
-                            }
-                            
-                            await state.addCompleted(id: itemId, title: snapshot.title, artist: snapshot.artist, step: .completed, trackIndex: index, ttml: ttml)
-                            
-                        } catch {
-                            await state.addCompleted(id: itemId, title: snapshot.title, artist: snapshot.artist, step: .failed, trackIndex: index, ttml: nil)
+        fetchTask = Task { @MainActor in
+            let completedLyrics = await Task.detached(priority: .userInitiated) { @Sendable in
+                let client = LDDCClient()
+                let totalCount = snapshots.count
+
+                actor ProgressState {
+                    var completedCount = 0
+                    var completedLyrics: [(id: String, ttml: String)] = []
+
+                    func addCompleted(id: String, ttml: String?) {
+                        completedCount += 1
+                        if let ttml {
+                            completedLyrics.append((id: id, ttml: ttml))
                         }
                     }
+
+                    func getCompletedLyrics() -> [(id: String, ttml: String)] {
+                        completedLyrics
+                    }
+
+                    func getProgress(totalCount: Int) -> Double {
+                        return Double(completedCount) / Double(totalCount)
+                    }
                 }
-                
-                await group.waitForAll()
+
+                let state = ProgressState()
+
+                await withTaskGroup(of: Void.self) { group in
+                    for snapshot in snapshots {
+                        group.addTask {
+                            let itemId = snapshot.id
+
+                            do {
+                                await MainActor.run {
+                                    viewModel.updateItem(id: itemId, title: snapshot.title, artist: snapshot.artist, step: .searching)
+                                }
+
+                                let response = try await client.search(
+                                    title: snapshot.title,
+                                    artist: snapshot.artist.isEmpty ? nil : snapshot.artist,
+                                    sources: [.QM, .KG, .NE],
+                                    mode: .verbatim,
+                                    translation: true,
+                                    limitPerSource: 5
+                                )
+
+                                guard let firstCandidate = response.results.first else {
+                                    await state.addCompleted(id: itemId, ttml: nil)
+                                    return
+                                }
+
+                                await MainActor.run {
+                                    viewModel.updateItem(id: itemId, title: snapshot.title, artist: snapshot.artist, step: .found)
+                                }
+
+                                let (origLyrics, transLyrics) = try await client.fetchByIdSeparate(
+                                    candidate: firstCandidate,
+                                    mode: .verbatim
+                                )
+
+                                await MainActor.run {
+                                    viewModel.updateItem(id: itemId, title: snapshot.title, artist: snapshot.artist, step: .converting)
+                                }
+
+                                let ttml: String
+                                if let transLyrics = transLyrics, !transLyrics.isEmpty {
+                                    ttml = try await TTMLConverter.shared.convertToTTMLWithTranslation(
+                                        origLyrics: origLyrics,
+                                        transLyrics: transLyrics,
+                                        stripMetadata: false
+                                    )
+                                } else {
+                                    ttml = try await TTMLConverter.shared.convertToTTML(
+                                        rawLyrics: origLyrics,
+                                        stripMetadata: false
+                                    )
+                                }
+
+                                await MainActor.run {
+                                    viewModel.updateItem(id: itemId, title: snapshot.title, artist: snapshot.artist, step: .savingTTML)
+                                }
+
+                                await state.addCompleted(id: itemId, ttml: ttml)
+                            } catch {
+                                await state.addCompleted(id: itemId, ttml: nil)
+                            }
+                        }
+                    }
+
+                    await group.waitForAll()
+                }
+
+                let progress = await state.getProgress(totalCount: totalCount)
+
+                await MainActor.run {
+                    viewModel.setProgress(progress * 0.95)
+                }
+
+                return await state.getCompletedLyrics()
+            }.value
+
+            for lyric in completedLyrics {
+                if let track = tracks.first(where: { $0.id.uuidString == lyric.id }) {
+                    track.ttmlLyricText = lyric.ttml
+                }
             }
-            
-            let progress = await state.getProgress(totalCount: totalCount)
-            
-            await MainActor.run {
-                viewModel.setProgress(progress * 0.95)
-                viewModel.complete()
-            }
+
+            viewModel.complete()
         }
     }
     

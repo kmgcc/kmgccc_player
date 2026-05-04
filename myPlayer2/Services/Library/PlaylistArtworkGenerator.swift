@@ -335,9 +335,9 @@ actor PlaylistArtworkGenerator {
 @MainActor
 final class DetailHeaderArtworkResolver {
 
-    nonisolated static let shared = DetailHeaderArtworkResolver()
+    static let shared = DetailHeaderArtworkResolver()
 
-    private nonisolated init() {}
+    private init() {}
 
     private let libraryService = LocalLibraryService.shared
     private let generator = PlaylistArtworkGenerator.shared
@@ -392,7 +392,7 @@ final class DetailHeaderArtworkResolver {
 
             let placeholderImage = ArtistArtworkGenerator.placeholderArtwork(
                 artistName: entry.displayName,
-                tracks: tracks
+                trackSources: tracks.map { $0.artistArtworkSource() }
             )
             return ResolvedHeaderArtwork(
                 selectionIdentity: selectionIdentity,

@@ -265,7 +265,7 @@ nonisolated enum ExternalPlaybackTextNormalizer {
 }
 
 private extension String {
-    func replacingOccurrences(
+    nonisolated func replacingOccurrences(
         of pattern: String,
         with replacement: (Substring) -> String,
         options: NSString.CompareOptions

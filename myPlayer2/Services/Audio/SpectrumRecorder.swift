@@ -125,7 +125,7 @@ final class SpectrumRecorder {
         lines.append("//  Regenerate: KMGCCC_RECORD_SPECTRUM=1 <app_binary>")
         lines.append("//")
         lines.append("")
-        lines.append("struct SpectrumFrameData {")
+        lines.append("nonisolated struct SpectrumFrameData {")
         lines.append("    static let fps: Double = 30.0")
         lines.append("    static let frameCount: Int = \(frameCount)")
         lines.append("    static let waveBandCount: Int = \(waveBandCount)")

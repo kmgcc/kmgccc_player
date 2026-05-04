@@ -12,7 +12,7 @@ import Foundation
 import Observation
 import SwiftUI
 
-struct LEDMeterConfig: Sendable {
+nonisolated struct LEDMeterConfig: Sendable {
     var ledCount: Int = 11
     var levels: Int = 7
     var cutoffHz: Float = 1200
@@ -21,7 +21,7 @@ struct LEDMeterConfig: Sendable {
     var targetHz: Int = 30
 }
 
-struct LEDMeterMetrics: Sendable {
+nonisolated struct LEDMeterMetrics: Sendable {
     var timestamp: TimeInterval
     var level: Float
     var leds: [Float]
@@ -115,7 +115,7 @@ final class LEDMeterService: AudioLevelMeterProtocol {
 
 // MARK: - Processor
 
-final class LEDMeterProcessor: @unchecked Sendable {
+nonisolated final class LEDMeterProcessor: @unchecked Sendable {
 
     let fftSize: Int = 2048
     private let bandCount: Int = 8
@@ -126,7 +126,6 @@ final class LEDMeterProcessor: @unchecked Sendable {
 
     private var config: LEDMeterConfig
 
-    static var lastPrintTime: TimeInterval = 0
     private var window: [Float]
     private var fftSetup: FFTSetup?
     private var log2n: vDSP_Length = 0
@@ -499,7 +498,7 @@ final class LEDMeterProcessor: @unchecked Sendable {
     }
 }
 
-private final class LEDRingBuffer {
+private nonisolated final class LEDRingBuffer {
     private var buffer: [Float]
     private var writeIndex: Int = 0
     private var filledOnce: Bool = false

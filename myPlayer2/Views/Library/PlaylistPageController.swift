@@ -23,6 +23,17 @@ final class PlaylistPageController {
         let playlistItemAddedAt: Date?
     }
 
+    private struct PageTrackSource: Sendable {
+        let id: UUID
+        let title: String
+        let artist: String
+        let duration: Double
+        let artworkData: Data?
+        let libraryRootSnapshot: String
+        let artworkFileName: String?
+        let isMissing: Bool
+    }
+
     private struct BuildResult: Sendable {
         let rowRecords: [PlaylistPageRowRecord]
         let queueTrackIDs: [UUID]
@@ -491,9 +502,21 @@ final class PlaylistPageController {
                 playlistItemAddedAt: playlistItemAddedAtMap?[$0.id]
             )
         }
+        let pageTrackSources = displayedTracks.map {
+            PageTrackSource(
+                id: $0.id,
+                title: $0.title,
+                artist: $0.artist,
+                duration: $0.duration,
+                artworkData: $0.artworkData,
+                libraryRootSnapshot: $0.libraryRootSnapshot,
+                artworkFileName: $0.artworkFileName,
+                isMissing: $0.availability == .missing
+            )
+        }
 
         let buildResult = await Self.buildPageResult(
-            displayedTracks: displayedTracks,
+            displayedTracks: pageTrackSources,
             entries: sortableEntries,
             searchText: trimmedSearch,
             sortKey: libraryVM.trackSortKey,
@@ -1279,7 +1302,7 @@ final class PlaylistPageController {
     }
 
     private static func buildPageResult(
-        displayedTracks: [Track],
+        displayedTracks: [PageTrackSource],
         entries: [SortableTrackEntry],
         searchText: String,
         sortKey: TrackSortKey,
@@ -1307,7 +1330,7 @@ final class PlaylistPageController {
             let displayedTrackByID = Dictionary(uniqueKeysWithValues: displayedTracks.map { ($0.id, $0) })
             let rowRecords = sortedFiltered.compactMap { entry -> PlaylistPageRowRecord? in
                 guard let track = displayedTrackByID[entry.id] else { return nil }
-                let artworkFileURL = track.resolvedArtworkURL()
+                let artworkFileURL = resolvedArtworkURL(for: track)
                 return PlaylistPageRowRecord(
                     id: track.id,
                     title: track.title,
@@ -1319,7 +1342,7 @@ final class PlaylistPageController {
                         artworkFileURL: artworkFileURL
                     ),
                     artworkFileURL: artworkFileURL,
-                    isMissing: track.availability == .missing
+                    isMissing: track.isMissing
                 )
             }
 
@@ -1338,6 +1361,29 @@ final class PlaylistPageController {
                 displayedTotalDuration: displayedTotalDuration
             )
         }.value
+    }
+
+    private nonisolated static func resolvedArtworkURL(for track: PageTrackSource) -> URL? {
+        let root: URL
+        if track.libraryRootSnapshot.isEmpty {
+            root = LocalLibraryPaths.libraryRootURL
+        } else {
+            root = URL(fileURLWithPath: track.libraryRootSnapshot)
+        }
+        let folder = root
+            .appendingPathComponent("Tracks", isDirectory: true)
+            .appendingPathComponent(track.id.uuidString, isDirectory: true)
+
+        let fileManager = FileManager.default
+        for fileName in LocalLibraryPaths.trackArtworkCandidateFileNames(preferredFileName: track.artworkFileName) {
+            let url = folder.appendingPathComponent(fileName)
+            if fileManager.fileExists(atPath: url.path) {
+                return url
+            }
+        }
+
+        guard let artworkFileName = track.artworkFileName, !artworkFileName.isEmpty else { return nil }
+        return folder.appendingPathComponent(artworkFileName)
     }
 
     private nonisolated static func compareSortableTracks(
