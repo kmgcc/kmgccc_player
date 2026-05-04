@@ -72,6 +72,27 @@ struct LEDColorResolver {
         return ColorMath.color(h: h, s: s, l: l)
     }
 
+    // MARK: - Status Light Base Color
+
+    private var statusLightBaseColor: NSColor {
+        if let palette {
+            let candidate = palette.coverGradientDominant
+            let centerHSL = ColorMath.hsl(of: centerColor)
+            let candidateHSL = ColorMath.hsl(of: candidate)
+            if ColorMath.circularHueDistance(centerHSL.h, candidateHSL.h) > 0.03 {
+                return candidate
+            }
+            return palette.artBackgroundSecondary
+        }
+        let hsl = ColorMath.hsl(of: rawBase)
+        let h = ColorMath.normalizedHue(hsl.h + 0.05)
+        let s = min(1.0, hsl.s * 1.10)
+        let l = colorScheme == .dark
+            ? ColorMath.clamp(hsl.l * 0.95, 0.30, 0.50)
+            : ColorMath.clamp(hsl.l * 1.05, 0.70, 0.88)
+        return ColorMath.color(h: h, s: s, l: l)
+    }
+
     // MARK: - Mix
 
     private func mix(_ a: NSColor, _ b: NSColor, t: CGFloat) -> NSColor {
@@ -107,21 +128,21 @@ struct LEDColorResolver {
         var s = hsl.s
         var l = hsl.l
 
-        // Minimal hue shift for low levels
+        // Enhanced hue shift for low levels
         let oneMinus = 1 - levelRatio
         if h >= 0.08 && h < 0.17 {
-            h = ColorMath.normalizedHue(h - 0.03 * oneMinus)
+            h = ColorMath.normalizedHue(h - 0.05 * oneMinus)  // orange → yellow, ~18°
         } else if h >= 0.55 && h < 0.75 {
-            h = ColorMath.normalizedHue(h + 0.03 * oneMinus)
+            h = ColorMath.normalizedHue(h + 0.05 * oneMinus)  // blue → violet, ~18°
         } else if h >= 0.25 && h < 0.45 {
-            h = ColorMath.normalizedHue(h + 0.04 * oneMinus)
+            h = ColorMath.normalizedHue(h + 0.06 * oneMinus)  // green → cyan, ~22°
         } else if h < 0.08 || h >= 0.92 {
-            h = ColorMath.normalizedHue(h + 0.02 * oneMinus)
+            h = ColorMath.normalizedHue(h + 0.04 * oneMinus)  // red → orange, ~14°
         } else if h >= 0.75 && h < 0.92 {
-            h = ColorMath.normalizedHue(h - 0.02 * oneMinus)
+            h = ColorMath.normalizedHue(h - 0.04 * oneMinus)  // purple → blue, ~14°
         }
 
-        s = min(1.0, s * (1.0 + 0.12 * oneMinus))
+        s = min(1.0, s * (1.0 + 0.18 * oneMinus))
 
         if colorScheme == .dark {
             l = l * (0.40 + 0.40 * levelRatio)
@@ -151,12 +172,12 @@ struct LEDColorResolver {
     // MARK: - Status Light
 
     func statusLightColor(level: Int) -> Color {
-        let ns = colorForLevel(base: centerColor, level: level)
+        let ns = colorForLevel(base: statusLightBaseColor, level: level)
         return Color(nsColor: ns).opacity(opacityForLevel(level: level))
     }
 
     func statusLightStrokeColor(level: Int) -> Color {
-        let ns = colorForLevel(base: centerColor, level: level, isStroke: true)
+        let ns = colorForLevel(base: statusLightBaseColor, level: level, isStroke: true)
         return Color(nsColor: ns).opacity(min(0.60, opacityForLevel(level: level) * 0.70))
     }
 
@@ -174,7 +195,7 @@ struct LEDColorResolver {
         return Color(nsColor: ns).opacity(min(0.60, opacityForLevel(level: level) * 0.70))
     }
 
-    var usePlusLighter: Bool {
-        colorScheme == .dark
+    var ledBlendMode: BlendMode {
+        colorScheme == .dark ? .plusLighter : .plusDarker
     }
 }
