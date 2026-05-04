@@ -24,18 +24,15 @@ struct LedMeterView: View {
     var ledValues: [Float]? = nil
 
     /// Dot size
-    var dotSize: CGFloat = 12
+    var dotSize: CGFloat = 10
 
     /// Spacing between dots
-    var spacing: CGFloat = 8
+    var spacing: CGFloat = 5
 
     /// Optional pill tint (very subtle, above glass)
     var pillTint: Color? = nil
 
     var isPlaying: Bool = false
-
-    @State private var statusOpacity: Double = 0
-    @State private var phase: Double = 0
 
     // MARK: - Settings (from AppSettings)
 
@@ -45,10 +42,6 @@ struct LedMeterView: View {
 
     private var brightnessLevels: Int {
         AppSettings.shared.ledBrightnessLevels
-    }
-
-    private var outlineIntensity: Double {
-        colorScheme == .dark ? 0.55 : 0.35
     }
 
     // MARK: - Resolver
@@ -62,65 +55,69 @@ struct LedMeterView: View {
         )
     }
 
-    var body: some View {
-        let baseOffsetY: CGFloat = 4
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !isPlaying)) { _ in
-            ZStack {
-                LEDPillBase(
-                    ledCount: numLEDs + 1,
-                    dotSize: dotSize,
-                    dotSpacing: spacing,
-                    horizontalPadding: 14,
-                    heightPadding: 14,
-                    tint: pillTint
-                )
-                .offset(y: baseOffsetY)
-                .zIndex(0)
+    // MARK: - Discrete Breath Timing
 
-                HStack(spacing: spacing) {
-                    statusLed
-                    divider
-                    ForEach(0..<numLEDs, id: \.self) { index in
-                        ledDot(at: index)
-                    }
-                }
-                .offset(y: baseOffsetY)
-                .zIndex(1)
-            }
-        }
-        .animation(.easeInOut(duration: 0.25), value: numLEDs)
-        .onAppear {
-            if isPlaying {
-                withAnimation(.linear(duration: 2.5).repeatForever(autoreverses: true)) {
-                    phase = 1.0
-                }
-            }
-        }
-        .onChange(of: isPlaying) { _, playing in
-            if playing {
-                withAnimation(.linear(duration: 2.5).repeatForever(autoreverses: true)) {
-                    phase = 1.0
-                }
-            } else {
-                phase = 0
-            }
+    private let breathHoldTime: Double = 0.20
+
+    private func breathStep(at date: Date) -> Int {
+        guard isPlaying, brightnessLevels > 1 else { return 0 }
+        let levels = brightnessLevels - 1
+        let cycle = Double(levels) * breathHoldTime * 2
+        let t = date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: cycle)
+        if t < Double(levels) * breathHoldTime {
+            let step = Int(t / breathHoldTime)
+            return min(levels, step)
+        } else {
+            let dt = t - Double(levels) * breathHoldTime
+            let step = Int(dt / breathHoldTime)
+            return max(0, levels - step)
         }
     }
 
-    private var statusLed: some View {
-        let levelIndex = quantizedLevelIndex(phase: phase)
+    var body: some View {
+        let horizontalPadding: CGFloat = 14
+        let verticalPadding: CGFloat = 10
 
-        return ZStack {
+        TimelineView(.animation(minimumInterval: 0.05, paused: false)) { timeline in
+            let breath = breathStep(at: timeline.date)
+
+            HStack(spacing: spacing) {
+                statusLed(level: breath)
+                divider
+                ForEach(0..<numLEDs, id: \.self) { index in
+                    ledDot(at: index, breathLevel: breath)
+                }
+            }
+            .padding(.horizontal, horizontalPadding)
+            .padding(.vertical, verticalPadding)
+            .background(
+                Capsule()
+                    .fill(Color.clear)
+                    .liquidGlassPill(
+                        colorScheme: colorScheme,
+                        accentColor: pillTint,
+                        prominence: pillTint != nil ? .prominent : .standard,
+                        isFloating: false
+                    )
+            )
+        }
+        .animation(.easeInOut(duration: 0.25), value: numLEDs)
+    }
+
+    // MARK: - Status Light (Breath LED)
+
+    private func statusLed(level: Int) -> some View {
+        ZStack {
             Circle()
                 .fill(Color.primary.opacity(0.06))
                 .frame(width: dotSize, height: dotSize)
 
             Circle()
-                .fill(resolver.statusLightColor(level: levelIndex))
+                .fill(resolver.statusLightColor(level: level))
                 .frame(width: dotSize, height: dotSize)
 
             Circle()
-                .stroke(resolver.statusLightStrokeColor(level: levelIndex), lineWidth: 0.8)
+                .stroke(resolver.statusLightStrokeColor(level: level), lineWidth: 0.6)
                 .frame(width: dotSize, height: dotSize)
         }
     }
@@ -134,26 +131,32 @@ struct LedMeterView: View {
     // MARK: - LED Dot
 
     @ViewBuilder
-    private func ledDot(at index: Int) -> some View {
+    private func ledDot(at index: Int, breathLevel breath: Int) -> some View {
         let brightnessState = calculateBrightnessState(for: index)
+        let ledColor = resolver.volumeLEDColor(index: index, count: numLEDs, level: brightnessState)
+        let strokeColor = resolver.volumeLEDStrokeColor(index: index, count: numLEDs, level: brightnessState)
 
         ZStack {
+            // Unlit glass base
             Circle()
                 .fill(Color.primary.opacity(0.06))
                 .frame(width: dotSize, height: dotSize)
 
+            // Lit LED with inner hotspot via plusLighter
             Circle()
-                .fill(resolver.volumeLEDGlowColor(index: index, count: numLEDs, level: brightnessState))
-                .frame(width: dotSize * 1.4, height: dotSize * 1.4)
-                .blur(radius: 2)
-                .blendMode(resolver.usePlusLighter ? .plusLighter : .normal)
-
-            Circle()
-                .fill(resolver.volumeLEDColor(index: index, count: numLEDs, level: brightnessState))
+                .fill(ledColor)
                 .frame(width: dotSize, height: dotSize)
+                .overlay(
+                    Circle()
+                        .fill(ledColor.opacity(0.45))
+                        .frame(width: dotSize * 0.6, height: dotSize * 0.6)
+                        .blendMode(resolver.usePlusLighter ? .plusLighter : .normal)
+                )
+                .compositingGroup()
 
+            // Subtle stroke
             Circle()
-                .stroke(resolver.volumeLEDStrokeColor(index: index, count: numLEDs, level: brightnessState), lineWidth: 0.8)
+                .stroke(strokeColor, lineWidth: 0.6)
                 .frame(width: dotSize, height: dotSize)
         }
         .animation(.easeOut(duration: 0.03), value: brightnessState)
@@ -170,93 +173,21 @@ struct LedMeterView: View {
         }
 
         let centerIndex = numLEDs / 2
-
-        // Calculate distance from center
         let distanceFromCenter = abs(index - centerIndex)
-
-        // Total slots = (LEDs from center to edge + 1) * brightness levels
         let ledsFromCenterToEdge = numLEDs / 2 + 1
         let totalSlots = ledsFromCenterToEdge * brightnessLevels
         let currentSlot = level * Double(totalSlots)
-
-        // This LED starts at slot = distanceFromCenter * brightnessLevels
         let ledStartSlot = Double(distanceFromCenter * brightnessLevels)
 
         if currentSlot < ledStartSlot {
-            // Not reached this LED yet
             return 0
         } else if currentSlot >= ledStartSlot + Double(brightnessLevels) {
-            // This LED is fully lit
             return brightnessLevels - 1
         } else {
-            // Partially lit - calculate which brightness level
             let slotWithinLed = currentSlot - ledStartSlot
             let level = Int(slotWithinLed)
             return min(level, brightnessLevels - 1)
         }
-    }
-
-    /// Ease phase 0...1 with easeInOutSine, then quantize to discrete brightness levels.
-    private func quantizedLevelIndex(phase: Double) -> Int {
-        guard isPlaying, brightnessLevels > 1 else { return 0 }
-        let eased = -0.5 * (cos(Double.pi * phase) - 1.0) // easeInOutSine
-        let levels = brightnessLevels - 1
-        let index = Int(round(eased * Double(levels)))
-        return max(0, min(levels, index))
-    }
-
-    /// Map brightness state to opacity (0 = glass only, max = full brightness).
-    private func opacityForState(_ state: Int) -> Double {
-        guard state > 0, brightnessLevels > 1 else { return 0 }
-
-        // Map state 1..(brightnessLevels-1) to 0.3..1.0
-        let minOpacity = 0.3
-        let maxOpacity = 1.0
-        let fraction = Double(state) / Double(brightnessLevels - 1)
-        return minOpacity + fraction * (maxOpacity - minOpacity)
-    }
-
-}
-
-// MARK: - LED Pill Base
-
-private struct LEDPillBase: View {
-    @Environment(\.colorScheme) private var colorScheme
-
-    let ledCount: Int
-    let dotSize: CGFloat
-    let dotSpacing: CGFloat
-    let horizontalPadding: CGFloat
-    let heightPadding: CGFloat
-    let tint: Color?
-
-    /// For capsule harmony, keep horizontal/vertical padding in sync so end-cap radius
-    /// matches the end LED geometry (end LED centers align with cap centers).
-    private var capAlignedPadding: CGFloat {
-        max(horizontalPadding, heightPadding)
-    }
-
-    private var pillWidth: CGFloat {
-        CGFloat(ledCount) * dotSize
-            + CGFloat(max(0, ledCount - 1)) * dotSpacing
-            + capAlignedPadding * 2
-    }
-
-    private var pillHeight: CGFloat {
-        dotSize + capAlignedPadding * 2
-    }
-
-    var body: some View {
-        Capsule()
-            .fill(Color.clear)
-            .frame(width: pillWidth, height: pillHeight)
-            .liquidGlassPill(
-                colorScheme: colorScheme,
-                accentColor: tint,
-                prominence: tint != nil ? .prominent : .standard,
-                isFloating: false
-            )
-            .animation(.easeInOut(duration: 0.25), value: ledCount)
     }
 }
 
@@ -271,7 +202,7 @@ private struct LEDPillBase: View {
                     .font(.caption)
                     .foregroundStyle(.white)
 
-                LedMeterView(level: level, dotSize: 14, spacing: 8, isPlaying: true)
+                LedMeterView(level: level, dotSize: 10, spacing: 5, isPlaying: true)
             }
         }
     }
@@ -281,9 +212,9 @@ private struct LEDPillBase: View {
 
 #Preview("LED Meter - Light Mode") {
     VStack(spacing: 20) {
-        LedMeterView(level: 0.0, dotSize: 14, spacing: 8, isPlaying: true)
-        LedMeterView(level: 0.5, dotSize: 14, spacing: 8, isPlaying: true)
-        LedMeterView(level: 1.0, dotSize: 14, spacing: 8, isPlaying: true)
+        LedMeterView(level: 0.0, dotSize: 10, spacing: 5, isPlaying: true)
+        LedMeterView(level: 0.5, dotSize: 10, spacing: 5, isPlaying: true)
+        LedMeterView(level: 1.0, dotSize: 10, spacing: 5, isPlaying: true)
     }
     .padding(30)
     .background(Color.gray.opacity(0.2))
@@ -296,7 +227,7 @@ private struct LEDPillBase: View {
 
         var body: some View {
             VStack(spacing: 30) {
-                LedMeterView(level: level, dotSize: 16, spacing: 10, isPlaying: true)
+                LedMeterView(level: level, dotSize: 10, spacing: 5, isPlaying: true)
 
                 Slider(value: $level, in: 0...1)
                     .frame(width: 250)
