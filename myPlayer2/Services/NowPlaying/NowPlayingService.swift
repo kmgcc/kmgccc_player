@@ -286,11 +286,7 @@ final class NowPlayingService {
         cachedArtworkKey = cacheKey
         cachedArtwork = nil
 
-        guard let data = artworkData, !data.isEmpty, let image = NSImage(data: data) else {
-            return nil
-        }
-
-        let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+        guard let artwork = Self.makeMediaArtwork(from: artworkData) else { return nil }
         cachedArtwork = artwork
         return artwork
     }
@@ -310,17 +306,18 @@ final class NowPlayingService {
         cachedArtworkKey = cacheKey
         cachedArtwork = nil
 
-        guard
-            let data = presentation.artworkData,
-            !data.isEmpty,
-            let image = NSImage(data: data)
-        else {
-            return nil
-        }
-
-        let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+        guard let artwork = Self.makeMediaArtwork(from: presentation.artworkData) else { return nil }
         cachedArtwork = artwork
         return artwork
+    }
+
+    private nonisolated static func makeMediaArtwork(from data: Data?) -> MPMediaItemArtwork? {
+        guard let data, !data.isEmpty, let image = NSImage(data: data) else { return nil }
+        let size = image.size
+        // MediaPlayer invokes this handler on its own access queue, so keep it nonisolated.
+        return MPMediaItemArtwork(boundsSize: size) { _ in
+            NSImage(data: data) ?? NSImage(size: size)
+        }
     }
 
     private func artworkSignature(for data: Data?) -> String {

@@ -555,9 +555,10 @@ struct LibraryDetailHeaderView: View {
                     LibraryNormalization.containsArtist(entry.canonicalName, in: $0.artist)
                         && $0.availability != .missing
                 }
+                let artistTrackSources = artistTracks.map { $0.artistArtworkSource() }
                 guard let generatedArtwork = await ArtistArtworkGenerator.shared.generateArtwork(
                     artistName: entry.displayName,
-                    tracks: artistTracks
+                    trackSources: artistTrackSources
                 ) else {
                     await MainActor.run { isArtworkActionInFlight = false }
                     return

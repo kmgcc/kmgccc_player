@@ -7,7 +7,7 @@
 //  Regenerate: KMGCCC_RECORD_SPECTRUM=1 <app_binary>
 //
 
-struct SpectrumFrameData {
+nonisolated struct SpectrumFrameData {
     static let fps: Double = 30.0
     static let frameCount: Int = 600
     static let waveBandCount: Int = 9

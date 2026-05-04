@@ -199,12 +199,15 @@ final class AppSessionHost: ObservableObject {
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
-                guard let self, let repository = self.repository else { return }
-                self.libraryService?.restartMonitoring(repository: repository)
-                Log.info(
-                    "[AppSessionHost] Restarted library monitoring after location change",
-                    category: .library
-                )
+                // NotificationCenter delivers this observer on .main; keep the restart synchronous.
+                MainActor.assumeIsolated {
+                    guard let self, let repository = self.repository else { return }
+                    self.libraryService?.restartMonitoring(repository: repository)
+                    Log.info(
+                        "[AppSessionHost] Restarted library monitoring after location change",
+                        category: .library
+                    )
+                }
             }
         }
 
@@ -221,11 +224,13 @@ final class AppSessionHost: ObservableObject {
     }
 
     deinit {
-        if let playbackModeObserver {
-            NotificationCenter.default.removeObserver(playbackModeObserver)
-        }
-        if let libraryLocationObserver {
-            NotificationCenter.default.removeObserver(libraryLocationObserver)
+        MainActor.assumeIsolated {
+            if let playbackModeObserver {
+                NotificationCenter.default.removeObserver(playbackModeObserver)
+            }
+            if let libraryLocationObserver {
+                NotificationCenter.default.removeObserver(libraryLocationObserver)
+            }
         }
     }
 

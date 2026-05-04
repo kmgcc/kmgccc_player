@@ -9,7 +9,7 @@
 import AppKit
 import ImageIO
 
-public enum ArtworkColorExtractor {
+public nonisolated enum ArtworkColorExtractor {
     struct TextPalette {
         let primary: NSColor
         let secondary: NSColor

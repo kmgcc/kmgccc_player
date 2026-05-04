@@ -604,10 +604,7 @@ private struct HomeRankArtworkView: View {
     private func loadImage() async {
         var data = item.track.artworkData
         if data == nil || data!.isEmpty {
-            let track = item.track
-            data = await Task.detached {
-                track.loadArtworkDataIfNeeded()
-            }.value
+            data = await item.track.loadArtworkDataOffMainIfNeeded()
         }
         guard let data, !data.isEmpty else {
             image = nil

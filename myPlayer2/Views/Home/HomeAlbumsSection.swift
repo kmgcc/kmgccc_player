@@ -284,7 +284,7 @@ private struct HomeAlbumCard: View {
         if artworkData == nil || artworkData!.isEmpty {
             let albumKey = album.canonicalKey
             if let firstTrack = libraryVM.allTracks.first(where: { $0.albumGroupKey == albumKey }) {
-                artworkData = await Task.detached { firstTrack.loadArtworkDataIfNeeded() }.value
+                artworkData = await firstTrack.loadArtworkDataOffMainIfNeeded()
             }
         }
         guard let data = artworkData, !data.isEmpty else { return }

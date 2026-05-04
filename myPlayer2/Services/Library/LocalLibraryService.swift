@@ -209,8 +209,8 @@ final class LocalLibraryService {
     private var monitors: [String: DispatchSourceFileSystemObject] = [:]
     private var monitorFDs: [String: Int32] = [:]
     private var pendingSync: DispatchWorkItem?
-    private let monitorSuppressionLock = NSLock()
-    private var monitorEventsSuppressedUntil: TimeInterval = 0
+    private nonisolated let monitorSuppressionLock = NSLock()
+    private nonisolated(unsafe) var monitorEventsSuppressedUntil: TimeInterval = 0
 
     private init() {
         encoder = JSONEncoder()
@@ -223,7 +223,21 @@ final class LocalLibraryService {
 
     // MARK: - Library Setup
 
-    func ensureLibraryFolders() {
+    private nonisolated static func makeJSONEncoder() -> JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        return encoder
+    }
+
+    private nonisolated static func makeJSONDecoder() -> JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
+    }
+
+    nonisolated func ensureLibraryFolders() {
+        let fileManager = FileManager.default
         do {
             try fileManager.createDirectory(
                 at: LocalLibraryPaths.libraryRootURL,
@@ -649,7 +663,8 @@ final class LocalLibraryService {
     }
 
     @discardableResult
-    func deleteTrackFolder(trackID: UUID) -> Bool {
+    nonisolated func deleteTrackFolder(trackID: UUID) -> Bool {
+        let fileManager = FileManager.default
         let folder = LocalLibraryPaths.trackFolderURL(for: trackID)
         guard fileManager.fileExists(atPath: folder.path) else { return true }
 
@@ -684,7 +699,7 @@ final class LocalLibraryService {
         )
     }
 
-    func writePlaylistSidecar(
+    nonisolated func writePlaylistSidecar(
         playlistID: UUID,
         name: String,
         description: String,
@@ -715,7 +730,7 @@ final class LocalLibraryService {
         )
 
         do {
-            let data = try encoder.encode(sidecar)
+            let data = try Self.makeJSONEncoder().encode(sidecar)
             let url = LocalLibraryPaths.playlistURL(for: playlistID)
             try data.write(to: url, options: .atomic)
         } catch {
@@ -869,10 +884,10 @@ final class LocalLibraryService {
         return metadataSaved
     }
 
-    func loadPlaylistSidecar(playlistID: UUID) -> PlaylistSidecar? {
+    nonisolated func loadPlaylistSidecar(playlistID: UUID) -> PlaylistSidecar? {
         let url = LocalLibraryPaths.playlistURL(for: playlistID)
         guard let data = try? Data(contentsOf: url),
-              let sidecar = try? decoder.decode(PlaylistSidecar.self, from: data)
+              let sidecar = try? Self.makeJSONDecoder().decode(PlaylistSidecar.self, from: data)
         else { return nil }
         return sidecar
     }
@@ -1098,13 +1113,15 @@ final class LocalLibraryService {
         }
     }
 
-    func deleteArtistEntry(id: UUID) {
+    nonisolated func deleteArtistEntry(id: UUID) {
+        let fileManager = FileManager.default
         let folder = LocalLibraryPaths.artistFolderURL(for: id)
         guard fileManager.fileExists(atPath: folder.path) else { return }
         try? fileManager.removeItem(at: folder)
     }
 
-    func deleteAlbumEntry(id: UUID) {
+    nonisolated func deleteAlbumEntry(id: UUID) {
+        let fileManager = FileManager.default
         let folder = LocalLibraryPaths.albumFolderURL(for: id)
         guard fileManager.fileExists(atPath: folder.path) else { return }
         try? fileManager.removeItem(at: folder)
@@ -1478,7 +1495,7 @@ final class LocalLibraryService {
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.5, execute: work)
     }
 
-    func suppressMonitorEvents(for duration: TimeInterval = 1.5) {
+    nonisolated func suppressMonitorEvents(for duration: TimeInterval = 1.5) {
         monitorSuppressionLock.lock()
         monitorEventsSuppressedUntil = max(
             monitorEventsSuppressedUntil,

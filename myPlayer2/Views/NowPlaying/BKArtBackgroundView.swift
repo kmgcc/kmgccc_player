@@ -606,20 +606,18 @@ private final class BKArtBackgroundLayerView: NSView {
     deinit {
         MainActor.assumeIsolated {
             logLifecycle("deinit")
-        }
-        MainActor.assumeIsolated {
             releaseHeavyResources()
+            backgroundClockSubscription?.cancel()
+            shapeClockSubscription?.cancel()
+            dotClockSubscription?.cancel()
+            transitionClockSubscription?.cancel()
+            autoTransitionTimer?.cancel()
+            speedRampClockSubscription?.cancel()
+            solidCircleDotTimer?.cancel()
+            maskWarmupTask?.cancel()
+            initialResourceUpgradeTask?.cancel()
+            backgroundRenderTasks.values.forEach { $0.cancel() }
         }
-        backgroundClockSubscription?.cancel()
-        shapeClockSubscription?.cancel()
-        dotClockSubscription?.cancel()
-        transitionClockSubscription?.cancel()
-        autoTransitionTimer?.cancel()
-        speedRampClockSubscription?.cancel()
-        solidCircleDotTimer?.cancel()
-        maskWarmupTask?.cancel()
-        initialResourceUpgradeTask?.cancel()
-        backgroundRenderTasks.values.forEach { $0.cancel() }
     }
 
     override func viewDidMoveToWindow() {

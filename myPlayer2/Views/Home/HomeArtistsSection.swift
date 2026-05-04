@@ -274,9 +274,10 @@ private struct HomeArtistCircle: View {
         let tracks = libraryVM.allTracks.filter {
             LibraryNormalization.containsArtist(canonicalName, in: $0.artist)
         }
+        let trackSources = tracks.map { $0.artistArtworkSource() }
         let generated = await ArtistArtworkGenerator.shared.generateArtwork(
             artistName: artist.displayName,
-            tracks: tracks
+            trackSources: trackSources
         )
         image = generated
     }

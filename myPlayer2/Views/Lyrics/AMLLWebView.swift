@@ -287,7 +287,7 @@ struct AMLLWebView: NSViewRepresentable {
 
         func webView(
             _ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
-            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+            decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
         ) {
             if let url = navigationAction.request.url,
                 url.scheme == "http" || url.scheme == "https"

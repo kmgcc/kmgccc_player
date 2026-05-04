@@ -2587,7 +2587,7 @@ final class FileImportService: FileImportServiceProtocol {
         return nil
     }
 
-    private struct ExtractedMetadataFields: Sendable {
+    nonisolated private struct ExtractedMetadataFields: Sendable {
         var title: String?
         var artist: String?
         var album: String?

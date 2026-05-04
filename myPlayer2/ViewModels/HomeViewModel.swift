@@ -88,6 +88,7 @@ final class HomeViewModel {
         var artistPlayCounts: [String: Int] = [:]
         var weeklyArtistPlayCounts: [String: Int] = [:]
         var ranked: [(track: Track, stats: TrackPreferenceStats)] = []
+        var dayMap: [Date: Int] = [:]
         let calendar = Calendar.current
         let weekInterval = calendar.dateInterval(of: .weekOfYear, for: Date())
 
@@ -99,13 +100,15 @@ final class HomeViewModel {
             let artistKey = track.artist
             artistPlayCounts[artistKey, default: 0] += stats.playCount
 
-            if let lastPlayedAt = stats.lastPlayedAt,
-               let weekInterval,
-               weekInterval.contains(lastPlayedAt)
-            {
-                weekPlays += stats.playCount
-                weekSeconds += stats.totalPlayedSeconds
-                weeklyArtistPlayCounts[artistKey, default: 0] += stats.playCount
+            if let lastPlayedAt = stats.lastPlayedAt {
+                let day = calendar.startOfDay(for: lastPlayedAt)
+                dayMap[day, default: 0] += stats.playCount
+
+                if let weekInterval, weekInterval.contains(lastPlayedAt) {
+                    weekPlays += stats.playCount
+                    weekSeconds += stats.totalPlayedSeconds
+                    weeklyArtistPlayCounts[artistKey, default: 0] += stats.playCount
+                }
             }
 
             if stats.playCount > 0 {
@@ -153,15 +156,6 @@ final class HomeViewModel {
                 )
             }
 
-        // Daily listening map: aggregate by day from lastPlayedAt
-        var dayMap: [Date: Int] = [:]
-        for track in allTracks {
-            let stats = statsService.getStats(for: track.id)
-            if let lastPlayed = stats.lastPlayedAt {
-                let day = calendar.startOfDay(for: lastPlayed)
-                dayMap[day, default: 0] += stats.playCount
-            }
-        }
         dailyListeningMap = dayMap
         updateCachedSignatures(from: libraryVM, allTracks: allTracks)
     }
@@ -397,6 +391,7 @@ final class HomeViewModel {
         var artistPlayCounts: [String: Int] = [:]
         var weeklyArtistPlayCounts: [String: Int] = [:]
         var ranked: [(track: Track, stats: TrackPreferenceStats)] = []
+        var dayMap: [Date: Int] = [:]
         let calendar = Calendar.current
         let weekInterval = calendar.dateInterval(of: .weekOfYear, for: Date())
 
@@ -408,13 +403,15 @@ final class HomeViewModel {
             let artistKey = track.artist
             artistPlayCounts[artistKey, default: 0] += stats.playCount
 
-            if let lastPlayedAt = stats.lastPlayedAt,
-               let weekInterval,
-               weekInterval.contains(lastPlayedAt)
-            {
-                weekPlays += stats.playCount
-                weekSeconds += stats.totalPlayedSeconds
-                weeklyArtistPlayCounts[artistKey, default: 0] += stats.playCount
+            if let lastPlayedAt = stats.lastPlayedAt {
+                let day = calendar.startOfDay(for: lastPlayedAt)
+                dayMap[day, default: 0] += stats.playCount
+
+                if let weekInterval, weekInterval.contains(lastPlayedAt) {
+                    weekPlays += stats.playCount
+                    weekSeconds += stats.totalPlayedSeconds
+                    weeklyArtistPlayCounts[artistKey, default: 0] += stats.playCount
+                }
             }
 
             if stats.playCount > 0 {
@@ -460,14 +457,6 @@ final class HomeViewModel {
                 )
             }
 
-        var dayMap: [Date: Int] = [:]
-        for track in allTracks {
-            let stats = statsService.getStats(for: track.id)
-            if let lastPlayed = stats.lastPlayedAt {
-                let day = calendar.startOfDay(for: lastPlayed)
-                dayMap[day, default: 0] += stats.playCount
-            }
-        }
         dailyListeningMap = dayMap
     }
 

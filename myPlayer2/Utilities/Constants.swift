@@ -8,7 +8,7 @@
 import Foundation
 
 /// App-wide constants.
-enum Constants {
+nonisolated enum Constants {
 
     // MARK: - App Info
 

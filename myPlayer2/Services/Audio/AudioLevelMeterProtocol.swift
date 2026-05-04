@@ -7,7 +7,7 @@
 
 import Foundation
 
-public struct AudioMetrics: Sendable {
+nonisolated public struct AudioMetrics: Sendable {
     public var rms: Float
     public var peak: Float
     public var db: Float

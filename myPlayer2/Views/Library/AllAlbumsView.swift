@@ -297,7 +297,7 @@ private struct AlbumListRow: View {
         if data == nil || data!.isEmpty {
             let key = album.canonicalKey
             if let firstTrack = libraryVM.allTracks.first(where: { $0.albumGroupKey == key }) {
-                data = await Task.detached { firstTrack.loadArtworkDataIfNeeded() }.value
+                data = await firstTrack.loadArtworkDataOffMainIfNeeded()
             }
         }
         guard let data, !data.isEmpty else { return }

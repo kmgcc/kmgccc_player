@@ -160,19 +160,21 @@ struct TimePreviewContainer: View {
     
     func startTimer() {
         Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [self] timer in
-            // Perform checks on MainActor and schedule timer invalidation
-            // Timer is not Sendable, so we use MainActor.assumeIsolated for the callback
+            var shouldInvalidate = false
             MainActor.assumeIsolated {
                 if !isPlaying {
-                    timer.invalidate()
+                    shouldInvalidate = true
                     return
                 }
                 currentTime += 0.5
                 if currentTime >= 300 {
                     currentTime = 300
                     isPlaying = false
-                    timer.invalidate()
+                    shouldInvalidate = true
                 }
+            }
+            if shouldInvalidate {
+                timer.invalidate()
             }
         }
     }

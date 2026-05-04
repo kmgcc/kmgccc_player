@@ -10,7 +10,7 @@
 import Accelerate
 import Foundation
 
-final class AudioVisualizationService {
+nonisolated final class AudioVisualizationService: @unchecked Sendable {
 
     typealias Consumer = @MainActor ([Float]) -> Void
 
@@ -334,7 +334,7 @@ final class AudioVisualizationService {
 
 // MARK: - Spectrum Processing
 
-final class SpectrumProcessor: @unchecked Sendable {
+nonisolated final class SpectrumProcessor: @unchecked Sendable {
 
     struct Constants {
         // 1. Upstream Gains & Headroom
