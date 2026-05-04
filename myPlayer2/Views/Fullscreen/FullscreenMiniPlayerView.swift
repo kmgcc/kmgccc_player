@@ -484,7 +484,9 @@ struct FullscreenMiniPlayerView: View {
     }
 
     private var usesAdaptiveClearForeground: Bool {
-        glassStyle.materialStyle == .clear && themeStore.hasArtworkThemeColor
+        settings.fullscreen.skinID == FullscreenSkinID.coverGradientBlur.rawValue
+            && glassStyle.materialStyle == .clear
+            && themeStore.hasArtworkThemeColor
     }
 
     private var usesDarkArtworkForegroundForClear: Bool {

@@ -24,10 +24,10 @@ struct LedMeterView: View {
     var ledValues: [Float]? = nil
 
     /// Dot size
-    var dotSize: CGFloat = 10
+    var dotSize: CGFloat = 12
 
     /// Spacing between dots
-    var spacing: CGFloat = 5
+    var spacing: CGFloat = 7
 
     /// Optional pill tint (very subtle, above glass)
     var pillTint: Color? = nil
@@ -62,8 +62,9 @@ struct LedMeterView: View {
     private let zeroHoldTime: Double   = 0.40
 
     private func breathStep(at date: Date) -> Int {
-        guard isPlaying, brightnessLevels > 1 else { return 0 }
+        guard brightnessLevels > 1 else { return 0 }
         let maxStep = brightnessLevels - 1
+        if !isPlaying { return maxStep }
         let riseDuration  = Double(maxStep) * breathHoldTime
         let fallDuration  = Double(maxStep) * breathHoldTime
         let cycleDuration = riseDuration + peakHoldTime + fallDuration + zeroHoldTime
@@ -78,9 +79,9 @@ struct LedMeterView: View {
         } else if t < riseDuration + peakHoldTime + fallDuration {
             let dt = t - (riseDuration + peakHoldTime)
             let step = Int(dt / breathHoldTime)
-            return max(0, maxStep - step)
+            return max(1, maxStep - step)
         } else {
-            return 0
+            return 1
         }
     }
 
@@ -119,17 +120,18 @@ struct LedMeterView: View {
     private func statusLed(level: Int) -> some View {
         ZStack {
             Circle()
-                .fill(Color.primary.opacity(0.06))
+                .fill(Color.primary.opacity(0.10))
                 .frame(width: dotSize, height: dotSize)
 
             Circle()
                 .fill(resolver.statusLightColor(level: level))
                 .frame(width: dotSize, height: dotSize)
-                .blendMode(resolver.ledBlendMode)
+                .opacity(level > 0 ? 1.0 : 0.0)
 
             Circle()
                 .stroke(resolver.statusLightStrokeColor(level: level), lineWidth: 0.7)
                 .frame(width: dotSize, height: dotSize)
+                .opacity(level > 0 ? 1.0 : 0.0)
         }
     }
 
@@ -148,21 +150,22 @@ struct LedMeterView: View {
         let strokeColor = resolver.volumeLEDStrokeColor(index: index, count: numLEDs, level: brightnessState)
 
         ZStack {
-            // Unlit glass base
+            // Unlit glass base — faint outline when off
             Circle()
-                .fill(Color.primary.opacity(0.06))
+                .fill(Color.primary.opacity(0.10))
                 .frame(width: dotSize, height: dotSize)
 
-            // Lit LED fill with blend mode
+            // Lit LED fill — visible only when brightnessState > 0
             Circle()
                 .fill(ledColor)
                 .frame(width: dotSize, height: dotSize)
-                .blendMode(resolver.ledBlendMode)
+                .opacity(brightnessState > 0 ? 1.0 : 0.0)
 
-            // Subtle stroke
+            // Subtle stroke — visible only when brightnessState > 0
             Circle()
                 .stroke(strokeColor, lineWidth: 0.7)
                 .frame(width: dotSize, height: dotSize)
+                .opacity(brightnessState > 0 ? 1.0 : 0.0)
         }
         .animation(.easeOut(duration: 0.03), value: brightnessState)
     }

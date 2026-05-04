@@ -3,7 +3,7 @@
 //  myPlayer2
 //
 //  LED-dedicated color resolver with dual-tone gradient, level-driven hue shift,
-//  adaptive light/dark, and plusLighter glow.
+//  adaptive light/dark, opaque Normal compositing.
 //
 
 import AppKit
@@ -14,6 +14,7 @@ struct LEDColorResolver {
     let accentColor: Color
     let colorScheme: ColorScheme
     let brightnessLevels: Int
+    let isEffectivelyMonochrome: Bool
 
     private var accentNS: NSColor {
         NSColor(accentColor)
@@ -29,6 +30,18 @@ struct LEDColorResolver {
         self.colorScheme = colorScheme
         self.brightnessLevels = max(2, brightnessLevels)
         self.palette = palette
+        self.isEffectivelyMonochrome = palette?.analysis.isEffectivelyMonochrome ?? false
+    }
+
+    // MARK: - Neutral Base (for monochrome artwork)
+
+    private var neutralLEDBase: NSColor {
+        let h: CGFloat = 0.58 // cool silver/blue-grey
+        let s: CGFloat = colorScheme == .dark ? 0.06 : 0.05
+        let l: CGFloat = colorScheme == .dark
+            ? ColorMath.clamp(0.62, 0.55, 0.72)
+            : ColorMath.clamp(0.38, 0.30, 0.45)
+        return ColorMath.color(h: h, s: s, l: l)
     }
 
     // MARK: - Base Colors
@@ -41,16 +54,31 @@ struct LEDColorResolver {
     }
 
     var centerColor: NSColor {
+        if isEffectivelyMonochrome {
+            return neutralLEDBase
+        }
         let hsl = ColorMath.hsl(of: rawBase)
         if colorScheme == .dark {
-            let l = ColorMath.clamp(hsl.l, 0.32, 0.52)
-            return ColorMath.color(h: hsl.h, s: hsl.s, l: l)
+            // Bright vivid base — stays colorful even at low opacity
+            let s = ColorMath.clamp(hsl.s * 1.10, 0.60, 1.0)
+            let l = ColorMath.clamp(hsl.l, 0.52, 0.72)
+            return ColorMath.color(h: hsl.h, s: s, l: l)
+        } else {
+            // Dark vivid base — never pure black, keeps hue at low opacity
+            let s = ColorMath.clamp(hsl.s * 1.05, 0.55, 0.95)
+            let l = ColorMath.clamp(hsl.l * 0.50, 0.25, 0.42)
+            return ColorMath.color(h: hsl.h, s: s, l: l)
         }
-        let l = ColorMath.clamp(hsl.l * 1.30, 0.78, 0.90)
-        return ColorMath.color(h: hsl.h, s: hsl.s, l: l)
     }
 
     var edgeColor: NSColor {
+        if isEffectivelyMonochrome {
+            let hsl = ColorMath.hsl(of: neutralLEDBase)
+            let l = colorScheme == .dark
+                ? ColorMath.clamp(hsl.l * 0.90, 0.46, 0.64)
+                : ColorMath.clamp(hsl.l * 0.90, 0.22, 0.38)
+            return ColorMath.color(h: hsl.h, s: hsl.s, l: l)
+        }
         let hsl = ColorMath.hsl(of: centerColor)
         var h = hsl.h
         // Gentle hue shift based on region
@@ -65,16 +93,19 @@ struct LEDColorResolver {
         } else if h >= 0.75 && h < 0.92 {
             h = ColorMath.normalizedHue(h - 0.03) // purple → blue
         }
-        let s = ColorMath.clamp(hsl.s * 0.92, 0.30, 0.90)
+        let s = ColorMath.clamp(hsl.s * 0.92, 0.50, 0.95)
         let l = colorScheme == .dark
-            ? ColorMath.clamp(hsl.l * 0.92, 0.28, 0.48)
-            : ColorMath.clamp(hsl.l * 1.08, 0.72, 0.82)
+            ? ColorMath.clamp(hsl.l * 0.90, 0.46, 0.64)
+            : ColorMath.clamp(hsl.l * 0.90, 0.22, 0.38)
         return ColorMath.color(h: h, s: s, l: l)
     }
 
     // MARK: - Status Light Base Color
 
     private var statusLightBaseColor: NSColor {
+        if isEffectivelyMonochrome {
+            return neutralLEDBase
+        }
         if let palette {
             let candidate = palette.coverGradientDominant
             let centerHSL = ColorMath.hsl(of: centerColor)
@@ -88,8 +119,8 @@ struct LEDColorResolver {
         let h = ColorMath.normalizedHue(hsl.h + 0.05)
         let s = min(1.0, hsl.s * 1.10)
         let l = colorScheme == .dark
-            ? ColorMath.clamp(hsl.l * 0.95, 0.30, 0.50)
-            : ColorMath.clamp(hsl.l * 1.05, 0.70, 0.88)
+            ? ColorMath.clamp(hsl.l * 0.95, 0.40, 0.60)
+            : ColorMath.clamp(hsl.l * 0.50, 0.25, 0.42)
         return ColorMath.color(h: h, s: s, l: l)
     }
 
@@ -116,86 +147,154 @@ struct LEDColorResolver {
 
     // MARK: - Level-Driven Color
 
-    private func colorForLevel(
+    private func darkEmissiveColor(
         base: NSColor,
         level: Int,
         isStroke: Bool = false
     ) -> NSColor {
         let maxLevel = max(1, brightnessLevels - 1)
-        let levelRatio = CGFloat(min(level, maxLevel)) / CGFloat(maxLevel)
+        let t = CGFloat(min(level, maxLevel)) / CGFloat(maxLevel)
+        let eased = t * t * (3 - 2 * t) // smoothstep
+        let hsl = ColorMath.hsl(of: base)
+
+        if isEffectivelyMonochrome {
+            let minL: CGFloat = 0.82
+            let targetL: CGFloat = 0.95
+            let l = minL + (targetL - minL) * eased
+            let s = isStroke ? hsl.s * 0.95 : hsl.s
+            let finalL = isStroke ? l * 0.96 : l
+            return ColorMath.color(h: hsl.h, s: s, l: finalL)
+        }
+
+        let h = hsl.h
+        let (targetL, targetS): (CGFloat, CGFloat)
+        switch h {
+        case 0.92..<1.0, 0.0..<0.08:
+            targetL = 0.93; targetS = 0.96   // red: vivid LED red
+        case 0.08..<0.15:
+            targetL = 0.94; targetS = 0.94   // orange: rich warm glow
+        case 0.15..<0.20:
+            targetL = 0.94; targetS = 0.86   // amber: warm amber LED
+        case 0.20..<0.25:
+            targetL = 0.94; targetS = 0.76   // yellow: amber-adjacent warm white, not dirty grey
+        case 0.25..<0.42:
+            targetL = 0.92; targetS = 0.84   // green: bright LED green
+        case 0.42..<0.52:
+            targetL = 0.93; targetS = 0.82   // cyan: luminous teal
+        case 0.52..<0.65:
+            targetL = 0.95; targetS = 0.82   // sky blue: bright, soft, not grey
+        case 0.65..<0.75:
+            targetL = 0.95; targetS = 0.78   // blue: vivid with chroma
+        case 0.75..<0.85:
+            targetL = 0.96; targetS = 0.72   // purple/violet: rich, not grey-lavender
+        case 0.85..<0.92:
+            targetL = 0.95; targetS = 0.76   // magenta/pink: colorful, not fuchsia-blind
+        default:
+            targetL = 0.94; targetS = 0.78
+        }
+
+        // Saturation floor: level 1 keeps ≥84% of targetS, not base→target lerp
+        let satFloor = targetS * 0.84
+        let s = satFloor + (targetS - satFloor) * eased
+
+        // Lightness floor: level 1 ≥ 0.80, target at max
+        let minL: CGFloat = 0.80
+        let l = minL + (targetL - minL) * eased
+
+        if isStroke {
+            return ColorMath.color(h: h, s: s * 0.98, l: l * 0.96)
+        }
+        return ColorMath.color(h: h, s: s, l: l)
+    }
+
+    private func colorForLevel(
+        base: NSColor,
+        level: Int,
+        isStroke: Bool = false
+    ) -> NSColor {
+        if colorScheme == .dark {
+            return darkEmissiveColor(base: base, level: level, isStroke: isStroke)
+        }
+
+        let maxLevel = max(1, brightnessLevels - 1)
+        let t = CGFloat(min(level, maxLevel)) / CGFloat(maxLevel)
         let hsl = ColorMath.hsl(of: base)
         var h = hsl.h
         var s = hsl.s
         var l = hsl.l
 
-        // Enhanced hue shift for low levels
-        let oneMinus = 1 - levelRatio
+        if isEffectivelyMonochrome {
+            l = l * (0.92 + 0.08 * t)
+            if isStroke {
+                l = l * 0.92
+            }
+            return ColorMath.color(h: hsl.h, s: hsl.s, l: l)
+        }
+
+        // Hue warmth shift for low levels
+        let oneMinus = 1 - t
         if h >= 0.08 && h < 0.17 {
-            h = ColorMath.normalizedHue(h - 0.05 * oneMinus)  // orange → yellow, ~18°
+            h = ColorMath.normalizedHue(h - 0.05 * oneMinus)
         } else if h >= 0.55 && h < 0.75 {
-            h = ColorMath.normalizedHue(h + 0.05 * oneMinus)  // blue → violet, ~18°
+            h = ColorMath.normalizedHue(h + 0.05 * oneMinus)
         } else if h >= 0.25 && h < 0.45 {
-            h = ColorMath.normalizedHue(h + 0.06 * oneMinus)  // green → cyan, ~22°
+            h = ColorMath.normalizedHue(h + 0.06 * oneMinus)
         } else if h < 0.08 || h >= 0.92 {
-            h = ColorMath.normalizedHue(h + 0.04 * oneMinus)  // red → orange, ~14°
+            h = ColorMath.normalizedHue(h + 0.04 * oneMinus)
         } else if h >= 0.75 && h < 0.92 {
-            h = ColorMath.normalizedHue(h - 0.04 * oneMinus)  // purple → blue, ~14°
+            h = ColorMath.normalizedHue(h - 0.04 * oneMinus)
         }
 
-        s = min(1.0, s * (1.0 + 0.18 * oneMinus))
-
-        if colorScheme == .dark {
-            l = l * (0.40 + 0.40 * levelRatio)
-            l = min(l, 0.55)
-        } else {
-            l = l * (0.88 + 0.12 * levelRatio)
-            l = min(l, 0.92)
-        }
+        s = min(1.0, s * (1.0 + 0.22 * oneMinus))
+        l = l * (0.92 + 0.08 * t)
 
         if isStroke {
-            s = min(1.0, s + 0.08)
-            l = l * 0.80
+            s = min(1.0, s * 1.06)
+            l = l * 0.92
         }
 
         return ColorMath.color(h: h, s: s, l: l)
     }
 
+    // MARK: - Opacity (primary brightness control)
+
     private func opacityForLevel(level: Int) -> Double {
         guard level > 0, brightnessLevels > 1 else { return 0 }
         let maxLevel = brightnessLevels - 1
         let fraction = Double(level) / Double(maxLevel)
-        let minOpacity = colorScheme == .dark ? 0.20 : 0.60
-        let maxOpacity = 1.0
-        return minOpacity + fraction * (maxOpacity - minOpacity)
+        if colorScheme == .dark {
+            let eased = fraction * fraction * (3 - 2 * fraction)
+            let minOpacity = 0.58
+            return minOpacity + eased * (1.0 - minOpacity)
+        } else {
+            return 0.40 + fraction * 0.60
+        }
     }
 
     // MARK: - Status Light
 
     func statusLightColor(level: Int) -> Color {
-        let ns = colorForLevel(base: statusLightBaseColor, level: level)
-        return Color(nsColor: ns).opacity(opacityForLevel(level: level))
+        Color(nsColor: colorForLevel(base: statusLightBaseColor, level: level))
+            .opacity(opacityForLevel(level: level))
     }
 
     func statusLightStrokeColor(level: Int) -> Color {
-        let ns = colorForLevel(base: statusLightBaseColor, level: level, isStroke: true)
-        return Color(nsColor: ns).opacity(min(0.60, opacityForLevel(level: level) * 0.70))
+        Color(nsColor: colorForLevel(base: statusLightBaseColor, level: level, isStroke: true))
+            .opacity(min(0.55, opacityForLevel(level: level) * 0.70))
     }
 
     // MARK: - Volume LED
 
     func volumeLEDColor(index: Int, count: Int, level: Int) -> Color {
         let base = baseColorForIndex(index: index, count: count)
-        let ns = colorForLevel(base: base, level: level)
-        return Color(nsColor: ns).opacity(opacityForLevel(level: level))
+        return Color(nsColor: colorForLevel(base: base, level: level))
+            .opacity(opacityForLevel(level: level))
     }
 
     func volumeLEDStrokeColor(index: Int, count: Int, level: Int) -> Color {
         let base = baseColorForIndex(index: index, count: count)
-        let ns = colorForLevel(base: base, level: level, isStroke: true)
-        return Color(nsColor: ns).opacity(min(0.60, opacityForLevel(level: level) * 0.70))
+        return Color(nsColor: colorForLevel(base: base, level: level, isStroke: true))
+            .opacity(min(0.55, opacityForLevel(level: level) * 0.70))
     }
 
-    var ledBlendMode: BlendMode {
-        colorScheme == .dark ? .plusLighter : .plusDarker
-    }
 }

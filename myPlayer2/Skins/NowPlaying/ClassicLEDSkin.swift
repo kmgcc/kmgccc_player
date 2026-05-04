@@ -70,8 +70,8 @@ private struct ClassicLEDArtwork: View {
             : 18
 
         let visualizerMode = usesFullscreenLayout ? fullscreenVisualizerMode : normalVisualizerMode
-        let dotSize: CGFloat = usesFullscreenLayout ? 12 : 10
-        let spacing: CGFloat = usesFullscreenLayout ? 8 : 6
+        let dotSize: CGFloat = usesFullscreenLayout ? 14 : 12
+        let spacing: CGFloat = usesFullscreenLayout ? 9 : 7
 
         VStack(spacing: effectSpacing) {
             artworkView

@@ -275,16 +275,15 @@ private final class RotatingCoverCDMotionBlurCache: ObservableObject {
     @Published private(set) var blurredImage: NSImage?
 
     private static let blurVersion = 4
-    private static let ciContext = CIContext(options: nil)
 
-    private struct CacheKey: Equatable {
+    private struct CacheKey: Equatable, Sendable {
         let artworkSignature: String
         let pixelSize: Int
         let version: Int
     }
 
     private var currentKey: CacheKey?
-    private var renderWorkItem: DispatchWorkItem?
+    private var renderTask: Task<Void, Never>?
 
     func update(
         artworkImage: NSImage?,
@@ -314,33 +313,31 @@ private final class RotatingCoverCDMotionBlurCache: ObservableObject {
         guard currentKey != key else { return }
         currentKey = key
 
-        renderWorkItem?.cancel()
+        renderTask?.cancel()
         if previousKey?.artworkSignature != key.artworkSignature {
             blurredImage = nil
         }
 
-        let workItem = DispatchWorkItem { [weak self] in
-            guard let rendered = Self.renderBlurredDiscImage(
-                from: sourceImage,
+        let targetDiscSize = discSize
+        renderTask = Task.detached(priority: .userInitiated) { [weak self] in
+            let rendered = RotatingCoverCDMotionBlurRenderer.render(
+                sourceImage: sourceImage,
                 pixelSize: pixelSize
-            ) else { return }
-
-            DispatchQueue.main.async {
+            )
+            guard !Task.isCancelled, let rendered else { return }
+            await MainActor.run {
                 guard let self, self.currentKey == key else { return }
                 self.blurredImage = NSImage(
                     cgImage: rendered,
-                    size: NSSize(width: discSize, height: discSize)
+                    size: NSSize(width: targetDiscSize, height: targetDiscSize)
                 )
             }
         }
-
-        renderWorkItem = workItem
-        DispatchQueue.global(qos: .userInitiated).async(execute: workItem)
     }
 
     func clear() {
-        renderWorkItem?.cancel()
-        renderWorkItem = nil
+        renderTask?.cancel()
+        renderTask = nil
         currentKey = nil
         blurredImage = nil
     }
@@ -349,8 +346,18 @@ private final class RotatingCoverCDMotionBlurCache: ObservableObject {
         let bucket: CGFloat = 12
         return Int((rawPixelSize / bucket).rounded(.toNearestOrAwayFromZero) * bucket)
     }
+}
 
-    private static func renderBlurredDiscImage(from sourceImage: CGImage, pixelSize: Int) -> CGImage? {
+// MARK: - CD motion blur renderer (fully nonisolated)
+//
+// All rendering work runs off the main actor on a detached Task. Members are
+// declared `nonisolated` so the closure captured by Task.detached cannot
+// inherit any actor isolation from the caller — that inheritance was the
+// remaining cause of `_dispatch_assert_queue_fail` after the previous patch.
+private enum RotatingCoverCDMotionBlurRenderer {
+    nonisolated static let ciContext = CIContext(options: nil)
+
+    nonisolated static func render(sourceImage: CGImage, pixelSize: Int) -> CGImage? {
         let bounds = CGRect(x: 0, y: 0, width: pixelSize, height: pixelSize)
         guard
             let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
@@ -434,7 +441,7 @@ private final class RotatingCoverCDMotionBlurCache: ObservableObject {
         return densifiedOpaqueBlurImage(from: lightlyBlurred, pixelSize: pixelSize, colorSpace: colorSpace)
     }
 
-    private static func lightlyBlurredImage(from image: CGImage, pixelSize: Int) -> CGImage? {
+    nonisolated private static func lightlyBlurredImage(from image: CGImage, pixelSize: Int) -> CGImage? {
         let bounds = CGRect(x: 0, y: 0, width: pixelSize, height: pixelSize)
         let blurred = CIImage(cgImage: image)
             .clampedToExtent()
@@ -443,7 +450,7 @@ private final class RotatingCoverCDMotionBlurCache: ObservableObject {
         return ciContext.createCGImage(blurred, from: bounds)
     }
 
-    private static func densifiedOpaqueBlurImage(
+    nonisolated private static func densifiedOpaqueBlurImage(
         from image: CGImage,
         pixelSize: Int,
         colorSpace: CGColorSpace
@@ -479,7 +486,7 @@ private final class RotatingCoverCDMotionBlurCache: ObservableObject {
     }
 }
 
-private func aspectFillRect(sourceSize: CGSize, targetRect: CGRect) -> CGRect {
+private nonisolated func aspectFillRect(sourceSize: CGSize, targetRect: CGRect) -> CGRect {
     let scale = max(targetRect.width / sourceSize.width, targetRect.height / sourceSize.height)
     let scaledSize = CGSize(width: sourceSize.width * scale, height: sourceSize.height * scale)
     return CGRect(
@@ -798,10 +805,16 @@ private final class RotatingCDDiscHostView: NSView {
     }
 
     func setBlurStrength(_ ratio: Double) {
-        let easedRatio = pow(max(0, min(ratio, 1)), 1.1)
+        // Smooth fade with no cutoff: smoothstep gives slope→0 at ratio=0,
+        // and the sqrt biases the curve toward stronger blur in the middle of
+        // the speed range without raising the floor near zero.
+        // ratio=0 → 0, ratio=0.25 → ~0.40, ratio=0.5 → ~0.71, ratio=1 → 1.
+        let clamped = max(0, min(ratio, 1))
+        let smoothed = clamped * clamped * (3 - 2 * clamped)
+        let eased = sqrt(smoothed)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        blurLayer.opacity = ratio > 0.001 ? Float(max(0.16, min(easedRatio, 1.0))) : 0
+        blurLayer.opacity = Float(eased)
         artworkLayer.opacity = 1
         CATransaction.commit()
     }
@@ -868,7 +881,17 @@ private struct RotatingCoverArtwork: View {
                 }
             }
 
-            if visualizerMode == "spectrum" {
+            if visualizerMode == "led" {
+                let usesFullscreen = usesFullscreenLayout
+                LedMeterView(
+                    level: Double(context.audio.smoothedLevel),
+                    ledValues: context.led.leds,
+                    dotSize: usesFullscreen ? 16 : 14,
+                    spacing: usesFullscreen ? 10 : 8,
+                    pillTint: context.theme.artworkAccentColor,
+                    isPlaying: context.playback.isPlaying
+                )
+            } else if visualizerMode == "spectrum" {
                 PillSpectrumView(
                     context: context,
                     dotSize: 12,
@@ -952,15 +975,34 @@ private struct RotatingCoverArtwork: View {
 private struct RotatingCoverSkinNormalSettingsView: View {
     @AppStorage("skin.rotatingCover.cdMode") private var cdMode: Bool = false
     @AppStorage("skin.rotatingCover.visualizerMode") private var visualizerMode: String = "off"
+    @Environment(LEDMeterServiceProvider.self) private var ledMeterProvider
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             SettingsSwitchRow(title: "CD 模式", isOn: $cdMode)
 
+            SettingsSwitchRow(title: "LED 电平表", isOn: Binding(
+                get: { visualizerMode == "led" },
+                set: { isOn in
+                    if isOn {
+                        visualizerMode = "led"
+                        ledMeterProvider.getOrCreate().start()
+                    } else if visualizerMode == "led" {
+                        visualizerMode = "off"
+                        ledMeterProvider.releaseNowPlayingResources()
+                    }
+                }
+            ))
+
             SettingsSwitchRow(title: "频谱动画", isOn: Binding(
                 get: { visualizerMode == "spectrum" },
                 set: { isOn in
-                    visualizerMode = isOn ? "spectrum" : "off"
+                    if isOn {
+                        visualizerMode = "spectrum"
+                        ledMeterProvider.releaseNowPlayingResources()
+                    } else if visualizerMode == "spectrum" {
+                        visualizerMode = "off"
+                    }
                 }
             ))
         }
@@ -979,6 +1021,21 @@ private struct RotatingCoverSkinFullscreenSettingsView: View {
                 titleFont: presentationStyle.rowLabelFont,
                 titleColor: presentationStyle.primaryTextColor
             )
+
+            SettingsSwitchRow(title: "LED 电平表", isOn: Binding(
+                get: {
+                    FullscreenPresentationCoordinator.shared.isSkinVisualizerEnabled
+                    && UserDefaults.standard.string(forKey: "skin.rotatingCover.fullscreen.visualizerMode") == "led"
+                },
+                set: { isOn in
+                    if isOn {
+                        UserDefaults.standard.set("led", forKey: "skin.rotatingCover.fullscreen.visualizerMode")
+                        FullscreenPresentationCoordinator.shared.setVisualizerMode(.skinVisualizer)
+                    } else {
+                        FullscreenPresentationCoordinator.shared.setVisualizerMode(.off)
+                    }
+                }
+            ), titleFont: presentationStyle.rowLabelFont, titleColor: presentationStyle.primaryTextColor)
 
             SettingsSwitchRow(title: "频谱动画", isOn: Binding(
                 get: {

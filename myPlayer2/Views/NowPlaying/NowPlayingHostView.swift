@@ -201,6 +201,8 @@ struct NowPlayingHostView: View {
         switch skinID {
         case "coverLed":
             return UserDefaults.standard.string(forKey: "skin.classicLED.visualizerMode") == "led"
+        case "rotatingCover":
+            return UserDefaults.standard.string(forKey: "skin.rotatingCover.visualizerMode") == "led"
         case "kmgccc.cassette":
             return UserDefaults.standard.string(forKey: "skin.kmgcccCassette.visualizerMode") == "led"
         default:
