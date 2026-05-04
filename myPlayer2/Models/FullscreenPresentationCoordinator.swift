@@ -52,6 +52,18 @@ public enum FullscreenSkinID: String, CaseIterable, Identifiable {
         case .kmgcccCassette: return false
         }
     }
+
+    /// Whether this skin renders an audio LED meter as part of its decoration.
+    /// LED is a peer of spectrum: it should be driven by the skin identity,
+    /// not by the visualizerMode toggle.
+    public var hasLedMeter: Bool {
+        switch self {
+        case .coverLed: return true
+        case .kmgcccCassette: return true
+        case .rotatingCover: return false
+        case .coverGradientBlur: return false
+        }
+    }
 }
 
 /// Resolved configuration - guaranteed to be valid per mutual exclusivity rules
@@ -135,6 +147,7 @@ public final class FullscreenPresentationCoordinator {
         static let classicLEDVisualizer = "skin.classicLED.fullscreen.visualizerMode"
         static let kmgcccCassetteVisualizer = "skin.kmgcccCassette.fullscreen.visualizerMode"
         static let rotatingCoverVisualizer = "skin.rotatingCover.fullscreen.visualizerMode"
+        static let userExplicitlyDisabledMiniPlayerSpectrum = "userExplicitlyDisabledMiniPlayerSpectrum_v1"
     }
 
     @ObservationIgnored
@@ -171,6 +184,8 @@ public final class FullscreenPresentationCoordinator {
 
     public func setSkinID(_ skinID: String) {
         let currentConfig = configuration
+        let currentSkin = FullscreenSkinID(rawValue: currentConfig.skinID)
+        let newSkin = FullscreenSkinID(rawValue: skinID)
 
         if skinID == "kmgccc.cassette" && currentConfig.isMiniPlayerSpectrumEnabled {
             updateConfiguration(FullscreenPresentationConfiguration(
@@ -178,6 +193,19 @@ public final class FullscreenPresentationCoordinator {
                 visualizerMode: .off
             ))
             return
+        }
+
+        let currentSupportsMiniPlayer = currentSkin?.supportsMiniPlayerSpectrum ?? false
+        let newSupportsMiniPlayer = newSkin?.supportsMiniPlayerSpectrum ?? false
+        if !currentSupportsMiniPlayer && newSupportsMiniPlayer && currentConfig.visualizerMode == .off {
+            let explicitlyDisabled = UserDefaults.standard.bool(forKey: Keys.userExplicitlyDisabledMiniPlayerSpectrum)
+            if !explicitlyDisabled {
+                updateConfiguration(FullscreenPresentationConfiguration(
+                    skinID: skinID,
+                    visualizerMode: .miniPlayerSpectrum
+                ))
+                return
+            }
         }
 
         updateConfiguration(FullscreenPresentationConfiguration(
@@ -199,11 +227,16 @@ public final class FullscreenPresentationCoordinator {
         let currentConfig = configuration
 
         if currentConfig.isMiniPlayerSpectrumEnabled {
+            if let skin = FullscreenSkinID(rawValue: currentConfig.skinID),
+               skin.supportsMiniPlayerSpectrum {
+                UserDefaults.standard.set(true, forKey: Keys.userExplicitlyDisabledMiniPlayerSpectrum)
+            }
             updateConfiguration(FullscreenPresentationConfiguration(
                 skinID: currentConfig.skinID,
                 visualizerMode: .off
             ))
         } else {
+            UserDefaults.standard.set(false, forKey: Keys.userExplicitlyDisabledMiniPlayerSpectrum)
             updateConfiguration(FullscreenPresentationConfiguration(
                 skinID: currentConfig.skinID,
                 visualizerMode: .miniPlayerSpectrum
@@ -279,21 +312,26 @@ public final class FullscreenPresentationCoordinator {
         if let skin = FullscreenSkinID(rawValue: config.skinID) {
             switch skin {
             case .coverLed:
-                if config.isSkinVisualizerEnabled {
-                    // Preserve existing mode if already set (led or spectrum)
-                    let existingMode = UserDefaults.standard.string(forKey: Keys.classicLEDVisualizer) ?? "off"
-                    if existingMode == "off" {
-                        UserDefaults.standard.set("led", forKey: Keys.classicLEDVisualizer)
-                    }
-                } else {
-                    UserDefaults.standard.set("off", forKey: Keys.classicLEDVisualizer)
+                // LED is part of the coverLed skin identity, independent of
+                // visualizerMode. Write "led" whenever this skin is active so
+                // ClassicLEDSkin renders the LedMeterView. Spectrum on this
+                // skin is driven by miniPlayerSpectrum (peer), not classicLED.
+                let existingMode = UserDefaults.standard.string(forKey: Keys.classicLEDVisualizer) ?? "off"
+                if existingMode != "led" {
+                    UserDefaults.standard.set("led", forKey: Keys.classicLEDVisualizer)
                 }
                 UserDefaults.standard.set("off", forKey: Keys.kmgcccCassetteVisualizer)
                 UserDefaults.standard.set("off", forKey: Keys.rotatingCoverVisualizer)
 
             case .kmgcccCassette:
+                // Cassette skin renders LedMeterView when its key == "led".
+                // Treat LED as part of the skin identity, decoupled from
+                // visualizerMode (which governs spectrum, not LED).
                 UserDefaults.standard.set("off", forKey: Keys.classicLEDVisualizer)
-                UserDefaults.standard.set("off", forKey: Keys.kmgcccCassetteVisualizer)
+                let existingCassette = UserDefaults.standard.string(forKey: Keys.kmgcccCassetteVisualizer) ?? "off"
+                if existingCassette != "led" {
+                    UserDefaults.standard.set("led", forKey: Keys.kmgcccCassetteVisualizer)
+                }
                 UserDefaults.standard.set("off", forKey: Keys.rotatingCoverVisualizer)
 
             case .rotatingCover:

@@ -1979,19 +1979,12 @@ struct FullscreenPlayerView: View {
     }
 
     private func isLedEnabledForFullscreenSkin() -> Bool {
-        // Note: LED state is now managed by FullscreenPresentationCoordinator
-        // This method checks if the current configuration has skin visualizer enabled
-        guard settings.fullscreen.isSkinVisualizerEnabled else { return false }
-
+        // LED meter is part of the skin's identity (peer of spectrum), not a
+        // sub-mode of skinVisualizer. Drive the LED service / consumer purely
+        // from the skin's hasLedMeter flag so coverLed and cassette skins
+        // render the LedMeterView regardless of visualizerMode.
         let skinID = settings.fullscreen.skinID
-        switch skinID {
-        case "coverLed", "rotatingCover":
-            return true
-        case "kmgccc.cassette":
-            return false // Cassette doesn't support visualizer
-        default:
-            return false
-        }
+        return FullscreenSkinID(rawValue: skinID)?.hasLedMeter ?? false
     }
 
     private func handleLyricsButtonTap() {
