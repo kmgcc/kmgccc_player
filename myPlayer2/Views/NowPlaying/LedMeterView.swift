@@ -51,39 +51,15 @@ struct LedMeterView: View {
         colorScheme == .dark ? 0.55 : 0.35
     }
 
-    // MARK: - Colors (from artwork theme)
+    // MARK: - Resolver
 
-    private var ledFillColor: Color {
-        adjustColor(themeStore.accentColor, brightnessMult: 1.15, saturationMult: 1.2)
-    }
-
-    private var ledStrokeColor: Color {
-        adjustColor(themeStore.accentColor, brightnessMult: 0.35, saturationMult: 1.4, opacity: 0.7)
-    }
-
-    private var statusFillColor: Color {
-        themeStore.accentColor
-    }
-
-    private var statusStrokeColor: Color {
-        adjustColor(themeStore.accentColor, brightnessMult: 0.4, saturationMult: 1.3, opacity: 0.6)
-    }
-
-    private func adjustColor(
-        _ color: Color,
-        brightnessMult: Double = 1.0,
-        saturationMult: Double = 1.0,
-        opacity: Double = 1.0
-    ) -> Color {
-        let nsColor = NSColor(color)
-        guard let hsb = nsColor.usingColorSpace(.deviceRGB) else {
-            return color.opacity(opacity)
-        }
-        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        hsb.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
-        let newS = min(1.0, Double(s) * saturationMult)
-        let newB = min(1.0, Double(b) * brightnessMult)
-        return Color(hue: Double(h), saturation: newS, brightness: newB, opacity: opacity)
+    private var resolver: LEDColorResolver {
+        LEDColorResolver(
+            accentColor: themeStore.accentColor,
+            colorScheme: colorScheme,
+            brightnessLevels: brightnessLevels,
+            palette: themeStore.semanticPalette
+        )
     }
 
     var body: some View {
@@ -133,7 +109,6 @@ struct LedMeterView: View {
 
     private var statusLed: some View {
         let levelIndex = quantizedLevelIndex(phase: phase)
-        let opacity = opacityForState(levelIndex)
 
         return ZStack {
             Circle()
@@ -141,11 +116,11 @@ struct LedMeterView: View {
                 .frame(width: dotSize, height: dotSize)
 
             Circle()
-                .fill(statusFillColor.opacity(opacity))
+                .fill(resolver.statusLightColor(level: levelIndex))
                 .frame(width: dotSize, height: dotSize)
 
             Circle()
-                .stroke(statusStrokeColor, lineWidth: 0.8)
+                .stroke(resolver.statusLightStrokeColor(level: levelIndex), lineWidth: 0.8)
                 .frame(width: dotSize, height: dotSize)
         }
     }
@@ -161,7 +136,6 @@ struct LedMeterView: View {
     @ViewBuilder
     private func ledDot(at index: Int) -> some View {
         let brightnessState = calculateBrightnessState(for: index)
-        let opacity = opacityForState(brightnessState)
 
         ZStack {
             Circle()
@@ -169,11 +143,17 @@ struct LedMeterView: View {
                 .frame(width: dotSize, height: dotSize)
 
             Circle()
-                .fill(ledFillColor.opacity(opacity))
+                .fill(resolver.volumeLEDGlowColor(index: index, count: numLEDs, level: brightnessState))
+                .frame(width: dotSize * 1.4, height: dotSize * 1.4)
+                .blur(radius: 2)
+                .blendMode(resolver.usePlusLighter ? .plusLighter : .normal)
+
+            Circle()
+                .fill(resolver.volumeLEDColor(index: index, count: numLEDs, level: brightnessState))
                 .frame(width: dotSize, height: dotSize)
 
             Circle()
-                .stroke(ledStrokeColor, lineWidth: 0.8)
+                .stroke(resolver.volumeLEDStrokeColor(index: index, count: numLEDs, level: brightnessState), lineWidth: 0.8)
                 .frame(width: dotSize, height: dotSize)
         }
         .animation(.easeOut(duration: 0.03), value: brightnessState)
