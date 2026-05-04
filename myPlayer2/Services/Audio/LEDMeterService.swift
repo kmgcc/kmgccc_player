@@ -244,98 +244,63 @@ final class LEDMeterProcessor: @unchecked Sendable {
         let bin200 = min(max(1, Int(ceil(200.0 / binHz))), cutoffBin)
         let bin3000 = min(max(1, Int(ceil(3000.0 / binHz))), nyquistBins)
 
-        var bandPowerWeighted: Float = 0
-        magnitudes.withUnsafeBufferPointer { ptr in
-            guard let base = ptr.baseAddress else { return }
-            if bin20 > 1 {
-                var p: Float = 0
-                vDSP_sve(base.advanced(by: 1), 1, &p, vDSP_Length(bin20 - 1))
-                bandPowerWeighted += p
-            }
-            if bin60 > bin20 {
-                var p: Float = 0
-                vDSP_sve(base.advanced(by: bin20), 1, &p, vDSP_Length(bin60 - bin20))
-                bandPowerWeighted += p
-            }
-            if bin200 > bin60 {
-                var p: Float = 0
-                vDSP_sve(base.advanced(by: bin60), 1, &p, vDSP_Length(bin200 - bin60))
-                bandPowerWeighted += p
-            }
-            if cutoffBin > bin200 {
-                var p: Float = 0
-                vDSP_sve(base.advanced(by: bin200), 1, &p, vDSP_Length(cutoffBin - bin200))
-                bandPowerWeighted += p
-            }
-        }
+        // ── Perceptual volume mapping (time-domain mixed signal) ──
+        // Use RMS-heavy mix with peak contribution for robust level detection.
+        let mixed = 0.75 * rms + 0.25 * peak
 
-        let bandRMS = sqrt(bandPowerWeighted) / Float(fftSize)
-        let db = 20 * log10(bandRMS + 1e-7)
+        // Convert to dB
+        let mixedDb = 20.0 * log10f(max(mixed, 1e-7))
 
-        // ── Perceptual volume mapping ──
-        // 1. Linear position in dB range
-        var t = (db - dbFloor) / (dbCeil - dbFloor)
+        // Sensitivity as dB offset (0.5..1.5 maps to -6dB..+6dB)
+        let sensitivityDb = (currentConfig.sensitivity - 1.0) * 12.0
+        let adjustedDb = mixedDb + sensitivityDb
 
-        // 2. Soft-knee S-curve:
-        //    low: gentle lift   mid: linear-ish   high: soft compression
-        let mapped: Float
-        if t <= 0 {
-            mapped = 0
-        } else if t < 0.35 {
-            mapped = 0.35 * pow(t / 0.35, 1.7)
-        } else if t < 0.75 {
-            let midProgress = (t - 0.35) / 0.40
-            mapped = 0.35 + midProgress * 0.45
-        } else {
-            let highProgress = (t - 0.75) / 0.25
-            mapped = 0.80 + (1.0 - exp(-highProgress * 3.5)) * 0.12 / (1.0 - exp(-3.5))
-        }
+        // dB range for normalization
+        let dbFloor: Float = -58.0
+        let dbCeil: Float = -3.0
 
-        // 3. Sensitivity multiplier with soft limit (never hard-clamp to 1.0)
-        var levelAdj = mapped * currentConfig.sensitivity
-        if levelAdj > 0.9 {
-            levelAdj = 0.9 + (levelAdj - 0.9) * 0.3
-        }
-        levelAdj = min(levelAdj, 0.98)
+        // Normalize to 0..1
+        var t = (adjustedDb - dbFloor) / (dbCeil - dbFloor)
+        t = clamp(t, 0, 1)
 
-        // 4. Smooth noise gate (smoothstep)
-        let gateStart: Float = -42
-        let gateEnd: Float = -54
-        let gateRaw = clamp((rmsDb - gateEnd) / (gateStart - gateEnd))
+        // Noise gate (smoothstep) using the same dB scale as mapping
+        let gateStart: Float = -58.0
+        let gateEnd: Float = -45.0
+        let gateRaw = clamp((adjustedDb - gateStart) / (gateEnd - gateStart), 0, 1)
         let noiseGate = gateRaw * gateRaw * (3.0 - 2.0 * gateRaw)
-        let gatedLevel = levelAdj * noiseGate
 
-        // 5. Envelope smoothing
-        let dt = 1.0 / Double(currentConfig.targetHz)
+        // Gamma curve (mild compression of low levels)
+        let gamma: Float = 1.25
+        let curved = pow(t, gamma)
+
+        // Apply gate
+        let gatedLevel = curved * noiseGate
+
+        // Envelope smoothing
+        let dt = 1.0 / Double(max(1, currentConfig.targetHz))
         let speed = max(0.1, Double(currentConfig.speed))
         let attackTime = baseAttack / speed
         let releaseTime = baseRelease / speed
-        let aAtt = 1 - exp(-dt / attackTime)
-        let aRel = 1 - exp(-dt / releaseTime)
+        let aAtt = 1.0 - exp(-dt / attackTime)
+        let aRel = 1.0 - exp(-dt / releaseTime)
 
         if gatedLevel > env {
             env += Float(aAtt) * (gatedLevel - env)
         } else {
             env += Float(aRel) * (gatedLevel - env)
         }
-        env = clamp(env)
+        env = clamp(env, 0, 1)
 
-        // 6. LED quantization
+        // LED levels (continuous values; rendering layer handles quantization)
         let ledCount = max(1, currentConfig.ledCount)
-        let levels = max(3, currentConfig.levels)
-        let step = 1.0 / Float(levels - 1)
-        let x = env * Float(ledCount)
-
         var leds = [Float](repeating: 0, count: ledCount)
         let order = centerOutOrder(count: ledCount)
 
+        let x = env * Float(ledCount)
         for i in 0..<ledCount {
-            let cont = clamp(x - Float(i))
-            let softened = pow(cont, 1.6)
-            let quant = round(softened / step) * step
-            if i < order.count {
-                leds[order[i]] = clamp(quant)
-            }
+            let cont = clamp(x - Float(i), 0, 1)
+            // Gentle falloff for partial LEDs
+            leds[order[i]] = pow(cont, 1.2)
         }
 
         let now = Date().timeIntervalSinceReferenceDate
@@ -360,7 +325,36 @@ final class LEDMeterProcessor: @unchecked Sendable {
             bassEnergy = (smoothedBands[0] + smoothedBands[1]) * 0.5
         }
 
-        // Mid-band dB for downstream consumers (not used for gating anymore)
+        // Low-band dB (fixed: divide by included bin count, not fftSize)
+        var bandPowerWeighted: Float = 0
+        magnitudes.withUnsafeBufferPointer { ptr in
+            guard let base = ptr.baseAddress else { return }
+            if bin20 > 1 {
+                var p: Float = 0
+                vDSP_sve(base.advanced(by: 1), 1, &p, vDSP_Length(bin20 - 1))
+                bandPowerWeighted += p
+            }
+            if bin60 > bin20 {
+                var p: Float = 0
+                vDSP_sve(base.advanced(by: bin20), 1, &p, vDSP_Length(bin60 - bin20))
+                bandPowerWeighted += p
+            }
+            if bin200 > bin60 {
+                var p: Float = 0
+                vDSP_sve(base.advanced(by: bin60), 1, &p, vDSP_Length(bin200 - bin60))
+                bandPowerWeighted += p
+            }
+            if cutoffBin > bin200 {
+                var p: Float = 0
+                vDSP_sve(base.advanced(by: bin200), 1, &p, vDSP_Length(cutoffBin - bin200))
+                bandPowerWeighted += p
+            }
+        }
+        let includedBins = max(1, cutoffBin - 1)
+        let bandRMS = sqrt(bandPowerWeighted / Float(includedBins))
+        let lowBandDb = 20 * log10(bandRMS + 1e-7)
+
+        // Mid-band dB (fixed: divide by included bin count)
         var midPower: Float = 0
         magnitudes.withUnsafeBufferPointer { ptr in
             guard let base = ptr.baseAddress else { return }
@@ -369,7 +363,8 @@ final class LEDMeterProcessor: @unchecked Sendable {
                 vDSP_sve(base.advanced(by: bin200), 1, &midPower, vDSP_Length(len))
             }
         }
-        let midRMS = sqrt(midPower) / Float(fftSize)
+        let midBins = max(1, bin3000 - bin200)
+        let midRMS = sqrt(midPower / Float(midBins))
         let midDb = 20 * log10(midRMS + 1e-7)
 
         let audio = AudioMetrics(
@@ -383,7 +378,7 @@ final class LEDMeterProcessor: @unchecked Sendable {
             waveform: downsampleWaveform(samples: fftInput, target: 64),
             transientLevel: 0,
             midEnergy: midDb,
-            lowBandDb: db,
+            lowBandDb: lowBandDb,
             lowBandLoudness: 0,
             kickPulse: 0
         )
@@ -392,6 +387,31 @@ final class LEDMeterProcessor: @unchecked Sendable {
         lastAudio = audio
 
         return (ledMetrics, audio)
+    }
+
+    // MARK: - Debug Helpers
+
+    /// Verifies the LED mapping curve for a range of input dB values.
+    /// Call from a unit test or preview to inspect the curve.
+    static func verifyMappingCurve(sensitivity: Float = 1.0) {
+        let dbFloor: Float = -58.0
+        let dbCeil: Float = -3.0
+        let gamma: Float = 1.25
+        let gateStart: Float = -58.0
+        let gateEnd: Float = -45.0
+        let sensitivityDb = (sensitivity - 1.0) * 12.0
+
+        print("LED Mapping Curve (sensitivity=\(sensitivity)):")
+        for db in stride(from: -60, through: 0, by: 6) {
+            let adjustedDb = Float(db) + sensitivityDb
+            var t = (adjustedDb - dbFloor) / (dbCeil - dbFloor)
+            t = min(max(t, 0), 1)
+            let gateRaw = min(max((adjustedDb - gateStart) / (gateEnd - gateStart), 0), 1)
+            let noiseGate = gateRaw * gateRaw * (3.0 - 2.0 * gateRaw)
+            let curved = pow(t, gamma)
+            let gated = curved * noiseGate
+            print(String(format: "  %3d dB -> t=%.3f gate=%.3f curved=%.3f final=%.3f", db, t, noiseGate, curved, gated))
+        }
     }
 
     private func rebuildFFT() {

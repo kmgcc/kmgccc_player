@@ -66,6 +66,7 @@ final class ThemeStore: ObservableObject {
     private var lastProcessedChecksum: UInt64 = 0
     private var lastProcessedArtworkIdentity: String?
     private var averageColorCache: NSColor?
+    private let colorExtractionCacheVersion = "semantic-near-mono-v2"
 
     private init() {
         // Default theme color: soft warm yellow (desaturated for calmer appearance)
@@ -351,6 +352,11 @@ final class ThemeStore: ObservableObject {
             useArtworkTint: AppSettings.shared.globalArtworkTintEnabled && hasArtworkThemeColor
         )
         let resolvedAccentNS = semantic.globalAccent
+        let accentHSL = ColorMath.hsl(of: resolvedAccentNS)
+        Log.debug(
+            "semantic accent resolved reason=\(reason), scheme=\(schemeState), h=\(Self.format01(accentHSL.h)), s=\(Self.format01(accentHSL.s)), l=\(Self.format01(accentHSL.l)), mono=\(analysis.isMonochrome), effectiveMono=\(analysis.isEffectivelyMonochrome), colorfulness=\(Self.format01(analysis.colorfulness)), avgS=\(Self.format01(analysis.avgSaturation)), domS=\(Self.format01(analysis.dominantSaturation)), highSatMaxShare=\(Self.format01(analysis.largestHighSaturationAreaShare)), nearMonoClamp=\(analysis.isEffectivelyMonochrome)",
+            category: .theme
+        )
         let fillAlpha = colorScheme == .dark ? 0.20 : 0.14
         withAnimation(.easeInOut(duration: 0.20)) {
             baseColor = Color(nsColor: rawDominantColor)
@@ -469,12 +475,16 @@ final class ThemeStore: ObservableObject {
     
     private func makeCacheKey(artworkIdentity: String?, checksum: UInt64) -> String? {
         guard let artworkIdentity, checksum != 0 else { return nil }
-        return "\(artworkIdentity)-\(checksum)"
+        return "\(colorExtractionCacheVersion)-\(artworkIdentity)-\(checksum)"
     }
 
     private func shortIdentity(_ identity: String?) -> String {
         guard let identity, !identity.isEmpty else { return "nil" }
         return String(identity.prefix(16))
+    }
+
+    private nonisolated static func format01(_ value: CGFloat) -> String {
+        String(format: "%.3f", Double(value))
     }
 }
 

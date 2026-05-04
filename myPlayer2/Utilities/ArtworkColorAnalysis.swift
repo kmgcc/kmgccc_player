@@ -19,7 +19,11 @@ struct ArtworkColorAnalysis: Equatable, Sendable {
     let saturationVariance: CGFloat
     let lightnessVariance: CGFloat
     let colorfulness: CGFloat           // 0..1
+    let dominantSaturation: CGFloat
+    let largestHighSaturationAreaShare: CGFloat
+    let highSaturationAreaShare: CGFloat
     let isMonochrome: Bool
+    let isEffectivelyMonochrome: Bool
     let hasStrongAccentRegion: Bool
     let usesDarkForeground: Bool
 
@@ -39,7 +43,11 @@ struct ArtworkColorAnalysis: Equatable, Sendable {
         saturationVariance: 0,
         lightnessVariance: 0,
         colorfulness: 0,
+        dominantSaturation: 0.10,
+        largestHighSaturationAreaShare: 0,
+        highSaturationAreaShare: 0,
         isMonochrome: true,
+        isEffectivelyMonochrome: true,
         hasStrongAccentRegion: false,
         usesDarkForeground: true,
         dominantColor: NSColor(deviceRed: 1.0, green: 200/255, blue: 120/255, alpha: 1),
@@ -190,9 +198,14 @@ extension ArtworkColorExtractor {
             return h
         }()
 
+        var dominantSaturation: CGFloat = 0
+        var highSaturationAreaShare: CGFloat = 0
+        var largestHighSaturationAreaShare: CGFloat = 0
+
+        var hasStrong = false
         // hasStrongAccentRegion: any bucket with >= 18% area AND >= 0.50 saturation.
-        let hasStrong = buckets.contains { bucket in
-            guard bucket.weight > 0 else { return false }
+        for bucket in buckets {
+            guard bucket.weight > 0 else { continue }
             let inv = 1 / bucket.weight
             let bColor = NSColor(
                 deviceRed: ColorMath.clamp(bucket.r * inv, 0, 1),
@@ -201,10 +214,28 @@ extension ArtworkColorExtractor {
                 alpha: 1
             )
             let s = saturationValue(of: bColor)
-            return (bucket.weight / totalWeight) >= 0.18 && s >= 0.50
+            let areaShare = bucket.weight / totalWeight
+            if s >= 0.35 {
+                highSaturationAreaShare += areaShare
+                largestHighSaturationAreaShare = max(largestHighSaturationAreaShare, areaShare)
+            }
+            if bucket.weight == topW {
+                dominantSaturation = s
+            }
+            if areaShare >= 0.18 && s >= 0.50 {
+                hasStrong = true
+            }
         }
 
         let isMono = colorfulness < 0.04 && avgSat < 0.10
+        let isExtremeTone = avgHslL < 0.18 || avgHslL > 0.86
+        let highSatIsOnlyTinyNoise = largestHighSaturationAreaShare < 0.12
+        let isEffectivelyMono =
+            isMono
+            || (colorfulness < 0.10 && avgSat < 0.16 && highSatIsOnlyTinyNoise)
+            || (avgSat < 0.105 && colorfulness < 0.14 && largestHighSaturationAreaShare < 0.16)
+            || (isExtremeTone && avgSat < 0.18 && colorfulness < 0.16 && !hasStrong)
+            || (dominantSaturation < 0.18 && colorfulness < 0.16 && avgSat < 0.18)
         let usesDark = avgHslL >= 0.58
 
         let averageColor = NSColor(
@@ -230,7 +261,11 @@ extension ArtworkColorExtractor {
             saturationVariance: satVar,
             lightnessVariance: lVar,
             colorfulness: colorfulness,
+            dominantSaturation: dominantSaturation,
+            largestHighSaturationAreaShare: largestHighSaturationAreaShare,
+            highSaturationAreaShare: highSaturationAreaShare,
             isMonochrome: isMono,
+            isEffectivelyMonochrome: isEffectivelyMono,
             hasStrongAccentRegion: hasStrong,
             usesDarkForeground: usesDark,
             dominantColor: dominantColor,

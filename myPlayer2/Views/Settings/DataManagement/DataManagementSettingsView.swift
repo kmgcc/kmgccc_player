@@ -12,10 +12,13 @@ struct DataManagementSettingsView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(PlayerViewModel.self) private var playerVM
+    @Environment(PlaybackCoordinator.self) private var playbackCoordinator
 
     @State private var showResetDataAlert: Bool = false
     @State private var showClearIndexCacheAlert: Bool = false
     @State private var showClearArtworkColorCacheAlert: Bool = false
+    @State private var showClearExternalCacheAlert: Bool = false
+    @State private var isClearingExternalCaches: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -40,6 +43,63 @@ struct DataManagementSettingsView: View {
                 .padding(12)
             }
 
+            // Cache management (all cache-related actions grouped)
+            GroupBox {
+                VStack(alignment: .leading, spacing: 16) {
+                    // Index cache
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("清除本地索引缓存，下次进入资料库时将重新建立索引，不会删除歌曲文件。")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+
+                        Button("清除索引缓存") {
+                            showClearIndexCacheAlert = true
+                        }
+                        .buttonStyle(.bordered)
+                        .clipShape(Capsule())
+                    }
+
+                    Divider()
+
+                    // Artwork color cache
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("清除歌曲封面取色缓存。若遇到取色异常、颜色显示不正确，可尝试清除缓存。")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+
+                        Button("清除取色缓存") {
+                            showClearArtworkColorCacheAlert = true
+                        }
+                        .buttonStyle(.bordered)
+                        .clipShape(Capsule())
+                    }
+
+                    Divider()
+
+                    // External playback cache
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("清理外部播放的歌曲元数据缓存。会清除手动匹配覆盖、匹配结果缓存、联网封面缓存、联网歌词缓存，以及其它按外部曲目标识绑定的解析结果。当前播放状态会回退到自动重新匹配。")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+
+                        Button(role: .destructive) {
+                            showClearExternalCacheAlert = true
+                        } label: {
+                            if isClearingExternalCaches {
+                                ProgressView()
+                                    .controlSize(.small)
+                            } else {
+                                Text("清理外部播放元数据缓存")
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .clipShape(Capsule())
+                        .disabled(isClearingExternalCaches)
+                    }
+                }
+                .padding(12)
+            }
+
             // Reset app settings
             GroupBox {
                 VStack(alignment: .leading, spacing: 12) {
@@ -51,22 +111,6 @@ struct DataManagementSettingsView: View {
                         showResetDataAlert = true
                     }
                     .buttonStyle(.borderedProminent)
-                    .clipShape(Capsule())
-                }
-                .padding(12)
-            }
-
-            // Index cache
-            GroupBox {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("清除本地索引缓存，下次进入资料库时将重新建立索引，不会删除歌曲文件。")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-
-                    Button("清除索引缓存") {
-                        showClearIndexCacheAlert = true
-                    }
-                    .buttonStyle(.bordered)
                     .clipShape(Capsule())
                 }
                 .padding(12)
@@ -86,22 +130,6 @@ struct DataManagementSettingsView: View {
                         )
                     }
                     .buttonStyle(.borderedProminent)
-                    .clipShape(Capsule())
-                }
-                .padding(12)
-            }
-
-            // Artwork color cache
-            GroupBox {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("清除歌曲封面取色缓存。若遇到取色异常、颜色显示不正确，可尝试清除缓存。")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-
-                    Button("清除取色缓存") {
-                        showClearArtworkColorCacheAlert = true
-                    }
-                    .buttonStyle(.bordered)
                     .clipShape(Capsule())
                 }
                 .padding(12)
@@ -135,6 +163,14 @@ struct DataManagementSettingsView: View {
         } message: {
             Text("将清空歌曲封面取色缓存，下次播放时会重新提取颜色。")
         }
+        .alert("清理外部播放缓存？", isPresented: $showClearExternalCacheAlert) {
+            Button("取消", role: .cancel) {}
+            Button("清理", role: .destructive) {
+                clearExternalPlaybackCaches()
+            }
+        } message: {
+            Text("将清除外部播放的手动匹配覆盖、匹配结果、联网封面、联网歌词和相关解析缓存。不会删除本地资料库歌曲。")
+        }
     }
 
     private func resetAppDataExceptMusicLibrary() {
@@ -142,5 +178,12 @@ struct DataManagementSettingsView: View {
         guard let bundleIdentifier = Bundle.main.bundleIdentifier else { return }
         UserDefaults.standard.removePersistentDomain(forName: bundleIdentifier)
         UserDefaults.standard.synchronize()
+    }
+
+    private func clearExternalPlaybackCaches() {
+        clearExternalPlaybackCachesAction(
+            isClearing: $isClearingExternalCaches,
+            playbackCoordinator: playbackCoordinator
+        )
     }
 }

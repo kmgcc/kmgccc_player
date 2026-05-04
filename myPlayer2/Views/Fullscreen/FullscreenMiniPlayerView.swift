@@ -220,7 +220,7 @@ struct FullscreenMiniPlayerView: View {
                     .font(.system(size: iconSize, weight: .semibold))
                     .foregroundStyle(isTrackControlEnabled ? controlPrimaryColor : controlDisabledColor)
                     .compositingGroup()
-                    .blendMode(isTrackControlEnabled ? .screen : .normal)
+                    .blendMode(isTrackControlEnabled ? controlBlendMode : .normal)
                     .symbolEffect(.wiggle, value: previousSymbolEffectTrigger)
                     .frame(width: controlSize, height: controlSize)
             }
@@ -237,7 +237,7 @@ struct FullscreenMiniPlayerView: View {
                     .font(.system(size: primaryIconSize, weight: .semibold))
                     .foregroundStyle(isEnabled ? controlPrimaryColor : controlDisabledColor)
                     .compositingGroup()
-                    .blendMode(isEnabled ? .screen : .normal)
+                    .blendMode(isEnabled ? controlBlendMode : .normal)
                     .symbolEffect(.bounce, value: playPauseSymbolEffectTrigger)
                     .frame(width: controlSize, height: controlSize)
             }
@@ -254,7 +254,7 @@ struct FullscreenMiniPlayerView: View {
                     .font(.system(size: iconSize, weight: .semibold))
                     .foregroundStyle(isTrackControlEnabled ? controlPrimaryColor : controlDisabledColor)
                     .compositingGroup()
-                    .blendMode(isTrackControlEnabled ? .screen : .normal)
+                    .blendMode(isTrackControlEnabled ? controlBlendMode : .normal)
                     .symbolEffect(.wiggle, value: nextSymbolEffectTrigger)
                     .frame(width: controlSize, height: controlSize)
             }
@@ -276,7 +276,7 @@ struct FullscreenMiniPlayerView: View {
                     iconSize: 16 * scale,
                     selectedColor: controlPrimaryColor,
                     unselectedColor: controlPrimaryColor.opacity(0.62),
-                    useScreenBlend: true,
+                    useScreenBlend: usesScreenBlendForControls,
                     pillTintColor: themeStore.accentColor,
                     pillTintBlendMode: .normal,
                     onInteraction: onInteraction,
@@ -295,7 +295,7 @@ struct FullscreenMiniPlayerView: View {
                     iconSize: 16 * scale,
                     selectedColor: controlPrimaryColor,
                     unselectedColor: controlPrimaryColor.opacity(0.62),
-                    useScreenBlend: true,
+                    useScreenBlend: usesScreenBlendForControls,
                     pillTintColor: themeStore.accentColor,
                     pillTintBlendMode: .normal,
                     onInteraction: onInteraction,
@@ -331,6 +331,10 @@ struct FullscreenMiniPlayerView: View {
             isSpectrumEnabled: settings.fullscreen.isMiniPlayerSpectrumEnabled,
             isPlaying: playbackCoordinator.presentation.isPlaying,
             accentColor: themeStore.usesFallbackThemeColor ? nil : themeStore.accentColor,
+            foregroundColor: controlPrimaryColor,
+            enforceBrightForeground: !usesAdaptiveClearForeground,
+            spectrumArtworkColors: spectrumArtworkColors,
+            spectrumUsesDarkForeground: usesDarkArtworkForegroundForClear,
             progress: progressDisplayTime,
             duration: playbackCoordinator.presentation.duration,
             isSeekEnabled: playbackCoordinator.presentation.isSeekEnabled,
@@ -424,7 +428,7 @@ struct FullscreenMiniPlayerView: View {
                 .font(.system(size: 16, weight: .medium))
                 .foregroundStyle(isEnabled ? controlPrimaryColor : controlDisabledColor)
                 .compositingGroup()
-                .blendMode(isEnabled ? .screen : .normal)
+                .blendMode(isEnabled ? controlBlendMode : .normal)
                 .frame(width: 24)
 
             Slider(
@@ -437,7 +441,7 @@ struct FullscreenMiniPlayerView: View {
             .controlSize(.regular)
             .tint(controlPrimaryColor)
             .compositingGroup()
-            .blendMode(isEnabled ? .screen : .normal)
+            .blendMode(isEnabled ? controlBlendMode : .normal)
             .disabled(!isEnabled)
             .opacity(isEnabled ? 1 : 0.45)
         }
@@ -457,26 +461,66 @@ struct FullscreenMiniPlayerView: View {
     }
 
     private var lyricsDynamicPrimaryColor: Color {
-        Color(nsColor: fullscreenThemeAccentColor).opacity(0.94)
+        controlPrimaryColor.opacity(0.94)
     }
 
     private var lyricsDynamicSecondaryColor: Color {
-        Color(nsColor: fullscreenThemeAccentColor).opacity(0.78)
+        controlPrimaryColor.opacity(0.78)
     }
 
     private var controlPrimaryColor: Color {
-        Self.resolveControlPrimaryColor(from: themeStore.accentNSColor)
+        Color(nsColor: controlPrimaryNSColor).opacity(0.96)
     }
 
     private var controlDisabledColor: Color {
-        Color.secondary.opacity(0.5)
+        controlPrimaryColor.opacity(0.45)
     }
 
-    private var fullscreenThemeAccentColor: NSColor {
-        Self.resolveControlAccentColor(from: themeStore.accentNSColor)
+    private var controlPrimaryNSColor: NSColor {
+        if usesDarkArtworkForegroundForClear {
+            return themeStore.semanticPalette.readableTextOnArtwork
+        }
+        return Self.resolveControlAccentColor(from: themeStore.accentNSColor)
+    }
+
+    private var usesAdaptiveClearForeground: Bool {
+        glassStyle.materialStyle == .clear && themeStore.hasArtworkThemeColor
+    }
+
+    private var usesDarkArtworkForegroundForClear: Bool {
+        usesAdaptiveClearForeground
+            && Self.shouldUseDarkArtworkForeground(for: themeStore.semanticPalette.analysis)
+    }
+
+    private var controlBlendMode: BlendMode {
+        usesScreenBlendForControls ? .screen : .normal
+    }
+
+    private var usesScreenBlendForControls: Bool {
+        !usesDarkArtworkForegroundForClear || ColorMath.relativeLuminance(of: controlPrimaryNSColor) >= 0.58
+    }
+
+    private var spectrumArtworkColors: [NSColor] {
+        guard usesAdaptiveClearForeground else { return [] }
+        let analysis = themeStore.semanticPalette.analysis
+        let palette = analysis.topPalette.isEmpty
+            ? [
+                themeStore.semanticPalette.artBackgroundPrimary,
+                themeStore.semanticPalette.artBackgroundSecondary,
+            ]
+            : analysis.topPalette
+        return Array(palette.prefix(2))
     }
 
     // MARK: - HSL Color Helpers
+
+    static func shouldUseDarkArtworkForeground(for analysis: ArtworkColorAnalysis) -> Bool {
+        guard analysis.usesDarkForeground else { return false }
+        let averageLuma = ColorMath.relativeLuminance(of: analysis.averageColor)
+        return analysis.avgHslLightness >= 0.68
+            || averageLuma >= 0.58
+            || (analysis.avgBrightness >= 0.82 && analysis.avgSaturation < 0.30)
+    }
 
     static func resolveControlAccentColor(from color: NSColor) -> NSColor {
         let saturated = enforceMinimumHslSaturation(

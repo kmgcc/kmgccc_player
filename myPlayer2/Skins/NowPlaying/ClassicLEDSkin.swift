@@ -85,7 +85,8 @@ private struct ClassicLEDArtwork: View {
                     ledValues: context.led.leds,
                     dotSize: dotSize,
                     spacing: spacing,
-                    pillTint: context.theme.artworkAccentColor
+                    pillTint: context.theme.artworkAccentColor,
+                    isPlaying: context.playback.isPlaying
                 )
             } else if visualizerMode == "spectrum" {
                 PillSpectrumView(

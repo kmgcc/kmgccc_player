@@ -35,6 +35,7 @@ struct SkinSelectorRow: View {
     var itemSpacing: CGFloat = 10
     var edgePadding: CGFloat = 10
     var verticalPadding: CGFloat = 4
+    var showsScrollButtons: Bool = false
     @EnvironmentObject private var themeStore: ThemeStore
 
     var body: some View {
@@ -42,51 +43,36 @@ struct SkinSelectorRow: View {
             from: themeStore.accentNSColor
         )
 
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: itemSpacing) {
-                Color.clear.frame(width: edgePadding)
-
-                ForEach(skins) { skin in
-                    let selected = selectedSkinID == skin.id
-                    SkinPreviewCard(
-                        title: skin.name,
-                        isSelected: selected,
-                        cardSize: cardSize,
-                        previewSize: previewSize,
-                        cornerRadius: cornerRadius,
-                        titleFontSize: titleFontSize,
-                        preview: {
-                            skinPreview(
-                                for: skin.id,
-                                isSelected: selected,
-                                accentColor: selectionAccentColor
-                            )
-                        },
-                        action: { selectedSkinID = skin.id }
-                    )
-                }
-
-                Color.clear.frame(width: edgePadding)
+        HorizontalFadeScrollContainer(
+            spacing: itemSpacing,
+            fadeWidth: 12,
+            verticalPadding: verticalPadding,
+            leadingScrollPadding: edgePadding,
+            trailingScrollPadding: edgePadding,
+            showsEdgeFade: true,
+            showsScrollButtons: showsScrollButtons,
+            scrollButtonLeadingInset: max(4, edgePadding - 4),
+            scrollButtonTrailingInset: max(4, edgePadding - 4)
+        ) {
+            ForEach(skins) { skin in
+                let selected = selectedSkinID == skin.id
+                SkinPreviewCard(
+                    title: skin.name,
+                    isSelected: selected,
+                    cardSize: cardSize,
+                    previewSize: previewSize,
+                    cornerRadius: cornerRadius,
+                    titleFontSize: titleFontSize,
+                    preview: {
+                        skinPreview(
+                            for: skin.id,
+                            isSelected: selected,
+                            accentColor: selectionAccentColor
+                        )
+                    },
+                    action: { selectedSkinID = skin.id }
+                )
             }
-            .padding(.vertical, verticalPadding)
         }
-        .mask(
-            HStack(spacing: 0) {
-                LinearGradient(
-                    colors: [.clear, Color.white],
-                    startPoint: .leading,
-                    endPoint: .trailing
-                )
-                .frame(width: 12)
-                Rectangle()
-                    .fill(Color.white)
-                LinearGradient(
-                    colors: [Color.white, .clear],
-                    startPoint: .leading,
-                    endPoint: .trailing
-                )
-                .frame(width: 12)
-            }
-        )
     }
 }

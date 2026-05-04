@@ -104,7 +104,8 @@ struct HomeView: View {
                     geometry: g,
                     mode: mode,
                     scrollOffsetY: homeScrollY,
-                    sourceColor: themeStore.semanticPalette.ambientSurface
+                    sourceColor: themeStore.semanticPalette.ambientSurface,
+                    sourceAnalysis: themeStore.semanticPalette.analysis
                 )
                 .transaction { transaction in
                     transaction.animation = nil

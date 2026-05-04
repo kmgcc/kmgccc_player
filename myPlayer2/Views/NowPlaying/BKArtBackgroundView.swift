@@ -892,10 +892,11 @@ private final class BKArtBackgroundLayerView: NSView {
 
             for slot in container.dotSlots {
                 slot.rootLayer.frame = dotRoot.bounds
-                // Dot masks are intentionally local circles that move along the path.
-                // Resizing them to the root bounds turns the masked fill into a visible rectangle.
-                slot.rootLayer.sublayers?.forEach { sublayer in
-                    sublayer.frame = dotRoot.bounds
+                if dotRenderStyle == .dotGrid {
+                    // Dot grid layers fill the root; their masks are the moving local circles.
+                    slot.rootLayer.sublayers?.forEach { sublayer in
+                        sublayer.frame = dotRoot.bounds
+                    }
                 }
             }
         }
@@ -2822,59 +2823,42 @@ private final class BKArtBackgroundLayerView: NSView {
         // 3. Build Layer Tree for this Slot
         if dotRenderStyle == .solidCircles {
             let solid1 = CAShapeLayer()
-            solid1.frame = root.bounds
-            solid1.path = CGPath(rect: root.bounds, transform: nil)
-            solid1.fillColor = NSColor(white: 0.3, alpha: 1.0).cgColor
-            solid1.opacity = 0.88
-            solid1.zPosition = 1
-            slot.rootLayer.addSublayer(solid1)
-            slot.cellBig = solid1
-
-            let mask1 = CAShapeLayer()
-            mask1.fillColor = NSColor.black.cgColor
-            mask1.bounds = CGRect(
+            solid1.bounds = CGRect(
                 x: 0,
                 y: 0,
                 width: slot.maskBaseRadiusBig * 2,
                 height: slot.maskBaseRadiusBig * 2
             )
-            mask1.path = CGPath(ellipseIn: mask1.bounds, transform: nil)
-            mask1.position = anim.start
-            mask1.anchorPoint = CGPoint(x: 0.5, y: 0.5)
-            solid1.mask = mask1
-            slot.maskBig = mask1
+            solid1.path = CGPath(ellipseIn: solid1.bounds, transform: nil)
+            solid1.position = anim.start
+            solid1.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+            solid1.fillColor = NSColor(white: 0.3, alpha: 1.0).cgColor
+            solid1.opacity = 0.88
+            solid1.zPosition = 1
+            slot.rootLayer.addSublayer(solid1)
+            slot.cellBig = solid1
+            slot.maskBig = solid1
 
             let solid2 = CAShapeLayer()
-            solid2.frame = root.bounds
-            solid2.path = CGPath(rect: root.bounds, transform: nil)
-            solid2.fillColor = NSColor(white: 0.3, alpha: 1.0).cgColor
-            solid2.opacity = 0.82
-            solid2.zPosition = 0
-            slot.rootLayer.addSublayer(solid2)
-            slot.cellSmall = solid2
-
-            let mask2 = CAGradientLayer()
-            mask2.type = .radial
-            mask2.colors = [
-                NSColor.black.withAlphaComponent(0.96).cgColor,
-                NSColor.black.withAlphaComponent(0.92).cgColor,
-                NSColor.black.withAlphaComponent(0.78).cgColor,
-                NSColor.black.withAlphaComponent(0.40).cgColor,
-                NSColor.clear.cgColor,
-            ]
-            mask2.locations = [0.0, 0.60, 0.86, 0.97, 1.0]
-            mask2.startPoint = CGPoint(x: 0.5, y: 0.5)
-            mask2.endPoint = CGPoint(x: 1.0, y: 1.0)
-            mask2.bounds = CGRect(
+            solid2.bounds = CGRect(
                 x: 0,
                 y: 0,
                 width: slot.maskBaseRadiusSmall * 2,
                 height: slot.maskBaseRadiusSmall * 2
             )
-            mask2.position = anim.start
-            mask2.anchorPoint = CGPoint(x: 0.5, y: 0.5)
-            solid2.mask = mask2
-            slot.maskSmall = mask2
+            solid2.path = CGPath(ellipseIn: solid2.bounds, transform: nil)
+            solid2.position = anim.start
+            solid2.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+            solid2.fillColor = NSColor(white: 0.3, alpha: 1.0).cgColor
+            solid2.opacity = 0.62
+            solid2.zPosition = 0
+            slot.rootLayer.addSublayer(solid2)
+            slot.cellSmall = solid2
+            solid2.shadowColor = NSColor.black.cgColor
+            solid2.shadowOpacity = 0.18
+            solid2.shadowRadius = max(12, slot.maskBaseRadiusSmall * 0.12)
+            solid2.shadowOffset = .zero
+            slot.maskSmall = solid2
         } else {
             let dotSpacing: CGFloat = 30
             let cols = Int(baseSize / dotSpacing) + 6

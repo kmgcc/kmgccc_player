@@ -79,6 +79,10 @@ enum SemanticPaletteFactory {
         for scheme: ColorScheme,
         analysis: ArtworkColorAnalysis
     ) -> NSColor {
+        if analysis.isEffectivelyMonochrome {
+            return nearMonochromeAccent(for: scheme, analysis: analysis)
+        }
+
         let raw = analysis.dominantColor
         let comp = ColorMath.hsl(of: raw)
         var h = comp.h, s = comp.s, l = comp.l
@@ -164,6 +168,48 @@ enum SemanticPaletteFactory {
         }
 
         return ColorMath.color(h: h, s: s, l: l)
+    }
+
+    fileprivate static func nearMonochromeAccent(
+        for scheme: ColorScheme,
+        analysis: ArtworkColorAnalysis
+    ) -> NSColor {
+        let average = ColorMath.hsl(of: analysis.averageColor)
+        let hasUsableAverageHue = average.s >= 0.055 && analysis.avgSaturation >= 0.055
+        let neutralHue: CGFloat
+        if hasUsableAverageHue {
+            neutralHue = average.h
+        } else if analysis.avgHslLightness < 0.34 {
+            neutralHue = 0.58 // cool charcoal / silver-gray
+        } else {
+            neutralHue = 0.10 // warm paper / silver-gray
+        }
+
+        let strictMono =
+            analysis.isMonochrome
+            || analysis.colorfulness < 0.055
+            || analysis.avgSaturation < 0.085
+            || analysis.largestHighSaturationAreaShare < 0.06
+        let saturationCeiling: CGFloat = strictMono
+            ? (scheme == .dark ? 0.08 : 0.07)
+            : (scheme == .dark ? 0.14 : 0.12)
+        let saturationFloor: CGFloat = scheme == .dark ? 0.035 : 0.025
+        let saturation = ColorMath.clamp(
+            min(average.s * 0.72, saturationCeiling),
+            saturationFloor,
+            saturationCeiling
+        )
+
+        let lightness: CGFloat
+        if scheme == .dark {
+            let toneLift = ColorMath.clamp((0.42 - analysis.avgHslLightness) / 0.42, 0, 1)
+            lightness = ColorMath.clamp(0.66 + toneLift * 0.08, 0.66, 0.74)
+        } else {
+            let toneDrop = ColorMath.clamp((analysis.avgHslLightness - 0.52) / 0.42, 0, 1)
+            lightness = ColorMath.clamp(0.40 - toneDrop * 0.08, 0.32, 0.42)
+        }
+
+        return ColorMath.color(h: neutralHue, s: saturation, l: lightness)
     }
 
     fileprivate static func ambientSurface(

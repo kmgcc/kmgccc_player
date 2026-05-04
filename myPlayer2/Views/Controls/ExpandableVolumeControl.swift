@@ -76,7 +76,7 @@ struct ExpandableVolumeControl: View {
                 .foregroundStyle(controlPrimaryColor)
                 .opacity(isEnabled ? 1 : 0.4)
                 .compositingGroup()
-                .blendMode(isEnabled ? .screen : .normal)
+                .blendMode(isEnabled ? controlBlendMode : .normal)
                 .frame(width: scaledIconAreaWidth, height: scaledControlHeight)
                 .contentShape(Circle())
         }
@@ -98,7 +98,7 @@ struct ExpandableVolumeControl: View {
             .controlSize(.regular)
             .tint(controlPrimaryColor)
             .compositingGroup()
-            .blendMode(.screen)
+            .blendMode(controlBlendMode)
             .frame(maxWidth: .infinity)
             .padding(.trailing, sliderTrailingPadding)
             .opacity(isExpanded ? 1 : 0)
@@ -134,7 +134,30 @@ struct ExpandableVolumeControl: View {
     }
 
     private var controlPrimaryColor: Color {
-        FullscreenMiniPlayerView.resolveControlPrimaryColor(from: themeStore.accentNSColor)
+        Color(nsColor: controlPrimaryNSColor).opacity(0.96)
+    }
+
+    private var controlPrimaryNSColor: NSColor {
+        if materialStyle == .clear,
+           themeStore.hasArtworkThemeColor,
+           FullscreenMiniPlayerView.shouldUseDarkArtworkForeground(
+                for: themeStore.semanticPalette.analysis
+           ) {
+            return themeStore.semanticPalette.readableTextOnArtwork
+        }
+        return FullscreenMiniPlayerView.resolveControlAccentColor(from: themeStore.accentNSColor)
+    }
+
+    private var controlBlendMode: BlendMode {
+        if materialStyle == .clear,
+           themeStore.hasArtworkThemeColor,
+           FullscreenMiniPlayerView.shouldUseDarkArtworkForeground(
+                for: themeStore.semanticPalette.analysis
+           ),
+           ColorMath.relativeLuminance(of: controlPrimaryNSColor) < 0.58 {
+            return .normal
+        }
+        return .screen
     }
 
     private func toggleMute() {

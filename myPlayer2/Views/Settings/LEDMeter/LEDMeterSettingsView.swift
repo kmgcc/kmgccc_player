@@ -11,6 +11,7 @@ import SwiftUI
 struct LEDMeterSettingsView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(LEDMeterServiceProvider.self) private var ledMeterProvider
+    @Environment(PlayerViewModel.self) private var playerVM
     @EnvironmentObject private var themeStore: ThemeStore
 
     @State private var sensitivity: Float = AppSettings.shared.ledSensitivity
@@ -36,7 +37,8 @@ struct LEDMeterSettingsView: View {
                     level: Double(ledMeter.normalizedLevel),
                     ledValues: ledMeter.metrics.leds,
                     dotSize: 14,
-                    spacing: 7
+                    spacing: 7,
+                    isPlaying: playerVM.isPlaying
                 )
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 40)
@@ -81,8 +83,6 @@ struct LEDMeterSettingsView: View {
                     brightnessLevelsPicker
                     Divider()
                     sensitivitySlider
-                    Divider()
-                    tuningSlidersContent
                 }
                 .padding(16)
             }

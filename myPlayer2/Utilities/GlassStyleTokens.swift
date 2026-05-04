@@ -94,8 +94,8 @@ struct GlassStyleTokens {
     static let headerSearchMinWidth: CGFloat = 180
     static let headerSearchMaxWidth: CGFloat = 300
 
-    static let sidebarWidth: CGFloat = 260
-    static let sidebarMinWidth: CGFloat = 220
+    static let sidebarWidth: CGFloat = 200
+    static let sidebarMinWidth: CGFloat = 180
     static let sidebarRowPadding: CGFloat = 6  // Matches Main Interface inset
     static let sidebarContentPadding: CGFloat = 10  // Matches Main Interface content padding
     static let sidebarSelectionCornerRadius: CGFloat = 8  // Matches Main Interface radius

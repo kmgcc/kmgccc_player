@@ -13,6 +13,7 @@ struct HomeAmbientShapesBackground: View {
     let mode: HomeLayoutMode
     let scrollOffsetY: CGFloat
     let sourceColor: NSColor?
+    let sourceAnalysis: ArtworkColorAnalysis?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
@@ -27,7 +28,11 @@ struct HomeAmbientShapesBackground: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            Color(nsColor: Self.ambientBaseColor(from: sourceColor, colorScheme: colorScheme))
+            Color(nsColor: Self.ambientBaseColor(
+                from: sourceColor,
+                analysis: sourceAnalysis,
+                colorScheme: colorScheme
+            ))
                 .frame(width: geometry.windowWidth, height: geometry.windowHeight)
                 .allowsHitTesting(false)
 
@@ -104,7 +109,7 @@ struct HomeAmbientShapesBackground: View {
 
     private var palette: [NSColor] {
         if let sourceColor {
-            return Self.palette(from: sourceColor, colorScheme: colorScheme)
+            return Self.palette(from: sourceColor, analysis: sourceAnalysis, colorScheme: colorScheme)
         }
         return Self.fallbackPalette(colorScheme: colorScheme)
     }
@@ -224,7 +229,11 @@ struct HomeAmbientShapesBackground: View {
         return shapeLoadResult.fileNames[assetIndex].caseInsensitiveCompare("shape10.png") == .orderedSame
     }
 
-    private static func ambientBaseColor(from source: NSColor?, colorScheme: ColorScheme) -> NSColor {
+    private static func ambientBaseColor(
+        from source: NSColor?,
+        analysis: ArtworkColorAnalysis?,
+        colorScheme: ColorScheme
+    ) -> NSColor {
         guard let source else {
             return colorScheme == .dark
                 ? NSColor(calibratedHue: 0.10, saturation: 0.14, brightness: 0.10, alpha: 1)
@@ -244,9 +253,13 @@ struct HomeAmbientShapesBackground: View {
         rgb.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
 
         if colorScheme == .dark {
+            let lowColor = analysis?.isEffectivelyMonochrome
+                ?? (saturation < 0.12)
+            let satMin: CGFloat = lowColor ? 0.03 : 0.10
+            let satMax: CGFloat = lowColor ? 0.09 : 0.22
             return NSColor(
                 calibratedHue: hue,
-                saturation: clamp(saturation * 0.30, min: 0.10, max: 0.24),
+                saturation: clamp(saturation * 0.30, min: satMin, max: satMax),
                 brightness: clamp(brightness * 0.18, min: 0.07, max: 0.13),
                 alpha: 1
             )
@@ -263,22 +276,49 @@ struct HomeAmbientShapesBackground: View {
         )
     }
 
-    private static func palette(from source: NSColor, colorScheme: ColorScheme) -> [NSColor] {
+    private static func palette(
+        from source: NSColor,
+        analysis: ArtworkColorAnalysis?,
+        colorScheme: ColorScheme
+    ) -> [NSColor] {
         guard let hsl = hslComponents(from: source) else {
             return fallbackPalette(colorScheme: colorScheme)
         }
 
         let isDark = colorScheme == .dark
-        let targetSaturation = clamp(
-            hsl.s * (isDark ? 0.48 : 0.42),
-            min: isDark ? 0.10 : 0.08,
-            max: isDark ? 0.28 : 0.22
-        )
-        let targetLightness = clamp(
-            hsl.l + (isDark ? 0.10 : 0.28),
-            min: isDark ? 0.18 : 0.66,
-            max: isDark ? 0.34 : 0.84
-        )
+        let colorfulness = analysis?.colorfulness ?? hsl.s
+        let avgSaturation = analysis?.avgSaturation ?? hsl.s
+        let isLowColor = analysis?.isEffectivelyMonochrome
+            ?? (colorfulness < 0.12 || avgSaturation < 0.12)
+
+        let targetSaturation: CGFloat
+        if isDark {
+            if isLowColor {
+                targetSaturation = clamp(hsl.s * 0.42, min: 0.045, max: 0.13)
+            } else {
+                let floor = colorfulness >= 0.24 ? 0.19 : 0.13
+                let colorfulnessLift = colorfulness * 0.36
+                targetSaturation = clamp(
+                    max(hsl.s * 0.72, colorfulnessLift),
+                    min: floor,
+                    max: 0.38
+                )
+            }
+        } else {
+            if isLowColor {
+                targetSaturation = clamp(hsl.s * 0.34, min: 0.045, max: 0.14)
+            } else {
+                targetSaturation = clamp(
+                    max(hsl.s * 0.48, colorfulness * 0.22),
+                    min: 0.08,
+                    max: 0.25
+                )
+            }
+        }
+
+        let targetLightness: CGFloat = isDark
+            ? clamp(hsl.l * 0.54 + 0.05, min: 0.16, max: 0.30)
+            : clamp(hsl.l + 0.28, min: 0.66, max: 0.84)
 
         let variants: [(hue: CGFloat, saturation: CGFloat, lightness: CGFloat)] = [
             (0, 0.00, 0.00),
@@ -292,8 +332,16 @@ struct HomeAmbientShapesBackground: View {
         return variants.map { variant in
             rgbColorFromHsl(
                 h: hsl.h + variant.hue,
-                s: clamp(targetSaturation + variant.saturation, min: 0.06, max: isDark ? 0.28 : 0.24),
-                l: clamp(targetLightness + variant.lightness, min: isDark ? 0.16 : 0.64, max: isDark ? 0.38 : 0.86)
+                s: clamp(
+                    targetSaturation + variant.saturation,
+                    min: isLowColor ? 0.035 : 0.06,
+                    max: isDark ? (isLowColor ? 0.14 : 0.40) : (isLowColor ? 0.16 : 0.26)
+                ),
+                l: clamp(
+                    targetLightness + variant.lightness,
+                    min: isDark ? 0.14 : 0.64,
+                    max: isDark ? 0.33 : 0.86
+                )
             )
         }
     }
