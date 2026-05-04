@@ -58,8 +58,8 @@ struct LedMeterView: View {
     // MARK: - Discrete Breath Timing
 
     private let breathHoldTime: Double = 0.32
-    private let peakHoldTime: Double   = 0.30
-    private let zeroHoldTime: Double   = 0.30
+    private let peakHoldTime: Double   = 0.60
+    private let zeroHoldTime: Double   = 0.40
 
     private func breathStep(at date: Date) -> Int {
         guard isPlaying, brightnessLevels > 1 else { return 0 }
@@ -122,16 +122,10 @@ struct LedMeterView: View {
                 .fill(Color.primary.opacity(0.06))
                 .frame(width: dotSize, height: dotSize)
 
-            if resolver.usePlusLighter {
-                Circle()
-                    .fill(resolver.statusLightColor(level: level))
-                    .frame(width: dotSize, height: dotSize)
-                    .blendMode(.plusLighter)
-            } else {
-                Circle()
-                    .fill(resolver.statusLightColor(level: level))
-                    .frame(width: dotSize, height: dotSize)
-            }
+            Circle()
+                .fill(resolver.statusLightColor(level: level))
+                .frame(width: dotSize, height: dotSize)
+                .blendMode(resolver.ledBlendMode)
 
             Circle()
                 .stroke(resolver.statusLightStrokeColor(level: level), lineWidth: 0.7)
@@ -159,17 +153,11 @@ struct LedMeterView: View {
                 .fill(Color.primary.opacity(0.06))
                 .frame(width: dotSize, height: dotSize)
 
-            // Lit LED fill with optional plusLighter
-            if resolver.usePlusLighter {
-                Circle()
-                    .fill(ledColor)
-                    .frame(width: dotSize, height: dotSize)
-                    .blendMode(.plusLighter)
-            } else {
-                Circle()
-                    .fill(ledColor)
-                    .frame(width: dotSize, height: dotSize)
-            }
+            // Lit LED fill with blend mode
+            Circle()
+                .fill(ledColor)
+                .frame(width: dotSize, height: dotSize)
+                .blendMode(resolver.ledBlendMode)
 
             // Subtle stroke
             Circle()
