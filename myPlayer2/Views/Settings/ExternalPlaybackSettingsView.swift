@@ -8,6 +8,20 @@
 import SwiftUI
 
 @MainActor
+func clearExternalPlaybackCachesAction(
+    isClearing: Binding<Bool>,
+    playbackCoordinator: PlaybackCoordinator
+) {
+    guard !isClearing.wrappedValue else { return }
+    isClearing.wrappedValue = true
+    Task {
+        await ExternalPlaybackMetadataStore.shared.clearAllCaches()
+        playbackCoordinator.clearExternalPlaybackRuntimeCaches()
+        isClearing.wrappedValue = false
+    }
+}
+
+@MainActor
 struct ExternalPlaybackSettingsView: View {
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(AppSettings.self) private var settings
@@ -91,12 +105,9 @@ struct ExternalPlaybackSettingsView: View {
     }
 
     private func clearExternalPlaybackCaches() {
-        guard !isClearingCaches else { return }
-        isClearingCaches = true
-        Task {
-            await ExternalPlaybackMetadataStore.shared.clearAllCaches()
-            playbackCoordinator.clearExternalPlaybackRuntimeCaches()
-            isClearingCaches = false
-        }
+        clearExternalPlaybackCachesAction(
+            isClearing: $isClearingCaches,
+            playbackCoordinator: playbackCoordinator
+        )
     }
 }

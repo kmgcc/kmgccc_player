@@ -439,6 +439,10 @@ public final class AppSettings {
     @ObservationIgnored
     @AppStorage("nowPlayingArtBackgroundEnabled") var nowPlayingArtBackgroundEnabled: Bool = true
 
+    /// Enable BKArt animated background layer in the fullscreen player.
+    @ObservationIgnored
+    @AppStorage("fullscreenArtBackgroundEnabled") var fullscreenArtBackgroundEnabled: Bool = true
+
     /// Legacy background blur multiplier (kept for compatibility)
     @ObservationIgnored
     @AppStorage("nowPlayingBackgroundBlur") var nowPlayingBackgroundBlur: Double = 1.0

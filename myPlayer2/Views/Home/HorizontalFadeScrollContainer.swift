@@ -68,11 +68,6 @@ struct HorizontalFadeScrollContainer<Content: View>: View {
         self.content = content
     }
 
-    private var fadeBaseColor: Color {
-        // Match the page surface (NavigationSplitView detail column).
-        Color(nsColor: .windowBackgroundColor)
-    }
-
     private var maxScroll: CGFloat {
         max(0, contentWidth - viewportWidth)
     }
@@ -128,32 +123,7 @@ struct HorizontalFadeScrollContainer<Content: View>: View {
                 onScrollMetricsChange: onScrollMetricsChange
             )
         )
-        .overlay(alignment: .leading) {
-            if showsEdgeFade {
-                LinearGradient(
-                    colors: [fadeBaseColor, fadeBaseColor.opacity(0)],
-                    startPoint: .leading,
-                    endPoint: .trailing
-                )
-                .frame(width: fadeWidth)
-                .frame(maxHeight: .infinity)
-                .opacity(leftFadeOpacity)
-                .allowsHitTesting(false)
-            }
-        }
-        .overlay(alignment: .trailing) {
-            if showsEdgeFade {
-                LinearGradient(
-                    colors: [fadeBaseColor.opacity(0), fadeBaseColor],
-                    startPoint: .leading,
-                    endPoint: .trailing
-                )
-                .frame(width: fadeWidth)
-                .frame(maxHeight: .infinity)
-                .opacity(rightFadeOpacity)
-                .allowsHitTesting(false)
-            }
-        }
+        .mask(scrollFadeMask)
         .overlay {
             if showsScrollButtons {
                 HorizontalEdgeHoverTracker(
@@ -193,6 +163,39 @@ struct HorizontalFadeScrollContainer<Content: View>: View {
         .animation(showsEdgeFade ? .easeOut(duration: 0.18) : nil, value: rightFadeOpacity)
         .animation(.easeOut(duration: 0.30), value: showsLeftScrollButton)
         .animation(.easeOut(duration: 0.30), value: showsRightScrollButton)
+    }
+
+    @ViewBuilder
+    private var scrollFadeMask: some View {
+        if showsEdgeFade {
+            HStack(spacing: 0) {
+                LinearGradient(
+                    colors: [
+                        Color.black.opacity(1 - leftFadeOpacity),
+                        Color.black,
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+                .frame(width: fadeWidth)
+
+                Rectangle()
+                    .fill(Color.black)
+
+                LinearGradient(
+                    colors: [
+                        Color.black,
+                        Color.black.opacity(1 - rightFadeOpacity),
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+                .frame(width: fadeWidth)
+            }
+        } else {
+            Rectangle()
+                .fill(Color.black)
+        }
     }
 
     private var needsScrollMetrics: Bool {

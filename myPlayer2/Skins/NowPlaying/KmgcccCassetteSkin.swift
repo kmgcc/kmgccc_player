@@ -1447,7 +1447,8 @@ private struct CassetteOverlay: View {
                     ledValues: context.led.leds,
                     dotSize: 12,
                     spacing: 8,
-                    pillTint: context.theme.artworkAccentColor
+                    pillTint: context.theme.artworkAccentColor,
+                    isPlaying: context.playback.isPlaying
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 .offset(x: horizontalOffset, y: yOffset)

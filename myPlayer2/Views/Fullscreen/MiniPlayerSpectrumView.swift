@@ -25,9 +25,29 @@ enum MiniPlayerSpectrumPausedBehavior {
 struct MiniPlayerSpectrumView: View {
     let isPlaying: Bool
     let accentColor: Color?
+    let artworkColors: [NSColor]
+    let usesDarkForeground: Bool
     let scale: CGFloat
     let isHovered: Bool
     let pausedBehavior: MiniPlayerSpectrumPausedBehavior
+
+    init(
+        isPlaying: Bool,
+        accentColor: Color?,
+        artworkColors: [NSColor] = [],
+        usesDarkForeground: Bool = false,
+        scale: CGFloat,
+        isHovered: Bool,
+        pausedBehavior: MiniPlayerSpectrumPausedBehavior
+    ) {
+        self.isPlaying = isPlaying
+        self.accentColor = accentColor
+        self.artworkColors = artworkColors
+        self.usesDarkForeground = usesDarkForeground
+        self.scale = scale
+        self.isHovered = isHovered
+        self.pausedBehavior = pausedBehavior
+    }
 
     // Layout constants (scaled)
     private let baseDotSize: CGFloat = 5.8
@@ -63,6 +83,8 @@ struct MiniPlayerSpectrumView: View {
         MiniPlayerSpectrumContainer(
             isPlaying: isPlaying,
             accentColor: resolvedAccent,
+            artworkColors: artworkColors,
+            usesDarkForeground: usesDarkForeground,
             dotSize: dotSize,
             spacing: spacing,
             pausedBehavior: pausedBehavior
@@ -88,6 +110,8 @@ struct MiniPlayerSpectrumView: View {
 private struct MiniPlayerSpectrumContainer: NSViewRepresentable {
     let isPlaying: Bool
     let accentColor: NSColor
+    let artworkColors: [NSColor]
+    let usesDarkForeground: Bool
     let dotSize: CGFloat
     let spacing: CGFloat
     let pausedBehavior: MiniPlayerSpectrumPausedBehavior
@@ -97,7 +121,11 @@ private struct MiniPlayerSpectrumContainer: NSViewRepresentable {
         view.dotSize = dotSize
         view.spacing = spacing
         view.pausedBehavior = pausedBehavior
-        view.updateAccentColor(accentColor)
+        view.updateColors(
+            accentColor: accentColor,
+            artworkColors: artworkColors,
+            usesDarkForeground: usesDarkForeground
+        )
         view.start()
         view.setPlayback(isPlaying: isPlaying)
         return view
@@ -107,7 +135,11 @@ private struct MiniPlayerSpectrumContainer: NSViewRepresentable {
         nsView.dotSize = dotSize
         nsView.spacing = spacing
         nsView.pausedBehavior = pausedBehavior
-        nsView.updateAccentColor(accentColor)
+        nsView.updateColors(
+            accentColor: accentColor,
+            artworkColors: artworkColors,
+            usesDarkForeground: usesDarkForeground
+        )
         nsView.setPlayback(isPlaying: isPlaying)
     }
 
@@ -123,6 +155,8 @@ extension MiniPlayerSpectrumContainer: Equatable {
             && lhs.spacing == rhs.spacing
             && lhs.pausedBehavior == rhs.pausedBehavior
             && lhs.accentColor.isVisuallyEqual(to: rhs.accentColor)
+            && lhs.usesDarkForeground == rhs.usesDarkForeground
+            && lhs.artworkColors.isVisuallyEqual(to: rhs.artworkColors)
     }
 }
 
@@ -238,10 +272,19 @@ private final class MiniPlayerSpectrumHostView: NSView {
         }
     }
 
-    func updateAccentColor(_ accentColor: NSColor) {
-        // Use artwork-faithful colors for fullscreen mini player spectrum
-        // This preserves the artwork's hue/chroma more truthfully without oversaturation
-        let resolved = Self.resolveArtworkFaithfulColors(from: accentColor)
+    func updateColors(
+        accentColor: NSColor,
+        artworkColors: [NSColor],
+        usesDarkForeground: Bool
+    ) {
+        // Use the artwork's two strongest colours for fullscreen mini player spectrum.
+        // The same foreground-mode decision as the rest of the Clear mini player
+        // decides whether the bars are darkened or lifted for readability.
+        let resolved = Self.resolveArtworkFaithfulColors(
+            from: artworkColors,
+            fallback: accentColor,
+            usesDarkForeground: usesDarkForeground
+        )
         cachedColors = resolved.fillColors
         cachedStrokeColors = resolved.strokeColors
 
@@ -357,39 +400,30 @@ private final class MiniPlayerSpectrumHostView: NSView {
 
     /// Fullscreen mini player spectrum colors that faithfully represent artwork palette.
     /// Preserves artwork hue/chroma with minimal adjustment for visibility against glass background.
-    private static func resolveArtworkFaithfulColors(from accentColor: NSColor) -> (fillColors: [CGColor], strokeColors: [CGColor]) {
-        guard let inputRGB = accentColor.usingColorSpace(.deviceRGB) else {
+    private static func resolveArtworkFaithfulColors(
+        from artworkColors: [NSColor],
+        fallback accentColor: NSColor,
+        usesDarkForeground: Bool
+    ) -> (fillColors: [CGColor], strokeColors: [CGColor]) {
+        let sources = Array(artworkColors.prefix(2))
+        let leftSource = sources.first ?? accentColor
+        let rightSource = sources.dropFirst().first ?? accentColor
+
+        guard
+            let leftBase = adjustedSpectrumBase(
+                from: leftSource,
+                usesDarkForeground: usesDarkForeground,
+                alpha: 0.86
+            ),
+            let rightBase = adjustedSpectrumBase(
+                from: rightSource,
+                usesDarkForeground: usesDarkForeground,
+                alpha: 0.80
+            )
+        else {
             return (Array(repeating: CGColor(gray: 0.6, alpha: 0.85), count: 9),
                     Array(repeating: CGColor(gray: 0.5, alpha: 0.7), count: 9))
         }
-        
-        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        inputRGB.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
-        
-        let faithfulSat: CGFloat
-        if s > 0.72 {
-            faithfulSat = s * 0.88
-        } else if s > 0.55 {
-            faithfulSat = s * 0.94
-        } else {
-            faithfulSat = s
-        }
-        
-        let faithfulBri: CGFloat
-        if b < 0.28 {
-            faithfulBri = b + 0.22
-        } else if b > 0.85 {
-            faithfulBri = b - 0.12
-        } else {
-            faithfulBri = b
-        }
-        
-        let leftBase = NSColor(hue: h, saturation: faithfulSat, brightness: faithfulBri, alpha: 0.85)
-        
-        let shiftedHue = fmod(h + 0.06, 1.0)
-        let secondarySat = faithfulSat * 0.92
-        let secondaryBri = min(1.0, faithfulBri + 0.06)
-        let rightBase = NSColor(hue: shiftedHue, saturation: secondarySat, brightness: secondaryBri, alpha: 0.80)
         
         let total = max(1, 9 - 1)
         var fillColors: [CGColor] = []
@@ -408,8 +442,10 @@ private final class MiniPlayerSpectrumHostView: NSView {
             var sh: CGFloat = 0, ss: CGFloat = 0, sb: CGFloat = 0, sa: CGFloat = 0
             strokeHSB.getHue(&sh, saturation: &ss, brightness: &sb, alpha: &sa)
             
-            let strokeBri = max(0.12, sb - 0.04)
-            let strokeAlpha = 0.92
+            let strokeBri = usesDarkForeground
+                ? min(0.36, max(0.12, sb - 0.05))
+                : min(1.0, max(0.58, sb + 0.08))
+            let strokeAlpha = usesDarkForeground ? 0.78 : 0.92
             let strokeColor = NSColor(hue: sh, saturation: ss, brightness: strokeBri, alpha: strokeAlpha)
             
             fillColors.append(fillColor.cgColor)
@@ -417,6 +453,43 @@ private final class MiniPlayerSpectrumHostView: NSView {
         }
         
         return (fillColors, strokeColors)
+    }
+
+    private static func adjustedSpectrumBase(
+        from color: NSColor,
+        usesDarkForeground: Bool,
+        alpha: CGFloat
+    ) -> NSColor? {
+        guard let rgb = color.usingColorSpace(.deviceRGB) else { return nil }
+        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        rgb.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+
+        let tunedSaturation: CGFloat
+        if s > 0.72 {
+            tunedSaturation = s * 0.88
+        } else if s > 0.55 {
+            tunedSaturation = s * 0.94
+        } else {
+            tunedSaturation = min(0.70, max(0.18, s * 1.08))
+        }
+
+        let tunedBrightness: CGFloat
+        if usesDarkForeground {
+            tunedBrightness = min(0.42, max(0.18, b * 0.46))
+        } else if b < 0.34 {
+            tunedBrightness = min(0.92, b + 0.34)
+        } else if b > 0.88 {
+            tunedBrightness = max(0.70, b - 0.10)
+        } else {
+            tunedBrightness = min(0.94, max(0.58, b + 0.10))
+        }
+
+        return NSColor(
+            hue: h,
+            saturation: tunedSaturation,
+            brightness: tunedBrightness,
+            alpha: alpha
+        )
     }
 }
 
@@ -434,6 +507,15 @@ private extension NSColor {
             && abs(lhs.greenComponent - rhs.greenComponent) < epsilon
             && abs(lhs.blueComponent - rhs.blueComponent) < epsilon
             && abs(lhs.alphaComponent - rhs.alphaComponent) < epsilon
+    }
+}
+
+private extension Array where Element == NSColor {
+    func isVisuallyEqual(to other: [NSColor]) -> Bool {
+        guard count == other.count else { return false }
+        return zip(self, other).allSatisfy { lhs, rhs in
+            lhs.isVisuallyEqual(to: rhs)
+        }
     }
 }
 

@@ -272,7 +272,11 @@ extension ArtworkColorExtractor {
         // Near-monochrome covers: the only colourful buckets are likely noise
         // (skin tones, logos, compression artefacts). Require a much larger
         // area share before such a bucket can compete for dominance.
-        let isNearMono = profile.avgSaturation < 0.12 || profile.vividness < 0.10
+        let isExtremeTone = profile.avgBrightness < 0.20 || profile.avgBrightness > 0.86
+        let isNearMono =
+            profile.avgSaturation < 0.14
+            || profile.vividness < 0.10
+            || (isExtremeTone && profile.avgSaturation < 0.18 && profile.vividness < 0.16)
 
         for bucket in buckets where bucket.weight > noiseFloor {
             let inv = 1 / bucket.weight
@@ -291,7 +295,15 @@ extension ArtworkColorExtractor {
             }
 
             // On near-mono covers any saturated region needs to be substantial.
-            if isNearMono && bucketSat > 0.35 && areaShare < 0.12 {
+            if isNearMono && bucketSat > 0.22 && areaShare < 0.18 {
+                continue
+            }
+            if isNearMono && bucketSat > 0.35 && areaShare < 0.24 {
+                continue
+            }
+
+            let saturationOutlierThreshold = max(0.22, profile.avgSaturation * 2.6 + 0.08)
+            if isNearMono && bucketSat > saturationOutlierThreshold && areaShare < 0.22 {
                 continue
             }
 
@@ -358,7 +370,7 @@ extension ArtworkColorExtractor {
         }
 
         // Monochrome / nearly-grey covers should not synthesize colourful variants.
-        if profile.avgSaturation < 0.10 && profile.vividness < 0.04 {
+        if profile.avgSaturation < 0.12 || profile.vividness < 0.06 {
             if selected.isEmpty {
                 let fallback = NSColor(
                     calibratedRed: fallbackR / fallbackWeight,

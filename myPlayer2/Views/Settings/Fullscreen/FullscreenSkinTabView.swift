@@ -15,6 +15,7 @@ struct FullscreenSkinTabView: View {
 
     @State private var fullscreenArtworkScale: Double = AppSettings.shared.fullscreenArtworkScale
     @State private var fullscreenDimmingIntensity: Double = AppSettings.shared.fullscreenDimmingIntensity
+    @State private var fullscreenArtBackgroundEnabled: Bool = AppSettings.shared.fullscreenArtBackgroundEnabled
     @State private var fullscreenMiniPlayerAutoHideSeconds: Double = AppSettings.shared.fullscreenMiniPlayerAutoHideSeconds
     @State private var fullscreenMiniPlayerGlassMaterial: AppSettings.FullscreenMiniPlayerGlassMaterial = AppSettings.shared.fullscreenMiniPlayerGlassMaterial
 
@@ -61,7 +62,8 @@ struct FullscreenSkinTabView: View {
                         titleFontSize: presentationStyle.skinTitleFontSize,
                         itemSpacing: presentationStyle.skinItemSpacing,
                         edgePadding: presentationStyle.skinEdgePadding,
-                        verticalPadding: presentationStyle.skinVerticalPadding
+                        verticalPadding: presentationStyle.skinVerticalPadding,
+                        showsScrollButtons: true
                     )
                 }
                 .padding(presentationStyle.groupPadding)
@@ -110,6 +112,16 @@ struct FullscreenSkinTabView: View {
                         .font(presentationStyle.sectionTitleFont)
                         .foregroundStyle(presentationStyle.secondaryTextColor)
 
+                    SettingsSwitchRow(
+                        title: "启用全屏艺术背景",
+                        isOn: $fullscreenArtBackgroundEnabled,
+                        detail: "遇到性能问题时，可以关闭此选项",
+                        titleFont: presentationStyle.rowLabelFont,
+                        detailFont: presentationStyle.captionFont,
+                        titleColor: presentationStyle.primaryTextColor,
+                        detailColor: presentationStyle.secondaryTextColor
+                    )
+
                     artworkScaleSection
 
                     dimmingIntensitySection
@@ -120,6 +132,7 @@ struct FullscreenSkinTabView: View {
         .onAppear {
             fullscreenArtworkScale = settings.fullscreenArtworkScale
             fullscreenDimmingIntensity = settings.fullscreenDimmingIntensity
+            fullscreenArtBackgroundEnabled = settings.fullscreenArtBackgroundEnabled
             fullscreenMiniPlayerAutoHideSeconds = settings.fullscreenMiniPlayerAutoHideSeconds
             fullscreenMiniPlayerGlassMaterial = settings.fullscreenMiniPlayerGlassMaterial
         }
@@ -128,6 +141,9 @@ struct FullscreenSkinTabView: View {
         }
         .onChange(of: fullscreenDimmingIntensity) { _, newValue in
             settings.fullscreenDimmingIntensity = newValue
+        }
+        .onChange(of: fullscreenArtBackgroundEnabled) { _, newValue in
+            settings.fullscreenArtBackgroundEnabled = newValue
         }
         .onChange(of: fullscreenMiniPlayerAutoHideSeconds) { _, newValue in
             settings.fullscreenMiniPlayerAutoHideSeconds = newValue

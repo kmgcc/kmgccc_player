@@ -312,6 +312,9 @@ struct MiniPlayerView: View {
                     mode: currentPlaybackMode,
                     isEnabled: isEnabled,
                     isExpanded: isPlaybackModeExpanded,
+                    selectedColor: controlPrimaryColor,
+                    unselectedColor: controlPrimaryColor.opacity(0.62),
+                    pillTintColor: themeStore.usesFallbackThemeColor ? nil : themeStore.accentColor,
                     scale: 0.75,
                     onModeChange: { mode in
                         playbackCoordinator.setPlaybackOrderMode(mode)
@@ -323,6 +326,9 @@ struct MiniPlayerView: View {
                     mode: presentation.appleMusicPlaybackMode ?? .sequence,
                     isEnabled: isEnabled,
                     isExpanded: isPlaybackModeExpanded,
+                    selectedColor: controlPrimaryColor,
+                    unselectedColor: controlPrimaryColor.opacity(0.62),
+                    pillTintColor: themeStore.usesFallbackThemeColor ? nil : themeStore.accentColor,
                     scale: 0.75,
                     onModeChange: { mode in
                         playbackCoordinator.setAppleMusicPlaybackMode(mode)
@@ -478,11 +484,11 @@ struct MiniPlayerView: View {
     }
 
     private var progressFillColor: Color {
-        Color.primary.opacity(0.8)
+        controlPrimaryColor.opacity(0.88)
     }
 
     private var progressTrackColor: Color {
-        Color.secondary.opacity(0.25)
+        controlPrimaryColor.opacity(colorScheme == .dark ? 0.24 : 0.18)
     }
 
     private func progressWidth(in totalWidth: CGFloat) -> CGFloat {
@@ -891,7 +897,7 @@ struct PlaybackModeSlider: View {
     }
 
     private var trackBorder: Color {
-        Color.primary.opacity(0.16)
+        selectedColor.opacity(0.16)
     }
 
     private var knobFill: Color {
@@ -902,7 +908,7 @@ struct PlaybackModeSlider: View {
     }
 
     private var knobBorder: Color {
-        Color.primary.opacity(0.24)
+        selectedColor.opacity(0.24)
     }
 
     private func clampOffset(_ value: CGFloat, maxValue: CGFloat) -> CGFloat {
@@ -1156,7 +1162,7 @@ struct AppleMusicPlaybackModeSlider: View {
     }
 
     private var trackBorder: Color {
-        Color.primary.opacity(0.16)
+        selectedColor.opacity(0.16)
     }
 
     private var knobFill: Color {
@@ -1167,7 +1173,7 @@ struct AppleMusicPlaybackModeSlider: View {
     }
 
     private var knobBorder: Color {
-        Color.primary.opacity(0.24)
+        selectedColor.opacity(0.24)
     }
 
     private func clampOffset(_ value: CGFloat, maxValue: CGFloat) -> CGFloat {

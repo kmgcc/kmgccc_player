@@ -1,4 +1,4 @@
-//
+ //
 //  AppKitMainToolbarController.swift
 //  myPlayer2
 //
@@ -1132,7 +1132,7 @@ private struct ShiftRangeSelectionTipView: View {
                 .accessibilityLabel("关闭")
             }
 
-            Text("按住 Shift 点击歌曲，可以一次选择一段连续歌曲。")
+            Text("按住 Shift 点击歌曲，可以一次选择一段连续歌曲")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

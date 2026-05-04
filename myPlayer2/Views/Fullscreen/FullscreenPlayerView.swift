@@ -637,7 +637,7 @@ struct FullscreenPlayerView: View {
                     Color.black.opacity(effectiveDimmingIntensity * 0.7)
                         .ignoresSafeArea()
                         .allowsHitTesting(false)
-                } else if settings.nowPlayingArtBackgroundEnabled && currentDisplayContext.hasTrack {
+                } else if settings.fullscreenArtBackgroundEnabled && currentDisplayContext.hasTrack {
                     BKArtBackgroundView(
                         controller: bkController,
                         trackID: currentArtworkTrackID,
@@ -1772,7 +1772,7 @@ struct FullscreenPlayerView: View {
                     .font(.system(size: size * 0.34, weight: .semibold))
                     .foregroundStyle(fullscreenMiniPlayerPrimaryColor)
                     .compositingGroup()
-                    .blendMode(.screen)
+                    .blendMode(fullscreenMiniPlayerIconBlendMode)
             } action: {
                 onExitFullscreen?()
             }
@@ -1836,7 +1836,7 @@ struct FullscreenPlayerView: View {
                 .font(.system(size: size * 0.32, weight: .semibold))
                 .foregroundStyle(fullscreenMiniPlayerPrimaryColor)
                 .compositingGroup()
-                .blendMode(.screen)
+                .blendMode(fullscreenMiniPlayerIconBlendMode)
                 .contentTransition(
                     .symbolEffect(.replace.magic(fallback: .offUp.byLayer), options: .nonRepeating)
                 )
@@ -1858,7 +1858,7 @@ struct FullscreenPlayerView: View {
                 .font(.system(size: size * 0.32, weight: .semibold))
                 .foregroundStyle(fullscreenMiniPlayerPrimaryColor.opacity(canToggle ? 1 : 0.45))
                 .compositingGroup()
-                .blendMode(.screen)
+                .blendMode(fullscreenMiniPlayerIconBlendMode)
                 .contentTransition(
                     .symbolEffect(.replace.magic(fallback: .offUp.byLayer), options: .nonRepeating)
                 )
@@ -1896,7 +1896,30 @@ struct FullscreenPlayerView: View {
     }
 
     private var fullscreenMiniPlayerPrimaryColor: Color {
-        FullscreenMiniPlayerView.resolveControlPrimaryColor(from: themeStore.accentNSColor)
+        Color(nsColor: fullscreenMiniPlayerPrimaryNSColor).opacity(0.96)
+    }
+
+    private var fullscreenMiniPlayerPrimaryNSColor: NSColor {
+        if fullscreenControlsGlassStyle.materialStyle == .clear,
+           themeStore.hasArtworkThemeColor,
+           FullscreenMiniPlayerView.shouldUseDarkArtworkForeground(
+                for: themeStore.semanticPalette.analysis
+           ) {
+            return themeStore.semanticPalette.readableTextOnArtwork
+        }
+        return FullscreenMiniPlayerView.resolveControlAccentColor(from: themeStore.accentNSColor)
+    }
+
+    private var fullscreenMiniPlayerIconBlendMode: BlendMode {
+        if fullscreenControlsGlassStyle.materialStyle == .clear,
+           themeStore.hasArtworkThemeColor,
+           FullscreenMiniPlayerView.shouldUseDarkArtworkForeground(
+                for: themeStore.semanticPalette.analysis
+           ),
+           ColorMath.relativeLuminance(of: fullscreenMiniPlayerPrimaryNSColor) < 0.58 {
+            return .normal
+        }
+        return .screen
     }
 
     private var fullscreenControlsGlassStyle: FullscreenControlsGlassStyle {
@@ -2751,11 +2774,11 @@ struct FullscreenPlayerView: View {
 
     private func scheduleFullscreenLyricsBackgroundCapture() {
         pendingFullscreenLyricsBackgroundCapture =
-            settings.nowPlayingArtBackgroundEnabled && currentDisplayContext.hasTrack
+            settings.fullscreenArtBackgroundEnabled && currentDisplayContext.hasTrack
     }
 
     private func captureFullscreenLyricsBackgroundSnapshot(preferLiveSurface: Bool = false) {
-        guard settings.nowPlayingArtBackgroundEnabled else {
+        guard settings.fullscreenArtBackgroundEnabled else {
             resetFullscreenLyricsBackgroundSnapshot()
             return
         }
@@ -3448,7 +3471,7 @@ struct FullscreenPlayerView: View {
             return backgroundColor
         }
 
-        if settings.nowPlayingArtBackgroundEnabled, bkController.lyricsColorTrackID == trackID {
+        if settings.fullscreenArtBackgroundEnabled, bkController.lyricsColorTrackID == trackID {
             if pendingFullscreenLyricsBackgroundCapture,
                 let backgroundColor = bkController.primaryBackgroundColor
             {
