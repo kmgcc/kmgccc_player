@@ -369,7 +369,7 @@ struct FullscreenSettingsContainerView: View {
     let embedsScrollView: Bool
 
     @State private var selectedTab = 0
-    private let tabs = ["皮肤", "歌词"]
+    private let tabs = ["皮肤", "歌词", "LED"]
 
     init(
         presentationStyle: FullscreenSettingsPresentationStyle = .settingsWindow,
@@ -423,6 +423,8 @@ struct FullscreenSettingsContainerView: View {
             FullscreenSkinTabView()
         case 1:
             FullscreenLyricsTabView()
+        case 2:
+            LEDMeterSettingsView(showTitle: false)
         default:
             FullscreenSkinTabView()
         }

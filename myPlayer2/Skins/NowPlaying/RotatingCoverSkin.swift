@@ -1032,6 +1032,7 @@ private struct RotatingCoverSkinFullscreenSettingsView: View {
                         UserDefaults.standard.set("led", forKey: "skin.rotatingCover.fullscreen.visualizerMode")
                         FullscreenPresentationCoordinator.shared.setVisualizerMode(.skinVisualizer)
                     } else {
+                        UserDefaults.standard.set("off", forKey: "skin.rotatingCover.fullscreen.visualizerMode")
                         FullscreenPresentationCoordinator.shared.setVisualizerMode(.off)
                     }
                 }
@@ -1047,6 +1048,7 @@ private struct RotatingCoverSkinFullscreenSettingsView: View {
                         UserDefaults.standard.set("spectrum", forKey: "skin.rotatingCover.fullscreen.visualizerMode")
                         FullscreenPresentationCoordinator.shared.setVisualizerMode(.skinVisualizer)
                     } else {
+                        UserDefaults.standard.set("off", forKey: "skin.rotatingCover.fullscreen.visualizerMode")
                         FullscreenPresentationCoordinator.shared.setVisualizerMode(.off)
                     }
                 }

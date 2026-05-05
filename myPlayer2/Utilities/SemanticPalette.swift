@@ -51,6 +51,19 @@ enum SemanticPaletteFactory {
             globalAccent = isDark
                 ? ColorMath.clampLightness(userFallbackAccent, lo: 0.66, hi: 0.82)
                 : ColorMath.clampLightness(userFallbackAccent, lo: 0.30, hi: 0.50)
+            // Debug: log resolved accent RGB so we can confirm the runtime colour.
+            let inC = ColorMath.hsl(of: userFallbackAccent)
+            let outC = ColorMath.hsl(of: globalAccent)
+            let outNS = globalAccent.usingColorSpace(.deviceRGB) ?? globalAccent
+            let r8 = Int((outNS.redComponent * 255).rounded())
+            let g8 = Int((outNS.greenComponent * 255).rounded())
+            let b8 = Int((outNS.blueComponent * 255).rounded())
+            Log.debug(
+                "Palette fallback accent: \(isDark ? "dark" : "light") "
+                + "in hsl(\(f3(inC.h)),\(f3(inC.s)),\(f3(inC.l))) "
+                + "→ rgb(\(r8),\(g8),\(b8)) hsl(\(f3(outC.h)),\(f3(outC.s)),\(f3(outC.l)))",
+                category: .theme
+            )
         }
 
         return SemanticPalette(
@@ -313,4 +326,9 @@ enum SemanticPaletteFactory {
             )
         }
     }
+}
+
+/// Format a CGFloat to 3 decimal places for debug logging.
+private func f3(_ value: CGFloat) -> String {
+    String(format: "%.3f", Double(value))
 }

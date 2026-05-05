@@ -15,7 +15,7 @@ struct NowPlayingSettingsContainerView: View {
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
 
     @State private var selectedTab = 0
-    private let tabs = ["常规", "歌词"]
+    private let tabs = ["常规", "歌词", "LED"]
 
     var body: some View {
         VStack(alignment: .leading, spacing: presentationStyle.containerSpacing) {
@@ -29,6 +29,8 @@ struct NowPlayingSettingsContainerView: View {
                 NowPlayingGeneralTabView()
             case 1:
                 NowPlayingLyricsTabView()
+            case 2:
+                LEDMeterSettingsView(showTitle: false)
             default:
                 NowPlayingGeneralTabView()
             }

@@ -14,16 +14,25 @@ struct LEDMeterSettingsView: View {
     @Environment(PlayerViewModel.self) private var playerVM
     @EnvironmentObject private var themeStore: ThemeStore
 
-    @State private var sensitivity: Float = AppSettings.shared.ledSensitivity
+    /// Hide the embedded "LED Meter" header when this view is rendered as a tab
+    /// inside another settings container that already shows a title.
+    let showTitle: Bool
+
     @State private var cutoffHz: Double = AppSettings.shared.ledCutoffHz
     @State private var speed: Double = AppSettings.shared.ledSpeed
-    @State private var targetHz: Int = AppSettings.shared.ledTargetHz
     @State private var ledCount: Int = AppSettings.shared.ledCount
     @State private var brightnessLevels: Int = AppSettings.shared.ledBrightnessLevels
+    @State private var hasActiveSession: Bool = false
+
+    init(showTitle: Bool = true) {
+        self.showTitle = showTitle
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            SettingsHeaderLabel("settings.section.led", systemImage: "waveform.path.ecg")
+            if showTitle {
+                SettingsHeaderLabel("settings.section.led", systemImage: "waveform.path.ecg")
+            }
 
             // Live Preview
             VStack(alignment: .leading, spacing: 12) {
@@ -32,7 +41,7 @@ struct LEDMeterSettingsView: View {
                     .foregroundStyle(.secondary)
 
                 let ledMeter = ledMeterProvider.getOrCreate()
-                
+
                 LedMeterView(
                     level: Double(ledMeter.normalizedLevel),
                     ledValues: ledMeter.metrics.leds,
@@ -56,17 +65,23 @@ struct LEDMeterSettingsView: View {
             tuningSection
         }
         .onAppear {
-            sensitivity = settings.ledSensitivity
             cutoffHz = settings.ledCutoffHz
             speed = settings.ledSpeed
-            targetHz = settings.ledTargetHz
             ledCount = settings.ledCount
             brightnessLevels = settings.ledBrightnessLevels
+            if !hasActiveSession {
+                ledMeterProvider.acquireSession()
+                hasActiveSession = true
+            }
         }
-        .onChange(of: sensitivity) { _, _ in applyLedConfig() }
+        .onDisappear {
+            if hasActiveSession {
+                ledMeterProvider.releaseSession()
+                hasActiveSession = false
+            }
+        }
         .onChange(of: cutoffHz) { _, _ in applyLedConfig() }
         .onChange(of: speed) { _, _ in applyLedConfig() }
-        .onChange(of: targetHz) { _, _ in applyLedConfig() }
         .onChange(of: ledCount) { _, _ in applyLedConfig() }
         .onChange(of: brightnessLevels) { _, _ in applyLedConfig() }
     }
@@ -81,8 +96,6 @@ struct LEDMeterSettingsView: View {
                 VStack(spacing: 16) {
                     ledCountPicker
                     brightnessLevelsPicker
-                    Divider()
-                    sensitivitySlider
                 }
                 .padding(16)
             }
@@ -161,23 +174,6 @@ struct LEDMeterSettingsView: View {
         }
     }
 
-    private var sensitivitySlider: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack {
-                Text("settings.led.sensitivity")
-                Spacer()
-                Text(String(format: "%.1fx", sensitivity))
-                    .foregroundStyle(.secondary)
-            }
-            Slider(value: $sensitivity, in: 0.5...1.5)
-            Text("settings.led.sensitivity_desc")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-        }
-        .font(.subheadline)
-        .padding(.horizontal, 10)
-    }
-
     private var tuningSection: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 16) {
@@ -208,54 +204,14 @@ struct LEDMeterSettingsView: View {
                 }
                 Slider(value: $speed, in: 0.5...2.0, step: 0.05)
             }
-
-            refreshRatePicker
         }
         .font(.subheadline)
         .padding(.horizontal, 10)
     }
 
-    private var refreshRatePicker: some View {
-        HStack(spacing: 8) {
-            Text("settings.led.publish_rate")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-            Spacer()
-            SlidingSelector(
-                segments: [30, 60],
-                selection: $targetHz,
-                animation: .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08),
-                hSpacing: 0,
-                background: {
-                    Color.clear
-                },
-                knob: {
-                    Capsule()
-                        .fill(themeStore.accentColor.opacity(0.18))
-                },
-                content: { hz, isSelected in
-                    Text("\(hz) Hz")
-                        .font(.system(size: 11, weight: isSelected ? .medium : .regular))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .foregroundStyle(isSelected ? themeStore.accentColor : .secondary)
-                }
-            )
-            .padding(.horizontal, 4)
-            .padding(.vertical, 3)
-            .background(
-                Capsule()
-                    .fill(Color.secondary.opacity(0.08))
-            )
-            .fixedSize(horizontal: true, vertical: false)
-        }
-    }
-
     private func applyLedConfig() {
-        settings.ledSensitivity = sensitivity
         settings.ledCutoffHz = cutoffHz
         settings.ledSpeed = speed
-        settings.ledTargetHz = targetHz
         settings.ledCount = ledCount
         settings.ledBrightnessLevels = brightnessLevels
 
@@ -264,9 +220,9 @@ struct LEDMeterSettingsView: View {
                 ledCount: ledCount,
                 levels: brightnessLevels,
                 cutoffHz: Float(cutoffHz),
-                sensitivity: sensitivity,
+                sensitivity: LEDDefaults.sensitivity,
                 speed: Float(speed),
-                targetHz: targetHz
+                targetHz: LEDDefaults.targetHz
             )
         )
     }

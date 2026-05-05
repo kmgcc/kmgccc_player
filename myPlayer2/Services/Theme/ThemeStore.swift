@@ -69,11 +69,12 @@ final class ThemeStore: ObservableObject {
     private let colorExtractionCacheVersion = "semantic-near-mono-v2"
 
     private init() {
-        // Default theme color: soft warm yellow (desaturated for calmer appearance)
+        // Default theme color: soft warm amber, desaturated for calm light-mode appearance.
+        // Keep in sync with AppSettings.accentColorHex default (#E6C799).
         let fallback = NSColor(
-            calibratedRed: 255.0 / 255.0,
-            green: 200.0 / 255.0,
-            blue: 120.0 / 255.0,
+            calibratedRed: 230.0 / 255.0,
+            green: 199.0 / 255.0,
+            blue: 153.0 / 255.0,
             alpha: 1.0
         )
         self.defaultBlueNS = fallback

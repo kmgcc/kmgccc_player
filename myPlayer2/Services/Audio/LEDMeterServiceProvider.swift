@@ -22,6 +22,13 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
     private var externalPollTimer: Timer?
     private var externalPulse: UInt64 = 0
 
+    /// Active sampling sessions. The provider keeps the underlying meter alive
+    /// while at least one session is held (Now Playing scene, fullscreen,
+    /// settings preview, …). On the last release the service is stopped but
+    /// kept around for fast re-acquire — Now Playing's hard release goes
+    /// through `releaseNowPlayingResources()`.
+    private var sessionCount: Int = 0
+
     /// Metrics from the real service or the external simulator.
     var metrics: LEDMeterMetrics {
         if playbackSource.isExternal {
@@ -108,10 +115,38 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
     }
 
     /// Force-drop nowPlaying-only heavy state without changing provider lifetime.
+    ///
+    /// Skin views and `NowPlayingHostView` call this to release the service
+    /// when their own consumer disappears. If other consumers still hold a
+    /// session (e.g. the LED settings preview), this is a no-op — they need
+    /// the meter to keep sampling.
     func releaseNowPlayingResources() {
+        guard sessionCount == 0 else { return }
         stopExternalPolling()
         _service?.stop()
         _service = nil
+    }
+
+    /// Reference-counted sampling session.
+    /// Any view that needs the LED meter to be live (Now Playing, Fullscreen,
+    /// Settings preview…) calls `acquireSession()` on appear and
+    /// `releaseSession()` on disappear. The service stays running until the
+    /// last session is released.
+    func acquireSession() {
+        sessionCount += 1
+        let service = getOrCreate()
+        service.start()
+        if playbackSource.isExternal {
+            startExternalPolling()
+        }
+    }
+
+    func releaseSession() {
+        guard sessionCount > 0 else { return }
+        sessionCount -= 1
+        guard sessionCount == 0 else { return }
+        _service?.stop()
+        stopExternalPolling()
     }
 
     /// Updates config on existing service or stores for future creation.

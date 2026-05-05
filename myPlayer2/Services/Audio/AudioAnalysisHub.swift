@@ -54,6 +54,11 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
     private nonisolated(unsafe) var timer: DispatchSourceTimer?
     private nonisolated(unsafe) var activeClients: Int = 0
 
+    // Serializes start / stop / attachToMixer so the AVAudioMixerNode never
+    // sees two concurrent installTap calls (which trip the
+    // `nullptr == Tap()` precondition assert).
+    private let stateLock = NSLock()
+
     // Config
     nonisolated(unsafe) var targetHz: Int = 30
 
@@ -71,15 +76,22 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
     }
 
     func attachToMixer(_ mixer: AVAudioMixerNode) {
+        stateLock.lock()
         mixerNode = mixer
+        stateLock.unlock()
     }
 
     func start() {
+        stateLock.lock()
         activeClients += 1
-        guard !isInstalled else { return }
+        if isInstalled {
+            stateLock.unlock()
+            return
+        }
         guard let mixer = mixerNode else {
-            print("⚠️ AudioAnalysisHub: No mixer attached")
             activeClients = max(0, activeClients - 1)
+            stateLock.unlock()
+            print("⚠️ AudioAnalysisHub: No mixer attached")
             return
         }
 
@@ -89,24 +101,36 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
 
         resetBuffer()
 
+        // installTap is documented thread-safe; calling inside the lock keeps
+        // the install/uninstall + flag flip atomic across threads, which is
+        // exactly what AVAudioMixerNode needs to avoid `nullptr == Tap()`.
         mixer.installTap(onBus: 0, bufferSize: bufferSize, format: format) {
             [weak self] buffer, _ in
             self?.enqueue(buffer)
         }
 
         isInstalled = true
+        stateLock.unlock()
+
         startTimer()
     }
 
     func stop() {
+        stateLock.lock()
         activeClients = max(0, activeClients - 1)
-        guard activeClients == 0 else { return }
+        if activeClients > 0 {
+            stateLock.unlock()
+            return
+        }
         guard isInstalled else {
+            stateLock.unlock()
             purgeInactiveState(preservingMixerAttachment: true)
             return
         }
         mixerNode?.removeTap(onBus: 0)
         isInstalled = false
+        stateLock.unlock()
+
         stopTimer()
         purgeInactiveState(preservingMixerAttachment: true)
     }
