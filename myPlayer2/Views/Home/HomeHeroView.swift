@@ -22,6 +22,7 @@ struct HomeHeroView: View {
 
     @State private var coverImage: NSImage?
     @State private var artworkData: Data?
+    @State private var heroBackdropImage: CGImage?
     @State private var heroArtworkChecksum: UInt64 = 0
     @State private var heroAnalysis: ArtworkColorAnalysis?
     @State private var isHovering = false
@@ -214,17 +215,29 @@ struct HomeHeroView: View {
 
     @ViewBuilder
     private var backdropView: some View {
-        if let artworkData {
-            CoverGradientBlurBackgroundView(
-                artworkData: artworkData,
-                artworkImage: coverImage,
-                artworkChecksum: heroArtworkChecksum,
-                dominantColor: artworkDominantColor,
-                config: heroBlurConfig
-            )
+        if let heroBackdropImage {
+            GeometryReader { geometry in
+                let imageAspect = CGFloat(heroBackdropImage.width) / max(1, CGFloat(heroBackdropImage.height))
+                Image(decorative: heroBackdropImage, scale: 1, orientation: .up)
+                    .resizable()
+                    .interpolation(.medium)
+                    .aspectRatio(imageAspect, contentMode: .fill)
+                    .frame(width: geometry.size.width, height: geometry.size.height, alignment: .leading)
+                    .clipped()
+            }
         } else {
             RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(Color.clear)
+                .fill(Color(nsColor: artworkDominantColor).opacity(colorScheme == .dark ? 0.42 : 0.26))
+                .overlay(
+                    LinearGradient(
+                        colors: [
+                            Color.black.opacity(colorScheme == .dark ? 0.34 : 0.08),
+                            Color.black.opacity(colorScheme == .dark ? 0.16 : 0.02),
+                        ],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                )
         }
     }
 
@@ -469,6 +482,7 @@ struct HomeHeroView: View {
     private func loadCoverImage() async {
         coverImage = nil
         artworkData = nil
+        heroBackdropImage = nil
         heroArtworkChecksum = 0
         heroAnalysis = nil
         let data = track.loadArtworkDataIfNeeded()
@@ -486,42 +500,111 @@ struct HomeHeroView: View {
             cacheKey: key,
             targetPixelSize: CGSize(width: 480, height: 480)
         )
+        async let backdropTask: CGImage? = renderHeroBackdrop(
+            artworkData: data,
+            checksum: checksum
+        )
         // Analyze locally so the hero's text/dominant colours track this card's
         // artwork, not the currently-playing track's ThemeStore palette.
         async let analysisTask: ArtworkColorAnalysis? = Task.detached(priority: .userInitiated) {
             ArtworkColorExtractor.analyze(from: data)
         }.value
         let image = await imageTask
+        let backdrop = await backdropTask
         let analysis = await analysisTask
         // Guard against a stale completion from a previous track — only apply
         // the result if this hero card's artwork hasn't changed underneath us.
         guard heroArtworkChecksum == checksum else { return }
         coverImage = image
+        heroBackdropImage = backdrop
         heroAnalysis = analysis
+    }
+
+    private func renderHeroBackdrop(
+        artworkData: Data,
+        checksum: UInt64
+    ) async -> CGImage? {
+        let config = heroBlurConfig
+        let targetSize = CGSize(width: 1280, height: 380)
+        let cacheKey = "\(checksum)-1280x380-home-hero-v2" as NSString
+
+        if let cached = HomeHeroBackdropCache.shared.image(for: cacheKey) {
+            return cached
+        }
+
+        let rendered = await Task.detached(priority: .utility) { () -> CGImage? in
+            autoreleasepool {
+                guard
+                    let prepared = CoverGradientBlurRenderer.preparedArtworkImage(
+                        artworkData: artworkData,
+                        artworkImage: nil,
+                        targetSize: targetSize
+                    )
+                else { return nil }
+
+                return CoverGradientBlurRenderer.render(
+                    artworkCGImage: prepared,
+                    targetSize: targetSize,
+                    dominantColor: nil,
+                    config: config
+                )
+            }
+        }.value
+
+        if let rendered {
+            HomeHeroBackdropCache.shared.setImage(rendered, for: cacheKey)
+        }
+        return rendered
+    }
+}
+
+private final class HomeHeroBackdropCache {
+    static let shared = HomeHeroBackdropCache()
+
+    private final class ImageBox: NSObject {
+        let image: CGImage
+
+        init(_ image: CGImage) {
+            self.image = image
+        }
+    }
+
+    private let cache = NSCache<NSString, ImageBox>()
+
+    private init() {
+        cache.countLimit = 12
+        cache.totalCostLimit = 64 * 1024 * 1024
+    }
+
+    func image(for key: NSString) -> CGImage? {
+        cache.object(forKey: key)?.image
+    }
+
+    func setImage(_ image: CGImage, for key: NSString) {
+        let cost = max(1, image.bytesPerRow * image.height)
+        cache.setObject(ImageBox(image), forKey: key, cost: cost)
     }
 }
 
 private extension View {
+    @ViewBuilder
     func homeHeroHeaderGlassCapsule(colorScheme: ColorScheme) -> some View {
-        let shape = Capsule()
-        return self
-            .glassEffect(.clear, in: shape)
-            .overlay {
-                shape
-                    .strokeBorder(GlassStyleTokens.highlightGradient, lineWidth: 1)
-                    .allowsHitTesting(false)
-            }
-            .overlay {
-                shape
-                    .strokeBorder(Color.white.opacity(0.15), lineWidth: 0.5)
-                    .allowsHitTesting(false)
-            }
-            .clipShape(shape)
+        self.modifier(HomeHeroHeaderGlassModifier(shape: Capsule(), colorScheme: colorScheme))
     }
 
+    @ViewBuilder
     func homeHeroHeaderGlassCircle(colorScheme: ColorScheme) -> some View {
-        let shape = Circle()
-        return self
+        self.modifier(HomeHeroHeaderGlassModifier(shape: Circle(), colorScheme: colorScheme))
+    }
+}
+
+private struct HomeHeroHeaderGlassModifier<S: InsettableShape>: ViewModifier {
+    let shape: S
+    let colorScheme: ColorScheme
+
+    func body(content: Content) -> some View {
+        content
+            .background(shape.fill(Color.black.opacity(colorScheme == .dark ? 0.16 : 0.06)))
             .glassEffect(.clear, in: shape)
             .overlay {
                 shape

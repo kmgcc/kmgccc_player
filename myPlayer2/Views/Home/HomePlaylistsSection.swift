@@ -480,20 +480,9 @@ private struct HomePlaylistCard: View {
     }
 
     private var featuredTrackPreviews: [Track] {
-        Array(
-            playlist.tracks
-                .enumerated()
-                .filter { $0.element.isPlayable && $0.element.hasArtworkSource }
-                .sorted { lhs, rhs in
-                    let lhsScore = preferenceScore(for: lhs.element)
-                    let rhsScore = preferenceScore(for: rhs.element)
-                    if lhsScore != rhsScore {
-                        return lhsScore > rhsScore
-                    }
-                    return lhs.offset < rhs.offset
-                }
-                .map(\.element)
-                .prefix(featuredTrackPreviewLimit)
+        HomePlaylistPreviewCache.shared.previewTracks(
+            for: playlist,
+            limit: featuredTrackPreviewLimit
         )
     }
 
@@ -513,7 +502,7 @@ private struct HomePlaylistCard: View {
         .onHover { hovering in
             isHovering = hovering
         }
-        .task {
+        .task(id: headerArtworkIdentity) {
             await loadCover()
         }
     }
@@ -685,16 +674,6 @@ private struct HomePlaylistCard: View {
         Text("\(playlist.trackCount) 首")
     }
 
-    private func preferenceScore(for track: Track) -> Double {
-        let stats = PreferenceStatsService.shared.getStats(for: track.id)
-        let result = PreferenceScorerV2.calculateScore(
-            stats: stats,
-            duration: track.duration,
-            manualLikeState: stats.manualLikeState
-        )
-        return result.finalPreference
-    }
-
     private func loadCover() async {
         let request = DetailHeaderArtworkRequest.playlist(
             selectionIdentity: "playlist-\(playlist.id)",
@@ -732,6 +711,72 @@ private struct HomePlaylistCard: View {
         }
         let signature = PlaylistArtworkGenerator.contentSignature(tracks: playlist.tracks)
         return "\(selectionIdentity)-unresolved-\(signature)"
+    }
+}
+
+@MainActor
+private final class HomePlaylistPreviewCache {
+    static let shared = HomePlaylistPreviewCache()
+
+    private struct Key: Hashable {
+        let playlistID: UUID
+        let trackSignature: Int
+        let limit: Int
+    }
+
+    private var cached: [Key: [Track]] = [:]
+
+    func previewTracks(for playlist: Playlist, limit: Int) -> [Track] {
+        let key = Key(
+            playlistID: playlist.id,
+            trackSignature: trackSignature(for: playlist),
+            limit: limit
+        )
+        if let tracks = cached[key] {
+            return tracks
+        }
+
+        let tracks = Array(
+            playlist.tracks
+                .enumerated()
+                .filter { $0.element.isPlayable && $0.element.hasArtworkSource }
+                .sorted { lhs, rhs in
+                    let lhsScore = preferenceScore(for: lhs.element)
+                    let rhsScore = preferenceScore(for: rhs.element)
+                    if lhsScore != rhsScore {
+                        return lhsScore > rhsScore
+                    }
+                    return lhs.offset < rhs.offset
+                }
+                .map(\.element)
+                .prefix(limit)
+        )
+
+        if cached.count > 80 {
+            cached.removeAll(keepingCapacity: true)
+        }
+        cached[key] = tracks
+        return tracks
+    }
+
+    private func trackSignature(for playlist: Playlist) -> Int {
+        var hasher = Hasher()
+        hasher.combine(playlist.tracks.count)
+        for track in playlist.tracks {
+            hasher.combine(track.id)
+            hasher.combine(track.artworkFileName)
+        }
+        return hasher.finalize()
+    }
+
+    private func preferenceScore(for track: Track) -> Double {
+        let stats = PreferenceStatsService.shared.getStats(for: track.id)
+        let result = PreferenceScorerV2.calculateScore(
+            stats: stats,
+            duration: track.duration,
+            manualLikeState: stats.manualLikeState
+        )
+        return result.finalPreference
     }
 }
 

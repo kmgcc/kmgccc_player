@@ -107,6 +107,14 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
         sharedController?.splitViewController.setEmbeddedFullscreenActive(active)
     }
 
+    func windowWillStartLiveResize(_ notification: Notification) {
+        HomeWindowLayoutState.shared.setLiveResizing(true)
+    }
+
+    func windowDidEndLiveResize(_ notification: Notification) {
+        HomeWindowLayoutState.shared.setLiveResizing(false)
+    }
+
     init(appSession: AppSessionHost) {
         self.appSession = appSession
         let splitViewController = AppKitMainSplitViewController(appSession: appSession)
@@ -421,6 +429,16 @@ final class HomeRoutingRootView: NSView {
     /// strip that would block Home content. The Mini Player owns hit-testing
     /// inside (frame ∪ this margin); Home owns everything outside it.
     private let miniPlayerHitMargin: CGFloat = 6
+
+    override func viewWillStartLiveResize() {
+        super.viewWillStartLiveResize()
+        HomeWindowLayoutState.shared.setLiveResizing(true)
+    }
+
+    override func viewDidEndLiveResize() {
+        super.viewDidEndLiveResize()
+        HomeWindowLayoutState.shared.setLiveResizing(false)
+    }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         let layoutState = HomeWindowLayoutState.shared

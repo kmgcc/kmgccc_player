@@ -64,21 +64,25 @@ struct HomeInsightsSection: View {
     private var sideBySideInsights: some View {
         let dynamic = containerWidth > 0 ? containerWidth * 0.34 : 360
         let heatmapWidth = min(max(dynamic, 320), 400)
+        let rowHeight = max(
+            insightsRowHeight,
+            ListeningCalendarLayoutMetrics.requiredCardHeight(compact: false)
+        )
         HStack(alignment: .top, spacing: 16) {
             HomePreferenceRankingView(
                 items: homeVM.preferenceRanking,
-                fixedHeight: insightsRowHeight,
+                fixedHeight: rowHeight,
                 playbackCoordinator: playbackCoordinator
             )
                 .frame(maxWidth: .infinity)
-                .frame(height: insightsRowHeight)
+                .frame(height: rowHeight)
             ListeningCalendarCard(
                 dailyMap: homeVM.dailyListeningMap,
                 renderWidth: heatmapWidth,
-                fixedHeight: insightsRowHeight
+                fixedHeight: rowHeight
             )
             .frame(width: heatmapWidth)
-            .frame(height: insightsRowHeight)
+            .frame(height: rowHeight)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -187,6 +191,27 @@ private enum CompactSummaryRowMetrics {
         width: statCardSize.width * 2 + gridSpacing,
         height: statCardSize.height * 2 + gridSpacing
     )
+}
+
+private enum ListeningCalendarLayoutMetrics {
+    static func requiredCardHeight(compact: Bool) -> CGFloat {
+        let rowCount: CGFloat = compact ? 6 : 7
+        let cellSize: CGFloat = compact ? 28 : 36
+        let cellSpacing: CGFloat = compact ? 2 : 4
+        let weekdayHeaderHeight: CGFloat = compact ? 11 : 14
+        let headerGridSpacing: CGFloat = compact ? 8 : 12
+        let renderHeight =
+            weekdayHeaderHeight
+            + headerGridSpacing
+            + rowCount * cellSize
+            + max(0, rowCount - 1) * cellSpacing
+        let headerHeight: CGFloat = compact ? 20 : 22
+        let cardPadding: CGFloat = compact ? 24 : 32
+        let innerPadding: CGFloat = compact ? 0 : 4
+        let vStackSpacing: CGFloat = compact ? 8 : 12
+        let breathingRoom: CGFloat = compact ? 6 : 24
+        return ceil(cardPadding + innerPadding + headerHeight + vStackSpacing + renderHeight + breathingRoom)
+    }
 }
 
 // MARK: - Listening Stats Layouts
@@ -692,7 +717,7 @@ struct HomeListeningHeatmapView: View {
     }
 
     var body: some View {
-        let model = CalendarHeatmapData.build(
+        let model = CalendarHeatmapData.buildCached(
             dailyMap: dailyMap,
             month: displayedMonth,
             compact: compact,
@@ -1238,7 +1263,7 @@ private struct ListeningCalendarRenderModel: Equatable {
         let isCurrentMonth: Bool
     }
 
-    struct RGBA: Equatable {
+    struct RGBA: Equatable, Hashable {
         let red: Double
         let green: Double
         let blue: Double
@@ -1383,6 +1408,45 @@ private enum CalendarHeatmapData {
         )
     }
 
+    static func buildCached(
+        dailyMap: [Date: Int],
+        month: Date = Date(),
+        compact: Bool,
+        isDark: Bool,
+        accent: ListeningCalendarRenderModel.RGBA
+    ) -> ListeningCalendarRenderModel {
+        let monthIdentity = makeMonthIdentity(for: month)
+        let key = CacheKey(
+            dailySignature: dailySignature(dailyMap),
+            monthIdentity: monthIdentity,
+            compact: compact,
+            isDark: isDark,
+            accent: accent
+        )
+        cacheLock.lock()
+        if let model = modelCache[key] {
+            cacheLock.unlock()
+            return model
+        }
+        cacheLock.unlock()
+
+        let model = build(
+            dailyMap: dailyMap,
+            month: month,
+            compact: compact,
+            isDark: isDark,
+            accent: accent
+        )
+
+        cacheLock.lock()
+        if modelCache.count > 48 {
+            modelCache.removeAll(keepingCapacity: true)
+        }
+        modelCache[key] = model
+        cacheLock.unlock()
+        return model
+    }
+
     private static let weekdayLabels = ["一", "二", "三", "四", "五", "六", "日"]
 
     static func currentMonthStart() -> Date {
@@ -1427,5 +1491,34 @@ private enum CalendarHeatmapData {
         if n < 0.5 { return 0.5 }
         if n < 0.75 { return 0.75 }
         return 1
+    }
+
+    private struct CacheKey: Hashable {
+        let dailySignature: UInt64
+        let monthIdentity: String
+        let compact: Bool
+        let isDark: Bool
+        let accent: ListeningCalendarRenderModel.RGBA
+    }
+
+    private static let cacheLock = NSLock()
+    private static var modelCache: [CacheKey: ListeningCalendarRenderModel] = [:]
+
+    private static func dailySignature(_ dailyMap: [Date: Int]) -> UInt64 {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        func combine(_ value: String) {
+            for byte in value.utf8 {
+                hash ^= UInt64(byte)
+                hash = hash &* 0x0000_0100_0000_01B3
+            }
+            hash ^= 0xff
+            hash = hash &* 0x0000_0100_0000_01B3
+        }
+
+        combine("\(dailyMap.count)")
+        for (date, count) in dailyMap.sorted(by: { $0.key < $1.key }) {
+            combine("\(Int(date.timeIntervalSince1970 / 86_400)):\(count)")
+        }
+        return hash
     }
 }

@@ -1166,7 +1166,8 @@ struct FullscreenPlayerView: View {
             ExpandableVolumeControl(
                 volume: volumeBinding,
                 isExpanded: $isVolumeExpanded,
-                isEnabled: playbackCoordinator.presentation.isVolumeControlEnabled
+                isEnabled: playbackCoordinator.presentation.isVolumeControlEnabled,
+                usesAdaptiveForeground: isCoverBlurFullscreenSkin
             )
             .frame(width: volumeWidth, height: buttonSize)
             .environment(\.colorScheme, fullscreenControlsColorScheme)
@@ -1592,7 +1593,8 @@ struct FullscreenPlayerView: View {
                             }
                         },
                         materialStyle: fullscreenControlsGlassStyle.materialStyle,
-                        isEnabled: playbackCoordinator.presentation.isVolumeControlEnabled
+                        isEnabled: playbackCoordinator.presentation.isVolumeControlEnabled,
+                        usesAdaptiveForeground: isCoverBlurFullscreenSkin
                     )
                     .glassEffectTransition(.materialize)
                     .frame(width: scaledVolumeWidth, height: scaledButtonSize)
@@ -1904,7 +1906,8 @@ struct FullscreenPlayerView: View {
     }
 
     private var fullscreenMiniPlayerPrimaryNSColor: NSColor {
-        if fullscreenControlsGlassStyle.materialStyle == .clear,
+        if isCoverBlurFullscreenSkin,
+           fullscreenControlsGlassStyle.materialStyle == .clear,
            themeStore.hasArtworkThemeColor,
            FullscreenMiniPlayerView.shouldUseDarkArtworkForeground(
                 for: themeStore.semanticPalette.analysis
@@ -1915,7 +1918,8 @@ struct FullscreenPlayerView: View {
     }
 
     private var fullscreenMiniPlayerIconBlendMode: BlendMode {
-        if fullscreenControlsGlassStyle.materialStyle == .clear,
+        if isCoverBlurFullscreenSkin,
+           fullscreenControlsGlassStyle.materialStyle == .clear,
            themeStore.hasArtworkThemeColor,
            FullscreenMiniPlayerView.shouldUseDarkArtworkForeground(
                 for: themeStore.semanticPalette.analysis

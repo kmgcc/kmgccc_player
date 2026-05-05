@@ -11,6 +11,7 @@
 //  and which extend to full window width (album / artist carousels).
 //
 
+import AppKit
 import SwiftUI
 
 struct HomeView: View {
@@ -23,14 +24,18 @@ struct HomeView: View {
     @Environment(HomeViewModel.self) private var homeVM
     @State private var hasAppeared = false
     @State private var layout = HomeWindowLayoutState.shared
-    @State private var homeScrollY: CGFloat = 0
+    @StateObject private var ambientMotion = HomeAmbientMotionState()
 
     var body: some View {
         Group {
             if libraryVM.state == .loading {
-                ProgressView()
-                    .controlSize(.large)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if let snapshot = homeVM.cachedStartupSnapshot {
+                    cachedStartupContent(snapshot)
+                } else {
+                    ProgressView()
+                        .controlSize(.large)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             } else if libraryVM.allTracks.isEmpty {
                 emptyLibraryView
             } else {
@@ -39,7 +44,10 @@ struct HomeView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .task {
-            homeVM.refresh(from: libraryVM)
+            await homeVM.loadCachedStartupSnapshot()
+            if !libraryVM.allTracks.isEmpty {
+                homeVM.refresh(from: libraryVM)
+            }
             try? await Task.sleep(for: .milliseconds(50))
             hasAppeared = true
         }
@@ -73,6 +81,168 @@ struct HomeView: View {
         }
     }
 
+    private func cachedStartupContent(_ snapshot: HomeStartupSnapshot) -> some View {
+        let g = layout.geometry
+        let mode = HomeLayoutMode.mode(for: max(320, g.hasValidLayout ? g.centerWidth : 820))
+        let hPad = mode.horizontalPadding
+        let leftPad = (g.hasValidLayout ? g.leftInset : 0) + hPad
+        let rightPad = (g.hasValidLayout ? g.rightInset : 0) + hPad
+
+        return ZStack(alignment: .topLeading) {
+            Color(nsColor: HomeAmbientShapesBackground.ambientBaseColorForStaticCache(colorScheme: colorScheme))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .allowsHitTesting(false)
+
+            ScrollView(.vertical, showsIndicators: true) {
+                VStack(alignment: .leading, spacing: mode.sectionSpacing) {
+                    cachedHero(snapshot.hero, snapshot: snapshot, mode: mode)
+                    cachedSummary(snapshot)
+                    cachedStrip(title: "播放列表", items: snapshot.playlists.map { "\($0.name) · \($0.trackCount) 首" })
+                    cachedStrip(title: "歌手", items: snapshot.artists.map { "\($0.name) · \($0.albumCount) 张专辑" })
+                    cachedStrip(title: "专辑", items: snapshot.albums.map { "\($0.title) · \($0.artist)" })
+                    cachedRanking(snapshot.preferenceRanking)
+                    Color.clear.frame(height: 120)
+                }
+                .padding(.top, 56)
+                .padding(.bottom, 24)
+                .padding(.leading, leftPad)
+                .padding(.trailing, rightPad)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+        }
+        .opacity(hasAppeared ? 1 : 0)
+        .animation(.easeOut(duration: 0.25), value: hasAppeared)
+    }
+
+    private func cachedHero(
+        _ hero: HomeStartupSnapshot.TrackSummary?,
+        snapshot: HomeStartupSnapshot,
+        mode: HomeLayoutMode
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Home")
+                .font(.system(size: mode == .wide ? 34 : 28, weight: .semibold))
+            if let hero {
+                Text(hero.title)
+                    .font(.title3.weight(.semibold))
+                    .lineLimit(1)
+                Text([hero.artist, hero.album].filter { !$0.isEmpty }.joined(separator: " · "))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Text("正在载入音乐库，先显示上次主页快照 · \(snapshot.generatedAt.formatted(date: .abbreviated, time: .shortened))")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .homeUnifiedGlassCard(cornerRadius: 18, colorScheme: colorScheme, isFloating: true)
+    }
+
+    private func cachedSummary(_ snapshot: HomeStartupSnapshot) -> some View {
+        HStack(spacing: 14) {
+            cachedStat(label: "总歌曲", value: "\(snapshot.totalTrackCount)", unit: "首")
+            cachedStat(label: "本周播放", value: cachedFormattedNumber(snapshot.weeklyPlayCount), unit: "次")
+            let duration = cachedFormattedDurationParts(snapshot.weeklyListeningSeconds)
+            cachedStat(label: "本周时长", value: duration.value, unit: duration.unit)
+            cachedStat(
+                label: "本周常听",
+                value: snapshot.weeklyFavoriteArtistName ?? "—",
+                unit: snapshot.weeklyFavoriteArtistPlayCount > 0 ? "\(snapshot.weeklyFavoriteArtistPlayCount) 次" : ""
+            )
+        }
+    }
+
+    private func cachedStat(label: String, value: String, unit: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(label)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+            Text(value)
+                .font(.title3.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+            if !unit.isEmpty {
+                Text(unit)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, minHeight: 104, alignment: .topLeading)
+        .homeUnifiedGlassCard(cornerRadius: 16, colorScheme: colorScheme, isFloating: true)
+    }
+
+    private func cachedStrip(title: String, items: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title)
+                .font(.headline)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 12) {
+                    ForEach(Array(items.prefix(10).enumerated()), id: \.offset) { _, item in
+                        Text(item)
+                            .font(.callout.weight(.medium))
+                            .lineLimit(2)
+                            .frame(width: 154, height: 76, alignment: .topLeading)
+                            .padding(14)
+                            .homeUnifiedGlassCard(cornerRadius: 16, colorScheme: colorScheme, isFloating: true)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+        }
+    }
+
+    private func cachedRanking(_ items: [HomeStartupSnapshot.RankSummary]) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("爱听排行")
+                .font(.headline)
+            VStack(spacing: 0) {
+                ForEach(Array(items.prefix(8).enumerated()), id: \.element.id) { index, item in
+                    HStack {
+                        Text("\(index + 1)")
+                            .font(.callout.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 28)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.title)
+                                .font(.callout.weight(.semibold))
+                                .lineLimit(1)
+                            Text(item.artist)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer()
+                        Text("\(item.playCount)")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 8)
+                    if index < min(items.count, 8) - 1 {
+                        Divider()
+                    }
+                }
+            }
+            .padding(14)
+            .homeUnifiedGlassCard(cornerRadius: 18, colorScheme: colorScheme, isFloating: true)
+        }
+    }
+
+    private func cachedFormattedNumber(_ n: Int) -> String {
+        n.formatted(.number)
+    }
+
+    private func cachedFormattedDurationParts(_ seconds: Double) -> (value: String, unit: String) {
+        if seconds < 3600 {
+            return (String(max(0, Int((seconds / 60).rounded()))), "分钟")
+        }
+        return (String(Int((seconds / 3600).rounded())), "小时")
+    }
+
     private var scrollContent: some View {
         let g = layout.geometry
         // While the center-pane geometry probe hasn't published a valid
@@ -100,10 +270,14 @@ struct HomeView: View {
 
         return AnyView(
             ZStack(alignment: .topLeading) {
+                let ambientGeometry = layout.isLiveResizing
+                    ? (layout.liveResizeFrozenGeometry ?? g)
+                    : g
                 HomeAmbientShapesBackground(
-                    geometry: g,
+                    geometry: ambientGeometry,
                     mode: mode,
-                    scrollOffsetY: homeScrollY,
+                    motion: ambientMotion,
+                    isLiveResizing: layout.isLiveResizing,
                     sourceColor: themeStore.semanticPalette.ambientSurface,
                     sourceAnalysis: themeStore.semanticPalette.analysis
                 )
@@ -194,13 +368,7 @@ struct HomeView: View {
             .padding(.bottom, 24)
             .frame(maxWidth: .infinity, alignment: .top)
         }
-        .onScrollGeometryChange(for: CGFloat.self) { geometry in
-            let rawOffset = max(0, geometry.contentOffset.y + geometry.contentInsets.top)
-            return (rawOffset * 2).rounded() / 2
-        } action: { _, newValue in
-            guard abs(homeScrollY - newValue) >= 0.5 else { return }
-            homeScrollY = newValue
-        }
+        .background(HomeVerticalScrollOffsetObserver(motion: ambientMotion))
         .transaction { transaction in
             transaction.animation = nil
         }
@@ -241,9 +409,75 @@ struct HomeView: View {
     }
 }
 
+private struct HomeVerticalScrollOffsetObserver: NSViewRepresentable {
+    let motion: HomeAmbientMotionState
+
+    func makeNSView(context _: Context) -> HomeVerticalScrollOffsetProbeView {
+        let view = HomeVerticalScrollOffsetProbeView()
+        view.motion = motion
+        return view
+    }
+
+    func updateNSView(_ nsView: HomeVerticalScrollOffsetProbeView, context _: Context) {
+        nsView.motion = motion
+        nsView.resolveScrollViewSoon()
+    }
+}
+
+private final class HomeVerticalScrollOffsetProbeView: NSView {
+    weak var motion: HomeAmbientMotionState?
+
+    private weak var observedScrollView: NSScrollView?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        resolveScrollViewSoon()
+    }
+
+    func resolveScrollViewSoon() {
+        DispatchQueue.main.async { [weak self] in
+            self?.resolveScrollView()
+        }
+    }
+
+    private func resolveScrollView() {
+        guard let scrollView = enclosingScrollView else { return }
+        guard observedScrollView !== scrollView else {
+            publishOffset(from: scrollView)
+            return
+        }
+
+        NotificationCenter.default.removeObserver(self)
+
+        observedScrollView = scrollView
+        scrollView.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(observedBoundsDidChange(_:)),
+            name: NSView.boundsDidChangeNotification,
+            object: scrollView.contentView
+        )
+        publishOffset(from: scrollView)
+    }
+
+    @objc private func observedBoundsDidChange(_ notification: Notification) {
+        guard let scrollView = observedScrollView else { return }
+        publishOffset(from: scrollView)
+    }
+
+    private func publishOffset(from scrollView: NSScrollView) {
+        let offset = max(0, scrollView.contentView.bounds.origin.y)
+        motion?.setScrollOffset(offset)
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+}
+
 // MARK: - Layout Mode
 
-enum HomeLayoutMode {
+enum HomeLayoutMode: Hashable {
     case wide      // >= 980
     case medium    // 720..<980
     case compact   // 560..<720

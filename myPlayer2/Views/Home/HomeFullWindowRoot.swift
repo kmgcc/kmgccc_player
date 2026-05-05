@@ -51,6 +51,7 @@ struct HomeFullWindowRoot: View {
                         .environment(coverDownloadService)
                         .environment(netEaseCoverService)
                         .environmentObject(themeStore)
+                        .environment(\.homeLiveResizeRendering, layout.isLiveResizing)
                         .environment(\.libraryPresentedAccentColor, themeStore.accentColor)
                         .modelContainer(appSession.sharedModelContainer)
                         .tint(themeStore.accentColor)

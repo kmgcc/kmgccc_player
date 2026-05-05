@@ -34,6 +34,8 @@ final class AppSessionHost: ObservableObject {
     private var libraryLocationObserver: NSObjectProtocol?
     private var libraryService: LocalLibraryService?
     private var repository: LibraryRepositoryProtocol?
+    private var playbackMemoryTimer: Timer?
+    private var didAttemptPlaybackMemoryRestore = false
 
     init(
         modelContainer: ModelContainer,
@@ -53,6 +55,7 @@ final class AppSessionHost: ObservableObject {
 
         print("[Lifecycle] AppSessionHost initial setup")
         setupDependencies()
+        await restorePlaybackMemoryIfNeeded()
 
         AppVersionGate.shared.recordCurrentAppLaunch()
         WhatsNewWindowManager.shared.showIfNeeded()
@@ -170,6 +173,9 @@ final class AppSessionHost: ObservableObject {
             uiState: uiState
         )
         AppDelegate.shared?.configureDockPlayback(playbackCoordinator: playbackCoordinator)
+        AppDelegate.applicationWillTerminateHandler = { [weak self] in
+            self?.savePlaybackMemory()
+        }
 
         settingsSceneDependencies.configure(
             libraryVM: libraryVM,
@@ -192,6 +198,7 @@ final class AppSessionHost: ObservableObject {
         }
 
         libraryService.startMonitoring(repository: repository)
+        startPlaybackMemoryAutosave()
 
         if libraryLocationObserver == nil {
             libraryLocationObserver = NotificationCenter.default.addObserver(
@@ -231,6 +238,90 @@ final class AppSessionHost: ObservableObject {
             if let libraryLocationObserver {
                 NotificationCenter.default.removeObserver(libraryLocationObserver)
             }
+            playbackMemoryTimer?.invalidate()
+            AppDelegate.applicationWillTerminateHandler = nil
+        }
+    }
+
+    private func startPlaybackMemoryAutosave() {
+        playbackMemoryTimer?.invalidate()
+        let timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.savePlaybackMemory()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        playbackMemoryTimer = timer
+    }
+
+    private func savePlaybackMemory() {
+        guard playbackCoordinator?.activeSource == .local else {
+            PlaybackMemoryStore.clear()
+            return
+        }
+        guard let playerVM, let currentTrack = playerVM.currentTrack else {
+            PlaybackMemoryStore.clear()
+            return
+        }
+
+        let currentTime = playerVM.currentTime.isFinite ? max(0, playerVM.currentTime) : 0
+        let duration = playerVM.duration.isFinite ? max(0, playerVM.duration) : 0
+        let currentQueue = playerVM.currentQueueTracks
+        let queueTrackIDs = currentQueue.isEmpty ? [currentTrack.id] : currentQueue.map(\.id)
+
+        PlaybackMemoryStore.save(
+            PlaybackMemory(
+                savedAt: Date(),
+                trackID: currentTrack.id,
+                queueTrackIDs: queueTrackIDs,
+                currentTime: currentTime,
+                duration: duration,
+                wasPlaying: playerVM.isPlaying
+            )
+        )
+    }
+
+    private func restorePlaybackMemoryIfNeeded() async {
+        guard !didAttemptPlaybackMemoryRestore else { return }
+        didAttemptPlaybackMemoryRestore = true
+
+        guard DebugLaunchScenario.current == nil else { return }
+        guard let memory = PlaybackMemoryStore.loadValid() else { return }
+        guard let repository, let playbackCoordinator else { return }
+
+        await repository.reloadFromLibrary()
+
+        var requestedTrackIDs = memory.queueTrackIDs
+        if !requestedTrackIDs.contains(memory.trackID) {
+            requestedTrackIDs.append(memory.trackID)
+        }
+
+        let fetchedTracks = await repository.fetchTracks(ids: requestedTrackIDs)
+        let trackByID = Dictionary(uniqueKeysWithValues: fetchedTracks.map { ($0.id, $0) })
+        guard let targetTrack = trackByID[memory.trackID], targetTrack.availability != .missing else {
+            PlaybackMemoryStore.clear()
+            return
+        }
+
+        var restoredQueue = memory.queueTrackIDs.compactMap { trackByID[$0] }
+            .filter { $0.availability != .missing }
+        if !restoredQueue.contains(where: { $0.id == targetTrack.id }) {
+            restoredQueue.insert(targetTrack, at: 0)
+        }
+        guard !restoredQueue.isEmpty else {
+            PlaybackMemoryStore.clear()
+            return
+        }
+
+        let startIndex = restoredQueue.firstIndex { $0.id == targetTrack.id } ?? 0
+        playbackCoordinator.playTracks(restoredQueue, startingAt: startIndex)
+
+        let seekTime = PlaybackMemoryStore.restorableTime(from: memory)
+        if seekTime > 0 {
+            playbackCoordinator.seek(to: seekTime)
+        }
+        if !memory.wasPlaying {
+            playbackCoordinator.pause()
         }
     }
 
@@ -464,6 +555,53 @@ final class AppSessionHost: ObservableObject {
                 window.setFrame(originalFrame, display: true)
             }
         }
+    }
+}
+
+private struct PlaybackMemory: Codable {
+    let savedAt: Date
+    let trackID: UUID
+    let queueTrackIDs: [UUID]
+    let currentTime: Double
+    let duration: Double
+    let wasPlaying: Bool
+}
+
+private enum PlaybackMemoryStore {
+    private static let key = "playback.memory.v1"
+    private static let expirationInterval: TimeInterval = 18 * 60 * 60
+
+    static func save(_ memory: PlaybackMemory) {
+        guard let data = try? JSONEncoder().encode(memory) else { return }
+        UserDefaults.standard.set(data, forKey: key)
+    }
+
+    static func loadValid(now: Date = Date()) -> PlaybackMemory? {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let memory = try? JSONDecoder().decode(PlaybackMemory.self, from: data) else {
+            clear()
+            return nil
+        }
+
+        guard now.timeIntervalSince(memory.savedAt) <= expirationInterval else {
+            clear()
+            return nil
+        }
+
+        return memory
+    }
+
+    static func clear() {
+        UserDefaults.standard.removeObject(forKey: key)
+    }
+
+    static func restorableTime(from memory: PlaybackMemory) -> Double {
+        guard memory.currentTime.isFinite else { return 0 }
+        let lowerBoundedTime = max(0, memory.currentTime)
+        guard memory.duration.isFinite, memory.duration > 1 else {
+            return lowerBoundedTime
+        }
+        return min(lowerBoundedTime, memory.duration - 1)
     }
 }
 

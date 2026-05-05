@@ -20,6 +20,7 @@ struct ExpandableVolumeControl: View {
     var onAdjustingChanged: (Bool) -> Void = { _ in }
     var materialStyle: LiquidGlassPillMaterialStyle = .clear
     var isEnabled: Bool = true
+    var usesAdaptiveForeground: Bool = false
     
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
@@ -138,7 +139,8 @@ struct ExpandableVolumeControl: View {
     }
 
     private var controlPrimaryNSColor: NSColor {
-        if materialStyle == .clear,
+        if usesAdaptiveForeground,
+           materialStyle == .clear,
            themeStore.hasArtworkThemeColor,
            FullscreenMiniPlayerView.shouldUseDarkArtworkForeground(
                 for: themeStore.semanticPalette.analysis
@@ -149,7 +151,8 @@ struct ExpandableVolumeControl: View {
     }
 
     private var controlBlendMode: BlendMode {
-        if materialStyle == .clear,
+        if usesAdaptiveForeground,
+           materialStyle == .clear,
            themeStore.hasArtworkThemeColor,
            FullscreenMiniPlayerView.shouldUseDarkArtworkForeground(
                 for: themeStore.semanticPalette.analysis
