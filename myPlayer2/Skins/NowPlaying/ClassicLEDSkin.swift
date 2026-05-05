@@ -171,6 +171,7 @@ private struct ClassicLEDSkinFullscreenSettingsView: View {
                         UserDefaults.standard.set("led", forKey: "skin.classicLED.fullscreen.visualizerMode")
                         FullscreenPresentationCoordinator.shared.setVisualizerMode(.skinVisualizer)
                     } else {
+                        UserDefaults.standard.set("off", forKey: "skin.classicLED.fullscreen.visualizerMode")
                         FullscreenPresentationCoordinator.shared.setVisualizerMode(.off)
                     }
                 }
@@ -186,6 +187,7 @@ private struct ClassicLEDSkinFullscreenSettingsView: View {
                         UserDefaults.standard.set("spectrum", forKey: "skin.classicLED.fullscreen.visualizerMode")
                         FullscreenPresentationCoordinator.shared.setVisualizerMode(.skinVisualizer)
                     } else {
+                        UserDefaults.standard.set("off", forKey: "skin.classicLED.fullscreen.visualizerMode")
                         FullscreenPresentationCoordinator.shared.setVisualizerMode(.off)
                     }
                 }

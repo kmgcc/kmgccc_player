@@ -92,7 +92,7 @@ struct DataManagementSettingsView: View {
                                 Text("清理外部播放元数据缓存")
                             }
                         }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(.bordered)
                         .clipShape(Capsule())
                         .disabled(isClearingExternalCaches)
                     }

@@ -21,6 +21,16 @@ nonisolated struct LEDMeterConfig: Sendable {
     var targetHz: Int = 30
 }
 
+/// Centralized defaults for LED meter parameters.
+/// Sensitivity and target rate are no longer user-tunable; the other values seed
+/// `AppSettings`/`LEDMeterConfig` so the UI and the runtime stay in lockstep.
+nonisolated enum LEDDefaults {
+    static let sensitivity: Float = 0.8
+    static let targetHz: Int = 30
+    static let cutoffHz: Double = 2400
+    static let speed: Double = 1.15
+}
+
 nonisolated struct LEDMeterMetrics: Sendable {
     var timestamp: TimeInterval
     var level: Float

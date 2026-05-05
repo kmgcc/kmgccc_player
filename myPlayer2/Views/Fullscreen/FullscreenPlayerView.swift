@@ -264,6 +264,12 @@ struct FullscreenPlayerView: View {
     @State private var fullscreenPointerOcclusionMonitor = FullscreenPointerOcclusionMonitor()
     @Namespace private var fullscreenLayoutNamespace
 
+    // Fullscreen per-skin visualizer mode keys — observed for reactive LED service
+    // lifecycle (start/stop sampling when the user toggles LED in settings).
+    @AppStorage("skin.classicLED.fullscreen.visualizerMode") private var classicLedFullscreenMode: String = "led"
+    @AppStorage("skin.rotatingCover.fullscreen.visualizerMode") private var rotatingCoverLedFullscreenMode: String = "led"
+    @AppStorage("skin.kmgcccCassette.fullscreen.visualizerMode") private var cassetteLedFullscreenMode: String = "off"
+
     let hostContext: HostContext
     let onExitFullscreen: (() -> Void)?
 
@@ -434,10 +440,7 @@ struct FullscreenPlayerView: View {
             }
             resetFullscreenBottomControlsAutoHideState()
             syncFullscreenMiniPlayerSpectrumLease()
-
-            if isLedEnabledForFullscreenSkin() {
-                ledMeterProvider.getOrCreate().start()
-            }
+            syncFullscreenLedService()
         }
         .onDisappear {
             let shouldReportFullscreenHidden =
@@ -496,14 +499,19 @@ struct FullscreenPlayerView: View {
             reloadLyricsSurface(reason: "fullscreen skin changed", forceLyricsReload: true)
         }
         .onChange(of: settings.fullscreen.skinID) { _, newValue in
-            if isLedEnabledForFullscreenSkin() {
-                ledMeterProvider.getOrCreate().start()
-            } else {
-                ledMeterProvider.releaseNowPlayingResources()
-            }
+            syncFullscreenLedService()
 
             // Note: Mutual exclusivity is now handled by FullscreenPresentationCoordinator
             // When skin is set to kmgccc.cassette, Coordinator automatically disables MiniPlayer spectrum
+        }
+        .onChange(of: classicLedFullscreenMode) { _, _ in
+            syncFullscreenLedService()
+        }
+        .onChange(of: rotatingCoverLedFullscreenMode) { _, _ in
+            syncFullscreenLedService()
+        }
+        .onChange(of: cassetteLedFullscreenMode) { _, _ in
+            syncFullscreenLedService()
         }
         .onChange(of: settings.fullscreen.isMiniPlayerSpectrumEnabled) { _, _ in
             syncFullscreenMiniPlayerSpectrumLease()
@@ -2016,12 +2024,36 @@ struct FullscreenPlayerView: View {
     }
 
     private func isLedEnabledForFullscreenSkin() -> Bool {
-        // LED meter is part of the skin's identity (peer of spectrum), not a
-        // sub-mode of skinVisualizer. Drive the LED service / consumer purely
-        // from the skin's hasLedMeter flag so coverLed and cassette skins
-        // render the LedMeterView regardless of visualizerMode.
+        // Drive LED service start/stop from the real per-skin visualizerMode key
+        // (the same key the skin's display gate reads). `hasLedMeter` only
+        // describes whether the skin *supports* an LED meter — it must NOT be
+        // used to decide whether one is currently *enabled*. Cassette in
+        // particular keeps its key at "off" by default and must not auto-start
+        // the meter on fullscreen entry.
         let skinID = settings.fullscreen.skinID
-        return FullscreenSkinID(rawValue: skinID)?.hasLedMeter ?? false
+        guard let skin = FullscreenSkinID(rawValue: skinID), skin.hasLedMeter else {
+            return false
+        }
+        let defaults = UserDefaults.standard
+        switch skin {
+        case .coverLed:
+            return defaults.string(forKey: "skin.classicLED.fullscreen.visualizerMode") == "led"
+        case .rotatingCover:
+            return defaults.string(forKey: "skin.rotatingCover.fullscreen.visualizerMode") == "led"
+        case .kmgcccCassette:
+            return defaults.string(forKey: "skin.kmgcccCassette.fullscreen.visualizerMode") == "led"
+        case .coverGradientBlur:
+            return false
+        }
+    }
+
+    private func syncFullscreenLedService() {
+        let enabled = isLedEnabledForFullscreenSkin()
+        if enabled {
+            ledMeterProvider.getOrCreate().start()
+        } else {
+            ledMeterProvider.stop()
+        }
     }
 
     private func handleLyricsButtonTap() {

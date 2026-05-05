@@ -88,26 +88,19 @@ public final class AppSettings {
     @ObservationIgnored
     @AppStorage("ledBrightnessLevels") var ledBrightnessLevels: Int = 5
 
-    /// LED sensitivity (0.5 to 1.5, default 1.0)
-    @ObservationIgnored
-    @AppStorage("ledSensitivity") private var _ledSensitivity: Double = 1.0
-
-    var ledSensitivity: Float {
-        get { Float(_ledSensitivity) }
-        set { _ledSensitivity = Double(newValue) }
-    }
+    /// LED sensitivity is now fixed; UI control was removed and the value is sourced from LEDDefaults.
+    var ledSensitivity: Float { LEDDefaults.sensitivity }
 
     /// LED cutoff frequency (Hz)
     @ObservationIgnored
-    @AppStorage("ledCutoffHz") var ledCutoffHz: Double = 900
+    @AppStorage("ledCutoffHz") var ledCutoffHz: Double = LEDDefaults.cutoffHz
 
     /// LED response speed (0.5 to 2.0)
     @ObservationIgnored
-    @AppStorage("ledSpeed") var ledSpeed: Double = 1.4
+    @AppStorage("ledSpeed") var ledSpeed: Double = LEDDefaults.speed
 
-    /// LED publish rate (Hz): 30 or 60
-    @ObservationIgnored
-    @AppStorage("ledTargetHz") var ledTargetHz: Int = 30
+    /// LED publish rate is now fixed; UI control was removed and the value is sourced from LEDDefaults.
+    var ledTargetHz: Int { LEDDefaults.targetHz }
 
     // MARK: - Deprecated LED parameters (kept for storage compatibility, no longer used by algorithm)
 
@@ -336,9 +329,9 @@ public final class AppSettings {
         }
     }
 
-    /// Accent color hex string (default: soft warm yellow)
+    /// Accent color hex string (default: soft warm amber, desaturated for light-mode readability)
     @ObservationIgnored
-    @AppStorage("accentColorHex") var accentColorHex: String = "#FFC878"
+    @AppStorage("accentColorHex") var accentColorHex: String = "#E6C799"
 
     /// Liquid Glass intensity (0.0 to 1.0)
     @ObservationIgnored
@@ -414,9 +407,29 @@ public final class AppSettings {
             return nowPlayingSkin
         }
         set {
+            let previous = nowPlayingSkin
             withMutation(keyPath: \.selectedNowPlayingSkinID) {
                 nowPlayingSkin = newValue
+                applySkinEntryDefaults(previous: previous, new: newValue)
             }
+        }
+    }
+
+    /// Applies one-shot defaults when the user enters Classic / RotatingCover
+    /// from a different skin. Re-entering refreshes the defaults so the LED
+    /// (and CD mode for RotatingCover) come back on, but staying on the same
+    /// skin and toggling the keys manually is left untouched.
+    private func applySkinEntryDefaults(previous: String, new: String) {
+        guard previous != new else { return }
+        let defaults = UserDefaults.standard
+        switch new {
+        case ClassicLEDSkin.id:
+            defaults.set("led", forKey: "skin.classicLED.visualizerMode")
+        case "rotatingCover":
+            defaults.set("led", forKey: "skin.rotatingCover.visualizerMode")
+            defaults.set(true, forKey: "skin.rotatingCover.cdMode")
+        default:
+            break
         }
     }
 
@@ -877,6 +890,13 @@ public final class AppSettings {
                 followSystemAppearance = false
                 manualAppearance = .dark
             }
+        }
+
+        // Migrate old default accent (#FFC878) to new desaturated default (#E6C799).
+        // Only fires when the stored value exactly matches the previous default,
+        // so users who somehow set a custom value are left alone.
+        if UserDefaults.standard.string(forKey: "accentColorHex") == "#FFC878" {
+            UserDefaults.standard.set("#E6C799", forKey: "accentColorHex")
         }
     }
 
