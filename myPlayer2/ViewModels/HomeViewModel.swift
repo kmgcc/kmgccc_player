@@ -41,12 +41,15 @@ final class HomeViewModel {
     private(set) var weeklyFavoriteArtistPlayCount: Int = 0
     private(set) var preferenceRanking: [PreferenceRankItem] = []
     private(set) var dailyListeningMap: [Date: Int] = [:]
+    private(set) var cachedStartupSnapshot: HomeStartupSnapshot?
 
     private var trackIdentitySignature = 0
     private var trackMetadataSignature = 0
     private var playlistSignature = 0
     private var artistSignature = 0
     private var albumSignature = 0
+    private var lastAppliedRefreshSignature: HomeRefreshSignature?
+    private var snapshotWriteTask: Task<Void, Never>?
 
     struct PreferenceRankItem: Identifiable {
         let id: UUID
@@ -68,6 +71,9 @@ final class HomeViewModel {
             clearAll()
             return
         }
+
+        let incomingSignature = HomeRefreshSignature(libraryVM: libraryVM, tracks: allTracks)
+        guard incomingSignature != lastAppliedRefreshSignature else { return }
 
         heroTrack = resolveHeroTrack(in: allTracks)
 
@@ -158,6 +164,11 @@ final class HomeViewModel {
 
         dailyListeningMap = dayMap
         updateCachedSignatures(from: libraryVM, allTracks: allTracks)
+        lastAppliedRefreshSignature = incomingSignature
+        writeStartupSnapshotIfNeeded(
+            signature: incomingSignature.stableCacheSignature,
+            libraryVM: libraryVM
+        )
     }
 
     /// Incremental refresh for ordinary visible-state changes. This avoids
@@ -169,6 +180,9 @@ final class HomeViewModel {
             clearAll()
             return
         }
+
+        let incomingSignature = HomeRefreshSignature(libraryVM: libraryVM, tracks: allTracks)
+        guard incomingSignature != lastAppliedRefreshSignature else { return }
 
         let newTrackIdentitySignature = makeTrackIdentitySignature(allTracks)
         guard newTrackIdentitySignature == trackIdentitySignature else {
@@ -201,6 +215,11 @@ final class HomeViewModel {
             refreshStats(from: libraryVM, allTracks: allTracks)
             trackMetadataSignature = newTrackMetadataSignature
         }
+        lastAppliedRefreshSignature = incomingSignature
+        writeStartupSnapshotIfNeeded(
+            signature: incomingSignature.stableCacheSignature,
+            libraryVM: libraryVM
+        )
     }
 
     func applyTrackUpdates(from libraryVM: LibraryViewModel, trackIDs: [UUID]) {
@@ -242,6 +261,10 @@ final class HomeViewModel {
         }
 
         trackMetadataSignature = newTrackMetadataSignature
+        lastAppliedRefreshSignature = HomeRefreshSignature(libraryVM: libraryVM, tracks: allTracks)
+        if let signature = lastAppliedRefreshSignature?.stableCacheSignature {
+            writeStartupSnapshotIfNeeded(signature: signature, libraryVM: libraryVM)
+        }
     }
 
     func refreshArtistAlbumSort(from libraryVM: LibraryViewModel) {
@@ -249,6 +272,7 @@ final class HomeViewModel {
         albums = topAlbums(from: libraryVM)
         artistSignature = makeArtistSignature(libraryVM.artistEntries)
         albumSignature = makeAlbumSignature(libraryVM.albumEntries)
+        lastAppliedRefreshSignature = nil
     }
 
     func switchHeroTrack(from libraryVM: LibraryViewModel) {
@@ -272,6 +296,14 @@ final class HomeViewModel {
         selectedHeroTrackID = pick?.id
         selectedHeroGeneratedAt = pick == nil ? nil : Date()
         heroTrack = pick
+        if let signature = lastAppliedRefreshSignature?.stableCacheSignature {
+            writeStartupSnapshotIfNeeded(signature: signature, libraryVM: libraryVM)
+        }
+    }
+
+    func loadCachedStartupSnapshot() async {
+        guard cachedStartupSnapshot == nil else { return }
+        cachedStartupSnapshot = await HomeStartupSnapshotStore.shared.load()
     }
 
     private func clearAll() {
@@ -297,6 +329,7 @@ final class HomeViewModel {
         playlistSignature = 0
         artistSignature = 0
         albumSignature = 0
+        lastAppliedRefreshSignature = nil
     }
 
     private func topAlbums(from libraryVM: LibraryViewModel) -> [AlbumEntry] {
@@ -460,6 +493,35 @@ final class HomeViewModel {
         dailyListeningMap = dayMap
     }
 
+    private func writeStartupSnapshotIfNeeded(
+        signature: String,
+        libraryVM: LibraryViewModel
+    ) {
+        let snapshot = HomeStartupSnapshot(
+            schemaVersion: HomeStartupSnapshot.currentSchemaVersion,
+            librarySignature: signature,
+            generatedAt: Date(),
+            hero: heroTrack.map(HomeStartupSnapshot.TrackSummary.init(track:)),
+            playlists: playlists.prefix(8).map(HomeStartupSnapshot.PlaylistSummary.init(playlist:)),
+            albums: albums.prefix(12).map(HomeStartupSnapshot.AlbumSummary.init(album:)),
+            artists: artists.prefix(12).map(HomeStartupSnapshot.ArtistSummary.init(artist:)),
+            totalTrackCount: totalTrackCount,
+            weeklyPlayCount: weeklyPlayCount,
+            weeklyListeningSeconds: weeklyListeningSeconds,
+            weeklyFavoriteArtistName: weeklyFavoriteArtistName,
+            weeklyFavoriteArtistPlayCount: weeklyFavoriteArtistPlayCount,
+            preferenceRanking: preferenceRanking.prefix(12).map(HomeStartupSnapshot.RankSummary.init(item:)),
+            dailyListeningMap: dailyListeningMap
+        )
+        cachedStartupSnapshot = snapshot
+        snapshotWriteTask?.cancel()
+        snapshotWriteTask = Task(priority: .utility) {
+            try? await Task.sleep(for: .milliseconds(700))
+            guard !Task.isCancelled else { return }
+            await HomeStartupSnapshotStore.shared.save(snapshot)
+        }
+    }
+
     private func refreshHeroReference(in allTracks: [Track]) {
         guard let heroID = heroTrack?.id ?? selectedHeroTrackID,
               let updatedHero = allTracks.first(where: { $0.id == heroID })
@@ -559,5 +621,240 @@ final class HomeViewModel {
         selectedHeroTrackID = pick?.id
         selectedHeroGeneratedAt = pick == nil ? nil : now
         return pick
+    }
+}
+
+nonisolated struct HomeStartupSnapshot: Codable, Equatable, Sendable {
+    static let currentSchemaVersion = 1
+
+    struct TrackSummary: Codable, Equatable, Identifiable, Sendable {
+        let id: UUID
+        let title: String
+        let artist: String
+        let album: String
+
+        init(id: UUID, title: String, artist: String, album: String) {
+            self.id = id
+            self.title = title
+            self.artist = artist
+            self.album = album
+        }
+
+        @MainActor
+        init(track: Track) {
+            self.init(id: track.id, title: track.title, artist: track.artist, album: track.album)
+        }
+    }
+
+    struct PlaylistSummary: Codable, Equatable, Identifiable, Sendable {
+        let id: UUID
+        let name: String
+        let trackCount: Int
+
+        @MainActor
+        init(playlist: Playlist) {
+            id = playlist.id
+            name = playlist.name
+            trackCount = playlist.trackCount
+        }
+    }
+
+    struct AlbumSummary: Codable, Equatable, Identifiable, Sendable {
+        let id: UUID
+        let title: String
+        let artist: String
+        let trackCount: Int
+
+        init(album: AlbumEntry) {
+            id = album.id
+            title = album.displayTitle
+            artist = album.primaryArtistDisplayName
+            trackCount = album.trackCount
+        }
+    }
+
+    struct ArtistSummary: Codable, Equatable, Identifiable, Sendable {
+        let id: UUID
+        let name: String
+        let albumCount: Int
+        let trackCount: Int
+
+        init(artist: ArtistEntry) {
+            id = artist.id
+            name = artist.displayName
+            albumCount = artist.albumCount
+            trackCount = artist.trackCount
+        }
+    }
+
+    struct RankSummary: Codable, Equatable, Identifiable, Sendable {
+        let id: UUID
+        let title: String
+        let artist: String
+        let score: Double
+        let playCount: Int
+
+        init(item: HomeViewModel.PreferenceRankItem) {
+            id = item.id
+            title = item.title
+            artist = item.artist
+            score = item.score
+            playCount = item.playCount
+        }
+    }
+
+    let schemaVersion: Int
+    let librarySignature: String
+    let generatedAt: Date
+    let hero: TrackSummary?
+    let playlists: [PlaylistSummary]
+    let albums: [AlbumSummary]
+    let artists: [ArtistSummary]
+    let totalTrackCount: Int
+    let weeklyPlayCount: Int
+    let weeklyListeningSeconds: Double
+    let weeklyFavoriteArtistName: String?
+    let weeklyFavoriteArtistPlayCount: Int
+    let preferenceRanking: [RankSummary]
+    let dailyListeningMap: [Date: Int]
+}
+
+private actor HomeStartupSnapshotStore {
+    static let shared = HomeStartupSnapshotStore()
+
+    private let encoder: JSONEncoder = {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        return encoder
+    }()
+
+    private let decoder: JSONDecoder = {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
+    }()
+
+    func load() -> HomeStartupSnapshot? {
+        let url = cacheURL()
+        guard let data = try? Data(contentsOf: url),
+              let snapshot = try? decoder.decode(HomeStartupSnapshot.self, from: data),
+              snapshot.schemaVersion == HomeStartupSnapshot.currentSchemaVersion
+        else { return nil }
+        return snapshot
+    }
+
+    func save(_ snapshot: HomeStartupSnapshot) {
+        let url = cacheURL()
+        do {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let data = try encoder.encode(snapshot)
+            try data.write(to: url, options: [.atomic])
+        } catch {
+            Log.debug("[Home] Failed to write startup snapshot: \(error.localizedDescription)", category: .library)
+        }
+    }
+
+    private func cacheURL() -> URL {
+        let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        return root
+            .appendingPathComponent("kmgccc_player", isDirectory: true)
+            .appendingPathComponent("Home", isDirectory: true)
+            .appendingPathComponent("startup-snapshot-v\(HomeStartupSnapshot.currentSchemaVersion).json")
+    }
+}
+
+private struct HomeRefreshSignature: Equatable {
+    let volatileHash: Int
+    let stableCacheSignature: String
+
+    @MainActor
+    init(libraryVM: LibraryViewModel, tracks: [Track]) {
+        var hasher = Hasher()
+        var stable = HomeStableHasher()
+
+        hasher.combine(tracks.count)
+        stable.combine("tracks:\(tracks.count)")
+        for track in tracks {
+            hasher.combine(track.id)
+            hasher.combine(track.title)
+            hasher.combine(track.artist)
+            hasher.combine(track.album)
+            hasher.combine(track.albumGroupKey)
+            hasher.combine(track.artworkFileName)
+            stable.combine(track.id.uuidString)
+            stable.combine(track.title)
+            stable.combine(track.artist)
+            stable.combine(track.album)
+            stable.combine(track.albumGroupKey)
+            stable.combine(track.artworkFileName ?? "")
+        }
+
+        hasher.combine(libraryVM.playlists.count)
+        stable.combine("playlists:\(libraryVM.playlists.count)")
+        for playlist in libraryVM.playlists {
+            hasher.combine(playlist.id)
+            hasher.combine(playlist.name)
+            hasher.combine(playlist.userDescription)
+            hasher.combine(playlist.tracks.count)
+            stable.combine(playlist.id.uuidString)
+            stable.combine(playlist.name)
+            stable.combine(playlist.userDescription)
+            stable.combine("\(playlist.tracks.count)")
+            for track in playlist.tracks {
+                hasher.combine(track.id)
+                stable.combine(track.id.uuidString)
+            }
+        }
+
+        hasher.combine(libraryVM.artistSortKey.rawValue)
+        hasher.combine(libraryVM.albumSortKey.rawValue)
+        hasher.combine(libraryVM.trackSortOrder.rawValue)
+        stable.combine(libraryVM.artistSortKey.rawValue)
+        stable.combine(libraryVM.albumSortKey.rawValue)
+        stable.combine(libraryVM.trackSortOrder.rawValue)
+
+        for artist in libraryVM.artistEntries {
+            hasher.combine(artist.id)
+            hasher.combine(artist.updatedAt)
+            hasher.combine(artist.trackCount)
+            hasher.combine(artist.albumCount)
+            stable.combine(artist.id.uuidString)
+            stable.combine("\(artist.updatedAt.timeIntervalSince1970)")
+            stable.combine("\(artist.trackCount)")
+            stable.combine("\(artist.albumCount)")
+        }
+
+        for album in libraryVM.albumEntries {
+            hasher.combine(album.id)
+            hasher.combine(album.updatedAt)
+            hasher.combine(album.trackCount)
+            stable.combine(album.id.uuidString)
+            stable.combine("\(album.updatedAt.timeIntervalSince1970)")
+            stable.combine("\(album.trackCount)")
+        }
+
+        volatileHash = hasher.finalize()
+        stableCacheSignature = stable.digest
+    }
+}
+
+private struct HomeStableHasher {
+    private var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+
+    mutating func combine(_ value: String) {
+        for byte in value.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x0000_0100_0000_01B3
+        }
+        hash ^= 0xff
+        hash = hash &* 0x0000_0100_0000_01B3
+    }
+
+    var digest: String {
+        String(hash, radix: 16)
     }
 }

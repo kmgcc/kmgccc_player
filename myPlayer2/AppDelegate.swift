@@ -11,6 +11,7 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
     static weak var shared: AppDelegate?
     static var launchMainWindowHandler: (@MainActor () -> Void)?
+    static var applicationWillTerminateHandler: (@MainActor () -> Void)?
 
     static func showMainWindow() {
         Task { @MainActor in
@@ -34,6 +35,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             print("[AppDelegate] launchMainWindowHandler.invoke")
             Self.showMainWindow()
         }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        Self.applicationWillTerminateHandler?()
     }
 
     func configureDockPlayback(playbackCoordinator: PlaybackCoordinator) {

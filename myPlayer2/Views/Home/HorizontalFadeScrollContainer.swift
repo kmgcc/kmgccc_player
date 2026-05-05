@@ -39,6 +39,7 @@ struct HorizontalFadeScrollContainer<Content: View>: View {
     @State private var activeScrollEdge: HorizontalScrollEdge?
     @State private var nativeScrollView: NSScrollView?
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.homeLiveResizeRendering) private var isLiveResizing
 
     init(
         spacing: CGFloat = 0,
@@ -125,7 +126,7 @@ struct HorizontalFadeScrollContainer<Content: View>: View {
         )
         .mask(scrollFadeMask)
         .overlay {
-            if showsScrollButtons {
+            if effectiveShowsScrollButtons {
                 HorizontalEdgeHoverTracker(
                     edgeActivationWidth: edgeActivationWidth,
                     leadingInset: scrollButtonLeadingInset,
@@ -161,8 +162,8 @@ struct HorizontalFadeScrollContainer<Content: View>: View {
         }
         .animation(showsEdgeFade ? .easeOut(duration: 0.18) : nil, value: leftFadeOpacity)
         .animation(showsEdgeFade ? .easeOut(duration: 0.18) : nil, value: rightFadeOpacity)
-        .animation(.easeOut(duration: 0.30), value: showsLeftScrollButton)
-        .animation(.easeOut(duration: 0.30), value: showsRightScrollButton)
+        .animation(isLiveResizing ? nil : .easeOut(duration: 0.30), value: showsLeftScrollButton)
+        .animation(isLiveResizing ? nil : .easeOut(duration: 0.30), value: showsRightScrollButton)
     }
 
     @ViewBuilder
@@ -199,22 +200,30 @@ struct HorizontalFadeScrollContainer<Content: View>: View {
     }
 
     private var needsScrollMetrics: Bool {
-        showsEdgeFade || showsScrollButtons || onHorizontalScrollOffsetChange != nil || onScrollMetricsChange != nil
+        !isLiveResizing
+            && (showsEdgeFade
+                || showsScrollButtons
+                || onHorizontalScrollOffsetChange != nil
+                || onScrollMetricsChange != nil)
     }
 
     private var needsExactScrollOffset: Bool {
-        showsEdgeFade || onHorizontalScrollOffsetChange != nil || onScrollMetricsChange != nil
+        !isLiveResizing && (showsEdgeFade || onHorizontalScrollOffsetChange != nil || onScrollMetricsChange != nil)
+    }
+
+    private var effectiveShowsScrollButtons: Bool {
+        showsScrollButtons && !isLiveResizing
     }
 
     private var showsLeftScrollButton: Bool {
-        guard showsScrollButtons, canScrollLeft, activeScrollEdge == .leading else {
+        guard effectiveShowsScrollButtons, canScrollLeft, activeScrollEdge == .leading else {
             return false
         }
         return true
     }
 
     private var showsRightScrollButton: Bool {
-        guard showsScrollButtons, canScrollRight, activeScrollEdge == .trailing else {
+        guard effectiveShowsScrollButtons, canScrollRight, activeScrollEdge == .trailing else {
             return false
         }
         return true

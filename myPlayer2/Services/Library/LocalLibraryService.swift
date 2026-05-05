@@ -1442,7 +1442,7 @@ final class LocalLibraryService {
             let source = DispatchSource.makeFileSystemObjectSource(
                 fileDescriptor: fd,
                 eventMask: [.write, .delete, .rename, .extend, .attrib],  // Added .extend/.attrib for better file change detection
-                queue: DispatchQueue.global(qos: .utility)
+                queue: .main
             )
 
             source.setEventHandler { [weak self] in
@@ -1492,7 +1492,7 @@ final class LocalLibraryService {
             }
         }
         pendingSync = work
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.5, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
     }
 
     nonisolated func suppressMonitorEvents(for duration: TimeInterval = 1.5) {
