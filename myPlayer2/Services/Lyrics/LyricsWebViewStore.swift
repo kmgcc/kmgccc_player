@@ -9,6 +9,7 @@
 import Combine
 import CryptoKit
 import Foundation
+import QuartzCore
 import SwiftUI
 import WebKit
 
@@ -116,6 +117,9 @@ final class LyricsWebViewStore: NSObject {
     private var didRegisterMessageHandlers = false
     private var isShutDown = false
     private var isMouseInteractionSuppressed = false
+    private var lowResolutionModeEnabled = false
+    private var lastAppliedBackingScale: CGFloat?
+    private let lowResolutionViewScale = CGFloat(LyricsSurfaceRole.amllLowResolutionScale)
     // MARK: - Callbacks
 
     var onUserSeek: ((Double) -> Void)?
@@ -159,6 +163,94 @@ final class LyricsWebViewStore: NSObject {
         )
 
         updateWebContentPointerOcclusionState(isMouseInteractionSuppressed)
+    }
+
+    func setLowResolutionModeEnabled(_ enabled: Bool, reason: String) {
+        guard lowResolutionModeEnabled != enabled else {
+            applyBackingScaleForResolutionMode(reason: reason)
+            return
+        }
+
+        lowResolutionModeEnabled = enabled
+        lastAppliedBackingScale = nil
+        Log.info(
+            "AMLL low resolution mode=\(enabled), role=\(role), reason=\(reason), objectID=\(webViewObjectID)",
+            category: .webview
+        )
+        if let webView = retainedWebView {
+            layoutWebView(webView, in: webView.superview?.bounds ?? webView.frame, reason: reason)
+        }
+        applyBackingScaleForResolutionMode(reason: reason)
+    }
+
+    func layoutPreparedWebView(in bounds: CGRect, reason: String) {
+        guard let webView = retainedWebView else { return }
+        layoutWebView(webView, in: bounds, reason: reason)
+    }
+
+    private func layoutWebView(_ webView: WKWebView, in bounds: CGRect, reason: String) {
+        let viewScale = lowResolutionModeEnabled ? lowResolutionViewScale : 1
+        let targetFrame = CGRect(
+            x: 0,
+            y: 0,
+            width: max(1, bounds.width * viewScale),
+            height: max(1, bounds.height * viewScale)
+        )
+
+        if webView.frame != targetFrame {
+            LyricsRuntimeProfile.recordFrameWrite(
+                key: "WKWebView.frame",
+                previous: webView.frame,
+                next: targetFrame
+            )
+            webView.frame = targetFrame
+        }
+
+        webView.autoresizingMask = lowResolutionModeEnabled ? [] : [.width, .height]
+        webView.pageZoom = viewScale
+        webView.wantsLayer = true
+        webView.layer?.anchorPoint = CGPoint(x: 0, y: 0)
+        webView.layer?.position = CGPoint(x: 0, y: 0)
+        webView.layer?.setAffineTransform(
+            lowResolutionModeEnabled
+                ? CGAffineTransform(scaleX: 1 / viewScale, y: 1 / viewScale)
+                : .identity
+        )
+        applyBackingScaleForResolutionMode(reason: reason)
+    }
+
+    private func applyBackingScaleForResolutionMode(reason: String) {
+        guard let webView = retainedWebView else { return }
+
+        let windowScale = webView.window?.backingScaleFactor
+            ?? NSScreen.main?.backingScaleFactor
+            ?? 2
+        let targetScale = lowResolutionModeEnabled
+            ? windowScale
+            : windowScale
+
+        if let lastAppliedBackingScale,
+           abs(lastAppliedBackingScale - targetScale) < 0.001
+        {
+            return
+        }
+
+        webView.wantsLayer = true
+        applyContentsScale(targetScale, to: webView.layer)
+        lastAppliedBackingScale = targetScale
+        webView.setNeedsDisplay(webView.bounds)
+
+        Log.debug(
+            "Applied AMLL backing scale=\(String(format: "%.2f", targetScale)), windowScale=\(String(format: "%.2f", windowScale)), lowResolution=\(lowResolutionModeEnabled), role=\(role), reason=\(reason), objectID=\(webViewObjectID)",
+            category: .webview
+        )
+    }
+
+    private func applyContentsScale(_ contentsScale: CGFloat, to layer: CALayer?) {
+        guard let layer else { return }
+        layer.contentsScale = contentsScale
+        layer.rasterizationScale = contentsScale
+        layer.sublayers?.forEach { applyContentsScale(contentsScale, to: $0) }
     }
 
     private func updateWebContentPointerOcclusionState(_ suppressed: Bool) {
@@ -289,6 +381,7 @@ final class LyricsWebViewStore: NSObject {
         contentLoadRevision = 0
         trackSwitchesSinceLastWebViewRecycle = 0
         didRegisterMessageHandlers = false
+        lastAppliedBackingScale = nil
 
         // Clean up WebView
         if let webView = retainedWebView {
@@ -381,6 +474,7 @@ final class LyricsWebViewStore: NSObject {
         isReady = false
         isRecoveryInProgress = false
         didRegisterMessageHandlers = false
+        lastAppliedBackingScale = nil
 
         guard let webView = retainedWebView else {
             Log.debug("Release skipped, no prepared WebView: role=\(role), reason=\(reason)", category: .webview)
@@ -1032,6 +1126,7 @@ final class LyricsWebViewStore: NSObject {
         isTimeSyncInFlight = false
         contentLoadRevision = 0
         trackSwitchesSinceLastWebViewRecycle = 0
+        lastAppliedBackingScale = nil
         onUserSeek = nil
 
         // Detach from view hierarchy
@@ -1399,6 +1494,7 @@ final class LyricsWebViewStore: NSObject {
         webView.setValue(false, forKey: "drawsBackground")
         retainedWebView = webView
         applyMouseInteractionSuppression(reason: "ensureWebView")
+        applyBackingScaleForResolutionMode(reason: "ensureWebView")
         registerMessageHandlers()
         print("[LyricsStore:\(role)] Created WebView instance: objectID=\(webViewObjectID)")
         loadAMLLContent()
@@ -1444,6 +1540,7 @@ final class LyricsWebViewStore: NSObject {
         oldWebView.navigationDelegate = nil
         oldWebView.removeFromSuperview()
         retainedWebView = nil
+        lastAppliedBackingScale = nil
 
         let newWebView = ensureWebView()
         newWebView.frame = frame
@@ -1456,6 +1553,7 @@ final class LyricsWebViewStore: NSObject {
 
         if let hostView {
             hostView.addSubview(newWebView)
+            layoutWebView(newWebView, in: hostView.bounds, reason: "rebuildWebViewForFreshContent")
         }
         applyMouseInteractionSuppression(reason: "rebuildWebViewForFreshContent")
 

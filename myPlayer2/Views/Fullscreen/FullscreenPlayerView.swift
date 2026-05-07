@@ -2011,6 +2011,7 @@ struct FullscreenPlayerView: View {
             String(format: "%.0f", settings.lyricsLeadInMs),
             String(format: "%.0f", settings.lyricsNearSwitchGapMs),
             String(format: "%.0f", settings.lyricsGlobalAdvanceMs),
+            settings.amllLowResolutionModeEnabled ? "amllLowRes" : "amllFullRes",
             playbackCoordinator.presentation.source.rawValue,
             hostContext.rawValue,
             overlay.signature,
@@ -2670,7 +2671,9 @@ struct FullscreenPlayerView: View {
                 100,
                 min(900, settings.fullscreenLyricsTranslationFontWeight)
             ),
-            "renderScale": surfaceRole.renderScale,
+            "renderScale": surfaceRole.renderScale(
+                lowResolutionModeEnabled: settings.amllLowResolutionModeEnabled
+            ),
             "enableBlur": surfaceRole.enableBlur,
             "enableSpring": surfaceRole.enableSpring,
             "fpsCap": surfaceRole.fpsCap,

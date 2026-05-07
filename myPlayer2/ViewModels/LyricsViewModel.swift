@@ -348,7 +348,9 @@ final class LyricsViewModel {
             "nearSwitchGapMs": nearSwitchGapMs,
             "timeOffsetMs": combinedOffsetMs,
             "theme": resolvedTheme,
-            "renderScale": surfaceRole.renderScale,
+            "renderScale": surfaceRole.renderScale(
+                lowResolutionModeEnabled: settings.amllLowResolutionModeEnabled
+            ),
             "enableBlur": surfaceRole.enableBlur,
             "enableSpring": surfaceRole.enableSpring,
             "fpsCap": surfaceRole.fpsCap,

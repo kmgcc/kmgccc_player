@@ -166,7 +166,15 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
     }
 
     func windowWillClose(_ notification: Notification) {
-        Self.sharedController = nil
+        if let closingWindow = notification.object as? NSWindow {
+            toolbarController.detachFromWindow(closingWindow)
+            closingWindow.toolbar = nil
+        }
+        didInstallToolbar = false
+        didReachPresentedState = false
+        if Self.sharedController === self {
+            Self.sharedController = nil
+        }
     }
 
     func windowDidBecomeMain(_ notification: Notification) {
