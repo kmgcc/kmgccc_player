@@ -45,6 +45,10 @@ struct AMLLWebView: NSViewRepresentable {
     func makeNSView(context: Context) -> WebViewHostView {
         LyricsRuntimeProfile.increment("AMLLWebView.makeNSView")
         let hostView = WebViewHostView()
+        context.coordinator.updateLowResolutionMode(
+            effectiveLowResolutionModeEnabled,
+            reason: "makeNSView"
+        )
 
         Log.debug(
             "makeNSView: objectID=\(store.webViewObjectID)",
@@ -59,6 +63,10 @@ struct AMLLWebView: NSViewRepresentable {
 
     func updateNSView(_ nsView: WebViewHostView, context: Context) {
         LyricsRuntimeProfile.increment("AMLLWebView.updateNSView")
+        context.coordinator.updateLowResolutionMode(
+            effectiveLowResolutionModeEnabled,
+            reason: "updateNSView"
+        )
         // Always try to ensure WebView is attached with correct frame
         context.coordinator.tryAttach(to: nsView, context: "updateNSView")
 
@@ -123,6 +131,13 @@ struct AMLLWebView: NSViewRepresentable {
         Coordinator(store: store, animatesAttachment: animatesAttachment)
     }
 
+    private var effectiveLowResolutionModeEnabled: Bool {
+        guard let role = LyricsSurfaceRole(rawValue: store.role) else {
+            return settings.amllLowResolutionModeEnabled
+        }
+        return settings.amllLowResolutionModeEnabled && role.supportsAMLLLowResolutionMode
+    }
+
     static func dismantleNSView(_ nsView: WebViewHostView, coordinator: Coordinator) {
         LyricsRuntimeProfile.increment("AMLLWebView.dismantleNSView")
         guard let attachmentID = coordinator.attachmentID else {
@@ -153,10 +168,19 @@ struct AMLLWebView: NSViewRepresentable {
         var lastWebViewAlphaValue: Double?
         private weak var hostView: WebViewHostView?
         private var hasAttemptedAttach = false
+        private var lowResolutionModeEnabled = false
 
         init(store: LyricsWebViewStore, animatesAttachment: Bool) {
             self.store = store
             self.animatesAttachment = animatesAttachment
+        }
+
+        func updateLowResolutionMode(_ enabled: Bool, reason: String) {
+            lowResolutionModeEnabled = enabled
+            hostView?.webViewLayoutScale = enabled
+                ? CGFloat(LyricsSurfaceRole.amllLowResolutionScale)
+                : 1
+            store.setLowResolutionModeEnabled(enabled, reason: reason)
         }
 
         /// Try to attach WebView to host, with detailed logging
@@ -178,15 +202,8 @@ struct AMLLWebView: NSViewRepresentable {
 
             // If already attached to this host, just ensure frame is correct
             if isAttached {
-                if let webView = store.preparedWebView, webView.frame != hostView.bounds {
-                    LyricsRuntimeProfile.recordFrameWrite(
-                        key: "WKWebView.frame",
-                        previous: webView.frame,
-                        next: hostView.bounds
-                    )
-                    webView.frame = hostView.bounds
-                    Log.debug("Updated WebView frame: \(webView.frame)", category: .webview)
-                } else if let webView = store.preparedWebView {
+                if let webView = store.preparedWebView {
+                    store.layoutPreparedWebView(in: hostView.bounds, reason: "tryAttach:\(context)")
                     LyricsRuntimeProfile.recordFrameWrite(
                         key: "WKWebView.frame",
                         previous: webView.frame,
@@ -225,13 +242,13 @@ struct AMLLWebView: NSViewRepresentable {
             }
 
             // Add to new host
-            LyricsRuntimeProfile.recordFrameWrite(
-                key: "WKWebView.frame",
-                previous: webView.frame,
-                next: hostView.bounds
-            )
-            webView.frame = hostView.bounds
-            webView.autoresizingMask = [.width, .height]
+            hostView.webViewLayoutScale = lowResolutionModeEnabled
+                ? CGFloat(LyricsSurfaceRole.amllLowResolutionScale)
+                : 1
+            store.layoutPreparedWebView(in: hostView.bounds, reason: "attachWebView")
+            hostView.onLayout = { [weak store] bounds in
+                store?.layoutPreparedWebView(in: bounds, reason: "hostLayout")
+            }
             hostView.addSubview(webView)
             if shouldAnimateAttachment {
                 webView.alphaValue = 0
@@ -242,6 +259,10 @@ struct AMLLWebView: NSViewRepresentable {
                 }
             }
             store.refreshMouseInteractionSuppression(reason: "attachWebView")
+            store.setLowResolutionModeEnabled(
+                lowResolutionModeEnabled,
+                reason: "attachWebView"
+            )
             self.hostView = hostView
 
             Log.debug(
@@ -258,6 +279,8 @@ struct AMLLWebView: NSViewRepresentable {
             if self.hostView === hostView {
                 self.hostView = nil
             }
+            hostView.onLayout = nil
+            hostView.webViewLayoutScale = 1
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -302,6 +325,9 @@ struct AMLLWebView: NSViewRepresentable {
 }
 
 final class WebViewHostView: NSView {
+    var onLayout: ((CGRect) -> Void)?
+    var webViewLayoutScale: CGFloat = 1
+
     var isMouseInteractionSuppressed = false {
         didSet {
             if oldValue != isMouseInteractionSuppressed {
@@ -314,6 +340,15 @@ final class WebViewHostView: NSView {
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard !isMouseInteractionSuppressed else { return nil }
+        if webViewLayoutScale < 0.999, bounds.contains(point),
+           let webView = subviews.compactMap({ $0 as? WKWebView }).first
+        {
+            let webViewPoint = NSPoint(
+                x: point.x * webViewLayoutScale,
+                y: point.y * webViewLayoutScale
+            )
+            return webView.hitTest(webViewPoint) ?? webView
+        }
         return super.hitTest(point)
     }
 
@@ -340,6 +375,7 @@ final class WebViewHostView: NSView {
     override func layout() {
         LyricsRuntimeProfile.increment("WebViewHostView.layout")
         super.layout()
+        onLayout?(bounds)
     }
 
     override func layoutSubtreeIfNeeded() {

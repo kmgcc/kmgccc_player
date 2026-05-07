@@ -22,6 +22,7 @@ struct FullscreenLyricsTabView: View {
     @State private var fullscreenLyricsTranslationFontWeight: Int = AppSettings.shared.fullscreenLyricsTranslationFontWeight
     @State private var fullscreenLyricsFontSize: Double = AppSettings.shared.fullscreenLyricsFontSize
     @State private var fullscreenLyricsTranslationFontSize: Double = AppSettings.shared.fullscreenLyricsTranslationFontSize
+    @State private var amllHighResolutionLyricsEnabled: Bool = AppSettings.shared.amllHighResolutionLyricsEnabled
 
     private var fontFamilies: [String] {
         Self.cachedFontFamilies
@@ -61,6 +62,7 @@ struct FullscreenLyricsTabView: View {
         .onChange(of: fullscreenLyricsTranslationFontWeight) { _, _ in syncToSettings() }
         .onChange(of: fullscreenLyricsFontSize) { _, _ in syncToSettings() }
         .onChange(of: fullscreenLyricsTranslationFontSize) { _, _ in syncToSettings() }
+        .onChange(of: amllHighResolutionLyricsEnabled) { _, _ in syncToSettings() }
     }
 
     private var typographySection: some View {
@@ -71,10 +73,20 @@ struct FullscreenLyricsTabView: View {
                         .font(.system(size: presentationStyle.sectionTitleFontSize, weight: .semibold))
                         .foregroundStyle(presentationStyle.secondaryTextColor)
                     Spacer()
-                    Text("仅影响全屏 AMLL")
-                        .font(.system(size: presentationStyle.captionFontSize))
-                        .foregroundStyle(presentationStyle.tertiaryTextColor)
+                  
                 }
+
+                SettingsSwitchRow(
+                    title: "高分辨率歌词",
+                    isOn: $amllHighResolutionLyricsEnabled,
+                    detail: "开启后歌词观感更细腻，但 GPU 占用也会提高。",
+                    titleFont: presentationStyle.rowLabelFont,
+                    detailFont: presentationStyle.captionFont,
+                    titleColor: presentationStyle.primaryTextColor,
+                    detailColor: presentationStyle.tertiaryTextColor
+                )
+
+                Divider().padding(.vertical, presentationStyle.dividerVerticalPadding)
 
                 HStack {
                     Text("主歌词字号")
@@ -217,6 +229,7 @@ struct FullscreenLyricsTabView: View {
         fullscreenLyricsTranslationFontWeight = settings.fullscreenLyricsTranslationFontWeight
         fullscreenLyricsFontSize = settings.fullscreenLyricsFontSize
         fullscreenLyricsTranslationFontSize = settings.fullscreenLyricsTranslationFontSize
+        amllHighResolutionLyricsEnabled = settings.amllHighResolutionLyricsEnabled
     }
 
     private func syncToSettings() {
@@ -227,5 +240,7 @@ struct FullscreenLyricsTabView: View {
         settings.fullscreenLyricsTranslationFontWeight = fullscreenLyricsTranslationFontWeight
         settings.fullscreenLyricsFontSize = fullscreenLyricsFontSize
         settings.fullscreenLyricsTranslationFontSize = fullscreenLyricsTranslationFontSize
+        settings.amllHighResolutionLyricsEnabled = amllHighResolutionLyricsEnabled
+        lyricsVM.refreshConfigFromSettings()
     }
 }

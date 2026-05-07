@@ -24,6 +24,7 @@ struct NowPlayingLyricsTabView: View {
     @State private var lyricsTranslationFontSize: Double = AppSettings.shared.lyricsTranslationFontSize
     @State private var lyricsTranslationFontWeightLight: Int = AppSettings.shared.lyricsTranslationFontWeightLight
     @State private var lyricsTranslationFontWeightDark: Int = AppSettings.shared.lyricsTranslationFontWeightDark
+    @State private var amllHighResolutionLyricsEnabled: Bool = AppSettings.shared.amllHighResolutionLyricsEnabled
 
     private var fontFamilies: [String] {
         Self.cachedFontFamilies
@@ -47,10 +48,33 @@ struct NowPlayingLyricsTabView: View {
                 .environment(settings)
                 .environment(lyricsVM)
 
+            renderingSection
+
             fontsSection
 
             previewSection
         }
+    }
+
+    private var renderingSection: some View {
+        GroupBox {
+            SettingsSwitchRow(
+                title: "高分辨率歌词",
+                isOn: $amllHighResolutionLyricsEnabled,
+                detail: "开启后歌词观感更细腻，但 GPU 占用也会提高。",
+                titleFont: presentationStyle.rowLabelFont,
+                detailFont: presentationStyle.captionFont
+            )
+            .padding(presentationStyle.groupPadding)
+        } label: {
+            Text("渲染性能")
+                .font(presentationStyle.sectionTitleFont)
+                .foregroundStyle(.secondary)
+        }
+        .onAppear {
+            amllHighResolutionLyricsEnabled = settings.amllHighResolutionLyricsEnabled
+        }
+        .onChange(of: amllHighResolutionLyricsEnabled) { _, _ in syncToSettings() }
     }
 
     private var fontsSection: some View {
@@ -253,6 +277,7 @@ struct NowPlayingLyricsTabView: View {
         lyricsTranslationFontSize = settings.lyricsTranslationFontSize
         lyricsTranslationFontWeightLight = settings.lyricsTranslationFontWeightLight
         lyricsTranslationFontWeightDark = settings.lyricsTranslationFontWeightDark
+        amllHighResolutionLyricsEnabled = settings.amllHighResolutionLyricsEnabled
     }
 
     private func syncToSettings() {
@@ -265,6 +290,7 @@ struct NowPlayingLyricsTabView: View {
         settings.lyricsTranslationFontSize = lyricsTranslationFontSize
         settings.lyricsTranslationFontWeightLight = lyricsTranslationFontWeightLight
         settings.lyricsTranslationFontWeightDark = lyricsTranslationFontWeightDark
+        settings.amllHighResolutionLyricsEnabled = amllHighResolutionLyricsEnabled
         lyricsVM.refreshConfigFromSettings()
     }
 }

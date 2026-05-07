@@ -81,6 +81,10 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
     }
 
     func attachToWindow(_ window: NSWindow) {
+        if self.window !== window {
+            closeFeatureTipPopover()
+            resetToolbarItemReferences()
+        }
         self.window = window
         // Start one-shot observation loops after the toolbar is installed in a live window.
         observeSearchText()
@@ -92,6 +96,15 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         observeToolbarState()
         observeHomeNavigationState()
         applyToolbarLayoutForCurrentState()
+    }
+
+    func detachFromWindow(_ window: NSWindow) {
+        guard self.window === window else { return }
+        closeFeatureTipPopover()
+        fullscreenModeCancellable?.cancel()
+        fullscreenModeCancellable = nil
+        resetToolbarItemReferences()
+        self.window = nil
     }
 
     func toggleMultiselectFromCommand() {
@@ -987,11 +1000,29 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         let desiredIdentifiers = desiredToolbarIdentifiersForCurrentState()
         let currentIdentifiers = toolbar.items.map(\.itemIdentifier)
         guard currentIdentifiers != desiredIdentifiers else {
+            reattachVisibleToolbarItemReferences()
             toolbar.validateVisibleItems()
+            syncVisibleToolbarItemPresentation()
             return
         }
 
         closeFeatureTipPopover()
+        resetToolbarItemReferences()
+
+        while !toolbar.items.isEmpty {
+            toolbar.removeItem(at: toolbar.items.count - 1)
+        }
+
+        for identifier in desiredIdentifiers {
+            toolbar.insertItem(withItemIdentifier: identifier, at: toolbar.items.count)
+        }
+
+        reattachVisibleToolbarItemReferences()
+        toolbar.validateVisibleItems()
+        syncVisibleToolbarItemPresentation()
+    }
+
+    private func resetToolbarItemReferences() {
         searchItem = nil
         searchField = nil
         multiselectItem = nil
@@ -1002,16 +1033,82 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         sidebarToggleItem = nil
         lyricsToggleItem = nil
         homeNavPillItem = nil
+    }
 
-        while !toolbar.items.isEmpty {
-            toolbar.removeItem(at: toolbar.items.count - 1)
+    private func reattachVisibleToolbarItemReferences() {
+        resetToolbarItemReferences()
+
+        for item in toolbar.items {
+            switch item.itemIdentifier {
+            case Identifier.sidebarToggle:
+                item.target = self
+                item.action = #selector(handleSidebarToggle(_:))
+                item.autovalidates = false
+                item.isEnabled = true
+                sidebarToggleItem = item
+
+            case Identifier.lyricsToggle:
+                item.target = self
+                item.action = #selector(handleLyricsToggle(_:))
+                item.autovalidates = false
+                item.isEnabled = true
+                lyricsToggleItem = item
+
+            case Identifier.search:
+                searchItem = item
+                if let itemView = item.view,
+                   let field = firstSubview(in: itemView, matching: { $0 is NSSearchField }) as? NSSearchField {
+                    field.target = self
+                    field.action = #selector(handleSearchChange(_:))
+                    searchField = field
+                }
+
+            case Identifier.pillGroup:
+                guard let group = item as? NSToolbarItemGroup else { continue }
+                group.target = self
+                group.action = #selector(handlePillGroupAction(_:))
+                group.autovalidates = false
+                group.isEnabled = true
+                pillGroupItem = group
+                if group.subitems.indices.contains(0) {
+                    multiselectItem = group.subitems[0]
+                }
+                if group.subitems.indices.contains(1) {
+                    playItem = group.subitems[1]
+                }
+                if group.subitems.indices.contains(2) {
+                    importItem = group.subitems[2]
+                }
+
+            case Identifier.homePillGroup:
+                guard let group = item as? NSToolbarItemGroup else { continue }
+                group.target = self
+                group.action = #selector(handleHomePillGroupAction(_:))
+                group.autovalidates = false
+                group.isEnabled = true
+                homePillGroupItem = group
+                if group.subitems.indices.contains(0) {
+                    playItem = group.subitems[0]
+                }
+                if group.subitems.indices.contains(1) {
+                    importItem = group.subitems[1]
+                }
+
+            case Identifier.homeNavPill:
+                guard let group = item as? NSToolbarItemGroup else { continue }
+                group.target = self
+                group.action = #selector(handleHomeNavPillAction(_:))
+                group.autovalidates = false
+                group.isEnabled = true
+                homeNavPillItem = group
+
+            default:
+                continue
+            }
         }
+    }
 
-        for (index, identifier) in desiredIdentifiers.enumerated() {
-            toolbar.insertItem(withItemIdentifier: identifier, at: index)
-        }
-
-        toolbar.validateVisibleItems()
+    private func syncVisibleToolbarItemPresentation() {
         syncSearchFieldFromModel()
         syncSidebarToggleItemPresentation()
         syncMultiselectItemPresentation()

@@ -40,9 +40,6 @@ struct LyricsTimingConfigSection: View {
             Text("参数仅供调试，正常使用无需调整")
                 .font(.system(size: presentationStyle.captionFontSize * 0.92))
                 .foregroundStyle(presentationStyle.tertiaryTextColor)
-            Text("同时作用于窗口与全屏歌词")
-                .font(.system(size: presentationStyle.captionFontSize * 0.92))
-                .foregroundStyle(presentationStyle.secondaryTextColor)
 
             GroupBox {
                 VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {

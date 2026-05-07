@@ -322,8 +322,7 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
             hubConsumerId = nil
         }
 
-        hub.stop()
-        hub.start()
+        hub.reinstallTapIfActive()
         hubConsumerId = hub.addConsumer { [weak self] data in
             self?.enqueue(data)
         }

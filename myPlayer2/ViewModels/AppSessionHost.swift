@@ -266,17 +266,13 @@ final class AppSessionHost: ObservableObject {
 
         let currentTime = playerVM.currentTime.isFinite ? max(0, playerVM.currentTime) : 0
         let duration = playerVM.duration.isFinite ? max(0, playerVM.duration) : 0
-        let currentQueue = playerVM.currentQueueTracks
-        let queueTrackIDs = currentQueue.isEmpty ? [currentTrack.id] : currentQueue.map(\.id)
 
         PlaybackMemoryStore.save(
             PlaybackMemory(
                 savedAt: Date(),
                 trackID: currentTrack.id,
-                queueTrackIDs: queueTrackIDs,
                 currentTime: currentTime,
-                duration: duration,
-                wasPlaying: playerVM.isPlaying
+                duration: duration
             )
         )
     }
@@ -291,38 +287,20 @@ final class AppSessionHost: ObservableObject {
 
         await repository.reloadFromLibrary()
 
-        var requestedTrackIDs = memory.queueTrackIDs
-        if !requestedTrackIDs.contains(memory.trackID) {
-            requestedTrackIDs.append(memory.trackID)
-        }
-
-        let fetchedTracks = await repository.fetchTracks(ids: requestedTrackIDs)
-        let trackByID = Dictionary(uniqueKeysWithValues: fetchedTracks.map { ($0.id, $0) })
-        guard let targetTrack = trackByID[memory.trackID], targetTrack.availability != .missing else {
-            PlaybackMemoryStore.clear()
-            return
-        }
-
-        var restoredQueue = memory.queueTrackIDs.compactMap { trackByID[$0] }
+        let restoredQueue = await repository.fetchTracks(in: nil)
             .filter { $0.availability != .missing }
-        if !restoredQueue.contains(where: { $0.id == targetTrack.id }) {
-            restoredQueue.insert(targetTrack, at: 0)
-        }
-        guard !restoredQueue.isEmpty else {
+        guard let startIndex = restoredQueue.firstIndex(where: { $0.id == memory.trackID }) else {
             PlaybackMemoryStore.clear()
             return
         }
 
-        let startIndex = restoredQueue.firstIndex { $0.id == targetTrack.id } ?? 0
         playbackCoordinator.playTracks(restoredQueue, startingAt: startIndex)
 
         let seekTime = PlaybackMemoryStore.restorableTime(from: memory)
         if seekTime > 0 {
             playbackCoordinator.seek(to: seekTime)
         }
-        if !memory.wasPlaying {
-            playbackCoordinator.pause()
-        }
+        playbackCoordinator.pause()
     }
 
     private func runDebugLaunchScenarioIfNeeded(
@@ -561,10 +539,8 @@ final class AppSessionHost: ObservableObject {
 private struct PlaybackMemory: Codable {
     let savedAt: Date
     let trackID: UUID
-    let queueTrackIDs: [UUID]
     let currentTime: Double
     let duration: Double
-    let wasPlaying: Bool
 }
 
 private enum PlaybackMemoryStore {

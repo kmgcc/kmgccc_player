@@ -96,19 +96,9 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
         }
 
         let format = mixer.outputFormat(forBus: 0)
-        self.sampleRate = Float(format.sampleRate)
         let bufferSize: AVAudioFrameCount = AVAudioFrameCount(fftSize)
 
-        resetBuffer()
-
-        // installTap is documented thread-safe; calling inside the lock keeps
-        // the install/uninstall + flag flip atomic across threads, which is
-        // exactly what AVAudioMixerNode needs to avoid `nullptr == Tap()`.
-        mixer.installTap(onBus: 0, bufferSize: bufferSize, format: format) {
-            [weak self] buffer, _ in
-            self?.enqueue(buffer)
-        }
-
+        installTapLocked(on: mixer, format: format, bufferSize: bufferSize)
         isInstalled = true
         stateLock.unlock()
 
@@ -133,6 +123,70 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
 
         stopTimer()
         purgeInactiveState(preservingMixerAttachment: true)
+    }
+
+    func prepareForEngineConfigurationChange() {
+        stateLock.lock()
+        guard isInstalled else {
+            stateLock.unlock()
+            return
+        }
+
+        mixerNode?.removeTap(onBus: 0)
+        isInstalled = false
+        stateLock.unlock()
+        resetBuffer()
+    }
+
+    func restoreAfterEngineConfigurationChange() {
+        stateLock.lock()
+        guard activeClients > 0 else {
+            stateLock.unlock()
+            return
+        }
+        guard isInstalled == false else {
+            stateLock.unlock()
+            return
+        }
+        guard let mixer = mixerNode else {
+            stateLock.unlock()
+            print("⚠️ AudioAnalysisHub: No mixer attached after engine configuration change")
+            return
+        }
+
+        let format = mixer.outputFormat(forBus: 0)
+        let bufferSize: AVAudioFrameCount = AVAudioFrameCount(fftSize)
+        installTapLocked(on: mixer, format: format, bufferSize: bufferSize)
+        isInstalled = true
+        stateLock.unlock()
+
+        startTimer()
+    }
+
+    func reinstallTapIfActive() {
+        stateLock.lock()
+        guard activeClients > 0 else {
+            stateLock.unlock()
+            return
+        }
+        guard let mixer = mixerNode else {
+            stateLock.unlock()
+            print("⚠️ AudioAnalysisHub: No mixer attached for tap reinstall")
+            return
+        }
+
+        if isInstalled {
+            mixer.removeTap(onBus: 0)
+            isInstalled = false
+        }
+
+        let format = mixer.outputFormat(forBus: 0)
+        let bufferSize: AVAudioFrameCount = AVAudioFrameCount(fftSize)
+        installTapLocked(on: mixer, format: format, bufferSize: bufferSize)
+        isInstalled = true
+        stateLock.unlock()
+
+        startTimer()
     }
 
     // MARK: - Consumer API
@@ -195,6 +249,23 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
     private func stopTimer() {
         timer?.cancel()
         timer = nil
+    }
+
+    private func installTapLocked(
+        on mixer: AVAudioMixerNode,
+        format: AVAudioFormat,
+        bufferSize: AVAudioFrameCount
+    ) {
+        self.sampleRate = Float(format.sampleRate)
+        resetBuffer()
+
+        // installTap/removeTap are serialized by stateLock so LEDMeterService,
+        // AudioVisualizationService, and device-change recovery cannot double
+        // install the shared mixer tap.
+        mixer.installTap(onBus: 0, bufferSize: bufferSize, format: format) {
+            [weak self] buffer, _ in
+            self?.enqueue(buffer)
+        }
     }
 
     private func purgeInactiveState(preservingMixerAttachment: Bool) {

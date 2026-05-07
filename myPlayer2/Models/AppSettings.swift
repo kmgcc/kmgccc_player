@@ -396,6 +396,28 @@ public final class AppSettings {
     @ObservationIgnored
     @AppStorage("lyricsGlobalAdvanceMs") var lyricsGlobalAdvanceMs: Double = 0
 
+    private enum AMLLKeys {
+        static let highResolutionLyricsEnabled = "amllHighResolutionLyricsEnabled"
+    }
+
+    /// Whether AMLL WebViews should render at native resolution instead of the default reduced mode.
+    var amllHighResolutionLyricsEnabled: Bool {
+        get {
+            access(keyPath: \.amllHighResolutionLyricsEnabled)
+            return UserDefaults.standard.bool(forKey: AMLLKeys.highResolutionLyricsEnabled)
+        }
+        set {
+            withMutation(keyPath: \.amllHighResolutionLyricsEnabled) {
+                UserDefaults.standard.set(newValue, forKey: AMLLKeys.highResolutionLyricsEnabled)
+            }
+        }
+    }
+
+    /// Whether AMLL WebViews should render at reduced backing resolution.
+    var amllLowResolutionModeEnabled: Bool {
+        !amllHighResolutionLyricsEnabled
+    }
+
     /// Now Playing skin identifier
     @ObservationIgnored
     @AppStorage("nowPlayingSkin") var nowPlayingSkin: String = "kmgccc.cassette"

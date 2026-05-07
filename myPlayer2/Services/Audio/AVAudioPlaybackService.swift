@@ -141,7 +141,10 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     // MARK: - Engine Management
 
-    @objc private func handleEngineConfigurationChange(_ notification: Notification) {
+    @objc nonisolated private func handleEngineConfigurationChange(_ notification: Notification) {
+        // AVAudioEngine may post this notification from its internal engine queue.
+        // Keep the ObjC entrypoint nonisolated so Swift 6 does not assert that
+        // the CoreAudio callback is already running on MainActor.
         Task { @MainActor [weak self] in
             guard let self else { return }
             await self.reconnectEngineAndResume()
@@ -155,6 +158,11 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         let savedVolume = volume
 
         Log.debug("Audio device changed. Was playing: \(wasPlaying), position: \(String(format: "%.1f", savedTime))s", category: .audio)
+
+        AudioAnalysisHub.shared.prepareForEngineConfigurationChange()
+        defer {
+            AudioAnalysisHub.shared.restoreAfterEngineConfigurationChange()
+        }
 
         playerNode.stop()
         stopProgressTimer()
