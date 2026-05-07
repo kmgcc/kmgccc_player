@@ -889,7 +889,8 @@ private struct RotatingCoverArtwork: View {
                     dotSize: usesFullscreen ? 16 : 14,
                     spacing: usesFullscreen ? 10 : 8,
                     pillTint: context.theme.artworkAccentColor,
-                    isPlaying: context.playback.isPlaying
+                    isPlaying: context.playback.isPlaying,
+                    forceBrightLEDColors: context.theme.artBackgroundIsUltraDark
                 )
             } else if visualizerMode == "spectrum" {
                 PillSpectrumView(

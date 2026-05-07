@@ -3033,6 +3033,8 @@ struct FullscreenPlayerView: View {
             artworkPalette: artworkSnapshot?.palette ?? [],
             artworkRichPalette: artworkSnapshot?.richPalette ?? [],
             artworkAverageColor: artworkSnapshot?.averageColor,
+            artBackgroundIsUltraDark: settings.fullscreenArtBackgroundEnabled
+                && bkController.isUltraDarkActive,
             kickToBrightnessMix: AppSettings.shared.bgKickToBrightnessMix,
             kickDisplaceAmount: AppSettings.shared.bgKickDisplaceAmount,
             kickScaleAmount: AppSettings.shared.bgKickScaleAmount

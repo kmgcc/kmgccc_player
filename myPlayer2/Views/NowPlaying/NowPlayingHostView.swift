@@ -25,6 +25,7 @@ struct NowPlayingHostView: View {
     @State private var artworkSnapshot: ArtworkAssetSnapshot?
 
     let mainContentWidth: CGFloat
+    var artBackgroundIsUltraDark: Bool = false
     private static let externalArtworkTrackID = UUID(uuidString: "9D7D2E53-8CC0-4E65-8B19-7D9E772E6D43")!
 
     var body: some View {
@@ -141,6 +142,7 @@ struct NowPlayingHostView: View {
             artworkPalette: artworkSnapshot?.palette ?? [],
             artworkRichPalette: artworkSnapshot?.richPalette ?? [],
             artworkAverageColor: artworkSnapshot?.averageColor,
+            artBackgroundIsUltraDark: artBackgroundIsUltraDark,
             kickToBrightnessMix: AppSettings.shared.bgKickToBrightnessMix,
             kickDisplaceAmount: AppSettings.shared.bgKickDisplaceAmount,
             kickScaleAmount: AppSettings.shared.bgKickScaleAmount

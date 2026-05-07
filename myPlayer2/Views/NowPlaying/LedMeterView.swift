@@ -33,6 +33,7 @@ struct LedMeterView: View {
     var pillTint: Color? = nil
 
     var isPlaying: Bool = false
+    var forceBrightLEDColors: Bool = false
 
     // MARK: - Settings (from AppSettings)
 
@@ -49,7 +50,7 @@ struct LedMeterView: View {
     private var resolver: LEDColorResolver {
         LEDColorResolver(
             accentColor: themeStore.accentColor,
-            colorScheme: colorScheme,
+            colorScheme: forceBrightLEDColors ? .dark : colorScheme,
             brightnessLevels: brightnessLevels,
             palette: themeStore.semanticPalette
         )

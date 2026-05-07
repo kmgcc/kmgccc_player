@@ -150,7 +150,11 @@ struct AppKitMainContentPaneRoot: View {
                     }
                 case .nowPlaying:
                     GeometryReader { proxy in
-                        NowPlayingHostView(mainContentWidth: proxy.size.width)
+                        NowPlayingHostView(
+                            mainContentWidth: proxy.size.width,
+                            artBackgroundIsUltraDark: settings.nowPlayingArtBackgroundEnabled
+                                && artBackgroundController.isUltraDarkActive
+                        )
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                             .ignoresSafeArea(.container, edges: .top)
                     }
