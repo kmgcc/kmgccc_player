@@ -66,11 +66,31 @@ final class ShuffleSession {
 
     /// Start a new shuffle session from a specific track.
     func start(from trackID: UUID?, tracks: [Track]) {
-        // Build track cache.
-        trackCache = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) })
+        // Build track cache tolerantly — never crash on duplicate Track.id.
+        var cache: [UUID: Track] = [:]
+        var duplicateIDs: Set<UUID> = []
+        var dedupedTracks: [Track] = []
+        var seen: Set<UUID> = []
 
-        // Initialize base weights from preference stats.
-        initializeWeights(tracks: tracks)
+        for track in tracks {
+            if cache[track.id] == nil {
+                cache[track.id] = track
+            } else {
+                duplicateIDs.insert(track.id)
+            }
+            if seen.insert(track.id).inserted {
+                dedupedTracks.append(track)
+            }
+        }
+
+        if !duplicateIDs.isEmpty {
+            print("[ShuffleSession] ignored duplicate track ids: count=\(duplicateIDs.count)")
+        }
+
+        trackCache = cache
+
+        // Initialize base weights from preference stats using deduped tracks.
+        initializeWeights(tracks: dedupedTracks)
 
         // Clear existing sequence.
         generatedTrackIDs.removeAll()
@@ -78,7 +98,9 @@ final class ShuffleSession {
         currentIndex = -1
 
         // If starting track specified, add it as first in sequence.
-        if let startID = trackID, sourceSnapshotTrackIDs.contains(startID) {
+        if let startID = trackID,
+           sourceSnapshotTrackIDs.contains(startID),
+           trackCache[startID] != nil {
             generatedTrackIDs.append(startID)
             currentIndex = 0
             appendToHistory(startID)

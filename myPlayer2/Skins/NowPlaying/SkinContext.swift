@@ -62,6 +62,7 @@ struct SkinContext {
         let artworkPalette: [NSColor]
         let artworkRichPalette: [NSColor]
         let artworkAverageColor: NSColor?
+        let artBackgroundIsUltraDark: Bool
         /// Background dynamics (transient overlays).
         let kickToBrightnessMix: Double
         let kickDisplaceAmount: Double
