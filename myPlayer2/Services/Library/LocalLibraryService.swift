@@ -20,6 +20,14 @@ struct TrackSidecar: Codable {
     let album: String
     let albumArtist: String?
     let description: String?
+    let genreTags: [String]
+    let language: String?
+    let labelOrCompany: String?
+    let releaseDate: Date?
+    let qqMusicSongMid: String?
+    let metadataSource: String?
+    let metadataFetchedAt: Date?
+    let metadataConfidence: Double?
     let duration: Double
     let addedAt: Date
     let importedAt: Date?
@@ -43,6 +51,14 @@ struct TrackSidecar: Codable {
         case album
         case albumArtist
         case description
+        case genreTags
+        case language
+        case labelOrCompany
+        case releaseDate
+        case qqMusicSongMid
+        case metadataSource
+        case metadataFetchedAt
+        case metadataConfidence
         case duration
         case addedAt
         case importedAt
@@ -59,13 +75,21 @@ struct TrackSidecar: Codable {
     }
 
     init(
-        schemaVersion: Int = 5,
+        schemaVersion: Int = 6,
         id: UUID,
         title: String,
         artist: String,
         album: String,
         albumArtist: String? = nil,
         description: String? = nil,
+        genreTags: [String] = [],
+        language: String? = nil,
+        labelOrCompany: String? = nil,
+        releaseDate: Date? = nil,
+        qqMusicSongMid: String? = nil,
+        metadataSource: String? = nil,
+        metadataFetchedAt: Date? = nil,
+        metadataConfidence: Double? = nil,
         duration: Double,
         addedAt: Date,
         importedAt: Date?,
@@ -87,6 +111,14 @@ struct TrackSidecar: Codable {
         self.album = album
         self.albumArtist = albumArtist
         self.description = description
+        self.genreTags = genreTags
+        self.language = language
+        self.labelOrCompany = labelOrCompany
+        self.releaseDate = releaseDate
+        self.qqMusicSongMid = qqMusicSongMid
+        self.metadataSource = metadataSource
+        self.metadataFetchedAt = metadataFetchedAt
+        self.metadataConfidence = metadataConfidence
         self.duration = duration
         self.addedAt = addedAt
         self.importedAt = importedAt
@@ -114,6 +146,23 @@ struct TrackSidecar: Codable {
         album = try container.decode(String.self, forKey: .album)
         albumArtist = try container.decodeIfPresent(String.self, forKey: .albumArtist)
         description = try container.decodeIfPresent(String.self, forKey: .description)
+        if let decodedTags = try? container.decode([String].self, forKey: .genreTags) {
+            genreTags = decodedTags
+        } else if let decodedTags = try? container.decode(String.self, forKey: .genreTags) {
+            genreTags = decodedTags
+                .split(separator: ",")
+                .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        } else {
+            genreTags = []
+        }
+        language = try container.decodeIfPresent(String.self, forKey: .language)
+        labelOrCompany = try container.decodeIfPresent(String.self, forKey: .labelOrCompany)
+        releaseDate = try container.decodeIfPresent(Date.self, forKey: .releaseDate)
+        qqMusicSongMid = try container.decodeIfPresent(String.self, forKey: .qqMusicSongMid)
+        metadataSource = try container.decodeIfPresent(String.self, forKey: .metadataSource)
+        metadataFetchedAt = try container.decodeIfPresent(Date.self, forKey: .metadataFetchedAt)
+        metadataConfidence = try container.decodeIfPresent(Double.self, forKey: .metadataConfidence)
         duration = try container.decode(Double.self, forKey: .duration)
         addedAt = try container.decode(Date.self, forKey: .addedAt)
         importedAt = try container.decodeIfPresent(Date.self, forKey: .importedAt)
@@ -141,13 +190,23 @@ struct TrackSidecar: Codable {
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(5, forKey: .schemaVersion)
+        try container.encode(6, forKey: .schemaVersion)
         try container.encode(id, forKey: .id)
         try container.encode(title, forKey: .title)
         try container.encode(artist, forKey: .artist)
         try container.encode(album, forKey: .album)
         try container.encodeIfPresent(albumArtist, forKey: .albumArtist)
         try container.encodeIfPresent(description, forKey: .description)
+        if !genreTags.isEmpty {
+            try container.encode(genreTags, forKey: .genreTags)
+        }
+        try container.encodeIfPresent(language, forKey: .language)
+        try container.encodeIfPresent(labelOrCompany, forKey: .labelOrCompany)
+        try container.encodeIfPresent(releaseDate, forKey: .releaseDate)
+        try container.encodeIfPresent(qqMusicSongMid, forKey: .qqMusicSongMid)
+        try container.encodeIfPresent(metadataSource, forKey: .metadataSource)
+        try container.encodeIfPresent(metadataFetchedAt, forKey: .metadataFetchedAt)
+        try container.encodeIfPresent(metadataConfidence, forKey: .metadataConfidence)
         try container.encode(duration, forKey: .duration)
         try container.encode(addedAt, forKey: .addedAt)
         try container.encodeIfPresent(importedAt, forKey: .importedAt)
@@ -443,7 +502,7 @@ final class LocalLibraryService {
         let audioFileName = URL(fileURLWithPath: track.libraryRelativePath).lastPathComponent
         let preferenceStats = PreferenceStatsService.shared.getStats(for: track.id)
         let sidecar = TrackSidecar(
-            schemaVersion: 5,
+            schemaVersion: 6,
             id: track.id,
             title: track.title,
             artist: track.artist,
@@ -456,6 +515,20 @@ final class LocalLibraryService {
                 let trimmed = track.userDescription.trimmingCharacters(in: .whitespacesAndNewlines)
                 return trimmed.isEmpty ? nil : trimmed
             }(),
+            genreTags: track.genreTags,
+            language: {
+                let trimmed = track.language.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? nil : trimmed
+            }(),
+            labelOrCompany: {
+                let trimmed = track.labelOrCompany.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? nil : trimmed
+            }(),
+            releaseDate: track.releaseDate,
+            qqMusicSongMid: track.qqMusicSongMid,
+            metadataSource: track.metadataSource,
+            metadataFetchedAt: track.metadataFetchedAt,
+            metadataConfidence: track.metadataConfidence,
             duration: track.duration,
             addedAt: track.addedAt,
             importedAt: track.importedAt ?? track.addedAt,
@@ -1340,6 +1413,14 @@ final class LocalLibraryService {
                 album: sidecar.album,
                 albumArtist: sidecar.albumArtist,
                 userDescription: sidecar.description ?? "",
+                genreTags: sidecar.genreTags,
+                language: sidecar.language ?? "",
+                labelOrCompany: sidecar.labelOrCompany ?? "",
+                releaseDate: sidecar.releaseDate,
+                qqMusicSongMid: sidecar.qqMusicSongMid,
+                metadataSource: sidecar.metadataSource,
+                metadataFetchedAt: sidecar.metadataFetchedAt,
+                metadataConfidence: sidecar.metadataConfidence,
                 duration: sidecar.duration,
                 addedAt: sidecar.addedAt,
                 importedAt: sidecar.importedAt ?? sidecar.addedAt,

@@ -208,6 +208,7 @@ final class LyricsWebViewStore: NSObject {
 
         webView.autoresizingMask = lowResolutionModeEnabled ? [] : [.width, .height]
         webView.pageZoom = viewScale
+        (webView as? LyricsMouseGatedWebView)?.eventCoordinateScale = viewScale
         webView.wantsLayer = true
         webView.layer?.anchorPoint = CGPoint(x: 0, y: 0)
         webView.layer?.position = CGPoint(x: 0, y: 0)
@@ -1629,12 +1630,43 @@ final class LyricsWebViewStore: NSObject {
 }
 
 private final class LyricsMouseGatedWebView: WKWebView {
+    var eventCoordinateScale: CGFloat = 1
+
     var isMouseInteractionSuppressed = false {
         didSet {
             if oldValue != isMouseInteractionSuppressed {
                 window?.invalidateCursorRects(for: self)
             }
         }
+    }
+
+    private func scaledMouseEvent(_ event: NSEvent) -> NSEvent {
+        guard eventCoordinateScale < 0.999,
+              let superview,
+              let adjustedEvent = NSEvent.mouseEvent(
+                with: event.type,
+                location: scaledWindowLocation(for: event, in: superview),
+                modifierFlags: event.modifierFlags,
+                timestamp: event.timestamp,
+                windowNumber: event.windowNumber,
+                context: nil,
+                eventNumber: event.eventNumber,
+                clickCount: event.clickCount,
+                pressure: event.pressure
+              )
+        else {
+            return event
+        }
+        return adjustedEvent
+    }
+
+    private func scaledWindowLocation(for event: NSEvent, in superview: NSView) -> NSPoint {
+        let pointInSuperview = superview.convert(event.locationInWindow, from: nil)
+        let scaledPoint = NSPoint(
+            x: pointInSuperview.x * eventCoordinateScale,
+            y: pointInSuperview.y * eventCoordinateScale
+        )
+        return superview.convert(scaledPoint, to: nil)
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
@@ -1654,52 +1686,52 @@ private final class LyricsMouseGatedWebView: WKWebView {
 
     override func mouseMoved(with event: NSEvent) {
         guard !isMouseInteractionSuppressed else { return }
-        super.mouseMoved(with: event)
+        super.mouseMoved(with: scaledMouseEvent(event))
     }
 
     override func mouseDown(with event: NSEvent) {
         guard !isMouseInteractionSuppressed else { return }
-        super.mouseDown(with: event)
+        super.mouseDown(with: scaledMouseEvent(event))
     }
 
     override func mouseUp(with event: NSEvent) {
         guard !isMouseInteractionSuppressed else { return }
-        super.mouseUp(with: event)
+        super.mouseUp(with: scaledMouseEvent(event))
     }
 
     override func mouseDragged(with event: NSEvent) {
         guard !isMouseInteractionSuppressed else { return }
-        super.mouseDragged(with: event)
+        super.mouseDragged(with: scaledMouseEvent(event))
     }
 
     override func rightMouseDown(with event: NSEvent) {
         guard !isMouseInteractionSuppressed else { return }
-        super.rightMouseDown(with: event)
+        super.rightMouseDown(with: scaledMouseEvent(event))
     }
 
     override func rightMouseUp(with event: NSEvent) {
         guard !isMouseInteractionSuppressed else { return }
-        super.rightMouseUp(with: event)
+        super.rightMouseUp(with: scaledMouseEvent(event))
     }
 
     override func rightMouseDragged(with event: NSEvent) {
         guard !isMouseInteractionSuppressed else { return }
-        super.rightMouseDragged(with: event)
+        super.rightMouseDragged(with: scaledMouseEvent(event))
     }
 
     override func otherMouseDown(with event: NSEvent) {
         guard !isMouseInteractionSuppressed else { return }
-        super.otherMouseDown(with: event)
+        super.otherMouseDown(with: scaledMouseEvent(event))
     }
 
     override func otherMouseUp(with event: NSEvent) {
         guard !isMouseInteractionSuppressed else { return }
-        super.otherMouseUp(with: event)
+        super.otherMouseUp(with: scaledMouseEvent(event))
     }
 
     override func otherMouseDragged(with event: NSEvent) {
         guard !isMouseInteractionSuppressed else { return }
-        super.otherMouseDragged(with: event)
+        super.otherMouseDragged(with: scaledMouseEvent(event))
     }
 
     override func scrollWheel(with event: NSEvent) {

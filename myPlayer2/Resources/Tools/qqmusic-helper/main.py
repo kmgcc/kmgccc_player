@@ -14,10 +14,13 @@ import asyncio
 import importlib
 import importlib.metadata
 import json
+import re
 import sys
 import time
 import traceback
+from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 
 
 try:
@@ -33,6 +36,13 @@ except Exception as exc:  # pragma: no cover - exercised in unbundled dev setups
 
 SOURCE = "qqmusic"
 MAX_IMAGE_SIZE = 800
+QQMUSIC_HTTPS_IMAGE_HOSTS = {
+    "y.gtimg.cn",
+    "qpic.y.qq.com",
+    "y.qq.com",
+    "thirdqq.qlogo.cn",
+    "thirdwx.qlogo.cn",
+}
 
 
 def _log(message: str) -> None:
@@ -54,14 +64,20 @@ def _dependency_diagnostics() -> str:
     for module_name in (
         "qqmusic_api.core.client",
         "qqmusic_api.modules.search",
+        "qqmusic_api.modules.singer",
+        "qqmusic_api.modules.album",
+        "qqmusic_api.modules.song",
         "qqmusic_api.models.search",
+        "qqmusic_api.models.singer",
+        "qqmusic_api.models.album",
+        "qqmusic_api.models.song",
     ):
         try:
             module = importlib.import_module(module_name)
             parts.append(f"{module_name}=ok:{getattr(module, '__file__', '<unknown>')}")
         except Exception as exc:
             parts.append(f"{module_name}=failed:{type(exc).__name__}: {exc}")
-    api_path = "Client.execute(search.search_by_type)"
+    api_path = "Client.execute(search.search_by_type/detail modules)"
     parts.append(f"search_api={api_path}")
     return " ".join(parts)
 
@@ -86,6 +102,82 @@ def _first_text(value: Any, keys: tuple[str, ...]) -> str:
             if isinstance(item, (int, float)):
                 return str(item)
     return ""
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _compact_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(value)
+    return ""
+
+
+def _optional_text(value: Any) -> str | None:
+    text = _compact_text(value)
+    return text or None
+
+
+def _split_tags(value: Any) -> list[str]:
+    if isinstance(value, list):
+        raw_items = value
+    else:
+        raw_items = re.split(r"[,，、/;；|｜\n]+", _compact_text(value))
+    tags: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        tag = _compact_text(item)
+        if not tag or tag in seen:
+            continue
+        seen.add(tag)
+        tags.append(tag)
+    return tags
+
+
+def _release_year(value: Any) -> int | None:
+    match = re.search(r"\b(19|20)\d{2}\b", _compact_text(value))
+    return int(match.group(0)) if match else None
+
+
+def _content_values(items: Any) -> list[str]:
+    if not isinstance(items, list):
+        return []
+    values: list[str] = []
+    for item in items:
+        if isinstance(item, dict):
+            text = _first_text(item, ("value", "title", "name"))
+        else:
+            text = _compact_text(item)
+        if text:
+            values.append(text)
+    return values
+
+
+def _first_content_value(items: Any) -> str:
+    values = _content_values(items)
+    return values[0] if values else ""
+
+
+def _join_description(values: list[str]) -> str:
+    cleaned = [value.strip() for value in values if value.strip()]
+    return "\n".join(cleaned)
+
+
+def _sanitize_image_url(value: str) -> str:
+    raw = value.strip()
+    if not raw:
+        return ""
+    parsed = urlparse(raw)
+    if parsed.scheme.lower() == "http" and parsed.netloc.lower() in QQMUSIC_HTTPS_IMAGE_HOSTS:
+        sanitized = urlunparse(parsed._replace(scheme="https"))
+        _log(f"sanitized imageURL from={raw} to={sanitized}")
+        return sanitized
+    return raw
 
 
 def _to_plain(value: Any) -> Any:
@@ -167,6 +259,18 @@ def _singers_text(value: Any) -> str:
     return _first_text(value, ("singer", "singerName", "singer_name", "artist", "artistName"))
 
 
+def _singers_text_from_list(value: Any) -> str:
+    if not isinstance(value, list):
+        return ""
+    names: list[str] = []
+    for singer in value:
+        if isinstance(singer, dict):
+            name = _first_text(singer, ("name", "title", "singerName"))
+            if name:
+                names.append(name)
+    return ", ".join(names)
+
+
 def _singer_mid(value: Any) -> str:
     if not isinstance(value, dict):
         return ""
@@ -241,6 +345,35 @@ async def _search_by_type(
     return _items_from_search_result(result, result_keys)
 
 
+async def _execute_client_request(request_builder: Any) -> Any:
+    if Client is None:
+        return {}
+    async with Client() as client:
+        result = await client.execute(request_builder(client))
+    return _to_plain(result)
+
+
+async def _fetch_singer_desc(singer_mid: str) -> dict[str, Any]:
+    plain = await _execute_client_request(lambda client: client.singer.get_desc([singer_mid]))
+    items = _items_from_search_result(plain, ("singer_list", "singerList", "list"))
+    return items[0] if items else {}
+
+
+async def _fetch_singer_info(singer_mid: str) -> dict[str, Any]:
+    plain = await _execute_client_request(lambda client: client.singer.get_info(singer_mid))
+    return plain if isinstance(plain, dict) else {}
+
+
+async def _fetch_album_detail_raw(album_mid: str) -> dict[str, Any]:
+    plain = await _execute_client_request(lambda client: client.album.get_detail(album_mid))
+    return plain if isinstance(plain, dict) else {}
+
+
+async def _fetch_song_detail_raw(song_mid: str) -> dict[str, Any]:
+    plain = await _execute_client_request(lambda client: client.song.get_detail(song_mid))
+    return plain if isinstance(plain, dict) else {}
+
+
 async def search_artist_artwork(params: dict[str, Any]) -> list[dict[str, Any]]:
     _require_dependency()
     name = str(params.get("name") or "").strip()
@@ -256,6 +389,7 @@ async def search_artist_artwork(params: dict[str, Any]) -> list[dict[str, Any]]:
             _first_text(item, ("singerPic", "pic", "image", "picURL", "picUrl"))
             or _singer_cover_url(singer_mid)
         )
+        image_url = _sanitize_image_url(image_url)
         if not image_url:
             continue
         candidates.append(
@@ -283,7 +417,7 @@ async def search_track_artwork(params: dict[str, Any]) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     for index, item in enumerate(results or []):
         album_mid = _album_mid(item)
-        image_url = _album_cover_url(album_mid)
+        image_url = _sanitize_image_url(_album_cover_url(album_mid))
         if not image_url:
             continue
         candidates.append(
@@ -318,6 +452,7 @@ async def search_album_artwork(params: dict[str, Any]) -> list[dict[str, Any]]:
             _first_text(item, ("picURL", "picUrl", "albumPic", "image"))
             or _album_cover_url(album_mid)
         )
+        image_url = _sanitize_image_url(image_url)
         if not image_url:
             continue
         candidates.append(
@@ -331,6 +466,178 @@ async def search_album_artwork(params: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
     return candidates
+
+
+async def fetch_artist_detail(params: dict[str, Any]) -> dict[str, Any]:
+    _require_dependency()
+    name = str(params.get("name") or params.get("artist") or "").strip()
+    singer_mid = str(params.get("singerMid") or params.get("mid") or "").strip()
+    confidence = float(params.get("confidence") or 0.90)
+    image_url = ""
+    matched_name = name
+
+    if not singer_mid and name:
+        candidates = await search_artist_artwork({"name": name, "limit": 1})
+        if candidates:
+            top = candidates[0]
+            singer_mid = str(top.get("singerMid") or "").strip()
+            matched_name = str(top.get("artistName") or name).strip()
+            image_url = str(top.get("imageURL") or "").strip()
+            confidence = float(top.get("confidence") or confidence)
+
+    if not singer_mid:
+        raise ValueError("singerMid or name is required")
+
+    desc = await _fetch_singer_desc(singer_mid)
+    info = await _fetch_singer_info(singer_mid)
+    basic = _first_dict(desc, ("basic_info", "basicInfo"))
+    ex_info = _first_dict(desc, ("ex_info", "exInfo"))
+    info_singer = _first_dict(info, ("singer", "Singer"))
+    base_info = _first_dict(info, ("base_info", "baseInfo", "BaseInfo"))
+
+    artist_name = (
+        _first_text(basic, ("name", "title", "singerName"))
+        or _first_text(info_singer, ("name", "Name", "singerName"))
+        or matched_name
+    )
+    image_url = (
+        image_url
+        or _first_text(info_singer, ("singer_pic", "singerPic", "SingerPic"))
+        or _first_text(base_info, ("avatar", "Avatar"))
+        or _singer_cover_url(singer_mid)
+    )
+    image_url = _sanitize_image_url(image_url)
+    genre_tags = _split_tags(_first_text(ex_info, ("genre", "tag")))
+    description = (
+        _first_text(ex_info, ("desc", "description"))
+        or _first_text(desc, ("wiki",))
+    )
+
+    return {
+        "source": SOURCE,
+        "artistName": artist_name,
+        "singerMid": singer_mid,
+        "imageURL": image_url,
+        "description": description,
+        "genreTags": genre_tags,
+        "region": _first_text(ex_info, ("area", "region", "country")),
+        "foreignName": _first_text(ex_info, ("foreign_name", "foreignName")),
+        "metadataSource": SOURCE,
+        "metadataFetchedAt": _utc_now_iso(),
+        "metadataConfidence": confidence,
+        "confidence": confidence,
+    }
+
+
+async def fetch_album_detail(params: dict[str, Any]) -> dict[str, Any]:
+    _require_dependency()
+    album = str(params.get("album") or "").strip()
+    artist = str(params.get("artist") or "").strip()
+    album_mid = str(params.get("albumMid") or params.get("mid") or "").strip()
+    confidence = float(params.get("confidence") or 0.90)
+    image_url = ""
+    matched_album = album
+    matched_artist = artist
+
+    if not album_mid and (album or artist):
+        candidates = await search_album_artwork({"album": album, "artist": artist, "limit": 1})
+        if candidates:
+            top = candidates[0]
+            album_mid = str(top.get("albumMid") or "").strip()
+            matched_album = str(top.get("album") or album).strip()
+            matched_artist = str(top.get("artist") or artist).strip()
+            image_url = str(top.get("imageURL") or "").strip()
+            confidence = float(top.get("confidence") or confidence)
+
+    if not album_mid:
+        raise ValueError("albumMid or album/artist is required")
+
+    detail = await _fetch_album_detail_raw(album_mid)
+    album_info = _first_dict(detail, ("album", "basicInfo"))
+    company = _first_dict(detail, ("company",))
+    singers = detail.get("singers") if isinstance(detail, dict) else None
+    release_date = _first_text(album_info, ("time_public", "publishDate", "releaseDate"))
+    genre_text = _first_text(album_info, ("genre", "tag"))
+
+    return {
+        "source": SOURCE,
+        "album": _first_text(album_info, ("name", "title", "albumName")) or matched_album,
+        "artist": _singers_text_from_list(singers) or matched_artist,
+        "albumMid": _first_text(album_info, ("mid", "albumMid", "albumMID")) or album_mid,
+        "imageURL": _sanitize_image_url(image_url or _album_cover_url(album_mid)),
+        "description": _first_text(album_info, ("desc", "description")),
+        "releaseYear": _release_year(release_date),
+        "releaseDate": release_date,
+        "albumType": _first_text(album_info, ("album_type", "albumType")),
+        "genreTags": _split_tags(genre_text),
+        "language": _first_text(album_info, ("language", "lan")),
+        "labelOrCompany": _first_text(company, ("name", "company", "label")),
+        "metadataSource": SOURCE,
+        "metadataFetchedAt": _utc_now_iso(),
+        "metadataConfidence": confidence,
+        "confidence": confidence,
+    }
+
+
+async def fetch_song_detail(params: dict[str, Any]) -> dict[str, Any]:
+    _require_dependency()
+    title = str(params.get("title") or "").strip()
+    artist = str(params.get("artist") or "").strip()
+    album = str(params.get("album") or "").strip()
+    song_mid = str(params.get("songMid") or params.get("mid") or "").strip()
+    confidence = float(params.get("confidence") or 0.90)
+    image_url = ""
+    matched_title = title
+    matched_artist = artist
+    matched_album = album
+    album_mid = ""
+
+    if not song_mid and (title or artist or album):
+        candidates = await search_track_artwork(
+            {"title": title, "artist": artist, "album": album, "duration": params.get("duration"), "limit": 1}
+        )
+        if candidates:
+            top = candidates[0]
+            song_mid = str(top.get("songMid") or "").strip()
+            album_mid = str(top.get("albumMid") or "").strip()
+            matched_title = str(top.get("title") or title).strip()
+            matched_artist = str(top.get("artist") or artist).strip()
+            matched_album = str(top.get("album") or album).strip()
+            image_url = str(top.get("imageURL") or "").strip()
+            confidence = float(top.get("confidence") or confidence)
+
+    if not song_mid:
+        raise ValueError("songMid or title/artist/album is required")
+
+    detail = await _fetch_song_detail_raw(song_mid)
+    track = _first_dict(detail, ("track", "track_info", "trackInfo"))
+    album_info = _first_dict(track, ("album",))
+    album_mid = album_mid or _album_mid(track)
+    release_date = _first_content_value(detail.get("pub_time")) or _first_text(track, ("time_public", "timePublic"))
+    genre_values = _content_values(detail.get("genre"))
+    intro_values = _content_values(detail.get("intro"))
+    language = _first_content_value(detail.get("lan"))
+    company = _first_content_value(detail.get("company"))
+
+    return {
+        "source": SOURCE,
+        "title": _song_title(track) or matched_title,
+        "artist": _singers_text(track) or matched_artist,
+        "album": _album_name(track) or matched_album,
+        "songMid": _song_mid(track) or song_mid,
+        "albumMid": album_mid,
+        "imageURL": _sanitize_image_url(image_url or _album_cover_url(album_mid)),
+        "description": _join_description(intro_values),
+        "genreTags": _split_tags(genre_values),
+        "language": language,
+        "labelOrCompany": company,
+        "releaseDate": release_date,
+        "duration": _first_int(track, ("interval", "duration", "durationSec")),
+        "metadataSource": SOURCE,
+        "metadataFetchedAt": _utc_now_iso(),
+        "metadataConfidence": confidence,
+        "confidence": confidence,
+    }
 
 
 async def handle_request(request: dict[str, Any]) -> dict[str, Any]:
@@ -348,6 +655,30 @@ async def handle_request(request: dict[str, Any]) -> dict[str, Any]:
         candidates = await search_track_artwork(params)
     elif method == "search_album_artwork":
         candidates = await search_album_artwork(params)
+    elif method == "fetch_artist_detail":
+        detail = await fetch_artist_detail(params)
+        duration_ms = int((time.monotonic() - started_at) * 1000)
+        _log(
+            f"response id={request_id} method={method} "
+            f"detail=1 confidence={float(detail.get('confidence') or 0):.2f} durationMs={duration_ms}"
+        )
+        return {"id": request_id, "ok": True, "detail": detail}
+    elif method == "fetch_album_detail":
+        detail = await fetch_album_detail(params)
+        duration_ms = int((time.monotonic() - started_at) * 1000)
+        _log(
+            f"response id={request_id} method={method} "
+            f"detail=1 confidence={float(detail.get('confidence') or 0):.2f} durationMs={duration_ms}"
+        )
+        return {"id": request_id, "ok": True, "detail": detail}
+    elif method == "fetch_song_detail":
+        detail = await fetch_song_detail(params)
+        duration_ms = int((time.monotonic() - started_at) * 1000)
+        _log(
+            f"response id={request_id} method={method} "
+            f"detail=1 confidence={float(detail.get('confidence') or 0):.2f} durationMs={duration_ms}"
+        )
+        return {"id": request_id, "ok": True, "detail": detail}
     else:
         raise ValueError(f"unsupported method: {method}")
 

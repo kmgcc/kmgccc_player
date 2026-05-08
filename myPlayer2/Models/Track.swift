@@ -31,6 +31,14 @@ final class Track {
     var album: String
     var albumArtist: String?
     var userDescription: String
+    var genreTags: [String] = []
+    var language: String = ""
+    var labelOrCompany: String = ""
+    var releaseDate: Date?
+    var qqMusicSongMid: String?
+    var metadataSource: String?
+    var metadataFetchedAt: Date?
+    var metadataConfidence: Double?
     var albumGroupKey: String
     var duration: Double  // seconds
     var addedAt: Date
@@ -124,6 +132,14 @@ final class Track {
         album: String = "",
         albumArtist: String? = nil,
         userDescription: String = "",
+        genreTags: [String] = [],
+        language: String = "",
+        labelOrCompany: String = "",
+        releaseDate: Date? = nil,
+        qqMusicSongMid: String? = nil,
+        metadataSource: String? = nil,
+        metadataFetchedAt: Date? = nil,
+        metadataConfidence: Double? = nil,
         albumGroupKey: String = "",
         duration: Double = 0,
         addedAt: Date = Date(),
@@ -149,6 +165,14 @@ final class Track {
         self.album = album
         self.albumArtist = albumArtist
         self.userDescription = userDescription
+        self.genreTags = genreTags
+        self.language = language
+        self.labelOrCompany = labelOrCompany
+        self.releaseDate = releaseDate
+        self.qqMusicSongMid = qqMusicSongMid
+        self.metadataSource = metadataSource
+        self.metadataFetchedAt = metadataFetchedAt
+        self.metadataConfidence = metadataConfidence
         self.albumGroupKey = albumGroupKey
         self.duration = duration
         self.addedAt = addedAt

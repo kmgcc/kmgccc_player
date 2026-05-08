@@ -412,7 +412,9 @@ struct LibraryDetailHeaderView: View {
                 var updated = entry
                 updated.displayTitle = title
                 updated.description = desc
-                updated.year = Int(yearStr)
+                let parsedYear = Int(yearStr)
+                updated.year = parsedYear
+                updated.releaseYear = parsedYear
                 await libraryVM.saveAlbumEdits(original: entry, updated: updated)
             }
         }

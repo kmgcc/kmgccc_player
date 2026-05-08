@@ -73,6 +73,13 @@ final class LibraryMetadataSync {
                     displayName: sidecar.displayName,
                     artworkFileName: sidecar.artworkFileName,
                     description: sidecar.description ?? "",
+                    genreTags: sidecar.genreTags,
+                    region: sidecar.region ?? "",
+                    foreignName: sidecar.foreignName ?? "",
+                    qqMusicSingerMid: sidecar.qqMusicSingerMid,
+                    metadataSource: sidecar.metadataSource,
+                    metadataFetchedAt: sidecar.metadataFetchedAt,
+                    metadataConfidence: sidecar.metadataConfidence,
                     artworkData: artworkData,
                     createdAt: sidecar.createdAt,
                     updatedAt: sidecar.updatedAt,
@@ -111,7 +118,13 @@ final class LibraryMetadataSync {
         // Handle orphans: keep if user-edited content exists, otherwise delete
         for (_, (sidecar, folderURL)) in existing {
             let hasUserContent =
-                !(sidecar.description ?? "").isEmpty || sidecar.artworkFileName != nil
+                !(sidecar.description ?? "").isEmpty
+                || sidecar.artworkFileName != nil
+                || !sidecar.genreTags.isEmpty
+                || !(sidecar.region ?? "").isEmpty
+                || !(sidecar.foreignName ?? "").isEmpty
+                || sidecar.qqMusicSingerMid != nil
+                || sidecar.metadataSource != nil
             if hasUserContent {
                 let artworkData = sidecar.artworkFileName.flatMap { fileName in
                     try? Data(contentsOf: folderURL.appendingPathComponent(fileName))
@@ -122,6 +135,13 @@ final class LibraryMetadataSync {
                     displayName: sidecar.displayName,
                     artworkFileName: sidecar.artworkFileName,
                     description: sidecar.description ?? "",
+                    genreTags: sidecar.genreTags,
+                    region: sidecar.region ?? "",
+                    foreignName: sidecar.foreignName ?? "",
+                    qqMusicSingerMid: sidecar.qqMusicSingerMid,
+                    metadataSource: sidecar.metadataSource,
+                    metadataFetchedAt: sidecar.metadataFetchedAt,
+                    metadataConfidence: sidecar.metadataConfidence,
                     artworkData: artworkData,
                     createdAt: sidecar.createdAt,
                     updatedAt: sidecar.updatedAt,
@@ -221,6 +241,14 @@ final class LibraryMetadataSync {
                 !(sidecar.description ?? "").isEmpty
                 || sidecar.artworkFileName != nil
                 || sidecar.year != nil
+                || sidecar.releaseYear != nil
+                || sidecar.releaseDate != nil
+                || !(sidecar.albumType ?? "").isEmpty
+                || !sidecar.genreTags.isEmpty
+                || !(sidecar.language ?? "").isEmpty
+                || !(sidecar.labelOrCompany ?? "").isEmpty
+                || sidecar.qqMusicAlbumMid != nil
+                || sidecar.metadataSource != nil
             if hasUserContent {
                 let artworkData = sidecar.artworkFileName.flatMap { fileName in
                     try? Data(contentsOf: folderURL.appendingPathComponent(fileName))
@@ -234,6 +262,16 @@ final class LibraryMetadataSync {
                     artworkFileName: sidecar.artworkFileName,
                     description: sidecar.description ?? "",
                     year: sidecar.year,
+                    releaseYear: sidecar.releaseYear ?? sidecar.year,
+                    releaseDate: sidecar.releaseDate,
+                    albumType: sidecar.albumType ?? "",
+                    genreTags: sidecar.genreTags,
+                    language: sidecar.language ?? "",
+                    labelOrCompany: sidecar.labelOrCompany ?? "",
+                    qqMusicAlbumMid: sidecar.qqMusicAlbumMid,
+                    metadataSource: sidecar.metadataSource,
+                    metadataFetchedAt: sidecar.metadataFetchedAt,
+                    metadataConfidence: sidecar.metadataConfidence,
                     artworkData: artworkData,
                     createdAt: sidecar.createdAt,
                     updatedAt: sidecar.updatedAt,
@@ -282,10 +320,26 @@ final class LibraryMetadataSync {
                 !(lhs.sidecar.description ?? "").isEmpty
                 || lhs.sidecar.artworkFileName != nil
                 || lhs.sidecar.year != nil
+                || lhs.sidecar.releaseYear != nil
+                || lhs.sidecar.releaseDate != nil
+                || !(lhs.sidecar.albumType ?? "").isEmpty
+                || !lhs.sidecar.genreTags.isEmpty
+                || !(lhs.sidecar.language ?? "").isEmpty
+                || !(lhs.sidecar.labelOrCompany ?? "").isEmpty
+                || lhs.sidecar.qqMusicAlbumMid != nil
+                || lhs.sidecar.metadataSource != nil
             let rhsHasUserContent =
                 !(rhs.sidecar.description ?? "").isEmpty
                 || rhs.sidecar.artworkFileName != nil
                 || rhs.sidecar.year != nil
+                || rhs.sidecar.releaseYear != nil
+                || rhs.sidecar.releaseDate != nil
+                || !(rhs.sidecar.albumType ?? "").isEmpty
+                || !rhs.sidecar.genreTags.isEmpty
+                || !(rhs.sidecar.language ?? "").isEmpty
+                || !(rhs.sidecar.labelOrCompany ?? "").isEmpty
+                || rhs.sidecar.qqMusicAlbumMid != nil
+                || rhs.sidecar.metadataSource != nil
 
             if lhsHasUserContent != rhsHasUserContent {
                 return lhsHasUserContent && !rhsHasUserContent
@@ -309,6 +363,25 @@ final class LibraryMetadataSync {
             return (description?.isEmpty ?? true) ? nil : description
         }.first
         let mergedYear = sortedCandidates.compactMap { $0.sidecar.year }.first
+        let mergedReleaseYear = sortedCandidates.compactMap { $0.sidecar.releaseYear ?? $0.sidecar.year }.first
+        let mergedReleaseDate = sortedCandidates.compactMap { $0.sidecar.releaseDate }.first
+        let mergedAlbumType = sortedCandidates.compactMap { candidate in
+            let value = candidate.sidecar.albumType?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (value?.isEmpty ?? true) ? nil : value
+        }.first
+        let mergedGenreTags = sortedCandidates.first { !$0.sidecar.genreTags.isEmpty }?.sidecar.genreTags ?? []
+        let mergedLanguage = sortedCandidates.compactMap { candidate in
+            let value = candidate.sidecar.language?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (value?.isEmpty ?? true) ? nil : value
+        }.first
+        let mergedLabelOrCompany = sortedCandidates.compactMap { candidate in
+            let value = candidate.sidecar.labelOrCompany?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (value?.isEmpty ?? true) ? nil : value
+        }.first
+        let mergedQQMusicAlbumMid = sortedCandidates.compactMap { $0.sidecar.qqMusicAlbumMid }.first
+        let mergedMetadataSource = sortedCandidates.compactMap { $0.sidecar.metadataSource }.first
+        let mergedMetadataFetchedAt = sortedCandidates.compactMap { $0.sidecar.metadataFetchedAt }.first
+        let mergedMetadataConfidence = sortedCandidates.compactMap { $0.sidecar.metadataConfidence }.first
 
         let hasMergedCandidates = sortedCandidates.count > 1
         let candidateSidecar = AlbumSidecar(
@@ -319,6 +392,16 @@ final class LibraryMetadataSync {
             artworkFileName: artworkSource?.sidecar.artworkFileName,
             description: mergedDescription,
             year: mergedYear,
+            releaseYear: mergedReleaseYear,
+            releaseDate: mergedReleaseDate,
+            albumType: mergedAlbumType,
+            genreTags: mergedGenreTags,
+            language: mergedLanguage,
+            labelOrCompany: mergedLabelOrCompany,
+            qqMusicAlbumMid: mergedQQMusicAlbumMid,
+            metadataSource: mergedMetadataSource,
+            metadataFetchedAt: mergedMetadataFetchedAt,
+            metadataConfidence: mergedMetadataConfidence,
             createdAt: sortedCandidates.map { $0.sidecar.createdAt }.min() ?? keeper.sidecar.createdAt,
             updatedAt: keeper.sidecar.updatedAt
         )
@@ -331,6 +414,16 @@ final class LibraryMetadataSync {
             || keeper.sidecar.artworkFileName != candidateSidecar.artworkFileName
             || keeper.sidecar.description != candidateSidecar.description
             || keeper.sidecar.year != candidateSidecar.year
+            || keeper.sidecar.releaseYear != candidateSidecar.releaseYear
+            || keeper.sidecar.releaseDate != candidateSidecar.releaseDate
+            || keeper.sidecar.albumType != candidateSidecar.albumType
+            || keeper.sidecar.genreTags != candidateSidecar.genreTags
+            || keeper.sidecar.language != candidateSidecar.language
+            || keeper.sidecar.labelOrCompany != candidateSidecar.labelOrCompany
+            || keeper.sidecar.qqMusicAlbumMid != candidateSidecar.qqMusicAlbumMid
+            || keeper.sidecar.metadataSource != candidateSidecar.metadataSource
+            || keeper.sidecar.metadataFetchedAt != candidateSidecar.metadataFetchedAt
+            || keeper.sidecar.metadataConfidence != candidateSidecar.metadataConfidence
             || keeper.sidecar.createdAt != candidateSidecar.createdAt
 
         let mergedSidecar: AlbumSidecar
@@ -343,6 +436,16 @@ final class LibraryMetadataSync {
                 artworkFileName: candidateSidecar.artworkFileName,
                 description: candidateSidecar.description,
                 year: candidateSidecar.year,
+                releaseYear: candidateSidecar.releaseYear,
+                releaseDate: candidateSidecar.releaseDate,
+                albumType: candidateSidecar.albumType,
+                genreTags: candidateSidecar.genreTags,
+                language: candidateSidecar.language,
+                labelOrCompany: candidateSidecar.labelOrCompany,
+                qqMusicAlbumMid: candidateSidecar.qqMusicAlbumMid,
+                metadataSource: candidateSidecar.metadataSource,
+                metadataFetchedAt: candidateSidecar.metadataFetchedAt,
+                metadataConfidence: candidateSidecar.metadataConfidence,
                 createdAt: candidateSidecar.createdAt,
                 updatedAt: now
             )
@@ -367,6 +470,16 @@ final class LibraryMetadataSync {
             artworkFileName: mergedSidecar.artworkFileName,
             description: mergedSidecar.description ?? "",
             year: mergedSidecar.year,
+            releaseYear: mergedSidecar.releaseYear ?? mergedSidecar.year,
+            releaseDate: mergedSidecar.releaseDate,
+            albumType: mergedSidecar.albumType ?? "",
+            genreTags: mergedSidecar.genreTags,
+            language: mergedSidecar.language ?? "",
+            labelOrCompany: mergedSidecar.labelOrCompany ?? "",
+            qqMusicAlbumMid: mergedSidecar.qqMusicAlbumMid,
+            metadataSource: mergedSidecar.metadataSource,
+            metadataFetchedAt: mergedSidecar.metadataFetchedAt,
+            metadataConfidence: mergedSidecar.metadataConfidence,
             artworkData: artworkData ?? firstArtwork,
             createdAt: mergedSidecar.createdAt,
             updatedAt: mergedSidecar.updatedAt,

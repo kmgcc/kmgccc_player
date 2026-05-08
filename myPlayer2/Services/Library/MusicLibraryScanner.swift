@@ -15,6 +15,14 @@ nonisolated struct ScannedTrackMeta: Sendable {
     let album: String
     let albumArtist: String?
     let description: String
+    let genreTags: [String]
+    let language: String
+    let labelOrCompany: String
+    let releaseDate: Date?
+    let qqMusicSongMid: String?
+    let metadataSource: String?
+    let metadataFetchedAt: Date?
+    let metadataConfidence: Double?
     let duration: Double
     let addedAt: Date
     let importedAt: Date
@@ -87,6 +95,18 @@ nonisolated struct MusicLibraryScanner: Sendable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let description = ((json["description"] as? String) ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        let genreTags = parseStringArray(json["genreTags"])
+        let language = ((json["language"] as? String) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let labelOrCompany = ((json["labelOrCompany"] as? String) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let releaseDate = parseDate(json["releaseDate"])
+        let qqMusicSongMid = (json["qqMusicSongMid"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let metadataSource = (json["metadataSource"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let metadataFetchedAt = parseDate(json["metadataFetchedAt"])
+        let metadataConfidence = parseDouble(json["metadataConfidence"])
         let duration = parseDouble(json["duration"]) ?? 0
 
         let now = Date()
@@ -136,6 +156,14 @@ nonisolated struct MusicLibraryScanner: Sendable {
             album: album,
             albumArtist: albumArtist?.isEmpty == true ? nil : albumArtist,
             description: description,
+            genreTags: genreTags,
+            language: language,
+            labelOrCompany: labelOrCompany,
+            releaseDate: releaseDate,
+            qqMusicSongMid: (qqMusicSongMid?.isEmpty ?? true) ? nil : qqMusicSongMid,
+            metadataSource: (metadataSource?.isEmpty ?? true) ? nil : metadataSource,
+            metadataFetchedAt: metadataFetchedAt,
+            metadataConfidence: metadataConfidence,
             duration: duration,
             addedAt: addedAt,
             importedAt: importedAt,
@@ -194,6 +222,21 @@ nonisolated struct MusicLibraryScanner: Sendable {
         iso8601WithFractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let iso8601 = ISO8601DateFormatter()
         return iso8601WithFractional.date(from: value) ?? iso8601.date(from: value)
+    }
+
+    private func parseStringArray(_ raw: Any?) -> [String] {
+        if let values = raw as? [String] {
+            return values
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        }
+        if let value = raw as? String {
+            return value
+                .split(separator: ",")
+                .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        }
+        return []
     }
 
     private func parsePreferenceStats(_ raw: Any?) -> TrackPreferenceStats? {
