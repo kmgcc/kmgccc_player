@@ -487,6 +487,14 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
     let album: String
     let albumArtist: String?
     let description: String
+    let genreTags: [String]
+    let language: String
+    let labelOrCompany: String
+    let releaseDate: Date?
+    let qqMusicSongMid: String?
+    let metadataSource: String?
+    let metadataFetchedAt: Date?
+    let metadataConfidence: Double?
     let duration: Double
     let addedAt: Date
     let importedAt: Date
@@ -500,6 +508,36 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
     let preferenceStats: TrackPreferenceStats?
     let folderRelativePath: String
 
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case id
+        case title
+        case artist
+        case album
+        case albumArtist
+        case description
+        case genreTags
+        case language
+        case labelOrCompany
+        case releaseDate
+        case qqMusicSongMid
+        case metadataSource
+        case metadataFetchedAt
+        case metadataConfidence
+        case duration
+        case addedAt
+        case importedAt
+        case lyricsTimeOffsetMs
+        case originalFilePath
+        case audioFileName
+        case artworkFileName
+        case lyricsFileName
+        case ttmlLyricsFileName
+        case playCount
+        case preferenceStats
+        case folderRelativePath
+    }
+
     init(_ meta: ScannedTrackMeta) {
         schemaVersion = meta.schemaVersion
         id = meta.id
@@ -508,6 +546,14 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
         album = meta.album
         albumArtist = meta.albumArtist
         description = meta.description
+        genreTags = meta.genreTags
+        language = meta.language
+        labelOrCompany = meta.labelOrCompany
+        releaseDate = meta.releaseDate
+        qqMusicSongMid = meta.qqMusicSongMid
+        metadataSource = meta.metadataSource
+        metadataFetchedAt = meta.metadataFetchedAt
+        metadataConfidence = meta.metadataConfidence
         duration = meta.duration
         addedAt = meta.addedAt
         importedAt = meta.importedAt
@@ -522,6 +568,37 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
         folderRelativePath = "Tracks/\(meta.id.uuidString)"
     }
 
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try c.decode(Int.self, forKey: .schemaVersion)
+        id = try c.decode(UUID.self, forKey: .id)
+        title = try c.decode(String.self, forKey: .title)
+        artist = try c.decode(String.self, forKey: .artist)
+        album = try c.decode(String.self, forKey: .album)
+        albumArtist = try c.decodeIfPresent(String.self, forKey: .albumArtist)
+        description = try c.decode(String.self, forKey: .description)
+        genreTags = try c.decodeIfPresent([String].self, forKey: .genreTags) ?? []
+        language = try c.decodeIfPresent(String.self, forKey: .language) ?? ""
+        labelOrCompany = try c.decodeIfPresent(String.self, forKey: .labelOrCompany) ?? ""
+        releaseDate = try c.decodeIfPresent(Date.self, forKey: .releaseDate)
+        qqMusicSongMid = try c.decodeIfPresent(String.self, forKey: .qqMusicSongMid)
+        metadataSource = try c.decodeIfPresent(String.self, forKey: .metadataSource)
+        metadataFetchedAt = try c.decodeIfPresent(Date.self, forKey: .metadataFetchedAt)
+        metadataConfidence = try c.decodeIfPresent(Double.self, forKey: .metadataConfidence)
+        duration = try c.decode(Double.self, forKey: .duration)
+        addedAt = try c.decode(Date.self, forKey: .addedAt)
+        importedAt = try c.decode(Date.self, forKey: .importedAt)
+        lyricsTimeOffsetMs = try c.decode(Double.self, forKey: .lyricsTimeOffsetMs)
+        originalFilePath = try c.decode(String.self, forKey: .originalFilePath)
+        audioFileName = try c.decode(String.self, forKey: .audioFileName)
+        artworkFileName = try c.decodeIfPresent(String.self, forKey: .artworkFileName)
+        lyricsFileName = try c.decodeIfPresent(String.self, forKey: .lyricsFileName)
+        ttmlLyricsFileName = try c.decodeIfPresent(String.self, forKey: .ttmlLyricsFileName)
+        playCount = try c.decodeIfPresent(Int.self, forKey: .playCount)
+        preferenceStats = try c.decodeIfPresent(TrackPreferenceStats.self, forKey: .preferenceStats)
+        folderRelativePath = try c.decode(String.self, forKey: .folderRelativePath)
+    }
+
     func makeScannedMeta(rootURL: URL) -> ScannedTrackMeta? {
         guard folderRelativePath == "Tracks/\(id.uuidString)" else { return nil }
         return ScannedTrackMeta(
@@ -532,6 +609,14 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
             album: album,
             albumArtist: albumArtist,
             description: description,
+            genreTags: genreTags,
+            language: language,
+            labelOrCompany: labelOrCompany,
+            releaseDate: releaseDate,
+            qqMusicSongMid: qqMusicSongMid,
+            metadataSource: metadataSource,
+            metadataFetchedAt: metadataFetchedAt,
+            metadataConfidence: metadataConfidence,
             duration: duration,
             addedAt: addedAt,
             importedAt: importedAt,

@@ -142,16 +142,48 @@ nonisolated struct ArtistSidecar: Codable, Sendable {
     var displayName: String
     var artworkFileName: String?
     var description: String?
+    var genreTags: [String]
+    var region: String?
+    var foreignName: String?
+    var qqMusicSingerMid: String?
+    var metadataSource: String?
+    var metadataFetchedAt: Date?
+    var metadataConfidence: Double?
     var createdAt: Date
     var updatedAt: Date
 
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case id
+        case canonicalName
+        case displayName
+        case artworkFileName
+        case description
+        case genreTags
+        case region
+        case foreignName
+        case qqMusicSingerMid
+        case metadataSource
+        case metadataFetchedAt
+        case metadataConfidence
+        case createdAt
+        case updatedAt
+    }
+
     init(
-        schemaVersion: Int = 1,
+        schemaVersion: Int = 2,
         id: UUID,
         canonicalName: String,
         displayName: String,
         artworkFileName: String? = nil,
         description: String? = nil,
+        genreTags: [String] = [],
+        region: String? = nil,
+        foreignName: String? = nil,
+        qqMusicSingerMid: String? = nil,
+        metadataSource: String? = nil,
+        metadataFetchedAt: Date? = nil,
+        metadataConfidence: Double? = nil,
         createdAt: Date,
         updatedAt: Date
     ) {
@@ -161,8 +193,64 @@ nonisolated struct ArtistSidecar: Codable, Sendable {
         self.displayName = displayName
         self.artworkFileName = artworkFileName
         self.description = description
+        self.genreTags = genreTags
+        self.region = region
+        self.foreignName = foreignName
+        self.qqMusicSingerMid = qqMusicSingerMid
+        self.metadataSource = metadataSource
+        self.metadataFetchedAt = metadataFetchedAt
+        self.metadataConfidence = metadataConfidence
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        id = try c.decode(UUID.self, forKey: .id)
+        canonicalName = try c.decode(String.self, forKey: .canonicalName)
+        displayName = try c.decode(String.self, forKey: .displayName)
+        artworkFileName = try c.decodeIfPresent(String.self, forKey: .artworkFileName)
+        description = try c.decodeIfPresent(String.self, forKey: .description)
+        if let decodedTags = try? c.decode([String].self, forKey: .genreTags) {
+            genreTags = decodedTags
+        } else if let decodedTags = try? c.decode(String.self, forKey: .genreTags) {
+            genreTags = decodedTags
+                .split(separator: ",")
+                .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        } else {
+            genreTags = []
+        }
+        region = try c.decodeIfPresent(String.self, forKey: .region)
+        foreignName = try c.decodeIfPresent(String.self, forKey: .foreignName)
+        qqMusicSingerMid = try c.decodeIfPresent(String.self, forKey: .qqMusicSingerMid)
+        metadataSource = try c.decodeIfPresent(String.self, forKey: .metadataSource)
+        metadataFetchedAt = try c.decodeIfPresent(Date.self, forKey: .metadataFetchedAt)
+        metadataConfidence = try c.decodeIfPresent(Double.self, forKey: .metadataConfidence)
+        createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? createdAt
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(2, forKey: .schemaVersion)
+        try c.encode(id, forKey: .id)
+        try c.encode(canonicalName, forKey: .canonicalName)
+        try c.encode(displayName, forKey: .displayName)
+        try c.encodeIfPresent(artworkFileName, forKey: .artworkFileName)
+        try c.encodeIfPresent(description, forKey: .description)
+        if !genreTags.isEmpty {
+            try c.encode(genreTags, forKey: .genreTags)
+        }
+        try c.encodeIfPresent(region, forKey: .region)
+        try c.encodeIfPresent(foreignName, forKey: .foreignName)
+        try c.encodeIfPresent(qqMusicSingerMid, forKey: .qqMusicSingerMid)
+        try c.encodeIfPresent(metadataSource, forKey: .metadataSource)
+        try c.encodeIfPresent(metadataFetchedAt, forKey: .metadataFetchedAt)
+        try c.encodeIfPresent(metadataConfidence, forKey: .metadataConfidence)
+        try c.encode(createdAt, forKey: .createdAt)
+        try c.encode(updatedAt, forKey: .updatedAt)
     }
 }
 
@@ -175,11 +263,44 @@ nonisolated struct AlbumSidecar: Codable, Sendable {
     var artworkFileName: String?
     var description: String?
     var year: Int?
+    var releaseYear: Int?
+    var releaseDate: Date?
+    var albumType: String?
+    var genreTags: [String]
+    var language: String?
+    var labelOrCompany: String?
+    var qqMusicAlbumMid: String?
+    var metadataSource: String?
+    var metadataFetchedAt: Date?
+    var metadataConfidence: Double?
     var createdAt: Date
     var updatedAt: Date
 
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case id
+        case canonicalKey
+        case displayTitle
+        case primaryArtistCanonicalName
+        case artworkFileName
+        case description
+        case year
+        case releaseYear
+        case releaseDate
+        case albumType
+        case genreTags
+        case language
+        case labelOrCompany
+        case qqMusicAlbumMid
+        case metadataSource
+        case metadataFetchedAt
+        case metadataConfidence
+        case createdAt
+        case updatedAt
+    }
+
     init(
-        schemaVersion: Int = 1,
+        schemaVersion: Int = 2,
         id: UUID,
         canonicalKey: String,
         displayTitle: String,
@@ -187,6 +308,16 @@ nonisolated struct AlbumSidecar: Codable, Sendable {
         artworkFileName: String? = nil,
         description: String? = nil,
         year: Int? = nil,
+        releaseYear: Int? = nil,
+        releaseDate: Date? = nil,
+        albumType: String? = nil,
+        genreTags: [String] = [],
+        language: String? = nil,
+        labelOrCompany: String? = nil,
+        qqMusicAlbumMid: String? = nil,
+        metadataSource: String? = nil,
+        metadataFetchedAt: Date? = nil,
+        metadataConfidence: Double? = nil,
         createdAt: Date,
         updatedAt: Date
     ) {
@@ -198,7 +329,76 @@ nonisolated struct AlbumSidecar: Codable, Sendable {
         self.artworkFileName = artworkFileName
         self.description = description
         self.year = year
+        self.releaseYear = releaseYear ?? year
+        self.releaseDate = releaseDate
+        self.albumType = albumType
+        self.genreTags = genreTags
+        self.language = language
+        self.labelOrCompany = labelOrCompany
+        self.qqMusicAlbumMid = qqMusicAlbumMid
+        self.metadataSource = metadataSource
+        self.metadataFetchedAt = metadataFetchedAt
+        self.metadataConfidence = metadataConfidence
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        id = try c.decode(UUID.self, forKey: .id)
+        canonicalKey = try c.decode(String.self, forKey: .canonicalKey)
+        displayTitle = try c.decode(String.self, forKey: .displayTitle)
+        primaryArtistCanonicalName = try c.decode(String.self, forKey: .primaryArtistCanonicalName)
+        artworkFileName = try c.decodeIfPresent(String.self, forKey: .artworkFileName)
+        description = try c.decodeIfPresent(String.self, forKey: .description)
+        year = try c.decodeIfPresent(Int.self, forKey: .year)
+        releaseYear = try c.decodeIfPresent(Int.self, forKey: .releaseYear) ?? year
+        releaseDate = try c.decodeIfPresent(Date.self, forKey: .releaseDate)
+        albumType = try c.decodeIfPresent(String.self, forKey: .albumType)
+        if let decodedTags = try? c.decode([String].self, forKey: .genreTags) {
+            genreTags = decodedTags
+        } else if let decodedTags = try? c.decode(String.self, forKey: .genreTags) {
+            genreTags = decodedTags
+                .split(separator: ",")
+                .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        } else {
+            genreTags = []
+        }
+        language = try c.decodeIfPresent(String.self, forKey: .language)
+        labelOrCompany = try c.decodeIfPresent(String.self, forKey: .labelOrCompany)
+        qqMusicAlbumMid = try c.decodeIfPresent(String.self, forKey: .qqMusicAlbumMid)
+        metadataSource = try c.decodeIfPresent(String.self, forKey: .metadataSource)
+        metadataFetchedAt = try c.decodeIfPresent(Date.self, forKey: .metadataFetchedAt)
+        metadataConfidence = try c.decodeIfPresent(Double.self, forKey: .metadataConfidence)
+        createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? createdAt
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(2, forKey: .schemaVersion)
+        try c.encode(id, forKey: .id)
+        try c.encode(canonicalKey, forKey: .canonicalKey)
+        try c.encode(displayTitle, forKey: .displayTitle)
+        try c.encode(primaryArtistCanonicalName, forKey: .primaryArtistCanonicalName)
+        try c.encodeIfPresent(artworkFileName, forKey: .artworkFileName)
+        try c.encodeIfPresent(description, forKey: .description)
+        try c.encodeIfPresent(year, forKey: .year)
+        try c.encodeIfPresent(releaseYear ?? year, forKey: .releaseYear)
+        try c.encodeIfPresent(releaseDate, forKey: .releaseDate)
+        try c.encodeIfPresent(albumType, forKey: .albumType)
+        if !genreTags.isEmpty {
+            try c.encode(genreTags, forKey: .genreTags)
+        }
+        try c.encodeIfPresent(language, forKey: .language)
+        try c.encodeIfPresent(labelOrCompany, forKey: .labelOrCompany)
+        try c.encodeIfPresent(qqMusicAlbumMid, forKey: .qqMusicAlbumMid)
+        try c.encodeIfPresent(metadataSource, forKey: .metadataSource)
+        try c.encodeIfPresent(metadataFetchedAt, forKey: .metadataFetchedAt)
+        try c.encodeIfPresent(metadataConfidence, forKey: .metadataConfidence)
+        try c.encode(createdAt, forKey: .createdAt)
+        try c.encode(updatedAt, forKey: .updatedAt)
     }
 }

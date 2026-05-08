@@ -675,6 +675,14 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             album: meta.album,
             albumArtist: meta.albumArtist,
             userDescription: meta.description,
+            genreTags: meta.genreTags,
+            language: meta.language,
+            labelOrCompany: meta.labelOrCompany,
+            releaseDate: meta.releaseDate,
+            qqMusicSongMid: meta.qqMusicSongMid,
+            metadataSource: meta.metadataSource,
+            metadataFetchedAt: meta.metadataFetchedAt,
+            metadataConfidence: meta.metadataConfidence,
             duration: meta.duration,
             addedAt: meta.addedAt,
             importedAt: meta.importedAt,
@@ -743,6 +751,13 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             displayName: entry.displayName,
             artworkFileName: entry.artworkFileName,
             description: entry.description.isEmpty ? nil : entry.description,
+            genreTags: entry.genreTags,
+            region: entry.region.isEmpty ? nil : entry.region,
+            foreignName: entry.foreignName.isEmpty ? nil : entry.foreignName,
+            qqMusicSingerMid: entry.qqMusicSingerMid,
+            metadataSource: entry.metadataSource,
+            metadataFetchedAt: entry.metadataFetchedAt,
+            metadataConfidence: entry.metadataConfidence,
             createdAt: entry.createdAt,
             updatedAt: entry.updatedAt
         )
@@ -758,6 +773,16 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             artworkFileName: entry.artworkFileName,
             description: entry.description.isEmpty ? nil : entry.description,
             year: entry.year,
+            releaseYear: entry.releaseYear ?? entry.year,
+            releaseDate: entry.releaseDate,
+            albumType: entry.albumType.isEmpty ? nil : entry.albumType,
+            genreTags: entry.genreTags,
+            language: entry.language.isEmpty ? nil : entry.language,
+            labelOrCompany: entry.labelOrCompany.isEmpty ? nil : entry.labelOrCompany,
+            qqMusicAlbumMid: entry.qqMusicAlbumMid,
+            metadataSource: entry.metadataSource,
+            metadataFetchedAt: entry.metadataFetchedAt,
+            metadataConfidence: entry.metadataConfidence,
             createdAt: entry.createdAt,
             updatedAt: entry.updatedAt
         )
@@ -788,6 +813,13 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
                 ? preferred.artworkFileName
                 : fallback.artworkFileName,
             description: preferred.description.isEmpty ? fallback.description : preferred.description,
+            genreTags: preferred.genreTags.isEmpty ? fallback.genreTags : preferred.genreTags,
+            region: preferred.region.isEmpty ? fallback.region : preferred.region,
+            foreignName: preferred.foreignName.isEmpty ? fallback.foreignName : preferred.foreignName,
+            qqMusicSingerMid: preferred.qqMusicSingerMid ?? fallback.qqMusicSingerMid,
+            metadataSource: preferred.metadataSource ?? fallback.metadataSource,
+            metadataFetchedAt: preferred.metadataFetchedAt ?? fallback.metadataFetchedAt,
+            metadataConfidence: preferred.metadataConfidence ?? fallback.metadataConfidence,
             artworkData: preferred.artworkData ?? fallback.artworkData,
             createdAt: min(preferred.createdAt, fallback.createdAt),
             updatedAt: Date(),
@@ -826,6 +858,16 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
                 : fallback.artworkFileName,
             description: preferred.description.isEmpty ? fallback.description : preferred.description,
             year: preferred.year ?? fallback.year,
+            releaseYear: preferred.releaseYear ?? fallback.releaseYear ?? preferred.year ?? fallback.year,
+            releaseDate: preferred.releaseDate ?? fallback.releaseDate,
+            albumType: preferred.albumType.isEmpty ? fallback.albumType : preferred.albumType,
+            genreTags: preferred.genreTags.isEmpty ? fallback.genreTags : preferred.genreTags,
+            language: preferred.language.isEmpty ? fallback.language : preferred.language,
+            labelOrCompany: preferred.labelOrCompany.isEmpty ? fallback.labelOrCompany : preferred.labelOrCompany,
+            qqMusicAlbumMid: preferred.qqMusicAlbumMid ?? fallback.qqMusicAlbumMid,
+            metadataSource: preferred.metadataSource ?? fallback.metadataSource,
+            metadataFetchedAt: preferred.metadataFetchedAt ?? fallback.metadataFetchedAt,
+            metadataConfidence: preferred.metadataConfidence ?? fallback.metadataConfidence,
             artworkData: preferred.artworkData ?? fallback.artworkData,
             createdAt: min(preferred.createdAt, fallback.createdAt),
             updatedAt: Date(),
@@ -1052,12 +1094,25 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     private func hasUserContent(_ entry: ArtistEntry) -> Bool {
         !entry.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || entry.artworkFileName != nil
+            || !entry.genreTags.isEmpty
+            || !entry.region.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !entry.foreignName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || entry.qqMusicSingerMid != nil
+            || entry.metadataSource != nil
     }
 
     private func hasUserContent(_ entry: AlbumEntry) -> Bool {
         !entry.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || entry.artworkFileName != nil
             || entry.year != nil
+            || entry.releaseYear != nil
+            || entry.releaseDate != nil
+            || !entry.albumType.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !entry.genreTags.isEmpty
+            || !entry.language.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !entry.labelOrCompany.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || entry.qqMusicAlbumMid != nil
+            || entry.metadataSource != nil
     }
 
     private func performBackgroundTrackDeletionCleanup(_ cleanupPlan: TrackDeletionCleanupPlan) async -> Int {
