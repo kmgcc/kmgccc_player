@@ -14,10 +14,10 @@ import SwiftUI
 
 nonisolated struct LEDMeterConfig: Sendable {
     var ledCount: Int = 11
-    var levels: Int = 7
-    var cutoffHz: Float = 1200
+    var levels: Int = 5
+    var cutoffHz: Float = 2400
     var sensitivity: Float = 1.0
-    var speed: Float = 1.0
+    var speed: Float = 1.15
     var targetHz: Int = 30
 }
 
@@ -25,6 +25,8 @@ nonisolated struct LEDMeterConfig: Sendable {
 /// Sensitivity and target rate are no longer user-tunable; the other values seed
 /// `AppSettings`/`LEDMeterConfig` so the UI and the runtime stay in lockstep.
 nonisolated enum LEDDefaults {
+    static let ledCount: Int = 11
+    static let levels: Int = 5
     static let sensitivity: Float = 0.8
     static let targetHz: Int = 30
     static let cutoffHz: Double = 2400

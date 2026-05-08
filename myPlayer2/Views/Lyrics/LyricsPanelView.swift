@@ -335,14 +335,14 @@ private struct LyricsRealtimeSyncObserver: View {
 struct LyricsSettingsObserver: ViewModifier {
     var lyricsVM: LyricsViewModel
 
-    @AppStorage("lyricsFontSize") private var lyricsFontSize: Double = 24.0
+    @AppStorage("lyricsFontSize") private var lyricsFontSize: Double = 26.0
     @AppStorage("lyricsFontNameZh") private var lyricsFontNameZh: String = "PingFang SC"
     @AppStorage("lyricsFontNameEn") private var lyricsFontNameEn: String = "SF Pro Text"
     @AppStorage("lyricsTranslationFontName") private var lyricsTranslationFontName: String =
         "SF Pro Text"
     @AppStorage("lyricsFontWeightLight") private var lyricsFontWeightLight: Int = 600
     @AppStorage("lyricsFontWeightDark") private var lyricsFontWeightDark: Int = 600
-    @AppStorage("lyricsTranslationFontSize") private var lyricsTranslationFontSize: Double = 18.0
+    @AppStorage("lyricsTranslationFontSize") private var lyricsTranslationFontSize: Double = 16.0
     @AppStorage("lyricsTranslationFontWeightLight") private var lyricsTranslationFontWeightLight:
         Int = 400
     @AppStorage("lyricsTranslationFontWeightDark") private var lyricsTranslationFontWeightDark:

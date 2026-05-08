@@ -270,14 +270,10 @@ struct HomeView: View {
 
         return AnyView(
             ZStack(alignment: .topLeading) {
-                let ambientGeometry = layout.isLiveResizing
-                    ? (layout.liveResizeFrozenGeometry ?? g)
-                    : g
                 HomeAmbientShapesBackground(
-                    geometry: ambientGeometry,
+                    geometry: g,
                     mode: mode,
                     motion: ambientMotion,
-                    isLiveResizing: layout.isLiveResizing,
                     sourceColor: themeStore.semanticPalette.ambientSurface,
                     sourceAnalysis: themeStore.semanticPalette.analysis
                 )

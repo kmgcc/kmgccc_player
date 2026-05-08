@@ -104,16 +104,12 @@ struct AppKitMainContentPaneRoot: View {
 
         let base = ZStack(alignment: .bottomLeading) {
             // Transparent center-rect probe. Reports the center pane's
-            // window-coordinate frame to `HomeWindowLayoutState` regardless
-            // of the active page so the full-window Home layer can keep its
-            // inner sections aligned to the center column.
+            // presence so the center pane keeps its normal layout footprint.
+            // AppKitMainSplitViewController publishes the center rect
+            // synchronously from the split view frames; doing it here with a
+            // SwiftUI geometry callback lags during live window resize.
             Color.clear
                 .allowsHitTesting(false)
-                .onGeometryChange(for: CGRect.self) { proxy in
-                    proxy.frame(in: .global)
-                } action: { newRect in
-                    HomeWindowLayoutState.shared.setCenterRect(newRect)
-                }
 
             Group {
                 switch uiState.contentMode {

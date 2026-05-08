@@ -82,11 +82,11 @@ public final class AppSettings {
 
     /// Number of LEDs (default 11)
     @ObservationIgnored
-    @AppStorage("ledCount") var ledCount: Int = 13
+    @AppStorage("ledCount") var ledCount: Int = LEDDefaults.ledCount
 
     /// Brightness levels per LED (default 5)
     @ObservationIgnored
-    @AppStorage("ledBrightnessLevels") var ledBrightnessLevels: Int = 5
+    @AppStorage("ledBrightnessLevels") var ledBrightnessLevels: Int = LEDDefaults.levels
 
     /// LED sensitivity is now fixed; UI control was removed and the value is sourced from LEDDefaults.
     var ledSensitivity: Float { LEDDefaults.sensitivity }
@@ -361,7 +361,7 @@ public final class AppSettings {
 
     /// Translation font size
     @ObservationIgnored
-    @AppStorage("lyricsTranslationFontSize") var lyricsTranslationFontSize: Double = 14.0
+    @AppStorage("lyricsTranslationFontSize") var lyricsTranslationFontSize: Double = 16.0
 
     /// Translation font weight in light mode (100~900)
     @ObservationIgnored
@@ -381,7 +381,7 @@ public final class AppSettings {
 
     /// Lyrics font size
     @ObservationIgnored
-    @AppStorage("lyricsFontSize") var lyricsFontSize: Double = 24.0
+    @AppStorage("lyricsFontSize") var lyricsFontSize: Double = 26.0
 
     /// Lead-in milliseconds for near-switch lyric line advance
     @ObservationIgnored
@@ -398,6 +398,7 @@ public final class AppSettings {
 
     private enum AMLLKeys {
         static let highResolutionLyricsEnabled = "amllHighResolutionLyricsEnabled"
+        static let discreteWordHighlightEnabled = "amllDiscreteWordHighlightEnabled"
     }
 
     /// Whether AMLL WebViews should render at native resolution instead of the default reduced mode.
@@ -416,6 +417,19 @@ public final class AppSettings {
     /// Whether AMLL WebViews should render at reduced backing resolution.
     var amllLowResolutionModeEnabled: Bool {
         !amllHighResolutionLyricsEnabled
+    }
+
+    /// Whether word-by-word AMLL highlighting should jump by whole words instead of sweeping left-to-right.
+    var amllDiscreteWordHighlightEnabled: Bool {
+        get {
+            access(keyPath: \.amllDiscreteWordHighlightEnabled)
+            return UserDefaults.standard.bool(forKey: AMLLKeys.discreteWordHighlightEnabled)
+        }
+        set {
+            withMutation(keyPath: \.amllDiscreteWordHighlightEnabled) {
+                UserDefaults.standard.set(newValue, forKey: AMLLKeys.discreteWordHighlightEnabled)
+            }
+        }
     }
 
     /// Now Playing skin identifier
@@ -708,9 +722,9 @@ public final class AppSettings {
         static let lyricsFontNameEn = "SF Pro Text"
         static let lyricsTranslationFontName = "SF Pro Text"
         static let lyricsFontWeight = 600
-        static let lyricsTranslationFontWeight = 400
-        static let lyricsFontSize: Double = 36
-        static let lyricsTranslationFontSize: Double = 18
+        static let lyricsTranslationFontWeight = 500
+        static let lyricsFontSize: Double = 38
+        static let lyricsTranslationFontSize: Double = 20
     }
 
     enum FullscreenMiniPlayerGlassMaterial: String, CaseIterable, Identifiable {

@@ -356,6 +356,7 @@ final class LyricsViewModel {
             "fpsCap": surfaceRole.fpsCap,
             "overscanPx": surfaceRole.overscanPx,
             "wordFadeWidth": surfaceRole.wordFadeWidth,
+            "wordHighlightMode": settings.amllDiscreteWordHighlightEnabled ? "discrete" : "smooth",
             "lineHeight": 1.5,
             "activeScale": surfaceRole.activeScale,
             "textColor": (paletteMatchesScheme ? palette?.text : nil)

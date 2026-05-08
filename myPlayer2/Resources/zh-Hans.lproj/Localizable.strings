@@ -54,7 +54,7 @@
 "settings.language.restart_notice" = "某些更改可能需要重新启动 App 才能完全生效。";
 
 // MARK: - Settings Now Playing
-"settings.now_playing.select_skin" = "选择皮肤";
+"settings.now_playing.select_skin" = "选择外观";
 "settings.now_playing.skin_options" = "%@ 选项";
 "skin.classic_led.name" = "经典";
 "skin.classic_led.detail" = "封面";

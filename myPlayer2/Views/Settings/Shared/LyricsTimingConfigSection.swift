@@ -10,46 +10,48 @@ import SwiftUI
 /// Lyrics timing parameters configuration section.
 /// These parameters are shared between window and fullscreen lyrics.
 struct LyricsTimingConfigSection: View {
+    private enum Defaults {
+        static let leadInMs: Double = 600
+        static let nearSwitchGapMs: Double = 160
+        static let globalAdvanceMs: Double = 0
+    }
+
     @Environment(AppSettings.self) private var settings
     @Environment(LyricsViewModel.self) private var lyricsVM
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
 
     // Local state for slider binding (fixes UI update issue with @ObservationIgnored properties)
-    @State private var leadInMs: Double = 600
-    @State private var nearSwitchGapMs: Double = 160
-    @State private var globalAdvanceMs: Double = 0
+    @State private var leadInMs: Double = Defaults.leadInMs
+    @State private var nearSwitchGapMs: Double = Defaults.nearSwitchGapMs
+    @State private var globalAdvanceMs: Double = Defaults.globalAdvanceMs
 
     var body: some View {
-        VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
-            HStack {
+        GroupBox {
+            VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
+                Text("参数仅供调试，正常使用无需调整")
+                    .font(.system(size: presentationStyle.captionFontSize * 0.92))
+                    .foregroundStyle(presentationStyle.tertiaryTextColor)
+
+                leadInSection
+                Divider().padding(.vertical, presentationStyle.dividerVerticalPadding)
+                nearSwitchGapSection
+                Divider().padding(.vertical, presentationStyle.dividerVerticalPadding)
+                globalAdvanceSection
+            }
+            .padding(presentationStyle.groupPadding)
+        } label: {
+            HStack(spacing: presentationStyle.compactInlineSpacing) {
                 Text("settings.lyrics.timing")
                     .font(.system(size: presentationStyle.sectionTitleFontSize, weight: .semibold))
                     .foregroundStyle(presentationStyle.secondaryTextColor)
                 Spacer()
                 Button("恢复默认值") {
-                    leadInMs = 600
-                    nearSwitchGapMs = 160
-                    globalAdvanceMs = 0
-                    syncToSettings()
+                    resetToDefaults()
                 }
                 .buttonStyle(.borderless)
                 .font(.system(size: presentationStyle.captionFontSize))
                 .foregroundStyle(presentationStyle.secondaryTextColor)
-            }
-            Text("参数仅供调试，正常使用无需调整")
-                .font(.system(size: presentationStyle.captionFontSize * 0.92))
-                .foregroundStyle(presentationStyle.tertiaryTextColor)
-
-            GroupBox {
-                VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
-                    leadInSection
-                    Divider().padding(.vertical, presentationStyle.dividerVerticalPadding)
-                    nearSwitchGapSection
-                    Divider().padding(.vertical, presentationStyle.dividerVerticalPadding)
-                    globalAdvanceSection
-                }
-                .padding(presentationStyle.groupPadding)
             }
         }
         .onAppear {
@@ -79,6 +81,13 @@ struct LyricsTimingConfigSection: View {
                 .font(.system(size: presentationStyle.captionFontSize))
                 .foregroundStyle(presentationStyle.secondaryTextColor)
         }
+    }
+
+    private func resetToDefaults() {
+        leadInMs = Defaults.leadInMs
+        nearSwitchGapMs = Defaults.nearSwitchGapMs
+        globalAdvanceMs = Defaults.globalAdvanceMs
+        syncToSettings()
     }
 
     private var nearSwitchGapSection: some View {

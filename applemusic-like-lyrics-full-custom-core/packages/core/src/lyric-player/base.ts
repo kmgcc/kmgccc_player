@@ -13,6 +13,8 @@ import { BottomLineEl } from "./bottom-line.ts";
 import { InterludeDots } from "./dom/interlude-dots.ts";
 import { MaskObsceneWordsMode } from "./index.ts";
 
+export type WordHighlightMode = "smooth" | "discrete";
+
 /**
  * 歌词播放器的基类，已经包含了有关歌词操作和排版的功能，子类需要为其实现对应的显示展示操作
  */
@@ -151,6 +153,7 @@ export abstract class LyricPlayerBase
 		}
 	}) as ResizeObserverCallback);
 	protected wordFadeWidth = 0.5;
+	protected wordHighlightMode: WordHighlightMode = "smooth";
 	protected targetAlignIndex = 0;
 	protected lyricAdvanceLeadInMs = 300;
 	protected lyricNearSwitchGapMs = 85;
@@ -354,6 +357,10 @@ export abstract class LyricPlayerBase
 		this.wordFadeWidth = Math.max(0.0001, value);
 	}
 
+	setWordHighlightMode(mode: WordHighlightMode = "smooth") {
+		this.wordHighlightMode = mode === "discrete" ? "discrete" : "smooth";
+	}
+
 	/**
 	 * 是否启用歌词行缩放效果，默认启用
 	 *
@@ -380,6 +387,10 @@ export abstract class LyricPlayerBase
 	 */
 	getWordFadeWidth() {
 		return this.wordFadeWidth;
+	}
+
+	getWordHighlightMode() {
+		return this.wordHighlightMode;
 	}
 
 	setIsSeeking(isSeeking: boolean) {

@@ -27,7 +27,6 @@ struct HomeAmbientShapesBackground: View {
     let geometry: HomeWindowLayoutState.Geometry
     let mode: HomeLayoutMode
     @ObservedObject var motion: HomeAmbientMotionState
-    let isLiveResizing: Bool
     let sourceColor: NSColor?
     let sourceAnalysis: ArtworkColorAnalysis?
 
@@ -61,8 +60,7 @@ struct HomeAmbientShapesBackground: View {
                     presentations: presentations,
                     scrollOffsetY: motion.scrollOffsetY,
                     virtualHeight: virtualHeight,
-                    reduceMotion: reduceMotion,
-                    isLiveResizing: isLiveResizing
+                    reduceMotion: reduceMotion
                 )
                 .frame(width: geometry.windowWidth, height: geometry.windowHeight, alignment: .topLeading)
             }
@@ -443,7 +441,6 @@ private struct HomeAmbientShapeLayerHost: NSViewRepresentable {
     let scrollOffsetY: CGFloat
     let virtualHeight: CGFloat
     let reduceMotion: Bool
-    let isLiveResizing: Bool
 
     func makeNSView(context _: Context) -> HomeAmbientShapeLayerView {
         HomeAmbientShapeLayerView()
@@ -454,8 +451,7 @@ private struct HomeAmbientShapeLayerHost: NSViewRepresentable {
             presentations: presentations,
             scrollOffsetY: scrollOffsetY,
             virtualHeight: virtualHeight,
-            reduceMotion: reduceMotion,
-            isLiveResizing: isLiveResizing
+            reduceMotion: reduceMotion
         )
     }
 }
@@ -486,8 +482,7 @@ private final class HomeAmbientShapeLayerView: NSView {
         presentations: [HomeAmbientShapePresentation],
         scrollOffsetY: CGFloat,
         virtualHeight: CGFloat,
-        reduceMotion: Bool,
-        isLiveResizing: Bool
+        reduceMotion: Bool
     ) {
         guard let rootLayer = layer else { return }
         rootLayer.masksToBounds = true
@@ -508,38 +503,30 @@ private final class HomeAmbientShapeLayerView: NSView {
                 for: presentation,
                 scrollOffsetY: scrollOffsetY,
                 virtualHeight: virtualHeight,
-                reduceMotion: reduceMotion || isLiveResizing
+                reduceMotion: reduceMotion
             )
             let bounds = CGRect(x: 0, y: 0, width: presentation.side, height: presentation.side)
 
             pair.container.contentsScale = backingScale
-            if !isLiveResizing || pair.container.backgroundColor == nil {
-                pair.container.backgroundColor = presentation.color.homeAmbientDeviceRGBCGColor
-            }
-            if !isLiveResizing || pair.container.bounds.isEmpty {
-                pair.container.bounds = bounds
-                pair.container.position = CGPoint(
-                    x: presentation.basePosition.x + transform.x,
-                    y: presentation.basePosition.y + transform.y
-                )
-                pair.container.transform = CATransform3DMakeRotation(
-                    CGFloat((presentation.baseRotationDegrees + transform.rotationDegrees) * .pi / 180),
-                    0,
-                    0,
-                    1
-                )
-            }
+            pair.container.backgroundColor = presentation.color.homeAmbientDeviceRGBCGColor
+            pair.container.bounds = bounds
+            pair.container.position = CGPoint(
+                x: presentation.basePosition.x + transform.x,
+                y: presentation.basePosition.y + transform.y
+            )
+            pair.container.transform = CATransform3DMakeRotation(
+                CGFloat((presentation.baseRotationDegrees + transform.rotationDegrees) * .pi / 180),
+                0,
+                0,
+                1
+            )
 
             pair.mask.contentsScale = backingScale
-            if !isLiveResizing || pair.mask.contents == nil {
-                pair.mask.contents = presentation.image
-            }
+            pair.mask.contents = presentation.image
             pair.mask.contentsGravity = .resizeAspect
             pair.mask.minificationFilter = .linear
             pair.mask.magnificationFilter = .linear
-            if !isLiveResizing || pair.mask.bounds.isEmpty {
-                pair.mask.frame = bounds
-            }
+            pair.mask.frame = bounds
         }
 
         CATransaction.commit()

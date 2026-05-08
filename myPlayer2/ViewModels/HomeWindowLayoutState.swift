@@ -116,15 +116,6 @@ final class HomeWindowLayoutState {
     /// `appkit_y = boundsHeight - swiftUI_maxY`).
     var miniPlayerFrameInWindow: CGRect = .zero
 
-    /// True while AppKit is in a live window-resize loop. Home uses this to
-    /// keep layout live but temporarily drop expensive glass/blur layers.
-    var isLiveResizing: Bool = false
-
-    /// Geometry captured at the start of a live resize. Pure background
-    /// ornamentation can read this instead of the per-pixel live geometry so it
-    /// does not churn layout or jump while the user drags the window edge.
-    var liveResizeFrozenGeometry: Geometry?
-
     private let layoutEpsilon: CGFloat = 1.5
     private let miniPlayerFrameEpsilon: CGFloat = 1
 
@@ -143,6 +134,34 @@ final class HomeWindowLayoutState {
         next.windowWidth = quantizedSize.width
         next.windowHeight = quantizedSize.height
         geometry = next
+    }
+
+    func setGeometry(windowSize: CGSize, centerRect: CGRect) {
+        let quantizedSize = CGSize(
+            width: quantize(windowSize.width, step: layoutEpsilon),
+            height: quantize(windowSize.height, step: layoutEpsilon)
+        )
+        let minX = quantize(centerRect.minX, step: layoutEpsilon)
+        let maxX = quantize(centerRect.maxX, step: layoutEpsilon)
+        let minY = quantize(centerRect.minY, step: layoutEpsilon)
+        let maxY = quantize(centerRect.maxY, step: layoutEpsilon)
+        guard
+            abs(geometry.windowWidth - quantizedSize.width) >= layoutEpsilon
+                || abs(geometry.windowHeight - quantizedSize.height) >= layoutEpsilon
+                || abs(geometry.centerMinXInWindow - minX) >= layoutEpsilon
+                || abs(geometry.centerMaxXInWindow - maxX) >= layoutEpsilon
+                || abs(geometry.centerMinYInWindow - minY) >= layoutEpsilon
+                || abs(geometry.centerMaxYInWindow - maxY) >= layoutEpsilon
+        else { return }
+
+        geometry = Geometry(
+            windowWidth: quantizedSize.width,
+            windowHeight: quantizedSize.height,
+            centerMinXInWindow: minX,
+            centerMaxXInWindow: maxX,
+            centerMinYInWindow: minY,
+            centerMaxYInWindow: maxY
+        )
     }
 
     func setCenterRect(_ rect: CGRect) {
@@ -177,12 +196,6 @@ final class HomeWindowLayoutState {
     func setHomeSearchActive(_ active: Bool) {
         guard isHomeSearchActive != active else { return }
         isHomeSearchActive = active
-    }
-
-    func setLiveResizing(_ active: Bool) {
-        guard isLiveResizing != active else { return }
-        liveResizeFrozenGeometry = active ? geometry : nil
-        isLiveResizing = active
     }
 
     func setMiniPlayerFrame(_ rect: CGRect) {

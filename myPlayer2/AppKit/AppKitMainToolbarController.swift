@@ -37,6 +37,9 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
     private weak var splitViewController: AppKitMainSplitViewController?
     private weak var appSession: AppSessionHost?
     private weak var window: NSWindow?
+    private var isAttachedToWindow = false
+    private var isDetachingFromWindow = false
+    private var attachmentGeneration = 0
 
     private weak var multiselectItem: NSToolbarItem?
     private weak var playItem: NSToolbarItem?
@@ -72,7 +75,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         return menu
     }()
 
-    private(set) lazy var toolbar: NSToolbar = makeToolbar()
+    private var toolbar: NSToolbar?
 
     init(splitViewController: AppKitMainSplitViewController, appSession: AppSessionHost) {
         self.splitViewController = splitViewController
@@ -81,11 +84,37 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
     }
 
     func attachToWindow(_ window: NSWindow) {
+        attachToWindow(window, rebuildLayout: true)
+    }
+
+    func makeFreshToolbarForWindowAttach() -> NSToolbar {
+        closeFeatureTipPopover()
+        if let oldToolbar = toolbar {
+            clearToolbarItemTargets(oldToolbar)
+            oldToolbar.delegate = nil
+            if window?.toolbar === oldToolbar {
+                window?.toolbar = nil
+            }
+        }
+        let freshToolbar = makeToolbar()
+        toolbar = freshToolbar
+        resetToolbarItemReferences()
+        return freshToolbar
+    }
+
+    func attachToFreshToolbarWindow(_ window: NSWindow) {
+        attachToWindow(window, rebuildLayout: false)
+    }
+
+    private func attachToWindow(_ window: NSWindow, rebuildLayout: Bool) {
         if self.window !== window {
             closeFeatureTipPopover()
             resetToolbarItemReferences()
         }
         self.window = window
+        isDetachingFromWindow = false
+        isAttachedToWindow = true
+        attachmentGeneration += 1
         // Start one-shot observation loops after the toolbar is installed in a live window.
         observeSearchText()
         observeMultiselectState()
@@ -95,16 +124,34 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         observeLibrarySearchResetTrigger()
         observeToolbarState()
         observeHomeNavigationState()
-        applyToolbarLayoutForCurrentState()
+        if rebuildLayout {
+            applyToolbarLayoutForCurrentState()
+        } else {
+            reattachVisibleToolbarItemReferences()
+            validateCurrentToolbarVisibleItems()
+            syncVisibleToolbarItemPresentation()
+        }
     }
 
     func detachFromWindow(_ window: NSWindow) {
         guard self.window === window else { return }
+        isDetachingFromWindow = true
+        isAttachedToWindow = false
+        attachmentGeneration += 1
         closeFeatureTipPopover()
         fullscreenModeCancellable?.cancel()
         fullscreenModeCancellable = nil
+        if let toolbar {
+            clearToolbarItemTargets(toolbar)
+            toolbar.delegate = nil
+            if window.toolbar === toolbar {
+                window.toolbar = nil
+            }
+        }
         resetToolbarItemReferences()
+        toolbar = nil
         self.window = nil
+        isDetachingFromWindow = false
     }
 
     func toggleMultiselectFromCommand() {
@@ -177,6 +224,10 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        desiredToolbarIdentifiersForCurrentState()
+    }
+
+    private func baseLibraryToolbarIdentifiers() -> [NSToolbarItem.Identifier] {
         [
             Identifier.sidebarToggle,
             .sidebarTrackingSeparator,
@@ -497,7 +548,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             libraryVM.trackSortKey = key
             currentPageController?.handleSortChange(reason: "toolbar.sortKey")
         }
-        window?.toolbar?.validateVisibleItems()
+        validateCurrentToolbarVisibleItems()
     }
 
     @objc
@@ -509,7 +560,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         else { return }
         libraryVM.trackSortOrder = order
         currentPageController?.handleSortChange(reason: "toolbar.sortOrder")
-        window?.toolbar?.validateVisibleItems()
+        validateCurrentToolbarVisibleItems()
     }
 
     // MARK: - Actions
@@ -518,11 +569,12 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
     private func handleSearchChange(_ sender: NSSearchField) {
         currentPageController?.searchText = sender.stringValue
         currentPageController?.handleSearchChange()
-        window?.toolbar?.validateVisibleItems()
+        validateCurrentToolbarVisibleItems()
     }
 
     @objc
     private func handleSidebarToggle(_ sender: NSToolbarItem) {
+        guard isCurrentToolbarAttached else { return }
         guard let splitViewController else { return }
         splitViewController.setSidebarVisible(!splitViewController.isSidebarVisible)
         syncSidebarToggleItemPresentation()
@@ -530,15 +582,17 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
 
     @objc
     private func handleLyricsToggle(_ sender: NSToolbarItem) {
+        guard isCurrentToolbarAttached else { return }
         guard let splitViewController else { return }
         lyricsFlashTicket += 1
         let ticket = lyricsFlashTicket
+        let generation = attachmentGeneration
         lyricsFlashFilled = true
         syncLyricsToggleItemPresentation()
         splitViewController.setLyricsVisible(!splitViewController.isLyricsVisible)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.24) { [weak self] in
             guard let self else { return }
-            if self.lyricsFlashTicket == ticket {
+            if self.lyricsFlashTicket == ticket, self.isCurrentAttachment(generation) {
                 self.lyricsFlashFilled = false
                 self.syncLyricsToggleItemPresentation()
             }
@@ -555,10 +609,12 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             closeFeatureTipPopover()
         }
         syncMultiselectItemPresentation()
-        window?.toolbar?.validateVisibleItems()
+        validateCurrentToolbarVisibleItems()
         if pageController.isMultiselectMode {
+            let generation = attachmentGeneration
             DispatchQueue.main.async { [weak self] in
-                self?.showShiftRangeSelectionTipIfNeeded()
+                guard let self, self.isCurrentAttachment(generation) else { return }
+                self.showShiftRangeSelectionTipIfNeeded()
             }
         }
     }
@@ -798,7 +854,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             break
         }
         syncHomeNavPillPresentation()
-        window?.toolbar?.validateVisibleItems()
+        validateCurrentToolbarVisibleItems()
     }
 
     private func syncHomeNavPillPresentation() {
@@ -931,94 +987,123 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
     }
 
     private func observeSearchText() {
+        guard isCurrentToolbarAttached else { return }
         guard let pageController = currentPageController else { return }
+        let generation = attachmentGeneration
         withObservationTracking {
             _ = pageController.searchText
         } onChange: {
             DispatchQueue.main.async { [weak self] in
-                self?.syncSearchFieldFromModel()
-                self?.window?.toolbar?.validateVisibleItems()
-                self?.observeSearchText()
+                guard let self, self.isCurrentAttachment(generation) else { return }
+                self.syncSearchFieldFromModel()
+                self.validateCurrentToolbarVisibleItems()
+                self.observeSearchText()
             }
         }
     }
 
     private func observeMultiselectState() {
+        guard isCurrentToolbarAttached else { return }
         guard let pageController = currentPageController else { return }
+        let generation = attachmentGeneration
         withObservationTracking {
             _ = pageController.isMultiselectMode
             _ = pageController.selectedTrackIDs.count
         } onChange: {
             DispatchQueue.main.async { [weak self] in
-                if self?.currentPageController?.isMultiselectMode != true {
-                    self?.closeFeatureTipPopover()
+                guard let self, self.isCurrentAttachment(generation) else { return }
+                if self.currentPageController?.isMultiselectMode != true {
+                    self.closeFeatureTipPopover()
                 }
-                self?.syncMultiselectItemPresentation()
-                self?.window?.toolbar?.validateVisibleItems()
-                self?.observeMultiselectState()
+                self.syncMultiselectItemPresentation()
+                self.validateCurrentToolbarVisibleItems()
+                self.observeMultiselectState()
             }
         }
     }
 
     private func observeContentMode() {
+        guard isCurrentToolbarAttached else { return }
         guard let uiState = appSession?.uiState else { return }
+        let generation = attachmentGeneration
         withObservationTracking {
             _ = uiState.contentMode
         } onChange: {
             DispatchQueue.main.async { [weak self] in
-                self?.applyToolbarLayoutForCurrentState()
-                self?.syncSidebarToggleItemPresentation()
-                self?.syncSearchPlaceholder()
-                self?.window?.toolbar?.validateVisibleItems()
-                self?.observeContentMode()
+                guard let self, self.isCurrentAttachment(generation) else { return }
+                self.applyToolbarLayoutForCurrentState()
+                self.syncSidebarToggleItemPresentation()
+                self.syncSearchPlaceholder()
+                self.validateCurrentToolbarVisibleItems()
+                self.observeContentMode()
             }
         }
     }
 
     private func observeLyricsVisibility() {
+        guard isCurrentToolbarAttached else { return }
         guard let uiState = appSession?.uiState else { return }
+        let generation = attachmentGeneration
         withObservationTracking {
             _ = uiState.lyricsVisible
         } onChange: {
             DispatchQueue.main.async { [weak self] in
-                self?.syncLyricsToggleItemPresentation()
-                self?.window?.toolbar?.validateVisibleItems()
-                self?.observeLyricsVisibility()
+                guard let self, self.isCurrentAttachment(generation) else { return }
+                self.syncLyricsToggleItemPresentation()
+                self.validateCurrentToolbarVisibleItems()
+                self.observeLyricsVisibility()
             }
         }
     }
 
     private func observeEmbeddedFullscreenMode() {
+        guard isCurrentToolbarAttached else { return }
+        let generation = attachmentGeneration
         fullscreenModeCancellable = FullscreenWindowManager.shared.$presentationMode
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
-                self?.applyToolbarLayoutForCurrentState()
+                guard let self, self.isCurrentAttachment(generation) else { return }
+                self.applyToolbarLayoutForCurrentState()
             }
     }
 
+    private var isCurrentToolbarAttached: Bool {
+        guard isAttachedToWindow, !isDetachingFromWindow else { return false }
+        guard let window, let toolbar else { return false }
+        return window.toolbar === toolbar
+    }
+
+    private func isCurrentAttachment(_ generation: Int) -> Bool {
+        generation == attachmentGeneration && isCurrentToolbarAttached
+    }
+
+    private func validateCurrentToolbarVisibleItems() {
+        guard isCurrentToolbarAttached, let toolbar else { return }
+        toolbar.validateVisibleItems()
+    }
+
     private func applyToolbarLayoutForCurrentState() {
+        guard isCurrentToolbarAttached, let window, let currentToolbar = toolbar else { return }
         let desiredIdentifiers = desiredToolbarIdentifiersForCurrentState()
-        let currentIdentifiers = toolbar.items.map(\.itemIdentifier)
+        let currentIdentifiers = currentToolbar.items.map(\.itemIdentifier)
         guard currentIdentifiers != desiredIdentifiers else {
             reattachVisibleToolbarItemReferences()
-            toolbar.validateVisibleItems()
+            validateCurrentToolbarVisibleItems()
             syncVisibleToolbarItemPresentation()
             return
         }
 
         closeFeatureTipPopover()
+        clearToolbarItemTargets(currentToolbar)
+        currentToolbar.delegate = nil
         resetToolbarItemReferences()
 
-        while !toolbar.items.isEmpty {
-            toolbar.removeItem(at: toolbar.items.count - 1)
-        }
-
-        for identifier in desiredIdentifiers {
-            toolbar.insertItem(withItemIdentifier: identifier, at: toolbar.items.count)
-        }
+        let freshToolbar = makeToolbar()
+        toolbar = freshToolbar
+        window.toolbar = freshToolbar
 
         reattachVisibleToolbarItemReferences()
-        toolbar.validateVisibleItems()
+        validateCurrentToolbarVisibleItems()
         syncVisibleToolbarItemPresentation()
     }
 
@@ -1036,6 +1121,10 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
     }
 
     private func reattachVisibleToolbarItemReferences() {
+        guard isCurrentToolbarAttached, let toolbar else {
+            resetToolbarItemReferences()
+            return
+        }
         resetToolbarItemReferences()
 
         for item in toolbar.items {
@@ -1108,6 +1197,24 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         }
     }
 
+    private func clearToolbarItemTargets(_ toolbar: NSToolbar) {
+        for item in toolbar.items {
+            clearToolbarItemTarget(item)
+            if let group = item as? NSToolbarItemGroup {
+                group.subitems.forEach { clearToolbarItemTarget($0) }
+            }
+        }
+    }
+
+    private func clearToolbarItemTarget(_ item: NSToolbarItem) {
+        item.target = nil
+        item.action = nil
+        if let searchField = item.view.flatMap({ firstSubview(in: $0, matching: { $0 is NSSearchField }) }) as? NSSearchField {
+            searchField.target = nil
+            searchField.action = nil
+        }
+    }
+
     private func syncVisibleToolbarItemPresentation() {
         syncSearchFieldFromModel()
         syncSidebarToggleItemPresentation()
@@ -1132,7 +1239,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             ]
         }
 
-        var ids = toolbarDefaultItemIdentifiers(toolbar)
+        var ids = baseLibraryToolbarIdentifiers()
         if !shouldShowHomeNavPill() {
             ids.removeAll { $0 == Identifier.homeNavPill }
         }
@@ -1148,12 +1255,14 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
     }
 
     private func observeLibrarySearchResetTrigger() {
+        guard isCurrentToolbarAttached else { return }
         guard let libraryVM = currentLibraryVM else { return }
+        let generation = attachmentGeneration
         withObservationTracking {
             _ = libraryVM.searchResetTrigger
         } onChange: {
             DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
+                guard let self, self.isCurrentAttachment(generation) else { return }
                 let hadSearch = !(self.currentPageController?.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
                     || !(self.searchField?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
                 self.currentPageController?.clearSearchAndRebuildIfNeeded(reason: "search-reset")
@@ -1168,7 +1277,9 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
     }
 
     private func observeHomeNavigationState() {
+        guard isCurrentToolbarAttached else { return }
         guard let appSession else { return }
+        let generation = attachmentGeneration
         withObservationTracking {
             _ = appSession.uiState.isHomeDrilldown
             _ = appSession.uiState.homeBackStack.count
@@ -1176,17 +1287,20 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             _ = appSession.libraryVM?.currentSelection
         } onChange: {
             DispatchQueue.main.async { [weak self] in
-                self?.applyToolbarLayoutForCurrentState()
-                self?.syncSearchPlaceholder()
-                self?.syncHomeNavPillPresentation()
-                self?.window?.toolbar?.validateVisibleItems()
-                self?.observeHomeNavigationState()
+                guard let self, self.isCurrentAttachment(generation) else { return }
+                self.applyToolbarLayoutForCurrentState()
+                self.syncSearchPlaceholder()
+                self.syncHomeNavPillPresentation()
+                self.validateCurrentToolbarVisibleItems()
+                self.observeHomeNavigationState()
             }
         }
     }
 
     private func observeToolbarState() {
+        guard isCurrentToolbarAttached else { return }
         guard let pageController = currentPageController else { return }
+        let generation = attachmentGeneration
         withObservationTracking {
             _ = pageController.page?.rows.count
             _ = pageController.page?.queueTracks.count
@@ -1194,8 +1308,9 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             _ = pageController.phase
         } onChange: {
             DispatchQueue.main.async { [weak self] in
-                self?.window?.toolbar?.validateVisibleItems()
-                self?.observeToolbarState()
+                guard let self, self.isCurrentAttachment(generation) else { return }
+                self.validateCurrentToolbarVisibleItems()
+                self.observeToolbarState()
             }
         }
     }

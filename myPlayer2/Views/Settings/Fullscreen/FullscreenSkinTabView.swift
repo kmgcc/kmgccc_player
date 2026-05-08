@@ -46,7 +46,7 @@ struct FullscreenSkinTabView: View {
         VStack(alignment: .leading, spacing: presentationStyle.sectionSpacing) {
             GroupBox {
                 VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
-                    Text("全屏皮肤")
+                    Text("选择外观")
                         .font(presentationStyle.sectionTitleFont)
                         .foregroundStyle(presentationStyle.secondaryTextColor)
 
@@ -113,7 +113,7 @@ struct FullscreenSkinTabView: View {
                         .foregroundStyle(presentationStyle.secondaryTextColor)
 
                     SettingsSwitchRow(
-                        title: "启用全屏艺术背景",
+                        title: "启用艺术背景",
                         isOn: $fullscreenArtBackgroundEnabled,
                         detail: "遇到性能问题时，可以关闭此选项",
                         titleFont: presentationStyle.rowLabelFont,
