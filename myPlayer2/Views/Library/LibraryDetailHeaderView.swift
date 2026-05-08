@@ -73,6 +73,7 @@ struct LibraryDetailHeaderView: View {
     @State private var editYear = ""
     @State private var isImportingArtwork = false
     @State private var isArtworkActionInFlight = false
+    @State private var lastArtistAutofillIdentity: String?
 
     var body: some View {
         let _ = LyricsRuntimeProfile.markBody("LibraryDetailHeaderView.body")
@@ -110,6 +111,9 @@ struct LibraryDetailHeaderView: View {
         ) { result in
             handleArtworkImport(result: result)
         }
+        .task(id: config.artworkIdentity) {
+            await handleAutomaticArtistArtworkFillIfNeeded()
+        }
     }
 
     // MARK: - Artwork column
@@ -135,6 +139,14 @@ struct LibraryDetailHeaderView: View {
 
             if isEditing {
                 HStack(spacing: 8) {
+                    if canSearchArtistArtwork {
+                        artworkActionButton(
+                            icon: "magnifyingglass",
+                            help: NSLocalizedString("header.search_artist_artwork", comment: ""),
+                            action: { handleSearchArtistArtwork() }
+                        )
+                    }
+
                     if canGenerateArtwork {
                         artworkActionButton(
                             icon: "wand.and.stars",
@@ -498,6 +510,45 @@ struct LibraryDetailHeaderView: View {
             return true
         }
         return false
+    }
+
+    private var canSearchArtistArtwork: Bool {
+        if case .artist = config {
+            return true
+        }
+        return false
+    }
+
+    private func handleSearchArtistArtwork() {
+        guard !isArtworkActionInFlight else { return }
+        guard case .artist(let entry, _) = config else { return }
+
+        isArtworkActionInFlight = true
+        Task {
+            let didApply = await libraryVM.replaceArtistArtworkFromProviders(entry)
+            await MainActor.run {
+                if didApply {
+                    onArtworkMutation()
+                }
+                isArtworkActionInFlight = false
+            }
+        }
+    }
+
+    private func handleAutomaticArtistArtworkFillIfNeeded() async {
+        guard case .artist(let entry, _) = config else { return }
+        guard entry.artworkFileName == nil, entry.artworkData?.isEmpty != false else { return }
+
+        let autofillIdentity = "\(entry.id.uuidString)-\(entry.updatedAt.timeIntervalSince1970)"
+        guard lastArtistAutofillIdentity != autofillIdentity else { return }
+        lastArtistAutofillIdentity = autofillIdentity
+
+        let didApply = await libraryVM.autofillArtistArtworkIfMissing(entry)
+        if didApply {
+            await MainActor.run {
+                onArtworkMutation()
+            }
+        }
     }
 
     private func handleRegenerateArtwork() {

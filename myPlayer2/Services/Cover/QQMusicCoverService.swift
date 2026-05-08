@@ -89,7 +89,8 @@ actor QQMusicCoverService {
 
         for item in scored {
             guard results.count < limit else { break }
-            guard let imageURL = trimmed(item.candidate.imageURL),
+            guard let rawImageURL = trimmed(item.candidate.imageURL),
+                  let imageURL = sanitizeImageURL(rawImageURL),
                   seenImageURLs.insert(imageURL).inserted
             else { continue }
 
@@ -120,6 +121,87 @@ actor QQMusicCoverService {
             throw QQMusicCoverError.noResults
         }
         Log.info("[QQMusicCover] candidates=\(results.count)", category: .import)
+        return CoverCandidateSorter.sorted(results)
+    }
+
+    func searchArtistArtworkCandidates(
+        artist: String,
+        limit: Int = CoverLookupConfiguration.qqMusicCandidateLimit
+    ) async throws -> [CoverCandidate] {
+        let artist = trimmed(artist) ?? ""
+        guard !artist.isEmpty else {
+            throw QQMusicCoverError.noResults
+        }
+
+        let startedAt = Date()
+        let rawCandidates = try await cachedMetadata(
+            key: metadataKey(method: "artist", title: nil, artist: artist, album: "", duration: nil),
+            taskFactory: {
+                Task {
+                    try await self.helper.searchArtistArtwork(name: artist, limit: limit)
+                }
+            }
+        )
+
+        let scored = rawCandidates
+            .compactMap { candidate -> (candidate: QQMusicArtworkCandidate, confidence: Double)? in
+                guard let confidence = Self.scoreArtist(candidate, artist: artist), confidence >= 0.50 else {
+                    return nil
+                }
+                return (candidate, confidence)
+            }
+            .sorted { lhs, rhs in
+                if lhs.confidence == rhs.confidence {
+                    return (lhs.candidate.singerMid ?? lhs.candidate.artistName ?? "") <
+                        (rhs.candidate.singerMid ?? rhs.candidate.artistName ?? "")
+                }
+                return lhs.confidence > rhs.confidence
+            }
+
+        let durationMs = Int(Date().timeIntervalSince(startedAt) * 1_000)
+        let topConfidence = scored.map(\.confidence).max() ?? 0
+        Log.info(
+            "[QQMusicCover] artist raw=\(rawCandidates.count) scored=\(scored.count) topConfidence=\(String(format: "%.2f", topConfidence)) durationMs=\(durationMs)",
+            category: .import
+        )
+
+        var results: [CoverCandidate] = []
+        var seenImageURLs = Set<String>()
+
+        for item in scored {
+            guard results.count < limit else { break }
+            guard let rawImageURL = trimmed(item.candidate.imageURL),
+                  let imageURL = sanitizeImageURL(rawImageURL),
+                  seenImageURLs.insert(imageURL).inserted
+            else { continue }
+
+            do {
+                let imageData = try await imageData(for: imageURL)
+                let sourceItemId = item.candidate.singerMid
+                    ?? item.candidate.artistName
+                    ?? Self.cacheKey("artist-image:\(imageURL)")
+                results.append(
+                    CoverCandidate(
+                        imageData: imageData,
+                        source: .qqmusic,
+                        sourceItemId: sourceItemId,
+                        confidence: item.confidence,
+                        matchedTitle: nil,
+                        matchedArtist: item.candidate.artistName ?? item.candidate.artist,
+                        matchedAlbum: nil,
+                        imageURL: imageURL
+                    )
+                )
+            } catch {
+                Log.warning("[QQMusicCover] artist image download failed: \(error)", category: .import)
+            }
+        }
+
+        guard !results.isEmpty else {
+            Log.info("[QQMusicCover] artist no usable candidates after image download/filtering", category: .import)
+            throw QQMusicCoverError.noResults
+        }
+        Log.info("[QQMusicCover] artist candidates=\(results.count)", category: .import)
         return CoverCandidateSorter.sorted(results)
     }
 
@@ -205,15 +287,19 @@ actor QQMusicCoverService {
     }
 
     private func imageData(for imageURLString: String) async throws -> Data {
+        guard let sanitizedURLString = sanitizeImageURL(imageURLString) else {
+            throw QQMusicCoverError.badURL
+        }
+
         let cacheURL = imageCacheDirectory()
-            .appendingPathComponent("\(Self.cacheKey(imageURLString)).img")
+            .appendingPathComponent("\(Self.cacheKey(sanitizedURLString)).img")
 
         if let data = try? Data(contentsOf: cacheURL),
            ArtworkDataNormalizer.isDecodableImage(data) {
             return data
         }
 
-        guard let imageURL = URL(string: imageURLString) else {
+        guard let imageURL = URL(string: sanitizedURLString) else {
             throw QQMusicCoverError.badURL
         }
 
@@ -229,6 +315,29 @@ actor QQMusicCoverService {
         )
         try? data.write(to: cacheURL, options: .atomic)
         return data
+    }
+
+    private nonisolated func sanitizeImageURL(_ rawValue: String) -> String? {
+        let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty,
+              var components = URLComponents(string: value)
+        else { return nil }
+
+        let host = components.host?.lowercased() ?? ""
+        if components.scheme?.lowercased() == "http",
+           Self.qqMusicHTTPSImageHosts.contains(host) {
+            let before = components.string ?? value
+            components.scheme = "https"
+            let after = components.string ?? before.replacingOccurrences(of: "http://", with: "https://")
+            Log.info("[QQMusicCover] sanitized imageURL from=\(before) to=\(after)", category: .import)
+            return after
+        }
+
+        let result = components.string ?? value
+        if result != value {
+            Log.info("[QQMusicCover] sanitized imageURL from=\(value) to=\(result)", category: .import)
+        }
+        return result
     }
 
     private func readMetadataCache(for key: String) -> [QQMusicArtworkCandidate]? {
@@ -379,6 +488,28 @@ actor QQMusicCoverService {
         return min(max(score, 0), 1)
     }
 
+    private nonisolated static func scoreArtist(
+        _ candidate: QQMusicArtworkCandidate,
+        artist: String
+    ) -> Double? {
+        let helperConfidence = min(max(candidate.confidence ?? 0.70, 0), 1)
+        let sourceArtist = ExternalPlaybackTextNormalizer.normalizeArtist(artist)
+        let candidateArtist = ExternalPlaybackTextNormalizer.normalizeArtist(
+            candidate.artistName ?? candidate.artist
+        )
+        let artistScore = ExternalPlaybackTextNormalizer.artistSimilarity(sourceArtist, candidateArtist)
+        guard artistScore >= 0.45
+                || candidateArtist.text.compact.contains(sourceArtist.text.compact)
+                || sourceArtist.text.compact.contains(candidateArtist.text.compact)
+        else { return nil }
+
+        var score = artistScore * 0.90 + helperConfidence * 0.10
+        if containsVariantMarker(candidate.artistName ?? candidate.artist) {
+            score -= 0.10
+        }
+        return min(max(score, 0), 1)
+    }
+
     private nonisolated static func variantMismatchPenalty(
         sourceTitle: String?,
         candidateTitle: String?,
@@ -416,6 +547,14 @@ actor QQMusicCoverService {
         }
     }
 
+    private nonisolated static let qqMusicHTTPSImageHosts: Set<String> = [
+        "y.gtimg.cn",
+        "qpic.y.qq.com",
+        "y.qq.com",
+        "thirdqq.qlogo.cn",
+        "thirdwx.qlogo.cn",
+    ]
+
     private nonisolated static func makeDefaultSession() -> URLSession {
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = 10
@@ -448,6 +587,35 @@ nonisolated enum CoverCandidateSorter {
     static func bestAutomaticCandidate(from candidates: [CoverCandidate]) -> CoverCandidate? {
         sorted(candidates).first {
             $0.confidence >= CoverLookupConfiguration.automaticCoverConfidenceThreshold
+        }
+    }
+}
+
+actor ArtistArtworkProviderCoordinator {
+    static let shared = ArtistArtworkProviderCoordinator()
+
+    private let qqMusicCoverService: QQMusicCoverService
+
+    init(qqMusicCoverService: QQMusicCoverService = .shared) {
+        self.qqMusicCoverService = qqMusicCoverService
+    }
+
+    func searchCandidates(
+        artist: String,
+        limit: Int = CoverLookupConfiguration.qqMusicCandidateLimit
+    ) async throws -> [CoverCandidate] {
+        do {
+            return try await withCoverLookupTimeout(
+                CoverLookupConfiguration.qqMusicCandidatesTimeout
+            ) {
+                try await self.qqMusicCoverService.searchArtistArtworkCandidates(
+                    artist: artist,
+                    limit: limit
+                )
+            }
+        } catch {
+            Log.warning("[QQMusicCover] artist candidates failed: \(error)", category: .import)
+            throw error
         }
     }
 }
