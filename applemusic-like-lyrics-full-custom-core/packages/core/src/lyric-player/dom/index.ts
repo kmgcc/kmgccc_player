@@ -7,7 +7,11 @@
 import type { LyricLine } from "../../interfaces.ts";
 import "../../styles/index.css";
 import styles from "../../styles/lyric-player.module.css";
-import { type LyricLineBase, LyricPlayerBase } from "../base.ts";
+import {
+	type LyricLineBase,
+	LyricPlayerBase,
+	type WordHighlightMode,
+} from "../base.ts";
 import { LyricLineEl, type RawLyricLineMouseEvent } from "./lyric-line.ts";
 
 /**
@@ -94,6 +98,13 @@ export class DomLyricPlayer extends LyricPlayerBase {
 
 	override setWordFadeWidth(value = 0.5) {
 		super.setWordFadeWidth(value);
+		for (const el of this.currentLyricLineObjects) {
+			el.updateMaskImageSync();
+		}
+	}
+
+	override setWordHighlightMode(mode: WordHighlightMode = "smooth") {
+		super.setWordHighlightMode(mode);
 		for (const el of this.currentLyricLineObjects) {
 			el.updateMaskImageSync();
 		}

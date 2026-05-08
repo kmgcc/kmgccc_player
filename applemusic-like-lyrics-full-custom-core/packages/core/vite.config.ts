@@ -18,7 +18,7 @@ export default defineConfig({
     },
     resolve: {
         alias: {
-            "@applemusic-like-lyrics/lyric": path.resolve(__dirname, "../lyric/pkg"),
+            "@applemusic-like-lyrics/lyric": path.resolve(__dirname, "../lyric/pkg/amll_lyric.js"),
             "@applemusic-like-lyrics/ttml": path.resolve(__dirname, "../ttml/src"),
         },
     },

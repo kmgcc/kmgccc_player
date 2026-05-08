@@ -5,17 +5,6 @@
 
 import SwiftUI
 
-private struct HomeLiveResizeRenderingKey: EnvironmentKey {
-    static let defaultValue = false
-}
-
-extension EnvironmentValues {
-    var homeLiveResizeRendering: Bool {
-        get { self[HomeLiveResizeRenderingKey.self] }
-        set { self[HomeLiveResizeRenderingKey.self] = newValue }
-    }
-}
-
 enum LiquidGlassPillMaterialStyle {
     case clear
     case regular

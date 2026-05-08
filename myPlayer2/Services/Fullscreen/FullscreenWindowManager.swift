@@ -286,6 +286,42 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         restoreSuspendedMainLyricsIfNeeded()
     }
 
+    func mainWindowWillClose(_ window: NSWindow) {
+        guard presentationMode == .embeddedInWindow || embeddedHostWindow === window else { return }
+
+        LyricsSurfaceManager.shared.requestMode(.main)
+        presentationMode = .none
+        removeEscapeMonitor()
+
+        if embeddedHostWindow === window {
+            embeddedHostWindowOriginalFrame = nil
+            embeddedHostWindowOriginalMinSize = nil
+            embeddedHostWindowOriginalContentMinSize = nil
+            embeddedHostWindow = nil
+        }
+
+        let sidebarWasVisible = suspendedMainSidebarVisibility
+        suspendedMainSidebarVisibility = nil
+        AppKitMainSplitWindowController.setEmbeddedFullscreenActive(false)
+        if let sidebarWasVisible {
+            uiState?.sidebarVisible = sidebarWasVisible
+        }
+
+        let lyricsWereVisible = suspendedMainLyricsVisibility
+        suspendedMainLyricsVisibility = nil
+        if let lyricsWereVisible {
+            uiState?.lyricsVisible = lyricsWereVisible
+        }
+
+        HomeWindowLayoutState.shared.setEmbeddedFullscreenActive(false)
+    }
+
+    func resetStaleEmbeddedFullscreenForMainWindowAttach(_ window: NSWindow) {
+        guard presentationMode == .embeddedInWindow else { return }
+        guard embeddedHostWindow !== window else { return }
+        mainWindowWillClose(embeddedHostWindow ?? window)
+    }
+
     /// Close the fullscreen window safely.
     func closeFullscreenWindow() {
         guard let window = fullscreenWindow else { return }

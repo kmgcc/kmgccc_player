@@ -33,12 +33,11 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
 
     private let splitViewController: AppKitMainSplitViewController
     private let rootViewController: AppKitMainRootViewController
-    private lazy var toolbarController: AppKitMainToolbarController = {
-        AppKitMainToolbarController(splitViewController: splitViewController, appSession: appSession)
-    }()
+    private var toolbarController: AppKitMainToolbarController?
     private let appSession: AppSessionHost
     private var didInstallToolbar = false
     private var didReachPresentedState = false
+    private var isClosingMainWindow = false
 
     static func show(appSession: AppSessionHost) -> AppKitMainSplitWindowController {
         let controller: AppKitMainSplitWindowController
@@ -83,7 +82,7 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
 
     static func toggleMultiselect(appSession: AppSessionHost) {
         let controller = reveal(appSession: appSession)
-        controller.toolbarController.toggleMultiselectFromCommand()
+        controller.ensureToolbarController().toggleMultiselectFromCommand()
     }
 
     static func setLyricsVisible(_ visible: Bool) {
@@ -105,14 +104,6 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
     static func setEmbeddedFullscreenActive(_ active: Bool) {
         HomeWindowLayoutState.shared.setEmbeddedFullscreenActive(active)
         sharedController?.splitViewController.setEmbeddedFullscreenActive(active)
-    }
-
-    func windowWillStartLiveResize(_ notification: Notification) {
-        HomeWindowLayoutState.shared.setLiveResizing(true)
-    }
-
-    func windowDidEndLiveResize(_ notification: Notification) {
-        HomeWindowLayoutState.shared.setLiveResizing(false)
     }
 
     init(appSession: AppSessionHost) {
@@ -166,10 +157,14 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
     }
 
     func windowWillClose(_ notification: Notification) {
+        isClosingMainWindow = true
         if let closingWindow = notification.object as? NSWindow {
-            toolbarController.detachFromWindow(closingWindow)
+            FullscreenWindowManager.shared.mainWindowWillClose(closingWindow)
+            toolbarController?.detachFromWindow(closingWindow)
             closingWindow.toolbar = nil
+            closingWindow.delegate = nil
         }
+        toolbarController = nil
         didInstallToolbar = false
         didReachPresentedState = false
         if Self.sharedController === self {
@@ -193,6 +188,7 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
     }
 
     private func markPresented(reason: String) {
+        guard !isClosingMainWindow else { return }
         guard !didReachPresentedState else { return }
         didReachPresentedState = true
     }
@@ -211,7 +207,10 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
 
     private func installToolbarIfReady(reason: String) {
         guard let window else { return }
+        guard !isClosingMainWindow else { return }
         guard !didInstallToolbar else { return }
+
+        FullscreenWindowManager.shared.resetStaleEmbeddedFullscreenForMainWindowAttach(window)
 
         let splitInWindow = (splitViewController.view.window === window)
         let splitViewInWindow = (splitViewController.splitView.window === window)
@@ -220,10 +219,23 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
 
         guard splitInWindow, splitViewInWindow, splitLayoutReady, splitSubviewCount >= 3 else { return }
 
-        window.toolbar = toolbarController.toolbar
-        window.toolbar?.validateVisibleItems()
-        toolbarController.attachToWindow(window)
+        let toolbarController = ensureToolbarController()
+        let toolbar = toolbarController.makeFreshToolbarForWindowAttach()
+        window.toolbar = toolbar
+        toolbarController.attachToFreshToolbarWindow(window)
         didInstallToolbar = true
+    }
+
+    private func ensureToolbarController() -> AppKitMainToolbarController {
+        if let toolbarController {
+            return toolbarController
+        }
+        let toolbarController = AppKitMainToolbarController(
+            splitViewController: splitViewController,
+            appSession: appSession
+        )
+        self.toolbarController = toolbarController
+        return toolbarController
     }
 }
 
@@ -233,6 +245,7 @@ private final class AppKitMainRootViewController: NSViewController {
     private let splitViewController: AppKitMainSplitViewController
     private let backgroundController: NSHostingController<AppKitMainWindowArtBackgroundLayer>
     private let homeFullWindowHost: PassthroughHostingView<HomeFullWindowRoot>
+    private var didApplyPaneGlassBlendingMode = false
 
     init(appSession: AppSessionHost, splitViewController: AppKitMainSplitViewController) {
         self.appSession = appSession
@@ -329,19 +342,23 @@ private final class AppKitMainRootViewController: NSViewController {
         homeFullWindowHost.frame = view.bounds
         splitViewController.view.frame = view.bounds
 
-        HomeWindowLayoutState.shared.setWindowSize(view.bounds.size)
+        splitViewController.publishHomeLayoutGeometry(windowSize: view.bounds.size)
 
         // Switch sidebar/inspector glass blendingMode to `.withinWindow` so
         // the Home content (rendered below the split view) shows through the
         // panes' translucent material. `.behindWindow` (the default) only
         // samples the desktop, which would hide the Home layer completely.
-        applyWithinWindowBlendingModeToPaneGlass()
+        if !didApplyPaneGlassBlendingMode {
+            didApplyPaneGlassBlendingMode = applyWithinWindowBlendingModeToPaneGlass()
+        }
     }
 
-    private func applyWithinWindowBlendingModeToPaneGlass() {
+    private func applyWithinWindowBlendingModeToPaneGlass() -> Bool {
         let splitView = splitViewController.splitView
+        var foundEffectView = false
         for subview in splitView.subviews {
             if let effect = subview as? NSVisualEffectView {
+                foundEffectView = true
                 if effect.blendingMode != .withinWindow {
                     effect.blendingMode = .withinWindow
                 }
@@ -351,10 +368,14 @@ private final class AppKitMainRootViewController: NSViewController {
             for nested in subview.subviews {
                 if let effect = nested as? NSVisualEffectView,
                    effect.blendingMode != .withinWindow {
+                    foundEffectView = true
                     effect.blendingMode = .withinWindow
+                } else if nested is NSVisualEffectView {
+                    foundEffectView = true
                 }
             }
         }
+        return foundEffectView
     }
 }
 
@@ -437,16 +458,6 @@ final class HomeRoutingRootView: NSView {
     /// strip that would block Home content. The Mini Player owns hit-testing
     /// inside (frame ∪ this margin); Home owns everything outside it.
     private let miniPlayerHitMargin: CGFloat = 6
-
-    override func viewWillStartLiveResize() {
-        super.viewWillStartLiveResize()
-        HomeWindowLayoutState.shared.setLiveResizing(true)
-    }
-
-    override func viewDidEndLiveResize() {
-        super.viewDidEndLiveResize()
-        HomeWindowLayoutState.shared.setLiveResizing(false)
-    }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         let layoutState = HomeWindowLayoutState.shared

@@ -23,6 +23,7 @@ struct FullscreenLyricsTabView: View {
     @State private var fullscreenLyricsFontSize: Double = AppSettings.shared.fullscreenLyricsFontSize
     @State private var fullscreenLyricsTranslationFontSize: Double = AppSettings.shared.fullscreenLyricsTranslationFontSize
     @State private var amllHighResolutionLyricsEnabled: Bool = AppSettings.shared.amllHighResolutionLyricsEnabled
+    @State private var amllDiscreteWordHighlightEnabled: Bool = AppSettings.shared.amllDiscreteWordHighlightEnabled
 
     private var fontFamilies: [String] {
         Self.cachedFontFamilies
@@ -46,7 +47,8 @@ struct FullscreenLyricsTabView: View {
                 .environment(settings)
                 .environment(lyricsVM)
 
-            typographySection
+            appearanceSection
+            fontsSection
 
             if !presentationStyle.usesMaterialSectionCards {
                 previewSection
@@ -63,31 +65,43 @@ struct FullscreenLyricsTabView: View {
         .onChange(of: fullscreenLyricsFontSize) { _, _ in syncToSettings() }
         .onChange(of: fullscreenLyricsTranslationFontSize) { _, _ in syncToSettings() }
         .onChange(of: amllHighResolutionLyricsEnabled) { _, _ in syncToSettings() }
+        .onChange(of: amllDiscreteWordHighlightEnabled) { _, _ in syncToSettings() }
     }
 
-    private var typographySection: some View {
+    private var appearanceSection: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
-                HStack {
-                    Text("全屏歌词样式")
-                        .font(.system(size: presentationStyle.sectionTitleFontSize, weight: .semibold))
-                        .foregroundStyle(presentationStyle.secondaryTextColor)
-                    Spacer()
-                  
-                }
-
                 SettingsSwitchRow(
-                    title: "高分辨率歌词",
+                    title: "高分辨率",
                     isOn: $amllHighResolutionLyricsEnabled,
-                    detail: "开启后歌词观感更细腻，但 GPU 占用也会提高。",
+                    detail: "开启后歌词观感和 GPU 占用会提高",
                     titleFont: presentationStyle.rowLabelFont,
                     detailFont: presentationStyle.captionFont,
                     titleColor: presentationStyle.primaryTextColor,
                     detailColor: presentationStyle.tertiaryTextColor
                 )
 
-                Divider().padding(.vertical, presentationStyle.dividerVerticalPadding)
+                SettingsSwitchRow(
+                    title: "减弱高亮",
+                    isOn: $amllDiscreteWordHighlightEnabled,
+                    detail: "开启后可能减少高亮移动干扰",
+                    titleFont: presentationStyle.rowLabelFont,
+                    detailFont: presentationStyle.captionFont,
+                    titleColor: presentationStyle.primaryTextColor,
+                    detailColor: presentationStyle.tertiaryTextColor
+                )
+            }
+            .padding(presentationStyle.groupPadding)
+        } label: {
+            Text("外观")
+                .font(.system(size: presentationStyle.sectionTitleFontSize, weight: .semibold))
+                .foregroundStyle(presentationStyle.secondaryTextColor)
+        }
+    }
 
+    private var fontsSection: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
                 HStack {
                     Text("主歌词字号")
                         .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
@@ -97,12 +111,8 @@ struct FullscreenLyricsTabView: View {
                         .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))
                         .font(.system(size: presentationStyle.rowValueFontSize, weight: .medium, design: .monospaced))
                 }
-                Slider(
-                    value: $fullscreenLyricsFontSize,
-                    in: 24...72,
-                    step: 1
-                )
-                .frame(height: presentationStyle.tabHeight)
+                Slider(value: $fullscreenLyricsFontSize, in: 24...72, step: 1)
+                    .frame(height: presentationStyle.tabHeight)
 
                 HStack {
                     Text("主歌词字重")
@@ -129,12 +139,8 @@ struct FullscreenLyricsTabView: View {
                         .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))
                         .font(.system(size: presentationStyle.rowValueFontSize, weight: .medium, design: .monospaced))
                 }
-                Slider(
-                    value: $fullscreenLyricsTranslationFontSize,
-                    in: 14...40,
-                    step: 1
-                )
-                .frame(height: presentationStyle.tabHeight)
+                Slider(value: $fullscreenLyricsTranslationFontSize, in: 14...40, step: 1)
+                    .frame(height: presentationStyle.tabHeight)
 
                 HStack {
                     Text("翻译字重")
@@ -159,7 +165,9 @@ struct FullscreenLyricsTabView: View {
                     Spacer()
                     Picker("", selection: $fullscreenLyricsFontNameZh) {
                         ForEach(fontFamilies, id: \.self) { family in
-                            Text(family).tag(family)
+                            Text(family)
+                                .font(.custom(family, size: 12))
+                                .tag(family)
                         }
                     }
                     .labelsHidden()
@@ -174,7 +182,9 @@ struct FullscreenLyricsTabView: View {
                     Spacer()
                     Picker("", selection: $fullscreenLyricsFontNameEn) {
                         ForEach(fontFamilies, id: \.self) { family in
-                            Text(family).tag(family)
+                            Text(family)
+                                .font(.custom(family, size: 12))
+                                .tag(family)
                         }
                     }
                     .labelsHidden()
@@ -189,7 +199,9 @@ struct FullscreenLyricsTabView: View {
                     Spacer()
                     Picker("", selection: $fullscreenLyricsTranslationFontName) {
                         ForEach(fontFamilies, id: \.self) { family in
-                            Text(family).tag(family)
+                            Text(family)
+                                .font(.custom(family, size: 12))
+                                .tag(family)
                         }
                     }
                     .labelsHidden()
@@ -198,6 +210,10 @@ struct FullscreenLyricsTabView: View {
                 }
             }
             .padding(presentationStyle.groupPadding)
+        } label: {
+            Text("字体")
+                .font(.system(size: presentationStyle.sectionTitleFontSize, weight: .semibold))
+                .foregroundStyle(presentationStyle.secondaryTextColor)
         }
     }
 
@@ -215,7 +231,7 @@ struct FullscreenLyricsTabView: View {
                 translationFontSize: fullscreenLyricsTranslationFontSize
             )
         } label: {
-            Text("全屏歌词预览")
+            Text("预览")
                 .font(.system(size: presentationStyle.sectionTitleFontSize, weight: .semibold))
                 .foregroundStyle(presentationStyle.secondaryTextColor)
         }
@@ -230,6 +246,7 @@ struct FullscreenLyricsTabView: View {
         fullscreenLyricsFontSize = settings.fullscreenLyricsFontSize
         fullscreenLyricsTranslationFontSize = settings.fullscreenLyricsTranslationFontSize
         amllHighResolutionLyricsEnabled = settings.amllHighResolutionLyricsEnabled
+        amllDiscreteWordHighlightEnabled = settings.amllDiscreteWordHighlightEnabled
     }
 
     private func syncToSettings() {
@@ -241,6 +258,7 @@ struct FullscreenLyricsTabView: View {
         settings.fullscreenLyricsFontSize = fullscreenLyricsFontSize
         settings.fullscreenLyricsTranslationFontSize = fullscreenLyricsTranslationFontSize
         settings.amllHighResolutionLyricsEnabled = amllHighResolutionLyricsEnabled
+        settings.amllDiscreteWordHighlightEnabled = amllDiscreteWordHighlightEnabled
         lyricsVM.refreshConfigFromSettings()
     }
 }

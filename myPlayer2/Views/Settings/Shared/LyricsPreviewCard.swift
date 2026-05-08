@@ -28,8 +28,8 @@ struct LyricsPreviewCard: View {
         mainFontNameZh: String = "PingFang SC",
         mainFontNameEn: String = "SF Pro Text",
         translationFontName: String = "SF Pro Text",
-        mainFontSize: Double = 24.0,
-        translationFontSize: Double = 14.0
+        mainFontSize: Double = 26.0,
+        translationFontSize: Double = 16.0
     ) {
         self.title = title
         self.isDarkCard = isDarkCard

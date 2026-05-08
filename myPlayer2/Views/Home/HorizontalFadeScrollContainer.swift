@@ -39,7 +39,6 @@ struct HorizontalFadeScrollContainer<Content: View>: View {
     @State private var activeScrollEdge: HorizontalScrollEdge?
     @State private var nativeScrollView: NSScrollView?
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.homeLiveResizeRendering) private var isLiveResizing
 
     init(
         spacing: CGFloat = 0,
@@ -162,8 +161,8 @@ struct HorizontalFadeScrollContainer<Content: View>: View {
         }
         .animation(showsEdgeFade ? .easeOut(duration: 0.18) : nil, value: leftFadeOpacity)
         .animation(showsEdgeFade ? .easeOut(duration: 0.18) : nil, value: rightFadeOpacity)
-        .animation(isLiveResizing ? nil : .easeOut(duration: 0.30), value: showsLeftScrollButton)
-        .animation(isLiveResizing ? nil : .easeOut(duration: 0.30), value: showsRightScrollButton)
+        .animation(.easeOut(duration: 0.30), value: showsLeftScrollButton)
+        .animation(.easeOut(duration: 0.30), value: showsRightScrollButton)
     }
 
     @ViewBuilder
@@ -200,19 +199,18 @@ struct HorizontalFadeScrollContainer<Content: View>: View {
     }
 
     private var needsScrollMetrics: Bool {
-        !isLiveResizing
-            && (showsEdgeFade
-                || showsScrollButtons
-                || onHorizontalScrollOffsetChange != nil
-                || onScrollMetricsChange != nil)
+        showsEdgeFade
+            || showsScrollButtons
+            || onHorizontalScrollOffsetChange != nil
+            || onScrollMetricsChange != nil
     }
 
     private var needsExactScrollOffset: Bool {
-        !isLiveResizing && (showsEdgeFade || onHorizontalScrollOffsetChange != nil || onScrollMetricsChange != nil)
+        showsEdgeFade || onHorizontalScrollOffsetChange != nil || onScrollMetricsChange != nil
     }
 
     private var effectiveShowsScrollButtons: Bool {
-        showsScrollButtons && !isLiveResizing
+        showsScrollButtons
     }
 
     private var showsLeftScrollButton: Bool {

@@ -122,16 +122,24 @@ final class AppKitMainSplitViewController: NSSplitViewController {
     }
 
     override func splitViewDidResizeSubviews(_ notification: Notification) {
+        publishHomeLayoutGeometry(windowSize: view.bounds.size)
         mirrorSplitStateToUIState(reason: "resize")
+    }
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        publishHomeLayoutGeometry(windowSize: view.bounds.size)
     }
 
     override func toggleSidebar(_ sender: Any?) {
         super.toggleSidebar(sender)
+        publishHomeLayoutGeometry(windowSize: view.bounds.size)
         mirrorSplitStateToUIState(reason: "toggleSidebar")
     }
 
     override func toggleInspector(_ sender: Any?) {
         super.toggleInspector(sender)
+        publishHomeLayoutGeometry(windowSize: view.bounds.size)
         mirrorSplitStateToUIState(reason: "toggleInspector")
     }
 
@@ -147,6 +155,7 @@ final class AppKitMainSplitViewController: NSSplitViewController {
         guard visible != isSidebarVisible else { return }
         sidebarItem.animator().isCollapsed = !visible
         splitView.adjustSubviews()
+        publishHomeLayoutGeometry(windowSize: view.bounds.size)
         mirrorSplitStateToUIState(reason: "setSidebarVisible")
     }
 
@@ -154,6 +163,7 @@ final class AppKitMainSplitViewController: NSSplitViewController {
         guard visible != isLyricsVisible else { return }
         lyricsItem.animator().isCollapsed = !visible
         splitView.adjustSubviews()
+        publishHomeLayoutGeometry(windowSize: view.bounds.size)
         mirrorSplitStateToUIState(reason: "setLyricsVisible")
     }
 
@@ -213,6 +223,31 @@ final class AppKitMainSplitViewController: NSSplitViewController {
         }
 
         splitView.adjustSubviews()
+        publishHomeLayoutGeometry(windowSize: view.bounds.size)
+    }
+
+    func publishHomeLayoutGeometry(windowSize: CGSize? = nil) {
+        let mainView = mainItem.viewController.view
+        let mainFrame = mainView.convert(mainView.bounds, to: splitView)
+        let splitBounds = splitView.bounds
+        guard splitBounds.width > 1, splitBounds.height > 1 else { return }
+
+        let minX = Swift.max(0, mainFrame.minX)
+        let maxX = Swift.min(splitBounds.width, mainFrame.maxX)
+        guard maxX > minX + 1 else { return }
+
+        let centerRect = CGRect(
+            x: minX,
+            y: 0,
+            width: maxX - minX,
+            height: splitBounds.height
+        )
+
+        if let windowSize {
+            HomeWindowLayoutState.shared.setGeometry(windowSize: windowSize, centerRect: centerRect)
+        } else {
+            HomeWindowLayoutState.shared.setCenterRect(centerRect)
+        }
     }
 
     private func mirrorSplitStateToUIState(reason: String) {

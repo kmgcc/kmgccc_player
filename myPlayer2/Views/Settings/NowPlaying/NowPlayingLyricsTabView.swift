@@ -25,6 +25,7 @@ struct NowPlayingLyricsTabView: View {
     @State private var lyricsTranslationFontWeightLight: Int = AppSettings.shared.lyricsTranslationFontWeightLight
     @State private var lyricsTranslationFontWeightDark: Int = AppSettings.shared.lyricsTranslationFontWeightDark
     @State private var amllHighResolutionLyricsEnabled: Bool = AppSettings.shared.amllHighResolutionLyricsEnabled
+    @State private var amllDiscreteWordHighlightEnabled: Bool = AppSettings.shared.amllDiscreteWordHighlightEnabled
 
     private var fontFamilies: [String] {
         Self.cachedFontFamilies
@@ -58,23 +59,35 @@ struct NowPlayingLyricsTabView: View {
 
     private var renderingSection: some View {
         GroupBox {
-            SettingsSwitchRow(
-                title: "高分辨率歌词",
-                isOn: $amllHighResolutionLyricsEnabled,
-                detail: "开启后歌词观感更细腻，但 GPU 占用也会提高。",
-                titleFont: presentationStyle.rowLabelFont,
-                detailFont: presentationStyle.captionFont
-            )
+            VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
+                SettingsSwitchRow(
+                    title: "高分辨率",
+                    isOn: $amllHighResolutionLyricsEnabled,
+                    detail: "开启后歌词观感和 GPU 占用会提高",
+                    titleFont: presentationStyle.rowLabelFont,
+                    detailFont: presentationStyle.captionFont
+                )
+
+                SettingsSwitchRow(
+                    title: "减弱高亮",
+                    isOn: $amllDiscreteWordHighlightEnabled,
+                    detail: "开启后可能减少高亮移动干扰",
+                    titleFont: presentationStyle.rowLabelFont,
+                    detailFont: presentationStyle.captionFont
+                )
+            }
             .padding(presentationStyle.groupPadding)
         } label: {
-            Text("渲染性能")
+            Text("外观")
                 .font(presentationStyle.sectionTitleFont)
                 .foregroundStyle(.secondary)
         }
         .onAppear {
             amllHighResolutionLyricsEnabled = settings.amllHighResolutionLyricsEnabled
+            amllDiscreteWordHighlightEnabled = settings.amllDiscreteWordHighlightEnabled
         }
         .onChange(of: amllHighResolutionLyricsEnabled) { _, _ in syncToSettings() }
+        .onChange(of: amllDiscreteWordHighlightEnabled) { _, _ in syncToSettings() }
     }
 
     private var fontsSection: some View {
@@ -278,6 +291,7 @@ struct NowPlayingLyricsTabView: View {
         lyricsTranslationFontWeightLight = settings.lyricsTranslationFontWeightLight
         lyricsTranslationFontWeightDark = settings.lyricsTranslationFontWeightDark
         amllHighResolutionLyricsEnabled = settings.amllHighResolutionLyricsEnabled
+        amllDiscreteWordHighlightEnabled = settings.amllDiscreteWordHighlightEnabled
     }
 
     private func syncToSettings() {
@@ -291,6 +305,7 @@ struct NowPlayingLyricsTabView: View {
         settings.lyricsTranslationFontWeightLight = lyricsTranslationFontWeightLight
         settings.lyricsTranslationFontWeightDark = lyricsTranslationFontWeightDark
         settings.amllHighResolutionLyricsEnabled = amllHighResolutionLyricsEnabled
+        settings.amllDiscreteWordHighlightEnabled = amllDiscreteWordHighlightEnabled
         lyricsVM.refreshConfigFromSettings()
     }
 }

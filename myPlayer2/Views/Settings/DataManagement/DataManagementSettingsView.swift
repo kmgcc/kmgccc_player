@@ -55,11 +55,9 @@ struct DataManagementSettingsView: View {
                         Button("清除索引缓存") {
                             showClearIndexCacheAlert = true
                         }
-                        .buttonStyle(.bordered)
-                        .clipShape(Capsule())
+                            .buttonStyle(.bordered)
+                            .clipShape(Capsule())
                     }
-
-                    Divider()
 
                     // Artwork color cache
                     VStack(alignment: .leading, spacing: 8) {
@@ -70,11 +68,9 @@ struct DataManagementSettingsView: View {
                         Button("清除取色缓存") {
                             showClearArtworkColorCacheAlert = true
                         }
-                        .buttonStyle(.bordered)
-                        .clipShape(Capsule())
+                            .buttonStyle(.bordered)
+                            .clipShape(Capsule())
                     }
-
-                    Divider()
 
                     // External playback cache
                     VStack(alignment: .leading, spacing: 8) {
