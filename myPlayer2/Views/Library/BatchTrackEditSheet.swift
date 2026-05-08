@@ -814,7 +814,14 @@ struct BatchTrackEditSheet: View {
             guard let coordinator = coverCoordinator else { return }
             let currentArtist = artist
             let currentAlbum = album
-            await coordinator.search(artist: currentArtist, album: currentAlbum)
+            let currentTitle = title
+            let currentDuration = tracks.indices.contains(currentIndex) ? tracks[currentIndex].duration : nil
+            await coordinator.search(
+                artist: currentArtist,
+                album: currentAlbum,
+                title: currentTitle,
+                duration: currentDuration
+            )
             // Note: artworkData is updated reactively via onChange
         }
     }

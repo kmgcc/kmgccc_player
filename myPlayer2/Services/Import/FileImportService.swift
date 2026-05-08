@@ -379,63 +379,40 @@ nonisolated private enum ImportEnrichmentWorker {
     }
 
     static func fetchCover(
+        title: String? = nil,
         artist: String,
-        album: String
+        album: String,
+        duration: Double? = nil
     ) async -> ImportCoverLookupOutcome {
+        let normalizedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedArtist = artist.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedAlbum = album.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        guard !normalizedArtist.isEmpty || !normalizedAlbum.isEmpty else {
+        guard !(normalizedTitle?.isEmpty ?? true) || !normalizedArtist.isEmpty || !normalizedAlbum.isEmpty else {
             return .noResults
         }
 
         do {
-            let coverData = try await withCoverLookupTimeout(
+            let candidates = try await withCoverLookupTimeout(
                 CoverLookupConfiguration.importPerTrackTimeout
             ) {
-                do {
-                    return try await withCoverLookupTimeout(
-                        CoverLookupConfiguration.netEaseCandidatesTimeout
-                    ) {
-                        try await downloadNetEaseCover(
-                            artist: normalizedArtist,
-                            album: normalizedAlbum
-                        )
-                    }
-                } catch let error as NetEaseCoverError {
-                    if case .noResults = error {
-                        // Fall through to sacad.
-                    } else {
-                        Log.warning(
-                            "NetEase cover fetch failed for \(normalizedArtist) - \(normalizedAlbum): \(error)",
-                            category: .import
-                        )
-                    }
-                } catch {
-                    Log.warning(
-                        "NetEase cover fetch failed for \(normalizedArtist) - \(normalizedAlbum): \(error)",
-                        category: .import
-                    )
-                }
-
-                return try await withCoverLookupTimeout(CoverLookupConfiguration.sacadTimeout) {
-                    try await downloadCoverViaSacad(
-                        artist: normalizedArtist,
-                        album: normalizedAlbum,
-                        size: 1200
-                    )
-                }
+                await fetchImportCoverCandidates(
+                    title: normalizedTitle,
+                    artist: normalizedArtist,
+                    album: normalizedAlbum,
+                    duration: duration
+                )
             }
-            return .completed(coverData)
-        } catch let error as NetEaseCoverError {
-            if case .noResults = error {
+
+            guard let selected = CoverCandidateSorter.bestAutomaticCandidate(from: candidates) else {
                 return .noResults
             }
-            Log.warning(
-                "Import cover fetch failed for \(normalizedArtist) - \(normalizedAlbum): \(error)",
-                category: .import
-            )
-            return .failed(error.localizedDescription)
+
+            let normalizedData = ArtworkDataNormalizer.normalizedJPEGData(
+                from: selected.imageData,
+                maxPixelSize: ArtworkDataNormalizer.importMaxPixelSize
+            ) ?? selected.imageData
+            return .completed(normalizedData)
         } catch let error as CoverLookupTimeoutError {
             Log.warning(
                 "Import cover fetch timed out for \(normalizedArtist) - \(normalizedAlbum): \(error)",
@@ -449,6 +426,109 @@ nonisolated private enum ImportEnrichmentWorker {
             )
             return .failed(error.localizedDescription)
         }
+    }
+
+    private static func fetchImportCoverCandidates(
+        title: String?,
+        artist: String,
+        album: String,
+        duration: Double?
+    ) async -> [CoverCandidate] {
+        var candidates: [CoverCandidate] = []
+
+        await withTaskGroup(of: [CoverCandidate].self) { group in
+            group.addTask {
+                do {
+                    return try await withCoverLookupTimeout(
+                        CoverLookupConfiguration.netEaseCandidatesTimeout
+                    ) {
+                        let data = try await downloadNetEaseCover(
+                            artist: artist,
+                            album: album
+                        )
+                        return [
+                            CoverCandidate(
+                                imageData: data,
+                                source: .netease,
+                                sourceItemId: normalizedCoverQuery(artist: artist, album: album),
+                                matchedArtist: artist,
+                                matchedAlbum: album
+                            )
+                        ]
+                    }
+                } catch let error as NetEaseCoverError {
+                    if case .noResults = error {
+                        return []
+                    }
+                    Log.warning(
+                        "NetEase cover fetch failed for \(artist) - \(album): \(error)",
+                        category: .import
+                    )
+                    return []
+                } catch {
+                    Log.warning(
+                        "NetEase cover fetch failed for \(artist) - \(album): \(error)",
+                        category: .import
+                    )
+                    return []
+                }
+            }
+
+            group.addTask {
+                do {
+                    return try await withCoverLookupTimeout(CoverLookupConfiguration.sacadTimeout) {
+                        let data = try await downloadCoverViaSacad(
+                            artist: artist,
+                            album: album,
+                            size: 1200
+                        )
+                        return [
+                            CoverCandidate(
+                                imageData: data,
+                                source: .sacad,
+                                sourceItemId: normalizedCoverQuery(artist: artist, album: album),
+                                matchedArtist: artist,
+                                matchedAlbum: album
+                            )
+                        ]
+                    }
+                } catch {
+                    Log.warning(
+                        "SACAD cover fetch failed for \(artist) - \(album): \(error)",
+                        category: .import
+                    )
+                    return []
+                }
+            }
+
+            group.addTask {
+                do {
+                    return try await withCoverLookupTimeout(
+                        CoverLookupConfiguration.qqMusicCandidatesTimeout
+                    ) {
+                        try await QQMusicCoverService.shared.searchCoverCandidates(
+                            title: title,
+                            artist: artist,
+                            album: album,
+                            duration: duration,
+                            limit: CoverLookupConfiguration.qqMusicCandidateLimit
+                        )
+                    }
+                } catch {
+                    Log.warning(
+                        "QQMusic cover fetch failed for \(artist) - \(album): \(error)",
+                        category: .import
+                    )
+                    return []
+                }
+            }
+
+            for await partial in group {
+                candidates.append(contentsOf: partial)
+            }
+        }
+
+        return CoverCandidateSorter.sorted(candidates)
     }
 
     private static func downloadCoverViaSacad(
@@ -635,6 +715,15 @@ nonisolated private enum ImportEnrichmentWorker {
         configuration.timeoutIntervalForRequest = CoverLookupConfiguration.netEasePreferredTimeout
         configuration.timeoutIntervalForResource = CoverLookupConfiguration.netEaseCandidatesTimeout
         return URLSession(configuration: configuration)
+    }
+
+    private static func normalizedCoverQuery(artist: String, album: String) -> String {
+        "\(artist)-\(album)"
+            .lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: "-")
     }
 
     private struct NetEaseSearchResponse: Decodable, Sendable {
@@ -929,8 +1018,10 @@ final class ImportEnrichmentService {
                 await self.completeLyrics(request: request, outcome: outcome)
             case .cover:
                 let outcome = await ImportEnrichmentWorker.fetchCover(
+                    title: title,
                     artist: artist,
-                    album: album
+                    album: album,
+                    duration: duration
                 )
                 await self.completeCover(request: request, outcome: outcome)
             }
@@ -2356,8 +2447,10 @@ final class FileImportService: FileImportServiceProtocol {
         let coverTask = snapshot.needsCover
             ? Task {
                 await ImportEnrichmentWorker.fetchCover(
+                    title: snapshot.title,
                     artist: snapshot.artist,
-                    album: snapshot.album
+                    album: snapshot.album,
+                    duration: snapshot.duration
                 )
             }
             : nil

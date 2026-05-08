@@ -45,15 +45,15 @@ struct NowPlayingLyricsTabView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: presentationStyle.sectionSpacing) {
-            LyricsTimingConfigSection()
-                .environment(settings)
-                .environment(lyricsVM)
-
             renderingSection
 
             fontsSection
 
             previewSection
+
+            LyricsTimingConfigSection()
+                .environment(settings)
+                .environment(lyricsVM)
         }
     }
 

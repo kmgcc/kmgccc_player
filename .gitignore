@@ -48,6 +48,10 @@ __pycache__/
 env/
 dist/
 *.spec
+myPlayer2/Resources/Tools/qqmusic-helper/.venv/
+myPlayer2/Resources/Tools/qqmusic-helper/.venv
+myPlayer2/Resources/Tools/qqmusic-helper/.build-universal/
+.qqmusic-helper-venv/
 
 # Tools / Binary distributions
 Tools/lddc-server/

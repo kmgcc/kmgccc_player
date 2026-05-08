@@ -1196,9 +1196,87 @@
 
         let lastSeekAt = 0;
         let lastSeekSeconds = null;
-        const emitSeek = (line) => {
-            if (!line) return;
-            const start = typeof line.startTime === "number" ? line.startTime : undefined;
+        const getLineObjectIndex = (lineObj) => lyricPlayer.lyricLinesIndexes?.get?.(lineObj);
+        const getLineObjectVisualRect = (lineObj) => {
+            const element = lineObj?.getElement?.();
+            if (!(element instanceof HTMLElement)) return null;
+
+            const childRects = Array.from(element.children)
+                .filter((child) => (child.textContent || "").trim().length > 0)
+                .flatMap((child) => Array.from(child.getClientRects()));
+            const rects = childRects.length > 0
+                ? childRects
+                : Array.from(element.getClientRects());
+            const visibleRects = rects.filter((rect) => rect.width > 1 && rect.height > 1);
+            if (visibleRects.length === 0) return null;
+
+            const left = Math.min(...visibleRects.map((rect) => rect.left));
+            const right = Math.max(...visibleRects.map((rect) => rect.right));
+            const top = Math.min(...visibleRects.map((rect) => rect.top));
+            const bottom = Math.max(...visibleRects.map((rect) => rect.bottom));
+            if (!(right > left && bottom > top)) return null;
+            return { left, right, top, bottom };
+        };
+
+        const resolveLineFromPoint = (event) => {
+            const x = event?.clientX;
+            const y = event?.clientY;
+            if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+
+            const lineObjects = Array.isArray(lyricPlayer.currentLyricLineObjects)
+                ? lyricPlayer.currentLyricLineObjects
+                : [];
+            let best = null;
+            for (const lineObj of lineObjects) {
+                const lineIndex = getLineObjectIndex(lineObj);
+                if (!Number.isInteger(lineIndex) || lineIndex < 0) continue;
+
+                const rect = getLineObjectVisualRect(lineObj);
+                if (!rect) continue;
+
+                const verticalDistance = y < rect.top
+                    ? rect.top - y
+                    : (y > rect.bottom ? y - rect.bottom : 0);
+                const horizontalDistance = x < rect.left
+                    ? rect.left - x
+                    : (x > rect.right ? x - rect.right : 0);
+                const centerY = (rect.top + rect.bottom) / 2;
+                const score = verticalDistance * 1000 + horizontalDistance + Math.abs(y - centerY) * 0.01;
+                if (!best || score < best.score) {
+                    best = { lineObj, lineIndex, score };
+                }
+            }
+            return best;
+        };
+
+        const getSeekLineStart = (lineLike, lineIndex) => {
+            const candidates = [];
+            if (Number.isInteger(lineIndex) && lineIndex >= 0) {
+                candidates.push(lyricPlayer.processedLines?.[lineIndex]);
+            }
+            if (lineLike && typeof lineLike.getLine === "function") {
+                candidates.push(lineLike.getLine());
+            }
+            candidates.push(lineLike);
+            if (Number.isInteger(lineIndex) && lineIndex >= 0) {
+                candidates.push({ startTime: seekLineStartTimesMs[lineIndex] });
+                candidates.push(lyricPlayer.getLyricLines?.()[lineIndex]);
+            }
+            for (const candidate of candidates) {
+                const start = typeof candidate?.startTime === "number" ? candidate.startTime : undefined;
+                if (start !== undefined && !Number.isNaN(start)) return start;
+            }
+            return undefined;
+        };
+
+        const emitSeek = (lineLike, lineIndex, event) => {
+            const visualHit = resolveLineFromPoint(event);
+            if (visualHit) {
+                lineLike = visualHit.lineObj;
+                lineIndex = visualHit.lineIndex;
+            }
+            if (!lineLike && !Number.isInteger(lineIndex)) return;
+            const start = getSeekLineStart(lineLike, lineIndex);
             if (start === undefined || Number.isNaN(start)) return;
 
             const currentMs = typeof lyricPlayer.getCurrentTime === "function"
@@ -1226,7 +1304,7 @@
             const root = lyricPlayer.getElement();
             while (node && node !== root) {
                 const lineObj = lyricPlayer.lyricLineElementMap?.get?.(node);
-                if (lineObj?.getLine) return lineObj.getLine();
+                if (lineObj?.getLine) return lineObj;
                 node = node.parentElement;
             }
             return null;
@@ -2897,13 +2975,14 @@
 
         // Seek on line click (notify native)
         lyricPlayer.addEventListener("line-click", (e) => {
-            emitSeek(e?.line);
+            emitSeek(e?.line, e?.lineIndex, e);
         });
 
         // Fallback: resolve clicked line from DOM target (some WebKit builds drop line-click)
         lyricPlayer.getElement().addEventListener("click", (e) => {
-            const line = resolveLineFromTarget(e.target);
-            emitSeek(line);
+            const lineObj = resolveLineFromTarget(e.target);
+            const lineIndex = getLineObjectIndex(lineObj);
+            emitSeek(lineObj, lineIndex, e);
         });
 
         const parseTTMLTimeToMs = (value) => {
@@ -3620,6 +3699,7 @@
             externalTimeAnchorPerfMs = performance.now();
             lastSeekAt = 0;
             lastSeekSeconds = null;
+            seekLineStartTimesMs = [];
             lineTimingOnlyMode = false;
             lyricPlayer.isNonDynamic = false;
             patchFullscreenLastProcessedTime = -1;
@@ -3766,6 +3846,8 @@
 	        };
 	        lyricPlayer.setCurrentTime = originalSetCurrentTime;
 	        let timeOffsetMs = 0;
+	        let seekTimeOffsetMs = 0;
+	        let seekLineStartTimesMs = [];
 	        let lastTTML = "";
 	        let lineTimingOnlyMode = false;
 	        const hasEffectiveWordTiming = (line) => {
@@ -4082,6 +4164,12 @@
 		                    lastTTML = ttml;
 			                    const result = parseTTML(ttml);
 			                    const lines = result.lines.map(mapTTMLLyric);
+			                    seekLineStartTimesMs = lines.map((line) => {
+			                        const start = Number.isFinite(line?.startTime) ? line.startTime : NaN;
+			                        return Number.isFinite(start)
+			                            ? Math.max(0, start + seekTimeOffsetMs)
+			                            : NaN;
+			                    });
 			                    lines.forEach(applyTimeOffset);
 			                    lineTimingOnlyMode = normalizeMainLinesForLineTimingMode(lines);
 			                    parallelEmphasisDiagnosticsSourceLines = structuredClone(lines);
@@ -4490,6 +4578,13 @@
 	                        const nextTimeOffsetMs = Math.max(-15000, Math.min(15000, config.timeOffsetMs));
 	                        if (nextTimeOffsetMs !== timeOffsetMs) {
 	                            timeOffsetMs = nextTimeOffsetMs;
+	                            needsLyricsReload = true;
+	                        }
+	                    }
+	                    if (typeof config.seekTimeOffsetMs === "number" && !Number.isNaN(config.seekTimeOffsetMs)) {
+	                        const nextSeekTimeOffsetMs = Math.max(-15000, Math.min(15000, config.seekTimeOffsetMs));
+	                        if (nextSeekTimeOffsetMs !== seekTimeOffsetMs) {
+	                            seekTimeOffsetMs = nextSeekTimeOffsetMs;
 	                            needsLyricsReload = true;
 	                        }
 	                    }

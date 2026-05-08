@@ -491,15 +491,6 @@ final class HomeRoutingRootView: NSView {
         // cascade claim the click for Mini Player.
         for sub in subviews.reversed() {
             if let hit = sub.hitTest(point) {
-                #if DEBUG
-                if inMiniPlayer {
-                    MiniPlayerHitDiag.shared.log(
-                        "[RoutingRoot] inside MP. point=\(MiniPlayerHitDiag.format(point))"
-                        + " path=\(sub === splitViewRef ? "split" : (sub === homeHostRef ? "home" : "background"))"
-                        + " hit=\(MiniPlayerHitDiag.describe(hit))"
-                    )
-                }
-                #endif
                 return hit
             }
         }

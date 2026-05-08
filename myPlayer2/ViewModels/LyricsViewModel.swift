@@ -347,6 +347,7 @@ final class LyricsViewModel {
             "leadInMs": leadInMs,
             "nearSwitchGapMs": nearSwitchGapMs,
             "timeOffsetMs": combinedOffsetMs,
+            "seekTimeOffsetMs": trackOffsetMs,
             "theme": resolvedTheme,
             "renderScale": surfaceRole.renderScale(
                 lowResolutionModeEnabled: settings.amllLowResolutionModeEnabled

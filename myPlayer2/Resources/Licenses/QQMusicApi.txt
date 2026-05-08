@@ -1,0 +1,7 @@
+QQMusicApi
+
+Project: https://github.com/L-1124/QQMusicApi
+Documentation: https://l-1124.github.io/QQMusicApi/
+License: GPL-3.0-or-later
+
+QQMusicApi is used as an optional metadata/artwork provider helper dependency.

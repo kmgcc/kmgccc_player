@@ -14,7 +14,7 @@ import Foundation
 @Observable
 @MainActor
 final class CoverSearchCoordinator {
-    /// All candidates found from search, sorted by resolution descending.
+    /// All candidates found from search, sorted by confidence and resolution.
     var candidates: [CoverCandidate] = []
 
     /// The candidate currently selected for preview (not yet persisted).
@@ -35,17 +35,25 @@ final class CoverSearchCoordinator {
 
     private let coverDownloadService: CoverDownloadService
     private let netEaseCoverService: NetEaseCoverService
+    private let qqMusicCoverService: QQMusicCoverService
 
     init(
         coverDownloadService: CoverDownloadService,
-        netEaseCoverService: NetEaseCoverService
+        netEaseCoverService: NetEaseCoverService,
+        qqMusicCoverService: QQMusicCoverService = .shared
     ) {
         self.coverDownloadService = coverDownloadService
         self.netEaseCoverService = netEaseCoverService
+        self.qqMusicCoverService = qqMusicCoverService
     }
 
     /// Searches NetEase first so the UI can render quickly, then merges slower sources in the background.
-    func search(artist: String, album: String) async {
+    func search(
+        artist: String,
+        album: String,
+        title: String? = nil,
+        duration: Double? = nil
+    ) async {
         searchTask?.cancel()
         isLoading = true
         error = nil
@@ -117,6 +125,25 @@ final class CoverSearchCoordinator {
                     }
                 }
 
+                group.addTask {
+                    do {
+                        return try await withCoverLookupTimeout(
+                            CoverLookupConfiguration.qqMusicCandidatesTimeout
+                        ) {
+                            try await self.qqMusicCoverService.searchCoverCandidates(
+                                title: title,
+                                artist: artist,
+                                album: album,
+                                duration: duration,
+                                limit: CoverLookupConfiguration.qqMusicCandidateLimit
+                            )
+                        }
+                    } catch {
+                        print("[CoverSearchCoordinator] QQMusic candidates failed: \(error)")
+                        return []
+                    }
+                }
+
                 for await partialCandidates in group {
                     guard !Task.isCancelled else { return }
                     backgroundCandidates.append(contentsOf: partialCandidates)
@@ -181,7 +208,7 @@ final class CoverSearchCoordinator {
             }
         }
 
-        merged.sort { $0.resolution > $1.resolution }
+        merged = CoverCandidateSorter.sorted(merged)
         candidates = merged
 
         if preferExistingSelection,
