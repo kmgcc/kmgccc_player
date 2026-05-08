@@ -65,13 +65,9 @@ export class InterludeDots implements HasElement, Disposable {
 		this.currentTime += delta;
 		let curStyle = "";
 
-		// Window mode: move dots up more; Fullscreen: move down slightly from baseline
-		const isFullscreen = this.element.closest('.amll-surface-fullscreen') !== null;
-		const verticalOffset = isFullscreen ? 4 : -10;
-
 		curStyle += `transform:translate(${this.left.toFixed(
 			2,
-		)}px, ${(this.top + verticalOffset).toFixed(2)}px)`;
+		)}px, ${this.top.toFixed(2)}px)`;
 
 		// 计算缩放大小
 

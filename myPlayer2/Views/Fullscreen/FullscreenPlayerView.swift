@@ -2700,6 +2700,7 @@ struct FullscreenPlayerView: View {
             "leadInMs": max(0, settings.lyricsLeadInMs),
             "nearSwitchGapMs": max(0, min(500, settings.lyricsNearSwitchGapMs)),
             "timeOffsetMs": combinedOffsetMs,
+            "seekTimeOffsetMs": trackOffsetMs,
         ]
 
         config["fullscreenLyricDodgeMode"] = true

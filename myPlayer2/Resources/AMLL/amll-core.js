@@ -18799,47 +18799,46 @@ class Po {
     if (!this.playing) return;
     this.currentTime += A;
     let t = "";
-    const i = this.element.closest(".amll-surface-fullscreen") !== null ? 4 : -10;
     if (t += `transform:translate(${this.left.toFixed(
       2
-    )}px, ${(this.top + i).toFixed(2)}px)`, this.currentInterlude) {
-      const g = this.currentInterlude[1] - this.currentInterlude[0], s = this.currentTime - this.currentInterlude[0];
-      if (s <= g) {
-        const C = g / Math.ceil(g / this.targetBreatheDuration);
-        let Q = 1, B = 1;
-        Q *= Math.sin(1.5 * Math.PI - s / C * 2) / 20 + 1, s < 2e3 && (Q *= Vo(s / 2e3)), s < 500 ? B = 0 : s < 1e3 && (B *= (s - 500) / 500), g - s < 750 && (Q *= 1 - zo(
-          (750 - (g - s)) / 750 / 2
-        )), g - s < 375 && (B *= dt(
+    )}px, ${this.top.toFixed(2)}px)`, this.currentInterlude) {
+      const e = this.currentInterlude[1] - this.currentInterlude[0], i = this.currentTime - this.currentInterlude[0];
+      if (i <= e) {
+        const g = e / Math.ceil(e / this.targetBreatheDuration);
+        let s = 1, C = 1;
+        s *= Math.sin(1.5 * Math.PI - i / g * 2) / 20 + 1, i < 2e3 && (s *= Vo(i / 2e3)), i < 500 ? C = 0 : i < 1e3 && (C *= (i - 500) / 500), e - i < 750 && (s *= 1 - zo(
+          (750 - (e - i)) / 750 / 2
+        )), e - i < 375 && (C *= dt(
           0,
-          (g - s) / 375,
+          (e - i) / 375,
           1
         ));
-        const r = Math.max(0, g - 750);
-        Q = Math.max(0, Q) * 0.7, t += ` scale(${Q})`;
-        const n = dt(
+        const Q = Math.max(0, e - 750);
+        s = Math.max(0, s) * 0.7, t += ` scale(${s})`;
+        const B = dt(
           0.25,
-          s * 3 / r * 0.75,
+          i * 3 / Q * 0.75,
           1
-        ), E = dt(
+        ), r = dt(
           0.25,
-          (s - r / 3) * 3 / r * 0.75,
+          (i - Q / 3) * 3 / Q * 0.75,
           1
-        ), a = dt(
+        ), n = dt(
           0.25,
-          (s - r / 3 * 2) * 3 / r * 0.75,
+          (i - Q / 3 * 2) * 3 / Q * 0.75,
           1
         );
         this.dot0.style.opacity = `${dt(
           0,
-          Math.max(0, B * n),
+          Math.max(0, C * B),
           1
         )}`, this.dot1.style.opacity = `${dt(
           0,
-          Math.max(0, B * E),
+          Math.max(0, C * r),
           1
         )}`, this.dot2.style.opacity = `${dt(
           0,
-          Math.max(0, B * a),
+          Math.max(0, C * n),
           1
         )}`;
       } else

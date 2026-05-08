@@ -502,7 +502,12 @@ struct TrackInfoEditorCore: View {
 
         coverFetchTask = Task {
             guard let coordinator = coverCoordinator else { return }
-            await coordinator.search(artist: artist, album: album)
+            await coordinator.search(
+                artist: artist,
+                album: album,
+                title: title,
+                duration: duration
+            )
         }
     }
 

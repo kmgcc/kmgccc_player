@@ -113,6 +113,11 @@ struct AboutSettingsView: View {
                     license: "GPL-3.0"
                 )
                 complianceItem(
+                    name: "QQMusicApi",
+                    url: "https://github.com/L-1124/QQMusicApi",
+                    license: "GPL-3.0-or-later"
+                )
+                complianceItem(
                     name: "sacad",
                     url: "https://github.com/desbma/sacad",
                     license: "MPL-2.0"
@@ -240,7 +245,7 @@ struct AboutSettingsView: View {
     private func licenseColor(for license: String) -> Color {
         switch license {
         case "MIT": return .green
-        case "GPL-3.0", "AGPL-3.0": return .blue
+        case "GPL-3.0", "GPL-3.0-or-later", "AGPL-3.0": return .blue
         case "MPL-2.0": return .purple
         case "Apache-2.0": return .teal
         case "BSD": return .cyan

@@ -86,6 +86,10 @@ struct PlaylistDetailView: View {
         // Fill available space, anchor content to top
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(PlaylistLayoutPassProbe(key: "PlaylistDetailView.root"))
+        .environment(
+            \.libraryPresentedAccentColor,
+            pageController.headerAccentColor
+        )
         .background(
             PlaylistTopChromeInsetReader(topInset: $scrollFadeTopChromeInset)
                 .allowsHitTesting(false)

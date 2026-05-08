@@ -32,6 +32,7 @@
 		9351198D2F33149A00766A5F /* AMLL */ = {isa = PBXFileReference; lastKnownFileType = folder; name = AMLL; path = myPlayer2/Resources/AMLL; sourceTree = "<group>"; };
 		9396ADAB2FA12C0100000001 /* mediaremote-adapter */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "mediaremote-adapter"; path = "myPlayer2/Resources/mediaremote-adapter"; sourceTree = "<group>"; };
 		93CF3F822F344E9F0004C8E3 /* lddc-server */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "lddc-server"; path = "Tools/lddc-server"; sourceTree = "<group>"; };
+		93D91A102FA5000000010001 /* Tools */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Tools; path = myPlayer2/Resources/Tools; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -81,6 +82,9 @@
 				"Resources/mediaremote-adapter/build/MediaRemoteAdapterTestClient",
 				"Resources/mediaremote-adapter/LICENSE",
 				"Resources/mediaremote-adapter/README.md",
+				"Resources/Tools/qqmusic-helper/build-universal.sh",
+				"Resources/Tools/qqmusic-helper/main.py",
+				"Resources/Tools/qqmusic-helper/requirements.txt",
 				scan_ui.py,
 			);
 			target = 935118912F3231C500766A5F /* kmgccc_player */;
@@ -130,6 +134,7 @@
 			children = (
 				933AAE412F3CCCDF0081B59C /* BKThemes */,
 				93CF3F822F344E9F0004C8E3 /* lddc-server */,
+				93D91A102FA5000000010001 /* Tools */,
 				9351198D2F33149A00766A5F /* AMLL */,
 				9396ADAB2FA12C0100000001 /* mediaremote-adapter */,
 				935118942F3231C500766A5F /* myPlayer2 */,
@@ -187,6 +192,7 @@
 				9351188E2F3231C500766A5F /* Sources */,
 				9351188F2F3231C500766A5F /* Frameworks */,
 				935118902F3231C500766A5F /* Resources */,
+				93D91A122FA5000000010001 /* Copy QQMusic helper */,
 			);
 			buildRules = (
 			);
@@ -267,6 +273,33 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		93D91A122FA5000000010001 /* Copy QQMusic helper */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(PROJECT_DIR)/myPlayer2/Resources/Tools/qqmusic-helper/qqmusic-helper",
+				"$(PROJECT_DIR)/myPlayer2/Resources/Tools/qqmusic-helper/_internal.bundle",
+			);
+			name = "Copy QQMusic helper";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/Tools/qqmusic-helper",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/Tools/qqmusic-helper/qqmusic-helper",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/Tools/qqmusic-helper/_internal.bundle",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "set -euo pipefail\nSRC=\"${PROJECT_DIR}/myPlayer2/Resources/Tools/qqmusic-helper\"\nDST=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/Tools/qqmusic-helper\"\nAPP=\"${TARGET_BUILD_DIR}/${WRAPPER_NAME}\"\nclean_xattrs() {\n  local root=\"$1\"\n  while IFS= read -r -d '' item; do\n    /usr/bin/xattr -d com.apple.FinderInfo \"${item}\" 2>/dev/null || true\n    /usr/bin/xattr -d 'com.apple.fileprovider.fpfs#P' \"${item}\" 2>/dev/null || true\n    /usr/bin/xattr -d com.apple.ResourceFork \"${item}\" 2>/dev/null || true\n  done < <(/usr/bin/find \"${root}\" -print0)\n  /usr/bin/xattr -cr \"${root}\" 2>/dev/null || true\n}\nif [ ! -x \"${SRC}/qqmusic-helper\" ]; then\n  echo \"warning: QQMusic helper binary missing or not executable: ${SRC}/qqmusic-helper\"\n  exit 0\nfi\nmkdir -p \"${DST}\"\nCOPYFILE_DISABLE=1 /bin/cp -f \"${SRC}/qqmusic-helper\" \"${DST}/qqmusic-helper\"\nif [ -d \"${SRC}/_internal.bundle\" ]; then\n  mkdir -p \"${DST}/_internal.bundle\"\n  COPYFILE_DISABLE=1 /bin/cp -R \"${SRC}/_internal.bundle/.\" \"${DST}/_internal.bundle/\"\nfi\nclean_xattrs \"${DST}\"\nchmod 755 \"${DST}/qqmusic-helper\"\ncodesign --force --deep --sign - \"${DST}/qqmusic-helper\" >/dev/null 2>&1 || true\nclean_xattrs \"${APP}\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		933AADF92F3CC8D40081B59C /* Sources */ = {
@@ -479,6 +512,23 @@
 				ENABLE_HARDENED_RUNTIME = NO;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				EXCLUDED_SOURCE_FILE_NAMES = (
+					"$(inherited)",
+					.venv,
+					".qqmusic-helper-venv",
+					".build-universal",
+					_internal,
+					_internal.bundle,
+					"qqmusic-helper",
+					__pycache__,
+					build,
+					dist,
+					"*.spec",
+					"build-universal.sh",
+					main.py,
+					requirements.txt,
+				);
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/myPlayer2/Resources/mediaremote-adapter/build",
@@ -530,6 +580,23 @@
 				ENABLE_HARDENED_RUNTIME = NO;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				EXCLUDED_SOURCE_FILE_NAMES = (
+					"$(inherited)",
+					.venv,
+					".qqmusic-helper-venv",
+					".build-universal",
+					_internal,
+					_internal.bundle,
+					"qqmusic-helper",
+					__pycache__,
+					build,
+					dist,
+					"*.spec",
+					"build-universal.sh",
+					main.py,
+					requirements.txt,
+				);
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/myPlayer2/Resources/mediaremote-adapter/build",

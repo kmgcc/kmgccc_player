@@ -43,16 +43,16 @@ struct FullscreenLyricsTabView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: presentationStyle.sectionSpacing) {
-            LyricsTimingConfigSection()
-                .environment(settings)
-                .environment(lyricsVM)
-
             appearanceSection
             fontsSection
 
             if !presentationStyle.usesMaterialSectionCards {
                 previewSection
             }
+
+            LyricsTimingConfigSection()
+                .environment(settings)
+                .environment(lyricsVM)
         }
         .onAppear {
             syncStateFromSettings()

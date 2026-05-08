@@ -338,25 +338,12 @@ final class CenterPanePassthroughHostingView: NSHostingView<AppKitMainContentPan
         // use a real NSSlider NSView, kept working while every Button
         // was dead).
         if isPointInsideMiniPlayer(point, layoutState: layoutState) {
-            let hit = super.hitTest(point)
-            #if DEBUG
-            MiniPlayerHitDiag.shared.log(
-                "[CenterPaneHost] inside MP. point=\(MiniPlayerHitDiag.format(point))"
-                + " super.hitTest=\(MiniPlayerHitDiag.describe(hit))"
-                + " isSelf=\(hit === self)"
-            )
-            #endif
-            return hit
+            return super.hitTest(point)
         }
 
         // Home mode + outside Mini Player rect:
         // Yield entirely so the click can fall through to the
         // `homeFullWindowHost` via `HomeRoutingRootView.hitTest`.
-        #if DEBUG
-        MiniPlayerHitDiag.shared.log(
-            "[CenterPaneHost] outside MP yield. point=\(MiniPlayerHitDiag.format(point))"
-        )
-        #endif
         return nil
     }
 
@@ -419,42 +406,3 @@ final class CenterPanePassthroughViewController: NSViewController {
     }
 }
 
-// MARK: - Mini Player hit-test diagnostics (DEBUG only)
-
-#if DEBUG
-/// Targeted, narrow diagnostic for Mini Player click routing. OFF by
-/// default after a fix is in place — flip `enabled` to `true` to surface
-/// what `super.hitTest(_:)` returns inside the Mini Player rect when a
-/// click misses (e.g. a Button doesn't fire).
-@MainActor
-final class MiniPlayerHitDiag {
-    static let shared = MiniPlayerHitDiag()
-    /// Toggle to enable/disable diagnostic prints without recompiling
-    /// or removing call sites. Default `true` so the next launch
-    /// surfaces the actual super.hitTest return type while we verify
-    /// the Mini Player click fix.
-    var enabled: Bool = true
-    private init() {}
-
-    func log(_ message: @autoclosure () -> String) {
-        guard enabled else { return }
-        print("[MiniPlayerHit] \(message())")
-    }
-
-    static func format(_ point: NSPoint) -> String {
-        String(format: "(%.1f, %.1f)", point.x, point.y)
-    }
-
-    static func format(_ rect: CGRect) -> String {
-        String(
-            format: "(%.1f, %.1f, %.1fx%.1f)",
-            rect.origin.x, rect.origin.y, rect.size.width, rect.size.height
-        )
-    }
-
-    static func describe(_ view: NSView?) -> String {
-        guard let view else { return "nil" }
-        return "\(type(of: view))<0x\(String(UInt(bitPattern: ObjectIdentifier(view).hashValue), radix: 16))>"
-    }
-}
-#endif

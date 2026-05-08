@@ -67,6 +67,9 @@ struct CoverCandidateStripView: View {
             // Resolution badge
             resolutionBadge(candidate.resolutionLabel)
         }
+        .overlay(alignment: .topLeading) {
+            sourceBadge(candidate.source)
+        }
         .contentShape(RoundedRectangle(cornerRadius: 6))
         .onTapGesture {
             onSelect(candidate)
@@ -85,6 +88,29 @@ struct CoverCandidateStripView: View {
             .background(Color.black.opacity(0.7))
             .clipShape(RoundedRectangle(cornerRadius: 3))
             .padding(2)
+    }
+
+    @ViewBuilder
+    private func sourceBadge(_ source: CoverSource) -> some View {
+        Text(source.shortLabel)
+            .font(.system(size: 9, weight: .bold, design: .rounded))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
+            .background(sourceBadgeColor(source).opacity(0.82))
+            .clipShape(RoundedRectangle(cornerRadius: 3))
+            .padding(2)
+    }
+
+    private func sourceBadgeColor(_ source: CoverSource) -> Color {
+        switch source {
+        case .netease:
+            return .red
+        case .qqmusic:
+            return .green
+        case .sacad:
+            return .blue
+        }
     }
 }
 

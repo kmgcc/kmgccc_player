@@ -36,7 +36,7 @@ struct DataManagementSettingsView: View {
                             get: { settings.deferImportEnrichment },
                             set: { settings.deferImportEnrichment = $0 }
                         ),
-                        detail: "开启后导入会先完成文件复制与基础信息入库，歌曲会先出现在资料库与播放列表中，再在后台补全歌词和封面。关闭后保持当前导入流程。",
+                        detail: "开启后导入会先完成文件复制，再在后台补全歌词和封面，以提高导入速度",
                         detailFont: .subheadline
                     )
                 }
@@ -48,36 +48,32 @@ struct DataManagementSettingsView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     // Index cache
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("清除本地索引缓存，下次进入资料库时将重新建立索引，不会删除歌曲文件。")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-
                         Button("清除索引缓存") {
                             showClearIndexCacheAlert = true
                         }
                             .buttonStyle(.bordered)
                             .clipShape(Capsule())
+
+                        Text("重新建立音乐资料库的索引，供 app 内显示使用，不会影响资料库歌曲文件")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
                     }
 
                     // Artwork color cache
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("清除歌曲封面取色缓存。若遇到取色异常、颜色显示不正确，可尝试清除缓存。")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-
                         Button("清除取色缓存") {
                             showClearArtworkColorCacheAlert = true
                         }
                             .buttonStyle(.bordered)
                             .clipShape(Capsule())
+
+                        Text("若遇到取色异常、颜色显示不正确，可尝试清除取色缓存")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
                     }
 
                     // External playback cache
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("清理外部播放的歌曲元数据缓存。会清除手动匹配覆盖、匹配结果缓存、联网封面缓存、联网歌词缓存，以及其它按外部曲目标识绑定的解析结果。当前播放状态会回退到自动重新匹配。")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-
                         Button(role: .destructive) {
                             showClearExternalCacheAlert = true
                         } label: {
@@ -91,6 +87,10 @@ struct DataManagementSettingsView: View {
                         .buttonStyle(.bordered)
                         .clipShape(Capsule())
                         .disabled(isClearingExternalCaches)
+
+                        Text("遇到问题时，可以尝试清除来自外部播放过程中产生的歌曲元数据匹配结果缓存、手动覆盖元数据。此操作不影响本地播放歌曲的数据")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
                     }
                 }
                 .padding(12)
@@ -99,15 +99,15 @@ struct DataManagementSettingsView: View {
             // Reset app settings
             GroupBox {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("将应用配置恢复为初始默认值，不会修改音乐资料库。")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-
                     Button("初始化应用设置", role: .destructive) {
                         showResetDataAlert = true
                     }
                     .buttonStyle(.borderedProminent)
                     .clipShape(Capsule())
+
+                    Text("将应用设置恢复为初始默认值")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
                 }
                 .padding(12)
             }
@@ -115,11 +115,7 @@ struct DataManagementSettingsView: View {
             // Music preference reset
             GroupBox {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("批量重置整个音乐资料库中的播放统计偏好数据，只会修改所选统计字段与统计相关旧残留。")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-
-                    Button("重置音乐偏好数据", role: .destructive) {
+                    Button("重置音乐播放数据", role: .destructive) {
                         MusicPreferenceResetDialogPresenter.present(
                             libraryVM: libraryVM,
                             playerVM: playerVM
@@ -127,6 +123,10 @@ struct DataManagementSettingsView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .clipShape(Capsule())
+
+                    Text("清除播放统计数据，包括歌曲聆听计数、播放时长等")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
                 }
                 .padding(12)
             }
@@ -137,7 +137,7 @@ struct DataManagementSettingsView: View {
                 resetAppDataExceptMusicLibrary()
             }
         } message: {
-            Text("会重置应用设置与界面状态，不会修改音乐资料库内容。")
+            Text("会重置应用设置与界面状态，不会修改音乐资料库内容")
         }
         .alert("清除索引缓存？", isPresented: $showClearIndexCacheAlert) {
             Button("取消", role: .cancel) {}
@@ -147,7 +147,7 @@ struct DataManagementSettingsView: View {
                 }
             }
         } message: {
-            Text("将清空索引缓存并立即重新扫描音乐资料库，不会删除音频、meta.json 或播放列表。")
+            Text("将清空索引缓存并立即重新扫描音乐资料库，不会删除歌曲文件或播放列表。")
         }
         .alert("清除取色缓存？", isPresented: $showClearArtworkColorCacheAlert) {
             Button("取消", role: .cancel) {}
@@ -157,7 +157,7 @@ struct DataManagementSettingsView: View {
                 }
             }
         } message: {
-            Text("将清空歌曲封面取色缓存，下次播放时会重新提取颜色。")
+            Text("将清空歌曲封面取色缓存，下次播放时会重新提取颜色，可能降低加载速度")
         }
         .alert("清理外部播放缓存？", isPresented: $showClearExternalCacheAlert) {
             Button("取消", role: .cancel) {}

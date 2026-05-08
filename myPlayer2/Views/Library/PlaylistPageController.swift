@@ -73,6 +73,16 @@ final class PlaylistPageController {
     /// Opacity of incoming layer (0 = show current, 1 = show incoming)
     private(set) var headerIncomingOpacity: Double = 0
 
+    // MARK: - Header Color Extraction (independent of global ThemeStore)
+    /// Accent color derived from the current header artwork.
+    /// Updated asynchronously when header artwork changes.
+    private(set) var headerAccentColor: Color = ThemeStore.shared.accentColor
+    /// Full semantic palette derived from the current header artwork.
+    private(set) var headerSemanticPalette: SemanticPalette?
+    private var headerColorTask: Task<Void, Never>?
+    private var lastHeaderColorIdentity: String?
+    private var lastHeaderColorChecksum: UInt64 = 0
+
     // MARK: - Halo Crossfade State (low-resolution seed image)
     private(set) var haloCurrentImage: NSImage?
     private(set) var haloIncomingImage: NSImage?
@@ -715,6 +725,15 @@ final class PlaylistPageController {
             request: currentHeader.config.artworkRequest,
             resolved: resolved
         )
+
+        // Kick off header color extraction independently of the global ThemeStore.
+        // Uses payload.data or falls back to resolved image data for the color source.
+        startHeaderColorExtraction(
+            payload: payload,
+            artworkIdentity: artworkIdentity,
+            resolveToken: resolveToken
+        )
+
         guard payload.data != nil || payload.fileURL != nil else { return }
 
         startImmediateHaloSeedLoad(
@@ -820,6 +839,56 @@ final class PlaylistPageController {
         }
     }
 
+    private func startHeaderColorExtraction(
+        payload: HeaderArtworkPayload,
+        artworkIdentity: String,
+        resolveToken: UUID
+    ) {
+        // Resolve data: prefer payload.data, fall back to fileURL contents.
+        let resolvedData: Data? = {
+            if let data = payload.data, !data.isEmpty { return data }
+            if let fileURL = payload.fileURL,
+               FileManager.default.fileExists(atPath: fileURL.path) {
+                return try? Data(contentsOf: fileURL)
+            }
+            return nil
+        }()
+
+        // Dedupe: don't re-extract for the same identity + data.
+        let checksum = resolvedData.map { ColorMath.fnv1a($0) } ?? 0
+        if artworkIdentity == lastHeaderColorIdentity, checksum == lastHeaderColorChecksum, checksum != 0 {
+            return
+        }
+
+        headerColorTask?.cancel()
+        HeaderColorExtractor.shared.cancelPending()
+
+        guard let data = resolvedData, !data.isEmpty else {
+            // No data: fall back to global theme accent.
+            headerAccentColor = ThemeStore.shared.accentColor
+            headerSemanticPalette = nil
+            lastHeaderColorIdentity = artworkIdentity
+            lastHeaderColorChecksum = 0
+            return
+        }
+
+        headerColorTask = Task { @MainActor in
+            let result = await HeaderColorExtractor.shared.extract(
+                from: data,
+                artworkIdentity: artworkIdentity
+            )
+            guard !Task.isCancelled else { return }
+            guard self.headerResolveToken == resolveToken else { return }
+
+            if let result {
+                self.headerAccentColor = result.accent
+                self.headerSemanticPalette = result.palette
+                self.lastHeaderColorIdentity = artworkIdentity
+                self.lastHeaderColorChecksum = checksum
+            }
+        }
+    }
+
     private func startImmediateHaloSeedLoad(
         payload: HeaderArtworkPayload,
         artworkIdentity: String,
@@ -906,6 +975,8 @@ final class PlaylistPageController {
         headerFadeTask?.cancel()
         haloFadeTask?.cancel()
         headerHaloSeedTask?.cancel()
+        headerColorTask?.cancel()
+        HeaderColorExtractor.shared.cancelPending()
         headerCurrentArtwork = nil
         headerIncomingArtwork = nil
         headerIncomingOpacity = 0
@@ -913,6 +984,10 @@ final class PlaylistPageController {
         haloIncomingImage = nil
         haloSourceBlendOpacity = 1
         haloPresentationOpacity = 0
+        headerAccentColor = ThemeStore.shared.accentColor
+        headerSemanticPalette = nil
+        lastHeaderColorIdentity = nil
+        lastHeaderColorChecksum = 0
     }
 
     private func publishHeaderImage(_ image: NSImage, identity: String, resolveToken: UUID) {

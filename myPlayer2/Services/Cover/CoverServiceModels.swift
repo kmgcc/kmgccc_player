@@ -11,9 +11,12 @@ import ImageIO
 nonisolated enum CoverLookupConfiguration {
     static let netEasePreferredTimeout: TimeInterval = 8
     static let netEaseCandidatesTimeout: TimeInterval = 12
+    static let qqMusicCandidatesTimeout: TimeInterval = 15
     static let sacadTimeout: TimeInterval = 18
     static let importPerTrackTimeout: TimeInterval = 30
     static let netEaseCandidateLimit = 5
+    static let qqMusicCandidateLimit = 5
+    static let automaticCoverConfidenceThreshold = 0.74
 }
 
 nonisolated enum CoverDownloadError: Error {
@@ -35,6 +38,23 @@ nonisolated enum NetEaseCoverError: Error {
 nonisolated enum CoverSource: Sendable {
     case sacad
     case netease
+    case qqmusic
+
+    var shortLabel: String {
+        switch self {
+        case .sacad: return "SC"
+        case .netease: return "NE"
+        case .qqmusic: return "QQ"
+        }
+    }
+
+    var defaultConfidence: Double {
+        switch self {
+        case .netease: return 0.78
+        case .sacad: return 0.74
+        case .qqmusic: return 0.70
+        }
+    }
 }
 
 nonisolated enum CoverLookupTimeoutError: LocalizedError {
@@ -77,13 +97,32 @@ nonisolated struct CoverCandidate: Identifiable, Equatable, Hashable, Sendable {
     let height: Int
     let source: CoverSource
     let sourceItemId: String?  // Album ID or query hash
+    let confidence: Double
+    let matchedTitle: String?
+    let matchedArtist: String?
+    let matchedAlbum: String?
+    let imageURL: String?
 
     /// Creates a candidate with automatically computed dimensions.
-    init(imageData: Data, source: CoverSource, sourceItemId: String?) {
+    init(
+        imageData: Data,
+        source: CoverSource,
+        sourceItemId: String?,
+        confidence: Double? = nil,
+        matchedTitle: String? = nil,
+        matchedArtist: String? = nil,
+        matchedAlbum: String? = nil,
+        imageURL: String? = nil
+    ) {
         self.id = "\(source):\(sourceItemId ?? "unknown")"
         self.imageData = imageData
         self.source = source
         self.sourceItemId = sourceItemId
+        self.confidence = min(max(confidence ?? source.defaultConfidence, 0), 1)
+        self.matchedTitle = matchedTitle
+        self.matchedArtist = matchedArtist
+        self.matchedAlbum = matchedAlbum
+        self.imageURL = imageURL
         let (w, h) = Self.computeDimensions(from: imageData)
         self.width = w
         self.height = h
@@ -91,11 +130,27 @@ nonisolated struct CoverCandidate: Identifiable, Equatable, Hashable, Sendable {
     }
 
     /// Creates a candidate with explicit dimensions (for performance when known).
-    init(imageData: Data, source: CoverSource, sourceItemId: String?, width: Int, height: Int) {
+    init(
+        imageData: Data,
+        source: CoverSource,
+        sourceItemId: String?,
+        width: Int,
+        height: Int,
+        confidence: Double? = nil,
+        matchedTitle: String? = nil,
+        matchedArtist: String? = nil,
+        matchedAlbum: String? = nil,
+        imageURL: String? = nil
+    ) {
         self.id = "\(source):\(sourceItemId ?? "unknown")"
         self.imageData = imageData
         self.source = source
         self.sourceItemId = sourceItemId
+        self.confidence = min(max(confidence ?? source.defaultConfidence, 0), 1)
+        self.matchedTitle = matchedTitle
+        self.matchedArtist = matchedArtist
+        self.matchedAlbum = matchedAlbum
+        self.imageURL = imageURL
         self.width = width
         self.height = height
         self.resolution = max(width, height)
@@ -113,6 +168,11 @@ nonisolated struct CoverCandidate: Identifiable, Equatable, Hashable, Sendable {
         } else {
             return "\(width)×\(height)"
         }
+    }
+
+    var rankingScore: Double {
+        let resolutionScore = min(Double(resolution), 2_000) / 2_000
+        return confidence * 0.82 + resolutionScore * 0.18
     }
 
     private static func computeDimensions(from data: Data) -> (Int, Int) {

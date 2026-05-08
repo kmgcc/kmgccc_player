@@ -44,7 +44,7 @@ struct ExternalPlaybackSettingsView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     SettingsSwitchRow(title: "启用\"其他\"播放模式", isOn: $enableSystemNowPlaying)
 
-                    Text("\"其他\" 模式通过 macOS MediaRemote 读取系统当前播放的第三方 App 的元数据，可能出现元数据缺失、封面无法获取、播放进度控制不可用、暂停/恢复延迟等问题。如果您只使用本地播放或 Apple Music，可以关闭此选项以保持界面简洁。")
+                    Text("\"其他\" 模式通过 macOS MediaRemote 读取系统当前播放的第三方 App 的元数据，可能出现部分控制不可用、不稳定等问题。如果您只使用本地播放或 Apple Music，可以关闭此选项以保持界面简洁")
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -54,13 +54,6 @@ struct ExternalPlaybackSettingsView: View {
 
             GroupBox {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("清理外部播放的歌曲元数据缓存。")
-                        .font(.default)
-
-                    Text("会清除手动匹配覆盖、匹配结果缓存、联网封面缓存、联网歌词缓存，以及其它按外部曲目标识绑定的解析结果。当前播放状态会回退到自动重新匹配。")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-
                     Button(role: .destructive) {
                         showClearCacheAlert = true
                     } label: {
@@ -74,6 +67,10 @@ struct ExternalPlaybackSettingsView: View {
                     .buttonStyle(.borderedProminent)
                     .clipShape(Capsule())
                     .disabled(isClearingCaches)
+
+                    Text("遇到问题时，可以尝试清除来自外部播放过程中产生的歌曲元数据匹配结果缓存、手动覆盖元数据。此操作不影响本地播放歌曲的数据")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
                 }
                 .padding(12)
             }

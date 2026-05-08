@@ -175,6 +175,9 @@ final class AppSessionHost: ObservableObject {
         AppDelegate.shared?.configureDockPlayback(playbackCoordinator: playbackCoordinator)
         AppDelegate.applicationWillTerminateHandler = { [weak self] in
             self?.savePlaybackMemory()
+            Task {
+                await QQMusicHelperProcess.shared.terminate()
+            }
         }
 
         settingsSceneDependencies.configure(
