@@ -204,6 +204,7 @@ final class LibraryViewModel {
 
     private(set) var artistEntries: [ArtistEntry] = []
     private(set) var albumEntries: [AlbumEntry] = []
+    private var artistArtworkProviderTasks: Set<UUID> = []
 
     /// All tracks loaded from Music Library (in-memory snapshot).
     private(set) var allTracks: [Track] = []
@@ -889,6 +890,84 @@ final class LibraryViewModel {
         await invalidateDetailSelectionCacheIfNeeded(
             selectionIdentity: "artist-\(persisted.canonicalName)"
         )
+    }
+
+    @discardableResult
+    func autofillArtistArtworkIfMissing(_ entry: ArtistEntry) async -> Bool {
+        await applyArtistArtworkFromProviders(
+            entry,
+            allowReplacingExistingArtwork: false,
+            reason: "auto-missing"
+        )
+    }
+
+    @discardableResult
+    func replaceArtistArtworkFromProviders(_ entry: ArtistEntry) async -> Bool {
+        await applyArtistArtworkFromProviders(
+            entry,
+            allowReplacingExistingArtwork: true,
+            reason: "manual-header"
+        )
+    }
+
+    @discardableResult
+    private func applyArtistArtworkFromProviders(
+        _ entry: ArtistEntry,
+        allowReplacingExistingArtwork: Bool,
+        reason: String
+    ) async -> Bool {
+        guard allowReplacingExistingArtwork || !hasPersistedArtistArtwork(entry) else {
+            return false
+        }
+        guard !artistArtworkProviderTasks.contains(entry.id) else {
+            return false
+        }
+
+        artistArtworkProviderTasks.insert(entry.id)
+        defer {
+            artistArtworkProviderTasks.remove(entry.id)
+        }
+
+        do {
+            let candidates = try await ArtistArtworkProviderCoordinator.shared.searchCandidates(
+                artist: entry.displayName,
+                limit: CoverLookupConfiguration.qqMusicCandidateLimit
+            )
+            guard let selected = CoverCandidateSorter.bestAutomaticCandidate(from: candidates) else {
+                let topConfidence = candidates.map(\.confidence).max() ?? 0
+                Log.info(
+                    "[QQMusicCover] artist \(reason) skipped lowConfidence top=\(String(format: "%.2f", topConfidence)) artist=\(entry.displayName)",
+                    category: .import
+                )
+                return false
+            }
+
+            guard var current = artistEntries.first(where: { $0.id == entry.id }) else {
+                return false
+            }
+            guard allowReplacingExistingArtwork || !hasPersistedArtistArtwork(current) else {
+                return false
+            }
+
+            current.artworkFileName = "artwork.png"
+            current.artworkData = selected.imageData
+            await saveArtistEntry(current)
+            Log.info(
+                "[QQMusicCover] artist \(reason) applied source=\(selected.source.shortLabel) confidence=\(String(format: "%.2f", selected.confidence)) artist=\(entry.displayName)",
+                category: .import
+            )
+            return true
+        } catch {
+            Log.warning(
+                "[QQMusicCover] artist \(reason) failed artist=\(entry.displayName) reason=\(error)",
+                category: .import
+            )
+            return false
+        }
+    }
+
+    private func hasPersistedArtistArtwork(_ entry: ArtistEntry) -> Bool {
+        entry.artworkFileName != nil || entry.artworkData?.isEmpty == false
     }
 
     func saveArtistEdits(original: ArtistEntry, updated: ArtistEntry) async {
