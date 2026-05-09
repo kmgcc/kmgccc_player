@@ -98,7 +98,7 @@ struct HomeView: View {
                     cachedHero(snapshot.hero, snapshot: snapshot, mode: mode)
                     cachedSummary(snapshot)
                     cachedStrip(title: "播放列表", items: snapshot.playlists.map { "\($0.name) · \($0.trackCount) 首" })
-                    cachedStrip(title: "歌手", items: snapshot.artists.map { "\($0.name) · \($0.albumCount) 张专辑" })
+                    cachedStrip(title: "艺人", items: snapshot.artists.map { "\($0.name) · \($0.albumCount) 张专辑" })
                     cachedStrip(title: "专辑", items: snapshot.albums.map { "\($0.title) · \($0.artist)" })
                     cachedRanking(snapshot.preferenceRanking)
                     Color.clear.frame(height: 120)

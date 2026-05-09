@@ -105,7 +105,6 @@ nonisolated struct MetadataApplyResult<Value>: Sendable where Value: Sendable {
 }
 
 nonisolated enum MetadataDetailApplicator {
-    @MainActor
     static func applyMissingFields(
         _ detail: ArtistMetadataDetail,
         to entry: ArtistEntry,
@@ -138,7 +137,6 @@ nonisolated enum MetadataDetailApplicator {
         return MetadataApplyResult(value: updated, changed: changed)
     }
 
-    @MainActor
     static func applyMissingFields(
         _ detail: AlbumMetadataDetail,
         to entry: AlbumEntry,
@@ -178,7 +176,6 @@ nonisolated enum MetadataDetailApplicator {
         return MetadataApplyResult(value: updated, changed: changed)
     }
 
-    @MainActor
     static func applyMissingFields(
         _ detail: TrackMetadataDetail,
         to track: Track,
@@ -187,6 +184,9 @@ nonisolated enum MetadataDetailApplicator {
         guard detail.confidence >= minimumConfidence else { return false }
 
         var changed = false
+        if LibraryNormalization.isUnknownAlbum(track.album) {
+            fillString(&track.album, with: detail.album, changed: &changed)
+        }
         fillString(&track.userDescription, with: detail.description, changed: &changed)
         fillStringArray(&track.genreTags, with: detail.genreTags, changed: &changed)
         fillString(&track.language, with: detail.language, changed: &changed)

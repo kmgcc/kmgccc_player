@@ -10,9 +10,9 @@
 "sidebar.new_playlist" = "新建播放列表";
 "sidebar.edit_playlist" = "编辑播放列表";
 "sidebar.delete_playlist" = "删除播放列表";
-"sidebar.delete_artist" = "删除歌手";
+"sidebar.delete_artist" = "删除艺人";
 "sidebar.delete_album" = "删除专辑";
-"sidebar.delete_artist_confirm_title" = "删除歌手？";
+"sidebar.delete_artist_confirm_title" = "删除艺人？";
 "sidebar.delete_album_confirm_title" = "删除专辑？";
 "sidebar.delete_artist_confirm_message" = "将删除“%@”及其关联的 %d 首歌曲。此操作不可恢复。";
 "sidebar.delete_album_confirm_message" = "将删除“%@”及其关联的 %d 首歌曲。此操作不可恢复。";
@@ -20,7 +20,7 @@
 "sidebar.appearance_light" = "外观：浅色";
 "sidebar.appearance_dark" = "外观：深色";
 "sidebar.appearance_system" = "外观：跟随系统";
-"sidebar.artists" = "歌手";
+"sidebar.artists" = "艺人";
 "sidebar.albums" = "专辑";
 "sidebar.fullscreen" = "全屏播放";
 "playback.source.local" = "本地";
@@ -136,7 +136,7 @@
 "library.file_missing" = "文件丢失";
 "library.new_playlist_name" = "新建播放列表 %d";
 "library.imported_playlist_name" = "导入于 %@";
-"library.unknown_artist" = "未知艺术家";
+"library.unknown_artist" = "未知艺人";
 "library.unknown_album" = "未知专辑";
 "library.unknown_title" = "未知标题";
 
@@ -146,7 +146,7 @@
 "sort.imported_time" = "导入时间";
 "sort.added_time" = "添加时间";
 "sort.title" = "标题";
-"sort.artist" = "歌手";
+"sort.artist" = "艺人";
 "sort.duration" = "时长";
 "sort.play_count" = "播放次数";
 "sort.preference" = "偏好程度";
@@ -172,8 +172,8 @@
 "edit.track.remove_artwork" = "移除插图";
 "edit.track.metadata" = "元数据";
 "edit.track.track_title" = "歌曲标题";
-"edit.track.artist" = "歌手";
-"edit.track.artist_name" = "歌手名称";
+"edit.track.artist" = "艺人";
+"edit.track.artist_name" = "艺人名称";
 "edit.track.album" = "专辑";
 "edit.track.album_name" = "专辑名称";
 "edit.track.description" = "歌曲描述";
@@ -197,14 +197,14 @@
 "edit.playlist.delete_confirm_title" = "删除播放列表？";
 "edit.playlist.delete_desc" = "这将移除播放列表，但不会删除歌曲文件本身。";
 "header.generate_artwork" = "生成封面";
-"header.search_artist_artwork" = "查找歌手封面";
+"header.search_artist_artwork" = "查找艺人封面";
 "header.import_artwork" = "导入封面";
 "header.restore_default_album_artwork" = "恢复默认专辑封面";
 
 // MARK: - Search LDDC
 "search.lddc.title" = "歌词查找 (LDDC)";
 "search.lddc.song" = "歌名";
-"search.lddc.artist" = "歌手";
+"search.lddc.artist" = "艺人";
 "search.lddc.mode" = "模式";
 "search.lddc.translation" = "翻译";
 "search.lddc.platform" = "平台";

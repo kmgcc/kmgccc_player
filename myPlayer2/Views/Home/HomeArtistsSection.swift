@@ -22,6 +22,7 @@ struct HomeArtistsSection: View {
     @Environment(UIStateViewModel.self) private var uiState
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @State private var deletionRequest: HomeArtistDeletionRequest?
+    @State private var editingArtist: ArtistEntry?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -59,6 +60,10 @@ struct HomeArtistsSection: View {
                 )
             )
         }
+        .sheet(item: $editingArtist) { entry in
+            ArtistInfoEditSheet(entry: entry) {}
+                .presentationSizing(.page)
+        }
     }
 
     @ViewBuilder
@@ -80,6 +85,7 @@ struct HomeArtistsSection: View {
                     mode: mode,
                     onOpen: { open(artist) },
                     onPlay: { play(artist) },
+                    onEdit: { editingArtist = artist },
                     onDelete: { requestDelete(artist) }
                 )
             }
@@ -106,7 +112,7 @@ struct HomeArtistsSection: View {
 
     private var sectionHeader: some View {
         HStack(alignment: .firstTextBaseline) {
-            Text("歌手")
+            Text("艺人")
                 .font(.system(size: mode.sectionTitleFontSize, weight: .semibold))
                 .tracking(-0.3)
             Spacer()
@@ -170,6 +176,7 @@ private struct HomeArtistCircle: View {
     let mode: HomeLayoutMode
     let onOpen: () -> Void
     let onPlay: () -> Void
+    let onEdit: () -> Void
     let onDelete: () -> Void
 
     @Environment(LibraryViewModel.self) private var libraryVM
@@ -235,11 +242,14 @@ private struct HomeArtistCircle: View {
         .onTapGesture(perform: onOpen)
         .contextMenu {
             Button(action: onPlay) {
-                Label("播放该歌手", systemImage: "play.fill")
+                Label("播放该艺人", systemImage: "play.fill")
             }
 
             Button(action: onOpen) {
                 Label("打开艺人", systemImage: "person.crop.circle")
+            }
+            Button(action: onEdit) {
+                Label("编辑艺人", systemImage: "info.circle")
             }
 
             Divider()

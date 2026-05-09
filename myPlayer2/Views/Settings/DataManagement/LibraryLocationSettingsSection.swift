@@ -79,7 +79,7 @@ struct LibraryLocationSettingsSection: View {
                 }
             }
         } message: {
-            Text("将把音乐资料库存放在所选文件夹下的 “kmgccc_player Library” 子文件夹中。APP 会重新加载该位置中的歌曲、播放列表、专辑和歌手信息。")
+            Text("将把音乐资料库存放在所选文件夹下的 “kmgccc_player Library” 子文件夹中。APP 会重新加载该位置中的歌曲、播放列表、专辑和艺人信息。")
         }
         .alert("恢复默认位置？", isPresented: $showRestoreConfirmAlert) {
             Button("取消", role: .cancel) {}

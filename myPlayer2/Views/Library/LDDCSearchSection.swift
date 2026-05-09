@@ -229,11 +229,11 @@ struct LDDCSearchSection: View {
                 }
                 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("歌手")
+                    Text("艺人")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     TextField(
-                        "歌手", text: $searchArtist
+                        "艺人", text: $searchArtist
                     )
                     .textFieldStyle(.roundedBorder)
                 }
@@ -575,9 +575,10 @@ struct LDDCSearchSection: View {
                 
                 TextEditor(text: $editableOrig)
                     .font(.system(.body, design: .monospaced))
-                    .frame(minHeight: 120)
+                    .frame(height: 120)
                     .background(Color(nsColor: .textBackgroundColor))
                     .clipShape(RoundedRectangle(cornerRadius: 4))
+                    .padding(.trailing, 18)
             }
             
             // Translation editor (if available)
@@ -589,9 +590,10 @@ struct LDDCSearchSection: View {
                     
                     TextEditor(text: $editableTrans)
                         .font(.system(.body, design: .monospaced))
-                        .frame(minHeight: 80)
+                        .frame(height: 80)
                         .background(Color(nsColor: .textBackgroundColor))
                         .clipShape(RoundedRectangle(cornerRadius: 4))
+                        .padding(.trailing, 18)
                 }
             }
         }

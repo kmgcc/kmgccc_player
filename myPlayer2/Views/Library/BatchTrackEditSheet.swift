@@ -44,6 +44,14 @@ struct BatchTrackEditSheet: View {
     @State private var artist = ""
     @State private var album = ""
     @State private var trackDescription = ""
+    @State private var genreTagsText = ""
+    @State private var language = ""
+    @State private var labelOrCompany = ""
+    @State private var releaseDateText = ""
+    @State private var qqMusicSongMid = ""
+    @State private var metadataSource = ""
+    @State private var metadataFetchedAt: Date?
+    @State private var metadataConfidence: Double?
     @State private var lyricsText = ""
     @State private var artworkData: Data?
     @State private var lyricsTimeOffsetMs: Double = 0
@@ -135,6 +143,10 @@ struct BatchTrackEditSheet: View {
         .onChange(of: artist) { _, _ in draftDidChange() }
         .onChange(of: album) { _, _ in draftDidChange() }
         .onChange(of: trackDescription) { _, _ in draftDidChange() }
+        .onChange(of: genreTagsText) { _, _ in draftDidChange() }
+        .onChange(of: language) { _, _ in draftDidChange() }
+        .onChange(of: labelOrCompany) { _, _ in draftDidChange() }
+        .onChange(of: releaseDateText) { _, _ in draftDidChange() }
         .onChange(of: lyricsText) { _, _ in draftDidChange() }
         .onChange(of: artworkData) { _, _ in draftDidChange() }
         .onChange(of: lyricsTimeOffsetMs) { _, _ in draftDidChange() }
@@ -332,20 +344,30 @@ struct BatchTrackEditSheet: View {
                 .font(.headline)
 
             HStack(spacing: 14) {
-                Group {
-                    if let data = artworkData, let nsImage = NSImage(data: data) {
-                        Image(nsImage: nsImage)
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                    } else {
-                        Image(systemName: "music.note")
-                            .font(.title2)
-                            .foregroundStyle(.secondary)
+                ZStack {
+                    Group {
+                        if let data = artworkData, let nsImage = NSImage(data: data) {
+                            Image(nsImage: nsImage)
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                        } else {
+                            Image(systemName: "music.note")
+                                .font(.title2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(width: 84, height: 84)
+                    .background(.ultraThinMaterial)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                    if coverCoordinator?.isLoading == true {
+                        ProgressView()
+                            .controlSize(.small)
+                            .padding(8)
+                            .background(.regularMaterial)
+                            .clipShape(Circle())
                     }
                 }
-                .frame(width: 84, height: 84)
-                .background(.ultraThinMaterial)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
 
                 VStack(alignment: .leading, spacing: 8) {
                     Button("导入封面") {
@@ -360,11 +382,6 @@ struct BatchTrackEditSheet: View {
                     .buttonStyle(.bordered)
                     .clipShape(Capsule())
                     .disabled(coverCoordinator?.isLoading == true)
-
-                    if coverCoordinator?.isLoading == true {
-                        ProgressView()
-                            .controlSize(.small)
-                    }
 
                     if artworkData != nil {
                         Button("移除封面", role: .destructive) {
@@ -426,28 +443,41 @@ struct BatchTrackEditSheet: View {
                 }
             }
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text("歌曲描述")
+            batchScrollingEditor(
+                "歌曲描述",
+                prompt: "可选，用于主页歌曲卡片横幅展示",
+                text: $trackDescription,
+                height: 96,
+                font: .body
+            )
+
+            VStack(alignment: .leading, spacing: 10) {
+                Label("更多详细元数据", systemImage: "list.bullet.rectangle")
+                    .font(.subheadline.weight(.semibold))
+
+                HStack(spacing: 10) {
+                    batchLabeledField("流派 / 标签", prompt: "用逗号分隔", text: $genreTagsText)
+                    batchLabeledField("语言", prompt: "语言", text: $language)
+                }
+
+                HStack(spacing: 10) {
+                    batchLabeledField("厂牌 / 公司", prompt: "厂牌或公司", text: $labelOrCompany)
+                    batchLabeledField("发行日期", prompt: "YYYY-MM-DD", text: $releaseDateText)
+                }
+
+                if hasReadonlyMetadata {
+                    VStack(alignment: .leading, spacing: 4) {
+                        batchReadonlyRow("QQMusic Song MID", qqMusicSongMid)
+                        batchReadonlyRow("来源", metadataSource)
+                        batchReadonlyRow("获取时间", metadataFetchedAt.map(formatMetadataDate) ?? "")
+                        batchReadonlyRow(
+                            "置信度",
+                            metadataConfidence.map { String(format: "%.2f", $0) } ?? ""
+                        )
+                    }
                     .font(.caption)
                     .foregroundStyle(.secondary)
-
-                ZStack(alignment: .topLeading) {
-                    TextEditor(text: $trackDescription)
-                        .frame(height: 64)
-                        .scrollContentBackground(.hidden)
-
-                    if trackDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        Text("可选，用于主页歌曲卡片横幅展示")
-                            .foregroundStyle(.tertiary)
-                            .font(.callout)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 8)
-                            .allowsHitTesting(false)
-                    }
-                }
-                .overlay {
-                    RoundedRectangle(cornerRadius: 6)
-                        .strokeBorder(Color.secondary.opacity(0.3), lineWidth: 1)
+                    .padding(.top, 2)
                 }
             }
         }
@@ -490,13 +520,13 @@ struct BatchTrackEditSheet: View {
                 .font(.caption)
             }
 
-            TextEditor(text: $lyricsText)
-                .font(.system(.caption, design: .monospaced))
-                .frame(height: 120)
-                .overlay {
-                    RoundedRectangle(cornerRadius: 6)
-                        .strokeBorder(Color.secondary.opacity(0.3), lineWidth: 1)
-                }
+            batchScrollingEditor(
+                "歌词文本",
+                prompt: "粘贴或应用 TTML / LRC 歌词",
+                text: $lyricsText,
+                height: 120,
+                font: .system(.caption, design: .monospaced)
+            )
 
             Text("TTML 文本区仅用于快速核对/微调；主要操作建议在下方 LDDC 区域完成。")
                 .font(.caption2)
@@ -545,6 +575,77 @@ struct BatchTrackEditSheet: View {
         .padding(14)
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.36))
         .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var hasReadonlyMetadata: Bool {
+        !qqMusicSongMid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !metadataSource.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || metadataFetchedAt != nil
+            || metadataConfidence != nil
+    }
+
+    private func batchLabeledField(
+        _ label: String,
+        prompt: String,
+        text: Binding<String>
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            TextField(prompt, text: text)
+                .textFieldStyle(.roundedBorder)
+        }
+    }
+
+    private func batchReadonlyRow(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(label)
+                .frame(width: 118, alignment: .leading)
+                .foregroundStyle(.tertiary)
+            Text(value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未记录" : value)
+                .lineLimit(1)
+                .textSelection(.enabled)
+        }
+    }
+
+    private func batchScrollingEditor(
+        _ label: String,
+        prompt: String,
+        text: Binding<String>,
+        height: CGFloat,
+        font: Font
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            ZStack(alignment: .topLeading) {
+                TextEditor(text: text)
+                    .font(font)
+                    .lineSpacing(4)
+                    .padding(8)
+                    .frame(height: height)
+                    .scrollContentBackground(.hidden)
+
+                if text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text(prompt)
+                        .foregroundStyle(.tertiary)
+                        .font(.callout)
+                        .padding(.horizontal, 13)
+                        .padding(.vertical, 16)
+                        .allowsHitTesting(false)
+                }
+            }
+            .background(.thinMaterial)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Color.secondary.opacity(0.22), lineWidth: 1)
+            }
+            .padding(.trailing, 18)
+        }
     }
 
     private var amllPreviewPanel: some View {
@@ -620,6 +721,14 @@ struct BatchTrackEditSheet: View {
         artist = track.artist
         album = track.album
         trackDescription = track.userDescription
+        genreTagsText = track.genreTags.joined(separator: ", ")
+        language = track.language
+        labelOrCompany = track.labelOrCompany
+        releaseDateText = formatDateForEditing(track.releaseDate)
+        qqMusicSongMid = track.qqMusicSongMid ?? ""
+        metadataSource = track.metadataSource ?? ""
+        metadataFetchedAt = track.metadataFetchedAt
+        metadataConfidence = track.metadataConfidence
         lyricsText = track.loadTTMLLyricsIfNeeded() ?? track.loadLyricsIfNeeded() ?? ""
         artworkData = track.loadArtworkDataIfNeeded()
         lyricsTimeOffsetMs = track.lyricsTimeOffsetMs
@@ -703,12 +812,17 @@ struct BatchTrackEditSheet: View {
 
         track.title = title.isEmpty ? NSLocalizedString("library.unknown_title", comment: "") : title
         track.artist = artist.isEmpty ? NSLocalizedString("library.unknown_artist", comment: "") : artist
-        track.album = album.isEmpty ? NSLocalizedString("library.unknown_album", comment: "") : album
+        track.album = album.trimmingCharacters(in: .whitespacesAndNewlines)
         track.userDescription = trackDescription
+        track.genreTags = parsedGenreTags(from: genreTagsText)
+        track.language = language.trimmingCharacters(in: .whitespacesAndNewlines)
+        track.labelOrCompany = labelOrCompany.trimmingCharacters(in: .whitespacesAndNewlines)
+        track.releaseDate = parseEditingDate(releaseDateText)
         track.artworkData = artworkData
         track.lyricsTimeOffsetMs = lyricsTimeOffsetMs
 
         TrackLyricsDraft.assign(editorText: lyricsText, to: track)
+        refreshLiveLyricsIfEditingCurrentTrack(track, reason: "\(reason) draft")
 
         Task {
             await libraryVM.saveTrackEdits(
@@ -716,6 +830,7 @@ struct BatchTrackEditSheet: View {
                 mode: changeSet.persistenceMode,
                 reason: persistenceReason(for: changeSet.persistenceMode, preferredReason: reason)
             )
+            refreshLiveLyricsIfEditingCurrentTrack(track, reason: reason)
         }
         markTrackCompleted(track: track, edited: true)
         statusMessage = "已保存：\(track.title)"
@@ -742,14 +857,17 @@ struct BatchTrackEditSheet: View {
             title.isEmpty ? NSLocalizedString("library.unknown_title", comment: "") : title
         let savedArtist =
             artist.isEmpty ? NSLocalizedString("library.unknown_artist", comment: "") : artist
-        let savedAlbum =
-            album.isEmpty ? NSLocalizedString("library.unknown_album", comment: "") : album
+        let savedAlbum = album.trimmingCharacters(in: .whitespacesAndNewlines)
 
         let metadataChanged =
             savedTitle != track.title
             || savedArtist != track.artist
             || savedAlbum != track.album
             || trackDescription != track.userDescription
+            || parsedGenreTags(from: genreTagsText) != track.genreTags
+            || language.trimmingCharacters(in: .whitespacesAndNewlines) != track.language
+            || labelOrCompany.trimmingCharacters(in: .whitespacesAndNewlines) != track.labelOrCompany
+            || parseEditingDate(releaseDateText) != track.releaseDate
             || abs(lyricsTimeOffsetMs - track.lyricsTimeOffsetMs) > 0.000_1
 
         let lyricsChanged = TrackLyricsDraft.differs(from: track, editorText: lyricsText)
@@ -862,6 +980,17 @@ struct BatchTrackEditSheet: View {
         )
     }
 
+    private func refreshLiveLyricsIfEditingCurrentTrack(_ track: Track, reason: String) {
+        guard playerVM.currentTrack?.id == track.id else { return }
+        lyricsVM.ensureAMLLLoaded(
+            track: track,
+            currentTime: playerVM.currentTime,
+            isPlaying: playerVM.isPlaying,
+            reason: reason,
+            forceLyricsReload: true
+        )
+    }
+
     private func handlePlaybackTrackChange(_ newTrackID: UUID?) {
         guard let track = currentTrack, newTrackID == track.id else { return }
         syncAMLLPreview(reason: "播放轨道更新", forceLyricsReload: false)
@@ -886,7 +1015,44 @@ struct BatchTrackEditSheet: View {
     }
 
     private func displayAlbum(_ raw: String) -> String {
-        raw.isEmpty ? NSLocalizedString("library.unknown_album", comment: "") : raw
+        LibraryNormalization.displayAlbum(raw)
+    }
+
+    private func parsedGenreTags(from text: String) -> [String] {
+        var seen = Set<String>()
+        return text
+            .split { $0 == "," || $0 == "，" || $0 == ";" || $0 == "；" }
+            .compactMap { part in
+                let tag = String(part).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !tag.isEmpty, seen.insert(tag).inserted else { return nil }
+                return tag
+            }
+    }
+
+    private func formatDateForEditing(_ date: Date?) -> String {
+        guard let date else { return "" }
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
+    }
+
+    private func parseEditingDate(_ text: String) -> Date? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.date(from: trimmed)
+    }
+
+    private func formatMetadataDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
     }
 
     private func ensurePreviewLyricsViewModel() {

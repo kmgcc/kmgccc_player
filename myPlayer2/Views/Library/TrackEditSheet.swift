@@ -29,6 +29,14 @@ struct TrackEditSheet: View {
     @State private var artist: String = ""
     @State private var album: String = ""
     @State private var trackDescription: String = ""
+    @State private var genreTagsText: String = ""
+    @State private var language: String = ""
+    @State private var labelOrCompany: String = ""
+    @State private var releaseDateText: String = ""
+    @State private var qqMusicSongMid: String = ""
+    @State private var metadataSource: String = ""
+    @State private var metadataFetchedAt: Date?
+    @State private var metadataConfidence: Double?
     @State private var lyricsText: String = ""
     @State private var artworkData: Data?
     @State private var lyricsTimeOffsetMs: Double = 0
@@ -62,16 +70,29 @@ struct TrackEditSheet: View {
             allowsDescriptionEditing: true,
             canSave: trackEditChangeSet.hasChanges,
             saveTitle: "edit.track.save",
+            descriptionFallback: albumDescriptionFallback,
+            showsDetailedMetadata: true,
             onSave: {
                 saveChanges()
             },
             onCancel: {},
             onClearOverride: nil,
             onRestoreAutomatic: nil,
+            onFetchMetadata: {
+                await fetchMissingMetadataIntoDraft()
+            },
             title: $title,
             artist: $artist,
             album: $album,
             trackDescription: $trackDescription,
+            genreTagsText: $genreTagsText,
+            language: $language,
+            labelOrCompany: $labelOrCompany,
+            releaseDateText: $releaseDateText,
+            qqMusicSongMid: $qqMusicSongMid,
+            metadataSource: $metadataSource,
+            metadataFetchedAt: $metadataFetchedAt,
+            metadataConfidence: $metadataConfidence,
             lyricsText: $lyricsText,
             artworkData: $artworkData,
             lyricsTimeOffsetMs: $lyricsTimeOffsetMs
@@ -377,9 +398,21 @@ struct TrackEditSheet: View {
         artist = track.artist
         album = track.album
         trackDescription = track.userDescription
+        genreTagsText = track.genreTags.joined(separator: ", ")
+        language = track.language
+        labelOrCompany = track.labelOrCompany
+        releaseDateText = formatDateForEditing(track.releaseDate)
+        qqMusicSongMid = track.qqMusicSongMid ?? ""
+        metadataSource = track.metadataSource ?? ""
+        metadataFetchedAt = track.metadataFetchedAt
+        metadataConfidence = track.metadataConfidence
         lyricsText = track.loadTTMLLyricsIfNeeded() ?? track.loadLyricsIfNeeded() ?? ""
         artworkData = track.loadArtworkDataIfNeeded()
         lyricsTimeOffsetMs = track.lyricsTimeOffsetMs
+    }
+
+    private var albumDescriptionFallback: String? {
+        libraryVM.albumEntries.first(where: { $0.canonicalKey == track.albumGroupKey })?.description
     }
 
     private var trackEditChangeSet: TrackEditChangeSet {
@@ -387,14 +420,21 @@ struct TrackEditSheet: View {
             title.isEmpty ? NSLocalizedString("library.unknown_title", comment: "") : title
         let savedArtist =
             artist.isEmpty ? NSLocalizedString("library.unknown_artist", comment: "") : artist
-        let savedAlbum =
-            album.isEmpty ? NSLocalizedString("library.unknown_album", comment: "") : album
+        let savedAlbum = album.trimmingCharacters(in: .whitespacesAndNewlines)
 
         let metadataChanged =
             savedTitle != track.title
             || savedArtist != track.artist
             || savedAlbum != track.album
             || trackDescription != track.userDescription
+            || parsedGenreTags(from: genreTagsText) != track.genreTags
+            || language.trimmingCharacters(in: .whitespacesAndNewlines) != track.language
+            || labelOrCompany.trimmingCharacters(in: .whitespacesAndNewlines) != track.labelOrCompany
+            || parseEditingDate(releaseDateText) != track.releaseDate
+            || optionalTrimmed(qqMusicSongMid) != track.qqMusicSongMid
+            || optionalTrimmed(metadataSource) != track.metadataSource
+            || metadataFetchedAt != track.metadataFetchedAt
+            || metadataConfidence != track.metadataConfidence
             || abs(lyricsTimeOffsetMs - track.lyricsTimeOffsetMs) > 0.000_1
 
         let lyricsChanged = TrackLyricsDraft.differs(from: track, editorText: lyricsText)
@@ -437,12 +477,21 @@ struct TrackEditSheet: View {
             title.isEmpty ? NSLocalizedString("library.unknown_title", comment: "") : title
         track.artist =
             artist.isEmpty ? NSLocalizedString("library.unknown_artist", comment: "") : artist
-        track.album =
-            album.isEmpty ? NSLocalizedString("library.unknown_album", comment: "") : album
+        track.album = album.trimmingCharacters(in: .whitespacesAndNewlines)
         track.userDescription = trackDescription
+        track.genreTags = parsedGenreTags(from: genreTagsText)
+        track.language = language.trimmingCharacters(in: .whitespacesAndNewlines)
+        track.labelOrCompany = labelOrCompany.trimmingCharacters(in: .whitespacesAndNewlines)
+        track.releaseDate = parseEditingDate(releaseDateText)
+        track.qqMusicSongMid = optionalTrimmed(qqMusicSongMid)
+        track.metadataSource = optionalTrimmed(metadataSource)
+        track.metadataFetchedAt = metadataFetchedAt
+        track.metadataConfidence = metadataConfidence
         TrackLyricsDraft.assign(editorText: lyricsText, to: track)
         track.artworkData = artworkData
         track.lyricsTimeOffsetMs = lyricsTimeOffsetMs
+
+        refreshLiveLyricsIfEditingCurrentTrack(reason: "track info saved draft")
 
         Task {
             await libraryVM.saveTrackEdits(
@@ -451,16 +500,97 @@ struct TrackEditSheet: View {
                 reason: reason(for: changeSet.persistenceMode, preferredReason: preferredReason)
             )
             print("[TrackEditSheet] Saved changes for: \(track.title)")
-            if playerVM.currentTrack?.id == track.id {
-                lyricsVM.ensureAMLLLoaded(
-                    track: track,
-                    currentTime: playerVM.currentTime,
-                    isPlaying: playerVM.isPlaying,
-                    reason: "track info saved",
-                    forceLyricsReload: true
-                )
-            }
+            refreshLiveLyricsIfEditingCurrentTrack(reason: "track info saved")
         }
+    }
+
+    private func refreshLiveLyricsIfEditingCurrentTrack(reason: String) {
+        guard playerVM.currentTrack?.id == track.id else { return }
+        lyricsVM.ensureAMLLLoaded(
+            track: track,
+            currentTime: playerVM.currentTime,
+            isPlaying: playerVM.isPlaying,
+            reason: reason,
+            forceLyricsReload: true
+        )
+    }
+
+    @MainActor
+    private func fetchMissingMetadataIntoDraft() async -> Bool {
+        guard let detail = await libraryVM.fetchTrackMetadataDetail(track) else { return false }
+        guard detail.confidence >= 0.70 else { return false }
+
+        var changed = false
+        if LibraryNormalization.isUnknownAlbum(album) {
+            fillString(&album, with: detail.album, changed: &changed)
+        }
+        fillString(&trackDescription, with: detail.description, changed: &changed)
+        if genreTagsText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !detail.genreTags.isEmpty {
+            genreTagsText = detail.genreTags.joined(separator: ", ")
+            changed = true
+        }
+        fillString(&language, with: detail.language, changed: &changed)
+        fillString(&labelOrCompany, with: detail.labelOrCompany, changed: &changed)
+        if releaseDateText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let releaseDate = detail.releaseDate {
+            releaseDateText = formatDateForEditing(releaseDate)
+            changed = true
+        }
+        fillString(&qqMusicSongMid, with: detail.qqMusicSongMid, changed: &changed)
+        fillString(&metadataSource, with: detail.source.rawValue, changed: &changed)
+        if metadataFetchedAt == nil {
+            metadataFetchedAt = detail.fetchedAt ?? Date()
+            changed = true
+        }
+        if metadataConfidence == nil {
+            metadataConfidence = detail.confidence
+            changed = true
+        }
+        return changed
+    }
+
+    private func fillString(_ target: inout String, with candidate: String?, changed: inout Bool) {
+        guard target.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let candidate = candidate?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !candidate.isEmpty
+        else { return }
+        target = candidate
+        changed = true
+    }
+
+    private func parsedGenreTags(from text: String) -> [String] {
+        var seen = Set<String>()
+        return text
+            .split { $0 == "," || $0 == "，" || $0 == ";" || $0 == "；" }
+            .compactMap { part in
+                let tag = String(part).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !tag.isEmpty, seen.insert(tag).inserted else { return nil }
+                return tag
+            }
+    }
+
+    private func optionalTrimmed(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func formatDateForEditing(_ date: Date?) -> String {
+        guard let date else { return "" }
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
+    }
+
+    private func parseEditingDate(_ text: String) -> Date? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.date(from: trimmed)
     }
 
     private func handleArtworkImport(_ result: Result<[URL], Error>) {

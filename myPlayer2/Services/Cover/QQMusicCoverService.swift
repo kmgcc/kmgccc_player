@@ -343,9 +343,12 @@ actor QQMusicCoverService {
     private func readMetadataCache(for key: String) -> [QQMusicArtworkCandidate]? {
         let url = metadataCacheDirectory().appendingPathComponent("\(key).json")
         guard let data = try? Data(contentsOf: url),
-              let entry = try? JSONDecoder().decode(MetadataCacheEntry.self, from: data),
-              Date().timeIntervalSince(entry.fetchedAt) <= metadataTTL
+              let entry = try? JSONDecoder().decode(MetadataCacheEntry.self, from: data)
         else {
+            return nil
+        }
+        if Date().timeIntervalSince(entry.fetchedAt) > metadataTTL {
+            try? FileManager.default.removeItem(at: url)
             return nil
         }
         return entry.candidates

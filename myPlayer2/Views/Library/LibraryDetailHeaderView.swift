@@ -74,6 +74,8 @@ struct LibraryDetailHeaderView: View {
     @State private var isImportingArtwork = false
     @State private var isArtworkActionInFlight = false
     @State private var lastArtistAutofillIdentity: String?
+    @State private var isShowingArtistInfo = false
+    @State private var isShowingAlbumInfo = false
 
     var body: some View {
         let _ = LyricsRuntimeProfile.markBody("LibraryDetailHeaderView.body")
@@ -93,14 +95,16 @@ struct LibraryDetailHeaderView: View {
                     descriptionEditor
                     if case .album = config { yearEditor }
                 } else {
-                    descriptionReadView
+                    if hasReadableDescription {
+                        descriptionReadView
+                    }
                 }
                 
                 Spacer()
                 
                 headerButtonsView
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, minHeight: 220, maxHeight: 220, alignment: .leading)
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 20)
@@ -113,6 +117,22 @@ struct LibraryDetailHeaderView: View {
         }
         .task(id: config.artworkIdentity) {
             await handleAutomaticArtistArtworkFillIfNeeded()
+        }
+        .sheet(isPresented: $isShowingArtistInfo) {
+            if case .artist(let entry, _) = config {
+                ArtistInfoEditSheet(entry: entry) {
+                    onArtworkMutation()
+                }
+                .presentationSizing(.page)
+            }
+        }
+        .sheet(isPresented: $isShowingAlbumInfo) {
+            if case .album(let entry, _) = config {
+                AlbumInfoEditSheet(entry: entry) {
+                    onArtworkMutation()
+                }
+                .presentationSizing(.page)
+            }
         }
     }
 
@@ -287,8 +307,13 @@ struct LibraryDetailHeaderView: View {
             Text(formatDuration(dur))
                 .font(.caption)
                 .foregroundStyle(.tertiary)
-        case .artist:
-            EmptyView()
+        case .artist(let entry, _):
+            let parts = buildArtistMetaParts(entry: entry)
+            if !parts.isEmpty {
+                Text(parts.joined(separator: " · "))
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
         case .album(let entry, let stats):
             let parts = buildAlbumMetaParts(entry: entry, stats: stats)
             Text(parts.joined(separator: " · "))
@@ -297,9 +322,25 @@ struct LibraryDetailHeaderView: View {
         }
     }
 
+    private func buildArtistMetaParts(entry: ArtistEntry) -> [String] {
+        var parts: [String] = []
+        parts.append(contentsOf: entry.genreTags.prefix(3))
+        if !entry.region.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            parts.append(entry.region)
+        }
+        if !entry.foreignName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            parts.append(entry.foreignName)
+        }
+        return parts
+    }
+
     private func buildAlbumMetaParts(entry: AlbumEntry, stats: AlbumDerivedStats) -> [String] {
         var parts: [String] = []
-        if let year = entry.year { parts.append(String(year)) }
+        if let year = entry.releaseYear ?? entry.year { parts.append(String(year)) }
+        if !entry.albumType.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            parts.append(entry.albumType)
+        }
+        parts.append(contentsOf: entry.genreTags.prefix(3))
         let n = stats.trackCount
         parts.append(n == 1 ? "1 首歌曲" : "\(n) 首歌曲")
         parts.append(formatDuration(stats.totalDuration))
@@ -317,11 +358,28 @@ struct LibraryDetailHeaderView: View {
     }
 
     private var descriptionReadView: some View {
-        Text(currentDescription)
-            .font(.callout)
-            .foregroundStyle(.secondary)
-            .lineLimit(4)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        ScrollView(.vertical, showsIndicators: true) {
+            Text(currentDescription)
+                .font(.callout)
+                .lineSpacing(0)
+                .foregroundStyle(.secondary)
+                .lineLimit(nil)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(height: headerDescriptionHeight, alignment: .top)
+        .scrollClipDisabled(false)
+        .clipped()
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var headerDescriptionHeight: CGFloat {
+        let font = NSFont.preferredFont(forTextStyle: .callout)
+        let lineHeight = NSLayoutManager().defaultLineHeight(for: font)
+        return ceil(lineHeight * 4 + 1)
+    }
+
+    private var hasReadableDescription: Bool {
+        !currentDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var descriptionEditor: some View {
@@ -370,12 +428,46 @@ struct LibraryDetailHeaderView: View {
             buttonHeight: buttonHeight,
             symbolName: "pencil"
         ) {
-            if isEditing { commitEdits() } else { beginEditing() }
+            if canEditInfoFromArtwork {
+                openInfoEditor()
+            } else {
+                if isEditing { commitEdits() } else { beginEditing() }
+            }
         }
+        .help(headerEditHelp)
     }
 
     private var buttonHeight: CGFloat {
         GlassStyleTokens.headerControlHeight
+    }
+
+    private var headerEditHelp: String {
+        switch config {
+        case .artist, .album:
+            return "编辑信息"
+        case .playlist:
+            return isEditing ? "保存" : "编辑"
+        }
+    }
+
+    private var canEditInfoFromArtwork: Bool {
+        switch config {
+        case .artist, .album:
+            return true
+        case .playlist:
+            return false
+        }
+    }
+
+    private func openInfoEditor() {
+        switch config {
+        case .artist:
+            isShowingArtistInfo = true
+        case .album:
+            isShowingAlbumInfo = true
+        case .playlist:
+            break
+        }
     }
 
     private func beginEditing() {
@@ -662,6 +754,763 @@ struct LibraryDetailHeaderView: View {
         }
         return String(format: "%d:%02d", m, s)
     }
+}
+
+struct ArtistInfoEditSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(LibraryViewModel.self) private var libraryVM
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    let entry: ArtistEntry
+    let onSaved: () -> Void
+
+    @State private var displayName = ""
+    @State private var description = ""
+    @State private var genreTagsText = ""
+    @State private var region = ""
+    @State private var foreignName = ""
+    @State private var qqMusicSingerMid = ""
+    @State private var metadataSource = ""
+    @State private var metadataFetchedAt: Date?
+    @State private var metadataConfidence: Double?
+    @State private var artworkData: Data?
+    @State private var isImportingArtwork = false
+    @State private var isMetadataLookupInFlight = false
+    @State private var metadataMessage: String?
+    @State private var isArtworkLookupInFlight = false
+    @State private var isArtworkGenerationInFlight = false
+    @State private var artworkMessage: String?
+    @State private var artworkCandidates: [CoverCandidate] = []
+    @State private var selectedArtworkCandidate: CoverCandidate?
+
+    var body: some View {
+        metadataEntitySheet(
+            title: "编辑艺人信息",
+            systemImage: "person.crop.circle",
+            canSave: hasChanges,
+            onCancel: { dismiss() },
+            onSave: save
+        ) {
+            artworkEditor(
+                data: artworkData,
+                isLoading: isArtworkLookupInFlight,
+                error: artworkMessage,
+                candidates: artworkCandidates,
+                selectedCandidate: selectedArtworkCandidate,
+                chooseImage: { isImportingArtwork = true },
+                searchArtwork: { searchArtwork() },
+                generateArtworkTitle: "生成封面",
+                isGeneratingArtwork: isArtworkGenerationInFlight,
+                generateArtwork: { generateArtwork() },
+                selectCandidate: { candidate in
+                    selectedArtworkCandidate = candidate
+                    artworkData = candidate.imageData
+                }
+            )
+
+            Divider()
+
+            labeledField("艺人名称", prompt: "艺人名称", text: $displayName)
+            labeledEditor("介绍", prompt: "添加艺人介绍…", text: $description)
+            labeledField("流派 / 标签", prompt: "用逗号分隔", text: $genreTagsText)
+            labeledField("地区", prompt: "地区", text: $region)
+            labeledField("外文名", prompt: "外文名", text: $foreignName)
+
+            metadataLookupButton(isLoading: isMetadataLookupInFlight, message: metadataMessage) {
+                fetchMetadata()
+            }
+
+            readonlyMetadataBlock(rows: [
+                ("QQMusic Singer MID", qqMusicSingerMid),
+                ("来源", metadataSource),
+                ("获取时间", metadataFetchedAt.map(formatMetadataDate) ?? ""),
+                ("置信度", metadataConfidence.map { String(format: "%.2f", $0) } ?? ""),
+            ])
+        }
+        .tint(themeStore.accentColor)
+        .onAppear(perform: load)
+        .fileImporter(
+            isPresented: $isImportingArtwork,
+            allowedContentTypes: [UTType.jpeg, UTType.png, UTType.heic, UTType.tiff],
+            allowsMultipleSelection: false
+        ) { result in
+            importArtwork(result)
+        }
+    }
+
+    private var hasChanges: Bool {
+        displayName.trimmingCharacters(in: .whitespacesAndNewlines) != entry.displayName
+            || description != entry.description
+            || parsedGenreTags(from: genreTagsText) != entry.genreTags
+            || region.trimmingCharacters(in: .whitespacesAndNewlines) != entry.region
+            || foreignName.trimmingCharacters(in: .whitespacesAndNewlines) != entry.foreignName
+            || optionalTrimmed(qqMusicSingerMid) != entry.qqMusicSingerMid
+            || optionalTrimmed(metadataSource) != entry.metadataSource
+            || metadataFetchedAt != entry.metadataFetchedAt
+            || metadataConfidence != entry.metadataConfidence
+            || artworkData != entry.artworkData
+    }
+
+    private func load() {
+        displayName = entry.displayName
+        description = entry.description
+        genreTagsText = entry.genreTags.joined(separator: ", ")
+        region = entry.region
+        foreignName = entry.foreignName
+        qqMusicSingerMid = entry.qqMusicSingerMid ?? ""
+        metadataSource = entry.metadataSource ?? ""
+        metadataFetchedAt = entry.metadataFetchedAt
+        metadataConfidence = entry.metadataConfidence
+        artworkData = entry.artworkData
+    }
+
+    private func currentDraft() -> ArtistEntry {
+        var draft = entry
+        let trimmedName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedName.isEmpty {
+            draft.displayName = trimmedName
+        }
+        draft.description = description
+        draft.genreTags = parsedGenreTags(from: genreTagsText)
+        draft.region = region.trimmingCharacters(in: .whitespacesAndNewlines)
+        draft.foreignName = foreignName.trimmingCharacters(in: .whitespacesAndNewlines)
+        draft.qqMusicSingerMid = optionalTrimmed(qqMusicSingerMid)
+        draft.metadataSource = optionalTrimmed(metadataSource)
+        draft.metadataFetchedAt = metadataFetchedAt
+        draft.metadataConfidence = metadataConfidence
+        draft.artworkData = artworkData
+        draft.artworkFileName = artworkData == nil ? nil : "artwork.png"
+        return draft
+    }
+
+    private func fetchMetadata() {
+        isMetadataLookupInFlight = true
+        metadataMessage = nil
+        Task {
+            let draft = currentDraft()
+            let updated = await libraryVM.fetchMissingArtistMetadataDraft(draft)
+            await MainActor.run {
+                isMetadataLookupInFlight = false
+                guard let updated else {
+                    metadataMessage = hasRecordedMetadataSource
+                        ? "QQMusic 未返回介绍/标签等字段"
+                        : "没有可补全字段"
+                    return
+                }
+                description = updated.description
+                genreTagsText = updated.genreTags.joined(separator: ", ")
+                region = updated.region
+                foreignName = updated.foreignName
+                qqMusicSingerMid = updated.qqMusicSingerMid ?? ""
+                metadataSource = updated.metadataSource ?? ""
+                metadataFetchedAt = updated.metadataFetchedAt
+                metadataConfidence = updated.metadataConfidence
+                metadataMessage = "已补全缺失字段"
+            }
+        }
+    }
+
+    private func searchArtwork() {
+        isArtworkLookupInFlight = true
+        artworkMessage = nil
+        artworkCandidates = []
+        selectedArtworkCandidate = nil
+        Task {
+            let candidates = await libraryVM.searchArtistArtworkCandidates(currentDraft())
+            await MainActor.run {
+                isArtworkLookupInFlight = false
+                artworkCandidates = candidates
+                artworkMessage = candidates.isEmpty ? "没有找到可用封面" : nil
+            }
+        }
+    }
+
+    private func generateArtwork() {
+        guard !isArtworkGenerationInFlight else { return }
+        isArtworkGenerationInFlight = true
+        artworkMessage = nil
+        Task {
+            let artistTracks = libraryVM.allTracks.filter {
+                LibraryNormalization.containsArtist(entry.canonicalName, in: $0.artist)
+                    && $0.availability != .missing
+            }
+            let trackSources = artistTracks.map { $0.artistArtworkSource() }
+            let image = await ArtistArtworkGenerator.shared.generateArtwork(
+                artistName: entry.displayName,
+                trackSources: trackSources
+            )
+            await MainActor.run {
+                isArtworkGenerationInFlight = false
+                guard let pngData = image?.pngData() else {
+                    artworkMessage = "无法生成封面"
+                    return
+                }
+                artworkData = pngData
+                selectedArtworkCandidate = nil
+            }
+        }
+    }
+
+    private var hasRecordedMetadataSource: Bool {
+        !qqMusicSingerMid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !metadataSource.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || metadataFetchedAt != nil
+            || metadataConfidence != nil
+    }
+
+    private func save() {
+        let updated = currentDraft()
+        Task {
+            await libraryVM.saveArtistEdits(original: entry, updated: updated)
+            await MainActor.run {
+                onSaved()
+                dismiss()
+            }
+        }
+    }
+
+    private func importArtwork(_ result: Result<[URL], Error>) {
+        guard case .success(let urls) = result, let url = urls.first else { return }
+        let didStartAccess = url.startAccessingSecurityScopedResource()
+        defer { if didStartAccess { url.stopAccessingSecurityScopedResource() } }
+        guard let imported = normalizedImportedArtwork(from: url) else { return }
+        artworkData = imported.pngData
+        selectedArtworkCandidate = nil
+    }
+}
+
+struct AlbumInfoEditSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(LibraryViewModel.self) private var libraryVM
+    @Environment(CoverDownloadService.self) private var coverDownloadService
+    @Environment(NetEaseCoverService.self) private var netEaseCoverService
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    let entry: AlbumEntry
+    let onSaved: () -> Void
+
+    @State private var displayTitle = ""
+    @State private var description = ""
+    @State private var releaseYearText = ""
+    @State private var releaseDateText = ""
+    @State private var albumType = ""
+    @State private var genreTagsText = ""
+    @State private var language = ""
+    @State private var labelOrCompany = ""
+    @State private var qqMusicAlbumMid = ""
+    @State private var metadataSource = ""
+    @State private var metadataFetchedAt: Date?
+    @State private var metadataConfidence: Double?
+    @State private var artworkData: Data?
+    @State private var isImportingArtwork = false
+    @State private var isMetadataLookupInFlight = false
+    @State private var metadataMessage: String?
+    @State private var isArtworkGenerationInFlight = false
+    @State private var coverCoordinator: CoverSearchCoordinator?
+
+    var body: some View {
+        metadataEntitySheet(
+            title: "编辑专辑信息",
+            systemImage: "rectangle.stack",
+            canSave: hasChanges,
+            onCancel: { dismiss() },
+            onSave: save
+        ) {
+            artworkEditor(
+                data: artworkData,
+                isLoading: coverCoordinator?.isLoading == true,
+                error: coverCoordinator?.error,
+                candidates: coverCoordinator?.candidates ?? [],
+                selectedCandidate: coverCoordinator?.selectedForPreview,
+                chooseImage: { isImportingArtwork = true },
+                searchArtwork: { searchArtwork() },
+                generateArtworkTitle: "使用歌曲封面",
+                isGeneratingArtwork: isArtworkGenerationInFlight,
+                generateArtwork: { restoreDefaultArtworkIntoDraft() },
+                selectCandidate: { candidate in
+                    coverCoordinator?.selectForPreview(candidate)
+                    artworkData = candidate.imageData
+                }
+            )
+
+            Divider()
+
+            labeledField("专辑名称", prompt: "专辑名称", text: $displayTitle)
+            labeledEditor("介绍", prompt: "添加专辑介绍…", text: $description)
+            labeledField("发行年份", prompt: "YYYY", text: $releaseYearText)
+            labeledField("发行日期", prompt: "YYYY-MM-DD", text: $releaseDateText)
+            labeledField("专辑类型", prompt: "专辑类型", text: $albumType)
+            labeledField("流派 / 标签", prompt: "用逗号分隔", text: $genreTagsText)
+            labeledField("语言", prompt: "语言", text: $language)
+            labeledField("厂牌 / 公司", prompt: "厂牌或公司", text: $labelOrCompany)
+
+            metadataLookupButton(isLoading: isMetadataLookupInFlight, message: metadataMessage) {
+                fetchMetadata()
+            }
+
+            readonlyMetadataBlock(rows: [
+                ("QQMusic Album MID", qqMusicAlbumMid),
+                ("来源", metadataSource),
+                ("获取时间", metadataFetchedAt.map(formatMetadataDate) ?? ""),
+                ("置信度", metadataConfidence.map { String(format: "%.2f", $0) } ?? ""),
+            ])
+        }
+        .tint(themeStore.accentColor)
+        .onAppear {
+            load()
+            coverCoordinator = CoverSearchCoordinator(
+                coverDownloadService: coverDownloadService,
+                netEaseCoverService: netEaseCoverService
+            )
+        }
+        .onDisappear {
+            coverCoordinator?.cancelSearch()
+        }
+        .fileImporter(
+            isPresented: $isImportingArtwork,
+            allowedContentTypes: [UTType.jpeg, UTType.png, UTType.heic, UTType.tiff],
+            allowsMultipleSelection: false
+        ) { result in
+            importArtwork(result)
+        }
+    }
+
+    private var hasChanges: Bool {
+        displayTitle.trimmingCharacters(in: .whitespacesAndNewlines) != entry.displayTitle
+            || description != entry.description
+            || Int(releaseYearText.trimmingCharacters(in: .whitespacesAndNewlines)) != entry.releaseYear
+            || parseEditingDate(releaseDateText) != entry.releaseDate
+            || albumType.trimmingCharacters(in: .whitespacesAndNewlines) != entry.albumType
+            || parsedGenreTags(from: genreTagsText) != entry.genreTags
+            || language.trimmingCharacters(in: .whitespacesAndNewlines) != entry.language
+            || labelOrCompany.trimmingCharacters(in: .whitespacesAndNewlines) != entry.labelOrCompany
+            || optionalTrimmed(qqMusicAlbumMid) != entry.qqMusicAlbumMid
+            || optionalTrimmed(metadataSource) != entry.metadataSource
+            || metadataFetchedAt != entry.metadataFetchedAt
+            || metadataConfidence != entry.metadataConfidence
+            || artworkData != entry.artworkData
+    }
+
+    private func load() {
+        displayTitle = entry.displayTitle
+        description = entry.description
+        releaseYearText = entry.releaseYear.map(String.init) ?? entry.year.map(String.init) ?? ""
+        releaseDateText = formatDateForEditing(entry.releaseDate)
+        albumType = entry.albumType
+        genreTagsText = entry.genreTags.joined(separator: ", ")
+        language = entry.language
+        labelOrCompany = entry.labelOrCompany
+        qqMusicAlbumMid = entry.qqMusicAlbumMid ?? ""
+        metadataSource = entry.metadataSource ?? ""
+        metadataFetchedAt = entry.metadataFetchedAt
+        metadataConfidence = entry.metadataConfidence
+        artworkData = entry.artworkData
+    }
+
+    private func currentDraft() -> AlbumEntry {
+        var draft = entry
+        let trimmedTitle = displayTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let releaseYear = Int(releaseYearText.trimmingCharacters(in: .whitespacesAndNewlines))
+        if !trimmedTitle.isEmpty {
+            draft.displayTitle = trimmedTitle
+        }
+        draft.description = description
+        draft.year = releaseYear
+        draft.releaseYear = releaseYear
+        draft.releaseDate = parseEditingDate(releaseDateText)
+        draft.albumType = albumType.trimmingCharacters(in: .whitespacesAndNewlines)
+        draft.genreTags = parsedGenreTags(from: genreTagsText)
+        draft.language = language.trimmingCharacters(in: .whitespacesAndNewlines)
+        draft.labelOrCompany = labelOrCompany.trimmingCharacters(in: .whitespacesAndNewlines)
+        draft.qqMusicAlbumMid = optionalTrimmed(qqMusicAlbumMid)
+        draft.metadataSource = optionalTrimmed(metadataSource)
+        draft.metadataFetchedAt = metadataFetchedAt
+        draft.metadataConfidence = metadataConfidence
+        draft.artworkData = artworkData
+        draft.artworkFileName = artworkData == nil ? nil : "artwork.png"
+        return draft
+    }
+
+    private func fetchMetadata() {
+        isMetadataLookupInFlight = true
+        metadataMessage = nil
+        Task {
+            let draft = currentDraft()
+            let updated = await libraryVM.fetchMissingAlbumMetadataDraft(draft)
+            await MainActor.run {
+                isMetadataLookupInFlight = false
+                guard let updated else {
+                    metadataMessage = "没有可补全字段"
+                    return
+                }
+                description = updated.description
+                releaseYearText = updated.releaseYear.map(String.init) ?? updated.year.map(String.init) ?? ""
+                releaseDateText = formatDateForEditing(updated.releaseDate)
+                albumType = updated.albumType
+                genreTagsText = updated.genreTags.joined(separator: ", ")
+                language = updated.language
+                labelOrCompany = updated.labelOrCompany
+                qqMusicAlbumMid = updated.qqMusicAlbumMid ?? ""
+                metadataSource = updated.metadataSource ?? ""
+                metadataFetchedAt = updated.metadataFetchedAt
+                metadataConfidence = updated.metadataConfidence
+                metadataMessage = "已补全缺失字段"
+            }
+        }
+    }
+
+    private func searchArtwork() {
+        Task {
+            await coverCoordinator?.search(
+                artist: entry.primaryArtistDisplayName,
+                album: entry.displayTitle,
+                title: nil,
+                duration: nil
+            )
+        }
+    }
+
+    private func restoreDefaultArtworkIntoDraft() {
+        guard !isArtworkGenerationInFlight else { return }
+        isArtworkGenerationInFlight = true
+        metadataMessage = nil
+        Task {
+            let track = libraryVM.allTracks.first { $0.albumGroupKey == entry.canonicalKey }
+            let fallback = await track?.loadArtworkDataOffMainIfNeeded()
+            await MainActor.run {
+                isArtworkGenerationInFlight = false
+                guard let fallback, !fallback.isEmpty else {
+                    metadataMessage = "没有可用的歌曲封面"
+                    return
+                }
+                artworkData = fallback
+                coverCoordinator?.clear()
+                metadataMessage = "已使用歌曲封面，保存后生效"
+            }
+        }
+    }
+
+    private func save() {
+        let updated = currentDraft()
+        Task {
+            await libraryVM.saveAlbumEdits(original: entry, updated: updated)
+            await MainActor.run {
+                onSaved()
+                dismiss()
+            }
+        }
+    }
+
+    private func importArtwork(_ result: Result<[URL], Error>) {
+        guard case .success(let urls) = result, let url = urls.first else { return }
+        let didStartAccess = url.startAccessingSecurityScopedResource()
+        defer { if didStartAccess { url.stopAccessingSecurityScopedResource() } }
+        guard let imported = normalizedImportedArtwork(from: url) else { return }
+        artworkData = imported.pngData
+        coverCoordinator?.clear()
+    }
+}
+
+private func metadataEntitySheet<Content: View>(
+    title: String,
+    systemImage: String,
+    canSave: Bool,
+    onCancel: @escaping () -> Void,
+    onSave: @escaping () -> Void,
+    @ViewBuilder content: () -> Content
+) -> some View {
+    VStack(spacing: 0) {
+        HStack {
+            Label(title, systemImage: systemImage)
+                .font(.title2.bold())
+            Spacer()
+            GlassIconButton(
+                systemImage: "xmark",
+                size: GlassStyleTokens.headerControlHeight,
+                iconSize: GlassStyleTokens.headerStandardIconSize,
+                isPrimary: false,
+                help: "关闭",
+                surfaceVariant: .defaultToolbar
+            ) {
+                onCancel()
+            }
+        }
+        .padding()
+
+        Divider()
+
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                content()
+            }
+            .padding(24)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                clearCurrentTextInputFocus()
+            }
+        }
+
+        Divider()
+
+        HStack {
+            Button("取消") {
+                onCancel()
+            }
+            .buttonStyle(.bordered)
+            .clipShape(Capsule())
+            .keyboardShortcut(.escape)
+
+            Spacer()
+            Button("保存") {
+                onSave()
+            }
+            .buttonStyle(.borderedProminent)
+            .clipShape(Capsule())
+            .keyboardShortcut(.return)
+            .disabled(!canSave)
+        }
+        .padding()
+    }
+    .frame(width: 560, height: 720)
+}
+
+private func artworkEditor(
+    data: Data?,
+    isLoading: Bool,
+    error: String?,
+    candidates: [CoverCandidate],
+    selectedCandidate: CoverCandidate?,
+    chooseImage: @escaping () -> Void,
+    searchArtwork: @escaping () -> Void,
+    generateArtworkTitle: String?,
+    isGeneratingArtwork: Bool,
+    generateArtwork: (() -> Void)?,
+    selectCandidate: @escaping (CoverCandidate) -> Void
+) -> some View {
+    VStack(alignment: .leading, spacing: 12) {
+        Label("封面", systemImage: "photo")
+            .font(.headline)
+
+        HStack(spacing: 16) {
+            ZStack {
+                Group {
+                    if let data, let image = NSImage(data: data) {
+                        Image(nsImage: image)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                    } else {
+                        Image(systemName: "photo")
+                            .font(.largeTitle)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(width: 100, height: 100)
+                .background(.ultraThinMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+
+                if isLoading || isGeneratingArtwork {
+                    ProgressView()
+                        .controlSize(.small)
+                        .padding(8)
+                        .background(.regularMaterial)
+                        .clipShape(Circle())
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Button("选择图片", action: chooseImage)
+                    .buttonStyle(.bordered)
+                    .clipShape(Capsule())
+
+                Button("查找封面", action: searchArtwork)
+                    .buttonStyle(.bordered)
+                    .clipShape(Capsule())
+                    .disabled(isLoading)
+
+                if let generateArtworkTitle, let generateArtwork {
+                    Button(generateArtworkTitle, action: generateArtwork)
+                        .buttonStyle(.bordered)
+                        .clipShape(Capsule())
+                        .disabled(isGeneratingArtwork)
+                }
+
+                if let error {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
+
+            if !candidates.isEmpty {
+                CoverCandidateStripView(
+                    candidates: candidates,
+                    selectedCandidate: selectedCandidate,
+                    onSelect: selectCandidate
+                )
+            }
+        }
+    }
+}
+
+private func metadataLookupButton(
+    isLoading: Bool,
+    message: String?,
+    action: @escaping () -> Void
+) -> some View {
+    HStack {
+        Button {
+            action()
+        } label: {
+            Label("查找元数据", systemImage: "sparkle.magnifyingglass")
+        }
+        .buttonStyle(.bordered)
+        .clipShape(Capsule())
+        .disabled(isLoading)
+
+        if isLoading {
+            ProgressView()
+                .controlSize(.small)
+        }
+
+        if let message {
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+private func labeledField(_ label: String, prompt: String, text: Binding<String>) -> some View {
+    VStack(alignment: .leading, spacing: 4) {
+        Text(label)
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+        TextField(prompt, text: text)
+            .textFieldStyle(.roundedBorder)
+    }
+}
+
+private func labeledEditor(_ label: String, prompt: String, text: Binding<String>) -> some View {
+    VStack(alignment: .leading, spacing: 4) {
+        Text(label)
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+        ZStack(alignment: .topLeading) {
+            TextEditor(text: text)
+                .font(.body)
+                .lineSpacing(4)
+                .padding(8)
+                .frame(height: 148)
+                .scrollContentBackground(.hidden)
+            if text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(prompt)
+                    .foregroundStyle(.tertiary)
+                    .font(.body)
+                    .padding(.horizontal, 13)
+                    .padding(.vertical, 16)
+                    .allowsHitTesting(false)
+            }
+        }
+        .background(.thinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color.secondary.opacity(0.22), lineWidth: 1)
+        }
+        .padding(.trailing, 18)
+    }
+}
+
+private func readonlyMetadataBlock(rows: [(String, String)]) -> some View {
+    VStack(alignment: .leading, spacing: 6) {
+        Text("来源信息")
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+        ForEach(rows, id: \.0) { label, value in
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(label)
+                    .frame(width: 142, alignment: .leading)
+                    .foregroundStyle(.tertiary)
+                Text(value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未记录" : value)
+                    .textSelection(.enabled)
+            }
+        }
+    }
+    .font(.caption)
+    .foregroundStyle(.secondary)
+}
+
+private func normalizedImportedArtwork(from url: URL) -> NormalizedImportedHeaderArtwork? {
+    guard let originalImage = NSImage(contentsOf: url) else { return nil }
+    let size: CGFloat = 512
+    let originalSize = originalImage.size
+    let minDimension = min(originalSize.width, originalSize.height)
+    let cropRect = NSRect(
+        x: (originalSize.width - minDimension) / 2,
+        y: (originalSize.height - minDimension) / 2,
+        width: minDimension,
+        height: minDimension
+    )
+
+    let cropped = NSImage(size: NSSize(width: size, height: size))
+    cropped.lockFocus()
+    originalImage.draw(
+        in: NSRect(origin: .zero, size: NSSize(width: size, height: size)),
+        from: cropRect,
+        operation: .copy,
+        fraction: 1.0
+    )
+    cropped.unlockFocus()
+
+    guard let tiff = cropped.tiffRepresentation,
+          let rep = NSBitmapImageRep(data: tiff),
+          let pngData = rep.representation(using: .png, properties: [:])
+    else { return nil }
+
+    return NormalizedImportedHeaderArtwork(image: cropped, pngData: pngData)
+}
+
+private func parsedGenreTags(from text: String) -> [String] {
+    var seen = Set<String>()
+    return text
+        .split { $0 == "," || $0 == "，" || $0 == ";" || $0 == "；" }
+        .compactMap { part in
+            let tag = String(part).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !tag.isEmpty, seen.insert(tag).inserted else { return nil }
+            return tag
+        }
+}
+
+private func optionalTrimmed(_ value: String) -> String? {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
+}
+
+private func formatDateForEditing(_ date: Date?) -> String {
+    guard let date else { return "" }
+    let formatter = DateFormatter()
+    formatter.calendar = Calendar(identifier: .gregorian)
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.dateFormat = "yyyy-MM-dd"
+    return formatter.string(from: date)
+}
+
+private func parseEditingDate(_ text: String) -> Date? {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+    let formatter = DateFormatter()
+    formatter.calendar = Calendar(identifier: .gregorian)
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.dateFormat = "yyyy-MM-dd"
+    return formatter.date(from: trimmed)
+}
+
+private func formatMetadataDate(_ date: Date) -> String {
+    let formatter = DateFormatter()
+    formatter.dateStyle = .medium
+    formatter.timeStyle = .short
+    return formatter.string(from: date)
 }
 
 private struct HeaderArtworkProgressOverlay: View {

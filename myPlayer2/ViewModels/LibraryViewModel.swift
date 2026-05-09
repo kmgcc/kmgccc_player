@@ -788,6 +788,31 @@ final class LibraryViewModel {
         // selectedPlaylistId handled by didSet
     }
 
+    func navigateToArtist(for track: Track, uiState: UIStateViewModel? = nil) {
+        guard let artistKey = LibraryNormalization.artistComponents(track.artist).first?.canonicalName else {
+            return
+        }
+        let target = LibrarySelection.artist(artistKey)
+        if let uiState {
+            uiState.pushSelectionInHomeContext(target, libraryVM: self)
+        } else {
+            searchResetTrigger += 1
+            currentSelection = target
+        }
+    }
+
+    func navigateToAlbum(for track: Track, uiState: UIStateViewModel? = nil) {
+        let target = LibrarySelection.album(track.albumGroupKey)
+        selectedAlbumName = albumEntries.first(where: { $0.canonicalKey == track.albumGroupKey })?.displayTitle
+            ?? LibraryNormalization.displayAlbumGroupTitle(track.album)
+        if let uiState {
+            uiState.pushSelectionInHomeContext(target, libraryVM: self)
+        } else {
+            searchResetTrigger += 1
+            currentSelection = target
+        }
+    }
+
     func renamePlaylist(_ playlist: Playlist, name: String) async {
         await repository.renamePlaylist(playlist, name: name)
         await refresh()
@@ -943,6 +968,34 @@ final class LibraryViewModel {
         }
     }
 
+    func fetchMissingArtistMetadataDraft(
+        _ entry: ArtistEntry,
+        minimumConfidence: Double = 0.70
+    ) async -> ArtistEntry? {
+        do {
+            let detail = try await metadataDetailCoordinator.fetchArtistDetail(
+                name: entry.displayName,
+                singerMid: entry.qqMusicSingerMid
+            )
+            let result = metadataDetailCoordinator.applyMissingFields(
+                detail,
+                to: entry,
+                minimumConfidence: minimumConfidence
+            )
+            Log.info(
+                "[MetadataDetail] artist draft \(result.changed ? "applied" : "skipped") artist=\(entry.displayName) confidence=\(String(format: "%.2f", detail.confidence))",
+                category: .library
+            )
+            return result.changed ? result.value : nil
+        } catch {
+            Log.warning(
+                "[MetadataDetail] artist draft failed artist=\(entry.displayName) reason=\(error)",
+                category: .library
+            )
+            return nil
+        }
+    }
+
     @discardableResult
     func autofillArtistArtworkIfMissing(_ entry: ArtistEntry) async -> Bool {
         await applyArtistArtworkFromProviders(
@@ -959,6 +1012,21 @@ final class LibraryViewModel {
             allowReplacingExistingArtwork: true,
             reason: "manual-header"
         )
+    }
+
+    func searchArtistArtworkCandidates(_ entry: ArtistEntry) async -> [CoverCandidate] {
+        do {
+            return try await ArtistArtworkProviderCoordinator.shared.searchCandidates(
+                artist: entry.displayName,
+                limit: CoverLookupConfiguration.qqMusicCandidateLimit
+            )
+        } catch {
+            Log.warning(
+                "[QQMusicCover] artist manual candidates failed artist=\(entry.displayName) reason=\(error)",
+                category: .import
+            )
+            return []
+        }
     }
 
     @discardableResult
@@ -1096,6 +1164,35 @@ final class LibraryViewModel {
                 category: .library
             )
             return false
+        }
+    }
+
+    func fetchMissingAlbumMetadataDraft(
+        _ entry: AlbumEntry,
+        minimumConfidence: Double = 0.70
+    ) async -> AlbumEntry? {
+        do {
+            let detail = try await metadataDetailCoordinator.fetchAlbumDetail(
+                album: entry.displayTitle,
+                artist: entry.primaryArtistDisplayName,
+                albumMid: entry.qqMusicAlbumMid
+            )
+            let result = metadataDetailCoordinator.applyMissingFields(
+                detail,
+                to: entry,
+                minimumConfidence: minimumConfidence
+            )
+            Log.info(
+                "[MetadataDetail] album draft \(result.changed ? "applied" : "skipped") album=\(entry.displayTitle) confidence=\(String(format: "%.2f", detail.confidence))",
+                category: .library
+            )
+            return result.changed ? result.value : nil
+        } catch {
+            Log.warning(
+                "[MetadataDetail] album draft failed album=\(entry.displayTitle) reason=\(error)",
+                category: .library
+            )
+            return nil
         }
     }
 
@@ -1293,6 +1390,34 @@ final class LibraryViewModel {
                 category: .library
             )
             return false
+        }
+    }
+
+    func fetchTrackMetadataDetail(_ track: Track) async -> TrackMetadataDetail? {
+        guard let current = allTracks.first(where: { $0.id == track.id }) else {
+            Log.warning(
+                "[MetadataDetail] track detail stale track=\(track.title)",
+                category: .library
+            )
+            return nil
+        }
+        do {
+            let duration = current.duration.isFinite && current.duration > 0
+                ? Int(current.duration.rounded())
+                : nil
+            return try await metadataDetailCoordinator.fetchTrackDetail(
+                title: current.title,
+                artist: current.artist,
+                album: current.album,
+                songMid: current.qqMusicSongMid,
+                duration: duration
+            )
+        } catch {
+            Log.warning(
+                "[MetadataDetail] track detail failed track=\(current.title) reason=\(error)",
+                category: .library
+            )
+            return nil
         }
     }
 
