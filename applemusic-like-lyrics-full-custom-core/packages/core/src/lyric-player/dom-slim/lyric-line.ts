@@ -1,5 +1,6 @@
 import bezier from "bezier-easing";
 import type { LyricLine, LyricWord } from "../../interfaces.ts";
+import { isCJK } from "../../utils/is-cjk.ts";
 import { chunkAndSplitLyricWords } from "../../utils/lyric-split-words.ts";
 import {
 	createMatrix4,
@@ -254,10 +255,15 @@ export class LyricLineEl extends LyricLineBase {
 		this.clearExitHighlightAnimations();
 		const inactiveOpacity = this.getDiscreteInactiveOpacity();
 		const fadeDuration = 280;
+		const currentTime = this.lyricPlayer.getCurrentTime?.() ?? this.lyricLine.endTime;
 
 		for (const word of this.splittedWords) {
 			for (const animation of word.maskAnimations) {
 				animation.pause();
+			}
+			if (currentTime < this.getDiscreteHighlightStartTime(word) - 16) {
+				word.mainElement.style.opacity = `${inactiveOpacity}`;
+				continue;
 			}
 			const currentOpacity = Number.parseFloat(
 				getComputedStyle(word.mainElement).opacity,
@@ -265,7 +271,10 @@ export class LyricLineEl extends LyricLineBase {
 			const fromOpacity = Number.isFinite(currentOpacity)
 				? currentOpacity
 				: 1;
-			if (fromOpacity <= inactiveOpacity + 0.01) continue;
+			if (fromOpacity <= inactiveOpacity + 0.01) {
+				word.mainElement.style.opacity = `${inactiveOpacity}`;
+				continue;
+			}
 			const animation = word.mainElement.animate(
 				[
 					{ opacity: fromOpacity },
@@ -487,6 +496,9 @@ export class LyricLineEl extends LyricLineBase {
 					.reduce((a, b) => a || b, LyricLineBase.shouldEmphasize(merged));
 				const wrapperWordEl = document.createElement("span");
 				wrapperWordEl.classList.add(styles.emphasizeWrapper);
+				const shouldGroupDiscreteHighlight =
+					this.lyricPlayer.getWordHighlightMode() !== "discrete" ||
+					!isCJK(merged.word);
 				const characterElements: HTMLElement[] = [];
 				for (const word of chunk) {
 					const mainWordEl = document.createElement("span");
@@ -511,8 +523,12 @@ export class LyricLineEl extends LyricLineBase {
 							// elementAnimations: [this.initFloatAnimation(word, mainWordEl)],
 							elementAnimations: [], // this.initFloatAnimation(word, mainWordEl)
 							maskAnimations: [],
-							highlightStartTime: merged.startTime,
-							highlightEndTime: merged.endTime,
+							highlightStartTime: shouldGroupDiscreteHighlight
+								? merged.startTime
+								: word.startTime,
+							highlightEndTime: shouldGroupDiscreteHighlight
+								? merged.endTime
+								: word.endTime,
 							width: 0,
 							height: 0,
 							padding: 0,
@@ -528,8 +544,12 @@ export class LyricLineEl extends LyricLineBase {
 							// elementAnimations: [this.initFloatAnimation(word, mainWordEl)],
 							elementAnimations: [], // this.initFloatAnimation(word, mainWordEl)
 							maskAnimations: [],
-							highlightStartTime: merged.startTime,
-							highlightEndTime: merged.endTime,
+							highlightStartTime: shouldGroupDiscreteHighlight
+								? merged.startTime
+								: word.startTime,
+							highlightEndTime: shouldGroupDiscreteHighlight
+								? merged.endTime
+								: word.endTime,
 							width: 0,
 							height: 0,
 							padding: 0,

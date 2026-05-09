@@ -34,10 +34,10 @@
         ._lyricLine_1jop6_6 {
             overflow: visible;
         }
-        .amll-lyric-player [class*="_lyricLine_"]:hover,
-        .amll-lyric-player [class*="_lyricLine_"]:active {
-            background-color: transparent !important;
-        }
+        /* Note: CSS :hover is intentionally left enabled so WebKit's native
+           hit-test (which correctly handles layer transforms / pageZoom in
+           low-resolution mode) can provide hover feedback. JavaScript-driven
+           amll-hover-line class is kept for seek / click interaction. */
         .amll-lyric-player [class*="_lyricLine_"].amll-hover-line {
             background-color: var(--amll-lp-hover-bg-color, #fff1) !important;
         }
@@ -313,6 +313,16 @@
             --bright-mask-alpha: 1 !important;
             --dark-mask-alpha: 0 !important;
         }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete .amll-cb-word-active,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete .amll-cb-char-active {
+            transition: none !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="_lyricLine_"]:not([class*="_active_"]):not([data-amll-exiting-highlight="1"]) .amll-cb-word-active,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="_lyricLine_"]:not([class*="_active_"]):not([data-amll-exiting-highlight="1"]) .amll-cb-char-active {
+            opacity: 0 !important;
+            visibility: hidden !important;
+            transition: none !important;
+        }
         .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"]:not([class*="_active_"]) .amll-cb-word-active,
         .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"]:not([class*="_active_"]) .amll-cb-char-active {
             color: var(
@@ -322,8 +332,8 @@
             visibility: hidden !important;
         }
         /* Keep cover-blur highlight visible while completed or exiting highlight is still finishing */
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"][data-fs-completed-highlight="1"] .amll-cb-word-active,
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"][data-fs-completed-highlight="1"] .amll-cb-char-active,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="_lyricLine_"][data-fs-completed-highlight="1"] .amll-cb-word-active,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="_lyricLine_"][data-fs-completed-highlight="1"] .amll-cb-char-active,
         .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"][data-amll-exiting-highlight="1"] .amll-cb-word-active,
         .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"][data-amll-exiting-highlight="1"] .amll-cb-char-active {
             color: var(
@@ -599,6 +609,16 @@
             --bright-mask-alpha: 1 !important;
             --dark-mask-alpha: 0 !important;
         }
+        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete .amll-fs-word-active,
+        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete .amll-fs-char-active {
+            transition: none !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="_lyricLine_"]:not([class*="_active_"]):not([data-amll-exiting-highlight="1"]) .amll-fs-word-active,
+        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="_lyricLine_"]:not([class*="_active_"]):not([data-amll-exiting-highlight="1"]) .amll-fs-char-active {
+            opacity: 0 !important;
+            visibility: hidden !important;
+            transition: none !important;
+        }
         .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"]:not([class*="_active_"]):not([data-amll-exiting-highlight="1"]) .amll-fs-word-active {
             color: var(
                 --amll-fs-main-inactive,
@@ -618,7 +638,7 @@
             opacity: 0 !important;
         }
         /* Keep fullscreen highlight visible while completed or exiting highlight is still finishing. */
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][data-fs-completed-highlight="1"] .amll-fs-word-active,
+        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="_lyricLine_"][data-fs-completed-highlight="1"] .amll-fs-word-active,
         .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][data-amll-exiting-highlight="1"] .amll-fs-word-active {
             color: var(
                 --amll-fs-main-active,
@@ -626,7 +646,7 @@
             ) !important;
             visibility: visible !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][data-fs-completed-highlight="1"] .amll-fs-char-active,
+        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="_lyricLine_"][data-fs-completed-highlight="1"] .amll-fs-char-active,
         .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][data-amll-exiting-highlight="1"] .amll-fs-char-active {
             color: var(
                 --amll-fs-main-active,
@@ -945,12 +965,12 @@
     <div id="player"></div>
 
     <!-- Load Bridge first so logs & AMLL namespace are available -->
-    <script src="bridge.js?v=cover-blur-rewrite-20260328-v26"></script>
+    <script src="bridge.js?v=cover-blur-rewrite-20260328-v29"></script>
 
     <script type="module">
-        import { LyricPlayer, parseTTML } from "./amll-core.js?v=cover-blur-rewrite-20260328-v26";
+        import { LyricPlayer, parseTTML } from "./amll-core.js?v=cover-blur-rewrite-20260328-v29";
 
-        const AMLL_BUNDLE_VERSION = "cover-blur-rewrite-20260328-v26";
+        const AMLL_BUNDLE_VERSION = "cover-blur-rewrite-20260328-v29";
         console.log("[LyricsRenderer] Module script loaded");
         console.log(`[LyricsRenderer] Bundle version=${AMLL_BUNDLE_VERSION}`);
 
@@ -1228,17 +1248,12 @@
             const element = getLineObjectElement(lineObj);
             if (!element) return null;
 
-            const textRects = collectTextRects(element);
-            const rects = textRects.length > 0 ? textRects : Array.from(element.getClientRects());
-            const visibleRects = rects.filter((rect) => rect.width > 1 && rect.height > 1);
-            if (visibleRects.length === 0) return null;
-
-            const left = Math.min(...visibleRects.map((rect) => rect.left));
-            const right = Math.max(...visibleRects.map((rect) => rect.right));
-            const top = Math.min(...visibleRects.map((rect) => rect.top));
-            const bottom = Math.max(...visibleRects.map((rect) => rect.bottom));
-            if (!(right > left && bottom > top)) return null;
-            return { left, right, top, bottom };
+            // Use getBoundingClientRect for accurate visual bounds including transforms.
+            // collectTextRects can return rects that deviate from the element's actual
+            // rendered bounds when CSS transforms (scale/translateY) are applied.
+            const rect = element.getBoundingClientRect();
+            if (!(rect.width > 1 && rect.height > 1)) return null;
+            return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
         };
 
         const resolveLineFromPoint = (event) => {
@@ -1246,6 +1261,29 @@
             const y = event?.clientY;
             if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
 
+            // Use browser-native hit-test first. WebKit's internal hit-test engine
+            // respects CSS transforms, AppKit layer transforms, pointer-events,
+            // and pageZoom — all of which can cause getBoundingClientRect()-based
+            // hit-testing to diverge from visual reality (especially in
+            // low-resolution rendering mode where the event-delivery region and
+            // CSS viewport have different sizes).
+            try {
+                const target = document.elementFromPoint(x, y);
+                if (target) {
+                    const lineObj = resolveLineFromTarget(target);
+                    if (lineObj) {
+                        const lineIndex = getLineObjectIndex(lineObj);
+                        if (Number.isInteger(lineIndex) && lineIndex >= 0) {
+                            return { lineObj, lineIndex, score: 0 };
+                        }
+                    }
+                }
+            } catch (e) {
+                console.warn("[LyricsRenderer] elementFromPoint failed", e);
+            }
+
+            // Fallback to rect-based matching for lines that may not be
+            // hit-testable (detached from DOM, visibility:hidden, etc.).
             const lineObjects = Array.isArray(lyricPlayer.currentLyricLineObjects)
                 ? lyricPlayer.currentLyricLineObjects
                 : [];
@@ -1279,9 +1317,66 @@
             }
         };
 
+        // Temporary hover debug: set window.__AMLL_DEBUG_HOVER = true in console to enable
+        let hoverDebugOverlay = null;
+        let lastDebugHoverLineIndex = -1;
+        let lastDebugLogTime = 0;
+        function ensureHoverDebugOverlay() {
+            if (hoverDebugOverlay) return;
+            hoverDebugOverlay = document.createElement('div');
+            hoverDebugOverlay.style.cssText = `
+                position: fixed;
+                border: 2px solid rgba(255, 0, 0, 0.8);
+                background: rgba(255, 0, 0, 0.1);
+                pointer-events: none;
+                z-index: 99999;
+                border-radius: 4px;
+                transition: all 0.05s linear;
+                display: none;
+            `;
+            document.body.appendChild(hoverDebugOverlay);
+        }
+
         const updateHoverLine = (event) => {
             const hit = resolveLineFromPoint(event);
             const nextElement = getLineObjectElement(hit?.lineObj);
+
+            if (window.__AMLL_DEBUG_HOVER) {
+                ensureHoverDebugOverlay();
+                const now = performance.now();
+                const shouldLog = hit && nextElement && (
+                    hit.lineIndex !== lastDebugHoverLineIndex || now - lastDebugLogTime > 500
+                );
+                if (shouldLog) {
+                    lastDebugHoverLineIndex = hit.lineIndex;
+                    lastDebugLogTime = now;
+                    const container = lyricPlayer.getElement();
+                    const containerRect = container.getBoundingClientRect();
+                    const lineRect = nextElement.getBoundingClientRect();
+                    const line = hit.lineObj?.getLine?.();
+                    const lineText = line?.words?.map(w => w.word).join('').slice(0, 30) || '';
+                    console.log(
+                        `[AMLL-HoverDebug] ` +
+                        `mouse=(${event.clientX.toFixed(1)}, ${event.clientY.toFixed(1)}) ` +
+                        `container=(${containerRect.left.toFixed(1)},${containerRect.top.toFixed(1)},${containerRect.width.toFixed(1)},${containerRect.height.toFixed(1)}) ` +
+                        `lineIdx=${hit.lineIndex} ` +
+                        `lineTime=${line?.startTime ?? 'N/A'} ` +
+                        `lineRect=(${lineRect.left.toFixed(1)},${lineRect.top.toFixed(1)},${lineRect.width.toFixed(1)},${lineRect.height.toFixed(1)}) ` +
+                        `lineText="${lineText}"`
+                    );
+                }
+                if (hit && nextElement) {
+                    const lineRect = nextElement.getBoundingClientRect();
+                    hoverDebugOverlay.style.display = 'block';
+                    hoverDebugOverlay.style.left = lineRect.left + 'px';
+                    hoverDebugOverlay.style.top = lineRect.top + 'px';
+                    hoverDebugOverlay.style.width = lineRect.width + 'px';
+                    hoverDebugOverlay.style.height = lineRect.height + 'px';
+                } else {
+                    hoverDebugOverlay.style.display = 'none';
+                }
+            }
+
             if (nextElement === hoveredLineElement) return;
             clearHoverLine();
             if (nextElement) {
@@ -1311,10 +1406,16 @@
         };
 
         const emitSeek = (lineLike, lineIndex, event) => {
-            const visualHit = resolveLineFromPoint(event);
-            if (visualHit) {
-                lineLike = visualHit.lineObj;
-                lineIndex = visualHit.lineIndex;
+            // Prefer the native hit-test result (from line-click or resolveLineFromTarget).
+            // Only fall back to resolveLineFromPoint if the native result is missing,
+            // since resolveLineFromPoint can mis-match when transforms/scale cause
+            // visual bounds to diverge from its rect calculation.
+            if (!lineLike || !Number.isInteger(lineIndex)) {
+                const visualHit = resolveLineFromPoint(event);
+                if (visualHit) {
+                    lineLike = visualHit.lineObj;
+                    lineIndex = visualHit.lineIndex;
+                }
             }
             if (!lineLike && !Number.isInteger(lineIndex)) return;
             const start = getSeekLineStart(lineLike, lineIndex);
@@ -3814,6 +3915,11 @@
 	            // line highlight lifetime already follows the root active color path.
 	            if (lineTimingOnlyMode === true) {
 	                clearFullscreenCompletedHighlightState();
+	                return;
+	            }
+	            if (wordHighlightMode === "discrete") {
+	                clearFullscreenCompletedHighlightState();
+	                updateFullscreenFadingHighlightState();
 	                return;
 	            }
 	            

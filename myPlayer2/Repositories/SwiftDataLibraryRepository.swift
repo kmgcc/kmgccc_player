@@ -770,6 +770,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             canonicalKey: entry.canonicalKey,
             displayTitle: entry.displayTitle,
             primaryArtistCanonicalName: entry.primaryArtistCanonicalName,
+            primaryArtistDisplayName: entry.primaryArtistDisplayName.isEmpty ? nil : entry.primaryArtistDisplayName,
             artworkFileName: entry.artworkFileName,
             description: entry.description.isEmpty ? nil : entry.description,
             year: entry.year,

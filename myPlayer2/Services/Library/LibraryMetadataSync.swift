@@ -258,7 +258,7 @@ final class LibraryMetadataSync {
                     canonicalKey: sidecar.canonicalKey,
                     displayTitle: sidecar.displayTitle,
                     primaryArtistCanonicalName: sidecar.primaryArtistCanonicalName,
-                    primaryArtistDisplayName: "",
+                    primaryArtistDisplayName: sidecar.primaryArtistDisplayName ?? "",
                     artworkFileName: sidecar.artworkFileName,
                     description: sidecar.description ?? "",
                     year: sidecar.year,

@@ -274,10 +274,15 @@ export class LyricLineEl extends LyricLineBase {
 		const fadeDuration = this.exitHighlightMaxDurationMs;
 		this.isExitingHighlight = true;
 		this.element.dataset.amllExitingHighlight = "1";
+		const currentTime = this.lyricPlayer.getCurrentTime?.() ?? this.lyricLine.endTime;
 
 		for (const word of this.splittedWords) {
 			for (const animation of word.maskAnimations) {
 				animation.pause();
+			}
+			if (currentTime < this.getDiscreteHighlightStartTime(word) - 16) {
+				word.mainElement.style.opacity = `${inactiveOpacity}`;
+				continue;
 			}
 			const currentOpacity = Number.parseFloat(
 				getComputedStyle(word.mainElement).opacity,
@@ -285,7 +290,10 @@ export class LyricLineEl extends LyricLineBase {
 			const fromOpacity = Number.isFinite(currentOpacity)
 				? currentOpacity
 				: 1;
-			if (fromOpacity <= inactiveOpacity + 0.01) continue;
+			if (fromOpacity <= inactiveOpacity + 0.01) {
+				word.mainElement.style.opacity = `${inactiveOpacity}`;
+				continue;
+			}
 			const animation = word.mainElement.animate(
 				[
 					{ opacity: fromOpacity },
@@ -443,6 +451,19 @@ export class LyricLineEl extends LyricLineBase {
 	async resume() {
 		if (!this.isEnabled && !this.isExitingHighlight) return;
 		if (this.isExitingHighlight && !this.isEnabled) {
+			if (this.lyricPlayer.getWordHighlightMode() === "discrete") {
+				for (const animation of this.exitHighlightAnimations) {
+					if (animation.playState !== "finished") {
+						animation.play();
+					}
+				}
+				for (const word of this.splittedWords) {
+					for (const animation of word.maskAnimations) {
+						animation.pause();
+					}
+				}
+				return;
+			}
 			for (const word of this.splittedWords) {
 				for (const a of word.elementAnimations) {
 					if (a.playState !== "finished") {
@@ -691,6 +712,9 @@ export class LyricLineEl extends LyricLineBase {
 
 		const wrapperWordEl = document.createElement("span");
 		wrapperWordEl.classList.add(styles.emphasizeWrapper);
+		const shouldGroupDiscreteHighlight =
+			this.lyricPlayer.getWordHighlightMode() !== "discrete" ||
+			!isCJK(merged.word);
 
 		const characterElements: HTMLElement[] = [];
 
@@ -701,8 +725,12 @@ export class LyricLineEl extends LyricLineBase {
 			}
 
 			const realWord = this.createWord(word, emp);
-			realWord.highlightStartTime = merged.startTime;
-			realWord.highlightEndTime = merged.endTime;
+			realWord.highlightStartTime = shouldGroupDiscreteHighlight
+				? merged.startTime
+				: word.startTime;
+			realWord.highlightEndTime = shouldGroupDiscreteHighlight
+				? merged.endTime
+				: word.endTime;
 
 			if (emp) {
 				characterElements.push(...realWord.subElements);

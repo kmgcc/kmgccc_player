@@ -345,6 +345,7 @@ final class LibraryViewModel {
     // MARK: - Dependencies
 
     private let repository: LibraryRepositoryProtocol
+    private let metadataDetailCoordinator: MetadataDetailCoordinator
     private var importService: FileImportServiceProtocol?
     var currentTrackIDProvider: (() -> UUID?)?
     var onTracksDeleted: ((Set<UUID>) -> Void)?
@@ -366,8 +367,13 @@ final class LibraryViewModel {
 
     // MARK: - Initialization
 
-    init(repository: LibraryRepositoryProtocol, libraryService _: LocalLibraryService? = nil) {
+    init(
+        repository: LibraryRepositoryProtocol,
+        libraryService _: LocalLibraryService? = nil,
+        metadataDetailCoordinator: MetadataDetailCoordinator = .shared
+    ) {
         self.repository = repository
+        self.metadataDetailCoordinator = metadataDetailCoordinator
         self.trackSortKey =
             TrackSortKey(
                 rawValue: UserDefaults.standard.string(
@@ -893,6 +899,51 @@ final class LibraryViewModel {
     }
 
     @discardableResult
+    func fetchAndApplyMissingArtistMetadata(
+        _ entry: ArtistEntry,
+        minimumConfidence: Double = 0.70
+    ) async -> Bool {
+        let current = artistEntries.first(where: { $0.id == entry.id }) ?? entry
+        do {
+            let detail = try await metadataDetailCoordinator.fetchArtistDetail(
+                name: current.displayName,
+                singerMid: current.qqMusicSingerMid
+            )
+            guard let latest = artistEntries.first(where: { $0.id == entry.id }) else {
+                Log.warning(
+                    "[MetadataDetail] artist stale entry removed artist=\(current.displayName)",
+                    category: .library
+                )
+                return false
+            }
+            let result = metadataDetailCoordinator.applyMissingFields(
+                detail,
+                to: latest,
+                minimumConfidence: minimumConfidence
+            )
+            guard result.changed else {
+                Log.info(
+                    "[MetadataDetail] artist skipped artist=\(latest.displayName) confidence=\(String(format: "%.2f", detail.confidence))",
+                    category: .library
+                )
+                return false
+            }
+            await saveArtistEntry(result.value)
+            Log.info(
+                "[MetadataDetail] artist applied source=\(detail.source.rawValue) confidence=\(String(format: "%.2f", detail.confidence)) artist=\(latest.displayName)",
+                category: .library
+            )
+            return true
+        } catch {
+            Log.warning(
+                "[MetadataDetail] artist failed artist=\(current.displayName) reason=\(error)",
+                category: .library
+            )
+            return false
+        }
+    }
+
+    @discardableResult
     func autofillArtistArtworkIfMissing(_ entry: ArtistEntry) async -> Bool {
         await applyArtistArtworkFromProviders(
             entry,
@@ -1000,6 +1051,52 @@ final class LibraryViewModel {
         await invalidateDetailSelectionCacheIfNeeded(
             selectionIdentity: "album-\(persisted.canonicalKey)"
         )
+    }
+
+    @discardableResult
+    func fetchAndApplyMissingAlbumMetadata(
+        _ entry: AlbumEntry,
+        minimumConfidence: Double = 0.70
+    ) async -> Bool {
+        let current = albumEntries.first(where: { $0.id == entry.id }) ?? entry
+        do {
+            let detail = try await metadataDetailCoordinator.fetchAlbumDetail(
+                album: current.displayTitle,
+                artist: current.primaryArtistDisplayName,
+                albumMid: current.qqMusicAlbumMid
+            )
+            guard let latest = albumEntries.first(where: { $0.id == entry.id }) else {
+                Log.warning(
+                    "[MetadataDetail] album stale entry removed album=\(current.displayTitle)",
+                    category: .library
+                )
+                return false
+            }
+            let result = metadataDetailCoordinator.applyMissingFields(
+                detail,
+                to: latest,
+                minimumConfidence: minimumConfidence
+            )
+            guard result.changed else {
+                Log.info(
+                    "[MetadataDetail] album skipped album=\(latest.displayTitle) confidence=\(String(format: "%.2f", detail.confidence))",
+                    category: .library
+                )
+                return false
+            }
+            await saveAlbumEntry(result.value)
+            Log.info(
+                "[MetadataDetail] album applied source=\(detail.source.rawValue) confidence=\(String(format: "%.2f", detail.confidence)) album=\(latest.displayTitle)",
+                category: .library
+            )
+            return true
+        } catch {
+            Log.warning(
+                "[MetadataDetail] album failed album=\(current.displayTitle) reason=\(error)",
+                category: .library
+            )
+            return false
+        }
     }
 
     func saveAlbumEdits(original: AlbumEntry, updated: AlbumEntry) async {
@@ -1145,6 +1242,57 @@ final class LibraryViewModel {
             await repository.persistTrackMetaAndArtwork(track, reason: reason)
         case .metaLyricsAndArtwork:
             await repository.persistTrackMetaLyricsAndArtwork(track, reason: reason)
+        }
+    }
+
+    @discardableResult
+    func fetchAndApplyMissingTrackMetadata(
+        _ track: Track,
+        minimumConfidence: Double = 0.70
+    ) async -> Bool {
+        guard let current = allTracks.first(where: { $0.id == track.id }) else {
+            Log.warning(
+                "[MetadataDetail] track stale track=\(track.title)",
+                category: .library
+            )
+            return false
+        }
+        do {
+            let duration = current.duration.isFinite && current.duration > 0
+                ? Int(current.duration.rounded())
+                : nil
+            let detail = try await metadataDetailCoordinator.fetchTrackDetail(
+                title: current.title,
+                artist: current.artist,
+                album: current.album,
+                songMid: current.qqMusicSongMid,
+                duration: duration
+            )
+            let changed = metadataDetailCoordinator.applyMissingFields(
+                detail,
+                to: current,
+                minimumConfidence: minimumConfidence
+            )
+            guard changed else {
+                Log.info(
+                    "[MetadataDetail] track skipped track=\(current.title) confidence=\(String(format: "%.2f", detail.confidence))",
+                    category: .library
+                )
+                return false
+            }
+
+            await saveTrackEdits(current, mode: .metaOnly, reason: "metadataDetailFill")
+            Log.info(
+                "[MetadataDetail] track applied source=\(detail.source.rawValue) confidence=\(String(format: "%.2f", detail.confidence)) track=\(current.title)",
+                category: .library
+            )
+            return true
+        } catch {
+            Log.warning(
+                "[MetadataDetail] track failed track=\(current.title) reason=\(error)",
+                category: .library
+            )
+            return false
         }
     }
 

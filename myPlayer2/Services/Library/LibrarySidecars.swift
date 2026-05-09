@@ -260,6 +260,7 @@ nonisolated struct AlbumSidecar: Codable, Sendable {
     var canonicalKey: String
     var displayTitle: String
     var primaryArtistCanonicalName: String
+    var primaryArtistDisplayName: String?
     var artworkFileName: String?
     var description: String?
     var year: Int?
@@ -282,6 +283,7 @@ nonisolated struct AlbumSidecar: Codable, Sendable {
         case canonicalKey
         case displayTitle
         case primaryArtistCanonicalName
+        case primaryArtistDisplayName
         case artworkFileName
         case description
         case year
@@ -305,6 +307,7 @@ nonisolated struct AlbumSidecar: Codable, Sendable {
         canonicalKey: String,
         displayTitle: String,
         primaryArtistCanonicalName: String,
+        primaryArtistDisplayName: String? = nil,
         artworkFileName: String? = nil,
         description: String? = nil,
         year: Int? = nil,
@@ -326,6 +329,7 @@ nonisolated struct AlbumSidecar: Codable, Sendable {
         self.canonicalKey = canonicalKey
         self.displayTitle = displayTitle
         self.primaryArtistCanonicalName = primaryArtistCanonicalName
+        self.primaryArtistDisplayName = primaryArtistDisplayName
         self.artworkFileName = artworkFileName
         self.description = description
         self.year = year
@@ -350,6 +354,7 @@ nonisolated struct AlbumSidecar: Codable, Sendable {
         canonicalKey = try c.decode(String.self, forKey: .canonicalKey)
         displayTitle = try c.decode(String.self, forKey: .displayTitle)
         primaryArtistCanonicalName = try c.decode(String.self, forKey: .primaryArtistCanonicalName)
+        primaryArtistDisplayName = try c.decodeIfPresent(String.self, forKey: .primaryArtistDisplayName)
         artworkFileName = try c.decodeIfPresent(String.self, forKey: .artworkFileName)
         description = try c.decodeIfPresent(String.self, forKey: .description)
         year = try c.decodeIfPresent(Int.self, forKey: .year)
@@ -383,6 +388,7 @@ nonisolated struct AlbumSidecar: Codable, Sendable {
         try c.encode(canonicalKey, forKey: .canonicalKey)
         try c.encode(displayTitle, forKey: .displayTitle)
         try c.encode(primaryArtistCanonicalName, forKey: .primaryArtistCanonicalName)
+        try c.encodeIfPresent(primaryArtistDisplayName, forKey: .primaryArtistDisplayName)
         try c.encodeIfPresent(artworkFileName, forKey: .artworkFileName)
         try c.encodeIfPresent(description, forKey: .description)
         try c.encodeIfPresent(year, forKey: .year)
