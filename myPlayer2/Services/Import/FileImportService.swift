@@ -1440,6 +1440,7 @@ final class ImportEnrichmentService {
         var entry = await latestArtistEntry(canonical: canonical, displayName: artist)
         guard entry.artworkData == nil else { return false }
         entry.artworkData = data
+        entry.artworkFileName = "artwork.png"
         entry.updatedAt = Date()
         await repository.updateArtistEntry(entry)
         return true
@@ -1463,6 +1464,7 @@ final class ImportEnrichmentService {
         var entry = await latestAlbumEntry(album: album, artist: artist)
         guard entry.artworkData == nil else { return false }
         entry.artworkData = data
+        entry.artworkFileName = "artwork.png"
         entry.updatedAt = Date()
         await repository.updateAlbumEntry(entry)
         return true
@@ -3671,6 +3673,7 @@ final class FileImportService: FileImportServiceProtocol {
         var entry = await latestArtistEntry(canonical: canonical, displayName: artist)
         guard entry.artworkData == nil else { return false }
         entry.artworkData = data
+        entry.artworkFileName = "artwork.png"
         entry.updatedAt = Date()
         await repository.updateArtistEntry(entry)
         return true
@@ -3694,6 +3697,7 @@ final class FileImportService: FileImportServiceProtocol {
         var entry = await latestAlbumEntry(album: album, artist: artist)
         guard entry.artworkData == nil else { return false }
         entry.artworkData = data
+        entry.artworkFileName = "artwork.png"
         entry.updatedAt = Date()
         await repository.updateAlbumEntry(entry)
         return true

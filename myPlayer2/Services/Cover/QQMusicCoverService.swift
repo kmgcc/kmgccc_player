@@ -63,20 +63,32 @@ actor QQMusicCoverService {
 
         let startedAt = Date()
         let rawCandidates = try await fetchRawCandidates(for: query)
-        let scored = rawCandidates
-            .compactMap { candidate -> (candidate: QQMusicArtworkCandidate, confidence: Double)? in
-                guard let confidence = Self.score(candidate, for: query), confidence >= 0.50 else {
-                    return nil
-                }
-                return (candidate, confidence)
+
+        var scored: [(candidate: QQMusicArtworkCandidate, confidence: Double)] = []
+        for candidate in rawCandidates {
+            let helperConf = candidate.confidence ?? 0
+            Log.info(
+                "[QQMusicCover] raw[\(candidate.source)] title=\(candidate.title ?? "-") artist=\(candidate.artist ?? candidate.artistName ?? "-") album=\(candidate.album ?? "-") imageURL=\(candidate.imageURL ?? "-") helperConf=\(String(format: "%.2f", helperConf))",
+                category: .import
+            )
+            var rejectReason: String?
+            let scoreValue = Self.scoreAndDiagnose(candidate, for: query, rejectReason: &rejectReason)
+            if let confidence = scoreValue, confidence >= 0.50 {
+                Log.info("[QQMusicCover] accepted: score=\(String(format: "%.2f", confidence))", category: .import)
+                scored.append((candidate, confidence))
+            } else {
+                let why = rejectReason ?? scoreValue.map { "score=\(String(format: "%.2f", $0)) < 0.50" } ?? "nil score"
+                Log.info("[QQMusicCover] filtered: \(why)", category: .import)
             }
-            .sorted { lhs, rhs in
-                if lhs.confidence == rhs.confidence {
-                    return (lhs.candidate.albumMid ?? lhs.candidate.songMid ?? "") <
-                        (rhs.candidate.albumMid ?? rhs.candidate.songMid ?? "")
-                }
-                return lhs.confidence > rhs.confidence
+        }
+        scored.sort { lhs, rhs in
+            if lhs.confidence == rhs.confidence {
+                return (lhs.candidate.albumMid ?? lhs.candidate.songMid ?? "") <
+                    (rhs.candidate.albumMid ?? rhs.candidate.songMid ?? "")
             }
+            return lhs.confidence > rhs.confidence
+        }
+
         let durationMs = Int(Date().timeIntervalSince(startedAt) * 1_000)
         let topConfidence = scored.map(\.confidence).max() ?? 0
         Log.info(
@@ -89,10 +101,18 @@ actor QQMusicCoverService {
 
         for item in scored {
             guard results.count < limit else { break }
-            guard let rawImageURL = trimmed(item.candidate.imageURL),
-                  let imageURL = sanitizeImageURL(rawImageURL),
-                  seenImageURLs.insert(imageURL).inserted
-            else { continue }
+            guard let rawImageURL = trimmed(item.candidate.imageURL) else {
+                Log.info("[QQMusicCover] skipped: empty imageURL title=\(item.candidate.title ?? "-")", category: .import)
+                continue
+            }
+            guard let imageURL = sanitizeImageURL(rawImageURL) else {
+                Log.info("[QQMusicCover] skipped: invalid imageURL=\(rawImageURL) title=\(item.candidate.title ?? "-")", category: .import)
+                continue
+            }
+            guard seenImageURLs.insert(imageURL).inserted else {
+                Log.info("[QQMusicCover] skipped: duplicate imageURL=\(imageURL) title=\(item.candidate.title ?? "-")", category: .import)
+                continue
+            }
 
             do {
                 let imageData = try await imageData(for: imageURL)
@@ -112,7 +132,8 @@ actor QQMusicCoverService {
                     )
                 )
             } catch {
-                Log.warning("[QQMusicCover] image download failed: \(error)", category: .import)
+                let nsErr = error as NSError
+                Log.warning("[QQMusicCover] download failed: url=\(imageURL) code=\(nsErr.code) domain=\(nsErr.domain) \(error)", category: .import)
             }
         }
 
@@ -412,6 +433,15 @@ actor QQMusicCoverService {
         _ candidate: QQMusicArtworkCandidate,
         for query: CoverQuery
     ) -> Double? {
+        var ignored: String?
+        return scoreAndDiagnose(candidate, for: query, rejectReason: &ignored)
+    }
+
+    private nonisolated static func scoreAndDiagnose(
+        _ candidate: QQMusicArtworkCandidate,
+        for query: CoverQuery,
+        rejectReason: inout String?
+    ) -> Double? {
         let helperConfidence = min(max(candidate.confidence ?? 0.70, 0), 1)
 
         if let queryTitle = query.title, !queryTitle.isEmpty {
@@ -421,22 +451,40 @@ actor QQMusicCoverService {
             guard titleScore >= 0.50
                     || candidateTitle.compact.contains(sourceTitle.compact)
                     || sourceTitle.compact.contains(candidateTitle.compact)
-            else { return nil }
+            else {
+                rejectReason = "title mismatch: score=\(String(format: "%.2f", titleScore)) query=\"\(queryTitle)\" candidate=\"\(candidate.title ?? "-")\""
+                return nil
+            }
 
             let sourceArtist = ExternalPlaybackTextNormalizer.normalizeArtist(query.artist)
             let candidateArtist = ExternalPlaybackTextNormalizer.normalizeArtist(
                 candidate.artist ?? candidate.artistName
             )
             let artistScore = ExternalPlaybackTextNormalizer.artistSimilarity(sourceArtist, candidateArtist)
-            guard artistScore >= 0.22 else { return nil }
+            guard artistScore >= 0.22 else {
+                rejectReason = "artist mismatch: score=\(String(format: "%.2f", artistScore)) query=\"\(query.artist)\" candidate=\"\(candidate.artist ?? candidate.artistName ?? "-")\""
+                return nil
+            }
 
             let candidateDuration = Double(candidate.duration ?? 0)
-            if ExternalPlaybackTextNormalizer.hasObviousConflict(
-                titleScore: titleScore,
-                artistScore: artistScore,
-                sourceDuration: query.duration ?? 0,
-                candidateDuration: candidateDuration
-            ) {
+            // Album-source candidates have nil/empty title; the title guard above passed only
+            // via sourceTitle.compact.contains("") == true, so titleScore is 0.
+            // hasObviousConflict would always reject them on the titleScore < 0.45 branch.
+            // Skip the title component of the conflict check for those candidates.
+            if !candidateTitle.compact.isEmpty {
+                if ExternalPlaybackTextNormalizer.hasObviousConflict(
+                    titleScore: titleScore,
+                    artistScore: artistScore,
+                    sourceDuration: query.duration ?? 0,
+                    candidateDuration: candidateDuration
+                ) {
+                    rejectReason = "obvious conflict: titleScore=\(String(format: "%.2f", titleScore)) artistScore=\(String(format: "%.2f", artistScore)) sourceDuration=\(query.duration ?? 0) candidateDuration=\(candidateDuration)"
+                    return nil
+                }
+            } else if (query.duration ?? 0) > 0, candidateDuration > 0,
+                      abs((query.duration ?? 0) - candidateDuration) > 45
+            {
+                rejectReason = "duration conflict (album-source): source=\(query.duration ?? 0) candidate=\(candidateDuration)"
                 return nil
             }
 
@@ -464,13 +512,19 @@ actor QQMusicCoverService {
             return min(max(score, 0), 1)
         }
 
+        // Album-only path (no query title)
         let sourceAlbum = ExternalPlaybackTextNormalizer.normalize(query.album)
         let candidateAlbum = ExternalPlaybackTextNormalizer.normalize(candidate.album)
         let albumScore = ExternalPlaybackTextNormalizer.stringSimilarity(sourceAlbum, candidateAlbum)
+        let highConf = helperConfidence >= 0.80
         guard albumScore >= 0.45
                 || candidateAlbum.compact.contains(sourceAlbum.compact)
                 || sourceAlbum.compact.contains(candidateAlbum.compact)
-        else { return nil }
+                || highConf
+        else {
+            rejectReason = "album mismatch: albumScore=\(String(format: "%.2f", albumScore)) helperConf=\(String(format: "%.2f", helperConfidence)) query=\"\(query.album)\" candidate=\"\(candidate.album ?? "-")\""
+            return nil
+        }
 
         let sourceArtist = ExternalPlaybackTextNormalizer.normalizeArtist(query.artist)
         let candidateArtist = ExternalPlaybackTextNormalizer.normalizeArtist(
@@ -479,9 +533,17 @@ actor QQMusicCoverService {
         let artistScore = sourceArtist.text.compact.isEmpty
             ? 0.5
             : ExternalPlaybackTextNormalizer.artistSimilarity(sourceArtist, candidateArtist)
-        guard artistScore >= 0.18 else { return nil }
+        guard artistScore >= 0.18 else {
+            rejectReason = "artist mismatch (album-only): artistScore=\(String(format: "%.2f", artistScore)) query=\"\(query.artist)\" candidate=\"\(candidate.artist ?? candidate.artistName ?? "-")\""
+            return nil
+        }
 
-        var score = albumScore * 0.60 + artistScore * 0.34 + helperConfidence * 0.06
+        // When the helper has high confidence, boost its weight to reduce the penalty from
+        // complex album names (movie soundtracks, EP/Single titles, long subtitles, etc.).
+        // Weights always sum to 1.0: albumWeight + 0.34 + confWeight = 1.0.
+        let confWeight: Double = highConf ? 0.18 : 0.06
+        let albumWeight: Double = highConf ? 0.48 : 0.60
+        var score = albumScore * albumWeight + artistScore * 0.34 + helperConfidence * confWeight
         score -= variantMismatchPenalty(
             sourceTitle: nil,
             candidateTitle: candidate.title,
