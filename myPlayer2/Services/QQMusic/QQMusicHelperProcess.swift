@@ -1140,13 +1140,16 @@ actor QQMusicHelperProcess {
                 return Date(timeIntervalSince1970: timestamp)
             }
             let value = try container.decode(String.self)
-            if let date = ISO8601DateFormatter.qqMusicHelperInternet.date(from: value) {
+            // Internet datetime with fractional seconds (e.g. "2023-01-15T10:30:45.123Z")
+            if let date = try? Date(value, strategy: Date.ISO8601FormatStyle(timeZoneSeparator: .colon, includingFractionalSeconds: true)) {
                 return date
             }
-            if let date = ISO8601DateFormatter.qqMusicHelperInternetWithoutFractionalSeconds.date(from: value) {
+            // Internet datetime without fractional seconds (e.g. "2023-01-15T10:30:45Z")
+            if let date = try? Date(value, strategy: Date.ISO8601FormatStyle(timeZoneSeparator: .colon)) {
                 return date
             }
-            if let date = ISO8601DateFormatter.qqMusicHelperDateOnly.date(from: value) {
+            // Date only (e.g. "2023-01-15")
+            if let date = QQMusicHelperProcess.parseQQMusicDateOnly(value) {
                 return date
             }
             throw DecodingError.dataCorruptedError(
@@ -1156,24 +1159,19 @@ actor QQMusicHelperProcess {
         }
         return decoder
     }
-}
 
-private extension ISO8601DateFormatter {
-    static let qqMusicHelperInternet: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter
-    }()
-
-    static let qqMusicHelperInternetWithoutFractionalSeconds: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter
-    }()
-
-    static let qqMusicHelperDateOnly: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withFullDate]
-        return formatter
-    }()
+    private nonisolated static func parseQQMusicDateOnly(_ string: String) -> Date? {
+        let parts = string.split(separator: "-", maxSplits: 2)
+        guard parts.count == 3,
+              let year = Int(parts[0]), parts[0].count == 4,
+              let month = Int(parts[1]), parts[1].count == 2,
+              let day = Int(parts[2]), parts[2].count == 2 else { return nil }
+        var comps = DateComponents()
+        comps.calendar = Calendar(identifier: .gregorian)
+        comps.timeZone = TimeZone(secondsFromGMT: 0)
+        comps.year = year
+        comps.month = month
+        comps.day = day
+        return comps.date
+    }
 }
