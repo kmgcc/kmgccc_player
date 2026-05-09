@@ -33,6 +33,7 @@ struct AllAlbumsView: View {
     @Environment(UIStateViewModel.self) private var uiState
 
     @State private var deletionRequest: AlbumDeletionRequest?
+    @State private var editingAlbum: AlbumEntry?
 
     var body: some View {
         let albums = filteredAlbums
@@ -67,6 +68,10 @@ struct AllAlbumsView: View {
                 )
             )
         }
+        .sheet(item: $editingAlbum) { entry in
+            AlbumInfoEditSheet(entry: entry) {}
+                .presentationSizing(.page)
+        }
     }
 
     // MARK: List
@@ -79,6 +84,7 @@ struct AllAlbumsView: View {
                         album: album,
                         trackCount: trackCount(for: album),
                         onOpen: { open(album) },
+                        onEdit: { editingAlbum = album },
                         onDelete: { requestDelete(album) }
                     )
                 }
@@ -171,6 +177,7 @@ private struct AlbumListRow: View {
     let album: AlbumEntry
     let trackCount: Int
     let onOpen: () -> Void
+    let onEdit: () -> Void
     let onDelete: () -> Void
 
     @Environment(LibraryViewModel.self) private var libraryVM
@@ -203,6 +210,9 @@ private struct AlbumListRow: View {
         .contextMenu {
             Button(action: onOpen) {
                 Label("打开专辑", systemImage: "square.stack")
+            }
+            Button(action: onEdit) {
+                Label("编辑专辑", systemImage: "info.circle")
             }
             Divider()
             Button(role: .destructive, action: onDelete) {
@@ -266,6 +276,9 @@ private struct AlbumListRow: View {
         Menu {
             Button(action: onOpen) {
                 Label("打开专辑", systemImage: "square.stack")
+            }
+            Button(action: onEdit) {
+                Label("编辑专辑", systemImage: "info.circle")
             }
             Divider()
             Button(role: .destructive, action: onDelete) {

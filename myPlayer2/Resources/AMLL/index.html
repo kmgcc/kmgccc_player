@@ -34,13 +34,10 @@
         ._lyricLine_1jop6_6 {
             overflow: visible;
         }
-        /* Note: CSS :hover is intentionally left enabled so WebKit's native
-           hit-test (which correctly handles layer transforms / pageZoom in
-           low-resolution mode) can provide hover feedback. JavaScript-driven
-           amll-hover-line class is kept for seek / click interaction. */
-        .amll-lyric-player [class*="_lyricLine_"].amll-hover-line {
-            background-color: var(--amll-lp-hover-bg-color, #fff1) !important;
-        }
+        /* Hover feedback is handled entirely by the native CSS :hover rule in
+           lyric-player.module.css. WebKit's native hit-test correctly accounts
+           for layer transforms and pageZoom in low-resolution mode, so no
+           JavaScript-driven hover class is needed. */
         ._lyricMainLine_m23bz_99,
         ._lyricMainLine_1jop6_80 {
             font-family: var(--amll-lp-main-font-family, -apple-system, "Helvetica Neue", sans-serif);
@@ -334,8 +331,23 @@
         /* Keep cover-blur highlight visible while completed or exiting highlight is still finishing */
         .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="_lyricLine_"][data-fs-completed-highlight="1"] .amll-cb-word-active,
         .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="_lyricLine_"][data-fs-completed-highlight="1"] .amll-cb-char-active,
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"][data-amll-exiting-highlight="1"] .amll-cb-word-active,
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"][data-amll-exiting-highlight="1"] .amll-cb-char-active {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="_lyricLine_"][data-amll-exiting-highlight="1"] .amll-cb-word-active,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="_lyricLine_"][data-amll-exiting-highlight="1"] .amll-cb-char-active {
+            color: var(
+                --amll-cb-main-active,
+                var(--amll-active, var(--amll-lp-color, white))
+            ) !important;
+            visibility: visible !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="_lyricLine_"][data-amll-exiting-highlight="1"] .amll-cb-word-active:not([data-amll-exit-highlight-word="1"]),
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="_lyricLine_"][data-amll-exiting-highlight="1"] .amll-cb-char-active:not([data-amll-exit-highlight-word="1"]) {
+            visibility: hidden !important;
+            transition: none !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="_lyricLine_"][data-amll-exiting-highlight="1"] .amll-cb-word-active[data-amll-exit-highlight-word="1"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="_lyricLine_"][data-amll-exiting-highlight="1"] .amll-cb-char-active[data-amll-exit-highlight-word="1"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="_lyricLine_"][data-amll-exiting-highlight="1"] [data-amll-exit-highlight-word="1"] .amll-cb-word-active,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="_lyricLine_"][data-amll-exiting-highlight="1"] [data-amll-exit-highlight-word="1"] .amll-cb-char-active {
             color: var(
                 --amll-cb-main-active,
                 var(--amll-active, var(--amll-lp-color, white))
@@ -619,6 +631,17 @@
             visibility: hidden !important;
             transition: none !important;
         }
+        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="_lyricLine_"][data-amll-fs-discrete-inactive-locked="1"] .amll-fs-word-active,
+        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="_lyricLine_"][data-amll-fs-discrete-inactive-locked="1"] .amll-fs-char-active {
+            opacity: 0 !important;
+            visibility: hidden !important;
+            transition: none !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="_lyricLine_"][data-amll-fs-discrete-exit-locked="1"] .amll-fs-word-active:not([data-amll-exit-highlight-word="1"]),
+        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="_lyricLine_"][data-amll-fs-discrete-exit-locked="1"] .amll-fs-char-active:not([data-amll-exit-highlight-word="1"]) {
+            visibility: hidden !important;
+            transition: none !important;
+        }
         .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"]:not([class*="_active_"]):not([data-amll-exiting-highlight="1"]) .amll-fs-word-active {
             color: var(
                 --amll-fs-main-inactive,
@@ -639,7 +662,7 @@
         }
         /* Keep fullscreen highlight visible while completed or exiting highlight is still finishing. */
         .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="_lyricLine_"][data-fs-completed-highlight="1"] .amll-fs-word-active,
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][data-amll-exiting-highlight="1"] .amll-fs-word-active {
+        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="_lyricLine_"][data-amll-exiting-highlight="1"] .amll-fs-word-active {
             color: var(
                 --amll-fs-main-active,
                 var(--amll-active, var(--amll-lp-color, white))
@@ -647,15 +670,30 @@
             visibility: visible !important;
         }
         .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="_lyricLine_"][data-fs-completed-highlight="1"] .amll-fs-char-active,
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][data-amll-exiting-highlight="1"] .amll-fs-char-active {
+        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="_lyricLine_"][data-amll-exiting-highlight="1"] .amll-fs-char-active {
             color: var(
                 --amll-fs-main-active,
                 var(--amll-active, var(--amll-lp-color, white))
             ) !important;
             visibility: visible !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][data-fs-highlight-state="fading"] .amll-fs-word-active,
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][data-fs-highlight-state="fading"] .amll-fs-char-active {
+        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="_lyricLine_"][data-amll-exiting-highlight="1"] .amll-fs-word-active:not([data-amll-exit-highlight-word="1"]),
+        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="_lyricLine_"][data-amll-exiting-highlight="1"] .amll-fs-char-active:not([data-amll-exit-highlight-word="1"]) {
+            visibility: hidden !important;
+            transition: none !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="_lyricLine_"][data-amll-exiting-highlight="1"] .amll-fs-word-active[data-amll-exit-highlight-word="1"],
+        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="_lyricLine_"][data-amll-exiting-highlight="1"] .amll-fs-char-active[data-amll-exit-highlight-word="1"],
+        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="_lyricLine_"][data-amll-exiting-highlight="1"] [data-amll-exit-highlight-word="1"] .amll-fs-word-active,
+        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="_lyricLine_"][data-amll-exiting-highlight="1"] [data-amll-exit-highlight-word="1"] .amll-fs-char-active {
+            color: var(
+                --amll-fs-main-active,
+                var(--amll-active, var(--amll-lp-color, white))
+            ) !important;
+            visibility: visible !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="_lyricLine_"][data-fs-highlight-state="fading"] .amll-fs-word-active,
+        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="_lyricLine_"][data-fs-highlight-state="fading"] .amll-fs-char-active {
             opacity: var(--amll-fs-highlight-fade-opacity, 0.4) !important;
             transition:
                 opacity .36s linear,
@@ -965,12 +1003,12 @@
     <div id="player"></div>
 
     <!-- Load Bridge first so logs & AMLL namespace are available -->
-    <script src="bridge.js?v=cover-blur-rewrite-20260328-v29"></script>
+    <script src="bridge.js?v=cover-blur-rewrite-20260328-v33"></script>
 
     <script type="module">
-        import { LyricPlayer, parseTTML } from "./amll-core.js?v=cover-blur-rewrite-20260328-v29";
+        import { LyricPlayer, parseTTML } from "./amll-core.js?v=cover-blur-rewrite-20260328-v33";
 
-        const AMLL_BUNDLE_VERSION = "cover-blur-rewrite-20260328-v29";
+        const AMLL_BUNDLE_VERSION = "cover-blur-rewrite-20260328-v33";
         console.log("[LyricsRenderer] Module script loaded");
         console.log(`[LyricsRenderer] Bundle version=${AMLL_BUNDLE_VERSION}`);
 
@@ -1223,7 +1261,6 @@
 
         let lastSeekAt = 0;
         let lastSeekSeconds = null;
-        let hoveredLineElement = null;
         const getLineObjectIndex = (lineObj) => lyricPlayer.lyricLinesIndexes?.get?.(lineObj);
         const getLineObjectElement = (lineObj) => {
             const element = lineObj?.getElement?.();
@@ -1308,81 +1345,6 @@
                 }
             }
             return best;
-        };
-
-        const clearHoverLine = () => {
-            if (hoveredLineElement) {
-                hoveredLineElement.classList.remove("amll-hover-line");
-                hoveredLineElement = null;
-            }
-        };
-
-        // Temporary hover debug: set window.__AMLL_DEBUG_HOVER = true in console to enable
-        let hoverDebugOverlay = null;
-        let lastDebugHoverLineIndex = -1;
-        let lastDebugLogTime = 0;
-        function ensureHoverDebugOverlay() {
-            if (hoverDebugOverlay) return;
-            hoverDebugOverlay = document.createElement('div');
-            hoverDebugOverlay.style.cssText = `
-                position: fixed;
-                border: 2px solid rgba(255, 0, 0, 0.8);
-                background: rgba(255, 0, 0, 0.1);
-                pointer-events: none;
-                z-index: 99999;
-                border-radius: 4px;
-                transition: all 0.05s linear;
-                display: none;
-            `;
-            document.body.appendChild(hoverDebugOverlay);
-        }
-
-        const updateHoverLine = (event) => {
-            const hit = resolveLineFromPoint(event);
-            const nextElement = getLineObjectElement(hit?.lineObj);
-
-            if (window.__AMLL_DEBUG_HOVER) {
-                ensureHoverDebugOverlay();
-                const now = performance.now();
-                const shouldLog = hit && nextElement && (
-                    hit.lineIndex !== lastDebugHoverLineIndex || now - lastDebugLogTime > 500
-                );
-                if (shouldLog) {
-                    lastDebugHoverLineIndex = hit.lineIndex;
-                    lastDebugLogTime = now;
-                    const container = lyricPlayer.getElement();
-                    const containerRect = container.getBoundingClientRect();
-                    const lineRect = nextElement.getBoundingClientRect();
-                    const line = hit.lineObj?.getLine?.();
-                    const lineText = line?.words?.map(w => w.word).join('').slice(0, 30) || '';
-                    console.log(
-                        `[AMLL-HoverDebug] ` +
-                        `mouse=(${event.clientX.toFixed(1)}, ${event.clientY.toFixed(1)}) ` +
-                        `container=(${containerRect.left.toFixed(1)},${containerRect.top.toFixed(1)},${containerRect.width.toFixed(1)},${containerRect.height.toFixed(1)}) ` +
-                        `lineIdx=${hit.lineIndex} ` +
-                        `lineTime=${line?.startTime ?? 'N/A'} ` +
-                        `lineRect=(${lineRect.left.toFixed(1)},${lineRect.top.toFixed(1)},${lineRect.width.toFixed(1)},${lineRect.height.toFixed(1)}) ` +
-                        `lineText="${lineText}"`
-                    );
-                }
-                if (hit && nextElement) {
-                    const lineRect = nextElement.getBoundingClientRect();
-                    hoverDebugOverlay.style.display = 'block';
-                    hoverDebugOverlay.style.left = lineRect.left + 'px';
-                    hoverDebugOverlay.style.top = lineRect.top + 'px';
-                    hoverDebugOverlay.style.width = lineRect.width + 'px';
-                    hoverDebugOverlay.style.height = lineRect.height + 'px';
-                } else {
-                    hoverDebugOverlay.style.display = 'none';
-                }
-            }
-
-            if (nextElement === hoveredLineElement) return;
-            clearHoverLine();
-            if (nextElement) {
-                nextElement.classList.add("amll-hover-line");
-                hoveredLineElement = nextElement;
-            }
         };
 
         const getSeekLineStart = (lineLike, lineIndex) => {
@@ -2610,6 +2572,107 @@
                 lineElement.style.removeProperty("--amll-fs-highlight-fade-opacity");
             }
         };
+        const isFullscreenLineActiveElement = (lineElement) => {
+            if (!(lineElement instanceof HTMLElement)) return false;
+            return String(lineElement.className || "").includes("_active_");
+        };
+        const isFullscreenLineActiveObject = (lineObj, lineIndex) => {
+            const lineElement = lineObj?.element;
+            if (lineObj?.isEnabled === true) return true;
+            if (isFullscreenLineActiveElement(lineElement)) return true;
+            if (Number.isInteger(lineIndex)) {
+                if (lyricPlayer.hotLines instanceof Set && lyricPlayer.hotLines.has(lineIndex)) return true;
+                if (lyricPlayer.bufferedLines instanceof Set && lyricPlayer.bufferedLines.has(lineIndex)) return true;
+            }
+            return false;
+        };
+        const isFullscreenLinePastObject = (lineObj) => {
+            const line = typeof lineObj?.getLine === "function" ? lineObj.getLine() : lineObj?.lyricLine;
+            const endTime = Number(line?.endTime);
+            if (!Number.isFinite(endTime)) return false;
+            return endTime <= lastKnownTimeMs;
+        };
+        const getFullscreenActiveHighlightElements = (lineObj) => {
+            const elements = [];
+            const splitWords = Array.isArray(lineObj?.splittedWords) ? lineObj.splittedWords : [];
+            for (const splitWord of splitWords) {
+                const activeWordElement = splitWord?.__fsActiveWordElement ?? splitWord?.mainElement;
+                if (activeWordElement instanceof HTMLElement) {
+                    if (
+                        activeWordElement.classList.contains("amll-fs-word-active") ||
+                        activeWordElement.classList.contains("amll-fs-char-active")
+                    ) {
+                        elements.push(activeWordElement);
+                    }
+                    for (const nested of activeWordElement.querySelectorAll(".amll-fs-word-active, .amll-fs-char-active")) {
+                        if (nested instanceof HTMLElement) elements.push(nested);
+                    }
+                }
+                const charRecords = Array.isArray(splitWord?.__fsCharRecords) ? splitWord.__fsCharRecords : [];
+                for (const record of charRecords) {
+                    if (record?.active instanceof HTMLElement) elements.push(record.active);
+                }
+            }
+
+            const uniqueElements = [];
+            const seenElements = new Set();
+            for (const element of elements) {
+                if (!(element instanceof HTMLElement) || seenElements.has(element)) continue;
+                seenElements.add(element);
+                uniqueElements.push(element);
+            }
+            return uniqueElements;
+        };
+        const clearFullscreenDiscreteLayerLock = (element) => {
+            if (!(element instanceof HTMLElement)) return;
+            if (element.dataset.amllFsDiscreteLayerLocked !== "1") return;
+            element.style.removeProperty("visibility");
+            element.style.removeProperty("transition");
+            delete element.dataset.amllFsDiscreteLayerLocked;
+        };
+        const lockFullscreenDiscreteLayerHidden = (element) => {
+            if (!(element instanceof HTMLElement)) return;
+            element.dataset.amllFsDiscreteLayerLocked = "1";
+            element.style.setProperty("visibility", "hidden", "important");
+            element.style.setProperty("transition", "none", "important");
+        };
+        const resetFullscreenDiscreteLayerLocks = (lineObj) => {
+            const lineElement = lineObj?.element;
+            if (lineElement instanceof HTMLElement) {
+                delete lineElement.dataset.amllFsDiscreteInactiveLocked;
+                delete lineElement.dataset.amllFsDiscreteExitLocked;
+            }
+            for (const element of getFullscreenActiveHighlightElements(lineObj)) {
+                clearFullscreenDiscreteLayerLock(element);
+            }
+        };
+        const lockFullscreenDiscreteInactiveLine = (lineObj) => {
+            const lineElement = lineObj?.element;
+            if (!(lineElement instanceof HTMLElement)) return;
+            lineElement.dataset.amllFsDiscreteInactiveLocked = "1";
+            delete lineElement.dataset.amllFsDiscreteExitLocked;
+            for (const element of getFullscreenActiveHighlightElements(lineObj)) {
+                lockFullscreenDiscreteLayerHidden(element);
+                element.removeAttribute("data-amll-exit-highlight-word");
+            }
+        };
+        const lockFullscreenDiscreteExitingLine = (lineObj) => {
+            const lineElement = lineObj?.element;
+            if (!(lineElement instanceof HTMLElement)) return;
+            delete lineElement.dataset.amllFsDiscreteInactiveLocked;
+            lineElement.dataset.amllFsDiscreteExitLocked = "1";
+            for (const element of getFullscreenActiveHighlightElements(lineObj)) {
+                const markedAncestor = element.closest('[data-amll-exit-highlight-word="1"]');
+                const shouldKeepVisible =
+                    element.dataset.amllExitHighlightWord === "1" ||
+                    markedAncestor instanceof HTMLElement;
+                if (shouldKeepVisible) {
+                    clearFullscreenDiscreteLayerLock(element);
+                } else {
+                    lockFullscreenDiscreteLayerHidden(element);
+                }
+            }
+        };
         const patchFullscreenLineOpacityBehavior = () => {
             if (!fullscreenOpaqueLyricsMode) return;
             if (!Array.isArray(lyricPlayer.currentLyricLineObjects)) return;
@@ -2624,6 +2687,25 @@
                     if (!(child instanceof HTMLElement)) continue;
                     child.style.removeProperty("opacity");
                     child.style.setProperty("mix-blend-mode", "normal", "important");
+                }
+                if (wordHighlightMode === "discrete") {
+                    const isActiveLine = isFullscreenLineActiveObject(lineObj, lineIdx);
+                    const isExitingLine = lineElement.dataset.amllExitingHighlight === "1";
+                    const isPastLine = isFullscreenLinePastObject(lineObj);
+                    if (!isActiveLine && !isExitingLine) {
+                        if (isPastLine) {
+                            lockFullscreenDiscreteInactiveLine(lineObj);
+                            continue;
+                        }
+                        resetFullscreenDiscreteLayerLocks(lineObj);
+                    }
+                    if (!isActiveLine && isExitingLine) {
+                        lockFullscreenDiscreteExitingLine(lineObj);
+                        continue;
+                    }
+                    resetFullscreenDiscreteLayerLocks(lineObj);
+                } else {
+                    resetFullscreenDiscreteLayerLocks(lineObj);
                 }
 
                 const splitWords = Array.isArray(lineObj?.splittedWords) ? lineObj.splittedWords : [];
@@ -3126,8 +3208,8 @@
             const lineIndex = getLineObjectIndex(lineObj);
             emitSeek(lineObj, lineIndex, e);
         });
-        lyricPlayer.getElement().addEventListener("mousemove", updateHoverLine);
-        lyricPlayer.getElement().addEventListener("mouseleave", clearHoverLine);
+        // Hover feedback is handled natively by CSS :hover in lyric-player.module.css;
+        // no JavaScript mousemove tracking is needed.
 
         const parseTTMLTimeToMs = (value) => {
             if (typeof value !== "string" || value.length === 0) return null;

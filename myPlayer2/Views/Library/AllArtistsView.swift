@@ -33,6 +33,7 @@ struct AllArtistsView: View {
     @Environment(UIStateViewModel.self) private var uiState
 
     @State private var deletionRequest: ArtistDeletionRequest?
+    @State private var editingArtist: ArtistEntry?
 
     var body: some View {
         let artists = filteredArtists
@@ -67,6 +68,10 @@ struct AllArtistsView: View {
                 )
             )
         }
+        .sheet(item: $editingArtist) { entry in
+            ArtistInfoEditSheet(entry: entry) {}
+                .presentationSizing(.page)
+        }
     }
 
     // MARK: List
@@ -80,6 +85,7 @@ struct AllArtistsView: View {
                         trackCount: trackCount(for: artist),
                         albumCount: albumCount(for: artist),
                         onOpen: { open(artist) },
+                        onEdit: { editingArtist = artist },
                         onDelete: { requestDelete(artist) }
                     )
                 }
@@ -178,6 +184,7 @@ private struct ArtistListRow: View {
     let trackCount: Int
     let albumCount: Int
     let onOpen: () -> Void
+    let onEdit: () -> Void
     let onDelete: () -> Void
 
     @Environment(LibraryViewModel.self) private var libraryVM
@@ -209,6 +216,9 @@ private struct ArtistListRow: View {
         .contextMenu {
             Button(action: onOpen) {
                 Label("打开艺人", systemImage: "person.crop.circle")
+            }
+            Button(action: onEdit) {
+                Label("编辑艺人", systemImage: "info.circle")
             }
             Divider()
             Button(role: .destructive, action: onDelete) {
@@ -268,6 +278,9 @@ private struct ArtistListRow: View {
         Menu {
             Button(action: onOpen) {
                 Label("打开艺人", systemImage: "person.crop.circle")
+            }
+            Button(action: onEdit) {
+                Label("编辑艺人", systemImage: "info.circle")
             }
             Divider()
             Button(role: .destructive, action: onDelete) {

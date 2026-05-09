@@ -2649,7 +2649,7 @@ final class FileImportService: FileImportServiceProtocol {
         // Apply defaults
         let finalTitle = fields.title ?? url.deletingPathExtension().lastPathComponent
         let finalArtist = fields.artist ?? NSLocalizedString("library.unknown_artist", comment: "")
-        let finalAlbum = fields.album ?? NSLocalizedString("library.unknown_album", comment: "")
+        let finalAlbum = fields.album?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let finalAlbumArtist = fields.albumArtist?.trimmingCharacters(in: .whitespacesAndNewlines)
 
         return (

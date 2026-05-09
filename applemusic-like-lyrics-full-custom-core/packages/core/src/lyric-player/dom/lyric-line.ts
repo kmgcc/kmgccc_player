@@ -224,6 +224,7 @@ export class LyricLineEl extends LyricLineBase {
 
 	private isEnabled = false;
 	private isExitingHighlight = false;
+	private exitHighlightCompleted = false;
 	private exitHighlightCleanupTimer: number | undefined;
 	private exitHighlightAnimations: Animation[] = [];
 	private readonly exitHighlightMinDurationMs = 120;
@@ -248,15 +249,32 @@ export class LyricLineEl extends LyricLineBase {
 			? computedDuration
 			: this.totalDuration;
 	}
+	private getDiscreteOpacityAtTime(
+		word: RealWord,
+		currentTime: number,
+		inactiveOpacity: number,
+	) {
+		const elapsed = currentTime - this.getDiscreteHighlightStartTime(word);
+		if (!(elapsed > 16)) return inactiveOpacity;
+		const fadeDuration = this.getDiscreteFadeDuration(word);
+		if (elapsed >= fadeDuration) return 1;
+		const x = Math.max(0, Math.min(1, elapsed / fadeDuration));
+		const eased =
+			Math.log1p(x * DISCRETE_LOG_EASING_STRENGTH) /
+			Math.log1p(DISCRETE_LOG_EASING_STRENGTH);
+		return inactiveOpacity + (1 - inactiveOpacity) * eased;
+	}
 	private finishExitHighlightState() {
 		this.clearExitHighlightCleanupTimer();
 		this.clearExitHighlightAnimations();
 		this.isExitingHighlight = false;
+		this.exitHighlightCompleted = true;
 		delete this.element.dataset.amllExitingHighlight;
 		this.element.classList.remove(styles.active);
 		const main = this.element.children[0] as HTMLDivElement;
 		main.classList.remove(styles.active);
 		for (const word of this.splittedWords) {
+			delete word.mainElement.dataset.amllExitHighlightWord;
 			for (const animation of word.maskAnimations) {
 				animation.pause();
 			}
@@ -267,33 +285,42 @@ export class LyricLineEl extends LyricLineBase {
 		if (!(this.lyricPlayer.getIsPlaying?.() ?? true)) {
 			return false;
 		}
+		if (this.exitHighlightCompleted) {
+			return false;
+		}
+		if (this.isExitingHighlight) {
+			for (const animation of this.exitHighlightAnimations) {
+				if (animation.playState !== "finished") {
+					animation.play();
+				}
+			}
+			return this.exitHighlightAnimations.length > 0;
+		}
 
 		this.clearExitHighlightCleanupTimer();
 		this.clearExitHighlightAnimations();
 		const inactiveOpacity = this.getDiscreteInactiveOpacity();
 		const fadeDuration = this.exitHighlightMaxDurationMs;
 		this.isExitingHighlight = true;
+		this.exitHighlightCompleted = false;
 		this.element.dataset.amllExitingHighlight = "1";
 		const currentTime = this.lyricPlayer.getCurrentTime?.() ?? this.lyricLine.endTime;
 
 		for (const word of this.splittedWords) {
+			delete word.mainElement.dataset.amllExitHighlightWord;
 			for (const animation of word.maskAnimations) {
 				animation.pause();
 			}
-			if (currentTime < this.getDiscreteHighlightStartTime(word) - 16) {
-				word.mainElement.style.opacity = `${inactiveOpacity}`;
-				continue;
-			}
-			const currentOpacity = Number.parseFloat(
-				getComputedStyle(word.mainElement).opacity,
+			const fromOpacity = this.getDiscreteOpacityAtTime(
+				word,
+				currentTime,
+				inactiveOpacity,
 			);
-			const fromOpacity = Number.isFinite(currentOpacity)
-				? currentOpacity
-				: 1;
 			if (fromOpacity <= inactiveOpacity + 0.01) {
 				word.mainElement.style.opacity = `${inactiveOpacity}`;
 				continue;
 			}
+			word.mainElement.dataset.amllExitHighlightWord = "1";
 			const animation = word.mainElement.animate(
 				[
 					{ opacity: fromOpacity },
@@ -311,6 +338,7 @@ export class LyricLineEl extends LyricLineBase {
 
 		if (this.exitHighlightAnimations.length === 0) {
 			this.isExitingHighlight = false;
+			this.exitHighlightCompleted = true;
 			delete this.element.dataset.amllExitingHighlight;
 			return false;
 		}
@@ -375,6 +403,7 @@ export class LyricLineEl extends LyricLineBase {
 		this.clearExitHighlightCleanupTimer();
 		this.clearExitHighlightAnimations();
 		this.isExitingHighlight = false;
+		this.exitHighlightCompleted = false;
 		delete this.element.dataset.amllExitingHighlight;
 		this.isEnabled = true;
 		this.element.classList.add(styles.active);
@@ -395,6 +424,7 @@ export class LyricLineEl extends LyricLineBase {
 		);
 
 		for (const word of this.splittedWords) {
+			delete word.mainElement.dataset.amllExitHighlightWord;
 			for (const a of word.elementAnimations) {
 				a.currentTime = relativeTime;
 				a.playbackRate = 1;
@@ -550,8 +580,10 @@ export class LyricLineEl extends LyricLineBase {
 	private pauseWordAnimations() {
 		this.clearExitHighlightCleanupTimer();
 		this.isExitingHighlight = false;
+		this.exitHighlightCompleted = false;
 		delete this.element.dataset.amllExitingHighlight;
 		for (const word of this.splittedWords) {
+			delete word.mainElement.dataset.amllExitHighlightWord;
 			for (const animation of word.elementAnimations) {
 				animation.pause();
 			}
@@ -972,6 +1004,7 @@ export class LyricLineEl extends LyricLineBase {
 		if (this.lyricPlayer.getWordHighlightMode() !== "discrete") return;
 		const inactiveOpacity = this.getDiscreteInactiveOpacity();
 		for (const word of this.splittedWords) {
+			delete word.mainElement.dataset.amllExitHighlightWord;
 			for (const animation of word.maskAnimations) {
 				try {
 					animation.cancel();

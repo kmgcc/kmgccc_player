@@ -23,14 +23,20 @@ struct CoverCandidateStripView: View {
     private let spacing: CGFloat = 8
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            LazyHStack(spacing: spacing) {
-                ForEach(candidates) { candidate in
-                    thumbnailView(for: candidate)
-                }
+        HorizontalFadeScrollContainer(
+            spacing: spacing,
+            fadeWidth: 10,
+            verticalPadding: 2,
+            leadingScrollPadding: 4,
+            trailingScrollPadding: 4,
+            showsEdgeFade: true,
+            showsScrollButtons: true,
+            scrollButtonLeadingInset: 2,
+            scrollButtonTrailingInset: 2
+        ) {
+            ForEach(candidates) { candidate in
+                thumbnailView(for: candidate)
             }
-            .padding(.horizontal, 4)
-            .padding(.vertical, 2)
         }
         .frame(height: thumbnailSize + 16) // Thumbnail + badge height
     }

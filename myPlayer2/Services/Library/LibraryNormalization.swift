@@ -20,7 +20,8 @@ nonisolated enum LibraryNormalization {
     private static let unknownAlbumAliases = [
         "",
         "unknown album",
-        "未知专辑"
+        "未知专辑",
+        "未标注专辑"
     ]
     private static let albumArtistDisambiguationPrefix = "albumartist:"
     private static let artistClusterDisambiguationPrefix = "artistcluster:"
@@ -134,7 +135,21 @@ nonisolated enum LibraryNormalization {
     }
 
     static func displayAlbum(_ value: String?) -> String {
-        canonicalAlbumTitle(value)
+        let canonical = canonicalAlbumTitle(value)
+        return comparisonKey(canonical) == comparisonKey(unknownAlbum)
+            ? ""
+            : canonical
+    }
+
+    static func displayAlbumGroupTitle(_ value: String?) -> String {
+        let canonical = canonicalAlbumTitle(value)
+        return comparisonKey(canonical) == comparisonKey(unknownAlbum)
+            ? NSLocalizedString("library.unknown_album", comment: "")
+            : canonical
+    }
+
+    static func isUnknownAlbum(_ value: String?) -> Bool {
+        comparisonKey(canonicalAlbumTitle(value)) == comparisonKey(unknownAlbum)
     }
 
     static func composeAlbumKey(
@@ -183,7 +198,7 @@ nonisolated enum LibraryNormalization {
                 sections.append(
                     AlbumSection(
                         key: group.key,
-                        name: displayAlbum(group.tracks.first?.album),
+                        name: displayAlbumGroupTitle(group.tracks.first?.album),
                         artistName: representative.displayName,
                         artistCanonicalName: representative.canonicalName,
                         memberArtistCanonicalNames: group.memberArtistCanonicalNames,

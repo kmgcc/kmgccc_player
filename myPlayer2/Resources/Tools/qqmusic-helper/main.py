@@ -26,11 +26,13 @@ from urllib.parse import urlparse, urlunparse
 try:
     from qqmusic_api import Client
     from qqmusic_api.modules.search import SearchType
+    from qqmusic_api.modules.singer import TabType
 
     IMPORT_ERROR: str | None = None
 except Exception as exc:  # pragma: no cover - exercised in unbundled dev setups.
     Client = None  # type: ignore[assignment]
     SearchType = None  # type: ignore[assignment]
+    TabType = None  # type: ignore[assignment]
     IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
 
 
@@ -166,6 +168,61 @@ def _first_content_value(items: Any) -> str:
 def _join_description(values: list[str]) -> str:
     cleaned = [value.strip() for value in values if value.strip()]
     return "\n".join(cleaned)
+
+
+def _collect_content_text(value: Any) -> list[str]:
+    keys = {
+        "value",
+        "content",
+        "text",
+        "desc",
+        "description",
+        "intro",
+        "introduction",
+        "detail",
+        "body",
+        "summary",
+    }
+    values: list[str] = []
+    seen: set[str] = set()
+
+    def add(text: Any) -> None:
+        item = _compact_text(text)
+        if (
+            not item
+            or item in seen
+            or item.startswith(("http://", "https://"))
+            or item.lower() in {"wiki", "introduction", "简介"}
+        ):
+            return
+        seen.add(item)
+        values.append(item)
+
+    def walk(node: Any, include_string: bool = False) -> None:
+        if isinstance(node, str):
+            if include_string:
+                add(node)
+            return
+        if isinstance(node, list):
+            for child in node:
+                walk(child, include_string=include_string)
+            return
+        if not isinstance(node, dict):
+            if include_string:
+                add(node)
+            return
+        for key, child in node.items():
+            key_text = str(key).lower()
+            if key_text in keys:
+                if isinstance(child, (dict, list)):
+                    walk(child, include_string=True)
+                else:
+                    add(child)
+            elif isinstance(child, (dict, list)):
+                walk(child, include_string=False)
+
+    walk(value, include_string=False)
+    return values
 
 
 def _sanitize_image_url(value: str) -> str:
@@ -364,6 +421,19 @@ async def _fetch_singer_info(singer_mid: str) -> dict[str, Any]:
     return plain if isinstance(plain, dict) else {}
 
 
+async def _fetch_singer_wiki_tab(singer_mid: str) -> dict[str, Any]:
+    if TabType is None:
+        return {}
+    try:
+        plain = await _execute_client_request(
+            lambda client: client.singer.get_tab_detail(singer_mid, TabType.WIKI, page=1, num=10)
+        )
+        return plain if isinstance(plain, dict) else {}
+    except Exception as exc:
+        _log(f"artist wiki tab fetch failed singerMid={singer_mid} reason={type(exc).__name__}: {exc}")
+        return {}
+
+
 async def _fetch_album_detail_raw(album_mid: str) -> dict[str, Any]:
     plain = await _execute_client_request(lambda client: client.album.get_detail(album_mid))
     return plain if isinstance(plain, dict) else {}
@@ -398,6 +468,9 @@ async def search_artist_artwork(params: dict[str, Any]) -> list[dict[str, Any]]:
                 "artistName": singer_name,
                 "singerMid": singer_mid,
                 "imageURL": image_url,
+                "genreTags": _split_tags(_first_text(item, ("genre", "tag"))),
+                "region": _first_text(item, ("country", "area", "areaName")),
+                "foreignName": _first_text(item, ("other_name", "otherName", "foreignName")),
                 "confidence": _rank_confidence(index),
             }
         )
@@ -475,6 +548,9 @@ async def fetch_artist_detail(params: dict[str, Any]) -> dict[str, Any]:
     confidence = float(params.get("confidence") or 0.90)
     image_url = ""
     matched_name = name
+    matched_region = ""
+    matched_foreign_name = ""
+    matched_genre_tags: list[str] = []
 
     if not singer_mid and name:
         candidates = await search_artist_artwork({"name": name, "limit": 1})
@@ -483,6 +559,9 @@ async def fetch_artist_detail(params: dict[str, Any]) -> dict[str, Any]:
             singer_mid = str(top.get("singerMid") or "").strip()
             matched_name = str(top.get("artistName") or name).strip()
             image_url = str(top.get("imageURL") or "").strip()
+            matched_region = str(top.get("region") or "").strip()
+            matched_foreign_name = str(top.get("foreignName") or "").strip()
+            matched_genre_tags = _split_tags(top.get("genreTags"))
             confidence = float(top.get("confidence") or confidence)
 
     if not singer_mid:
@@ -490,10 +569,12 @@ async def fetch_artist_detail(params: dict[str, Any]) -> dict[str, Any]:
 
     desc = await _fetch_singer_desc(singer_mid)
     info = await _fetch_singer_info(singer_mid)
+    wiki_tab = await _fetch_singer_wiki_tab(singer_mid)
     basic = _first_dict(desc, ("basic_info", "basicInfo"))
     ex_info = _first_dict(desc, ("ex_info", "exInfo"))
     info_singer = _first_dict(info, ("singer", "Singer"))
     base_info = _first_dict(info, ("base_info", "baseInfo", "BaseInfo"))
+    info_tab_detail = _first_dict(info, ("tab_detail", "TabDetail"))
 
     artist_name = (
         _first_text(basic, ("name", "title", "singerName"))
@@ -507,10 +588,19 @@ async def fetch_artist_detail(params: dict[str, Any]) -> dict[str, Any]:
         or _singer_cover_url(singer_mid)
     )
     image_url = _sanitize_image_url(image_url)
-    genre_tags = _split_tags(_first_text(ex_info, ("genre", "tag")))
+    genre_tags = _split_tags(_first_text(ex_info, ("genre", "tag"))) or matched_genre_tags
     description = (
         _first_text(ex_info, ("desc", "description"))
         or _first_text(desc, ("wiki",))
+        or _join_description(_collect_content_text(info_tab_detail))
+        or _join_description(_collect_content_text(wiki_tab))
+    )
+    region = _first_text(ex_info, ("area", "region", "country")) or matched_region
+    foreign_name = _first_text(ex_info, ("foreign_name", "foreignName")) or matched_foreign_name
+    _log(
+        "artist detail fields "
+        f"singerMid={singer_mid} desc={bool(description)} tags={len(genre_tags)} "
+        f"region={bool(region)} foreignName={bool(foreign_name)}"
     )
 
     return {
@@ -520,8 +610,8 @@ async def fetch_artist_detail(params: dict[str, Any]) -> dict[str, Any]:
         "imageURL": image_url,
         "description": description,
         "genreTags": genre_tags,
-        "region": _first_text(ex_info, ("area", "region", "country")),
-        "foreignName": _first_text(ex_info, ("foreign_name", "foreignName")),
+        "region": region,
+        "foreignName": foreign_name,
         "metadataSource": SOURCE,
         "metadataFetchedAt": _utc_now_iso(),
         "metadataConfidence": confidence,

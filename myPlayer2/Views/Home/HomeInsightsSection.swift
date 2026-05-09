@@ -456,7 +456,7 @@ private struct HomePreferenceRankingView: View {
                             .frame(width: 28)
                         Spacer()
                             .frame(width: rankArtworkSpacing + artworkSide + artworkTitleSpacing)
-                        Text("歌曲 \u{00B7} 歌手")
+                        Text("歌曲 \u{00B7} 艺人")
                             .frame(maxWidth: .infinity, alignment: .leading)
                         Text("爱听")
                             .frame(width: scoreWidth, alignment: .leading)

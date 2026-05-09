@@ -125,13 +125,28 @@ struct HomeHeroView: View {
         }
     }
 
-    private var descriptionLineLimit: Int {
+    private var descriptionLineCount: Int {
         switch mode {
-        case .wide:    return 9 + Int(wideExpansion.rounded())
-        case .medium:  return 8
-        case .compact: return 6
-        case .narrow:  return 4
+        case .wide:    return wideExpansion > 0.55 ? 8 : 7
+        case .medium:  return 7
+        case .compact: return 5
+        case .narrow:  return 5
         }
+    }
+
+    private var descriptionFontSize: CGFloat {
+        mode == .narrow ? 11.5 : 13
+    }
+
+    private var descriptionLineHeight: CGFloat {
+        let font = NSFont.systemFont(ofSize: descriptionFontSize, weight: .ultraLight)
+        return NSLayoutManager().defaultLineHeight(for: font)
+    }
+
+    private var descriptionScrollHeight: CGFloat {
+        let lineSpacing: CGFloat = 1.5
+        let lines = CGFloat(descriptionLineCount)
+        return ceil(descriptionLineHeight * lines + lineSpacing * max(0, lines - 1) + 1)
     }
 
     private var heroPadding: CGFloat {
@@ -307,10 +322,11 @@ struct HomeHeroView: View {
         HStack(spacing: 0) {
             Text(track.artist)
                 .foregroundStyle(heroSecondaryForeground)
-            if !track.album.isEmpty {
+            let albumTitle = LibraryNormalization.displayAlbum(track.album)
+            if !LibraryNormalization.isUnknownAlbum(track.album), !albumTitle.isEmpty {
                 Text(" \u{00B7} ")
                     .foregroundStyle(heroQuaternaryForeground)
-                Text(track.album)
+                Text(albumTitle)
                     .foregroundStyle(heroSecondaryForeground)
             }
         }
@@ -320,18 +336,30 @@ struct HomeHeroView: View {
 
     @ViewBuilder
     private var descriptionLine: some View {
-        let description = track.userDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        let description = heroDescription.trimmingCharacters(in: .whitespacesAndNewlines)
         if !description.isEmpty {
-            Text(description)
-                .font(.system(size: mode == .narrow ? 11.5 : 13, weight: .ultraLight))
-                .lineSpacing(1.5)
-                .lineLimit(descriptionLineLimit)
-                .truncationMode(.tail)
-                .foregroundStyle(heroDescriptionForeground)
-                .fixedSize(horizontal: false, vertical: true)
-                .layoutPriority(1)
-                .padding(.top, 4)
+            ScrollView(.vertical, showsIndicators: true) {
+                Text(description)
+                    .font(.system(size: descriptionFontSize, weight: .ultraLight))
+                    .lineSpacing(1.5)
+                    .foregroundStyle(heroDescriptionForeground)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(height: descriptionScrollHeight, alignment: .top)
+            .scrollClipDisabled(false)
+            .clipped()
+            .layoutPriority(1)
+            .padding(.top, 4)
         }
+    }
+
+    private var heroDescription: String {
+        let trackDescription = track.userDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trackDescription.isEmpty { return trackDescription }
+        return libraryVM.albumEntries
+            .first { $0.canonicalKey == track.albumGroupKey }?
+            .description
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 
     @ViewBuilder

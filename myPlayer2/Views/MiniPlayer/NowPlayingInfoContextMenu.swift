@@ -17,6 +17,7 @@ struct TrackActionMenuContent: View {
     var onRemoveFromCurrentPlaylist: ((Track) -> Void)?
 
     @Environment(LibraryViewModel.self) private var libraryVM
+    @Environment(UIStateViewModel.self) private var uiState
 
     var body: some View {
         if canSelectMultiple, let onSelectMultiple {
@@ -81,6 +82,22 @@ struct TrackActionMenuContent: View {
             Label("编辑歌曲信息", systemImage: "info.circle")
         }
 
+        if shouldShowArtistNavigation {
+            Button {
+                libraryVM.navigateToArtist(for: track, uiState: uiState)
+            } label: {
+                Label("跳转到艺人", systemImage: "person.crop.circle")
+            }
+        }
+
+        if shouldShowAlbumNavigation {
+            Button {
+                libraryVM.navigateToAlbum(for: track, uiState: uiState)
+            } label: {
+                Label("跳转到专辑", systemImage: "rectangle.stack")
+            }
+        }
+
         Divider()
 
         Button(role: .destructive) {
@@ -90,6 +107,16 @@ struct TrackActionMenuContent: View {
         } label: {
             Label("从资料库删除", systemImage: "trash")
         }
+    }
+
+    private var shouldShowArtistNavigation: Bool {
+        guard case .artist = libraryVM.currentSelection else { return true }
+        return false
+    }
+
+    private var shouldShowAlbumNavigation: Bool {
+        guard case .album = libraryVM.currentSelection else { return true }
+        return false
     }
 }
 

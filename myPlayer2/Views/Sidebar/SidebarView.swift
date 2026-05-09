@@ -29,6 +29,8 @@ struct SidebarView: View {
     @State private var showSettings = false
     @State private var showingPlaylistSheet = false
     @State private var deletionRequest: SidebarDeletionRequest?
+    @State private var editingArtistEntry: ArtistEntry?
+    @State private var editingAlbumEntry: AlbumEntry?
     @State private var isHoveringPlaylists = false
     @State private var isArtistsExpanded = false
     @State private var isAlbumsExpanded = false
@@ -177,6 +179,12 @@ struct SidebarView: View {
                             .listRowBackground(Color.clear)
                             .contextMenu {
                                 if let entry = libraryVM.artistEntry(for: artist) {
+                                    Button {
+                                        editingArtistEntry = entry
+                                    } label: {
+                                        Label("编辑艺人", systemImage: "info.circle")
+                                    }
+                                    Divider()
                                     Button(role: .destructive) {
                                         deletionRequest = .artist(
                                             entry: entry,
@@ -241,6 +249,12 @@ struct SidebarView: View {
                             .listRowBackground(Color.clear)
                             .contextMenu {
                                 if let entry = libraryVM.albumEntry(for: album) {
+                                    Button {
+                                        editingAlbumEntry = entry
+                                    } label: {
+                                        Label("编辑专辑", systemImage: "info.circle")
+                                    }
+                                    Divider()
                                     Button(role: .destructive) {
                                         deletionRequest = .album(
                                             entry: entry,
@@ -320,6 +334,14 @@ struct SidebarView: View {
         }
         .sheet(isPresented: $showingPlaylistSheet) {
             PlaylistEditSheet()
+        }
+        .sheet(item: $editingArtistEntry) { entry in
+            ArtistInfoEditSheet(entry: entry) {}
+                .presentationSizing(.page)
+        }
+        .sheet(item: $editingAlbumEntry) { entry in
+            AlbumInfoEditSheet(entry: entry) {}
+                .presentationSizing(.page)
         }
         .alert(
             deletionRequest?.title ?? "",

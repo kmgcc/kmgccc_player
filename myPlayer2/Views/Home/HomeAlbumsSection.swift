@@ -29,6 +29,7 @@ struct HomeAlbumsSection: View {
     @Environment(UIStateViewModel.self) private var uiState
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @State private var deletionRequest: HomeAlbumDeletionRequest?
+    @State private var editingAlbum: AlbumEntry?
 
     private let cardCornerRadius: CGFloat = 16
 
@@ -68,6 +69,10 @@ struct HomeAlbumsSection: View {
                 )
             )
         }
+        .sheet(item: $editingAlbum) { entry in
+            AlbumInfoEditSheet(entry: entry) {}
+                .presentationSizing(.page)
+        }
     }
 
     @ViewBuilder
@@ -91,6 +96,7 @@ struct HomeAlbumsSection: View {
                     mode: mode,
                     onOpen: { open(album) },
                     onPlay: { play(album) },
+                    onEdit: { editingAlbum = album },
                     onDelete: { requestDelete(album) }
                 )
             }
@@ -182,6 +188,7 @@ private struct HomeAlbumCard: View {
     let mode: HomeLayoutMode
     let onOpen: () -> Void
     let onPlay: () -> Void
+    let onEdit: () -> Void
     let onDelete: () -> Void
 
     @Environment(LibraryViewModel.self) private var libraryVM
@@ -266,6 +273,9 @@ private struct HomeAlbumCard: View {
 
             Button(action: onOpen) {
                 Label("打开专辑", systemImage: "square.stack")
+            }
+            Button(action: onEdit) {
+                Label("编辑专辑", systemImage: "info.circle")
             }
 
             Divider()
