@@ -184,9 +184,7 @@ nonisolated enum MetadataDetailApplicator {
         guard detail.confidence >= minimumConfidence else { return false }
 
         var changed = false
-        if LibraryNormalization.isUnknownAlbum(track.album) {
-            fillString(&track.album, with: detail.album, changed: &changed)
-        }
+        fillMissingAlbum(&track.album, with: detail.album, changed: &changed)
         fillString(&track.userDescription, with: detail.description, changed: &changed)
         fillStringArray(&track.genreTags, with: detail.genreTags, changed: &changed)
         fillString(&track.language, with: detail.language, changed: &changed)
@@ -205,6 +203,20 @@ nonisolated enum MetadataDetailApplicator {
             )
         }
         return changed
+    }
+
+    static func shouldFillMissingAlbum(_ album: String) -> Bool {
+        LibraryNormalization.isUnknownAlbum(album)
+    }
+
+    private static func fillMissingAlbum(_ target: inout String, with candidate: String?, changed: inout Bool) {
+        guard shouldFillMissingAlbum(target),
+              let candidate = candidate?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !candidate.isEmpty,
+              !LibraryNormalization.isUnknownAlbum(candidate)
+        else { return }
+        target = candidate
+        changed = true
     }
 
     private static func fillString(_ target: inout String, with candidate: String?, changed: inout Bool) {

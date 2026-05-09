@@ -445,17 +445,65 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     }
 
     func updateArtistEntry(_ entry: ArtistEntry) async {
-        if let idx = artistEntries.firstIndex(where: { $0.id == entry.id }) {
-            artistEntries[idx] = entry
+        let canonicalName = entry.canonicalName
+        let displayName = entry.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? LibraryNormalization.displayArtist(entry.displayName)
+            : entry.displayName
+        let target = artistEntries.first {
+            $0.canonicalName == canonicalName && $0.id != entry.id
         }
-        writeArtistEntryToDisk(entry)
+        let entryToPersist = mergedArtistEntry(
+            preferred: entry,
+            fallback: target,
+            canonicalName: canonicalName,
+            displayName: displayName
+        )
+
+        writeArtistEntryToDisk(entryToPersist)
+
+        if let target {
+            libraryService.deleteArtistEntry(id: entry.id)
+            artistEntries.removeAll { $0.id == entry.id }
+            if let idx = artistEntries.firstIndex(where: { $0.id == target.id }) {
+                artistEntries[idx] = entryToPersist
+            } else {
+                artistEntries.append(entryToPersist)
+            }
+        } else if let idx = artistEntries.firstIndex(where: { $0.id == entry.id }) {
+            artistEntries[idx] = entryToPersist
+        } else {
+            artistEntries.append(entryToPersist)
+        }
     }
 
     func updateAlbumEntry(_ entry: AlbumEntry) async {
-        if let idx = albumEntries.firstIndex(where: { $0.id == entry.id }) {
-            albumEntries[idx] = entry
+        let target = albumEntries.first {
+            $0.canonicalKey == entry.canonicalKey && $0.id != entry.id
         }
-        writeAlbumEntryToDisk(entry)
+        let entryToPersist = mergedAlbumEntry(
+            preferred: entry,
+            fallback: target,
+            canonicalKey: entry.canonicalKey,
+            displayTitle: entry.displayTitle,
+            primaryArtistCanonicalName: entry.primaryArtistCanonicalName,
+            primaryArtistDisplayName: entry.primaryArtistDisplayName
+        )
+
+        writeAlbumEntryToDisk(entryToPersist)
+
+        if let target {
+            libraryService.deleteAlbumEntry(id: entry.id)
+            albumEntries.removeAll { $0.id == entry.id }
+            if let idx = albumEntries.firstIndex(where: { $0.id == target.id }) {
+                albumEntries[idx] = entryToPersist
+            } else {
+                albumEntries.append(entryToPersist)
+            }
+        } else if let idx = albumEntries.firstIndex(where: { $0.id == entry.id }) {
+            albumEntries[idx] = entryToPersist
+        } else {
+            albumEntries.append(entryToPersist)
+        }
     }
 
     func applyArtistEdits(original: ArtistEntry, updated: ArtistEntry) async {

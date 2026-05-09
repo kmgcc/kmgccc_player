@@ -42,8 +42,10 @@ final class LibraryMetadataSync {
         sidecars: [(sidecar: ArtistSidecar, folderURL: URL)],
         libraryService: LocalLibraryService
     ) -> [ArtistEntry] {
-        var existing: [String: (sidecar: ArtistSidecar, folderURL: URL)] =
-            Dictionary(uniqueKeysWithValues: sidecars.map { ($0.sidecar.canonicalName, $0) })
+        var existing = repairedArtistSidecarsByCanonical(
+            sidecars,
+            libraryService: libraryService
+        )
         let now = Date()
 
         // Compute album counts per artist canonical key
@@ -168,8 +170,10 @@ final class LibraryMetadataSync {
         sidecars: [(sidecar: AlbumSidecar, folderURL: URL)],
         libraryService: LocalLibraryService
     ) -> [AlbumEntry] {
-        var existing: [String: (sidecar: AlbumSidecar, folderURL: URL)] =
-            Dictionary(uniqueKeysWithValues: sidecars.map { ($0.sidecar.canonicalKey, $0) })
+        var existing = repairedAlbumSidecarsByCanonical(
+            sidecars,
+            libraryService: libraryService
+        )
         let now = Date()
 
         var result: [AlbumEntry] = []
@@ -303,6 +307,278 @@ final class LibraryMetadataSync {
 
         return sidecar.primaryArtistCanonicalName == section.artistCanonicalName
             || section.memberArtistCanonicalNames.contains(sidecar.primaryArtistCanonicalName)
+    }
+
+    private func repairedArtistSidecarsByCanonical(
+        _ sidecars: [(sidecar: ArtistSidecar, folderURL: URL)],
+        libraryService: LocalLibraryService
+    ) -> [String: (sidecar: ArtistSidecar, folderURL: URL)] {
+        var result: [String: (sidecar: ArtistSidecar, folderURL: URL)] = [:]
+        let grouped = Dictionary(grouping: sidecars) { $0.sidecar.canonicalName }
+
+        for (canonicalName, candidates) in grouped {
+            guard candidates.count > 1 else {
+                if let candidate = candidates.first {
+                    result[canonicalName] = candidate
+                }
+                continue
+            }
+
+            let repaired = repairDuplicateArtistSidecars(
+                canonicalName: canonicalName,
+                candidates: candidates,
+                libraryService: libraryService
+            )
+            result[canonicalName] = repaired
+        }
+
+        return result
+    }
+
+    private func repairedAlbumSidecarsByCanonical(
+        _ sidecars: [(sidecar: AlbumSidecar, folderURL: URL)],
+        libraryService: LocalLibraryService
+    ) -> [String: (sidecar: AlbumSidecar, folderURL: URL)] {
+        var result: [String: (sidecar: AlbumSidecar, folderURL: URL)] = [:]
+        let grouped = Dictionary(grouping: sidecars) { $0.sidecar.canonicalKey }
+
+        for (canonicalKey, candidates) in grouped {
+            guard candidates.count > 1 else {
+                if let candidate = candidates.first {
+                    result[canonicalKey] = candidate
+                }
+                continue
+            }
+
+            let repaired = repairDuplicateAlbumSidecars(
+                canonicalKey: canonicalKey,
+                candidates: candidates,
+                libraryService: libraryService
+            )
+            result[canonicalKey] = repaired
+        }
+
+        return result
+    }
+
+    private func repairDuplicateArtistSidecars(
+        canonicalName: String,
+        candidates: [(sidecar: ArtistSidecar, folderURL: URL)],
+        libraryService: LocalLibraryService
+    ) -> (sidecar: ArtistSidecar, folderURL: URL) {
+        let sorted = sortedArtistSidecarCandidates(candidates)
+        let keeper = sorted[0]
+        let artworkCandidate = bestArtistArtworkCandidate(from: sorted)
+        let mergedSidecar = mergedArtistSidecar(
+            canonicalName: canonicalName,
+            candidates: sorted,
+            keeper: keeper,
+            artworkFileName: artworkCandidate?.sidecar.artworkFileName
+        )
+        let artworkData = artworkCandidate?.data
+
+        Log.warning(
+            "[LibraryMetadataSync] duplicate artist sidecars canonical=\(canonicalName) count=\(candidates.count) ids=\(candidates.map { $0.sidecar.id.uuidString }) paths=\(candidates.map { $0.folderURL.path }) keeper=\(keeper.sidecar.id.uuidString) mergedArtwork=\(mergedSidecar.artworkFileName ?? "nil") mergedDescription=\((mergedSidecar.description ?? "").isEmpty ? "empty" : "filled") mergedTags=\(mergedSidecar.genreTags.count)",
+            category: .library
+        )
+
+        libraryService.writeArtistSidecar(
+            mergedSidecar,
+            artworkData: mergedSidecar.artworkFileName != nil ? artworkData : nil
+        )
+        for duplicate in sorted.dropFirst() {
+            libraryService.deleteArtistEntry(id: duplicate.sidecar.id)
+        }
+        return (mergedSidecar, keeper.folderURL)
+    }
+
+    private func repairDuplicateAlbumSidecars(
+        canonicalKey: String,
+        candidates: [(sidecar: AlbumSidecar, folderURL: URL)],
+        libraryService: LocalLibraryService
+    ) -> (sidecar: AlbumSidecar, folderURL: URL) {
+        let sorted = sortedAlbumSidecarCandidates(candidates)
+        let keeper = sorted[0]
+        let artworkCandidate = bestAlbumArtworkCandidate(from: sorted)
+        let mergedSidecar = mergedAlbumSidecar(
+            canonicalKey: canonicalKey,
+            candidates: sorted,
+            keeper: keeper,
+            artworkFileName: artworkCandidate?.sidecar.artworkFileName
+        )
+        let artworkData = artworkCandidate?.data
+
+        Log.warning(
+            "[LibraryMetadataSync] duplicate album sidecars canonicalKey=\(canonicalKey) count=\(candidates.count) ids=\(candidates.map { $0.sidecar.id.uuidString }) paths=\(candidates.map { $0.folderURL.path }) keeper=\(keeper.sidecar.id.uuidString) mergedArtwork=\(mergedSidecar.artworkFileName ?? "nil") mergedDescription=\((mergedSidecar.description ?? "").isEmpty ? "empty" : "filled") mergedTags=\(mergedSidecar.genreTags.count)",
+            category: .library
+        )
+
+        libraryService.writeAlbumSidecar(
+            mergedSidecar,
+            artworkData: mergedSidecar.artworkFileName != nil ? artworkData : nil
+        )
+        for duplicate in sorted.dropFirst() {
+            libraryService.deleteAlbumEntry(id: duplicate.sidecar.id)
+        }
+        return (mergedSidecar, keeper.folderURL)
+    }
+
+    private func sortedArtistSidecarCandidates(
+        _ candidates: [(sidecar: ArtistSidecar, folderURL: URL)]
+    ) -> [(sidecar: ArtistSidecar, folderURL: URL)] {
+        candidates.sorted { lhs, rhs in
+            let lhsScore = artistSidecarContentScore(lhs)
+            let rhsScore = artistSidecarContentScore(rhs)
+            if lhsScore != rhsScore { return lhsScore > rhsScore }
+            return lhs.sidecar.updatedAt > rhs.sidecar.updatedAt
+        }
+    }
+
+    private func sortedAlbumSidecarCandidates(
+        _ candidates: [(sidecar: AlbumSidecar, folderURL: URL)]
+    ) -> [(sidecar: AlbumSidecar, folderURL: URL)] {
+        candidates.sorted { lhs, rhs in
+            let lhsScore = albumSidecarContentScore(lhs)
+            let rhsScore = albumSidecarContentScore(rhs)
+            if lhsScore != rhsScore { return lhsScore > rhsScore }
+            return lhs.sidecar.updatedAt > rhs.sidecar.updatedAt
+        }
+    }
+
+    private func artistSidecarContentScore(_ candidate: (sidecar: ArtistSidecar, folderURL: URL)) -> Int {
+        var score = 0
+        if artistArtworkData(candidate) != nil { score += 8 }
+        if !(candidate.sidecar.description ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { score += 5 }
+        score += min(candidate.sidecar.genreTags.count, 5)
+        if !(candidate.sidecar.region ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { score += 1 }
+        if !(candidate.sidecar.foreignName ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { score += 1 }
+        if candidate.sidecar.qqMusicSingerMid != nil { score += 2 }
+        if candidate.sidecar.metadataSource != nil { score += 1 }
+        return score
+    }
+
+    private func albumSidecarContentScore(_ candidate: (sidecar: AlbumSidecar, folderURL: URL)) -> Int {
+        var score = 0
+        if albumArtworkData(candidate) != nil { score += 8 }
+        if !(candidate.sidecar.description ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { score += 5 }
+        score += min(candidate.sidecar.genreTags.count, 5)
+        if candidate.sidecar.year != nil || candidate.sidecar.releaseYear != nil || candidate.sidecar.releaseDate != nil { score += 2 }
+        if !(candidate.sidecar.albumType ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { score += 1 }
+        if !(candidate.sidecar.language ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { score += 1 }
+        if !(candidate.sidecar.labelOrCompany ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { score += 1 }
+        if candidate.sidecar.qqMusicAlbumMid != nil { score += 2 }
+        if candidate.sidecar.metadataSource != nil { score += 1 }
+        return score
+    }
+
+    private func bestArtistArtworkCandidate(
+        from candidates: [(sidecar: ArtistSidecar, folderURL: URL)]
+    ) -> (sidecar: ArtistSidecar, folderURL: URL, data: Data)? {
+        candidates.compactMap { candidate -> (sidecar: ArtistSidecar, folderURL: URL, data: Data)? in
+            guard let data = artistArtworkData(candidate) else { return nil }
+            return (candidate.sidecar, candidate.folderURL, data)
+        }.max { lhs, rhs in lhs.data.count < rhs.data.count }
+    }
+
+    private func bestAlbumArtworkCandidate(
+        from candidates: [(sidecar: AlbumSidecar, folderURL: URL)]
+    ) -> (sidecar: AlbumSidecar, folderURL: URL, data: Data)? {
+        candidates.compactMap { candidate -> (sidecar: AlbumSidecar, folderURL: URL, data: Data)? in
+            guard let data = albumArtworkData(candidate) else { return nil }
+            return (candidate.sidecar, candidate.folderURL, data)
+        }.max { lhs, rhs in lhs.data.count < rhs.data.count }
+    }
+
+    private func artistArtworkData(_ candidate: (sidecar: ArtistSidecar, folderURL: URL)) -> Data? {
+        guard let fileName = candidate.sidecar.artworkFileName else { return nil }
+        return try? Data(contentsOf: candidate.folderURL.appendingPathComponent(fileName))
+    }
+
+    private func albumArtworkData(_ candidate: (sidecar: AlbumSidecar, folderURL: URL)) -> Data? {
+        guard let fileName = candidate.sidecar.artworkFileName else { return nil }
+        return try? Data(contentsOf: candidate.folderURL.appendingPathComponent(fileName))
+    }
+
+    private func mergedArtistSidecar(
+        canonicalName: String,
+        candidates: [(sidecar: ArtistSidecar, folderURL: URL)],
+        keeper: (sidecar: ArtistSidecar, folderURL: URL),
+        artworkFileName: String?
+    ) -> ArtistSidecar {
+        ArtistSidecar(
+            id: keeper.sidecar.id,
+            canonicalName: canonicalName,
+            displayName: firstNonEmpty(candidates.map(\.sidecar.displayName)) ?? keeper.sidecar.displayName,
+            artworkFileName: artworkFileName,
+            description: firstNonEmpty(candidates.map(\.sidecar.description)),
+            genreTags: mergedTags(candidates.flatMap(\.sidecar.genreTags)),
+            region: firstNonEmpty(candidates.map(\.sidecar.region)),
+            foreignName: firstNonEmpty(candidates.map(\.sidecar.foreignName)),
+            qqMusicSingerMid: firstNonEmpty(candidates.map(\.sidecar.qqMusicSingerMid)),
+            metadataSource: firstNonEmpty(candidates.map(\.sidecar.metadataSource)),
+            metadataFetchedAt: candidates.compactMap(\.sidecar.metadataFetchedAt).max(),
+            metadataConfidence: candidates.compactMap(\.sidecar.metadataConfidence).max(),
+            createdAt: candidates.map(\.sidecar.createdAt).min() ?? keeper.sidecar.createdAt,
+            updatedAt: Date()
+        )
+    }
+
+    private func mergedAlbumSidecar(
+        canonicalKey: String,
+        candidates: [(sidecar: AlbumSidecar, folderURL: URL)],
+        keeper: (sidecar: AlbumSidecar, folderURL: URL),
+        artworkFileName: String?
+    ) -> AlbumSidecar {
+        AlbumSidecar(
+            id: keeper.sidecar.id,
+            canonicalKey: canonicalKey,
+            displayTitle: firstNonEmpty(candidates.map(\.sidecar.displayTitle)) ?? keeper.sidecar.displayTitle,
+            primaryArtistCanonicalName: firstNonEmpty(candidates.map(\.sidecar.primaryArtistCanonicalName)) ?? keeper.sidecar.primaryArtistCanonicalName,
+            primaryArtistDisplayName: firstNonEmpty(candidates.map(\.sidecar.primaryArtistDisplayName)),
+            artworkFileName: artworkFileName,
+            description: firstNonEmpty(candidates.map(\.sidecar.description)),
+            year: candidates.compactMap(\.sidecar.year).first,
+            releaseYear: candidates.compactMap { $0.sidecar.releaseYear ?? $0.sidecar.year }.first,
+            releaseDate: candidates.compactMap(\.sidecar.releaseDate).max(),
+            albumType: firstNonEmpty(candidates.map(\.sidecar.albumType)),
+            genreTags: mergedTags(candidates.flatMap(\.sidecar.genreTags)),
+            language: firstNonEmpty(candidates.map(\.sidecar.language)),
+            labelOrCompany: firstNonEmpty(candidates.map(\.sidecar.labelOrCompany)),
+            qqMusicAlbumMid: firstNonEmpty(candidates.map(\.sidecar.qqMusicAlbumMid)),
+            metadataSource: firstNonEmpty(candidates.map(\.sidecar.metadataSource)),
+            metadataFetchedAt: candidates.compactMap(\.sidecar.metadataFetchedAt).max(),
+            metadataConfidence: candidates.compactMap(\.sidecar.metadataConfidence).max(),
+            createdAt: candidates.map(\.sidecar.createdAt).min() ?? keeper.sidecar.createdAt,
+            updatedAt: Date()
+        )
+    }
+
+    private func firstNonEmpty(_ values: [String?]) -> String? {
+        values.compactMap { value in
+            let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (trimmed?.isEmpty ?? true) ? nil : trimmed
+        }.first
+    }
+
+    private func firstNonEmpty(_ values: [String]) -> String? {
+        values.compactMap { value in
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }.first
+    }
+
+    private func mergedTags(_ tags: [String]) -> [String] {
+        var seen: Set<String> = []
+        var result: [String] = []
+        for tag in tags {
+            let trimmed = tag.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            let key = trimmed.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current)
+            guard !seen.contains(key) else { continue }
+            seen.insert(key)
+            result.append(trimmed)
+        }
+        return result
     }
 
     private func mergedAlbumEntry(

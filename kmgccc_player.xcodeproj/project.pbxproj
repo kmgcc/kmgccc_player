@@ -542,19 +542,9 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				LIBRARY_SEARCH_PATHS = (
-					"$(inherited)",
-					"$(PROJECT_DIR)/myPlayer2/Resources/Tools/qqmusic-helper/.build-universal/venv-arm64/lib/python3.12/site-packages/orjson",
-					"$(PROJECT_DIR)/myPlayer2/Resources/Tools/qqmusic-helper/.build-universal/venv-arm64/lib/python3.12/site-packages/tarsio",
-					"$(PROJECT_DIR)/myPlayer2/Resources/Tools/qqmusic-helper/.build-universal/venv-arm64/lib/python3.12/site-packages/cryptography/hazmat/bindings",
-					"$(PROJECT_DIR)/myPlayer2/Resources/Tools/qqmusic-helper/.build-universal/venv-arm64/lib/python3.12/site-packages/pydantic_core",
-					"$(PROJECT_DIR)/myPlayer2/Resources/Tools/qqmusic-helper/.build-universal/venv-x86_64/lib/python3.11/site-packages/orjson",
-					"$(PROJECT_DIR)/myPlayer2/Resources/Tools/qqmusic-helper/.build-universal/venv-x86_64/lib/python3.11/site-packages/tarsio",
-					"$(PROJECT_DIR)/myPlayer2/Resources/Tools/qqmusic-helper/.build-universal/venv-x86_64/lib/python3.11/site-packages/pydantic_core",
-					"$(PROJECT_DIR)/myPlayer2/Resources/Tools/qqmusic-helper/.build-universal/venv-x86_64/lib/python3.11/site-packages/cryptography/hazmat/bindings",
-				);
+				LIBRARY_SEARCH_PATHS = "$(inherited)";
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.4.1;
+				MARKETING_VERSION = 2.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = kmgccc.player;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -620,19 +610,9 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				LIBRARY_SEARCH_PATHS = (
-					"$(inherited)",
-					"$(PROJECT_DIR)/myPlayer2/Resources/Tools/qqmusic-helper/.build-universal/venv-arm64/lib/python3.12/site-packages/orjson",
-					"$(PROJECT_DIR)/myPlayer2/Resources/Tools/qqmusic-helper/.build-universal/venv-arm64/lib/python3.12/site-packages/tarsio",
-					"$(PROJECT_DIR)/myPlayer2/Resources/Tools/qqmusic-helper/.build-universal/venv-arm64/lib/python3.12/site-packages/cryptography/hazmat/bindings",
-					"$(PROJECT_DIR)/myPlayer2/Resources/Tools/qqmusic-helper/.build-universal/venv-arm64/lib/python3.12/site-packages/pydantic_core",
-					"$(PROJECT_DIR)/myPlayer2/Resources/Tools/qqmusic-helper/.build-universal/venv-x86_64/lib/python3.11/site-packages/orjson",
-					"$(PROJECT_DIR)/myPlayer2/Resources/Tools/qqmusic-helper/.build-universal/venv-x86_64/lib/python3.11/site-packages/tarsio",
-					"$(PROJECT_DIR)/myPlayer2/Resources/Tools/qqmusic-helper/.build-universal/venv-x86_64/lib/python3.11/site-packages/pydantic_core",
-					"$(PROJECT_DIR)/myPlayer2/Resources/Tools/qqmusic-helper/.build-universal/venv-x86_64/lib/python3.11/site-packages/cryptography/hazmat/bindings",
-				);
+				LIBRARY_SEARCH_PATHS = "$(inherited)";
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.4.1;
+				MARKETING_VERSION = 2.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = kmgccc.player;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;

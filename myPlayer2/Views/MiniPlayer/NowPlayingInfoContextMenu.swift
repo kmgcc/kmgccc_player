@@ -86,7 +86,7 @@ struct TrackActionMenuContent: View {
             Button {
                 libraryVM.navigateToArtist(for: track, uiState: uiState)
             } label: {
-                Label("跳转到艺人", systemImage: "person.crop.circle")
+                Label("查看艺人", systemImage: "person.crop.circle")
             }
         }
 
@@ -94,7 +94,7 @@ struct TrackActionMenuContent: View {
             Button {
                 libraryVM.navigateToAlbum(for: track, uiState: uiState)
             } label: {
-                Label("跳转到专辑", systemImage: "rectangle.stack")
+                Label("查看专辑", systemImage: "rectangle.stack")
             }
         }
 

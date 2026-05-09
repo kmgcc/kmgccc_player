@@ -754,48 +754,7 @@ final class AppleMusicPlaybackAdapter {
         let metadataStore = self.metadataStore
         let matchedTrackID = matchedTrack?.id
         let localArtwork = matchedTrack?.loadArtworkDataIfNeeded()
-        if let matchedTrack, let localArtwork, !localArtwork.isEmpty {
-            let localMatchedTrackID = matchedTrack.id
-            if displayedArtwork.identity == identity,
-               displayedArtwork.source == .localLibrary,
-               displayedArtwork.data?.isEmpty == false {
-                pendingArtworkIdentity = nil
-                Log.info(
-                    "[AMAdapter] artwork finalSource=localMatchedArtwork identity=\(identity.prefix(16)) trackID=\(localMatchedTrackID) action=keep-existing skipAutoSearch=true",
-                    category: .playback
-                )
-                updatePresentationFromLatestInfo()
-                return
-            }
-
-            pendingArtworkIdentity = identity
-            updatePresentationFromLatestInfo()
-            artworkTask = Task { [weak self] in
-                guard let self else { return }
-                let displayTrackID = matchedTrackID ?? NowPlayingPresentation.externalArtworkDisplayUUID(for: identity)
-                let didCommit = await self.prepareAndCommitArtwork(
-                    localArtwork,
-                    source: .localLibrary,
-                    identity: identity,
-                    displayTrackID: displayTrackID
-                )
-                if didCommit {
-                    await MainActor.run {
-                        metadataStore.updateArtworkSource("localMatchedArtwork", for: identity)
-                        Log.info(
-                            "[AMAdapter] artwork local match trackID=\(localMatchedTrackID) identity=\(identity.prefix(16)) used=artwork skipOnlineFallback=true",
-                            category: .playback
-                        )
-                    }
-                }
-            }
-            return
-        } else if let matchedTrack {
-            Log.info(
-                "[AMAdapter] artwork local match trackID=\(matchedTrack.id) identity=\(identity.prefix(16)) missing=artwork fallback=enabled",
-                category: .playback
-            )
-        }
+        let localMatchedTrackID = matchedTrack?.id
 
         if displayedArtwork.identity == identity,
            displayedArtwork.source == .appleMusic,
@@ -815,12 +774,24 @@ final class AppleMusicPlaybackAdapter {
         artworkTask = Task { [weak self] in
             guard let self else { return }
 
-            let directArtwork = bridge.fetchCurrentArtworkData()
+            let directSnapshot = bridge.fetchCurrentArtworkSnapshot()
             guard !Task.isCancelled else { return }
-            if let directArtwork, !directArtwork.isEmpty {
+            if let directSnapshot, !directSnapshot.data.isEmpty {
+                guard self.artworkSnapshot(directSnapshot.info, matchesExpectedInfo: info, identity: identity) else {
+                    Log.info(
+                        "[AMAdapter] artwork source=appleMusicArtwork identity=\(identity.prefix(16)) result=stale actual=\(self.artworkSnapshotDebugIdentity(for: directSnapshot.info).prefix(32)) skipFallback=true",
+                        category: .playback
+                    )
+                    await MainActor.run {
+                        guard self.latestIdentity == identity else { return }
+                        self.pendingArtworkIdentity = nil
+                        self.updatePresentationFromLatestInfo()
+                    }
+                    return
+                }
                 let displayTrackID = NowPlayingPresentation.externalArtworkDisplayUUID(for: identity)
                 let didCommit = await self.prepareAndCommitArtwork(
-                    directArtwork,
+                    directSnapshot.data,
                     source: .appleMusic,
                     identity: identity,
                     displayTrackID: displayTrackID
@@ -836,6 +807,31 @@ final class AppleMusicPlaybackAdapter {
                 "[AMAdapter] artwork source=appleMusicArtwork identity=\(identity.prefix(16)) result=unavailable fallback=enabled",
                 category: .playback
             )
+
+            if let localArtwork, !localArtwork.isEmpty {
+                let displayTrackID = matchedTrackID ?? NowPlayingPresentation.externalArtworkDisplayUUID(for: identity)
+                let didCommit = await self.prepareAndCommitArtwork(
+                    localArtwork,
+                    source: .localLibrary,
+                    identity: identity,
+                    displayTrackID: displayTrackID
+                )
+                if didCommit {
+                    await MainActor.run {
+                        metadataStore.updateArtworkSource("localMatchedArtwork", for: identity)
+                        Log.info(
+                            "[AMAdapter] artwork fallbackSource=localMatchedArtwork identity=\(identity.prefix(16)) trackID=\(localMatchedTrackID?.uuidString ?? "nil") skipOnlineFallback=true",
+                            category: .playback
+                        )
+                    }
+                }
+                return
+            } else if let localMatchedTrackID {
+                Log.info(
+                    "[AMAdapter] artwork local match trackID=\(localMatchedTrackID) identity=\(identity.prefix(16)) missing=artwork fallback=enabled",
+                    category: .playback
+                )
+            }
 
             if let manualOverrideArtwork, !manualOverrideArtwork.isEmpty {
                 let displayTrackID = NowPlayingPresentation.externalArtworkDisplayUUID(for: identity)
@@ -896,6 +892,68 @@ final class AppleMusicPlaybackAdapter {
                 self.commitArtworkResolutionFinishedWithoutArtwork(identity: identity)
             }
         }
+    }
+
+    private nonisolated func artworkSnapshot(
+        _ actual: AppleMusicBridge.NowPlayingInfo,
+        matchesExpectedInfo expected: AppleMusicBridge.NowPlayingInfo,
+        identity: String
+    ) -> Bool {
+        guard let actualTitle = actual.title, !actualTitle.isEmpty else { return false }
+        let actualStableKey = externalStableKey(
+            source: .appleMusic,
+            persistentID: actual.persistentID,
+            title: actualTitle,
+            artist: actual.artist ?? "",
+            duration: actual.duration
+        )
+        if actualStableKey == identity { return true }
+
+        if let expectedPID = expected.persistentID, !expectedPID.isEmpty,
+           let actualPID = actual.persistentID, !actualPID.isEmpty {
+            return expectedPID == actualPID
+        }
+
+        let expectedTitle = ExternalPlaybackTextNormalizer.normalizedKey(expected.title ?? "")
+        let actualTitleKey = ExternalPlaybackTextNormalizer.normalizedKey(actualTitle)
+        let expectedArtist = ExternalPlaybackTextNormalizer.normalizedKey(expected.artist ?? "")
+        let actualArtist = ExternalPlaybackTextNormalizer.normalizedKey(actual.artist ?? "")
+        let durationMatches = expected.duration <= 0
+            || actual.duration <= 0
+            || abs(expected.duration - actual.duration) <= 2
+        return !expectedTitle.isEmpty
+            && expectedTitle == actualTitleKey
+            && expectedArtist == actualArtist
+            && durationMatches
+    }
+
+    private nonisolated func artworkSnapshotDebugIdentity(
+        for info: AppleMusicBridge.NowPlayingInfo
+    ) -> String {
+        guard let title = info.title, !title.isEmpty else { return "missing-title" }
+        return externalStableKey(
+            source: .appleMusic,
+            persistentID: info.persistentID,
+            title: title,
+            artist: info.artist ?? "",
+            duration: info.duration
+        )
+    }
+
+    private nonisolated func externalStableKey(
+        source: PlaybackSource,
+        persistentID: String?,
+        title: String,
+        artist: String,
+        duration: Double
+    ) -> String {
+        if let persistentID, !persistentID.isEmpty {
+            return "\(source.rawValue):pid:\(persistentID)"
+        }
+        let normalizedTitle = ExternalPlaybackTextNormalizer.normalizedKey(title)
+        let normalizedArtist = ExternalPlaybackTextNormalizer.normalizedKey(artist)
+        let durationBucket = Int((duration / 2).rounded()) * 2
+        return "\(source.rawValue):meta:\(normalizedTitle)|\(normalizedArtist)|\(durationBucket)"
     }
 
     private func prepareAndCommitArtwork(
