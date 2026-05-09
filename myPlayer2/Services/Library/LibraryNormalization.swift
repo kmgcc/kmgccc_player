@@ -20,7 +20,10 @@ nonisolated enum LibraryNormalization {
     private static let unknownAlbumAliases = [
         "",
         "unknown album",
+        "untitled album",
+        "无专辑",
         "未知专辑",
+        "未知唱片集",
         "未标注专辑"
     ]
     private static let albumArtistDisambiguationPrefix = "albumartist:"

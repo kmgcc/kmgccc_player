@@ -48,6 +48,8 @@ private struct HeaderArtworkBoundsReporter: View {
 }
 
 struct LibraryDetailHeaderView: View {
+    private static let visibleDescriptionLineCount = 7
+    private static let maxHeaderDescriptionContentLines = 15
 
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(\.colorScheme) private var colorScheme
@@ -357,25 +359,38 @@ struct LibraryDetailHeaderView: View {
         }
     }
 
+    private var headerDescriptionText: String {
+        let normalized = currentDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lines = normalized.components(separatedBy: .newlines)
+        guard lines.count > Self.maxHeaderDescriptionContentLines else { return normalized }
+
+        var clippedLines = Array(lines.prefix(Self.maxHeaderDescriptionContentLines))
+        if let lastIndex = clippedLines.indices.last {
+            let lastLine = clippedLines[lastIndex].trimmingCharacters(in: .whitespacesAndNewlines)
+            clippedLines[lastIndex] = lastLine.isEmpty ? "…" : "\(lastLine)…"
+        }
+        return clippedLines.joined(separator: "\n")
+    }
+
     private var descriptionReadView: some View {
         ScrollView(.vertical, showsIndicators: true) {
-            Text(currentDescription)
+            Text(headerDescriptionText)
                 .font(.callout)
                 .lineSpacing(0)
                 .foregroundStyle(.secondary)
                 .lineLimit(nil)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(height: headerDescriptionHeight, alignment: .top)
+        .frame(height: headerDescriptionHeight(lineCount: Self.visibleDescriptionLineCount), alignment: .top)
         .scrollClipDisabled(false)
         .clipped()
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var headerDescriptionHeight: CGFloat {
+    private func headerDescriptionHeight(lineCount: Int) -> CGFloat {
         let font = NSFont.preferredFont(forTextStyle: .callout)
         let lineHeight = NSLayoutManager().defaultLineHeight(for: font)
-        return ceil(lineHeight * 4 + 1)
+        return ceil(lineHeight * CGFloat(lineCount) + 1)
     }
 
     private var hasReadableDescription: Bool {

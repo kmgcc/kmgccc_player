@@ -54,6 +54,11 @@ final class AppleMusicBridge: @unchecked Sendable {
         var songRepeat: RepeatMode
     }
 
+    struct ArtworkSnapshot: Sendable {
+        var data: Data
+        var info: NowPlayingInfo
+    }
+
     nonisolated(unsafe) private var fetchPositionScript: NSAppleScript?
     nonisolated(unsafe) private var fetchFullScript: NSAppleScript?
     nonisolated(unsafe) private var controlScripts: [ControlScript: NSAppleScript] = [:]
@@ -195,6 +200,10 @@ final class AppleMusicBridge: @unchecked Sendable {
     }
 
     nonisolated func fetchCurrentArtworkData() -> Data? {
+        fetchCurrentArtworkSnapshot()?.data
+    }
+
+    nonisolated func fetchCurrentArtworkSnapshot() -> ArtworkSnapshot? {
         guard isMusicAppRunning() else { return nil }
 
         let tempURL = FileManager.default.temporaryDirectory
@@ -209,32 +218,55 @@ final class AppleMusicBridge: @unchecked Sendable {
         with timeout of 8 seconds
             tell application "Music"
                 try
+                    set currentPlayerState to player state as string
+                    try
+                        set currentPosition to player position
+                    on error
+                        set currentPosition to 0
+                    end try
+                    try
+                        set currentSoundVolume to sound volume
+                    on error
+                        set currentSoundVolume to 100
+                    end try
+                    try
+                        set currentShuffle to shuffle enabled
+                    on error
+                        set currentShuffle to false
+                    end try
+                    try
+                        set currentRepeat to song repeat as string
+                    on error
+                        set currentRepeat to "unknown"
+                    end try
                     set trk to current track
-                    if (count of artworks of trk) is 0 then return false
+                    if (count of artworks of trk) is 0 then return {"noArtwork"}
                     set artworkData to data of artwork 1 of trk
                     set targetFile to POSIX file "\(path)"
                     set fileRef to open for access targetFile with write permission
                     set eof of fileRef to 0
                     write artworkData to fileRef
                     close access fileRef
-                    return true
+                    return {"ok", name of trk, artist of trk, album of trk, album artist of trk, duration of trk, currentPosition, currentPlayerState, currentSoundVolume, persistent ID of trk, track number of trk, year of trk, currentShuffle, currentRepeat}
                 on error
                     try
                         close access POSIX file "\(path)"
                     end try
-                    return false
+                    return {"error"}
                 end try
             end tell
         end timeout
         """
 
-        guard runSource(source)?.booleanValue == true,
+        guard let descriptor = runSource(source),
+              descriptor.numberOfItems >= 14,
+              descriptor.atIndex(1)?.stringValue == "ok",
               let data = try? Data(contentsOf: tempURL),
               !data.isEmpty,
               NSImage(data: data) != nil else {
             return nil
         }
-        return data
+        return ArtworkSnapshot(data: data, info: parseFullInfo(from: descriptor, startIndex: 2))
     }
 
     @discardableResult
