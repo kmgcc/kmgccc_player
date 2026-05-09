@@ -858,9 +858,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             id: fallback.id,
             canonicalName: canonicalName,
             displayName: displayName,
-            artworkFileName: preferred.artworkData != nil || preferred.artworkFileName != nil
-                ? preferred.artworkFileName
-                : fallback.artworkFileName,
+            artworkFileName: preferred.artworkFileName ?? fallback.artworkFileName,
             description: preferred.description.isEmpty ? fallback.description : preferred.description,
             genreTags: preferred.genreTags.isEmpty ? fallback.genreTags : preferred.genreTags,
             region: preferred.region.isEmpty ? fallback.region : preferred.region,
@@ -902,9 +900,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             displayTitle: displayTitle,
             primaryArtistCanonicalName: primaryArtistCanonicalName,
             primaryArtistDisplayName: primaryArtistDisplayName,
-            artworkFileName: preferred.artworkData != nil || preferred.artworkFileName != nil
-                ? preferred.artworkFileName
-                : fallback.artworkFileName,
+            artworkFileName: preferred.artworkFileName ?? fallback.artworkFileName,
             description: preferred.description.isEmpty ? fallback.description : preferred.description,
             year: preferred.year ?? fallback.year,
             releaseYear: preferred.releaseYear ?? fallback.releaseYear ?? preferred.year ?? fallback.year,

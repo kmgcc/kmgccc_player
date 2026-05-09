@@ -82,7 +82,7 @@ struct FullscreenLyricsTabView: View {
                 )
 
                 SettingsSwitchRow(
-                    title: "减弱高亮",
+                    title: "减弱高亮(beta)",
                     isOn: $amllDiscreteWordHighlightEnabled,
                     detail: "开启后可能减少高亮移动干扰",
                     titleFont: presentationStyle.rowLabelFont,

@@ -56,6 +56,7 @@ final class LDDCServerManager: ObservableObject {
     private var serverProcess: Process?
     private var stdoutPipe: Pipe?
     private var stderrPipe: Pipe?
+    private var startTask: Task<Void, Error>?
     private var idleTimer: Timer?
     private var lastRequestTime = Date()
     private var recentStdout: String = ""
@@ -68,19 +69,42 @@ final class LDDCServerManager: ObservableObject {
     // MARK: - Public API
 
     /// Ensure server is running, starting it if necessary.
+    /// Concurrent callers share a single start task — only one process is ever launched.
     func ensureRunning() async throws {
         if isRunning {
             resetIdleTimer()
             return
         }
 
-        try await startServer()
+        if let existing = startTask {
+            Log.info("start joined existing task", category: .lddc)
+            try await existing.value
+            return
+        }
+
+        let requestId = String(UUID().uuidString.prefix(8))
+        Log.info("[\(requestId)] start requested", category: .lddc)
+
+        let task = Task<Void, Error> { [weak self] in
+            guard let self else { return }
+            try await self.startServer()
+        }
+        startTask = task
+
+        do {
+            try await task.value
+            startTask = nil
+        } catch {
+            startTask = nil
+            throw error
+        }
     }
 
     /// Stop the server process.
     func stop() {
         idleTimer?.invalidate()
         idleTimer = nil
+        startTask = nil
 
         if let process = serverProcess, process.isRunning {
             process.terminate()
@@ -570,6 +594,7 @@ final class LDDCServerManager: ObservableObject {
                 throw LDDCError.healthCheckFailed
             }
             if await checkHealth() {
+                Log.info("health check ok port=\(currentPort)", category: .lddc)
                 didLogHealthCheckFailure = false
                 return
             }
