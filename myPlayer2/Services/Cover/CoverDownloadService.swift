@@ -31,11 +31,11 @@ private actor CoverDownloadContinuationState {
 @Observable
 @MainActor
 final class CoverDownloadService: CoverDownloadServiceProtocol {
-    private let executablePath: String
+    private let executablePath: String?
     private let fileManager: FileManager
 
     init(
-        executablePath: String = "/Users/kmg/.cargo/bin/sacad",
+        executablePath: String? = nil,
         fileManager: FileManager = .default
     ) {
         self.executablePath = executablePath
@@ -47,21 +47,59 @@ final class CoverDownloadService: CoverDownloadServiceProtocol {
 
         let executablePath = executablePath
 
-        guard fileManager.isExecutableFile(atPath: executablePath) else {
-            throw CoverDownloadError.executableMissing(path: executablePath)
-        }
+        let resolvedExecutablePath = try Self.resolvedExecutablePath(
+            explicitPath: executablePath,
+            fileManager: fileManager
+        )
 
         return try await Task.detached(priority: .userInitiated) { @Sendable in
-            try await Self.downloadCoverData(
+            try await Self.runSacad(
                 artist: artist,
                 album: album,
                 size: size,
-                executablePath: executablePath
+                executablePath: resolvedExecutablePath
             )
         }.value
     }
 
-    nonisolated private static func downloadCoverData(
+    nonisolated static func downloadCoverData(
+        artist: String,
+        album: String,
+        size: Int
+    ) async throws -> Data {
+        let executablePath = try resolvedExecutablePath()
+        return try await runSacad(
+            artist: artist,
+            album: album,
+            size: size,
+            executablePath: executablePath
+        )
+    }
+
+    nonisolated static func resolvedExecutablePath(
+        explicitPath: String? = nil,
+        fileManager: FileManager = .default
+    ) throws -> String {
+        if let explicitPath {
+            guard fileManager.isExecutableFile(atPath: explicitPath) else {
+                throw CoverDownloadError.executableMissing(path: explicitPath)
+            }
+            return explicitPath
+        }
+
+        guard let executableURL = Bundle.main.resourceURL?
+            .appendingPathComponent("Tools/sacad/sacad") else {
+            throw CoverDownloadError.executableMissing(path: "Tools/sacad/sacad")
+        }
+
+        guard fileManager.isExecutableFile(atPath: executableURL.path) else {
+            throw CoverDownloadError.executableMissing(path: executableURL.path)
+        }
+
+        return executableURL.path
+    }
+
+    nonisolated private static func runSacad(
         artist: String,
         album: String,
         size: Int,

@@ -15,20 +15,15 @@
 import AppKit
 import SwiftUI
 
-struct HomeAlbumsSection: View, Equatable {
-    let model: HomeAlbumsDisplayModel
-    /// Retained for action callbacks (open, play, edit, delete).
-    /// Correlated with model.items by index/ID. Does NOT participate
-    /// in equality — only `model` does.
+struct HomeAlbumsSection: View {
     let albums: [AlbumEntry]
-
-    private var mode: HomeLayoutMode { model.mode }
+    var mode: HomeLayoutMode = .wide
     /// Distance from the window's left edge to where the first card should
     /// sit (sidebar width + horizontal padding inside the center column).
-    private var centerLeftPad: CGFloat { CGFloat(model.centerLeftPadBucket) * 16 }
+    let centerLeftPad: CGFloat
     /// Distance from the right window edge inwards (right lyrics inspector
     /// width + horizontal padding inside the center column).
-    private var centerRightPad: CGFloat { CGFloat(model.centerRightPadBucket) * 16 }
+    let centerRightPad: CGFloat
 
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(UIStateViewModel.self) private var uiState
@@ -38,12 +33,7 @@ struct HomeAlbumsSection: View, Equatable {
 
     private let cardCornerRadius: CGFloat = 16
 
-    static func == (lhs: HomeAlbumsSection, rhs: HomeAlbumsSection) -> Bool {
-        lhs.model == rhs.model
-    }
-
     var body: some View {
-        let _ = HomePerf.bodyCounters.bump("Albums")
         VStack(alignment: .leading, spacing: 14) {
             sectionHeader
                 .padding(.leading, centerLeftPad)
@@ -102,16 +92,6 @@ struct HomeAlbumsSection: View, Equatable {
         ) {
             ForEach(albums) { album in
                 HomeAlbumCard(
-                    item: model.items.first { $0.id == album.id } ??
-                        HomeAlbumsDisplayModel.Item(
-                            id: album.id,
-                            displayTitle: album.displayTitle,
-                            primaryArtistDisplayName: album.primaryArtistDisplayName,
-                            canonicalKey: album.canonicalKey,
-                            trackCount: album.trackCount,
-                            artworkChecksum: 0,
-                            hasArtworkData: album.artworkData != nil
-                        ),
                     album: album,
                     mode: mode,
                     onOpen: { open(album) },
@@ -204,9 +184,6 @@ private struct HomeAlbumDeletionRequest: Identifiable {
 // MARK: - Album card
 
 private struct HomeAlbumCard: View {
-    /// Equality-stable display data from the section's display model.
-    let item: HomeAlbumsDisplayModel.Item
-    /// Original reference for artworkData access and action callbacks.
     let album: AlbumEntry
     let mode: HomeLayoutMode
     let onOpen: () -> Void
@@ -220,7 +197,7 @@ private struct HomeAlbumCard: View {
     @Environment(\.colorScheme) private var colorScheme
 
     // Outer card geometry. Cover radius is derived so the cover and card
-    // form concentric rounded rectangles: innerR = outerR - inset.
+    // form concentric rounded rectangles: innerR = outerR − inset.
     private let outerCornerRadius: CGFloat = 18
     private let cardInset: CGFloat = 10
     private var coverCornerRadius: CGFloat {
@@ -314,14 +291,12 @@ private struct HomeAlbumCard: View {
                 Label("删除专辑", systemImage: "trash")
             }
         }
-        .task(id: album.id) {
+        .task {
             await loadImage()
         }
     }
 
     private func loadImage() async {
-        HomePerf.imageMetrics.recordStart()
-        defer { HomePerf.imageMetrics.recordEnd() }
         var artworkData = album.artworkData
         if artworkData == nil || artworkData!.isEmpty {
             let albumKey = album.canonicalKey
@@ -336,11 +311,11 @@ private struct HomeAlbumCard: View {
             checksum: checksum,
             targetPixelSize: CGSize(width: 336, height: 336)
         )
-        image = await HomeImageCoordinator.shared.image(for: HomeImageCoordinator.Request(
-            cacheKey: key,
-            targetPixelSize: CGSize(width: 336, height: 336),
+        let loaded = await ArtworkLoader.loadImage(
             artworkData: data,
-            priority: .normal
-        ))
+            cacheKey: key,
+            targetPixelSize: CGSize(width: 336, height: 336)
+        )
+        image = loaded
     }
 }

@@ -12,17 +12,11 @@
 import AppKit
 import SwiftUI
 
-struct HomeArtistsSection: View, Equatable {
-    let model: HomeArtistsDisplayModel
+struct HomeArtistsSection: View {
     let artists: [ArtistEntry]
-
-    static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.model == rhs.model
-    }
-
-    private var mode: HomeLayoutMode { model.mode }
-    private var centerLeftPad: CGFloat { CGFloat(model.centerLeftPadBucket) * 16 }
-    private var centerRightPad: CGFloat { CGFloat(model.centerRightPadBucket) * 16 }
+    var mode: HomeLayoutMode = .wide
+    let centerLeftPad: CGFloat
+    let centerRightPad: CGFloat
 
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(UIStateViewModel.self) private var uiState
@@ -31,7 +25,6 @@ struct HomeArtistsSection: View, Equatable {
     @State private var editingArtist: ArtistEntry?
 
     var body: some View {
-        let _ = HomePerf.bodyCounters.bump("Artists")
         VStack(alignment: .leading, spacing: 14) {
             sectionHeader
                 .padding(.leading, centerLeftPad)
@@ -88,15 +81,6 @@ struct HomeArtistsSection: View, Equatable {
         ) {
             ForEach(artists) { artist in
                 HomeArtistCircle(
-                    item: model.items.first { $0.id == artist.id } ?? HomeArtistsDisplayModel.Item(
-                        id: artist.id,
-                        displayName: artist.displayName,
-                        canonicalName: artist.canonicalName,
-                        trackCount: artist.trackCount,
-                        albumCount: 0,
-                        artworkChecksum: 0,
-                        hasArtworkData: artist.artworkData != nil
-                    ),
                     artist: artist,
                     mode: mode,
                     onOpen: { open(artist) },
@@ -188,7 +172,6 @@ private struct HomeArtistDeletionRequest: Identifiable {
 // MARK: - Artist circle
 
 private struct HomeArtistCircle: View {
-    let item: HomeArtistsDisplayModel.Item
     let artist: ArtistEntry
     let mode: HomeLayoutMode
     let onOpen: () -> Void
@@ -238,7 +221,7 @@ private struct HomeArtistCircle: View {
             .clipShape(Circle())
 
             VStack(spacing: 3) {
-                Text(item.displayName)
+                Text(artist.displayName)
                     .font(.system(size: titleFontSize, weight: .semibold))
                     .lineLimit(1)
             }
@@ -287,14 +270,12 @@ private struct HomeArtistCircle: View {
                 Label("删除艺人", systemImage: "trash")
             }
         }
-        .task(id: artist.id) {
+        .task {
             await loadImage()
         }
     }
 
     private func loadImage() async {
-        HomePerf.imageMetrics.recordStart()
-        defer { HomePerf.imageMetrics.recordEnd() }
         if let data = artist.artworkData, !data.isEmpty {
             let checksum = ArtworkLoader.checksum(for: data)
             let key = ArtworkLoader.cacheKey(
@@ -302,12 +283,12 @@ private struct HomeArtistCircle: View {
                 checksum: checksum,
                 targetPixelSize: CGSize(width: 256, height: 256)
             )
-            image = await HomeImageCoordinator.shared.image(for: HomeImageCoordinator.Request(
-                cacheKey: key,
-                targetPixelSize: CGSize(width: 256, height: 256),
+            let loaded = await ArtworkLoader.loadImage(
                 artworkData: data,
-                priority: .normal
-            ))
+                cacheKey: key,
+                targetPixelSize: CGSize(width: 256, height: 256)
+            )
+            image = loaded
             return
         }
 

@@ -596,84 +596,13 @@ nonisolated enum ImportEnrichmentWorker {
         album: String,
         size: Int
     ) async throws -> Data {
-        let executablePath = "/Users/kmg/.cargo/bin/sacad"
-        let fileManager = FileManager.default
-
-        guard fileManager.isExecutableFile(atPath: executablePath) else {
-            throw CoverDownloadError.executableMissing(path: executablePath)
-        }
-
-        let tempURL = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("temp_\(UUID().uuidString).jpg")
-
-        defer {
-            try? fileManager.removeItem(at: tempURL)
-        }
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executablePath)
-        process.arguments = [artist, album, String(size), tempURL.path]
-
-        let errorPipe = Pipe()
-        process.standardOutput = Pipe()
-        process.standardError = errorPipe
-
-        try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation {
-                (continuation: CheckedContinuation<Void, Error>) in
-                let state = ContinuationState(continuation)
-                process.terminationHandler = { process in
-                    let stderrData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-                    guard process.terminationStatus == 0 else {
-                        let stderrText = String(data: stderrData, encoding: .utf8)?
-                            .trimmingCharacters(in: .whitespacesAndNewlines)
-                        Task {
-                            await state.resume(
-                                .failure(
-                                    CoverDownloadError.processFailed(
-                                        exitCode: process.terminationStatus,
-                                        message: stderrText?.isEmpty == false
-                                            ? stderrText!
-                                            : "sacad exited with an error"
-                                    )
-                                )
-                            )
-                        }
-                        return
-                    }
-                    Task {
-                        await state.resume(.success(()))
-                    }
-                }
-
-                do {
-                    try process.run()
-                } catch {
-                    Task {
-                        await state.resume(
-                            .failure(
-                                CoverDownloadError.processFailed(
-                                    exitCode: -1,
-                                    message: error.localizedDescription
-                                )
-                            )
-                        )
-                    }
-                }
-            }
-        } onCancel: {
-            if process.isRunning {
-                process.terminate()
-            }
-        }
-
-        guard fileManager.fileExists(atPath: tempURL.path) else {
-            throw CoverDownloadError.outputMissing
-        }
-
         guard
             let normalizedData = ArtworkDataNormalizer.normalizedJPEGData(
-                from: tempURL,
+                from: try await CoverDownloadService.downloadCoverData(
+                    artist: artist,
+                    album: album,
+                    size: size
+                ),
                 maxPixelSize: ArtworkDataNormalizer.importMaxPixelSize
             )
         else {
