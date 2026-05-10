@@ -10,21 +10,18 @@
 import AppKit
 import SwiftUI
 
-struct HomeInsightsSection: View, Equatable {
-    let model: HomeInsightsDisplayModel
-    /// Retained for runtime access to `preferenceRanking` (contains Track
-    /// references for playback) and `dailyListeningMap`. Not part of equality.
+struct HomeInsightsSection: View {
     let homeVM: HomeViewModel
-
-    /// Derived from `model`; used throughout the layout.
-    private var mode: HomeLayoutMode { model.mode }
-    private var containerWidth: CGFloat { CGFloat(model.containerWidthBucket) * 16 }
-    private var centerLeftPad: CGFloat { CGFloat(model.centerLeftPadBucket) * 16 }
-    private var centerRightPad: CGFloat { CGFloat(model.centerRightPadBucket) * 16 }
-
-    static func == (lhs: HomeInsightsSection, rhs: HomeInsightsSection) -> Bool {
-        lhs.model == rhs.model
-    }
+    var mode: HomeLayoutMode = .wide
+    /// Actual content width for the page. Used so we can stack vertically when
+    /// the side-by-side ranking + calendar would otherwise crowd each other.
+    var containerWidth: CGFloat = 0
+    /// Distance from the window's left edge to the center column's left edge
+    /// (sidebar width + horizontal padding). Used so the narrow horizontal
+    /// summary row can align with the rest of the Home content.
+    var centerLeftPad: CGFloat = 0
+    /// Distance from the window's right edge inward to the center column.
+    var centerRightPad: CGFloat = 0
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
@@ -37,7 +34,6 @@ struct HomeInsightsSection: View, Equatable {
     private let insightsRowHeight: CGFloat = 360
 
     var body: some View {
-        let _ = HomePerf.bodyCounters.bump("Insights")
         if stacksVertically {
             narrowLayout
         } else {
@@ -56,7 +52,7 @@ struct HomeInsightsSection: View, Equatable {
     private var wideLayout: some View {
         VStack(alignment: .leading, spacing: 14) {
             sectionHeader
-            ListeningStatsRow(statCards: model.statCards)
+            ListeningStatsRow(homeVM: homeVM)
             sideBySideInsights
                 .padding(.top, 4)
         }
@@ -120,7 +116,7 @@ struct HomeInsightsSection: View, Equatable {
         let metrics = compactSummaryMetrics(for: max(220, containerWidth))
 
         HStack(alignment: .top, spacing: compactLayoutSpacing) {
-            ListeningStatsGridCompact(statCards: model.statCards, cardSize: metrics.statCardSize)
+            ListeningStatsGridCompact(homeVM: homeVM, cardSize: metrics.statCardSize)
                 .frame(width: metrics.statsWidth, height: CompactSummaryRowMetrics.rowHeight)
             compactCalendar(width: metrics.calendarWidth)
         }
@@ -221,69 +217,77 @@ private enum ListeningCalendarLayoutMetrics {
 // MARK: - Listening Stats Layouts
 
 private struct ListeningStatsRow: View {
-    let statCards: [HomeInsightsDisplayModel.StatCard]
+    let homeVM: HomeViewModel
 
     var body: some View {
+        let weeklyDuration = formattedDurationParts(homeVM.weeklyListeningSeconds)
+
         HStack(alignment: .top, spacing: 14) {
-            ForEach(statCards) { card in
-                if card.id == "weeklyArtist" {
-                    FavoriteArtistCard(card: card)
-                } else {
-                    HomeStatCard(
-                        label: card.label,
-                        value: card.value,
-                        unit: card.unit,
-                        subtitle: card.id == "totalTracks" ? "音乐库" : "本周"
-                    )
-                }
-            }
+            HomeStatCard(
+                label: "总歌曲",
+                value: "\(homeVM.totalTrackCount)",
+                unit: "首",
+                subtitle: "音乐库"
+            )
+            HomeStatCard(
+                label: "本周播放",
+                value: formattedNumber(homeVM.weeklyPlayCount),
+                unit: "次",
+                subtitle: "本周"
+            )
+            HomeStatCard(
+                label: "本周时长",
+                value: weeklyDuration.value,
+                unit: weeklyDuration.unit,
+                subtitle: "本周"
+            )
+            FavoriteArtistCard(homeVM: homeVM)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
 private struct ListeningStatsGridCompact: View {
-    let statCards: [HomeInsightsDisplayModel.StatCard]
+    let homeVM: HomeViewModel
     let cardSize: CGSize
 
     var body: some View {
-        // First three stat cards in a 2x2 grid with the favorite artist card.
-        // Layout: top row = first two stat cards, bottom row = third stat + artist.
-        let statsOnly = statCards.filter { $0.id != "weeklyArtist" }
-        let artistCard = statCards.first { $0.id == "weeklyArtist" }
+        let weeklyDuration = formattedDurationParts(homeVM.weeklyListeningSeconds)
 
         VStack(alignment: .leading, spacing: CompactSummaryRowMetrics.gridSpacing) {
             HStack(spacing: CompactSummaryRowMetrics.gridSpacing) {
-                ForEach(Array(statsOnly.prefix(2))) { card in
-                    HomeStatCard(
-                        label: card.label,
-                        value: card.value,
-                        unit: card.unit,
-                        subtitle: card.id == "totalTracks" ? "音乐库" : "本周",
-                        fixedSize: cardSize,
-                        compact: true
-                    )
-                }
+                HomeStatCard(
+                    label: "总歌曲",
+                    value: "\(homeVM.totalTrackCount)",
+                    unit: "首",
+                    subtitle: "音乐库",
+                    fixedSize: cardSize,
+                    compact: true
+                )
+                HomeStatCard(
+                    label: "本周播放",
+                    value: formattedNumber(homeVM.weeklyPlayCount),
+                    unit: "次",
+                    subtitle: "本周",
+                    fixedSize: cardSize,
+                    compact: true
+                )
             }
 
             HStack(spacing: CompactSummaryRowMetrics.gridSpacing) {
-                if statsOnly.count > 2 {
-                    HomeStatCard(
-                        label: statsOnly[2].label,
-                        value: statsOnly[2].value,
-                        unit: statsOnly[2].unit,
-                        subtitle: "本周",
-                        fixedSize: cardSize,
-                        compact: true
-                    )
-                }
-                if let artistCard {
-                    FavoriteArtistCard(
-                        card: artistCard,
-                        fixedSize: cardSize,
-                        compact: true
-                    )
-                }
+                HomeStatCard(
+                    label: "本周时长",
+                    value: weeklyDuration.value,
+                    unit: weeklyDuration.unit,
+                    subtitle: "本周",
+                    fixedSize: cardSize,
+                    compact: true
+                )
+                FavoriteArtistCard(
+                    homeVM: homeVM,
+                    fixedSize: cardSize,
+                    compact: true
+                )
             }
         }
         .frame(
@@ -295,33 +299,50 @@ private struct ListeningStatsGridCompact: View {
 }
 
 private struct FavoriteArtistCard: View {
-    let card: HomeInsightsDisplayModel.StatCard
+    let homeVM: HomeViewModel
     var fixedSize: CGSize? = nil
     var compact: Bool = false
 
     var body: some View {
         HomeInsightsCardContainer(fixedSize: fixedSize, compact: compact) {
             VStack(alignment: .leading, spacing: compact ? 4 : 8) {
-                Text(card.label)
+                Text("本周常听")
                     .font(.system(size: compact ? 11 : 12, weight: .medium))
                     .textCase(.uppercase)
                     .foregroundStyle(.secondary)
 
                 Spacer(minLength: 0)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(card.value)
-                        .font(.system(size: compact ? 15 : 17, weight: .semibold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.78)
-                    Text(card.unit)
-                        .font(.system(size: compact ? 10 : 11))
+                if let name = homeVM.weeklyFavoriteArtistName {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(name)
+                            .font(.system(size: compact ? 15 : 17, weight: .semibold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.78)
+                        Text("\(homeVM.weeklyFavoriteArtistPlayCount) 次播放")
+                            .font(.system(size: compact ? 10 : 11))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
+                } else {
+                    Text("\u{2014}")
+                        .font(.title2)
                         .foregroundStyle(.tertiary)
-                        .lineLimit(1)
                 }
             }
         }
     }
+}
+
+private func formattedNumber(_ n: Int) -> String {
+    n.formatted(.number)
+}
+
+private func formattedDurationParts(_ seconds: Double) -> (value: String, unit: String) {
+    if seconds < 3600 {
+        return (String(max(0, Int((seconds / 60).rounded()))), "分钟")
+    }
+    return (String(Int((seconds / 3600).rounded())), "小时")
 }
 
 // MARK: - Stat Card
@@ -606,8 +627,6 @@ private struct HomeRankArtworkView: View {
     }
 
     private func loadImage() async {
-        HomePerf.imageMetrics.recordStart()
-        defer { HomePerf.imageMetrics.recordEnd() }
         var data = item.track.artworkData
         if data == nil || data!.isEmpty {
             data = await item.track.loadArtworkDataOffMainIfNeeded()
@@ -624,12 +643,11 @@ private struct HomeRankArtworkView: View {
             checksum: checksum,
             targetPixelSize: targetSize
         )
-        image = await HomeImageCoordinator.shared.image(for: HomeImageCoordinator.Request(
-            cacheKey: key,
-            targetPixelSize: targetSize,
+        image = await ArtworkLoader.loadImage(
             artworkData: data,
-            priority: .background
-        ))
+            cacheKey: key,
+            targetPixelSize: targetSize
+        )
     }
 }
 

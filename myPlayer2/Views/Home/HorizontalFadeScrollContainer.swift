@@ -128,7 +128,7 @@ struct HorizontalFadeScrollContainer<Content: View>: View {
                 onScrollMetricsChange: onScrollMetricsChange
             )
         )
-        .mask(scrollFadeMask)
+        .modifier(ConditionalFadeMask(showsEdgeFade: showsEdgeFade, mask: scrollFadeMask))
         .overlay {
             if effectiveShowsScrollButtons {
                 HorizontalEdgeHoverTracker(
@@ -513,6 +513,22 @@ private struct HorizontalScrollMetricsModifier: ViewModifier {
                         scrollX = newValue.offsetX
                     }
                 }
+        } else {
+            content
+        }
+    }
+}
+
+/// Applies the fade mask only when edge fading is enabled.
+/// When `showsEdgeFade: false`, skipping the mask entirely avoids
+/// clipping card shadows that extend beyond the scroll viewport.
+private struct ConditionalFadeMask<M: View>: ViewModifier {
+    let showsEdgeFade: Bool
+    let mask: M
+
+    func body(content: Content) -> some View {
+        if showsEdgeFade {
+            content.mask(mask)
         } else {
             content
         }

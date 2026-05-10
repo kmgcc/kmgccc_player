@@ -867,7 +867,7 @@ export class LyricLineEl extends LyricLineBase {
 					const offsetX = isFullscreen
 						? 0
 						: -transX * 0.03 * amount * (arr.length / 2 - i);
-					const offsetY = -transX * 0.025 * amount;
+					const offsetY = 0;
 
 					return {
 						offset: x,
@@ -899,35 +899,6 @@ export class LyricLineEl extends LyricLineBase {
 			};
 			glow.pause();
 			result.push(glow);
-
-			const floatFrame: Keyframe[] = new Array(ANIMATION_FRAME_QUANTITY)
-				.fill(0)
-				.map((_, j) => {
-					const x = (j + 1) / ANIMATION_FRAME_QUANTITY;
-					let y = Math.sin(x * Math.PI);
-					// y = x < 0.5 ? y : Math.max(y, 1.0);
-					if (this.lyricLine.isBG) {
-						y *= 2;
-					}
-
-					return {
-						offset: x,
-						transform: `translateY(${-y * 0.05}em)`,
-					};
-				});
-			const float = el.animate(floatFrame, {
-				duration: animateDu * 1.4,
-				delay: Number.isFinite(wordDe) ? wordDe - 400 : 0,
-				id: "emphasize-word-float",
-				iterations: 1,
-				composite: "add",
-				fill: "both",
-			});
-			float.onfinish = () => {
-				float.pause();
-			};
-			float.pause();
-			result.push(float);
 
 			return result;
 		});

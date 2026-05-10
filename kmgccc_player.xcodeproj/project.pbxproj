@@ -82,11 +82,12 @@
 				"Resources/mediaremote-adapter/build/MediaRemoteAdapterTestClient",
 				"Resources/mediaremote-adapter/LICENSE",
 				"Resources/mediaremote-adapter/README.md",
-				"Resources/Tools/qqmusic-helper/build-universal.sh",
-				"Resources/Tools/qqmusic-helper/main.py",
-				"Resources/Tools/qqmusic-helper/requirements.txt",
-				scan_ui.py,
-			);
+					"Resources/Tools/qqmusic-helper/build-universal.sh",
+					"Resources/Tools/qqmusic-helper/main.py",
+					"Resources/Tools/qqmusic-helper/requirements.txt",
+					"Resources/Tools/sacad/sacad",
+					scan_ui.py,
+				);
 			target = 935118912F3231C500766A5F /* kmgccc_player */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -193,6 +194,7 @@
 				9351188F2F3231C500766A5F /* Frameworks */,
 				935118902F3231C500766A5F /* Resources */,
 				93D91A122FA5000000010001 /* Copy QQMusic helper */,
+				93D91A132FA5000000010002 /* Copy SACAD helper */,
 			);
 			buildRules = (
 			);
@@ -298,6 +300,27 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/bash;
 			shellScript = "set -euo pipefail\nSRC=\"${PROJECT_DIR}/myPlayer2/Resources/Tools/qqmusic-helper\"\nDST=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/Tools/qqmusic-helper\"\nAPP=\"${TARGET_BUILD_DIR}/${WRAPPER_NAME}\"\nclean_xattrs() {\n  local root=\"$1\"\n  while IFS= read -r -d '' item; do\n    /usr/bin/xattr -d com.apple.FinderInfo \"${item}\" 2>/dev/null || true\n    /usr/bin/xattr -d 'com.apple.fileprovider.fpfs#P' \"${item}\" 2>/dev/null || true\n    /usr/bin/xattr -d com.apple.ResourceFork \"${item}\" 2>/dev/null || true\n  done < <(/usr/bin/find \"${root}\" -print0)\n  /usr/bin/xattr -cr \"${root}\" 2>/dev/null || true\n}\nif [ ! -x \"${SRC}/qqmusic-helper\" ]; then\n  echo \"warning: QQMusic helper binary missing or not executable: ${SRC}/qqmusic-helper\"\n  exit 0\nfi\nmkdir -p \"${DST}\"\nCOPYFILE_DISABLE=1 /bin/cp -f \"${SRC}/qqmusic-helper\" \"${DST}/qqmusic-helper\"\nif [ -d \"${SRC}/_internal.bundle\" ]; then\n  mkdir -p \"${DST}/_internal.bundle\"\n  COPYFILE_DISABLE=1 /bin/cp -R \"${SRC}/_internal.bundle/.\" \"${DST}/_internal.bundle/\"\nfi\nclean_xattrs \"${DST}\"\nchmod 755 \"${DST}/qqmusic-helper\"\ncodesign --force --deep --sign - \"${DST}/qqmusic-helper\" >/dev/null 2>&1 || true\nclean_xattrs \"${APP}\"\n";
+		};
+		93D91A132FA5000000010002 /* Copy SACAD helper */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(PROJECT_DIR)/myPlayer2/Resources/Tools/sacad/sacad",
+			);
+			name = "Copy SACAD helper";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/Tools/sacad/sacad",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "set -euo pipefail\nSRC=\"${PROJECT_DIR}/myPlayer2/Resources/Tools/sacad/sacad\"\nDST_DIR=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/Tools/sacad\"\nDST=\"${DST_DIR}/sacad\"\nif [ ! -x \"${SRC}\" ]; then\n  echo \"error: SACAD arm64 binary missing or not executable: ${SRC}\"\n  exit 1\nfi\nmkdir -p \"${DST_DIR}\"\nCOPYFILE_DISABLE=1 /bin/cp -f \"${SRC}\" \"${DST}\"\n/usr/bin/xattr -cr \"${DST}\" 2>/dev/null || true\nchmod 755 \"${DST}\"\n/usr/bin/codesign --force --sign - \"${DST}\" >/dev/null 2>&1 || true\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

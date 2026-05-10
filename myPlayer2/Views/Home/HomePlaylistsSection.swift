@@ -8,32 +8,14 @@
 import AppKit
 import SwiftUI
 
-struct HomePlaylistsSection: View, Equatable {
-    let model: HomePlaylistsDisplayModel
-    /// Original Playlist references for navigation, context menus, and playback.
-    /// NOT part of Equatable equality — the display model drives that.
-    /// Items are in the same order as model.items; correlate by index and ID.
+struct HomePlaylistsSection: View {
     let playlists: [Playlist]
+    var mode: HomeLayoutMode = .wide
 
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(UIStateViewModel.self) private var uiState
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @State private var deletionRequest: HomePlaylistDeletionRequest?
-
-    private var mode: HomeLayoutMode { model.mode }
-
-    /// Look up the artwork revision tag for a playlist from the display model.
-    /// The model items and playlists arrays share the same order.
-    private func artworkTag(for playlist: Playlist) -> String {
-        if let idx = model.items.firstIndex(where: { $0.id == playlist.id }) {
-            return model.items[idx].artworkRevisionTag
-        }
-        return ""
-    }
-
-    static func == (lhs: HomePlaylistsSection, rhs: HomePlaylistsSection) -> Bool {
-        lhs.model == rhs.model
-    }
 
     private var columnCount: Int {
         switch mode {
@@ -108,7 +90,6 @@ struct HomePlaylistsSection: View, Equatable {
     }
 
     var body: some View {
-        let _ = HomePerf.bodyCounters.bump("Playlists")
         VStack(alignment: .leading, spacing: 14) {
             sectionHeader
             contentBlock
@@ -201,7 +182,6 @@ struct HomePlaylistsSection: View, Equatable {
                     playlist: featured,
                     mode: mode,
                     kind: .featured(height: featuredH),
-                    artworkRevisionTag: artworkTag(for: featured),
                     onFeaturedTrackPlay: { track in
                         play(track, in: featured)
                     }
@@ -214,16 +194,14 @@ struct HomePlaylistsSection: View, Equatable {
                     HomePlaylistCard(
                         playlist: sideA,
                         mode: mode,
-                        kind: .compact(height: smallH),
-                        artworkRevisionTag: artworkTag(for: sideA)
+                        kind: .compact(height: smallH)
                     )
                     .onTapGesture { navigate(to: sideA) }
                     .contextMenu { playlistContextMenu(for: sideA) }
                     HomePlaylistCard(
                         playlist: sideB,
                         mode: mode,
-                        kind: .compact(height: smallH),
-                        artworkRevisionTag: artworkTag(for: sideB)
+                        kind: .compact(height: smallH)
                     )
                     .onTapGesture { navigate(to: sideB) }
                     .contextMenu { playlistContextMenu(for: sideB) }
@@ -267,7 +245,7 @@ struct HomePlaylistsSection: View, Equatable {
             spacing: gridSpacing
         ) {
             ForEach(items) { playlist in
-                HomePlaylistCard(playlist: playlist, mode: mode, kind: .normal, artworkRevisionTag: artworkTag(for: playlist))
+                HomePlaylistCard(playlist: playlist, mode: mode, kind: .normal)
                     .onTapGesture { navigate(to: playlist) }
                     .contextMenu { playlistContextMenu(for: playlist) }
             }
@@ -333,15 +311,14 @@ struct HomePlaylistsSection: View, Equatable {
             HomePlaylistCard(
                 playlist: items[leftIndex],
                 mode: mode,
-                kind: shouldExpandTrailingItem ? .expandedTrailing(height: expandedTrailingHeight) : .normal,
-                artworkRevisionTag: artworkTag(for: items[leftIndex])
+                kind: shouldExpandTrailingItem ? .expandedTrailing(height: expandedTrailingHeight) : .normal
             )
                 .frame(width: leftCardWidth)
                 .onTapGesture { navigate(to: items[leftIndex]) }
                 .contextMenu { playlistContextMenu(for: items[leftIndex]) }
 
             if rightIndex < items.count {
-                HomePlaylistCard(playlist: items[rightIndex], mode: mode, kind: .normal, artworkRevisionTag: artworkTag(for: items[rightIndex]))
+                HomePlaylistCard(playlist: items[rightIndex], mode: mode, kind: .normal)
                     .frame(width: rightWidth)
                     .onTapGesture { navigate(to: items[rightIndex]) }
                     .contextMenu { playlistContextMenu(for: items[rightIndex]) }
@@ -435,9 +412,6 @@ private struct HomePlaylistCard: View {
     let playlist: Playlist
     let mode: HomeLayoutMode
     let kind: HomePlaylistCardKind
-    /// Artwork revision tag from the display model; included in the
-    /// .task identity so the cover re-loads when artwork changes.
-    let artworkRevisionTag: String
     var onFeaturedTrackPlay: ((Track) -> Void)? = nil
 
     @State private var coverImage: NSImage?
@@ -701,8 +675,6 @@ private struct HomePlaylistCard: View {
     }
 
     private func loadCover() async {
-        HomePerf.imageMetrics.recordStart()
-        defer { HomePerf.imageMetrics.recordEnd() }
         let request = DetailHeaderArtworkRequest.playlist(
             selectionIdentity: "playlist-\(playlist.id)",
             playlistID: playlist.id,
@@ -735,15 +707,15 @@ private struct HomePlaylistCard: View {
         if let revision = LocalLibraryService.shared.playlistArtworkRevision(playlistID: playlist.id),
            !revision.isEmpty
         {
-            return "\(selectionIdentity)-artwork-\(revision)-model-\(artworkRevisionTag)"
+            return "\(selectionIdentity)-artwork-\(revision)"
         }
         let signature = PlaylistArtworkGenerator.contentSignature(tracks: playlist.tracks)
-        return "\(selectionIdentity)-unresolved-\(signature)-model-\(artworkRevisionTag)"
+        return "\(selectionIdentity)-unresolved-\(signature)"
     }
 }
 
 @MainActor
-final class HomePlaylistPreviewCache {
+private final class HomePlaylistPreviewCache {
     static let shared = HomePlaylistPreviewCache()
 
     private struct Key: Hashable {
@@ -844,8 +816,6 @@ private struct HomeFeaturedPlaylistTrackArtwork: View {
     }
 
     private func loadImage() async {
-        HomePerf.imageMetrics.recordStart()
-        defer { HomePerf.imageMetrics.recordEnd() }
         var data = track.artworkData
         if data == nil || data!.isEmpty {
             let artworkURL = track.resolvedArtworkURL()
@@ -870,12 +840,11 @@ private struct HomeFeaturedPlaylistTrackArtwork: View {
             checksum: checksum,
             targetPixelSize: targetSize
         )
-        image = await HomeImageCoordinator.shared.image(for: HomeImageCoordinator.Request(
-            cacheKey: key,
-            targetPixelSize: targetSize,
+        image = await ArtworkLoader.loadImage(
             artworkData: data,
-            priority: .high
-        ))
+            cacheKey: key,
+            targetPixelSize: targetSize
+        )
     }
 }
 

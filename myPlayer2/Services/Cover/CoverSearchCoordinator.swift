@@ -47,7 +47,7 @@ final class CoverSearchCoordinator {
         self.qqMusicCoverService = qqMusicCoverService
     }
 
-    /// Searches NetEase first so the UI can render quickly, then merges slower sources in the background.
+    /// Searches all providers concurrently and publishes candidates as soon as any source returns.
     func search(
         artist: String,
         album: String,
@@ -68,23 +68,25 @@ final class CoverSearchCoordinator {
                 searchTask = nil
             }
 
-            do {
-                let preferredCandidate = try await withCoverLookupTimeout(
-                    CoverLookupConfiguration.netEasePreferredTimeout
-                ) {
-                    try await self.netEaseCoverService.searchTopCoverCandidate(
-                        artist: artist,
-                        album: album
-                    )
-                }
-                guard !Task.isCancelled else { return }
-                self.publishMergedCandidates([preferredCandidate], preferExistingSelection: false)
-            } catch {
-                print("[CoverSearchCoordinator] NetEase preferred candidate failed: \(error)")
-            }
-
             var backgroundCandidates: [CoverCandidate] = []
             await withTaskGroup(of: [CoverCandidate].self) { group in
+                group.addTask {
+                    do {
+                        let preferredCandidate = try await withCoverLookupTimeout(
+                            CoverLookupConfiguration.netEasePreferredTimeout
+                        ) {
+                            try await self.netEaseCoverService.searchTopCoverCandidate(
+                                artist: artist,
+                                album: album
+                            )
+                        }
+                        return [preferredCandidate]
+                    } catch {
+                        print("[CoverSearchCoordinator] NetEase preferred candidate failed: \(error)")
+                        return []
+                    }
+                }
+
                 group.addTask {
                     do {
                         return try await withCoverLookupTimeout(
@@ -147,7 +149,10 @@ final class CoverSearchCoordinator {
                 for await partialCandidates in group {
                     guard !Task.isCancelled else { return }
                     backgroundCandidates.append(contentsOf: partialCandidates)
-                    self.publishMergedCandidates(backgroundCandidates, preferExistingSelection: true)
+                    self.publishMergedCandidates(
+                        backgroundCandidates,
+                        preferExistingSelection: self.selectedForPreview != nil
+                    )
                     if self.candidates.isEmpty == false {
                         self.error = nil
                     }
