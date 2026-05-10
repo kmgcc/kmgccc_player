@@ -260,11 +260,13 @@ final class PlaybackCoordinator {
     }
 
     func playRandomTracks(_ tracks: [Track], libraryQueueSource: PlayerViewModel.LibraryQueueSource? = nil) {
-        let queue = Self.randomQueue(from: tracks)
+        let queue = Self.availableUniqueTracks(from: tracks)
         guard !queue.isEmpty else { return }
+        let startTrack = Self.smartRandomPick(from: queue) ?? queue[0]
+        let startIndex = queue.firstIndex(where: { $0.id == startTrack.id }) ?? 0
         playTracks(
             queue,
-            startingAt: 0,
+            startingAt: startIndex,
             libraryQueueSource: libraryQueueSource,
             playbackOrderMode: .shuffle
         )
@@ -275,11 +277,12 @@ final class PlaybackCoordinator {
         inRandomQueueFrom tracks: [Track],
         libraryQueueSource: PlayerViewModel.LibraryQueueSource? = nil
     ) {
-        let queue = Self.randomQueue(from: tracks, startingWith: track)
+        let queue = Self.availableUniqueTracks(from: tracks)
         guard !queue.isEmpty else { return }
+        let startIndex = queue.firstIndex(where: { $0.id == track.id }) ?? 0
         playTracks(
             queue,
-            startingAt: 0,
+            startingAt: startIndex,
             libraryQueueSource: libraryQueueSource,
             playbackOrderMode: .shuffle
         )
@@ -331,14 +334,18 @@ final class PlaybackCoordinator {
         externalProvider(for: activeSource)
     }
 
+    @available(*, deprecated, message: "Use smartRandomPick for single picks or playRandomTracks for ShuffleSession-backed playback.")
     static func smartRandomQueue(from tracks: [Track], startingWith startTrack: Track? = nil) -> [Track] {
-        var seenIDs = Set<UUID>()
-        let uniqueTracks = tracks.filter { track in
-            guard !seenIDs.contains(track.id) else { return false }
-            seenIDs.insert(track.id)
-            return track.availability != .missing
+        if let startTrack,
+           let matched = availableUniqueTracks(from: tracks).first(where: { $0.id == startTrack.id }) {
+            return [matched]
         }
-        guard !uniqueTracks.isEmpty else { return [] }
+        return smartRandomPick(from: tracks).map { [$0] } ?? []
+    }
+
+    static func smartRandomPick(from tracks: [Track]) -> Track? {
+        let uniqueTracks = availableUniqueTracks(from: tracks)
+        guard !uniqueTracks.isEmpty else { return nil }
 
         let trackByID = Dictionary(uniqueKeysWithValues: uniqueTracks.map { ($0.id, $0) })
         let weights = Dictionary(uniqueKeysWithValues: uniqueTracks.map { track in
@@ -351,41 +358,21 @@ final class PlaybackCoordinator {
             return (track.id, score.baseWeight)
         })
 
-        let start = startTrack.flatMap { requested in
-            uniqueTracks.first { $0.id == requested.id }
-        } ?? weightedSample(
+        return weightedSample(
             from: uniqueTracks,
             weights: weights,
             recentHistory: [],
             trackByID: trackByID
         )
-        guard let start else { return [] }
-
-        var result: [Track] = [start]
-        var recentHistory: [UUID] = [start.id]
-        var remaining = uniqueTracks.filter { $0.id != start.id }
-
-        while !remaining.isEmpty {
-            guard let next = weightedSample(
-                from: remaining,
-                weights: weights,
-                recentHistory: recentHistory,
-                trackByID: trackByID
-            ) else { break }
-
-            result.append(next)
-            recentHistory.append(next.id)
-            if recentHistory.count > ShuffleSession.maxHistorySize {
-                recentHistory.removeFirst(recentHistory.count - ShuffleSession.maxHistorySize)
-            }
-            remaining.removeAll { $0.id == next.id }
-        }
-
-        return result
     }
 
-    private static func randomQueue(from tracks: [Track], startingWith startTrack: Track? = nil) -> [Track] {
-        smartRandomQueue(from: tracks, startingWith: startTrack)
+    private static func availableUniqueTracks(from tracks: [Track]) -> [Track] {
+        var seenIDs = Set<UUID>()
+        return tracks.filter { track in
+            guard !seenIDs.contains(track.id) else { return false }
+            seenIDs.insert(track.id)
+            return track.availability != .missing
+        }
     }
 
     private static func weightedSample(

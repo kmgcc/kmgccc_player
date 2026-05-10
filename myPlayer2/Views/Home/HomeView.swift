@@ -22,6 +22,7 @@ struct HomeView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     @Environment(HomeViewModel.self) private var homeVM
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hasAppeared = false
     @State private var layout = HomeWindowLayoutState.shared
     @StateObject private var ambientMotion = HomeAmbientMotionState()
@@ -82,11 +83,13 @@ struct HomeView: View {
     }
 
     private func cachedStartupContent(_ snapshot: HomeStartupSnapshot) -> some View {
-        let g = layout.geometry
-        let mode = HomeLayoutMode.mode(for: max(320, g.hasValidLayout ? g.centerWidth : 820))
+        let snap = layout.discreteSnapshot
+        let mode: HomeLayoutMode = snap.hasValidLayout
+            ? HomeLayoutMode.from(snap.mode)
+            : .wide
         let hPad = mode.horizontalPadding
-        let leftPad = (g.hasValidLayout ? g.leftInset : 0) + hPad
-        let rightPad = (g.hasValidLayout ? g.rightInset : 0) + hPad
+        let leftPad = (snap.hasValidLayout ? CGFloat(snap.leftInset) : 0) + hPad
+        let rightPad = (snap.hasValidLayout ? CGFloat(snap.rightInset) : 0) + hPad
 
         return ZStack(alignment: .topLeading) {
             Color(nsColor: HomeAmbientShapesBackground.ambientBaseColorForStaticCache(colorScheme: colorScheme))
@@ -244,26 +247,29 @@ struct HomeView: View {
     }
 
     private var scrollContent: some View {
-        let g = layout.geometry
-        // While the center-pane geometry probe hasn't published a valid
-        // rect yet (very brief at mount time), render nothing rather than
-        // briefly aligning content against the window's left edge. The
-        // center pane mounts on the same frame, so this empty state is
-        // only visible for ~1 layout pass before real geometry arrives.
-        guard g.hasValidLayout else {
+        // Read only the discrete layout snapshot. This intentionally avoids
+        // touching `layout.geometry` so sub-pixel resize / divider-drag ticks
+        // do NOT invalidate this body. The continuous geometry pipe is read
+        // directly from AppKit by `HomeAmbientRootView` via a Combine
+        // publisher on `HomeWindowLayoutState`.
+        let snap = layout.discreteSnapshot
+        guard snap.hasValidLayout else {
             return AnyView(
                 Color.clear
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             )
         }
 
-        let centerW = g.centerWidth
+        let centerW = CGFloat(snap.contentWidthBucket) * 16
         // Layout mode follows the center column width so card sizes match
-        // the visible center area, not the full window width.
-        let mode = HomeLayoutMode.mode(for: max(320, centerW))
+        // the visible center area, not the full window width. Mode is
+        // computed from the raw geometry inside `HomeWindowLayoutState` so
+        // tier thresholds (560/720/980) are evaluated against pixel-precise
+        // input rather than the 16pt-bucketed centerW used for layout.
+        let mode = HomeLayoutMode.from(snap.mode)
         let hPad = mode.horizontalPadding
-        let leftInset = g.leftInset
-        let rightInset = g.rightInset
+        let leftInset = CGFloat(snap.leftInset)
+        let rightInset = CGFloat(snap.rightInset)
         let centerLeftPad = leftInset + hPad
         let centerRightPad = rightInset + hPad
         let contentWidth = max(200, centerW - hPad * 2)
@@ -271,15 +277,12 @@ struct HomeView: View {
         return AnyView(
             ZStack(alignment: .topLeading) {
                 HomeAmbientShapesBackground(
-                    geometry: g,
-                    mode: mode,
                     motion: ambientMotion,
                     sourceColor: themeStore.semanticPalette.ambientSurface,
-                    sourceAnalysis: themeStore.semanticPalette.analysis
+                    sourceAnalysis: themeStore.semanticPalette.analysis,
+                    colorScheme: colorScheme,
+                    reduceMotion: reduceMotion
                 )
-                .transaction { transaction in
-                    transaction.animation = nil
-                }
 
                 homeScrollView(
                     mode: mode,
@@ -484,6 +487,15 @@ enum HomeLayoutMode: Hashable {
         if width >= 720 { return .medium }
         if width >= 560 { return .compact }
         return .narrow
+    }
+
+    static func from(_ bucket: HomeWindowLayoutState.DiscreteSnapshot.ModeBucket) -> HomeLayoutMode {
+        switch bucket {
+        case .wide:    return .wide
+        case .medium:  return .medium
+        case .compact: return .compact
+        case .narrow:  return .narrow
+        }
     }
 
     var horizontalPadding: CGFloat {

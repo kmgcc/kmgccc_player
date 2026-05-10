@@ -4,6 +4,26 @@
 //
 //  Lightweight, non-interactive ambient shape layer for Home.
 //
+//  Architecture:
+//    HomeAmbientShapesBackground is a thin SwiftUI `NSViewRepresentable`
+//    whose only SwiftUI inputs are stable per-content values
+//    (sourceColor / analysis / colorScheme / reduceMotion). All live
+//    geometry and scroll-offset observation happens INSIDE the AppKit
+//    `HomeAmbientRootView`, which subscribes directly to:
+//      - `HomeWindowLayoutState.shared.geometryPublisher` (continuous
+//        window/center geometry from the AppKit split view)
+//      - `HomeAmbientMotionState.$scrollOffsetY` (Home ScrollView offset
+//        published by `HomeVerticalScrollOffsetProbeView`)
+//      - `BackgroundAnimationClock.shared.dotHighRatePublisher` for ambient
+//        drift (shared 30Hz clock; same source the previous working build at
+//        commit b473d4f used)
+//
+//    This means SwiftUI body re-evaluation is completely decoupled from
+//    resize / sidebar-toggle / scroll ticks. The ambient layer keeps
+//    repositioning shapes via CALayer transforms inside the AppKit view
+//    without going through SwiftUI's diff path. Only an actual palette /
+//    color-scheme change re-runs `updateNSView`.
+//
 
 import AppKit
 import Combine
@@ -14,7 +34,7 @@ import SwiftUI
 final class HomeAmbientMotionState: ObservableObject {
     @Published private(set) var scrollOffsetY: CGFloat = 0
 
-    private let offsetEpsilon: CGFloat = 1
+    private let offsetEpsilon: CGFloat = 0.5
 
     func setScrollOffset(_ offset: CGFloat) {
         let next = max(0, offset)
@@ -23,172 +43,513 @@ final class HomeAmbientMotionState: ObservableObject {
     }
 }
 
-struct HomeAmbientShapesBackground: View {
-    let geometry: HomeWindowLayoutState.Geometry
-    let mode: HomeLayoutMode
-    @ObservedObject var motion: HomeAmbientMotionState
+struct HomeAmbientShapesBackground: NSViewRepresentable {
+    let motion: HomeAmbientMotionState
     let sourceColor: NSColor?
     let sourceAnalysis: ArtworkColorAnalysis?
+    let colorScheme: ColorScheme
+    let reduceMotion: Bool
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.colorScheme) private var colorScheme
+    static func ambientBaseColorForStaticCache(colorScheme: ColorScheme) -> NSColor {
+        HomeAmbientPalette.ambientBaseColor(from: nil, analysis: nil, colorScheme: colorScheme)
+    }
 
-    @State private var shapeLoadResult = BKThemeAssets.ShapeLoadResult(
+    func makeNSView(context _: Context) -> HomeAmbientRootView {
+        HomeAmbientRootView(motion: motion)
+    }
+
+    func updateNSView(_ nsView: HomeAmbientRootView, context _: Context) {
+        nsView.update(
+            motion: motion,
+            sourceColor: sourceColor,
+            sourceAnalysis: sourceAnalysis,
+            colorScheme: colorScheme,
+            reduceMotion: reduceMotion
+        )
+    }
+}
+
+// MARK: - AppKit root view
+
+@MainActor
+final class HomeAmbientRootView: NSView {
+    private struct Presentation {
+        let id: Int
+        let image: CGImage
+        let color: NSColor
+        let side: CGFloat
+        let sideDirection: HomeAmbientShapeSpec.Side
+        let sizeTier: HomeAmbientShapeSpec.SizeTier
+        let boundaryOffsetX: CGFloat
+        let isShape10: Bool
+        let baseY: CGFloat
+        var basePosition: CGPoint
+        let baseRotationDegrees: Double
+        let parallaxX: CGFloat
+        let parallax: CGFloat
+        let rotationPerPoint: CGFloat
+        let rotationClampDegrees: CGFloat
+
+        let ambientPhase: CGFloat
+        let ambientSpeed: CGFloat
+        let ambientAmplitudeX: CGFloat
+        let ambientAmplitudeY: CGFloat
+        let ambientRotationDegrees: CGFloat
+        let ambientScaleAmount: CGFloat
+    }
+
+    private struct ShapeLayerPair {
+        let container: CALayer
+        let mask: CALayer
+    }
+
+    /// Rebuilding the full presentation array (specs, sizes, colors, layer
+    /// images) is expensive. We cache the bucketed signature so continuous
+    /// resize ticks that don't change the bucket only run the cheap
+    /// reposition path (per-presentation basePosition + layer position).
+    private struct LayoutSignature: Equatable {
+        let viewportHeightBucket: Int   // /160 quantized
+        let virtualHeightBucket: Int    // /240 quantized
+        let centerWidthBucket: Int      // /16 quantized
+        let mode: HomeLayoutMode
+        let shapeFileSignature: Int
+        let paletteSignature: PaletteSignature
+        let colorScheme: ColorScheme
+    }
+
+    private struct PaletteSignature: Equatable {
+        let sourceColorRGBA: UInt32
+        let colorfulnessBits: UInt32
+        let avgSaturationBits: UInt32
+        let isEffectivelyMonochrome: Bool
+    }
+
+    private var motion: HomeAmbientMotionState
+    private var motionSubscription: AnyCancellable?
+    private var geometrySubscription: AnyCancellable?
+    private var clockSubscription: AnyCancellable?
+    private var holdsClockLease = false
+
+    private var sourceColor: NSColor?
+    private var sourceAnalysis: ArtworkColorAnalysis?
+    private var colorScheme: ColorScheme = .light
+    private var reduceMotion = false
+
+    private var geometry: HomeWindowLayoutState.Geometry = .empty
+    private var scrollOffsetY: CGFloat = 0
+    private var lastLayoutSignature: LayoutSignature?
+    private var hasPublishedFirstFrameLog = false
+
+    private let baseLayer = CALayer()
+    private var shapeLoadResult = BKThemeAssets.ShapeLoadResult(
         images: [],
         scaleByIndex: [:],
         edgePinnedIndices: []
     )
+    private var presentations: [Presentation] = []
+    private var layersByID: [Int: ShapeLayerPair] = [:]
+
+    private let animationStartTime = CACurrentMediaTime()
+    private var hasLoadedShapes = false
 
     private static let shapeMaxPixel = 768
 
-    static func ambientBaseColorForStaticCache(colorScheme: ColorScheme) -> NSColor {
-        ambientBaseColor(from: nil, analysis: nil, colorScheme: colorScheme)
+    init(motion: HomeAmbientMotionState) {
+        self.motion = motion
+        super.init(frame: .zero)
+        wantsLayer = true
+        layerContentsRedrawPolicy = .duringViewResize
+        layer?.masksToBounds = true
+        baseLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
+        baseLayer.backgroundColor = HomeAmbientPalette.ambientBaseColor(
+            from: nil,
+            analysis: nil,
+            colorScheme: .light
+        ).homeAmbientDeviceRGBCGColor
+        layer?.addSublayer(baseLayer)
     }
 
-    var body: some View {
-        ZStack(alignment: .topLeading) {
-            Color(nsColor: Self.ambientBaseColor(
-                from: sourceColor,
-                analysis: sourceAnalysis,
-                colorScheme: colorScheme
-            ))
-                .frame(width: geometry.windowWidth, height: geometry.windowHeight)
-                .allowsHitTesting(false)
+    @available(*, unavailable)
+    required init?(coder _: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
 
-            if !presentations.isEmpty {
-                HomeAmbientShapeLayerHost(
-                    presentations: presentations,
-                    scrollOffsetY: motion.scrollOffsetY,
-                    virtualHeight: virtualHeight,
-                    reduceMotion: reduceMotion
-                )
-                .frame(width: geometry.windowWidth, height: geometry.windowHeight, alignment: .topLeading)
+    override var isFlipped: Bool { true }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func layout() {
+        super.layout()
+        // Keep the base color layer flush with the view's bounds without
+        // ever writing back to `frame` (which would fight SwiftUI's layout
+        // pass and cause resize jitter). Shape layers are positioned in
+        // window-content coordinates by `applyLayerTransforms`.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        baseLayer.frame = bounds
+        CATransaction.commit()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil {
+            stopAnimationClock()
+            geometrySubscription = nil
+            motionSubscription = nil
+        } else {
+            loadShapesIfNeeded()
+            subscribeToLayoutState()
+            subscribeToMotion()
+            // Pull the current published values explicitly. CurrentValueSubject
+            // delivers asynchronously through `.receive(on: RunLoop.main)`, so
+            // without these calls the layer would be empty for one extra
+            // runloop tick on first mount.
+            applyGeometryChange(HomeWindowLayoutState.shared.geometry)
+            applyScrollOffset(motion.scrollOffsetY)
+            startAnimationClockIfNeeded()
+        }
+    }
+
+    func update(
+        motion: HomeAmbientMotionState,
+        sourceColor: NSColor?,
+        sourceAnalysis: ArtworkColorAnalysis?,
+        colorScheme: ColorScheme,
+        reduceMotion: Bool
+    ) {
+        let motionChanged = self.motion !== motion
+        self.motion = motion
+        if motionChanged {
+            subscribeToMotion()
+            applyScrollOffset(motion.scrollOffsetY)
+        }
+
+        let paletteChanged = !colorsEqual(self.sourceColor, sourceColor)
+            || self.sourceAnalysis != sourceAnalysis
+            || self.colorScheme != colorScheme
+        let reduceMotionChanged = self.reduceMotion != reduceMotion
+
+        self.sourceColor = sourceColor
+        self.sourceAnalysis = sourceAnalysis
+        self.colorScheme = colorScheme
+        self.reduceMotion = reduceMotion
+
+        if paletteChanged {
+            updateBaseLayerColor()
+            rebuildOrReposition(for: geometry, forceFullRebuild: true)
+        }
+        if reduceMotionChanged {
+            startAnimationClockIfNeeded()
+            applyLayerTransforms()
+        }
+    }
+
+    // MARK: - Subscriptions
+
+    private func subscribeToLayoutState() {
+        geometrySubscription = HomeWindowLayoutState.shared.geometryPublisher
+            .receive(on: RunLoop.main)
+            .sink { [weak self] geometry in
+                self?.applyGeometryChange(geometry)
             }
-        }
-        .frame(width: geometry.windowWidth, height: geometry.windowHeight, alignment: .topLeading)
-        .clipped()
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
-        .task {
-            guard shapeLoadResult.images.isEmpty else { return }
-            shapeLoadResult = BKThemeAssets.shared.shapes(maxPixel: Self.shapeMaxPixel)
-        }
     }
 
-    private var specs: [HomeAmbientShapeSpec] {
-        HomeAmbientShapeSpecCache.shared.specs(
-            count: shapeCount,
-            viewportHeight: geometry.windowHeight,
-            virtualHeight: virtualHeight,
-            mode: .wide,
-            shapeFileNames: shapeLoadResult.fileNames
+    private func subscribeToMotion() {
+        motionSubscription = motion.$scrollOffsetY
+            .receive(on: RunLoop.main)
+            .sink { [weak self] offset in
+                self?.applyScrollOffset(offset)
+            }
+    }
+
+    // MARK: - Geometry / palette
+
+    private func applyGeometryChange(_ next: HomeWindowLayoutState.Geometry) {
+        guard next.hasValidLayout else { return }
+        guard next != geometry else { return }
+        geometry = next
+        rebuildOrReposition(for: next, forceFullRebuild: false)
+    }
+
+    private func applyScrollOffset(_ offset: CGFloat) {
+        let clamped = max(0, offset)
+        guard abs(clamped - scrollOffsetY) >= 0.5 else { return }
+        scrollOffsetY = clamped
+        applyLayerTransforms()
+    }
+
+    private func updateBaseLayerColor() {
+        let baseColor = HomeAmbientPalette.ambientBaseColor(
+            from: sourceColor,
+            analysis: sourceAnalysis,
+            colorScheme: colorScheme
+        )
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        baseLayer.backgroundColor = baseColor.homeAmbientDeviceRGBCGColor
+        CATransaction.commit()
+    }
+
+    // MARK: - Shape assets
+
+    private func loadShapesIfNeeded() {
+        guard !hasLoadedShapes else { return }
+        hasLoadedShapes = true
+        shapeLoadResult = BKThemeAssets.shared.shapes(maxPixel: Self.shapeMaxPixel)
+        rebuildOrReposition(for: geometry, forceFullRebuild: true)
+    }
+
+    // MARK: - Presentation building / repositioning
+
+    private func rebuildOrReposition(
+        for geometry: HomeWindowLayoutState.Geometry,
+        forceFullRebuild: Bool
+    ) {
+        guard geometry.hasValidLayout, !shapeLoadResult.images.isEmpty else {
+            presentations = []
+            lastLayoutSignature = nil
+            removeAllShapeLayers()
+            applyLayerTransforms()
+            return
+        }
+
+        let signature = makeLayoutSignature(for: geometry)
+        if !forceFullRebuild,
+           let prev = lastLayoutSignature,
+           prev == signature,
+           !presentations.isEmpty {
+            // Hot path: bucketed inputs unchanged, only continuous geometry
+            // moved. Just slide the cached presentations to new positions and
+            // re-apply layer transforms — no palette / spec / image work.
+            repositionPresentations(for: geometry)
+            applyLayerTransforms()
+            return
+        }
+
+        lastLayoutSignature = signature
+        rebuildPresentationsFully(for: geometry)
+    }
+
+    private func makeLayoutSignature(for geometry: HomeWindowLayoutState.Geometry) -> LayoutSignature {
+        let viewportH = geometry.windowHeight
+        let virtualH = max(viewportH * 2.6, viewportH + 1400)
+        let centerW = geometry.centerWidth
+        var fileHasher = Hasher()
+        for name in shapeLoadResult.fileNames {
+            fileHasher.combine(name)
+        }
+        return LayoutSignature(
+            viewportHeightBucket: Int((viewportH / 160).rounded()),
+            virtualHeightBucket: Int((virtualH / 240).rounded()),
+            centerWidthBucket: Int((centerW / 16).rounded()),
+            mode: layoutMode(for: centerW),
+            shapeFileSignature: fileHasher.finalize(),
+            paletteSignature: makePaletteSignature(),
+            colorScheme: colorScheme
         )
     }
 
-    private var presentations: [HomeAmbientShapePresentation] {
-        specs.compactMap { spec in
-            guard let image = image(for: spec) else { return nil }
-            let side = sideLength(for: spec)
-            let position = basePosition(for: spec, side: side)
-            return HomeAmbientShapePresentation(
-                id: spec.id,
-                image: image,
-                color: color(for: spec),
+    private func makePaletteSignature() -> PaletteSignature {
+        var rgba: UInt32 = 0
+        if let rgb = sourceColor?.usingColorSpace(.deviceRGB) {
+            rgba = (UInt32(min(max(rgb.redComponent, 0), 1) * 255) << 24)
+                | (UInt32(min(max(rgb.greenComponent, 0), 1) * 255) << 16)
+                | (UInt32(min(max(rgb.blueComponent, 0), 1) * 255) << 8)
+                | UInt32(min(max(rgb.alphaComponent, 0), 1) * 255)
+        }
+        let colorfulness = sourceAnalysis?.colorfulness ?? 0
+        let avgSaturation = sourceAnalysis?.avgSaturation ?? 0
+        let mono = sourceAnalysis?.isEffectivelyMonochrome ?? false
+        return PaletteSignature(
+            sourceColorRGBA: rgba,
+            colorfulnessBits: UInt32(min(max(colorfulness, 0), 1) * 1024),
+            avgSaturationBits: UInt32(min(max(avgSaturation, 0), 1) * 1024),
+            isEffectivelyMonochrome: mono
+        )
+    }
+
+    private func rebuildPresentationsFully(for geometry: HomeWindowLayoutState.Geometry) {
+        let palette = HomeAmbientPalette.palette(
+            sourceColor: sourceColor,
+            analysis: sourceAnalysis,
+            colorScheme: colorScheme
+        )
+        let count = Self.shapeCount
+        let viewportH = geometry.windowHeight
+        let virtualH = max(viewportH * 2.6, viewportH + 1400)
+        let centerW = geometry.centerWidth
+        let mode = layoutMode(for: centerW)
+        let layoutProgress = HomeAmbientPalette.layoutProgress(centerWidth: centerW)
+        let wideExpansion = HomeAmbientPalette.wideExpansion(centerWidth: centerW)
+
+        let specs = HomeAmbientShapeSpecCache.shared.specs(
+            count: count,
+            viewportHeight: viewportH,
+            virtualHeight: virtualH,
+            mode: mode,
+            shapeFileNames: shapeLoadResult.fileNames
+        )
+
+        var built: [Presentation] = []
+        built.reserveCapacity(specs.count)
+        for spec in specs {
+            guard !shapeLoadResult.images.isEmpty else { continue }
+            let assetIndex = spec.assetIndex % shapeLoadResult.images.count
+            let image = shapeLoadResult.images[assetIndex]
+            let side = sideLength(
+                for: spec,
+                geometry: geometry,
+                layoutProgress: layoutProgress,
+                wideExpansion: wideExpansion
+            )
+            let position = basePosition(
+                for: spec,
                 side: side,
-                sideDirection: spec.side,
-                basePosition: position,
-                baseRotationDegrees: spec.baseRotationDegrees,
-                parallaxX: spec.parallaxX,
-                parallax: spec.parallax,
-                rotationPerPoint: spec.rotationPerPoint,
-                rotationClampDegrees: spec.rotationClampDegrees
+                geometry: geometry,
+                layoutProgress: layoutProgress
+            )
+            let color: NSColor = {
+                guard !palette.isEmpty else {
+                    return colorScheme == .dark
+                        ? NSColor(calibratedWhite: 0.42, alpha: 1)
+                        : NSColor(calibratedWhite: 0.78, alpha: 1)
+                }
+                return palette[spec.colorIndex % palette.count]
+            }()
+
+            built.append(
+                Presentation(
+                    id: spec.id,
+                    image: image,
+                    color: color,
+                    side: side,
+                    sideDirection: spec.side,
+                    sizeTier: spec.sizeTier,
+                    boundaryOffsetX: spec.boundaryOffsetX,
+                    isShape10: isShape10(spec),
+                    baseY: spec.baseY,
+                    basePosition: position,
+                    baseRotationDegrees: spec.baseRotationDegrees,
+                    parallaxX: spec.parallaxX,
+                    parallax: spec.parallax,
+                    rotationPerPoint: spec.rotationPerPoint,
+                    rotationClampDegrees: spec.rotationClampDegrees,
+                    ambientPhase: CGFloat((spec.id * 37) % 360) * .pi / 180,
+                    ambientSpeed: 0.10 + CGFloat((spec.id * 11) % 7) * 0.012,
+                    ambientAmplitudeX: ambientAmplitudeX(forSpec: spec),
+                    ambientAmplitudeY: 24 + CGFloat((spec.id * 7) % 9) * 3.5,
+                    ambientRotationDegrees: 4.5 + CGFloat((spec.id * 13) % 6) * 1.2,
+                    ambientScaleAmount: 0.026 + CGFloat((spec.id * 17) % 5) * 0.005
+                )
+            )
+        }
+
+        presentations = built
+        syncShapeLayers()
+        applyLayerTransforms()
+        startAnimationClockIfNeeded()
+        if !hasPublishedFirstFrameLog {
+            hasPublishedFirstFrameLog = true
+            Log.debug(
+                "[HomeAmbient] First full presentation rebuild: shapes=\(built.count) viewport=\(Int(viewportH)) center=\(Int(centerW))",
+                category: .ui
             )
         }
     }
 
-    private var virtualHeight: CGFloat {
-        max(geometry.windowHeight * 2.6, geometry.windowHeight + 1400)
-    }
-
-    private var shapeCount: Int {
-        if ProcessInfo.processInfo.isLowPowerModeEnabled {
-            return 12
+    private func repositionPresentations(for geometry: HomeWindowLayoutState.Geometry) {
+        let centerW = geometry.centerWidth
+        let layoutProgress = HomeAmbientPalette.layoutProgress(centerWidth: centerW)
+        for index in presentations.indices {
+            presentations[index].basePosition = basePosition(
+                forPresentation: presentations[index],
+                geometry: geometry,
+                layoutProgress: layoutProgress
+            )
         }
-        return 18
     }
 
-    private var palette: [NSColor] {
-        if let sourceColor {
-            return Self.palette(from: sourceColor, analysis: sourceAnalysis, colorScheme: colorScheme)
+    private func basePosition(
+        forPresentation presentation: Presentation,
+        geometry: HomeWindowLayoutState.Geometry,
+        layoutProgress: CGFloat
+    ) -> CGPoint {
+        let half = presentation.side * 0.5
+        let isUltraShape10 = presentation.sizeTier == .ultra && presentation.isShape10
+        let boundary: CGFloat = presentation.sideDirection == .left
+            ? geometry.centerMinXInWindow
+            : geometry.centerMaxXInWindow
+        let fluidBoundaryScale = 0.48 + layoutProgress * 0.52
+
+        let boundaryOffsetX: CGFloat
+        if isUltraShape10 {
+            let outwardDistance = max(abs(presentation.boundaryOffsetX), presentation.side * 0.70)
+            boundaryOffsetX = presentation.sideDirection == .left ? -outwardDistance : outwardDistance
+        } else {
+            boundaryOffsetX = presentation.boundaryOffsetX * fluidBoundaryScale
         }
-        return Self.fallbackPalette(colorScheme: colorScheme)
+
+        let x = clamp(
+            boundary + boundaryOffsetX,
+            min: -half * (isUltraShape10 ? 1.15 : 0.72),
+            max: geometry.windowWidth + half * (isUltraShape10 ? 1.15 : 0.72)
+        )
+
+        return CGPoint(x: x, y: presentation.baseY)
     }
 
-    private func image(for spec: HomeAmbientShapeSpec) -> CGImage? {
-        guard !shapeLoadResult.images.isEmpty else { return nil }
-        return shapeLoadResult.images[spec.assetIndex % shapeLoadResult.images.count]
+    private func ambientAmplitudeX(forSpec spec: HomeAmbientShapeSpec) -> CGFloat {
+        let magnitude = 24 + CGFloat((spec.id * 5) % 6) * 4.5
+        return spec.side == .left ? magnitude : -magnitude
     }
 
-    private func sideLength(for spec: HomeAmbientShapeSpec) -> CGFloat {
+    private static var shapeCount: Int {
+        ProcessInfo.processInfo.isLowPowerModeEnabled ? 12 : 18
+    }
+
+    private func layoutMode(for centerWidth: CGFloat) -> HomeLayoutMode {
+        if centerWidth >= 980 { return .wide }
+        if centerWidth >= 720 { return .medium }
+        if centerWidth >= 560 { return .compact }
+        return .narrow
+    }
+
+    private func sideLength(
+        for spec: HomeAmbientShapeSpec,
+        geometry: HomeWindowLayoutState.Geometry,
+        layoutProgress: CGFloat,
+        wideExpansion: CGFloat
+    ) -> CGFloat {
         guard geometry.hasValidLayout else { return 0 }
-
         let assetIndex = shapeLoadResult.images.isEmpty
             ? spec.assetIndex
             : spec.assetIndex % shapeLoadResult.images.count
-        let assetMultiplier = switch spec.sizeTier {
+        let assetMultiplier: CGFloat = switch spec.sizeTier {
         case .small, .medium:
             min(1.18, max(1.0, shapeLoadResult.scaleByIndex[assetIndex] ?? 1.0))
         case .large, .ultra:
             1.0
         }
 
-        return clamp(
-            spec.nominalSide * assetMultiplier * fluidShapeScale,
-            min: minimumShapeSide,
-            max: maximumShapeSide
-        )
+        let fluidShapeScale = 0.72 + layoutProgress * 0.28 + wideExpansion * 0.08
+        let minSide = lerp(54, 70, layoutProgress)
+        let maxSide = lerp(680, 980, min(1, layoutProgress + wideExpansion * 0.45))
+
+        return clamp(spec.nominalSide * assetMultiplier * fluidShapeScale, min: minSide, max: maxSide)
     }
 
-    private var minimumShapeSide: CGFloat {
-        lerp(54, 70, fluidLayoutProgress)
-    }
-
-    private var maximumShapeSide: CGFloat {
-        lerp(680, 980, min(1, fluidLayoutProgress + fluidWideExpansion * 0.45))
-    }
-
-    private var fluidShapeScale: CGFloat {
-        0.72 + fluidLayoutProgress * 0.28 + fluidWideExpansion * 0.08
-    }
-
-    private var fluidBoundaryScale: CGFloat {
-        0.48 + fluidLayoutProgress * 0.52
-    }
-
-    private var fluidLayoutProgress: CGFloat {
-        let width = max(geometry.centerWidth, 520)
-        let raw = clamp((width - 560) / 620, min: 0, max: 1)
-        return raw * raw * (3 - 2 * raw)
-    }
-
-    private var fluidWideExpansion: CGFloat {
-        let width = max(geometry.centerWidth, 520)
-        let raw = clamp((width - 1180) / 520, min: 0, max: 1)
-        return raw * raw * (3 - 2 * raw)
-    }
-
-    private func basePosition(for spec: HomeAmbientShapeSpec, side: CGFloat) -> CGPoint {
+    private func basePosition(
+        for spec: HomeAmbientShapeSpec,
+        side: CGFloat,
+        geometry: HomeWindowLayoutState.Geometry,
+        layoutProgress: CGFloat
+    ) -> CGPoint {
         let centerMinX = geometry.centerMinXInWindow
         let centerMaxX = geometry.centerMaxXInWindow
         let half = side * 0.5
         let isUltraShape10 = spec.sizeTier == .ultra && isShape10(spec)
-        let boundary: CGFloat
-        switch spec.side {
-        case .left:
-            boundary = centerMinX
-        case .right:
-            boundary = centerMaxX
-        }
+        let boundary: CGFloat = spec.side == .left ? centerMinX : centerMaxX
+        let fluidBoundaryScale = 0.48 + layoutProgress * 0.52
 
         let boundaryOffsetX: CGFloat
         if isUltraShape10 {
@@ -207,27 +568,186 @@ struct HomeAmbientShapesBackground: View {
         return CGPoint(x: x, y: spec.baseY)
     }
 
-    private func lerp(_ a: CGFloat, _ b: CGFloat, _ t: CGFloat) -> CGFloat {
-        a + (b - a) * clamp(t, min: 0, max: 1)
-    }
-
-    private func color(for spec: HomeAmbientShapeSpec) -> NSColor {
-        let colors = palette
-        guard !colors.isEmpty else {
-            return colorScheme == .dark
-                ? NSColor(calibratedWhite: 0.42, alpha: 1)
-                : NSColor(calibratedWhite: 0.78, alpha: 1)
-        }
-        return colors[spec.colorIndex % colors.count]
-    }
-
     private func isShape10(_ spec: HomeAmbientShapeSpec) -> Bool {
         guard !shapeLoadResult.fileNames.isEmpty else { return false }
         let assetIndex = spec.assetIndex % shapeLoadResult.fileNames.count
         return shapeLoadResult.fileNames[assetIndex].caseInsensitiveCompare("shape10.png") == .orderedSame
     }
 
-    private static func ambientBaseColor(
+    // MARK: - Layer sync
+
+    private func removeAllShapeLayers() {
+        for pair in layersByID.values {
+            pair.container.removeFromSuperlayer()
+        }
+        layersByID.removeAll(keepingCapacity: true)
+    }
+
+    private func syncShapeLayers() {
+        guard let rootLayer = layer else { return }
+        let activeIDs = Set(presentations.map(\.id))
+        for (id, pair) in layersByID where !activeIDs.contains(id) {
+            pair.container.removeFromSuperlayer()
+            layersByID[id] = nil
+        }
+
+        let backingScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+
+        for presentation in presentations {
+            let pair = layerPair(for: presentation, in: rootLayer)
+            let bounds = CGRect(x: 0, y: 0, width: presentation.side, height: presentation.side)
+            pair.container.contentsScale = backingScale
+            pair.container.backgroundColor = presentation.color.homeAmbientDeviceRGBCGColor
+            pair.container.bounds = bounds
+            pair.mask.contentsScale = backingScale
+            pair.mask.contents = presentation.image
+            pair.mask.contentsGravity = .resizeAspect
+            pair.mask.minificationFilter = .linear
+            pair.mask.magnificationFilter = .linear
+            pair.mask.frame = bounds
+        }
+
+        CATransaction.commit()
+    }
+
+    private func layerPair(
+        for presentation: Presentation,
+        in rootLayer: CALayer
+    ) -> ShapeLayerPair {
+        if let existing = layersByID[presentation.id] {
+            return existing
+        }
+        let container = CALayer()
+        container.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+        container.masksToBounds = false
+        container.allowsEdgeAntialiasing = true
+        container.minificationFilter = .linear
+        container.magnificationFilter = .linear
+
+        let mask = CALayer()
+        mask.anchorPoint = CGPoint(x: 0, y: 0)
+        container.mask = mask
+        rootLayer.addSublayer(container)
+        let pair = ShapeLayerPair(container: container, mask: mask)
+        layersByID[presentation.id] = pair
+        return pair
+    }
+
+    // MARK: - Animation
+
+    /// Subscribe to the shared 30Hz `BackgroundAnimationClock` so ambient
+    /// drift advances on every gate tick. We keep this path instead of
+    /// `NSView.displayLink(target:selector:)` because the latter shadows the
+    /// inherited `displayLink` symbol on the subclass and was not firing on
+    /// SwiftUI-hosted instances during testing — the shared clock is what
+    /// the previous working build used (see commit b473d4f).
+    private func startAnimationClockIfNeeded() {
+        guard window != nil, !presentations.isEmpty, !reduceMotion else {
+            stopAnimationClock()
+            return
+        }
+        guard clockSubscription == nil else { return }
+        clockSubscription = BackgroundAnimationClock.shared.dotHighRatePublisher
+            .sink { [weak self] in
+                self?.applyLayerTransforms()
+            }
+        if !holdsClockLease {
+            BackgroundAnimationClock.shared.acquire()
+            holdsClockLease = true
+        }
+    }
+
+    private func stopAnimationClock() {
+        clockSubscription?.cancel()
+        clockSubscription = nil
+        if holdsClockLease {
+            BackgroundAnimationClock.shared.release()
+            holdsClockLease = false
+        }
+    }
+
+    private func applyLayerTransforms() {
+        guard !presentations.isEmpty else { return }
+        let elapsed = CGFloat(CACurrentMediaTime() - animationStartTime)
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+
+        for presentation in presentations {
+            guard let pair = layersByID[presentation.id] else { continue }
+            let scroll = scrollTransform(for: presentation, scrollOffsetY: scrollOffsetY)
+            let ambient = ambientTransform(for: presentation, elapsed: elapsed)
+
+            pair.container.position = CGPoint(
+                x: presentation.basePosition.x + scroll.x + ambient.x,
+                y: presentation.basePosition.y + scroll.y + ambient.y
+            )
+            var transform = CATransform3DMakeRotation(
+                CGFloat((presentation.baseRotationDegrees + scroll.rotationDegrees) * .pi / 180)
+                    + ambient.rotationRadians,
+                0,
+                0,
+                1
+            )
+            transform = CATransform3DScale(transform, ambient.scale, ambient.scale, 1)
+            pair.container.transform = transform
+        }
+
+        CATransaction.commit()
+    }
+
+    private func ambientTransform(
+        for presentation: Presentation,
+        elapsed: CGFloat
+    ) -> (x: CGFloat, y: CGFloat, rotationRadians: CGFloat, scale: CGFloat) {
+        guard !reduceMotion else { return (0, 0, 0, 1) }
+        let phase = presentation.ambientPhase + elapsed * presentation.ambientSpeed
+        return (
+            x: sin(phase) * presentation.ambientAmplitudeX,
+            y: cos(phase * 0.82) * presentation.ambientAmplitudeY,
+            rotationRadians: sin(phase * 0.64) * presentation.ambientRotationDegrees * .pi / 180,
+            scale: 1 + sin(phase * 0.48) * presentation.ambientScaleAmount
+        )
+    }
+
+    private func scrollTransform(
+        for presentation: Presentation,
+        scrollOffsetY: CGFloat
+    ) -> (x: CGFloat, y: CGFloat, rotationDegrees: Double) {
+        guard !reduceMotion else { return (0, 0, 0) }
+        let virtualHeight = max(geometry.windowHeight * 2.6, geometry.windowHeight + 1400)
+        return (
+            x: clamp(scrollOffsetY * presentation.parallaxX, min: -90, max: 90),
+            y: clamp(-scrollOffsetY * presentation.parallax, min: -virtualHeight, max: virtualHeight),
+            rotationDegrees: Double(
+                clamp(
+                    scrollOffsetY * presentation.rotationPerPoint,
+                    min: -presentation.rotationClampDegrees,
+                    max: presentation.rotationClampDegrees
+                )
+            )
+        )
+    }
+
+    private func colorsEqual(_ lhs: NSColor?, _ rhs: NSColor?) -> Bool {
+        switch (lhs, rhs) {
+        case (nil, nil):
+            return true
+        case let (.some(a), .some(b)):
+            return a.isEqual(b)
+        default:
+            return false
+        }
+    }
+}
+
+// MARK: - Palette helpers
+
+private enum HomeAmbientPalette {
+    static func ambientBaseColor(
         from source: NSColor?,
         analysis: ArtworkColorAnalysis?,
         colorScheme: ColorScheme
@@ -237,13 +757,11 @@ struct HomeAmbientShapesBackground: View {
                 ? NSColor(calibratedHue: 0.10, saturation: 0.14, brightness: 0.10, alpha: 1)
                 : .white
         }
-
         guard let rgb = source.usingColorSpace(.deviceRGB) else {
             return colorScheme == .dark
                 ? NSColor(calibratedHue: 0.10, saturation: 0.14, brightness: 0.10, alpha: 1)
                 : .white
         }
-
         var hue: CGFloat = 0
         var saturation: CGFloat = 0
         var brightness: CGFloat = 0
@@ -266,7 +784,6 @@ struct HomeAmbientShapesBackground: View {
         guard let hsl = hslComponents(from: source) else {
             return .white
         }
-
         return rgbColorFromHsl(
             h: hsl.h,
             s: clamp(hsl.s * 0.16, min: 0.05, max: 0.13),
@@ -274,7 +791,30 @@ struct HomeAmbientShapesBackground: View {
         )
     }
 
-    private static func palette(
+    static func palette(
+        sourceColor: NSColor?,
+        analysis: ArtworkColorAnalysis?,
+        colorScheme: ColorScheme
+    ) -> [NSColor] {
+        if let sourceColor {
+            return makePalette(from: sourceColor, analysis: analysis, colorScheme: colorScheme)
+        }
+        return fallbackPalette(colorScheme: colorScheme)
+    }
+
+    static func layoutProgress(centerWidth: CGFloat) -> CGFloat {
+        let width = max(centerWidth, 520)
+        let raw = clamp((width - 560) / 620, min: 0, max: 1)
+        return raw * raw * (3 - 2 * raw)
+    }
+
+    static func wideExpansion(centerWidth: CGFloat) -> CGFloat {
+        let width = max(centerWidth, 520)
+        let raw = clamp((width - 1180) / 520, min: 0, max: 1)
+        return raw * raw * (3 - 2 * raw)
+    }
+
+    private static func makePalette(
         from source: NSColor,
         analysis: ArtworkColorAnalysis?,
         colorScheme: ColorScheme
@@ -354,7 +894,6 @@ struct HomeAmbientShapesBackground: View {
                 NSColor(calibratedRed: 0.56, green: 0.45, blue: 0.38, alpha: 1),
             ]
         }
-
         return [
             NSColor(calibratedRed: 0.72, green: 0.78, blue: 0.70, alpha: 1),
             NSColor(calibratedRed: 0.68, green: 0.75, blue: 0.80, alpha: 1),
@@ -424,298 +963,17 @@ struct HomeAmbientShapesBackground: View {
     }
 }
 
-private struct HomeAmbientShapePresentation {
-    let id: Int
-    let image: CGImage
-    let color: NSColor
-    let side: CGFloat
-    let sideDirection: HomeAmbientShapeSpec.Side
-    let basePosition: CGPoint
-    let baseRotationDegrees: Double
-    let parallaxX: CGFloat
-    let parallax: CGFloat
-    let rotationPerPoint: CGFloat
-    let rotationClampDegrees: CGFloat
-
-    var ambientPhase: CGFloat {
-        CGFloat((id * 37) % 360) * .pi / 180
-    }
-
-    var ambientSpeed: CGFloat {
-        0.060 + CGFloat((id * 11) % 7) * 0.006
-    }
-
-    var ambientAmplitudeX: CGFloat {
-        switch sideDirection {
-        case .left: return 4 + CGFloat((id * 5) % 6)
-        case .right: return -(4 + CGFloat((id * 5) % 6))
-        }
-    }
-
-    var ambientAmplitudeY: CGFloat {
-        5 + CGFloat((id * 7) % 8)
-    }
-
-    var ambientRotationDegrees: CGFloat {
-        0.8 + CGFloat((id * 13) % 6) * 0.22
-    }
-
-    var ambientScaleAmount: CGFloat {
-        0.006 + CGFloat((id * 17) % 5) * 0.0015
-    }
-}
-
-private struct HomeAmbientShapeLayerHost: NSViewRepresentable {
-    let presentations: [HomeAmbientShapePresentation]
-    let scrollOffsetY: CGFloat
-    let virtualHeight: CGFloat
-    let reduceMotion: Bool
-
-    func makeNSView(context _: Context) -> HomeAmbientShapeLayerView {
-        HomeAmbientShapeLayerView()
-    }
-
-    func updateNSView(_ nsView: HomeAmbientShapeLayerView, context _: Context) {
-        nsView.update(
-            presentations: presentations,
-            scrollOffsetY: scrollOffsetY,
-            virtualHeight: virtualHeight,
-            reduceMotion: reduceMotion
-        )
-    }
-}
-
-private final class HomeAmbientShapeLayerView: NSView {
-    private struct ShapeLayerPair {
-        let container: CALayer
-        let mask: CALayer
-    }
-
-    private var layersByID: [Int: ShapeLayerPair] = [:]
-    private var presentationsByID: [Int: HomeAmbientShapePresentation] = [:]
-    private var presentationOrder: [Int] = []
-    private var scrollOffsetY: CGFloat = 0
-    private var virtualHeight: CGFloat = 0
-    private var reduceMotion = false
-    private var animationStartTime = CACurrentMediaTime()
-    private var animationSubscription: AnyCancellable?
-    private var holdsClockLease = false
-
-    override var isFlipped: Bool { true }
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        wantsLayer = true
-        layerContentsRedrawPolicy = .duringViewResize
-        layer?.masksToBounds = true
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        if window == nil {
-            stopAnimationClock()
-        } else {
-            startAnimationClockIfNeeded()
-            applyLayerTransforms()
-        }
-    }
-
-    func update(
-        presentations: [HomeAmbientShapePresentation],
-        scrollOffsetY: CGFloat,
-        virtualHeight: CGFloat,
-        reduceMotion: Bool
-    ) {
-        guard let rootLayer = layer else { return }
-        rootLayer.masksToBounds = true
-        self.scrollOffsetY = scrollOffsetY
-        self.virtualHeight = virtualHeight
-        self.reduceMotion = reduceMotion
-        presentationsByID = Dictionary(uniqueKeysWithValues: presentations.map { ($0.id, $0) })
-        presentationOrder = presentations.map(\.id)
-
-        let activeIDs = Set(presentations.map(\.id))
-        for (id, pair) in layersByID where !activeIDs.contains(id) {
-            pair.container.removeFromSuperlayer()
-            layersByID[id] = nil
-        }
-
-        let backingScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-
-        for presentation in presentations {
-            let pair = layerPair(for: presentation, in: rootLayer)
-            let transform = scrollTransform(
-                for: presentation,
-                scrollOffsetY: scrollOffsetY,
-                virtualHeight: virtualHeight,
-                reduceMotion: reduceMotion
-            )
-            let bounds = CGRect(x: 0, y: 0, width: presentation.side, height: presentation.side)
-
-            pair.container.contentsScale = backingScale
-            pair.container.backgroundColor = presentation.color.homeAmbientDeviceRGBCGColor
-            pair.container.bounds = bounds
-            pair.container.position = CGPoint(
-                x: presentation.basePosition.x + transform.x,
-                y: presentation.basePosition.y + transform.y
-            )
-            pair.container.transform = CATransform3DMakeRotation(
-                CGFloat((presentation.baseRotationDegrees + transform.rotationDegrees) * .pi / 180),
-                0,
-                0,
-                1
-            )
-
-            pair.mask.contentsScale = backingScale
-            pair.mask.contents = presentation.image
-            pair.mask.contentsGravity = .resizeAspect
-            pair.mask.minificationFilter = .linear
-            pair.mask.magnificationFilter = .linear
-            pair.mask.frame = bounds
-        }
-
-        CATransaction.commit()
-        applyLayerTransforms()
-        startAnimationClockIfNeeded()
-    }
-
-    private func layerPair(
-        for presentation: HomeAmbientShapePresentation,
-        in rootLayer: CALayer
-    ) -> ShapeLayerPair {
-        if let existing = layersByID[presentation.id] {
-            return existing
-        }
-
-        let container = CALayer()
-        container.anchorPoint = CGPoint(x: 0.5, y: 0.5)
-        container.masksToBounds = false
-        container.allowsEdgeAntialiasing = true
-        container.minificationFilter = .linear
-        container.magnificationFilter = .linear
-
-        let mask = CALayer()
-        mask.anchorPoint = CGPoint(x: 0, y: 0)
-        container.mask = mask
-        rootLayer.addSublayer(container)
-
-        let pair = ShapeLayerPair(container: container, mask: mask)
-        layersByID[presentation.id] = pair
-        return pair
-    }
-
-    private func startAnimationClockIfNeeded() {
-        guard window != nil, !presentationOrder.isEmpty, !reduceMotion else {
-            stopAnimationClock()
-            return
-        }
-        guard animationSubscription == nil else { return }
-        animationSubscription = BackgroundAnimationClock.shared.dotHighRatePublisher
-            .sink { [weak self] in
-                self?.applyLayerTransforms()
-            }
-        if !holdsClockLease {
-            BackgroundAnimationClock.shared.acquire()
-            holdsClockLease = true
-        }
-    }
-
-    private func stopAnimationClock() {
-        animationSubscription?.cancel()
-        animationSubscription = nil
-        if holdsClockLease {
-            BackgroundAnimationClock.shared.release()
-            holdsClockLease = false
-        }
-    }
-
-    private func applyLayerTransforms() {
-        guard !presentationOrder.isEmpty else { return }
-
-        let elapsed = CGFloat(CACurrentMediaTime() - animationStartTime)
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-
-        for id in presentationOrder {
-            guard
-                let presentation = presentationsByID[id],
-                let pair = layersByID[id]
-            else { continue }
-
-            let transform = scrollTransform(
-                for: presentation,
-                scrollOffsetY: scrollOffsetY,
-                virtualHeight: virtualHeight,
-                reduceMotion: reduceMotion
-            )
-            let ambient = ambientTransform(for: presentation, elapsed: elapsed, reduceMotion: reduceMotion)
-
-            pair.container.position = CGPoint(
-                x: presentation.basePosition.x + transform.x + ambient.x,
-                y: presentation.basePosition.y + transform.y + ambient.y
-            )
-            var layerTransform = CATransform3DMakeRotation(
-                CGFloat((presentation.baseRotationDegrees + transform.rotationDegrees) * .pi / 180)
-                    + ambient.rotationRadians,
-                0,
-                0,
-                1
-            )
-            layerTransform = CATransform3DScale(layerTransform, ambient.scale, ambient.scale, 1)
-            pair.container.transform = layerTransform
-        }
-
-        CATransaction.commit()
-    }
-
-    private func ambientTransform(
-        for presentation: HomeAmbientShapePresentation,
-        elapsed: CGFloat,
-        reduceMotion: Bool
-    ) -> (x: CGFloat, y: CGFloat, rotationRadians: CGFloat, scale: CGFloat) {
-        guard !reduceMotion else { return (0, 0, 0, 1) }
-        let phase = presentation.ambientPhase + elapsed * presentation.ambientSpeed
-        return (
-            x: sin(phase) * presentation.ambientAmplitudeX,
-            y: cos(phase * 0.82) * presentation.ambientAmplitudeY,
-            rotationRadians: sin(phase * 0.64) * presentation.ambientRotationDegrees * .pi / 180,
-            scale: 1 + sin(phase * 0.48) * presentation.ambientScaleAmount
-        )
-    }
-
-    private func scrollTransform(
-        for presentation: HomeAmbientShapePresentation,
-        scrollOffsetY: CGFloat,
-        virtualHeight: CGFloat,
-        reduceMotion: Bool
-    ) -> (x: CGFloat, y: CGFloat, rotationDegrees: Double) {
-        guard !reduceMotion else { return (0, 0, 0) }
-        return (
-            x: clamp(scrollOffsetY * presentation.parallaxX, min: -8, max: 8),
-            y: clamp(-scrollOffsetY * presentation.parallax, min: -virtualHeight, max: virtualHeight),
-            rotationDegrees: Double(
-                clamp(
-                    scrollOffsetY * presentation.rotationPerPoint,
-                    min: -presentation.rotationClampDegrees,
-                    max: presentation.rotationClampDegrees
-                )
-            )
-        )
-    }
-}
-
 private extension NSColor {
     var homeAmbientDeviceRGBCGColor: CGColor {
         (usingColorSpace(.deviceRGB) ?? self).cgColor
     }
 }
+
+private func lerp(_ a: CGFloat, _ b: CGFloat, _ t: CGFloat) -> CGFloat {
+    a + (b - a) * clamp(t, min: 0, max: 1)
+}
+
+// MARK: - Spec generation (unchanged geometry / RNG behavior)
 
 private final class HomeAmbientShapeSpecCache {
     static let shared = HomeAmbientShapeSpecCache()
@@ -771,7 +1029,7 @@ private final class HomeAmbientShapeSpecCache {
     }
 }
 
-private struct HomeAmbientShapeSpec: Identifiable {
+struct HomeAmbientShapeSpec: Identifiable {
     enum Side {
         case left
         case right
@@ -935,11 +1193,9 @@ private struct HomeAmbientShapeSpec: Identifiable {
                 rng: &rng,
                 assetPicker: &assetPicker
             )
-
             specs.append(spec)
             previousInSide = spec
         }
-
         return specs
     }
 
@@ -983,7 +1239,7 @@ private struct HomeAmbientShapeSpec: Identifiable {
                 baseY: baseY,
                 nominalSide: sizeSpec.side,
                 baseRotationDegrees: randomBaseRotation(sizeTier: sizeSpec.tier, rng: &rng),
-                parallaxX: CGFloat(rng.next(in: -0.0025...0.0025)),
+                parallaxX: CGFloat(rng.next(in: -0.07...0.07)),
                 parallax: randomParallax(sizeTier: sizeSpec.tier, rng: &rng),
                 rotationPerPoint: rotationFactor,
                 rotationClampDegrees: rotationClamp(sizeTier: sizeSpec.tier)

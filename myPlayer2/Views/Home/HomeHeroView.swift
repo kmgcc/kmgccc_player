@@ -18,6 +18,7 @@ struct HomeHeroView: View {
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(AppSettings.self) private var appSettings
     @EnvironmentObject private var themeStore: ThemeStore
 
     @State private var coverImage: NSImage?
@@ -27,15 +28,44 @@ struct HomeHeroView: View {
     @State private var heroAnalysis: ArtworkColorAnalysis?
     @State private var isHovering = false
 
+    /// Cached hero palette. Invariant: equals `Self.makeHeroPalette(...)` for
+    /// the most recent observed inputs. Recomputed only via the `.onChange`
+    /// guards on `body`, NEVER inside body / computed properties — the
+    /// factory is expensive (13+ semantic role colors per call) and the
+    /// hero's foreground accessors are evaluated 10+ times per body run, so
+    /// a per-body call would melt the CPU during live resize.
+    @State private var heroPaletteCache: SemanticPalette = SemanticPaletteFactory.make(
+        from: .neutralFallback,
+        scheme: .light,
+        userFallbackAccent: .systemBlue,
+        useArtworkTint: false
+    )
+
     /// Hero palette is derived from this hero card's own track artwork — it
     /// must NOT follow current playback when those differ. SemanticPaletteFactory
     /// is shared, but the analysis input is local.
-    private var heroPalette: SemanticPalette {
+    private var heroPalette: SemanticPalette { heroPaletteCache }
+
+    private static func makeHeroPalette(
+        analysis: ArtworkColorAnalysis?,
+        scheme: ColorScheme,
+        accentColor: Color,
+        useArtworkTint: Bool
+    ) -> SemanticPalette {
         SemanticPaletteFactory.make(
-            from: heroAnalysis ?? .neutralFallback,
+            from: analysis ?? .neutralFallback,
+            scheme: scheme,
+            userFallbackAccent: NSColor(accentColor),
+            useArtworkTint: useArtworkTint && analysis != nil
+        )
+    }
+
+    private func recomputeHeroPalette() {
+        heroPaletteCache = Self.makeHeroPalette(
+            analysis: heroAnalysis,
             scheme: colorScheme,
-            userFallbackAccent: NSColor(AppSettings.shared.accentColor),
-            useArtworkTint: AppSettings.shared.globalArtworkTintEnabled && heroAnalysis != nil
+            accentColor: appSettings.accentColor,
+            useArtworkTint: appSettings.globalArtworkTintEnabled
         )
     }
 
@@ -197,6 +227,11 @@ struct HomeHeroView: View {
         .task(id: track.id) {
             await loadCoverImage()
         }
+        .onAppear { recomputeHeroPalette() }
+        .onChange(of: heroAnalysis) { _, _ in recomputeHeroPalette() }
+        .onChange(of: colorScheme) { _, _ in recomputeHeroPalette() }
+        .onChange(of: appSettings.accentColor) { _, _ in recomputeHeroPalette() }
+        .onChange(of: appSettings.globalArtworkTintEnabled) { _, _ in recomputeHeroPalette() }
     }
 
     private var heroBlurConfig: CoverGradientBlurConfig {

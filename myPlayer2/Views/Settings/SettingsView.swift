@@ -110,6 +110,7 @@ struct SettingsView: View {
 /// Fullscreen/NowPlaying containers override this with their own glass or material style.
 private struct SettingsWindowGroupBoxStyle: GroupBoxStyle {
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
+    @Environment(\.colorScheme) private var colorScheme
 
     func makeBody(configuration: Configuration) -> some View {
         VStack(alignment: .leading, spacing: presentationStyle.sectionLabelSpacing) {
@@ -123,15 +124,7 @@ private struct SettingsWindowGroupBoxStyle: GroupBoxStyle {
                         cornerRadius: presentationStyle.sectionCornerRadius,
                         style: .continuous
                     )
-                    .fill(.regularMaterial)
-                )
-                .overlay(
-                    RoundedRectangle(
-                        cornerRadius: presentationStyle.sectionCornerRadius,
-                        style: .continuous
-                    )
-                    .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.5)
-                    .allowsHitTesting(false)
+                    .fill(settingsCardBackground)
                 )
                 .clipShape(
                     RoundedRectangle(
@@ -141,6 +134,12 @@ private struct SettingsWindowGroupBoxStyle: GroupBoxStyle {
                 )
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var settingsCardBackground: Color {
+        colorScheme == .dark
+            ? Color.white.opacity(0.045)
+            : Color.black.opacity(0.035)
     }
 }
 

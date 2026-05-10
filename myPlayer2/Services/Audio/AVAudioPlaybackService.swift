@@ -80,11 +80,6 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     private var currentFileURL: URL?
 
-    // MARK: - Seek Detection
-
-    private var isSeeking = false
-    private var seekStartTime: Double = 0
-
     // MARK: - Level Meter Integration
 
     /// The main mixer node (exposed for level meter tap)
@@ -409,10 +404,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
         let wasPlaying = isPlaying
 
-        // Mark that we're seeking
-        isSeeking = true
         smartController.beginSeek()
-        seekStartTime = seconds
 
         cancelPendingCompletion()
         invalidateScheduleToken()
@@ -425,7 +417,6 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
         guard targetFrame >= 0, targetFrame < totalFrames else {
             print("⚠️ Seek position out of range")
-            isSeeking = false
             smartController.endSeek()
             return
         }
@@ -434,6 +425,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
         startingFramePosition = targetFrame
         currentTime = max(0, min(seconds - lookaheadSeconds, duration))
+        smartController.recordSeek(to: currentTime)
 
         scheduleSegment(audioFile, startingFrame: targetFrame, frameCount: frameCount)
 
@@ -441,12 +433,6 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             playerNode.play()
             isPlaying = true
             startProgressTimer()
-        }
-
-        // Clear seeking flag after a short delay
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-            self?.isSeeking = false
-            self?.smartController.endSeek()
         }
 
         print("⏩ Seeked to \(String(format: "%.1f", seconds))s")
@@ -524,6 +510,9 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         if let drainStartUptime {
             let elapsed = max(0, nowUptime - drainStartUptime)
             currentTime = min(duration, drainStartTime + elapsed)
+            if duration > 0 {
+                smartController.updateProgress(currentTime: currentTime, duration: duration)
+            }
             return
         }
 
@@ -588,13 +577,14 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         let repeatMode = RepeatMode(rawValue: AppSettings.shared.repeatMode) ?? .off
 
         if stopAfterTrack {
+            smartController.finishCurrentTrackForStopAfterTrack()
             isPlaying = false
             currentTime = duration
             return
         }
 
-        if repeatMode == .one, let track = currentTrack {
-            playInternal(track: track)
+        if repeatMode == .one, currentTrack != nil {
+            smartController.replayCurrentTrackAfterCompletion()
             return
         }
 

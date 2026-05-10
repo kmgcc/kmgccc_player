@@ -165,11 +165,19 @@ extension ManualLikeState {
 // MARK: - App Lifecycle Integration
 
 /// Handles saving preference stats on app lifecycle events.
+@MainActor
 final class PreferenceStatsLifecycleHandler {
     static let shared = PreferenceStatsLifecycleHandler()
 
+    private var autosaveTimer: Timer?
+    private var trackProvider: ((UUID) -> Track?)?
+
     private init() {
         setupNotifications()
+    }
+
+    func configure(trackProvider: @escaping (UUID) -> Track?) {
+        self.trackProvider = trackProvider
     }
 
     private func setupNotifications() {
@@ -190,18 +198,23 @@ final class PreferenceStatsLifecycleHandler {
         )
 
         // Periodic save every 5 minutes.
-        Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { _ in
-            Task { @MainActor in
-                await PreferenceStatsService.shared.saveAllPending()
+        let timer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.savePendingStatsNow()
             }
         }
+        RunLoop.main.add(timer, forMode: .common)
+        autosaveTimer = timer
     }
 
     @objc private func savePendingStats() {
-        Task { @MainActor in
-            await PreferenceStatsService.shared.saveAllPending()
-        }
+        savePendingStatsNow()
     }
+
+    private func savePendingStatsNow() {
+        PreferenceStatsService.shared.saveAllPendingNow(trackProvider: trackProvider)
+    }
+
 }
 
 // MARK: - Debug Information

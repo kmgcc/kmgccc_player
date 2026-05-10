@@ -39,15 +39,6 @@ final class SmartPlaybackController {
     /// Current track index in source array (for non-shuffle mode).
     private var currentSourceIndex: Int = -1
 
-    /// Whether the last track change was user-initiated.
-    private var lastChangeWasUserAction: Bool = false
-
-    /// Whether we're currently seeking (to avoid misdetecting skips).
-    private var isSeeking: Bool = false
-
-    /// Last progress time for seek detection.
-    private var lastProgressTime: Double = 0
-
     // MARK: - Initialization
 
     init() {
@@ -83,6 +74,8 @@ final class SmartPlaybackController {
     /// Start playback with a set of tracks.
     func startPlayback(tracks: [Track], startingAt index: Int, shuffle: Bool) {
         guard !tracks.isEmpty, index >= 0, index < tracks.count else { return }
+
+        finalizeCurrentPlaybackSession(reason: .userJumpToTrack)
 
         sourceTracks = tracks
         isShuffleEnabled = shuffle
@@ -186,8 +179,7 @@ final class SmartPlaybackController {
 
     /// Go to next track (user-initiated).
     func nextTrack() {
-        lastChangeWasUserAction = true
-        finalizeCurrentSession(userInitiated: true)
+        finalizeCurrentPlaybackSession(reason: .userNext)
 
         let nextTrack: Track?
 
@@ -217,8 +209,11 @@ final class SmartPlaybackController {
 
     /// Go to previous track (user-initiated).
     func previousTrack() {
-        lastChangeWasUserAction = true
-        finalizeCurrentSession(userInitiated: true)
+        if isShuffleEnabled, let session = shuffleSession, session.getCurrentIndexInSequence() <= 0 {
+            return
+        }
+
+        finalizeCurrentPlaybackSession(reason: .userPrevious)
 
         let prevTrack: Track?
 
@@ -248,8 +243,7 @@ final class SmartPlaybackController {
 
     /// Auto-advance to next track (playback completed naturally).
     func autoAdvance() -> Track? {
-        lastChangeWasUserAction = false
-        finalizeCurrentSession(userInitiated: false, completedNaturally: true)
+        finalizeCurrentPlaybackSession(reason: .naturalCompletion)
 
         let nextTrack: Track?
 
@@ -276,8 +270,7 @@ final class SmartPlaybackController {
 
     /// Jump to a specific track.
     func jumpToTrack(_ track: Track) {
-        lastChangeWasUserAction = true
-        finalizeCurrentSession(userInitiated: true)
+        finalizeCurrentPlaybackSession(reason: .userJumpToTrack)
 
         if let index = sourceTracks.firstIndex(where: { $0.id == track.id }) {
             currentSourceIndex = index
@@ -297,17 +290,14 @@ final class SmartPlaybackController {
     /// Start tracking a new playback session.
     private func startTrackSession(track: Track) {
         // End any existing session (safety net - should have been finalized already).
-        if let tracker = currentSessionTracker {
+        if currentSessionTracker != nil {
             print("⚠️ [PlaybackSession] startTrackSession called with existing tracker! Finalizing...")
-            let outcome = tracker.finalize()
-            print("   Outcome: \(outcome)")
-            currentSessionTracker = nil
+            finalizeCurrentPlaybackSession(reason: .systemInterrupt)
         }
 
         // Create new tracker.
         currentSessionTracker = PlaybackSessionTracker(track: track)
         print("🎵 [PlaybackSession] Started new session for: \(track.title) (ID: \(track.id.uuidString.prefix(8)))")
-        lastChangeWasUserAction = false
 
         // Notify about track change.
         onTrackChanged?(track)
@@ -315,75 +305,53 @@ final class SmartPlaybackController {
 
     /// Update progress during playback.
     func updateProgress(currentTime: Double, duration: Double) {
-        // Detect seek by checking for large time jumps.
-        if !isSeeking {
-            let timeDiff = abs(currentTime - lastProgressTime)
-            if timeDiff > 5.0 {
-                isSeeking = true
-            }
-        }
-
-        lastProgressTime = currentTime
-
         // Update tracker
         if let tracker = currentSessionTracker {
             tracker.updateProgress(currentTime: currentTime)
         } else {
             print("⚠️ [PlaybackSession] updateProgress called but no active tracker!")
         }
-
-        // After progress update, clear seeking flag if stable.
-        if isSeeking {
-            // Keep seeking flag for a bit to avoid false skip detection.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                self?.isSeeking = false
-            }
-        }
     }
 
     /// Mark that a seek operation is starting.
     func beginSeek() {
-        isSeeking = true
+        currentSessionTracker?.beginSeek()
+    }
+
+    /// Record a successful seek target so the tracker can exclude the position jump.
+    func recordSeek(to currentTime: Double) {
+        currentSessionTracker?.recordSeek(to: currentTime)
     }
 
     /// Mark that a seek operation has completed.
     func endSeek() {
-        isSeeking = false
+        currentSessionTracker?.endSeek()
     }
 
     /// Unified entry point for finalizing playback sessions.
     /// ALL paths that end a song must go through here.
     private func finalizeCurrentPlaybackSession(
-        reason: SessionEndReason,
+        reason: PlaybackSessionEndReason,
         source: String = #function
     ) {
         guard let tracker = currentSessionTracker else {
-            print("⚠️ [PlaybackSession] No active tracker to finalize (source: \(source))")
             return
         }
 
         guard let track = currentTrack else {
             print("⚠️ [PlaybackSession] No current track to finalize (source: \(source))")
+            currentSessionTracker = nil
             return
         }
 
         let trackID = track.id
         let trackTitle = track.title
 
-        // Mark the tracker with the end reason
         switch reason {
-        case .completedNaturally:
-            tracker.markCompleted()
-        case .userInitiatedSkip:
-            if !isSeeking {
-                tracker.markEndedByUserAction()
-            } else {
-                tracker.markEndedBySystem()
-            }
-        case .systemInterrupt:
-            tracker.markEndedBySystem()
-        case .appTermination:
-            tracker.markEndedBySystem()
+        case .naturalCompletion, .repeatOneReplay, .stopAfterTrack:
+            tracker.markCompleted(reason: reason)
+        case .userNext, .userPrevious, .userJumpToTrack, .userJumpWithinQueue, .systemInterrupt, .appTermination:
+            tracker.markEnded(reason: reason)
         }
 
         // Finalize and get outcome
@@ -443,17 +411,17 @@ final class SmartPlaybackController {
             print("   ✅ Outcome: COMPLETED")
             print("      playCount: \(updatedStats.playCount)")
             print("      completePlayCount: \(updatedStats.completePlayCount)")
-        case .skipped(let progress, let playedSeconds):
+        case .skipped(_, let progress, let playedSeconds, let allowsQuickSkip):
             print("   ⏭️ Outcome: SKIPPED")
             print("      Progress: \(String(format: "%.1f", progress * 100))%")
             print("      Played: \(String(format: "%.1f", playedSeconds))s")
             print("      playCount: \(updatedStats.playCount)")
             print("      skipCount: \(updatedStats.skipCount)")
-            if tracker.isQuickSkip() {
+            if allowsQuickSkip && tracker.isQuickSkip() {
                 print("      ⚡ QUICK SKIP detected!")
                 print("      quickSkipCount: \(updatedStats.quickSkipCount)")
             }
-        case .interrupted(let progress, _):
+        case .interrupted(_, let progress, _):
             print("   ⏸️ Outcome: INTERRUPTED")
             print("      Progress: \(String(format: "%.1f", progress * 100))%")
             print("      playCount: \(updatedStats.playCount)")
@@ -486,34 +454,29 @@ final class SmartPlaybackController {
             print("   ⏭️ No stats delta, skipping disk write")
         }
 
+        if didChangeStats {
+            shuffleSession?.updateWeight(for: trackID, weight: updatedStats.effectiveWeightCache)
+        }
+
         print(String(repeating: "=", count: 60))
 
         currentSessionTracker = nil
     }
 
-    /// Legacy wrapper for finalizeCurrentPlaybackSession
-    private func finalizeCurrentSession(userInitiated: Bool, completedNaturally: Bool = false) {
-        let reason: SessionEndReason
-        if completedNaturally {
-            reason = .completedNaturally
-        } else if userInitiated {
-            reason = .userInitiatedSkip
-        } else {
-            reason = .systemInterrupt
-        }
-        finalizeCurrentPlaybackSession(reason: reason)
+    func finishCurrentTrackForStopAfterTrack() {
+        finalizeCurrentPlaybackSession(reason: .stopAfterTrack)
     }
 
-    enum SessionEndReason {
-        case completedNaturally
-        case userInitiatedSkip
-        case systemInterrupt
-        case appTermination
+    func replayCurrentTrackAfterCompletion() {
+        guard let track = currentTrack else { return }
+        finalizeCurrentPlaybackSession(reason: .repeatOneReplay)
+        startTrackSession(track: track)
+        onPlayTrack?(track)
     }
 
     /// Stop playback completely.
     func stop() {
-        finalizeCurrentSession(userInitiated: false)
+        finalizeCurrentPlaybackSession(reason: .systemInterrupt)
         currentSessionTracker = nil
         shuffleSession = nil
         sourceTracks.removeAll()
@@ -524,10 +487,10 @@ final class SmartPlaybackController {
 
     @objc private func handleAppWillTerminate(_ notification: Notification) {
         // Finalize current session and save all pending stats.
-        finalizeCurrentSession(userInitiated: false)
-
-        Task {
-            await PreferenceStatsService.shared.saveAllPending()
+        finalizeCurrentPlaybackSession(reason: .appTermination)
+        let tracksByID = Dictionary(uniqueKeysWithValues: sourceTracks.map { ($0.id, $0) })
+        PreferenceStatsService.shared.saveAllPendingNow { trackID in
+            tracksByID[trackID]
         }
     }
 
@@ -573,8 +536,7 @@ final class SmartPlaybackController {
     func jumpToTrackInQueue(_ track: Track) {
         guard sourceTracks.contains(where: { $0.id == track.id }) else { return }
         
-        lastChangeWasUserAction = true
-        finalizeCurrentSession(userInitiated: true)
+        finalizeCurrentPlaybackSession(reason: .userJumpWithinQueue)
         
         if isShuffleEnabled, let session = shuffleSession {
             // Jump to this track in the shuffle session without reshuffling

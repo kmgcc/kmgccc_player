@@ -30,6 +30,7 @@
 //
 
 import AppKit
+import Combine
 import Foundation
 import Observation
 
@@ -80,8 +81,82 @@ final class HomeWindowLayoutState {
         }
     }
 
+    /// Coarse, body-friendly snapshot of the layout. Mutates only when a
+    /// discrete bucket changes, so SwiftUI views that read this property do
+    /// NOT re-evaluate on every sub-pixel resize/divider-drag tick.
+    /// Continuous geometry remains available via `geometry` for AppKit and
+    /// CALayer consumers that must track pixels precisely.
+    struct DiscreteSnapshot: Equatable {
+        var hasValidLayout: Bool
+        /// Center column width quantized to a coarse bucket (16pt steps), so
+        /// content-mode-dependent paddings/font sizes only change in distinct
+        /// jumps during resize, not every frame.
+        var contentWidthBucket: Int
+        var leftInset: Int
+        var rightInset: Int
+        var mode: ModeBucket
+
+        enum ModeBucket: Int {
+            case wide
+            case medium
+            case compact
+            case narrow
+        }
+
+        static let empty = DiscreteSnapshot(
+            hasValidLayout: false,
+            contentWidthBucket: 0,
+            leftInset: 0,
+            rightInset: 0,
+            mode: .wide
+        )
+    }
+
     /// Live window + center-pane geometry in window-content coordinates.
-    var geometry: Geometry = .empty
+    var geometry: Geometry = .empty {
+        didSet {
+            geometryPublisher.send(geometry)
+            let next = Self.makeDiscreteSnapshot(from: geometry)
+            if next != discreteSnapshot {
+                discreteSnapshot = next
+            }
+        }
+    }
+
+    /// Coarse layout snapshot for SwiftUI body consumers. Only changes when
+    /// a discrete bucket flips (mode tier, integer pane insets, 16pt content
+    /// width steps), so resize ticks within a bucket do not invalidate views.
+    var discreteSnapshot: DiscreteSnapshot = .empty
+
+    /// Continuous-geometry pipe for AppKit/CALayer consumers (e.g. the Home
+    /// ambient shape layer host). Bypasses SwiftUI observation so live resize
+    /// ticks do not propagate body invalidations.
+    @ObservationIgnored
+    let geometryPublisher = CurrentValueSubject<Geometry, Never>(.empty)
+
+    private static let contentWidthBucketStep: CGFloat = 16
+
+    private static func makeDiscreteSnapshot(from g: Geometry) -> DiscreteSnapshot {
+        guard g.hasValidLayout else { return .empty }
+        let centerW = g.centerWidth
+        let modeBucket: DiscreteSnapshot.ModeBucket
+        if centerW >= 980 {
+            modeBucket = .wide
+        } else if centerW >= 720 {
+            modeBucket = .medium
+        } else if centerW >= 560 {
+            modeBucket = .compact
+        } else {
+            modeBucket = .narrow
+        }
+        return DiscreteSnapshot(
+            hasValidLayout: true,
+            contentWidthBucket: Int((centerW / contentWidthBucketStep).rounded()),
+            leftInset: Int(g.leftInset.rounded()),
+            rightInset: Int(g.rightInset.rounded()),
+            mode: modeBucket
+        )
+    }
 
     /// True when the active library selection is `.home` and content mode is
     /// `.library`. This records navigation state only; AppKit hit-test
