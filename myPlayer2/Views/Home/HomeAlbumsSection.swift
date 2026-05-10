@@ -260,8 +260,15 @@ private struct HomeAlbumCard: View {
             colorScheme: colorScheme,
             isFloating: true
         )
-        .scaleEffect(isHovering ? 1.03 : 1.0)
-        .animation(.easeOut(duration: 0.2), value: isHovering)
+        .overlay(
+            // Cheap hover indicator (see HomeArtistCircle for rationale).
+            RoundedRectangle(cornerRadius: outerCornerRadius, style: .continuous)
+                .strokeBorder(
+                    Color.primary.opacity(isHovering ? 0.18 : 0),
+                    lineWidth: 1
+                )
+                .allowsHitTesting(false)
+        )
         .onHover { hovering in
             isHovering = hovering
         }
