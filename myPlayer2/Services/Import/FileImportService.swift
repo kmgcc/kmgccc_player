@@ -1257,6 +1257,9 @@ final class ImportEnrichmentService {
     }
 
     private func trackMetadataIsMissing(_ track: Track) -> Bool {
+        if MetadataDetailApplicator.shouldFillMissingAlbum(track.album) {
+            return true
+        }
         if track.genreTags.isEmpty == false,
            track.language.isEmpty == false,
            track.labelOrCompany.isEmpty == false,
