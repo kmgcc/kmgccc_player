@@ -35,6 +35,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
     private weak var previousKeyWindow: NSWindow?
     private var escapeEventMonitor: Any?
     private var fullscreenLyricsVM: LyricsViewModel?
+    private let cursorAutoHideCoordinator = FullscreenCursorAutoHideCoordinator()
 
     // References to shared dependencies configured by the app session.
     weak var playerVM: PlayerViewModel?
@@ -139,6 +140,8 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
             if !window.styleMask.contains(.fullScreen) {
                 isTransitioning = true
                 window.toggleFullScreen(nil)
+            } else {
+                cursorAutoHideCoordinator.start(for: window)
             }
             return
         }
@@ -328,6 +331,8 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
 
         guard !isTransitioning else { return }
 
+        cursorAutoHideCoordinator.stop()
+
         if window.styleMask.contains(.fullScreen) {
             isTransitioning = true
             // First exit fullscreen, then order out in delegate callback
@@ -352,6 +357,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         fullscreenWindow = nil
         isTransitioning = false
         presentationMode = .none
+        cursorAutoHideCoordinator.stop()
         removeEscapeMonitor()
         teardownFullscreenLyricsIfNeeded()
 
@@ -508,12 +514,14 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         installEscapeMonitorIfNeeded()
         window.makeKey()
         isTransitioning = false
+        cursorAutoHideCoordinator.start(for: window)
     }
 
     func windowDidExitFullScreen(_ notification: Notification) {
         guard let window = notification.object as? NSWindow, window === fullscreenWindow else {
             return
         }
+        cursorAutoHideCoordinator.stop()
         dismissFullscreenWindow(window)
     }
 
@@ -521,6 +529,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         guard let window = notification.object as? NSWindow, window === fullscreenWindow else {
             return
         }
+        cursorAutoHideCoordinator.stop()
         dismissFullscreenWindow(window)
     }
 
@@ -555,4 +564,100 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
 private final class FullscreenPlayerWindow: NSWindow {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
+}
+
+@MainActor
+private final class FullscreenCursorAutoHideCoordinator {
+    private weak var window: NSWindow?
+    private var eventMonitor: Any?
+    private var pendingHide: DispatchWorkItem?
+    private let hideDelay: TimeInterval = 2.0
+
+    func start(for window: NSWindow) {
+        guard window.styleMask.contains(.fullScreen) else {
+            stop()
+            return
+        }
+
+        if self.window !== window {
+            stop()
+            self.window = window
+        }
+
+        window.acceptsMouseMovedEvents = true
+        showCursorUntilNextIdlePeriod()
+
+        guard eventMonitor == nil else { return }
+        eventMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [
+                .mouseEntered,
+                .mouseExited,
+                .mouseMoved,
+                .leftMouseDown,
+                .rightMouseDown,
+                .otherMouseDown,
+                .leftMouseDragged,
+                .rightMouseDragged,
+                .otherMouseDragged,
+                .scrollWheel
+            ]
+        ) { [weak self] event in
+            self?.handle(event)
+            return event
+        }
+    }
+
+    func stop() {
+        pendingHide?.cancel()
+        pendingHide = nil
+
+        if let eventMonitor {
+            NSEvent.removeMonitor(eventMonitor)
+            self.eventMonitor = nil
+        }
+
+        NSCursor.setHiddenUntilMouseMoves(false)
+        window = nil
+    }
+
+    private func handle(_ event: NSEvent) {
+        guard let window else {
+            stop()
+            return
+        }
+        guard event.window === window else { return }
+        showCursorUntilNextIdlePeriod()
+    }
+
+    private func showCursorUntilNextIdlePeriod() {
+        NSCursor.setHiddenUntilMouseMoves(false)
+        scheduleHide()
+    }
+
+    private func scheduleHide() {
+        pendingHide?.cancel()
+
+        let hideWorkItem = DispatchWorkItem { [weak self] in
+            Task { @MainActor in
+                self?.hideCursorIfStillIdleInFullscreen()
+            }
+        }
+        pendingHide = hideWorkItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + hideDelay, execute: hideWorkItem)
+    }
+
+    private func hideCursorIfStillIdleInFullscreen() {
+        pendingHide = nil
+
+        guard let window else { return }
+        guard window.isVisible, window.isKeyWindow, window.styleMask.contains(.fullScreen) else {
+            return
+        }
+        guard window.frame.contains(NSEvent.mouseLocation) else {
+            scheduleHide()
+            return
+        }
+
+        NSCursor.setHiddenUntilMouseMoves(true)
+    }
 }
