@@ -4,6 +4,17 @@
 //
 //  Lightweight, non-interactive ambient shape layer for Home.
 //
+//  Motion semantics (matches the pre-`b473d4f` build the user signed off on):
+//    - Shapes do NOT drift on their own. There is no autonomous timer / clock /
+//      displayLink driving motion.
+//    - The only driver is the Home vertical ScrollView's offset
+//      (`HomeAmbientMotionState.shared.scrollOffsetY`). Each shape has a
+//      vertical parallax factor (sized by tier), a small horizontal parallax
+//      factor (±0.0025, clamped to ±8pt), and a tiny rotationPerPoint factor
+//      (clamped per tier). When scrolling stops, NSScrollView's natural
+//      deceleration physics carries the shapes to rest — no explicit easing
+//      is needed.
+//
 //  Architecture:
 //    HomeAmbientShapesBackground is a thin SwiftUI `NSViewRepresentable`
 //    whose only SwiftUI inputs are stable per-content values
@@ -12,17 +23,17 @@
 //    `HomeAmbientRootView`, which subscribes directly to:
 //      - `HomeWindowLayoutState.shared.geometryPublisher` (continuous
 //        window/center geometry from the AppKit split view)
-//      - `HomeAmbientMotionState.$scrollOffsetY` (Home ScrollView offset
-//        published by `HomeVerticalScrollOffsetProbeView`)
-//      - `BackgroundAnimationClock.shared.dotHighRatePublisher` for ambient
-//        drift (shared 30Hz clock; same source the previous working build at
-//        commit b473d4f used)
+//      - `HomeAmbientMotionState.shared.$scrollOffsetY` (Home ScrollView
+//        offset, published by `HomeVerticalScrollOffsetProbeView` via
+//        `setScrollOffset(_:)`)
 //
-//    This means SwiftUI body re-evaluation is completely decoupled from
-//    resize / sidebar-toggle / scroll ticks. The ambient layer keeps
-//    repositioning shapes via CALayer transforms inside the AppKit view
-//    without going through SwiftUI's diff path. Only an actual palette /
-//    color-scheme change re-runs `updateNSView`.
+//    `HomeAmbientMotionState` is a singleton (NOT a `@StateObject` in
+//    `HomeView`). That is intentional: making it a `@StateObject` would
+//    subscribe HomeView's body to its `objectWillChange` publisher, so
+//    every scroll frame would invalidate Hero / Playlists / Artists /
+//    Albums / Insights and tank scroll smoothness. Keeping it global means
+//    only the AppKit ambient layer reacts to scroll motion; SwiftUI bodies
+//    are completely decoupled from per-frame scroll ticks.
 //
 
 import AppKit
@@ -32,19 +43,27 @@ import SwiftUI
 
 @MainActor
 final class HomeAmbientMotionState: ObservableObject {
+    static let shared = HomeAmbientMotionState()
+
     @Published private(set) var scrollOffsetY: CGFloat = 0
 
     private let offsetEpsilon: CGFloat = 0.5
+    private var setCount = 0
+
+    private init() {}
 
     func setScrollOffset(_ offset: CGFloat) {
         let next = max(0, offset)
         guard abs(scrollOffsetY - next) >= offsetEpsilon else { return }
         scrollOffsetY = next
+        setCount += 1
+        if setCount == 1 || setCount % 60 == 0 {
+            Log.debug("[HomeAmbient/motion] setScrollOffset #\(setCount) offset=\(Int(next))", category: .ui)
+        }
     }
 }
 
 struct HomeAmbientShapesBackground: NSViewRepresentable {
-    let motion: HomeAmbientMotionState
     let sourceColor: NSColor?
     let sourceAnalysis: ArtworkColorAnalysis?
     let colorScheme: ColorScheme
@@ -55,12 +74,11 @@ struct HomeAmbientShapesBackground: NSViewRepresentable {
     }
 
     func makeNSView(context _: Context) -> HomeAmbientRootView {
-        HomeAmbientRootView(motion: motion)
+        HomeAmbientRootView(motion: HomeAmbientMotionState.shared)
     }
 
     func updateNSView(_ nsView: HomeAmbientRootView, context _: Context) {
         nsView.update(
-            motion: motion,
             sourceColor: sourceColor,
             sourceAnalysis: sourceAnalysis,
             colorScheme: colorScheme,
@@ -89,13 +107,6 @@ final class HomeAmbientRootView: NSView {
         let parallax: CGFloat
         let rotationPerPoint: CGFloat
         let rotationClampDegrees: CGFloat
-
-        let ambientPhase: CGFloat
-        let ambientSpeed: CGFloat
-        let ambientAmplitudeX: CGFloat
-        let ambientAmplitudeY: CGFloat
-        let ambientRotationDegrees: CGFloat
-        let ambientScaleAmount: CGFloat
     }
 
     private struct ShapeLayerPair {
@@ -124,11 +135,9 @@ final class HomeAmbientRootView: NSView {
         let isEffectivelyMonochrome: Bool
     }
 
-    private var motion: HomeAmbientMotionState
+    private let motion: HomeAmbientMotionState
     private var motionSubscription: AnyCancellable?
     private var geometrySubscription: AnyCancellable?
-    private var clockSubscription: AnyCancellable?
-    private var holdsClockLease = false
 
     private var sourceColor: NSColor?
     private var sourceAnalysis: ArtworkColorAnalysis?
@@ -138,7 +147,6 @@ final class HomeAmbientRootView: NSView {
     private var geometry: HomeWindowLayoutState.Geometry = .empty
     private var scrollOffsetY: CGFloat = 0
     private var lastLayoutSignature: LayoutSignature?
-    private var hasPublishedFirstFrameLog = false
 
     private let baseLayer = CALayer()
     private var shapeLoadResult = BKThemeAssets.ShapeLoadResult(
@@ -149,7 +157,6 @@ final class HomeAmbientRootView: NSView {
     private var presentations: [Presentation] = []
     private var layersByID: [Int: ShapeLayerPair] = [:]
 
-    private let animationStartTime = CACurrentMediaTime()
     private var hasLoadedShapes = false
 
     private static let shapeMaxPixel = 768
@@ -193,7 +200,7 @@ final class HomeAmbientRootView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if window == nil {
-            stopAnimationClock()
+            Log.debug("[HomeAmbient/root] viewDidMoveToWindow=nil — releasing subs", category: .ui)
             geometrySubscription = nil
             motionSubscription = nil
         } else {
@@ -206,24 +213,19 @@ final class HomeAmbientRootView: NSView {
             // runloop tick on first mount.
             applyGeometryChange(HomeWindowLayoutState.shared.geometry)
             applyScrollOffset(motion.scrollOffsetY)
-            startAnimationClockIfNeeded()
+            Log.debug(
+                "[HomeAmbient/root] viewDidMoveToWindow=window presentations=\(presentations.count) geomValid=\(geometry.hasValidLayout) scrollY=\(Int(scrollOffsetY))",
+                category: .ui
+            )
         }
     }
 
     func update(
-        motion: HomeAmbientMotionState,
         sourceColor: NSColor?,
         sourceAnalysis: ArtworkColorAnalysis?,
         colorScheme: ColorScheme,
         reduceMotion: Bool
     ) {
-        let motionChanged = self.motion !== motion
-        self.motion = motion
-        if motionChanged {
-            subscribeToMotion()
-            applyScrollOffset(motion.scrollOffsetY)
-        }
-
         let paletteChanged = !colorsEqual(self.sourceColor, sourceColor)
             || self.sourceAnalysis != sourceAnalysis
             || self.colorScheme != colorScheme
@@ -239,7 +241,6 @@ final class HomeAmbientRootView: NSView {
             rebuildOrReposition(for: geometry, forceFullRebuild: true)
         }
         if reduceMotionChanged {
-            startAnimationClockIfNeeded()
             applyLayerTransforms()
         }
     }
@@ -271,10 +272,18 @@ final class HomeAmbientRootView: NSView {
         rebuildOrReposition(for: next, forceFullRebuild: false)
     }
 
+    private var applyScrollCount = 0
     private func applyScrollOffset(_ offset: CGFloat) {
         let clamped = max(0, offset)
         guard abs(clamped - scrollOffsetY) >= 0.5 else { return }
         scrollOffsetY = clamped
+        applyScrollCount += 1
+        if applyScrollCount == 1 || applyScrollCount % 60 == 0 {
+            Log.debug(
+                "[HomeAmbient/root] applyScrollOffset #\(applyScrollCount) offset=\(Int(clamped)) presentations=\(presentations.count)",
+                category: .ui
+            )
+        }
         applyLayerTransforms()
     }
 
@@ -433,13 +442,7 @@ final class HomeAmbientRootView: NSView {
                     parallaxX: spec.parallaxX,
                     parallax: spec.parallax,
                     rotationPerPoint: spec.rotationPerPoint,
-                    rotationClampDegrees: spec.rotationClampDegrees,
-                    ambientPhase: CGFloat((spec.id * 37) % 360) * .pi / 180,
-                    ambientSpeed: 0.10 + CGFloat((spec.id * 11) % 7) * 0.012,
-                    ambientAmplitudeX: ambientAmplitudeX(forSpec: spec),
-                    ambientAmplitudeY: 24 + CGFloat((spec.id * 7) % 9) * 3.5,
-                    ambientRotationDegrees: 4.5 + CGFloat((spec.id * 13) % 6) * 1.2,
-                    ambientScaleAmount: 0.026 + CGFloat((spec.id * 17) % 5) * 0.005
+                    rotationClampDegrees: spec.rotationClampDegrees
                 )
             )
         }
@@ -447,14 +450,6 @@ final class HomeAmbientRootView: NSView {
         presentations = built
         syncShapeLayers()
         applyLayerTransforms()
-        startAnimationClockIfNeeded()
-        if !hasPublishedFirstFrameLog {
-            hasPublishedFirstFrameLog = true
-            Log.debug(
-                "[HomeAmbient] First full presentation rebuild: shapes=\(built.count) viewport=\(Int(viewportH)) center=\(Int(centerW))",
-                category: .ui
-            )
-        }
     }
 
     private func repositionPresentations(for geometry: HomeWindowLayoutState.Geometry) {
@@ -496,11 +491,6 @@ final class HomeAmbientRootView: NSView {
         )
 
         return CGPoint(x: x, y: presentation.baseY)
-    }
-
-    private func ambientAmplitudeX(forSpec spec: HomeAmbientShapeSpec) -> CGFloat {
-        let magnitude = 24 + CGFloat((spec.id * 5) % 6) * 4.5
-        return spec.side == .left ? magnitude : -magnitude
     }
 
     private static var shapeCount: Int {
@@ -638,40 +628,22 @@ final class HomeAmbientRootView: NSView {
 
     // MARK: - Animation
 
-    /// Subscribe to the shared 30Hz `BackgroundAnimationClock` so ambient
-    /// drift advances on every gate tick. We keep this path instead of
-    /// `NSView.displayLink(target:selector:)` because the latter shadows the
-    /// inherited `displayLink` symbol on the subclass and was not firing on
-    /// SwiftUI-hosted instances during testing — the shared clock is what
-    /// the previous working build used (see commit b473d4f).
-    private func startAnimationClockIfNeeded() {
-        guard window != nil, !presentations.isEmpty, !reduceMotion else {
-            stopAnimationClock()
+    private var applyLayerEmptyLogCount = 0
+    /// Apply scroll-driven transforms to all shape layers. Called only when
+    /// `scrollOffsetY` or `geometry` actually changes. There is intentionally
+    /// no autonomous timer or display link — shapes are static unless the
+    /// user is scrolling.
+    private func applyLayerTransforms() {
+        guard !presentations.isEmpty else {
+            applyLayerEmptyLogCount += 1
+            if applyLayerEmptyLogCount == 1 || applyLayerEmptyLogCount % 30 == 0 {
+                Log.debug(
+                    "[HomeAmbient/root] applyLayerTransforms skipped — presentations EMPTY (#\(applyLayerEmptyLogCount))",
+                    category: .ui
+                )
+            }
             return
         }
-        guard clockSubscription == nil else { return }
-        clockSubscription = BackgroundAnimationClock.shared.dotHighRatePublisher
-            .sink { [weak self] in
-                self?.applyLayerTransforms()
-            }
-        if !holdsClockLease {
-            BackgroundAnimationClock.shared.acquire()
-            holdsClockLease = true
-        }
-    }
-
-    private func stopAnimationClock() {
-        clockSubscription?.cancel()
-        clockSubscription = nil
-        if holdsClockLease {
-            BackgroundAnimationClock.shared.release()
-            holdsClockLease = false
-        }
-    }
-
-    private func applyLayerTransforms() {
-        guard !presentations.isEmpty else { return }
-        let elapsed = CGFloat(CACurrentMediaTime() - animationStartTime)
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -679,40 +651,26 @@ final class HomeAmbientRootView: NSView {
         for presentation in presentations {
             guard let pair = layersByID[presentation.id] else { continue }
             let scroll = scrollTransform(for: presentation, scrollOffsetY: scrollOffsetY)
-            let ambient = ambientTransform(for: presentation, elapsed: elapsed)
 
             pair.container.position = CGPoint(
-                x: presentation.basePosition.x + scroll.x + ambient.x,
-                y: presentation.basePosition.y + scroll.y + ambient.y
+                x: presentation.basePosition.x + scroll.x,
+                y: presentation.basePosition.y + scroll.y
             )
-            var transform = CATransform3DMakeRotation(
-                CGFloat((presentation.baseRotationDegrees + scroll.rotationDegrees) * .pi / 180)
-                    + ambient.rotationRadians,
+            pair.container.transform = CATransform3DMakeRotation(
+                CGFloat((presentation.baseRotationDegrees + scroll.rotationDegrees) * .pi / 180),
                 0,
                 0,
                 1
             )
-            transform = CATransform3DScale(transform, ambient.scale, ambient.scale, 1)
-            pair.container.transform = transform
         }
 
         CATransaction.commit()
     }
 
-    private func ambientTransform(
-        for presentation: Presentation,
-        elapsed: CGFloat
-    ) -> (x: CGFloat, y: CGFloat, rotationRadians: CGFloat, scale: CGFloat) {
-        guard !reduceMotion else { return (0, 0, 0, 1) }
-        let phase = presentation.ambientPhase + elapsed * presentation.ambientSpeed
-        return (
-            x: sin(phase) * presentation.ambientAmplitudeX,
-            y: cos(phase * 0.82) * presentation.ambientAmplitudeY,
-            rotationRadians: sin(phase * 0.64) * presentation.ambientRotationDegrees * .pi / 180,
-            scale: 1 + sin(phase * 0.48) * presentation.ambientScaleAmount
-        )
-    }
-
+    /// Restored from commit b473d4f^ — pre-drift behavior. Horizontal parallax
+    /// is intentionally tiny (clamped to ±8pt at any scroll depth); vertical
+    /// parallax is per-tier (small shapes drift fastest); rotation tracks
+    /// `rotationPerPoint` clamped per tier.
     private func scrollTransform(
         for presentation: Presentation,
         scrollOffsetY: CGFloat
@@ -720,7 +678,7 @@ final class HomeAmbientRootView: NSView {
         guard !reduceMotion else { return (0, 0, 0) }
         let virtualHeight = max(geometry.windowHeight * 2.6, geometry.windowHeight + 1400)
         return (
-            x: clamp(scrollOffsetY * presentation.parallaxX, min: -90, max: 90),
+            x: clamp(scrollOffsetY * presentation.parallaxX, min: -8, max: 8),
             y: clamp(-scrollOffsetY * presentation.parallax, min: -virtualHeight, max: virtualHeight),
             rotationDegrees: Double(
                 clamp(
@@ -1239,7 +1197,7 @@ struct HomeAmbientShapeSpec: Identifiable {
                 baseY: baseY,
                 nominalSide: sizeSpec.side,
                 baseRotationDegrees: randomBaseRotation(sizeTier: sizeSpec.tier, rng: &rng),
-                parallaxX: CGFloat(rng.next(in: -0.07...0.07)),
+                parallaxX: CGFloat(rng.next(in: -0.0025...0.0025)),
                 parallax: randomParallax(sizeTier: sizeSpec.tier, rng: &rng),
                 rotationPerPoint: rotationFactor,
                 rotationClampDegrees: rotationClamp(sizeTier: sizeSpec.tier)

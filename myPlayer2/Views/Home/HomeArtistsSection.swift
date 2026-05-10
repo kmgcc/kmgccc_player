@@ -234,8 +234,20 @@ private struct HomeArtistCircle: View {
             colorScheme: colorScheme,
             isFloating: true
         )
-        .scaleEffect(isHovering ? 1.05 : 1.0)
-        .animation(.easeOut(duration: 0.2), value: isHovering)
+        .overlay(
+            // Cheap hover indicator: stroke overlay only on the current card.
+            // Avoids the previous `scaleEffect + animation`, which forced the
+            // card's glass material to re-composite at a new scale every time
+            // the cursor crossed a card during scroll. With ~30 cards across
+            // Artists+Albums, that compositing storm was a real per-frame
+            // GPU+CPU hit during outer vertical scroll.
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(
+                    Color.primary.opacity(isHovering ? 0.18 : 0),
+                    lineWidth: 1
+                )
+                .allowsHitTesting(false)
+        )
         .onHover { hovering in
             isHovering = hovering
         }

@@ -135,6 +135,12 @@ final class HomeWindowLayoutState {
     let geometryPublisher = CurrentValueSubject<Geometry, Never>(.empty)
 
     private static let contentWidthBucketStep: CGFloat = 16
+    /// Step size for `leftInset` / `rightInset` quantization. Sidebar /
+    /// lyrics toggles animate over ~250ms with the divider sliding a few
+    /// hundred points; quantizing to 8pt drops body-invalidation frequency
+    /// from per-pixel to per-8pt, which is below the perceptible alignment
+    /// threshold during an animation.
+    private static let insetBucketStep: CGFloat = 8
 
     private static func makeDiscreteSnapshot(from g: Geometry) -> DiscreteSnapshot {
         guard g.hasValidLayout else { return .empty }
@@ -152,8 +158,8 @@ final class HomeWindowLayoutState {
         return DiscreteSnapshot(
             hasValidLayout: true,
             contentWidthBucket: Int((centerW / contentWidthBucketStep).rounded()),
-            leftInset: Int(g.leftInset.rounded()),
-            rightInset: Int(g.rightInset.rounded()),
+            leftInset: Int((g.leftInset / insetBucketStep).rounded()) * Int(insetBucketStep),
+            rightInset: Int((g.rightInset / insetBucketStep).rounded()) * Int(insetBucketStep),
             mode: modeBucket
         )
     }

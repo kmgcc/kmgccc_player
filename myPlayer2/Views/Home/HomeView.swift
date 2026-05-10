@@ -25,7 +25,13 @@ struct HomeView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hasAppeared = false
     @State private var layout = HomeWindowLayoutState.shared
-    @StateObject private var ambientMotion = HomeAmbientMotionState()
+    /// Stored as a plain `let` to a singleton — NEVER `@StateObject` or
+    /// `@ObservedObject`. The motion state's `scrollOffsetY` publishes on
+    /// every scroll frame, so observing it from this view's body would make
+    /// every scroll tick invalidate Hero / Playlists / Artists / Albums /
+    /// Insights and tank scroll smoothness. Only the AppKit ambient layer
+    /// reacts to scroll motion; SwiftUI bodies stay decoupled.
+    private let ambientMotion = HomeAmbientMotionState.shared
 
     var body: some View {
         Group {
@@ -276,13 +282,14 @@ struct HomeView: View {
 
         return AnyView(
             ZStack(alignment: .topLeading) {
-                HomeAmbientShapesBackground(
-                    motion: ambientMotion,
-                    sourceColor: themeStore.semanticPalette.ambientSurface,
-                    sourceAnalysis: themeStore.semanticPalette.analysis,
-                    colorScheme: colorScheme,
-                    reduceMotion: reduceMotion
-                )
+                if !HomeDebugFlags.disableAmbient {
+                    HomeAmbientShapesBackground(
+                        sourceColor: themeStore.semanticPalette.ambientSurface,
+                        sourceAnalysis: themeStore.semanticPalette.analysis,
+                        colorScheme: colorScheme,
+                        reduceMotion: reduceMotion
+                    )
+                }
 
                 homeScrollView(
                     mode: mode,
@@ -306,7 +313,7 @@ struct HomeView: View {
     ) -> some View {
         ScrollView(.vertical, showsIndicators: true) {
             VStack(spacing: mode.sectionSpacing) {
-                if let heroTrack = homeVM.heroTrack {
+                if !HomeDebugFlags.disableHero, let heroTrack = homeVM.heroTrack {
                     HomeHeroView(
                         track: heroTrack,
                         containerWidth: contentWidth,
@@ -319,13 +326,13 @@ struct HomeView: View {
                         .padding(.trailing, centerRightPad)
                 }
 
-                if !homeVM.playlists.isEmpty {
+                if !HomeDebugFlags.disablePlaylists, !homeVM.playlists.isEmpty {
                     HomePlaylistsSection(playlists: homeVM.playlists, mode: mode)
                         .padding(.leading, centerLeftPad)
                         .padding(.trailing, centerRightPad)
                 }
 
-                if !homeVM.artists.isEmpty {
+                if !HomeDebugFlags.disableArtists, !homeVM.artists.isEmpty {
                     HomeArtistsSection(
                         artists: homeVM.artists,
                         mode: mode,
@@ -334,7 +341,7 @@ struct HomeView: View {
                     )
                 }
 
-                if !homeVM.albums.isEmpty {
+                if !HomeDebugFlags.disableAlbums, !homeVM.albums.isEmpty {
                     HomeAlbumsSection(
                         albums: homeVM.albums,
                         mode: mode,
@@ -343,13 +350,15 @@ struct HomeView: View {
                     )
                 }
 
-                HomeInsightsSection(
-                    homeVM: homeVM,
-                    mode: mode,
-                    containerWidth: contentWidth,
-                    centerLeftPad: centerLeftPad,
-                    centerRightPad: centerRightPad
-                )
+                if !HomeDebugFlags.disableInsights {
+                    HomeInsightsSection(
+                        homeVM: homeVM,
+                        mode: mode,
+                        containerWidth: contentWidth,
+                        centerLeftPad: centerLeftPad,
+                        centerRightPad: centerRightPad
+                    )
+                }
 
                 footer
                     .padding(.leading, centerLeftPad)
@@ -367,7 +376,17 @@ struct HomeView: View {
             .padding(.bottom, 24)
             .frame(maxWidth: .infinity, alignment: .top)
         }
-        .background(HomeVerticalScrollOffsetObserver(motion: ambientMotion))
+        // SwiftUI-native scroll offset observation. Replaces the previous
+        // AppKit `enclosingScrollView` probe, which on Home was hosted via
+        // `.background(...)` outside the inner NSScrollView and therefore
+        // never resolved. The action runs on the main actor and is the
+        // single feed point for `HomeAmbientMotionState.shared`, which the
+        // AppKit ambient layer subscribes to via Combine.
+        .onScrollGeometryChange(for: CGFloat.self) { geo in
+            geo.contentOffset.y
+        } action: { _, newValue in
+            ambientMotion.setScrollOffset(newValue)
+        }
         .transaction { transaction in
             transaction.animation = nil
         }
@@ -408,71 +427,6 @@ struct HomeView: View {
     }
 }
 
-private struct HomeVerticalScrollOffsetObserver: NSViewRepresentable {
-    let motion: HomeAmbientMotionState
-
-    func makeNSView(context _: Context) -> HomeVerticalScrollOffsetProbeView {
-        let view = HomeVerticalScrollOffsetProbeView()
-        view.motion = motion
-        return view
-    }
-
-    func updateNSView(_ nsView: HomeVerticalScrollOffsetProbeView, context _: Context) {
-        nsView.motion = motion
-        nsView.resolveScrollViewSoon()
-    }
-}
-
-private final class HomeVerticalScrollOffsetProbeView: NSView {
-    weak var motion: HomeAmbientMotionState?
-
-    private weak var observedScrollView: NSScrollView?
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        resolveScrollViewSoon()
-    }
-
-    func resolveScrollViewSoon() {
-        DispatchQueue.main.async { [weak self] in
-            self?.resolveScrollView()
-        }
-    }
-
-    private func resolveScrollView() {
-        guard let scrollView = enclosingScrollView else { return }
-        guard observedScrollView !== scrollView else {
-            publishOffset(from: scrollView)
-            return
-        }
-
-        NotificationCenter.default.removeObserver(self)
-
-        observedScrollView = scrollView
-        scrollView.contentView.postsBoundsChangedNotifications = true
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(observedBoundsDidChange(_:)),
-            name: NSView.boundsDidChangeNotification,
-            object: scrollView.contentView
-        )
-        publishOffset(from: scrollView)
-    }
-
-    @objc private func observedBoundsDidChange(_ notification: Notification) {
-        guard let scrollView = observedScrollView else { return }
-        publishOffset(from: scrollView)
-    }
-
-    private func publishOffset(from scrollView: NSScrollView) {
-        let offset = max(0, scrollView.contentView.bounds.origin.y)
-        motion?.setScrollOffset(offset)
-    }
-
-    deinit {
-        NotificationCenter.default.removeObserver(self)
-    }
-}
 
 // MARK: - Layout Mode
 

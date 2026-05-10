@@ -91,7 +91,12 @@ struct HorizontalFadeScrollContainer<Content: View>: View {
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: spacing) {
+            // LazyHStack: only on-screen + immediate-prefetch cards are
+            // realized. With ~15-20 artist/album cards per row, eager HStack
+            // builds and lays out every card as the parent vertical
+            // ScrollView scrolls — even cards far below the viewport. Lazy
+            // fixes that without changing any visible layout.
+            LazyHStack(spacing: spacing) {
                 content()
             }
             .background(

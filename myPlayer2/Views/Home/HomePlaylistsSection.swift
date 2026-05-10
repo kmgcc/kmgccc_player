@@ -415,7 +415,12 @@ private struct HomePlaylistCard: View {
     var onFeaturedTrackPlay: ((Track) -> Void)? = nil
 
     @State private var coverImage: NSImage?
-    @State private var isHovering = false
+    // Hover state intentionally removed — playlist cards used to apply a
+    // 1.01–1.015 scaleEffect on hover, which forced the card's glass material
+    // to recomposite at a new scale every time the cursor crossed a card
+    // during outer vertical scroll. The visual change was barely perceptible
+    // while costing significant per-frame compositing work; we drop it
+    // entirely rather than replacing with an overlay.
     @Environment(\.colorScheme) private var colorScheme
 
     fileprivate static let cardInset: CGFloat = 12
@@ -496,11 +501,6 @@ private struct HomePlaylistCard: View {
             case .compact:
                 compactBody
             }
-        }
-        .scaleEffect(isHovering ? (isFeatured ? 1.01 : 1.015) : 1.0)
-        .animation(.easeOut(duration: 0.2), value: isHovering)
-        .onHover { hovering in
-            isHovering = hovering
         }
         .task(id: headerArtworkIdentity) {
             await loadCover()
