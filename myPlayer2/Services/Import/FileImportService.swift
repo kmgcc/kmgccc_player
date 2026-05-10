@@ -163,13 +163,13 @@ nonisolated private enum ImportEnrichmentMode: Sendable {
     }
 }
 
-nonisolated private enum ImportLyricsLookupOutcome: Sendable {
+nonisolated enum ImportLyricsLookupOutcome: Sendable {
     case completed(String)
     case noResults
     case failed(String)
 }
 
-nonisolated private enum ImportCoverLookupOutcome: Sendable {
+nonisolated enum ImportCoverLookupOutcome: Sendable {
     case completed(Data)
     case noResults
     case failed(String)
@@ -387,7 +387,7 @@ nonisolated private struct PendingTrackEnrichmentPatch: Sendable {
     }
 }
 
-nonisolated private enum ImportEnrichmentWorker {
+nonisolated enum ImportEnrichmentWorker {
     private actor ContinuationState {
         private var continuation: CheckedContinuation<Void, Error>?
 
@@ -837,7 +837,7 @@ nonisolated enum ImportAlbumArtworkOutcome: Sendable {
 
 // MARK: - Metadata Enrichment Worker
 
-nonisolated private enum MetadataEnrichmentWorker {
+nonisolated enum MetadataEnrichmentWorker {
     static let metadataTimeout: TimeInterval = 15
 
     // MARK: Track Metadata
