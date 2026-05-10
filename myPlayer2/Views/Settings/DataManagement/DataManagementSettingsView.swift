@@ -41,6 +41,22 @@ struct DataManagementSettingsView: View {
                 }
             }
 
+            // Manual library completion
+            SettingsSection {
+                VStack(alignment: .leading, spacing: 10) {
+                    Button {
+                        LibraryCompletionDialogPresenter.present(libraryVM: libraryVM)
+                    } label: {
+                        Text("手动补全所有歌曲信息")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .clipShape(Capsule())
+
+                    Text("补全本地曲库中缺失的歌曲信息、封面和歌词，已有内容会保留")
+                        .settingsDescriptionStyle()
+                }
+            }
+
             // Cache management (all cache-related actions grouped)
             SettingsSection {
                 VStack(alignment: .leading, spacing: 16) {
@@ -85,20 +101,6 @@ struct DataManagementSettingsView: View {
                         .disabled(isClearingExternalCaches)
 
                         Text("遇到问题时，可以尝试清除来自外部播放过程中产生的歌曲元数据匹配结果缓存、手动覆盖元数据。此操作不影响本地播放歌曲的数据")
-                            .settingsDescriptionStyle()
-                    }
-
-                    // Manual library completion
-                    VStack(alignment: .leading, spacing: 8) {
-                        Button {
-                            LibraryCompletionDialogPresenter.present(libraryVM: libraryVM)
-                        } label: {
-                            Text("手动补全所有歌曲信息")
-                        }
-                        .buttonStyle(.bordered)
-                        .clipShape(Capsule())
-
-                        Text("扫描整个本地曲库，按字段只补全缺失的元数据、封面和歌词，不覆盖已有内容")
                             .settingsDescriptionStyle()
                     }
                 }

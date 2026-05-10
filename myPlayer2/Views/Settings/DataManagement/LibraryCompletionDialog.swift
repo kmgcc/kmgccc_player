@@ -68,6 +68,10 @@ private final class LibraryCompletionDialogViewModel {
             processedCount: 0,
             totalCount: 0,
             currentTrackTitle: nil,
+            currentArtist: nil,
+            currentAlbum: nil,
+            currentTaskLabel: nil,
+            recentEvents: [],
             detail: "正在准备扫描整个本地曲库"
         )
 
@@ -92,6 +96,10 @@ private final class LibraryCompletionDialogViewModel {
             processedCount: progress.processedCount,
             totalCount: progress.totalCount,
             currentTrackTitle: progress.currentTrackTitle,
+            currentArtist: progress.currentArtist,
+            currentAlbum: progress.currentAlbum,
+            currentTaskLabel: progress.currentTaskLabel,
+            recentEvents: progress.recentEvents,
             detail: "正在取消，当前请求结束后停止继续处理"
         )
         task?.cancel()
@@ -233,28 +241,17 @@ private struct LibraryCompletionDialogView: View {
     let onCloseResult: () -> Void
 
     @EnvironmentObject private var themeStore: ThemeStore
-    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        VStack(spacing: 0) {
-            headerView
-                .padding(.horizontal, 20)
-                .padding(.top, 24)
-                .padding(.bottom, 16)
-
-            Divider()
-                .opacity(0.25)
-
+        SettingsTaskDialog(
+            title: headerTitle,
+            subtitle: headerSubtitle,
+            systemImage: headerIconName,
+            iconColor: headerIconColor
+        ) {
             contentView
-                .padding(20)
-
-            Divider()
-                .opacity(0.25)
-
+        } footer: {
             footerView
-                .padding(.horizontal, 20)
-                .padding(.top, 12)
-                .padding(.bottom, 40)
         }
     }
 
@@ -272,11 +269,11 @@ private struct LibraryCompletionDialogView: View {
     private var headerSubtitle: String {
         switch viewModel.stage {
         case .selection:
-            return "扫描整个本地曲库，只填充缺失项。"
+            return "选择补全范围。"
         case .running:
-            return viewModel.progress.phase.title
+            return "处理中，可随时取消。"
         case .result:
-            return "已生成本次处理结果摘要。"
+            return "已生成本次补全结果摘要。"
         }
     }
 
@@ -302,37 +299,6 @@ private struct LibraryCompletionDialogView: View {
         }
     }
 
-    private var headerView: some View {
-        HStack(spacing: 16) {
-            ZStack {
-                Circle()
-                    .fill(headerIconColor.opacity(colorScheme == .dark ? 0.18 : 0.12))
-                    .frame(width: 54, height: 54)
-                Image(systemName: headerIconName)
-                    .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(headerIconColor)
-            }
-            .liquidGlassCircle(
-                colorScheme: colorScheme,
-                accentColor: headerIconColor,
-                prominence: .prominent,
-                isFloating: true
-            )
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(headerTitle)
-                    .font(.system(size: 19, weight: .semibold))
-                    .foregroundStyle(.primary)
-                Text(headerSubtitle)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Spacer()
-        }
-    }
-
     @ViewBuilder
     private var contentView: some View {
         switch viewModel.stage {
@@ -347,83 +313,108 @@ private struct LibraryCompletionDialogView: View {
 
     private var selectionContent: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("本次会扫描整个本地曲库，只补全缺失信息；已有元数据、封面和歌词不会被覆盖。")
+            Text("扫描本地曲库，补全缺失内容。已有歌曲信息、封面和歌词会保留。")
                 .font(.system(size: 14))
                 .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
 
             VStack(alignment: .leading, spacing: 12) {
-                CompletionOptionToggle(
-                    title: "补全元数据",
-                    detail: "包括歌曲缺失字段、封面、专辑信息、艺人信息、描述、年份等可由外部来源补全的空字段",
+                SettingsTaskOptionToggle(
+                    title: "补全歌曲信息",
+                    detail: "补全歌曲资料、封面、专辑和艺人信息。",
                     isOn: $viewModel.options.fillMetadata
                 )
 
-                CompletionOptionToggle(
+                SettingsTaskOptionToggle(
                     title: "补全歌词",
-                    detail: "只为没有歌词的歌曲查找并保存歌词，不替换已保存歌词",
+                    detail: "为没有歌词的歌曲查找并保存歌词。",
                     isOn: $viewModel.options.fillLyrics
                 )
             }
-
-            VStack(alignment: .leading, spacing: 8) {
-                safetyRow("字段级合并，不用搜索结果整体覆盖本地数据")
-                safetyRow("已有歌曲、专辑、艺人封面都会保留")
-                safetyRow("网络失败或单曲匹配失败会记录后继续处理")
-            }
-            .padding(14)
-            .liquidGlassRect(
-                cornerRadius: 16,
-                colorScheme: colorScheme,
-                accentColor: themeStore.accentColor,
-                prominence: .standard
-            )
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var runningContent: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            summaryCard(title: "正在处理", items: viewModel.selectedItemTitles)
+        VStack(alignment: .leading, spacing: 16) {
+            SettingsTaskPanel(accentColor: themeStore.accentColor) {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Text("已处理 \(viewModel.progress.processedCount) / \(viewModel.progress.totalCount)")
+                            .font(.system(size: 14, weight: .medium))
+                        Spacer()
+                        Text("\(Int(viewModel.progress.fractionCompleted * 100))%")
+                            .font(.system(size: 13, weight: .medium))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
 
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Text("已处理 \(viewModel.progress.processedCount) / \(viewModel.progress.totalCount)")
-                        .font(.system(size: 14, weight: .medium))
-                    Spacer()
-                    Text("\(Int(viewModel.progress.fractionCompleted * 100))%")
-                        .font(.system(size: 13, weight: .medium))
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
+                    ProgressView(value: viewModel.progress.fractionCompleted)
+                        .progressViewStyle(.linear)
+
+                    HStack(spacing: 8) {
+                        if let currentTaskLabel = viewModel.progress.currentTaskLabel,
+                           !currentTaskLabel.isEmpty {
+                            Text(currentTaskLabel)
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 9)
+                                .padding(.vertical, 4)
+                                .background(Capsule().fill(themeStore.accentColor.opacity(0.88)))
+                        }
+
+                        Spacer()
+                    }
+
+                    if let currentTrackTitle = viewModel.progress.currentTrackTitle,
+                       !currentTrackTitle.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(currentTrackTitle)
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+
+                            if !currentTrackSubtitle.isEmpty {
+                                Text(currentTrackSubtitle)
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                    }
                 }
-
-                ProgressView(value: viewModel.progress.fractionCompleted)
-                    .progressViewStyle(.linear)
-
-                Text(viewModel.progress.phase.title)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.primary)
-
-                if let currentTrackTitle = viewModel.progress.currentTrackTitle,
-                   !currentTrackTitle.isEmpty {
-                    Text("当前：\(currentTrackTitle)")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                }
-
-                Text(viewModel.progress.detail)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
-            .padding(16)
-            .liquidGlassRect(
-                cornerRadius: 18,
-                colorScheme: colorScheme,
-                accentColor: themeStore.accentColor,
-                prominence: .standard
-            )
+
+            if !viewModel.progress.recentEvents.isEmpty {
+                SettingsTaskPanel(accentColor: nil) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("已找到内容")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(.primary)
+
+                        ForEach(viewModel.progress.recentEvents) { event in
+                            HStack(alignment: .top, spacing: 10) {
+                                Image(systemName: "sparkle.magnifyingglass")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(themeStore.accentColor)
+                                    .frame(width: 18, height: 18)
+
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(event.title)
+                                        .font(.system(size: 13, weight: .medium))
+                                        .foregroundStyle(.primary)
+                                    Text(event.detail)
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+
+                                Spacer(minLength: 0)
+                            }
+                        }
+                    }
+                }
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
@@ -431,24 +422,19 @@ private struct LibraryCompletionDialogView: View {
     private var resultContent: some View {
         VStack(alignment: .leading, spacing: 14) {
             if let result = viewModel.result {
-                VStack(alignment: .leading, spacing: 10) {
-                    resultRow("处理歌曲", value: "\(result.processedTrackCount) 首")
-                    resultRow("补全元数据", value: "\(result.metadataItemsFilledCount) 项")
-                    resultRow("补全歌词", value: "\(result.lyricsFilledTrackCount) 首")
-                    resultRow("跳过已有数据", value: "\(result.skippedExistingDataCount) 项")
-                    resultRow("失败", value: "\(result.failureCount) 项")
+                SettingsTaskPanel(accentColor: result.failureCount == 0 ? .green : .orange) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        resultRow("已检查", value: "\(result.processedTrackCount) 首")
+                        resultRow("已补全信息", value: "\(result.metadataItemsFilledCount) 项")
+                        resultRow("已补全歌词", value: "\(result.lyricsFilledTrackCount) 首")
+                        resultRow("已跳过已有内容", value: "\(result.skippedExistingDataCount) 项")
+                        resultRow("未找到", value: "\(result.failureCount) 项")
+                    }
                 }
-                .padding(16)
-                .liquidGlassRect(
-                    cornerRadius: 18,
-                    colorScheme: colorScheme,
-                    accentColor: result.failureCount == 0 ? .green : .orange,
-                    prominence: .standard
-                )
 
                 if !result.failures.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("失败原因")
+                        Text("未补全项目")
                             .font(.system(size: 14, weight: .medium))
                             .foregroundStyle(.primary)
 
@@ -483,50 +469,19 @@ private struct LibraryCompletionDialogView: View {
 
             switch viewModel.stage {
             case .selection:
-                dialogButton("取消", kind: .secondary, action: onCancel)
-                dialogButton(
+                SettingsTaskDialogButton("取消", kind: .secondary, action: onCancel)
+                SettingsTaskDialogButton(
                     "开始补全",
                     kind: .primary,
                     disabled: !viewModel.canStart,
                     action: viewModel.start
                 )
             case .running:
-                dialogButton("取消操作", kind: .secondary, action: viewModel.cancel)
+                SettingsTaskDialogButton("取消操作", kind: .secondary, action: viewModel.cancel)
             case .result:
-                dialogButton("关闭", kind: .primary, action: onCloseResult)
+                SettingsTaskDialogButton("关闭", kind: .primary, action: onCloseResult)
             }
         }
-    }
-
-    private func safetyRow(_ text: String) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(themeStore.accentColor)
-            Text(text)
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private func summaryCard(title: String, items: [String]) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(title)
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(.primary)
-
-            ForEach(items, id: \.self) { item in
-                safetyRow(item)
-            }
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .liquidGlassRect(
-            cornerRadius: 18,
-            colorScheme: colorScheme,
-            accentColor: themeStore.accentColor,
-            prominence: .standard
-        )
     }
 
     private func resultRow(_ title: String, value: String) -> some View {
@@ -542,92 +497,15 @@ private struct LibraryCompletionDialogView: View {
         }
     }
 
-    @ViewBuilder
-    private func dialogButton(
-        _ title: String,
-        kind: CompletionDialogButtonKind,
-        disabled: Bool = false,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(.system(size: 13, weight: kind == .primary ? .semibold : .medium))
-                .foregroundStyle(kind.foregroundColor)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
+    private var currentTrackSubtitle: String {
+        [
+            viewModel.progress.currentArtist,
+            viewModel.progress.currentAlbum
+        ]
+        .compactMap { value in
+            let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed?.isEmpty == false ? trimmed : nil
         }
-        .buttonStyle(.plain)
-        .disabled(disabled)
-        .opacity(disabled ? 0.5 : 1)
-        .background(kind.backgroundColor)
-        .overlay(
-            Capsule()
-                .strokeBorder(GlassStyleTokens.glassBorderColor, lineWidth: GlassStyleTokens.hairlineWidth)
-        )
-        .glassEffect(.clear, in: Capsule())
-        .clipShape(Capsule())
-        .if(kind == .primary) { view in
-            view.subtleFloatingShadow()
-        }
-    }
-}
-
-private struct CompletionOptionToggle: View {
-    let title: String
-    let detail: String
-    @Binding var isOn: Bool
-    @Environment(\.colorScheme) private var colorScheme
-    @EnvironmentObject private var themeStore: ThemeStore
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Toggle(isOn: $isOn) {
-                Text(title)
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(.primary)
-            }
-            .toggleStyle(.checkbox)
-
-            Text(detail)
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .liquidGlassRect(
-            cornerRadius: 16,
-            colorScheme: colorScheme,
-            accentColor: isOn ? themeStore.accentColor : nil,
-            prominence: isOn ? .prominent : .standard
-        )
-    }
-}
-
-private enum CompletionDialogButtonKind: Equatable {
-    case secondary
-    case primary
-
-    var foregroundColor: Color {
-        switch self {
-        case .secondary:
-            return .primary
-        case .primary:
-            return .white
-        }
-    }
-
-    var backgroundColor: some View {
-        Capsule()
-            .fill(fillColor)
-    }
-
-    private var fillColor: Color {
-        switch self {
-        case .secondary:
-            return Color.black.opacity(0.08)
-        case .primary:
-            return ThemeStore.shared.accentColor.opacity(0.88)
-        }
+        .joined(separator: " · ")
     }
 }

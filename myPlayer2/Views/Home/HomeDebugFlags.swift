@@ -47,4 +47,17 @@ enum HomeDebugFlags {
     static var disableInsights: Bool {
         UserDefaults.standard.bool(forKey: "home.debug.disableInsights")
     }
+
+    /// Show the live Home performance overlay (body counters + image metrics).
+    ///   defaults write kmgccc.player home.debug.showPerfOverlay -bool YES
+    static var showPerfOverlay: Bool {
+        UserDefaults.standard.bool(forKey: "home.debug.showPerfOverlay")
+    }
+
+    /// Use AppKit-backed HomeFeedScrollView instead of SwiftUI ScrollView.
+    ///   defaults write kmgccc.player home.debug.useAppKitFeed -bool YES
+    /// Default is OFF until validated — the legacy SwiftUI path is kept as fallback.
+    static var useAppKitFeed: Bool {
+        UserDefaults.standard.bool(forKey: "home.debug.useAppKitFeed")
+    }
 }

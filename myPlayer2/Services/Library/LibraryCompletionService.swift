@@ -28,6 +28,12 @@ struct LibraryCompletionOptions: Equatable, Sendable {
     }
 }
 
+struct LibraryCompletionProgressEvent: Identifiable, Sendable {
+    let id = UUID()
+    let title: String
+    let detail: String
+}
+
 enum LibraryCompletionPhase: String, Sendable {
     case idle
     case scanning
@@ -53,13 +59,43 @@ struct LibraryCompletionProgress: Sendable {
     let processedCount: Int
     let totalCount: Int
     let currentTrackTitle: String?
+    let currentArtist: String?
+    let currentAlbum: String?
+    let currentTaskLabel: String?
+    let recentEvents: [LibraryCompletionProgressEvent]
     let detail: String
+
+    init(
+        phase: LibraryCompletionPhase,
+        processedCount: Int,
+        totalCount: Int,
+        currentTrackTitle: String?,
+        currentArtist: String? = nil,
+        currentAlbum: String? = nil,
+        currentTaskLabel: String? = nil,
+        recentEvents: [LibraryCompletionProgressEvent] = [],
+        detail: String
+    ) {
+        self.phase = phase
+        self.processedCount = processedCount
+        self.totalCount = totalCount
+        self.currentTrackTitle = currentTrackTitle
+        self.currentArtist = currentArtist
+        self.currentAlbum = currentAlbum
+        self.currentTaskLabel = currentTaskLabel
+        self.recentEvents = recentEvents
+        self.detail = detail
+    }
 
     static let idle = LibraryCompletionProgress(
         phase: .idle,
         processedCount: 0,
         totalCount: 0,
         currentTrackTitle: nil,
+        currentArtist: nil,
+        currentAlbum: nil,
+        currentTaskLabel: nil,
+        recentEvents: [],
         detail: "等待开始"
     )
 
@@ -280,6 +316,7 @@ final class LibraryCompletionService {
     @ObservationIgnored private var artistEntryCache: [String: ArtistEntry] = [:]
     @ObservationIgnored private var albumEntryCache: [String: AlbumEntry] = [:]
     @ObservationIgnored private var trackCoverCache: [String: LibraryCompletionCachedCover] = [:]
+    @ObservationIgnored private var progressEvents: [LibraryCompletionProgressEvent] = []
 
     init(libraryVM: LibraryViewModel) {
         self.libraryVM = libraryVM
@@ -294,6 +331,7 @@ final class LibraryCompletionService {
         artistEntryCache = Dictionary(uniqueKeysWithValues: libraryVM.artistEntries.map { ($0.canonicalName, $0) })
         albumEntryCache = Dictionary(uniqueKeysWithValues: libraryVM.albumEntries.map { ($0.canonicalKey, $0) })
         trackCoverCache.removeAll()
+        progressEvents.removeAll()
 
         let tracks = libraryVM.allTracks.sorted {
             if $0.title.localizedStandardCompare($1.title) == .orderedSame {
@@ -314,6 +352,9 @@ final class LibraryCompletionService {
                 processedCount: 0,
                 totalCount: tracks.count,
                 currentTrackTitle: nil,
+                currentArtist: nil,
+                currentAlbum: nil,
+                currentTaskLabel: nil,
                 detail: "已读取本地曲库，共 \(tracks.count) 首"
             ),
             progressHandler
@@ -343,11 +384,19 @@ final class LibraryCompletionService {
                         processedCount: index,
                         totalCount: tracks.count,
                         currentTrackTitle: currentTrack.title,
-                        detail: "正在检查元数据、封面、专辑和艺人信息"
+                        currentArtist: currentTrack.artist,
+                        currentAlbum: currentTrack.album,
+                        currentTaskLabel: "歌曲信息",
+                        detail: "正在检查歌曲信息"
                     ),
                     progressHandler
                 )
-                let outcome = await completeMetadata(for: currentTrack)
+                let outcome = await completeMetadata(
+                    for: currentTrack,
+                    index: index,
+                    totalCount: tracks.count,
+                    progressHandler: progressHandler
+                )
                 metadataItemsFilledCount += outcome.filledCount
                 skippedExistingDataCount += outcome.skippedExistingCount
                 failures.append(contentsOf: outcome.failures)
@@ -374,11 +423,19 @@ final class LibraryCompletionService {
                         processedCount: index,
                         totalCount: tracks.count,
                         currentTrackTitle: currentTrack.title,
+                        currentArtist: currentTrack.artist,
+                        currentAlbum: currentTrack.album,
+                        currentTaskLabel: "歌词",
                         detail: "正在检查歌词"
                     ),
                     progressHandler
                 )
-                let outcome = await completeLyrics(for: currentTrack)
+                let outcome = await completeLyrics(
+                    for: currentTrack,
+                    index: index,
+                    totalCount: tracks.count,
+                    progressHandler: progressHandler
+                )
                 lyricsFilledTrackCount += outcome.filled ? 1 : 0
                 skippedExistingDataCount += outcome.skippedExisting ? 1 : 0
                 failures.append(contentsOf: outcome.failure.map { [$0] } ?? [])
@@ -395,6 +452,9 @@ final class LibraryCompletionService {
                     processedCount: index + 1,
                     totalCount: tracks.count,
                     currentTrackTitle: currentTrack.title,
+                    currentArtist: currentTrack.artist,
+                    currentAlbum: currentTrack.album,
+                    currentTaskLabel: nil,
                     detail: "已处理 \(index + 1) / \(tracks.count)"
                 ),
                 progressHandler
@@ -412,6 +472,9 @@ final class LibraryCompletionService {
                 processedCount: tracks.count,
                 totalCount: tracks.count,
                 currentTrackTitle: nil,
+                currentArtist: nil,
+                currentAlbum: nil,
+                currentTaskLabel: nil,
                 detail: "全库补全任务完成"
             ),
             progressHandler
@@ -441,7 +504,16 @@ final class LibraryCompletionService {
         var failure: LibraryCompletionFailure?
     }
 
-    private func completeMetadata(for track: Track) async -> MetadataOutcome {
+    private func metadataEventDetail(filledCount: Int) -> String {
+        filledCount > 0 ? "补全 \(filledCount) 项内容" : "已找到可用内容"
+    }
+
+    private func completeMetadata(
+        for track: Track,
+        index: Int,
+        totalCount: Int,
+        progressHandler: @escaping @MainActor (LibraryCompletionProgress) -> Void
+    ) async -> MetadataOutcome {
         var outcome = MetadataOutcome()
         let artworkAlreadyPresent = await trackHasArtwork(track)
         let beforeTrack = TrackMetadataFieldSnapshot(track)
@@ -465,15 +537,33 @@ final class LibraryCompletionService {
                     outcome.filledCount += filled
                     outcome.trackUpdated = true
                     await libraryVM.saveTrackEdits(track, mode: .metaOnly, reason: "manualLibraryCompletionMetadata")
+                    await recordProgressEvent(
+                        title: "歌曲信息",
+                        detail: metadataEventDetail(filledCount: filled),
+                        phase: .metadata,
+                        index: index,
+                        totalCount: totalCount,
+                        track: track,
+                        taskLabel: "歌曲信息",
+                        progressHandler
+                    )
                 }
             case .noResults:
-                outcome.failures.append(failure(track: track, reason: "歌曲信息未找到可用结果"))
-            case .failed(let message):
-                outcome.failures.append(failure(track: track, reason: "歌曲信息补全失败：\(message)"))
+                outcome.failures.append(failure(track: track, reason: "暂未找到歌曲信息"))
+            case .failed(_):
+                outcome.failures.append(failure(track: track, reason: "暂未补全歌曲信息"))
             }
         }
 
         if !artworkAlreadyPresent {
+            await reportTrackProgress(
+                phase: .metadata,
+                index: index,
+                totalCount: totalCount,
+                track: track,
+                taskLabel: "封面",
+                progressHandler
+            )
             switch await coverData(for: track) {
             case .found(let data):
                 guard !Task.isCancelled else { return outcome }
@@ -482,6 +572,16 @@ final class LibraryCompletionService {
                     outcome.filledCount += 1
                     outcome.trackUpdated = true
                     await libraryVM.saveTrackEdits(track, mode: .metaAndArtwork, reason: "manualLibraryCompletionArtwork")
+                    await recordProgressEvent(
+                        title: "封面",
+                        detail: "已找到歌曲封面",
+                        phase: .metadata,
+                        index: index,
+                        totalCount: totalCount,
+                        track: track,
+                        taskLabel: "封面",
+                        progressHandler
+                    )
                 } else {
                     outcome.skippedExistingCount += 1
                 }
@@ -490,12 +590,22 @@ final class LibraryCompletionService {
             }
         }
 
-        let artistResult = await completeArtistMetadataIfNeeded(for: track)
+        let artistResult = await completeArtistMetadataIfNeeded(
+            for: track,
+            index: index,
+            totalCount: totalCount,
+            progressHandler: progressHandler
+        )
         outcome.filledCount += artistResult.filledCount
         outcome.skippedExistingCount += artistResult.skippedExistingCount
         outcome.failures.append(contentsOf: artistResult.failures)
 
-        let albumResult = await completeAlbumMetadataIfNeeded(for: track)
+        let albumResult = await completeAlbumMetadataIfNeeded(
+            for: track,
+            index: index,
+            totalCount: totalCount,
+            progressHandler: progressHandler
+        )
         outcome.filledCount += albumResult.filledCount
         outcome.skippedExistingCount += albumResult.skippedExistingCount
         outcome.failures.append(contentsOf: albumResult.failures)
@@ -503,7 +613,12 @@ final class LibraryCompletionService {
         return outcome
     }
 
-    private func completeLyrics(for track: Track) async -> LyricsOutcome {
+    private func completeLyrics(
+        for track: Track,
+        index: Int,
+        totalCount: Int,
+        progressHandler: @escaping @MainActor (LibraryCompletionProgress) -> Void
+    ) async -> LyricsOutcome {
         if trackHasLyrics(track) {
             return LyricsOutcome(filled: false, skippedExisting: true, failure: nil)
         }
@@ -519,17 +634,32 @@ final class LibraryCompletionService {
             if !trackHasLyrics(track) {
                 track.ttmlLyricText = ttml
                 await libraryVM.saveTrackEdits(track, mode: .metaAndLyrics, reason: "manualLibraryCompletionLyrics")
+                await recordProgressEvent(
+                    title: "歌词",
+                    detail: "已找到歌词",
+                    phase: .lyrics,
+                    index: index,
+                    totalCount: totalCount,
+                    track: track,
+                    taskLabel: "歌词",
+                    progressHandler
+                )
                 return LyricsOutcome(filled: true, skippedExisting: false, failure: nil)
             }
             return LyricsOutcome(filled: false, skippedExisting: true, failure: nil)
         case .noResults:
-            return LyricsOutcome(filled: false, skippedExisting: false, failure: failure(track: track, reason: "歌词未找到可用结果"))
-        case .failed(let message):
-            return LyricsOutcome(filled: false, skippedExisting: false, failure: failure(track: track, reason: "歌词补全失败：\(message)"))
+            return LyricsOutcome(filled: false, skippedExisting: false, failure: failure(track: track, reason: "暂未找到歌词"))
+        case .failed(_):
+            return LyricsOutcome(filled: false, skippedExisting: false, failure: failure(track: track, reason: "暂未补全歌词"))
         }
     }
 
-    private func completeArtistMetadataIfNeeded(for track: Track) async -> MetadataOutcome {
+    private func completeArtistMetadataIfNeeded(
+        for track: Track,
+        index: Int,
+        totalCount: Int,
+        progressHandler: @escaping @MainActor (LibraryCompletionProgress) -> Void
+    ) async -> MetadataOutcome {
         var outcome = MetadataOutcome()
         let canonical = LibraryNormalization.normalizeArtist(track.artist)
         guard canonical != LibraryNormalization.normalizeArtist(nil),
@@ -542,6 +672,14 @@ final class LibraryCompletionService {
         outcome.skippedExistingCount += before.existingFieldCount()
 
         if before.metadataMissingCount() > 0 {
+            await reportTrackProgress(
+                phase: .metadata,
+                index: index,
+                totalCount: totalCount,
+                track: track,
+                taskLabel: "艺人",
+                progressHandler
+            )
             switch await MetadataEnrichmentWorker.fetchArtistMetadata(name: entry.displayName) {
             case .completed(let detail):
                 guard !Task.isCancelled else { return outcome }
@@ -552,27 +690,60 @@ final class LibraryCompletionService {
                     artistEntryCache[canonical] = entry
                     outcome.filledCount += filled
                     await libraryVM.saveArtistEntry(entry)
+                    await recordProgressEvent(
+                        title: "艺人",
+                        detail: "\(entry.displayName) · \(metadataEventDetail(filledCount: filled))",
+                        phase: .metadata,
+                        index: index,
+                        totalCount: totalCount,
+                        track: track,
+                        taskLabel: "艺人",
+                        progressHandler
+                    )
                 }
             case .noResults:
-                outcome.failures.append(failure(track: track, reason: "艺人信息未找到可用结果：\(entry.displayName)"))
-            case .failed(let message):
-                outcome.failures.append(failure(track: track, reason: "艺人信息补全失败：\(entry.displayName)，\(message)"))
+                outcome.failures.append(failure(track: track, reason: "暂未找到艺人信息：\(entry.displayName)"))
+            case .failed(_):
+                outcome.failures.append(failure(track: track, reason: "暂未补全艺人信息：\(entry.displayName)"))
             }
         }
 
         if !ArtistMetadataFieldSnapshot(entry).hasArtwork {
+            await reportTrackProgress(
+                phase: .metadata,
+                index: index,
+                totalCount: totalCount,
+                track: track,
+                taskLabel: "艺人封面",
+                progressHandler
+            )
             let changed = await libraryVM.autofillArtistArtworkIfMissing(entry)
             if changed {
                 outcome.filledCount += 1
+                await recordProgressEvent(
+                    title: "艺人封面",
+                    detail: entry.displayName,
+                    phase: .metadata,
+                    index: index,
+                    totalCount: totalCount,
+                    track: track,
+                    taskLabel: "艺人封面",
+                    progressHandler
+                )
             } else {
-                outcome.failures.append(failure(track: track, reason: "艺人封面未找到可用结果：\(entry.displayName)"))
+                outcome.failures.append(failure(track: track, reason: "暂未找到艺人封面：\(entry.displayName)"))
             }
         }
 
         return outcome
     }
 
-    private func completeAlbumMetadataIfNeeded(for track: Track) async -> MetadataOutcome {
+    private func completeAlbumMetadataIfNeeded(
+        for track: Track,
+        index: Int,
+        totalCount: Int,
+        progressHandler: @escaping @MainActor (LibraryCompletionProgress) -> Void
+    ) async -> MetadataOutcome {
         var outcome = MetadataOutcome()
         guard !LibraryNormalization.isUnknownAlbum(track.album) else { return outcome }
         let key = LibraryNormalization.normalizedAlbumKey(album: track.album)
@@ -584,6 +755,14 @@ final class LibraryCompletionService {
         outcome.skippedExistingCount += before.existingFieldCount()
 
         if before.metadataMissingCount() > 0 {
+            await reportTrackProgress(
+                phase: .metadata,
+                index: index,
+                totalCount: totalCount,
+                track: track,
+                taskLabel: "专辑",
+                progressHandler
+            )
             switch await MetadataEnrichmentWorker.fetchAlbumMetadata(album: entry.displayTitle, artist: entry.primaryArtistDisplayName) {
             case .completed(let detail):
                 guard !Task.isCancelled else { return outcome }
@@ -594,15 +773,33 @@ final class LibraryCompletionService {
                     albumEntryCache[key] = entry
                     outcome.filledCount += filled
                     await libraryVM.saveAlbumEntry(entry)
+                    await recordProgressEvent(
+                        title: "专辑",
+                        detail: "\(entry.displayTitle) · \(metadataEventDetail(filledCount: filled))",
+                        phase: .metadata,
+                        index: index,
+                        totalCount: totalCount,
+                        track: track,
+                        taskLabel: "专辑",
+                        progressHandler
+                    )
                 }
             case .noResults:
-                outcome.failures.append(failure(track: track, reason: "专辑信息未找到可用结果：\(entry.displayTitle)"))
-            case .failed(let message):
-                outcome.failures.append(failure(track: track, reason: "专辑信息补全失败：\(entry.displayTitle)，\(message)"))
+                outcome.failures.append(failure(track: track, reason: "暂未找到专辑信息：\(entry.displayTitle)"))
+            case .failed(_):
+                outcome.failures.append(failure(track: track, reason: "暂未补全专辑信息：\(entry.displayTitle)"))
             }
         }
 
         if !AlbumMetadataFieldSnapshot(entry).hasArtwork {
+            await reportTrackProgress(
+                phase: .metadata,
+                index: index,
+                totalCount: totalCount,
+                track: track,
+                taskLabel: "专辑封面",
+                progressHandler
+            )
             switch await MetadataEnrichmentWorker.fetchAlbumArtwork(album: entry.displayTitle, artist: entry.primaryArtistDisplayName) {
             case .completed(let data):
                 guard !Task.isCancelled else { return outcome }
@@ -614,13 +811,23 @@ final class LibraryCompletionService {
                     albumEntryCache[key] = latest
                     outcome.filledCount += 1
                     await libraryVM.saveAlbumEntry(latest)
+                    await recordProgressEvent(
+                        title: "专辑封面",
+                        detail: latest.displayTitle,
+                        phase: .metadata,
+                        index: index,
+                        totalCount: totalCount,
+                        track: track,
+                        taskLabel: "专辑封面",
+                        progressHandler
+                    )
                 } else {
                     outcome.skippedExistingCount += 1
                 }
             case .noResults:
-                outcome.failures.append(failure(track: track, reason: "专辑封面未找到可用结果：\(entry.displayTitle)"))
-            case .failed(let message):
-                outcome.failures.append(failure(track: track, reason: "专辑封面补全失败：\(entry.displayTitle)，\(message)"))
+                outcome.failures.append(failure(track: track, reason: "暂未找到专辑封面：\(entry.displayTitle)"))
+            case .failed(_):
+                outcome.failures.append(failure(track: track, reason: "暂未补全专辑封面：\(entry.displayTitle)"))
             }
         }
 
@@ -643,9 +850,9 @@ final class LibraryCompletionService {
         case .completed(let data):
             result = .found(data)
         case .noResults:
-            result = .missing("歌曲封面未找到可用结果")
-        case .failed(let message):
-            result = .missing("歌曲封面补全失败：\(message)")
+            result = .missing("暂未找到歌曲封面")
+        case .failed(_):
+            result = .missing("暂未补全歌曲封面")
         }
         trackCoverCache[key] = result
         return result
@@ -736,8 +943,75 @@ final class LibraryCompletionService {
         _ newProgress: LibraryCompletionProgress,
         _ progressHandler: @escaping @MainActor (LibraryCompletionProgress) -> Void
     ) async {
-        progress = newProgress
-        progressHandler(newProgress)
+        let eventfulProgress = LibraryCompletionProgress(
+            phase: newProgress.phase,
+            processedCount: newProgress.processedCount,
+            totalCount: newProgress.totalCount,
+            currentTrackTitle: newProgress.currentTrackTitle,
+            currentArtist: newProgress.currentArtist,
+            currentAlbum: newProgress.currentAlbum,
+            currentTaskLabel: newProgress.currentTaskLabel,
+            recentEvents: newProgress.recentEvents.isEmpty ? progressEvents : newProgress.recentEvents,
+            detail: newProgress.detail
+        )
+        progress = eventfulProgress
+        progressHandler(eventfulProgress)
+    }
+
+    private func recordProgressEvent(
+        title: String,
+        detail: String,
+        phase: LibraryCompletionPhase,
+        index: Int,
+        totalCount: Int,
+        track: Track,
+        taskLabel: String,
+        _ progressHandler: @escaping @MainActor (LibraryCompletionProgress) -> Void
+    ) async {
+        progressEvents.append(
+            LibraryCompletionProgressEvent(title: title, detail: detail)
+        )
+        if progressEvents.count > 5 {
+            progressEvents.removeFirst(progressEvents.count - 5)
+        }
+        await report(
+            LibraryCompletionProgress(
+                phase: phase,
+                processedCount: index,
+                totalCount: totalCount,
+                currentTrackTitle: track.title,
+                currentArtist: track.artist,
+                currentAlbum: track.album,
+                currentTaskLabel: taskLabel,
+                recentEvents: progressEvents,
+                detail: detail
+            ),
+            progressHandler
+        )
+    }
+
+    private func reportTrackProgress(
+        phase: LibraryCompletionPhase,
+        index: Int,
+        totalCount: Int,
+        track: Track,
+        taskLabel: String,
+        _ progressHandler: @escaping @MainActor (LibraryCompletionProgress) -> Void
+    ) async {
+        await report(
+            LibraryCompletionProgress(
+                phase: phase,
+                processedCount: index,
+                totalCount: totalCount,
+                currentTrackTitle: track.title,
+                currentArtist: track.artist,
+                currentAlbum: track.album,
+                currentTaskLabel: taskLabel,
+                recentEvents: progressEvents,
+                detail: taskLabel
+            ),
+            progressHandler
+        )
     }
 
     private func reportCancelled(
@@ -751,6 +1025,9 @@ final class LibraryCompletionService {
                 processedCount: processedCount,
                 totalCount: totalCount,
                 currentTrackTitle: nil,
+                currentArtist: nil,
+                currentAlbum: nil,
+                currentTaskLabel: nil,
                 detail: "已取消，已完成的写入会保留"
             ),
             progressHandler

@@ -51,6 +51,7 @@ struct HomeView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .task {
+            HomePerf.reset()
             await homeVM.loadCachedStartupSnapshot()
             if !libraryVM.allTracks.isEmpty {
                 homeVM.refresh(from: libraryVM)
@@ -305,7 +306,75 @@ struct HomeView: View {
         )
     }
 
+    #if DEBUG
+    private var perfOverlay: some View {
+        Group {
+            if HomeDebugFlags.showPerfOverlay {
+                HomePerfOverlay()
+            }
+        }
+    }
+    #endif
+
+    @ViewBuilder
     private func homeScrollView(
+        mode: HomeLayoutMode,
+        contentWidth: CGFloat,
+        centerLeftPad: CGFloat,
+        centerRightPad: CGFloat
+    ) -> some View {
+        if HomeDebugFlags.useAppKitFeed {
+            appKitFeedScrollView(
+                mode: mode,
+                contentWidth: contentWidth,
+                centerLeftPad: centerLeftPad,
+                centerRightPad: centerRightPad
+            )
+        } else {
+            legacySwiftUIScrollContent(
+                mode: mode,
+                contentWidth: contentWidth,
+                centerLeftPad: centerLeftPad,
+                centerRightPad: centerRightPad
+            )
+        }
+    }
+
+    private func appKitFeedScrollView(
+        mode: HomeLayoutMode,
+        contentWidth: CGFloat,
+        centerLeftPad: CGFloat,
+        centerRightPad: CGFloat
+    ) -> some View {
+        HomeFeedScrollView(
+            heroModel: homeVM.heroModel(containerWidth: contentWidth, mode: mode),
+            playlistsModel: homeVM.playlistsModel(centerLeftPad: centerLeftPad, centerRightPad: centerRightPad, mode: mode),
+            playlists: homeVM.playlists,
+            artistsModel: homeVM.artistsModel(centerLeftPad: centerLeftPad, centerRightPad: centerRightPad, mode: mode),
+            artists: homeVM.artists,
+            albumsModel: homeVM.albumsModel(centerLeftPad: centerLeftPad, centerRightPad: centerRightPad, mode: mode),
+            albums: homeVM.albums,
+            insightsModel: homeVM.insightsModel(containerWidth: contentWidth, centerLeftPad: centerLeftPad, centerRightPad: centerRightPad, mode: mode),
+            homeVM: homeVM,
+            mode: mode,
+            centerLeftPad: centerLeftPad,
+            centerRightPad: centerRightPad,
+            onSwitchHeroTrack: { homeVM.switchHeroTrack(from: libraryVM) }
+        )
+        #if DEBUG
+        .overlay(alignment: .topTrailing) {
+            perfOverlay
+                .padding(.top, 60)
+                .padding(.trailing, 16)
+        }
+        .onAppear { HomePerf.bodyCounters.bump("HomeView") }
+        .onChange(of: layout.discreteSnapshot) { _, _ in
+            HomePerf.bodyCounters.bump("HomeView-layout")
+        }
+        #endif
+    }
+
+    private func legacySwiftUIScrollContent(
         mode: HomeLayoutMode,
         contentWidth: CGFloat,
         centerLeftPad: CGFloat,
@@ -313,51 +382,45 @@ struct HomeView: View {
     ) -> some View {
         ScrollView(.vertical, showsIndicators: true) {
             VStack(spacing: mode.sectionSpacing) {
-                if !HomeDebugFlags.disableHero, let heroTrack = homeVM.heroTrack {
-                    HomeHeroView(
-                        track: heroTrack,
-                        containerWidth: contentWidth,
-                        mode: mode,
+                if !HomeDebugFlags.disableHero, let heroModel = homeVM.heroModel(containerWidth: contentWidth, mode: mode) {
+                    EquatableView(content: HomeHeroView(
+                        model: heroModel,
                         onSwitchTrack: {
                             homeVM.switchHeroTrack(from: libraryVM)
                         }
-                    )
+                    ))
                         .padding(.leading, centerLeftPad)
                         .padding(.trailing, centerRightPad)
                 }
 
                 if !HomeDebugFlags.disablePlaylists, !homeVM.playlists.isEmpty {
-                    HomePlaylistsSection(playlists: homeVM.playlists, mode: mode)
+                    EquatableView(content: HomePlaylistsSection(
+                        model: homeVM.playlistsModel(centerLeftPad: centerLeftPad, centerRightPad: centerRightPad, mode: mode),
+                        playlists: homeVM.playlists
+                    ))
                         .padding(.leading, centerLeftPad)
                         .padding(.trailing, centerRightPad)
                 }
 
                 if !HomeDebugFlags.disableArtists, !homeVM.artists.isEmpty {
-                    HomeArtistsSection(
-                        artists: homeVM.artists,
-                        mode: mode,
-                        centerLeftPad: centerLeftPad,
-                        centerRightPad: centerRightPad
-                    )
+                    EquatableView(content: HomeArtistsSection(
+                        model: homeVM.artistsModel(centerLeftPad: centerLeftPad, centerRightPad: centerRightPad, mode: mode),
+                        artists: homeVM.artists
+                    ))
                 }
 
                 if !HomeDebugFlags.disableAlbums, !homeVM.albums.isEmpty {
-                    HomeAlbumsSection(
-                        albums: homeVM.albums,
-                        mode: mode,
-                        centerLeftPad: centerLeftPad,
-                        centerRightPad: centerRightPad
-                    )
+                    EquatableView(content: HomeAlbumsSection(
+                        model: homeVM.albumsModel(centerLeftPad: centerLeftPad, centerRightPad: centerRightPad, mode: mode),
+                        albums: homeVM.albums
+                    ))
                 }
 
                 if !HomeDebugFlags.disableInsights {
-                    HomeInsightsSection(
-                        homeVM: homeVM,
-                        mode: mode,
-                        containerWidth: contentWidth,
-                        centerLeftPad: centerLeftPad,
-                        centerRightPad: centerRightPad
-                    )
+                    EquatableView(content: HomeInsightsSection(
+                        model: homeVM.insightsModel(containerWidth: contentWidth, centerLeftPad: centerLeftPad, centerRightPad: centerRightPad, mode: mode),
+                        homeVM: homeVM
+                    ))
                 }
 
                 footer
@@ -390,6 +453,17 @@ struct HomeView: View {
         .transaction { transaction in
             transaction.animation = nil
         }
+        #if DEBUG
+        .overlay(alignment: .topTrailing) {
+            perfOverlay
+                .padding(.top, 60)
+                .padding(.trailing, 16)
+        }
+        .onAppear { HomePerf.bodyCounters.bump("HomeView") }
+        .onChange(of: layout.discreteSnapshot) { _, _ in
+            HomePerf.bodyCounters.bump("HomeView-layout")
+        }
+        #endif
     }
 
     private var emptyLibraryView: some View {
