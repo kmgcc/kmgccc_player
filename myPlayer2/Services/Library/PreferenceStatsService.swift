@@ -50,7 +50,8 @@ final class PreferenceStatsService {
         return result
     }
 
-    /// Get effective weight for a track (used for weighted sampling).
+    /// Get cached base weight for a track (long-term preference only).
+    /// Runtime shuffle penalties are applied by ShuffleSession and are not written here.
     func getEffectiveWeight(for trackID: UUID) -> Double {
         let stats = getStats(for: trackID)
         return stats.effectiveWeightCache
@@ -91,7 +92,10 @@ final class PreferenceStatsService {
     }
 
     /// Apply a playback session outcome to a track's stats.
-    /// Uses V2 scoring algorithm with proper duration-based weight calculation.
+    ///
+    /// This is the single authoritative runtime mapping from playback outcome to stats:
+    /// play counts, complete/skip/quick-skip counts, played seconds, timestamps, and
+    /// cached V2 preference scores all flow through this method.
     @discardableResult
     func applyPlaybackOutcome(trackID: UUID, outcome: PlaybackSessionOutcome, trackDuration: Double) -> Bool {
         switch outcome {
@@ -101,44 +105,36 @@ final class PreferenceStatsService {
             break
         }
 
+        let finalizedAt = Date()
         return updateStats(for: trackID, duration: trackDuration) { stats in
             switch outcome {
-            case .completed:
+            case .completed(_, _, let playedSeconds):
                 stats.playCount += 1
                 stats.completePlayCount += 1
-                stats.totalPlayedSeconds += trackDuration // Assume full duration
-                stats.lastPlayedAt = Date()
-                stats.lastCompletedAt = Date()
+                stats.totalPlayedSeconds += playedSeconds
+                stats.lastPlayedAt = finalizedAt
+                stats.lastCompletedAt = finalizedAt
 
-            case .skipped(let progress, let playedSeconds):
+            case .skipped(_, let progress, let playedSeconds, let allowsQuickSkip):
                 stats.playCount += 1
                 stats.skipCount += 1
                 stats.totalPlayedSeconds += playedSeconds
-                stats.lastPlayedAt = Date()
-                stats.lastSkippedAt = Date()
+                stats.lastPlayedAt = finalizedAt
+                stats.lastSkippedAt = finalizedAt
 
                 // Check for quick skip.
                 let isQuick = playedSeconds < PlaybackSessionTracker.quickSkipDuration
                     || progress < PlaybackSessionTracker.quickSkipPercentage
-                if isQuick {
+                if allowsQuickSkip && isQuick {
                     stats.quickSkipCount += 1
                 }
 
-            case .interrupted(let progress, let playedSeconds):
+            case .interrupted(_, _, let playedSeconds):
                 // Interrupted plays count as plays but not skips.
                 stats.playCount += 1
                 stats.totalPlayedSeconds += playedSeconds
-                stats.lastPlayedAt = Date()
+                stats.lastPlayedAt = finalizedAt
 
-                // If they got close to completion, count as complete.
-                let remainingSeconds = trackDuration - playedSeconds
-                let metCompletePercentage = progress >= PlaybackSessionTracker.completePlayPercentage
-                let metCompleteRemaining = remainingSeconds <= PlaybackSessionTracker.completePlayRemainingSeconds
-
-                if metCompletePercentage || metCompleteRemaining {
-                    stats.completePlayCount += 1
-                    stats.lastCompletedAt = Date()
-                }
             case .tooShort:
                 break
             }
@@ -195,19 +191,21 @@ final class PreferenceStatsService {
         }
     }
 
-    /// Save all dirty stats to their respective sidecars.
+    /// Save all dirty stats to their respective sidecars synchronously on the main actor.
     /// - Parameter trackProvider: Optional closure to get Track objects for writing sidecars.
-    func saveAllPending(trackProvider: ((UUID) -> Track?)? = nil) async {
+    func saveAllPendingNow(trackProvider: ((UUID) -> Track?)? = nil) {
         let tracksToSave = Array(dirtyTrackIDs)
-        dirtyTrackIDs.removeAll()
 
         guard !tracksToSave.isEmpty else { return }
 
         // If track provider provided, use it to get tracks and write sidecars.
+        var savedCount = 0
         if let provider = trackProvider {
             for trackID in tracksToSave {
                 if let track = provider(trackID) {
                     LocalLibraryService.shared.writeMetaOnly(for: track, reason: "playbackStats")
+                    dirtyTrackIDs.remove(trackID)
+                    savedCount += 1
                 }
             }
         } else {
@@ -218,9 +216,16 @@ final class PreferenceStatsService {
                 object: nil,
                 userInfo: ["trackIDs": tracksToSave]
             )
+            dirtyTrackIDs.removeAll()
+            savedCount = tracksToSave.count
         }
 
-        print("💾 Saved preference stats for \(tracksToSave.count) tracks")
+        print("💾 Saved preference stats for \(savedCount) tracks")
+    }
+
+    /// Async wrapper for callers already using task-based lifecycle hooks.
+    func saveAllPending(trackProvider: ((UUID) -> Track?)? = nil) async {
+        saveAllPendingNow(trackProvider: trackProvider)
     }
 
     /// Save stats for a specific track immediately.

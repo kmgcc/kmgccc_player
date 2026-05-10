@@ -9,19 +9,51 @@
 import Foundation
 import SwiftData
 
+/// Why a playback session ended.
+/// This is intentionally more specific than "user initiated" because stats semantics differ.
+enum PlaybackSessionEndReason: Equatable {
+    case naturalCompletion
+    case userNext
+    case userPrevious
+    case userJumpToTrack
+    case userJumpWithinQueue
+    case systemInterrupt
+    case appTermination
+    case repeatOneReplay
+    case stopAfterTrack
+
+    var isUserInitiatedTrackChange: Bool {
+        switch self {
+        case .userNext, .userPrevious, .userJumpToTrack, .userJumpWithinQueue:
+            return true
+        case .naturalCompletion, .systemInterrupt, .appTermination, .repeatOneReplay, .stopAfterTrack:
+            return false
+        }
+    }
+
+    var allowsQuickSkip: Bool {
+        switch self {
+        case .userNext, .userJumpToTrack, .userJumpWithinQueue:
+            return true
+        case .userPrevious, .naturalCompletion, .systemInterrupt, .appTermination, .repeatOneReplay, .stopAfterTrack:
+            return false
+        }
+    }
+}
+
 /// Represents the outcome of a playback session.
 enum PlaybackSessionOutcome: Equatable {
     /// Playback completed naturally (reached end).
-    case completed
+    case completed(reason: PlaybackSessionEndReason, progress: Double, playedSeconds: Double)
 
     /// User actively skipped before completion.
-    case skipped(progress: Double, playedSeconds: Double)
+    case skipped(reason: PlaybackSessionEndReason, progress: Double, playedSeconds: Double, allowsQuickSkip: Bool)
 
     /// Playback was interrupted (device change, app quit, etc).
-    case interrupted(progress: Double, playedSeconds: Double)
+    case interrupted(reason: PlaybackSessionEndReason, progress: Double, playedSeconds: Double)
 
     /// Playback was very short (< 2 seconds), doesn't count as a play.
-    case tooShort
+    case tooShort(reason: PlaybackSessionEndReason, playedSeconds: Double)
 }
 
 /// Tracks a single playback session with detailed metrics.
@@ -46,15 +78,23 @@ final class PlaybackSessionTracker {
     /// Threshold for quick skip: < 8% played.
     static let quickSkipPercentage: Double = 0.08
 
+    /// Progress jumps above this are treated as seeks/position changes, not listening time.
+    private static let maxContinuousProgressDelta: Double = 2.0
+
+    /// Small negative jitter can happen around timing boundaries; larger backward movement is seek.
+    private static let backwardJumpTolerance: Double = 0.5
+
     // MARK: - Session State
 
     private let track: Track
     private let trackDuration: Double
-    private let startTime: Date
 
     private var lastProgressTime: Double = 0
     private var maxProgressReached: Double = 0
     private var hasReachedMinPlayThreshold: Bool = false
+    private var endReason: PlaybackSessionEndReason = .systemInterrupt
+    private var isExplicitlySeeking: Bool = false
+    private var suppressNextProgressDelta: Bool = false
 
     /// Total accumulated played seconds.
     internal private(set) var totalPlayedSeconds: Double = 0
@@ -65,8 +105,8 @@ final class PlaybackSessionTracker {
     /// Whether the track was played to completion.
     internal private(set) var isCompleted: Bool = false
 
-    /// Whether the session ended due to user action (vs auto/system).
-    private(set) var endedByUserAction: Bool = false
+    /// Whether seek or position-jump activity occurred during this session.
+    private(set) var hadSeekActivity: Bool = false
 
     /// Whether the track is currently playing.
     private(set) var isActive: Bool = true
@@ -79,7 +119,6 @@ final class PlaybackSessionTracker {
     init(track: Track) {
         self.track = track
         self.trackDuration = track.duration
-        self.startTime = Date()
         self.lastProgressTime = 0
     }
 
@@ -90,38 +129,72 @@ final class PlaybackSessionTracker {
         guard isActive else { return }
         guard trackDuration > 0 else { return }
 
-        let progressDelta = max(0, currentTime - lastProgressTime)
+        let boundedTime = max(0, min(currentTime, trackDuration))
+        defer {
+            lastProgressTime = boundedTime
+            maxProgressReached = max(maxProgressReached, boundedTime)
+
+            if !hasReachedMinPlayThreshold && totalPlayedSeconds >= Self.minPlayDuration {
+                hasReachedMinPlayThreshold = true
+            }
+        }
+
+        if isExplicitlySeeking || suppressNextProgressDelta {
+            hadSeekActivity = true
+            suppressNextProgressDelta = false
+            return
+        }
+
+        let progressDelta = boundedTime - lastProgressTime
+        let isBackwardJump = progressDelta < -Self.backwardJumpTolerance
+        let isLargeForwardJump = progressDelta > Self.maxContinuousProgressDelta
+
+        if isBackwardJump || isLargeForwardJump {
+            hadSeekActivity = true
+            return
+        }
+
         if progressDelta > 0 {
             totalPlayedSeconds += progressDelta
         }
-        lastProgressTime = currentTime
-        maxProgressReached = max(maxProgressReached, currentTime)
-
-        // Check if we've reached minimum play threshold.
-        if !hasReachedMinPlayThreshold && totalPlayedSeconds >= Self.minPlayDuration {
-            hasReachedMinPlayThreshold = true
-        }
     }
 
-    /// Mark the track as completed naturally (reached end).
-    func markCompleted() {
+    /// Mark the track as completed (natural end, repeat-one replay, stop-after-track).
+    func markCompleted(reason: PlaybackSessionEndReason) {
         guard isActive else { return }
         isActive = false
         isCompleted = true
-        endedByUserAction = false
+        endReason = reason
         maxProgressReached = trackDuration
     }
 
-    /// Mark the session as ended by user action (pressed next/previous button).
-    func markEndedByUserAction() {
+    /// Mark the session as ended by a specific non-completion reason.
+    func markEnded(reason: PlaybackSessionEndReason) {
         guard isActive else { return }
-        endedByUserAction = true
+        endReason = reason
     }
 
-    /// Mark the session as ended by system/app (not user action).
-    func markEndedBySystem() {
+    func beginSeek() {
         guard isActive else { return }
-        endedByUserAction = false
+        hadSeekActivity = true
+        isExplicitlySeeking = true
+    }
+
+    func recordSeek(to currentTime: Double) {
+        guard isActive else { return }
+        let boundedTime = max(0, min(currentTime, trackDuration))
+        hadSeekActivity = true
+        isExplicitlySeeking = false
+        suppressNextProgressDelta = true
+        lastProgressTime = boundedTime
+        maxProgressReached = max(maxProgressReached, boundedTime)
+    }
+
+    func endSeek() {
+        guard isActive else { return }
+        hadSeekActivity = true
+        isExplicitlySeeking = false
+        suppressNextProgressDelta = true
     }
 
     /// End the session and compute the outcome.
@@ -151,12 +224,12 @@ final class PlaybackSessionTracker {
 
         // If too short, don't count as a play at all.
         if totalPlayedSeconds < Self.minPlayDuration {
-            return .tooShort
+            return .tooShort(reason: endReason, playedSeconds: totalPlayedSeconds)
         }
 
         // If completed naturally, it's a complete play.
         if isCompleted {
-            return .completed
+            return .completed(reason: endReason, progress: progress, playedSeconds: totalPlayedSeconds)
         }
 
         // Check for complete play criteria (even if user skipped).
@@ -166,14 +239,18 @@ final class PlaybackSessionTracker {
 
         if metCompletePercentage || metCompleteRemaining {
             // User was very close to the end, treat as completed.
-            return .completed
+            return .completed(reason: endReason, progress: progress, playedSeconds: totalPlayedSeconds)
         }
 
-        // Determine if this was a user-initiated skip or system interrupt.
-        if endedByUserAction {
-            return .skipped(progress: progress, playedSeconds: totalPlayedSeconds)
+        if endReason.isUserInitiatedTrackChange {
+            return .skipped(
+                reason: endReason,
+                progress: progress,
+                playedSeconds: totalPlayedSeconds,
+                allowsQuickSkip: endReason.allowsQuickSkip && !hadSeekActivity
+            )
         } else {
-            return .interrupted(progress: progress, playedSeconds: totalPlayedSeconds)
+            return .interrupted(reason: endReason, progress: progress, playedSeconds: totalPlayedSeconds)
         }
     }
 
@@ -190,86 +267,5 @@ final class PlaybackSessionTracker {
         let isSmallProgress = progress < Self.quickSkipPercentage
 
         return isShortDuration || isSmallProgress
-    }
-
-    // MARK: - Statistics Update
-
-    /// Apply this session's outcome to track statistics.
-    /// Returns the updated stats for persistence.
-    func applyToStats(_ stats: inout TrackPreferenceStats) -> TrackPreferenceStats {
-        let outcome = finalize()
-
-        switch outcome {
-        case .tooShort:
-            // Don't update any stats for very short plays.
-            break
-
-        case .completed:
-            stats.playCount += 1
-            stats.completePlayCount += 1
-            stats.totalPlayedSeconds += totalPlayedSeconds
-            stats.lastPlayedAt = startTime
-            stats.lastCompletedAt = Date()
-
-        case .skipped(_, _):
-            stats.playCount += 1
-            stats.skipCount += 1
-            stats.totalPlayedSeconds += totalPlayedSeconds
-            stats.lastPlayedAt = startTime
-            stats.lastSkippedAt = Date()
-
-            // Check for quick skip.
-            let isQuick = isQuickSkip()
-            if isQuick {
-                stats.quickSkipCount += 1
-            }
-
-        case .interrupted(let progress, _):
-            // Interrupted plays count as plays but not skips.
-            stats.playCount += 1
-            stats.totalPlayedSeconds += totalPlayedSeconds
-            stats.lastPlayedAt = startTime
-
-            // If they got close to completion, count as complete.
-            let remainingSeconds = trackDuration - maxProgressReached
-            let metCompletePercentage = progress >= Self.completePlayPercentage
-            let metCompleteRemaining = remainingSeconds <= Self.completePlayRemainingSeconds
-
-            if metCompletePercentage || metCompleteRemaining {
-                stats.completePlayCount += 1
-                stats.lastCompletedAt = Date()
-            }
-        }
-
-        return stats
-    }
-}
-
-// MARK: - Non-interactive Skip Detection
-
-extension PlaybackSessionTracker {
-    /// Determine if a transition was caused by seeking/dragging.
-    /// When user drags progress bar, we get a seek followed by a position update.
-    /// This should NOT be counted as a skip.
-    static func isSeekingTransition(
-        from previousTime: Double,
-        to newTime: Double,
-        duration: Double
-    ) -> Bool {
-        // Large backward jumps are typically seeks.
-        // Small forward jumps could be seeks or normal playback.
-        let timeDiff = newTime - previousTime
-
-        // If time went backwards significantly, it's a seek.
-        if timeDiff < -1.0 {
-            return true
-        }
-
-        // If time jumped forward by more than 5 seconds (more than typical tick interval).
-        if timeDiff > 5.0 {
-            return true
-        }
-
-        return false
     }
 }

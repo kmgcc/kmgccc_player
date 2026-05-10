@@ -30,12 +30,11 @@ struct AboutSettingsView: View {
                         format: NSLocalizedString("settings.about.version", comment: ""),
                         Constants.appVersion)
                 )
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .settingsDescriptionStyle()
             }
 
             Text(NSLocalizedString("settings.about.quote", comment: ""))
-                .font(.body)
+                .font(.system(size: SettingsStyleTokens.rowFontSize, weight: .regular))
                 .fontWeight(.ultraLight)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
@@ -90,11 +89,10 @@ struct AboutSettingsView: View {
     private var complianceSection: some View {
         VStack(alignment: .leading, spacing: 20) {
             Text(NSLocalizedString("settings.about.compliance", comment: ""))
-                .font(.headline)
+                .settingsSectionTitleStyle()
 
             Text("settings.about.compliance_desc")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .settingsDescriptionStyle()
 
             VStack(alignment: .leading, spacing: 16) {
                 complianceItem(
@@ -136,40 +134,35 @@ struct AboutSettingsView: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 Text("settings.about.source_code")
-                    .font(.subheadline.bold())
+                    .settingsRowLabelStyle()
                 Text("settings.about.source_code_desc")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .settingsDescriptionStyle()
                 Link(
                     "https://github.com/kmgccc/kmgccc_player",
                     destination: URL(string: "https://github.com/kmgcc/kmgccc_player")!
                 )
-                .font(.caption)
+                .font(.system(size: SettingsStyleTokens.descriptionFontSize))
             }
             .padding(.top, 10)
 
             Text("settings.about.license")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .settingsDescriptionStyle()
 
             VStack(alignment: .leading, spacing: 6) {
                 Text("版权与素材声明")
-                    .font(.headline)
+                    .settingsSectionTitleStyle()
                 Text(
                     "除代码及另有说明的第三方内容外，本项目相关的美术素材，包括但不限于界面插画、UI 装饰、皮肤、贴图、角色设计、图形元素、图像资源及其他视觉素材，均为作者原创作品，其著作权及其他相关权利均由作者保留。"
                 )
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .settingsDescriptionStyle()
                 Text(
                     "前述美术素材不构成本项目开源代码的一部分，亦不适用本仓库所采用的 AGPL-3.0 或其他任何开源许可证。任何个人或组织，未经作者事先书面授权，不得以任何形式对该等素材进行复制、转载、分发、修改、改编、商用、二次创作、数据集收录、抓取、提取，或用于机器学习、生成式 AI 训练、微调、推理输入集构建及其他类似用途。"
                 )
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .settingsDescriptionStyle()
                 Text(
                     "本仓库当前不包含上述原创美术素材。任何需要相关素材的使用者，均应自行制作或另行取得作者的明确书面许可。\n\n保留一切权利。\nCopyright © kmg. All rights reserved."
                 )
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .settingsDescriptionStyle()
             }
             .padding(.top, 2)
 
@@ -219,9 +212,9 @@ struct AboutSettingsView: View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
                 Text(name)
-                    .font(.subheadline.bold())
+                    .settingsRowLabelStyle()
                 Link(url, destination: URL(string: url)!)
-                    .font(.caption)
+                    .font(.system(size: SettingsStyleTokens.descriptionFontSize))
             }
             Spacer()
             if let license = license {

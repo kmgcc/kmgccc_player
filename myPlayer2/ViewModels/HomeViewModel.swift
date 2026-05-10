@@ -289,9 +289,9 @@ final class HomeViewModel {
         let currentID = heroTrack?.id ?? selectedHeroTrackID
         let candidates = preferredPool.filter { $0.id != currentID }
         let fallbackCandidates = allTracks.filter { $0.id != currentID }
-        let pick = PlaybackCoordinator.smartRandomQueue(
+        let pick = PlaybackCoordinator.smartRandomPick(
             from: candidates.isEmpty ? fallbackCandidates : candidates
-        ).first ?? fallbackCandidates.first ?? allTracks.first
+        ) ?? fallbackCandidates.first ?? allTracks.first
 
         selectedHeroTrackID = pick?.id
         selectedHeroGeneratedAt = pick == nil ? nil : Date()
@@ -617,7 +617,7 @@ final class HomeViewModel {
 
         let tracksWithArt = allTracks.filter { $0.artworkFileName != nil }
         let preferredPool = tracksWithArt.isEmpty ? allTracks : tracksWithArt
-        let pick = PlaybackCoordinator.smartRandomQueue(from: preferredPool).first
+        let pick = PlaybackCoordinator.smartRandomPick(from: preferredPool)
         selectedHeroTrackID = pick?.id
         selectedHeroGeneratedAt = pick == nil ? nil : now
         return pick

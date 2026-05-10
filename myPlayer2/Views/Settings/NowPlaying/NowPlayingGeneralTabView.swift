@@ -23,7 +23,7 @@ struct NowPlayingGeneralTabView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: presentationStyle.sectionSpacing) {
-            SettingsSection("视觉效果") {
+            SettingsSection {
                 VStack(alignment: .leading, spacing: presentationStyle.rowSpacing) {
                     SettingsSwitchRow(
                         title: "启用艺术背景",

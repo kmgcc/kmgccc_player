@@ -22,7 +22,7 @@ struct AppearanceSettingsView: View {
         VStack(alignment: .leading, spacing: 20) {
             SettingsHeaderLabel("外观", systemImage: "paintpalette")
 
-            SettingsSection("通用") {
+            SettingsSection {
                 VStack(alignment: .leading, spacing: 14) {
                     SettingsSwitchRow(
                         title: "全局取色",

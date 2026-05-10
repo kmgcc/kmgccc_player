@@ -28,7 +28,7 @@ struct DataManagementSettingsView: View {
             LibraryLocationSettingsSection()
 
             // Import settings
-            SettingsSection("导入") {
+            SettingsSection {
                 VStack(alignment: .leading, spacing: 12) {
                     SettingsSwitchRow(
                         title: "导入时延后补全歌词与封面",
@@ -42,7 +42,7 @@ struct DataManagementSettingsView: View {
             }
 
             // Cache management (all cache-related actions grouped)
-            SettingsSection("缓存") {
+            SettingsSection {
                 VStack(alignment: .leading, spacing: 16) {
                     // Index cache
                     VStack(alignment: .leading, spacing: 8) {
@@ -91,7 +91,7 @@ struct DataManagementSettingsView: View {
             }
 
             // Reset app settings
-            SettingsSection("初始化") {
+            SettingsSection {
                 VStack(alignment: .leading, spacing: 12) {
                     Button("初始化应用设置", role: .destructive) {
                         showResetDataAlert = true
@@ -105,7 +105,7 @@ struct DataManagementSettingsView: View {
             }
 
             // Music preference reset
-            SettingsSection("播放数据") {
+            SettingsSection {
                 VStack(alignment: .leading, spacing: 12) {
                     Button("重置音乐播放数据", role: .destructive) {
                         MusicPreferenceResetDialogPresenter.present(

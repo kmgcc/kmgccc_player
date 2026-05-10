@@ -8,7 +8,7 @@
 import SwiftUI
 
 enum SettingsStyleTokens {
-    static let sectionTitleFontSize: CGFloat = 15
+    static let sectionTitleFontSize: CGFloat = 14
     static let rowFontSize: CGFloat = 13
     static let rowValueFontSize: CGFloat = 13
     static let descriptionFontSize: CGFloat = 12
@@ -100,7 +100,7 @@ private struct SettingsSectionTitleStyleModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .font(presentationStyle.sectionTitleFont)
-            .foregroundStyle(presentationStyle.secondaryTextColor)
+            .foregroundStyle(presentationStyle.primaryTextColor.opacity(0.82))
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

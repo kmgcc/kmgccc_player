@@ -38,7 +38,7 @@ nonisolated struct TrackPreferenceStats: Codable, Equatable, Sendable {
     /// Total seconds actually listened across all sessions.
     var totalPlayedSeconds: Double = 0
 
-    /// Timestamp of last playback start.
+    /// Timestamp of the last effective playback settlement (valid play, complete, skip, or interrupt).
     var lastPlayedAt: Date?
 
     /// Timestamp of last completed playback.
@@ -54,12 +54,12 @@ nonisolated struct TrackPreferenceStats: Codable, Equatable, Sendable {
 
     // MARK: - Cached Scores
 
-    /// Cached preference score (computed from stats).
-    /// Range: typically -100 to +100, but unbounded.
+    /// Cached V2 finalPreference computed from persisted stats only.
+    /// Runtime shuffle penalties are not included in this value.
     var preferenceScoreCache: Double = 0
 
-    /// Cached effective weight for random selection.
-    /// Range: 0.25 to 2.5 (enforced limits to prevent extreme values).
+    /// Cached V2 base weight for random selection.
+    /// Runtime history / artist / album penalties are applied by ShuffleSession at sample time.
     var effectiveWeightCache: Double = 1.0
 
     // MARK: - Versioning

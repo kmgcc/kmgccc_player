@@ -103,6 +103,7 @@ final class Track {
     /// DEPRECATED: All playback stats now live in preferenceStats via PreferenceStatsService.
     /// This property is kept for backward compatibility during migration only.
     /// Use `PreferenceStatsService.shared.getStats(for: id).playCount` instead.
+    @available(*, deprecated, message: "Use PreferenceStatsService.shared.getStats(for: id).playCount")
     @MainActor
     var playCount: Int {
         get {

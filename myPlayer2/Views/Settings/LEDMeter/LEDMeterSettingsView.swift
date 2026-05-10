@@ -166,7 +166,7 @@ struct LEDMeterSettingsView: View {
     }
 
     private var tuningSection: some View {
-        SettingsSection("调校") {
+        SettingsSection {
             VStack(alignment: .leading, spacing: 16) {
                 tuningSlidersContent
             }

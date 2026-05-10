@@ -106,6 +106,9 @@ final class AppSessionHost: ObservableObject {
             repository: repository,
             libraryService: libraryService
         )
+        PreferenceStatsLifecycleHandler.shared.configure { [weak libraryVM] trackID in
+            libraryVM?.allTracks.first { $0.id == trackID }
+        }
         let appleMusicAdapter = AppleMusicPlaybackAdapter(libraryVM: libraryVM)
         let systemNowPlayingProvider = SystemNowPlayingProvider(libraryVM: libraryVM)
         let playbackCoordinator = PlaybackCoordinator(
@@ -175,6 +178,11 @@ final class AppSessionHost: ObservableObject {
         AppDelegate.shared?.configureDockPlayback(playbackCoordinator: playbackCoordinator)
         AppDelegate.applicationWillTerminateHandler = { [weak self] in
             self?.savePlaybackMemory()
+            if let libraryVM = self?.libraryVM {
+                PreferenceStatsService.shared.saveAllPendingNow { trackID in
+                    libraryVM.allTracks.first { $0.id == trackID }
+                }
+            }
             Task {
                 await QQMusicHelperProcess.shared.terminate()
             }

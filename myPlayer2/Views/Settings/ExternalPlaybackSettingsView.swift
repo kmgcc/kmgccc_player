@@ -35,11 +35,11 @@ struct ExternalPlaybackSettingsView: View {
         VStack(alignment: .leading, spacing: 20) {
             SettingsHeaderLabel("外部播放", systemImage: "music.note.tv")
 
-            SettingsSection("播放入口") {
+            SettingsSection {
                 SettingsSwitchRow(title: "从外部播放", isOn: $showPlaybackSourceSwitcher)
             }
 
-            SettingsSection("其他播放模式") {
+            SettingsSection {
                 VStack(alignment: .leading, spacing: 12) {
                     SettingsSwitchRow(title: "启用\"其他\"播放模式", isOn: $enableSystemNowPlaying)
 
@@ -48,7 +48,7 @@ struct ExternalPlaybackSettingsView: View {
                 }
             }
 
-            SettingsSection("缓存") {
+            SettingsSection {
                 VStack(alignment: .leading, spacing: 12) {
                     Button(role: .destructive) {
                         showClearCacheAlert = true
