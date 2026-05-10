@@ -113,7 +113,7 @@ struct AboutSettingsView: View {
                 complianceItem(
                     name: "QQMusicApi",
                     url: "https://github.com/L-1124/QQMusicApi",
-                    license: "GPL-3.0-or-later"
+                    license: "GPL-3.0"
                 )
                 complianceItem(
                     name: "sacad",
