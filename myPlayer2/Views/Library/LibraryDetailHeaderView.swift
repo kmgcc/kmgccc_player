@@ -101,12 +101,12 @@ struct LibraryDetailHeaderView: View {
                         descriptionReadView
                     }
                 }
-                
+
                 Spacer()
-                
+
                 headerButtonsView
             }
-            .frame(maxWidth: .infinity, minHeight: 220, maxHeight: 220, alignment: .leading)
+            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 220, maxHeight: 220, alignment: .leading)
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 20)

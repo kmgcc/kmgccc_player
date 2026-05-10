@@ -44,12 +44,8 @@ struct FullscreenSkinTabView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: presentationStyle.sectionSpacing) {
-            GroupBox {
+            SettingsSection("选择外观") {
                 VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
-                    Text("选择外观")
-                        .font(presentationStyle.sectionTitleFont)
-                        .foregroundStyle(presentationStyle.secondaryTextColor)
-
                     SkinSelectorRow(
                         skins: SkinRegistry.fullscreenOptions,
                         selectedSkinID: Binding(
@@ -66,29 +62,19 @@ struct FullscreenSkinTabView: View {
                         showsScrollButtons: true
                     )
                 }
-                .padding(presentationStyle.groupPadding)
             }
 
             if let selected = SkinRegistry.fullscreenOptions.first(where: { $0.id == settings.fullscreen.skinID }),
                let optionsView = SkinRegistry.fullscreenSkin(for: settings.fullscreen.skinID).fullscreenSettingsView {
-                GroupBox {
+                SettingsSection("\(selected.name) 选项") {
                     VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
-                        Text("\(selected.name) 选项")
-                            .font(presentationStyle.sectionTitleFont)
-                            .foregroundStyle(presentationStyle.secondaryTextColor)
-
                         optionsView
                     }
-                    .padding(presentationStyle.groupPadding)
                 }
             }
 
-            GroupBox {
+            SettingsSection("Mini Player") {
                 VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
-                    Text("Mini Player")
-                        .font(presentationStyle.sectionTitleFont)
-                        .foregroundStyle(presentationStyle.secondaryTextColor)
-
                     SettingsSwitchRow(
                         title: "频谱动画",
                         isOn: Binding(
@@ -103,15 +89,10 @@ struct FullscreenSkinTabView: View {
 
                     miniPlayerMaterialPicker
                 }
-                .padding(presentationStyle.groupPadding)
             }
 
-            GroupBox {
+            SettingsSection("视觉效果") {
                 VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
-                    Text("视觉效果")
-                        .font(presentationStyle.sectionTitleFont)
-                        .foregroundStyle(presentationStyle.secondaryTextColor)
-
                     SettingsSwitchRow(
                         title: "启用艺术背景",
                         isOn: $fullscreenArtBackgroundEnabled,
@@ -126,7 +107,6 @@ struct FullscreenSkinTabView: View {
 
                     dimmingIntensitySection
                 }
-                .padding(presentationStyle.groupPadding)
             }
         }
         .onAppear {
@@ -248,8 +228,7 @@ struct FullscreenSkinTabView: View {
             )
             .frame(height: presentationStyle.tabHeight)
             Text("调整全屏模式下歌曲封面的显示大小")
-                .font(presentationStyle.captionFont)
-                .foregroundStyle(presentationStyle.secondaryTextColor)
+                .settingsDescriptionStyle()
         }
     }
 
@@ -271,8 +250,7 @@ struct FullscreenSkinTabView: View {
             )
             .frame(height: presentationStyle.tabHeight)
             Text("调整全屏模式下背景压暗程度，提高可读性")
-                .font(presentationStyle.captionFont)
-                .foregroundStyle(presentationStyle.secondaryTextColor)
+                .settingsDescriptionStyle()
         }
     }
 

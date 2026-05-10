@@ -77,6 +77,7 @@ struct SettingsView: View {
             .frame(maxWidth: 800, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .groupBoxStyle(SettingsWindowGroupBoxStyle())
     }
 
     private var settingsCloseButton: some View {
@@ -100,6 +101,46 @@ struct SettingsView: View {
         .buttonStyle(.plain)
         .help("关闭")
         .accessibilityLabel(Text("关闭"))
+    }
+}
+
+// MARK: - Settings Window GroupBox Style
+
+/// Ensures every GroupBox in the settings detail pane fills the available column width.
+/// Fullscreen/NowPlaying containers override this with their own glass or material style.
+private struct SettingsWindowGroupBoxStyle: GroupBoxStyle {
+    @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
+
+    func makeBody(configuration: Configuration) -> some View {
+        VStack(alignment: .leading, spacing: presentationStyle.sectionLabelSpacing) {
+            configuration.label
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            configuration.content
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(
+                        cornerRadius: presentationStyle.sectionCornerRadius,
+                        style: .continuous
+                    )
+                    .fill(.regularMaterial)
+                )
+                .overlay(
+                    RoundedRectangle(
+                        cornerRadius: presentationStyle.sectionCornerRadius,
+                        style: .continuous
+                    )
+                    .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.5)
+                    .allowsHitTesting(false)
+                )
+                .clipShape(
+                    RoundedRectangle(
+                        cornerRadius: presentationStyle.sectionCornerRadius,
+                        style: .continuous
+                    )
+                )
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

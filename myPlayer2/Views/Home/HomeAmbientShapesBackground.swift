@@ -95,6 +95,7 @@ struct HomeAmbientShapesBackground: View {
                 image: image,
                 color: color(for: spec),
                 side: side,
+                sideDirection: spec.side,
                 basePosition: position,
                 baseRotationDegrees: spec.baseRotationDegrees,
                 parallaxX: spec.parallaxX,
@@ -428,12 +429,40 @@ private struct HomeAmbientShapePresentation {
     let image: CGImage
     let color: NSColor
     let side: CGFloat
+    let sideDirection: HomeAmbientShapeSpec.Side
     let basePosition: CGPoint
     let baseRotationDegrees: Double
     let parallaxX: CGFloat
     let parallax: CGFloat
     let rotationPerPoint: CGFloat
     let rotationClampDegrees: CGFloat
+
+    var ambientPhase: CGFloat {
+        CGFloat((id * 37) % 360) * .pi / 180
+    }
+
+    var ambientSpeed: CGFloat {
+        0.060 + CGFloat((id * 11) % 7) * 0.006
+    }
+
+    var ambientAmplitudeX: CGFloat {
+        switch sideDirection {
+        case .left: return 4 + CGFloat((id * 5) % 6)
+        case .right: return -(4 + CGFloat((id * 5) % 6))
+        }
+    }
+
+    var ambientAmplitudeY: CGFloat {
+        5 + CGFloat((id * 7) % 8)
+    }
+
+    var ambientRotationDegrees: CGFloat {
+        0.8 + CGFloat((id * 13) % 6) * 0.22
+    }
+
+    var ambientScaleAmount: CGFloat {
+        0.006 + CGFloat((id * 17) % 5) * 0.0015
+    }
 }
 
 private struct HomeAmbientShapeLayerHost: NSViewRepresentable {
@@ -463,6 +492,14 @@ private final class HomeAmbientShapeLayerView: NSView {
     }
 
     private var layersByID: [Int: ShapeLayerPair] = [:]
+    private var presentationsByID: [Int: HomeAmbientShapePresentation] = [:]
+    private var presentationOrder: [Int] = []
+    private var scrollOffsetY: CGFloat = 0
+    private var virtualHeight: CGFloat = 0
+    private var reduceMotion = false
+    private var animationStartTime = CACurrentMediaTime()
+    private var animationSubscription: AnyCancellable?
+    private var holdsClockLease = false
 
     override var isFlipped: Bool { true }
 
@@ -478,6 +515,16 @@ private final class HomeAmbientShapeLayerView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil {
+            stopAnimationClock()
+        } else {
+            startAnimationClockIfNeeded()
+            applyLayerTransforms()
+        }
+    }
+
     func update(
         presentations: [HomeAmbientShapePresentation],
         scrollOffsetY: CGFloat,
@@ -486,6 +533,11 @@ private final class HomeAmbientShapeLayerView: NSView {
     ) {
         guard let rootLayer = layer else { return }
         rootLayer.masksToBounds = true
+        self.scrollOffsetY = scrollOffsetY
+        self.virtualHeight = virtualHeight
+        self.reduceMotion = reduceMotion
+        presentationsByID = Dictionary(uniqueKeysWithValues: presentations.map { ($0.id, $0) })
+        presentationOrder = presentations.map(\.id)
 
         let activeIDs = Set(presentations.map(\.id))
         for (id, pair) in layersByID where !activeIDs.contains(id) {
@@ -530,6 +582,8 @@ private final class HomeAmbientShapeLayerView: NSView {
         }
 
         CATransaction.commit()
+        applyLayerTransforms()
+        startAnimationClockIfNeeded()
     }
 
     private func layerPair(
@@ -555,6 +609,85 @@ private final class HomeAmbientShapeLayerView: NSView {
         let pair = ShapeLayerPair(container: container, mask: mask)
         layersByID[presentation.id] = pair
         return pair
+    }
+
+    private func startAnimationClockIfNeeded() {
+        guard window != nil, !presentationOrder.isEmpty, !reduceMotion else {
+            stopAnimationClock()
+            return
+        }
+        guard animationSubscription == nil else { return }
+        animationSubscription = BackgroundAnimationClock.shared.dotHighRatePublisher
+            .sink { [weak self] in
+                self?.applyLayerTransforms()
+            }
+        if !holdsClockLease {
+            BackgroundAnimationClock.shared.acquire()
+            holdsClockLease = true
+        }
+    }
+
+    private func stopAnimationClock() {
+        animationSubscription?.cancel()
+        animationSubscription = nil
+        if holdsClockLease {
+            BackgroundAnimationClock.shared.release()
+            holdsClockLease = false
+        }
+    }
+
+    private func applyLayerTransforms() {
+        guard !presentationOrder.isEmpty else { return }
+
+        let elapsed = CGFloat(CACurrentMediaTime() - animationStartTime)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+
+        for id in presentationOrder {
+            guard
+                let presentation = presentationsByID[id],
+                let pair = layersByID[id]
+            else { continue }
+
+            let transform = scrollTransform(
+                for: presentation,
+                scrollOffsetY: scrollOffsetY,
+                virtualHeight: virtualHeight,
+                reduceMotion: reduceMotion
+            )
+            let ambient = ambientTransform(for: presentation, elapsed: elapsed, reduceMotion: reduceMotion)
+
+            pair.container.position = CGPoint(
+                x: presentation.basePosition.x + transform.x + ambient.x,
+                y: presentation.basePosition.y + transform.y + ambient.y
+            )
+            var layerTransform = CATransform3DMakeRotation(
+                CGFloat((presentation.baseRotationDegrees + transform.rotationDegrees) * .pi / 180)
+                    + ambient.rotationRadians,
+                0,
+                0,
+                1
+            )
+            layerTransform = CATransform3DScale(layerTransform, ambient.scale, ambient.scale, 1)
+            pair.container.transform = layerTransform
+        }
+
+        CATransaction.commit()
+    }
+
+    private func ambientTransform(
+        for presentation: HomeAmbientShapePresentation,
+        elapsed: CGFloat,
+        reduceMotion: Bool
+    ) -> (x: CGFloat, y: CGFloat, rotationRadians: CGFloat, scale: CGFloat) {
+        guard !reduceMotion else { return (0, 0, 0, 1) }
+        let phase = presentation.ambientPhase + elapsed * presentation.ambientSpeed
+        return (
+            x: sin(phase) * presentation.ambientAmplitudeX,
+            y: cos(phase * 0.82) * presentation.ambientAmplitudeY,
+            rotationRadians: sin(phase * 0.64) * presentation.ambientRotationDegrees * .pi / 180,
+            scale: 1 + sin(phase * 0.48) * presentation.ambientScaleAmount
+        )
     }
 
     private func scrollTransform(

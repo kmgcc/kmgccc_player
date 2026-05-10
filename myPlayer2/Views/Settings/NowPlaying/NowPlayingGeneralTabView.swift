@@ -23,7 +23,7 @@ struct NowPlayingGeneralTabView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: presentationStyle.sectionSpacing) {
-            GroupBox {
+            SettingsSection("视觉效果") {
                 VStack(alignment: .leading, spacing: presentationStyle.rowSpacing) {
                     SettingsSwitchRow(
                         title: "启用艺术背景",
@@ -32,38 +32,27 @@ struct NowPlayingGeneralTabView: View {
                         detailFont: presentationStyle.captionFont
                     )
                 }
-                .padding(presentationStyle.groupPadding)
             }
 
-            GroupBox {
+            SettingsSection("settings.now_playing.select_skin") {
                 VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
-                    Text("settings.now_playing.select_skin")
-                        .font(presentationStyle.sectionTitleFont)
-                        .foregroundStyle(.secondary)
-
                     SkinSelectorRow(
                         skins: SkinRegistry.nowPlayingOptions,
                         selectedSkinID: $nowPlayingSkin
                     )
                 }
-                .padding(presentationStyle.groupPadding)
             }
 
             if let selected = SkinRegistry.options.first(where: { $0.id == nowPlayingSkin }),
                let optionsView = SkinRegistry.skin(for: nowPlayingSkin).settingsView {
-                GroupBox {
+                SettingsSection(
+                    String(
+                        format: NSLocalizedString(
+                            "settings.now_playing.skin_options", comment: ""), selected.name)
+                ) {
                     VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
-                        Text(
-                            String(
-                                format: NSLocalizedString(
-                                    "settings.now_playing.skin_options", comment: ""), selected.name)
-                        )
-                        .font(presentationStyle.sectionTitleFont)
-                        .foregroundStyle(.secondary)
-
                         optionsView
                     }
-                    .padding(presentationStyle.groupPadding)
                 }
             }
         }

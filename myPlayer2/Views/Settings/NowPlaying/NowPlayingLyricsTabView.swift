@@ -58,7 +58,7 @@ struct NowPlayingLyricsTabView: View {
     }
 
     private var renderingSection: some View {
-        GroupBox {
+        SettingsSection("外观") {
             VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
                 SettingsSwitchRow(
                     title: "高分辨率",
@@ -76,11 +76,6 @@ struct NowPlayingLyricsTabView: View {
                     detailFont: presentationStyle.captionFont
                 )
             }
-            .padding(presentationStyle.groupPadding)
-        } label: {
-            Text("外观")
-                .font(presentationStyle.sectionTitleFont)
-                .foregroundStyle(.secondary)
         }
         .onAppear {
             amllHighResolutionLyricsEnabled = settings.amllHighResolutionLyricsEnabled
@@ -91,7 +86,7 @@ struct NowPlayingLyricsTabView: View {
     }
 
     private var fontsSection: some View {
-        GroupBox {
+        SettingsSection("settings.lyrics.fonts") {
             VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
                 HStack {
                     Text("settings.lyrics.font_size")
@@ -226,11 +221,6 @@ struct NowPlayingLyricsTabView: View {
                     .frame(width: presentationStyle.pickerWidth)
                 }
             }
-            .padding(presentationStyle.groupPadding)
-        } label: {
-            Text("settings.lyrics.fonts")
-                .font(presentationStyle.sectionTitleFont)
-                .foregroundStyle(.secondary)
         }
         .onAppear {
             syncStateFromSettings()
@@ -247,7 +237,7 @@ struct NowPlayingLyricsTabView: View {
     }
 
     private var previewSection: some View {
-        GroupBox {
+        SettingsSection("settings.lyrics.preview") {
             VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
                 LyricsPreviewCard(
                     title: "浅色模式预览",
@@ -272,11 +262,6 @@ struct NowPlayingLyricsTabView: View {
                     translationFontSize: lyricsTranslationFontSize
                 )
             }
-            .padding(presentationStyle.groupPadding)
-        } label: {
-            Text("settings.lyrics.preview")
-                .font(presentationStyle.sectionTitleFont)
-                .foregroundStyle(.secondary)
         }
     }
 

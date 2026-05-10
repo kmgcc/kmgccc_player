@@ -35,24 +35,20 @@ struct ExternalPlaybackSettingsView: View {
         VStack(alignment: .leading, spacing: 20) {
             SettingsHeaderLabel("外部播放", systemImage: "music.note.tv")
 
-            GroupBox {
+            SettingsSection("播放入口") {
                 SettingsSwitchRow(title: "从外部播放", isOn: $showPlaybackSourceSwitcher)
-                    .padding(12)
             }
 
-            GroupBox {
+            SettingsSection("其他播放模式") {
                 VStack(alignment: .leading, spacing: 12) {
                     SettingsSwitchRow(title: "启用\"其他\"播放模式", isOn: $enableSystemNowPlaying)
 
                     Text("\"其他\" 模式通过 macOS MediaRemote 读取系统当前播放的第三方 App 的元数据，可能出现部分控制不可用、不稳定等问题。如果您只使用本地播放或 Apple Music，可以关闭此选项以保持界面简洁")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .fixedSize(horizontal: false, vertical: true)
+                        .settingsDescriptionStyle()
                 }
-                .padding(12)
             }
 
-            GroupBox {
+            SettingsSection("缓存") {
                 VStack(alignment: .leading, spacing: 12) {
                     Button(role: .destructive) {
                         showClearCacheAlert = true
@@ -69,10 +65,8 @@ struct ExternalPlaybackSettingsView: View {
                     .disabled(isClearingCaches)
 
                     Text("遇到问题时，可以尝试清除来自外部播放过程中产生的歌曲元数据匹配结果缓存、手动覆盖元数据。此操作不影响本地播放歌曲的数据")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .settingsDescriptionStyle()
                 }
-                .padding(12)
             }
 
         }
