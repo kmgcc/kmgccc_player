@@ -9,11 +9,18 @@
 import AppKit
 import SwiftUI
 
-struct HomeHeroView: View {
-    let track: Track
-    var containerWidth: CGFloat = 700
-    var mode: HomeLayoutMode = .wide
+struct HomeHeroView: View, Equatable {
+    let model: HomeHeroDisplayModel
     var onSwitchTrack: (() -> Void)?
+
+    // Derived from model
+    private var track: Track { model.track }
+    private var containerWidth: CGFloat { CGFloat(model.containerWidthBucket) * 16 }
+    private var mode: HomeLayoutMode { model.mode }
+
+    static func == (lhs: HomeHeroView, rhs: HomeHeroView) -> Bool {
+        lhs.model == rhs.model
+    }
 
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
@@ -196,6 +203,7 @@ struct HomeHeroView: View {
     }
 
     var body: some View {
+        let _ = HomePerf.bodyCounters.bump("Hero")
         ZStack(alignment: .topLeading) {
             backdropView
                 .allowsHitTesting(false)
@@ -558,11 +566,14 @@ struct HomeHeroView: View {
             checksum: checksum,
             targetPixelSize: CGSize(width: 480, height: 480)
         )
-        async let imageTask = ArtworkLoader.loadImage(
-            artworkData: data,
+        HomePerf.imageMetrics.recordStart()
+        async let imageTask = HomeImageCoordinator.shared.image(for: HomeImageCoordinator.Request(
             cacheKey: key,
-            targetPixelSize: CGSize(width: 480, height: 480)
-        )
+            targetPixelSize: CGSize(width: 480, height: 480),
+            artworkData: data,
+            priority: .hero
+        ))
+        HomePerf.imageMetrics.recordStart()
         async let backdropTask: CGImage? = renderHeroBackdrop(
             artworkData: data,
             checksum: checksum
@@ -573,7 +584,9 @@ struct HomeHeroView: View {
             ArtworkColorExtractor.analyze(from: data)
         }.value
         let image = await imageTask
+        HomePerf.imageMetrics.recordEnd()
         let backdrop = await backdropTask
+        HomePerf.imageMetrics.recordEnd()
         let analysis = await analysisTask
         // Guard against a stale completion from a previous track — only apply
         // the result if this hero card's artwork hasn't changed underneath us.

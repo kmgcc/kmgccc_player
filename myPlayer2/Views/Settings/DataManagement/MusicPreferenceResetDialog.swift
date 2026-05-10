@@ -251,28 +251,17 @@ private struct MusicPreferenceResetDialogView: View {
     let onCloseResult: () -> Void
 
     @EnvironmentObject private var themeStore: ThemeStore
-    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        VStack(spacing: 0) {
-            headerView
-                .padding(.horizontal, 20)
-                .padding(.top, 24)
-                .padding(.bottom, 16)
-
-            Divider()
-                .opacity(0.25)
-
+        SettingsTaskDialog(
+            title: headerTitle,
+            subtitle: headerSubtitle,
+            systemImage: headerIconName,
+            iconColor: headerIconColor
+        ) {
             contentView
-                .padding(20)
-
-            Divider()
-                .opacity(0.25)
-
+        } footer: {
             footerView
-                .padding(.horizontal, 20)
-                .padding(.top, 12)
-                .padding(.bottom, 40)
         }
     }
 
@@ -328,37 +317,6 @@ private struct MusicPreferenceResetDialogView: View {
         }
     }
 
-    private var headerView: some View {
-        HStack(spacing: 16) {
-            ZStack {
-                Circle()
-                    .fill(headerIconColor.opacity(colorScheme == .dark ? 0.18 : 0.12))
-                    .frame(width: 54, height: 54)
-                Image(systemName: headerIconName)
-                    .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(headerIconColor)
-            }
-            .liquidGlassCircle(
-                colorScheme: colorScheme,
-                accentColor: headerIconColor,
-                prominence: .prominent,
-                isFloating: true
-            )
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(headerTitle)
-                    .font(.system(size: 19, weight: .semibold))
-                    .foregroundStyle(.primary)
-                Text(headerSubtitle)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Spacer()
-        }
-    }
-
     @ViewBuilder
     private var contentView: some View {
         switch viewModel.stage {
@@ -382,13 +340,13 @@ private struct MusicPreferenceResetDialogView: View {
                 .foregroundStyle(.primary)
 
             VStack(alignment: .leading, spacing: 12) {
-                ResetOptionToggle(
+                SettingsTaskOptionToggle(
                     title: "重置自动记录的播放统计与歌曲偏好",
                     detail: "包括播放次数、播放时长、完整播放计数、跳过计数、快速跳过计数、偏好分数与权重缓存",
                     isOn: $viewModel.options.resetPlaybackStatsAndPreference
                 )
 
-                ResetOptionToggle(
+                SettingsTaskOptionToggle(
                     title: "清理旧版残留与废弃缓存",
                     detail: "仅清理统计相关的旧顶层残留与废弃缓存，不影响歌曲正常统计数据。",
                     isOn: $viewModel.options.cleanupLegacyResiduals
@@ -409,7 +367,7 @@ private struct MusicPreferenceResetDialogView: View {
                 .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            summaryCard(
+            SettingsTaskSummaryCard(
                 title: "本次将处理",
                 items: viewModel.selectedItemTitles
             )
@@ -428,7 +386,7 @@ private struct MusicPreferenceResetDialogView: View {
                 .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            summaryCard(
+            SettingsTaskSummaryCard(
                 title: "确认重置项目",
                 items: viewModel.selectedItemTitles
             )
@@ -442,12 +400,13 @@ private struct MusicPreferenceResetDialogView: View {
 
     private var runningContent: some View {
         VStack(alignment: .leading, spacing: 18) {
-            summaryCard(
+            SettingsTaskSummaryCard(
                 title: "正在处理整个音乐资料库",
                 items: viewModel.selectedItemTitles
             )
 
-            VStack(alignment: .leading, spacing: 12) {
+            SettingsTaskPanel(accentColor: themeStore.accentColor) {
+                VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     Text("已处理 \(viewModel.progress.processedCount) / \(viewModel.progress.totalCount)")
                         .font(.system(size: 14, weight: .medium))
@@ -472,14 +431,8 @@ private struct MusicPreferenceResetDialogView: View {
                 Text(viewModel.progress.detail)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
+                }
             }
-            .padding(16)
-            .liquidGlassRect(
-                cornerRadius: 18,
-                colorScheme: colorScheme,
-                accentColor: themeStore.accentColor,
-                prominence: .standard
-            )
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
@@ -487,7 +440,8 @@ private struct MusicPreferenceResetDialogView: View {
     private var resultContent: some View {
         VStack(alignment: .leading, spacing: 18) {
             if let result = viewModel.result {
-                VStack(alignment: .leading, spacing: 12) {
+                SettingsTaskPanel(accentColor: result.failureCount == 0 ? .green : .orange) {
+                    VStack(alignment: .leading, spacing: 12) {
                     Text("已处理 \(result.successCount) 首，失败 \(result.failureCount) 首。")
                         .font(.system(size: 15, weight: .medium))
                         .foregroundStyle(.primary)
@@ -496,14 +450,8 @@ private struct MusicPreferenceResetDialogView: View {
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
-                .padding(16)
-                .liquidGlassRect(
-                    cornerRadius: 18,
-                    colorScheme: colorScheme,
-                    accentColor: result.failureCount == 0 ? .green : .orange,
-                    prominence: .standard
-                )
 
                 if !result.failures.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
@@ -541,8 +489,8 @@ private struct MusicPreferenceResetDialogView: View {
 
             switch viewModel.stage {
             case .selection:
-                dialogButton("取消", kind: .secondary, action: onCancel)
-                dialogButton(
+                SettingsTaskDialogButton("取消", kind: .secondary, action: onCancel)
+                SettingsTaskDialogButton(
                     "下一步",
                     kind: .primary,
                     disabled: !viewModel.canAdvanceFromSelection,
@@ -550,138 +498,19 @@ private struct MusicPreferenceResetDialogView: View {
                 )
 
             case .review:
-                dialogButton("返回修改", kind: .secondary, action: viewModel.returnToSelection)
-                dialogButton("继续", kind: .primary, action: viewModel.goToFinalConfirmation)
+                SettingsTaskDialogButton("返回修改", kind: .secondary, action: viewModel.returnToSelection)
+                SettingsTaskDialogButton("继续", kind: .primary, action: viewModel.goToFinalConfirmation)
 
             case .finalConfirmation:
-                dialogButton("取消", kind: .secondary, action: onCancel)
-                dialogButton("确认重置", kind: .destructive, action: viewModel.startReset)
+                SettingsTaskDialogButton("取消", kind: .secondary, action: onCancel)
+                SettingsTaskDialogButton("确认重置", kind: .destructive, action: viewModel.startReset)
 
             case .running:
-                dialogButton("处理中", kind: .secondary, disabled: true, action: {})
+                SettingsTaskDialogButton("处理中", kind: .secondary, disabled: true, action: {})
 
             case .result:
-                dialogButton("关闭", kind: .primary, action: onCloseResult)
+                SettingsTaskDialogButton("关闭", kind: .primary, action: onCloseResult)
             }
-        }
-    }
-
-    private func summaryCard(title: String, items: [String]) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(title)
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(.primary)
-
-            ForEach(items, id: \.self) { item in
-                HStack(spacing: 10) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(themeStore.accentColor)
-                    Text(item)
-                        .font(.system(size: 13))
-                        .foregroundStyle(.primary)
-                }
-            }
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .liquidGlassRect(
-            cornerRadius: 18,
-            colorScheme: colorScheme,
-            accentColor: themeStore.accentColor,
-            prominence: .standard
-        )
-    }
-
-    @ViewBuilder
-    private func dialogButton(
-        _ title: String,
-        kind: ResetDialogButtonKind,
-        disabled: Bool = false,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(.system(size: 13, weight: kind == .primary || kind == .destructive ? .semibold : .medium))
-                .foregroundStyle(kind.foregroundColor)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-        }
-        .buttonStyle(.plain)
-        .disabled(disabled)
-        .opacity(disabled ? 0.5 : 1)
-        .background(kind.backgroundColor)
-        .overlay(
-            Capsule()
-                .strokeBorder(GlassStyleTokens.glassBorderColor, lineWidth: GlassStyleTokens.hairlineWidth)
-        )
-        .glassEffect(.clear, in: Capsule())
-        .clipShape(Capsule())
-        .if(kind == .primary || kind == .destructive) { view in
-            view.subtleFloatingShadow()
-        }
-    }
-}
-
-private struct ResetOptionToggle: View {
-    let title: String
-    let detail: String
-    @Binding var isOn: Bool
-    @Environment(\.colorScheme) private var colorScheme
-    @EnvironmentObject private var themeStore: ThemeStore
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Toggle(isOn: $isOn) {
-                Text(title)
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(.primary)
-            }
-            .toggleStyle(.checkbox)
-
-            Text(detail)
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .liquidGlassRect(
-            cornerRadius: 16,
-            colorScheme: colorScheme,
-            accentColor: isOn ? themeStore.accentColor : nil,
-            prominence: isOn ? .prominent : .standard
-        )
-    }
-}
-
-private enum ResetDialogButtonKind: Equatable {
-    case secondary
-    case primary
-    case destructive
-
-    var foregroundColor: Color {
-        switch self {
-        case .secondary:
-            return .primary
-        case .primary, .destructive:
-            return .white
-        }
-    }
-
-    var backgroundColor: some View {
-        Capsule()
-            .fill(fillColor)
-    }
-
-    private var fillColor: Color {
-        switch self {
-        case .secondary:
-            return Color.black.opacity(0.08)
-        case .primary:
-            return ThemeStore.shared.accentColor.opacity(0.88)
-        case .destructive:
-            return Color.red.opacity(0.88)
         }
     }
 }
