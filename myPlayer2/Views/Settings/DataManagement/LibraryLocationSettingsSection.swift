@@ -27,11 +27,8 @@ struct LibraryLocationSettingsSection: View {
     }
 
     var body: some View {
-        GroupBox {
+        SettingsSection("音乐资料库位置") {
             VStack(alignment: .leading, spacing: 12) {
-                Text("音乐资料库位置")
-                    .font(.default)
-
                 Text(currentPath)
                     .font(.system(.body, design: .monospaced))
                     .foregroundStyle(.secondary)
@@ -69,7 +66,6 @@ struct LibraryLocationSettingsSection: View {
                     .disabled(isDefaultPath)
                 }
             }
-            .padding(12)
         }
         .alert("更改资料库位置？", isPresented: $showChangeConfirmAlert) {
             Button("取消", role: .cancel) {}

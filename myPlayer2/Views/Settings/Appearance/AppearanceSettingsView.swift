@@ -22,7 +22,7 @@ struct AppearanceSettingsView: View {
         VStack(alignment: .leading, spacing: 20) {
             SettingsHeaderLabel("外观", systemImage: "paintpalette")
 
-            GroupBox {
+            SettingsSection("通用") {
                 VStack(alignment: .leading, spacing: 14) {
                     SettingsSwitchRow(
                         title: "全局取色",
@@ -48,7 +48,6 @@ struct AppearanceSettingsView: View {
 
                     homeCardMaterialModePicker
                 }
-                .padding(12)
             }
         }
         .onAppear {
@@ -81,8 +80,7 @@ struct AppearanceSettingsView: View {
     private var lyricsBackgroundModePicker: some View {
         HStack(spacing: 8) {
             Text("歌词卡片背景")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+                .settingsRowLabelStyle()
 
             Spacer()
 
@@ -119,8 +117,7 @@ struct AppearanceSettingsView: View {
     private var homeCardMaterialModePicker: some View {
         HStack(spacing: 8) {
             Text("主页卡片材质")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+                .settingsRowLabelStyle()
 
             Spacer()
 

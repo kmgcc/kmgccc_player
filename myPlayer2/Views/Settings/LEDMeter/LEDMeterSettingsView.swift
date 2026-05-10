@@ -13,6 +13,7 @@ struct LEDMeterSettingsView: View {
     @Environment(LEDMeterServiceProvider.self) private var ledMeterProvider
     @Environment(PlayerViewModel.self) private var playerVM
     @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
 
     /// Hide the embedded "LED Meter" header when this view is rendered as a tab
     /// inside another settings container that already shows a title.
@@ -36,9 +37,7 @@ struct LEDMeterSettingsView: View {
 
             // Live Preview
             VStack(alignment: .leading, spacing: 12) {
-                Text("settings.led.live_preview")
-                    .font(.subheadline.bold())
-                    .foregroundStyle(.secondary)
+                SettingsSectionTitle("settings.led.live_preview")
 
                 let ledMeter = ledMeterProvider.getOrCreate()
 
@@ -57,6 +56,7 @@ struct LEDMeterSettingsView: View {
                         .strokeBorder(Color.primary.opacity(0.05))
                 )
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             // Visual Config
             visualConfigSection
@@ -87,17 +87,10 @@ struct LEDMeterSettingsView: View {
     }
 
     private var visualConfigSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("settings.led.config")
-                .font(.subheadline.bold())
-                .foregroundStyle(.secondary)
-
-            GroupBox {
-                VStack(spacing: 16) {
-                    ledCountPicker
-                    brightnessLevelsPicker
-                }
-                .padding(16)
+        SettingsSection("settings.led.config") {
+            VStack(spacing: 16) {
+                ledCountPicker
+                brightnessLevelsPicker
             }
         }
     }
@@ -105,8 +98,7 @@ struct LEDMeterSettingsView: View {
     private var ledCountPicker: some View {
         HStack(spacing: 8) {
             Text("settings.led.count")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+                .settingsRowLabelStyle()
             Spacer()
             SlidingSelector(
                 segments: [9, 11, 13, 15],
@@ -141,8 +133,7 @@ struct LEDMeterSettingsView: View {
     private var brightnessLevelsPicker: some View {
         HStack(spacing: 8) {
             Text("settings.led.brightness")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+                .settingsRowLabelStyle()
             Spacer()
             SlidingSelector(
                 segments: [3, 5, 7],
@@ -175,11 +166,10 @@ struct LEDMeterSettingsView: View {
     }
 
     private var tuningSection: some View {
-        GroupBox {
+        SettingsSection("调校") {
             VStack(alignment: .leading, spacing: 16) {
                 tuningSlidersContent
             }
-            .padding(12)
         }
     }
 
@@ -188,9 +178,11 @@ struct LEDMeterSettingsView: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Text("settings.led.frequency")
+                        .settingsRowLabelStyle()
                     Spacer()
                     Text(String(format: "%.0f Hz", cutoffHz))
-                        .foregroundStyle(.secondary)
+                        .font(presentationStyle.rowValueFont)
+                        .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))
                 }
                 Slider(value: $cutoffHz, in: 200...6000, step: 100)
             }
@@ -198,14 +190,15 @@ struct LEDMeterSettingsView: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Text("settings.led.speed")
+                        .settingsRowLabelStyle()
                     Spacer()
                     Text(String(format: "%.2fx", speed))
-                        .foregroundStyle(.secondary)
+                        .font(presentationStyle.rowValueFont)
+                        .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))
                 }
                 Slider(value: $speed, in: 0.5...2.0, step: 0.05)
             }
         }
-        .font(.subheadline)
         .padding(.horizontal, 10)
     }
 

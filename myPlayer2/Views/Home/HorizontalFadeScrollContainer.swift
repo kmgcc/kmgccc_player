@@ -181,6 +181,7 @@ struct HorizontalFadeScrollContainer<Content: View>: View {
 
                 Rectangle()
                     .fill(Color.black)
+                    .frame(minWidth: 0)
 
                 LinearGradient(
                     colors: [

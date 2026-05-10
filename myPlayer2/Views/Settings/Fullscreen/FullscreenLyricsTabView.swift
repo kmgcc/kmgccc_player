@@ -69,7 +69,7 @@ struct FullscreenLyricsTabView: View {
     }
 
     private var appearanceSection: some View {
-        GroupBox {
+        SettingsSection("外观") {
             VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
                 SettingsSwitchRow(
                     title: "高分辨率",
@@ -91,16 +91,11 @@ struct FullscreenLyricsTabView: View {
                     detailColor: presentationStyle.tertiaryTextColor
                 )
             }
-            .padding(presentationStyle.groupPadding)
-        } label: {
-            Text("外观")
-                .font(.system(size: presentationStyle.sectionTitleFontSize, weight: .semibold))
-                .foregroundStyle(presentationStyle.secondaryTextColor)
         }
     }
 
     private var fontsSection: some View {
-        GroupBox {
+        SettingsSection("字体") {
             VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
                 HStack {
                     Text("主歌词字号")
@@ -209,16 +204,11 @@ struct FullscreenLyricsTabView: View {
                     .frame(width: presentationStyle.pickerWidth)
                 }
             }
-            .padding(presentationStyle.groupPadding)
-        } label: {
-            Text("字体")
-                .font(.system(size: presentationStyle.sectionTitleFontSize, weight: .semibold))
-                .foregroundStyle(presentationStyle.secondaryTextColor)
         }
     }
 
     private var previewSection: some View {
-        GroupBox {
+        SettingsSection("预览") {
             LyricsPreviewCard(
                 title: "",
                 isDarkCard: true,
@@ -230,10 +220,6 @@ struct FullscreenLyricsTabView: View {
                 mainFontSize: fullscreenLyricsFontSize,
                 translationFontSize: fullscreenLyricsTranslationFontSize
             )
-        } label: {
-            Text("预览")
-                .font(.system(size: presentationStyle.sectionTitleFontSize, weight: .semibold))
-                .foregroundStyle(presentationStyle.secondaryTextColor)
         }
     }
 

@@ -30,8 +30,7 @@ struct LyricsTimingConfigSection: View {
         GroupBox {
             VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
                 Text("参数仅供调试，正常使用无需调整")
-                    .font(.system(size: presentationStyle.captionFontSize * 0.92))
-                    .foregroundStyle(presentationStyle.tertiaryTextColor)
+                    .settingsDescriptionStyle()
 
                 leadInSection
                 Divider().padding(.vertical, presentationStyle.dividerVerticalPadding)
@@ -43,7 +42,7 @@ struct LyricsTimingConfigSection: View {
         } label: {
             HStack(spacing: presentationStyle.compactInlineSpacing) {
                 Text("settings.lyrics.timing")
-                    .font(.system(size: presentationStyle.sectionTitleFontSize, weight: .semibold))
+                    .font(presentationStyle.sectionTitleFont)
                     .foregroundStyle(presentationStyle.secondaryTextColor)
                 Spacer()
                 Button("恢复默认值") {
@@ -78,8 +77,7 @@ struct LyricsTimingConfigSection: View {
             Slider(value: $leadInMs, in: 0...1200, step: 20)
                 .frame(height: presentationStyle.tabHeight)
             Text("settings.lyrics.leadin_desc")
-                .font(.system(size: presentationStyle.captionFontSize))
-                .foregroundStyle(presentationStyle.secondaryTextColor)
+                .settingsDescriptionStyle()
         }
     }
 
@@ -104,8 +102,7 @@ struct LyricsTimingConfigSection: View {
             Slider(value: $nearSwitchGapMs, in: 0...500, step: 5)
                 .frame(height: presentationStyle.tabHeight)
             Text("settings.lyrics.near_switch_gap_desc")
-                .font(.system(size: presentationStyle.captionFontSize))
-                .foregroundStyle(presentationStyle.secondaryTextColor)
+                .settingsDescriptionStyle()
         }
     }
 
@@ -123,8 +120,7 @@ struct LyricsTimingConfigSection: View {
             Slider(value: $globalAdvanceMs, in: -1000...1000, step: 10)
                 .frame(height: presentationStyle.tabHeight)
             Text("全曲统一提前（正值=更早显示，负值=更晚显示）。会与单曲时间偏移共同作用。")
-                .font(.system(size: presentationStyle.captionFontSize))
-                .foregroundStyle(presentationStyle.secondaryTextColor)
+                .settingsDescriptionStyle()
         }
     }
 
