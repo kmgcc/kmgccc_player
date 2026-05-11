@@ -15,7 +15,7 @@ import SwiftUI
 final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarItemValidation, NSMenuDelegate {
     private enum FeatureTips {
         static let shiftRangeSelectionKey = "playlist.shiftRangeSelection"
-        static let shiftRangeSelectionIntroducedVersion = AppVersion(major: 1, minor: 4, patch: 1)
+        static let shiftRangeSelectionIntroducedVersion = AppVersion(major: 2, minor: 0, patch: 0)
         static let shiftRangeSelectionMaxDisplayCount = 4
     }
 

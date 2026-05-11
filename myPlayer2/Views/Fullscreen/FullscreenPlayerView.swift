@@ -73,6 +73,12 @@ struct FullscreenPlayerView: View {
         case highlight
     }
 
+    private enum FeatureTips {
+        static let playbackModeRetapKey = "fullscreen.playbackModeRetap"
+        static let playbackModeRetapIntroducedVersion = AppVersion(major: 2, minor: 0, patch: 0)
+        static let playbackModeRetapMaxDisplayCount = 2
+    }
+
     private enum RightPanelDisplayState {
         case hidden
         case lyrics
@@ -260,7 +266,8 @@ struct FullscreenPlayerView: View {
     @State private var isPointerOverMiniPlayerOcclusion = false
     @State private var trackToEdit: Track?
     @State private var isShowingExternalMatchEditor = false
-    @State private var pendingFullscreenBottomControlsHide: DispatchWorkItem?
+    @State private var showPlaybackModeRetapTip = false
+    @State private var pendingFullscreenBottomControlsHideTask: Task<Void, Never>?
     @State private var fullscreenPointerOcclusionMonitor = FullscreenPointerOcclusionMonitor()
     @Namespace private var fullscreenLayoutNamespace
 
@@ -389,102 +396,11 @@ struct FullscreenPlayerView: View {
             )
         )
         .contentShape(Rectangle())
-        .contextMenu {
-            Button {
-                forceRefreshFullscreenLyricsColors(reason: "context-menu-refresh")
-            } label: {
-                Label(
-                    NSLocalizedString(
-                        "fullscreen.refresh_lyrics_colors",
-                        comment: "Refresh fullscreen lyrics color sampling"
-                    ),
-                    systemImage: "arrow.clockwise"
-                )
-            }
-        }
-        .sheet(item: $trackToEdit) { track in
-            TrackEditSheet(track: track)
-                .environmentObject(themeStore)
-        }
-        .sheet(isPresented: $isShowingExternalMatchEditor) {
-            ExternalPlaybackInfoEditorView(
-                presentation: playbackCoordinator.presentation,
-                onSaved: {
-                    playbackCoordinator.invalidateExternalPlaybackResolution()
-                }
-            )
-            .environmentObject(themeStore)
-        }
-        .onAppear {
-            guard !didHandleFullscreenAppear else { return }
-            didHandleFullscreenAppear = true
-            Log.info(
-                "FullscreenPlayerView appeared context=\(hostContext.rawValue)",
-                category: .webview
-            )
-            fullscreenPointerOcclusionMonitor.start { isOccluded in
-                setPointerOverMiniPlayerOcclusion(isOccluded, reason: "mouse-location")
-            }
-
-            syncCoverBlurHighlightActivation()
-            resetFullscreenLyricsBackgroundSnapshot()
-            scheduleFullscreenLyricsBackgroundCapture()
-            fullscreenLyricsHostMounted = isShowingLyricsPanel && playbackCoordinator.presentation.hasTrack
-            setupSeekCallback()
-            if hostContext == .embeddedWindow {
-                embeddedInitialThemeUnlocked = false
-            } else {
-                // Report visibility to manager - manager handles the switch with debouncing
-                LyricsSurfaceManager.shared.reportFullscreenVisible(true)
-                reloadLyricsSurface(reason: "fullscreen appear", forceLyricsReload: true)
-            }
-            resetFullscreenBottomControlsAutoHideState()
-            syncFullscreenMiniPlayerSpectrumLease()
-            syncFullscreenLedService()
-        }
-        .onDisappear {
-            let shouldReportFullscreenHidden =
-                hostContext != .embeddedWindow || embeddedInitialThemeUnlocked
-            Log.info(
-                "FullscreenPlayerView disappeared context=\(hostContext.rawValue)",
-                category: .webview
-            )
-            didHandleFullscreenAppear = false
-            fullscreenPointerOcclusionMonitor.stop()
-            setPointerOverMiniPlayerOcclusion(false, reason: "fullscreen disappear")
-            ledMeterProvider.releaseNowPlayingResources()
-            artworkSnapshot = nil
-            existingFullscreenStore?.onUserSeek = nil
-            pendingFullscreenLyricsRefresh?.cancel()
-            pendingFullscreenLyricsRefresh = nil
-            pendingFullscreenLyricsReveal?.cancel()
-            pendingFullscreenLyricsReveal = nil
-            pendingFullscreenLyricsHostDetach?.cancel()
-            pendingFullscreenLyricsHostDetach = nil
-            pendingFullscreenTrackRefresh?.cancel()
-            pendingFullscreenTrackRefresh = nil
-            pendingFullscreenThemeReapply?.cancel()
-            pendingFullscreenThemeReapply = nil
-            deferredTrackUpdateDeadline = nil
-            suppressFullscreenLyricsViewport = false
-            fullscreenLyricsHostMounted = false
-            embeddedInitialThemeUnlocked = false
-            isQuickAppearancePanelPresented = false
-            isFullscreenBottomControlsAppearancePanelHovered = false
-            releaseFullscreenMiniPlayerSpectrumLease()
-            cancelFullscreenBottomControlsAutoHide()
-            deactivateCoverBlurHighlightSurface()
-            clearFullscreenLyricsTheme()
-            Task {
-                await ArtworkAssetStore.shared.purgeHydratedImages()
-                await CassetteArtworkCache.shared.removeAll()
-            }
-
-            if shouldReportFullscreenHidden {
-                // Report visibility to manager - manager will debounce to handle transient disappears
-                LyricsSurfaceManager.shared.reportFullscreenVisible(false)
-            }
-        }
+        .contextMenu(menuItems: fullscreenContextMenu)
+        .sheet(item: $trackToEdit, content: trackEditSheet)
+        .sheet(isPresented: $isShowingExternalMatchEditor, content: externalMatchEditorSheet)
+        .onAppear(perform: handleFullscreenAppear)
+        .onDisappear(perform: handleFullscreenDisappear)
         .onChange(of: selectedSkinID) { oldValue, newValue in
             skinRevision &+= 1
             if oldValue == "kmgccc.cassette", newValue != oldValue {
@@ -578,6 +494,109 @@ struct FullscreenPlayerView: View {
         .task(id: currentArtworkTaskKey) {
             await loadArtworkSnapshot()
         }
+    }
+
+    private func handleFullscreenAppear() {
+        guard !didHandleFullscreenAppear else { return }
+        didHandleFullscreenAppear = true
+        Log.info(
+            "FullscreenPlayerView appeared context=\(hostContext.rawValue)",
+            category: .webview
+        )
+        fullscreenPointerOcclusionMonitor.start { isOccluded in
+            setPointerOverMiniPlayerOcclusion(isOccluded, reason: "mouse-location")
+        }
+
+        syncCoverBlurHighlightActivation()
+        resetFullscreenLyricsBackgroundSnapshot()
+        scheduleFullscreenLyricsBackgroundCapture()
+        fullscreenLyricsHostMounted = isShowingLyricsPanel && playbackCoordinator.presentation.hasTrack
+        setupSeekCallback()
+        if hostContext == .embeddedWindow {
+            embeddedInitialThemeUnlocked = false
+        } else {
+            // Report visibility to manager - manager handles the switch with debouncing
+            LyricsSurfaceManager.shared.reportFullscreenVisible(true)
+            reloadLyricsSurface(reason: "fullscreen appear", forceLyricsReload: true)
+        }
+        resetFullscreenBottomControlsAutoHideState()
+        syncFullscreenMiniPlayerSpectrumLease()
+        syncFullscreenLedService()
+        showPlaybackModeRetapTipIfNeeded()
+    }
+
+    private func handleFullscreenDisappear() {
+        let shouldReportFullscreenHidden =
+            hostContext != .embeddedWindow || embeddedInitialThemeUnlocked
+        Log.info(
+            "FullscreenPlayerView disappeared context=\(hostContext.rawValue)",
+            category: .webview
+        )
+        didHandleFullscreenAppear = false
+        fullscreenPointerOcclusionMonitor.stop()
+        setPointerOverMiniPlayerOcclusion(false, reason: "fullscreen disappear")
+        ledMeterProvider.releaseNowPlayingResources()
+        artworkSnapshot = nil
+        existingFullscreenStore?.onUserSeek = nil
+        pendingFullscreenLyricsRefresh?.cancel()
+        pendingFullscreenLyricsRefresh = nil
+        pendingFullscreenLyricsReveal?.cancel()
+        pendingFullscreenLyricsReveal = nil
+        pendingFullscreenLyricsHostDetach?.cancel()
+        pendingFullscreenLyricsHostDetach = nil
+        pendingFullscreenTrackRefresh?.cancel()
+        pendingFullscreenTrackRefresh = nil
+        pendingFullscreenThemeReapply?.cancel()
+        pendingFullscreenThemeReapply = nil
+        deferredTrackUpdateDeadline = nil
+        suppressFullscreenLyricsViewport = false
+        fullscreenLyricsHostMounted = false
+        embeddedInitialThemeUnlocked = false
+        isQuickAppearancePanelPresented = false
+        isFullscreenBottomControlsAppearancePanelHovered = false
+        releaseFullscreenMiniPlayerSpectrumLease()
+        cancelFullscreenBottomControlsAutoHide()
+        deactivateCoverBlurHighlightSurface()
+        clearFullscreenLyricsTheme()
+        Task {
+            await ArtworkAssetStore.shared.purgeHydratedImages()
+            await CassetteArtworkCache.shared.removeAll()
+        }
+
+        if shouldReportFullscreenHidden {
+            // Report visibility to manager - manager will debounce to handle transient disappears
+            LyricsSurfaceManager.shared.reportFullscreenVisible(false)
+        }
+    }
+
+    @ViewBuilder
+    private func fullscreenContextMenu() -> some View {
+        Button {
+            forceRefreshFullscreenLyricsColors(reason: "context-menu-refresh")
+        } label: {
+            Label(
+                NSLocalizedString(
+                    "fullscreen.refresh_lyrics_colors",
+                    comment: "Refresh fullscreen lyrics color sampling"
+                ),
+                systemImage: "arrow.clockwise"
+            )
+        }
+    }
+
+    private func trackEditSheet(for track: Track) -> some View {
+        TrackEditSheet(track: track)
+            .environmentObject(themeStore)
+    }
+
+    private func externalMatchEditorSheet() -> some View {
+        ExternalPlaybackInfoEditorView(
+            presentation: playbackCoordinator.presentation,
+            onSaved: {
+                playbackCoordinator.invalidateExternalPlaybackResolution()
+            }
+        )
+        .environmentObject(themeStore)
     }
 
     // MARK: - Fullscreen Content (Extracted to simplify body type checking)
@@ -1168,6 +1187,13 @@ struct FullscreenPlayerView: View {
                 }
             )
                 .frame(width: currentMiniPlayerWidth, height: buttonSize)
+                .overlay(alignment: .top) {
+                    if showPlaybackModeRetapTip {
+                        PlaybackModeRetapTipView(onClose: dismissPlaybackModeRetapTip)
+                            .offset(y: -12)
+                    }
+                }
+                .animation(bottomControlsAnimation, value: showPlaybackModeRetapTip)
                 .environment(\.colorScheme, fullscreenControlsGlassStyle.colorScheme)
                 .offset(x: miniPlayerOriginX)
 
@@ -1389,25 +1415,32 @@ struct FullscreenPlayerView: View {
         }
         guard shouldBlockFullscreenBottomControlsAutoHide == false else { return }
 
-        let hideWorkItem = DispatchWorkItem { @MainActor in
+        let delay = settings.fullscreenMiniPlayerAutoHideSeconds
+        guard delay > 0 else { return }
+
+        pendingFullscreenBottomControlsHideTask = Task { @MainActor in
+            do {
+                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            } catch {
+                return
+            }
+
+            guard !Task.isCancelled else { return }
             guard shouldBlockFullscreenBottomControlsAutoHide == false else {
                 scheduleFullscreenBottomControlsAutoHideIfNeeded()
                 return
             }
+
             withAnimation(bottomControlsAnimation) {
                 isFullscreenBottomControlsVisible = false
             }
+            pendingFullscreenBottomControlsHideTask = nil
         }
-        pendingFullscreenBottomControlsHide = hideWorkItem
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + settings.fullscreenMiniPlayerAutoHideSeconds,
-            execute: hideWorkItem
-        )
     }
 
     private func cancelFullscreenBottomControlsAutoHide() {
-        pendingFullscreenBottomControlsHide?.cancel()
-        pendingFullscreenBottomControlsHide = nil
+        pendingFullscreenBottomControlsHideTask?.cancel()
+        pendingFullscreenBottomControlsHideTask = nil
     }
 
     // MARK: - Fullscreen Bottom Bar Layer (Actual Resolution - Crisp)
@@ -1571,6 +1604,13 @@ struct FullscreenPlayerView: View {
                     )
                     .glassEffectTransition(.materialize)
                     .frame(width: scaledMiniPlayerWidth, height: scaledButtonSize)
+                    .overlay(alignment: .top) {
+                        if showPlaybackModeRetapTip {
+                            PlaybackModeRetapTipView(onClose: dismissPlaybackModeRetapTip)
+                                .offset(y: -12 * scale)
+                        }
+                    }
+                    .animation(bottomControlsAnimation, value: showPlaybackModeRetapTip)
                     .environment(\.colorScheme, fullscreenControlsGlassStyle.colorScheme)
                     .position(
                         x: scaledMiniPlayerOriginX + scaledMiniPlayerWidth / 2,
@@ -2126,6 +2166,28 @@ struct FullscreenPlayerView: View {
 
     private func applyPlaybackMode(_ mode: PlaybackOrderMode) {
         playbackCoordinator.setPlaybackOrderMode(mode)
+    }
+
+    private func showPlaybackModeRetapTipIfNeeded() {
+        guard showPlaybackModeRetapTip == false else { return }
+        guard AppVersionGate.shared.shouldShowFeatureTip(
+            featureKey: FeatureTips.playbackModeRetapKey,
+            introducedVersion: FeatureTips.playbackModeRetapIntroducedVersion,
+            maxDisplayCount: FeatureTips.playbackModeRetapMaxDisplayCount
+        ) else { return }
+
+        withAnimation(bottomControlsAnimation) {
+            showPlaybackModeRetapTip = true
+        }
+        AppVersionGate.shared.recordFeatureTipDisplayed(
+            featureKey: FeatureTips.playbackModeRetapKey
+        )
+    }
+
+    private func dismissPlaybackModeRetapTip() {
+        withAnimation(bottomControlsAnimation) {
+            showPlaybackModeRetapTip = false
+        }
     }
 
     private func handleQueueTrackTap(_ track: Track) {
@@ -3687,6 +3749,38 @@ struct FullscreenPlayerView: View {
 
     private func clamp(_ value: CGFloat, min lower: CGFloat, max upper: CGFloat) -> CGFloat {
         Swift.min(upper, Swift.max(lower, value))
+    }
+}
+
+private struct PlaybackModeRetapTipView: View {
+    let onClose: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text("播放队列")
+                    .font(.headline)
+                Spacer(minLength: 8)
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 22, height: 22)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("关闭")
+            }
+
+            Text("再次点击已选择的播放顺序按钮，可快速展开播放队列")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .frame(width: 288, alignment: .leading)
+        .background(.regularMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
     }
 }
 
