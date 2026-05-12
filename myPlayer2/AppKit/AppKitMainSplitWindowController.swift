@@ -24,19 +24,16 @@ import SwiftUI
 @MainActor
 final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegate {
     private enum WindowMetrics {
-        static let defaultSize = NSSize(width: 1360, height: 820)
+        static let defaultSize = NSSize(width: 1280, height: 780)
         static let minimumContentSize = NSSize(width: 980, height: 520)
         static let frameAutosaveName = "AppKitMainSplitWindowFrame"
+        static let frameAutosaveDefaultsKey = "NSWindow Frame \(frameAutosaveName)"
 
-        /// Frames smaller than this in either dimension are considered stale
-        /// (legacy defaults) and get bumped up on next launch.  Kept low
-        /// enough that users who deliberately shrink the window won't be
-        /// overridden on relaunch.
-        static let floorSize = NSSize(width: 1180, height: 700)
+        static var hasSavedFrame: Bool {
+            UserDefaults.standard.object(forKey: frameAutosaveDefaultsKey) != nil
+        }
 
-        /// Returns the default window frame for the given screen, clamped with
-        /// generous margin and centered.  Returns a *window frame* rect ready
-        /// for `NSWindow.setFrame`, not a content rect.
+        /// Returns the first-launch default window frame, not a restoration policy.
         static func defaultFrame(on screen: NSScreen) -> NSRect {
             let vis = screen.visibleFrame
             let w = min(defaultSize.width, vis.width - 180)
@@ -147,19 +144,14 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
             splitViewController: splitViewController
         )
 
-        // Compute the authoritative default frame upfront.  This is a *window
-        // frame* rect (not a content rect), clamped with margin and centered.
         let defaultFrame: NSRect
         if let screen = NSScreen.main {
             defaultFrame = WindowMetrics.defaultFrame(on: screen)
         } else {
             defaultFrame = WindowMetrics.fallbackFrame
         }
+        let hasSavedFrame = WindowMetrics.hasSavedFrame
 
-        // Use the default frame as the initial content rect.  NSWindow's
-        // init(contentRect:…) treats this as a content rect and adds title-bar
-        // chrome, but we correct it with setFrame immediately after the window
-        // is fully configured, before anything is displayed.
         let window = CustomZoomWindow(
             contentRect: defaultFrame,
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -178,35 +170,18 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
         window.toolbarStyle = .automatic
         window.backgroundColor = .windowBackgroundColor
         window.contentViewController = rootViewController
-        window.delegate = self
         window.isReleasedWhenClosed = false
         window.contentMinSize = WindowMetrics.minimumContentSize
         window.minSize = WindowMetrics.minimumContentSize
 
-        // Explicitly set the correct window frame *before* enabling autosave.
-        // This overrides the content-rect-to-frame expansion from the
-        // initializer and ensures both first-launch and reopen start from the
-        // same baseline.
+        // Use the default only as the construction baseline. Once an autosaved
+        // frame exists, restoring it is the only startup sizing policy.
         window.setFrame(defaultFrame, display: false)
-
-        // Let autosave restore the user's last frame if one exists.
         window.setFrameAutosaveName(WindowMetrics.frameAutosaveName)
-
-        // After autosave restoration, gently fix frames that are clearly stale
-        // (smaller than the floor).  Only bumps up — never shrinks a frame the
-        // user intentionally sized larger.  Uses the same defaultFrame(on:)
-        // calculation to keep margins consistent.
-        let current = window.frame
-        let floor = WindowMetrics.floorSize
-        if current.width < floor.width || current.height < floor.height {
-            let fixedFrame: NSRect
-            if let screen = window.screen {
-                fixedFrame = WindowMetrics.defaultFrame(on: screen)
-            } else {
-                fixedFrame = WindowMetrics.fallbackFrame
-            }
-            window.setFrame(fixedFrame, display: true)
+        if hasSavedFrame {
+            _ = window.setFrameUsingName(WindowMetrics.frameAutosaveName)
         }
+        window.delegate = self
 
         // Install the toolbar only after the split view has applied its initial layout (viewDidAppear),
         // otherwise tracking separator items may bind too early (or throw during setToolbar).
@@ -225,6 +200,7 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
     func windowWillClose(_ notification: Notification) {
         isClosingMainWindow = true
         if let closingWindow = notification.object as? NSWindow {
+            closingWindow.saveFrame(usingName: WindowMetrics.frameAutosaveName)
             FullscreenWindowManager.shared.mainWindowWillClose(closingWindow)
             toolbarController?.detachFromWindow(closingWindow)
             closingWindow.toolbar = nil
@@ -236,6 +212,20 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
         if Self.sharedController === self {
             Self.sharedController = nil
         }
+    }
+
+    func windowDidEndLiveResize(_ notification: Notification) {
+        saveMainWindowFrame(from: notification)
+    }
+
+    func windowDidMove(_ notification: Notification) {
+        saveMainWindowFrame(from: notification)
+    }
+
+    private func saveMainWindowFrame(from notification: Notification) {
+        guard !isClosingMainWindow else { return }
+        guard let movedWindow = notification.object as? NSWindow, movedWindow === window else { return }
+        movedWindow.saveFrame(usingName: WindowMetrics.frameAutosaveName)
     }
 
     func windowDidBecomeMain(_ notification: Notification) {
