@@ -258,7 +258,7 @@ private struct LibraryCompletionDialogView: View {
     private var headerTitle: String {
         switch viewModel.stage {
         case .selection:
-            return "手动补全所有歌曲信息"
+            return "补全所有歌曲信息"
         case .running:
             return "正在补全本地曲库"
         case .result:

@@ -24,9 +24,38 @@ import SwiftUI
 @MainActor
 final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegate {
     private enum WindowMetrics {
-        static let initialSize = NSSize(width: 1520, height: 860)
+        static let defaultSize = NSSize(width: 1360, height: 820)
         static let minimumContentSize = NSSize(width: 980, height: 520)
         static let frameAutosaveName = "AppKitMainSplitWindowFrame"
+
+        /// Frames smaller than this in either dimension are considered stale
+        /// (legacy defaults) and get bumped up on next launch.  Kept low
+        /// enough that users who deliberately shrink the window won't be
+        /// overridden on relaunch.
+        static let floorSize = NSSize(width: 1180, height: 700)
+
+        /// Returns the default window frame for the given screen, clamped with
+        /// generous margin and centered.  Returns a *window frame* rect ready
+        /// for `NSWindow.setFrame`, not a content rect.
+        static func defaultFrame(on screen: NSScreen) -> NSRect {
+            let vis = screen.visibleFrame
+            let w = min(defaultSize.width, vis.width - 180)
+            let h = min(defaultSize.height, vis.height - 140)
+            let x = vis.midX - w / 2
+            let y = vis.midY - h / 2
+            return NSRect(x: x, y: y, width: w, height: h)
+        }
+
+        /// Fallback when no screen is available (shouldn't happen in practice).
+        static var fallbackFrame: NSRect {
+            NSRect(origin: .zero, size: defaultSize)
+        }
+    }
+
+    private enum FeatureTips {
+        static let externalPlaybackKey = "playbackSource.externalAppPlayback"
+        static let externalPlaybackIntroducedVersion = AppVersion(major: 2, minor: 0, patch: 0)
+        static let externalPlaybackMaxDisplayCount = 2
     }
 
     private static var sharedController: AppKitMainSplitWindowController?
@@ -38,6 +67,9 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
     private var didInstallToolbar = false
     private var didReachPresentedState = false
     private var isClosingMainWindow = false
+
+    private var externalPlaybackTipPopover: NSPopover?
+    private var pendingTipDisplay: Bool = false
 
     static func show(appSession: AppSessionHost) -> AppKitMainSplitWindowController {
         let controller: AppKitMainSplitWindowController
@@ -115,8 +147,21 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
             splitViewController: splitViewController
         )
 
-        let window = NSWindow(
-            contentRect: NSRect(origin: .zero, size: WindowMetrics.initialSize),
+        // Compute the authoritative default frame upfront.  This is a *window
+        // frame* rect (not a content rect), clamped with margin and centered.
+        let defaultFrame: NSRect
+        if let screen = NSScreen.main {
+            defaultFrame = WindowMetrics.defaultFrame(on: screen)
+        } else {
+            defaultFrame = WindowMetrics.fallbackFrame
+        }
+
+        // Use the default frame as the initial content rect.  NSWindow's
+        // init(contentRect:…) treats this as a content rect and adds title-bar
+        // chrome, but we correct it with setFrame immediately after the window
+        // is fully configured, before anything is displayed.
+        let window = CustomZoomWindow(
+            contentRect: defaultFrame,
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -137,9 +182,30 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
         window.isReleasedWhenClosed = false
         window.contentMinSize = WindowMetrics.minimumContentSize
         window.minSize = WindowMetrics.minimumContentSize
+
+        // Explicitly set the correct window frame *before* enabling autosave.
+        // This overrides the content-rect-to-frame expansion from the
+        // initializer and ensures both first-launch and reopen start from the
+        // same baseline.
+        window.setFrame(defaultFrame, display: false)
+
+        // Let autosave restore the user's last frame if one exists.
         window.setFrameAutosaveName(WindowMetrics.frameAutosaveName)
-        if UserDefaults.standard.string(forKey: "NSWindow Frame \(WindowMetrics.frameAutosaveName)") == nil {
-            window.center()
+
+        // After autosave restoration, gently fix frames that are clearly stale
+        // (smaller than the floor).  Only bumps up — never shrinks a frame the
+        // user intentionally sized larger.  Uses the same defaultFrame(on:)
+        // calculation to keep margins consistent.
+        let current = window.frame
+        let floor = WindowMetrics.floorSize
+        if current.width < floor.width || current.height < floor.height {
+            let fixedFrame: NSRect
+            if let screen = window.screen {
+                fixedFrame = WindowMetrics.defaultFrame(on: screen)
+            } else {
+                fixedFrame = WindowMetrics.fallbackFrame
+            }
+            window.setFrame(fixedFrame, display: true)
         }
 
         // Install the toolbar only after the split view has applied its initial layout (viewDidAppear),
@@ -191,6 +257,113 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
         guard !isClosingMainWindow else { return }
         guard !didReachPresentedState else { return }
         didReachPresentedState = true
+        scheduleExternalPlaybackTipIfNeeded()
+    }
+
+    // MARK: - External Playback Feature Tip
+
+    /// Set by the NSViewRepresentable anchor probe placed behind the source switch.
+    static weak var sourceSwitchAnchorView: NSView?
+
+    private func scheduleExternalPlaybackTipIfNeeded() {
+        guard !isClosingMainWindow else {
+            print("[FeatureTip:externalPlayback] skip – window is closing")
+            return
+        }
+
+        let gateResult = AppVersionGate.shared.shouldShowFeatureTip(
+            featureKey: FeatureTips.externalPlaybackKey,
+            introducedVersion: FeatureTips.externalPlaybackIntroducedVersion,
+            maxDisplayCount: FeatureTips.externalPlaybackMaxDisplayCount
+        )
+        let dismissed = AppVersionGate.shared.isFeatureTipDismissed(featureKey: FeatureTips.externalPlaybackKey)
+        let count = AppVersionGate.shared.featureTipDisplayCount(featureKey: FeatureTips.externalPlaybackKey)
+        let upgraded = AppVersionGate.shared.wasUpgradedFromVersionBelow(FeatureTips.externalPlaybackIntroducedVersion)
+        print("[FeatureTip:externalPlayback] gate result=\(gateResult) dismissed=\(dismissed) displayCount=\(count) upgraded=\(upgraded)")
+
+        guard gateResult else {
+            print("[FeatureTip:externalPlayback] skip – gate returned false")
+            return
+        }
+        guard AppSettings.shared.showPlaybackSourceSwitcher else {
+            print("[FeatureTip:externalPlayback] skip – showPlaybackSourceSwitcher is false")
+            return
+        }
+
+        pendingTipDisplay = true
+        // Give the sidebar layout time to settle, then try to find the anchor.
+        tryShowExternalPlaybackTip(retryDelay: 0.5)
+    }
+
+    private func tryShowExternalPlaybackTip(retryDelay: TimeInterval) {
+        guard pendingTipDisplay, !isClosingMainWindow else {
+            print("[FeatureTip:externalPlayback] tryShow skip – pending=\(pendingTipDisplay) closing=\(isClosingMainWindow)")
+            return
+        }
+        guard externalPlaybackTipPopover?.isShown != true else {
+            print("[FeatureTip:externalPlayback] tryShow skip – popover already shown")
+            return
+        }
+
+        print("[FeatureTip:externalPlayback] attempt findSourceSwitchAnchor (retryDelay=\(String(format: "%.2f", retryDelay))s)")
+
+        if let anchor = findSourceSwitchAnchor() {
+            print("[FeatureTip:externalPlayback] anchor found – view=\(type(of: anchor.view)) bounds=\(NSStringFromRect(anchor.view.bounds)) rect=\(NSStringFromRect(anchor.rect))")
+            showExternalPlaybackTipPopover(anchor: anchor)
+            pendingTipDisplay = false
+        } else if retryDelay < 5.0 {
+            print("[FeatureTip:externalPlayback] anchor not found – retry in \(String(format: "%.2f", retryDelay))s")
+            DispatchQueue.main.asyncAfter(deadline: .now() + retryDelay) { [weak self] in
+                self?.tryShowExternalPlaybackTip(retryDelay: retryDelay * 1.5)
+            }
+        } else {
+            print("[FeatureTip:externalPlayback] giving up after retries – anchor never appeared")
+            pendingTipDisplay = false
+        }
+    }
+
+    private func findSourceSwitchAnchor() -> (view: NSView, rect: NSRect)? {
+        guard let switchView = Self.sourceSwitchAnchorView else {
+            print("[FeatureTip:externalPlayback] findAnchor – sourceSwitchAnchorView is nil")
+            return nil
+        }
+        guard switchView.window != nil else {
+            print("[FeatureTip:externalPlayback] findAnchor – anchor view has no window")
+            return nil
+        }
+        guard switchView.bounds.width > 0, switchView.bounds.height > 0 else {
+            print("[FeatureTip:externalPlayback] findAnchor – anchor bounds zero: \(NSStringFromRect(switchView.bounds))")
+            return nil
+        }
+
+        // Anchor to the middle-right edge of the switch's own bounds so the
+        // popover arrow points directly at the source switch (not a container).
+        let anchorRect = NSRect(
+            x: switchView.bounds.maxX - 4,
+            y: switchView.bounds.midY - 1,
+            width: 8,
+            height: 2
+        )
+        return (switchView, anchorRect)
+    }
+
+    private func showExternalPlaybackTipPopover(anchor: (view: NSView, rect: NSRect)) {
+        let popover = NSPopover()
+        popover.behavior = .semitransient
+        popover.animates = true
+        popover.contentSize = NSSize(width: 288, height: 118)
+        popover.contentViewController = NSHostingController(
+            rootView: ExternalPlaybackTipView { [weak self] in
+                self?.externalPlaybackTipPopover?.performClose(nil)
+                self?.externalPlaybackTipPopover = nil
+            }
+        )
+
+        externalPlaybackTipPopover = popover
+        popover.show(relativeTo: anchor.rect, of: anchor.view, preferredEdge: .maxX)
+        AppVersionGate.shared.recordFeatureTipDisplayed(
+            featureKey: FeatureTips.externalPlaybackKey
+        )
     }
 
     @discardableResult
@@ -379,6 +552,50 @@ private final class AppKitMainRootViewController: NSViewController {
     }
 }
 
+// MARK: - Custom zoom window
+
+/// Replaces the default macOS title-bar double-click zoom with a toggle
+/// between the current frame and a screen-adaptive expanded frame.
+/// The expansion primarily increases height to near-screen-height; width
+/// increases only slightly so the three-column layout stays comfortable.
+private final class CustomZoomWindow: NSWindow {
+    private var isExpanded = false
+    private var preExpandFrame: NSRect?
+
+    override func performZoom(_ sender: Any?) {
+        guard !styleMask.contains(.fullScreen) else { return }
+
+        if isExpanded {
+            if let restore = preExpandFrame {
+                setFrame(restore, display: true, animate: true)
+            }
+            isExpanded = false
+            preExpandFrame = nil
+        } else {
+            preExpandFrame = frame
+            let expanded = computeExpandedFrame()
+            setFrame(expanded, display: true, animate: true)
+            isExpanded = true
+        }
+    }
+
+    private func computeExpandedFrame() -> NSRect {
+        guard let screen else {
+            return NSRect(origin: frame.origin, size: NSSize(width: 1640, height: 940))
+        }
+        let vis = screen.visibleFrame
+        // Width: just a nudge over the current frame — at most +80 pt,
+        // capped to leave side margin and never exceed visible width.
+        let width = min(frame.width + 80, vis.width - 80)
+        // Height: fill nearly the entire visible area, keeping a small margin.
+        let height = vis.height - 40
+        // Center horizontally; vertically center within visible frame.
+        let x = vis.midX - width / 2
+        let y = vis.midY - height / 2
+        return NSRect(x: x, y: y, width: width, height: height)
+    }
+}
+
 // MARK: - Passthrough hosting view
 
 /// `NSHostingView` subclass that returns nil from `hitTest(_:)` when SwiftUI
@@ -520,4 +737,57 @@ final class HomeRoutingRootView: NSView {
 
         return appkitRect.insetBy(dx: -miniPlayerHitMargin, dy: -miniPlayerHitMargin).contains(point)
     }
+}
+
+// MARK: - External Playback Tip View
+
+private struct ExternalPlaybackTipView: View {
+    let onClose: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text("现已支持外部音乐 App")
+                    .font(.headline)
+                Spacer(minLength: 8)
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 22, height: 22)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("关闭")
+            }
+
+            Text("授权必要权限后，可以在这里切换并使用其他音乐 App 的正在播放内容。")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .frame(width: 288, alignment: .leading)
+    }
+}
+
+// MARK: - Source Switch Anchor Probe
+
+/// Transparent NSView that registers itself as the source-switch anchor on the
+/// window controller so the NSPopover can be positioned precisely on the switch.
+final class SourceSwitchAnchorView: NSView {
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil {
+            AppKitMainSplitWindowController.sourceSwitchAnchorView = self
+        }
+    }
+}
+
+/// NSViewRepresentable that places a `SourceSwitchAnchorView` in the view
+/// hierarchy, matching the frame of the SwiftUI view it is attached to.
+struct SourceSwitchAnchorProbe: NSViewRepresentable {
+    func makeNSView(context: Context) -> SourceSwitchAnchorView {
+        SourceSwitchAnchorView()
+    }
+    func updateNSView(_ nsView: SourceSwitchAnchorView, context: Context) {}
 }

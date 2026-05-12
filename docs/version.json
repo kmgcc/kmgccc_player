@@ -1,5 +1,5 @@
 {
-  "latestVersion": "1.3.1",
+  "latestVersion": "2.0.0",
   "releaseURL": "https://github.com/kmgcc/kmgccc_player/releases/latest",
-  "notes": "支持通过 AMLL DB 查找歌词\n播放列表现已支持头图\n导入歌曲时，可选择在后台补全封面、歌词等信息\n聆听习惯记录和动态调整随机播放队列功能\n新增旋转封面 CD 模式\n全屏播放器底部控制栏重新整理，并支持自动隐藏\n修复了音乐资料库反复写入时歌曲封面被重复压缩、导致画质下降的问题\n……\n更多更新内容见 release 页面说明～"
+  "notes": "全新 Home 页面，可浏览专辑、艺人与播放列表\n资料库支持自定义位置，管理更完善\n点小窗口支持全屏沉浸播放，支持调整显示效果\nLED 模拟焕新，新增呼吸灯效果\n新增播放记忆，启动 App 可恢复上次状态\n……\n更多新功能详见 release 页面"
 }

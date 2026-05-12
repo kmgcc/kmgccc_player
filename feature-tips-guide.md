@@ -29,7 +29,7 @@ func shouldShowFeatureTip(
 
 1. 该 Tip 未被用户永久关闭（`isFeatureTipDismissed == false`）
 2. 已显示次数未达上限（`featureTipDisplayCount < maxDisplayCount`）
-3. 用户是从低于 `introducedVersion` 的版本升级上来的
+3. 用户是从低于 `introducedVersion` 的版本升级上来的；如果缺少 `previousInstalledVersion`，按“很旧版本”处理，允许新版提示正常显示
 
 ### 状态记录方法
 
@@ -50,10 +50,14 @@ func wasUpgradedFromVersionBelow(_ version: AppVersion) -> Bool
 
 在 `AppSessionHost` 或 `App` 入口处调用 `AppVersionGate.shared.recordCurrentAppLaunch()`，它负责维护 `previousInstalledVersion` / `latestInstalledVersion` 的迁移状态。
 
+兼容要求：如果用户本地没有 `previousInstalledVersion`（常见于旧版本首次升级到带门控系统的新版本，或旧数据迁移不完整），不要把它视为“没有升级”。相关门控应把缺失的 previous version 当作低于所有已知 introduced version 的旧版本处理，确保 Feature Tip、What's New 和更新提示不会因为历史字段缺失而全部失效。
+
 ### UserDefaults Key 约定
 
 - Dismiss 标记：`kmgccc_player.dismissedFeatureTip.<featureKey>`
 - 显示次数：`kmgccc_player.featureTipDisplayCount.<featureKey>`
+- 上次安装版本：`kmgccc_player.previousInstalledVersion`
+- 当前已记录版本：`kmgccc_player.latestInstalledVersion`
 
 ## Tip 关闭行为的两种模式
 
@@ -291,5 +295,9 @@ AppKit NSPopover 场景中：
 |-----|------|------|------|
 | Shift 连续选择 | `myPlayer2/AppKit/AppKitMainToolbarController.swift` | NSPopover + 模式 B | AppKit 工具栏按钮 |
 | 播放队列展开 | `myPlayer2/Views/Fullscreen/FullscreenPlayerView.swift` | overlay + 模式 A | SwiftUI 全屏覆盖层 |
+| v2.0 设置面板资料库 | `myPlayer2/Views/Settings/SettingsView.swift` | overlay + 模式 A | SwiftUI 设置窗口 |
+| 外部音乐 App 播放 | `myPlayer2/AppKit/AppKitMainSplitWindowController.swift` | NSPopover + 模式 A | AppKit 窗口控制器，锚定 sidebar 播放来源滑块 |
 
-搜索关键词：`FeatureTips`、`showShiftRangeSelectionTipIfNeeded`、`showPlaybackModeRetapTipIfNeeded`。
+**外部音乐 App 播放 Tip 特别说明**：anchor view 在 sidebar 内部（`SlidingSelector`），但 NSPopover 挂载在窗口控制器层级，不嵌入 sidebar。popover 通过 subview walk 找到 sidebar 内 NSHostingView 作为锚点，`preferredEdge: .maxX` 使弹窗出现在 sidebar 右侧，避免被 sidebar 裁剪。触发时机为窗口首次 visible 后延迟尝试，有递增重试逻辑应对 layout 未就绪的情况。
+
+搜索关键词：`FeatureTips`、`showShiftRangeSelectionTipIfNeeded`、`showPlaybackModeRetapTipIfNeeded`、`externalPlaybackTipPopover`。

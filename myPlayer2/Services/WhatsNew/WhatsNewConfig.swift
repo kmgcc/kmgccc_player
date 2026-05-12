@@ -10,8 +10,8 @@ import WhatsNewKit
 
 enum WhatsNewConfig {
 
-    static let targetVersion = AppVersion(major: 1, minor: 3, patch: 1)
-    static let whatsNewVersion = WhatsNew.Version(major: 1, minor: 3, patch: 1)
+    static let targetVersion = AppVersion(major: 2, minor: 0, patch: 0)
+    static let whatsNewVersion = WhatsNew.Version(major: 2, minor: 0, patch: 0)
     
     static var lastSeenVersion: AppVersion? {
         get { AppVersionGate.shared.lastSeenWhatsNewVersion }

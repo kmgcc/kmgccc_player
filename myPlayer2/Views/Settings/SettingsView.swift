@@ -23,6 +23,16 @@ struct SettingsView: View {
     @State private var selection: SettingsCategory = .appearance
     @State private var columnVisibility = NavigationSplitViewVisibility.all
 
+    // MARK: - Feature Tip State
+
+    @State private var showV2FeatureTip = false
+
+    private enum FeatureTips {
+        static let v2FeatureKey = "settings.v2DataManagement"
+        static let v2FeatureIntroducedVersion = AppVersion(major: 2, minor: 0, patch: 0)
+        static let v2FeatureMaxDisplayCount = 2
+    }
+
     // MARK: - Body
 
     var body: some View {
@@ -46,9 +56,17 @@ struct SettingsView: View {
                 .padding(.top, 18)
                 .padding(.trailing, 20)
         }
+        .overlay(alignment: .leading) {
+            if showV2FeatureTip {
+                V2FeatureTipView(onClose: dismissV2FeatureTip)
+                    .padding(.leading, 20)
+                    .transition(.move(edge: .leading).combined(with: .opacity))
+            }
+        }
         .frame(minWidth: 760, minHeight: 680)
         .onAppear {
             settings.fullscreen.normalizeConfiguration()
+            showV2FeatureTipIfNeeded()
         }
     }
 
@@ -78,6 +96,30 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .groupBoxStyle(SettingsWindowGroupBoxStyle())
+    }
+
+    // MARK: - Feature Tip
+
+    private func showV2FeatureTipIfNeeded() {
+        guard !showV2FeatureTip else { return }
+        guard AppVersionGate.shared.shouldShowFeatureTip(
+            featureKey: FeatureTips.v2FeatureKey,
+            introducedVersion: FeatureTips.v2FeatureIntroducedVersion,
+            maxDisplayCount: FeatureTips.v2FeatureMaxDisplayCount
+        ) else { return }
+
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+            showV2FeatureTip = true
+        }
+        AppVersionGate.shared.recordFeatureTipDisplayed(
+            featureKey: FeatureTips.v2FeatureKey
+        )
+    }
+
+    private func dismissV2FeatureTip() {
+        withAnimation(.easeOut(duration: 0.2)) {
+            showV2FeatureTip = false
+        }
     }
 
     private var settingsCloseButton: some View {
@@ -140,6 +182,54 @@ private struct SettingsWindowGroupBoxStyle: GroupBoxStyle {
         colorScheme == .dark
             ? Color.white.opacity(0.045)
             : Color.black.opacity(0.035)
+    }
+}
+
+// MARK: - V2 Feature Tip View
+
+private struct V2FeatureTipView: View {
+    let onClose: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text("资料库管理升级")
+                    .font(.headline)
+                Spacer(minLength: 8)
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 22, height: 22)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("关闭")
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Image(systemName: "folder.badge.gearshape")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Text("支持自定义音乐资料库储存位置")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Image(systemName: "sparkles")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Text("可为所有歌曲主动补全信息与封面")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .frame(width: 298, alignment: .leading)
+        .background(.regularMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
     }
 }
 
