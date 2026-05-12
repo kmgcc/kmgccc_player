@@ -136,8 +136,18 @@ final class UpdateWindowManager: NSObject, NSWindowDelegate, ObservableObject {
     }
     
     private func openReleasePage() {
-        let urlString = "https://github.com/kmgcc/kmgccc_player/releases/latest"
-        if let url = URL(string: urlString) {
+        let fallbackURLString = "https://github.com/kmgcc/kmgccc_player/releases/latest"
+        let urlString = versionInfo?.releaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let remoteURL = urlString.flatMap { rawValue -> URL? in
+            guard !rawValue.isEmpty,
+                  let url = URL(string: rawValue),
+                  url.scheme != nil else {
+                return nil
+            }
+            return url
+        }
+
+        if let url = remoteURL ?? URL(string: fallbackURLString) {
             NSWorkspace.shared.open(url)
         }
     }
