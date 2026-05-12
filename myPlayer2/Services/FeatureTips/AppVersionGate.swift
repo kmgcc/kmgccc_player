@@ -47,11 +47,12 @@ final class AppVersionGate {
         let storedLatest = latestInstalledVersion
 
         if storedLatest == currentVersion {
-            if previousInstalledVersion == nil,
-               let legacyLastSeen = lastSeenWhatsNewVersion,
-               legacyLastSeen < currentVersion
-            {
-                previousInstalledVersion = legacyLastSeen
+            // Legacy migration: users upgrading from versions that predate AppVersionGate
+            // may have latestInstalledVersion set but no previousInstalledVersion.
+            // Treat them as coming from a very old version so Feature Tips and
+            // What's New gating can function.
+            if previousInstalledVersion == nil {
+                previousInstalledVersion = AppVersion(major: 0)
             }
             return
         }
@@ -66,9 +67,15 @@ final class AppVersionGate {
     }
 
     func wasUpgradedFromVersionBelow(_ version: AppVersion) -> Bool {
-        guard let previousInstalledVersion else { return false }
-        let latestVersion = latestInstalledVersion ?? currentAppVersion
-        return previousInstalledVersion < version && latestVersion >= version
+        guard let previous = previousInstalledVersion else {
+            // Missing previousInstalledVersion means the migration state was
+            // never recorded.  If latestInstalledVersion is present the user
+            // has launched the app before — treat as upgrade from a very old
+            // version so Feature Tips / What's New can display.
+            return latestInstalledVersion != nil
+        }
+        let latest = latestInstalledVersion ?? currentAppVersion
+        return previous < version && latest >= version
     }
 
     func shouldShowWhatsNew(targetVersion: AppVersion) -> Bool {

@@ -20227,7 +20227,7 @@ let rE = class extends VA {
           transform: `${iB(
             U,
             4
-          )} translate(${x}em, 0em)`,
+          )} translate3d(${x}em, 0em, 0)`,
           // Fullscreen gets a very weak, controlled glow only
           // Non-fullscreen keeps the original stronger glow
           textShadow: E ? "0 0 0.14em rgba(255, 255, 255, 0.12)" : `0 0 ${Math.min(
@@ -20243,9 +20243,34 @@ let rE = class extends VA {
         composite: "replace",
         fill: "both"
       });
-      return m.onfinish = () => {
+      if (m.onfinish = () => {
         m.pause();
-      }, m.pause(), c.push(m), c;
+      }, m.pause(), c.push(m), !E) {
+        const f = this.lyricLine.isBG ? 0.1 : 0.05, D = [
+          {
+            offset: 0,
+            transform: "translate3d(0, 0em, 0)",
+            easing: "cubic-bezier(0.16, 1, 0.3, 1)"
+          },
+          {
+            offset: 0.3,
+            transform: `translate3d(0, ${-f}em, 0)`,
+            easing: "cubic-bezier(0.4, 0, 0.2, 1)"
+          },
+          { offset: 1, transform: "translate3d(0, 0em, 0)" }
+        ], N = a.animate(D, {
+          duration: r * 1.6,
+          delay: Number.isFinite(o) ? o - 200 : 0,
+          id: "emphasize-word-float",
+          iterations: 1,
+          composite: "add",
+          fill: "both"
+        });
+        N.onfinish = () => {
+          N.pause();
+        }, N.pause(), c.push(N);
+      }
+      return c;
     }), C;
   }
   get totalDuration() {

@@ -692,7 +692,7 @@ public final class AppSettings {
     /// and limited pause/resume support). Users who only need local library
     /// or Apple Music can safely disable it to declutter the UI.
     @ObservationIgnored
-    @AppStorage("enableSystemNowPlayingMode") var enableSystemNowPlayingMode: Bool = true
+    @AppStorage("enableSystemNowPlayingMode") var enableSystemNowPlayingMode: Bool = false
 
     // MARK: - Fullscreen Presentation Coordinator
 

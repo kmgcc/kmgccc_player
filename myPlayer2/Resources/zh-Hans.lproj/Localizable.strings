@@ -221,7 +221,7 @@
 "search.lddc.kg" = "酷狗";
 "search.lddc.ne" = "网易云";
 "search.lddc.mode_line" = "逐行";
-"search.lddc.mode_verbatim" = "逐字";
+"search.lddc.mode_verbatim" = "逐词";
 
 // MARK: - Errors
 "error.lddc.not_running" = "LDDC 服务未运行";

@@ -867,14 +867,15 @@ export class LyricLineEl extends LyricLineBase {
 					const offsetX = isFullscreen
 						? 0
 						: -transX * 0.03 * amount * (arr.length / 2 - i);
-					const offsetY = 0;
-
+					// Per-glyph Y motion is handled by the dedicated lift animation
+					// below, not stacked into the glow keyframes. translate3d keeps
+					// the layer 3D-composited at every offset.
 					return {
 						offset: x,
 						transform: `${matrix4ToCSS(
 							mat,
 							4,
-						)} translate(${offsetX}em, ${offsetY}em)`,
+						)} translate3d(${offsetX}em, 0em, 0)`,
 						// Fullscreen gets a very weak, controlled glow only
 						// Non-fullscreen keeps the original stronger glow
 						textShadow: isFullscreen
@@ -899,6 +900,40 @@ export class LyricLineEl extends LyricLineBase {
 			};
 			glow.pause();
 			result.push(glow);
+
+			if (!isFullscreen) {
+				// Asymmetric ease curve: quick rise to peak in ~30% of duration,
+				// long ease-in-out settle in the remaining ~70% so the descent
+				// reads as a smooth return instead of a sudden drop. translate3d
+				// keeps the glyph on a GPU layer through the entire settle.
+				const peak = this.lyricLine.isBG ? 0.1 : 0.05;
+				const liftFrames: Keyframe[] = [
+					{
+						offset: 0,
+						transform: "translate3d(0, 0em, 0)",
+						easing: "cubic-bezier(0.16, 1, 0.3, 1)",
+					},
+					{
+						offset: 0.3,
+						transform: `translate3d(0, ${-peak}em, 0)`,
+						easing: "cubic-bezier(0.4, 0, 0.2, 1)",
+					},
+					{ offset: 1, transform: "translate3d(0, 0em, 0)" },
+				];
+				const lift = el.animate(liftFrames, {
+					duration: animateDu * 1.6,
+					delay: Number.isFinite(wordDe) ? wordDe - 200 : 0,
+					id: "emphasize-word-float",
+					iterations: 1,
+					composite: "add",
+					fill: "both",
+				});
+				lift.onfinish = () => {
+					lift.pause();
+				};
+				lift.pause();
+				result.push(lift);
+			}
 
 			return result;
 		});

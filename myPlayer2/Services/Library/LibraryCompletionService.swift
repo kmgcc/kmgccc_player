@@ -308,6 +308,8 @@ private struct AlbumMetadataFieldSnapshot {
 @MainActor
 @Observable
 final class LibraryCompletionService {
+    private static let maxProgressEventCount = 4
+
     var progress: LibraryCompletionProgress = .idle
 
     @ObservationIgnored private let libraryVM: LibraryViewModel
@@ -971,8 +973,8 @@ final class LibraryCompletionService {
         progressEvents.append(
             LibraryCompletionProgressEvent(title: title, detail: detail)
         )
-        if progressEvents.count > 5 {
-            progressEvents.removeFirst(progressEvents.count - 5)
+        if progressEvents.count > Self.maxProgressEventCount {
+            progressEvents.removeFirst(progressEvents.count - Self.maxProgressEventCount)
         }
         await report(
             LibraryCompletionProgress(

@@ -35,13 +35,7 @@ struct AppVersion: Comparable, Codable {
     }
     
     var stringValue: String {
-        if patch == 0 && minor == 0 {
-            return "\(major)"
-        } else if patch == 0 {
-            return "\(major).\(minor)"
-        } else {
-            return "\(major).\(minor).\(patch)"
-        }
+        "\(major).\(minor).\(patch)"
     }
     
     static func < (lhs: AppVersion, rhs: AppVersion) -> Bool {

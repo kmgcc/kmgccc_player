@@ -221,7 +221,10 @@ defaults delete kmgccc.player kmgccc_player.lastSeenWhatsNewVersion
 ```
 previousInstalledVersion < version && latestInstalledVersion >= version
 ```
-即：用户确实是从低于目标 `version` 的版本升级上来的。
+
+**兼容规则**：如果 `previousInstalledVersion` 缺失（常见于旧版本首次升级到带门控系统的新版本），但 `latestInstalledVersion` 存在，则视为用户来自一个很旧的版本，门控正常放行。只有 `previousInstalledVersion` 和 `latestInstalledVersion` 同时缺失时才视为完全没有版本记录。
+
+**版本字符串格式**：`AppVersion.stringValue` 始终输出完整 `major.minor.patch` 格式（如 `2.0.0`），不再缩写 `2.0.0` 为 `2`。UserDefaults 中版本 key 的值必须保证稳定可比较。
 
 ### Feature Tip 门控判断
 
@@ -246,6 +249,11 @@ shouldShowFeatureTip(featureKey: String, introducedVersion: AppVersion, maxDispl
 |---|---|
 | 永久关闭标记 | `kmgccc_player.dismissedFeatureTip.<featureKey>` |
 | 已显示次数 | `kmgccc_player.featureTipDisplayCount.<featureKey>` |
+| 上次安装版本 | `kmgccc_player.previousInstalledVersion` |
+| 当前已记录版本 | `kmgccc_player.latestInstalledVersion` |
+| What's New 已读版本 | `kmgccc_player.lastSeenWhatsNewVersion` |
+
+版本 key 的值使用完整 `major.minor.patch` 格式（如 `2.0.0`），由 `AppVersion.stringValue` 保证。
 
 ### 触发时机
 
@@ -270,6 +278,25 @@ if shouldShowTip {
 - 触发时机：用户点击工具栏 multiselect 按钮进入多选模式
 - UI：`NSPopover`（`.semitransient` 行为），288×118，锚定在 multiselect 按钮下方
 - 内容：标题"连续选择" + 关闭按钮 (×) + 说明"按住 Shift 点击歌曲，可以一次选择一段连续歌曲"
+
+**v2.0 设置面板资料库提示**（`SettingsView.swift:28-33, 59-64, 101-117, 190-234`）：
+
+- `featureKey`：`"settings.v2DataManagement"`
+- `introducedVersion`：`AppVersion(major: 2, minor: 0, patch: 0)`（v2.0.0 引入）
+- `maxDisplayCount`：2
+- 触发时机：用户打开设置面板
+- UI：SwiftUI overlay，`.leading` 对齐在设置窗口左侧，带滑入动画
+- 内容：标题"v2.0 资料库管理升级" + 两条功能说明（自定义资料库位置 / 主动补全信息）
+
+**外部音乐 App 播放提示**（`AppKitMainSplitWindowController.swift:28-34, 48-50, 200-270, 671-696`）：
+
+- `featureKey`：`"playbackSource.externalAppPlayback"`
+- `introducedVersion`：`AppVersion(major: 2, minor: 0, patch: 0)`（v2.0.0 引入）
+- `maxDisplayCount`：2
+- 触发时机：主窗口首次 visible 后，sidebar 布局完成时延迟尝试
+- UI：`NSPopover`（`.semitransient` 行为），锚定到 sidebar 顶部播放来源切换滑块的 NSHostingView，`preferredEdge: .maxX`
+- 内容：标题"现已支持外部音乐 App" + 说明"授权必要权限后，可以在这里切换并使用其他音乐 App 的正在播放内容。"
+- 特殊逻辑：递增重试（0.5s → 0.75s → ... → < 3.0s），仅在实际显示 popover 时记录 display count；窗口关闭时 pending flag 重置
 
 ### 新增 Feature Tip 步骤摘要
 
@@ -383,10 +410,15 @@ defaults read kmgccc.player kmgccc_player.previousInstalledVersion
 
 # 查看最新安装的版本号
 defaults read kmgccc.player kmgccc_player.latestInstalledVersion
+```
 
-# 删除所有版本追踪（模拟全新安装）
-defaults delete kmgccc.player kmgccc_player.previousInstalledVersion
-defaults delete kmgccc.player kmgccc_player.latestInstalledVersion
+### 修复缺失 previousInstalledVersion 导致所有 Tip 失效
+
+如果 `latestInstalledVersion` 已设置但 `previousInstalledVersion` 缺失，所有版本门控都会返回 false。启动 App 一次即可自动修复（`recordCurrentAppLaunch` 会将缺失的 `previousInstalledVersion` 设为 `0.0.0`）。
+
+也可手动写入：
+```bash
+defaults write kmgccc.player kmgccc_player.previousInstalledVersion -string "0.0.0"
 ```
 
 ### 一次性清除所有 kmgccc_player 开头的 key（仅限调试，会清除所有持久化状态）

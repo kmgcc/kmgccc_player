@@ -47,12 +47,12 @@ struct DataManagementSettingsView: View {
                     Button {
                         LibraryCompletionDialogPresenter.present(libraryVM: libraryVM)
                     } label: {
-                        Text("手动补全所有歌曲信息")
+                        Text("补全所有歌曲信息")
                     }
                     .buttonStyle(.borderedProminent)
                     .clipShape(Capsule())
 
-                    Text("补全本地曲库中缺失的歌曲信息、封面和歌词，已有内容会保留")
+                    Text("自动联网补全本地曲库中缺失的歌曲信息、封面和歌词，已有内容会保留")
                         .settingsDescriptionStyle()
                 }
             }

@@ -18,29 +18,29 @@ enum WhatsNewConfiguration {
         title: "kmgccc player 新功能！",
         features: [
             WhatsNew.Feature(
-                image: .init(systemName: "text.magnifyingglass", foregroundColor: .indigo),
-                title: "AMLL DB 歌词查找",
-                subtitle: "现已支持通过 AMLL DB 搜索来自开源社区的高质量歌词。"
+                image: .init(systemName: "music.note.house.fill", foregroundColor: .indigo),
+                title: "全新 Home 页面",
+                subtitle: "浏览专辑、艺人、播放列表与每周排行，音乐世界尽收眼底。"
             ),
             WhatsNew.Feature(
-                image: .init(systemName: "dock.rectangle", foregroundColor: .blue),
-                title: "全屏控制栏焕新",
-                subtitle: "底部控制栏自动显隐，并支持不同玻璃材质，带来更沉浸也更灵活的界面体验。"
+                image: .init(systemName: "opticaldisc.fill", foregroundColor: .blue),
+                title: "资料库全面升级",
+                subtitle: "支持自定义资料库位置，扫描、补全与批量管理更加得心应手。"
             ),
             WhatsNew.Feature(
-                image: .init(systemName: "square.and.arrow.down.on.square", foregroundColor: .mint),
-                title: "导入后后台补全歌曲信息",
-                subtitle: "导入歌曲时，现可选择在后台补全封面、歌词等信息。"
+                image: .init(systemName: "arrow.up.left.and.arrow.down.right", foregroundColor: .orange),
+                title: "窗口全屏播放",
+                subtitle: "点按正在播放的封面即可进入全屏模式，随时调整显示效果与皮肤。"
             ),
             WhatsNew.Feature(
-                image: .init(systemName: "shuffle.circle", foregroundColor: .green),
-                title: "随机播放偏好记录",
-                subtitle: "随机播放现可结合您的聆听习惯进行调整，带来更符合偏好的播放体验。"
+                image: .init(systemName: "waveform", foregroundColor: .green),
+                title: "LED 模拟焕新",
+                subtitle: "采用 OKLCH 颜色体系与呼吸灯效果，重现经典播放器的温暖质感。"
             ),
             WhatsNew.Feature(
-                image: .init(systemName: "list.bullet.rectangle", foregroundColor: .orange),
-                title: "全屏播放队列",
-                subtitle: "全屏模式现已支持显示播放队列。再次点按播放顺序按钮，即可快速打开当前队列。"
+                image: .init(systemName: "clock.arrow.circlepath", foregroundColor: .purple),
+                title: "播放记忆",
+                subtitle: "重新打开 App，自动恢复上次播放状态，无缝继续聆听。"
             )
         ],
         primaryAction: .init(

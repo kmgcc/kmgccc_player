@@ -41,7 +41,7 @@ enum LDDCMode: String, CaseIterable, Identifiable, Codable {
     var displayName: String {
         switch self {
         case .line: return "逐行"
-        case .verbatim: return "逐字"
+        case .verbatim: return "逐词"
         }
     }
 }

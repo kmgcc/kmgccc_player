@@ -44,6 +44,7 @@ struct SidebarView: View {
         VStack(spacing: 0) {
             if settings.showPlaybackSourceSwitcher {
                 playbackSourceSwitcher
+                    .background(SourceSwitchAnchorProbe())
                     .padding(.horizontal, 14)
                     .padding(.top, 5)
                     .padding(.bottom, 12)
