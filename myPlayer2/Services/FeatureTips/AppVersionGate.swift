@@ -7,6 +7,19 @@
 
 import Foundation
 
+enum FeatureTipCatalog {
+    static let enabledFeatureKeys: Set<String> = [
+        "fullscreen.playbackModeRetap",
+        "playbackSource.externalAppPlayback",
+        "playlist.shiftRangeSelection",
+        "settings.v2DataManagement"
+    ]
+
+    static func isEnabled(featureKey: String) -> Bool {
+        enabledFeatureKeys.contains(featureKey)
+    }
+}
+
 final class AppVersionGate {
     static let shared = AppVersionGate()
 
@@ -49,8 +62,7 @@ final class AppVersionGate {
         if storedLatest == currentVersion {
             // Legacy migration: users upgrading from versions that predate AppVersionGate
             // may have latestInstalledVersion set but no previousInstalledVersion.
-            // Treat them as coming from a very old version so Feature Tips and
-            // What's New gating can function.
+            // Treat them as coming from a very old version so Feature Tips can display.
             if previousInstalledVersion == nil {
                 previousInstalledVersion = AppVersion(major: 0)
             }
@@ -71,7 +83,7 @@ final class AppVersionGate {
             // Missing previousInstalledVersion means the migration state was
             // never recorded.  If latestInstalledVersion is present the user
             // has launched the app before — treat as upgrade from a very old
-            // version so Feature Tips / What's New can display.
+            // version so Feature Tips can display.
             return latestInstalledVersion != nil
         }
         let latest = latestInstalledVersion ?? currentAppVersion
@@ -113,7 +125,8 @@ final class AppVersionGate {
         introducedVersion: AppVersion,
         maxDisplayCount: Int
     ) -> Bool {
-        !isFeatureTipDismissed(featureKey: featureKey)
+        FeatureTipCatalog.isEnabled(featureKey: featureKey)
+            && !isFeatureTipDismissed(featureKey: featureKey)
             && featureTipDisplayCount(featureKey: featureKey) < maxDisplayCount
             && wasUpgradedFromVersionBelow(introducedVersion)
     }

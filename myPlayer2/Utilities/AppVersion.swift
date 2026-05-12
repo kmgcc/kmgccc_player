@@ -20,10 +20,24 @@ struct AppVersion: Comparable, Codable {
     }
     
     init?(from string: String) {
-        let components = string.split(separator: ".").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
-        
-        guard !components.isEmpty, components.count <= 3 else { return nil }
-        
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parts = trimmed.split(separator: ".", omittingEmptySubsequences: false)
+
+        guard !parts.isEmpty, parts.count <= 3 else { return nil }
+
+        var components: [Int] = []
+        components.reserveCapacity(3)
+
+        for part in parts {
+            let segment = String(part)
+            guard !segment.isEmpty,
+                  segment.unicodeScalars.allSatisfy({ $0.value >= 48 && $0.value <= 57 }),
+                  let value = Int(segment) else {
+                return nil
+            }
+            components.append(value)
+        }
+
         self.major = components[0]
         self.minor = components.count > 1 ? components[1] : 0
         self.patch = components.count > 2 ? components[2] : 0

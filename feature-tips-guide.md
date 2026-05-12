@@ -4,12 +4,13 @@
 
 ## 架构概览
 
-Feature Tip 系统分为两层：
+Feature Tip 系统分为三层：
 
 - **下层：`AppVersionGate`** — 通用门控逻辑，管理版本升级检测、dismiss 状态、显示次数上限。位于 `myPlayer2/Services/FeatureTips/AppVersionGate.swift`。
+- **开发者清单：`FeatureTipCatalog`** — 集中列出当前仍参与显示判断的 tip key。位于 `AppVersionGate.swift` 顶部，供发布时手动启用/停用旧 tip。
 - **上层：具体 Tip 的 UI 呈现** — 在合适的时机（通常是用户触发相关功能时），通过 `NSPopover`（AppKit 场景）或 SwiftUI `.overlay`（SwiftUI 场景）弹出提示。位于各自的功能模块中。
 
-依赖的版本号工具：`myPlayer2/Utilities/AppVersion.swift`（`AppVersion` 结构体，支持 `major.minor.patch` 解析与比较）。
+依赖的版本号工具：`myPlayer2/Utilities/AppVersion.swift`（`AppVersion` 结构体，支持 1 到 3 段非负数字点分版本解析与比较，如 `2`、`2.0`、`2.0.0`；非法字符串不会被静默改写成其他版本）。
 
 ## AppVersionGate 门控 API
 
@@ -25,11 +26,12 @@ func shouldShowFeatureTip(
 ) -> Bool
 ```
 
-三个条件**全部满足**才返回 `true`：
+四个条件**全部满足**才返回 `true`：
 
-1. 该 Tip 未被用户永久关闭（`isFeatureTipDismissed == false`）
-2. 已显示次数未达上限（`featureTipDisplayCount < maxDisplayCount`）
-3. 用户是从低于 `introducedVersion` 的版本升级上来的；如果缺少 `previousInstalledVersion`，按“很旧版本”处理，允许新版提示正常显示
+1. 该 Tip 的 key 仍在 `FeatureTipCatalog.enabledFeatureKeys` 中
+2. 该 Tip 未被用户永久关闭（`isFeatureTipDismissed == false`）
+3. 已显示次数未达上限（`featureTipDisplayCount < maxDisplayCount`）
+4. 用户跨过了 `introducedVersion` 门槛：之前记录的版本低于该版本，当前记录的版本达到或高于该版本；首次安装或缺少旧版本记录时，按“可显示新功能提示”处理
 
 ### 状态记录方法
 
@@ -50,7 +52,7 @@ func wasUpgradedFromVersionBelow(_ version: AppVersion) -> Bool
 
 在 `AppSessionHost` 或 `App` 入口处调用 `AppVersionGate.shared.recordCurrentAppLaunch()`，它负责维护 `previousInstalledVersion` / `latestInstalledVersion` 的迁移状态。
 
-兼容要求：如果用户本地没有 `previousInstalledVersion`（常见于旧版本首次升级到带门控系统的新版本，或旧数据迁移不完整），不要把它视为“没有升级”。相关门控应把缺失的 previous version 当作低于所有已知 introduced version 的旧版本处理，确保 Feature Tip、What's New 和更新提示不会因为历史字段缺失而全部失效。
+兼容要求：首次安装也可以显示 Feature Tips。如果用户本地没有 `previousInstalledVersion`（常见于首次安装、旧版本首次升级到带门控系统的新版本，或旧数据迁移不完整），不要把它视为“没有升级”。相关门控应把缺失的 previous version 当作低于所有已知 introduced version 的旧版本处理，确保 Feature Tip 不会因为历史字段缺失而全部失效。
 
 ### UserDefaults Key 约定
 
@@ -58,6 +60,8 @@ func wasUpgradedFromVersionBelow(_ version: AppVersion) -> Bool
 - 显示次数：`kmgccc_player.featureTipDisplayCount.<featureKey>`
 - 上次安装版本：`kmgccc_player.previousInstalledVersion`
 - 当前已记录版本：`kmgccc_player.latestInstalledVersion`
+
+`FeatureTipCatalog.enabledFeatureKeys` 不是 UserDefaults，不会影响用户已有的 dismiss / display count 历史。它只是开发者维护的启用清单：把 key 移出清单后，该 tip 不再通过门控；以后重新加入同一个 key，会继续沿用原有历史计数和 dismiss 状态。
 
 ## Tip 关闭行为的两种模式
 
@@ -119,7 +123,22 @@ private enum FeatureTips {
 
 命名建议：`<模块>.<功能>`，如 `playlist.shiftRangeSelection`、`fullscreen.playbackModeRetap`。
 
-### 步骤 2：选择触发时机
+### 步骤 2：加入开发者启用清单
+
+在 `AppVersionGate.swift` 顶部的 `FeatureTipCatalog.enabledFeatureKeys` 中加入该 tip 的 key：
+
+```swift
+enum FeatureTipCatalog {
+    static let enabledFeatureKeys: Set<String> = [
+        "playlist.shiftRangeSelection",
+        "<命名空间>.<功能标识>"
+    ]
+}
+```
+
+后续某条旧 tip 不想再出现时，优先从这份清单中移除或注释掉 key，而不是改散落在各处的触发逻辑。不要更改已发布 tip 的 key，否则会丢失原有显示次数和 dismiss 历史。
+
+### 步骤 3：选择触发时机
 
 在用户触发相关功能时调用显示逻辑：
 
@@ -135,7 +154,7 @@ func handleEnterMode() {
 }
 ```
 
-### 步骤 3：实现 Tip 显示方法
+### 步骤 4：实现 Tip 显示方法
 
 **AppKit 场景**（有 NSView 锚点可用）：
 
@@ -211,7 +230,7 @@ SomeTargetView()
 
 重要：overlay 应加在目标视图的**外部**（父视图侧），而非目标视图内部，以避免被目标视图的 clipShape / 圆角遮罩裁切。
 
-### 步骤 4：编写 Tip UI（SwiftUI View）
+### 步骤 5：编写 Tip UI（SwiftUI View）
 
 ```swift
 private struct MyFeatureTipView: View {
@@ -254,7 +273,7 @@ private struct MyFeatureTipView: View {
 - 关闭按钮 22×22，`.buttonStyle(.plain)`
 - 使用 `.regularMaterial` 背景 + 圆角 + 阴影，确保在任何背景下可读
 
-### 步骤 5：管理生命周期
+### 步骤 6：管理生命周期
 
 ```swift
 private func dismissMyFeatureTip() {
@@ -298,6 +317,6 @@ AppKit NSPopover 场景中：
 | v2.0 设置面板资料库 | `myPlayer2/Views/Settings/SettingsView.swift` | overlay + 模式 A | SwiftUI 设置窗口 |
 | 外部音乐 App 播放 | `myPlayer2/AppKit/AppKitMainSplitWindowController.swift` | NSPopover + 模式 A | AppKit 窗口控制器，锚定 sidebar 播放来源滑块 |
 
-**外部音乐 App 播放 Tip 特别说明**：anchor view 在 sidebar 内部（`SlidingSelector`），但 NSPopover 挂载在窗口控制器层级，不嵌入 sidebar。popover 通过 subview walk 找到 sidebar 内 NSHostingView 作为锚点，`preferredEdge: .maxX` 使弹窗出现在 sidebar 右侧，避免被 sidebar 裁剪。触发时机为窗口首次 visible 后延迟尝试，有递增重试逻辑应对 layout 未就绪的情况。
+**外部音乐 App 播放 Tip 特别说明**：anchor view 在 sidebar 内部（`SlidingSelector` 背后的 `SourceSwitchAnchorProbe`），但 NSPopover 由窗口控制器创建，不嵌入 sidebar。popover 以 source switch anchor 为锚点，`preferredEdge: .maxX` 使弹窗出现在 sidebar 右侧，避免被 sidebar 裁剪。触发时机为窗口首次 visible 后延迟尝试，有递增重试逻辑应对 layout 未就绪的情况。
 
-搜索关键词：`FeatureTips`、`showShiftRangeSelectionTipIfNeeded`、`showPlaybackModeRetapTipIfNeeded`、`externalPlaybackTipPopover`。
+搜索关键词：`FeatureTipCatalog`、`FeatureTips`、`showShiftRangeSelectionTipIfNeeded`、`showPlaybackModeRetapTipIfNeeded`、`externalPlaybackTipPopover`。
