@@ -35,7 +35,6 @@ struct HorizontalFadeScrollContainer<Content: View>: View {
     @State private var scrollX: CGFloat = 0
     @State private var canScrollLeft = false
     @State private var canScrollRight = false
-    @State private var scrollPosition = ScrollPosition(edge: .leading)
     @State private var activeScrollEdge: HorizontalScrollEdge?
     @State private var nativeScrollView: NSScrollView?
     @Environment(\.colorScheme) private var colorScheme
@@ -90,43 +89,31 @@ struct HorizontalFadeScrollContainer<Content: View>: View {
     }
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            // LazyHStack: only on-screen + immediate-prefetch cards are
-            // realized. With ~15-20 artist/album cards per row, eager HStack
-            // builds and lays out every card as the parent vertical
-            // ScrollView scrolls — even cards far below the viewport. Lazy
-            // fixes that without changing any visible layout.
-            LazyHStack(spacing: spacing) {
-                content()
-            }
-            .background(
-                HorizontalNativeScrollViewResolver { scrollView in
-                    nativeScrollView = scrollView
-                }
-            )
-            // Asymmetric scroll content padding lets callers align the first
-            // item with the Home content left edge while still allowing items
-            // to drift left/right under adjacent glass regions when scrolling.
-            // Vertical padding keeps hover lift / soft shadows from clipping
-            // at the ScrollView content rect.
-            .padding(.leading, leadingScrollPadding)
-            .padding(.trailing, trailingScrollPadding)
-            .padding(.vertical, verticalPadding)
-        }
-        .scrollPosition($scrollPosition)
-        .scrollClipDisabled(true)
-        .modifier(
-            HorizontalScrollMetricsModifier(
-                isEnabled: needsScrollMetrics,
-                tracksExactScrollOffset: needsExactScrollOffset,
-                contentWidth: $contentWidth,
-                viewportWidth: $viewportWidth,
-                scrollX: $scrollX,
-                canScrollLeft: $canScrollLeft,
-                canScrollRight: $canScrollRight,
-                onHorizontalScrollOffsetChange: onHorizontalScrollOffsetChange,
-                onScrollMetricsChange: onScrollMetricsChange
-            )
+        // The ScrollView and its high-frequency state (scroll-position
+        // tracking, geometry callbacks, native-view resolver) live in a
+        // child subtree so a per-scroll-frame body re-eval cannot bubble up
+        // into this container — and from there into the parent VStack of
+        // `HomeArtistsSection`/`HomeAlbumsSection`, where the cascade forces
+        // SwiftUI to remeasure every visible card's text on each frame.
+        // Parent state (`contentWidth`, `canScrollLeft`, etc.) is written
+        // via bindings only on material changes, so this body re-evaluates
+        // at most on edge-availability flips or coarse size changes.
+        HorizontalScrollSurface(
+            spacing: spacing,
+            leadingScrollPadding: leadingScrollPadding,
+            trailingScrollPadding: trailingScrollPadding,
+            verticalPadding: verticalPadding,
+            needsScrollMetrics: needsScrollMetrics,
+            needsExactScrollOffset: needsExactScrollOffset,
+            contentWidth: $contentWidth,
+            viewportWidth: $viewportWidth,
+            scrollX: $scrollX,
+            canScrollLeft: $canScrollLeft,
+            canScrollRight: $canScrollRight,
+            nativeScrollView: $nativeScrollView,
+            onHorizontalScrollOffsetChange: onHorizontalScrollOffsetChange,
+            onScrollMetricsChange: onScrollMetricsChange,
+            content: content
         )
         .modifier(ConditionalFadeMask(showsEdgeFade: showsEdgeFade, mask: scrollFadeMask))
         .overlay {
@@ -269,14 +256,14 @@ struct HorizontalFadeScrollContainer<Content: View>: View {
     }
 
     private func scrollTo(_ target: CGFloat) {
+        // Buttons only become visible after `onScrollGeometryChange` has
+        // fired with valid metrics, by which point the native-view resolver
+        // has already resolved the enclosing NSScrollView on a prior runloop
+        // tick. If the resolver hasn't caught up, drop the click silently —
+        // there is no SwiftUI `ScrollPosition` binding to fall back to.
         guard let scrollView = nativeScrollView,
               let documentView = scrollView.documentView
-        else {
-            withAnimation(.easeInOut(duration: 0.42)) {
-                scrollPosition.scrollTo(x: target)
-            }
-            return
-        }
+        else { return }
 
         let clipView = scrollView.contentView
         let maxNativeX = max(0, documentView.bounds.width - clipView.bounds.width)
@@ -292,6 +279,78 @@ struct HorizontalFadeScrollContainer<Content: View>: View {
                 scrollView.reflectScrolledClipView(clipView)
             }
         }
+    }
+}
+
+/// Hosts the actual `ScrollView` + `LazyHStack` content closure, paddings,
+/// native-view resolver, and the scroll-metrics modifier. Isolating these
+/// inside a child view keeps any per-scroll-frame state writes inside this
+/// subtree's invalidation scope and prevents them from re-evaluating the
+/// parent `HorizontalFadeScrollContainer.body` — which in turn would
+/// cascade up to `HomeArtistsSection` / `HomeAlbumsSection` and force
+/// SwiftUI to remeasure visible card text on every scroll/resize frame.
+private struct HorizontalScrollSurface<Content: View>: View {
+    let spacing: CGFloat
+    let leadingScrollPadding: CGFloat
+    let trailingScrollPadding: CGFloat
+    let verticalPadding: CGFloat
+    let needsScrollMetrics: Bool
+    let needsExactScrollOffset: Bool
+    @Binding var contentWidth: CGFloat
+    @Binding var viewportWidth: CGFloat
+    @Binding var scrollX: CGFloat
+    @Binding var canScrollLeft: Bool
+    @Binding var canScrollRight: Bool
+    @Binding var nativeScrollView: NSScrollView?
+    let onHorizontalScrollOffsetChange: ((CGFloat) -> Void)?
+    let onScrollMetricsChange: ((CGFloat, CGFloat, CGFloat) -> Void)?
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            // LazyHStack: only on-screen + immediate-prefetch cards are
+            // realized. With ~15-20 artist/album cards per row, eager HStack
+            // builds and lays out every card as the parent vertical
+            // ScrollView scrolls — even cards far below the viewport. Lazy
+            // fixes that without changing any visible layout.
+            LazyHStack(spacing: spacing) {
+                content()
+            }
+            .background(
+                HorizontalNativeScrollViewResolver { scrollView in
+                    // Identity guard: the resolver's `updateNSView` fires on
+                    // every SwiftUI update of the host NSView, and writing
+                    // the same NSScrollView reference into `@State` would
+                    // still count as a state mutation for some Swift class
+                    // optional cases. Compare first.
+                    if scrollView !== nativeScrollView {
+                        nativeScrollView = scrollView
+                    }
+                }
+            )
+            // Asymmetric scroll content padding lets callers align the first
+            // item with the Home content left edge while still allowing items
+            // to drift left/right under adjacent glass regions when scrolling.
+            // Vertical padding keeps hover lift / soft shadows from clipping
+            // at the ScrollView content rect.
+            .padding(.leading, leadingScrollPadding)
+            .padding(.trailing, trailingScrollPadding)
+            .padding(.vertical, verticalPadding)
+        }
+        .scrollClipDisabled(true)
+        .modifier(
+            HorizontalScrollMetricsModifier(
+                isEnabled: needsScrollMetrics,
+                tracksExactScrollOffset: needsExactScrollOffset,
+                contentWidth: $contentWidth,
+                viewportWidth: $viewportWidth,
+                scrollX: $scrollX,
+                canScrollLeft: $canScrollLeft,
+                canScrollRight: $canScrollRight,
+                onHorizontalScrollOffsetChange: onHorizontalScrollOffsetChange,
+                onScrollMetricsChange: onScrollMetricsChange
+            )
+        )
     }
 }
 
@@ -479,9 +538,19 @@ private struct HorizontalScrollMetricsModifier: ViewModifier {
                         offsetX: max(0, geo.contentOffset.x)
                     )
                 } action: { _, newValue in
+                    // For non-fade rails (Artists/Albums) the only consumers of
+                    // `contentWidth`/`viewportWidth` are `isScrollable`,
+                    // `maxScroll`, and `edgeActivationWidth` — all tolerant of
+                    // sub-pixel rounding. Allowing every live-resize delta to
+                    // write parent `@State` would invalidate the rail
+                    // container body once per resize frame, cascading into a
+                    // SwiftUI remeasure of all visible card text. Fade rails
+                    // keep zero epsilon because their opacity ramp needs exact
+                    // offset precision.
+                    let sizeEpsilon: CGFloat = tracksExactScrollOffset ? 0 : 1
                     let didChangeSize =
-                        contentWidth != newValue.contentWidth
-                            || viewportWidth != newValue.viewportWidth
+                        abs(contentWidth - newValue.contentWidth) > sizeEpsilon
+                            || abs(viewportWidth - newValue.viewportWidth) > sizeEpsilon
                     let newCanScrollLeft = newValue.offsetX > 8
                     let newCanScrollRight =
                         max(0, newValue.contentWidth - newValue.viewportWidth) - newValue.offsetX > 8
