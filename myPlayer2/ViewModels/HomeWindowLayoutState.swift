@@ -117,15 +117,17 @@ final class HomeWindowLayoutState {
         didSet {
             geometryPublisher.send(geometry)
             let next = Self.makeDiscreteSnapshot(from: geometry)
-            if next != discreteSnapshot {
-                discreteSnapshot = next
-            }
+            scheduleDiscreteSnapshotCommit(target: next)
         }
     }
 
     /// Coarse layout snapshot for SwiftUI body consumers. Only changes when
     /// a discrete bucket flips (mode tier, integer pane insets, 16pt content
-    /// width steps), so resize ticks within a bucket do not invalidate views.
+    /// width steps) AND the geometry has been quiet for at least
+    /// `snapshotDebounceInterval`. The debounce keeps live-resize and
+    /// sidebar/lyrics pane animations from invalidating Home's body 12-25
+    /// times per gesture; pixel-precise live geometry is still available
+    /// via `geometry` / `geometryPublisher` for AppKit/CALayer consumers.
     var discreteSnapshot: DiscreteSnapshot = .empty
 
     /// Continuous-geometry pipe for AppKit/CALayer consumers (e.g. the Home
@@ -133,6 +135,19 @@ final class HomeWindowLayoutState {
     /// ticks do not propagate body invalidations.
     @ObservationIgnored
     let geometryPublisher = CurrentValueSubject<Geometry, Never>(.empty)
+
+    /// Trailing-edge debounce window for committing `discreteSnapshot`. Long
+    /// enough to absorb a live window resize and a 250ms sidebar/lyrics
+    /// `animator()` toggle, short enough that the user perceives the final
+    /// settled snapshot as snapping into place immediately after they let go.
+    @ObservationIgnored
+    private static let snapshotDebounceInterval: TimeInterval = 0.12
+
+    @ObservationIgnored
+    private var pendingDiscreteSnapshot: DiscreteSnapshot?
+
+    @ObservationIgnored
+    private var discreteSnapshotCommitWorkItem: DispatchWorkItem?
 
     private static let contentWidthBucketStep: CGFloat = 16
     /// Step size for `leftInset` / `rightInset` quantization. Sidebar /
@@ -161,6 +176,48 @@ final class HomeWindowLayoutState {
             leftInset: Int((g.leftInset / insetBucketStep).rounded()) * Int(insetBucketStep),
             rightInset: Int((g.rightInset / insetBucketStep).rounded()) * Int(insetBucketStep),
             mode: modeBucket
+        )
+    }
+
+    /// Coalesce `discreteSnapshot` updates so a live window resize or a
+    /// 250ms sidebar/lyrics pane animation does not invalidate Home's
+    /// SwiftUI body on every quantized bucket flip. First valid snapshot
+    /// commits immediately so initial layout is correct; subsequent
+    /// changes are committed after the geometry has been quiet for
+    /// `snapshotDebounceInterval`. If a flip back to the current value
+    /// arrives during the debounce window, any pending commit is
+    /// cancelled so no body invalidation is queued.
+    private func scheduleDiscreteSnapshotCommit(target: DiscreteSnapshot) {
+        if target == discreteSnapshot {
+            discreteSnapshotCommitWorkItem?.cancel()
+            discreteSnapshotCommitWorkItem = nil
+            pendingDiscreteSnapshot = nil
+            return
+        }
+
+        if !discreteSnapshot.hasValidLayout {
+            discreteSnapshotCommitWorkItem?.cancel()
+            discreteSnapshotCommitWorkItem = nil
+            pendingDiscreteSnapshot = nil
+            discreteSnapshot = target
+            return
+        }
+
+        pendingDiscreteSnapshot = target
+        discreteSnapshotCommitWorkItem?.cancel()
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            let pending = self.pendingDiscreteSnapshot
+            self.pendingDiscreteSnapshot = nil
+            self.discreteSnapshotCommitWorkItem = nil
+            guard let pending, pending != self.discreteSnapshot else { return }
+            self.discreteSnapshot = pending
+        }
+        discreteSnapshotCommitWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.snapshotDebounceInterval,
+            execute: workItem
         )
     }
 
