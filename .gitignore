@@ -1,7 +1,9 @@
 # Manual exclusions
 BKThemes/
 apple-audio-visualization-main/
+# AMLL source worktrees live in ../amll-sources/.
 applemusic-like-lyrics-full-refractor/
+applemusic-like-lyrics-full-custom-core/
 LDDC-main/
 skills/
 ARCHITECTURE.md
