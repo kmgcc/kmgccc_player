@@ -51,6 +51,7 @@ dist/
 myPlayer2/Resources/Tools/qqmusic-helper/.venv/
 myPlayer2/Resources/Tools/qqmusic-helper/.venv
 myPlayer2/Resources/Tools/qqmusic-helper/.build-universal/
+myPlayer2/Resources/Tools/qqmusic-helper/_internal 2.bundle/
 .qqmusic-helper-venv/
 
 # Tools / Binary distributions
@@ -60,4 +61,4 @@ Tools/lddc-server/
 *.bak
 .claude/worktrees/
 .worktrees/
-.worktrees/
+superteam/
