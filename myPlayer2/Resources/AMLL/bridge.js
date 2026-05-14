@@ -7,6 +7,27 @@
 (function() {
     'use strict';
     
+    const serializeConsoleArg = function(arg) {
+        if (arg instanceof Error) {
+            return arg.stack || arg.message || String(arg);
+        }
+        if (typeof arg === 'object' && arg !== null) {
+            try {
+                return JSON.stringify(arg);
+            } catch (error) {
+                return Object.prototype.toString.call(arg);
+            }
+        }
+        return String(arg);
+    };
+
+    const postLogToSwift = function(msg) {
+        if (window.debugLog) window.debugLog(msg);
+        if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.log) {
+            window.webkit.messageHandlers.log.postMessage(msg);
+        }
+    };
+
     // Redirect Console Log to Swift
     const originalLog = console.log;
     console.log = function() {
@@ -14,30 +35,40 @@
         originalLog.apply(console, arguments);
         
         // Format message
-        const msg = Array.from(arguments).map(arg => {
-            if (typeof arg === 'object') return JSON.stringify(arg);
-            return String(arg);
-        }).join(' ');
-        
-        // Updates debug overlay
-        if (window.debugLog) window.debugLog(msg);
-        
-        // Send to Swift
-        if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.log) {
-            window.webkit.messageHandlers.log.postMessage(msg);
-        }
+        const msg = Array.from(arguments).map(serializeConsoleArg).join(' ');
+        postLogToSwift(msg);
+    };
+
+    const originalWarn = console.warn;
+    console.warn = function() {
+        originalWarn.apply(console, arguments);
+        const msg = "[WARN] " + Array.from(arguments).map(serializeConsoleArg).join(' ');
+        postLogToSwift(msg);
     };
     
     const originalError = console.error;
     console.error = function() {
         originalError.apply(console, arguments);
-        const msg = "[ERROR] " + Array.from(arguments).join(' ');
-        if (window.debugLog) window.debugLog(msg);
-        
-        if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.log) {
-            window.webkit.messageHandlers.log.postMessage(msg);
-        }
+        const msg = "[ERROR] " + Array.from(arguments).map(serializeConsoleArg).join(' ');
+        postLogToSwift(msg);
     };
+
+    window.addEventListener('error', function(event) {
+        console.error(
+            '[AMLL-BOOT][window.onerror]',
+            event.message || 'unknown error',
+            event.filename || '',
+            event.lineno || 0,
+            event.colno || 0,
+            event.error || ''
+        );
+    });
+
+    window.addEventListener('unhandledrejection', function(event) {
+        console.error('[AMLL-BOOT][unhandledrejection]', event.reason || '');
+    });
+
+    console.log('[AMLL-BOOT] bridge loaded href=' + window.location.href);
     
     // State
     let isReady = false;

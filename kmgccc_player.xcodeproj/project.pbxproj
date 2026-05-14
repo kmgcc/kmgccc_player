@@ -82,12 +82,12 @@
 				"Resources/mediaremote-adapter/build/MediaRemoteAdapterTestClient",
 				"Resources/mediaremote-adapter/LICENSE",
 				"Resources/mediaremote-adapter/README.md",
-					"Resources/Tools/qqmusic-helper/build-universal.sh",
-					"Resources/Tools/qqmusic-helper/main.py",
-					"Resources/Tools/qqmusic-helper/requirements.txt",
-					"Resources/Tools/sacad/sacad",
-					scan_ui.py,
-				);
+				"Resources/Tools/qqmusic-helper/build-universal.sh",
+				"Resources/Tools/qqmusic-helper/main.py",
+				"Resources/Tools/qqmusic-helper/requirements.txt",
+				Resources/Tools/sacad/sacad,
+				scan_ui.py,
+			);
 			target = 935118912F3231C500766A5F /* kmgccc_player */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */

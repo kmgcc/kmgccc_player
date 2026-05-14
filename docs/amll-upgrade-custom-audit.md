@@ -1,23 +1,25 @@
 # AMLL 升级前自定义盘点与兼容性审计
 
-审计/整理日期：2026-05-13  
-范围：升级前目录、Git、文档与备份整理。未开始新版 AMLL 接入，未修改 `myPlayer2/Resources/AMLL/` bundle 行为，未迁移任何 AMLL 功能。
+审计/整理日期：2026-05-13，升级执行补充：2026-05-14  
+范围：升级前目录、Git、文档与备份整理；2026-05-14 起开始新版基础接入。生成 bundle 必须从新版 fork 源码构建后同步，不手改 `myPlayer2/Resources/AMLL/amll-core.js`。
 
 ## 1. 当前集成基线
 
 | 项目 | 当前情况 | 证据/备注 |
 |---|---|---|
-| App 当前使用的 AMLL core 版本 | `@applemusic-like-lyrics/core` `0.2.1` | 冻结源码见 `/Users/kmg/Documents/vscode/player/amll-sources/applemusic-like-lyrics-kmgcccplayer-custom-legacy-0.2.1` |
+| App 升级前使用的 AMLL core 版本 | `@applemusic-like-lyrics/core` `0.2.1` | 冻结源码见 `/Users/kmg/Documents/vscode/player/amll-sources/applemusic-like-lyrics-kmgcccplayer-custom-legacy-0.2.1` |
 | 最新本地 AMLL core 版本 | `@applemusic-like-lyrics/core` `0.5.0` | `/Users/kmg/Documents/vscode/player/amll-sources/applemusic-like-lyrics-kmgcccplayer-integration/packages/core/package.json` |
+| App 当前 AMLL 资源状态 | Phase 1 已切到新版 fork 的 myPlayer 专用 DOM-only bundle | 由 `scripts/sync-amll-from-fork.sh` 从新版 fork 构建并同步；旧 bundle 仍在备份目录 |
 | 旧版官方参考源码 | `/Users/kmg/Documents/vscode/player/amll-sources/applemusic-like-lyrics-upstream-legacy-0.2.1-reference` | 用作 custom diff baseline，tag `legacy-upstream-reference-20260513` |
 | 旧 custom 源码位置 | `/Users/kmg/Documents/vscode/player/amll-sources/applemusic-like-lyrics-kmgcccplayer-custom-legacy-0.2.1` | 已从 App 仓库外移，tag `legacy-custom-core-20260513` |
 | 新版集成源码位置 | `/Users/kmg/Documents/vscode/player/amll-sources/applemusic-like-lyrics-kmgcccplayer-integration` | `origin` 指向 fork，`upstream` 指向官方仓库，当前分支 `myplayer-integration` |
 | 临时最新版副本 | `/Users/kmg/Documents/vscode/player/amll-sources/_superseded/applemusic-like-lyrics-main-temp-20260513` | 已归档，不作为后续集成 base |
-| bundle 产物位置 | `/Users/kmg/Documents/vscode/player/myPlayer2/myPlayer2/Resources/AMLL/amll-core.js` | 当前 sha256 `456c74ee...52404c8`，大小约 1.19 MB |
-| CSS 产物位置 | `/Users/kmg/Documents/vscode/player/myPlayer2/myPlayer2/Resources/AMLL/style.css` | 当前 sha256 `1df257e4...0aef23` |
-| App HTML 壳 | `/Users/kmg/Documents/vscode/player/myPlayer2/myPlayer2/Resources/AMLL/index.html` | 当前 bundle marker `window-emphasis-lift-20260511-v34` |
+| bundle 产物位置 | `/Users/kmg/Documents/vscode/player/myPlayer2/myPlayer2/Resources/AMLL/amll-core.js` | Phase 1 startup-fix sha256 `599ef9f9...ff92a40e`，110,328 bytes |
+| parser 产物位置 | `/Users/kmg/Documents/vscode/player/myPlayer2/myPlayer2/Resources/AMLL/amll-lyric.js` | Phase 1 sha256 `974ee4ea...fc5451e2`，198,970 bytes |
+| CSS 产物位置 | `/Users/kmg/Documents/vscode/player/myPlayer2/myPlayer2/Resources/AMLL/style.css` | Phase 1 sha256 `4770c9eb...496d00b`，4,727 bytes |
+| App HTML 壳 | `/Users/kmg/Documents/vscode/player/myPlayer2/myPlayer2/Resources/AMLL/index.html` | 当前 bundle marker `amll-upgrade-phase1-20260514` |
 | 当前 bundle 备份 | `/Users/kmg/Documents/vscode/player/amll-sources/_backups/current-app-amll-bundle-20260513/Resources-AMLL` | 包含 `SHA256SUMS.txt` 与 `MANIFEST.txt` |
-| App 实际使用播放器 | `LyricPlayer`，映射到普通 DOM renderer `DomLyricPlayer` | `index.html` 里 `import { LyricPlayer, parseTTML } from "./amll-core.js"`，并 `new LyricPlayer()` |
+| App 实际使用播放器 | `LyricPlayer`，映射到普通 DOM renderer `DomLyricPlayer` | Phase 1 中 `index.html` 从 `amll-core.js` 导入 `LyricPlayer`，从 `amll-lyric.js` 导入 `parseTTML` |
 | App 当前不使用 | `CanvasLyricPlayer`、`DomSlimLyricPlayer` | 新版已移除 canvas；dom-slim 自定义不应继续迁移，除非后续显式启用 |
 | 当前 Git 整理状态 | App 仓库只保留运行 bundle 与接入文档；旧 custom 源码迁出 App 仓库 | App 仓库后续提交应包含旧源码删除、`.gitignore`、本文档 |
 
@@ -57,6 +59,23 @@
 | `packages/core/src/lyric-player/dom-slim/*` | 将离散高亮、exit fade、mask alpha 等同步复制到 dom-slim | 曾为 slim renderer 准备 | 当前不依赖，App 用 `LyricPlayer` DOM | 最新 core 未导出 dom-slim | 不迁移。删除维护负担 |
 | `packages/core/src/lyric-player/canvas/*` | 当前 custom 仍保留 canvas renderer | 历史残留 | 当前不依赖 | 最新 `0.4.0` 已移除 canvas | 不迁移 |
 
+### 2.1 离散逐字高亮风险边界
+
+离散逐字/逐词高亮仍是保留的产品需求，但旧实现不能作为可靠迁移基线直接照搬。已知风险包括：
+
+- 提前切行时 exiting line 的高亮淡出丢失。
+- 行隐退后存在高亮残留，随后又突然闪没。
+- 即使关闭离散高亮，也会污染 smooth 默认路径。
+- 过去为修离散高亮加入的强力 exiting-line suppress，疑似破坏从窗口进入全屏时历史行显示。
+- 当前窗口歌词字符裁切、强调词回落末尾下坠异常，可能与旧离散高亮/exit suppress/line lifecycle patch 有关；至少不能默认迁移。
+
+迁移原则：
+
+- 保留“离散高亮”作为后续产品能力。
+- 不把旧实现当作可靠迁移基线。
+- Phase 1 先恢复纯净新版 smooth 路径，并确认关闭 discrete 时完全接近 upstream 行为。
+- 后续若重做 discrete，必须基于新版 renderer/timeline 重新设计；关闭 discrete 时不得残留 class、data attribute、动画、opacity/mask 覆盖或 line suppress 行为。
+
 ## 3. App 前端层自定义清单
 
 | 位置 | 自定义点 | 依赖的 DOM/API | 迁移风险 | 建议 |
@@ -73,6 +92,15 @@
 | `Resources/AMLL/index.html` config consumer | `setConfig` 消费字体、颜色、blend、timing、mode、align 等 | `setEnableBlur`、`setEnableSpring`、`setWordFadeWidth`、`setOverscanPx`、`setAlignAnchor`、`setAlignPosition` 等 | 中。多数 public API 仍在；`setWordHighlightMode`、lead-in API 不在 | 保留 config schema，缺失项走 adapter 或 custom patch |
 | `Resources/AMLL/index.html` diagnostics/profile | wrap `setLyricLines`、`calcLayout`、line `rebuildElement/updateMaskImage*`，debug dump visible layers | 方法名和 line object internals | 中高。新版方法仍在，但 timeline 字段变了 | 降级为可选诊断，不阻塞播放 |
 | `Resources/AMLL/bridge.js` | pending calls、capabilities、Swift onReady、user seek callback | `window.LyricsRenderer` / `window.AMLL` | 低。与 core 解耦 | 可直接保留 |
+
+### 3.1 Fullscreen Surface 产品语义
+
+fullscreen surface 不是单纯的 AMLL core 渲染模式，而是 App 侧既定视觉语义：
+
+- 普通全屏歌词皮肤主要通过颜色明度区分歌词层级，不依赖整体 opacity 发灰；除高亮相关部分外，不应随意引入 opacity。
+- 全屏封面渐变模糊模式允许透明度参与合成，属于另一套视觉语义。
+- 浅色/深色模式下分别存在 `plus-lighter` / `plus-darker` 等混合策略，升级时不能无意丢失。
+- 本轮基础接入阶段先登记这些语义，并尽量保持现有 App 层壳逻辑；不急于重做 fullscreen/cover blur 的视觉 patch。
 
 ## 4. Swift 层 AMLL 契约清单
 
@@ -103,6 +131,16 @@
 - `currentLyricLineObjects` / `splittedWords` / `element` 注入层的生命周期：最新版 hide 仍可能 dispose DOM，当前 fullscreen/cover blur 注入层可能被销毁。
 - 纯净新版接入阶段的显式降级：`wordHighlightMode`、`leadInMs`、`nearSwitchGapMs` 在新版无等价 public API 时必须进入明确 fallback，并输出日志标记，例如 `[AMLL-UPGRADE-DOWNGRADE] wordHighlightMode ignored by pure upstream core`，避免静默失效被误判为功能正常。
 - 纯净新版 smoke test 样本：必须覆盖普通逐字、CJK、英文、对唱、背景人声、长间奏、暂停 seek、同一句内拖动、fullscreen cover blur。
+
+### 5.1 升级时不得盲目继承的旧 patch
+
+- 离散高亮相关 suppress 和 mask/opacity 覆盖。
+- exiting line 的强力抑制逻辑。
+- 为修历史 bug 临时加入、但可能破坏 fullscreen/history line 生命周期的 patch。
+- hide/show 不 dispose 的旧 line lifecycle patch，除非新版基础接入验证证明 App 注入层无法外置恢复。
+- fullscreen mask alpha / glow / lift 的旧 core patch，Phase 1 不迁移，后续按视觉回归结果单独评估。
+
+迁移时这些 patch 必须先审计、再小范围重做；不得因为旧 custom core 中存在就默认搬运。
 
 ### P1：新版跑通后优先补
 
@@ -165,3 +203,97 @@
 4. 先补 adapter 能解决的：lead-in 预处理、状态读取、fullscreen/cover blur 可重入 patch。
 5. 最后只对无法外置的功能做小 core patch：离散高亮、exit data 标记、必要的 line lifecycle。
 6. 每次 core patch 后构建源码产物，再同步到 `myPlayer2/Resources/AMLL/`；不要手改 `amll-core.js`。
+
+## 8. 当前执行计划
+
+### Phase 1：新版基础接入 App
+
+- 使用 `/Users/kmg/Documents/vscode/player/amll-sources/applemusic-like-lyrics-kmgcccplayer-integration` 的 `myplayer-integration` 分支作为新版源码 base。
+- 接入纯净新版 DOM `LyricPlayer` 到 App，解决 parser import / `parseTTML` 来源、bundle 产物命名与同步、App `Resources/AMLL/` 引用兼容、timeline/internal-state adapter、新旧 parser 输出 shape 结构 diff。
+- 对 `wordHighlightMode`、`leadInMs`、`nearSwitchGapMs` 先做显式降级和日志标记；其中时间字段在 Phase 2 恢复前不得静默失效。
+- Phase 1 不迁移离散逐字高亮、exit highlight catch-up、exiting line suppress、hide/show 不 dispose 的旧 line lifecycle patch、fullscreen mask alpha / glow / lift 的旧 core patch。
+
+### Phase 2：恢复时间相关、已验证必要的自定义
+
+- 在新版基础接入可运行后，优先接回 `leadInMs`、`nearSwitchGapMs`、必要的歌词提前 / 近距离换行逻辑。
+- 验证 `timeOffsetMs` / `seekTimeOffsetMs` 与新版 parser shape 的兼容性。
+- 优先使用 adapter / lyric preprocessing；只有明确无法外置时，才做小而独立的 core patch。
+- 时间相关改动必须实际接入 App，并通过构建、parser diff、配置 downgrade/恢复日志做基本验证。
+
+## 9. 2026-05-14 执行记录
+
+### 已完成
+
+- 新版 fork 增加 myPlayer 专用构建入口：
+  - `packages/core/src/myplayer-app.ts` 只导出 DOM `LyricPlayer`、interfaces 与 spring type，不导出 bg-render/Pixi。
+  - `packages/core/tsdown.myplayer.config.ts` 构建自包含 `dist-myplayer/amll-core.mjs`。
+  - `packages/lyric/src/myplayer-app.ts` 提供 App 专用 `parseTTML`，优先走 upstream parser；当新版严格 parser 因旧式 plain TTML 缺少 `itunes:key` 返回 0 行时，fallback 到旧式 `<p begin/end>` 行解析；同时对多语言翻译优先选择中文 `zh*`，避免新版默认拿到英文翻译。
+  - `packages/lyric/tsdown.myplayer.config.ts` 构建自包含 `dist-myplayer/amll-lyric.mjs`。
+- App 仓库新增 `scripts/sync-amll-from-fork.sh`，从新版 fork 构建后同步到 `Resources/AMLL/`；不手改 generated bundle。
+- App `index.html` 已改为从 `amll-core.js` 导入 `LyricPlayer`、从 `amll-lyric.js` 导入 `parseTTML`。
+- App `index.html` 增加 timeline/internal-state 兼容访问器，兼容新版 `timelineState`。
+- `wordHighlightMode` 在新版缺少 core API 时显式降级到 smooth，并输出 `[AMLL-UPGRADE-DOWNGRADE]` 日志；旧离散高亮不迁移。
+- `leadInMs` / `nearSwitchGapMs` 已通过 App 侧 lyric preprocessing adapter 恢复基础时间行为；core 缺少旧 API 时会输出日志并说明由 adapter 接管。
+- 新增 `scripts/verify-amll-parser-shape.mjs`，用旧 bundle 备份与当前新版 parser 对同一 TTML 样本做结构 diff。
+
+### 验证结果
+
+- 新版 myPlayer bundle 构建通过；`amll-core.js` / `amll-lyric.js` 无裸 npm import。
+- Node import smoke test 通过：`LyricPlayer` 与 `parseTTML` 均可导入。
+- Parser diff：`sample.ttml` 行结构通过，`lines=3`，`metadataDiffs=0`。
+- 扩展 parser diff：官方 fixture 暴露新版 parser 与旧 parser 的真实差异：
+  - `apple-music-other-duet.ttml` 行结构兼容，只有 metadata 增量差异。
+  - `apple-music-duet.ttml` 在背景声部/翻译拆分上有差异；新版会给背景行更完整的 start/end 和独立翻译，旧版会把部分背景翻译拼到主行。
+  - `complex-test-song.ttml` 在 romanization 对齐、合唱/背景行 duet 判定、背景翻译拆分上有差异；新版更偏向结构化逐字 romanWord，旧版更偏向整行 romanLyric。
+  - `ruby-test-song.ttml` 旧 parser 会触发 wasm `unreachable`，新版 parser 可作为后续 ruby 兼容验证基线。
+- Xcode Debug 构建通过：`xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player -configuration Debug -destination 'platform=macOS' build`。
+- 构建出的 App bundle 已包含新版 `Resources/AMLL/amll-core.js`、`amll-lyric.js`、`style.css` 与更新后的 `index.html`。
+
+### 2026-05-14 启动空白问题排查与修复
+
+排查链路结论：
+
+- `Resources/AMLL/index.html` 已在 WKWebView 中加载；`bridge.js`、module script 均执行。
+- 带 `?v=amll-upgrade-phase1-20260514` 的本地 module import 在本次 WKWebView 验证中可正常 resolve；`LyricPlayer` 与 `parseTTML` 的 import 都成功，因此 `?v=` 不是本次空白根因，暂未移除。
+- `window.AMLL` ready 链路正常：前端调用 `_onRendererReady()`，Swift 收到 `onReady`，随后 replay config 和下发 `setLyricsTTML`。
+- `parseTTML` 成功解析当前 TTML：`lineCount=79`。
+- 真正失败点是 `lyricPlayer.setLyricLines(lines)`：新版 myPlayer 专用 core bundle 中仍残留 `process.env.NODE_ENV !== "production"`，WKWebView 没有 Node `process`，导致 `ReferenceError: Can't find variable: process`，歌词 DOM 未生成。
+
+修复方式：
+
+- 在新版 fork 的 `packages/core/tsdown.myplayer.config.ts` 中把浏览器 bundle 的 define 改为生产常量：`import.meta.env.DEV=false`，并显式定义 `process.env.NODE_ENV="production"`。
+- 通过 `scripts/sync-amll-from-fork.sh` 重新从源码构建并同步 `amll-core.js`；没有手改 generated bundle。
+- `bridge.js` 增加 `window.onerror`、`unhandledrejection`、`console.warn/error` 转发，Swift `LyricsWebViewStore` 将 `[AMLL-BOOT]`、ready、setLyrics、错误类日志提升到可见等级，避免后续 WKWebView 启动失败只能猜。
+
+验证结果：
+
+- 重建后的 `amll-core.js` 已无 `process` / `NODE_ENV` 残留。
+- 实际启动 Debug App 后日志显示：module import 成功、ready 成功、`setLyricsTTML len=36063`、`parseTTML lineCount=79`、`setLyricLines done lineCount=79`、`Loaded lines: 79`。
+- 截图确认主窗口右侧歌词恢复显示。
+
+### 2026-05-14 低分辨率渲染核查
+
+旧版 0.75 倍渲染能力的真实实现不是 DOM `LyricPlayer.setRenderScale()`：
+
+- Swift 设置层使用 `amllHighResolutionLyricsEnabled` 作为用户开关；默认未开启高分辨率时，`amllLowResolutionModeEnabled == true`。
+- `LyricsSurfaceRole.amllLowResolutionScale = 0.75`。main/fullscreen/standalone 支持低分辨率，batch preview 不受该开关影响。
+- `AMLLWebView.Coordinator.updateLowResolutionMode()` 会把 scale 同步给 `WebViewHostView.webViewLayoutScale`，并调用 `LyricsWebViewStore.setLowResolutionModeEnabled()`。
+- `LyricsWebViewStore.layoutWebView()` 才是真正降分辨率的地方：WKWebView frame 按 `0.75` 缩小，`webView.pageZoom = 0.75`，随后 layer 用 `scale(1 / 0.75)` 放回宿主布局尺寸；鼠标 hit-test / event 坐标也按 `0.75` 修正。
+- `applyBackingScaleForResolutionMode()` 当前仍使用窗口 backing scale，没有把 layer contentsScale 降到 0.75；因此实际收益来自“缩小 WebView frame + pageZoom + layer 放大”，不是单独修改 backing scale。
+- JS 侧 `renderScale: 0.75` 和旧 `index.html` 的 `lyricPlayer.setRenderScale(renderScale)` 对 App 当前 DOM `LyricPlayer` 基本不是有效路径：旧 custom core 与新版 core 的 `setRenderScale` 实现在 `bg-render` / Pixi/canvas 背景渲染类上，`lyric-player/dom` 没有该 public method；新版实际日志也显示 `hasSetRenderScale: "undefined"`。
+
+新版迁移结论：
+
+- 0.75 低分辨率能力没有因新版 core 接入而失效，因为它属于 App/WebView adapter 层，不依赖 AMLL DOM core。
+- 本次实际启动验证显示 main surface 默认进入低分辨率：宿主约 `232x653` 时，WKWebView frame 为约 `174x489`，`pageZoom=0.75`，layer scale 约 `1.33`，最终宿主布局尺寸不变。
+- 继续保留 Swift/WebView adapter 实现；不要把它误迁成 core patch，也不要只依赖 JS `renderScale`。
+- 文档中此前“`renderScale/fpsCap` 应确认实际作用”的判断修正为：`renderScale` 对当前 DOM 歌词路径是兼容保留字段但实际 no-op；真实低分辨率由 Swift WebView 几何缩放负责。
+
+### 仍未迁移
+
+- 离散逐字/逐词高亮。
+- exit highlight catch-up 与相关 data 标记。
+- exiting-line suppress。
+- hide/show 不 dispose 的旧 line lifecycle patch。
+- fullscreen mask alpha / glow / lift 的旧 core patch。
+- fullscreen/cover blur layering 的新版可重入重构。

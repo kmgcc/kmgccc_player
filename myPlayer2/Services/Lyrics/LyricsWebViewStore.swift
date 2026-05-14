@@ -119,6 +119,7 @@ final class LyricsWebViewStore: NSObject {
     private var isMouseInteractionSuppressed = false
     private var lowResolutionModeEnabled = false
     private var lastAppliedBackingScale: CGFloat?
+    private var lastLoggedLowResolutionLayoutSignature: String?
     private let lowResolutionViewScale = CGFloat(LyricsSurfaceRole.amllLowResolutionScale)
     // MARK: - Callbacks
 
@@ -217,6 +218,17 @@ final class LyricsWebViewStore: NSObject {
                 ? CGAffineTransform(scaleX: 1 / viewScale, y: 1 / viewScale)
                 : .identity
         )
+        if lowResolutionModeEnabled {
+            let layoutSignature = "\(Int(bounds.width))x\(Int(bounds.height)):\(Int(targetFrame.width))x\(Int(targetFrame.height)):\(String(format: "%.2f", viewScale))"
+            let shouldLogLayout = lastLoggedLowResolutionLayoutSignature != layoutSignature
+            lastLoggedLowResolutionLayoutSignature = layoutSignature
+            if shouldLogLayout {
+                Log.info(
+                    "AMLL low resolution layout role=\(role), host=\(Int(bounds.width))x\(Int(bounds.height)), webFrame=\(Int(targetFrame.width))x\(Int(targetFrame.height)), pageZoom=\(String(format: "%.2f", viewScale)), layerScale=\(String(format: "%.2f", 1 / viewScale)), reason=\(reason), objectID=\(webViewObjectID)",
+                    category: .webview
+                )
+            }
+        }
         applyBackingScaleForResolutionMode(reason: reason)
     }
 
@@ -336,7 +348,7 @@ final class LyricsWebViewStore: NSObject {
 
         let amllDir = indexURL.deletingLastPathComponent()
         let loadURL = resolvedAMLLLoadURL(from: indexURL)
-        Log.debug("Loading AMLL from: \(loadURL.absoluteString) role=\(role), objectID=\(webViewObjectID)", category: .webview)
+        Log.info("Loading AMLL from: \(loadURL.absoluteString) role=\(role), objectID=\(webViewObjectID)", category: .webview)
         webView.loadFileURL(loadURL, allowingReadAccessTo: amllDir)
     }
 
@@ -1472,6 +1484,32 @@ final class LyricsWebViewStore: NSObject {
         didRegisterMessageHandlers = true
     }
 
+    private func logAMLLWebMessage(_ body: Any) {
+        let text = String(describing: body)
+        let message = "[AMLLWeb:\(role)] \(text)"
+
+        if text.contains("[ERROR]")
+            || text.contains("[AMLL-BOOT][window.onerror]")
+            || text.contains("[AMLL-BOOT][unhandledrejection]")
+        {
+            Log.error(message, category: .webview)
+        } else if text.contains("[WARN]") || text.contains("[AMLL-UPGRADE-DOWNGRADE]") {
+            Log.warning(message, category: .webview)
+        } else if text.contains("[AMLL-BOOT]")
+            || text.contains("[Bridge]")
+            || text.contains("[AMLL-UPGRADE]")
+            || text.contains("[LyricsRenderer] Module")
+            || text.contains("[LyricsRenderer] Bundle")
+            || text.contains("[LyricsRenderer] Boot")
+            || text.contains("[LyricsRenderer] Loaded lines")
+            || text.contains("[LyricsRenderer] lineTimingOnlyMode")
+        {
+            Log.info(message, category: .webview)
+        } else {
+            Log.trace(message, category: .webview)
+        }
+    }
+
     private func ensureWebView() -> WKWebView {
         if let retainedWebView {
             return retainedWebView
@@ -1755,7 +1793,7 @@ extension LyricsWebViewStore: WKScriptMessageHandler {
             case "onUserSeek":
                 handleOnUserSeek(message.body)
             case "log":
-                Log.trace("[AMLLWeb:\(role)] \(message.body)", category: .webview)
+                logAMLLWebMessage(message.body)
             default:
                 Log.debug("Unknown message: \(message.name)", category: .webview)
             }
