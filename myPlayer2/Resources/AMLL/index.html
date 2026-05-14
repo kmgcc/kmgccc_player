@@ -1006,9 +1006,23 @@
     <script src="bridge.js?v=window-emphasis-lift-20260511-v34"></script>
 
     <script type="module">
-        import { LyricPlayer, parseTTML } from "./amll-core.js?v=window-emphasis-lift-20260511-v34";
+        import { LyricPlayer } from "./amll-core.js?v=amll-upgrade-phase1-20260514";
+        import { parseTTML } from "./amll-lyric.js?v=amll-upgrade-phase1-20260514";
 
-        const AMLL_BUNDLE_VERSION = "window-emphasis-lift-20260511-v34";
+        const AMLL_BUNDLE_VERSION = "amll-upgrade-phase1-20260514";
+        const AMLL_UPGRADE_LOG_PREFIX = "[AMLL-UPGRADE]";
+        const AMLL_DOWNGRADE_LOG_PREFIX = "[AMLL-UPGRADE-DOWNGRADE]";
+        const upgradeLogOnceKeys = new Set();
+        const logUpgradeOnce = (key, message, level = "log") => {
+            if (upgradeLogOnceKeys.has(key)) return;
+            upgradeLogOnceKeys.add(key);
+            const log = typeof console[level] === "function" ? console[level] : console.log;
+            log(message);
+        };
+        console.log("[AMLL-BOOT] module imports resolved", {
+            lyricPlayerExport: typeof LyricPlayer,
+            parseTTMLExport: typeof parseTTML,
+        });
         console.log("[LyricsRenderer] Module script loaded");
         console.log(`[LyricsRenderer] Bundle version=${AMLL_BUNDLE_VERSION}`);
 
@@ -1061,12 +1075,57 @@
 
         // Initialize Player
         const playerContainer = document.getElementById('player');
+        console.log("[AMLL-BOOT] creating LyricPlayer", {
+            hasPlayerContainer: !!playerContainer,
+            role: surfaceRole,
+        });
         const lyricPlayer = new LyricPlayer();
+        console.log("[AMLL-BOOT] LyricPlayer created", {
+            hasElement: !!lyricPlayer.getElement?.(),
+            hasSetLyricLines: typeof lyricPlayer.setLyricLines,
+            hasSetRenderScale: typeof lyricPlayer.setRenderScale,
+        });
+        const installAMLLUpgradeCompatAccessors = (player) => {
+            const defineTimelineGetter = (name, fallbackValue, selector) => {
+                if (name in player) return;
+                Object.defineProperty(player, name, {
+                    configurable: true,
+                    enumerable: false,
+                    get() {
+                        const timelineState = player.timelineState;
+                        if (timelineState && selector(timelineState) !== undefined) {
+                            return selector(timelineState);
+                        }
+                        return typeof fallbackValue === "function"
+                            ? fallbackValue()
+                            : fallbackValue;
+                    },
+                });
+            };
+            defineTimelineGetter("hotLines", () => new Set(), (state) => state.hotLines);
+            defineTimelineGetter("bufferedLines", () => new Set(), (state) => state.bufferedLines);
+            defineTimelineGetter("scrollToIndex", 0, (state) => state.scrollToIndex);
+            defineTimelineGetter("initialLayoutFinished", false, (state) => state.initialLayoutFinished);
+            defineTimelineGetter("currentTime", 0, (state) => state.currentTime);
+            defineTimelineGetter("isPlaying", true, (state) => state.isPlaying);
+        };
+        installAMLLUpgradeCompatAccessors(lyricPlayer);
         playerContainer.appendChild(lyricPlayer.getElement());
         lyricPlayer.getElement().classList.toggle(
             "amll-surface-fullscreen-cover-blur-highlight-only",
             isCoverBlurHighlightSurface
         );
+        if (typeof lyricPlayer.setOptimizeOptions === "function") {
+            lyricPlayer.setOptimizeOptions({
+                normalizeSpaces: false,
+                resetLineTimestamps: false,
+                convertExcessiveBackgroundLines: false,
+                syncMainAndBackgroundLines: false,
+                cleanUnintentionalOverlaps: false,
+                tryAdvanceStartTime: false,
+            });
+            console.log(`${AMLL_UPGRADE_LOG_PREFIX} upstream lyric timing optimization disabled; App adapter owns Phase 2 timing preprocessing`);
+        }
         
         // Initial config defaults
         lyricPlayer.setEnableSpring(defaultEnableSpring);
@@ -1074,6 +1133,12 @@
         lyricPlayer.setWordFadeWidth(defaultWordFadeWidth);
         if (typeof lyricPlayer.setWordHighlightMode === "function") {
             lyricPlayer.setWordHighlightMode("smooth");
+        } else {
+            logUpgradeOnce(
+                "wordHighlightMode-api-missing",
+                `${AMLL_DOWNGRADE_LOG_PREFIX} wordHighlightMode is not available in upstream core; forcing smooth path and ignoring discrete mode for Phase 1`,
+                "warn"
+            );
         }
         if (typeof lyricPlayer.setOverscanPx === "function") {
             lyricPlayer.setOverscanPx(defaultOverscanPx);
@@ -1236,12 +1301,276 @@
             romanLyric: "",
         });
 
+        const normalizeLyricSpaces = (lines) => {
+            for (const line of lines) {
+                if (!Array.isArray(line?.words)) continue;
+                for (const word of line.words) {
+                    if (typeof word?.word === "string") {
+                        word.word = word.word.replace(/\s+/g, " ");
+                    }
+                }
+            }
+        };
+
+        const resetLineTimestampsFromWords = (lines) => {
+            for (const line of lines) {
+                if (!line || !Array.isArray(line.words) || line.words.length === 0) continue;
+                if (
+                    line.words.length === 1
+                    && line.words[0].startTime === 0
+                    && line.words[0].endTime === 0
+                    && (line.startTime !== 0 || line.endTime !== 0)
+                ) {
+                    line.words[0].startTime = line.startTime;
+                    line.words[0].endTime = line.endTime;
+                } else {
+                    const firstWord = line.words[0];
+                    const lastWord = line.words[line.words.length - 1];
+                    if (Number.isFinite(firstWord?.startTime)) {
+                        line.startTime = firstWord.startTime;
+                    }
+                    if (Number.isFinite(lastWord?.endTime)) {
+                        line.endTime = lastWord.endTime;
+                    }
+                }
+            }
+        };
+
+        const convertExcessiveBackgroundLines = (lines) => {
+            let consecutiveBgCount = 0;
+            for (const line of lines) {
+                if (line?.isBG) {
+                    consecutiveBgCount += 1;
+                    if (consecutiveBgCount > 1) {
+                        line.isBG = false;
+                    }
+                } else {
+                    consecutiveBgCount = 0;
+                }
+            }
+        };
+
+        const syncMainAndBackgroundLineTimes = (lines) => {
+            for (let i = lines.length - 1; i >= 0; i -= 1) {
+                const line = lines[i];
+                if (!line || line.isBG) continue;
+                const nextLine = lines[i + 1];
+                if (!nextLine?.isBG) continue;
+                const allWords = [...(line.words || []), ...(nextLine.words || [])].filter(
+                    (word) => typeof word?.word === "string" && word.word.trim().length > 0
+                );
+                if (allWords.length === 0) continue;
+                const minStart = Math.min(...allWords.map((word) => word.startTime));
+                const maxEnd = Math.max(...allWords.map((word) => word.endTime));
+                const finalStart = Math.min(minStart, line.startTime, nextLine.startTime);
+                const finalEnd = Math.max(maxEnd, line.endTime, nextLine.endTime);
+                line.startTime = finalStart;
+                line.endTime = finalEnd;
+                nextLine.startTime = finalStart;
+                nextLine.endTime = finalEnd;
+            }
+        };
+
+        const cleanUnintentionalLineOverlaps = (lines) => {
+            for (let i = 0; i < lines.length - 1; i += 1) {
+                const line = lines[i];
+                if (!line || line.isBG) continue;
+                let nextMainIndex = i + 1;
+                while (nextMainIndex < lines.length && lines[nextMainIndex]?.isBG) {
+                    nextMainIndex += 1;
+                }
+                if (nextMainIndex >= lines.length) continue;
+                const nextLine = lines[nextMainIndex];
+                const overlap = line.endTime - nextLine.startTime;
+                if (!(overlap > 0)) continue;
+                const nextDuration = nextLine.endTime - nextLine.startTime;
+                const isIntentionalOverlap = overlap > 100 && overlap > nextDuration * 0.1;
+                if (isIntentionalOverlap) continue;
+                line.endTime = nextLine.startTime;
+                const attachedBgLine = lines[i + 1];
+                if (attachedBgLine?.isBG) {
+                    attachedBgLine.endTime = nextLine.startTime;
+                }
+            }
+        };
+
+        const resolveAdapterWordLeadInMs = (isNearSwitch, appliedLeadInMs) => {
+            if (!(appliedLeadInMs > 0)) return 0;
+            if (isNearSwitch) {
+                return Math.min(appliedLeadInMs, leadInMs, 260);
+            }
+            return Math.min(appliedLeadInMs, 180, leadInMs * 0.6);
+        };
+
+        const applyEarlyWordLeadIn = (line, wordLeadInMs) => {
+            if (!(wordLeadInMs > 0) || !Array.isArray(line?.words) || line.words.length === 0) {
+                return;
+            }
+            const meaningfulIndexes = [];
+            for (let i = 0; i < line.words.length; i += 1) {
+                const word = line.words[i];
+                if (
+                    typeof word?.word === "string"
+                    && word.word.trim().length > 0
+                    && Number.isFinite(word.startTime)
+                    && Number.isFinite(word.endTime)
+                    && word.endTime >= word.startTime
+                ) {
+                    meaningfulIndexes.push(i);
+                    if (meaningfulIndexes.length >= 2) break;
+                }
+            }
+            if (meaningfulIndexes.length === 0) return;
+            const lastIndex = meaningfulIndexes[meaningfulIndexes.length - 1];
+            const frontWords = line.words.slice(0, lastIndex + 1).filter((word) => (
+                Number.isFinite(word?.startTime)
+                && Number.isFinite(word?.endTime)
+                && word.endTime >= word.startTime
+            ));
+            if (frontWords.length === 0) return;
+            const segmentStart = frontWords[0].startTime;
+            const segmentEnd = Math.max(
+                segmentStart + 1,
+                frontWords.reduce((max, word) => Math.max(max, word.endTime), segmentStart)
+            );
+            const availableLeadIn = Math.max(0, segmentStart - line.startTime);
+            const effectiveLeadIn = Math.min(wordLeadInMs, availableLeadIn);
+            if (!(effectiveLeadIn > 0)) return;
+            const segmentDuration = Math.max(1, segmentEnd - segmentStart);
+            for (let i = 0; i <= lastIndex; i += 1) {
+                const word = line.words[i];
+                if (
+                    !Number.isFinite(word?.startTime)
+                    || !Number.isFinite(word?.endTime)
+                    || word.endTime < word.startTime
+                ) {
+                    continue;
+                }
+                const startProgress = Math.max(
+                    0,
+                    Math.min(1, (word.startTime - segmentStart) / segmentDuration)
+                );
+                const endProgress = Math.max(
+                    startProgress,
+                    Math.min(1, (word.endTime - segmentStart) / segmentDuration)
+                );
+                const nextStartTime = Math.max(
+                    line.startTime,
+                    word.startTime - effectiveLeadIn * (1 - startProgress)
+                );
+                const nextEndTime = Math.max(
+                    nextStartTime,
+                    word.endTime - effectiveLeadIn * (1 - endProgress)
+                );
+                word.startTime = nextStartTime;
+                word.endTime = nextEndTime;
+            }
+        };
+
+        const clipLineEndTime = (line, targetEndTime) => {
+            if (!line || !Number.isFinite(targetEndTime)) return;
+            line.endTime = Math.max(line.startTime, targetEndTime);
+        };
+
+        const applyAppTimingPreprocessing = (lines) => {
+            if (!Array.isArray(lines) || lines.length === 0) {
+                return { changedLines: 0, nearSwitches: 0 };
+            }
+            normalizeLyricSpaces(lines);
+            resetLineTimestampsFromWords(lines);
+            convertExcessiveBackgroundLines(lines);
+            syncMainAndBackgroundLineTimes(lines);
+            cleanUnintentionalLineOverlaps(lines);
+            const rawLines = structuredClone(lines);
+            let changedLines = 0;
+            let nearSwitches = 0;
+            for (let i = lines.length - 1; i >= 0; i -= 1) {
+                const line = lines[i];
+                if (!line || line.isBG) continue;
+                let prevEndTime = 0;
+                let prevRawEndTime;
+                let prevIdx = -1;
+                if (i > 0) {
+                    prevIdx = i - 1;
+                    if (lines[prevIdx]?.isBG) {
+                        prevIdx -= 1;
+                    }
+                    if (prevIdx >= 0) {
+                        prevEndTime = lines[prevIdx].endTime;
+                        prevRawEndTime = rawLines[prevIdx]?.endTime;
+                    }
+                }
+                const rawLineStartTime = rawLines[i]?.startTime;
+                const rawGap =
+                    Number.isFinite(rawLineStartTime) && Number.isFinite(prevRawEndTime)
+                        ? rawLineStartTime - prevRawEndTime
+                        : undefined;
+                const hasOriginalOverlap = rawGap !== undefined && rawGap < 0;
+                const isNearSwitch =
+                    rawGap !== undefined
+                    && !hasOriginalOverlap
+                    && rawGap <= nearSwitchGapMs;
+                if (isNearSwitch) nearSwitches += 1;
+                const lineLeadInMs = isNearSwitch ? leadInMs : 1000;
+                const oldStartTime = line.startTime;
+                const leadInStartTime = Math.max(0, line.startTime - lineLeadInMs);
+                const newStartTime =
+                    hasOriginalOverlap || isNearSwitch
+                        ? leadInStartTime
+                        : Math.max(prevEndTime, leadInStartTime);
+                const appliedLeadInMs = Number.isFinite(rawLineStartTime)
+                    ? Math.max(0, rawLineStartTime - newStartTime)
+                    : 0;
+                if (isNearSwitch && !hasOriginalOverlap && prevIdx >= 0) {
+                    const prevLine = lines[prevIdx];
+                    const clippedPrevEndTime = Math.max(
+                        prevLine.startTime,
+                        Math.min(prevLine.endTime, newStartTime)
+                    );
+                    clipLineEndTime(prevLine, clippedPrevEndTime);
+                    const prevBgLine = lines[prevIdx + 1];
+                    if (prevBgLine?.isBG) {
+                        clipLineEndTime(prevBgLine, Math.min(prevBgLine.endTime, clippedPrevEndTime));
+                    }
+                }
+                line.startTime = newStartTime;
+                applyEarlyWordLeadIn(
+                    line,
+                    resolveAdapterWordLeadInMs(isNearSwitch, appliedLeadInMs)
+                );
+                const nextLine = lines[i + 1];
+                if (nextLine?.isBG) {
+                    nextLine.startTime = newStartTime;
+                    applyEarlyWordLeadIn(
+                        nextLine,
+                        resolveAdapterWordLeadInMs(isNearSwitch, appliedLeadInMs)
+                    );
+                }
+                if (Math.round(oldStartTime) !== Math.round(newStartTime)) {
+                    changedLines += 1;
+                }
+            }
+            return { changedLines, nearSwitches };
+        };
+
         const syncLeadTimingConfig = () => {
             if (typeof lyricPlayer.setLyricAdvanceLeadInMs === "function") {
                 lyricPlayer.setLyricAdvanceLeadInMs(leadInMs);
+            } else {
+                logUpgradeOnce(
+                    "leadInMs-core-api-missing",
+                    `${AMLL_DOWNGRADE_LOG_PREFIX} setLyricAdvanceLeadInMs is not available in upstream core; leadInMs=${leadInMs} is applied by App timing preprocessing`,
+                    "warn"
+                );
             }
             if (typeof lyricPlayer.setLyricNearSwitchGapMs === "function") {
                 lyricPlayer.setLyricNearSwitchGapMs(nearSwitchGapMs);
+            } else {
+                logUpgradeOnce(
+                    "nearSwitchGapMs-core-api-missing",
+                    `${AMLL_DOWNGRADE_LOG_PREFIX} setLyricNearSwitchGapMs is not available in upstream core; nearSwitchGapMs=${nearSwitchGapMs} is applied by App timing preprocessing`,
+                    "warn"
+                );
             }
         };
         syncLeadTimingConfig();
@@ -4393,7 +4722,11 @@
                             clearRendererState("setLyrics-replace");
                         }
 		                    lastTTML = ttml;
+                                console.log("[AMLL-BOOT] setLyrics parseTTML start", { length: ttml.length });
 			                    const result = parseTTML(ttml);
+                                console.log("[AMLL-BOOT] setLyrics parseTTML done", {
+                                    lineCount: Array.isArray(result?.lines) ? result.lines.length : -1,
+                                });
 			                    const lines = result.lines.map(mapTTMLLyric);
 			                    seekLineStartTimesMs = lines.map((line) => {
 			                        const start = Number.isFinite(line?.startTime) ? line.startTime : NaN;
@@ -4403,6 +4736,7 @@
 			                    });
 			                    lines.forEach(applyTimeOffset);
 			                    lineTimingOnlyMode = normalizeMainLinesForLineTimingMode(lines);
+                                const timingPreprocessSummary = applyAppTimingPreprocessing(lines);
 			                    parallelEmphasisDiagnosticsSourceLines = structuredClone(lines);
 			                    parallelEmphasisDiagnosticPairs = buildParallelEmphasisDiagnosticPairs(
 			                        parallelEmphasisDiagnosticsSourceLines
@@ -4410,12 +4744,17 @@
 			                    lastParallelEmphasisLineState.clear();
 			                    lastParallelEmphasisPairState.clear();
 			                    console.log(`[LyricsRenderer] lineTimingOnlyMode=${lineTimingOnlyMode}`);
+                                console.log(
+                                    `${AMLL_UPGRADE_LOG_PREFIX} timingAdapter leadInMs=${leadInMs} nearSwitchGapMs=${nearSwitchGapMs} changedLines=${timingPreprocessSummary.changedLines} nearSwitches=${timingPreprocessSummary.nearSwitches}`
+                                );
                                 lyricPlayer.isNonDynamic = lineTimingOnlyMode === true;
                                 lyricPlayer.getElement().classList.toggle(
                                     "fs-line-timing-only",
                                     lineTimingOnlyMode === true
                                 );
+                                console.log("[AMLL-BOOT] setLyrics setLyricLines start", { lineCount: lines.length });
 		                    lyricPlayer.setLyricLines(lines);
+                                console.log("[AMLL-BOOT] setLyrics setLyricLines done", { lineCount: lines.length });
 		                    emitParallelEmphasisNormalizationTrace();
 		                    if (fullscreenOpaqueLyricsMode) {
 		                        enforceFullscreenNormalCompositing();
@@ -4542,15 +4881,26 @@
 		                    }
                             if (
                                 (hasOwn("wordHighlightMode") || hasOwn("discreteWordHighlightEnabled"))
-                                && typeof lyricPlayer.setWordHighlightMode === "function"
                             ) {
                                 const nextWordHighlightMode =
                                     config.wordHighlightMode === "discrete" || config.discreteWordHighlightEnabled === true
                                         ? "discrete"
                                         : "smooth";
-                                if (nextWordHighlightMode !== wordHighlightMode) {
-                                    wordHighlightMode = nextWordHighlightMode;
-                                    lyricPlayer.setWordHighlightMode(wordHighlightMode);
+                                if (typeof lyricPlayer.setWordHighlightMode === "function") {
+                                    if (nextWordHighlightMode !== wordHighlightMode) {
+                                        wordHighlightMode = nextWordHighlightMode;
+                                        lyricPlayer.setWordHighlightMode(wordHighlightMode);
+                                        syncWordHighlightModeRootState();
+                                    }
+                                } else {
+                                    if (nextWordHighlightMode === "discrete") {
+                                        logUpgradeOnce(
+                                            "wordHighlightMode-discrete-ignored",
+                                            `${AMLL_DOWNGRADE_LOG_PREFIX} discrete wordHighlightMode requested but not migrated; keeping upstream smooth behavior`,
+                                            "warn"
+                                        );
+                                    }
+                                    wordHighlightMode = "smooth";
                                     syncWordHighlightModeRootState();
                                 }
                             }
@@ -4937,6 +5287,7 @@
         rendererRuntime.animationFrameRequestId = requestAnimationFrame(animate);
 
         // Notify bridge that renderer is ready (after LyricsRenderer defined)
+        console.log("[AMLL-BOOT] renderer bootstrap complete; notifying bridge ready");
         if (window.AMLL && typeof window.AMLL._onRendererReady === "function") {
             window.AMLL._onRendererReady();
         } else {

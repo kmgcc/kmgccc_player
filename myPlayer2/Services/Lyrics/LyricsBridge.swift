@@ -265,7 +265,22 @@ extension LyricsBridge: WKScriptMessageHandler {
             handleOnUserSeek(body)
 
         case "log":
-            Log.debug("AMLLWeb: \(body)", category: .webview)
+            let text = String(describing: body)
+            if text.contains("[ERROR]") {
+                Log.error("AMLLWeb: \(text)", category: .webview)
+            } else if text.contains("[WARN]") {
+                Log.warning("AMLLWeb: \(text)", category: .webview)
+            } else if text.contains("[AMLL-BOOT]")
+                || text.contains("[Bridge]")
+                || text.contains("[LyricsRenderer] Module")
+                || text.contains("[LyricsRenderer] Bundle")
+                || text.contains("[LyricsRenderer] Boot")
+                || text.contains("[LyricsRenderer] Loaded lines")
+            {
+                Log.info("AMLLWeb: \(text)", category: .webview)
+            } else {
+                Log.debug("AMLLWeb: \(text)", category: .webview)
+            }
 
         default:
             Log.warning("Unknown message: \(name)", category: .webview)
