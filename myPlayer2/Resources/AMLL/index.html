@@ -30,6 +30,7 @@
         .amll-lyric-player.dom-slim {
             line-height: 1.44em;
         }
+        [class*="lyricLine"],
         ._lyricLine_m23bz_6,
         ._lyricLine_1jop6_6 {
             overflow: visible;
@@ -38,6 +39,7 @@
            lyric-player.module.css. WebKit's native hit-test correctly accounts
            for layer transforms and pageZoom in low-resolution mode, so no
            JavaScript-driven hover class is needed. */
+        [class*="lyricMainLine"],
         ._lyricMainLine_m23bz_99,
         ._lyricMainLine_1jop6_80 {
             font-family: var(--amll-lp-main-font-family, -apple-system, "Helvetica Neue", sans-serif);
@@ -45,6 +47,7 @@
             line-height: 1.42em;
             padding-bottom: 1.05em;
         }
+        [class*="lyricSubLine"],
         ._lyricSubLine_m23bz_145,
         ._lyricSubLine_1jop6_90 {
             font-family: var(--amll-lp-translation-font-family, -apple-system, "Helvetica Neue", sans-serif);
@@ -55,24 +58,24 @@
 
         /* Background (small) lyric lines - FULLSCREEN ONLY:
            keep AMLL timing gate on the root; visual fade/blur handled by later surface-specific rules. */
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricBgLine_"],
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricBgLine_"] {
+        .amll-lyric-player.amll-surface-fullscreen [class*="lyricBgLine"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricBgLine"] {
             padding-top: 0.2em !important;
             padding-bottom: 0.2em !important;
             scale: 1 !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricBgLine_"][class*="_active_"],
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricBgLine_"][class*="_active_"] {
+        .amll-lyric-player.amll-surface-fullscreen [class*="lyricBgLine"][class*="active"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricBgLine"][class*="active"] {
             scale: 1 !important;
         }
 
         /* Keep exit translation on content while root handles fade/blur timing. */
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricBgLine_"] > *,
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricBgLine_"] > * {
+        .amll-lyric-player.amll-surface-fullscreen [class*="lyricBgLine"] > *,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricBgLine"] > * {
             transition: transform .35s ease-out !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricBgLine_"][class*="_active_"] > *,
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricBgLine_"][class*="_active_"] > * {
+        .amll-lyric-player.amll-surface-fullscreen [class*="lyricBgLine"][class*="active"] > *,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricBgLine"][class*="active"] > * {
             transform: translateY(0);
         }
 
@@ -100,44 +103,44 @@
             --amll-cb-main-glow: rgb(0, 0, 0);
             --amll-cb-sub-glow: rgb(50, 50, 50);
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"] {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricLine"] {
             color: var(--amll-cb-main-inactive, var(--amll-inactive, var(--amll-lp-color, white))) !important;
             mix-blend-mode: var(--amll-cb-main-blend, plus-lighter) !important;
             filter: none !important;
             overflow: visible !important;
             contain: none !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"][class*="_active_"] {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricLine"][class*="active"] {
             color: var(
                 --amll-cb-main-inactive,
                 var(--amll-inactive, var(--amll-lp-color, white))
             ) !important;
             mix-blend-mode: var(--amll-cb-main-blend, plus-lighter) !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="lyricLine"]:not([class*="active"]) {
             color: var(
                 --amll-cb-main-line-timing-inactive,
                 var(--amll-cb-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
             ) !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="_lyricLine_"][class*="_active_"],
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] [class*="_lyricMainLine_"],
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] [class*="_lyricMainLine_"] * {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="lyricLine"][class*="active"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="lyricLine"][class*="active"] [class*="lyricMainLine"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="lyricLine"][class*="active"] [class*="lyricMainLine"] * {
             color: var(
                 --amll-cb-main-active,
                 var(--amll-active, var(--amll-lp-color, white))
             ) !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="_lyricLine_"] > *,
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="_lyricMainLine_"],
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="_lyricMainLine_"] *,
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="_emphasizeWrapper_"],
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="_emphasizeWrapper_"] *,
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="_emphasize_"],
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="_emphasize_"] *,
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="_romanWord_"],
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="_lyricSubLine_"],
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="_lyricSubLine_"] * {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="lyricLine"] > *,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="lyricMainLine"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="lyricMainLine"] *,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="emphasizeWrapper"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="emphasizeWrapper"] *,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="emphasize"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="emphasize"] *,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="romanWord"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="lyricSubLine"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="lyricSubLine"] * {
             opacity: 1 !important;
             overflow: visible !important;
             contain: none !important;
@@ -146,8 +149,8 @@
         .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete {
             --amll-discrete-inactive-opacity: 1;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="_lyricSubLine_"],
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="_lyricSubLine_"] *,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="lyricSubLine"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="lyricSubLine"] *,
         .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete .amll-cb-word-base,
         .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete .amll-cb-char-base {
             opacity: var(--amll-discrete-inactive-opacity) !important;
@@ -157,24 +160,24 @@
             opacity: 1 !important;
         }
         /* HARD ISOLATION TEST: Base text-shadow disabled to find dominant blowout source */
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricMainLine_"],
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricMainLine_"] * {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricMainLine"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricMainLine"] * {
             text-shadow: none !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricSubLine_"],
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricSubLine_"] * {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricSubLine"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricSubLine"] * {
             text-shadow: 0 0 0.035em var(--amll-cb-sub-glow, rgb(200, 200, 200)) !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"] > [class*="_lyricSubLine_"],
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"] > [class*="_lyricSubLine_"] * {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricLine"] > [class*="lyricSubLine"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricLine"] > [class*="lyricSubLine"] * {
             color: var(
                 --amll-cb-sub-color,
                 var(--amll-cb-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
             ) !important;
             mix-blend-mode: var(--amll-cb-main-blend, plus-lighter) !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"][class*="_active_"] > [class*="_lyricSubLine_"],
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"][class*="_active_"] > [class*="_lyricSubLine_"] * {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricLine"][class*="active"] > [class*="lyricSubLine"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricLine"][class*="active"] > [class*="lyricSubLine"] * {
             color: var(
                 --amll-cb-sub-color,
                 var(--amll-cb-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
@@ -182,21 +185,21 @@
             mix-blend-mode: var(--amll-cb-main-blend, plus-lighter) !important;
             transition: none !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-profile="darker"] [class*="_lyricLine_"][class*="_active_"] [class*="_lyricMainLine_"],
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-profile="darker"] [class*="_lyricLine_"][class*="_active_"] [class*="_lyricMainLine_"] *,
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-profile="darker"] [class*="_lyricLine_"][class*="_active_"] [class*="_emphasizeWrapper_"],
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-profile="darker"] [class*="_lyricLine_"][class*="_active_"] [class*="_emphasize_"],
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-profile="darker"] [class*="_lyricLine_"][class*="_active_"] [class*="_romanWord_"] {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-profile="darker"] [class*="lyricLine"][class*="active"] [class*="lyricMainLine"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-profile="darker"] [class*="lyricLine"][class*="active"] [class*="lyricMainLine"] *,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-profile="darker"] [class*="lyricLine"][class*="active"] [class*="emphasizeWrapper"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-profile="darker"] [class*="lyricLine"][class*="active"] [class*="emphasize"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-profile="darker"] [class*="lyricLine"][class*="active"] [class*="romanWord"] {
             mix-blend-mode: normal !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="base"] [class*="_lyricLine_"][class*="_active_"] {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="base"] [class*="lyricLine"][class*="active"] {
             color: var(
                 --amll-cb-main-inactive,
                 var(--amll-inactive, var(--amll-lp-color, white))
             ) !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="base"] [class*="_lyricLine_"][class*="_active_"] > [class*="_lyricSubLine_"],
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="base"] [class*="_lyricLine_"][class*="_active_"] > [class*="_lyricSubLine_"] * {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="base"] [class*="lyricLine"][class*="active"] > [class*="lyricSubLine"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="base"] [class*="lyricLine"][class*="active"] > [class*="lyricSubLine"] * {
             color: var(
                 --amll-cb-sub-color,
                 var(--amll-cb-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
@@ -206,20 +209,20 @@
         .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="base"] .amll-cb-char-active {
             visibility: hidden !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="_lyricLine_"]:not([class*="_active_"]),
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="_lyricLine_"]:not([class*="_active_"]) *,
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="_lyricSubLine_"],
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="_lyricSubLine_"] *,
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="_lyricBgLine_"],
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="_lyricBgLine_"] *,
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="_interludeDots_"],
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="_interludeDots_"] *,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="lyricLine"]:not([class*="active"]),
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="lyricLine"]:not([class*="active"]) *,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="lyricSubLine"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="lyricSubLine"] *,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="lyricBgLine"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="lyricBgLine"] *,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="interludeDots"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="interludeDots"] *,
         .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] .amll-cb-word-base,
         .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] .amll-cb-char-base,
         .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] .amll-cb-glow-layer {
             visibility: hidden !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="_lyricLine_"][class*="_active_"] {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="lyricLine"][class*="active"] {
             color: var(
                 --amll-cb-main-inactive,
                 var(--amll-inactive, var(--amll-lp-color, white))
@@ -227,35 +230,35 @@
             mix-blend-mode: var(--amll-cb-highlight-blend, plus-lighter) !important;
             text-shadow: none !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="_lyricLine_"][class*="_active_"] > *,
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="_lyricMainLine_"],
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="_lyricMainLine_"] *,
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="_romanWord_"],
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="_emphasizeWrapper_"],
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="_emphasizeWrapper_"] *,
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="_emphasize_"],
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="_emphasize_"] * {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="lyricLine"][class*="active"] > *,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="lyricMainLine"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="lyricMainLine"] *,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="romanWord"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="emphasizeWrapper"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="emphasizeWrapper"] *,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="emphasize"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="emphasize"] * {
             mix-blend-mode: var(--amll-cb-highlight-blend, plus-lighter) !important;
             text-shadow: none !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="base"].fs-line-timing-only [class*="_lyricLine_"][class*="_active_"],
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="base"].fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] [class*="_lyricMainLine_"],
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="base"].fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] [class*="_lyricMainLine_"] * {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="base"].fs-line-timing-only [class*="lyricLine"][class*="active"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="base"].fs-line-timing-only [class*="lyricLine"][class*="active"] [class*="lyricMainLine"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="base"].fs-line-timing-only [class*="lyricLine"][class*="active"] [class*="lyricMainLine"] * {
             color: var(
                 --amll-cb-main-inactive,
                 var(--amll-inactive, var(--amll-lp-color, white))
             ) !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"].fs-line-timing-only [class*="_lyricLine_"][class*="_active_"],
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"].fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] [class*="_lyricMainLine_"],
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"].fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] [class*="_lyricMainLine_"] * {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"].fs-line-timing-only [class*="lyricLine"][class*="active"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"].fs-line-timing-only [class*="lyricLine"][class*="active"] [class*="lyricMainLine"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"].fs-line-timing-only [class*="lyricLine"][class*="active"] [class*="lyricMainLine"] * {
             color: var(
                 --amll-cb-main-active,
                 var(--amll-active, var(--amll-lp-color, white))
             ) !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) > [class*="_lyricSubLine_"],
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) > [class*="_lyricSubLine_"] * {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="lyricLine"]:not([class*="active"]) > [class*="lyricSubLine"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="lyricLine"]:not([class*="active"]) > [class*="lyricSubLine"] * {
             color: var(
                 --amll-cb-sub-color,
                 var(--amll-cb-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
@@ -291,8 +294,8 @@
             pointer-events: none !important;
             user-select: none !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) .amll-cb-word-base,
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) .amll-cb-char-base {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="lyricLine"]:not([class*="active"]) .amll-cb-word-base,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="lyricLine"]:not([class*="active"]) .amll-cb-char-base {
             color: var(
                 --amll-cb-main-line-timing-inactive,
                 var(--amll-cb-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
@@ -306,7 +309,10 @@
             ) !important;
             mix-blend-mode: var(--amll-cb-highlight-blend, plus-lighter) !important;
             visibility: visible !important;
-            transition: color .14s ease-out !important;
+            opacity: 1 !important;
+            transition:
+                opacity .50s cubic-bezier(0.42, 0, 1, 1),
+                color .14s ease-out !important;
             --bright-mask-alpha: 1 !important;
             --dark-mask-alpha: 0 !important;
         }
@@ -314,55 +320,66 @@
         .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete .amll-cb-char-active {
             transition: none !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="_lyricLine_"]:not([class*="_active_"]):not([data-amll-exiting-highlight="1"]) .amll-cb-word-active,
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="_lyricLine_"]:not([class*="_active_"]):not([data-amll-exiting-highlight="1"]) .amll-cb-char-active {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="lyricLine"]:not([class*="active"]):not([data-amll-exiting-highlight="1"]) .amll-cb-word-active,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="lyricLine"]:not([class*="active"]):not([data-amll-exiting-highlight="1"]) .amll-cb-char-active {
             opacity: 0 !important;
             visibility: hidden !important;
             transition: none !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"]:not([class*="_active_"]) .amll-cb-word-active,
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricLine_"]:not([class*="_active_"]) .amll-cb-char-active {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricLine"]:not([class*="active"]):not([data-amll-exit-catch-up="1"]) .amll-cb-word-active,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricLine"]:not([class*="active"]):not([data-amll-exit-catch-up="1"]) .amll-cb-char-active {
             color: var(
                 --amll-cb-main-inactive,
                 var(--amll-inactive, var(--amll-lp-color, white))
             ) !important;
-            visibility: hidden !important;
+            visibility: visible !important;
+            opacity: 0 !important;
         }
-        /* Keep cover-blur highlight visible while completed or exiting highlight is still finishing */
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="_lyricLine_"][data-fs-completed-highlight="1"] .amll-cb-word-active,
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="_lyricLine_"][data-fs-completed-highlight="1"] .amll-cb-char-active,
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="_lyricLine_"][data-amll-exiting-highlight="1"] .amll-cb-word-active,
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="_lyricLine_"][data-amll-exiting-highlight="1"] .amll-cb-char-active {
+        /* Keep active color during completed/catch-up states; opacity fade still starts with line exit. */
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="lyricLine"][data-fs-completed-highlight="1"] .amll-cb-word-active,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="lyricLine"][data-fs-completed-highlight="1"] .amll-cb-char-active,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="lyricLine"][data-amll-exit-catch-up="1"] .amll-cb-word-active,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="lyricLine"][data-amll-exit-catch-up="1"] .amll-cb-char-active,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="lyricLine"][data-amll-exiting-highlight="1"] .amll-cb-word-active,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="lyricLine"][data-amll-exiting-highlight="1"] .amll-cb-char-active {
             color: var(
                 --amll-cb-main-active,
                 var(--amll-active, var(--amll-lp-color, white))
             ) !important;
             visibility: visible !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="_lyricLine_"][data-amll-exiting-highlight="1"] .amll-cb-word-active:not([data-amll-exit-highlight-word="1"]),
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="_lyricLine_"][data-amll-exiting-highlight="1"] .amll-cb-char-active:not([data-amll-exit-highlight-word="1"]) {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="lyricLine"][data-amll-exit-catch-up="1"]:not([class*="active"]) .amll-cb-word-active,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="lyricLine"][data-amll-exit-catch-up="1"]:not([class*="active"]) .amll-cb-char-active {
+            opacity: 0 !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="lyricLine"][data-amll-exiting-highlight="1"] .amll-cb-word-active:not([data-amll-exit-highlight-word="1"]),
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="lyricLine"][data-amll-exiting-highlight="1"] .amll-cb-char-active:not([data-amll-exit-highlight-word="1"]) {
             visibility: hidden !important;
             transition: none !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="_lyricLine_"][data-amll-exiting-highlight="1"] .amll-cb-word-active[data-amll-exit-highlight-word="1"],
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="_lyricLine_"][data-amll-exiting-highlight="1"] .amll-cb-char-active[data-amll-exit-highlight-word="1"],
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="_lyricLine_"][data-amll-exiting-highlight="1"] [data-amll-exit-highlight-word="1"] .amll-cb-word-active,
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="_lyricLine_"][data-amll-exiting-highlight="1"] [data-amll-exit-highlight-word="1"] .amll-cb-char-active {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="lyricLine"][data-amll-exiting-highlight="1"] .amll-cb-word-active[data-amll-exit-highlight-word="1"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="lyricLine"][data-amll-exiting-highlight="1"] .amll-cb-char-active[data-amll-exit-highlight-word="1"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="lyricLine"][data-amll-exiting-highlight="1"] [data-amll-exit-highlight-word="1"] .amll-cb-word-active,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="lyricLine"][data-amll-exiting-highlight="1"] [data-amll-exit-highlight-word="1"] .amll-cb-char-active {
             color: var(
                 --amll-cb-main-active,
                 var(--amll-active, var(--amll-lp-color, white))
             ) !important;
             visibility: visible !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] .amll-cb-word-active,
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] .amll-cb-char-active {
-            transition: color 0.20s linear 0.05s !important;
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="lyricLine"][class*="active"] .amll-cb-word-active,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="lyricLine"][class*="active"] .amll-cb-char-active {
+            transition:
+                opacity 0.20s linear 0.05s,
+                color 0.20s linear 0.05s !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) .amll-cb-word-active,
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) .amll-cb-char-active {
-            transition: color 0.50s ease-out 0s !important;
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="lyricLine"]:not([class*="active"]) .amll-cb-word-active,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="lyricLine"]:not([class*="active"]) .amll-cb-char-active {
+            transition:
+                opacity 0.50s cubic-bezier(0.42, 0, 1, 1) 0s,
+                color 0.50s cubic-bezier(0.42, 0, 1, 1) 0s !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricBgLine_"] {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricBgLine"] {
             visibility: hidden !important;
             opacity: 0 !important;
             color: var(
@@ -379,7 +396,7 @@
                 color .18s ease !important;
             will-change: opacity, filter, transform !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricBgLine_"][class*="_active_"] {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricBgLine"][class*="active"] {
             visibility: visible !important;
             opacity: 0.4 !important;
             color: var(
@@ -394,16 +411,16 @@
                 filter 0.2s,
                 color .18s ease !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricBgLine_"] > * {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricBgLine"] > * {
             transform: translateY(-0.5em) !important;
             mix-blend-mode: var(--amll-cb-main-blend, plus-lighter) !important;
             transition: transform .35s ease-out, color .18s ease !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricBgLine_"][class*="_active_"] > * {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricBgLine"][class*="active"] > * {
             transform: translateY(0) !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricBgLine_"] .amll-cb-word-active,
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_lyricBgLine_"] .amll-cb-char-active {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricBgLine"] .amll-cb-word-active,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricBgLine"] .amll-cb-char-active {
             color: var(
                 --amll-cb-bg-active,
                 var(--amll-cb-main-active, var(--amll-active, var(--amll-lp-color, white)))
@@ -434,15 +451,15 @@
             /* Use solid color instead of rgba for glow */
             filter: drop-shadow(0 0 0.12em rgb(0, 0, 0));
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_interludeDots_"] {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="interludeDots"] {
             visibility: hidden !important;
             opacity: 1 !important;
             transition: none !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_interludeDots_"][class*="_enabled_"] {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="interludeDots"][class*="enabled"] {
             visibility: visible !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="_interludeDots_"] > * {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="interludeDots"] > * {
             background-color: var(
                 --amll-cb-main-active,
                 var(--amll-active, var(--amll-lp-color, white))
@@ -466,16 +483,16 @@
             contain: none !important;
             overflow: visible !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"] {
+        .amll-lyric-player.amll-surface-fullscreen [class*="lyricLine"] {
             color: var(--amll-fs-main-inactive, var(--amll-inactive, var(--amll-lp-color, white))) !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][class*="_active_"] {
+        .amll-lyric-player.amll-surface-fullscreen [class*="lyricLine"][class*="active"] {
             color: var(
                 --amll-fs-main-inactive,
                 var(--amll-inactive, var(--amll-lp-color, white))
             ) !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) {
+        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="lyricLine"]:not([class*="active"]) {
             color: var(
                 --amll-fs-main-line-timing-inactive,
                 var(--amll-fs-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
@@ -487,7 +504,7 @@
             --amll-fs-line-switch-highlight-out-duration: 0.50s;
             --amll-fs-line-switch-highlight-out-delay: 0.00s;
         }
-        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] {
+        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="lyricLine"][class*="active"] {
             color: var(
                 --amll-fs-main-active,
                 var(--amll-active, var(--amll-lp-color, white))
@@ -495,31 +512,31 @@
             transition:
                 color var(--amll-fs-line-switch-highlight-in-duration) linear var(--amll-fs-line-switch-highlight-delay) !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] [class*="_lyricMainLine_"],
-        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] [class*="_lyricMainLine_"] * {
+        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="lyricLine"][class*="active"] [class*="lyricMainLine"],
+        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="lyricLine"][class*="active"] [class*="lyricMainLine"] * {
             color: inherit !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) {
+        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="lyricLine"]:not([class*="active"]) {
             transition:
                 color var(--amll-fs-line-switch-highlight-out-duration) ease-out var(--amll-fs-line-switch-highlight-out-delay) !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="_lyricLine_"] > *,
-        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="_lyricMainLine_"],
-        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="_lyricMainLine_"] *,
-        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="_emphasizeWrapper_"],
-        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="_emphasizeWrapper_"] *,
-        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="_emphasize_"],
-        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="_emphasize_"] *,
-        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="_romanWord_"],
-        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="_lyricSubLine_"],
-        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="_lyricSubLine_"] * {
+        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="lyricLine"] > *,
+        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="lyricMainLine"],
+        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="lyricMainLine"] *,
+        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="emphasizeWrapper"],
+        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="emphasizeWrapper"] *,
+        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="emphasize"],
+        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="emphasize"] *,
+        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="romanWord"],
+        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="lyricSubLine"],
+        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="lyricSubLine"] * {
             opacity: 1 !important;
         }
         .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete {
             --amll-discrete-inactive-opacity: 1;
         }
-        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="_lyricSubLine_"],
-        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="_lyricSubLine_"] *,
+        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricSubLine"],
+        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricSubLine"] *,
         .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete .amll-fs-word-base,
         .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete .amll-fs-char-base {
             opacity: var(--amll-discrete-inactive-opacity) !important;
@@ -528,8 +545,8 @@
         .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete .amll-fs-char-stack {
             opacity: 1 !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"] > [class*="_lyricSubLine_"],
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"] > [class*="_lyricSubLine_"] * {
+        .amll-lyric-player.amll-surface-fullscreen [class*="lyricLine"] > [class*="lyricSubLine"],
+        .amll-lyric-player.amll-surface-fullscreen [class*="lyricLine"] > [class*="lyricSubLine"] * {
             color: var(
                 --amll-fs-sub-color,
                 var(--amll-fs-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
@@ -583,13 +600,13 @@
             pointer-events: none !important;
             user-select: none !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) .amll-fs-word-base {
+        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="lyricLine"]:not([class*="active"]) .amll-fs-word-base {
             color: var(
                 --amll-fs-main-line-timing-inactive,
                 var(--amll-fs-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
             ) !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) .amll-fs-char-base {
+        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="lyricLine"]:not([class*="active"]) .amll-fs-char-base {
             color: var(
                 --amll-fs-main-line-timing-inactive,
                 var(--amll-fs-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
@@ -602,7 +619,7 @@
             ) !important;
             mix-blend-mode: normal !important;
             transition:
-                opacity .34s ease-out,
+                opacity .50s cubic-bezier(0.42, 0, 1, 1),
                 color .14s ease-out !important;
             /* Keep per-word sweep animation, but make non-highlighted area fully transparent
                so the opaque base layer stays identical to inactive line color. */
@@ -616,7 +633,7 @@
             ) !important;
             mix-blend-mode: normal !important;
             transition:
-                opacity .34s ease-out,
+                opacity .50s cubic-bezier(0.42, 0, 1, 1),
                 color .14s ease-out !important;
             --bright-mask-alpha: 1 !important;
             --dark-mask-alpha: 0 !important;
@@ -625,24 +642,24 @@
         .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete .amll-fs-char-active {
             transition: none !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="_lyricLine_"]:not([class*="_active_"]):not([data-amll-exiting-highlight="1"]) .amll-fs-word-active,
-        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="_lyricLine_"]:not([class*="_active_"]):not([data-amll-exiting-highlight="1"]) .amll-fs-char-active {
+        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricLine"]:not([class*="active"]):not([data-amll-exiting-highlight="1"]) .amll-fs-word-active,
+        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricLine"]:not([class*="active"]):not([data-amll-exiting-highlight="1"]) .amll-fs-char-active {
             opacity: 0 !important;
             visibility: hidden !important;
             transition: none !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="_lyricLine_"][data-amll-fs-discrete-inactive-locked="1"] .amll-fs-word-active,
-        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="_lyricLine_"][data-amll-fs-discrete-inactive-locked="1"] .amll-fs-char-active {
+        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricLine"][data-amll-fs-discrete-inactive-locked="1"] .amll-fs-word-active,
+        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricLine"][data-amll-fs-discrete-inactive-locked="1"] .amll-fs-char-active {
             opacity: 0 !important;
             visibility: hidden !important;
             transition: none !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="_lyricLine_"][data-amll-fs-discrete-exit-locked="1"] .amll-fs-word-active:not([data-amll-exit-highlight-word="1"]),
-        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="_lyricLine_"][data-amll-fs-discrete-exit-locked="1"] .amll-fs-char-active:not([data-amll-exit-highlight-word="1"]) {
+        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricLine"][data-amll-fs-discrete-exit-locked="1"] .amll-fs-word-active:not([data-amll-exit-highlight-word="1"]),
+        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricLine"][data-amll-fs-discrete-exit-locked="1"] .amll-fs-char-active:not([data-amll-exit-highlight-word="1"]) {
             visibility: hidden !important;
             transition: none !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"]:not([class*="_active_"]):not([data-amll-exiting-highlight="1"]) .amll-fs-word-active {
+        .amll-lyric-player.amll-surface-fullscreen [class*="lyricLine"]:not([class*="active"]):not([data-amll-exit-catch-up="1"]):not([data-amll-exiting-highlight="1"]) .amll-fs-word-active {
             color: var(
                 --amll-fs-main-inactive,
                 var(--amll-inactive, var(--amll-lp-color, white))
@@ -651,7 +668,7 @@
             visibility: visible !important;
             opacity: 0 !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"]:not([class*="_active_"]):not([data-amll-exiting-highlight="1"]) .amll-fs-char-active {
+        .amll-lyric-player.amll-surface-fullscreen [class*="lyricLine"]:not([class*="active"]):not([data-amll-exit-catch-up="1"]):not([data-amll-exiting-highlight="1"]) .amll-fs-char-active {
             color: var(
                 --amll-fs-main-inactive,
                 var(--amll-inactive, var(--amll-lp-color, white))
@@ -660,48 +677,54 @@
             visibility: visible !important;
             opacity: 0 !important;
         }
-        /* Keep fullscreen highlight visible while completed or exiting highlight is still finishing. */
-        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="_lyricLine_"][data-fs-completed-highlight="1"] .amll-fs-word-active,
-        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="_lyricLine_"][data-amll-exiting-highlight="1"] .amll-fs-word-active {
+        /* Keep active color during completed/catch-up states; opacity fade still starts with line exit. */
+        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="lyricLine"][data-fs-completed-highlight="1"] .amll-fs-word-active,
+        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="lyricLine"][data-amll-exit-catch-up="1"] .amll-fs-word-active,
+        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="lyricLine"][data-amll-exiting-highlight="1"] .amll-fs-word-active {
             color: var(
                 --amll-fs-main-active,
                 var(--amll-active, var(--amll-lp-color, white))
             ) !important;
             visibility: visible !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="_lyricLine_"][data-fs-completed-highlight="1"] .amll-fs-char-active,
-        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="_lyricLine_"][data-amll-exiting-highlight="1"] .amll-fs-char-active {
+        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="lyricLine"][data-fs-completed-highlight="1"] .amll-fs-char-active,
+        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="lyricLine"][data-amll-exit-catch-up="1"] .amll-fs-char-active,
+        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="lyricLine"][data-amll-exiting-highlight="1"] .amll-fs-char-active {
             color: var(
                 --amll-fs-main-active,
                 var(--amll-active, var(--amll-lp-color, white))
             ) !important;
             visibility: visible !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="_lyricLine_"][data-amll-exiting-highlight="1"] .amll-fs-word-active:not([data-amll-exit-highlight-word="1"]),
-        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="_lyricLine_"][data-amll-exiting-highlight="1"] .amll-fs-char-active:not([data-amll-exit-highlight-word="1"]) {
+        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="lyricLine"][data-amll-exit-catch-up="1"]:not([class*="active"]) .amll-fs-word-active,
+        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="lyricLine"][data-amll-exit-catch-up="1"]:not([class*="active"]) .amll-fs-char-active {
+            opacity: 0 !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricLine"][data-amll-exiting-highlight="1"] .amll-fs-word-active:not([data-amll-exit-highlight-word="1"]),
+        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricLine"][data-amll-exiting-highlight="1"] .amll-fs-char-active:not([data-amll-exit-highlight-word="1"]) {
             visibility: hidden !important;
             transition: none !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="_lyricLine_"][data-amll-exiting-highlight="1"] .amll-fs-word-active[data-amll-exit-highlight-word="1"],
-        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="_lyricLine_"][data-amll-exiting-highlight="1"] .amll-fs-char-active[data-amll-exit-highlight-word="1"],
-        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="_lyricLine_"][data-amll-exiting-highlight="1"] [data-amll-exit-highlight-word="1"] .amll-fs-word-active,
-        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="_lyricLine_"][data-amll-exiting-highlight="1"] [data-amll-exit-highlight-word="1"] .amll-fs-char-active {
+        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricLine"][data-amll-exiting-highlight="1"] .amll-fs-word-active[data-amll-exit-highlight-word="1"],
+        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricLine"][data-amll-exiting-highlight="1"] .amll-fs-char-active[data-amll-exit-highlight-word="1"],
+        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricLine"][data-amll-exiting-highlight="1"] [data-amll-exit-highlight-word="1"] .amll-fs-word-active,
+        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricLine"][data-amll-exiting-highlight="1"] [data-amll-exit-highlight-word="1"] .amll-fs-char-active {
             color: var(
                 --amll-fs-main-active,
                 var(--amll-active, var(--amll-lp-color, white))
             ) !important;
             visibility: visible !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="_lyricLine_"][data-fs-highlight-state="fading"] .amll-fs-word-active,
-        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="_lyricLine_"][data-fs-highlight-state="fading"] .amll-fs-char-active {
+        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="lyricLine"][data-fs-highlight-state="fading"] .amll-fs-word-active,
+        .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="lyricLine"][data-fs-highlight-state="fading"] .amll-fs-char-active {
             opacity: var(--amll-fs-highlight-fade-opacity, 0.4) !important;
             transition:
                 opacity .36s linear,
                 color .14s ease-out !important;
         }
         /* 全屏翻译行配色 - 统一使用非高亮主歌词颜色，不跟随主行高亮 */
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"] > [class*="_lyricSubLine_"],
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"] > [class*="_lyricSubLine_"] * {
+        .amll-lyric-player.amll-surface-fullscreen [class*="lyricLine"] > [class*="lyricSubLine"],
+        .amll-lyric-player.amll-surface-fullscreen [class*="lyricLine"] > [class*="lyricSubLine"] * {
             color: var(
                 --amll-fs-sub-color,
                 var(--amll-fs-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
@@ -709,10 +732,10 @@
             transition: none !important;
         }
         /* 移除激活/非激活状态的颜色差异，翻译行统一使用非高亮色 */
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"][class*="_active_"] > [class*="_lyricSubLine_"],
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"]:not([class*="_active_"]) > [class*="_lyricSubLine_"],
-        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] > [class*="_lyricSubLine_"],
-        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) > [class*="_lyricSubLine_"] {
+        .amll-lyric-player.amll-surface-fullscreen [class*="lyricLine"][class*="active"] > [class*="lyricSubLine"],
+        .amll-lyric-player.amll-surface-fullscreen [class*="lyricLine"]:not([class*="active"]) > [class*="lyricSubLine"],
+        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="lyricLine"][class*="active"] > [class*="lyricSubLine"],
+        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="lyricLine"]:not([class*="active"]) > [class*="lyricSubLine"] {
             color: var(
                 --amll-fs-sub-color,
                 var(--amll-fs-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
@@ -720,33 +743,33 @@
         }
 
         /* BG lines in fullscreen: use brightness filter instead of opacity */
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricBgLine_"] {
+        .amll-lyric-player.amll-surface-fullscreen [class*="lyricBgLine"] {
             opacity: 1 !important;
             filter: none !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricBgLine_"][class*="_active_"] {
+        .amll-lyric-player.amll-surface-fullscreen [class*="lyricBgLine"][class*="active"] {
             opacity: 1 !important;
             filter: none !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricBgLine_"] > * {
+        .amll-lyric-player.amll-surface-fullscreen [class*="lyricBgLine"] > * {
             opacity: 1 !important;
             transform: translateY(0) !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] .amll-fs-word-active,
-        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"][class*="_active_"] .amll-fs-char-active {
+        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="lyricLine"][class*="active"] .amll-fs-word-active,
+        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="lyricLine"][class*="active"] .amll-fs-char-active {
             transition:
                 opacity var(--amll-fs-line-switch-highlight-in-duration) linear var(--amll-fs-line-switch-highlight-delay),
                 color var(--amll-fs-line-switch-highlight-in-duration) linear var(--amll-fs-line-switch-highlight-delay) !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) .amll-fs-word-active,
-        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="_lyricLine_"]:not([class*="_active_"]) .amll-fs-char-active {
+        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="lyricLine"]:not([class*="active"]) .amll-fs-word-active,
+        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="lyricLine"]:not([class*="active"]) .amll-fs-char-active {
             transition:
-                opacity var(--amll-fs-line-switch-highlight-out-duration) ease-out var(--amll-fs-line-switch-highlight-out-delay),
-                color var(--amll-fs-line-switch-highlight-out-duration) ease-out var(--amll-fs-line-switch-highlight-out-delay) !important;
+                opacity var(--amll-fs-line-switch-highlight-out-duration) cubic-bezier(0.42, 0, 1, 1) var(--amll-fs-line-switch-highlight-out-delay),
+                color var(--amll-fs-line-switch-highlight-out-duration) cubic-bezier(0.42, 0, 1, 1) var(--amll-fs-line-switch-highlight-out-delay) !important;
         }
         /* 全屏 BG line 配色 - 使用主歌词色系，层级稍弱 */
         /* 非高亮状态：使用主歌词非高亮色 */
-.amll-lyric-player.amll-surface-fullscreen [class*="_lyricBgLine_"] {
+.amll-lyric-player.amll-surface-fullscreen [class*="lyricBgLine"] {
             visibility: hidden !important;
             opacity: 0 !important;
             color: var(
@@ -763,7 +786,7 @@
             will-change: opacity, filter, transform, color !important;
         }
         /* 高亮状态：使用主歌词高亮色的较暗版本（通过 brightness 实现） */
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricBgLine_"][class*="_active_"] {
+        .amll-lyric-player.amll-surface-fullscreen [class*="lyricBgLine"][class*="active"] {
             visibility: visible !important;
             opacity: 0.4 !important;
             color: var(
@@ -779,17 +802,17 @@
                 color .35s ease-out !important;
         }
 /* Background line content: keep the fullscreen exit translation while root handles fade/blur timing. */
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricBgLine_"] > * {
+        .amll-lyric-player.amll-surface-fullscreen [class*="lyricBgLine"] > * {
             transform: translateY(-0.5em) !important;
             color: inherit !important;
             transition: transform .35s ease-out, color .35s ease-out !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricBgLine_"][class*="_active_"] > * {
+        .amll-lyric-player.amll-surface-fullscreen [class*="lyricBgLine"][class*="active"] > * {
             transform: translateY(0) !important;
             color: inherit !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricBgLine_"] .amll-fs-word-active,
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricBgLine_"] .amll-fs-char-active {
+        .amll-lyric-player.amll-surface-fullscreen [class*="lyricBgLine"] .amll-fs-word-active,
+        .amll-lyric-player.amll-surface-fullscreen [class*="lyricBgLine"] .amll-fs-char-active {
             color: var(
                 --amll-fs-bg-active,
                 var(--amll-fs-main-active, var(--amll-active, var(--amll-lp-color, white)))
@@ -874,70 +897,70 @@
         }
 
         /* Ensure lyric main line allows overflow for glow */
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricMainLine_"] {
+        .amll-lyric-player.amll-surface-fullscreen [class*="lyricMainLine"] {
             overflow: visible !important;
             contain: none !important;
         }
 
         /* Ensure sub line also allows overflow */
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricSubLine_"] {
+        .amll-lyric-player.amll-surface-fullscreen [class*="lyricSubLine"] {
             overflow: visible !important;
             contain: none !important;
         }
 
         /* Ensure the lyric line container allows overflow */
-        .amll-lyric-player.amll-surface-fullscreen [class*="_lyricLine_"] {
+        .amll-lyric-player.amll-surface-fullscreen [class*="lyricLine"] {
             overflow: visible !important;
             contain: none !important;
         }
 
         /* Ensure emphasize wrapper allows overflow */
-        .amll-lyric-player.amll-surface-fullscreen [class*="_emphasizeWrapper_"] {
+        .amll-lyric-player.amll-surface-fullscreen [class*="emphasizeWrapper"] {
             position: relative !important;
             overflow: visible !important;
         }
 
         /* Ensure emphasize element allows overflow */
-        .amll-lyric-player.amll-surface-fullscreen [class*="_emphasize_"] {
+        .amll-lyric-player.amll-surface-fullscreen [class*="emphasize"] {
             overflow: visible !important;
         }
 
-        .amll-lyric-player.amll-surface-fullscreen [class*="_emphasizeWrapper_"]::after,
-        .amll-lyric-player.amll-surface-fullscreen [class*="_emphasize_"]::after {
+        .amll-lyric-player.amll-surface-fullscreen [class*="emphasizeWrapper"]::after,
+        .amll-lyric-player.amll-surface-fullscreen [class*="emphasize"]::after {
             content: none !important;
             display: none !important;
         }
 
         /* === Interlude Dots (间奏等待点) - Fullscreen Theme Colors === */
-        .amll-lyric-player.amll-surface-fullscreen [class*="_interludeDots_"] > * {
+        .amll-lyric-player.amll-surface-fullscreen [class*="interludeDots"] > * {
             background-color: var(
                 --amll-fs-main-active,
                 var(--amll-active, var(--amll-lp-color, white))
             ) !important;
         }
 
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_lyricLine_"]:not([class*="_active_"]),
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_lyricLine_"]:not([class*="_active_"]) *,
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_lyricBgLine_"],
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_lyricBgLine_"] *,
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_interludeDots_"],
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_interludeDots_"] * {
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="lyricLine"]:not([class*="active"]),
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="lyricLine"]:not([class*="active"]) *,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="lyricBgLine"],
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="lyricBgLine"] *,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="interludeDots"],
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="interludeDots"] * {
             visibility: hidden !important;
             /* Use color instead of opacity - hide by making transparent */
             color: transparent !important;
         }
 
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_lyricLine_"][class*="_active_"],
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_lyricLine_"][class*="_active_"] > *,
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_lyricMainLine_"],
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_lyricMainLine_"] *,
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_lyricSubLine_"],
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_lyricSubLine_"] *,
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_romanWord_"],
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_emphasizeWrapper_"],
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_emphasizeWrapper_"] *,
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_emphasize_"],
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_emphasize_"] * {
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="lyricLine"][class*="active"],
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="lyricLine"][class*="active"] > *,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="lyricMainLine"],
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="lyricMainLine"] *,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="lyricSubLine"],
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="lyricSubLine"] *,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="romanWord"],
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="emphasizeWrapper"],
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="emphasizeWrapper"] *,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="emphasize"],
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="emphasize"] * {
             color: transparent !important;
             -webkit-text-fill-color: transparent !important;
             text-shadow: none !important;
@@ -968,30 +991,30 @@
             filter: none !important;
         }
 
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_emphasizeWrapper_"]::after,
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="_emphasize_"]::after {
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="emphasizeWrapper"]::after,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="emphasize"]::after {
             content: none !important;
             /* Use color instead of opacity */
             color: transparent !important;
         }
 
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="_lyricLine_"][class*="_active_"] [class*="_lyricMainLine_"],
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="_lyricLine_"][class*="_active_"] [class*="_lyricMainLine_"] *,
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="_lyricLine_"][class*="_active_"] [class*="_romanWord_"],
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="_lyricLine_"][class*="_active_"] [class*="_emphasizeWrapper_"],
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="_lyricLine_"][class*="_active_"] [class*="_emphasizeWrapper_"] *,
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="_lyricLine_"][class*="_active_"] [class*="_emphasize_"],
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="_lyricLine_"][class*="_active_"] [class*="_emphasize_"] * {
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="lyricLine"][class*="active"] [class*="lyricMainLine"],
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="lyricLine"][class*="active"] [class*="lyricMainLine"] *,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="lyricLine"][class*="active"] [class*="romanWord"],
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="lyricLine"][class*="active"] [class*="emphasizeWrapper"],
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="lyricLine"][class*="active"] [class*="emphasizeWrapper"] *,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="lyricLine"][class*="active"] [class*="emphasize"],
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="lyricLine"][class*="active"] [class*="emphasize"] * {
             color: transparent !important;
             -webkit-text-fill-color: transparent !important;
             text-shadow: none !important;
         }
 
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="_lyricLine_"][class*="_active_"] .amll-fs-word-base,
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="_lyricLine_"][class*="_active_"] .amll-fs-word-active,
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="_lyricLine_"][class*="_active_"] .amll-fs-char-base,
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="_lyricLine_"][class*="_active_"] .amll-fs-char-active,
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="_lyricLine_"][class*="_active_"] .amll-fs-glow-layer {
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="lyricLine"][class*="active"] .amll-fs-word-base,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="lyricLine"][class*="active"] .amll-fs-word-active,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="lyricLine"][class*="active"] .amll-fs-char-base,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="lyricLine"][class*="active"] .amll-fs-char-active,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-base-hide-active [class*="lyricLine"][class*="active"] .amll-fs-glow-layer {
             visibility: hidden !important;
             /* Use color instead of opacity - hide by making transparent */
             color: transparent !important;
@@ -2903,7 +2926,7 @@
         };
         const isFullscreenLineActiveElement = (lineElement) => {
             if (!(lineElement instanceof HTMLElement)) return false;
-            return String(lineElement.className || "").includes("_active_");
+            return String(lineElement.className || "").includes("active");
         };
         const isFullscreenLineActiveObject = (lineObj, lineIndex) => {
             const lineElement = lineObj?.element;
@@ -3425,20 +3448,20 @@
                     applyExplicitCoverBlurBlend(node, blendMode);
                 }
             };
-            applyBlendToNodeList('[class*="_lyricLine_"]', mainBlendMode);
-            applyBlendToNodeList('[class*="_lyricMainLine_"]', mainBlendMode);
-            applyBlendToNodeList('[class*="_lyricMainLine_"] *', mainBlendMode);
-            applyBlendToNodeList('[class*="_lyricSubLine_"]', mainBlendMode);
-            applyBlendToNodeList('[class*="_lyricSubLine_"] *', mainBlendMode);
-            applyBlendToNodeList('[class*="_emphasizeWrapper_"], [class*="_emphasize_"], [class*="_romanWord_"]', mainBlendMode);
+            applyBlendToNodeList('[class*="lyricLine"]', mainBlendMode);
+            applyBlendToNodeList('[class*="lyricMainLine"]', mainBlendMode);
+            applyBlendToNodeList('[class*="lyricMainLine"] *', mainBlendMode);
+            applyBlendToNodeList('[class*="lyricSubLine"]', mainBlendMode);
+            applyBlendToNodeList('[class*="lyricSubLine"] *', mainBlendMode);
+            applyBlendToNodeList('[class*="emphasizeWrapper"], [class*="emphasize"], [class*="romanWord"]', mainBlendMode);
             applyBlendToNodeList(".amll-cb-word-stack, .amll-cb-char-stack", mainBlendMode);
             applyBlendToNodeList(".amll-cb-word-base, .amll-cb-char-base", mainBlendMode);
             applyBlendToNodeList(".amll-cb-word-active, .amll-cb-char-active", highlightBlendMode);
             applyBlendToNodeList(".amll-cb-glow-layer", mainBlendMode);
-            applyBlendToNodeList('[class*="_lyricLine_"][class*="_active_"] [class*="_lyricMainLine_"]', highlightBlendMode);
-            applyBlendToNodeList('[class*="_lyricBgLine_"]', mainBlendMode);
-            applyBlendToNodeList('[class*="_lyricBgLine_"] > *', mainBlendMode);
-            applyBlendToNodeList('[class*="_interludeDots_"] > *', mainBlendMode);
+            applyBlendToNodeList('[class*="lyricLine"][class*="active"] [class*="lyricMainLine"]', highlightBlendMode);
+            applyBlendToNodeList('[class*="lyricBgLine"]', mainBlendMode);
+            applyBlendToNodeList('[class*="lyricBgLine"] > *', mainBlendMode);
+            applyBlendToNodeList('[class*="interludeDots"] > *', mainBlendMode);
         };
         let lastCoverBlurBlendSignature = "";
 
@@ -3775,7 +3798,7 @@
 	                hot: hotLines.has(lineIdx),
 	                buffered: bufferedLines.has(lineIdx),
 	                enabled: lineObj?.isEnabled === true,
-	                activeClass: typeof element?.className === "string" && element.className.includes("_active_"),
+	                activeClass: typeof element?.className === "string" && element.className.includes("active"),
 	                emphasisRunning: emphasisState.running,
 	                emphasisFinished: emphasisState.finished,
 	                emphasisTotal: emphasisState.total,
@@ -4180,10 +4203,10 @@
                 ttmlLength: lastTTML.length,
                 dom: {
                     totalElements: document.getElementsByTagName("*").length,
-                    lyricLines: playerElement.querySelectorAll('[class*="_lyricLine_"]').length,
-                    lyricMainLines: playerElement.querySelectorAll('[class*="_lyricMainLine_"]').length,
-                    lyricSubLines: playerElement.querySelectorAll('[class*="_lyricSubLine_"]').length,
-                    lyricBgLines: playerElement.querySelectorAll('[class*="_lyricBgLine_"]').length,
+                    lyricLines: playerElement.querySelectorAll('[class*="lyricLine"]').length,
+                    lyricMainLines: playerElement.querySelectorAll('[class*="lyricMainLine"]').length,
+                    lyricSubLines: playerElement.querySelectorAll('[class*="lyricSubLine"]').length,
+                    lyricBgLines: playerElement.querySelectorAll('[class*="lyricBgLine"]').length,
                     splitWords: splitWordCount,
                     emphasizedWords: emphasizedWordCount,
                     emphasizedChars: subElementCount,
@@ -4365,7 +4388,7 @@
 	                    continue;
 	                }
 	                
-	                const hasActiveClass = lineElement.className.includes("_active_");
+	                const hasActiveClass = lineElement.className.includes("active");
 	                if (hasActiveClass) {
 	                    delete lineElement.dataset.fsCompletedHighlight;
 	                    continue;
@@ -4496,7 +4519,7 @@
         const findFirstVisibleLineElement = () => {
             const playerElement = lyricPlayer.getElement();
             const activeMainLine = playerElement.querySelector(
-                '[class*="_lyricLine_"][class*="_active_"] > [class*="_lyricMainLine_"]'
+                '[class*="lyricLine"][class*="active"] > [class*="lyricMainLine"]'
             );
             if (isProbeVisibleElement(activeMainLine)) {
                 return {
@@ -4505,7 +4528,7 @@
                 };
             }
             const visibleMainLine = Array.from(
-                playerElement.querySelectorAll('[class*="_lyricMainLine_"]')
+                playerElement.querySelectorAll('[class*="lyricMainLine"]')
             ).find((element) => isProbeVisibleElement(element));
             if (visibleMainLine instanceof HTMLElement) {
                 return {
@@ -4649,41 +4672,41 @@
                     coverBlurGlow: countMatches(".amll-cb-glow-layer"),
                     genericFullscreenWordBase: countMatches(".amll-fs-word-base"),
                     genericFullscreenWordActive: countMatches(".amll-fs-word-active"),
-                    lyricMainLines: countMatches('[class*="_lyricMainLine_"]'),
-                    lyricSubLines: countMatches('[class*="_lyricSubLine_"]'),
-                    lyricBgLines: countMatches('[class*="_lyricBgLine_"]'),
-                    interludeDots: countMatches('[class*="_interludeDots_"] > *'),
+                    lyricMainLines: countMatches('[class*="lyricMainLine"]'),
+                    lyricSubLines: countMatches('[class*="lyricSubLine"]'),
+                    lyricBgLines: countMatches('[class*="lyricBgLine"]'),
+                    interludeDots: countMatches('[class*="interludeDots"] > *'),
                 },
                 layers: {
                     mainNonHighlight: snapshotLayer(".amll-cb-word-base, .amll-cb-char-base")
                         || snapshotLayer(".amll-fs-word-base, .amll-fs-char-base")
-                        || snapshotLayer('[class*="_lyricMainLine_"]'),
-                    inactiveLyric: snapshotLayer('[class*="_lyricLine_"]:not([class*="_active_"]) .amll-cb-word-base, [class*="_lyricLine_"]:not([class*="_active_"]) .amll-cb-char-base')
-                        || snapshotLayer('[class*="_lyricLine_"]:not([class*="_active_"]) .amll-fs-word-base, [class*="_lyricLine_"]:not([class*="_active_"]) .amll-fs-char-base')
-                        || snapshotLayer('[class*="_lyricLine_"]:not([class*="_active_"]) [class*="_lyricMainLine_"]'),
-                    translation: snapshotLayer('[class*="_lyricLine_"][class*="_active_"] > [class*="_lyricSubLine_"]')
-                        || snapshotLayer('[class*="_lyricSubLine_"]'),
-                    backgroundLyric: snapshotLayer('[class*="_lyricBgLine_"][class*="_active_"] > *')
-                        || snapshotLayer('[class*="_lyricBgLine_"] > *')
-                        || snapshotLayer('[class*="_lyricBgLine_"]'),
-                    interludeDots: snapshotLayer('[class*="_interludeDots_"] > *'),
+                        || snapshotLayer('[class*="lyricMainLine"]'),
+                    inactiveLyric: snapshotLayer('[class*="lyricLine"]:not([class*="active"]) .amll-cb-word-base, [class*="lyricLine"]:not([class*="active"]) .amll-cb-char-base')
+                        || snapshotLayer('[class*="lyricLine"]:not([class*="active"]) .amll-fs-word-base, [class*="lyricLine"]:not([class*="active"]) .amll-fs-char-base')
+                        || snapshotLayer('[class*="lyricLine"]:not([class*="active"]) [class*="lyricMainLine"]'),
+                    translation: snapshotLayer('[class*="lyricLine"][class*="active"] > [class*="lyricSubLine"]')
+                        || snapshotLayer('[class*="lyricSubLine"]'),
+                    backgroundLyric: snapshotLayer('[class*="lyricBgLine"][class*="active"] > *')
+                        || snapshotLayer('[class*="lyricBgLine"] > *')
+                        || snapshotLayer('[class*="lyricBgLine"]'),
+                    interludeDots: snapshotLayer('[class*="interludeDots"] > *'),
                     glow: snapshotLayer('.amll-cb-glow-layer')
                         || snapshotLayer('.amll-fs-glow-layer'),
                     wordHighlight: snapshotLayer('.amll-cb-word-active')
                         || snapshotLayer('.amll-fs-word-active'),
                     charHighlight: snapshotLayer('.amll-cb-char-active')
                         || snapshotLayer('.amll-fs-char-active'),
-                    lineHighlight: snapshotLayer('[class*="_lyricLine_"][class*="_active_"] [class*="_lyricMainLine_"]')
-                        || snapshotLayer('[class*="_lyricLine_"][class*="_active_"]'),
+                    lineHighlight: snapshotLayer('[class*="lyricLine"][class*="active"] [class*="lyricMainLine"]')
+                        || snapshotLayer('[class*="lyricLine"][class*="active"]'),
                 },
                 hitTests: {
-                    activeMainLine: hitTestVisibleLayer('[class*="_lyricLine_"][class*="_active_"] [class*="_lyricMainLine_"]'),
-                    inactiveMainLine: hitTestVisibleLayer('[class*="_lyricLine_"]:not([class*="_active_"]) [class*="_lyricMainLine_"]'),
-                    activeSubLine: hitTestVisibleLayer('[class*="_lyricLine_"][class*="_active_"] > [class*="_lyricSubLine_"]'),
-                    interludeDots: hitTestVisibleLayer('[class*="_interludeDots_"] > *'),
+                    activeMainLine: hitTestVisibleLayer('[class*="lyricLine"][class*="active"] [class*="lyricMainLine"]'),
+                    inactiveMainLine: hitTestVisibleLayer('[class*="lyricLine"]:not([class*="active"]) [class*="lyricMainLine"]'),
+                    activeSubLine: hitTestVisibleLayer('[class*="lyricLine"][class*="active"] > [class*="lyricSubLine"]'),
+                    interludeDots: hitTestVisibleLayer('[class*="interludeDots"] > *'),
                     activeWord: hitTestVisibleLayer('.amll-cb-word-active, .amll-fs-word-active'),
                     inactiveWordBase: hitTestVisibleLayer(
-                        '[class*="_lyricLine_"]:not([class*="_active_"]) .amll-cb-word-base, [class*="_lyricLine_"]:not([class*="_active_"]) .amll-fs-word-base'
+                        '[class*="lyricLine"]:not([class*="active"]) .amll-cb-word-base, [class*="lyricLine"]:not([class*="active"]) .amll-fs-word-base'
                     ),
                 },
             };
@@ -4801,7 +4824,7 @@
                         return;
                     }
 	                
-	                originalSetCurrentTime(timeInMs, needsForce);
+	                originalSetCurrentTime(timeInMs, needsForce || timeDelta > 500);
                     externalTimeMs = timeInMs;
                     externalTimeAnchorPerfMs = performance.now();
 	            },

@@ -1521,7 +1521,7 @@ var LyricPlayerBase = class extends EventTarget {
 			hasBottomContent,
 			stateResult
 		});
-		for (const id of commitResult.linesToDisable) this.currentLyricLineObjects[id]?.disable();
+		for (const id of commitResult.linesToDisable) this.currentLyricLineObjects[id]?.disable(isSeek);
 		for (const id of commitResult.linesToEnable) this.currentLyricLineObjects[id]?.enable();
 		if (commitResult.shouldResetScroll) this.resetScroll();
 		if (commitResult.shouldLayout) this.calcLayout();
@@ -2283,6 +2283,9 @@ const beginNum = norNum(0, EMP_EASING_MID);
 const endNum = norNum(EMP_EASING_MID, 1);
 const bezIn = bezier(.2, .4, .58, 1);
 const bezOut = bezier(.3, 0, .58, 1);
+const EXIT_HIGHLIGHT_MIN_REMAINING_MS = 16;
+const EXIT_HIGHLIGHT_MIN_CATCH_UP_MS = 120;
+const EXIT_HIGHLIGHT_MAX_CATCH_UP_MS = 280;
 const makeEmpEasing = (mid) => {
 	return (x) => x < mid ? bezIn(beginNum(x)) : 1 - bezOut(endNum(x));
 };
@@ -2308,6 +2311,7 @@ var LyricLineEl = class extends LyricLineBase {
 	currentDarkAlpha = .2;
 	targetBrightAlpha = 1;
 	targetDarkAlpha = .2;
+	exitCatchUpGeneration = 0;
 	/**
 	* 用于平衡换行、尽量减少各行长度差异的类
 	*/
@@ -2381,6 +2385,7 @@ var LyricLineEl = class extends LyricLineBase {
 	}
 	isEnabled = false;
 	async enable(maskAnimationTime = this.lyricPlayer.getCurrentTime(), shouldPlay = this.lyricPlayer.getIsPlaying()) {
+		this.clearExitHighlightCatchUpState();
 		this.isEnabled = true;
 		this.element.classList.add(lyric_player_module_default.active);
 		const main = this.element.children[0];
@@ -2408,17 +2413,60 @@ var LyricLineEl = class extends LyricLineBase {
 		}
 		main.classList.add(lyric_player_module_default.active);
 	}
-	disable() {
+	getAnimationEndTime(animation) {
+		const timing = animation.effect?.getComputedTiming();
+		const endTime = Number(timing?.endTime ?? 0);
+		if (Number.isFinite(endTime) && endTime > 0) return endTime;
+		const duration = Number(timing?.duration ?? 0);
+		const delay = Number(timing?.delay ?? 0);
+		const iterations = Number(timing?.iterations ?? 1);
+		const fallbackEndTime = delay + (Number.isFinite(iterations) ? duration * iterations : duration);
+		return Number.isFinite(fallbackEndTime) && fallbackEndTime > 0 ? fallbackEndTime : 0;
+	}
+	clearExitHighlightCatchUpState() {
+		this.exitCatchUpGeneration++;
+		delete this.element.dataset.amllExitCatchUp;
+	}
+	startExitHighlightCatchUp(isSeek = false) {
+		if (isSeek) return false;
+		if (!(this.lyricPlayer.getIsPlaying?.() ?? true)) return false;
+		let maxRemaining = 0;
+		const catchUpAnimations = [];
+		for (const word of this.splittedWords) for (const animation of word.maskAnimations) {
+			const endTime = this.getAnimationEndTime(animation);
+			if (!(endTime > 0)) continue;
+			const remaining = endTime - clamp(typeof animation.currentTime === "number" ? animation.currentTime : 0, 0, endTime);
+			maxRemaining = Math.max(maxRemaining, remaining);
+			if (remaining > EXIT_HIGHLIGHT_MIN_REMAINING_MS) catchUpAnimations.push(animation);
+		}
+		if (maxRemaining <= EXIT_HIGHLIGHT_MIN_REMAINING_MS || catchUpAnimations.length === 0) return false;
+		const catchUpDuration = clamp(maxRemaining, EXIT_HIGHLIGHT_MIN_CATCH_UP_MS, EXIT_HIGHLIGHT_MAX_CATCH_UP_MS);
+		const playbackRate = Math.max(1, maxRemaining / catchUpDuration);
+		const generation = ++this.exitCatchUpGeneration;
+		this.element.dataset.amllExitCatchUp = "1";
+		for (const animation of catchUpAnimations) {
+			const endTime = this.getAnimationEndTime(animation);
+			animation.currentTime = clamp(typeof animation.currentTime === "number" ? animation.currentTime : 0, 0, endTime);
+			animation.playbackRate = playbackRate;
+			animation.play();
+		}
+		Promise.allSettled(catchUpAnimations.map((animation) => animation.finished)).then(() => {
+			if (this.exitCatchUpGeneration === generation) this.clearExitHighlightCatchUpState();
+		});
+		return true;
+	}
+	disable(isSeek = false) {
 		this.isEnabled = false;
 		this.element.classList.remove(lyric_player_module_default.active);
-		this.renderMode = LyricLineRenderMode.SOLID;
 		const main = this.element.children[0];
+		const keepHighlightDuringExit = this.startExitHighlightCatchUp(isSeek);
+		if (!keepHighlightDuringExit) this.renderMode = LyricLineRenderMode.SOLID;
 		for (const word of this.splittedWords) {
 			for (const a of word.elementAnimations) if (a.id === "float-word" || a.id.includes("emphasize-word-float-only")) {
 				a.playbackRate = -1;
 				a.play();
 			}
-			for (const a of word.maskAnimations) a.pause();
+			for (const a of word.maskAnimations) if (!keepHighlightDuringExit) a.pause();
 		}
 		main.classList.remove(lyric_player_module_default.active);
 	}
@@ -2443,11 +2491,13 @@ var LyricLineEl = class extends LyricLineBase {
 		}
 	}
 	async pause() {
-		if (!this.isEnabled) return;
-		for (const word of this.splittedWords) {
-			for (const a of word.elementAnimations) a.pause();
-			for (const a of word.maskAnimations) a.pause();
+		for (const word of this.splittedWords) for (const a of word.maskAnimations) a.pause();
+		if (!this.isEnabled) {
+			this.clearExitHighlightCatchUpState();
+			this.renderMode = LyricLineRenderMode.SOLID;
+			return;
 		}
+		for (const word of this.splittedWords) for (const a of word.elementAnimations) a.pause();
 	}
 	setMaskAnimationState(maskAnimationTime = 0) {
 		const t = maskAnimationTime - this.lyricLine.startTime;

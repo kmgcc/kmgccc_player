@@ -289,10 +289,108 @@ fullscreen surface 不是单纯的 AMLL core 渲染模式，而是 App 侧既定
 - 继续保留 Swift/WebView adapter 实现；不要把它误迁成 core patch，也不要只依赖 JS `renderScale`。
 - 文档中此前“`renderScale/fpsCap` 应确认实际作用”的判断修正为：`renderScale` 对当前 DOM 歌词路径是兼容保留字段但实际 no-op；真实低分辨率由 Swift WebView 几何缩放负责。
 
+### 2026-05-15 fullscreen 高亮残留排查与修复
+
+排查结论：
+
+- 官方 AMLL core 的行高亮生命周期仍由 `LyricLineEl.enable()` / `disable()`、`PlayerTimelineState.hotLines` / `bufferedLines` 与 `computeLinePresentation()` 驱动；新版 public API 文档没有提供 `data-amll-exiting-highlight`、`splittedWords`、旧 `hotLines` 顶层字段等稳定契约，不能把这些当成迁移目标。
+- 真实残留发生在 App fullscreen adapter 的 DOM/CSS overlay 层，而不是新版 core 缺少旧 custom exit patch。
+- 新版 CSS module 类名形态变为类似 `xkZOxW_lyricLine`、`xkZOxW_active`；App fullscreen CSS/diagnostics/JS 仍大量使用旧选择器 `[class*="_lyricLine_"]`、`[class*="_active_"]` 和 `className.includes("_active_")`。
+- 这些旧选择器在新版类名上不命中，导致普通 fullscreen 的 `.amll-fs-word-active` 以及 legacy cover-blur `.amll-cb-word-active` 的“非 active 行隐藏/降色/退出”规则失效。视觉上表现为原始 AMLL 行已退出 active 后，App 注入的高亮覆盖层仍按 active layer 继续显示。
+- 窗口歌词没有此问题，是因为 main surface 不安装 `.amll-fs-word-active` / `.amll-cb-word-active` 这套 fullscreen overlay，直接走 core DOM renderer 的原始 mask/color 路径。
+- 当前 Swift cover blur fullscreen 主要走普通 fullscreen store 加 `amll-surface-fullscreen-cover-blur-generic` 与可选 `fullscreenCoverBlurHighlight` overlay；因此同样依赖 `.amll-fs-*` overlay selector。旧 `fullscreenCoverBlurMode=true` 的 `.amll-cb-*` 路径虽然当前不是主路径，也被同一类 selector 失配影响。
+
+前两次错误方向不成立：
+
+- 恢复旧 `data-amll-exiting-highlight` 机制不解决根因；根因是 App selector 没有命中新版 CSS module 类名，即使补回 data 标记，相关 CSS 仍可能不生效。
+- 用 `setTimeout` 模拟退出高亮会绕过 core 的 timeline/animation 状态，只是在 overlay 上叠另一个时钟，无法解释窗口歌词正常、fullscreen 残留的差异。
+- 直接围绕 `bufferedLines` / `hotLines` 改 core 或正式逻辑风险过高；新版这些状态在 `timelineState` 内，且 core 的缓冲行语义本来用于布局/过渡，不等于 App fullscreen overlay 应永久高亮。
+
+最终修法：
+
+- 只修改 App adapter `Resources/AMLL/index.html`。
+- 将 fullscreen/cover-blur overlay CSS 与诊断选择器从旧 hash 形态 `[class*="_lyricLine_"]` / `[class*="_active_"]` 等改为能同时匹配新旧 CSS module 的语义片段：`[class*="lyricLine"]`、`[class*="active"]`、`[class*="lyricMainLine"]`、`[class*="lyricSubLine"]`、`[class*="lyricBgLine"]` 等。
+- 同步修正 JS active 判断 `className.includes("_active_")`，让 `updateFullscreenParallelHighlightState()`、diagnostics 与 fullscreen layer patch 能识别新版 `xkZOxW_active`。
+- 不改 AMLL fork core，不手改 `amll-core.js`，不恢复旧 exiting data patch，不加定时器。
+
+cover blur 状态：
+
+- 普通 fullscreen 与当前 generic cover blur highlight overlay 共用 `.amll-fs-*` overlay 路径，已随 selector 修复一起覆盖。
+- legacy `fullscreenCoverBlurMode` / `.amll-cb-*` 路径同样做了 selector 修复，但当前 Swift 配置默认 `fullscreenCoverBlurMode=false`，因此本轮主要验证对象仍是普通 fullscreen 和 generic cover blur highlight overlay。
+
+### 2026-05-15 exit highlight catch-up 回归排查与修复
+
+现象：
+
+- 新版 AMLL 接入后，App adapter 的 `leadInMs` / `nearSwitchGapMs` 会在近距离换行时提前下一行 start，并把上一行 `endTime` clip 到提前切行点。
+- 上一行的 word end time 仍保留原始逐字时序；因此在切行点时，上一行 mask animation 可能还没走到行尾。
+- 新版 `LyricLineEl.disable()` 在行退出时直接 `pause()` 所有 `maskAnimations`。结果是原始 DOM 窗口歌词和 fullscreen overlay 都停在当前逐字进度，退出动画期间不会继续补完。
+
+根因：
+
+- 这不是 fullscreen selector 问题，也不是旧 custom core 整块缺失导致的视觉残留；真实断点在新版 DOM line lifecycle：`disable()` 无条件暂停 mask animation。
+- fullscreen / cover blur overlay 复制或替换的也是同一组 `splitWord.maskAnimations`，所以 core 一暂停，`.amll-fs-*` / `.amll-cb-*` 视觉层也同步停住。
+- App adapter 若要修窗口歌词，只能去 monkey patch `lineObj.splittedWords` / `maskAnimations` / `disable()` 等内部字段；这比在 fork core 的 DOM line lifecycle 中加入小范围语义更脆弱，也更难覆盖窗口与 fullscreen 的共同路径。
+
+最终修法：
+
+- 在新版 fork core 的 `packages/core/src/lyric-player/dom/lyric-line.ts` 增加窄语义 `startExitHighlightCatchUp()`：
+  - 仅普通播放退出行时触发；
+  - seek 退出不触发；
+  - 暂停状态不触发；
+  - 若剩余 mask 进度小于 16ms，退化为 upstream 原行为；
+  - 否则把未完成的 mask animations 以 `playbackRate = remaining / catchUpDuration` 加速到行尾，`catchUpDuration` 限制在 120-280ms，贴合行退出/隐退窗口。
+- `LyricPlayerBase.setCurrentTime()` 把 `isSeek` 传给 `line.disable(isSeek)`，避免 seek 时误触发 catch-up。
+- `pause()` 现在即使行已退出，也会暂停其 mask animations，避免 catch-up 在暂停状态继续播放。
+- 为 fullscreen / cover blur smooth overlay 增加新的窄数据语义 `data-amll-exit-catch-up="1"`，仅用于让非 active 退出行的 `.amll-fs-*` / `.amll-cb-*` active layer 在补完期间可见；该标记由 animation `finished` promise 清理，不使用 `setTimeout`。
+- App adapter 的 `setCurrentTime` 在大跳（`timeDelta > 500ms`）时把本次更新标为 seek，避免拖动进度条触发退出补完。
+
+第二阶段 overlay 时间关系修正：
+
+- 第一版 fullscreen / cover blur 适配把 `data-amll-exit-catch-up="1"` 同时当成“mask 继续补完”和“高亮层保持可见”的条件，导致 `.amll-fs-*` / `.amll-cb-*` active layer 的 opacity 等 catch-up 标记清除后才开始下降。实测表现为整行位移/缩放已经退场到后段，高亮才明显淡出，形成拖尾。
+- 这个设计错误已修正：`data-amll-exit-catch-up` 只保留 active color / visibility，让 mask catch-up 继续扫到行尾；opacity fade 由非 active 行的 CSS 目标立即置为 `0`，从行退出同一时间窗开始，不再等待 catch-up 完成。
+- fullscreen / cover blur smooth overlay 的退出 opacity 曲线改为 `cubic-bezier(0.42, 0, 1, 1)`，即前慢后快；退出时长保持 `0.50s`，与既有全屏行退场视觉窗口对齐。
+- 窗口模式中，第一版 core patch 在 `disable()` 开头立即把 `renderMode` 切到 `SOLID`，导致原始 DOM mask alpha 在 catch-up 仍进行时过早变暗。现在只在没有 catch-up 时立即切 `SOLID`；有 catch-up 的退出行先保留当前 gradient alpha 路径，让高亮亮度随整行退场/scale 过渡自然衰减。暂停时仍会清理 catch-up 并回到 `SOLID`。
+
+明确没有迁移：
+
+- 没有恢复旧 `data-amll-exiting-highlight` / `data-amll-exit-highlight-word` 机制。
+- 没有恢复旧离散逐字高亮。
+- 没有引入旧 exiting-line suppress。
+- 没有用 `setTimeout` 模拟退出动画。
+
+验证记录：
+
+- `packages/core` 执行 `pnpm exec tsgo -b` 通过。
+- 通过 `scripts/sync-amll-from-fork.sh` 从 fork 源码构建并同步 `amll-core.js`，没有手改 generated bundle。
+- 静态扫描确认 fullscreen selector 修复仍保留，未回退到 `[class*="_lyricLine_"]` / `[class*="_active_"]` / `includes("_active_")`。
+- Xcode Debug build 通过。
+
+cover blur 状态：
+
+- 当前 generic cover blur highlight 共用 `.amll-fs-*` smooth overlay，因此会随 `data-amll-exit-catch-up` 一起获得退出补完可见性。
+- legacy `.amll-cb-*` cover blur smooth overlay 同样识别 `data-amll-exit-catch-up`；离散 overlay 仍保持未迁移状态。
+
+### Fork Patch Registry
+
+| Patch | 文件 | 必要性 | 行为边界 | 维护策略 |
+|---|---|---|---|---|
+| Exit highlight catch-up: seek-aware line disable | `packages/core/src/lyric-player/base/index.ts` | `setCurrentTime(time, isSeek)` 是 core 判断 seek 的入口；必须把 `isSeek` 传给退出行，否则拖动/大跳也会触发 catch-up。 | 只改变 `disable()` 入参，不改变 timeline 命中、layout 或 public API。`isSeek=true` 时退化为 upstream 的暂停 mask 行为。 | upstream 更新时检查 `commitPlayerTimeState().linesToDisable` 调用点是否仍存在；若官方新增 seek-aware disable，可删除该转发。 |
+| Exit highlight catch-up: abstract signature | `packages/core/src/lyric-player/base/line.ts` | 为 DOM line 提供类型化 `disable(isSeek?: boolean)`；否则只能用不透明 cast 或 adapter monkey patch。 | 仅接口签名变更，默认可选参数保持现有子类调用兼容。 | upstream 更新时同步所有 `LyricLineBase` 子类签名；当前 App 只使用 DOM renderer。 |
+| Exit highlight catch-up: DOM mask continuation | `packages/core/src/lyric-player/dom/lyric-line.ts` | 窗口歌词直接依赖原始 DOM mask animations；App adapter 无法不触碰 `splittedWords` / `maskAnimations` / `disable()` 内部字段就覆盖窗口和 fullscreen 共同路径。 | 仅普通播放、非 seek、非暂停、剩余 mask 超过 16ms 的退出行触发；catch-up duration clamp 到 120-280ms；不恢复旧 `data-amll-exiting-highlight`，不引入 `setTimeout`。 | upstream 更新时只需对照 `enable()` / `disable()` / `pause()` / `maskAnimations` lifecycle；若官方支持退出行 mask continuation，可移除本 patch。 |
+| App smooth overlay catch-up adapter | `myPlayer2/Resources/AMLL/index.html` | fullscreen / cover blur smooth overlay 复制 core mask animation，但视觉层由 `.amll-fs-*` / `.amll-cb-*` CSS 控制；需要识别 `data-amll-exit-catch-up`，否则非 active 行会立即隐藏 overlay。 | 标记只保留 active color / visibility；opacity fade 与行退出同步开始。只覆盖 smooth overlay，不迁移离散高亮旧机制。 | upstream CSS module 类名变化时继续依赖语义 substring selector；若未来 overlay 改为 public API，应把这段 adapter 下沉到统一 layer patch。 |
+
+本轮补充审计结论：
+
+- `base/index.ts` 与 `base/line.ts` 的改动已经是为避免 seek 误触发 catch-up 所需的最小类型链路；若不改，只能在 App adapter 中猜测 seek 并 monkey patch line object，风险更高。
+- `dom/lyric-line.ts` 是唯一真正控制窗口歌词 mask animation 生命周期的位置；本 patch 没有修改 word mask 生成算法、离散高亮、行布局或旧 suppress 逻辑。
+- 第二阶段 overlay 第一版实现存在设计错误：把 catch-up 标记同时用于“进度继续”和“opacity 保持”。修正后两者解耦，catch-up 负责 mask 进度，CSS 非 active 状态负责 opacity 退场。
+- 后续 upstream 更新时，优先尝试删除或缩小 fork patch；保留条件是 App 仍需要提前切行后的退出行 mask continuation，且官方 core 仍在 `disable()` 时直接暂停未完成 mask animations。
+
 ### 仍未迁移
 
 - 离散逐字/逐词高亮。
-- exit highlight catch-up 与相关 data 标记。
+- 旧 `data-amll-exiting-highlight` / `data-amll-exit-highlight-word` 机制。
 - exiting-line suppress。
 - hide/show 不 dispose 的旧 line lifecycle patch。
 - fullscreen mask alpha / glow / lift 的旧 core patch。
