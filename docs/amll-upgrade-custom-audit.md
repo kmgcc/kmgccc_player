@@ -349,8 +349,16 @@ cover blur 状态：
 
 - 第一版 fullscreen / cover blur 适配把 `data-amll-exit-catch-up="1"` 同时当成“mask 继续补完”和“高亮层保持可见”的条件，导致 `.amll-fs-*` / `.amll-cb-*` active layer 的 opacity 等 catch-up 标记清除后才开始下降。实测表现为整行位移/缩放已经退场到后段，高亮才明显淡出，形成拖尾。
 - 这个设计错误已修正：`data-amll-exit-catch-up` 只保留 active color / visibility，让 mask catch-up 继续扫到行尾；opacity fade 由非 active 行的 CSS 目标立即置为 `0`，从行退出同一时间窗开始，不再等待 catch-up 完成。
-- fullscreen / cover blur smooth overlay 的退出 opacity 曲线改为 `cubic-bezier(0.42, 0, 1, 1)`，即前慢后快；退出时长保持 `0.50s`，与既有全屏行退场视觉窗口对齐。
+- fullscreen / cover blur smooth overlay 的退出 opacity 曲线第二阶段曾改为 `cubic-bezier(0.42, 0, 1, 1)`；后续 2026-05-16 复查发现该 ease-in 型曲线前段过平，已在第三阶段改为 `ease-out`。
 - 窗口模式中，第一版 core patch 在 `disable()` 开头立即把 `renderMode` 切到 `SOLID`，导致原始 DOM mask alpha 在 catch-up 仍进行时过早变暗。现在只在没有 catch-up 时立即切 `SOLID`；有 catch-up 的退出行先保留当前 gradient alpha 路径，让高亮亮度随整行退场/scale 过渡自然衰减。暂停时仍会清理 catch-up 并回到 `SOLID`。
+
+第三阶段 fullscreen fade 起步偏迟修正：
+
+- 复查时间轴后确认：提前切行点由 App timing preprocessing clip 上一行 `endTime` 产生；在该时间点，`setCurrentTime()` 同一次提交会触发 core `disable()`、启动 catch-up、移除 active class、执行 layout 退场，并让 fullscreen / cover blur CSS 的非 active 规则把 overlay opacity 目标写为 `0`。没有发现 overlay opacity 目标晚于行退场起点写入。
+- 真实问题是上一版 `opacity 0.50s cubic-bezier(0.42, 0, 1, 1)` 是 ease-in 型曲线：500ms 动画在 200ms 时只完成约 21.5%，opacity 仍约 0.785；250ms 时也只完成约 31.5%，opacity 仍约 0.685。因此视觉上会像整行已经退场到 40%-50% 后，高亮层才开始明显变暗。
+- A/B 结论：linear 能即时下降但质感偏机械；更激进的 `cubic-bezier(.22,.61,.36,1)` 在 200ms 前下降过快，容易像断崖；`ease-out` 在 100ms/200ms 已分别降到约 0.84/0.69，能让用户看到同起淡出，同时保持 500ms 末端自然收束。
+- 最终仅修改 App fullscreen / cover blur smooth overlay 的 opacity/color fade-out timing-function 为 `ease-out`，保留 `0.50s` 时长和现有触发条件。catch-up 仍只负责 mask 进度补完，opacity fade 仍由非 active 状态驱动。
+- 本轮没有继续修改 fork core；Fork Patch Registry 中的 core patch 仍保持上一阶段范围。
 
 明确没有迁移：
 
