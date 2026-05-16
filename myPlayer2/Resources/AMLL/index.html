@@ -1020,6 +1020,56 @@
             color: transparent !important;
         }
 
+        /* === Cover-blur highlight-only: dedicated main emphasis body channel ===
+           Source .amll-fs-word-active / .amll-fs-char-active are hidden by the
+           highlight-only rules above so non-emphasized content stays invisible.
+           When the bridge tags an emphasized word-stack with
+           data-amll-fs-emphasis-body="1", restore a controlled, opaque body fill
+           so the main highlight stays readable in both lighter and darker
+           profiles. The decorative glow clone is a separate channel; its alpha
+           must never carry main visibility. */
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="lyricLine"][class*="active"] .amll-fs-word-stack[data-amll-fs-emphasis-body="1"] > .amll-fs-word-active,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="lyricLine"][data-fs-completed-highlight="1"] .amll-fs-word-stack[data-amll-fs-emphasis-body="1"] > .amll-fs-word-active,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="lyricLine"][data-amll-exit-catch-up="1"] .amll-fs-word-stack[data-amll-fs-emphasis-body="1"] > .amll-fs-word-active,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="lyricLine"][data-amll-exiting-highlight="1"] .amll-fs-word-stack[data-amll-fs-emphasis-body="1"] > .amll-fs-word-active {
+            visibility: visible !important;
+            color: var(
+                --amll-fs-cover-blur-body-color,
+                var(--amll-fs-main-active, var(--amll-active, var(--amll-lp-color, white)))
+            ) !important;
+            -webkit-text-fill-color: var(
+                --amll-fs-cover-blur-body-color,
+                var(--amll-fs-main-active, var(--amll-active, var(--amll-lp-color, white)))
+            ) !important;
+            text-shadow: none !important;
+            filter: none !important;
+            mix-blend-mode: normal !important;
+        }
+
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="lyricLine"][class*="active"] .amll-fs-word-stack[data-amll-fs-emphasis-body="1"] .amll-fs-char-stack,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="lyricLine"][data-fs-completed-highlight="1"] .amll-fs-word-stack[data-amll-fs-emphasis-body="1"] .amll-fs-char-stack,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="lyricLine"][data-amll-exit-catch-up="1"] .amll-fs-word-stack[data-amll-fs-emphasis-body="1"] .amll-fs-char-stack,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="lyricLine"][data-amll-exiting-highlight="1"] .amll-fs-word-stack[data-amll-fs-emphasis-body="1"] .amll-fs-char-stack {
+            visibility: visible !important;
+        }
+
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="lyricLine"][class*="active"] .amll-fs-word-stack[data-amll-fs-emphasis-body="1"] .amll-fs-char-active,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="lyricLine"][data-fs-completed-highlight="1"] .amll-fs-word-stack[data-amll-fs-emphasis-body="1"] .amll-fs-char-active,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="lyricLine"][data-amll-exit-catch-up="1"] .amll-fs-word-stack[data-amll-fs-emphasis-body="1"] .amll-fs-char-active,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="lyricLine"][data-amll-exiting-highlight="1"] .amll-fs-word-stack[data-amll-fs-emphasis-body="1"] .amll-fs-char-active {
+            visibility: visible !important;
+            color: var(
+                --amll-fs-cover-blur-body-color,
+                var(--amll-fs-main-active, var(--amll-active, var(--amll-lp-color, white)))
+            ) !important;
+            -webkit-text-fill-color: var(
+                --amll-fs-cover-blur-body-color,
+                var(--amll-fs-main-active, var(--amll-active, var(--amll-lp-color, white)))
+            ) !important;
+            text-shadow: none !important;
+            filter: none !important;
+        }
+
     </style>
 </head>
 <body>
@@ -2148,15 +2198,20 @@
         };
 
         const COVER_BLUR_EMPHASIS_GLOW_ALPHA_LIMIT = 0.2;
+        // Decorative-only glow profile. Main emphasis visibility is now carried by the
+        // body channel (data-amll-fs-emphasis-body); these values shape the halo only
+        // and must NOT be tuned to compensate for missing main highlight visibility.
+        // Source AMLL emphasis text-shadow may reach alpha 0.8. These profile values
+        // keep the final cloned shadow well under 0.2 after retinting.
         const coverBlurGlowProfiles = {
-            // Source AMLL emphasis text-shadow may reach alpha 0.8. These profile
-            // alphas keep the final cloned shadow well under 0.2 after retinting.
+            // lighter: subtle white halo, must not overexpose against the bright blur.
             lighter: {
                 color: "rgba(255, 255, 255, 0.12)",
                 alphaMultiplier: 0.9,
             },
-            // plus-darker only reads as an emphasis halo when the shadow itself is
-            // dark; a bright glow is mostly neutralized by the final blend.
+            // darker: faint dark halo. plus-darker / dark cover composition consumes
+            // bright halos; a low-alpha dark shadow keeps a perceptible decoration
+            // without becoming the only source of emphasis visibility.
             darker: {
                 color: "rgba(0, 0, 0, 0.16)",
                 alphaMultiplier: 0.9,
@@ -2717,6 +2772,17 @@
 
             if (emphasisAnimations.length === 0) return;
 
+            // === Cover-blur highlight-only: main emphasis body channel ===
+            // The highlight-only WebView hides .amll-fs-word-active / .amll-fs-char-active by
+            // default so non-emphasized text stays invisible. Tagging the word-stack here
+            // re-enables a controlled, opaque body fill for the emphasized word via the
+            // companion CSS rule (data-amll-fs-emphasis-body). The body channel is
+            // independent of the decorative glow profile alpha — emphasis stays readable
+            // even when the glow is intentionally subtle (lighter) or color-clipped
+            // against the blurred cover (darker). The glow clone below stays purely
+            // decorative.
+            stackElement.setAttribute("data-amll-fs-emphasis-body", "1");
+
             const profile = getFullscreenCoverBlurGenericProfile();
             if (fullscreenCoverBlurSuppressEmphasisGlow === true) {
                 for (const animation of emphasisAnimations) {
@@ -2724,6 +2790,8 @@
                 }
                 teardownFullscreenGlowLayer(splitWord);
                 activeWordElement.style.setProperty("text-shadow", "none", "important");
+                // Body channel intentionally stays active under suppress — the flag is
+                // about removing the decorative halo, not silencing the emphasis word.
                 return;
             }
             const glowLayer = ensureFullscreenGlowLayerElement(
@@ -4022,6 +4090,12 @@
             const cbCharRecords = Array.isArray(splitWord.__cbCharRecords)
                 ? splitWord.__cbCharRecords.length
                 : 0;
+
+            // Clear cover-blur emphasis body channel attr before detaching the stack;
+            // safe no-op when the stack is already detached or never tagged.
+            if (splitWord.__fsWordStackElement instanceof HTMLElement) {
+                splitWord.__fsWordStackElement.removeAttribute("data-amll-fs-emphasis-body");
+            }
 
             removedNodes += removeNodeSafely(splitWord.__fsGlowLayer);
             removedNodes += removeNodeSafely(splitWord.__cbGlowLayer);
