@@ -197,16 +197,18 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         let contentView: AnyView
         if let libraryVM,
            let coverDownloadService,
-           let netEaseCoverService {
+           let netEaseCoverService,
+           let uiState {
             contentView = AnyView(
                 baseContentView
                     .environment(libraryVM)
+                    .environment(uiState)
                     .environment(coverDownloadService)
                     .environment(netEaseCoverService)
             )
         } else {
             Log.error(
-                "Fullscreen editor dependencies missing: libraryVM=\(libraryVM != nil), coverDownloadService=\(coverDownloadService != nil), netEaseCoverService=\(netEaseCoverService != nil)",
+                "Fullscreen editor dependencies missing: libraryVM=\(libraryVM != nil), coverDownloadService=\(coverDownloadService != nil), netEaseCoverService=\(netEaseCoverService != nil), uiState=\(uiState != nil)",
                 category: .fullscreen
             )
             contentView = AnyView(baseContentView)

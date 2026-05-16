@@ -15,6 +15,8 @@ struct TrackActionMenuContent: View {
     let onPlay: () -> Void
     let onEditTrack: (Track) -> Void
     var onRemoveFromCurrentPlaylist: ((Track) -> Void)?
+    var showsPlay: Bool = true
+    var showsNavigation: Bool = true
 
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(UIStateViewModel.self) private var uiState
@@ -30,13 +32,15 @@ struct TrackActionMenuContent: View {
             Divider()
         }
 
-        Button {
-            onPlay()
-        } label: {
-            Label("播放", systemImage: "play")
-        }
+        if showsPlay {
+            Button {
+                onPlay()
+            } label: {
+                Label("播放", systemImage: "play")
+            }
 
-        Divider()
+            Divider()
+        }
 
         Menu {
             ForEach(libraryVM.playlists) { playlist in
@@ -82,7 +86,7 @@ struct TrackActionMenuContent: View {
             Label("编辑歌曲信息", systemImage: "info.circle")
         }
 
-        if shouldShowArtistNavigation {
+        if showsNavigation && shouldShowArtistNavigation {
             Button {
                 libraryVM.navigateToArtist(for: track, uiState: uiState)
             } label: {
@@ -90,7 +94,7 @@ struct TrackActionMenuContent: View {
             }
         }
 
-        if shouldShowAlbumNavigation {
+        if showsNavigation && shouldShowAlbumNavigation {
             Button {
                 libraryVM.navigateToAlbum(for: track, uiState: uiState)
             } label: {

@@ -91,12 +91,29 @@ struct FullscreenMiniPlayerView: View {
     var body: some View {
         HStack(spacing: hStackSpacing) {
             // Left: Cover + Title/Artist
-            trackInfoView
-                .frame(width: trackInfoWidth, alignment: .leading)
-                .contentShape(Rectangle())
-                .contextMenu {
-                    nowPlayingInfoContextMenu
-                }
+            FullscreenMiniPlayerLeftSection(
+                hasTrack: playbackCoordinator.presentation.hasTrack,
+                isArtworkLoading: playbackCoordinator.presentation.isArtworkLoading,
+                displayTitle: playbackCoordinator.presentation.title,
+                displayArtist: playbackCoordinator.presentation.artist,
+                emptyTitleKey: playbackCoordinator.presentation.emptyTitleKey,
+                artworkImage: artworkImage,
+                scale: scale,
+                primaryColor: lyricsDynamicPrimaryColor,
+                secondaryColor: lyricsDynamicSecondaryColor,
+                onEditTrack: { track in
+                    onInteraction()
+                    onEditTrackRequested(track)
+                },
+                onEditExternalInfo: {
+                    onInteraction()
+                    onEditExternalInfoRequested()
+                },
+                onInteraction: onInteraction
+            )
+            .equatable()
+            .frame(width: trackInfoWidth, alignment: .leading)
+            .contentShape(Rectangle())
 
             // Center: Playback Controls
             controlsView
@@ -134,76 +151,6 @@ struct FullscreenMiniPlayerView: View {
     }
 
     // MARK: - Subviews
-
-    @ViewBuilder
-    private var nowPlayingInfoContextMenu: some View {
-        NowPlayingInfoContextMenu(
-            presentation: playbackCoordinator.presentation,
-            onEditTrack: { track in
-                onInteraction()
-                onEditTrackRequested(track)
-            },
-            onEditExternalInfo: {
-                onInteraction()
-                onEditExternalInfoRequested()
-            }
-        )
-    }
-
-    private var trackInfoView: some View {
-        HStack(spacing: trackInfoHSpacing) {
-            artworkView
-
-            VStack(alignment: .leading, spacing: trackInfoVSpacing) {
-                let presentation = playbackCoordinator.presentation
-                if presentation.hasTrack {
-                    SeamlessMarqueeText(
-                        text: presentation.title,
-                        fontSize: titleFontSize,
-                        fontWeight: .semibold,
-                        color: lyricsDynamicPrimaryColor,
-                        enablesContentTransition: true
-                    )
-
-                    SeamlessMarqueeText(
-                        text: presentation.artist.isEmpty
-                            ? NSLocalizedString("library.unknown_artist", comment: "")
-                            : presentation.artist,
-                        fontSize: artistFontSize,
-                        fontWeight: .medium,
-                        color: lyricsDynamicSecondaryColor,
-                        enablesContentTransition: true
-                    )
-                } else {
-                    Text(LocalizedStringKey(presentation.emptyTitleKey))
-                        .font(.system(size: titleFontSize, weight: .semibold))
-                        .foregroundStyle(lyricsDynamicSecondaryColor)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
-    @ViewBuilder
-    private var artworkView: some View {
-        if let artworkImage {
-            Image(nsImage: artworkImage)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-                .frame(width: artworkSize, height: artworkSize)
-                .clipShape(RoundedRectangle(cornerRadius: artworkCornerRadius, style: .continuous))
-        } else if playbackCoordinator.presentation.isArtworkLoading {
-            ZStack {
-                ArtworkPlaceholderView.fullscreenMiniPlayer(artworkSize: 44, scale: scale)
-                ProgressView()
-                    .controlSize(.small)
-                    .scaleEffect(0.78 * scale)
-            }
-            .frame(width: artworkSize, height: artworkSize)
-        } else {
-            ArtworkPlaceholderView.fullscreenMiniPlayer(artworkSize: 44, scale: scale)
-        }
-    }
 
     private var controlsView: some View {
         let presentation = playbackCoordinator.presentation
@@ -632,6 +579,140 @@ struct FullscreenMiniPlayerView: View {
 
     private static func clamp01(_ value: CGFloat) -> CGFloat {
         Swift.min(Swift.max(value, 0), 1)
+    }
+}
+
+// MARK: - Left section (isolated from high-frequency presentation ticks)
+
+private struct FullscreenMiniPlayerLeftSection: View, Equatable {
+
+    let hasTrack: Bool
+    let isArtworkLoading: Bool
+    let displayTitle: String
+    let displayArtist: String
+    let emptyTitleKey: String
+    let artworkImage: NSImage?
+    let scale: CGFloat
+    let primaryColor: Color
+    let secondaryColor: Color
+
+    let onEditTrack: (Track) -> Void
+    let onEditExternalInfo: () -> Void
+    let onInteraction: () -> Void
+
+    @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+
+    // Layout derived from scale (mirrors FullscreenMiniPlayerView formulas)
+    private var artworkSize: CGFloat { 60 * 0.73 * scale }
+    private var artworkCornerRadius: CGFloat { 12 * scale }
+    private var trackInfoHSpacing: CGFloat { 16 * scale }
+    private var trackInfoVSpacing: CGFloat { 6 * scale }
+    private var titleFontSize: CGFloat { 15 * scale }
+    private var artistFontSize: CGFloat { 12.5 * scale }
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.hasTrack == rhs.hasTrack
+            && lhs.isArtworkLoading == rhs.isArtworkLoading
+            && lhs.displayTitle == rhs.displayTitle
+            && lhs.displayArtist == rhs.displayArtist
+            && lhs.emptyTitleKey == rhs.emptyTitleKey
+            && lhs.artworkImage === rhs.artworkImage
+            && lhs.scale == rhs.scale
+            && lhs.primaryColor == rhs.primaryColor
+            && lhs.secondaryColor == rhs.secondaryColor
+    }
+
+    var body: some View {
+        HStack(spacing: trackInfoHSpacing) {
+            artworkView
+
+            VStack(alignment: .leading, spacing: trackInfoVSpacing) {
+                if hasTrack {
+                    SeamlessMarqueeText(
+                        text: displayTitle,
+                        fontSize: titleFontSize,
+                        fontWeight: .semibold,
+                        color: primaryColor,
+                        enablesContentTransition: true
+                    )
+
+                    SeamlessMarqueeText(
+                        text: displayArtist.isEmpty
+                            ? NSLocalizedString("library.unknown_artist", comment: "")
+                            : displayArtist,
+                        fontSize: artistFontSize,
+                        fontWeight: .medium,
+                        color: secondaryColor,
+                        enablesContentTransition: true
+                    )
+                } else {
+                    Text(LocalizedStringKey(emptyTitleKey))
+                        .font(.system(size: titleFontSize, weight: .semibold))
+                        .foregroundStyle(secondaryColor)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .contextMenu {
+            // Closure is lazy — evaluated only when NSMenu appears, not during body computation.
+            nowPlayingInfoContextMenu
+        }
+    }
+
+    @ViewBuilder
+    private var artworkView: some View {
+        if let artworkImage {
+            Image(nsImage: artworkImage)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: artworkSize, height: artworkSize)
+                .clipShape(RoundedRectangle(cornerRadius: artworkCornerRadius, style: .continuous))
+        } else if isArtworkLoading {
+            ZStack {
+                ArtworkPlaceholderView.fullscreenMiniPlayer(artworkSize: 44, scale: scale)
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.78 * scale)
+            }
+            .frame(width: artworkSize, height: artworkSize)
+        } else {
+            ArtworkPlaceholderView.fullscreenMiniPlayer(artworkSize: 44, scale: scale)
+        }
+    }
+
+    @ViewBuilder
+    private var nowPlayingInfoContextMenu: some View {
+        let presentation = playbackCoordinator.presentation
+        if let track = presentation.localTrack {
+            TrackActionMenuContent(
+                track: track,
+                onPlay: {
+                    onInteraction()
+                    playbackCoordinator.play(track: track)
+                },
+                onEditTrack: { t in
+                    onInteraction()
+                    onEditTrack(t)
+                },
+                showsPlay: false,
+                showsNavigation: false
+            )
+            if presentation.source.isExternal, presentation.externalStableKey != nil {
+                Button {
+                    onInteraction()
+                    onEditExternalInfo()
+                } label: {
+                    Label("编辑外部播放覆盖信息", systemImage: "slider.horizontal.3")
+                }
+            }
+        } else if presentation.source.isExternal, presentation.externalStableKey != nil {
+            Button {
+                onInteraction()
+                onEditExternalInfo()
+            } label: {
+                Label("编辑外部播放覆盖信息", systemImage: "slider.horizontal.3")
+            }
+        }
     }
 }
 

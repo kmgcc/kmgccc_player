@@ -34,7 +34,6 @@ struct MiniPlayerView: View {
     @State private var playPauseSymbolEffectTrigger = 0
     @State private var nextSymbolEffectTrigger = 0
     @State private var artworkImage: NSImage?
-    @State private var isArtworkHovering = false
     @State private var isPlaybackModeExpanded = false
     @State private var isShowingExternalMatchEditor = false
 
@@ -55,11 +54,27 @@ struct MiniPlayerView: View {
     var body: some View {
         return HStack(spacing: 12) {
             // MARK: - Left: Cover enters embedded fullscreen player, text keeps library/now playing toggle
-            leftNowPlayingSection
+            MiniPlayerLeftSection(
+                hasTrack: playbackCoordinator.presentation.hasTrack,
+                isArtworkLoading: playbackCoordinator.presentation.isArtworkLoading,
+                displayTitle: playbackCoordinator.presentation.title,
+                displayArtist: playbackCoordinator.presentation.artist,
+                emptyTitleKey: playbackCoordinator.presentation.emptyTitleKey,
+                artworkImage: artworkImage,
+                isFullscreenPresented: fullscreenWindowManager.isFullscreenPlayerPresented,
+                trackToEdit: $trackToEdit,
+                isShowingExternalMatchEditor: $isShowingExternalMatchEditor,
+                onFullscreen: { fullscreenWindowManager.showFullscreenPlayerInWindow() },
+                onToggleNowPlaying: {
+                    if uiState.contentMode == .nowPlaying {
+                        uiState.returnToLibraryFromNowPlaying()
+                    } else {
+                        uiState.showNowPlaying()
+                    }
+                }
+            )
+            .equatable()
             .layoutPriority(1)
-            .contextMenu {
-                nowPlayingInfoContextMenu
-            }
 
             // MARK: - Controls
             controlsView
@@ -111,107 +126,6 @@ struct MiniPlayerView: View {
     }
 
     // MARK: - Subviews
-
-    private var leftNowPlayingSection: some View {
-        HStack(spacing: 10) {
-            Button {
-                fullscreenWindowManager.showFullscreenPlayerInWindow()
-            } label: {
-                artworkButtonContent
-            }
-            .buttonStyle(.plain)
-            .disabled(
-                !playbackCoordinator.presentation.hasTrack || fullscreenWindowManager.isFullscreenPlayerPresented
-            )
-
-            Button {
-                if uiState.contentMode == .nowPlaying {
-                    uiState.returnToLibraryFromNowPlaying()
-                } else {
-                    uiState.showNowPlaying()
-                }
-            } label: {
-                trackInfoView
-                    .frame(height: 36, alignment: .leading)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .frame(
-                minWidth: trackInfoMinWidth,
-                idealWidth: trackInfoIdealWidth,
-                maxWidth: trackInfoMaxWidth,
-                minHeight: 36,
-                alignment: .leading
-            )
-            .contentShape(Rectangle())
-        }
-        .contentShape(Rectangle())
-        .offset(x: 4, y: 0)
-    }
-
-    @ViewBuilder
-    private var artworkButtonContent: some View {
-        let isEnabled = playbackCoordinator.presentation.hasTrack
-            && !fullscreenWindowManager.isFullscreenPlayerPresented
-
-        ZStack {
-            artworkView
-
-            if isArtworkHovering && isEnabled {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color.black.opacity(0.18))
-                    .overlay(
-                        Image(systemName: "arrow.up.left.and.arrow.down.right")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(Color.white.opacity(0.95))
-                    )
-                    .transition(.opacity)
-            }
-        }
-        .frame(width: 36, height: 36)
-        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .onHover { hovering in
-            isArtworkHovering = hovering && isEnabled
-        }
-        .animation(.easeOut(duration: 0.15), value: isArtworkHovering)
-    }
-
-    @ViewBuilder
-    private var trackInfoView: some View {
-        let presentation = playbackCoordinator.presentation
-        VStack(alignment: .leading, spacing: 4) {
-            if presentation.hasTrack {
-                SeamlessMarqueeText(
-                    text: presentation.title,
-                    style: .subheadline,
-                    fontWeight: .medium,
-                    color: .primary,
-                    enablesContentTransition: true
-                )
-
-                SeamlessMarqueeText(
-                    text: presentation.artist.isEmpty
-                        ? NSLocalizedString("library.unknown_artist", comment: "")
-                        : presentation.artist,
-                    style: .caption,
-                    fontWeight: .regular,
-                    color: .secondary,
-                    enablesContentTransition: true
-                )
-            } else {
-                Text(LocalizedStringKey(presentation.emptyTitleKey))
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .frame(
-            minWidth: trackInfoMinWidth,
-            idealWidth: trackInfoIdealWidth,
-            maxWidth: trackInfoMaxWidth,
-            alignment: .leading
-        )
-        .clipped()
-    }
 
     private var controlsView: some View {
         let presentation = playbackCoordinator.presentation
@@ -285,35 +199,6 @@ struct MiniPlayerView: View {
 
     private var controlHitSize: CGFloat { 26 }
 
-    @ViewBuilder
-    private var nowPlayingInfoContextMenu: some View {
-        let presentation = playbackCoordinator.presentation
-        if let track = presentation.localTrack {
-            TrackActionMenuContent(
-                track: track,
-                onPlay: {
-                    playbackCoordinator.play(track: track)
-                },
-                onEditTrack: { t in
-                    trackToEdit = t
-                }
-            )
-            if presentation.source.isExternal, presentation.externalStableKey != nil {
-                Button {
-                    isShowingExternalMatchEditor = true
-                } label: {
-                    Label("编辑外部播放覆盖信息", systemImage: "slider.horizontal.3")
-                }
-            }
-        } else if presentation.source.isExternal, presentation.externalStableKey != nil {
-            Button {
-                isShowingExternalMatchEditor = true
-            } label: {
-                Label("编辑外部播放覆盖信息", systemImage: "slider.horizontal.3")
-            }
-        }
-    }
-
     private var currentPlaybackMode: PlaybackOrderMode {
         settings.playbackOrderMode
     }
@@ -363,27 +248,6 @@ struct MiniPlayerView: View {
             withAnimation(layoutAnimation) {
                 isPlaybackModeExpanded = hovering
             }
-        }
-    }
-
-    @ViewBuilder
-    private var artworkView: some View {
-        if let artworkImage {
-            Image(nsImage: artworkImage)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-                .frame(width: 36, height: 36)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-        } else if playbackCoordinator.presentation.isArtworkLoading {
-            ZStack {
-                ArtworkPlaceholderView.miniPlayer()
-                ProgressView()
-                    .controlSize(.small)
-                    .scaleEffect(0.72)
-            }
-            .frame(width: 36, height: 36)
-        } else {
-            ArtworkPlaceholderView.miniPlayer()
         }
     }
 
@@ -652,6 +516,186 @@ struct MiniPlayerView: View {
 
     private static func clamp01(_ value: CGFloat) -> CGFloat {
         Swift.min(Swift.max(value, 0), 1)
+    }
+}
+
+// MARK: - Left section (isolated from high-frequency presentation ticks)
+
+private struct MiniPlayerLeftSection: View, Equatable {
+
+    let hasTrack: Bool
+    let isArtworkLoading: Bool
+    let displayTitle: String
+    let displayArtist: String
+    let emptyTitleKey: String
+    let artworkImage: NSImage?
+    let isFullscreenPresented: Bool
+
+    @Binding var trackToEdit: Track?
+    @Binding var isShowingExternalMatchEditor: Bool
+
+    let onFullscreen: () -> Void
+    let onToggleNowPlaying: () -> Void
+
+    @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+
+    @State private var isArtworkHovering = false
+
+    private var trackInfoMinWidth: CGFloat { 56 }
+    private var trackInfoIdealWidth: CGFloat { 100 }
+    private var trackInfoMaxWidth: CGFloat { 136 }
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.hasTrack == rhs.hasTrack
+            && lhs.isArtworkLoading == rhs.isArtworkLoading
+            && lhs.displayTitle == rhs.displayTitle
+            && lhs.displayArtist == rhs.displayArtist
+            && lhs.emptyTitleKey == rhs.emptyTitleKey
+            && lhs.artworkImage === rhs.artworkImage
+            && lhs.isFullscreenPresented == rhs.isFullscreenPresented
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Button { onFullscreen() } label: {
+                artworkButtonContent
+            }
+            .buttonStyle(.plain)
+            .disabled(!hasTrack || isFullscreenPresented)
+
+            Button { onToggleNowPlaying() } label: {
+                trackInfoView
+                    .frame(height: 36, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .frame(
+                minWidth: trackInfoMinWidth,
+                idealWidth: trackInfoIdealWidth,
+                maxWidth: trackInfoMaxWidth,
+                minHeight: 36,
+                alignment: .leading
+            )
+            .contentShape(Rectangle())
+        }
+        .contentShape(Rectangle())
+        .offset(x: 4, y: 0)
+        .contextMenu {
+            // Closure is lazy — evaluated only when NSMenu appears, not during body computation.
+            nowPlayingInfoContextMenu
+        }
+    }
+
+    @ViewBuilder
+    private var artworkButtonContent: some View {
+        let isEnabled = hasTrack && !isFullscreenPresented
+        ZStack {
+            artworkView
+
+            if isArtworkHovering && isEnabled {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.black.opacity(0.18))
+                    .overlay(
+                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color.white.opacity(0.95))
+                    )
+                    .transition(.opacity)
+            }
+        }
+        .frame(width: 36, height: 36)
+        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .onHover { hovering in
+            isArtworkHovering = hovering && isEnabled
+        }
+        .animation(.easeOut(duration: 0.15), value: isArtworkHovering)
+    }
+
+    @ViewBuilder
+    private var artworkView: some View {
+        if let artworkImage {
+            Image(nsImage: artworkImage)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: 36, height: 36)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+        } else if isArtworkLoading {
+            ZStack {
+                ArtworkPlaceholderView.miniPlayer()
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.72)
+            }
+            .frame(width: 36, height: 36)
+        } else {
+            ArtworkPlaceholderView.miniPlayer()
+        }
+    }
+
+    @ViewBuilder
+    private var trackInfoView: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if hasTrack {
+                SeamlessMarqueeText(
+                    text: displayTitle,
+                    style: .subheadline,
+                    fontWeight: .medium,
+                    color: .primary,
+                    enablesContentTransition: true
+                )
+
+                SeamlessMarqueeText(
+                    text: displayArtist.isEmpty
+                        ? NSLocalizedString("library.unknown_artist", comment: "")
+                        : displayArtist,
+                    style: .caption,
+                    fontWeight: .regular,
+                    color: .secondary,
+                    enablesContentTransition: true
+                )
+            } else {
+                Text(LocalizedStringKey(emptyTitleKey))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(
+            minWidth: trackInfoMinWidth,
+            idealWidth: trackInfoIdealWidth,
+            maxWidth: trackInfoMaxWidth,
+            alignment: .leading
+        )
+        .clipped()
+    }
+
+    @ViewBuilder
+    private var nowPlayingInfoContextMenu: some View {
+        let presentation = playbackCoordinator.presentation
+        if let track = presentation.localTrack {
+            TrackActionMenuContent(
+                track: track,
+                onPlay: {
+                    playbackCoordinator.play(track: track)
+                },
+                onEditTrack: { t in
+                    trackToEdit = t
+                },
+                showsPlay: false
+            )
+            if presentation.source.isExternal, presentation.externalStableKey != nil {
+                Button {
+                    isShowingExternalMatchEditor = true
+                } label: {
+                    Label("编辑外部播放覆盖信息", systemImage: "slider.horizontal.3")
+                }
+            }
+        } else if presentation.source.isExternal, presentation.externalStableKey != nil {
+            Button {
+                isShowingExternalMatchEditor = true
+            } label: {
+                Label("编辑外部播放覆盖信息", systemImage: "slider.horizontal.3")
+            }
+        }
     }
 }
 
