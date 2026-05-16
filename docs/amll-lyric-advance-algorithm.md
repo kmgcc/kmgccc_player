@@ -221,14 +221,11 @@ for (let i = this.processedLines.length - 1; i >= 0; i--) {
         ? leadInStartTime               // 有重叠或 near switch: 直接提前
         : Math.max(prevEndTime, leadInStartTime); // 否则: 不能早于前一行结束
 
-    // 4. 如果是 near switch，裁剪前一行的结束时间
+    // 4. 如果是 near switch，登记前一行的结束时间上限
     if (isNearSwitch && !hasOriginalOverlap && prevIdx >= 0) {
         const prevLine = this.processedLines[prevIdx];
-        const clippedPrevEndTime = Math.max(
-            prevLine.startTime,
-            Math.min(prevLine.endTime, newStartTime)
-        );
-        this.applyTrailingWordCatchUp(prevLine, ..., clippedPrevEndTime);
+        const clippedPrevEndTime = Math.min(prevLine.endTime, newStartTime);
+        pendingLineEndCaps.set(prevIdx, clippedPrevEndTime);
     }
 
     // 5. 应用行开始时间
@@ -239,6 +236,11 @@ for (let i = this.processedLines.length - 1; i >= 0; i--) {
         line,
         this.resolveWordLeadInMs(isNearSwitch, appliedLeadInMs)
     );
+}
+
+// 7. 所有行 startTime 都提前完成后，再用最终 startTime 应用 end cap
+for (const [lineIndex, endCap] of pendingLineEndCaps) {
+    clipLineEndTime(lines[lineIndex], Math.min(lines[lineIndex].endTime, endCap));
 }
 ```
 
@@ -255,6 +257,7 @@ for (let i = this.processedLines.length - 1; i >= 0; i--) {
 - `lyricAdvanceLeadInMs` **只在 near switch 时生效**。它的作用是：当两行歌词挨得很近时，让切换更"干脆"——下一行在上一行还没完全结束时就开始高亮，产生 Apple Music 风格的连贯切入感。
 - 非 near switch 时，使用固定的 1000ms 提前量，但由于 `Math.max(prevEndTime, ...)` 的限制，实际提前量通常就是两行之间的间隔（即不会真正提前，只是确保不重叠）。
 - 也就是说，`lyricsLeadInMs` 和 `lyricsNearSwitchGapMs` 共同控制的是**紧凑歌词的切换动画风格**，而不是简单的"所有歌词都提前显示"。
+- 新版 App adapter 中，near switch 对上一行的 `endTime` 裁剪必须在所有行的 `startTime` lead-in 都完成后再落地。原因是算法从后往前处理；如果处理下一行时立刻用上一行尚未提前的旧 `startTime` clamp `endTime`，随后上一行再被 fallback lead-in 提前，就会制造原 TTML 中不存在的结构 overlap。
 
 ### 5.3 逐词提前动画
 
@@ -414,7 +417,8 @@ TypeScript 核心 (setLyricLines)
 
 - 新版接入后，`leadInMs` / `nearSwitchGapMs` 的行提前仍在 App `index.html` 的 timing preprocessing 中完成：near switch 时下一行 start 被提前，上一行 `endTime` 被 clip 到提前切行点。
 - exit highlight catch-up 属于这个提前切行点之后的视觉补偿：上一行已退出 active，但未完成的 word mask animation 会在退出窗口内继续补完到行尾。
-- fullscreen / cover blur overlay 的高亮 opacity fade 不应由 catch-up 进度决定；它应在行退出同一帧由非 active 状态开始淡出。2026-05-16 修正只调整 overlay fade 曲线，不改变 advance 算法、clip 行为、word lead-in 或 fork core catch-up 语义。
+- fullscreen / cover blur overlay 的高亮 opacity fade 不应由 catch-up 进度决定；它应在行退出同一帧由非 active 状态开始淡出。2026-05-16 fade 起步偏迟修正只调整 overlay fade 曲线，不改变 advance 算法、clip 行为、word lead-in 或 fork core catch-up 语义。
+- 2026-05-16 复查 L5 `00:33.469-00:33.877` / L6 `00:33.877-00:35.504` 样本确认：原始 TTML 首尾相接不应并行。旧 adapter 在反向循环中立即裁剪上一行 end，导致 L5 被提前成 `33.119-33.469`、L6 被提前成 `33.277-...`，产生约 192ms 假 overlap。当前修正把 near switch end cap 延后到所有 start lead-in 后应用，结果为 L5 `33.119-33.277`、L6 `33.277-...`，保留提前切行但不制造虚假并行。
 
 ---
 

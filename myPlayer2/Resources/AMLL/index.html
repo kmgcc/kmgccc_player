@@ -326,8 +326,8 @@
             visibility: hidden !important;
             transition: none !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricLine"]:not([class*="active"]):not([data-amll-exit-catch-up="1"]) .amll-cb-word-active,
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricLine"]:not([class*="active"]):not([data-amll-exit-catch-up="1"]) .amll-cb-char-active {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricLine"]:not([class*="active"]):not([data-fs-completed-highlight="1"]):not([data-amll-exit-catch-up="1"]) .amll-cb-word-active,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricLine"]:not([class*="active"]):not([data-fs-completed-highlight="1"]):not([data-amll-exit-catch-up="1"]) .amll-cb-char-active {
             color: var(
                 --amll-cb-main-inactive,
                 var(--amll-inactive, var(--amll-lp-color, white))
@@ -659,7 +659,7 @@
             visibility: hidden !important;
             transition: none !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen [class*="lyricLine"]:not([class*="active"]):not([data-amll-exit-catch-up="1"]):not([data-amll-exiting-highlight="1"]) .amll-fs-word-active {
+        .amll-lyric-player.amll-surface-fullscreen [class*="lyricLine"]:not([class*="active"]):not([data-fs-completed-highlight="1"]):not([data-amll-exit-catch-up="1"]):not([data-amll-exiting-highlight="1"]) .amll-fs-word-active {
             color: var(
                 --amll-fs-main-inactive,
                 var(--amll-inactive, var(--amll-lp-color, white))
@@ -668,7 +668,7 @@
             visibility: visible !important;
             opacity: 0 !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen [class*="lyricLine"]:not([class*="active"]):not([data-amll-exit-catch-up="1"]):not([data-amll-exiting-highlight="1"]) .amll-fs-char-active {
+        .amll-lyric-player.amll-surface-fullscreen [class*="lyricLine"]:not([class*="active"]):not([data-fs-completed-highlight="1"]):not([data-amll-exit-catch-up="1"]):not([data-amll-exiting-highlight="1"]) .amll-fs-char-active {
             color: var(
                 --amll-fs-main-inactive,
                 var(--amll-inactive, var(--amll-lp-color, white))
@@ -1505,6 +1505,17 @@
             syncMainAndBackgroundLineTimes(lines);
             cleanUnintentionalLineOverlaps(lines);
             const rawLines = structuredClone(lines);
+            const pendingLineEndCaps = new Map();
+            const capLineEndTimeAfterLeadIn = (lineIndex, targetEndTime) => {
+                if (lineIndex < 0 || !Number.isFinite(targetEndTime)) return;
+                const currentCap = pendingLineEndCaps.get(lineIndex);
+                pendingLineEndCaps.set(
+                    lineIndex,
+                    Number.isFinite(currentCap)
+                        ? Math.min(currentCap, targetEndTime)
+                        : targetEndTime
+                );
+            };
             let changedLines = 0;
             let nearSwitches = 0;
             for (let i = lines.length - 1; i >= 0; i -= 1) {
@@ -1546,14 +1557,14 @@
                     : 0;
                 if (isNearSwitch && !hasOriginalOverlap && prevIdx >= 0) {
                     const prevLine = lines[prevIdx];
-                    const clippedPrevEndTime = Math.max(
-                        prevLine.startTime,
-                        Math.min(prevLine.endTime, newStartTime)
-                    );
-                    clipLineEndTime(prevLine, clippedPrevEndTime);
+                    const clippedPrevEndTime = Math.min(prevLine.endTime, newStartTime);
+                    capLineEndTimeAfterLeadIn(prevIdx, clippedPrevEndTime);
                     const prevBgLine = lines[prevIdx + 1];
                     if (prevBgLine?.isBG) {
-                        clipLineEndTime(prevBgLine, Math.min(prevBgLine.endTime, clippedPrevEndTime));
+                        capLineEndTimeAfterLeadIn(
+                            prevIdx + 1,
+                            Math.min(prevBgLine.endTime, clippedPrevEndTime)
+                        );
                     }
                 }
                 line.startTime = newStartTime;
@@ -1572,6 +1583,12 @@
                 if (Math.round(oldStartTime) !== Math.round(newStartTime)) {
                     changedLines += 1;
                 }
+            }
+            for (const [lineIndex, endCap] of pendingLineEndCaps) {
+                clipLineEndTime(
+                    lines[lineIndex],
+                    Math.min(lines[lineIndex]?.endTime ?? endCap, endCap)
+                );
             }
             return { changedLines, nearSwitches };
         };
