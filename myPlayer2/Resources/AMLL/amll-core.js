@@ -2141,6 +2141,45 @@ var LineBalancer = class {
 //#region src/utils/lyric-split-words.ts
 const SPLIT_WHITESPACE_RE = /(\s+)/;
 const WHITESPACE_RE = /\s/g;
+const hasWordSegmenter = typeof Intl !== "undefined" && typeof Intl.Segmenter !== "undefined";
+function isSegmentableCJKWord(item) {
+	return !Array.isArray(item) && item.word.trim().length > 0 && (item.ruby?.length ?? 0) === 0 && isCJK(item.word);
+}
+function groupCJKWordsBySegmenter(items) {
+	if (!hasWordSegmenter) return items;
+	const segmenter = new Intl.Segmenter(void 0, { granularity: "word" });
+	const result = [];
+	for (let i = 0; i < items.length; i++) {
+		const item = items[i];
+		if (!isSegmentableCJKWord(item)) {
+			result.push(item);
+			continue;
+		}
+		const run = [item];
+		while (i + 1 < items.length && isSegmentableCJKWord(items[i + 1])) {
+			run.push(items[i + 1]);
+			i++;
+		}
+		const fullText = run.map((word) => word.word).join("");
+		const segments = Array.from(segmenter.segment(fullText));
+		let wordIndex = 0;
+		for (const segment of segments) {
+			const segmentGroup = [];
+			let remainingLength = segment.segment.length;
+			while (remainingLength > 0 && wordIndex < run.length) {
+				const word = run[wordIndex];
+				const wordLength = word.word.length;
+				segmentGroup.push(word);
+				wordIndex++;
+				remainingLength -= wordLength;
+			}
+			if (segmentGroup.length === 1) result.push(segmentGroup[0]);
+			else if (segmentGroup.length > 1) result.push(segmentGroup);
+		}
+		while (wordIndex < run.length) result.push(run[wordIndex++]);
+	}
+	return result;
+}
 /**
 * 将输入的单词重新分组，之间没有空格的单词将会组合成一个单词数组
 *
@@ -2222,7 +2261,7 @@ function chunkAndSplitLyricWords(words) {
 		}
 	}
 	flushGroup();
-	return result;
+	return groupCJKWordsBySegmenter(result);
 }
 //#endregion
 //#region src/utils/matrix.ts

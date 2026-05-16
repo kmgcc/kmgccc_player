@@ -304,6 +304,59 @@
 - 回归原因不是 fork core 或时间轴，而是 App cover blur highlight-only layer 的结构语义：该层会隐藏普通 `.amll-fs-word-active` / `.amll-fs-char-active` 和非 `.amll-fs-glow-layer` 的 stack 子层，强调词的可见高亮主要由 glow clone 承担。把 glow profile 当作"只影响装饰辉光"的独立旋钮是不准确的。
 - 后续若继续增强，必须把"装饰 halo 强度"和"主高亮可见性"分离后再调，例如先为 highlight-only 层增加诊断开关确认 source word、glow layer、stack active layer 的 computed visibility/text-shadow，再只调独立 halo，不复用会影响主可见高亮的参数。
 
+## 2026-05-16 Emphasis 连续波与 Fullscreen Scale
+
+样本：
+
+- L17 `01:17.210-01:26.020 飘飘荡荡只能飘飘荡荡`
+
+问题 A 现象：
+
+- 旧版 AMLL / 旧 App 中，相邻长时值 CJK 字会形成连续波式 emphasis：前后多个字处于不同上浮、放大、辉光进度。
+- 新版接入后变成近似“同时只强调一个字”，连续感断裂。
+
+问题 A 根因：
+
+- 旧 custom `0.2.1` 与旧 upstream reference `0.2.1` 的 emphasis keyframes、`amount` / `blur` / `scale` / `translate` 计算基本一致；连续波不是 custom 特供。
+- 旧 upstream 的 `utils/lyric-split-words.ts` 会先拆成 CJK 原子，再用 `Intl.Segmenter(granularity: "word")` 把连续 CJK 原子重新分成语义 chunk。
+- 对样本，旧行为会得到 `飘飘荡荡 0-4920`、`只能 4920-5640`、`飘飘荡荡 5640-8810` 三个 chunk；emphasis animation 对 merged chunk 的总时长生成，并对 chunk 内字符 stagger，所以产生连续波。
+- 新版 `0.5.0` 的分词逻辑把 CJK 单字作为不可合并 atom 直接输出；同一样本变成 10 个单字独立 chunk。长时值 envelope 被拆小，前后字不再共享一个 emphasis 时间窗。
+- 这是 core DOM 行构建前的分词/强调输入变化，不是 App adapter。window、普通 fullscreen、cover blur 都会受影响。
+
+问题 A 修复：
+
+- 在新版 fork core `packages/core/src/utils/lyric-split-words.ts` 中恢复 CJK run 的 `Intl.Segmenter` 分组，保留新版对 ruby / 空白 / 非 CJK 合并的处理。
+- fallback 仍是新版行为：当运行环境没有 `Intl.Segmenter` 时，不做额外 CJK regroup。
+- 没有改时间轴、mask、seek、pause 或布局逻辑。
+
+问题 B 现象：
+
+- window / 官方 emphasis 有上浮、scale、glow。
+- fullscreen clone 层中长时值词 scale 不明显或被吃掉，只剩上浮；cover blur glow 修复后仍需要保留 scale。
+
+问题 B 根因：
+
+- App fullscreen / cover blur adapter 会把官方 `emphasize-word-*` 和 `emphasize-word-float` clone 到 per-character mapped target。
+- scale 与 `emphasize-word-float` 都作用在同一个 char stack 的 `transform` 上，必须保留源动画的 `composite: "add"`。
+- 旧 clone helper 只读取 `sourceEffect.composite`。在 WKWebView 若该属性不可用，clone timing 会退回默认 `replace`，float transform 会覆盖 scale transform，视觉上只剩上浮。
+- window 不走 fullscreen clone helper，因此 window 不受这个 adapter 问题影响；普通 fullscreen、generic cover blur、legacy cover blur 都共享该 helper 或等价路径，均需覆盖。
+
+问题 B 修复：
+
+- App `Resources/AMLL/index.html` 增加 `resolveAnimationComposite()`：
+  - 依次读取 `KeyframeEffect.composite`、timing composite、keyframe composite；
+  - 对 `float-word` / `emphasize-word-float*` 做 id fallback，强制 clone timing 使用 `composite: "add"`。
+- cover blur 仍只 retint/rescale `textShadow`；不移除 transform，不重造私有 emphasis 动画系统。
+
+验证：
+
+- `scripts/sync-amll-from-fork.sh` 构建并同步通过。
+- Xcode Debug build 通过，构建产物包含更新后的 `groupCJKWordsBySegmenter()` 与 `resolveAnimationComposite()`。
+- `amll-core.js` 由 fork source 重新生成，包含 `groupCJKWordsBySegmenter()`。
+- `amll-lyric.js` Node import smoke test 通过。
+- `amll-core.js` 在补最小 browser global stub 后 Node import smoke test 通过。
+- 用样本时序脚本确认旧分组为 `飘飘荡荡 / 只能 / 飘飘荡荡`，新版修复前为逐字分组；修复恢复旧分组语义。
+
 ## 2026-05-16 Cover Blur Highlight-Only 主高亮 / 装饰 Glow 通道分离
 
 现象：
