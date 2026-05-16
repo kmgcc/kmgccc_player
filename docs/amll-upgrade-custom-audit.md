@@ -360,6 +360,17 @@ cover blur 状态：
 - 最终仅修改 App fullscreen / cover blur smooth overlay 的 opacity/color fade-out timing-function 为 `ease-out`，保留 `0.50s` 时长和现有触发条件。catch-up 仍只负责 mask 进度补完，opacity fade 仍由非 active 状态驱动。
 - 本轮没有继续修改 fork core；Fork Patch Registry 中的 core patch 仍保持上一阶段范围。
 
+第四阶段并行保留行与相邻行假 overlap 修正：
+
+- 问题 A 样本：L79 `02:43.311-02:47.754 Goodnight`、L80 `02:44.144-02:45.684 So you don't wake`、L81 `02:45.684-02:48.107 in the morning`。L80 到自己的 endTime 后仍应留在 fullscreen 并行显示组内，保持完整高亮；只有它真正离开并行组、开始位移/缩放/模糊退场时，overlay 高亮层才应与整行退场同步淡出。
+- 真实根因在 App fullscreen / cover blur CSS overlay：`updateFullscreenParallelHighlightState()` 已经为这类“已完成但仍留在组内”的行设置 `data-fs-completed-highlight="1"`；但非 active 行的 `.amll-fs-*` / `.amll-cb-*` opacity 归零规则只排除了 `data-amll-exit-catch-up`，没有排除 `data-fs-completed-highlight`。因此 active class 一消失，overlay opacity 就按自身 endTime 归零，而不是按真实退出组的时间归零。
+- 最终修法只在 App adapter CSS 层完成：非 active overlay 归零规则新增 `:not([data-fs-completed-highlight="1"])`。这样 completed-highlight 行继续保持 active overlay opacity；当该行真正不再属于 fullscreen 并行/foreground 组时，JS 会移除 `data-fs-completed-highlight`，同一套非 active 规则才开始 opacity fade，绑定到真实退场起点。
+- cover blur 状态：legacy `.amll-cb-*` smooth overlay 与普通 fullscreen `.amll-fs-*` 使用同一语义修正；当前 generic cover blur highlight 主要走 `.amll-fs-*` 路径，因此也随本修正覆盖。
+- 问题 B 样本：`1.ttml` 中 L5 `00:33.469-00:33.877` 与 L6 `00:33.877-00:35.504` 原始首尾相接，没有 TTML overlap。core timeline 对行命中使用 start-inclusive/end-exclusive，原始相邻行不会被官方逻辑并行高亮。
+- 真实根因是 App timing preprocessing 把焦点提前切换时间直接写回 `line.startTime`，并在反向循环中立刻裁剪上一行 `endTime`。处理 L6 时，上一行 L5 还没被之后的 fallback lead-in 改成更早的 start，裁剪时用的是 L5 旧 start `33.469` 作为下限；随后 L5 start 被提前到 `33.119`，end 却保留在 `33.469`，而 L6 start 已提前到 `33.277`，制造了约 192ms 的虚假 overlap。
+- 最终修法仍在 App adapter 层：near switch 对上一行的 `endTime` 不再立即按旧 start clamp，而是先登记 pending end cap；所有行的 start lead-in 都应用完后，再用最终 startTime 执行 `clipLineEndTime()`。同一 TTML 样本在默认 `leadInMs=600` / `nearSwitchGapMs=160` 下变为 L5 `33.119-33.277`、L6 `33.277-...`：保留提前切行，但不把原本相邻的结构误判成并行。
+- 本轮没有修改 fork core，也没有新增 Fork Patch Registry 项；这两个修正都属于 App fullscreen/cover blur overlay 与 timing adapter 的状态边界修正。后续 upstream 同步只需要重看 `index.html` adapter，不增加 core 迁移负担。
+
 明确没有迁移：
 
 - 没有恢复旧 `data-amll-exiting-highlight` / `data-amll-exit-highlight-word` 机制。
@@ -386,7 +397,7 @@ cover blur 状态：
 | Exit highlight catch-up: seek-aware line disable | `packages/core/src/lyric-player/base/index.ts` | `setCurrentTime(time, isSeek)` 是 core 判断 seek 的入口；必须把 `isSeek` 传给退出行，否则拖动/大跳也会触发 catch-up。 | 只改变 `disable()` 入参，不改变 timeline 命中、layout 或 public API。`isSeek=true` 时退化为 upstream 的暂停 mask 行为。 | upstream 更新时检查 `commitPlayerTimeState().linesToDisable` 调用点是否仍存在；若官方新增 seek-aware disable，可删除该转发。 |
 | Exit highlight catch-up: abstract signature | `packages/core/src/lyric-player/base/line.ts` | 为 DOM line 提供类型化 `disable(isSeek?: boolean)`；否则只能用不透明 cast 或 adapter monkey patch。 | 仅接口签名变更，默认可选参数保持现有子类调用兼容。 | upstream 更新时同步所有 `LyricLineBase` 子类签名；当前 App 只使用 DOM renderer。 |
 | Exit highlight catch-up: DOM mask continuation | `packages/core/src/lyric-player/dom/lyric-line.ts` | 窗口歌词直接依赖原始 DOM mask animations；App adapter 无法不触碰 `splittedWords` / `maskAnimations` / `disable()` 内部字段就覆盖窗口和 fullscreen 共同路径。 | 仅普通播放、非 seek、非暂停、剩余 mask 超过 16ms 的退出行触发；catch-up duration clamp 到 120-280ms；不恢复旧 `data-amll-exiting-highlight`，不引入 `setTimeout`。 | upstream 更新时只需对照 `enable()` / `disable()` / `pause()` / `maskAnimations` lifecycle；若官方支持退出行 mask continuation，可移除本 patch。 |
-| App smooth overlay catch-up adapter | `myPlayer2/Resources/AMLL/index.html` | fullscreen / cover blur smooth overlay 复制 core mask animation，但视觉层由 `.amll-fs-*` / `.amll-cb-*` CSS 控制；需要识别 `data-amll-exit-catch-up`，否则非 active 行会立即隐藏 overlay。 | 标记只保留 active color / visibility；opacity fade 与行退出同步开始。只覆盖 smooth overlay，不迁移离散高亮旧机制。 | upstream CSS module 类名变化时继续依赖语义 substring selector；若未来 overlay 改为 public API，应把这段 adapter 下沉到统一 layer patch。 |
+| App smooth overlay catch-up/completed adapter | `myPlayer2/Resources/AMLL/index.html` | fullscreen / cover blur smooth overlay 复制 core mask animation，但视觉层由 `.amll-fs-*` / `.amll-cb-*` CSS 控制；需要识别 `data-amll-exit-catch-up` 与 `data-fs-completed-highlight`，否则非 active 行会在 catch-up 或并行保留期间过早隐藏 overlay。 | `data-amll-exit-catch-up` 只保留 active color / visibility，opacity fade 与行退出同步开始；`data-fs-completed-highlight` 让已完成但仍留在并行组内的行保持完整高亮，直到真实退场。只覆盖 smooth overlay，不迁移离散高亮旧机制。 | upstream CSS module 类名变化时继续依赖语义 substring selector；若未来 overlay 改为 public API，应把这段 adapter 下沉到统一 layer patch。 |
 
 本轮补充审计结论：
 
