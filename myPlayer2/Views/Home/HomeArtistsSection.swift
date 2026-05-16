@@ -276,17 +276,20 @@ private struct HomeArtistCircle: View {
     }
 
     private func loadImage() async {
+        let pixelSide = mode.homeArtistRailPixelSide
+        let targetSize = CGSize(width: pixelSide, height: pixelSide)
+
         if let data = artist.artworkData, !data.isEmpty {
             let checksum = ArtworkLoader.checksum(for: data)
             let key = ArtworkLoader.cacheKey(
                 trackID: artist.id,
                 checksum: checksum,
-                targetPixelSize: CGSize(width: 256, height: 256)
+                targetPixelSize: targetSize
             )
             let loaded = await ArtworkLoader.loadImage(
                 artworkData: data,
                 cacheKey: key,
-                targetPixelSize: CGSize(width: 256, height: 256)
+                targetPixelSize: targetSize
             )
             image = loaded
             return
@@ -299,7 +302,8 @@ private struct HomeArtistCircle: View {
         let trackSources = tracks.map { $0.artistArtworkSource() }
         let generated = await ArtistArtworkGenerator.shared.generateArtwork(
             artistName: artist.displayName,
-            trackSources: trackSources
+            trackSources: trackSources,
+            pixelSide: pixelSide
         )
         image = generated
     }

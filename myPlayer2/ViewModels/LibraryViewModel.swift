@@ -207,8 +207,16 @@ final class LibraryViewModel {
     private var artistArtworkProviderTasks: Set<UUID> = []
 
     /// All tracks loaded from Music Library (in-memory snapshot).
-    private(set) var allTracks: [Track] = []
+    private(set) var allTracks: [Track] = [] {
+        didSet { albumKeyFirstTrackMap = nil }
+    }
     private(set) var playlistItemAddedAtMap: [UUID: [UUID: Date]] = [:]
+
+    // Lazy O(1) index for `firstTrack(forAlbumGroupKey:)`. Rebuilt on next
+    // access whenever `allTracks` is reassigned. Not part of the observed
+    // state — purely a cache for fallback artwork lookups from rail cards.
+    @ObservationIgnored
+    private var albumKeyFirstTrackMap: [String: Track]?
 
     /// Currently selected playlist (nil = All Songs, unless artist/album selected).
     /// Published so UI can react to changes.
@@ -907,6 +915,24 @@ final class LibraryViewModel {
 
     func albumEntry(for section: AlbumSection) -> AlbumEntry? {
         albumEntries.first { $0.canonicalKey == section.key }
+    }
+
+    /// First track in `allTracks` whose `albumGroupKey` matches `key`.
+    /// Backed by a lazy `[albumKey: Track]` index so rail cards can resolve
+    /// fallback artwork in O(1) instead of scanning the full library per
+    /// card. The index is rebuilt the next time it is asked for after
+    /// `allTracks` is reassigned.
+    func firstTrack(forAlbumGroupKey key: String) -> Track? {
+        if let map = albumKeyFirstTrackMap {
+            return map[key]
+        }
+        var built: [String: Track] = [:]
+        built.reserveCapacity(allTracks.count)
+        for track in allTracks where built[track.albumGroupKey] == nil {
+            built[track.albumGroupKey] = track
+        }
+        albumKeyFirstTrackMap = built
+        return built[key]
     }
 
     // MARK: - Artist/Album Entry Saves
