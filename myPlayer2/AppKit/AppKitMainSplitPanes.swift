@@ -245,9 +245,12 @@ struct AppKitMainContentPaneRoot: View {
                 }
                 playerVM.refreshTracks([refreshedTrack])
             }
-            .task(id: playbackThemeArtworkIdentity(playbackCoordinator: playbackCoordinator)) {
-                await themeStore.updateTheme(for: playbackCoordinator.presentation)
-            }
+            // Theme/artwork updates depend on playbackCoordinator.presentation, which the
+            // 0.25s presentationTimer reassigns during playback. Subscribing to it here
+            // would invalidate this body every 0.25s, reinstantiating PlaylistDetailView
+            // and tearing down the open contextMenu's hover state. Isolate it in a tiny
+            // child view so only that child re-renders on presentation ticks.
+            .background(PlaybackThemeArtworkWatcher())
 
         let withEvents: some View = withTasks
             .onChange(of: uiState.contentMode) { (_: ContentMode, newValue: ContentMode) in
@@ -303,17 +306,6 @@ struct AppKitMainContentPaneRoot: View {
             return
         }
         artBackgroundController.triggerTransition()
-    }
-
-    private func playbackThemeArtworkIdentity(playbackCoordinator: PlaybackCoordinator) -> String {
-        let presentation = playbackCoordinator.presentation
-        let identity =
-            presentation.artworkIdentity
-            ?? presentation.externalStableKey
-            ?? presentation.lyricsIdentity
-            ?? presentation.localTrack?.id.uuidString
-            ?? "none"
-        return "\(presentation.source.rawValue)|track:\(presentation.hasTrack)|art:\(identity)"
     }
 
     private func shouldShowArtBackground(
@@ -384,6 +376,34 @@ struct AppKitMainContentPaneRoot: View {
             coverDownloadService: coverDownloadService,
             netEaseCoverService: netEaseCoverService
         )
+    }
+}
+
+/// Subscribes to `playbackCoordinator.presentation` in isolation so the parent
+/// content pane's body does not re-evaluate every 0.25 s when the presentation
+/// timer reassigns the value. Renders an invisible zero-size layer.
+private struct PlaybackThemeArtworkWatcher: View {
+    @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .allowsHitTesting(false)
+            .task(id: artworkIdentity) {
+                await themeStore.updateTheme(for: playbackCoordinator.presentation)
+            }
+    }
+
+    private var artworkIdentity: String {
+        let presentation = playbackCoordinator.presentation
+        let identity =
+            presentation.artworkIdentity
+            ?? presentation.externalStableKey
+            ?? presentation.lyricsIdentity
+            ?? presentation.localTrack?.id.uuidString
+            ?? "none"
+        return "\(presentation.source.rawValue)|track:\(presentation.hasTrack)|art:\(identity)"
     }
 }
 
