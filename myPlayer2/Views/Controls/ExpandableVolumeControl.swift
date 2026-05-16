@@ -21,6 +21,7 @@ struct ExpandableVolumeControl: View {
     var materialStyle: LiquidGlassPillMaterialStyle = .clear
     var isEnabled: Bool = true
     var usesAdaptiveForeground: Bool = false
+    var usesInternalHoverExpansion: Bool = true
     
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
@@ -57,11 +58,15 @@ struct ExpandableVolumeControl: View {
         )
         .onHover { hovering in
             guard isEnabled else {
-                isExpanded = false
+                if usesInternalHoverExpansion {
+                    isExpanded = false
+                }
                 onHoverStateChanged(false)
                 return
             }
-            isExpanded = hovering
+            if usesInternalHoverExpansion {
+                isExpanded = hovering
+            }
             onHoverStateChanged(hovering)
             if hovering {
                 onInteraction()

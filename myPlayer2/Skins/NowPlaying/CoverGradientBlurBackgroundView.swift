@@ -471,7 +471,27 @@ enum CoverGradientBlurRenderer {
         if let c = config.blurAlphaCoefficients {
             aCoeff = CIVector(x: c.0, y: c.1, z: c.2, w: c.3)
         } else {
-            aCoeff = CIVector(x: 0, y: 0.10, z: 0.34, w: 0.56)
+            // Adaptive coefficients: when radius grows beyond ~150, slightly lift the
+            // low-alpha region via the linear term so the early blur zone also responds.
+            // Right-edge behaviour is preserved by reducing the cubic term in tandem.
+            let baseLinear: CGFloat = 0.10
+            let baseQuad: CGFloat = 0.34
+            let baseCubic: CGFloat = 0.56
+            let totalRadius = max(0, config.blurRadius)
+            let refRadius: CGFloat = 150.0
+            let adaptLinear: CGFloat
+            let adaptCubic: CGFloat
+            if totalRadius <= refRadius {
+                adaptLinear = baseLinear
+                adaptCubic = baseCubic
+            } else {
+                let excess = (totalRadius - refRadius) / refRadius
+                // sqrt-compressed gain, capped at +38 %
+                let gain = 1.0 + min(0.38, sqrt(excess) * 0.24)
+                adaptLinear = baseLinear * gain
+                adaptCubic = max(0.30, baseCubic - baseLinear * (gain - 1.0) * 0.5)
+            }
+            aCoeff = CIVector(x: 0, y: adaptLinear, z: baseQuad, w: adaptCubic)
         }
         
         polynomialFilter.setValue(linearMask, forKey: kCIInputImageKey)
@@ -487,23 +507,41 @@ enum CoverGradientBlurRenderer {
         // Large blur radii visually saturate too early if we keep reusing the same mask.
         // Split the blur into smaller passes and progressively delay later passes toward
         // the far-right region, so the blur can keep increasing all the way to the edge.
+        //
+        // Pass 0 uses the full non-linear mask and a radius that grows modestly beyond
+        // the base cap (compressed gain), so the early / low-blur zone still responds
+        // when the user increases totalRadius past ~150.  Later passes use delayed
+        // masks with softer thresholds so they reach the mid-region sooner without
+        // flooding the left-side cover.
         var currentImage = clampedImage
-        let maxSinglePassRadius: CGFloat = 150.0
+        let basePassRadius: CGFloat = 150.0
         let totalRadius = max(0, config.blurRadius)
-        let passCount = max(1, Int(ceil(totalRadius / maxSinglePassRadius)))
 
-        for passIndex in 0..<passCount {
-            let consumedRadius = CGFloat(passIndex) * maxSinglePassRadius
-            let remainingRadius = max(0, totalRadius - consumedRadius)
-            let passRadius = min(maxSinglePassRadius, remainingRadius)
+        // Build pass radii: pass 0 gets an adaptive cap; remaining radius is split
+        // into standard ≤150 passes.
+        var passRadii: [CGFloat] = []
+        var remaining = totalRadius
+        let p0Extra = min(100.0, max(0, totalRadius - basePassRadius) * 0.20)
+        let p0Cap = min(totalRadius, basePassRadius + p0Extra)
+        passRadii.append(p0Cap)
+        remaining -= p0Cap
+        while remaining > 0 {
+            let r = min(basePassRadius, remaining)
+            passRadii.append(r)
+            remaining -= r
+        }
+
+        for (passIndex, passRadius) in passRadii.enumerated() {
             guard passRadius > 0 else { continue }
 
             let passMask: CIImage
             if passIndex == 0 {
                 passMask = nonLinearMask
             } else {
-                let progress = CGFloat(passIndex) / CGFloat(passCount)
-                let delayedThreshold = min(0.82, 0.18 + progress * 0.55)
+                let progress = CGFloat(passIndex) / CGFloat(passRadii.count)
+                // Softer thresholds: start close to 0, cap at 0.60 so later passes
+                // reach the mid-blur zone but stay out of the left-side cover.
+                let delayedThreshold = min(0.60, 0.03 + progress * 0.28)
                 passMask = delayedMask(
                     from: nonLinearMask,
                     startThreshold: delayedThreshold,
