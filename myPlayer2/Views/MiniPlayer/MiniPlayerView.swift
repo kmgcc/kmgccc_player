@@ -287,15 +287,31 @@ struct MiniPlayerView: View {
 
     @ViewBuilder
     private var nowPlayingInfoContextMenu: some View {
-        NowPlayingInfoContextMenu(
-            presentation: playbackCoordinator.presentation,
-            onEditTrack: { track in
-                trackToEdit = track
-            },
-            onEditExternalInfo: {
-                isShowingExternalMatchEditor = true
+        let presentation = playbackCoordinator.presentation
+        if let track = presentation.localTrack {
+            TrackActionMenuContent(
+                track: track,
+                onPlay: {
+                    playbackCoordinator.play(track: track)
+                },
+                onEditTrack: { t in
+                    trackToEdit = t
+                }
+            )
+            if presentation.source.isExternal, presentation.externalStableKey != nil {
+                Button {
+                    isShowingExternalMatchEditor = true
+                } label: {
+                    Label("编辑外部播放覆盖信息", systemImage: "slider.horizontal.3")
+                }
             }
-        )
+        } else if presentation.source.isExternal, presentation.externalStableKey != nil {
+            Button {
+                isShowingExternalMatchEditor = true
+            } label: {
+                Label("编辑外部播放覆盖信息", systemImage: "slider.horizontal.3")
+            }
+        }
     }
 
     private var currentPlaybackMode: PlaybackOrderMode {

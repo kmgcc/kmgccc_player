@@ -416,3 +416,33 @@
 后续：
 
 - 其他皮肤下 glow 半径/强度略偏大属于单独审美微调；本轮不全局调 glow。
+
+## 2026-05-16 Fullscreen Emphasis Scale 与 Cover Blur Glow 微调
+
+现象：
+
+- Cover blur lighter/darker 下，官方链路恢复后 glow 已稳定，但视觉上可以稍微更明显。
+- 普通 fullscreen 和 cover blur fullscreen 的长时值强调词仍缺少明显“放大”，看起来主要只有上浮和 glow；窗口歌词正常。
+
+调查结论：
+
+- 官方 `emphasize-word-*` keyframes 里的 `transform` 同时包含 `matrix3d` scale 与轻微 `translate(x/y)`；`emphasize-word-float` 使用 `composite: "add"`，把正弦上浮/回落叠加在 scale transform 上。
+- fullscreen adapter 通过 `cloneAnimationToElement()` 把 core WebAnimation clone 到 `.amll-fs-*` stack/char stack，但原 helper 只复制 `effect.getTiming()`。WebAnimation 的 effect-level `composite` 不在 `getTiming()` 返回值里。
+- 结果是 cloned `emphasize-word-float` 从官方的 `add` 退化为默认 `replace`。它后执行时覆盖同一 char stack 上 cloned `emphasize-word-*` 的 `matrix3d` scale，视觉就只剩上浮，scale 被吃掉。
+- 影响范围是使用 fullscreen packed animation clone 的普通 fullscreen 和 generic cover blur fullscreen；window 直接跑 core 原始 animation，不受影响。
+
+修复：
+
+- 只改 App `Resources/AMLL/index.html`，不改 fork core，不改时间轴 / lead-in / near switch / exit catch-up / completed highlight。
+- `cloneAnimationToElement()` 现在读取 `sourceAnimation.effect.composite`，当 source composite 不是默认 `replace` 时，把它带入 cloned animation options。这样 `emphasize-word-float` 继续以 `add` 叠加，`emphasize-word-*` 的 scale 不再被覆盖。
+- Cover blur glow 只做小幅参数微调：
+  - lighter：`rgba(255,255,255,0.12)` 保持不变，`alphaMultiplier 0.9 -> 1.0`，源 alpha `0.8` 时最高约 `0.0864 -> 0.096`。
+  - darker：`rgba(0,0,0,0.16)` 保持不变，`alphaMultiplier 0.9 -> 1.0`，源 alpha `0.8` 时最高约 `0.1152 -> 0.128`。
+- glow 结构不变：仍是 per-character official emphasis chain adapter，只在 cloned keyframes 上弱化/重染 `textShadow`。
+
+验证：
+
+- `index.html` module script 通过 `node --input-type=module --check -` 语法检查。
+- `git diff --check` 通过。
+- Xcode Debug build 通过（`xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player -configuration Debug build`）。
+- 视觉仍需在 App 中确认 lighter 不过曝、darker 可见但不脏，普通 fullscreen / cover blur 都有上浮 + 放大 + glow。
