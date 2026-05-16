@@ -463,6 +463,9 @@ struct FullscreenPlayerView: View {
             guard playbackCoordinator.presentation.source.isExternal else { return }
             reloadLyricsSurface(reason: "fullscreen external lyrics updated", forceLyricsReload: true)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .libraryTrackDidUpdate)) { notification in
+            handleLibraryTrackDidUpdate(notification)
+        }
         .onChange(of: rightPanelDisplayState) { _, newValue in
             handleRightPanelDisplayStateChange(newValue)
         }
@@ -2371,6 +2374,38 @@ struct FullscreenPlayerView: View {
         reloadLyricsSurface(reason: "fullscreen external track changed", forceLyricsReload: true)
     }
 
+    private func handleLibraryTrackDidUpdate(_ notification: Notification) {
+        guard let trackID = notification.userInfo?["trackID"] as? UUID else {
+            Log.info("[FullscreenLyricsReload] libraryTrackDidUpdate missing trackID", category: .webview)
+            return
+        }
+
+        let currentTrackID = playerVM.currentTrack?.id ?? playbackCoordinator.presentation.localTrack?.id
+        Log.info(
+            "[FullscreenLyricsReload] libraryTrackDidUpdate received trackID=\(trackID.uuidString.prefix(8)), currentTrackID=\(currentTrackID?.uuidString.prefix(8) ?? "nil"), source=\(playbackCoordinator.presentation.source.rawValue), host=\(hostContext.rawValue)",
+            category: .webview
+        )
+
+        guard playbackCoordinator.presentation.source == .local else { return }
+        guard trackID == currentTrackID else { return }
+
+        let refreshedTrack = FullscreenWindowManager.shared.libraryVM?.allTracks.first { $0.id == trackID }
+        let playerLyricsLen = resolvedFullscreenLyricsText(for: playerVM.currentTrack).count
+        let refreshedLyricsLen = refreshedTrack.map { resolvedFullscreenLyricsText(for: $0).count } ?? -1
+        Log.info(
+            "[FullscreenLyricsReload] matched current track refreshedTrack=\(refreshedTrack != nil), playerLyricsLen=\(playerLyricsLen), refreshedLyricsLen=\(refreshedLyricsLen)",
+            category: .webview
+        )
+
+        syncFullscreenLyricsHostMount()
+        reloadLyricsSurface(
+            reason: "fullscreen library track update",
+            forceLyricsReload: true,
+            preferredLocalTrack: refreshedTrack,
+            forceLocalLyricsReload: true
+        )
+    }
+
     private func cancelPendingFullscreenLyricsThemeWork() {
         pendingFullscreenLyricsRefresh?.cancel()
         pendingFullscreenLyricsRefresh = nil
@@ -2412,13 +2447,26 @@ struct FullscreenPlayerView: View {
         reason: String,
         forceWebReload: Bool = false,
         forceLyricsReload: Bool = false,
-        recreateWebViewOnForceReload: Bool = false
+        recreateWebViewOnForceReload: Bool = false,
+        preferredLocalTrack: Track? = nil,
+        forceLocalLyricsReload: Bool = false
     ) {
         syncCoverBlurHighlightActivation()
 
-        let playbackPayload = updateFullscreenPlaybackSnapshot()
+        let playbackPayload = updateFullscreenPlaybackSnapshot(
+            preferredLocalTrack: preferredLocalTrack,
+            forceLocalLyricsReload: forceLyricsReload || forceLocalLyricsReload
+        )
+        Log.info(
+            "[FullscreenLyricsReload] reload reason=\(reason), forceLyricsReload=\(forceLyricsReload), trackID=\(playbackPayload.trackID?.uuidString.prefix(8) ?? "nil"), ttmlLen=\(playbackPayload.ttml?.count ?? 0), ttmlHash=\(playbackPayload.ttml?.hashValue ?? 0), time=\(String(format: "%.3f", playbackPayload.currentTime)), playing=\(playbackPayload.isPlaying), host=\(hostContext.rawValue)",
+            category: .webview
+        )
         syncFullscreenLyricsAvailability(with: playbackPayload)
         if hostContext == .embeddedWindow && !embeddedInitialThemeUnlocked {
+            Log.info(
+                "[FullscreenLyricsReload] skipped embedded startup gate reason=\(reason), trackID=\(playbackPayload.trackID?.uuidString.prefix(8) ?? "nil")",
+                category: .webview
+            )
             return
         }
 
@@ -2462,14 +2510,20 @@ struct FullscreenPlayerView: View {
         }
     }
 
-    private func updateFullscreenPlaybackSnapshot() -> FullscreenPlaybackPayload {
+    private func updateFullscreenPlaybackSnapshot(
+        preferredLocalTrack: Track? = nil,
+        forceLocalLyricsReload: Bool = false
+    ) -> FullscreenPlaybackPayload {
         let presentation = playbackCoordinator.presentation
         let payload: FullscreenPlaybackPayload
 
         switch presentation.source {
         case .local:
-            let track = playerVM.currentTrack
-            let lyricsText = resolvedFullscreenLyricsText(for: track)
+            let track = preferredLocalTrack ?? playerVM.currentTrack
+            let lyricsText = resolvedFullscreenLyricsText(
+                for: track,
+                forceDiskReload: forceLocalLyricsReload
+            )
             payload = FullscreenPlaybackPayload(
                 trackID: track?.id,
                 ttml: track == nil ? nil : lyricsText,
@@ -2496,8 +2550,15 @@ struct FullscreenPlayerView: View {
         return payload
     }
 
-    private func resolvedFullscreenLyricsText(for track: Track?) -> String {
+    private func resolvedFullscreenLyricsText(
+        for track: Track?,
+        forceDiskReload: Bool = false
+    ) -> String {
         guard let track else { return "" }
+
+        if forceDiskReload, let fileText = resolvedFullscreenLyricsTextFromDisk(for: track) {
+            return fileText
+        }
 
         let plain = track.loadLyricsIfNeeded()
         let userText = plain?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -2512,6 +2573,22 @@ struct FullscreenPlayerView: View {
         }
 
         return ""
+    }
+
+    private func resolvedFullscreenLyricsTextFromDisk(for track: Track) -> String? {
+        if let lyricsURL = track.resolvedLyricsURL(),
+           let text = try? String(contentsOf: lyricsURL, encoding: .utf8),
+           !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return text
+        }
+
+        if let ttmlURL = track.resolvedTTMLURL(),
+           let text = try? String(contentsOf: ttmlURL, encoding: .utf8),
+           !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return text
+        }
+
+        return nil
     }
 
     private func activateCoverBlurHighlightSurface() {

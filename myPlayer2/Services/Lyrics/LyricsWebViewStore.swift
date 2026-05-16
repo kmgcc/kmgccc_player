@@ -522,6 +522,10 @@ final class LyricsWebViewStore: NSObject {
 
         // Deduplication: skip if same TTML
         if ttml == lastTTML && ttml.count > 0 {
+            Log.info(
+                "[LyricsWebViewStore] setLyricsTTML skipped duplicate role=\(role), len=\(ttml.count), objectID=\(webViewObjectID)",
+                category: .webview
+            )
             return
         }
 
@@ -979,6 +983,10 @@ final class LyricsWebViewStore: NSObject {
         lastTrackID = trackID
         Log.debug(
             "applyTrack: trackID=\(trackID?.uuidString.prefix(8) ?? "nil"), ttmlLen=\(ttml?.count ?? 0), time=\(currentTime), playing=\(isPlaying), objectID=\(webViewObjectID)",
+            category: .webview
+        )
+        Log.info(
+            "[LyricsWebViewStore] applyTrack role=\(role), trackID=\(trackID?.uuidString.prefix(8) ?? "nil"), ttmlLen=\(ttml?.count ?? 0), ttmlHash=\(ttml?.hashValue ?? 0), time=\(String(format: "%.3f", currentTime)), playing=\(isPlaying), objectID=\(webViewObjectID)",
             category: .webview
         )
         let activeProfileSessionID = beginTrackProfileSession(
