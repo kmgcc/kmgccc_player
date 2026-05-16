@@ -301,5 +301,75 @@
 
 - 一次仅调 profile 强度的尝试把 lighter 提到最终 alpha 约 `0.14`、darker 提到约 `0.24`，实测导致 cover blur 下高亮几乎消失。
 - 该尝试已回退到上一版稳定参数：lighter `0.0864`、darker `0.1152`。
-- 回归原因不是 fork core 或时间轴，而是 App cover blur highlight-only layer 的结构语义：该层会隐藏普通 `.amll-fs-word-active` / `.amll-fs-char-active` 和非 `.amll-fs-glow-layer` 的 stack 子层，强调词的可见高亮主要由 glow clone 承担。把 glow profile 当作“只影响装饰辉光”的独立旋钮是不准确的。
-- 后续若继续增强，必须把“装饰 halo 强度”和“主高亮可见性”分离后再调，例如先为 highlight-only 层增加诊断开关确认 source word、glow layer、stack active layer 的 computed visibility/text-shadow，再只调独立 halo，不复用会影响主可见高亮的参数。
+- 回归原因不是 fork core 或时间轴，而是 App cover blur highlight-only layer 的结构语义：该层会隐藏普通 `.amll-fs-word-active` / `.amll-fs-char-active` 和非 `.amll-fs-glow-layer` 的 stack 子层，强调词的可见高亮主要由 glow clone 承担。把 glow profile 当作"只影响装饰辉光"的独立旋钮是不准确的。
+- 后续若继续增强，必须把"装饰 halo 强度"和"主高亮可见性"分离后再调，例如先为 highlight-only 层增加诊断开关确认 source word、glow layer、stack active layer 的 computed visibility/text-shadow，再只调独立 halo，不复用会影响主可见高亮的参数。
+
+## 2026-05-16 Cover Blur Highlight-Only 主高亮 / 装饰 Glow 通道分离
+
+现象：
+
+- 仅 fullscreen 大封面渐变模糊皮肤的 highlight-only WebView 受影响。
+- 上一轮回退的稳定参数（lighter ≈ 0.0864、darker ≈ 0.1152）下，darker 模式实测强调高亮基本看不见。
+- 普通 fullscreen 和窗口歌词不应改变。
+
+根因（结构性问题，不是 alpha 数值问题）：
+
+- `Resources/AMLL/index.html` 在 `.amll-surface-fullscreen-cover-blur-highlight-only` WebView 内显式隐藏：
+  - 非 active 行的所有 lyric 内容；
+  - active 行的 main line / sub line / emphasize wrapper 文本（`color: transparent !important`）；
+  - `.amll-fs-word-base` / `.amll-fs-char-base`（基础不发光层）；
+  - `.amll-fs-word-active` / `.amll-fs-char-active`（本应显示的高亮主体）；
+  - `.amll-fs-word-stack` 内除 `.amll-fs-glow-layer` 之外的全部子层。
+- 上述策略把"主强调高亮可见性"和"装饰 halo"全部压到 `.amll-fs-glow-layer` 单层承担。
+- glow clone 是 source emphasize-word text-shadow animation 经 profile retint 后的结果：lighter 白色 rgba(255,255,255,0.12) × 0.9、darker 黑色 rgba(0,0,0,0.16) × 0.9。叠加 source max alpha 0.8 后，最终最高 ≈ 0.108 白色 halo / 0.144 黑色 halo。
+- 这种强度足够作为"装饰辉光"，但在被亮色或暗色 cover blur 浸染的背景上无法稳定承担"主高亮本体可读"。
+- darker 模式：≈ 0.144 黑色 halo 在 darker profile 的明亮 cover 表面被 wash out，且没有任何主高亮 fill 兜底，于是表现为"什么都看不到"。
+- lighter 模式：≈ 0.108 白色 halo 勉强可见，但本质上是字形轮廓边缘的浅光晕，不构成"该词被高亮"的视觉读出。
+- 单纯把 glow alpha 调大会让 lighter 过曝、darker 真正实现"halo 自身可见"但仍是 halo 而非主高亮；继续调 alpha 永远无法解开"装饰 vs 主可见"职责混叠。
+
+修复（仅改 App adapter，不改 fork core）：
+
+- 在 `Resources/AMLL/index.html` 引入"主强调 highlight body"独立通道：
+  - 当 `installFullscreenEmphasizedGlowLayer()` 检测到当前 splitWord 在 generic cover blur 模式下有 emphasize-word text-shadow animation 时，先给所属 `.amll-fs-word-stack` 写入 `data-amll-fs-emphasis-body="1"`。
+  - 写入 attr 的时机早于 suppress 分支判断，`fullscreenCoverBlurSuppressEmphasisGlow=true` 不会清掉 body 通道——该 flag 语义是抑制装饰 glow，而非整体强调可见。
+- 新增配套 CSS，在 line-state 为 `active` / `data-fs-completed-highlight="1"` / `data-amll-exit-catch-up="1"` / `data-amll-exiting-highlight="1"` 时，对于带 `data-amll-fs-emphasis-body="1"` 的 word-stack：
+  - 强制 `.amll-fs-word-active`、`.amll-fs-char-stack`、`.amll-fs-char-active` `visibility: visible !important`；
+  - color / `-webkit-text-fill-color` 强制为 `var(--amll-fs-cover-blur-body-color, var(--amll-fs-main-active, …))`；
+  - 显式 `text-shadow: none !important; filter: none !important;`，保证 body 通道本身不发光、不再叠加 halo。
+- 体节奏：char-active 已有 source mask animations，仅恢复可见性即可继续按现有时间轴 progressive reveal；不需要克隆任何 mask animation 到额外节点。
+- `.amll-fs-word-base` / `.amll-fs-char-base` / 非高亮行 / 非 active 行 等等的隐藏规则全部保留——body 通道只在被显式打 attr 的强调词上生效。
+- `releaseSplitWordAuxiliaryState()` 在拆 stack 节点前清除 `data-amll-fs-emphasis-body`，避免在罕见状态下属性悬挂。
+- glow profile 数值本轮**不动**：lighter `rgba(255,255,255,0.12) × 0.9`、darker `rgba(0,0,0,0.16) × 0.9`；同时在 `coverBlurGlowProfiles` 头部加入"decorative-only"注释，明确禁止再用它补偿主高亮可见性。
+
+通道职责分工（修复后定型）：
+
+- 主 emphasis highlight body 通道：
+  - 仅在 highlight-only WebView 的 generic cover blur 模式下激活；
+  - 仅作用于被标记的强调词 word-stack；
+  - 不依赖 glow profile alpha；
+  - 颜色走 `--amll-fs-cover-blur-body-color`，缺省回落到 `--amll-fs-main-active` / `--amll-active`，可让后续 Swift 端按 profile 微调 body 主色而不动 glow；
+  - 在 lighter / darker 下都是"主可见的强调字"，是否可读由该通道单独负责。
+- 装饰 glow 通道：
+  - 继续走 `.amll-fs-glow-layer` clone；
+  - 仅承担 halo / 装饰光晕；
+  - lighter：≈ 0.108 白色弱晕，不过曝；
+  - darker：≈ 0.144 黑色暗晕，做"emphasis halo"线索而不再兜底主可见；
+  - 后续若要调整 halo 强度，只调 `coverBlurGlowProfiles`，不应触发主高亮消失。
+
+为什么这比继续调 alpha 更稳定：
+
+- 主可见性与装饰晕环现在是两个互不依赖的渲染节点，CSS / JS 路径互相独立；
+- 调 glow alpha 只会改变光晕强度，不会再让"darker 整个不显示"；
+- 主高亮亮度受主题语义（`--amll-fs-main-active`）驱动，与 cover blur 合成无关；
+- 任何模式失效都可单独定位（attr 是否设、CSS 是否命中、主题色是否解析、glow clone 是否存在），不再被叠层语义掩盖。
+
+验证：
+
+- Xcode Debug build 通过（`xcodebuild ... build` 成功）。
+- 视觉验证由用户在 app 中确认：
+  - darker 模式下强调词本体必须可读；
+  - lighter 模式下主高亮清晰、glow 不过曝；
+  - 普通 fullscreen / window 路径无 highlight-only class，body 通道 CSS 不生效，视觉应保持不变；
+  - 时间轴 / catch-up 路径未触碰。
+- 改动文件：
+  - `myPlayer2/Resources/AMLL/index.html` — CSS 新增 body 通道选择器；bridge JS 在 `installFullscreenEmphasizedGlowLayer()` 中写入 attr，在 `releaseSplitWordAuxiliaryState()` 中清除 attr；`coverBlurGlowProfiles` 头部加入 decorative-only 注释。
