@@ -461,6 +461,8 @@ public final class AppSettings {
         switch new {
         case ClassicLEDSkin.id:
             defaults.set("led", forKey: "skin.classicLED.visualizerMode")
+        case AppleStyleSkin.skinID:
+            defaults.set("led", forKey: "skin.appleStyle.visualizerMode")
         case "rotatingCover":
             defaults.set("led", forKey: "skin.rotatingCover.visualizerMode")
             defaults.set(true, forKey: "skin.rotatingCover.cdMode")

@@ -18,12 +18,14 @@ fi
 
 cd "$AMLL_SOURCE/packages/core"
 pnpm exec tsdown --config tsdown.myplayer.config.ts
+pnpm exec tsdown --config tsdown.myplayer-background.config.ts
 
 cd "$AMLL_SOURCE/packages/lyric"
 pnpm exec tsdown --config tsdown.myplayer.config.ts
 
 cp "$AMLL_SOURCE/packages/core/dist-myplayer/amll-core.mjs" "$APP_AMLL_DIR/amll-core.js"
 cp "$AMLL_SOURCE/packages/core/dist-myplayer/style.css" "$APP_AMLL_DIR/style.css"
+cp "$AMLL_SOURCE/packages/core/dist-myplayer-background/amll-background.mjs" "$APP_AMLL_DIR/amll-background.js"
 cp "$AMLL_SOURCE/packages/lyric/dist-myplayer/amll-lyric.mjs" "$APP_AMLL_DIR/amll-lyric.js"
 
-echo "Synced AMLL core and parser bundle to $APP_AMLL_DIR"
+echo "Synced AMLL core, background, and parser bundles to $APP_AMLL_DIR"

@@ -255,10 +255,12 @@ private struct HomeAlbumCard: View {
         }
         .padding(cardInset)
         .frame(width: cardSize + cardInset * 2)
+        // `isFloating: false` drops the per-card drop shadow — see
+        // HomeArtistCircle for the rail-shadow rationale.
         .homeUnifiedGlassCard(
             cornerRadius: outerCornerRadius,
             colorScheme: colorScheme,
-            isFloating: true
+            isFloating: false
         )
         .overlay(
             // Cheap hover indicator (see HomeArtistCircle for rationale).

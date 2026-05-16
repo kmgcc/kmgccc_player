@@ -276,6 +276,7 @@ struct FullscreenPlayerView: View {
     // Fullscreen per-skin visualizer mode keys — observed for reactive LED service
     // lifecycle (start/stop sampling when the user toggles LED in settings).
     @AppStorage("skin.classicLED.fullscreen.visualizerMode") private var classicLedFullscreenMode: String = "led"
+    @AppStorage("skin.appleStyle.fullscreen.visualizerMode") private var appleStyleFullscreenMode: String = "led"
     @AppStorage("skin.rotatingCover.fullscreen.visualizerMode") private var rotatingCoverLedFullscreenMode: String = "led"
     @AppStorage("skin.kmgcccCassette.fullscreen.visualizerMode") private var cassetteLedFullscreenMode: String = "off"
 
@@ -294,11 +295,29 @@ struct FullscreenPlayerView: View {
         settings.fullscreen.skinID == "fullscreen.coverGradientBlur"
     }
 
+    private var isAppleStyleFullscreenSkin: Bool {
+        settings.fullscreen.skinID == AppleStyleSkin.skinID
+    }
+
+    private var fullscreenSkinUsesCustomBackground: Bool {
+        isCoverBlurFullscreenSkin || isAppleStyleFullscreenSkin
+    }
+
     /// Cover-element skins (classic, rotating, cassette) get a slight vertical
     /// drop when the fullscreen miniplayer auto-hides, and return when it reappears.
     private var isCoverSkinWithMiniplayerMotion: Bool {
         let id = settings.fullscreen.skinID
-        return id == "coverLed" || id == "rotatingCover" || id == "kmgccc.cassette"
+        return id == "coverLed" || id == AppleStyleSkin.skinID || id == "rotatingCover" || id == "kmgccc.cassette"
+    }
+
+    private var fullscreenLedServiceSignature: String {
+        [
+            settings.fullscreen.skinID,
+            classicLedFullscreenMode,
+            appleStyleFullscreenMode,
+            rotatingCoverLedFullscreenMode,
+            cassetteLedFullscreenMode,
+        ].joined(separator: "|")
     }
 
     private var fullscreenStore: LyricsWebViewStore {
@@ -371,12 +390,8 @@ struct FullscreenPlayerView: View {
     }
 
     var body: some View {
-        let selectedSkinID = settings.fullscreen.skinID
-        let selectedSkin = SkinRegistry.fullscreenSkin(for: selectedSkinID)
-        let usesCustomBg = selectedSkinID == "fullscreen.coverGradientBlur"
-
         GeometryReader { proxy in
-            fullscreenContent(for: proxy, selectedSkin: selectedSkin, skinUsesCustomBackground: usesCustomBg)
+            fullscreenContent(for: proxy)
         }
         .background(
             WindowToolbarAccessor(
@@ -403,7 +418,7 @@ struct FullscreenPlayerView: View {
         .sheet(isPresented: $isShowingExternalMatchEditor, content: externalMatchEditorSheet)
         .onAppear(perform: handleFullscreenAppear)
         .onDisappear(perform: handleFullscreenDisappear)
-        .onChange(of: selectedSkinID) { oldValue, newValue in
+        .onChange(of: settings.fullscreen.skinID) { oldValue, newValue in
             skinRevision &+= 1
             if oldValue == "kmgccc.cassette", newValue != oldValue {
                 Task {
@@ -416,19 +431,7 @@ struct FullscreenPlayerView: View {
             guard coverBlurTransition else { return }
             reloadLyricsSurface(reason: "fullscreen skin changed", forceLyricsReload: true)
         }
-        .onChange(of: settings.fullscreen.skinID) { _, newValue in
-            syncFullscreenLedService()
-
-            // Note: Mutual exclusivity is now handled by FullscreenPresentationCoordinator
-            // When skin is set to kmgccc.cassette, Coordinator automatically disables MiniPlayer spectrum
-        }
-        .onChange(of: classicLedFullscreenMode) { _, _ in
-            syncFullscreenLedService()
-        }
-        .onChange(of: rotatingCoverLedFullscreenMode) { _, _ in
-            syncFullscreenLedService()
-        }
-        .onChange(of: cassetteLedFullscreenMode) { _, _ in
+        .onChange(of: fullscreenLedServiceSignature) { _, _ in
             syncFullscreenLedService()
         }
         .onChange(of: settings.fullscreen.isMiniPlayerSpectrumEnabled) { _, _ in
@@ -646,7 +649,8 @@ struct FullscreenPlayerView: View {
     }
 
     @ViewBuilder
-    private func fullscreenContent(for proxy: GeometryProxy, selectedSkin: any NowPlayingSkin, skinUsesCustomBackground: Bool) -> some View {
+    private func fullscreenContent(for proxy: GeometryProxy) -> some View {
+        let selectedSkin = SkinRegistry.fullscreenSkin(for: settings.fullscreen.skinID)
         let scaleX = proxy.size.width / Self.baseCanvasWidth
         let scaleY = proxy.size.height / Self.baseCanvasHeight
         let scale = min(scaleX, scaleY)
@@ -658,50 +662,7 @@ struct FullscreenPlayerView: View {
 
         ZStack {
             if hasRenderableGeometry {
-                if skinUsesCustomBackground {
-                    selectedSkin.makeBackground(
-                        context: makeContext(
-                            windowSize: CGSize(width: Self.baseCanvasWidth, height: Self.baseCanvasHeight),
-                            artworkColumnWidth: layoutMetrics.artworkWidth,
-                            fullscreenScale: scale
-                        )
-                    )
-                    .ignoresSafeArea()
-                    .allowsHitTesting(false)
-
-                    Color.black.opacity(effectiveDimmingIntensity * 0.7)
-                        .ignoresSafeArea()
-                        .allowsHitTesting(false)
-                } else if settings.fullscreenArtBackgroundEnabled && currentDisplayContext.hasTrack {
-                    BKArtBackgroundView(
-                        controller: bkController,
-                        trackID: currentArtworkTrackID,
-                        artworkData: currentDisplayContext.artworkData,
-                        isPlaying: currentDisplayContext.isPlaying,
-                        avoidanceRect: nil,
-                        resourceProfile: settings.fullscreen.skinID == "kmgccc.cassette"
-                            ? .cassetteForeground
-                            : .standard,
-                        dotRenderStyle: .solidCircles,
-                        initialPalette: fullscreenArtBackgroundSeedPalette
-                    )
-                    .ignoresSafeArea()
-
-                    Color.black.opacity(effectiveDimmingIntensity)
-                        .ignoresSafeArea()
-                } else {
-                    selectedSkin.makeBackground(
-                        context: makeContext(
-                            windowSize: CGSize(width: Self.baseCanvasWidth, height: Self.baseCanvasHeight),
-                            artworkColumnWidth: layoutMetrics.artworkWidth,
-                            fullscreenScale: scale
-                        )
-                    )
-                    .ignoresSafeArea()
-
-                    Color.black.opacity(effectiveDimmingIntensity * 0.7)
-                        .ignoresSafeArea()
-                }
+                fullscreenBackgroundLayer(selectedSkin: selectedSkin, scale: scale)
 
                 // Layer 1: AMLL lyrics at actual resolution
                 fullscreenLyricsLayer(scale: scale, screenWidth: proxy.size.width)
@@ -751,6 +712,48 @@ struct FullscreenPlayerView: View {
         }
         .onChange(of: miniPlayerOcclusionRegion) { _, newRegion in
             updateFullscreenMiniPlayerOcclusionRegion(newRegion)
+        }
+    }
+
+    @ViewBuilder
+    private func fullscreenBackgroundLayer(selectedSkin: any NowPlayingSkin, scale: CGFloat) -> some View {
+        let context = makeContext(
+            windowSize: CGSize(width: Self.baseCanvasWidth, height: Self.baseCanvasHeight),
+            artworkColumnWidth: layoutMetrics.artworkWidth,
+            fullscreenScale: scale
+        )
+
+        if fullscreenSkinUsesCustomBackground {
+            selectedSkin.makeBackground(context: context)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+
+            Color.black.opacity(effectiveDimmingIntensity * 0.7)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+        } else if settings.fullscreenArtBackgroundEnabled && currentDisplayContext.hasTrack {
+            BKArtBackgroundView(
+                controller: bkController,
+                trackID: currentArtworkTrackID,
+                artworkData: currentDisplayContext.artworkData,
+                isPlaying: currentDisplayContext.isPlaying,
+                avoidanceRect: nil,
+                resourceProfile: settings.fullscreen.skinID == "kmgccc.cassette"
+                    ? .cassetteForeground
+                    : .standard,
+                dotRenderStyle: .solidCircles,
+                initialPalette: fullscreenArtBackgroundSeedPalette
+            )
+            .ignoresSafeArea()
+
+            Color.black.opacity(effectiveDimmingIntensity)
+                .ignoresSafeArea()
+        } else {
+            selectedSkin.makeBackground(context: context)
+                .ignoresSafeArea()
+
+            Color.black.opacity(effectiveDimmingIntensity * 0.7)
+                .ignoresSafeArea()
         }
     }
 
@@ -2204,6 +2207,8 @@ struct FullscreenPlayerView: View {
         switch skin {
         case .coverLed:
             return defaults.string(forKey: "skin.classicLED.fullscreen.visualizerMode") == "led"
+        case .appleStyle:
+            return defaults.string(forKey: "skin.appleStyle.fullscreen.visualizerMode") == "led"
         case .rotatingCover:
             return defaults.string(forKey: "skin.rotatingCover.fullscreen.visualizerMode") == "led"
         case .kmgcccCassette:
@@ -2806,7 +2811,10 @@ struct FullscreenPlayerView: View {
             }
             return nil
         }()
-        let colorSet = activeCoverBlurTheme?.colors ?? makeFullscreenLyricsColorSet(forTrackID: displayTrackID)
+        let colorSet = activeCoverBlurTheme?.colors
+            ?? (isAppleStyleFullscreenSkin
+                ? makeAppleStyleLyricsColorSet(forTrackID: displayTrackID)
+                : makeFullscreenLyricsColorSet(forTrackID: displayTrackID))
 
         if isCoverBlurFullscreenSkin, readyCoverBlurTheme == nil {
             if activeCoverBlurTheme == nil {
@@ -2964,6 +2972,7 @@ struct FullscreenPlayerView: View {
         ]
 
         config["fullscreenLyricDodgeMode"] = true
+        config["fullscreenAppleStyleMode"] = isAppleStyleFullscreenSkin
         config["fullscreenCoverBlurMode"] = false
         config["coverBlurFullscreenGenericMode"] = isCoverBlurFullscreenSkin && activeCoverBlurTheme != nil
         config["coverBlurFullscreenGenericProfile"] = activeCoverBlurTheme?.profile.rawValue ?? NSNull()
@@ -3510,6 +3519,50 @@ struct FullscreenPlayerView: View {
             subActive: subActiveColor,
             subInactive: subInactiveColor,
             lineTimingSubInactive: lineTimingSubInactiveColor
+        )
+    }
+
+    private func makeAppleStyleLyricsColorSet(forTrackID trackID: UUID?) -> FullscreenLyricsColorSet {
+        let themeColor = resolveFullscreenLyricsBaseColor(forTrackID: trackID)
+        let themeHSL = hslComponents(from: themeColor)
+        let tunedSaturation = clamp(
+            themeHSL.saturation * 0.72 + 0.08,
+            min: 0.16,
+            max: 0.62
+        )
+        let hue = themeHSL.hue
+
+        return FullscreenLyricsColorSet(
+            mainActive: colorFromHSL(
+                hue: hue,
+                saturation: clamp(tunedSaturation * 1.04, min: 0, max: 1),
+                lightness: 0.93
+            ),
+            mainInactive: colorFromHSL(
+                hue: hue,
+                saturation: clamp(tunedSaturation * 0.82, min: 0, max: 1),
+                lightness: 0.82
+            ),
+            lineTimingMainInactive: colorFromHSL(
+                hue: hue,
+                saturation: clamp(tunedSaturation * 0.72, min: 0, max: 1),
+                lightness: 0.78
+            ),
+            subActive: colorFromHSL(
+                hue: hue,
+                saturation: clamp(tunedSaturation * 0.74, min: 0, max: 1),
+                lightness: 0.88
+            ),
+            subInactive: colorFromHSL(
+                hue: hue,
+                saturation: clamp(tunedSaturation * 0.66, min: 0, max: 1),
+                lightness: 0.80
+            ),
+            lineTimingSubInactive: colorFromHSL(
+                hue: hue,
+                saturation: clamp(tunedSaturation * 0.58, min: 0, max: 1),
+                lightness: 0.76
+            )
         )
     }
 

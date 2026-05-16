@@ -57,3 +57,18 @@ Skins can access `context.audio`:
 - Do not render lyrics in skins.
 - Do not drive playback from skins.
 - Keep animations respectful of Reduce Motion.
+
+## Apple Style Skin
+- `AppleStyleSkin` is the AMLL Mesh Gradient skin. It is registered for both window now playing and fullscreen now playing with the display name `Apple 风格`.
+- The skin background is hosted by `AMLLMeshGradientBackgroundView`, which loads `Resources/AMLL/background.html` and the independent `amll-background.js` bundle. Do not add Mesh Gradient imports to the lyric `amll-core.js` bundle.
+- The skin foreground reuses the classic cover/LED/spectrum artwork view. Window mode does not change lyrics styling.
+- Fullscreen mode reuses the classic fullscreen layout, but its AMLL lyrics config enables `fullscreenAppleStyleMode`: bright theme-derived colors plus opacity tiers, without cover blur's light/dark profile switching.
+- Shared settings:
+  - `skin.appleStyle.dynamicBackgroundEnabled`: pauses the renderer and releases the Apple background audio consumer when off.
+  - `skin.appleStyle.flowSpeed`: `gentle`, `standard`, or `active`.
+- Background parameters:
+  - `gentle`: `flowSpeed 0.18`, `30 FPS`.
+  - `standard`: `flowSpeed 0.32`, `30 FPS`.
+  - `active`: `flowSpeed 0.55`, `60 FPS`.
+  - render scale is fixed at `0.6`; do not add a clarity slider unless the skin design is revisited.
+- Audio sampling is an independent consumer of `AudioVisualizationService.shared`. It may share the underlying analysis hub with LED/spectrum, but must not depend on their toggles and must remove only its own consumer when hidden, disabled, or disposed.

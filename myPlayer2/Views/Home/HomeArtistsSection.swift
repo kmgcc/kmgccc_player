@@ -229,18 +229,22 @@ private struct HomeArtistCircle: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 10)
         .frame(width: circleSize + (mode == .narrow ? 26 : 32))
+        // `isFloating: false` drops the per-card drop shadow. Rail cards
+        // accumulate ~30 visible shadow passes during scroll, and A/B
+        // testing showed disabling that shadow is the dominant perf win
+        // (clearly in dark mode where `.clear` glass has no system
+        // depth; in light mode `.regular` glass keeps its intrinsic
+        // depth treatment, which we keep so the material is unchanged).
         .homeUnifiedGlassCard(
             cornerRadius: 18,
             colorScheme: colorScheme,
-            isFloating: true
+            isFloating: false
         )
         .overlay(
             // Cheap hover indicator: stroke overlay only on the current card.
             // Avoids the previous `scaleEffect + animation`, which forced the
             // card's glass material to re-composite at a new scale every time
-            // the cursor crossed a card during scroll. With ~30 cards across
-            // Artists+Albums, that compositing storm was a real per-frame
-            // GPU+CPU hit during outer vertical scroll.
+            // the cursor crossed a card during scroll.
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .strokeBorder(
                     Color.primary.opacity(isHovering ? 0.18 : 0),

@@ -611,3 +611,64 @@
 - `git diff --check` 通过。
 - Xcode Debug build 通过（`xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player -configuration Debug build`）。
 - 视觉仍需在 App 中确认短时值中文连续字/英文短词可并行 fade，window discrete 退场不残留，普通 fullscreen 与 cover blur discrete 退场 opacity fade 与行退出同步。
+
+## 2026-05-16 Apple 风格 Mesh Gradient 播放皮肤
+
+目标：
+
+- 新增窗口与全屏共用的 `Apple 风格` 播放皮肤，背景使用 AMLL 官方 Mesh Gradient / 流体背景。
+- 前景封面、LED、频谱沿用现有 `经典` 皮肤布局，不迁移或改写歌词 core 的稳定时间轴成果。
+- 背景能力与歌词能力解耦，避免把 `bg-render` 重新塞回 DOM-only 歌词 bundle。
+
+方案：
+
+- fork 新增专用 background bundle entry：
+  - `packages/core/src/myplayer-background.ts`
+  - `packages/core/tsdown.myplayer-background.config.ts`
+- App `scripts/sync-amll-from-fork.sh` 构建并同步 `dist-myplayer-background/amll-background.mjs` 到 `myPlayer2/Resources/AMLL/amll-background.js`。
+- App 新增 `Resources/AMLL/background.html`，在独立透明 WKWebView 中加载 `BackgroundRender.new(MeshGradientRenderer)`，只暴露稳定 bridge：
+  - `setConfig({ dynamic, fps, flowSpeed, renderScale })`
+  - `setAlbum(dataURL)`
+  - `setLowFreqVolume(value)`
+  - `setPlaying(isPlaying)`
+  - `dispose()`
+- `amll-core.js` 仍保持 DOM-only lyric bundle，Apple 背景不依赖 `LyricPlayer` 或 fullscreen overlay 内部字段。
+
+窗口皮肤：
+
+- `AppleStyleSkin` 注册到 `SkinRegistry`，名称 `Apple 风格`。
+- background 使用 `AMLLMeshGradientBackgroundView`，封面/LED/频谱通过抽出的 `ClassicCoverArtworkView` 复用经典皮肤前景。
+- 若全局窗口封面背景开启，Apple 风格会跳过 app-level BKArt 背景，避免盖住 Mesh Gradient。
+
+全屏皮肤：
+
+- `FullscreenPresentationCoordinator.FullscreenSkinID.appleStyle` 注册为全屏皮肤。
+- 背景使用同一 Mesh Gradient host，并铺满全屏；封面、LED、频谱沿用经典全屏布局。
+- 歌词位置沿用经典全屏布局。
+- 歌词颜色使用当前主题取色引擎生成偏亮色组，不使用 cover blur 的 light/dark profile 自动切换。
+- `index.html` 新增 `fullscreenAppleStyleMode` root class，Apple 风格允许行/副歌词透明度层级，区别于经典全屏“完全不透明 + 明度区分层级”的策略；lead-in、near switch、exit catch-up、discrete highlight 等时间轴行为不变。
+
+设置与参数：
+
+- 窗口和全屏共用 Apple 背景设置：
+  - `skin.appleStyle.dynamicBackgroundEnabled`，默认开启。
+  - `skin.appleStyle.flowSpeed`，默认 `standard`。
+- UI 复用现有设置样式：Switch `动态背景`，胶囊滑块 `流体速度`。
+- 参数映射：
+  - `柔和`：`flowSpeed = 0.18`，`FPS = 30`。
+  - `标准`：`flowSpeed = 0.32`，`FPS = 30`。
+  - `活跃`：`flowSpeed = 0.55`，`FPS = 60`。
+- `renderScale` 固定 `0.6`，不新增清晰度 UI。
+
+音频采样生命周期：
+
+- 动态背景开启且 Apple 背景 view 存在时，`AMLLMeshGradientBackgroundView.Coordinator` 以独立 consumer 身份调用 `AudioVisualizationService.shared.start()` 并 `addConsumer`。
+- 低频输入使用 `band0 * 0.72 + band1 * 0.28`，再经 `pow(raw, 0.82) * 0.65` 限制到 `0...0.55`，驱动 `setLowFreqVolume()`，只做轻微呼吸律动。
+- 关闭动态背景、离开 Apple 风格、view dismantle 或 dispose 时移除该 consumer 并调用 `AudioVisualizationService.shared.stop()`。
+- LED / 频谱仍通过各自 consumer 与引用计数维持采样；Apple 背景只释放自己的 consumer，不直接关闭其他可视化需求。
+
+验证：
+
+- fork background bundle 通过 `scripts/sync-amll-from-fork.sh` 构建并同步。
+- `amll-background.js` 产物不包含 Pixi renderer 路径，歌词 `amll-core.js` 仍由 DOM-only entry 构建。
+- Xcode Debug build 通过后需在 App 中手动确认：窗口/全屏 Apple 背景显示、切歌换图、resize、切换皮肤停止渲染采样、动态背景开关与三档速度即时生效、重启后设置恢复。

@@ -73,6 +73,56 @@ struct ClassicSkinPreview: View {
     }
 }
 
+// MARK: - Apple Style Skin Preview
+
+/// Apple style fingerprint: bright mesh gradient field with classic cover geometry.
+struct AppleStyleSkinPreview: View {
+    let isSelected: Bool
+    let accentColor: Color
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: SkinPreviewStyle.cornerRadius, style: .continuous)
+                .fill(
+                    AngularGradient(
+                        colors: [
+                            accentColor.opacity(isSelected ? 0.72 : 0.54),
+                            Color.cyan.opacity(0.46),
+                            Color.pink.opacity(0.40),
+                            Color.orange.opacity(0.36),
+                            accentColor.opacity(isSelected ? 0.72 : 0.54),
+                        ],
+                        center: .center
+                    )
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: SkinPreviewStyle.cornerRadius, style: .continuous)
+                        .stroke(Color.white.opacity(colorScheme == .dark ? 0.26 : 0.38), lineWidth: 1)
+                )
+                .frame(width: 56, height: 56)
+
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill((colorScheme == .dark ? Color.black : Color.white).opacity(0.32))
+                .frame(width: 32, height: 32)
+                .overlay(
+                    Image(systemName: "music.note")
+                        .font(.system(size: 11, weight: .light))
+                        .foregroundStyle(Color.white.opacity(0.88))
+                )
+
+            HStack(spacing: 3) {
+                ForEach(0..<4) { index in
+                    Capsule()
+                        .fill(Color.white.opacity(0.52 + Double(index) * 0.08))
+                        .frame(width: 3, height: CGFloat(8 + index * 3))
+                }
+            }
+            .offset(y: 30)
+        }
+    }
+}
+
 // MARK: - Rotating Skin Preview
 
 /// Rotating cover skin fingerprint: disc with label ring + center hole.
