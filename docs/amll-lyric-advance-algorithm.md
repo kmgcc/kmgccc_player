@@ -410,6 +410,12 @@ TypeScript 核心 (setLyricLines)
 
 5. **`lookaheadMs`（默认200）与歌词显示完全独立**。它延迟音频输出，使 LED 频谱效果提前于听到的声音，歌词仍与实际听到的声音同步。
 
+### 2026-05-16 新版 AMLL 接入补充
+
+- 新版接入后，`leadInMs` / `nearSwitchGapMs` 的行提前仍在 App `index.html` 的 timing preprocessing 中完成：near switch 时下一行 start 被提前，上一行 `endTime` 被 clip 到提前切行点。
+- exit highlight catch-up 属于这个提前切行点之后的视觉补偿：上一行已退出 active，但未完成的 word mask animation 会在退出窗口内继续补完到行尾。
+- fullscreen / cover blur overlay 的高亮 opacity fade 不应由 catch-up 进度决定；它应在行退出同一帧由非 active 状态开始淡出。2026-05-16 修正只调整 overlay fade 曲线，不改变 advance 算法、clip 行为、word lead-in 或 fork core catch-up 语义。
+
 ---
 
 ## 十、相关文件速查

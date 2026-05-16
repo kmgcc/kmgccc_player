@@ -311,7 +311,7 @@
             visibility: visible !important;
             opacity: 1 !important;
             transition:
-                opacity .50s cubic-bezier(0.42, 0, 1, 1),
+                opacity .50s ease-out,
                 color .14s ease-out !important;
             --bright-mask-alpha: 1 !important;
             --dark-mask-alpha: 0 !important;
@@ -376,8 +376,8 @@
         .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="lyricLine"]:not([class*="active"]) .amll-cb-word-active,
         .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="lyricLine"]:not([class*="active"]) .amll-cb-char-active {
             transition:
-                opacity 0.50s cubic-bezier(0.42, 0, 1, 1) 0s,
-                color 0.50s cubic-bezier(0.42, 0, 1, 1) 0s !important;
+                opacity 0.50s ease-out 0s,
+                color 0.50s ease-out 0s !important;
         }
         .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricBgLine"] {
             visibility: hidden !important;
@@ -619,7 +619,7 @@
             ) !important;
             mix-blend-mode: normal !important;
             transition:
-                opacity .50s cubic-bezier(0.42, 0, 1, 1),
+                opacity .50s ease-out,
                 color .14s ease-out !important;
             /* Keep per-word sweep animation, but make non-highlighted area fully transparent
                so the opaque base layer stays identical to inactive line color. */
@@ -633,7 +633,7 @@
             ) !important;
             mix-blend-mode: normal !important;
             transition:
-                opacity .50s cubic-bezier(0.42, 0, 1, 1),
+                opacity .50s ease-out,
                 color .14s ease-out !important;
             --bright-mask-alpha: 1 !important;
             --dark-mask-alpha: 0 !important;
@@ -764,8 +764,8 @@
         .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="lyricLine"]:not([class*="active"]) .amll-fs-word-active,
         .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="lyricLine"]:not([class*="active"]) .amll-fs-char-active {
             transition:
-                opacity var(--amll-fs-line-switch-highlight-out-duration) cubic-bezier(0.42, 0, 1, 1) var(--amll-fs-line-switch-highlight-out-delay),
-                color var(--amll-fs-line-switch-highlight-out-duration) cubic-bezier(0.42, 0, 1, 1) var(--amll-fs-line-switch-highlight-out-delay) !important;
+                opacity var(--amll-fs-line-switch-highlight-out-duration) ease-out var(--amll-fs-line-switch-highlight-out-delay),
+                color var(--amll-fs-line-switch-highlight-out-duration) ease-out var(--amll-fs-line-switch-highlight-out-delay) !important;
         }
         /* 全屏 BG line 配色 - 使用主歌词色系，层级稍弱 */
         /* 非高亮状态：使用主歌词非高亮色 */
