@@ -2317,6 +2317,37 @@
             });
         };
 
+        const resolveAnimationComposite = (sourceAnimation, sourceEffect, sourceKeyframes) => {
+            const effectComposite = sourceEffect && typeof sourceEffect.composite === "string"
+                ? sourceEffect.composite
+                : "";
+            if (effectComposite.length > 0) return effectComposite;
+
+            const timing = typeof sourceEffect?.getTiming === "function"
+                ? sourceEffect.getTiming()
+                : null;
+            const timingComposite = timing && typeof timing.composite === "string"
+                ? timing.composite
+                : "";
+            if (timingComposite.length > 0) return timingComposite;
+
+            const keyframeComposite = Array.isArray(sourceKeyframes)
+                ? sourceKeyframes.find((keyframe) => (
+                    keyframe && typeof keyframe.composite === "string" && keyframe.composite.length > 0
+                ))?.composite
+                : "";
+            if (typeof keyframeComposite === "string" && keyframeComposite.length > 0) {
+                return keyframeComposite;
+            }
+
+            const id = typeof sourceAnimation?.id === "string" ? sourceAnimation.id : "";
+            if (id === "float-word" || id.includes("emphasize-word-float")) {
+                return "add";
+            }
+
+            return "";
+        };
+
         const cloneAnimationToElement = (sourceAnimation, targetElement, options = {}) => {
             if (!(sourceAnimation instanceof Animation)) return null;
             if (!(targetElement instanceof Element) || typeof targetElement.animate !== "function") return null;
@@ -2335,10 +2366,11 @@
                 : sourceKeyframes;
             if (!Array.isArray(keyframes) || keyframes.length === 0) return null;
             const timing = sourceEffect.getTiming();
-            const sourceComposite =
-                typeof sourceEffect.composite === "string"
-                    ? sourceEffect.composite
-                    : null;
+            const sourceComposite = resolveAnimationComposite(
+                sourceAnimation,
+                sourceEffect,
+                sourceKeyframes,
+            );
             const clonedTiming =
                 sourceComposite && sourceComposite !== "replace"
                     ? { ...timing, composite: sourceComposite }
