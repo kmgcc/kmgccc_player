@@ -320,8 +320,8 @@
         .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete .amll-cb-char-active {
             transition: none !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="lyricLine"]:not([class*="active"]):not([data-amll-exiting-highlight="1"]) .amll-cb-word-active,
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="lyricLine"]:not([class*="active"]):not([data-amll-exiting-highlight="1"]) .amll-cb-char-active {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="lyricLine"]:not([class*="active"]):not([data-fs-completed-highlight="1"]):not([data-amll-exit-catch-up="1"]) .amll-cb-word-active,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="lyricLine"]:not([class*="active"]):not([data-fs-completed-highlight="1"]):not([data-amll-exit-catch-up="1"]) .amll-cb-char-active {
             opacity: 0 !important;
             visibility: hidden !important;
             transition: none !important;
@@ -352,15 +352,8 @@
         .amll-lyric-player.amll-surface-fullscreen-cover-blur:not(.amll-word-highlight-discrete) [class*="lyricLine"][data-amll-exit-catch-up="1"]:not([class*="active"]) .amll-cb-char-active {
             opacity: 0 !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="lyricLine"][data-amll-exiting-highlight="1"] .amll-cb-word-active:not([data-amll-exit-highlight-word="1"]),
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="lyricLine"][data-amll-exiting-highlight="1"] .amll-cb-char-active:not([data-amll-exit-highlight-word="1"]) {
-            visibility: hidden !important;
-            transition: none !important;
-        }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="lyricLine"][data-amll-exiting-highlight="1"] .amll-cb-word-active[data-amll-exit-highlight-word="1"],
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="lyricLine"][data-amll-exiting-highlight="1"] .amll-cb-char-active[data-amll-exit-highlight-word="1"],
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="lyricLine"][data-amll-exiting-highlight="1"] [data-amll-exit-highlight-word="1"] .amll-cb-word-active,
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="lyricLine"][data-amll-exiting-highlight="1"] [data-amll-exit-highlight-word="1"] .amll-cb-char-active {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="lyricLine"][data-amll-exit-catch-up="1"] .amll-cb-word-active,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="lyricLine"][data-amll-exit-catch-up="1"] .amll-cb-char-active {
             color: var(
                 --amll-cb-main-active,
                 var(--amll-active, var(--amll-lp-color, white))
@@ -642,8 +635,8 @@
         .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete .amll-fs-char-active {
             transition: none !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricLine"]:not([class*="active"]):not([data-amll-exiting-highlight="1"]) .amll-fs-word-active,
-        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricLine"]:not([class*="active"]):not([data-amll-exiting-highlight="1"]) .amll-fs-char-active {
+        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricLine"]:not([class*="active"]):not([data-fs-completed-highlight="1"]):not([data-amll-exit-catch-up="1"]) .amll-fs-word-active,
+        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricLine"]:not([class*="active"]):not([data-fs-completed-highlight="1"]):not([data-amll-exit-catch-up="1"]) .amll-fs-char-active {
             opacity: 0 !important;
             visibility: hidden !important;
             transition: none !important;
@@ -651,11 +644,6 @@
         .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricLine"][data-amll-fs-discrete-inactive-locked="1"] .amll-fs-word-active,
         .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricLine"][data-amll-fs-discrete-inactive-locked="1"] .amll-fs-char-active {
             opacity: 0 !important;
-            visibility: hidden !important;
-            transition: none !important;
-        }
-        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricLine"][data-amll-fs-discrete-exit-locked="1"] .amll-fs-word-active:not([data-amll-exit-highlight-word="1"]),
-        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricLine"][data-amll-fs-discrete-exit-locked="1"] .amll-fs-char-active:not([data-amll-exit-highlight-word="1"]) {
             visibility: hidden !important;
             transition: none !important;
         }
@@ -700,15 +688,8 @@
         .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="lyricLine"][data-amll-exit-catch-up="1"]:not([class*="active"]) .amll-fs-char-active {
             opacity: 0 !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricLine"][data-amll-exiting-highlight="1"] .amll-fs-word-active:not([data-amll-exit-highlight-word="1"]),
-        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricLine"][data-amll-exiting-highlight="1"] .amll-fs-char-active:not([data-amll-exit-highlight-word="1"]) {
-            visibility: hidden !important;
-            transition: none !important;
-        }
-        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricLine"][data-amll-exiting-highlight="1"] .amll-fs-word-active[data-amll-exit-highlight-word="1"],
-        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricLine"][data-amll-exiting-highlight="1"] .amll-fs-char-active[data-amll-exit-highlight-word="1"],
-        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricLine"][data-amll-exiting-highlight="1"] [data-amll-exit-highlight-word="1"] .amll-fs-word-active,
-        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricLine"][data-amll-exiting-highlight="1"] [data-amll-exit-highlight-word="1"] .amll-fs-char-active {
+        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricLine"][data-amll-exit-catch-up="1"] .amll-fs-word-active,
+        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricLine"][data-amll-exit-catch-up="1"] .amll-fs-char-active {
             color: var(
                 --amll-fs-main-active,
                 var(--amll-active, var(--amll-lp-color, white))
@@ -1209,7 +1190,7 @@
         } else {
             logUpgradeOnce(
                 "wordHighlightMode-api-missing",
-                `${AMLL_DOWNGRADE_LOG_PREFIX} wordHighlightMode is not available in upstream core; forcing smooth path and ignoring discrete mode for Phase 1`,
+                `${AMLL_DOWNGRADE_LOG_PREFIX} wordHighlightMode API is missing; forcing smooth path`,
                 "warn"
             );
         }
@@ -3026,7 +3007,6 @@
             delete lineElement.dataset.amllFsDiscreteExitLocked;
             for (const element of getFullscreenActiveHighlightElements(lineObj)) {
                 lockFullscreenDiscreteLayerHidden(element);
-                element.removeAttribute("data-amll-exit-highlight-word");
             }
         };
         const lockFullscreenDiscreteExitingLine = (lineObj) => {
@@ -3035,15 +3015,7 @@
             delete lineElement.dataset.amllFsDiscreteInactiveLocked;
             lineElement.dataset.amllFsDiscreteExitLocked = "1";
             for (const element of getFullscreenActiveHighlightElements(lineObj)) {
-                const markedAncestor = element.closest('[data-amll-exit-highlight-word="1"]');
-                const shouldKeepVisible =
-                    element.dataset.amllExitHighlightWord === "1" ||
-                    markedAncestor instanceof HTMLElement;
-                if (shouldKeepVisible) {
-                    clearFullscreenDiscreteLayerLock(element);
-                } else {
-                    lockFullscreenDiscreteLayerHidden(element);
-                }
+                clearFullscreenDiscreteLayerLock(element);
             }
         };
         const patchFullscreenLineOpacityBehavior = () => {
@@ -3063,8 +3035,13 @@
                 }
                 if (wordHighlightMode === "discrete") {
                     const isActiveLine = isFullscreenLineActiveObject(lineObj, lineIdx);
-                    const isExitingLine = lineElement.dataset.amllExitingHighlight === "1";
+                    const isExitingLine = lineElement.dataset.amllExitCatchUp === "1";
+                    const isCompletedLine = lineElement.dataset.fsCompletedHighlight === "1";
                     const isPastLine = isFullscreenLinePastObject(lineObj);
+                    if (!isActiveLine && isCompletedLine) {
+                        resetFullscreenDiscreteLayerLocks(lineObj);
+                        continue;
+                    }
                     if (!isActiveLine && !isExitingLine) {
                         if (isPastLine) {
                             lockFullscreenDiscreteInactiveLine(lineObj);
@@ -4378,12 +4355,6 @@
 	                clearFullscreenCompletedHighlightState();
 	                return;
 	            }
-	            if (wordHighlightMode === "discrete") {
-	                clearFullscreenCompletedHighlightState();
-	                updateFullscreenFadingHighlightState();
-	                return;
-	            }
-	            
 	            const bufferedLines = lyricPlayer.bufferedLines;
 	            const bufferedIndexes = bufferedLines instanceof Set
 	                ? Array.from(bufferedLines).filter((lineIdx) => Number.isFinite(lineIdx))
@@ -4946,7 +4917,7 @@
                                     if (nextWordHighlightMode === "discrete") {
                                         logUpgradeOnce(
                                             "wordHighlightMode-discrete-ignored",
-                                            `${AMLL_DOWNGRADE_LOG_PREFIX} discrete wordHighlightMode requested but not migrated; keeping upstream smooth behavior`,
+                                            `${AMLL_DOWNGRADE_LOG_PREFIX} discrete wordHighlightMode requested but core API is missing; keeping smooth behavior`,
                                             "warn"
                                         );
                                     }

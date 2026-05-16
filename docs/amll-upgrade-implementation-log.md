@@ -518,3 +518,54 @@
 - `git diff --check` 通过。
 - Xcode Debug build 通过（`xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player -configuration Debug build`）。
 - 视觉仍需在 App 中确认提前切行 catch-up 的高亮淡出更早一点但不突兀，普通并行显示组完成行不提前熄灭。
+
+## 2026-05-16 离散高亮恢复
+
+目标：
+
+- 恢复设置项“减弱高亮(beta)”对应的旧 `wordHighlightMode = discrete` 产品能力。
+- 默认关闭时保持当前新版 smooth 连续扫光路径。
+- 不带回旧 custom 0.2.1 中的 `data-amll-exiting-highlight` / `data-amll-exit-highlight-word`、exiting suppress、hide/show 不 dispose hack。
+
+旧版视觉参数：
+
+- 旧 custom 0.2.1 的离散高亮本体不是硬切，而是 word/char 的 opacity fade-in：
+  - inactive opacity：普通窗口主行 `0.28`，BG 行 `0.4`，fullscreen surface `0`。
+  - fade duration：按高亮片段时长计算，并 clamp 到 `300ms...2000ms`。
+  - keyframes：18 个 opacity 采样点。
+  - easing：`log1p(x * 2.2) / log1p(2.2)`，前段较快、后段自然收住。
+  - CJK 连续 chunk 在 discrete 模式下不按整 chunk 同时亮起，而回落到各字自己的 start/end；非 CJK chunk 保持整词/整组高亮。
+- 旧版另有离散 exit fade：退出时把已亮词从当前 opacity 以 `ease-out` 淡回 inactive opacity，最长 `280ms` 左右。但该实现依赖旧 data 标记和额外 exit animation list，是历史残留/闪没问题的重要来源，本次不迁移结构。
+
+本次修复：
+
+- fork core 增加 `WordHighlightMode = "smooth" | "discrete"`、`setWordHighlightMode()`、`getWordHighlightMode()`。
+- DOM renderer 的 `setWordHighlightMode()` 会对当前已构建行执行 `updateMaskImageSync()`，设置切换可实时重建 mask/opacity animation。
+- `LyricLineEl.updateMaskImageSync()` 增加 discrete branch：
+  - smooth 仍走现有 `generateWebAnimationBasedMaskImage()` / calc fallback；
+  - discrete 走 per-word opacity animation，沿用旧版 18 帧、log easing `2.2`、`300ms...2000ms` duration clamp、窗口 inactive opacity `0.28` / BG `0.4` / fullscreen `0`；
+  - discrete animation 仍写入 `word.maskAnimations`，让当前 exit catch-up 可继续以 `data-amll-exit-catch-up` 加速剩余高亮。
+- App `index.html` 保留配置下发，不在 overlay 中重做离散动画本体：
+  - core API 存在后不再输出旧 `[AMLL-UPGRADE-DOWNGRADE] discrete wordHighlightMode requested but not migrated...`；
+  - discrete fullscreen / cover blur 的退出保持逻辑改用当前 `data-amll-exit-catch-up`，不依赖旧 `data-amll-exiting-highlight` / `data-amll-exit-highlight-word`；
+  - discrete 模式不再跳过 completed highlight 计算，完成但仍在并行组内的行继续保留 active overlay。
+
+取舍：
+
+- 沿用：opacity fade-in 视觉参数、duration clamp、CJK/非 CJK 高亮粒度、fullscreen inactive opacity 语义。
+- 舍弃：旧离散专属 exit data 标记、逐词 exit fade animation list、强力 suppress、hide/show 不 dispose 生命周期 hack、任何会污染 smooth 路径的 mask/opacity 兼容逻辑。
+- 退场淡出由当前已稳定的行 opacity fade 与 `data-amll-exit-catch-up` 负责；离散 branch 只提供高亮本体的 opacity fade-in，不重新发明 exit lifecycle。
+
+升级影响：
+
+- 改动集中在 fork core DOM line mask branch 与 App config adapter；parser、timeline、layout、lead-in / nearSwitch、emphasis chain 未改。
+- smooth 关闭状态下，`wordHighlightMode` 默认为 `"smooth"`，不会进入 discrete branch；切回 smooth 时会移除 discrete 写入的 inline opacity 并恢复 mask image 路径。
+- patch 仍可迁移/剥离：新增 API 和 discrete branch 都围绕 `wordHighlightMode` 单点开关；未来 upstream 若提供正式离散模式，可删除该 branch 并把 App config 映射到 upstream API。
+
+验证：
+
+- fork core `pnpm run typecheck` 通过。
+- `scripts/sync-amll-from-fork.sh` 构建并同步 `amll-core.js` / `amll-lyric.js` / `style.css` 通过。
+- `index.html` module script 通过 `node --input-type=module --check -` 语法检查。
+- Xcode Debug build 通过（`xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player -configuration Debug build`）。
+- 视觉仍需在 App 中覆盖：窗口 smooth/discrete、普通 fullscreen、cover blur、提前切行 catch-up、并行 completed highlight、seek/pause/切歌和设置项运行时切换。
