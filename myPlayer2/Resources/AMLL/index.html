@@ -2141,44 +2141,36 @@
             }
         };
 
-        const estimateColorLightness = (color) => {
-            if (!color) return null;
-            const r = Math.max(0, Math.min(255, color.r)) / 255;
-            const g = Math.max(0, Math.min(255, color.g)) / 255;
-            const b = Math.max(0, Math.min(255, color.b)) / 255;
-            return (Math.max(r, g, b) + Math.min(r, g, b)) / 2;
+        const isEmphasisTextShadowAnimation = (animation) => {
+            if (!(animation instanceof Animation)) return false;
+            const id = typeof animation.id === "string" ? animation.id : "";
+            return id.includes("emphasize-word-") && !id.includes("float");
         };
 
-        const resolveFullscreenCoverBlurGlowColor = (profile, activeWordElement) => {
+        const COVER_BLUR_EMPHASIS_GLOW_ALPHA_LIMIT = 0.2;
+        const coverBlurGlowProfiles = {
+            // Source AMLL emphasis text-shadow may reach alpha 0.8. These profile
+            // alphas keep the final cloned shadow well under 0.2 after retinting.
+            lighter: {
+                color: "rgba(255, 255, 255, 0.12)",
+                alphaMultiplier: 0.9,
+            },
+            // plus-darker only reads as an emphasis halo when the shadow itself is
+            // dark; a bright glow is mostly neutralized by the final blend.
+            darker: {
+                color: "rgba(0, 0, 0, 0.16)",
+                alphaMultiplier: 0.9,
+            },
+        };
+
+        const resolveFullscreenCoverBlurGlowColor = (profile) => {
             if (profile !== "lighter" && profile !== "darker") return null;
+            return coverBlurGlowProfiles[profile]?.color ?? null;
+        };
 
-            const themeColor = parseRGBAColor(getFullscreenCoverBlurGenericThemeColor());
-            const activeColor = activeWordElement instanceof HTMLElement
-                ? parseRGBAColor(window.getComputedStyle(activeWordElement).color)
-                : null;
-            const baseColor = themeColor ?? activeColor;
-            if (!baseColor) return null;
-
-            if (profile === "lighter") {
-                return formatRGBAColor(
-                    scaleRGBAColor(baseColor, {
-                        brightnessMultiplier: 0.18,
-                        alphaMultiplier: 0.12,
-                    })
-                );
-            }
-
-            const darkerBaseColor = activeColor ?? themeColor ?? baseColor;
-            const baseLightness = estimateColorLightness(darkerBaseColor);
-            const brightnessMultiplier = baseLightness !== null && baseLightness > 0.62
-                ? 0.72
-                : 0.88;
-            return formatRGBAColor(
-                scaleRGBAColor(darkerBaseColor, {
-                    brightnessMultiplier,
-                    alphaMultiplier: 0.88,
-                })
-            );
+        const resolveFullscreenCoverBlurGlowAlphaMultiplier = (profile) => {
+            if (profile !== "lighter" && profile !== "darker") return 0.22;
+            return coverBlurGlowProfiles[profile]?.alphaMultiplier ?? 0.22;
         };
 
         const recolorTextShadow = (textShadow, colorValue) => {
@@ -2701,14 +2693,14 @@
         };
 
         /**
-         * Create and install a glow layer that renders ABOVE the text for emphasized words.
-         * This separates the text-shadow glow from the text content, allowing the glow
-         * to appear on top of the text layer in fullscreen mode.
+         * Create and install a glow layer for generic cover-blur fullscreen.
+         * Ordinary fullscreen keeps upstream emphasis glow untouched; the cover-blur
+         * split WebViews need a separate highlight-only glow so the base layer does
+         * not amplify or cancel the original text-shadow through plus blend modes.
          */
         const installFullscreenEmphasizedGlowLayer = (splitWord) => {
-            // HARD ISOLATION TEST: Wrapper glow layer completely disabled
-            return;
-            // --- TEST DISABLED CODE BELOW ---
+            const isCoverBlurGenericGlow = isFullscreenCoverBlurGenericMode();
+            if (!isCoverBlurGenericGlow) return;
             if (!splitWord) return;
             const activeWordElement = splitWord?.__fsActiveWordElement;
             const stackElement = splitWord?.__fsWordStackElement;
@@ -2725,42 +2717,32 @@
 
             if (emphasisAnimations.length === 0) return;
 
-            const isCoverBlurGenericGlow = isFullscreenCoverBlurGenericMode();
-            const profile = isCoverBlurGenericGlow
-                ? getFullscreenCoverBlurGenericProfile()
-                : null;
-            if (
-                isCoverBlurGenericGlow
-                && fullscreenCoverBlurSuppressEmphasisGlow === true
-            ) {
+            const profile = getFullscreenCoverBlurGenericProfile();
+            if (fullscreenCoverBlurSuppressEmphasisGlow === true) {
+                for (const animation of emphasisAnimations) {
+                    cancelAnimationSafely(animation);
+                }
                 teardownFullscreenGlowLayer(splitWord);
-                activeWordElement.style.textShadow = "none";
+                activeWordElement.style.setProperty("text-shadow", "none", "important");
                 return;
             }
             const glowLayer = ensureFullscreenGlowLayerElement(
                 splitWord,
-                isCoverBlurGenericGlow
-                    ? "amll-fs-glow-layer amll-fs-cover-blur-glow-layer"
-                    : "amll-fs-glow-layer"
+                "amll-fs-glow-layer amll-fs-cover-blur-glow-layer"
             );
             if (!(glowLayer instanceof HTMLElement)) return;
-            if (isCoverBlurGenericGlow) {
-                if (profile) {
-                    glowLayer.dataset.amllCoverBlurGlowProfile = profile;
-                    glowLayer.style.setProperty(
-                        "mix-blend-mode",
-                        "normal",
-                        "important"
-                    );
-                } else {
-                    delete glowLayer.dataset.amllCoverBlurGlowProfile;
-                    glowLayer.style.removeProperty("mix-blend-mode");
-                }
-                glowLayer.style.setProperty("filter", "none", "important");
+            if (profile) {
+                glowLayer.dataset.amllCoverBlurGlowProfile = profile;
+                glowLayer.style.setProperty(
+                    "mix-blend-mode",
+                    "normal",
+                    "important"
+                );
             } else {
                 delete glowLayer.dataset.amllCoverBlurGlowProfile;
                 glowLayer.style.removeProperty("mix-blend-mode");
             }
+            glowLayer.style.setProperty("filter", "none", "important");
 
             // Clone emphasis animations to glow layer (text-shadow animations)
             const previousGlowAnimations = Array.isArray(splitWord?.__fsGlowAnimations)
@@ -2770,16 +2752,14 @@
                 cancelAnimationSafely(animation);
             }
             const glowAnimations = [];
-            const glowThemeColor = isCoverBlurGenericGlow
-                ? resolveFullscreenCoverBlurGlowColor(profile, activeWordElement)
-                : null;
+            const glowThemeColor = resolveFullscreenCoverBlurGlowColor(profile);
+            const glowAlphaMultiplier = resolveFullscreenCoverBlurGlowAlphaMultiplier(profile);
             for (const sourceAnimation of emphasisAnimations) {
                 const cloned = cloneAnimationToElement(sourceAnimation, glowLayer, {
                     transformKeyframes: (keyframes) => retintGlowKeyframes(
                         keyframes,
                         glowThemeColor,
-                        // Lower alpha to prevent overexposure - glow should be subtle, not blinding
-                        isCoverBlurGenericGlow ? 0.28 : 0.22,
+                        glowAlphaMultiplier,
                     ),
                 });
                 if (cloned instanceof Animation) {
@@ -2789,18 +2769,13 @@
 
             splitWord.__fsGlowAnimations = glowAnimations;
 
-            // Fullscreen glow layer must not keep the original emphasis glow running
-            // on the source word, otherwise the untouched AMLL glow stacks underneath
-            // the cloned glow animations and blows out visually.
-            // Cancel original emphasis animations for ALL fullscreen modes, not just cover-blur.
+            // The source word belongs to the same highlight-only WebView. Keeping its
+            // original text-shadow would stack with the cloned glow and defeat the
+            // cover-blur-specific profile tint/alpha.
             for (const animation of emphasisAnimations) {
                 cancelAnimationSafely(animation);
             }
-            if (isCoverBlurGenericGlow) {
-                activeWordElement.style.setProperty("text-shadow", "none", "important");
-            } else {
-                activeWordElement.style.textShadow = "none";
-            }
+            activeWordElement.style.setProperty("text-shadow", "none", "important");
         };
 
         const refreshFullscreenCoverBlurGenericGlowLayers = () => {
@@ -2907,6 +2882,9 @@
 
             for (const sourceAnimation of sourceAnimations) {
                 if (!(sourceAnimation instanceof Animation) || sourceAnimation === sourceFloatAnimation) continue;
+                if (isFullscreenCoverBlurGenericMode() && isEmphasisTextShadowAnimation(sourceAnimation)) {
+                    continue;
+                }
                 const sourceTarget = sourceAnimation?.effect?.target;
                 if (!(sourceTarget instanceof Node)) continue;
                 const packedTarget = fullscreenPackedAnimationTargetMap.get(sourceTarget);
