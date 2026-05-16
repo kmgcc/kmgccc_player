@@ -44,19 +44,33 @@ actor ArtistArtworkGenerator {
     }
 
     private nonisolated static let placeholderCache = PlaceholderCacheBox()
-    private nonisolated static let placeholderPixelSide = 640
+    private nonisolated static let defaultPlaceholderPixelSide = 640
 
-    func generateArtwork(artistName: String, trackSources: [ArtistArtworkTrackSource]) async -> NSImage? {
+    func generateArtwork(
+        artistName: String,
+        trackSources: [ArtistArtworkTrackSource],
+        pixelSide: Int = defaultPlaceholderPixelSide
+    ) async -> NSImage? {
         await Task.detached(priority: .userInitiated) { @Sendable in
-            Self.placeholderArtwork(artistName: artistName, trackSources: trackSources)
+            Self.placeholderArtwork(
+                artistName: artistName,
+                trackSources: trackSources,
+                pixelSide: pixelSide
+            )
         }.value
     }
 
     nonisolated static func placeholderArtwork(
         artistName: String,
-        trackSources: [ArtistArtworkTrackSource]
+        trackSources: [ArtistArtworkTrackSource],
+        pixelSide: Int = defaultPlaceholderPixelSide
     ) -> NSImage? {
-        let cacheKey = placeholderCacheKey(artistName: artistName, trackSources: trackSources) as NSString
+        let resolvedPixelSide = max(64, pixelSide)
+        let cacheKey = placeholderCacheKey(
+            artistName: artistName,
+            trackSources: trackSources,
+            pixelSide: resolvedPixelSide
+        ) as NSString
         if let cached = placeholderCache.cache.object(forKey: cacheKey) {
             return cached
         }
@@ -64,7 +78,7 @@ actor ArtistArtworkGenerator {
         guard let image = renderArtwork(
             artistName: artistName,
             trackSources: trackSources,
-            pixelSide: placeholderPixelSide
+            pixelSide: resolvedPixelSide
         ) else {
             return nil
         }
@@ -72,7 +86,7 @@ actor ArtistArtworkGenerator {
         placeholderCache.cache.setObject(
             image,
             forKey: cacheKey,
-            cost: placeholderPixelSide * placeholderPixelSide * 4
+            cost: resolvedPixelSide * resolvedPixelSide * 4
         )
         return image
     }
@@ -82,7 +96,7 @@ actor ArtistArtworkGenerator {
         trackSources: [ArtistArtworkTrackSource],
         pixelSide: Int
     ) -> NSImage? {
-        let side = CGFloat(max(256, pixelSide))
+        let side = CGFloat(max(64, pixelSide))
         let canvasSize = CGSize(width: side, height: side)
         let gradient = resolveGradientSpec(artistName: artistName, trackSources: trackSources)
 
@@ -145,7 +159,8 @@ actor ArtistArtworkGenerator {
 
     private nonisolated static func placeholderCacheKey(
         artistName: String,
-        trackSources: [ArtistArtworkTrackSource]
+        trackSources: [ArtistArtworkTrackSource],
+        pixelSide: Int
     ) -> String {
         let text = artistName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? LibraryNormalization.unknownArtist
@@ -158,10 +173,10 @@ actor ArtistArtworkGenerator {
             return !artworkData.isEmpty
         }) {
             let checksum = ArtworkLoader.checksum(for: artworkData(for: representative))
-            return "\(text)|\(representative.id.uuidString)|\(checksum)|\(sortedTracks.count)"
+            return "\(text)|\(representative.id.uuidString)|\(checksum)|\(sortedTracks.count)|\(pixelSide)"
         }
 
-        return "\(text)|fallback|\(sortedTracks.count)"
+        return "\(text)|fallback|\(sortedTracks.count)|\(pixelSide)"
     }
 
     private nonisolated static func resolveGradientSpec(

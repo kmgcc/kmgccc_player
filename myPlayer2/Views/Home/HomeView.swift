@@ -478,4 +478,26 @@ enum HomeLayoutMode: Hashable {
         case .narrow: return 17
         }
     }
+
+    // Per-mode pixel sizes for Home Artist / Album rail thumbnails. Each
+    // bucket is ≥ cardSize × 2 (covers @2× Retina without scaling artifacts)
+    // and 16-px aligned so cache keys land on a stable, finite set — total
+    // of 8 derivative variants across both rails regardless of window size.
+    var homeArtistRailPixelSide: Int {
+        switch self {
+        case .wide:    return 288   // circleSize 136 × 2 → 272, rounded to 288
+        case .medium:  return 256   // circleSize 120 × 2 → 240, rounded to 256
+        case .compact: return 224   // circleSize 104 × 2 → 208, rounded to 224
+        case .narrow:  return 192   // circleSize  90 × 2 → 180, rounded to 192
+        }
+    }
+
+    var homeAlbumRailPixelSide: Int {
+        switch self {
+        case .wide:    return 336   // cardSize 164 × 2 → 328, rounded to 336
+        case .medium:  return 304   // cardSize 146 × 2 → 292, rounded to 304
+        case .compact: return 256   // cardSize 124 × 2 → 248, rounded to 256
+        case .narrow:  return 224   // cardSize 110 × 2 → 220, rounded to 224
+        }
+    }
 }

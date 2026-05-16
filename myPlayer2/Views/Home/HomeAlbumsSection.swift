@@ -299,22 +299,23 @@ private struct HomeAlbumCard: View {
     private func loadImage() async {
         var artworkData = album.artworkData
         if artworkData == nil || artworkData!.isEmpty {
-            let albumKey = album.canonicalKey
-            if let firstTrack = libraryVM.allTracks.first(where: { $0.albumGroupKey == albumKey }) {
+            if let firstTrack = libraryVM.firstTrack(forAlbumGroupKey: album.canonicalKey) {
                 artworkData = await firstTrack.loadArtworkDataOffMainIfNeeded()
             }
         }
         guard let data = artworkData, !data.isEmpty else { return }
+        let pixelSide = mode.homeAlbumRailPixelSide
+        let targetSize = CGSize(width: pixelSide, height: pixelSide)
         let checksum = ArtworkLoader.checksum(for: data)
         let key = ArtworkLoader.cacheKey(
             trackID: album.id,
             checksum: checksum,
-            targetPixelSize: CGSize(width: 336, height: 336)
+            targetPixelSize: targetSize
         )
         let loaded = await ArtworkLoader.loadImage(
             artworkData: data,
             cacheKey: key,
-            targetPixelSize: CGSize(width: 336, height: 336)
+            targetPixelSize: targetSize
         )
         image = loaded
     }
