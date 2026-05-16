@@ -486,10 +486,13 @@ enum CoverGradientBlurRenderer {
                 adaptCubic = baseCubic
             } else {
                 let excess = (totalRadius - refRadius) / refRadius
-                // sqrt-compressed gain, capped at +38 %
-                let gain = 1.0 + min(0.38, sqrt(excess) * 0.24)
+                // sqrt-compressed gain, capped at +20 % — low-alpha zone
+                // should only get a subtle radius linkage, not follow it
+                // aggressively.  Cubic term is restored to keep the
+                // mid / high-alpha zones carrying most of the change.
+                let gain = 1.0 + min(0.20, sqrt(excess) * 0.14)
                 adaptLinear = baseLinear * gain
-                adaptCubic = max(0.30, baseCubic - baseLinear * (gain - 1.0) * 0.5)
+                adaptCubic = max(0.35, baseCubic - baseLinear * (gain - 1.0) * 0.2)
             }
             aCoeff = CIVector(x: 0, y: adaptLinear, z: baseQuad, w: adaptCubic)
         }
@@ -521,7 +524,7 @@ enum CoverGradientBlurRenderer {
         // into standard ≤150 passes.
         var passRadii: [CGFloat] = []
         var remaining = totalRadius
-        let p0Extra = min(100.0, max(0, totalRadius - basePassRadius) * 0.20)
+        let p0Extra = min(60.0, max(0, totalRadius - basePassRadius) * 0.10)
         let p0Cap = min(totalRadius, basePassRadius + p0Extra)
         passRadii.append(p0Cap)
         remaining -= p0Cap
@@ -539,9 +542,11 @@ enum CoverGradientBlurRenderer {
                 passMask = nonLinearMask
             } else {
                 let progress = CGFloat(passIndex) / CGFloat(passRadii.count)
-                // Softer thresholds: start close to 0, cap at 0.60 so later passes
-                // reach the mid-blur zone but stay out of the left-side cover.
-                let delayedThreshold = min(0.60, 0.03 + progress * 0.28)
+                // Pass 1 reaches mid-to-right; Pass 2+ tilt further right.
+                // Threshold start raised to 0.10 so early left-side blur is
+                // preserved; cap raised to 0.72 so later passes can still
+                // deliver full right-side blur without leaking left.
+                let delayedThreshold = min(0.72, 0.10 + progress * 0.38)
                 passMask = delayedMask(
                     from: nonLinearMask,
                     startThreshold: delayedThreshold,
