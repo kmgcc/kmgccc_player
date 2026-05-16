@@ -2207,14 +2207,14 @@
             // lighter: subtle white halo, must not overexpose against the bright blur.
             lighter: {
                 color: "rgba(255, 255, 255, 0.12)",
-                alphaMultiplier: 0.9,
+                alphaMultiplier: 1.0,
             },
             // darker: faint dark halo. plus-darker / dark cover composition consumes
             // bright halos; a low-alpha dark shadow keeps a perceptible decoration
             // without becoming the only source of emphasis visibility.
             darker: {
                 color: "rgba(0, 0, 0, 0.16)",
-                alphaMultiplier: 0.9,
+                alphaMultiplier: 1.0,
             },
         };
 
@@ -2335,9 +2335,17 @@
                 : sourceKeyframes;
             if (!Array.isArray(keyframes) || keyframes.length === 0) return null;
             const timing = sourceEffect.getTiming();
+            const sourceComposite =
+                typeof sourceEffect.composite === "string"
+                    ? sourceEffect.composite
+                    : null;
+            const clonedTiming =
+                sourceComposite && sourceComposite !== "replace"
+                    ? { ...timing, composite: sourceComposite }
+                    : timing;
             let clonedAnimation = null;
             try {
-                clonedAnimation = targetElement.animate(keyframes, timing);
+                clonedAnimation = targetElement.animate(keyframes, clonedTiming);
             } catch (_) {
                 return null;
             }
