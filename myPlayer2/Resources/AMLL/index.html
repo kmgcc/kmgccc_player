@@ -2289,6 +2289,34 @@
             });
         };
 
+        const adaptCoverBlurEmphasisKeyframes = (
+            keyframes,
+            { colorValue = null, alphaMultiplier = 1, suppressGlow = false } = {}
+        ) => {
+            if (!Array.isArray(keyframes)) {
+                return keyframes;
+            }
+            return keyframes.map((keyframe) => {
+                if (!keyframe || typeof keyframe !== "object") return keyframe;
+                const nextKeyframe = { ...keyframe };
+                if (typeof nextKeyframe.textShadow === "string" && nextKeyframe.textShadow.length > 0) {
+                    if (suppressGlow) {
+                        nextKeyframe.textShadow = "none";
+                    } else {
+                        nextKeyframe.textShadow =
+                            typeof colorValue === "string" && colorValue.length > 0
+                                ? recolorTextShadow(nextKeyframe.textShadow, colorValue)
+                                : nextKeyframe.textShadow;
+                        nextKeyframe.textShadow = rescaleTextShadowAlpha(
+                            nextKeyframe.textShadow,
+                            alphaMultiplier,
+                        );
+                    }
+                }
+                return nextKeyframe;
+            });
+        };
+
         const cloneAnimationToElement = (sourceAnimation, targetElement, options = {}) => {
             if (!(sourceAnimation instanceof Animation)) return null;
             if (!(targetElement instanceof Element) || typeof targetElement.animate !== "function") return null;
@@ -2651,80 +2679,6 @@
             splitWord.__fsInstalledMaskAnimations = nextMaskAnimations;
         };
 
-        const ensureFullscreenGlowLayerElement = (
-            splitWord,
-            className = "amll-fs-glow-layer"
-        ) => {
-            if (!splitWord) return null;
-            const activeWordElement = splitWord?.__fsActiveWordElement;
-            const stackElement = splitWord?.__fsWordStackElement;
-            if (!(activeWordElement instanceof HTMLElement)) return null;
-            if (!(stackElement instanceof HTMLElement)) return null;
-
-            let glowLayer = splitWord.__fsGlowLayer;
-            if (!(glowLayer instanceof HTMLElement)) {
-                glowLayer = document.createElement("span");
-                stackElement.appendChild(glowLayer);
-                splitWord.__fsGlowLayer = glowLayer;
-            }
-
-            glowLayer.className = className;
-            glowLayer.setAttribute("aria-hidden", "true");
-            glowLayer.style.position = "absolute";
-            glowLayer.style.top = "0";
-            glowLayer.style.left = "0";
-            glowLayer.style.pointerEvents = "none";
-            glowLayer.style.userSelect = "none";
-            glowLayer.style.zIndex = "10";
-            glowLayer.style.color = "transparent";
-            glowLayer.style.webkitTextFillColor = "transparent";
-            glowLayer.style.webkitTextStroke = "0 transparent";
-            glowLayer.style.overflow = "visible";
-            glowLayer.style.contain = "none";
-            glowLayer.style.whiteSpace = "nowrap";
-            glowLayer.style.display = "inline-block";
-            glowLayer.style.padding = "0";
-            glowLayer.style.margin = "0";
-            glowLayer.style.background = "none";
-            glowLayer.style.mask = "none";
-            glowLayer.style.webkitMask = "none";
-            glowLayer.style.maskImage = "none";
-            glowLayer.style.webkitMaskImage = "none";
-            glowLayer.style.clipPath = "none";
-            glowLayer.style.transform = "none";
-            glowLayer.style.filter = "none";
-            glowLayer.style.mixBlendMode = "normal";
-            glowLayer.style.removeProperty("mix-blend-mode");
-            glowLayer.style.removeProperty("text-shadow");
-            glowLayer.style.removeProperty("filter");
-
-            // Clone the actual element structure (including per-character spans)
-            // instead of just textContent, so text-shadow follows glyph shapes
-            glowLayer.innerHTML = "";
-            const clonedStructure = activeWordElement.cloneNode(true);
-            if (clonedStructure instanceof HTMLElement) {
-                // Make all text transparent while preserving structure
-                clonedStructure.style.color = "transparent";
-                clonedStructure.style.webkitTextFillColor = "transparent";
-                clonedStructure.style.webkitTextStroke = "0 transparent";
-                // Remove any inline text-shadow from cloned children - let parent animation handle it
-                for (const child of clonedStructure.querySelectorAll("*")) {
-                    if (child instanceof HTMLElement) {
-                        child.style.color = "transparent";
-                        child.style.webkitTextFillColor = "transparent";
-                        child.style.webkitTextStroke = "0 transparent";
-                        child.style.removeProperty("text-shadow");
-                        child.style.removeProperty("filter");
-                    }
-                }
-                glowLayer.appendChild(clonedStructure);
-            } else {
-                // Fallback to textContent if clone fails
-                glowLayer.textContent = activeWordElement.textContent;
-            }
-            return glowLayer;
-        };
-
         const teardownFullscreenGlowLayer = (splitWord) => {
             if (!splitWord) return;
             const previousGlowAnimations = Array.isArray(splitWord?.__fsGlowAnimations)
@@ -2748,10 +2702,10 @@
         };
 
         /**
-         * Create and install a glow layer for generic cover-blur fullscreen.
-         * Ordinary fullscreen keeps upstream emphasis glow untouched; the cover-blur
-         * split WebViews need a separate highlight-only glow so the base layer does
-         * not amplify or cancel the original text-shadow through plus blend modes.
+         * Mark generic cover-blur emphasized words so the highlight-only surface can
+         * show the normal active body. The actual upstream emphasis animation chain
+         * stays on per-character packed targets; cover-blur only adapts its textShadow
+         * in installFullscreenPackedElementAnimations().
          */
         const installFullscreenEmphasizedGlowLayer = (splitWord) => {
             const isCoverBlurGenericGlow = isFullscreenCoverBlurGenericMode();
@@ -2783,67 +2737,17 @@
             // decorative.
             stackElement.setAttribute("data-amll-fs-emphasis-body", "1");
 
-            const profile = getFullscreenCoverBlurGenericProfile();
+            // Older cover-blur revisions installed a single word-level glow clone.
+            // That collapsed AMLL's per-character emphasize-word-* animations onto one
+            // target and broke the official timing/transform semantics. Remove any
+            // stale layer and let the packed per-character clone carry the animation.
+            teardownFullscreenGlowLayer(splitWord);
+
             if (fullscreenCoverBlurSuppressEmphasisGlow === true) {
-                for (const animation of emphasisAnimations) {
-                    cancelAnimationSafely(animation);
-                }
-                teardownFullscreenGlowLayer(splitWord);
                 activeWordElement.style.setProperty("text-shadow", "none", "important");
-                // Body channel intentionally stays active under suppress — the flag is
-                // about removing the decorative halo, not silencing the emphasis word.
-                return;
-            }
-            const glowLayer = ensureFullscreenGlowLayerElement(
-                splitWord,
-                "amll-fs-glow-layer amll-fs-cover-blur-glow-layer"
-            );
-            if (!(glowLayer instanceof HTMLElement)) return;
-            if (profile) {
-                glowLayer.dataset.amllCoverBlurGlowProfile = profile;
-                glowLayer.style.setProperty(
-                    "mix-blend-mode",
-                    "normal",
-                    "important"
-                );
             } else {
-                delete glowLayer.dataset.amllCoverBlurGlowProfile;
-                glowLayer.style.removeProperty("mix-blend-mode");
+                activeWordElement.style.removeProperty("text-shadow");
             }
-            glowLayer.style.setProperty("filter", "none", "important");
-
-            // Clone emphasis animations to glow layer (text-shadow animations)
-            const previousGlowAnimations = Array.isArray(splitWord?.__fsGlowAnimations)
-                ? splitWord.__fsGlowAnimations
-                : [];
-            for (const animation of previousGlowAnimations) {
-                cancelAnimationSafely(animation);
-            }
-            const glowAnimations = [];
-            const glowThemeColor = resolveFullscreenCoverBlurGlowColor(profile);
-            const glowAlphaMultiplier = resolveFullscreenCoverBlurGlowAlphaMultiplier(profile);
-            for (const sourceAnimation of emphasisAnimations) {
-                const cloned = cloneAnimationToElement(sourceAnimation, glowLayer, {
-                    transformKeyframes: (keyframes) => retintGlowKeyframes(
-                        keyframes,
-                        glowThemeColor,
-                        glowAlphaMultiplier,
-                    ),
-                });
-                if (cloned instanceof Animation) {
-                    glowAnimations.push(cloned);
-                }
-            }
-
-            splitWord.__fsGlowAnimations = glowAnimations;
-
-            // The source word belongs to the same highlight-only WebView. Keeping its
-            // original text-shadow would stack with the cloned glow and defeat the
-            // cover-blur-specific profile tint/alpha.
-            for (const animation of emphasisAnimations) {
-                cancelAnimationSafely(animation);
-            }
-            activeWordElement.style.setProperty("text-shadow", "none", "important");
         };
 
         const refreshFullscreenCoverBlurGenericGlowLayers = () => {
@@ -2950,14 +2854,28 @@
 
             for (const sourceAnimation of sourceAnimations) {
                 if (!(sourceAnimation instanceof Animation) || sourceAnimation === sourceFloatAnimation) continue;
-                if (isFullscreenCoverBlurGenericMode() && isEmphasisTextShadowAnimation(sourceAnimation)) {
-                    continue;
-                }
                 const sourceTarget = sourceAnimation?.effect?.target;
                 if (!(sourceTarget instanceof Node)) continue;
                 const packedTarget = fullscreenPackedAnimationTargetMap.get(sourceTarget);
                 if (!(packedTarget instanceof Element)) continue;
-                const clone = cloneAnimationToElement(sourceAnimation, packedTarget);
+                let clone = null;
+                if (isFullscreenCoverBlurGenericMode() && isEmphasisTextShadowAnimation(sourceAnimation)) {
+                    const profile = getFullscreenCoverBlurGenericProfile();
+                    const glowThemeColor = resolveFullscreenCoverBlurGlowColor(profile);
+                    const glowAlphaMultiplier = resolveFullscreenCoverBlurGlowAlphaMultiplier(profile);
+                    clone = cloneAnimationToElement(sourceAnimation, packedTarget, {
+                        transformKeyframes: (keyframes) => adaptCoverBlurEmphasisKeyframes(
+                            keyframes,
+                            {
+                                colorValue: glowThemeColor,
+                                alphaMultiplier: glowAlphaMultiplier,
+                                suppressGlow: fullscreenCoverBlurSuppressEmphasisGlow === true,
+                            },
+                        ),
+                    });
+                } else {
+                    clone = cloneAnimationToElement(sourceAnimation, packedTarget);
+                }
                 if (clone instanceof Animation) {
                     clonedAnimations.push(clone);
                 }
@@ -3166,7 +3084,7 @@
                         if (shouldRefreshFullscreenEmphasizedMaskAnimations(splitWord)) {
                             installFullscreenEmphasizedMaskAnimations(splitWord);
                         }
-                        if (!(splitWord?.__fsGlowLayer instanceof HTMLElement)) {
+                        if (isFullscreenCoverBlurGenericMode()) {
                             installFullscreenEmphasizedGlowLayer(splitWord);
                         }
                     }

@@ -373,3 +373,46 @@
   - 时间轴 / catch-up 路径未触碰。
 - 改动文件：
   - `myPlayer2/Resources/AMLL/index.html` — CSS 新增 body 通道选择器；bridge JS 在 `installFullscreenEmphasizedGlowLayer()` 中写入 attr，在 `releaseSplitWordAuxiliaryState()` 中清除 attr；`coverBlurGlowProfiles` 头部加入 decorative-only 注释。
+
+## 2026-05-16 Fullscreen / Cover Blur Emphasis 官方链路回归
+
+现象：
+
+- 普通 fullscreen 下，强调词的官方“放大 + 上浮 + 回落”观感明显弱于窗口歌词。
+- 大封面渐变模糊皮肤下，glow 只在少数字符上很淡地出现；部分长时值强调词反而不显示明显 glow。
+- 其他皮肤仍能看到 glow，说明 core 的 emphasis 本体仍在。
+
+调查结论：
+
+- fork core 与 `upstream/main` 的 `initEmphasizeAnimation()` 对应实现一致；本轮没有发现 fork core 破坏官方 emphasis。
+- 官方 emphasis 是一条完整动画链：
+  - `float-word`：普通词轻微上浮。
+  - `emphasize-word-*`：per-character `matrix3d scale + translate(x/y) + textShadow glow`，长时值通过 `du` 推导更大的 `amount/blur`；尾词还会放大 `amount/blur/du`。
+  - `emphasize-word-float`：per-character 正弦上浮/回落，叠加在前一条 animation 上。
+- fullscreen adapter 会 capture 原始 `splitWord.elementAnimations`，再 cancel 源 animation 并 clone 到 `.amll-fs-*` stack/char stack。普通 fullscreen 因为仍按 per-character target clone，大体保留了官方链路，但已经不是原始节点直跑 upstream。
+- generic cover blur 的上一轮实现把 `emphasize-word-*` 误判成“text-shadow-only animation”，在 `installFullscreenPackedElementAnimations()` 中整条跳过；这同时丢掉了官方 scale/translate。
+- 同时，`installFullscreenEmphasizedGlowLayer()` 把多条 per-character `emphasize-word-*` clone 到单个 `.amll-fs-cover-blur-glow-layer`。这些 animation 使用 `composite: replace`，多个字符的 transform/textShadow 在一个目标上互相覆盖，导致长词和长时值词的官方 glow 时间规律丢失。
+
+修复：
+
+- 只改 App `Resources/AMLL/index.html` adapter，不改 fork core，不改时间轴 / lead-in / catch-up / completed highlight。
+- generic cover blur 不再创建独立 word-level glow clone；`installFullscreenEmphasizedGlowLayer()` 只负责给强调词 stack 写 `data-amll-fs-emphasis-body="1"`，并清理旧 `.amll-fs-cover-blur-glow-layer`。
+- `installFullscreenPackedElementAnimations()` 在 generic cover blur 下不再跳过 `emphasize-word-*`，而是继续按官方 per-character target clone。
+- clone `emphasize-word-*` 时只适配 keyframes 里的 `textShadow`：
+  - highlight layer：按 profile retint/rescale，保留官方 transform、duration、delay、per-character stagger。
+  - base layer `coverBlurSuppressEmphasisGlow=true`：只把 `textShadow` 置为 `none`，仍保留官方 transform。
+- 之前的 body CSS 继续只负责 highlight-only WebView 中强调词主填充可见；它不再承担重造 emphasis 动画语义。
+
+验证：
+
+- `index.html` module script 通过 `node --input-type=module --check -` 语法检查。
+- 代码检查确认 core `packages/core/src/lyric-player/dom/lyric-line.ts` 与 upstream 的 emphasis 实现一致；本轮未修改 fork core。
+- Xcode Debug build 通过（`xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player -configuration Debug build`）。
+- 预期视觉：
+  - 普通 fullscreen：保留现有 per-character packed clone，不做 profile 调整。
+  - cover blur lighter/darker：官方 scale/translate/float 回到 per-character clone；glow 只做 cover blur 专属弱化/重染，不再由单独 glow clone 重造。
+  - window：未触碰。
+
+后续：
+
+- 其他皮肤下 glow 半径/强度略偏大属于单独审美微调；本轮不全局调 glow。
