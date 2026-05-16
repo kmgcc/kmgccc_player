@@ -311,7 +311,7 @@
             visibility: visible !important;
             opacity: 1 !important;
             transition:
-                opacity .50s ease-out,
+                opacity .50s cubic-bezier(0.22, 0.61, 0.36, 1),
                 color .14s ease-out !important;
             --bright-mask-alpha: 1 !important;
             --dark-mask-alpha: 0 !important;
@@ -619,7 +619,7 @@
             ) !important;
             mix-blend-mode: normal !important;
             transition:
-                opacity .50s ease-out,
+                opacity .50s cubic-bezier(0.22, 0.61, 0.36, 1),
                 color .14s ease-out !important;
             /* Keep per-word sweep animation, but make non-highlighted area fully transparent
                so the opaque base layer stays identical to inactive line color. */
@@ -633,7 +633,7 @@
             ) !important;
             mix-blend-mode: normal !important;
             transition:
-                opacity .50s ease-out,
+                opacity .50s cubic-bezier(0.22, 0.61, 0.36, 1),
                 color .14s ease-out !important;
             --bright-mask-alpha: 1 !important;
             --dark-mask-alpha: 0 !important;
