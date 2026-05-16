@@ -471,30 +471,9 @@ enum CoverGradientBlurRenderer {
         if let c = config.blurAlphaCoefficients {
             aCoeff = CIVector(x: c.0, y: c.1, z: c.2, w: c.3)
         } else {
-            // Adaptive coefficients: when radius grows beyond ~150, slightly lift the
-            // low-alpha region via the linear term so the early blur zone also responds.
-            // Right-edge behaviour is preserved by reducing the cubic term in tandem.
-            let baseLinear: CGFloat = 0.10
-            let baseQuad: CGFloat = 0.34
-            let baseCubic: CGFloat = 0.56
-            let totalRadius = max(0, config.blurRadius)
-            let refRadius: CGFloat = 150.0
-            let adaptLinear: CGFloat
-            let adaptCubic: CGFloat
-            if totalRadius <= refRadius {
-                adaptLinear = baseLinear
-                adaptCubic = baseCubic
-            } else {
-                let excess = (totalRadius - refRadius) / refRadius
-                // sqrt-compressed gain, capped at +20 % — low-alpha zone
-                // should only get a subtle radius linkage, not follow it
-                // aggressively.  Cubic term is restored to keep the
-                // mid / high-alpha zones carrying most of the change.
-                let gain = 1.0 + min(0.20, sqrt(excess) * 0.14)
-                adaptLinear = baseLinear * gain
-                adaptCubic = max(0.35, baseCubic - baseLinear * (gain - 1.0) * 0.2)
-            }
-            aCoeff = CIVector(x: 0, y: adaptLinear, z: baseQuad, w: adaptCubic)
+            // Fixed base coefficients. Zone-based blur control is handled
+            // by per-pass smoothstep masks, not by reshaping this curve.
+            aCoeff = CIVector(x: 0, y: 0.10, z: 0.34, w: 0.56)
         }
         
         polynomialFilter.setValue(linearMask, forKey: kCIInputImageKey)
@@ -507,27 +486,23 @@ enum CoverGradientBlurRenderer {
             return nil
         }
 
-        // Large blur radii visually saturate too early if we keep reusing the same mask.
-        // Split the blur into smaller passes and progressively delay later passes toward
-        // the far-right region, so the blur can keep increasing all the way to the edge.
-        //
-        // Pass 0 uses the full non-linear mask and a radius that grows modestly beyond
-        // the base cap (compressed gain), so the early / low-blur zone still responds
-        // when the user increases totalRadius past ~150.  Later passes use delayed
-        // masks with softer thresholds so they reach the mid-region sooner without
-        // flooding the left-side cover.
+        // Zone-based progressive blur:
+        //   Pass 0 — fixed cap ≤150, full mask — defines the base cover-edge
+        //            transition and protects the left / cover-right-edge region.
+        //   Pass 1+ — each pass uses a right-shifted smoothstep zone mask so
+        //            extra radius is concentrated in the mid-to-right and
+        //            far-right lyrics-background region.
         var currentImage = clampedImage
         let basePassRadius: CGFloat = 150.0
         let totalRadius = max(0, config.blurRadius)
 
-        // Build pass radii: pass 0 gets an adaptive cap; remaining radius is split
-        // into standard ≤150 passes.
+        // Build pass radii: pass 0 is ≤150; remaining radius is split into
+        // standard ≤150 passes.
         var passRadii: [CGFloat] = []
         var remaining = totalRadius
-        let p0Extra = min(60.0, max(0, totalRadius - basePassRadius) * 0.10)
-        let p0Cap = min(totalRadius, basePassRadius + p0Extra)
-        passRadii.append(p0Cap)
-        remaining -= p0Cap
+        let p0Radius = min(basePassRadius, remaining)
+        passRadii.append(p0Radius)
+        remaining -= p0Radius
         while remaining > 0 {
             let r = min(basePassRadius, remaining)
             passRadii.append(r)
@@ -541,15 +516,20 @@ enum CoverGradientBlurRenderer {
             if passIndex == 0 {
                 passMask = nonLinearMask
             } else {
-                let progress = CGFloat(passIndex) / CGFloat(passRadii.count)
-                // Pass 1 reaches mid-to-right; Pass 2+ tilt further right.
-                // Threshold start raised to 0.10 so early left-side blur is
-                // preserved; cap raised to 0.72 so later passes can still
-                // deliver full right-side blur without leaking left.
-                let delayedThreshold = min(0.72, 0.10 + progress * 0.38)
-                passMask = delayedMask(
+                // Progressive right-shifted smoothstep zones.
+                // Each subsequent pass starts contributing further to the right.
+                let zoneLow: CGFloat
+                let zoneHigh: CGFloat
+                switch passIndex {
+                case 1:  zoneLow = 0.10; zoneHigh = 0.32
+                case 2:  zoneLow = 0.25; zoneHigh = 0.50
+                case 3:  zoneLow = 0.42; zoneHigh = 0.68
+                default: zoneLow = 0.55; zoneHigh = 0.82
+                }
+                passMask = zonedMask(
                     from: nonLinearMask,
-                    startThreshold: delayedThreshold,
+                    low: zoneLow,
+                    high: zoneHigh,
                     extent: canvasRect
                 ) ?? nonLinearMask
             }
@@ -648,18 +628,22 @@ enum CoverGradientBlurRenderer {
         return cgImage
     }
 
-    private nonisolated static func delayedMask(
+    /// Smoothstep zone mask: remaps `sourceMask` alpha so the output is
+    /// 0 where α ≤ low, 1 where α ≥ high, and a smooth cubic ease-in-out
+    /// (smoothstep) in between.  This replaces the old hard scale+bias+clamp
+    /// with a soft gate that avoids visible blur-amount seams between passes.
+    private nonisolated static func zonedMask(
         from sourceMask: CIImage,
-        startThreshold: CGFloat,
+        low: CGFloat,
+        high: CGFloat,
         extent: CGRect
     ) -> CIImage? {
-        let threshold = max(0, min(0.95, startThreshold))
-        let scale = 1 / max(0.0001, 1 - threshold)
-        let bias = -threshold * scale
+        let range = max(0.001, high - low)
+        let scale = 1.0 / range
+        let bias = -low * scale
 
-        guard let matrixFilter = CIFilter(name: "CIColorMatrix") else {
-            return nil
-        }
+        // Step 1: remap to t = (α - low) / range
+        guard let matrixFilter = CIFilter(name: "CIColorMatrix") else { return nil }
         matrixFilter.setValue(sourceMask, forKey: kCIInputImageKey)
         matrixFilter.setValue(CIVector(x: scale, y: 0, z: 0, w: 0), forKey: "inputRVector")
         matrixFilter.setValue(CIVector(x: 0, y: scale, z: 0, w: 0), forKey: "inputGVector")
@@ -669,17 +653,25 @@ enum CoverGradientBlurRenderer {
             CIVector(x: bias, y: bias, z: bias, w: bias),
             forKey: "inputBiasVector"
         )
-        guard let remappedMask = matrixFilter.outputImage?.cropped(to: extent) else {
-            return nil
-        }
+        guard let remapped = matrixFilter.outputImage?.cropped(to: extent) else { return nil }
 
-        guard let clampFilter = CIFilter(name: "CIColorClamp") else {
-            return remappedMask
-        }
-        clampFilter.setValue(remappedMask, forKey: kCIInputImageKey)
+        // Step 2: clamp t to [0, 1]
+        guard let clampFilter = CIFilter(name: "CIColorClamp") else { return remapped }
+        clampFilter.setValue(remapped, forKey: kCIInputImageKey)
         clampFilter.setValue(CIVector(x: 0, y: 0, z: 0, w: 0), forKey: "inputMinComponents")
         clampFilter.setValue(CIVector(x: 1, y: 1, z: 1, w: 1), forKey: "inputMaxComponents")
-        return clampFilter.outputImage?.cropped(to: extent) ?? remappedMask
+        guard let t = clampFilter.outputImage?.cropped(to: extent) else { return remapped }
+
+        // Step 3: smoothstep — cubic 3t² − 2t³ → (0, 0, 3, −2)
+        guard let smoothFilter = CIFilter(name: "CIColorPolynomial") else { return t }
+        smoothFilter.setValue(t, forKey: kCIInputImageKey)
+        let sCoeff = CIVector(x: 0, y: 0, z: 3, w: -2)
+        smoothFilter.setValue(sCoeff, forKey: "inputRedCoefficients")
+        smoothFilter.setValue(sCoeff, forKey: "inputGreenCoefficients")
+        smoothFilter.setValue(sCoeff, forKey: "inputBlueCoefficients")
+        smoothFilter.setValue(sCoeff, forKey: "inputAlphaCoefficients")
+
+        return smoothFilter.outputImage?.cropped(to: extent) ?? t
     }
 
     // MARK: - Render Base Image

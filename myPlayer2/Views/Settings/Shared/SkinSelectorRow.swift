@@ -13,6 +13,8 @@ func skinPreview(for id: String, isSelected: Bool, accentColor: Color) -> some V
     switch id {
     case "coverLed":
         ClassicSkinPreview(isSelected: isSelected, accentColor: accentColor)
+    case "appleStyle":
+        AppleStyleSkinPreview(isSelected: isSelected, accentColor: accentColor)
     case "rotatingCover":
         RotatingSkinPreview(isSelected: isSelected, accentColor: accentColor)
     case "kmgccc.cassette":

@@ -60,6 +60,8 @@
 "skin.classic_led.detail" = "封面";
 "skin.classic_led.show_led" = "显示 LED 电平表";
 "skin.classic_led.show_spectrum" = "显示频谱";
+"skin.apple_style.name" = "Apple 风格";
+"skin.apple_style.detail" = "AMLL Mesh Gradient 流体背景 + 经典封面";
 "skin.rotating_cover.name" = "旋转";
 "skin.rotating_cover.detail" = "黑胶风格旋转";
 "skin.kmgccc_cassette.name" = "kmgccc 磁带";

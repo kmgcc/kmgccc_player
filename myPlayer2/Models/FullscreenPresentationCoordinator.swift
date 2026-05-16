@@ -32,6 +32,7 @@ public enum FullscreenVisualizerMode: String, CaseIterable, Identifiable, Codabl
 /// Fullscreen skin identifier
 public enum FullscreenSkinID: String, CaseIterable, Identifiable {
     case coverLed = "coverLed"
+    case appleStyle = "appleStyle"
     case kmgcccCassette = "kmgccc.cassette"
     case rotatingCover = "rotatingCover"
     case coverGradientBlur = "fullscreen.coverGradientBlur"
@@ -40,7 +41,7 @@ public enum FullscreenSkinID: String, CaseIterable, Identifiable {
 
     public var supportsEmbeddedVisualizer: Bool {
         switch self {
-        case .coverLed, .rotatingCover: return true
+        case .coverLed, .appleStyle, .rotatingCover: return true
         case .kmgcccCassette: return false
         case .coverGradientBlur: return false
         }
@@ -48,7 +49,7 @@ public enum FullscreenSkinID: String, CaseIterable, Identifiable {
 
     public var supportsMiniPlayerSpectrum: Bool {
         switch self {
-        case .coverLed, .rotatingCover, .coverGradientBlur: return true
+        case .coverLed, .appleStyle, .rotatingCover, .coverGradientBlur: return true
         case .kmgcccCassette: return false
         }
     }
@@ -59,6 +60,7 @@ public enum FullscreenSkinID: String, CaseIterable, Identifiable {
     public var hasLedMeter: Bool {
         switch self {
         case .coverLed: return true
+        case .appleStyle: return true
         case .kmgcccCassette: return true
         case .rotatingCover: return true
         case .coverGradientBlur: return false
@@ -145,6 +147,7 @@ public final class FullscreenPresentationCoordinator {
         static let skinID = "fullscreenSkin"
         static let miniPlayerSpectrumEnabled = "miniPlayerSpectrumEnabled"
         static let classicLEDVisualizer = "skin.classicLED.fullscreen.visualizerMode"
+        static let appleStyleVisualizer = "skin.appleStyle.fullscreen.visualizerMode"
         static let kmgcccCassetteVisualizer = "skin.kmgcccCassette.fullscreen.visualizerMode"
         static let rotatingCoverVisualizer = "skin.rotatingCover.fullscreen.visualizerMode"
         static let userExplicitlyDisabledMiniPlayerSpectrum = "userExplicitlyDisabledMiniPlayerSpectrum_v1"
@@ -232,6 +235,9 @@ public final class FullscreenPresentationCoordinator {
         case FullscreenSkinID.coverLed.rawValue:
             defaults.set("led", forKey: Keys.classicLEDVisualizer)
             setVisualizerMode(.skinVisualizer)
+        case FullscreenSkinID.appleStyle.rawValue:
+            defaults.set("led", forKey: Keys.appleStyleVisualizer)
+            setVisualizerMode(.skinVisualizer)
         case FullscreenSkinID.rotatingCover.rawValue:
             defaults.set("led", forKey: Keys.rotatingCoverVisualizer)
             defaults.set(true, forKey: "skin.rotatingCover.cdMode")
@@ -270,6 +276,8 @@ public final class FullscreenPresentationCoordinator {
                 switch skin {
                 case .coverLed:
                     UserDefaults.standard.set("off", forKey: Keys.classicLEDVisualizer)
+                case .appleStyle:
+                    UserDefaults.standard.set("off", forKey: Keys.appleStyleVisualizer)
                 case .rotatingCover:
                     UserDefaults.standard.set("off", forKey: Keys.rotatingCoverVisualizer)
                 case .kmgcccCassette:
@@ -329,9 +337,13 @@ public final class FullscreenPresentationCoordinator {
             ? UserDefaults.standard.bool(forKey: Keys.miniPlayerSpectrumEnabled)
             : true
         let classicMode = UserDefaults.standard.string(forKey: Keys.classicLEDVisualizer) ?? "off"
+        let appleStyleMode = UserDefaults.standard.string(forKey: Keys.appleStyleVisualizer) ?? "off"
         let cassetteMode = UserDefaults.standard.string(forKey: Keys.kmgcccCassetteVisualizer) ?? "off"
         let rotatingMode = UserDefaults.standard.string(forKey: Keys.rotatingCoverVisualizer) ?? "off"
-        let skinVisualizerEnabled = classicMode != "off" || cassetteMode != "off" || rotatingMode != "off"
+        let skinVisualizerEnabled = classicMode != "off"
+            || appleStyleMode != "off"
+            || cassetteMode != "off"
+            || rotatingMode != "off"
 
         return FullscreenPresentationConfiguration(
             fromLegacy: skinID,
@@ -365,7 +377,7 @@ public final class FullscreenPresentationCoordinator {
                     }
                 }
 
-            case .coverLed, .kmgcccCassette, .coverGradientBlur:
+            case .coverLed, .appleStyle, .kmgcccCassette, .coverGradientBlur:
                 break
             }
         }

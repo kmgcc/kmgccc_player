@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        html,
+        body,
+        #root {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            overflow: hidden;
+            background: transparent;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+    <script type="module">
+        import { BackgroundRender, MeshGradientRenderer } from "./amll-background.js";
+
+        const root = document.getElementById("root");
+        let background = null;
+        let currentAlbum = "";
+        let currentConfig = {
+            dynamic: true,
+            fps: 30,
+            flowSpeed: 0.32,
+            renderScale: 0.6,
+        };
+
+        const ensureBackground = () => {
+            if (background) return background;
+            background = BackgroundRender.new(MeshGradientRenderer);
+            const canvas = background.getElement();
+            canvas.style.width = "100%";
+            canvas.style.height = "100%";
+            root.appendChild(canvas);
+            background.setHasLyric(true);
+            applyConfig(currentConfig);
+            return background;
+        };
+
+        const applyConfig = (config) => {
+            currentConfig = { ...currentConfig, ...config };
+            const bg = ensureBackground();
+            const renderScale = Number.isFinite(currentConfig.renderScale) ? currentConfig.renderScale : 0.6;
+            const fps = Number.isFinite(currentConfig.fps) ? currentConfig.fps : 30;
+            const flowSpeed = Number.isFinite(currentConfig.flowSpeed) ? currentConfig.flowSpeed : 0.32;
+            const dynamic = currentConfig.dynamic !== false;
+
+            bg.setRenderScale(Math.max(0.1, Math.min(1, renderScale)));
+            bg.setFlowSpeed(Math.max(0, flowSpeed));
+            bg.setFPS(dynamic ? Math.max(1, Math.min(120, fps)) : 0);
+            bg.setStaticMode(!dynamic);
+            if (dynamic) {
+                bg.resume();
+            } else {
+                bg.setLowFreqVolume(0);
+                bg.pause();
+            }
+        };
+
+        window.AMLLBackground = {
+            ready: true,
+            setConfig(config) {
+                applyConfig(config || {});
+            },
+            async setAlbum(albumDataURL) {
+                const bg = ensureBackground();
+                const next = typeof albumDataURL === "string" ? albumDataURL : "";
+                if (next === currentAlbum) return;
+                currentAlbum = next;
+                if (!next) return;
+                await bg.setAlbum(next, false);
+                applyConfig(currentConfig);
+            },
+            setLowFreqVolume(volume) {
+                const bg = ensureBackground();
+                if (currentConfig.dynamic === false) {
+                    bg.setLowFreqVolume(0);
+                    return;
+                }
+                const value = Number.isFinite(volume) ? volume : 0;
+                bg.setLowFreqVolume(Math.max(0, Math.min(1, value)));
+            },
+            setPlaying(isPlaying) {
+                const bg = ensureBackground();
+                if (currentConfig.dynamic === false || isPlaying === false) {
+                    bg.pause();
+                } else {
+                    bg.resume();
+                }
+            },
+            dispose() {
+                background?.dispose();
+                background = null;
+                currentAlbum = "";
+            },
+        };
+
+        window.webkit?.messageHandlers?.backgroundReady?.postMessage({ type: "ready" });
+        ensureBackground();
+    </script>
+</body>
+</html>

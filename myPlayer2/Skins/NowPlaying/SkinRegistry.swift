@@ -19,6 +19,7 @@ enum SkinRegistry {
 
     static let skins: [any NowPlayingSkin] = [
         ClassicLEDSkin(),
+        AppleStyleSkin(),
         RotatingCoverSkin(),
         KmgcccCassetteSkin(),
         FullscreenCoverGradientBlurSkin(),

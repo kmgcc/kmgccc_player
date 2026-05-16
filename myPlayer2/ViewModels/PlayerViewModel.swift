@@ -230,6 +230,8 @@ final class PlayerViewModel {
         switch settings.selectedNowPlayingSkinID {
         case ClassicLEDSkin.id:
             return UserDefaults.standard.string(forKey: "skin.classicLED.visualizerMode") == "led"
+        case AppleStyleSkin.skinID:
+            return UserDefaults.standard.string(forKey: "skin.appleStyle.visualizerMode") == "led"
         case "rotatingCover":
             return UserDefaults.standard.string(forKey: "skin.rotatingCover.visualizerMode") == "led"
         case "kmgccc.cassette":

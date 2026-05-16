@@ -40,6 +40,18 @@ private struct ClassicLEDArtwork: View {
     @AppStorage("skin.classicLED.visualizerMode") private var normalVisualizerMode: String = "off"
     @AppStorage("skin.classicLED.fullscreen.visualizerMode") private var fullscreenVisualizerMode: String = "led"
 
+    var body: some View {
+        let visualizerMode = context.usesFullscreenPlayerLayout
+            ? fullscreenVisualizerMode
+            : normalVisualizerMode
+        ClassicCoverArtworkView(context: context, visualizerMode: visualizerMode)
+    }
+}
+
+struct ClassicCoverArtworkView: View {
+    let context: SkinContext
+    let visualizerMode: String
+
     // MARK: - Fullscreen Fine-tuning Constants
     /// Slight boost to artwork size in fullscreen (1.0 = no change)
     private let fullscreenArtworkBoost: CGFloat = 1.22
@@ -69,7 +81,6 @@ private struct ClassicLEDArtwork: View {
             ? (context.fullscreenHostMode == .embeddedWindow ? 12 : 32)
             : 18
 
-        let visualizerMode = usesFullscreenLayout ? fullscreenVisualizerMode : normalVisualizerMode
         let dotSize: CGFloat = usesFullscreenLayout ? 14 : 12
         let spacing: CGFloat = usesFullscreenLayout ? 9 : 7
 

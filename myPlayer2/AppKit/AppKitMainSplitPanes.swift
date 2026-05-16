@@ -314,6 +314,7 @@ struct AppKitMainContentPaneRoot: View {
     ) -> Bool {
         uiState.contentMode == .nowPlaying
             && settings.nowPlayingArtBackgroundEnabled
+            && settings.selectedNowPlayingSkinID != AppleStyleSkin.skinID
             && playbackCoordinator.presentation.hasTrack
             && !fullscreenWindowManager.usesFullscreenPlayerUI
     }
@@ -514,6 +515,7 @@ struct AppKitMainWindowArtBackgroundLayer: View {
     private func shouldShowArtBackground(playbackCoordinator: PlaybackCoordinator) -> Bool {
         appSession.uiState.contentMode == .nowPlaying
             && settings.nowPlayingArtBackgroundEnabled
+            && settings.selectedNowPlayingSkinID != AppleStyleSkin.skinID
             && playbackCoordinator.presentation.hasTrack
             && !fullscreenWindowManager.usesFullscreenPlayerUI
     }

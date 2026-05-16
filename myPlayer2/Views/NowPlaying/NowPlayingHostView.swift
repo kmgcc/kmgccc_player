@@ -39,7 +39,7 @@ struct NowPlayingHostView: View {
             let context = makeContext(windowSize: proxy.size, contentBounds: contentBounds)
 
             ZStack(alignment: .topLeading) {
-                if settings.nowPlayingArtBackgroundEnabled {
+                if settings.nowPlayingArtBackgroundEnabled && selectedSkinID != AppleStyleSkin.skinID {
                     Color.clear
                 } else {
                     selectedSkin.makeBackground(context: context)
@@ -203,6 +203,8 @@ struct NowPlayingHostView: View {
         switch skinID {
         case "coverLed":
             return UserDefaults.standard.string(forKey: "skin.classicLED.visualizerMode") == "led"
+        case AppleStyleSkin.skinID:
+            return UserDefaults.standard.string(forKey: "skin.appleStyle.visualizerMode") == "led"
         case "rotatingCover":
             return UserDefaults.standard.string(forKey: "skin.rotatingCover.visualizerMode") == "led"
         case "kmgccc.cassette":
