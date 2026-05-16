@@ -499,3 +499,22 @@
 - `git diff --check` 通过。
 - Xcode Debug build 通过（`xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player -configuration Debug build`）。
 - 视觉仍需在 App 中确认 lighter 不过曝、darker 可见但不脏，普通 fullscreen / cover blur 都有上浮 + 放大 + glow。
+
+## 2026-05-16 Fullscreen Exit Highlight Fade 曲线微调
+
+目标：
+
+- 仅让 fullscreen / cover blur smooth overlay 的退出高亮 opacity fade 在开头稍早下降一点，后段自然收住。
+- 不改 fork core，不改 lead-in / nearSwitch / exit catch-up / completed highlight / active selector / overlap 逻辑。
+
+修复：
+
+- App `Resources/AMLL/index.html` 中 `.amll-fs-word-active`、`.amll-fs-char-active` 与 legacy cover blur `.amll-cb-word-active` / `.amll-cb-char-active` 的 opacity transition 保持 `0.50s` 时长，只把 timing-function 从 `ease-out` 调整为 `cubic-bezier(0.22, 0.61, 0.36, 1)`。
+- 非 active 行 opacity 目标值、`data-fs-completed-highlight` 保持规则、`data-amll-exit-catch-up` 可见性适配均未改变。
+
+验证：
+
+- `index.html` module script 通过 `node --input-type=module --check -` 语法检查。
+- `git diff --check` 通过。
+- Xcode Debug build 通过（`xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player -configuration Debug build`）。
+- 视觉仍需在 App 中确认提前切行 catch-up 的高亮淡出更早一点但不突兀，普通并行显示组完成行不提前熄灭。
