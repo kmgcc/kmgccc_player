@@ -569,3 +569,45 @@
 - `index.html` module script 通过 `node --input-type=module --check -` 语法检查。
 - Xcode Debug build 通过（`xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player -configuration Debug build`）。
 - 视觉仍需在 App 中覆盖：窗口 smooth/discrete、普通 fullscreen、cover blur、提前切行 catch-up、并行 completed highlight、seek/pause/切歌和设置项运行时切换。
+
+## 2026-05-16 离散高亮 envelope 与退场修复
+
+目标：
+
+- 保持已恢复的 `wordHighlightMode = discrete` 产品能力，同时补齐旧版成熟行为里的并行 fade envelope。
+- 修复 discrete 下 fullscreen / cover blur 退场延迟、缺少 opacity 渐隐，以及 window 行退场后 inline opacity 残留。
+- 不恢复旧 custom 0.2.1 的 `data-amll-exiting-highlight` / `data-amll-exit-highlight-word`、exiting suppress、hide/show 不 dispose hack。
+
+根因：
+
+- A：上一版 discrete WebAnimation 使用“整行扩展 duration + keyframe offset”表达每个词的 fade 片段。视觉上接近旧版，但 animation 自身不是独立 envelope，`endTime` 会被行级 duration 语义放大；exit catch-up 读取 `maskAnimations` 时无法准确知道每个词自己的 `delay + clamp duration`。
+- B：fullscreen discrete adapter 仍保留了历史兼容分叉：`.amll-fs-*` / `.amll-cb-*` active 层在 discrete 下被 `transition: none`，非 active 行还会被 visibility hidden / lock 隐藏；同时 catch-up 非 active 选择器没有像 smooth 一样把 opacity 置 0，所以高亮会等 catch-up 结束后再突然消失。
+- C：window discrete 的 opacity 是直接写在 word element 上的 WebAnimation/inline opacity。`disable()` 后如果没有 catch-up，只暂停动画，没有把当前 opacity 淡回 inactive；如果有 catch-up，动画完成后也会停在最终高亮 opacity。
+
+修复：
+
+- fork core `LyricLineEl.generateWebAnimationBasedDiscreteWordHighlight()` 改为每个 word/char 自己的 WebAnimation：
+  - `delay = highlightStartTime - lineStartTime`；
+  - `duration = clamp(wordDuration, 300ms, 2000ms)`；
+  - keyframes 只表达 inactive -> active 的 18 帧 log opacity fade。
+- `setMaskAnimationState()` 在 discrete 下按 animation 自己的 `endTime` 判断是否继续播放，不再被 line `totalDuration` 提前截断。
+- `disable()` 与 catch-up 完成后，如果当前是 discrete 且行已经非 active，会把 word 当前 computed opacity 作为起点，取消原 mask animation，并用 `300ms cubic-bezier(0.22, 0.61, 0.36, 1)` 淡回 inactive opacity；seek 路径即时复位，避免跳转残留。
+- App fullscreen / cover blur discrete overlay 不再启用专属 hidden lock：
+  - discrete active 层恢复 smooth 同款 `opacity .50s cubic-bezier(0.22, 0.61, 0.36, 1)` transition；
+  - non-active / non-completed / non-catch-up 行保持 visibility visible 并把 opacity 置 0，让 transition 生效；
+  - discrete 的 `data-amll-exit-catch-up="1":not(active)` 选择器也和 smooth 一样置 opacity 0，catch-up 只保留 active color / visibility，opacity fade 仍绑定真实行退出。
+
+边界：
+
+- smooth mask image 路径未改。
+- lead-in / nearSwitch / exit catch-up 判定阈值 / completed highlight / cover blur emphasis 官方链路 adapter 未改。
+- 仍没有恢复旧 discrete exit data、旧 suppress 或 hide/show lifecycle hack。
+
+验证：
+
+- fork core `pnpm run typecheck` 通过。
+- `scripts/sync-amll-from-fork.sh` 构建并同步 `amll-core.js` / `amll-lyric.js` / `style.css` 通过。
+- `index.html` module script 通过 `node --check` 语法检查。
+- `git diff --check` 通过。
+- Xcode Debug build 通过（`xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player -configuration Debug build`）。
+- 视觉仍需在 App 中确认短时值中文连续字/英文短词可并行 fade，window discrete 退场不残留，普通 fullscreen 与 cover blur discrete 退场 opacity fade 与行退出同步。

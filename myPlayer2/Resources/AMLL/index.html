@@ -318,13 +318,14 @@
         }
         .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete .amll-cb-word-active,
         .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete .amll-cb-char-active {
-            transition: none !important;
+            transition:
+                opacity .50s cubic-bezier(0.22, 0.61, 0.36, 1),
+                color .14s ease-out !important;
         }
         .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="lyricLine"]:not([class*="active"]):not([data-fs-completed-highlight="1"]):not([data-amll-exit-catch-up="1"]) .amll-cb-word-active,
         .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="lyricLine"]:not([class*="active"]):not([data-fs-completed-highlight="1"]):not([data-amll-exit-catch-up="1"]) .amll-cb-char-active {
             opacity: 0 !important;
-            visibility: hidden !important;
-            transition: none !important;
+            visibility: visible !important;
         }
         .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricLine"]:not([class*="active"]):not([data-fs-completed-highlight="1"]):not([data-amll-exit-catch-up="1"]) .amll-cb-word-active,
         .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricLine"]:not([class*="active"]):not([data-fs-completed-highlight="1"]):not([data-amll-exit-catch-up="1"]) .amll-cb-char-active {
@@ -359,6 +360,10 @@
                 var(--amll-active, var(--amll-lp-color, white))
             ) !important;
             visibility: visible !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="lyricLine"][data-amll-exit-catch-up="1"]:not([class*="active"]) .amll-cb-word-active,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="lyricLine"][data-amll-exit-catch-up="1"]:not([class*="active"]) .amll-cb-char-active {
+            opacity: 0 !important;
         }
         .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="lyricLine"][class*="active"] .amll-cb-word-active,
         .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="lyricLine"][class*="active"] .amll-cb-char-active {
@@ -633,19 +638,19 @@
         }
         .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete .amll-fs-word-active,
         .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete .amll-fs-char-active {
-            transition: none !important;
+            transition:
+                opacity .50s cubic-bezier(0.22, 0.61, 0.36, 1),
+                color .14s ease-out !important;
         }
         .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricLine"]:not([class*="active"]):not([data-fs-completed-highlight="1"]):not([data-amll-exit-catch-up="1"]) .amll-fs-word-active,
         .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricLine"]:not([class*="active"]):not([data-fs-completed-highlight="1"]):not([data-amll-exit-catch-up="1"]) .amll-fs-char-active {
             opacity: 0 !important;
-            visibility: hidden !important;
-            transition: none !important;
+            visibility: visible !important;
         }
         .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricLine"][data-amll-fs-discrete-inactive-locked="1"] .amll-fs-word-active,
         .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricLine"][data-amll-fs-discrete-inactive-locked="1"] .amll-fs-char-active {
             opacity: 0 !important;
-            visibility: hidden !important;
-            transition: none !important;
+            visibility: visible !important;
         }
         .amll-lyric-player.amll-surface-fullscreen [class*="lyricLine"]:not([class*="active"]):not([data-fs-completed-highlight="1"]):not([data-amll-exit-catch-up="1"]):not([data-amll-exiting-highlight="1"]) .amll-fs-word-active {
             color: var(
@@ -695,6 +700,10 @@
                 var(--amll-active, var(--amll-lp-color, white))
             ) !important;
             visibility: visible !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricLine"][data-amll-exit-catch-up="1"]:not([class*="active"]) .amll-fs-word-active,
+        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricLine"][data-amll-exit-catch-up="1"]:not([class*="active"]) .amll-fs-char-active {
+            opacity: 0 !important;
         }
         .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="lyricLine"][data-fs-highlight-state="fading"] .amll-fs-word-active,
         .amll-lyric-player.amll-surface-fullscreen:not(.amll-word-highlight-discrete) [class*="lyricLine"][data-fs-highlight-state="fading"] .amll-fs-char-active {
@@ -2940,12 +2949,6 @@
             }
             return false;
         };
-        const isFullscreenLinePastObject = (lineObj) => {
-            const line = typeof lineObj?.getLine === "function" ? lineObj.getLine() : lineObj?.lyricLine;
-            const endTime = Number(line?.endTime);
-            if (!Number.isFinite(endTime)) return false;
-            return endTime <= lastKnownTimeMs;
-        };
         const getFullscreenActiveHighlightElements = (lineObj) => {
             const elements = [];
             const splitWords = Array.isArray(lineObj?.splittedWords) ? lineObj.splittedWords : [];
@@ -2984,36 +2987,12 @@
             element.style.removeProperty("transition");
             delete element.dataset.amllFsDiscreteLayerLocked;
         };
-        const lockFullscreenDiscreteLayerHidden = (element) => {
-            if (!(element instanceof HTMLElement)) return;
-            element.dataset.amllFsDiscreteLayerLocked = "1";
-            element.style.setProperty("visibility", "hidden", "important");
-            element.style.setProperty("transition", "none", "important");
-        };
         const resetFullscreenDiscreteLayerLocks = (lineObj) => {
             const lineElement = lineObj?.element;
             if (lineElement instanceof HTMLElement) {
                 delete lineElement.dataset.amllFsDiscreteInactiveLocked;
                 delete lineElement.dataset.amllFsDiscreteExitLocked;
             }
-            for (const element of getFullscreenActiveHighlightElements(lineObj)) {
-                clearFullscreenDiscreteLayerLock(element);
-            }
-        };
-        const lockFullscreenDiscreteInactiveLine = (lineObj) => {
-            const lineElement = lineObj?.element;
-            if (!(lineElement instanceof HTMLElement)) return;
-            lineElement.dataset.amllFsDiscreteInactiveLocked = "1";
-            delete lineElement.dataset.amllFsDiscreteExitLocked;
-            for (const element of getFullscreenActiveHighlightElements(lineObj)) {
-                lockFullscreenDiscreteLayerHidden(element);
-            }
-        };
-        const lockFullscreenDiscreteExitingLine = (lineObj) => {
-            const lineElement = lineObj?.element;
-            if (!(lineElement instanceof HTMLElement)) return;
-            delete lineElement.dataset.amllFsDiscreteInactiveLocked;
-            lineElement.dataset.amllFsDiscreteExitLocked = "1";
             for (const element of getFullscreenActiveHighlightElements(lineObj)) {
                 clearFullscreenDiscreteLayerLock(element);
             }
@@ -3034,25 +3013,6 @@
                     child.style.setProperty("mix-blend-mode", "normal", "important");
                 }
                 if (wordHighlightMode === "discrete") {
-                    const isActiveLine = isFullscreenLineActiveObject(lineObj, lineIdx);
-                    const isExitingLine = lineElement.dataset.amllExitCatchUp === "1";
-                    const isCompletedLine = lineElement.dataset.fsCompletedHighlight === "1";
-                    const isPastLine = isFullscreenLinePastObject(lineObj);
-                    if (!isActiveLine && isCompletedLine) {
-                        resetFullscreenDiscreteLayerLocks(lineObj);
-                        continue;
-                    }
-                    if (!isActiveLine && !isExitingLine) {
-                        if (isPastLine) {
-                            lockFullscreenDiscreteInactiveLine(lineObj);
-                            continue;
-                        }
-                        resetFullscreenDiscreteLayerLocks(lineObj);
-                    }
-                    if (!isActiveLine && isExitingLine) {
-                        lockFullscreenDiscreteExitingLine(lineObj);
-                        continue;
-                    }
                     resetFullscreenDiscreteLayerLocks(lineObj);
                 } else {
                     resetFullscreenDiscreteLayerLocks(lineObj);

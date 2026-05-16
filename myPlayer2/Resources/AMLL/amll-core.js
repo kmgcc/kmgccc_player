@@ -2513,7 +2513,10 @@ var LyricLineEl = class extends LyricLineBase {
 			animation.play();
 		}
 		Promise.allSettled(catchUpAnimations.map((animation) => animation.finished)).then(() => {
-			if (this.exitCatchUpGeneration === generation) this.clearExitHighlightCatchUpState();
+			if (this.exitCatchUpGeneration === generation) {
+				this.clearExitHighlightCatchUpState();
+				this.fadeDiscreteWordOpacityToInactive(true);
+			}
 		});
 		return true;
 	}
@@ -2530,6 +2533,7 @@ var LyricLineEl = class extends LyricLineBase {
 			}
 			for (const a of word.maskAnimations) if (!keepHighlightDuringExit) a.pause();
 		}
+		if (!keepHighlightDuringExit) this.fadeDiscreteWordOpacityToInactive(!isSeek);
 		main.classList.remove(lyric_player_module_default.active);
 	}
 	lastWord;
@@ -2563,10 +2567,12 @@ var LyricLineEl = class extends LyricLineBase {
 	}
 	setMaskAnimationState(maskAnimationTime = 0) {
 		const t = maskAnimationTime - this.lyricLine.startTime;
+		const isDiscrete = this.lyricPlayer.getWordHighlightMode() === "discrete";
 		for (const word of this.splittedWords) for (const a of word.maskAnimations) {
-			a.currentTime = clamp(t, 0, this.lyricPlayer.getWordHighlightMode() === "discrete" ? Math.max(this.totalDuration, this.getAnimationEndTime(a)) : this.totalDuration);
+			const animationEndTime = this.getAnimationEndTime(a);
+			a.currentTime = clamp(t, 0, isDiscrete ? Math.max(this.totalDuration, animationEndTime) : this.totalDuration);
 			a.playbackRate = 1;
-			if (t >= 0 && t < this.totalDuration) a.play();
+			if (t >= 0 && t < (isDiscrete ? animationEndTime : this.totalDuration)) a.play();
 			else a.pause();
 		}
 	}
@@ -2850,32 +2856,49 @@ var LyricLineEl = class extends LyricLineBase {
 		if (wordDuration <= 0) return DISCRETE_MIN_FADE_DURATION_MS;
 		return clamp(wordDuration, DISCRETE_MIN_FADE_DURATION_MS, DISCRETE_MAX_FADE_DURATION_MS);
 	}
-	createDiscreteOpacityFrames(startOffset, endOffset, inactiveOpacity) {
+	createDiscreteOpacityFrames(inactiveOpacity) {
 		const frames = [{
 			offset: 0,
 			opacity: inactiveOpacity
 		}];
-		if (startOffset > 0) frames.push({
-			offset: startOffset,
-			opacity: inactiveOpacity
-		});
-		if (endOffset > startOffset) for (let i = 1; i <= DISCRETE_OPACITY_FRAME_QUANTITY; i++) {
+		for (let i = 1; i <= DISCRETE_OPACITY_FRAME_QUANTITY; i++) {
 			const x = i / DISCRETE_OPACITY_FRAME_QUANTITY;
 			const eased = Math.log1p(x * DISCRETE_LOG_EASING_STRENGTH) / Math.log1p(DISCRETE_LOG_EASING_STRENGTH);
 			frames.push({
-				offset: startOffset + (endOffset - startOffset) * x,
+				offset: x,
 				opacity: inactiveOpacity + (1 - inactiveOpacity) * eased
 			});
 		}
-		else if (startOffset < 1) frames.push({
-			offset: Math.min(1, startOffset + 1e-4),
-			opacity: 1
-		});
-		if (frames[frames.length - 1].offset < 1) frames.push({
-			offset: 1,
-			opacity: 1
-		});
 		return frames;
+	}
+	getCurrentWordOpacity(wordEl) {
+		const opacity = Number.parseFloat(getComputedStyle(wordEl).opacity);
+		return Number.isFinite(opacity) ? clamp(opacity, 0, 1) : 1;
+	}
+	fadeDiscreteWordOpacityToInactive(animated = true) {
+		if (this.lyricPlayer.getWordHighlightMode() !== "discrete") return;
+		const inactiveOpacity = this.getDiscreteInactiveOpacity();
+		const duration = animated ? 300 : 0;
+		for (const word of this.splittedWords) {
+			const wordEl = word.mainElement;
+			if (!(wordEl instanceof HTMLElement)) continue;
+			const currentOpacity = this.getCurrentWordOpacity(wordEl);
+			for (const animation of word.maskAnimations) animation.cancel();
+			wordEl.style.opacity = `${currentOpacity}`;
+			wordEl.style.removeProperty("transition");
+			if (duration <= 0) {
+				wordEl.style.opacity = `${inactiveOpacity}`;
+				continue;
+			}
+			requestAnimationFrame(() => {
+				if (this.isEnabled || this.lyricPlayer.getWordHighlightMode() !== "discrete") return;
+				wordEl.style.transition = `opacity ${duration}ms cubic-bezier(0.22, 0.61, 0.36, 1)`;
+				wordEl.style.opacity = `${inactiveOpacity}`;
+				window.setTimeout(() => {
+					if (!this.isEnabled) wordEl.style.removeProperty("transition");
+				}, duration + 34);
+			});
+		}
 	}
 	clearWordMaskStyles(wordEl) {
 		wordEl.style.removeProperty("mask-image");
@@ -3089,27 +3112,26 @@ var LyricLineEl = class extends LyricLineBase {
 		});
 	}
 	generateWebAnimationBasedDiscreteWordHighlight() {
-		const totalFadeDuration = Math.max(0, ...this.splittedWords.map((w) => this.getDiscreteHighlightStartTime(w) + this.getDiscreteFadeDuration(w)), this.lyricLine.endTime) - this.lyricLine.startTime;
-		const duration = Math.max(1, totalFadeDuration);
 		const inactiveOpacity = this.getDiscreteInactiveOpacity();
 		this.splittedWords.forEach((word, i) => {
 			const wordEl = word.mainElement;
 			if (!wordEl) return;
 			for (const a of word.maskAnimations) a.cancel();
 			this.clearWordMaskStyles(wordEl);
-			const startOffset = clamp01((this.getDiscreteHighlightStartTime(word) - this.lyricLine.startTime) / duration);
-			const fadeEndOffset = Math.max(startOffset, clamp01((this.getDiscreteHighlightStartTime(word) + this.getDiscreteFadeDuration(word) - this.lyricLine.startTime) / duration));
-			const frames = this.createDiscreteOpacityFrames(startOffset, fadeEndOffset, inactiveOpacity);
+			const delay = Math.max(0, this.getDiscreteHighlightStartTime(word) - this.lyricLine.startTime);
+			const duration = Math.max(1, this.getDiscreteFadeDuration(word));
+			const frames = this.createDiscreteOpacityFrames(inactiveOpacity);
 			try {
 				const ani = wordEl.animate(frames, {
 					duration,
+					delay,
 					id: `discrete-word-${word.word}-${i}`,
 					fill: "both"
 				});
 				ani.pause();
 				word.maskAnimations = [ani];
 			} catch (err) {
-				console.warn("应用离散逐词高亮动画发生错误", frames, duration, err);
+				console.warn("应用离散逐词高亮动画发生错误", frames, duration, delay, err);
 			}
 		});
 	}
