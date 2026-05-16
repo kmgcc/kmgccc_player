@@ -247,7 +247,7 @@ struct FullscreenPlayerView: View {
     @State private var autoHiddenFullscreenLyricsForEmptyContent = false
     @State private var suppressFullscreenLyricsViewport = false
     @State private var fullscreenLyricsHostMounted = false
-    @State private var isLeadingControlsExpanded = false
+    @State private var isLeftActionsExpanded = false
     @State private var isQuickAppearancePanelPresented = false
     @State private var currentFullscreenScale: CGFloat = 1.0
     @State private var fullscreenViewportSize: CGSize = .zero
@@ -268,6 +268,8 @@ struct FullscreenPlayerView: View {
     @State private var isShowingExternalMatchEditor = false
     @State private var showPlaybackModeRetapTip = false
     @State private var pendingFullscreenBottomControlsHideTask: Task<Void, Never>?
+    @State private var pendingLeftActionsCollapseTask: Task<Void, Never>?
+    @State private var pendingVolumeCollapseTask: Task<Void, Never>?
     @State private var fullscreenPointerOcclusionMonitor = FullscreenPointerOcclusionMonitor()
     @Namespace private var fullscreenLayoutNamespace
 
@@ -556,6 +558,9 @@ struct FullscreenPlayerView: View {
         isFullscreenBottomControlsAppearancePanelHovered = false
         releaseFullscreenMiniPlayerSpectrumLease()
         cancelFullscreenBottomControlsAutoHide()
+        cancelFullscreenSideControlCollapses()
+        setLeftActionsExpanded(false, reason: "fullscreen-disappear")
+        setVolumeExpanded(false, reason: "fullscreen-disappear")
         deactivateCoverBlurHighlightSurface()
         clearFullscreenLyricsTheme()
         Task {
@@ -1082,6 +1087,7 @@ struct FullscreenPlayerView: View {
     private let leadingControlsCollapsedWidth: CGFloat = 120  // 2 buttons × 60pt
     private let volumeExpandedWidth: CGFloat = 180
     private let volumeCollapsedWidth: CGFloat = 60
+    private let fullscreenSideControlsCollapseDelayNanoseconds: UInt64 = 180_000_000
 
     private func fullscreenMiniPlayerOcclusionRegion(
         scale: CGFloat,
@@ -1095,7 +1101,7 @@ struct FullscreenPlayerView: View {
         let spacing = fullscreenControlSpacing
         let windowWidth = Self.baseCanvasWidth
 
-        let leadingControlsWidth = isLeadingControlsExpanded ? leadingControlsExpandedWidth : leadingControlsCollapsedWidth
+        let leadingControlsWidth = isLeftActionsExpanded ? leadingControlsExpandedWidth : leadingControlsCollapsedWidth
         let leadingControlsExtraWidth = leadingControlsWidth - leadingControlsCollapsedWidth
         let volumeWidth = isVolumeExpanded ? volumeExpandedWidth : volumeCollapsedWidth
         let volumeExtraWidth = volumeWidth - volumeCollapsedWidth
@@ -1144,7 +1150,7 @@ struct FullscreenPlayerView: View {
         let buttonSize = fullscreenControlButtonSize
         let spacing = fullscreenControlSpacing
         let windowWidth = Self.baseCanvasWidth
-        let leadingControlsWidth = isLeadingControlsExpanded ? leadingControlsExpandedWidth : leadingControlsCollapsedWidth
+        let leadingControlsWidth = isLeftActionsExpanded ? leadingControlsExpandedWidth : leadingControlsCollapsedWidth
         let leadingControlsExtraWidth = leadingControlsWidth - leadingControlsCollapsedWidth
         let volumeWidth = isVolumeExpanded ? volumeExpandedWidth : volumeCollapsedWidth
         let volumeExtraWidth = volumeWidth - volumeCollapsedWidth
@@ -1209,7 +1215,7 @@ struct FullscreenPlayerView: View {
         }
         .frame(width: windowWidth, height: buttonSize, alignment: .leading)
         .padding(.bottom, fullscreenControlsBottomPadding)
-        .animation(bottomControlsAnimation, value: isLeadingControlsExpanded)
+        .animation(bottomControlsAnimation, value: isLeftActionsExpanded)
         .animation(bottomControlsAnimation, value: isVolumeExpanded)
     }
 
@@ -1252,7 +1258,7 @@ struct FullscreenPlayerView: View {
     private var shouldBlockFullscreenBottomControlsAutoHide: Bool {
         shouldKeepFullscreenBottomControlsVisible
             || isFullscreenBottomControlsHovered
-            || isLeadingControlsExpanded
+            || isLeftActionsExpanded
             || isQuickAppearancePanelPresented
             || isVolumeExpanded
             || isFullscreenBottomControlsProgressDragging
@@ -1391,6 +1397,7 @@ struct FullscreenPlayerView: View {
 
     private func resetFullscreenBottomControlsAutoHideState() {
         cancelFullscreenBottomControlsAutoHide()
+        cancelFullscreenSideControlCollapses()
         isFullscreenBottomControlsVisible = true
         isFullscreenBottomControlsProgressDragging = false
         isFullscreenBottomControlsVolumeAdjusting = false
@@ -1400,6 +1407,8 @@ struct FullscreenPlayerView: View {
         isFullscreenBottomControlsLeadingHovered = false
         isFullscreenBottomControlsCenterHovered = false
         isFullscreenBottomControlsTrailingHovered = false
+        setLeftActionsExpanded(false, reason: "reset")
+        setVolumeExpanded(false, reason: "reset")
         scheduleFullscreenBottomControlsAutoHideIfNeeded()
     }
 
@@ -1434,6 +1443,8 @@ struct FullscreenPlayerView: View {
             withAnimation(bottomControlsAnimation) {
                 isFullscreenBottomControlsVisible = false
             }
+            setLeftActionsExpanded(false, reason: "auto-hide")
+            setVolumeExpanded(false, reason: "auto-hide")
             pendingFullscreenBottomControlsHideTask = nil
         }
     }
@@ -1441,6 +1452,109 @@ struct FullscreenPlayerView: View {
     private func cancelFullscreenBottomControlsAutoHide() {
         pendingFullscreenBottomControlsHideTask?.cancel()
         pendingFullscreenBottomControlsHideTask = nil
+    }
+
+    private func scheduleLeftActionsCollapseIfNeeded(reason: String) {
+        cancelLeftActionsCollapse()
+        guard isFullscreenBottomControlsLeadingHovered == false else {
+            logFullscreenMiniPlayerHover("left collapse skipped reason=\(reason) still-hovered")
+            return
+        }
+
+        pendingLeftActionsCollapseTask = Task { @MainActor in
+            do {
+                try await Task.sleep(nanoseconds: fullscreenSideControlsCollapseDelayNanoseconds)
+            } catch {
+                return
+            }
+
+            guard !Task.isCancelled else { return }
+            guard isFullscreenBottomControlsLeadingHovered == false else {
+                logFullscreenMiniPlayerHover("left collapse cancelled reason=\(reason) hovered-after-delay")
+                return
+            }
+
+            setLeftActionsExpanded(false, reason: reason)
+            scheduleFullscreenBottomControlsAutoHideIfNeeded()
+            pendingLeftActionsCollapseTask = nil
+        }
+    }
+
+    private func cancelLeftActionsCollapse() {
+        pendingLeftActionsCollapseTask?.cancel()
+        pendingLeftActionsCollapseTask = nil
+    }
+
+    private func scheduleVolumeCollapseIfNeeded(reason: String) {
+        cancelVolumeCollapse()
+        guard isFullscreenBottomControlsTrailingHovered == false,
+              isFullscreenBottomControlsVolumeAdjusting == false else {
+            logFullscreenMiniPlayerHover("volume collapse skipped reason=\(reason) still-active")
+            return
+        }
+
+        pendingVolumeCollapseTask = Task { @MainActor in
+            do {
+                try await Task.sleep(nanoseconds: fullscreenSideControlsCollapseDelayNanoseconds)
+            } catch {
+                return
+            }
+
+            guard !Task.isCancelled else { return }
+            guard isFullscreenBottomControlsTrailingHovered == false,
+                  isFullscreenBottomControlsVolumeAdjusting == false else {
+                logFullscreenMiniPlayerHover("volume collapse cancelled reason=\(reason) active-after-delay")
+                return
+            }
+
+            setVolumeExpanded(false, reason: reason)
+            scheduleFullscreenBottomControlsAutoHideIfNeeded()
+            pendingVolumeCollapseTask = nil
+        }
+    }
+
+    private func cancelVolumeCollapse() {
+        pendingVolumeCollapseTask?.cancel()
+        pendingVolumeCollapseTask = nil
+    }
+
+    private func cancelFullscreenSideControlCollapses() {
+        cancelLeftActionsCollapse()
+        cancelVolumeCollapse()
+    }
+
+    private func setLeftActionsExpanded(_ expanded: Bool, reason: String) {
+        guard isLeftActionsExpanded != expanded else {
+            logFullscreenMiniPlayerHover("left unchanged reason=\(reason) expanded=\(expanded)")
+            return
+        }
+
+        logFullscreenMiniPlayerHover(
+            "left reason=\(reason) \(isLeftActionsExpanded)->\(expanded) hot=\(isFullscreenBottomControlsHotZoneHovered) center=\(isFullscreenBottomControlsCenterHovered) leadingHover=\(isFullscreenBottomControlsLeadingHovered) trailing=\(isFullscreenBottomControlsTrailingHovered)"
+        )
+        withAnimation(bottomControlsAnimation) {
+            isLeftActionsExpanded = expanded
+        }
+    }
+
+    private func setVolumeExpanded(_ expanded: Bool, reason: String) {
+        let nextValue = expanded && playbackCoordinator.presentation.isVolumeControlEnabled
+        guard isVolumeExpanded != nextValue else {
+            logFullscreenMiniPlayerHover("volume unchanged reason=\(reason) expanded=\(nextValue)")
+            return
+        }
+
+        logFullscreenMiniPlayerHover(
+            "volume reason=\(reason) \(isVolumeExpanded)->\(nextValue) hot=\(isFullscreenBottomControlsHotZoneHovered) center=\(isFullscreenBottomControlsCenterHovered) leadingHover=\(isFullscreenBottomControlsLeadingHovered) trailing=\(isFullscreenBottomControlsTrailingHovered) adjusting=\(isFullscreenBottomControlsVolumeAdjusting)"
+        )
+        withAnimation(bottomControlsAnimation) {
+            isVolumeExpanded = nextValue
+        }
+    }
+
+    private func logFullscreenMiniPlayerHover(_ message: @autoclosure () -> String) {
+        guard UserDefaults.standard.bool(forKey: "Debug.fullscreenMiniPlayerHover") else { return }
+        Log.info("FullscreenMiniPlayerHover: \(message())", category: .fullscreen)
     }
 
     // MARK: - Fullscreen Bottom Bar Layer (Actual Resolution - Crisp)
@@ -1457,7 +1571,7 @@ struct FullscreenPlayerView: View {
         let spacing = fullscreenControlSpacing
         let windowWidth = Self.baseCanvasWidth
         
-        let leadingControlsWidth = isLeadingControlsExpanded ? leadingControlsExpandedWidth : leadingControlsCollapsedWidth
+        let leadingControlsWidth = isLeftActionsExpanded ? leadingControlsExpandedWidth : leadingControlsCollapsedWidth
         let leadingControlsExtraWidth = leadingControlsWidth - leadingControlsCollapsedWidth
         let volumeWidth = isVolumeExpanded ? volumeExpandedWidth : volumeCollapsedWidth
         let volumeExtraWidth = volumeWidth - volumeCollapsedWidth
@@ -1627,8 +1741,11 @@ struct FullscreenPlayerView: View {
                         onHoverStateChanged: { hovering in
                             updateFullscreenBottomControlsHoverGate(trailing: hovering)
                             if hovering {
+                                cancelVolumeCollapse()
+                                setVolumeExpanded(true, reason: "volume-hover-enter")
                                 registerFullscreenBottomControlsInteraction()
                             } else {
+                                scheduleVolumeCollapseIfNeeded(reason: "volume-hover-exit")
                                 scheduleFullscreenBottomControlsAutoHideIfNeeded()
                             }
                         },
@@ -1637,12 +1754,14 @@ struct FullscreenPlayerView: View {
                             if adjusting {
                                 registerFullscreenBottomControlsInteraction()
                             } else {
+                                scheduleVolumeCollapseIfNeeded(reason: "volume-adjust-end")
                                 scheduleFullscreenBottomControlsAutoHideIfNeeded()
                             }
                         },
                         materialStyle: fullscreenControlsGlassStyle.materialStyle,
                         isEnabled: playbackCoordinator.presentation.isVolumeControlEnabled,
-                        usesAdaptiveForeground: isCoverBlurFullscreenSkin
+                        usesAdaptiveForeground: isCoverBlurFullscreenSkin,
+                        usesInternalHoverExpansion: false
                     )
                     .glassEffectTransition(.materialize)
                     .frame(width: scaledVolumeWidth, height: scaledButtonSize)
@@ -1685,7 +1804,7 @@ struct FullscreenPlayerView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .animation(quickAppearancePanelAnimation, value: isQuickAppearancePanelPresented)
-        .animation(bottomControlsAnimation, value: isLeadingControlsExpanded)
+        .animation(bottomControlsAnimation, value: isLeftActionsExpanded)
         .animation(bottomControlsAnimation, value: isVolumeExpanded)
         .animation(bottomControlsAnimation, value: isFullscreenBottomControlsVisible)
     }
@@ -1834,12 +1953,12 @@ struct FullscreenPlayerView: View {
             lyricsVisibilityButton(size: size)
 
             quickAppearanceButton(size: size)
-                .opacity(isLeadingControlsExpanded ? 1 : 0)
-                .allowsHitTesting(isLeadingControlsExpanded)
-                .accessibilityHidden(!isLeadingControlsExpanded)
+                .opacity(isLeftActionsExpanded ? 1 : 0)
+                .allowsHitTesting(isLeftActionsExpanded)
+                .accessibilityHidden(!isLeftActionsExpanded)
         }
         .frame(
-            width: isLeadingControlsExpanded ? leadingControlsExpandedWidth * scaleFactor : leadingControlsCollapsedWidth * scaleFactor,
+            width: isLeftActionsExpanded ? leadingControlsExpandedWidth * scaleFactor : leadingControlsCollapsedWidth * scaleFactor,
             height: size,
             alignment: .leading
         )
@@ -1854,10 +1973,12 @@ struct FullscreenPlayerView: View {
         .environment(\.colorScheme, controlColorScheme)
         .onHover { hovering in
             updateFullscreenBottomControlsHoverGate(leading: hovering)
-            isLeadingControlsExpanded = hovering
             if hovering {
+                cancelLeftActionsCollapse()
+                setLeftActionsExpanded(true, reason: "left-hover-enter")
                 registerFullscreenBottomControlsInteraction()
             } else {
+                scheduleLeftActionsCollapseIfNeeded(reason: "left-hover-exit")
                 scheduleFullscreenBottomControlsAutoHideIfNeeded()
             }
         }
