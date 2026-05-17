@@ -22,10 +22,14 @@ struct HomeInsightsSection: View {
     var centerLeftPad: CGFloat = 0
     /// Distance from the window's right edge inward to the center column.
     var centerRightPad: CGFloat = 0
+    /// Accent color resolved at the HomeView level. Passed down as a plain
+    /// value so ranking rows and the heatmap don't each maintain their own
+    /// `@EnvironmentObject ThemeStore` subscription — one subscription at
+    /// HomeView feeds ~30 ranking rows + the heatmap.
+    var accentColor: Color = .accentColor
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
-    @EnvironmentObject private var themeStore: ThemeStore
 
     /// Width threshold below which the side-by-side ranking + calendar would
     /// crowd each other and we switch to the horizontal-summary narrow layout.
@@ -72,14 +76,16 @@ struct HomeInsightsSection: View {
             HomePreferenceRankingView(
                 items: homeVM.preferenceRanking,
                 fixedHeight: rowHeight,
-                playbackCoordinator: playbackCoordinator
+                playbackCoordinator: playbackCoordinator,
+                accentColor: accentColor
             )
                 .frame(maxWidth: .infinity)
                 .frame(height: rowHeight)
             ListeningCalendarCard(
                 dailyMap: homeVM.dailyListeningMap,
                 renderWidth: heatmapWidth,
-                fixedHeight: rowHeight
+                fixedHeight: rowHeight,
+                accentColor: accentColor
             )
             .frame(width: heatmapWidth)
             .frame(height: rowHeight)
@@ -102,7 +108,8 @@ struct HomeInsightsSection: View {
 
             HomePreferenceRankingView(
                 items: homeVM.preferenceRanking,
-                playbackCoordinator: playbackCoordinator
+                playbackCoordinator: playbackCoordinator,
+                accentColor: accentColor
             )
                 .frame(maxWidth: .infinity)
                 .padding(.leading, centerLeftPad)
@@ -157,7 +164,8 @@ struct HomeInsightsSection: View {
             dailyMap: homeVM.dailyListeningMap,
             compact: true,
             renderWidth: width,
-            fixedHeight: CompactSummaryRowMetrics.rowHeight
+            fixedHeight: CompactSummaryRowMetrics.rowHeight,
+            accentColor: accentColor
         )
         .frame(width: width, height: CompactSummaryRowMetrics.rowHeight)
     }
@@ -426,6 +434,7 @@ private struct HomePreferenceRankingView: View {
     let items: [HomeViewModel.PreferenceRankItem]
     var fixedHeight: CGFloat? = nil
     let playbackCoordinator: PlaybackCoordinator
+    let accentColor: Color
     @Environment(\.colorScheme) private var colorScheme
     @State private var trackToEdit: Track?
 
@@ -481,6 +490,7 @@ private struct HomePreferenceRankingView: View {
                                     scoreRange: scoreRange,
                                     queueTracks: queueTracks,
                                     playbackCoordinator: playbackCoordinator,
+                                    accentColor: accentColor,
                                     onEditTrack: { trackToEdit = $0 }
                                 )
                                 if index < visibleItems.count - 1 {
@@ -511,10 +521,14 @@ private struct HomeRankRow: View {
     let scoreRange: HomePreferenceScoreRange
     let queueTracks: [Track]
     let playbackCoordinator: PlaybackCoordinator
+    /// Plain `let` instead of `@EnvironmentObject themeStore`. With up to
+    /// 30 rows lazy-realized at once, one subscription each meant 30
+    /// invalidations on every ThemeStore publish (track change, scheme
+    /// flip, palette refresh) even though each row reads only one value.
+    let accentColor: Color
     let onEditTrack: (Track) -> Void
     @State private var isHovering = false
     @Environment(\.colorScheme) private var colorScheme
-    @EnvironmentObject private var themeStore: ThemeStore
 
     private var scoreBarRatio: Double {
         scoreRange.barRatio(for: item.score)
@@ -552,9 +566,9 @@ private struct HomeRankRow: View {
             HStack(spacing: 6) {
                 ZStack(alignment: .leading) {
                     RoundedRectangle(cornerRadius: 3)
-                        .fill(themeStore.accentColor.opacity(0.12))
+                        .fill(accentColor.opacity(0.12))
                     RoundedRectangle(cornerRadius: 3)
-                        .fill(themeStore.accentColor.opacity(colorScheme == .dark ? 0.7 : 0.55))
+                        .fill(accentColor.opacity(colorScheme == .dark ? 0.7 : 0.55))
                         .frame(width: scoreBarWidth * scoreBarRatio)
                 }
                 .frame(width: scoreBarWidth, height: scoreBarHeight)
@@ -568,10 +582,16 @@ private struct HomeRankRow: View {
         }
         .padding(.horizontal, rowHorizontalPadding)
         .padding(.vertical, dense ? 5 : 8)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(themeStore.accentColor.opacity(isHovering ? 0.06 : 0))
-        )
+        .background {
+            // Conditionally mount the hover background. The previous always-
+            // present opacity-0 RoundedRectangle still allocated a layer per
+            // row × ~30 rows; with this gating the layer only exists for the
+            // single hovered row.
+            if isHovering {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(accentColor.opacity(0.06))
+            }
+        }
         .onHover { hovering in
             isHovering = hovering
         }
@@ -587,7 +607,6 @@ private struct HomeRankRow: View {
                 onEditTrack: onEditTrack
             )
         }
-        .animation(.easeOut(duration: 0.15), value: isHovering)
     }
 
     private func play() {
@@ -679,13 +698,15 @@ private struct ListeningCalendarCard: View {
     var compact: Bool = false
     var renderWidth: CGFloat? = nil
     var fixedHeight: CGFloat? = nil
+    var accentColor: Color = .accentColor
 
     var body: some View {
         HomeListeningHeatmapView(
             dailyMap: dailyMap,
             compact: compact,
             renderWidth: renderWidth,
-            fixedHeight: fixedHeight
+            fixedHeight: fixedHeight,
+            accentColor: accentColor
         )
     }
 }
@@ -695,9 +716,12 @@ struct HomeListeningHeatmapView: View {
     var compact: Bool
     var renderWidth: CGFloat?
     var fixedHeight: CGFloat?
+    /// Plain value rather than `@EnvironmentObject ThemeStore` so the
+    /// heatmap doesn't re-evaluate on unrelated ThemeStore changes (this
+    /// view caches its render model and only the accent input matters).
+    let accentColor: Color
 
     @Environment(\.colorScheme) private var colorScheme
-    @EnvironmentObject private var themeStore: ThemeStore
     @State private var displayedMonth: Date
     @State private var monthDirection: Int = 0
 
@@ -707,12 +731,14 @@ struct HomeListeningHeatmapView: View {
         dailyMap: [Date: Int],
         compact: Bool = false,
         renderWidth: CGFloat? = nil,
-        fixedHeight: CGFloat? = nil
+        fixedHeight: CGFloat? = nil,
+        accentColor: Color = .accentColor
     ) {
         self.dailyMap = dailyMap
         self.compact = compact
         self.renderWidth = renderWidth
         self.fixedHeight = fixedHeight
+        self.accentColor = accentColor
         _displayedMonth = State(initialValue: CalendarHeatmapData.currentMonthStart())
     }
 
@@ -722,7 +748,7 @@ struct HomeListeningHeatmapView: View {
             month: displayedMonth,
             compact: compact,
             isDark: colorScheme == .dark,
-            accent: ListeningCalendarRenderModel.RGBA.resolved(from: themeStore.accentColor)
+            accent: ListeningCalendarRenderModel.RGBA.resolved(from: accentColor)
         )
 
         HomeInsightsCardContainer(fixedSize: nil, fixedHeight: fixedHeight) {
@@ -794,7 +820,7 @@ struct HomeListeningHeatmapView: View {
             Image(systemName: systemImage)
                 .font(.system(size: compact ? 8 : 9, weight: .bold))
                 .foregroundStyle(
-                    isDisabled ? Color.secondary.opacity(0.35) : themeStore.accentColor.opacity(0.88)
+                    isDisabled ? Color.secondary.opacity(0.35) : accentColor.opacity(0.88)
                 )
                 .frame(width: compact ? 18 : 20, height: compact ? 18 : 20)
                 .contentShape(Circle())

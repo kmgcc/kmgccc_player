@@ -110,6 +110,10 @@ struct PlaylistDetailView: View {
             .presentationSizing(.page)
         }
         .onAppear {
+            let token = FirstUseHitchDiagnostics.begin(
+                "PlaylistDetailView.onAppear",
+                detail: "selection=\(fallbackSelectionIdentity), tracks=\(libraryVM.allTracks.count)"
+            )
             print(
                 "[PlaylistDetailView] appear pageController=\(ObjectIdentifier(pageController).hashValue) "
                     + "libraryVM=\(ObjectIdentifier(libraryVM).hashValue) "
@@ -118,6 +122,7 @@ struct PlaylistDetailView: View {
             )
             pageController.bind(libraryVM: libraryVM, playerVM: playerVM, uiState: uiState)
             pageController.appear(token: lifecycleToken)
+            FirstUseHitchDiagnostics.end(token)
         }
         .onDisappear {
             pageController.disappear(token: lifecycleToken)

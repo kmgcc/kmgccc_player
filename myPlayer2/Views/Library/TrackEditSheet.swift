@@ -99,7 +99,12 @@ struct TrackEditSheet: View {
             lyricsTimeOffsetMs: $lyricsTimeOffsetMs
         )
         .onAppear {
+            let token = FirstUseHitchDiagnostics.begin(
+                "TrackEditSheet.onAppear",
+                detail: "track=\(track.id.uuidString)"
+            )
             loadTrackData()
+            FirstUseHitchDiagnostics.end(token)
         }
         .onDisappear {
             coverFetchTask?.cancel()
@@ -395,6 +400,12 @@ struct TrackEditSheet: View {
     // MARK: - Data Handling
 
     private func loadTrackData() {
+        let token = FirstUseHitchDiagnostics.begin(
+            "TrackEditSheet.loadTrackData",
+            detail: "track=\(track.id.uuidString)"
+        )
+        defer { FirstUseHitchDiagnostics.end(token) }
+
         title = track.title
         artist = track.artist
         album = track.album
@@ -420,6 +431,10 @@ struct TrackEditSheet: View {
 
         guard artworkURL != nil || ttmlURL != nil || legacyLyricsURL != nil else { return }
 
+        let token = FirstUseHitchDiagnostics.begin(
+            "TrackEditSheet.loadDeferredMediaData",
+            detail: "artwork=\(artworkURL != nil), ttml=\(ttmlURL != nil), legacy=\(legacyLyricsURL != nil)"
+        )
         Task { @MainActor in
             async let artworkTask: Data? = Task.detached(priority: .utility) { @Sendable in
                 guard let artworkURL else { return nil }
@@ -454,6 +469,10 @@ struct TrackEditSheet: View {
                     track.lyricsText = loadedLyrics
                 }
             }
+            FirstUseHitchDiagnostics.end(
+                token,
+                detail: "artworkBytes=\(loadedArtwork?.count ?? 0), lyricsChars=\(loadedLyrics?.count ?? 0)"
+            )
         }
     }
 

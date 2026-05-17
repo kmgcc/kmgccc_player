@@ -50,7 +50,20 @@ struct HomeView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .onAppear {
+            let token = FirstUseHitchDiagnostics.begin(
+                "HomeView.onAppear",
+                detail: "tracks=\(libraryVM.allTracks.count), state=\(libraryVM.state)"
+            )
+            FirstUseHitchDiagnostics.end(token)
+        }
         .task {
+            let token = FirstUseHitchDiagnostics.begin(
+                "HomeView.task",
+                detail: "tracks=\(libraryVM.allTracks.count), state=\(libraryVM.state)"
+            )
+            defer { FirstUseHitchDiagnostics.end(token) }
+
             await homeVM.loadCachedStartupSnapshot()
             if !libraryVM.allTracks.isEmpty {
                 homeVM.refresh(from: libraryVM)
@@ -304,8 +317,24 @@ struct HomeView: View {
         centerLeftPad: CGFloat,
         centerRightPad: CGFloat
     ) -> some View {
-        ScrollView(.vertical, showsIndicators: true) {
-            VStack(spacing: mode.sectionSpacing) {
+        // Pre-resolve theme values once at this level so child sections
+        // receive them as plain `let` parameters and don't need their own
+        // `@EnvironmentObject ThemeStore` subscriptions. ThemeStore is an
+        // `ObservableObject` with coarse `objectWillChange`, so every
+        // direct subscriber re-evaluates on any of its ~15 `@Published`
+        // properties. HomeView already subscribes, so reading the accent
+        // here is free and lets `HomeInsightsSection` / `HomeRankRow` /
+        // `HomeListeningHeatmapView` opt out of the store entirely.
+        let accentColor = themeStore.accentColor
+
+        return ScrollView(.vertical, showsIndicators: true) {
+            // `LazyVStack` defers body evaluation and layout for sections
+            // that haven't intersected the scroll viewport yet — typically
+            // Insights, footer, and (in narrow modes) part of the Albums
+            // rail at first paint. Rails / hero / playlist grids already
+            // use `.frame(maxWidth: .infinity)` internally, so under-glass
+            // full-window extension and rail widths are preserved.
+            LazyVStack(spacing: mode.sectionSpacing) {
                 if !HomeDebugFlags.disableHero, let heroTrack = homeVM.heroTrack {
                     VStack(alignment: .leading, spacing: 14) {
                         Text("精选")
@@ -355,7 +384,8 @@ struct HomeView: View {
                         mode: mode,
                         containerWidth: contentWidth,
                         centerLeftPad: centerLeftPad,
-                        centerRightPad: centerRightPad
+                        centerRightPad: centerRightPad,
+                        accentColor: accentColor
                     )
                 }
 

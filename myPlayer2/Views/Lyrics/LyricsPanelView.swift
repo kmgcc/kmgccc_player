@@ -46,6 +46,10 @@ struct LyricsPanelView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
             .onAppear {
+                let token = FirstUseHitchDiagnostics.begin(
+                    "LyricsPanelView.onAppear",
+                    detail: "hasTrack=\(playbackCoordinator.presentation.hasTrack), visible=\(uiState.lyricsVisible)"
+                )
                 Log.info("LyricsPanelView appeared", category: .webview)
 
                 // Report visibility to manager - let manager decide if switch is needed
@@ -57,11 +61,17 @@ struct LyricsPanelView: View {
                     forceWebReload: false,
                     forceLyricsReload: false
                 )
+                FirstUseHitchDiagnostics.end(token)
             }
             .onDisappear {
+                let token = FirstUseHitchDiagnostics.begin(
+                    "LyricsPanelView.onDisappear",
+                    detail: "hasTrack=\(playbackCoordinator.presentation.hasTrack)"
+                )
                 Log.info("LyricsPanelView disappeared", category: .webview)
                 // Report visibility to manager - manager will debounce/handle transient states
                 LyricsSurfaceManager.shared.reportMainVisible(false)
+                FirstUseHitchDiagnostics.end(token)
             }
             .onChange(of: playbackCoordinator.presentation.lyricsIdentity, handleTrackIdentityChange)
             .onChange(of: uiState.lyricsVisible) { _, isVisible in

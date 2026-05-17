@@ -71,6 +71,11 @@ final class HomeViewModel {
             clearAll()
             return
         }
+        let token = FirstUseHitchDiagnostics.begin(
+            "HomeViewModel.refresh",
+            detail: "tracks=\(allTracks.count), albums=\(libraryVM.albumEntries.count), artists=\(libraryVM.artistEntries.count), playlists=\(libraryVM.playlists.count)"
+        )
+        defer { FirstUseHitchDiagnostics.end(token) }
 
         let incomingSignature = HomeRefreshSignature(libraryVM: libraryVM, tracks: allTracks)
         guard incomingSignature != lastAppliedRefreshSignature else { return }
@@ -180,6 +185,11 @@ final class HomeViewModel {
             clearAll()
             return
         }
+        let token = FirstUseHitchDiagnostics.begin(
+            "HomeViewModel.refreshChangedSections",
+            detail: "tracks=\(allTracks.count)"
+        )
+        defer { FirstUseHitchDiagnostics.end(token) }
 
         let incomingSignature = HomeRefreshSignature(libraryVM: libraryVM, tracks: allTracks)
         guard incomingSignature != lastAppliedRefreshSignature else { return }

@@ -240,18 +240,18 @@ private struct HomeArtistCircle: View {
             colorScheme: colorScheme,
             isFloating: false
         )
-        .overlay(
-            // Cheap hover indicator: stroke overlay only on the current card.
-            // Avoids the previous `scaleEffect + animation`, which forced the
-            // card's glass material to re-composite at a new scale every time
-            // the cursor crossed a card during scroll.
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(
-                    Color.primary.opacity(isHovering ? 0.18 : 0),
-                    lineWidth: 1
-                )
-                .allowsHitTesting(false)
-        )
+        .overlay {
+            // Hover indicator gated on `isHovering` so the stroke layer
+            // isn't mounted at α=0 for every card during scroll. Previously
+            // every visible artist circle kept an always-present overlay
+            // node with `opacity(isHovering ? 0.18 : 0)` — cheap per node,
+            // but ~12-15 nodes per rail × LazyVStack of rails adds up.
+            if isHovering {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.18), lineWidth: 1)
+                    .allowsHitTesting(false)
+            }
+        }
         .onHover { hovering in
             isHovering = hovering
         }

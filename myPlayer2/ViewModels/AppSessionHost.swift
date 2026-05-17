@@ -36,6 +36,7 @@ final class AppSessionHost: ObservableObject {
     private var repository: LibraryRepositoryProtocol?
     private var playbackMemoryTimer: Timer?
     private let mainThreadStallMonitor = MainThreadStallMonitor()
+    private var firstUsePrewarmTask: Task<Void, Never>?
     private var didAttemptPlaybackMemoryRestore = false
 
     init(
@@ -215,6 +216,11 @@ final class AppSessionHost: ObservableObject {
 
         libraryService.startMonitoring(repository: repository)
         startPlaybackMemoryAutosave()
+        scheduleFirstUsePrewarm(
+            libraryVM: libraryVM,
+            playerVM: playerVM,
+            playbackCoordinator: playbackCoordinator
+        )
 
         if libraryLocationObserver == nil {
             libraryLocationObserver = NotificationCenter.default.addObserver(
@@ -255,7 +261,51 @@ final class AppSessionHost: ObservableObject {
                 NotificationCenter.default.removeObserver(libraryLocationObserver)
             }
             playbackMemoryTimer?.invalidate()
+            firstUsePrewarmTask?.cancel()
             AppDelegate.applicationWillTerminateHandler = nil
+        }
+    }
+
+    private func scheduleFirstUsePrewarm(
+        libraryVM: LibraryViewModel,
+        playerVM: PlayerViewModel,
+        playbackCoordinator: PlaybackCoordinator
+    ) {
+        firstUsePrewarmTask?.cancel()
+        firstUsePrewarmTask = Task(priority: .background) { @MainActor [weak self, weak libraryVM, weak playerVM, weak playbackCoordinator] in
+            guard let self else { return }
+
+            try? await Task.sleep(for: .milliseconds(900))
+            guard !Task.isCancelled else { return }
+
+            LyricsSurfaceManager.shared.prewarm(role: .main, reason: "app-start-idle")
+
+            try? await Task.sleep(for: .milliseconds(1_400))
+            guard !Task.isCancelled, let libraryVM else { return }
+
+            let isPlaying = (playerVM?.isPlaying ?? false)
+                || (playbackCoordinator?.presentation.isPlaying ?? false)
+            if isPlaying {
+                Log.info(
+                    "[FirstUsePrewarm] deferring Home snapshot prewarm while playback is active",
+                    category: .perf
+                )
+            } else {
+                let token = FirstUseHitchDiagnostics.begin(
+                    "FirstUsePrewarm.homeSnapshot",
+                    detail: "tracks=\(libraryVM.allTracks.count)"
+                )
+                await self.homeVM.loadCachedStartupSnapshot()
+                if !libraryVM.allTracks.isEmpty {
+                    self.homeVM.refresh(from: libraryVM)
+                }
+                FirstUseHitchDiagnostics.end(token)
+            }
+
+            try? await Task.sleep(for: .milliseconds(isPlaying ? 3_000 : 1_800))
+            guard !Task.isCancelled else { return }
+
+            LyricsSurfaceManager.shared.prewarm(role: .fullscreen, reason: "app-start-idle")
         }
     }
 
@@ -589,8 +639,9 @@ private final class MainThreadStallMonitor {
 
         if delayMs >= warningThresholdMs {
             let severity = delayMs >= criticalThresholdMs ? "critical" : "warning"
+            let operation = FirstUseHitchDiagnostics.currentMainOperationDescription() ?? "none"
             Log.warning(
-                "[MainThreadStall] delayMs=\(String(format: "%.1f", delayMs)) severity=\(severity)",
+                "[MainThreadStall] delayMs=\(String(format: "%.1f", delayMs)) severity=\(severity) operation=\(operation)",
                 category: .perf
             )
         }

@@ -249,6 +249,106 @@ extension Logger {
     }
 }
 
+// MARK: - First-use Hitch Diagnostics
+
+nonisolated struct FirstUseHitchToken: Sendable {
+    let id: UUID
+    let key: String
+    let occurrence: Int
+    let startedAtUptime: TimeInterval
+
+    var phase: String {
+        occurrence == 1 ? "cold" : "warm"
+    }
+}
+
+nonisolated enum FirstUseHitchDiagnostics {
+    private static let lock = NSLock()
+    private nonisolated(unsafe) static var countsByKey: [String: Int] = [:]
+    private nonisolated(unsafe) static var activeMainOperationID: UUID?
+    private nonisolated(unsafe) static var activeMainOperationDescription: String?
+    private nonisolated(unsafe) static var signpostStates: [UUID: OSSignpostIntervalState] = [:]
+    private static let signposter = OSSignposter(
+        subsystem: "kmg.myplayer2",
+        category: "first_use_hitch"
+    )
+
+    nonisolated static func begin(_ key: String, detail: String? = nil) -> FirstUseHitchToken {
+        let id = UUID()
+        let occurrence: Int
+        let state = signposter.beginInterval("FirstUseHitch", id: signposter.makeSignpostID())
+
+        lock.lock()
+        occurrence = (countsByKey[key] ?? 0) + 1
+        countsByKey[key] = occurrence
+        signpostStates[id] = state
+        if Thread.isMainThread {
+            activeMainOperationID = id
+            activeMainOperationDescription = operationDescription(
+                key: key,
+                occurrence: occurrence,
+                detail: detail
+            )
+        }
+        lock.unlock()
+
+        Log.info(
+            "[FirstUseHitch] begin key=\(key) phase=\(occurrence == 1 ? "cold" : "warm") occurrence=\(occurrence) thread=\(Thread.isMainThread ? "main" : "background")\(detail.map { " detail=\($0)" } ?? "")",
+            category: .perf
+        )
+
+        return FirstUseHitchToken(
+            id: id,
+            key: key,
+            occurrence: occurrence,
+            startedAtUptime: ProcessInfo.processInfo.systemUptime
+        )
+    }
+
+    nonisolated static func end(_ token: FirstUseHitchToken, detail: String? = nil) {
+        let durationMs = (ProcessInfo.processInfo.systemUptime - token.startedAtUptime) * 1000
+        let state: OSSignpostIntervalState?
+
+        lock.lock()
+        state = signpostStates.removeValue(forKey: token.id)
+        if activeMainOperationID == token.id {
+            activeMainOperationID = nil
+            activeMainOperationDescription = nil
+        }
+        lock.unlock()
+
+        if let state {
+            signposter.endInterval("FirstUseHitch", state)
+        }
+
+        Log.info(
+            "[FirstUseHitch] end key=\(token.key) phase=\(token.phase) occurrence=\(token.occurrence) durationMs=\(String(format: "%.1f", durationMs))\(detail.map { " detail=\($0)" } ?? "")",
+            category: .perf
+        )
+    }
+
+    nonisolated static func currentMainOperationDescription() -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return activeMainOperationDescription
+    }
+
+    @discardableResult
+    nonisolated static func measure<T>(_ key: String, detail: String? = nil, _ body: () throws -> T) rethrows -> T {
+        let token = begin(key, detail: detail)
+        defer { end(token) }
+        return try body()
+    }
+
+    private nonisolated static func operationDescription(
+        key: String,
+        occurrence: Int,
+        detail: String?
+    ) -> String {
+        "\(key)#\(occurrence == 1 ? "cold" : "warm")\(detail.map { ":\($0)" } ?? "")"
+    }
+}
+
 // MARK: - Runtime Lyrics Profiling
 
 nonisolated private struct LyricsRuntimeProfileSession {

@@ -39,6 +39,13 @@ struct AllAlbumsView: View {
         let albums = filteredAlbums
         return list(albums)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .onAppear {
+            let token = FirstUseHitchDiagnostics.begin(
+                "AllAlbumsView.onAppear",
+                detail: "albums=\(libraryVM.albumEntries.count), tracks=\(libraryVM.allTracks.count)"
+            )
+            FirstUseHitchDiagnostics.end(token)
+        }
         .alert(
             NSLocalizedString("sidebar.delete_album_confirm_title", comment: ""),
             isPresented: Binding(
@@ -98,6 +105,12 @@ struct AllAlbumsView: View {
     // MARK: Data
 
     private var filteredAlbums: [AlbumEntry] {
+        let token = FirstUseHitchDiagnostics.begin(
+            "AllAlbumsView.filteredAlbums",
+            detail: "albums=\(libraryVM.albumEntries.count)"
+        )
+        defer { FirstUseHitchDiagnostics.end(token) }
+
         let trimmed = pageController.searchText
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
