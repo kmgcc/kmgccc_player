@@ -457,10 +457,36 @@ private struct HomePlaylistCard: View {
     /// Parent-computed preview-cover slot count for the featured card.
     /// Ignored by non-featured kinds. Defaults to the per-mode baseline
     /// so callers that don't need dynamic sizing can omit it.
-    var featuredPreviewLimit: Int? = nil
-    var onFeaturedTrackPlay: ((Track) -> Void)? = nil
+    var featuredPreviewLimit: Int?
+    var onFeaturedTrackPlay: ((Track) -> Void)?
 
     @State private var coverImage: NSImage?
+
+    init(
+        playlist: Playlist,
+        mode: HomeLayoutMode,
+        kind: HomePlaylistCardKind,
+        featuredPreviewLimit: Int? = nil,
+        onFeaturedTrackPlay: ((Track) -> Void)? = nil
+    ) {
+        self.playlist = playlist
+        self.mode = mode
+        self.kind = kind
+        self.featuredPreviewLimit = featuredPreviewLimit
+        self.onFeaturedTrackPlay = onFeaturedTrackPlay
+        // Seed @State synchronously from the main-actor cover store so
+        // LazyVStack rematerialization doesn't flash the placeholder and
+        // doesn't kick off the async resolveImmediately/pipeline hop for
+        // covers we've already decoded once this session. The .task body
+        // short-circuits when the seed is populated (mirrors the
+        // HomePlaylistPreviewArtworkStore pattern already used for the
+        // featured-card preview thumbs).
+        _coverImage = State(
+            initialValue: HomePlaylistCardCoverStore.shared.cachedImage(
+                for: Self.headerArtworkIdentity(for: playlist)
+            )
+        )
+    }
     // Hover state intentionally removed — playlist cards used to apply a
     // 1.01–1.015 scaleEffect on hover, which forced the card's glass material
     // to recomposite at a new scale every time the cursor crossed a card
@@ -557,6 +583,12 @@ private struct HomePlaylistCard: View {
             }
         }
         .task(id: headerArtworkIdentity) {
+            // Init seeded @State from HomePlaylistCardCoverStore. If the
+            // image is already populated we skip resolveImmediately (which
+            // does main-thread sidecar JSON + PNG reads) and the pipeline
+            // actor hop entirely — rematerialization of the playlist
+            // section now reuses cached covers instead of round-tripping.
+            if coverImage != nil { return }
             await loadCover()
         }
     }
@@ -737,6 +769,7 @@ private struct HomePlaylistCard: View {
     }
 
     private func loadCover() async {
+        let identity = headerArtworkIdentity
         let request = DetailHeaderArtworkRequest.playlist(
             selectionIdentity: "playlist-\(playlist.id)",
             playlistID: playlist.id,
@@ -746,11 +779,13 @@ private struct HomePlaylistCard: View {
         let immediate = DetailHeaderArtworkResolver.shared.resolveImmediately(for: request)
         if let image = await loadHeaderImage(from: immediate) {
             coverImage = image
+            HomePlaylistCardCoverStore.shared.store(image, for: identity)
         }
 
         let resolved = await DetailHeaderArtworkResolver.shared.resolveDeferredArtwork(for: request)
         if let image = await loadHeaderImage(from: resolved ?? immediate) {
             coverImage = image
+            HomePlaylistCardCoverStore.shared.store(image, for: identity)
         }
     }
 
@@ -765,6 +800,10 @@ private struct HomePlaylistCard: View {
     }
 
     private var headerArtworkIdentity: String {
+        Self.headerArtworkIdentity(for: playlist)
+    }
+
+    fileprivate static func headerArtworkIdentity(for playlist: Playlist) -> String {
         let selectionIdentity = "playlist-\(playlist.id)"
         if let revision = LocalLibraryService.shared.playlistArtworkRevision(playlistID: playlist.id),
            !revision.isEmpty
@@ -773,6 +812,38 @@ private struct HomePlaylistCard: View {
         }
         let signature = PlaylistArtworkGenerator.contentSignature(tracks: playlist.tracks)
         return "\(selectionIdentity)-unresolved-\(signature)"
+    }
+}
+
+/// Main-actor synchronously-readable cache for Home playlist card cover
+/// images. Mirrors `HomePlaylistPreviewArtworkStore` but keyed by the
+/// playlist's full `headerArtworkIdentity` (selection + revision/signature)
+/// so a custom-artwork edit or generated-artwork refresh invalidates the
+/// entry automatically — the next render computes a new identity and
+/// misses the cache.
+@MainActor
+private final class HomePlaylistCardCoverStore {
+    static let shared = HomePlaylistCardCoverStore()
+
+    private var images: [String: NSImage] = [:]
+    private var insertionOrder: [String] = []
+    private let capacity = 128
+
+    func cachedImage(for identity: String) -> NSImage? {
+        images[identity]
+    }
+
+    func store(_ image: NSImage, for identity: String) {
+        if images[identity] == nil {
+            insertionOrder.append(identity)
+        }
+        images[identity] = image
+        if insertionOrder.count > capacity {
+            let oldest = insertionOrder.removeFirst()
+            if oldest != identity {
+                images.removeValue(forKey: oldest)
+            }
+        }
     }
 }
 
