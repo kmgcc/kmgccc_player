@@ -53,14 +53,14 @@ extension Track {
         let next = current.nextState
         guard current != next else { return }
         PreferenceStatsService.shared.setManualLikeState(trackID: id, state: next)
-        LocalLibraryService.shared.writeMetaOnly(for: self, reason: "manualLike")
+        LocalLibraryService.shared.writeMetaOnlyInBackground(for: self, reason: "manualLike")
     }
 
     /// Set manual like state explicitly.
     func setManualLikeState(_ state: ManualLikeState) {
         guard preferenceStats.manualLikeState != state else { return }
         PreferenceStatsService.shared.setManualLikeState(trackID: id, state: state)
-        LocalLibraryService.shared.writeMetaOnly(for: self, reason: "manualLike")
+        LocalLibraryService.shared.writeMetaOnlyInBackground(for: self, reason: "manualLike")
     }
 }
 

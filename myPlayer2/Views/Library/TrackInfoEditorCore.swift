@@ -675,22 +675,38 @@ struct TrackInfoEditorCore: View {
         guard allowsArtworkImport else { return }
         guard case .success(let urls) = result, let url = urls.first else { return }
 
-        let didStart = url.startAccessingSecurityScopedResource()
-        defer { if didStart { url.stopAccessingSecurityScopedResource() } }
-
-        if let data = try? Data(contentsOf: url) {
-            artworkData = data
+        Task { @MainActor in
+            let data = await Task.detached(priority: .userInitiated) { @Sendable in
+                let didStart = url.startAccessingSecurityScopedResource()
+                defer {
+                    if didStart {
+                        url.stopAccessingSecurityScopedResource()
+                    }
+                }
+                return try? Data(contentsOf: url)
+            }.value
+            if let data {
+                artworkData = data
+            }
         }
     }
 
     private func handleLyricsImport(_ result: Result<[URL], Error>) {
         guard case .success(let urls) = result, let url = urls.first else { return }
 
-        let didStart = url.startAccessingSecurityScopedResource()
-        defer { if didStart { url.stopAccessingSecurityScopedResource() } }
-
-        if let text = try? String(contentsOf: url, encoding: .utf8) {
-            lyricsText = text
+        Task { @MainActor in
+            let text = await Task.detached(priority: .userInitiated) { @Sendable in
+                let didStart = url.startAccessingSecurityScopedResource()
+                defer {
+                    if didStart {
+                        url.stopAccessingSecurityScopedResource()
+                    }
+                }
+                return try? String(contentsOf: url, encoding: .utf8)
+            }.value
+            if let text {
+                lyricsText = text
+            }
         }
     }
 

@@ -12,7 +12,7 @@ import Dispatch
 import Foundation
 import ImageIO
 
-struct TrackSidecar: Codable {
+nonisolated struct TrackSidecar: Codable {
     let schemaVersion: Int
     let id: UUID
     let title: String
@@ -225,7 +225,7 @@ struct TrackSidecar: Codable {
     }
 }
 
-private struct TrackPersistenceReferences {
+nonisolated struct TrackPersistenceReferences: Sendable {
     let artworkFileName: String?
     let lyricsFileName: String?
     let lyricsType: String?
@@ -242,6 +242,74 @@ private struct TrackPersistenceReferences {
         self.lyricsType = lyricsType
         self.ttmlLyricsFileName = ttmlLyricsFileName
     }
+}
+
+nonisolated enum TrackPersistenceAssetMode: Sendable {
+    case metaOnly
+    case metaAndLyrics
+    case metaAndArtwork
+    case metaLyricsAndArtwork
+}
+
+nonisolated struct TrackPersistenceSnapshot: Sendable {
+    let id: UUID
+    let title: String
+    let artist: String
+    let album: String
+    let albumArtist: String?
+    let userDescription: String
+    let genreTags: [String]
+    let language: String
+    let labelOrCompany: String
+    let releaseDate: Date?
+    let qqMusicSongMid: String?
+    let metadataSource: String?
+    let metadataFetchedAt: Date?
+    let metadataConfidence: Double?
+    let duration: Double
+    let addedAt: Date
+    let importedAt: Date?
+    let lyricsTimeOffsetMs: Double
+    let originalFilePath: String
+    let libraryRelativePath: String
+    let artworkData: Data?
+    let ttmlLyricText: String?
+    let lyricsText: String?
+    let preferenceStats: TrackPreferenceStats
+
+    @MainActor
+    init(track: Track, preferenceStats: TrackPreferenceStats) {
+        id = track.id
+        title = track.title
+        artist = track.artist
+        album = track.album
+        albumArtist = track.albumArtist
+        userDescription = track.userDescription
+        genreTags = track.genreTags
+        language = track.language
+        labelOrCompany = track.labelOrCompany
+        releaseDate = track.releaseDate
+        qqMusicSongMid = track.qqMusicSongMid
+        metadataSource = track.metadataSource
+        metadataFetchedAt = track.metadataFetchedAt
+        metadataConfidence = track.metadataConfidence
+        duration = track.duration
+        addedAt = track.addedAt
+        importedAt = track.importedAt
+        lyricsTimeOffsetMs = track.lyricsTimeOffsetMs
+        originalFilePath = track.originalFilePath
+        libraryRelativePath = track.libraryRelativePath
+        artworkData = track.artworkData
+        ttmlLyricText = track.ttmlLyricText
+        lyricsText = track.lyricsText
+        self.preferenceStats = preferenceStats
+    }
+}
+
+nonisolated struct TrackPersistenceWriteResult: Sendable {
+    let trackID: UUID
+    let references: TrackPersistenceReferences?
+    let succeeded: Bool
 }
 
 struct PersistedPlaylistArtwork {
@@ -400,6 +468,26 @@ final class LocalLibraryService {
         }
     }
 
+    func writeMetaOnlyInBackground(for track: Track, reason: String) {
+        guard !track.libraryRelativePath.isEmpty else { return }
+
+        let snapshot = TrackPersistenceSnapshot(
+            track: track,
+            preferenceStats: PreferenceStatsService.shared.getStats(for: track.id)
+        )
+        suppressMonitorEvents(for: 1.5)
+
+        Task.detached(priority: .utility) { @Sendable in
+            _ = autoreleasepool {
+                LocalLibraryService.persistTrackSnapshotOnBackground(
+                    snapshot,
+                    mode: .metaOnly,
+                    reason: reason
+                )
+            }
+        }
+    }
+
     @discardableResult
     func writeTrackMetaAndLyrics(for track: Track, reason: String) -> Bool {
         guard !track.libraryRelativePath.isEmpty else { return false }
@@ -469,11 +557,117 @@ final class LocalLibraryService {
         }
     }
 
+    nonisolated static func persistTrackSnapshotOnBackground(
+        _ snapshot: TrackPersistenceSnapshot,
+        mode: TrackPersistenceAssetMode,
+        reason: String
+    ) -> TrackPersistenceWriteResult {
+        guard !snapshot.libraryRelativePath.isEmpty else {
+            return TrackPersistenceWriteResult(trackID: snapshot.id, references: nil, succeeded: false)
+        }
+
+        do {
+            let existingReferences = loadTrackPersistenceReferencesOnBackground(for: snapshot.id)
+            let finalReferences: TrackPersistenceReferences
+
+            switch mode {
+            case .metaOnly:
+                finalReferences = existingReferences
+                logTrackPersistenceOnBackground(
+                    snapshot: snapshot,
+                    reason: reason,
+                    action: "meta-only",
+                    artwork: "not-requested"
+                )
+            case .metaAndLyrics:
+                let trackFolder = try ensureTrackFolderOnBackground(for: snapshot.id)
+                finalReferences = try writeLyricsAssetsOnBackground(
+                    snapshot: snapshot,
+                    folder: trackFolder,
+                    existing: existingReferences
+                )
+                logTrackPersistenceOnBackground(
+                    snapshot: snapshot,
+                    reason: reason,
+                    action: "meta+lyrics",
+                    artwork: "not-requested"
+                )
+            case .metaAndArtwork:
+                let artworkFileName = try writeArtworkIfChangedOnBackground(
+                    snapshot: snapshot,
+                    reason: reason,
+                    existingFileName: existingReferences.artworkFileName
+                )
+                finalReferences = TrackPersistenceReferences(
+                    artworkFileName: artworkFileName,
+                    lyricsFileName: existingReferences.lyricsFileName,
+                    lyricsType: existingReferences.lyricsType,
+                    ttmlLyricsFileName: existingReferences.ttmlLyricsFileName
+                )
+            case .metaLyricsAndArtwork:
+                let trackFolder = try ensureTrackFolderOnBackground(for: snapshot.id)
+                let artworkFileName = try writeArtworkIfChangedOnBackground(
+                    snapshot: snapshot,
+                    reason: reason,
+                    existingFileName: existingReferences.artworkFileName
+                )
+                let lyricsReferences = try writeLyricsAssetsOnBackground(
+                    snapshot: snapshot,
+                    folder: trackFolder,
+                    existing: existingReferences
+                )
+                finalReferences = TrackPersistenceReferences(
+                    artworkFileName: artworkFileName,
+                    lyricsFileName: lyricsReferences.lyricsFileName,
+                    lyricsType: lyricsReferences.lyricsType,
+                    ttmlLyricsFileName: lyricsReferences.ttmlLyricsFileName
+                )
+            }
+
+            try writeTrackMetaOnBackground(snapshot: snapshot, references: finalReferences)
+            return TrackPersistenceWriteResult(
+                trackID: snapshot.id,
+                references: finalReferences,
+                succeeded: true
+            )
+        } catch {
+            Log.error(
+                "Failed background track persistence for \(snapshot.title): \(error)",
+                category: .library
+            )
+            return TrackPersistenceWriteResult(trackID: snapshot.id, references: nil, succeeded: false)
+        }
+    }
+
     private func ensureTrackFolder(for trackID: UUID) throws -> URL {
         ensureLibraryFolders()
         let trackFolder = LocalLibraryPaths.trackFolderURL(for: trackID)
         try fileManager.createDirectory(at: trackFolder, withIntermediateDirectories: true)
         return trackFolder
+    }
+
+    private nonisolated static func ensureTrackFolderOnBackground(for trackID: UUID) throws -> URL {
+        let fileManager = FileManager.default
+        ensureLibraryFoldersOnBackground()
+        let trackFolder = LocalLibraryPaths.trackFolderURL(for: trackID)
+        try fileManager.createDirectory(at: trackFolder, withIntermediateDirectories: true)
+        return trackFolder
+    }
+
+    private nonisolated static func ensureLibraryFoldersOnBackground() {
+        let fileManager = FileManager.default
+        do {
+            try fileManager.createDirectory(
+                at: LocalLibraryPaths.libraryRootURL,
+                withIntermediateDirectories: true
+            )
+            try fileManager.createDirectory(
+                at: LocalLibraryPaths.tracksRootURL,
+                withIntermediateDirectories: true
+            )
+        } catch {
+            Log.error("Failed to create library folders on background queue: \(error)", category: .library)
+        }
     }
 
     private func loadTrackPersistenceReferences(for trackID: UUID) -> TrackPersistenceReferences {
@@ -485,6 +679,30 @@ final class LocalLibraryService {
         }
 
         let resolvedArtworkFileName = resolvedTrackArtworkFileName(
+            for: trackID,
+            preferredFileName: sidecar.artworkFileName
+        )
+
+        return TrackPersistenceReferences(
+            artworkFileName: resolvedArtworkFileName,
+            lyricsFileName: sidecar.lyricsFileName,
+            lyricsType: sidecar.lyricsType,
+            ttmlLyricsFileName: sidecar.ttmlLyricsFileName
+        )
+    }
+
+    private nonisolated static func loadTrackPersistenceReferencesOnBackground(
+        for trackID: UUID
+    ) -> TrackPersistenceReferences {
+        let metaURL = LocalLibraryPaths.trackMetaURL(for: trackID)
+        let decoder = makeJSONDecoder()
+        guard let data = try? Data(contentsOf: metaURL),
+              let sidecar = try? decoder.decode(TrackSidecar.self, from: data)
+        else {
+            return TrackPersistenceReferences()
+        }
+
+        let resolvedArtworkFileName = resolvedTrackArtworkFileNameOnBackground(
             for: trackID,
             preferredFileName: sidecar.artworkFileName
         )
@@ -545,6 +763,59 @@ final class LocalLibraryService {
 
         let data = try encoder.encode(sidecar)
         let metaURL = LocalLibraryPaths.trackMetaURL(for: track.id)
+        try data.write(to: metaURL, options: .atomic)
+    }
+
+    private nonisolated static func writeTrackMetaOnBackground(
+        snapshot: TrackPersistenceSnapshot,
+        references: TrackPersistenceReferences
+    ) throws {
+        _ = try ensureTrackFolderOnBackground(for: snapshot.id)
+        let audioFileName = URL(fileURLWithPath: snapshot.libraryRelativePath).lastPathComponent
+        let sidecar = TrackSidecar(
+            schemaVersion: 6,
+            id: snapshot.id,
+            title: snapshot.title,
+            artist: snapshot.artist,
+            album: snapshot.album,
+            albumArtist: {
+                let trimmed = snapshot.albumArtist?.trimmingCharacters(in: .whitespacesAndNewlines)
+                return (trimmed?.isEmpty ?? true) ? nil : trimmed
+            }(),
+            description: {
+                let trimmed = snapshot.userDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? nil : trimmed
+            }(),
+            genreTags: snapshot.genreTags,
+            language: {
+                let trimmed = snapshot.language.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? nil : trimmed
+            }(),
+            labelOrCompany: {
+                let trimmed = snapshot.labelOrCompany.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? nil : trimmed
+            }(),
+            releaseDate: snapshot.releaseDate,
+            qqMusicSongMid: snapshot.qqMusicSongMid,
+            metadataSource: snapshot.metadataSource,
+            metadataFetchedAt: snapshot.metadataFetchedAt,
+            metadataConfidence: snapshot.metadataConfidence,
+            duration: snapshot.duration,
+            addedAt: snapshot.addedAt,
+            importedAt: snapshot.importedAt ?? snapshot.addedAt,
+            lyricsTimeOffsetMs: snapshot.lyricsTimeOffsetMs,
+            originalFilePath: snapshot.originalFilePath.isEmpty ? nil : snapshot.originalFilePath,
+            audioFileName: audioFileName.isEmpty ? nil : audioFileName,
+            artworkFileName: references.artworkFileName,
+            lyricsFileName: references.lyricsFileName,
+            lyricsType: references.lyricsType,
+            ttmlLyricsFileName: references.ttmlLyricsFileName,
+            ncmSourcePath: nil,
+            preferenceStats: snapshot.preferenceStats
+        )
+
+        let data = try makeJSONEncoder().encode(sidecar)
+        let metaURL = LocalLibraryPaths.trackMetaURL(for: snapshot.id)
         try data.write(to: metaURL, options: .atomic)
     }
 
@@ -627,6 +898,102 @@ final class LocalLibraryService {
         return targetArtworkFileName
     }
 
+    private nonisolated static func writeArtworkIfChangedOnBackground(
+        snapshot: TrackPersistenceSnapshot,
+        reason: String,
+        existingFileName: String? = nil
+    ) throws -> String? {
+        let fileManager = FileManager.default
+        let trackFolder = try ensureTrackFolderOnBackground(for: snapshot.id)
+        let existingArtworkFileName = resolvedTrackArtworkFileNameOnBackground(
+            for: snapshot.id,
+            preferredFileName: existingFileName
+        )
+        let existingArtworkURL = existingArtworkFileName.map { trackFolder.appendingPathComponent($0) }
+        let existingArtworkData = existingArtworkURL.flatMap { try? Data(contentsOf: $0) }
+        let targetArtworkFileName = LocalLibraryPaths.preferredTrackArtworkFileName
+        let targetArtworkURL = LocalLibraryPaths.trackArtworkURL(
+            for: snapshot.id,
+            fileName: targetArtworkFileName
+        )
+
+        guard let data = snapshot.artworkData, !data.isEmpty else {
+            let candidateFileNames = LocalLibraryPaths.trackArtworkCandidateFileNames(
+                preferredFileName: existingArtworkFileName
+            )
+            var removedAny = false
+            for fileName in candidateFileNames {
+                let candidateURL = trackFolder.appendingPathComponent(fileName)
+                if fileManager.fileExists(atPath: candidateURL.path) {
+                    try fileManager.removeItem(at: candidateURL)
+                    removedAny = true
+                }
+            }
+            logTrackPersistenceOnBackground(
+                snapshot: snapshot,
+                reason: reason,
+                action: "artwork-remove",
+                artwork: removedAny ? "removed" : "already-missing"
+            )
+            return nil
+        }
+
+        if dataMatchesOnBackground(data, existingArtworkData),
+           existingArtworkFileName == targetArtworkFileName {
+            logTrackPersistenceOnBackground(
+                snapshot: snapshot,
+                reason: reason,
+                action: "artwork-skip",
+                artwork: "raw-unchanged"
+            )
+            return existingArtworkFileName
+        }
+
+        guard
+            let dataToWrite = ArtworkDataNormalizer.normalizedJPEGData(
+                from: data,
+                maxPixelSize: ArtworkDataNormalizer.storedMaxPixelSize
+            )
+        else {
+            logTrackPersistenceOnBackground(
+                snapshot: snapshot,
+                reason: reason,
+                action: "artwork-error",
+                artwork: "normalize-failed"
+            )
+            throw NSError(
+                domain: "LocalLibraryService.TrackPersistence",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Artwork could not be downsampled and encoded"]
+            )
+        }
+
+        if dataMatchesOnBackground(dataToWrite, existingArtworkData),
+           existingArtworkFileName == targetArtworkFileName {
+            logTrackPersistenceOnBackground(
+                snapshot: snapshot,
+                reason: reason,
+                action: "artwork-skip",
+                artwork: "encoded-unchanged"
+            )
+            return existingArtworkFileName
+        }
+
+        try dataToWrite.write(to: targetArtworkURL, options: .atomic)
+        if let existingArtworkFileName, existingArtworkFileName != targetArtworkFileName,
+           let existingArtworkURL,
+           fileManager.fileExists(atPath: existingArtworkURL.path) {
+            try? fileManager.removeItem(at: existingArtworkURL)
+        }
+        logTrackPersistenceOnBackground(
+            snapshot: snapshot,
+            reason: reason,
+            action: "artwork-write",
+            artwork: "changed encoding=jpeg-downsampled maxPixel=\(ArtworkDataNormalizer.storedMaxPixelSize)"
+        )
+        return targetArtworkFileName
+    }
+
     private func writeLyricsAssets(
         for track: Track,
         folder: URL,
@@ -634,6 +1001,72 @@ final class LocalLibraryService {
     ) throws -> TrackPersistenceReferences {
         let ttmlText = track.ttmlLyricText?.trimmingCharacters(in: .whitespacesAndNewlines)
         let legacyText = track.lyricsText?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ttmlURL = folder.appendingPathComponent("lyrics.ttml")
+        let plainLyricsURL = folder.appendingPathComponent("lyrics.txt")
+
+        if let ttml = ttmlText, !ttml.isEmpty {
+            try ttml.write(to: ttmlURL, atomically: true, encoding: .utf8)
+            if fileManager.fileExists(atPath: plainLyricsURL.path) {
+                try? fileManager.removeItem(at: plainLyricsURL)
+            }
+            return TrackPersistenceReferences(
+                artworkFileName: existing.artworkFileName,
+                lyricsFileName: nil,
+                lyricsType: nil,
+                ttmlLyricsFileName: "lyrics.ttml"
+            )
+        }
+
+        if let legacy = legacyText, !legacy.isEmpty {
+            let isTTML = legacy.lowercased().contains("<tt") && legacy.contains("</")
+            if isTTML {
+                try legacy.write(to: ttmlURL, atomically: true, encoding: .utf8)
+                if fileManager.fileExists(atPath: plainLyricsURL.path) {
+                    try? fileManager.removeItem(at: plainLyricsURL)
+                }
+                return TrackPersistenceReferences(
+                    artworkFileName: existing.artworkFileName,
+                    lyricsFileName: nil,
+                    lyricsType: nil,
+                    ttmlLyricsFileName: "lyrics.ttml"
+                )
+            }
+
+            try legacy.write(to: plainLyricsURL, atomically: true, encoding: .utf8)
+            if fileManager.fileExists(atPath: ttmlURL.path) {
+                try? fileManager.removeItem(at: ttmlURL)
+            }
+            return TrackPersistenceReferences(
+                artworkFileName: existing.artworkFileName,
+                lyricsFileName: "lyrics.txt",
+                lyricsType: "plain",
+                ttmlLyricsFileName: nil
+            )
+        }
+
+        if fileManager.fileExists(atPath: ttmlURL.path) {
+            try? fileManager.removeItem(at: ttmlURL)
+        }
+        if fileManager.fileExists(atPath: plainLyricsURL.path) {
+            try? fileManager.removeItem(at: plainLyricsURL)
+        }
+
+        return TrackPersistenceReferences(
+            artworkFileName: existing.artworkFileName,
+            lyricsFileName: nil,
+            lyricsType: nil,
+            ttmlLyricsFileName: nil
+        )
+    }
+
+    private nonisolated static func writeLyricsAssetsOnBackground(
+        snapshot: TrackPersistenceSnapshot,
+        folder: URL,
+        existing: TrackPersistenceReferences
+    ) throws -> TrackPersistenceReferences {
+        let fileManager = FileManager.default
+        let ttmlText = snapshot.ttmlLyricText?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let legacyText = snapshot.lyricsText?.trimmingCharacters(in: .whitespacesAndNewlines)
         let ttmlURL = folder.appendingPathComponent("lyrics.ttml")
         let plainLyricsURL = folder.appendingPathComponent("lyrics.txt")
 
@@ -700,12 +1133,45 @@ final class LocalLibraryService {
         return lhs == rhs
     }
 
+    private nonisolated static func dataMatchesOnBackground(_ lhs: Data, _ rhs: Data?) -> Bool {
+        guard let rhs else { return false }
+        guard ArtworkAssetStore.checksum(for: lhs) == ArtworkAssetStore.checksum(for: rhs) else {
+            return false
+        }
+        return lhs == rhs
+    }
+
     private func resolvedTrackArtworkFileName(for trackID: UUID, preferredFileName: String?) -> String? {
         let folder = LocalLibraryPaths.trackFolderURL(for: trackID)
         return resolvedTrackArtworkFileName(in: folder, preferredFileName: preferredFileName)
     }
 
+    private nonisolated static func resolvedTrackArtworkFileNameOnBackground(
+        for trackID: UUID,
+        preferredFileName: String?
+    ) -> String? {
+        let folder = LocalLibraryPaths.trackFolderURL(for: trackID)
+        return resolvedTrackArtworkFileNameOnBackground(in: folder, preferredFileName: preferredFileName)
+    }
+
     private func resolvedTrackArtworkFileName(in folder: URL, preferredFileName: String?) -> String? {
+        for fileName in LocalLibraryPaths.trackArtworkCandidateFileNames(preferredFileName: preferredFileName) {
+            let candidateURL = folder.appendingPathComponent(fileName)
+            if fileManager.fileExists(atPath: candidateURL.path) {
+                return fileName
+            }
+        }
+        if let preferredFileName, !preferredFileName.isEmpty {
+            return preferredFileName
+        }
+        return nil
+    }
+
+    private nonisolated static func resolvedTrackArtworkFileNameOnBackground(
+        in folder: URL,
+        preferredFileName: String?
+    ) -> String? {
+        let fileManager = FileManager.default
         for fileName in LocalLibraryPaths.trackArtworkCandidateFileNames(preferredFileName: preferredFileName) {
             let candidateURL = folder.appendingPathComponent(fileName)
             if fileManager.fileExists(atPath: candidateURL.path) {
@@ -725,6 +1191,18 @@ final class LocalLibraryService {
     private func logTrackPersistence(track: Track, reason: String, action: String, artwork: String) {
         Log.info(
             "[TrackPersistence] reason=\(reason) track=\(track.id.uuidString) title=\(track.title) action=\(action) artwork=\(artwork)",
+            category: .library
+        )
+    }
+
+    private nonisolated static func logTrackPersistenceOnBackground(
+        snapshot: TrackPersistenceSnapshot,
+        reason: String,
+        action: String,
+        artwork: String
+    ) {
+        Log.info(
+            "[TrackPersistence] reason=\(reason) track=\(snapshot.id.uuidString) title=\(snapshot.title) action=\(action) artwork=\(artwork)",
             category: .library
         )
     }

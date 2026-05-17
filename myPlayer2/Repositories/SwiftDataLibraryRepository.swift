@@ -234,10 +234,9 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         await persistTracks(
             tracks,
             label: "meta-only",
-            reason: reason
-        ) { [libraryService] track in
-            libraryService.writeMetaOnly(for: track, reason: reason)
-        }
+            reason: reason,
+            mode: .metaOnly
+        )
     }
 
     func persistTrackMetaAndLyrics(_ track: Track, reason: String) async {
@@ -248,10 +247,9 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         await persistTracks(
             tracks,
             label: "meta+lyrics",
-            reason: reason
-        ) { [libraryService] track in
-            libraryService.writeTrackMetaAndLyrics(for: track, reason: reason)
-        }
+            reason: reason,
+            mode: .metaAndLyrics
+        )
     }
 
     func persistTrackMetaAndArtwork(_ track: Track, reason: String) async {
@@ -262,10 +260,9 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         await persistTracks(
             tracks,
             label: "meta+artwork",
-            reason: reason
-        ) { [libraryService] track in
-            libraryService.writeTrackMetaAndArtwork(for: track, reason: reason)
-        }
+            reason: reason,
+            mode: .metaAndArtwork
+        )
     }
 
     func persistTrackMetaLyricsAndArtwork(_ track: Track, reason: String) async {
@@ -276,10 +273,9 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         await persistTracks(
             tracks,
             label: "meta+lyrics+artwork",
-            reason: reason
-        ) { [libraryService] track in
-            libraryService.writeTrackMetaLyricsAndArtwork(for: track, reason: reason)
-        }
+            reason: reason,
+            mode: .metaLyricsAndArtwork
+        )
     }
 
     func refreshTracks(ids: [UUID]) async -> [Track] {
@@ -1205,11 +1201,41 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         }
     }
 
+    private func applyPersistenceReferences(_ results: [TrackPersistenceWriteResult]) {
+        let referencesByTrackID = Dictionary(
+            uniqueKeysWithValues: results.compactMap { result -> (UUID, TrackPersistenceReferences)? in
+                guard let references = result.references else { return nil }
+                return (result.trackID, references)
+            }
+        )
+        guard !referencesByTrackID.isEmpty else { return }
+
+        func apply(_ references: TrackPersistenceReferences, to track: Track) {
+            track.artworkFileName = references.artworkFileName
+            track.lyricsFileName = references.lyricsFileName
+            track.ttmlLyricsFileName = references.ttmlLyricsFileName
+        }
+
+        for track in allTracks {
+            if let references = referencesByTrackID[track.id] {
+                apply(references, to: track)
+            }
+        }
+
+        for playlist in playlists {
+            for track in playlist.tracks {
+                if let references = referencesByTrackID[track.id] {
+                    apply(references, to: track)
+                }
+            }
+        }
+    }
+
     private func persistTracks(
         _ tracks: [Track],
         label: String,
         reason: String,
-        writer: (Track) -> Bool
+        mode: TrackPersistenceAssetMode
     ) async -> LibraryTrackPersistenceResult {
         let uniqueTracks = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) }).values.sorted {
             $0.id.uuidString < $1.id.uuidString
@@ -1223,21 +1249,40 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             category: .library
         )
 
-        var persistedTrackIDs: [UUID] = []
-        var failedTrackIDs: [UUID] = []
-
-        for track in uniqueTracks {
-            autoreleasepool {
-                if writer(track) {
-                    persistedTrackIDs.append(track.id)
-                } else {
-                    failedTrackIDs.append(track.id)
-                }
-            }
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        let statsByTrackID = PreferenceStatsService.shared.getStats(for: uniqueTracks.map(\.id))
+        let snapshots = uniqueTracks.map { track in
+            TrackPersistenceSnapshot(
+                track: track,
+                preferenceStats: statsByTrackID[track.id] ?? TrackPreferenceStats()
+            )
         }
 
-        if !persistedTrackIDs.isEmpty {
-            _ = await refreshTracks(ids: persistedTrackIDs)
+        libraryService.suppressMonitorEvents(
+            for: min(10.0, max(1.5, Double(uniqueTracks.count) * 0.15 + 1.5))
+        )
+
+        let results = await Task.detached(priority: .utility) { @Sendable in
+            snapshots.map { snapshot in
+                autoreleasepool {
+                    LocalLibraryService.persistTrackSnapshotOnBackground(
+                        snapshot,
+                        mode: mode,
+                        reason: reason
+                    )
+                }
+            }
+        }.value
+
+        let persistedResults = results.filter(\.succeeded)
+        let persistedTrackIDs = persistedResults.map(\.trackID)
+        let persistedTrackIDSet = Set(persistedTrackIDs)
+        let failedTrackIDs = results.filter { !$0.succeeded }.map(\.trackID)
+
+        if !persistedResults.isEmpty {
+            applyPersistenceReferences(persistedResults)
+            rebuildRuntimeDerivedState()
+            upsertTrackIndexEntries(for: allTracks.filter { persistedTrackIDSet.contains($0.id) })
         }
 
         if !persistedTrackIDs.isEmpty {
@@ -1249,7 +1294,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         }
 
         Log.info(
-            "[TrackPersistenceRepository] label=\(label) reason=\(reason) complete persisted=\(persistedTrackIDs.count) failed=\(failedTrackIDs.count)",
+            "[TrackPersistenceRepository] label=\(label) reason=\(reason) complete persisted=\(persistedTrackIDs.count) failed=\(failedTrackIDs.count) ms=\(String(format: "%.1f", (ProcessInfo.processInfo.systemUptime - startedAt) * 1000))",
             category: .library
         )
 
@@ -1311,6 +1356,38 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             try indexContext.save()
         } catch {
             print("⚠️ 重建索引缓存失败: \(error)")
+        }
+    }
+
+    private func upsertTrackIndexEntries(for tracks: [Track]) {
+        guard let indexContext, !tracks.isEmpty else { return }
+
+        do {
+            for track in tracks {
+                let trackID = track.id
+                let descriptor = FetchDescriptor<TrackIndexEntry>(
+                    predicate: #Predicate<TrackIndexEntry> { entry in
+                        entry.id == trackID
+                    }
+                )
+                let existingEntries = try indexContext.fetch(descriptor)
+                for entry in existingEntries {
+                    indexContext.delete(entry)
+                }
+
+                let entry = TrackIndexEntry(
+                    id: track.id,
+                    libraryRelativePath: track.libraryRelativePath,
+                    normalizedTitle: LibraryNormalization.normalizeTitle(track.title),
+                    normalizedArtist: LibraryNormalization.normalizeArtist(track.artist),
+                    duration: track.duration,
+                    indexedAt: Date()
+                )
+                indexContext.insert(entry)
+            }
+            try indexContext.save()
+        } catch {
+            print("⚠️ 更新索引缓存条目失败: \(error)")
         }
     }
 

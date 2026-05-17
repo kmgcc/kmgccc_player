@@ -314,16 +314,22 @@ struct HomeView: View {
         ScrollView(.vertical, showsIndicators: true) {
             VStack(spacing: mode.sectionSpacing) {
                 if !HomeDebugFlags.disableHero, let heroTrack = homeVM.heroTrack {
-                    HomeHeroView(
-                        track: heroTrack,
-                        containerWidth: contentWidth,
-                        mode: mode,
-                        onSwitchTrack: {
-                            homeVM.switchHeroTrack(from: libraryVM)
-                        }
-                    )
-                        .padding(.leading, centerLeftPad)
-                        .padding(.trailing, centerRightPad)
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text("精选")
+                            .font(.system(size: mode.sectionTitleFontSize, weight: .semibold))
+                            .tracking(-0.3)
+
+                        HomeHeroView(
+                            track: heroTrack,
+                            containerWidth: contentWidth,
+                            mode: mode,
+                            onSwitchTrack: {
+                                homeVM.switchHeroTrack(from: libraryVM)
+                            }
+                        )
+                    }
+                    .padding(.leading, centerLeftPad)
+                    .padding(.trailing, centerRightPad)
                 }
 
                 if !HomeDebugFlags.disablePlaylists, !homeVM.playlists.isEmpty {

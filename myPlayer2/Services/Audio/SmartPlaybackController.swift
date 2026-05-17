@@ -489,9 +489,12 @@ final class SmartPlaybackController {
         // Finalize current session and save all pending stats.
         finalizeCurrentPlaybackSession(reason: .appTermination)
         let tracksByID = Dictionary(uniqueKeysWithValues: sourceTracks.map { ($0.id, $0) })
-        PreferenceStatsService.shared.saveAllPendingNow { trackID in
-            tracksByID[trackID]
-        }
+        PreferenceStatsService.shared.saveAllPendingNow(
+            trackProvider: { trackID in
+                tracksByID[trackID]
+            },
+            synchronously: true
+        )
     }
 
     @objc private func handleSaveRequest(_ notification: Notification) {
@@ -499,7 +502,7 @@ final class SmartPlaybackController {
         if let trackIDs = notification.userInfo?["trackIDs"] as? [UUID] {
             for trackID in trackIDs {
                 if let track = sourceTracks.first(where: { $0.id == trackID }) {
-                    LocalLibraryService.shared.writeMetaOnly(for: track, reason: "playbackStats")
+                    LocalLibraryService.shared.writeMetaOnlyInBackground(for: track, reason: "playbackStats")
                 }
             }
         }

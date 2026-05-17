@@ -35,6 +35,7 @@ final class AppSessionHost: ObservableObject {
     private var libraryService: LocalLibraryService?
     private var repository: LibraryRepositoryProtocol?
     private var playbackMemoryTimer: Timer?
+    private let mainThreadStallMonitor = MainThreadStallMonitor()
     private var didAttemptPlaybackMemoryRestore = false
 
     init(
@@ -54,6 +55,7 @@ final class AppSessionHost: ObservableObject {
         hasSetupDependencies = true
 
         print("[Lifecycle] AppSessionHost initial setup")
+        mainThreadStallMonitor.start()
         setupDependencies()
         await restorePlaybackMemoryIfNeeded()
 
@@ -179,9 +181,12 @@ final class AppSessionHost: ObservableObject {
         AppDelegate.applicationWillTerminateHandler = { [weak self] in
             self?.savePlaybackMemory()
             if let libraryVM = self?.libraryVM {
-                PreferenceStatsService.shared.saveAllPendingNow { trackID in
-                    libraryVM.allTracks.first { $0.id == trackID }
-                }
+                PreferenceStatsService.shared.saveAllPendingNow(
+                    trackProvider: { trackID in
+                        libraryVM.allTracks.first { $0.id == trackID }
+                    },
+                    synchronously: true
+                )
             }
             Task {
                 await QQMusicHelperProcess.shared.terminate()
@@ -544,6 +549,53 @@ final class AppSessionHost: ObservableObject {
                 window.setFrame(originalFrame, display: true)
             }
         }
+    }
+}
+
+@MainActor
+private final class MainThreadStallMonitor {
+    private var timer: DispatchSourceTimer?
+    private var expectedFireTime = DispatchTime.now()
+
+    private let interval: DispatchTimeInterval = .milliseconds(50)
+    private let intervalNanoseconds: UInt64 = 50_000_000
+    private let warningThresholdMs = 50.0
+    private let criticalThresholdMs = 100.0
+
+    func start() {
+        guard timer == nil else { return }
+
+        expectedFireTime = .now() + interval
+
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: expectedFireTime, repeating: interval, leeway: .milliseconds(5))
+        timer.setEventHandler { [weak self] in
+            Task { @MainActor in
+                self?.tick()
+            }
+        }
+        self.timer = timer
+        timer.resume()
+
+        Log.info("[MainThreadStall] monitor started thresholdMs=50", category: .perf)
+    }
+
+    private func tick() {
+        let now = DispatchTime.now()
+        let delayNs = now.uptimeNanoseconds > expectedFireTime.uptimeNanoseconds
+            ? now.uptimeNanoseconds - expectedFireTime.uptimeNanoseconds
+            : 0
+        let delayMs = Double(delayNs) / 1_000_000.0
+
+        if delayMs >= warningThresholdMs {
+            let severity = delayMs >= criticalThresholdMs ? "critical" : "warning"
+            Log.warning(
+                "[MainThreadStall] delayMs=\(String(format: "%.1f", delayMs)) severity=\(severity)",
+                category: .perf
+            )
+        }
+
+        expectedFireTime = DispatchTime(uptimeNanoseconds: now.uptimeNanoseconds + intervalNanoseconds)
     }
 }
 

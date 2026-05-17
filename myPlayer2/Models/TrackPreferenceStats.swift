@@ -139,7 +139,7 @@ nonisolated struct TrackPreferenceStats: Codable, Equatable, Sendable {
 
 extension TrackPreferenceStats {
     /// Create from legacy playCount value (migration).
-    static func fromLegacy(playCount: Int) -> TrackPreferenceStats {
+    nonisolated static func fromLegacy(playCount: Int) -> TrackPreferenceStats {
         var stats = TrackPreferenceStats()
         stats.playCount = playCount
         // Assume legacy plays were complete plays (conservative estimate).

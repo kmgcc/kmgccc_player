@@ -2579,17 +2579,18 @@ struct FullscreenPlayerView: View {
     ) -> String {
         guard let track else { return "" }
 
-        if forceDiskReload, let fileText = resolvedFullscreenLyricsTextFromDisk(for: track) {
+        if forceDiskReload, !playerVM.isPlaying,
+           let fileText = resolvedFullscreenLyricsTextFromDisk(for: track) {
             return fileText
         }
 
-        let plain = track.loadLyricsIfNeeded()
+        let plain = track.lyricsText ?? (!playerVM.isPlaying ? track.loadLyricsIfNeeded() : nil)
         let userText = plain?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !userText.isEmpty {
             return plain!
         }
 
-        let ttml = track.loadTTMLLyricsIfNeeded()
+        let ttml = track.ttmlLyricText ?? (!playerVM.isPlaying ? track.loadTTMLLyricsIfNeeded() : nil)
         let ttmlText = ttml?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !ttmlText.isEmpty {
             return ttml!

@@ -24,9 +24,11 @@ struct HomeHeroView: View {
     @State private var coverImage: NSImage?
     @State private var artworkData: Data?
     @State private var heroBackdropImage: CGImage?
+    @State private var heroCoverHoverBackdropImage: CGImage?
     @State private var heroArtworkChecksum: UInt64 = 0
     @State private var heroAnalysis: ArtworkColorAnalysis?
     @State private var isHovering = false
+    @State private var isCoverHovering = false
 
     /// Cached hero palette. Invariant: equals `Self.makeHeroPalette(...)` for
     /// the most recent observed inputs. Recomputed only via the `.onChange`
@@ -201,6 +203,8 @@ struct HomeHeroView: View {
                 .allowsHitTesting(false)
             heroContent
                 .zIndex(1)
+            coverHoverHitRegion
+                .zIndex(2)
         }
         .frame(height: heroHeight)
         .frame(maxWidth: .infinity)
@@ -234,23 +238,27 @@ struct HomeHeroView: View {
         .onChange(of: appSettings.globalArtworkTintEnabled) { _, _ in recomputeHeroPalette() }
     }
 
-    private var heroBlurConfig: CoverGradientBlurConfig {
-        CoverGradientBlurConfig(
-            blurRadius: 240,
+    private func heroBlurConfig(variant: HomeHeroBackdropVariant) -> CoverGradientBlurConfig {
+        let isCoverHover = variant == .coverHover
+        return CoverGradientBlurConfig(
+            blurRadius: isCoverHover ? 560 : 240,
             colorOverlayOpacity: 0.46,
-            transitionDuration: 0.35,
+            transitionDuration: isCoverHover ? 0.28 : 0.35,
             edgeStripWidth: 3.0,
             blurStartRatio: 0.08,
             blurEndRatio: 0.9,
             overlayOffsetRatio: 0.0,
             blurCurveGamma: 5.0,
             overlayCurveGamma: 3.0,
+            overlayStartRatioFromEdge: isCoverHover ? 0.0 : 0.28,
             edgeFillMode: .pixelStretch,
-            // Start blur slightly inside the artwork's right half
-            blurStartRatioFromEdge: 0.42,
+            blurMaskMode: isCoverHover ? .extensionOnly : .progressiveRamp,
+            // Normal keeps the existing soft ramp; cover hover selects only
+            // the right-side extension so the square cover area stays clean.
+            blurStartRatioFromEdge: isCoverHover ? 0.0 : 0.42,
             // Keep the hero ramp earlier than fullscreen so the text area
             // resolves into a cleaner colour field at card height.
-            blurAlphaCoefficients: (0, 0.62, 0.26, 0.12)
+            blurAlphaCoefficients: isCoverHover ? (0, 0.36, 0.38, 0.26) : (0, 0.62, 0.26, 0.12)
         )
     }
 
@@ -268,13 +276,16 @@ struct HomeHeroView: View {
     private var backdropView: some View {
         if let heroBackdropImage {
             GeometryReader { geometry in
-                let imageAspect = CGFloat(heroBackdropImage.width) / max(1, CGFloat(heroBackdropImage.height))
-                Image(decorative: heroBackdropImage, scale: 1, orientation: .up)
-                    .resizable()
-                    .interpolation(.medium)
-                    .aspectRatio(imageAspect, contentMode: .fill)
-                    .frame(width: geometry.size.width, height: geometry.size.height, alignment: .leading)
-                    .clipped()
+                ZStack(alignment: .leading) {
+                    heroBackdropLayer(heroBackdropImage, geometry: geometry)
+
+                    if let heroCoverHoverBackdropImage {
+                        heroBackdropLayer(heroCoverHoverBackdropImage, geometry: geometry)
+                            .opacity(isCoverHovering ? 1 : 0)
+                    }
+                }
+                .animation(.easeInOut(duration: 0.24), value: isCoverHovering)
+                .animation(.easeInOut(duration: 0.24), value: heroCoverHoverBackdropImage != nil)
             }
         } else {
             RoundedRectangle(cornerRadius: 22, style: .continuous)
@@ -290,6 +301,30 @@ struct HomeHeroView: View {
                     )
                 )
         }
+    }
+
+    private func heroBackdropLayer(_ image: CGImage, geometry: GeometryProxy) -> some View {
+        let imageAspect = CGFloat(image.width) / max(1, CGFloat(image.height))
+        return Image(decorative: image, scale: 1, orientation: .up)
+            .resizable()
+            .interpolation(.medium)
+            .aspectRatio(imageAspect, contentMode: .fill)
+            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .leading)
+            .clipped()
+    }
+
+    private var coverHoverSide: CGFloat {
+        let side = artworkLeadingWidth > 0 ? artworkLeadingWidth : baseHeroHeight
+        return min(heroHeight, max(1, side))
+    }
+
+    private var coverHoverHitRegion: some View {
+        Color.clear
+            .frame(width: coverHoverSide, height: coverHoverSide, alignment: .topLeading)
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                isCoverHovering = hovering
+            }
     }
 
     private var heroContent: some View {
@@ -547,6 +582,7 @@ struct HomeHeroView: View {
         coverImage = nil
         artworkData = nil
         heroBackdropImage = nil
+        heroCoverHoverBackdropImage = nil
         heroArtworkChecksum = 0
         heroAnalysis = nil
         let data = track.loadArtworkDataIfNeeded()
@@ -566,7 +602,8 @@ struct HomeHeroView: View {
         )
         async let backdropTask: CGImage? = renderHeroBackdrop(
             artworkData: data,
-            checksum: checksum
+            checksum: checksum,
+            variant: .normal
         )
         // Analyze locally so the hero's text/dominant colours track this card's
         // artwork, not the currently-playing track's ThemeStore palette.
@@ -582,15 +619,24 @@ struct HomeHeroView: View {
         coverImage = image
         heroBackdropImage = backdrop
         heroAnalysis = analysis
+
+        let hoverBackdrop = await renderHeroBackdrop(
+            artworkData: data,
+            checksum: checksum,
+            variant: .coverHover
+        )
+        guard heroArtworkChecksum == checksum else { return }
+        heroCoverHoverBackdropImage = hoverBackdrop
     }
 
     private func renderHeroBackdrop(
         artworkData: Data,
-        checksum: UInt64
+        checksum: UInt64,
+        variant: HomeHeroBackdropVariant
     ) async -> CGImage? {
-        let config = heroBlurConfig
+        let config = heroBlurConfig(variant: variant)
         let targetSize = CGSize(width: 1280, height: 380)
-        let cacheKey = "\(checksum)-1280x380-home-hero-v3" as NSString
+        let cacheKey = "\(checksum)-1280x380-home-hero-\(variant.cacheKey)-v5" as NSString
 
         if let cached = HomeHeroBackdropCache.shared.image(for: cacheKey) {
             return cached
@@ -619,6 +665,18 @@ struct HomeHeroView: View {
             HomeHeroBackdropCache.shared.setImage(rendered, for: cacheKey)
         }
         return rendered
+    }
+}
+
+private enum HomeHeroBackdropVariant {
+    case normal
+    case coverHover
+
+    var cacheKey: String {
+        switch self {
+        case .normal: return "normal"
+        case .coverHover: return "cover-hover"
+        }
     }
 }
 

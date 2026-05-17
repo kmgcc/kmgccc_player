@@ -48,7 +48,8 @@ private struct HeaderArtworkBoundsReporter: View {
 }
 
 struct LibraryDetailHeaderView: View {
-    private static let visibleDescriptionLineCount = 7
+    private static let artworkSide: CGFloat = 220
+    private static let visibleDescriptionLineCount = 3
     private static let maxHeaderDescriptionContentLines = 15
 
     @Environment(LibraryViewModel.self) private var libraryVM
@@ -83,30 +84,12 @@ struct LibraryDetailHeaderView: View {
         let _ = LyricsRuntimeProfile.markBody("LibraryDetailHeaderView.body")
         HStack(alignment: .bottom, spacing: 20) {
             artworkColumn
-            .frame(width: 220, height: 220)
+            .frame(width: Self.artworkSide, height: Self.artworkSide)
             .background(
                 HeaderArtworkBoundsReporter(onChange: onArtworkFrameChange)
             )
 
-            VStack(alignment: .leading, spacing: 5) {
-                titleView
-                subtitleView
-                metadataView
-                Spacer().frame(height: 2)
-                if isEditing {
-                    descriptionEditor
-                    if case .album = config { yearEditor }
-                } else {
-                    if hasReadableDescription {
-                        descriptionReadView
-                    }
-                }
-
-                Spacer()
-
-                headerButtonsView
-            }
-            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 220, maxHeight: 220, alignment: .leading)
+            headerTextColumn
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 20)
@@ -134,6 +117,49 @@ struct LibraryDetailHeaderView: View {
                     onArtworkMutation()
                 }
                 .presentationSizing(.page)
+            }
+        }
+    }
+
+    private var headerTextColumn: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            headerTopContent
+                .frame(
+                    maxWidth: .infinity,
+                    maxHeight: headerTopContentHeight,
+                    alignment: .topLeading
+                )
+                .clipped()
+
+            Spacer(minLength: 0)
+
+            headerButtonsView
+        }
+        .frame(
+            minWidth: 0,
+            maxWidth: .infinity,
+            minHeight: Self.artworkSide,
+            maxHeight: Self.artworkSide,
+            alignment: .leading
+        )
+    }
+
+    private var headerTopContentHeight: CGFloat {
+        Self.artworkSide - buttonHeight - 14
+    }
+
+    @ViewBuilder
+    private var headerTopContent: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            titleView
+            subtitleView
+            metadataView
+            Spacer().frame(height: 2)
+            if isEditing {
+                descriptionEditor
+                if case .album = config { yearEditor }
+            } else if hasReadableDescription {
+                descriptionReadView
             }
         }
     }
@@ -245,7 +271,7 @@ struct LibraryDetailHeaderView: View {
     @ViewBuilder
     private var artworkPlaceholder: some View {
         let isCircle = config.isCircle
-        ArtworkPlaceholderView.header(size: 220, isCircle: isCircle)
+        ArtworkPlaceholderView.header(size: Self.artworkSide, isCircle: isCircle)
     }
 
     private var artworkClipShape: AnyShape {
