@@ -191,9 +191,13 @@ final class PreferenceStatsService {
         }
     }
 
-    /// Save all dirty stats to their respective sidecars synchronously on the main actor.
+    /// Save all dirty stats to their respective sidecars.
+    /// Defaults to background writes; app-termination paths can request synchronous writes.
     /// - Parameter trackProvider: Optional closure to get Track objects for writing sidecars.
-    func saveAllPendingNow(trackProvider: ((UUID) -> Track?)? = nil) {
+    func saveAllPendingNow(
+        trackProvider: ((UUID) -> Track?)? = nil,
+        synchronously: Bool = false
+    ) {
         let tracksToSave = Array(dirtyTrackIDs)
 
         guard !tracksToSave.isEmpty else { return }
@@ -203,7 +207,11 @@ final class PreferenceStatsService {
         if let provider = trackProvider {
             for trackID in tracksToSave {
                 if let track = provider(trackID) {
-                    LocalLibraryService.shared.writeMetaOnly(for: track, reason: "playbackStats")
+                    if synchronously {
+                        LocalLibraryService.shared.writeMetaOnly(for: track, reason: "playbackStats")
+                    } else {
+                        LocalLibraryService.shared.writeMetaOnlyInBackground(for: track, reason: "playbackStats")
+                    }
                     dirtyTrackIDs.remove(trackID)
                     savedCount += 1
                 }
@@ -230,7 +238,7 @@ final class PreferenceStatsService {
 
     /// Save stats for a specific track immediately.
     func saveStats(for track: Track) {
-        LocalLibraryService.shared.writeMetaOnly(for: track, reason: "playbackStats")
+        LocalLibraryService.shared.writeMetaOnlyInBackground(for: track, reason: "playbackStats")
 
         dirtyTrackIDs.remove(track.id)
     }

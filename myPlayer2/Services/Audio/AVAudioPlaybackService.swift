@@ -95,7 +95,17 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         self.volume = AppSettings.shared.volume
         // Engine is now lazily initialized on first access (see `engine` property)
         setupSmartController()
-        Log.debug("AVAudioPlaybackService initialized with Smart Shuffle (engine deferred)", category: .audio)
+        Log.info(
+            "[PlaybackPipeline] AVAudioPlaybackService init id=\(ObjectIdentifier(self)) engine=deferred",
+            category: .audio
+        )
+    }
+
+    deinit {
+        Log.info(
+            "[PlaybackPipeline] AVAudioPlaybackService deinit id=\(ObjectIdentifier(self))",
+            category: .audio
+        )
     }
 
     // MARK: - Setup
@@ -300,6 +310,10 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     }
 
     private func playInternal(track: Track) {
+        Log.info(
+            "[PlaybackPipeline] load item requested track=\(track.id.uuidString) title=\(track.title)",
+            category: .audio
+        )
         stopPlayback(clearQueue: false)
         configureDelay()
         resetDelayBuffer()
@@ -343,6 +357,10 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             isPlaying = true
             startProgressTimer()
 
+            Log.info(
+                "[PlaybackPipeline] item loaded track=\(track.id.uuidString) duration=\(String(format: "%.1f", fileDuration))s engineRunning=\(engine.isRunning)",
+                category: .audio
+            )
             print("▶️ Playing: \(track.title) (duration: \(String(format: "%.1f", fileDuration))s)")
 
         } catch {
@@ -380,6 +398,10 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     }
 
     private func stopPlayback(clearQueue: Bool) {
+        Log.info(
+            "[PlaybackPipeline] stopPlayback clearQueue=\(clearQueue) currentTrack=\(currentTrack?.id.uuidString ?? "nil")",
+            category: .audio
+        )
         cancelPendingCompletion()
         invalidateScheduleToken()
         playerNode.stop()

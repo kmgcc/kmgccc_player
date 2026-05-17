@@ -35,10 +35,15 @@
         ._lyricLine_1jop6_6 {
             overflow: visible;
         }
-        /* Hover feedback is handled entirely by the native CSS :hover rule in
-           lyric-player.module.css. WebKit's native hit-test correctly accounts
-           for layer transforms and pageZoom in low-resolution mode, so no
-           JavaScript-driven hover class is needed. */
+        /* Window hover feedback is adapter-driven in scaled WebView mode.
+           Native :hover is tied to WebKit's transformed view tracking region,
+           while click seek already uses the app's scaled event path. */
+        .amll-lyric-player.amll-surface-main.amll-js-hover-enabled [class*="lyricLine"]:hover {
+            background-color: transparent !important;
+        }
+        .amll-lyric-player.amll-surface-main.amll-js-hover-enabled [class*="lyricLine"].amll-app-hover-line {
+            background-color: var(--amll-lp-hover-bg-color, #fff1) !important;
+        }
         [class*="lyricMainLine"],
         ._lyricMainLine_m23bz_99,
         ._lyricMainLine_1jop6_80 {
@@ -1180,6 +1185,8 @@
         };
         installAMLLUpgradeCompatAccessors(lyricPlayer);
         playerContainer.appendChild(lyricPlayer.getElement());
+        lyricPlayer.getElement().classList.toggle("amll-surface-main", isMainSurface);
+        lyricPlayer.getElement().classList.toggle("amll-js-hover-enabled", isMainSurface);
         lyricPlayer.getElement().classList.toggle(
             "amll-surface-fullscreen-cover-blur-highlight-only",
             isCoverBlurHighlightSurface
@@ -1857,6 +1864,80 @@
             return null;
         };
 
+        let appHoveredLineElement = null;
+        const setAppHoveredLine = (lineObj) => {
+            if (!isMainSurface) return;
+            const nextElement = getLineObjectElement(lineObj);
+            if (nextElement === appHoveredLineElement) return;
+            if (appHoveredLineElement instanceof HTMLElement) {
+                appHoveredLineElement.classList.remove("amll-app-hover-line");
+            }
+            appHoveredLineElement = nextElement instanceof HTMLElement ? nextElement : null;
+            if (appHoveredLineElement) {
+                appHoveredLineElement.classList.add("amll-app-hover-line");
+            }
+        };
+        const clearAppHoveredLine = () => setAppHoveredLine(null);
+
+        let lastPointerMetricsSignature = null;
+        let lastPointerMetricsAt = 0;
+        const logPointerMetrics = (event, resolvedLineObj) => {
+            if (!event || typeof event.clientX !== "number" || typeof event.clientY !== "number") return;
+            const now = performance.now();
+            if (now - lastPointerMetricsAt < 250) return;
+
+            const targetLine = resolvedLineObj ?? resolveLineFromTarget(event.target);
+            const lineIndex = getLineObjectIndex(targetLine);
+            const lineRect = getLineObjectVisualRect(targetLine);
+            const rootRect = lyricPlayer.getElement?.()?.getBoundingClientRect?.();
+            const metrics = {
+                role: surfaceRole,
+                clientX: roundMetric(event.clientX),
+                clientY: roundMetric(event.clientY),
+                targetTag: event.target?.tagName ?? "",
+                lineIndex: Number.isInteger(lineIndex) ? lineIndex : null,
+                lineRect: lineRect ? {
+                    left: roundMetric(lineRect.left),
+                    top: roundMetric(lineRect.top),
+                    right: roundMetric(lineRect.right),
+                    bottom: roundMetric(lineRect.bottom),
+                } : null,
+                rootRect: rootRect ? {
+                    left: roundMetric(rootRect.left),
+                    top: roundMetric(rootRect.top),
+                    width: roundMetric(rootRect.width),
+                    height: roundMetric(rootRect.height),
+                } : null,
+                devicePixelRatio: roundMetric(window.devicePixelRatio),
+                innerWidth: roundMetric(window.innerWidth),
+                innerHeight: roundMetric(window.innerHeight),
+            };
+            const signature = JSON.stringify(metrics);
+            if (signature === lastPointerMetricsSignature) return;
+
+            lastPointerMetricsAt = now;
+            lastPointerMetricsSignature = signature;
+            console.log("[AMLLPointerMetrics]", metrics);
+        };
+
+        const updateAppHoverFromPointer = (event) => {
+            if (!isMainSurface) return;
+            const lineObj = resolveLineFromTarget(event.target) ?? resolveLineFromPoint(event)?.lineObj;
+            setAppHoveredLine(lineObj);
+            logPointerMetrics(event, lineObj);
+        };
+
+        if (isMainSurface) {
+            const playerElementForHover = lyricPlayer.getElement();
+            playerElementForHover.addEventListener("pointermove", updateAppHoverFromPointer, { passive: true });
+            playerElementForHover.addEventListener("pointerleave", clearAppHoveredLine, { passive: true });
+            playerElementForHover.addEventListener("mouseleave", clearAppHoveredLine, { passive: true });
+            window.addEventListener("blur", clearAppHoveredLine, { passive: true });
+            document.addEventListener("visibilitychange", () => {
+                if (document.visibilityState !== "visible") clearAppHoveredLine();
+            });
+        }
+
         const syncWordFadeWidth = () => {
             if (typeof lyricPlayer.setWordFadeWidth !== "function") return;
             lyricPlayer.setWordFadeWidth(defaultWordFadeWidth);
@@ -2290,28 +2371,37 @@
 
         // === Window/main emphasis glow color treatment ===
         // Upstream AMLL `initEmphasizeAnimation()` emits per-character emphasis keyframes
-        // with `textShadow: "0 0 Xem rgba(255, 255, 255, glowLevel)"`. That is correct for
-        // light-on-dark presentation (window/fullscreen palettes with white-ish text),
-        // but visibly weak on dark-on-light window palettes — the white halo barely
-        // shows against light backgrounds while the glyph itself is dark.
+        // with `textShadow: "0 0 Xem rgba(255, 255, 255, glowLevel)"`. That white halo
+        // looks correct for dark appearance (light text on dark background) but is
+        // effectively invisible in light appearance: the dark glyph on a light surface
+        // gets no perceivable halo.
         //
-        // Window mode owns no upstream API to customize this color, so the adapter walks
-        // the live emphasis animations after `setLyricLines()` (and on color-scheme flips)
-        // and rewrites the textShadow color via `KeyframeEffect.setKeyframes()`. Timing,
-        // transform, easing, composite, duration, delay, and stagger stay verbatim.
+        // Window lyrics polarity is stable and driven entirely by the app appearance
+        // signal: light appearance always renders dark text, dark appearance always
+        // renders light text — even when an artwork-derived palette is in effect.
+        // So the scheme is taken directly from `config.theme` ("light" | "dark"), which
+        // Swift's LyricsViewModel/applyEffectiveTheme emits on every config push and on
+        // every appearance flip. No luma heuristic is used; previous attempts to infer
+        // the scheme from `config.textColor` luma raced with config ordering and left
+        // the light-mode halo visually missing.
         //
-        // Only the `main` surface uses this path. Fullscreen, fullscreen cover-blur, and
-        // batch preview surfaces are unaffected.
-        const WINDOW_EMPHASIS_LIGHT_GLOW_BASE = { r: 24, g: 22, b: 32 };
+        // Window mode owns no upstream API to recolor the emphasis halo, so the adapter
+        // walks the live emphasis animations after `setLyricLines()` (and on scheme
+        // flips) and rewrites the textShadow color via `KeyframeEffect.setKeyframes()`.
+        // Timing, transform, easing, composite, duration, delay, and stagger stay
+        // verbatim — only the textShadow color/alpha is touched.
+        //
+        // Only the `main` surface uses this path. Fullscreen, fullscreen cover-blur,
+        // and batch preview surfaces are unaffected.
+        //
+        // Light-mode halo profile: pure black at 0.55× source alpha. Source peak alpha
+        // is ~0.8, so the rewritten peak lands near 0.44 with the original 0.3em blur,
+        // producing a clearly visible but refined drop-shadow weight under the glyph
+        // without smudging neighbouring characters.
+        const WINDOW_EMPHASIS_LIGHT_GLOW_BASE = { r: 0, g: 0, b: 0 };
         const WINDOW_EMPHASIS_LIGHT_GLOW_ALPHA_GAIN = 0.55;
-        let windowEmphasisGlowScheme = null;
-        const detectWindowEmphasisGlowScheme = (textColor) => {
-            const parsed = parseRGBAColor(textColor);
-            if (!parsed) return null;
-            // Rec.601 luma works well enough at picking text-dark-vs-text-light.
-            const luma = (parsed.r * 0.299 + parsed.g * 0.587 + parsed.b * 0.114) / 255;
-            return luma < 0.5 ? "light" : "dark";
-        };
+        // "dark" means "let upstream white halo through unchanged".
+        let windowEmphasisGlowScheme = "dark";
         const recolorWindowEmphasisTextShadow = (textShadow) => {
             if (typeof textShadow !== "string" || textShadow.length === 0) return textShadow;
             const base = WINDOW_EMPHASIS_LIGHT_GLOW_BASE;
@@ -3656,8 +3746,8 @@
             const lineIndex = getLineObjectIndex(lineObj);
             emitSeek(lineObj, lineIndex, e);
         });
-        // Hover feedback is handled natively by CSS :hover in lyric-player.module.css;
-        // no JavaScript mousemove tracking is needed.
+        // Window hover feedback is adapter-driven so scaled WebView rendering uses the
+        // same line resolution path as click seek instead of WebKit's native :hover.
 
         const parseTTMLTimeToMs = (value) => {
             if (typeof value !== "string" || value.length === 0) return null;
@@ -5274,19 +5364,19 @@
                                 ? toOpaqueColor(config.textColor)
                                 : config.textColor;
                             lyricPlayer.getElement().style.setProperty("--amll-lp-color", resolvedTextColor);
-                            if (isMainSurface) {
-                                const nextScheme = detectWindowEmphasisGlowScheme(config.textColor) ?? "dark";
-                                if (nextScheme !== windowEmphasisGlowScheme) {
-                                    windowEmphasisGlowScheme = nextScheme;
-                                    applyWindowEmphasisGlowScheme(nextScheme);
-                                }
-                            }
                         } else {
                             lyricPlayer.getElement().style.removeProperty("--amll-lp-color");
-                            if (isMainSurface && windowEmphasisGlowScheme !== "dark") {
-                                windowEmphasisGlowScheme = "dark";
-                                applyWindowEmphasisGlowScheme("dark");
-                            }
+                        }
+                    }
+                    // Window emphasis halo scheme is driven by the app appearance signal
+                    // (config.theme), not by textColor luma. Swift sends "light" or "dark"
+                    // on every config/theme push, so this branch is the canonical place
+                    // for window emphasis glow scheme transitions.
+                    if (isMainSurface && hasOwn("theme")) {
+                        const nextScheme = config.theme === "light" ? "light" : "dark";
+                        if (nextScheme !== windowEmphasisGlowScheme) {
+                            windowEmphasisGlowScheme = nextScheme;
+                            applyWindowEmphasisGlowScheme(nextScheme);
                         }
                     }
                     if (hasOwn("shadowColor")) {

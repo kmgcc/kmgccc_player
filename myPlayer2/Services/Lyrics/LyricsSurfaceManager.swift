@@ -80,6 +80,8 @@ final class LyricsSurfaceManager {
 
     /// Pending switch work item (for debouncing/disposal)
     private var pendingSwitchWorkItem: DispatchWorkItem?
+    private var pendingRoleTeardownWorkItems: [LyricsSurfaceRole: DispatchWorkItem] = [:]
+    private let deferredRoleTeardownDelay: TimeInterval = 2.0
 
     /// Callback when a switch completes
     private var onSwitchComplete: ((TargetMode, Int) -> Void)?
@@ -302,6 +304,7 @@ final class LyricsSurfaceManager {
 
     /// Internal: get existing store or create new one
     private func getOrCreateStore(for role: LyricsSurfaceRole) -> LyricsWebViewStore {
+        cancelDeferredTeardown(for: role)
         if let existing = stores[role] {
             return existing
         }
@@ -320,6 +323,7 @@ final class LyricsSurfaceManager {
 
     /// Mark a role as active (has a visible surface).
     func activate(role: LyricsSurfaceRole) {
+        cancelDeferredTeardown(for: role)
         activeRoles.insert(role)
         Log.debug("Activated role: \(role.rawValue)", category: .webview)
     }
@@ -346,30 +350,57 @@ final class LyricsSurfaceManager {
 
     /// Explicitly tear down the main store (used when entering fullscreen).
     func teardownMainStore() {
-        Log.info("Tearing down main store", category: .webview)
-
-        if let mainStore = stores[.main] {
-            mainStore.teardown()
-            mainStore.shutdown()
-            stores.removeValue(forKey: .main)
-        }
-
-        activeRoles.remove(.main)
+        Log.info("Scheduling deferred main store teardown", category: .webview)
+        scheduleDeferredTeardown(role: .main, reason: "mode-switch")
     }
 
     /// Explicitly tear down all fullscreen stores (used when exiting fullscreen).
     func teardownFullscreenStores() {
-        Log.info("Tearing down fullscreen stores", category: .webview)
+        Log.info("Scheduling deferred fullscreen store teardown", category: .webview)
 
         let fullscreenRoles: [LyricsSurfaceRole] = [.fullscreen, .fullscreenCoverBlurHighlight]
         for role in fullscreenRoles {
-            if let store = stores[role] {
-                store.teardown()
-                store.shutdown()
-                stores.removeValue(forKey: role)
-            }
-            activeRoles.remove(role)
+            scheduleDeferredTeardown(role: role, reason: "mode-switch")
         }
+    }
+
+    private func scheduleDeferredTeardown(role: LyricsSurfaceRole, reason: String) {
+        pendingRoleTeardownWorkItems[role]?.cancel()
+        activeRoles.remove(role)
+
+        guard let store = stores[role] else { return }
+        let objectID = store.webViewObjectID
+
+        let workItem = DispatchWorkItem { [weak self, weak store] in
+            guard let self, let store else { return }
+            guard let currentStore = self.stores[role], currentStore === store else { return }
+            guard !self.activeRoles.contains(role) else { return }
+
+            Log.info(
+                "Deferred teardown running: role=\(role.rawValue), reason=\(reason), objectID=\(objectID)",
+                category: .webview
+            )
+            store.teardown()
+            store.shutdown()
+            self.stores.removeValue(forKey: role)
+            self.pendingRoleTeardownWorkItems[role] = nil
+        }
+
+        pendingRoleTeardownWorkItems[role] = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + deferredRoleTeardownDelay,
+            execute: workItem
+        )
+        Log.info(
+            "Deferred teardown scheduled: role=\(role.rawValue), reason=\(reason), delay=\(String(format: "%.1f", deferredRoleTeardownDelay))s, objectID=\(objectID)",
+            category: .webview
+        )
+    }
+
+    private func cancelDeferredTeardown(for role: LyricsSurfaceRole) {
+        guard let workItem = pendingRoleTeardownWorkItems.removeValue(forKey: role) else { return }
+        workItem.cancel()
+        Log.debug("Cancelled deferred teardown for role=\(role.rawValue)", category: .webview)
     }
 
     /// Apply track to all active surfaces.

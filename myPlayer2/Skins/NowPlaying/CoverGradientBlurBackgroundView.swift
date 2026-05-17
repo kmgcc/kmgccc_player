@@ -30,6 +30,11 @@ enum CoverEdgeFillMode: String, Sendable, CaseIterable {
 
 // MARK: - Configuration
 
+enum CoverGradientBlurMaskMode: String, Sendable {
+    case progressiveRamp
+    case extensionOnly
+}
+
 struct CoverGradientBlurConfig: Sendable {
     var blurRadius: CGFloat = 50.0
     var colorOverlayOpacity: CGFloat = 0.65
@@ -40,7 +45,9 @@ struct CoverGradientBlurConfig: Sendable {
     var overlayOffsetRatio: CGFloat = 0.0
     var blurCurveGamma: CGFloat = 16.0
     var overlayCurveGamma: CGFloat = 3.0
+    var overlayStartRatioFromEdge: CGFloat = 0.28
     var edgeFillMode: CoverEdgeFillMode = .pixelStretch
+    var blurMaskMode: CoverGradientBlurMaskMode = .progressiveRamp
 
     // How far left of the artwork's right edge the blur begins, expressed as
     // a fraction of the visible artwork width. 0.48 = legacy fullscreen default.
@@ -89,7 +96,7 @@ private struct RenderKey: Equatable {
             alphaCoeffStr = "default"
         }
         self.configHash = String(
-            format: "%@-%.1f-%.3f-%.3f-%.3f-%.3f-%.3f-%.3f-%.3f-%@-%@-%.3f-%@",
+            format: "%@-%.1f-%.3f-%.3f-%.3f-%.3f-%.3f-%.3f-%.3f-%.3f-%@-%@-%@-%.3f-%@",
             coverGradientBlurRendererCacheVersion,
             config.blurRadius,
             config.colorOverlayOpacity,
@@ -99,7 +106,9 @@ private struct RenderKey: Equatable {
             config.overlayOffsetRatio,
             config.blurCurveGamma,
             config.overlayCurveGamma,
+            config.overlayStartRatioFromEdge,
             config.edgeFillMode.rawValue,
+            config.blurMaskMode.rawValue,
             prefersAdaptiveArtworkSizing ? "adaptive" : "fixed",
             config.blurStartRatioFromEdge,
             alphaCoeffStr
@@ -445,49 +454,25 @@ enum CoverGradientBlurRenderer {
             return nil
         }
 
-        guard let linearGradientFilter = CIFilter(name: "CILinearGradient") else {
-            return nil
+        let nonLinearMask: CIImage?
+        switch config.blurMaskMode {
+        case .progressiveRamp:
+            nonLinearMask = progressiveRampMask(
+                blurStartX: blurStartX,
+                blurEndX: blurEndX,
+                canvasRect: canvasRect,
+                canvasLogicalHeight: canvasLogicalHeight,
+                alphaCoefficients: config.blurAlphaCoefficients
+            )
+        case .extensionOnly:
+            nonLinearMask = extensionOnlyMask(
+                artworkRightEdgeX: artworkRightEdgeX,
+                canvasRect: canvasRect,
+                canvasLogicalHeight: canvasLogicalHeight
+            )
         }
 
-        let point0 = CIVector(x: blurStartX, y: canvasLogicalHeight / 2)
-        let point1 = CIVector(x: blurEndX, y: canvasLogicalHeight / 2)
-        let color0 = CIColor(red: 0, green: 0, blue: 0, alpha: 0)
-        let color1 = CIColor(red: 1, green: 1, blue: 1, alpha: 1)
-
-        linearGradientFilter.setValue(point0, forKey: "inputPoint0")
-        linearGradientFilter.setValue(point1, forKey: "inputPoint1")
-        linearGradientFilter.setValue(color0, forKey: "inputColor0")
-        linearGradientFilter.setValue(color1, forKey: "inputColor1")
-
-        guard let linearMask = linearGradientFilter.outputImage?.cropped(to: canvasRect) else {
-            return nil
-        }
-
-        guard let polynomialFilter = CIFilter(name: "CIColorPolynomial") else {
-            return nil
-        }
-
-        let rCoeff = CIVector(x: 0, y: 0, z: 0, w: 1)
-        let gCoeff = CIVector(x: 0, y: 0, z: 0, w: 1)
-        let bCoeff = CIVector(x: 0, y: 0, z: 0, w: 1)
-        let aCoeff: CIVector
-        if let c = config.blurAlphaCoefficients {
-            aCoeff = CIVector(x: c.0, y: c.1, z: c.2, w: c.3)
-        } else {
-            // Fixed base coefficients. Zone-based blur control is handled
-            // by per-pass smoothstep masks, not by reshaping this curve.
-            aCoeff = CIVector(x: 0, y: 0.10, z: 0.34, w: 0.56)
-        }
-        
-        polynomialFilter.setValue(linearMask, forKey: kCIInputImageKey)
-        polynomialFilter.setValue(rCoeff, forKey: "inputRedCoefficients")
-        polynomialFilter.setValue(gCoeff, forKey: "inputGreenCoefficients")
-        polynomialFilter.setValue(bCoeff, forKey: "inputBlueCoefficients")
-        polynomialFilter.setValue(aCoeff, forKey: "inputAlphaCoefficients")
-        
-        guard let nonLinearMask = polynomialFilter.outputImage?.cropped(to: canvasRect) else {
-            return nil
-        }
+        guard let nonLinearMask else { return nil }
 
         // Progressive blur:
         //   Pass 0 — fixed cap ≤150, full mask — defines the base cover-edge
@@ -516,7 +501,7 @@ enum CoverGradientBlurRenderer {
             guard passRadius > 0 else { continue }
 
             let passMask: CIImage
-            if passIndex == 0 {
+            if passIndex == 0 || config.blurMaskMode == .extensionOnly {
                 passMask = nonLinearMask
             } else {
                 passMask = progressiveFeatherMask(
@@ -549,8 +534,7 @@ enum CoverGradientBlurRenderer {
 
         let blurredImage = currentImage
 
-        let overlayStartRatioFromEdge: CGFloat = 0.28
-        let overlayStartX = artworkRightEdgeX - (visibleArtworkWidth * overlayStartRatioFromEdge)
+        let overlayStartX = artworkRightEdgeX - (visibleArtworkWidth * config.overlayStartRatioFromEdge)
         let overlayEndX = canvasLogicalWidth
         let overlayAlphaMax = config.colorOverlayOpacity
 
@@ -623,6 +607,78 @@ enum CoverGradientBlurRenderer {
     /// Continuous feather mask for later blur passes. Integer powers keep low
     /// mask values near zero and let high values gradually reach full strength
     /// without introducing threshold bands or clamp plateaus.
+    private nonisolated static func progressiveRampMask(
+        blurStartX: CGFloat,
+        blurEndX: CGFloat,
+        canvasRect: CGRect,
+        canvasLogicalHeight: CGFloat,
+        alphaCoefficients: (CGFloat, CGFloat, CGFloat, CGFloat)?
+    ) -> CIImage? {
+        guard let linearGradientFilter = CIFilter(name: "CILinearGradient") else {
+            return nil
+        }
+
+        let point0 = CIVector(x: blurStartX, y: canvasLogicalHeight / 2)
+        let point1 = CIVector(x: blurEndX, y: canvasLogicalHeight / 2)
+        let color0 = CIColor(red: 0, green: 0, blue: 0, alpha: 0)
+        let color1 = CIColor(red: 1, green: 1, blue: 1, alpha: 1)
+
+        linearGradientFilter.setValue(point0, forKey: "inputPoint0")
+        linearGradientFilter.setValue(point1, forKey: "inputPoint1")
+        linearGradientFilter.setValue(color0, forKey: "inputColor0")
+        linearGradientFilter.setValue(color1, forKey: "inputColor1")
+
+        guard let linearMask = linearGradientFilter.outputImage?.cropped(to: canvasRect) else {
+            return nil
+        }
+
+        guard let polynomialFilter = CIFilter(name: "CIColorPolynomial") else {
+            return nil
+        }
+
+        let rCoeff = CIVector(x: 0, y: 0, z: 0, w: 1)
+        let gCoeff = CIVector(x: 0, y: 0, z: 0, w: 1)
+        let bCoeff = CIVector(x: 0, y: 0, z: 0, w: 1)
+        let aCoeff: CIVector
+        if let c = alphaCoefficients {
+            aCoeff = CIVector(x: c.0, y: c.1, z: c.2, w: c.3)
+        } else {
+            // Fixed base coefficients. Zone-based blur control is handled
+            // by per-pass smoothstep masks, not by reshaping this curve.
+            aCoeff = CIVector(x: 0, y: 0.10, z: 0.34, w: 0.56)
+        }
+
+        polynomialFilter.setValue(linearMask, forKey: kCIInputImageKey)
+        polynomialFilter.setValue(rCoeff, forKey: "inputRedCoefficients")
+        polynomialFilter.setValue(gCoeff, forKey: "inputGreenCoefficients")
+        polynomialFilter.setValue(bCoeff, forKey: "inputBlueCoefficients")
+        polynomialFilter.setValue(aCoeff, forKey: "inputAlphaCoefficients")
+
+        return polynomialFilter.outputImage?.cropped(to: canvasRect)
+    }
+
+    private nonisolated static func extensionOnlyMask(
+        artworkRightEdgeX: CGFloat,
+        canvasRect: CGRect,
+        canvasLogicalHeight: CGFloat
+    ) -> CIImage? {
+        guard let linearGradientFilter = CIFilter(name: "CILinearGradient") else {
+            return nil
+        }
+
+        let point0 = CIVector(x: artworkRightEdgeX - 0.5, y: canvasLogicalHeight / 2)
+        let point1 = CIVector(x: artworkRightEdgeX + 1.5, y: canvasLogicalHeight / 2)
+        let color0 = CIColor(red: 0, green: 0, blue: 0, alpha: 0)
+        let color1 = CIColor(red: 1, green: 1, blue: 1, alpha: 1)
+
+        linearGradientFilter.setValue(point0, forKey: "inputPoint0")
+        linearGradientFilter.setValue(point1, forKey: "inputPoint1")
+        linearGradientFilter.setValue(color0, forKey: "inputColor0")
+        linearGradientFilter.setValue(color1, forKey: "inputColor1")
+
+        return linearGradientFilter.outputImage?.cropped(to: canvasRect)
+    }
+
     private nonisolated static func progressiveFeatherMask(
         from sourceMask: CIImage,
         passIndex: Int,

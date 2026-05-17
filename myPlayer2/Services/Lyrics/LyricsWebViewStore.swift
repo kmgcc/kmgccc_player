@@ -258,7 +258,7 @@ final class LyricsWebViewStore: NSObject {
         lastLoggedRenderQualityLayoutSignature = layoutSignature
 
         Log.info(
-            "AMLL render quality layout role=\(role), host=\(Int(hostBounds.width))x\(Int(hostBounds.height)), webFrame=\(Int(targetFrame.width))x\(Int(targetFrame.height)), pageZoom=\(String(format: "%.2f", viewScale)), layerScale=\(String(format: "%.2f", layerScale)), windowBackingScale=\(String(format: "%.2f", windowScale)), layerContentsScale=\(String(format: "%.2f", contentsScale)), layerRasterizationScale=\(String(format: "%.2f", rasterizationScale)), effectiveHostBackingScale=\(String(format: "%.2f", effectiveHostBackingScale)), reason=\(reason), objectID=\(webViewObjectID)",
+            "AMLL render quality layout role=\(role), model=framePageZoomLayerScale, host=\(Int(hostBounds.width))x\(Int(hostBounds.height)), webFrame=\(Int(targetFrame.width))x\(Int(targetFrame.height)), pageZoom=\(String(format: "%.2f", webView.pageZoom)), layerScale=\(String(format: "%.2f", layerScale)), windowBackingScale=\(String(format: "%.2f", windowScale)), layerContentsScale=\(String(format: "%.2f", contentsScale)), layerRasterizationScale=\(String(format: "%.2f", rasterizationScale)), effectiveHostBackingScale=\(String(format: "%.2f", effectiveHostBackingScale)), reason=\(reason), objectID=\(webViewObjectID)",
             category: .webview
         )
     }
@@ -1540,6 +1540,8 @@ final class LyricsWebViewStore: NSObject {
             || text.contains("[LyricsRenderer] Boot")
             || text.contains("[LyricsRenderer] Loaded lines")
             || text.contains("[LyricsRenderer] lineTimingOnlyMode")
+            || text.contains("[AMLLScaleMetrics]")
+            || text.contains("[AMLLPointerMetrics]")
         {
             Log.info(message, category: .webview)
         } else {

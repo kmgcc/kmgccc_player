@@ -54,6 +54,7 @@ struct TrackEditSheet: View {
     private struct TrackEditChangeSet {
         let hasChanges: Bool
         let persistenceMode: TrackEditPersistenceMode
+        let affectsLiveLyrics: Bool
     }
 
     private let amllDbURL = URL(string: "https://github.com/amll-dev/amll-ttml-db")!
@@ -406,9 +407,54 @@ struct TrackEditSheet: View {
         metadataSource = track.metadataSource ?? ""
         metadataFetchedAt = track.metadataFetchedAt
         metadataConfidence = track.metadataConfidence
-        lyricsText = track.loadTTMLLyricsIfNeeded() ?? track.loadLyricsIfNeeded() ?? ""
-        artworkData = track.loadArtworkDataIfNeeded()
+        lyricsText = track.ttmlLyricText ?? track.lyricsText ?? ""
+        artworkData = track.artworkData
         lyricsTimeOffsetMs = track.lyricsTimeOffsetMs
+        loadDeferredMediaData()
+    }
+
+    private func loadDeferredMediaData() {
+        let artworkURL = track.artworkData == nil ? track.resolvedArtworkURL() : nil
+        let ttmlURL = track.ttmlLyricText == nil ? track.resolvedTTMLURL() : nil
+        let legacyLyricsURL = track.lyricsText == nil ? track.resolvedLyricsURL() : nil
+
+        guard artworkURL != nil || ttmlURL != nil || legacyLyricsURL != nil else { return }
+
+        Task { @MainActor in
+            async let artworkTask: Data? = Task.detached(priority: .utility) { @Sendable in
+                guard let artworkURL else { return nil }
+                return try? Data(contentsOf: artworkURL)
+            }.value
+            async let lyricsTask: String? = Task.detached(priority: .utility) { @Sendable in
+                if let ttmlURL,
+                   let text = try? String(contentsOf: ttmlURL, encoding: .utf8),
+                   !text.isEmpty {
+                    return text
+                }
+                if let legacyLyricsURL,
+                   let text = try? String(contentsOf: legacyLyricsURL, encoding: .utf8),
+                   !text.isEmpty {
+                    return text
+                }
+                return nil
+            }.value
+
+            let loadedArtwork = await artworkTask
+            let loadedLyrics = await lyricsTask
+
+            if let loadedArtwork, artworkData == nil {
+                artworkData = loadedArtwork
+                track.artworkData = loadedArtwork
+            }
+            if let loadedLyrics, lyricsText.isEmpty {
+                lyricsText = loadedLyrics
+                if loadedLyrics.lowercased().contains("<tt") {
+                    track.ttmlLyricText = loadedLyrics
+                } else {
+                    track.lyricsText = loadedLyrics
+                }
+            }
+        }
     }
 
     private var albumDescriptionFallback: String? {
@@ -422,6 +468,7 @@ struct TrackEditSheet: View {
             artist.isEmpty ? NSLocalizedString("library.unknown_artist", comment: "") : artist
         let savedAlbum = album.trimmingCharacters(in: .whitespacesAndNewlines)
 
+        let lyricsOffsetChanged = abs(lyricsTimeOffsetMs - track.lyricsTimeOffsetMs) > 0.000_1
         let metadataChanged =
             savedTitle != track.title
             || savedArtist != track.artist
@@ -435,7 +482,7 @@ struct TrackEditSheet: View {
             || optionalTrimmed(metadataSource) != track.metadataSource
             || metadataFetchedAt != track.metadataFetchedAt
             || metadataConfidence != track.metadataConfidence
-            || abs(lyricsTimeOffsetMs - track.lyricsTimeOffsetMs) > 0.000_1
+            || lyricsOffsetChanged
 
         let lyricsChanged = TrackLyricsDraft.differs(from: track, editorText: lyricsText)
         let artworkChanged = artworkData != track.artworkData
@@ -452,7 +499,11 @@ struct TrackEditSheet: View {
             persistenceMode = .metaOnly
         }
 
-        return TrackEditChangeSet(hasChanges: hasChanges, persistenceMode: persistenceMode)
+        return TrackEditChangeSet(
+            hasChanges: hasChanges,
+            persistenceMode: persistenceMode,
+            affectsLiveLyrics: lyricsChanged || lyricsOffsetChanged
+        )
     }
 
     private func reason(for mode: TrackEditPersistenceMode, preferredReason: String?) -> String {
@@ -491,7 +542,9 @@ struct TrackEditSheet: View {
         track.artworkData = artworkData
         track.lyricsTimeOffsetMs = lyricsTimeOffsetMs
 
-        refreshLiveLyricsIfEditingCurrentTrack(reason: "track info saved draft")
+        if changeSet.affectsLiveLyrics {
+            refreshLiveLyricsIfEditingCurrentTrack(reason: "track info saved draft")
+        }
 
         Task {
             await libraryVM.saveTrackEdits(
@@ -500,7 +553,9 @@ struct TrackEditSheet: View {
                 reason: reason(for: changeSet.persistenceMode, preferredReason: preferredReason)
             )
             print("[TrackEditSheet] Saved changes for: \(track.title)")
-            refreshLiveLyricsIfEditingCurrentTrack(reason: "track info saved")
+            if changeSet.affectsLiveLyrics {
+                refreshLiveLyricsIfEditingCurrentTrack(reason: "track info saved")
+            }
         }
     }
 
@@ -596,15 +651,20 @@ struct TrackEditSheet: View {
     private func handleArtworkImport(_ result: Result<[URL], Error>) {
         guard case .success(let urls) = result, let url = urls.first else { return }
 
-        let didStart = url.startAccessingSecurityScopedResource()
-        defer { if didStart { url.stopAccessingSecurityScopedResource() } }
-
-        do {
-            let data = try Data(contentsOf: url)
-            artworkData = data
-            print("[TrackEditSheet] Imported artwork: \(data.count) bytes")
-        } catch {
-            print("[TrackEditSheet] Failed to import artwork: \(error)")
+        Task { @MainActor in
+            let data = await Task.detached(priority: .userInitiated) { @Sendable in
+                let didStart = url.startAccessingSecurityScopedResource()
+                defer {
+                    if didStart {
+                        url.stopAccessingSecurityScopedResource()
+                    }
+                }
+                return try? Data(contentsOf: url)
+            }.value
+            if let data {
+                artworkData = data
+                print("[TrackEditSheet] Imported artwork: \(data.count) bytes")
+            }
         }
     }
 
@@ -627,15 +687,20 @@ struct TrackEditSheet: View {
     private func handleLyricsImport(_ result: Result<[URL], Error>) {
         guard case .success(let urls) = result, let url = urls.first else { return }
 
-        let didStart = url.startAccessingSecurityScopedResource()
-        defer { if didStart { url.stopAccessingSecurityScopedResource() } }
-
-        do {
-            let text = try String(contentsOf: url, encoding: .utf8)
-            lyricsText = text
-            print("[TrackEditSheet] Imported lyrics: \(text.prefix(50))...")
-        } catch {
-            print("[TrackEditSheet] Failed to import lyrics: \(error)")
+        Task { @MainActor in
+            let text = await Task.detached(priority: .userInitiated) { @Sendable in
+                let didStart = url.startAccessingSecurityScopedResource()
+                defer {
+                    if didStart {
+                        url.stopAccessingSecurityScopedResource()
+                    }
+                }
+                return try? String(contentsOf: url, encoding: .utf8)
+            }.value
+            if let text {
+                lyricsText = text
+                print("[TrackEditSheet] Imported lyrics: \(text.prefix(50))...")
+            }
         }
     }
 
