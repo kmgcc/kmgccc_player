@@ -24,6 +24,7 @@ actor ArtworkDerivativeCacheStore {
     private let fileManager = FileManager.default
     private let diskRootURL: URL
     private let maxDiskBytes: Int64 = 220 * 1024 * 1024
+    private let decodeGate = ArtworkDecodeGate(maxConcurrent: 2)
     private var writeCounter = 0
 
     private init() {
@@ -55,9 +56,17 @@ actor ArtworkDerivativeCacheStore {
             return diskImage
         }
 
+        let (acquired, _) = await decodeGate.acquire()
+        guard acquired else { return nil }
+        let token = FirstUseHitchDiagnostics.begin(
+            "ArtworkDerivative.decode",
+            detail: "target=\(Int(targetPixelSize.width))x\(Int(targetPixelSize.height))"
+        )
         let decoded = await Task.detached(priority: .utility) {
             downsampledImage(data: artworkData, targetPixelSize: targetPixelSize)
         }.value
+        await decodeGate.release()
+        FirstUseHitchDiagnostics.end(token, detail: "success=\(decoded != nil)")
         guard let decoded else { return nil }
 
         setMemoryImage(decoded, cacheKey: cacheKey)
@@ -81,9 +90,17 @@ actor ArtworkDerivativeCacheStore {
             return diskImage
         }
 
+        let (acquired, _) = await decodeGate.acquire()
+        guard acquired else { return nil }
+        let token = FirstUseHitchDiagnostics.begin(
+            "ArtworkDerivative.decode",
+            detail: "maxPixel=\(maxPixelSize)"
+        )
         let decoded = await Task.detached(priority: .utility) {
             downsampledImage(data: artworkData, maxPixelSize: maxPixelSize)
         }.value
+        await decodeGate.release()
+        FirstUseHitchDiagnostics.end(token, detail: "success=\(decoded != nil)")
         guard let decoded else { return nil }
 
         setMemoryImage(decoded, cacheKey: cacheKey)

@@ -302,6 +302,26 @@ final class LyricsSurfaceManager {
         return getOrCreateStore(for: role)
     }
 
+    /// Materialize a lyrics surface before the user opens it.
+    /// The role is not marked active; current snapshots are replayed so attach can be cheap.
+    func prewarm(role: LyricsSurfaceRole, reason: String) {
+        let token = FirstUseHitchDiagnostics.begin(
+            "LyricsSurfaceManager.prewarm.\(role.rawValue)",
+            detail: reason
+        )
+        let store = getOrCreateStore(for: role)
+        store.prepareWebViewIfNeeded()
+        replayCurrentSnapshot(
+            to: role,
+            store: store,
+            reason: "prewarm:\(reason)"
+        )
+        FirstUseHitchDiagnostics.end(
+            token,
+            detail: "ready=\(store.isReady), objectID=\(store.webViewObjectID)"
+        )
+    }
+
     /// Internal: get existing store or create new one
     private func getOrCreateStore(for role: LyricsSurfaceRole) -> LyricsWebViewStore {
         cancelDeferredTeardown(for: role)

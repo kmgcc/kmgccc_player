@@ -262,15 +262,14 @@ private struct HomeAlbumCard: View {
             colorScheme: colorScheme,
             isFloating: false
         )
-        .overlay(
-            // Cheap hover indicator (see HomeArtistCircle for rationale).
-            RoundedRectangle(cornerRadius: outerCornerRadius, style: .continuous)
-                .strokeBorder(
-                    Color.primary.opacity(isHovering ? 0.18 : 0),
-                    lineWidth: 1
-                )
-                .allowsHitTesting(false)
-        )
+        .overlay {
+            // Conditional hover stroke — see HomeArtistCircle for rationale.
+            if isHovering {
+                RoundedRectangle(cornerRadius: outerCornerRadius, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.18), lineWidth: 1)
+                    .allowsHitTesting(false)
+            }
+        }
         .onHover { hovering in
             isHovering = hovering
         }

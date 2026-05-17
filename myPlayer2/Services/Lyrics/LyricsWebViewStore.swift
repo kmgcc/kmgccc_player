@@ -105,6 +105,7 @@ final class LyricsWebViewStore: NSObject {
     private var lastRecoveryAttempt: Date = .distantPast
     private let recoveryDebounceInterval: TimeInterval = 1.0
     private var contentLoadRevision: Int = 0
+    private var lastContentLoadStartedAtUptime: TimeInterval?
     private var trackSwitchesSinceLastWebViewRecycle: Int = 0
 
     /// Track change debounce (prevents transient nil clearing).
@@ -361,6 +362,10 @@ final class LyricsWebViewStore: NSObject {
 
     func loadAMLLContent(cacheBust: Bool = false) {
         guard !isShutDown else { return }
+        let token = FirstUseHitchDiagnostics.begin(
+            "LyricsWebViewStore.loadAMLLContent",
+            detail: "role=\(role), cacheBust=\(cacheBust)"
+        )
         let webView = ensureWebView()
         guard
             let indexURL = Bundle.main.url(
@@ -368,6 +373,7 @@ final class LyricsWebViewStore: NSObject {
             )
         else {
             Log.error("AMLL/index.html not found in bundle, objectID=\(webViewObjectID)", category: .webview)
+            FirstUseHitchDiagnostics.end(token, detail: "missing-index")
             return
         }
 
@@ -377,8 +383,10 @@ final class LyricsWebViewStore: NSObject {
 
         let amllDir = indexURL.deletingLastPathComponent()
         let loadURL = resolvedAMLLLoadURL(from: indexURL)
+        lastContentLoadStartedAtUptime = ProcessInfo.processInfo.systemUptime
         Log.info("Loading AMLL from: \(loadURL.absoluteString) role=\(role), objectID=\(webViewObjectID)", category: .webview)
         webView.loadFileURL(loadURL, allowingReadAccessTo: amllDir)
+        FirstUseHitchDiagnostics.end(token, detail: "objectID=\(webViewObjectID)")
     }
 
     /// Eagerly materialize the WKWebView so surface switching can wait on a real ready event.
@@ -795,7 +803,13 @@ final class LyricsWebViewStore: NSObject {
         isReady = true
         isRecoveryInProgress = false
 
-        Log.info("Ready: version=\(version), caps=\(capabilities.count), objectID=\(webViewObjectID)", category: .webview)
+        let readyDurationMs = lastContentLoadStartedAtUptime.map {
+            (ProcessInfo.processInfo.systemUptime - $0) * 1000
+        }
+        Log.info(
+            "Ready: version=\(version), caps=\(capabilities.count), objectID=\(webViewObjectID), loadToReadyMs=\(readyDurationMs.map { String(format: "%.1f", $0) } ?? "nil")",
+            category: .webview
+        )
 
         updateWebContentPointerOcclusionState(isMouseInteractionSuppressed)
 
@@ -1554,6 +1568,10 @@ final class LyricsWebViewStore: NSObject {
             return retainedWebView
         }
 
+        let token = FirstUseHitchDiagnostics.begin(
+            "LyricsWebViewStore.ensureWebView",
+            detail: "role=\(role)"
+        )
         let config = WKWebViewConfiguration()
         config.preferences.setValue(true, forKey: "developerExtrasEnabled")
         config.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
@@ -1576,6 +1594,7 @@ final class LyricsWebViewStore: NSObject {
         registerMessageHandlers()
         print("[LyricsStore:\(role)] Created WebView instance: objectID=\(webViewObjectID)")
         loadAMLLContent()
+        FirstUseHitchDiagnostics.end(token, detail: "objectID=\(webViewObjectID)")
         return webView
     }
 

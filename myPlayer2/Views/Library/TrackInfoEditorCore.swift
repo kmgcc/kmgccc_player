@@ -73,6 +73,8 @@ struct TrackInfoEditorCore: View {
     @State private var metadataLookupMessage: String?
     @State private var coverFetchTask: Task<Void, Never>?
     @State private var metadataFetchTask: Task<Void, Never>?
+    @State private var artworkPreviewTask: Task<Void, Never>?
+    @State private var artworkPreviewImage: NSImage?
     @State private var coverCoordinator: CoverSearchCoordinator?
 
     private let amllDbURL = URL(string: "https://github.com/amll-dev/amll-ttml-db")!
@@ -123,22 +125,33 @@ struct TrackInfoEditorCore: View {
         .tint(themeStore.accentColor)
         .accentColor(themeStore.accentColor)
         .onAppear {
+            let token = FirstUseHitchDiagnostics.begin(
+                "TrackInfoEditorCore.onAppear",
+                detail: "mode=\(mode)"
+            )
             coverCoordinator = CoverSearchCoordinator(
                 coverDownloadService: coverDownloadService,
                 netEaseCoverService: netEaseCoverService
             )
+            scheduleArtworkPreviewDecode(reason: "appear")
+            FirstUseHitchDiagnostics.end(token)
         }
         .onDisappear {
             coverFetchTask?.cancel()
             coverFetchTask = nil
             metadataFetchTask?.cancel()
             metadataFetchTask = nil
+            artworkPreviewTask?.cancel()
+            artworkPreviewTask = nil
             coverCoordinator?.cancelSearch()
         }
         .onChange(of: coverCoordinator?.selectedForPreview) { _, newValue in
             if let candidate = newValue {
                 artworkData = candidate.imageData
             }
+        }
+        .onChange(of: artworkData) { _, _ in
+            scheduleArtworkPreviewDecode(reason: "artworkData changed")
         }
     }
 
@@ -287,8 +300,8 @@ struct TrackInfoEditorCore: View {
 
     private func artworkPreview(data: Data?, size: CGFloat) -> some View {
         Group {
-            if let data, let nsImage = NSImage(data: data) {
-                Image(nsImage: nsImage)
+            if let artworkPreviewImage {
+                Image(nsImage: artworkPreviewImage)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
             } else {
@@ -300,6 +313,40 @@ struct TrackInfoEditorCore: View {
         .frame(width: size, height: size)
         .background(.ultraThinMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func scheduleArtworkPreviewDecode(reason: String) {
+        artworkPreviewTask?.cancel()
+        artworkPreviewTask = nil
+
+        guard let data = artworkData, !data.isEmpty else {
+            artworkPreviewImage = nil
+            return
+        }
+
+        let checksum = ArtworkLoader.checksum(for: data)
+        let cacheKey = "track-info-editor-\(checksum)-220"
+        let token = FirstUseHitchDiagnostics.begin(
+            "TrackInfoEditorCore.artworkPreviewDecode",
+            detail: reason
+        )
+
+        artworkPreviewTask = Task { @MainActor in
+            let image = await ArtworkLoader.loadImage(
+                artworkData: data,
+                cacheKey: cacheKey,
+                targetPixelSize: CGSize(width: 220, height: 220)
+            )
+            let wasCancelled = Task.isCancelled
+            defer {
+                FirstUseHitchDiagnostics.end(
+                    token,
+                    detail: "success=\(image != nil), cancelled=\(wasCancelled)"
+                )
+            }
+            guard !wasCancelled else { return }
+            artworkPreviewImage = image
+        }
     }
 
     private var metadataSection: some View {

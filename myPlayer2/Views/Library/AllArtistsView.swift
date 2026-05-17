@@ -39,6 +39,13 @@ struct AllArtistsView: View {
         let artists = filteredArtists
         return list(artists)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .onAppear {
+            let token = FirstUseHitchDiagnostics.begin(
+                "AllArtistsView.onAppear",
+                detail: "artists=\(libraryVM.artistEntries.count), tracks=\(libraryVM.allTracks.count)"
+            )
+            FirstUseHitchDiagnostics.end(token)
+        }
         .alert(
             NSLocalizedString("sidebar.delete_artist_confirm_title", comment: ""),
             isPresented: Binding(
@@ -99,6 +106,12 @@ struct AllArtistsView: View {
     // MARK: Data
 
     private var filteredArtists: [ArtistEntry] {
+        let token = FirstUseHitchDiagnostics.begin(
+            "AllArtistsView.filteredArtists",
+            detail: "artists=\(libraryVM.artistEntries.count)"
+        )
+        defer { FirstUseHitchDiagnostics.end(token) }
+
         let trimmed = pageController.searchText
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
