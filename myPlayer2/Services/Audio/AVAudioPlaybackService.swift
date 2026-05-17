@@ -65,6 +65,8 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     private var completionWorkItem: DispatchWorkItem?
     private var drainStartUptime: TimeInterval?
     private var drainStartTime: Double = 0
+    private var lastProgressUpdateUptime: TimeInterval?
+    private var lastProgressAudibleTime: Double = 0
     private var lastKnownShuffleEnabled = AppSettings.shared.shuffleEnabled
     private var lastKnownRepeatMode = AppSettings.shared.repeatMode
 
@@ -263,6 +265,10 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     private func scheduleFile(_ file: AVAudioFile) {
         let token = UUID()
         activeScheduleToken = token
+        Log.info(
+            "[AudioDiagnostics] scheduleFile frames=\(file.length) operation=\(FirstUseHitchDiagnostics.currentMainOperationDescription() ?? "none")",
+            category: .audio
+        )
         playerNode.scheduleFile(file, at: nil) { [weak self] in
             Task { @MainActor [weak self] in
                 self?.handlePlaybackCompletion(token: token)
@@ -277,6 +283,10 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     ) {
         let token = UUID()
         activeScheduleToken = token
+        Log.info(
+            "[AudioDiagnostics] scheduleSegment startFrame=\(startingFrame) frameCount=\(frameCount) operation=\(FirstUseHitchDiagnostics.currentMainOperationDescription() ?? "none")",
+            category: .audio
+        )
         playerNode.scheduleSegment(
             file,
             startingFrame: startingFrame,
@@ -372,6 +382,10 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     func pause() {
         guard isPlaying else { return }
 
+        Log.info(
+            "[AudioDiagnostics] pause currentTime=\(String(format: "%.3f", currentTime)) operation=\(FirstUseHitchDiagnostics.currentMainOperationDescription() ?? "none")",
+            category: .audio
+        )
         cancelPendingCompletion()
         playerNode.pause()
         resetDelayBuffer()
@@ -384,6 +398,10 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     func resume() {
         guard !isPlaying, audioFile != nil else { return }
 
+        Log.info(
+            "[AudioDiagnostics] resume currentTime=\(String(format: "%.3f", currentTime)) operation=\(FirstUseHitchDiagnostics.currentMainOperationDescription() ?? "none")",
+            category: .audio
+        )
         configureDelay()
         resetDelayBuffer()
         playerNode.play()
@@ -399,7 +417,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     private func stopPlayback(clearQueue: Bool) {
         Log.info(
-            "[PlaybackPipeline] stopPlayback clearQueue=\(clearQueue) currentTrack=\(currentTrack?.id.uuidString ?? "nil")",
+            "[PlaybackPipeline] stopPlayback clearQueue=\(clearQueue) currentTrack=\(currentTrack?.id.uuidString ?? "nil") operation=\(FirstUseHitchDiagnostics.currentMainOperationDescription() ?? "none")",
             category: .audio
         )
         cancelPendingCompletion()
@@ -425,6 +443,10 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         guard let audioFile = audioFile else { return }
 
         let wasPlaying = isPlaying
+        Log.info(
+            "[AudioDiagnostics] seek target=\(String(format: "%.3f", seconds)) wasPlaying=\(wasPlaying) operation=\(FirstUseHitchDiagnostics.currentMainOperationDescription() ?? "none")",
+            category: .audio
+        )
 
         smartController.beginSeek()
 
@@ -508,6 +530,8 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     private func startProgressTimer() {
         stopProgressTimer()
+        lastProgressUpdateUptime = ProcessInfo.processInfo.systemUptime
+        lastProgressAudibleTime = currentTime
 
         progressTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) {
             [weak self] _ in
@@ -528,10 +552,14 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     private func updateProgress() {
         let nowUptime = ProcessInfo.processInfo.systemUptime
+        let previousUptime = lastProgressUpdateUptime
+        let previousAudibleTime = lastProgressAudibleTime
+        lastProgressUpdateUptime = nowUptime
 
         if let drainStartUptime {
             let elapsed = max(0, nowUptime - drainStartUptime)
             currentTime = min(duration, drainStartTime + elapsed)
+            lastProgressAudibleTime = currentTime
             if duration > 0 {
                 smartController.updateProgress(currentTime: currentTime, duration: duration)
             }
@@ -553,6 +581,18 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
         let audibleTime = newTime - lookaheadSeconds
         currentTime = max(0, min(audibleTime, duration))
+        lastProgressAudibleTime = currentTime
+
+        if let previousUptime {
+            let timerGap = nowUptime - previousUptime
+            let clockDelta = currentTime - previousAudibleTime
+            if timerGap >= 0.24 || abs(clockDelta - timerGap) >= 0.18 {
+                Log.warning(
+                    "[AudioClockGap] timerGapMs=\(String(format: "%.1f", timerGap * 1000)) clockDeltaMs=\(String(format: "%.1f", clockDelta * 1000)) playerNodePlaying=\(playerNode.isPlaying) engineRunning=\(isEngineInitialized ? engine.isRunning : false) operation=\(FirstUseHitchDiagnostics.currentMainOperationDescription() ?? "none")",
+                    category: .audio
+                )
+            }
+        }
 
         // Update smart controller with progress
         if duration > 0 {

@@ -115,8 +115,8 @@ enum AMLLDBUpdateReason: String {
 // MARK: - Raw JSONL Entry
 
 /// Raw JSONL entry format where metadata is array of key-value pairs
-struct AMLLDBJsonlRawEntry: Decodable {
-    struct MetadataPair: Decodable {
+nonisolated struct AMLLDBJsonlRawEntry: Decodable, Sendable {
+    nonisolated struct MetadataPair: Decodable, Sendable {
         let key: String
         let values: [String]
 
@@ -131,7 +131,7 @@ struct AMLLDBJsonlRawEntry: Decodable {
     let rawLyricFile: String
 
     /// Convert to AMLLDBRawIndexEntry
-    func toIndexEntry() -> AMLLDBRawIndexEntry? {
+    nonisolated func toIndexEntry() -> AMLLDBRawIndexEntry? {
         // Extract values from metadata pairs
         func getValue(key: String) -> String? {
             metadata.first(where: { $0.key == key })?.values.first
@@ -172,7 +172,7 @@ struct AMLLDBJsonlRawEntry: Decodable {
 
 /// Represents a raw entry from AMLLDB's raw-lyrics-index.jsonl file.
 /// This is the primary data structure for in-memory search.
-struct AMLLDBRawIndexEntry: Equatable {
+nonisolated struct AMLLDBRawIndexEntry: Equatable, Sendable {
 
     /// Song titles (may have multiple variants)
     let titles: [String]

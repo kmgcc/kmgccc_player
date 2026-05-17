@@ -589,10 +589,15 @@ private struct HomePlaylistCard: View {
         }
         .padding(Self.cardInset)
         .frame(height: cardHeight)
+        // `isFloating: false` matches HomeAlbumCard / HomeArtistCircle. The
+        // playlist grid stacks many isFloating cards side-by-side, and the
+        // overlapping drop shadows both burn compositing work per frame and
+        // dim each card's top-edge highlight gradient at the seams (light
+        // mode). Same shell otherwise — material and edge overlays unchanged.
         .homeUnifiedGlassCard(
             cornerRadius: Self.outerCornerRadius,
             colorScheme: colorScheme,
-            isFloating: true
+            isFloating: false
         )
     }
 
@@ -663,10 +668,12 @@ private struct HomePlaylistCard: View {
         }
         .padding(Self.cardInset)
         .frame(height: cardHeight)
+        // See normalBody — playlist cards run without per-card shadow so
+        // the featured card stays visually unified with the grid neighbours.
         .homeUnifiedGlassCard(
             cornerRadius: Self.outerCornerRadius,
             colorScheme: colorScheme,
-            isFloating: true
+            isFloating: false
         )
     }
 
@@ -698,10 +705,11 @@ private struct HomePlaylistCard: View {
         }
         .padding(Self.cardInset)
         .frame(height: cardHeight)
+        // See normalBody — playlist cards run without per-card shadow.
         .homeUnifiedGlassCard(
             cornerRadius: Self.outerCornerRadius,
             colorScheme: colorScheme,
-            isFloating: true
+            isFloating: false
         )
     }
 
@@ -884,6 +892,10 @@ private struct HomeFeaturedPlaylistTrackArtwork: View {
         .buttonStyle(.plain)
         .help(track.title)
         .task(id: track.id) {
+            // If the State seed already pulled the image from the main-actor
+            // store, skip the actor-cache hop + checksum work. Up to 8 thumbs
+            // per featured card × LazyVStack rematerialization adds up.
+            if image != nil { return }
             await loadImage()
         }
     }

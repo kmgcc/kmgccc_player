@@ -6,6 +6,7 @@
 //
 
 import AppKit
+import ImageIO
 import MediaPlayer
 
 @MainActor
@@ -312,12 +313,31 @@ final class NowPlayingService {
     }
 
     private nonisolated static func makeMediaArtwork(from data: Data?) -> MPMediaItemArtwork? {
-        guard let data, !data.isEmpty, let image = NSImage(data: data) else { return nil }
-        let size = image.size
+        guard let data, !data.isEmpty else { return nil }
+        let size = mediaArtworkSize(from: data) ?? CGSize(width: 512, height: 512)
         // MediaPlayer invokes this handler on its own access queue, so keep it nonisolated.
         return MPMediaItemArtwork(boundsSize: size) { _ in
             NSImage(data: data) ?? NSImage(size: size)
         }
+    }
+
+    private nonisolated static func mediaArtworkSize(from data: Data) -> CGSize? {
+        guard
+            let source = CGImageSourceCreateWithData(
+                data as CFData,
+                [kCGImageSourceShouldCache: false] as CFDictionary
+            ),
+            let properties = CGImageSourceCopyPropertiesAtIndex(
+                source,
+                0,
+                [kCGImageSourceShouldCache: false] as CFDictionary
+            ) as? [CFString: Any]
+        else { return nil }
+
+        let width = properties[kCGImagePropertyPixelWidth] as? CGFloat
+        let height = properties[kCGImagePropertyPixelHeight] as? CGFloat
+        guard let width, let height, width > 0, height > 0 else { return nil }
+        return CGSize(width: width, height: height)
     }
 
     private func artworkSignature(for data: Data?) -> String {

@@ -6,6 +6,7 @@
 //
 
 import AppKit
+import ImageIO
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -29,6 +30,7 @@ struct TrackInfoEditorCore: View {
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
+    @Environment(PlayerViewModel.self) private var playerVM
     @Environment(CoverDownloadService.self) private var coverDownloadService
     @Environment(NetEaseCoverService.self) private var netEaseCoverService
     @EnvironmentObject private var themeStore: ThemeStore
@@ -74,7 +76,8 @@ struct TrackInfoEditorCore: View {
     @State private var coverFetchTask: Task<Void, Never>?
     @State private var metadataFetchTask: Task<Void, Never>?
     @State private var artworkPreviewTask: Task<Void, Never>?
-    @State private var artworkPreviewImage: NSImage?
+    @State private var artworkPreviewImage: TrackInfoArtworkPreviewImage?
+    @State private var artworkPreviewSourceIdentity: String?
     @State private var coverCoordinator: CoverSearchCoordinator?
 
     private let amllDbURL = URL(string: "https://github.com/amll-dev/amll-ttml-db")!
@@ -134,6 +137,14 @@ struct TrackInfoEditorCore: View {
                 netEaseCoverService: netEaseCoverService
             )
             scheduleArtworkPreviewDecode(reason: "appear")
+            let layoutToken = FirstUseHitchDiagnostics.begin(
+                "TrackInfoEditorCore.initialSheetLayout",
+                detail: "mode=\(mode)"
+            )
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 900_000_000)
+                FirstUseHitchDiagnostics.end(layoutToken)
+            }
             FirstUseHitchDiagnostics.end(token)
         }
         .onDisappear {
@@ -201,7 +212,7 @@ struct TrackInfoEditorCore: View {
                 .font(.headline)
 
             HStack(alignment: .top, spacing: 16) {
-                artworkPreview(data: reference.artworkData, size: 72)
+                TrackInfoStaticArtworkPreview(data: reference.artworkData, size: 72)
 
                 VStack(alignment: .leading, spacing: 8) {
                     rawRow("标题", reference.title)
@@ -233,7 +244,7 @@ struct TrackInfoEditorCore: View {
 
             HStack(spacing: 16) {
                 ZStack {
-                    artworkPreview(data: artworkData, size: 100)
+                    artworkPreview(size: 100)
                     if coverCoordinator?.isLoading == true {
                         ProgressView()
                             .controlSize(.small)
@@ -298,10 +309,10 @@ struct TrackInfoEditorCore: View {
         }
     }
 
-    private func artworkPreview(data: Data?, size: CGFloat) -> some View {
+    private func artworkPreview(size: CGFloat) -> some View {
         Group {
             if let artworkPreviewImage {
-                Image(nsImage: artworkPreviewImage)
+                Image(decorative: artworkPreviewImage.cgImage, scale: 1, orientation: .up)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
             } else {
@@ -313,6 +324,12 @@ struct TrackInfoEditorCore: View {
         .frame(width: size, height: size)
         .background(.ultraThinMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        .background(
+            TrackInfoArtworkPreviewRenderProbe(
+                identity: artworkPreviewImage?.identity ?? "placeholder",
+                role: "editor"
+            )
+        )
     }
 
     private func scheduleArtworkPreviewDecode(reason: String) {
@@ -320,32 +337,73 @@ struct TrackInfoEditorCore: View {
         artworkPreviewTask = nil
 
         guard let data = artworkData, !data.isEmpty else {
+            let token = FirstUseHitchDiagnostics.begin(
+                "TrackInfoEditorCore.artworkPreviewClear",
+                detail: reason
+            )
             artworkPreviewImage = nil
+            artworkPreviewSourceIdentity = nil
+            FirstUseHitchDiagnostics.end(token)
             return
         }
 
-        let checksum = ArtworkLoader.checksum(for: data)
-        let cacheKey = "track-info-editor-\(checksum)-220"
-        let token = FirstUseHitchDiagnostics.begin(
-            "TrackInfoEditorCore.artworkPreviewDecode",
-            detail: reason
-        )
-
-        artworkPreviewTask = Task { @MainActor in
-            let image = await ArtworkLoader.loadImage(
-                artworkData: data,
-                cacheKey: cacheKey,
-                targetPixelSize: CGSize(width: 220, height: 220)
+        let identity = TrackInfoArtworkPreviewDecoder.lightweightIdentity(for: data)
+        guard identity != artworkPreviewSourceIdentity else {
+            Log.debug(
+                "[TrackInfoEditorCore] skip artwork preview refresh reason=\(reason) identity=\(identity)",
+                category: .perf
             )
-            let wasCancelled = Task.isCancelled
-            defer {
-                FirstUseHitchDiagnostics.end(
-                    token,
-                    detail: "success=\(image != nil), cancelled=\(wasCancelled)"
-                )
+            return
+        }
+
+        let playbackActive = playerVM.isPlaying
+        let scheduleToken = FirstUseHitchDiagnostics.begin(
+            "TrackInfoEditorCore.artworkPreviewSchedule",
+            detail: "\(reason), bytes=\(data.count), identity=\(identity), playing=\(playbackActive)"
+        )
+        artworkPreviewSourceIdentity = identity
+        artworkPreviewImage = nil
+        FirstUseHitchDiagnostics.end(scheduleToken)
+
+        artworkPreviewTask = Task.detached(priority: .utility) { [data, identity, playbackActive, reason] in
+            let delayNs: UInt64 = playbackActive ? 300_000_000 : 0
+            if delayNs > 0 {
+                try? await Task.sleep(nanoseconds: delayNs)
             }
-            guard !wasCancelled else { return }
-            artworkPreviewImage = image
+            guard !Task.isCancelled else { return }
+
+            let decodeToken = FirstUseHitchDiagnostics.begin(
+                "TrackInfoEditorCore.artworkPreviewDecode.background",
+                detail: "\(reason), bytes=\(data.count), identity=\(identity), delayMs=\(delayNs / 1_000_000)"
+            )
+            let decoded = TrackInfoArtworkPreviewDecoder.decode(
+                data: data,
+                identity: identity,
+                maxPixelSize: 320
+            )
+            FirstUseHitchDiagnostics.end(
+                decodeToken,
+                detail: decoded?.diagnosticSummary ?? "success=false"
+            )
+
+            guard !Task.isCancelled else { return }
+
+            await MainActor.run {
+                guard artworkPreviewSourceIdentity == identity else {
+                    Log.debug(
+                        "[TrackInfoEditorCore] drop stale artwork preview identity=\(identity)",
+                        category: .perf
+                    )
+                    return
+                }
+
+                let commitToken = FirstUseHitchDiagnostics.begin(
+                    "TrackInfoEditorCore.artworkPreviewCommit",
+                    detail: decoded?.commitSummary ?? "success=false, identity=\(identity)"
+                )
+                artworkPreviewImage = decoded?.image
+                FirstUseHitchDiagnostics.end(commitToken)
+            }
         }
     }
 
@@ -768,5 +826,193 @@ struct TrackInfoEditorCore: View {
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
         return formatter.string(from: date)
+    }
+}
+
+private nonisolated final class TrackInfoArtworkPreviewImage: @unchecked Sendable {
+    let identity: String
+    let cgImage: CGImage
+    let sourcePixelWidth: Int
+    let sourcePixelHeight: Int
+
+    init(identity: String, cgImage: CGImage, sourcePixelWidth: Int, sourcePixelHeight: Int) {
+        self.identity = identity
+        self.cgImage = cgImage
+        self.sourcePixelWidth = sourcePixelWidth
+        self.sourcePixelHeight = sourcePixelHeight
+    }
+}
+
+private nonisolated struct TrackInfoArtworkPreviewDecodeResult: Sendable {
+    let image: TrackInfoArtworkPreviewImage
+    let fullChecksum: UInt64
+    let sourceMs: Double
+    let metadataMs: Double
+    let thumbnailMs: Double
+    let checksumMs: Double
+
+    var diagnosticSummary: String {
+        "success=true, identity=\(image.identity), checksum=\(String(fullChecksum, radix: 16)), source=\(image.sourcePixelWidth)x\(image.sourcePixelHeight), thumbnail=\(image.cgImage.width)x\(image.cgImage.height), sourceMs=\(String(format: "%.1f", sourceMs)), metadataMs=\(String(format: "%.1f", metadataMs)), thumbnailMs=\(String(format: "%.1f", thumbnailMs)), checksumMs=\(String(format: "%.1f", checksumMs))"
+    }
+
+    var commitSummary: String {
+        "success=true, identity=\(image.identity), thumbnail=\(image.cgImage.width)x\(image.cgImage.height)"
+    }
+}
+
+private nonisolated enum TrackInfoArtworkPreviewDecoder {
+    nonisolated static func lightweightIdentity(for data: Data) -> String {
+        var hash: UInt64 = 1_469_598_103_934_665_603
+        data.withUnsafeBytes { rawBuffer in
+            let count = rawBuffer.count
+            guard count > 0 else { return }
+
+            func feed(_ byte: UInt8) {
+                hash ^= UInt64(byte)
+                hash &*= 1_099_511_628_211
+            }
+
+            let edgeCount = min(128, count)
+            for index in 0..<edgeCount {
+                feed(rawBuffer[index])
+            }
+
+            if count > edgeCount {
+                let suffixStart = max(edgeCount, count - edgeCount)
+                for index in suffixStart..<count {
+                    feed(rawBuffer[index])
+                }
+            }
+        }
+        return "\(data.count)-\(String(hash, radix: 16))"
+    }
+
+    nonisolated static func decode(
+        data: Data,
+        identity: String,
+        maxPixelSize: Int
+    ) -> TrackInfoArtworkPreviewDecodeResult? {
+        let sourceStart = ProcessInfo.processInfo.systemUptime
+        guard
+            let source = CGImageSourceCreateWithData(
+                data as CFData,
+                [kCGImageSourceShouldCache: false] as CFDictionary
+            )
+        else { return nil }
+        let sourceMs = elapsedMs(since: sourceStart)
+
+        let metadataStart = ProcessInfo.processInfo.systemUptime
+        let properties = CGImageSourceCopyPropertiesAtIndex(
+            source,
+            0,
+            [kCGImageSourceShouldCache: false] as CFDictionary
+        ) as? [CFString: Any]
+        let sourceWidth = properties?[kCGImagePropertyPixelWidth] as? Int ?? 0
+        let sourceHeight = properties?[kCGImagePropertyPixelHeight] as? Int ?? 0
+        let metadataMs = elapsedMs(since: metadataStart)
+
+        let thumbnailStart = ProcessInfo.processInfo.systemUptime
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCache: false,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: max(1, maxPixelSize),
+        ]
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        else { return nil }
+        let thumbnailMs = elapsedMs(since: thumbnailStart)
+
+        let checksumStart = ProcessInfo.processInfo.systemUptime
+        let checksum = ArtworkLoader.checksum(for: data)
+        let checksumMs = elapsedMs(since: checksumStart)
+
+        return TrackInfoArtworkPreviewDecodeResult(
+            image: TrackInfoArtworkPreviewImage(
+                identity: identity,
+                cgImage: cgImage,
+                sourcePixelWidth: sourceWidth,
+                sourcePixelHeight: sourceHeight
+            ),
+            fullChecksum: checksum,
+            sourceMs: sourceMs,
+            metadataMs: metadataMs,
+            thumbnailMs: thumbnailMs,
+            checksumMs: checksumMs
+        )
+    }
+
+    private nonisolated static func elapsedMs(since start: TimeInterval) -> Double {
+        (ProcessInfo.processInfo.systemUptime - start) * 1000
+    }
+}
+
+private struct TrackInfoArtworkPreviewRenderProbe: View {
+    let identity: String
+    let role: String
+
+    var body: some View {
+        Color.clear
+            .onAppear {
+                Log.debug(
+                    "[TrackInfoEditorCore] artwork preview view appear role=\(role) identity=\(identity)",
+                    category: .perf
+                )
+            }
+            .onChange(of: identity) { _, newValue in
+                let token = FirstUseHitchDiagnostics.begin(
+                    "TrackInfoEditorCore.artworkPreviewViewUpdate",
+                    detail: "role=\(role), identity=\(newValue)"
+                )
+                FirstUseHitchDiagnostics.end(token)
+            }
+    }
+}
+
+private struct TrackInfoStaticArtworkPreview: View {
+    let data: Data?
+    let size: CGFloat
+
+    @State private var image: TrackInfoArtworkPreviewImage?
+    @State private var task: Task<Void, Never>?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(decorative: image.cgImage, scale: 1, orientation: .up)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                Image(systemName: "music.note")
+                    .font(.system(size: size * 0.36, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: size, height: size)
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .task(id: data.map { TrackInfoArtworkPreviewDecoder.lightweightIdentity(for: $0) } ?? "nil") {
+            task?.cancel()
+            guard let data, !data.isEmpty else {
+                image = nil
+                return
+            }
+            let identity = TrackInfoArtworkPreviewDecoder.lightweightIdentity(for: data)
+            task = Task.detached(priority: .utility) {
+                let decoded = TrackInfoArtworkPreviewDecoder.decode(
+                    data: data,
+                    identity: identity,
+                    maxPixelSize: 160
+                )
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    image = decoded?.image
+                }
+            }
+        }
+        .onDisappear {
+            task?.cancel()
+            task = nil
+        }
     }
 }
