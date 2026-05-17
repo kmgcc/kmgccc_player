@@ -170,9 +170,18 @@ struct HomeHeroView: View {
         mode == .narrow ? 11.5 : 13
     }
 
+    // Cache by the two possible font sizes (11.5 narrow, 13 other) to avoid
+    // allocating NSLayoutManager on every body evaluation.
+    private static var lineHeightCache: [CGFloat: CGFloat] = [:]
+
     private var descriptionLineHeight: CGFloat {
-        let font = NSFont.systemFont(ofSize: descriptionFontSize, weight: .ultraLight)
-        return NSLayoutManager().defaultLineHeight(for: font)
+        let size = descriptionFontSize
+        if let cached = Self.lineHeightCache[size] { return cached }
+        let height = NSLayoutManager().defaultLineHeight(
+            for: NSFont.systemFont(ofSize: size, weight: .ultraLight)
+        )
+        Self.lineHeightCache[size] = height
+        return height
     }
 
     private var descriptionScrollHeight: CGFloat {

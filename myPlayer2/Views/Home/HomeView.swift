@@ -259,29 +259,22 @@ struct HomeView: View {
         // directly from AppKit by `HomeAmbientRootView` via a Combine
         // publisher on `HomeWindowLayoutState`.
         let snap = layout.discreteSnapshot
-        guard snap.hasValidLayout else {
-            return AnyView(
-                Color.clear
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            )
-        }
-
-        let centerW = CGFloat(snap.contentWidthBucket) * 16
-        // Layout mode follows the center column width so card sizes match
-        // the visible center area, not the full window width. Mode is
-        // computed from the raw geometry inside `HomeWindowLayoutState` so
-        // tier thresholds (560/720/980) are evaluated against pixel-precise
-        // input rather than the 16pt-bucketed centerW used for layout.
         let mode = HomeLayoutMode.from(snap.mode)
         let hPad = mode.horizontalPadding
         let leftInset = CGFloat(snap.leftInset)
         let rightInset = CGFloat(snap.rightInset)
         let centerLeftPad = leftInset + hPad
         let centerRightPad = rightInset + hPad
+        // Layout mode follows the center column width so card sizes match
+        // the visible center area, not the full window width. Mode is
+        // computed from the raw geometry inside `HomeWindowLayoutState` so
+        // tier thresholds (560/720/980) are evaluated against pixel-precise
+        // input rather than the 16pt-bucketed centerW used for layout.
+        let centerW = CGFloat(snap.contentWidthBucket) * 16
         let contentWidth = max(200, centerW - hPad * 2)
 
-        return AnyView(
-            ZStack(alignment: .topLeading) {
+        return ZStack(alignment: .topLeading) {
+            if snap.hasValidLayout {
                 if !HomeDebugFlags.disableAmbient {
                     HomeAmbientShapesBackground(
                         sourceColor: themeStore.semanticPalette.ambientSurface,
@@ -301,8 +294,8 @@ struct HomeView: View {
                 .offset(y: hasAppeared ? 0 : 12)
                 .animation(.easeOut(duration: 0.4), value: hasAppeared)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        )
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private func homeScrollView(

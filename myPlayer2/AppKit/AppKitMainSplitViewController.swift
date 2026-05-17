@@ -61,9 +61,9 @@ final class AppKitMainSplitViewController: NSSplitViewController {
         )
         mainController.title = "main"
 
-        let lyricsController = NSHostingController(
-            rootView: AppKitMainLyricsPaneRoot(appSession: appSession)
-        )
+        let lyricsController: NSViewController = LyricsDebugFlags.windowUseFlatAppKitHost
+            ? LyricsFlatAppKitHostViewController(appSession: appSession)
+            : NSHostingController(rootView: AppKitMainLyricsPaneRoot(appSession: appSession))
         lyricsController.title = "lyrics"
 
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebarController)
@@ -406,3 +406,126 @@ final class CenterPanePassthroughViewController: NSViewController {
     }
 }
 
+// MARK: - Flat AppKit lyrics inspector pane
+
+/// Lyrics inspector pane for the `lyrics.debug.windowUseFlatAppKitHost` diagnostic.
+/// Replaces the production `NSHostingController(rootView: AppKitMainLyricsPaneRoot(...))` with:
+///   - a plain `NSView` that hosts the WKWebView directly (no SwiftUI inspector hierarchy), and
+///   - a zero-sized `NSHostingController` child providing the same LyricsViewModel
+///     lifecycle that `LyricsPanelView` normally provides (seek callback, time sync,
+///     track-change handling).
+///
+/// Why the previous implementation showed blank lyrics:
+///   LyricsViewModel.ensureAMLLLoaded is never called without the SwiftUI driver,
+///   so LyricsSurfaceManager.currentPlaybackSnapshot stays empty. The store loads AMLL
+///   but has no track/lyrics data to replay. Time sync (LyricsRealtimeSyncObserver)
+///   was also absent, so lyrics would not advance even if content appeared.
+@MainActor
+final class LyricsFlatAppKitHostViewController: NSViewController {
+    private let appSession: AppSessionHost
+    private var attachmentID: UUID?
+    private var driverVC: NSViewController?
+    // WebViewHostView provides the correct superview type for mouse suppression and
+    // scaled hit-testing (webViewLayoutScale) when render quality < 1.0.
+    private var webViewHostView: WebViewHostView!
+
+    // 24pt matches LyricsPanelView's .padding(.horizontal, 24) on AMLLWebView.
+    private static let horizontalInset: CGFloat = 24
+
+    private var mainStore: LyricsWebViewStore { LyricsSurfaceManager.shared.mainStore }
+
+    init(appSession: AppSessionHost) {
+        self.appSession = appSession
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func loadView() {
+        let v = NSView()
+        v.wantsLayer = true
+        let host = WebViewHostView()
+        v.addSubview(host)
+        webViewHostView = host
+        view = v
+    }
+
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        // Call reportMainVisible BEFORE installDriver so the surface manager
+        // registers its onStoreReady handler before the WebView attach below.
+        LyricsSurfaceManager.shared.reportMainVisible(true)
+        // Apply quality scale before attach so layoutWebView uses the correct scale immediately.
+        mainStore.setRenderQualityScale(AppSettings.shared.amllLyricsRenderQualityScale, reason: "flatHost.appear")
+        installDriverIfNeeded()
+        attachWebViewIfNeeded()
+    }
+
+    override func viewWillDisappear() {
+        super.viewWillDisappear()
+        LyricsSurfaceManager.shared.reportMainVisible(false)
+        detachWebView()
+    }
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        let inset = Self.horizontalInset
+        webViewHostView.frame = CGRect(
+            x: inset,
+            y: 0,
+            width: max(0, view.bounds.width - inset * 2),
+            height: view.bounds.height
+        )
+        mainStore.layoutPreparedWebView(in: webViewHostView.bounds, reason: "flatHostLayout")
+    }
+
+    private func installDriverIfNeeded() {
+        guard driverVC == nil else { return }
+        guard
+            let libraryVM = appSession.libraryVM,
+            let playbackCoordinator = appSession.playbackCoordinator,
+            let lyricsVM = appSession.lyricsVM
+        else { return }
+
+        let driverView = LyricsFlatDriverView()
+            .environment(AppSettings.shared)
+            .environment(appSession.uiState)
+            .environment(libraryVM)
+            .environment(playbackCoordinator)
+            .environment(lyricsVM)
+            .environmentObject(ThemeStore.shared)
+        let vc = NSHostingController(rootView: driverView)
+        vc.view.frame = .zero
+        addChild(vc)
+        view.addSubview(vc.view)
+        driverVC = vc
+    }
+
+    private func attachWebViewIfNeeded() {
+        let store = mainStore
+        if attachmentID == nil {
+            attachmentID = store.attach()
+        }
+        let webView = store.webView
+        guard webView.superview !== webViewHostView else { return }
+        webView.removeFromSuperview()
+        webViewHostView.onLayout = { [weak store] bounds in
+            store?.layoutPreparedWebView(in: bounds, reason: "hostLayout")
+        }
+        store.layoutPreparedWebView(in: webViewHostView.bounds, reason: "flatHost.attach")
+        webViewHostView.addSubview(webView)
+        store.refreshMouseInteractionSuppression(reason: "flatHost.attach")
+    }
+
+    private func detachWebView() {
+        guard let id = attachmentID else { return }
+        attachmentID = nil
+        let store = mainStore
+        if let webView = store.preparedWebView, webView.superview === webViewHostView {
+            webView.removeFromSuperview()
+        }
+        webViewHostView.onLayout = nil
+        store.detach(requestingID: id)
+    }
+}
