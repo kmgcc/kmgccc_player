@@ -51,6 +51,7 @@ private struct ClassicLEDArtwork: View {
 struct ClassicCoverArtworkView: View {
     let context: SkinContext
     let visualizerMode: String
+    var forceBrightLEDColors: Bool = false
 
     // MARK: - Fullscreen Fine-tuning Constants
     /// Slight boost to artwork size in fullscreen (1.0 = no change)
@@ -98,7 +99,7 @@ struct ClassicCoverArtworkView: View {
                     spacing: spacing,
                     pillTint: context.theme.artworkAccentColor,
                     isPlaying: context.playback.isPlaying,
-                    forceBrightLEDColors: context.theme.artBackgroundIsUltraDark
+                    forceBrightLEDColors: forceBrightLEDColors || context.theme.artBackgroundIsUltraDark
                 )
             } else if visualizerMode == "spectrum" {
                 PillSpectrumView(

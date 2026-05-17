@@ -220,18 +220,47 @@ final class LyricsWebViewStore: NSObject {
                 ? CGAffineTransform(scaleX: 1 / viewScale, y: 1 / viewScale)
                 : .identity
         )
-        if usesScaledLayout {
-            let layoutSignature = "\(Int(bounds.width))x\(Int(bounds.height)):\(Int(targetFrame.width))x\(Int(targetFrame.height)):\(String(format: "%.2f", viewScale))"
-            let shouldLogLayout = lastLoggedRenderQualityLayoutSignature != layoutSignature
-            lastLoggedRenderQualityLayoutSignature = layoutSignature
-            if shouldLogLayout {
-                Log.info(
-                    "AMLL scaled render layout role=\(role), host=\(Int(bounds.width))x\(Int(bounds.height)), webFrame=\(Int(targetFrame.width))x\(Int(targetFrame.height)), pageZoom=\(String(format: "%.2f", viewScale)), layerScale=\(String(format: "%.2f", 1 / viewScale)), reason=\(reason), objectID=\(webViewObjectID)",
-                    category: .webview
-                )
-            }
-        }
         applyBackingScaleForRenderQuality(reason: reason)
+        logRenderQualityLayout(
+            webView: webView,
+            hostBounds: bounds,
+            targetFrame: targetFrame,
+            viewScale: viewScale,
+            reason: reason
+        )
+    }
+
+    private func logRenderQualityLayout(
+        webView: WKWebView,
+        hostBounds: CGRect,
+        targetFrame: CGRect,
+        viewScale: CGFloat,
+        reason: String
+    ) {
+        let windowScale = webView.window?.backingScaleFactor
+            ?? NSScreen.main?.backingScaleFactor
+            ?? 2
+        let layerScale = viewScale < 0.999 ? 1 / viewScale : 1
+        let contentsScale = webView.layer?.contentsScale ?? 0
+        let rasterizationScale = webView.layer?.rasterizationScale ?? 0
+        let effectiveHostBackingScale = windowScale * viewScale
+        let layoutSignature = [
+            String(format: "%.1fx%.1f", hostBounds.width, hostBounds.height),
+            String(format: "%.1fx%.1f", targetFrame.width, targetFrame.height),
+            String(format: "%.3f", viewScale),
+            String(format: "%.3f", layerScale),
+            String(format: "%.3f", windowScale),
+            String(format: "%.3f", contentsScale),
+            String(format: "%.3f", rasterizationScale),
+        ].joined(separator: ":")
+
+        guard lastLoggedRenderQualityLayoutSignature != layoutSignature else { return }
+        lastLoggedRenderQualityLayoutSignature = layoutSignature
+
+        Log.info(
+            "AMLL render quality layout role=\(role), host=\(Int(hostBounds.width))x\(Int(hostBounds.height)), webFrame=\(Int(targetFrame.width))x\(Int(targetFrame.height)), pageZoom=\(String(format: "%.2f", viewScale)), layerScale=\(String(format: "%.2f", layerScale)), windowBackingScale=\(String(format: "%.2f", windowScale)), layerContentsScale=\(String(format: "%.2f", contentsScale)), layerRasterizationScale=\(String(format: "%.2f", rasterizationScale)), effectiveHostBackingScale=\(String(format: "%.2f", effectiveHostBackingScale)), reason=\(reason), objectID=\(webViewObjectID)",
+            category: .webview
+        )
     }
 
     private func applyBackingScaleForRenderQuality(reason: String) {

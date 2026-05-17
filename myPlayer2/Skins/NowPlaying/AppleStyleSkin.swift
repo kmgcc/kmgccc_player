@@ -95,7 +95,11 @@ private struct AppleStyleArtwork: View {
         let visualizerMode = context.usesFullscreenPlayerLayout
             ? fullscreenVisualizerMode
             : normalVisualizerMode
-        ClassicCoverArtworkView(context: context, visualizerMode: visualizerMode)
+        ClassicCoverArtworkView(
+            context: context,
+            visualizerMode: visualizerMode,
+            forceBrightLEDColors: true
+        )
     }
 }
 

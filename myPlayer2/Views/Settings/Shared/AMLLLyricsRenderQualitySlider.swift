@@ -12,45 +12,91 @@ struct AMLLLyricsRenderQualitySlider: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
 
-    private var sliderBinding: Binding<Double> {
-        Binding(
-            get: { quality.sliderValue },
-            set: { quality = AppSettings.AMLLLyricsRenderQuality(sliderValue: $0) }
-        )
+    var body: some View {
+        HStack(spacing: 12) {
+            Text("歌词渲染质量")
+                .font(presentationStyle.rowLabelFont)
+                .foregroundStyle(presentationStyle.primaryTextColor)
+
+            Spacer(minLength: 12)
+
+            SlidingSelector(
+                segments: AppSettings.AMLLLyricsRenderQuality.allCases,
+                selection: $quality,
+                animation: .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08),
+                hSpacing: 0,
+                background: {
+                    Color.clear
+                },
+                knob: {
+                    Capsule()
+                        .fill(selectionTint.opacity(0.18))
+                },
+                content: { option, isSelected in
+                    Text(option.title)
+                        .font(.system(size: presentationStyle.segmentedFontSize, weight: isSelected ? .medium : .regular))
+                        .foregroundStyle(
+                            isSelected
+                                ? presentationStyle.selectedTextColor(accentColor: themeStore.accentColor)
+                                : presentationStyle.secondaryTextColor
+                        )
+                        .frame(minWidth: 30, minHeight: max(22, presentationStyle.tabHeight - 4))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2)
+                        .contentShape(Rectangle())
+                }
+            )
+            .padding(.horizontal, presentationStyle.segmentedTrackHorizontalPadding)
+            .padding(.vertical, presentationStyle.segmentedTrackVerticalPadding)
+            .background(segmentedTrackBackground)
+            .fixedSize(horizontal: true, vertical: false)
+        }
     }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: presentationStyle.sliderBlockSpacing) {
-            HStack {
-                Text("歌词渲染质量")
-                    .font(presentationStyle.rowLabelFont)
-                    .foregroundStyle(presentationStyle.primaryTextColor)
-                Spacer()
-                Text("\(quality.title) · \(quality.resolutionDescription)")
-                    .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))
-                    .font(presentationStyle.rowValueFont)
-            }
+    private var selectionTint: Color {
+        if presentationStyle.usesMaterialSectionCards {
+            return FullscreenSelectionAccentStyle.dimmedAccentColor(
+                from: themeStore.accentNSColor,
+                lightnessDelta: 0.30
+            )
+        }
+        return themeStore.accentColor
+    }
 
-            Slider(value: sliderBinding, in: 0...2, step: 1)
-                .frame(height: presentationStyle.tabHeight)
-
-            HStack {
-                ForEach(Array(AppSettings.AMLLLyricsRenderQuality.allCases.enumerated()), id: \.element.id) { index, option in
-                    Text(option.title)
-                        .font(presentationStyle.captionFont)
-                        .foregroundStyle(
-                            option == quality
-                                ? presentationStyle.primaryTextColor
-                                : presentationStyle.tertiaryTextColor
-                        )
-                    if index < AppSettings.AMLLLyricsRenderQuality.allCases.count - 1 {
-                        Spacer()
-                    }
+    @ViewBuilder
+    private var segmentedTrackBackground: some View {
+        if presentationStyle.usesGlassSectionCards {
+            Capsule()
+                .fill(Color.clear)
+                .liquidGlassPill(
+                    colorScheme: .dark,
+                    accentColor: nil,
+                    prominence: .standard,
+                    materialStyle: presentationStyle.glassMaterialStyle,
+                    isFloating: false
+                )
+                .overlay(
+                    Capsule()
+                        .fill(Color.white.opacity(0.02))
+                )
+        } else {
+            ZStack {
+                if presentationStyle.usesMaterialSectionCards {
+                    Capsule()
+                        .fill(.ultraThinMaterial)
                 }
-            }
 
-            Text("低为 0.5x，中为 0.75x，高为原生分辨率。质量越高，GPU 占用通常越高。")
-                .settingsDescriptionStyle()
+                Capsule()
+                    .fill(presentationStyle.segmentedTrackColor)
+                    .overlay(
+                        Capsule()
+                            .strokeBorder(
+                                presentationStyle.segmentedTrackStrokeColor,
+                                lineWidth: presentationStyle.segmentedTrackStrokeColor == .clear ? 0 : 0.5
+                            )
+                            .allowsHitTesting(false)
+                    )
+            }
         }
     }
 }

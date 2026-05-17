@@ -69,13 +69,6 @@ enum LyricsSurfaceRole: String, CaseIterable, Sendable {
         }
     }
 
-    func renderScale(renderQuality: AppSettings.AMLLLyricsRenderQuality) -> Double {
-        guard supportsAMLLRenderQuality else {
-            return renderScale
-        }
-        return renderQuality.webViewScale
-    }
-
     /// Whether the renderer should keep blur enabled for this role.
     var enableBlur: Bool {
         switch self {

@@ -65,6 +65,7 @@ struct FullscreenPlayerView: View {
         let displayTrackID: UUID?
         let artworkTrackID: UUID?
         let artworkSignature: String
+        let themeGeneration: UInt64
         let hostContext: HostContext
     }
 
@@ -362,6 +363,7 @@ struct FullscreenPlayerView: View {
             displayTrackID: display.trackID,
             artworkTrackID: display.artworkTrackID,
             artworkSignature: artworkSignature,
+            themeGeneration: themeStore.themeGeneration,
             hostContext: hostContext
         )
     }
@@ -481,6 +483,9 @@ struct FullscreenPlayerView: View {
         }
         .onChange(of: fullscreenLyricsConfigSignature) { _, _ in
             applyFullscreenLyricsTheme()
+        }
+        .onChange(of: themeStore.themeGeneration) { _, _ in
+            applyFullscreenLyricsTheme(force: true, reason: "theme-generation-change")
         }
         .onChange(of: colorScheme) { _, _ in
             forceRefreshFullscreenLyricsColors(reason: "colorScheme-change")
@@ -735,9 +740,11 @@ struct FullscreenPlayerView: View {
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
 
-            Color.black.opacity(effectiveDimmingIntensity * 0.7)
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
+            if !isAppleStyleFullscreenSkin {
+                Color.black.opacity(effectiveDimmingIntensity * 0.7)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+            }
         } else if settings.fullscreenArtBackgroundEnabled && currentDisplayContext.hasTrack {
             BKArtBackgroundView(
                 controller: bkController,
@@ -2955,9 +2962,7 @@ struct FullscreenPlayerView: View {
                 100,
                 min(900, settings.fullscreenLyricsTranslationFontWeight)
             ),
-            "renderScale": surfaceRole.renderScale(
-                renderQuality: settings.amllLyricsRenderQuality
-            ),
+            "renderScale": surfaceRole.renderScale,
             "enableBlur": surfaceRole.enableBlur,
             "enableSpring": surfaceRole.enableSpring,
             "fpsCap": surfaceRole.fpsCap,
@@ -3816,7 +3821,16 @@ struct FullscreenPlayerView: View {
     }
 
     private func resolveFullscreenLyricsBaseColor(forTrackID trackID: UUID?) -> NSColor {
-        themeStore.semanticPalette.fullscreenLyricBase
+        if themeStorePaletteMatchesCurrentArtwork(forTrackID: trackID) {
+            return themeStore.semanticPalette.fullscreenLyricBase
+        }
+
+        if let snapshot = currentArtworkSnapshot(forTrackID: trackID) ?? currentArtworkSnapshotForDisplay() {
+            return snapshot.accentColor ?? snapshot.averageColor ?? snapshot.dominantColor
+                ?? NSColor(AppSettings.shared.accentColor)
+        }
+
+        return NSColor(AppSettings.shared.accentColor)
     }
 
     private func resolveFullscreenLyricsInactiveBaseColor(forTrackID trackID: UUID?) -> NSColor {
@@ -3840,7 +3854,28 @@ struct FullscreenPlayerView: View {
             }
         }
 
-        return themeStore.semanticPalette.fullscreenLyricInactiveBase
+        if themeStorePaletteMatchesCurrentArtwork(forTrackID: trackID) {
+            return themeStore.semanticPalette.fullscreenLyricInactiveBase
+        }
+
+        if let snapshot = currentArtworkSnapshot(forTrackID: trackID) ?? currentArtworkSnapshotForDisplay() {
+            return snapshot.averageColor ?? snapshot.dominantColor ?? snapshot.accentColor
+                ?? NSColor(AppSettings.shared.accentColor)
+        }
+
+        return NSColor(AppSettings.shared.accentColor)
+    }
+
+    private func themeStorePaletteMatchesCurrentArtwork(forTrackID trackID: UUID?) -> Bool {
+        let display = currentDisplayContext
+        let checksum = ArtworkAssetStore.checksum(for: display.artworkData)
+        let identity = display.artworkIdentity ?? display.lyricsIdentity
+        let expectedTrackID = trackID ?? display.artworkTrackID ?? display.trackID
+        return themeStore.paletteMatches(
+            trackID: expectedTrackID,
+            artworkIdentity: identity,
+            artworkChecksum: checksum
+        )
     }
     
     private var currentArtworkTaskKey: String {

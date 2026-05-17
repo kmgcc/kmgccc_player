@@ -105,7 +105,9 @@ struct FullscreenSkinTabView: View {
 
                     artworkScaleSection
 
-                    dimmingIntensitySection
+                    if settings.fullscreen.skinID != AppleStyleSkin.skinID {
+                        dimmingIntensitySection
+                    }
                 }
             }
         }

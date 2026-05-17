@@ -63,7 +63,9 @@ enum SkinRegistry {
     }
 
     static var fullscreenOptions: [SkinOption] {
-        fullscreenSkins.map {
+        fullscreenSkins.sorted { lhs, rhs in
+            fullscreenSortRank(for: lhs.id) < fullscreenSortRank(for: rhs.id)
+        }.map {
             SkinOption(
                 id: $0.id,
                 name: $0.name,
@@ -71,6 +73,12 @@ enum SkinRegistry {
                 systemImage: $0.systemImage
             )
         }
+    }
+
+    private static func fullscreenSortRank(for id: String) -> Int {
+        id == "fullscreen.coverGradientBlur"
+            ? -1
+            : (skins.firstIndex { $0.id == id } ?? Int.max)
     }
 
     static var nowPlayingOptions: [SkinOption] {

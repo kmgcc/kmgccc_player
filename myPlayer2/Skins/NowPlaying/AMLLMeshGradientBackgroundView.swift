@@ -26,9 +26,9 @@ enum AppleMeshBackgroundSpeed: String, CaseIterable, Identifiable {
 
     var flowSpeed: Double {
         switch self {
-        case .gentle: return 0.18
-        case .standard: return 0.32
-        case .active: return 0.55
+        case .gentle: return 0.32
+        case .standard: return 0.58
+        case .active: return 0.92
         }
     }
 
