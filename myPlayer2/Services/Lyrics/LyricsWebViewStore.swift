@@ -117,10 +117,9 @@ final class LyricsWebViewStore: NSObject {
     private var didRegisterMessageHandlers = false
     private var isShutDown = false
     private var isMouseInteractionSuppressed = false
-    private var lowResolutionModeEnabled = false
+    private var renderQualityScale: CGFloat = 1
     private var lastAppliedBackingScale: CGFloat?
-    private var lastLoggedLowResolutionLayoutSignature: String?
-    private let lowResolutionViewScale = CGFloat(LyricsSurfaceRole.amllLowResolutionScale)
+    private var lastLoggedRenderQualityLayoutSignature: String?
     // MARK: - Callbacks
 
     var onUserSeek: ((Double) -> Void)?
@@ -166,22 +165,24 @@ final class LyricsWebViewStore: NSObject {
         updateWebContentPointerOcclusionState(isMouseInteractionSuppressed)
     }
 
-    func setLowResolutionModeEnabled(_ enabled: Bool, reason: String) {
-        guard lowResolutionModeEnabled != enabled else {
-            applyBackingScaleForResolutionMode(reason: reason)
+    func setRenderQualityScale(_ scale: CGFloat, reason: String) {
+        let clampedScale = max(0.1, min(1, scale))
+        guard abs(renderQualityScale - clampedScale) >= 0.001 else {
+            applyBackingScaleForRenderQuality(reason: reason)
             return
         }
 
-        lowResolutionModeEnabled = enabled
+        renderQualityScale = clampedScale
         lastAppliedBackingScale = nil
+        lastLoggedRenderQualityLayoutSignature = nil
         Log.info(
-            "AMLL low resolution mode=\(enabled), role=\(role), reason=\(reason), objectID=\(webViewObjectID)",
+            "AMLL render quality scale=\(String(format: "%.2f", clampedScale)), role=\(role), reason=\(reason), objectID=\(webViewObjectID)",
             category: .webview
         )
         if let webView = retainedWebView {
             layoutWebView(webView, in: webView.superview?.bounds ?? webView.frame, reason: reason)
         }
-        applyBackingScaleForResolutionMode(reason: reason)
+        applyBackingScaleForRenderQuality(reason: reason)
     }
 
     func layoutPreparedWebView(in bounds: CGRect, reason: String) {
@@ -190,7 +191,7 @@ final class LyricsWebViewStore: NSObject {
     }
 
     private func layoutWebView(_ webView: WKWebView, in bounds: CGRect, reason: String) {
-        let viewScale = lowResolutionModeEnabled ? lowResolutionViewScale : 1
+        let viewScale = renderQualityScale
         let targetFrame = CGRect(
             x: 0,
             y: 0,
@@ -207,40 +208,39 @@ final class LyricsWebViewStore: NSObject {
             webView.frame = targetFrame
         }
 
-        webView.autoresizingMask = lowResolutionModeEnabled ? [] : [.width, .height]
+        let usesScaledLayout = viewScale < 0.999
+        webView.autoresizingMask = usesScaledLayout ? [] : [.width, .height]
         webView.pageZoom = viewScale
         (webView as? LyricsMouseGatedWebView)?.eventCoordinateScale = viewScale
         webView.wantsLayer = true
         webView.layer?.anchorPoint = CGPoint(x: 0, y: 0)
         webView.layer?.position = CGPoint(x: 0, y: 0)
         webView.layer?.setAffineTransform(
-            lowResolutionModeEnabled
+            usesScaledLayout
                 ? CGAffineTransform(scaleX: 1 / viewScale, y: 1 / viewScale)
                 : .identity
         )
-        if lowResolutionModeEnabled {
+        if usesScaledLayout {
             let layoutSignature = "\(Int(bounds.width))x\(Int(bounds.height)):\(Int(targetFrame.width))x\(Int(targetFrame.height)):\(String(format: "%.2f", viewScale))"
-            let shouldLogLayout = lastLoggedLowResolutionLayoutSignature != layoutSignature
-            lastLoggedLowResolutionLayoutSignature = layoutSignature
+            let shouldLogLayout = lastLoggedRenderQualityLayoutSignature != layoutSignature
+            lastLoggedRenderQualityLayoutSignature = layoutSignature
             if shouldLogLayout {
                 Log.info(
-                    "AMLL low resolution layout role=\(role), host=\(Int(bounds.width))x\(Int(bounds.height)), webFrame=\(Int(targetFrame.width))x\(Int(targetFrame.height)), pageZoom=\(String(format: "%.2f", viewScale)), layerScale=\(String(format: "%.2f", 1 / viewScale)), reason=\(reason), objectID=\(webViewObjectID)",
+                    "AMLL scaled render layout role=\(role), host=\(Int(bounds.width))x\(Int(bounds.height)), webFrame=\(Int(targetFrame.width))x\(Int(targetFrame.height)), pageZoom=\(String(format: "%.2f", viewScale)), layerScale=\(String(format: "%.2f", 1 / viewScale)), reason=\(reason), objectID=\(webViewObjectID)",
                     category: .webview
                 )
             }
         }
-        applyBackingScaleForResolutionMode(reason: reason)
+        applyBackingScaleForRenderQuality(reason: reason)
     }
 
-    private func applyBackingScaleForResolutionMode(reason: String) {
+    private func applyBackingScaleForRenderQuality(reason: String) {
         guard let webView = retainedWebView else { return }
 
         let windowScale = webView.window?.backingScaleFactor
             ?? NSScreen.main?.backingScaleFactor
             ?? 2
-        let targetScale = lowResolutionModeEnabled
-            ? windowScale
-            : windowScale
+        let targetScale = windowScale
 
         if let lastAppliedBackingScale,
            abs(lastAppliedBackingScale - targetScale) < 0.001
@@ -254,7 +254,7 @@ final class LyricsWebViewStore: NSObject {
         webView.setNeedsDisplay(webView.bounds)
 
         Log.debug(
-            "Applied AMLL backing scale=\(String(format: "%.2f", targetScale)), windowScale=\(String(format: "%.2f", windowScale)), lowResolution=\(lowResolutionModeEnabled), role=\(role), reason=\(reason), objectID=\(webViewObjectID)",
+            "Applied AMLL backing scale=\(String(format: "%.2f", targetScale)), windowScale=\(String(format: "%.2f", windowScale)), renderQualityScale=\(String(format: "%.2f", renderQualityScale)), role=\(role), reason=\(reason), objectID=\(webViewObjectID)",
             category: .webview
         )
     }
@@ -1541,7 +1541,7 @@ final class LyricsWebViewStore: NSObject {
         webView.setValue(false, forKey: "drawsBackground")
         retainedWebView = webView
         applyMouseInteractionSuppression(reason: "ensureWebView")
-        applyBackingScaleForResolutionMode(reason: "ensureWebView")
+        applyBackingScaleForRenderQuality(reason: "ensureWebView")
         registerMessageHandlers()
         print("[LyricsStore:\(role)] Created WebView instance: objectID=\(webViewObjectID)")
         loadAMLLContent()

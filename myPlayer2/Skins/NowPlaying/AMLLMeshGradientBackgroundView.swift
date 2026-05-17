@@ -98,6 +98,7 @@ struct AMLLMeshGradientBackgroundView: NSViewRepresentable {
             webView.frame = hostView.bounds
             webView.autoresizingMask = [.width, .height]
             hostView.addSubview(webView)
+            Log.debug("AMLL background attached host=\(hostView.bounds) web=\(webView.frame)", category: .webview)
         }
 
         func update(_ configuration: Configuration) {
@@ -113,6 +114,7 @@ struct AMLLMeshGradientBackgroundView: NSViewRepresentable {
             stopSampling()
             call("window.AMLLBackground?.dispose?.()", label: "dispose")
             webView?.configuration.userContentController.removeScriptMessageHandler(forName: "backgroundReady")
+            webView?.configuration.userContentController.removeScriptMessageHandler(forName: "backgroundDebug")
             webView?.navigationDelegate = nil
             webView?.removeFromSuperview()
             webView = nil
@@ -126,12 +128,27 @@ struct AMLLMeshGradientBackgroundView: NSViewRepresentable {
             _ userContentController: WKUserContentController,
             didReceive message: WKScriptMessage
         ) {
-            guard message.name == "backgroundReady" else { return }
-            markReady()
+            switch message.name {
+            case "backgroundReady":
+                Log.info("AMLL background ready message: \(String(describing: message.body))", category: .webview)
+                markReady()
+            case "backgroundDebug":
+                logBackgroundWebMessage(message.body)
+            default:
+                break
+            }
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            markReady()
+            Log.info("AMLL background navigation finished frame=\(webView.frame)", category: .webview)
+        }
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            Log.error("AMLL background navigation failed: \(error.localizedDescription)", category: .webview)
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            Log.error("AMLL background provisional navigation failed: \(error.localizedDescription)", category: .webview)
         }
 
         private func markReady() {
@@ -142,6 +159,7 @@ struct AMLLMeshGradientBackgroundView: NSViewRepresentable {
                 applyArtworkIfNeeded(configuration, force: true)
                 setPlaying(configuration.isPlaying && configuration.dynamicBackgroundEnabled)
             }
+            collectDiagnostics(label: "ready")
         }
 
         private func ensureWebView() -> WKWebView {
@@ -151,10 +169,13 @@ struct AMLLMeshGradientBackgroundView: NSViewRepresentable {
 
             let contentController = WKUserContentController()
             contentController.add(self, name: "backgroundReady")
+            contentController.add(self, name: "backgroundDebug")
 
             let config = WKWebViewConfiguration()
             config.userContentController = contentController
             config.suppressesIncrementalRendering = false
+            config.preferences.setValue(true, forKey: "developerExtrasEnabled")
+            config.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
 
             let webView = WKWebView(frame: .zero, configuration: config)
             webView.navigationDelegate = self
@@ -165,6 +186,7 @@ struct AMLLMeshGradientBackgroundView: NSViewRepresentable {
 
             if let htmlURL = Bundle.main.url(forResource: "background", withExtension: "html", subdirectory: "AMLL"),
                let readAccessURL = Bundle.main.resourceURL?.appendingPathComponent("AMLL", isDirectory: true) {
+                Log.info("Loading AMLL background from: \(htmlURL.absoluteString)", category: .webview)
                 webView.loadFileURL(htmlURL, allowingReadAccessTo: readAccessURL)
             } else {
                 Log.error("AMLL background.html missing from app bundle", category: .webview)
@@ -199,6 +221,7 @@ struct AMLLMeshGradientBackgroundView: NSViewRepresentable {
                 arguments: [dataURL],
                 label: "setAlbum"
             )
+            collectDiagnostics(label: "setAlbum")
         }
 
         private func setPlaying(_ isPlaying: Bool) {
@@ -267,6 +290,19 @@ struct AMLLMeshGradientBackgroundView: NSViewRepresentable {
                 if let error {
                     Log.debug("AMLL background JS \(label) failed: \(error.localizedDescription)", category: .webview)
                 }
+            }
+        }
+
+        private func collectDiagnostics(label: String) {
+            call("window.AMLLBackground?.diagnostics?.('\(label)')", label: "diagnostics.\(label)")
+        }
+
+        private func logBackgroundWebMessage(_ body: Any) {
+            let text = String(describing: body)
+            if text.contains("error") || text.contains("rejection") || text.contains("bootstrap-failed") {
+                Log.error("[AMLLBackground] \(text)", category: .webview)
+            } else {
+                Log.info("[AMLLBackground] \(text)", category: .webview)
             }
         }
 

@@ -449,18 +449,21 @@
             /* Use solid color instead of rgba for glow */
             filter: drop-shadow(0 0 0.12em rgb(0, 0, 0));
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="interludeDots"] {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="interludeDots"],
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-generic [class*="interludeDots"] {
             visibility: hidden !important;
             opacity: 1 !important;
             transition: none !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="interludeDots"][class*="enabled"] {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="interludeDots"][class*="enabled"],
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-generic [class*="interludeDots"][class*="enabled"] {
             visibility: visible !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="interludeDots"] > * {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="interludeDots"] > *,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-generic [class*="interludeDots"] > * {
             background-color: var(
                 --amll-cb-main-active,
-                var(--amll-active, var(--amll-lp-color, white))
+                var(--amll-fs-main-active, var(--amll-active, var(--amll-lp-color, white)))
             ) !important;
             mix-blend-mode: var(--amll-cb-main-blend, plus-lighter) !important;
             opacity: 1 !important;
@@ -740,30 +743,6 @@
         .amll-lyric-player.amll-surface-fullscreen [class*="lyricBgLine"][class*="active"] {
             opacity: 1 !important;
             filter: none !important;
-        }
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-apple-style {
-            --amll-apple-line-opacity: 0.46;
-            --amll-apple-subline-opacity: 0.62;
-            --amll-apple-bgline-opacity: 0.22;
-        }
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-apple-style [class*="lyricLine"] {
-            opacity: var(--amll-apple-line-opacity) !important;
-        }
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-apple-style [class*="lyricLine"][class*="active"],
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-apple-style [class*="lyricLine"][data-fs-completed-highlight="1"],
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-apple-style [class*="lyricLine"][data-amll-exit-catch-up="1"] {
-            opacity: 1 !important;
-        }
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-apple-style [class*="lyricSubLine"],
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-apple-style [class*="lyricSubLine"] * {
-            opacity: var(--amll-apple-subline-opacity) !important;
-        }
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-apple-style [class*="lyricLine"][class*="active"] [class*="lyricSubLine"],
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-apple-style [class*="lyricLine"][class*="active"] [class*="lyricSubLine"] * {
-            opacity: 0.82 !important;
-        }
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-apple-style [class*="lyricBgLine"] {
-            opacity: var(--amll-apple-bgline-opacity) !important;
         }
         .amll-lyric-player.amll-surface-fullscreen [class*="lyricBgLine"] > * {
             opacity: 1 !important;
@@ -2006,6 +1985,10 @@
 
             if (genericMode && profile) {
                 playerElement.dataset.amllCoverBlurProfile = profile;
+                playerElement.style.setProperty(
+                    "--amll-cb-main-blend",
+                    profile === "darker" ? "plus-darker" : "plus-lighter"
+                );
                 const themeColor = getFullscreenCoverBlurGenericThemeColor();
                 if (themeColor) {
                     playerElement.style.setProperty("--amll-fs-cover-blur-theme-color", themeColor);
@@ -2014,6 +1997,7 @@
                 }
             } else if (!fullscreenCoverBlurMode) {
                 delete playerElement.dataset.amllCoverBlurProfile;
+                playerElement.style.removeProperty("--amll-cb-main-blend");
                 playerElement.style.removeProperty("--amll-fs-cover-blur-theme-color");
             }
         };

@@ -157,7 +157,6 @@ struct LibraryDetailHeaderView: View {
                         .clipShape(artworkClipShape)
                 }
             }
-            .shadow(color: .black.opacity(0.18), radius: 10, x: 0, y: 5)
 
             if isEditing {
                 HStack(spacing: 8) {

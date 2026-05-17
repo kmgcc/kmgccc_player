@@ -299,6 +299,10 @@ struct FullscreenPlayerView: View {
         settings.fullscreen.skinID == AppleStyleSkin.skinID
     }
 
+    private var usesCoverBlurLyricsRenderingPath: Bool {
+        isCoverBlurFullscreenSkin || isAppleStyleFullscreenSkin
+    }
+
     private var fullscreenSkinUsesCustomBackground: Bool {
         isCoverBlurFullscreenSkin || isAppleStyleFullscreenSkin
     }
@@ -428,8 +432,11 @@ struct FullscreenPlayerView: View {
             let coverBlurTransition = oldValue == "fullscreen.coverGradientBlur"
                 || newValue == "fullscreen.coverGradientBlur"
             syncCoverBlurHighlightActivation()
-            guard coverBlurTransition else { return }
-            reloadLyricsSurface(reason: "fullscreen skin changed", forceLyricsReload: true)
+            if coverBlurTransition {
+                reloadLyricsSurface(reason: "fullscreen skin changed", forceLyricsReload: true)
+            } else {
+                applyFullscreenLyricsTheme(force: true, reason: "fullscreen skin changed")
+            }
         }
         .onChange(of: fullscreenLedServiceSignature) { _, _ in
             syncFullscreenLedService()
@@ -970,8 +977,8 @@ struct FullscreenPlayerView: View {
                         visibleHeight: visibleClipHeight,
                         topFade: topFade,
                         bottomFade: bottomFade,
-                        blendMode: isCoverBlurFullscreenSkin ? coverBlurBaseBlendMode : .normal,
-                        useCompositingGroup: !isCoverBlurFullscreenSkin
+                        blendMode: usesCoverBlurLyricsRenderingPath ? coverBlurBaseBlendMode : .normal,
+                        useCompositingGroup: !usesCoverBlurLyricsRenderingPath
                     ) {
                         AMLLWebView(store: fullscreenStore, forcedAppearanceMode: .dark)
                     }
@@ -2137,6 +2144,9 @@ struct FullscreenPlayerView: View {
     }
 
     private var coverBlurBaseBlendMode: BlendMode {
+        if isAppleStyleFullscreenSkin {
+            return .plusLighter
+        }
         guard isCoverBlurFullscreenSkin else { return .normal }
         switch coverBlurLyricsTheme?.profile {
         case .lighter:
@@ -2168,6 +2178,7 @@ struct FullscreenPlayerView: View {
             playbackSource: playbackCoordinator.presentation.source
         )
         return [
+            settings.fullscreen.skinID,
             settings.fullscreenLyricsFontNameZh,
             settings.fullscreenLyricsFontNameEn,
             settings.fullscreenLyricsTranslationFontName,
@@ -2179,7 +2190,7 @@ struct FullscreenPlayerView: View {
             String(format: "%.0f", settings.lyricsNearSwitchGapMs),
             String(format: "%.0f", settings.lyricsGlobalAdvanceMs),
             settings.amllDiscreteWordHighlightEnabled ? "wordDiscrete" : "wordSmooth",
-            settings.amllLowResolutionModeEnabled ? "amllLowRes" : "amllFullRes",
+            "amllQuality:\(settings.amllLyricsRenderQuality.rawValue)",
             playbackCoordinator.presentation.source.rawValue,
             hostContext.rawValue,
             overlay.signature,
@@ -2799,7 +2810,13 @@ struct FullscreenPlayerView: View {
             ? updateCoverBlurLyricsThemeIfReady(forTrackID: displayTrackID)
             : nil
         let heldCoverBlurTheme = coverBlurLyricsTheme
+        let appleStyleCoverBlurTheme = isAppleStyleFullscreenSkin
+            ? makeAppleStyleCoverBlurLyricsTheme(forTrackID: displayTrackID)
+            : nil
         let activeCoverBlurTheme: FullscreenCoverBlurLyricsTheme? = {
+            if isAppleStyleFullscreenSkin {
+                return appleStyleCoverBlurTheme
+            }
             guard isCoverBlurFullscreenSkin else { return nil }
             if let readyCoverBlurTheme {
                 return readyCoverBlurTheme
@@ -2812,9 +2829,7 @@ struct FullscreenPlayerView: View {
             return nil
         }()
         let colorSet = activeCoverBlurTheme?.colors
-            ?? (isAppleStyleFullscreenSkin
-                ? makeAppleStyleLyricsColorSet(forTrackID: displayTrackID)
-                : makeFullscreenLyricsColorSet(forTrackID: displayTrackID))
+            ?? makeFullscreenLyricsColorSet(forTrackID: displayTrackID)
 
         if isCoverBlurFullscreenSkin, readyCoverBlurTheme == nil {
             if activeCoverBlurTheme == nil {
@@ -2941,7 +2956,7 @@ struct FullscreenPlayerView: View {
                 min(900, settings.fullscreenLyricsTranslationFontWeight)
             ),
             "renderScale": surfaceRole.renderScale(
-                lowResolutionModeEnabled: settings.amllLowResolutionModeEnabled
+                renderQuality: settings.amllLyricsRenderQuality
             ),
             "enableBlur": surfaceRole.enableBlur,
             "enableSpring": surfaceRole.enableSpring,
@@ -2972,9 +2987,9 @@ struct FullscreenPlayerView: View {
         ]
 
         config["fullscreenLyricDodgeMode"] = true
-        config["fullscreenAppleStyleMode"] = isAppleStyleFullscreenSkin
+        config["fullscreenAppleStyleMode"] = false
         config["fullscreenCoverBlurMode"] = false
-        config["coverBlurFullscreenGenericMode"] = isCoverBlurFullscreenSkin && activeCoverBlurTheme != nil
+        config["coverBlurFullscreenGenericMode"] = usesCoverBlurLyricsRenderingPath && activeCoverBlurTheme != nil
         config["coverBlurFullscreenGenericProfile"] = activeCoverBlurTheme?.profile.rawValue ?? NSNull()
         config["coverBlurFullscreenThemeColor"] = coverBlurThemeColor ?? NSNull()
 
@@ -3522,50 +3537,6 @@ struct FullscreenPlayerView: View {
         )
     }
 
-    private func makeAppleStyleLyricsColorSet(forTrackID trackID: UUID?) -> FullscreenLyricsColorSet {
-        let themeColor = resolveFullscreenLyricsBaseColor(forTrackID: trackID)
-        let themeHSL = hslComponents(from: themeColor)
-        let tunedSaturation = clamp(
-            themeHSL.saturation * 0.72 + 0.08,
-            min: 0.16,
-            max: 0.62
-        )
-        let hue = themeHSL.hue
-
-        return FullscreenLyricsColorSet(
-            mainActive: colorFromHSL(
-                hue: hue,
-                saturation: clamp(tunedSaturation * 1.04, min: 0, max: 1),
-                lightness: 0.93
-            ),
-            mainInactive: colorFromHSL(
-                hue: hue,
-                saturation: clamp(tunedSaturation * 0.82, min: 0, max: 1),
-                lightness: 0.82
-            ),
-            lineTimingMainInactive: colorFromHSL(
-                hue: hue,
-                saturation: clamp(tunedSaturation * 0.72, min: 0, max: 1),
-                lightness: 0.78
-            ),
-            subActive: colorFromHSL(
-                hue: hue,
-                saturation: clamp(tunedSaturation * 0.74, min: 0, max: 1),
-                lightness: 0.88
-            ),
-            subInactive: colorFromHSL(
-                hue: hue,
-                saturation: clamp(tunedSaturation * 0.66, min: 0, max: 1),
-                lightness: 0.80
-            ),
-            lineTimingSubInactive: colorFromHSL(
-                hue: hue,
-                saturation: clamp(tunedSaturation * 0.58, min: 0, max: 1),
-                lightness: 0.76
-            )
-        )
-    }
-
     private func makeCoverBlurLyricsColorSet(
         from themeColor: NSColor,
         profile: FullscreenCoverBlurBlendProfile
@@ -3801,6 +3772,21 @@ struct FullscreenPlayerView: View {
 
         return FullscreenCoverBlurLyricsTheme(
             trackID: trackID,
+            themeColor: themeColor,
+            themeLightness: themeHSL.lightness,
+            profile: profile,
+            colors: makeCoverBlurLyricsColorSet(from: themeColor, profile: profile)
+        )
+    }
+
+    private func makeAppleStyleCoverBlurLyricsTheme(forTrackID trackID: UUID?) -> FullscreenCoverBlurLyricsTheme {
+        let resolvedTrackID = trackID ?? Self.fallbackExternalTrackID
+        let themeColor = resolveFullscreenLyricsBaseColor(forTrackID: trackID)
+        let themeHSL = hslComponents(from: themeColor)
+        let profile: FullscreenCoverBlurBlendProfile = .lighter
+
+        return FullscreenCoverBlurLyricsTheme(
+            trackID: resolvedTrackID,
             themeColor: themeColor,
             themeLightness: themeHSL.lightness,
             profile: profile,

@@ -350,7 +350,7 @@ final class LyricsViewModel {
             "seekTimeOffsetMs": trackOffsetMs,
             "theme": resolvedTheme,
             "renderScale": surfaceRole.renderScale(
-                lowResolutionModeEnabled: settings.amllLowResolutionModeEnabled
+                renderQuality: settings.amllLyricsRenderQuality
             ),
             "enableBlur": surfaceRole.enableBlur,
             "enableSpring": surfaceRole.enableSpring,

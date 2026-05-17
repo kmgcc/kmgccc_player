@@ -22,7 +22,7 @@ struct FullscreenLyricsTabView: View {
     @State private var fullscreenLyricsTranslationFontWeight: Int = AppSettings.shared.fullscreenLyricsTranslationFontWeight
     @State private var fullscreenLyricsFontSize: Double = AppSettings.shared.fullscreenLyricsFontSize
     @State private var fullscreenLyricsTranslationFontSize: Double = AppSettings.shared.fullscreenLyricsTranslationFontSize
-    @State private var amllHighResolutionLyricsEnabled: Bool = AppSettings.shared.amllHighResolutionLyricsEnabled
+    @State private var amllLyricsRenderQuality: AppSettings.AMLLLyricsRenderQuality = AppSettings.shared.amllLyricsRenderQuality
     @State private var amllDiscreteWordHighlightEnabled: Bool = AppSettings.shared.amllDiscreteWordHighlightEnabled
 
     private var fontFamilies: [String] {
@@ -64,22 +64,14 @@ struct FullscreenLyricsTabView: View {
         .onChange(of: fullscreenLyricsTranslationFontWeight) { _, _ in syncToSettings() }
         .onChange(of: fullscreenLyricsFontSize) { _, _ in syncToSettings() }
         .onChange(of: fullscreenLyricsTranslationFontSize) { _, _ in syncToSettings() }
-        .onChange(of: amllHighResolutionLyricsEnabled) { _, _ in syncToSettings() }
+        .onChange(of: amllLyricsRenderQuality) { _, _ in syncToSettings() }
         .onChange(of: amllDiscreteWordHighlightEnabled) { _, _ in syncToSettings() }
     }
 
     private var appearanceSection: some View {
         SettingsSection("外观") {
             VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
-                SettingsSwitchRow(
-                    title: "高分辨率",
-                    isOn: $amllHighResolutionLyricsEnabled,
-                    detail: "开启后歌词观感和 GPU 占用会提高",
-                    titleFont: presentationStyle.rowLabelFont,
-                    detailFont: presentationStyle.captionFont,
-                    titleColor: presentationStyle.primaryTextColor,
-                    detailColor: presentationStyle.tertiaryTextColor
-                )
+                AMLLLyricsRenderQualitySlider(quality: $amllLyricsRenderQuality)
 
                 SettingsSwitchRow(
                     title: "减弱高亮(beta)",
@@ -231,7 +223,7 @@ struct FullscreenLyricsTabView: View {
         fullscreenLyricsTranslationFontWeight = settings.fullscreenLyricsTranslationFontWeight
         fullscreenLyricsFontSize = settings.fullscreenLyricsFontSize
         fullscreenLyricsTranslationFontSize = settings.fullscreenLyricsTranslationFontSize
-        amllHighResolutionLyricsEnabled = settings.amllHighResolutionLyricsEnabled
+        amllLyricsRenderQuality = settings.amllLyricsRenderQuality
         amllDiscreteWordHighlightEnabled = settings.amllDiscreteWordHighlightEnabled
     }
 
@@ -243,7 +235,7 @@ struct FullscreenLyricsTabView: View {
         settings.fullscreenLyricsTranslationFontWeight = fullscreenLyricsTranslationFontWeight
         settings.fullscreenLyricsFontSize = fullscreenLyricsFontSize
         settings.fullscreenLyricsTranslationFontSize = fullscreenLyricsTranslationFontSize
-        settings.amllHighResolutionLyricsEnabled = amllHighResolutionLyricsEnabled
+        settings.amllLyricsRenderQuality = amllLyricsRenderQuality
         settings.amllDiscreteWordHighlightEnabled = amllDiscreteWordHighlightEnabled
         lyricsVM.refreshConfigFromSettings()
     }
