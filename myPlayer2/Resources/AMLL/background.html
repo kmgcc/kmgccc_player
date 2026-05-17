@@ -11,7 +11,11 @@
             height: 100%;
             margin: 0;
             overflow: hidden;
-            background: transparent;
+            background:
+                radial-gradient(circle at 22% 18%, rgba(130, 145, 170, 0.34), transparent 36%),
+                radial-gradient(circle at 78% 28%, rgba(210, 185, 165, 0.22), transparent 38%),
+                radial-gradient(circle at 52% 80%, rgba(95, 120, 150, 0.26), transparent 42%),
+                #101114;
         }
 
         canvas {
@@ -25,9 +29,35 @@
 <body>
     <div id="root"></div>
     <script type="module">
-        import { BackgroundRender, MeshGradientRenderer } from "./amll-background.js";
-
         const root = document.getElementById("root");
+        const post = (type, payload = {}) => {
+            try {
+                window.webkit?.messageHandlers?.backgroundDebug?.postMessage({
+                    type,
+                    ...payload,
+                });
+            } catch {
+                // Host diagnostics are best-effort only.
+            }
+        };
+
+        window.addEventListener("error", (event) => {
+            post("error", {
+                message: event.message || String(event.error || "unknown"),
+                filename: event.filename || "",
+                lineno: event.lineno || 0,
+                colno: event.colno || 0,
+            });
+        });
+
+        window.addEventListener("unhandledrejection", (event) => {
+            post("unhandledrejection", {
+                reason: String(event.reason?.stack || event.reason || "unknown"),
+            });
+        });
+
+        let BackgroundRender = null;
+        let MeshGradientRenderer = null;
         let background = null;
         let currentAlbum = "";
         let currentConfig = {
@@ -36,15 +66,46 @@
             flowSpeed: 0.32,
             renderScale: 0.6,
         };
+        let fallbackAlbumDataURL = "";
+
+        const getFallbackAlbum = () => {
+            if (fallbackAlbumDataURL) return fallbackAlbumDataURL;
+            const canvas = document.createElement("canvas");
+            canvas.width = 96;
+            canvas.height = 96;
+            const ctx = canvas.getContext("2d");
+            const base = ctx.createLinearGradient(0, 0, 96, 96);
+            base.addColorStop(0, "#6f7f98");
+            base.addColorStop(0.45, "#232b38");
+            base.addColorStop(1, "#b79d8c");
+            ctx.fillStyle = base;
+            ctx.fillRect(0, 0, 96, 96);
+            const glow = ctx.createRadialGradient(72, 24, 6, 72, 24, 60);
+            glow.addColorStop(0, "rgba(240, 230, 210, 0.95)");
+            glow.addColorStop(1, "rgba(240, 230, 210, 0)");
+            ctx.fillStyle = glow;
+            ctx.fillRect(0, 0, 96, 96);
+            fallbackAlbumDataURL = canvas.toDataURL("image/jpeg", 0.82);
+            return fallbackAlbumDataURL;
+        };
 
         const ensureBackground = () => {
             if (background) return background;
+            if (!BackgroundRender || !MeshGradientRenderer) {
+                throw new Error("AMLL background module is not loaded");
+            }
             background = BackgroundRender.new(MeshGradientRenderer);
             const canvas = background.getElement();
             canvas.style.width = "100%";
             canvas.style.height = "100%";
             root.appendChild(canvas);
             background.setHasLyric(true);
+            post("renderer-created", {
+                canvasWidth: canvas.clientWidth,
+                canvasHeight: canvas.clientHeight,
+                rootWidth: root.clientWidth,
+                rootHeight: root.clientHeight,
+            });
             applyConfig(currentConfig);
             return background;
         };
@@ -67,6 +128,12 @@
                 bg.setLowFreqVolume(0);
                 bg.pause();
             }
+            post("config-applied", {
+                dynamic,
+                fps: dynamic ? Math.max(1, Math.min(120, fps)) : 0,
+                flowSpeed: Math.max(0, flowSpeed),
+                renderScale: Math.max(0.1, Math.min(1, renderScale)),
+            });
         };
 
         window.AMLLBackground = {
@@ -76,12 +143,17 @@
             },
             async setAlbum(albumDataURL) {
                 const bg = ensureBackground();
-                const next = typeof albumDataURL === "string" ? albumDataURL : "";
+                const next = typeof albumDataURL === "string" && albumDataURL.length > 0
+                    ? albumDataURL
+                    : getFallbackAlbum();
                 if (next === currentAlbum) return;
                 currentAlbum = next;
-                if (!next) return;
                 await bg.setAlbum(next, false);
                 applyConfig(currentConfig);
+                post("album-applied", {
+                    fallback: next === getFallbackAlbum(),
+                    length: next.length,
+                });
             },
             setLowFreqVolume(volume) {
                 const bg = ensureBackground();
@@ -104,11 +176,51 @@
                 background?.dispose();
                 background = null;
                 currentAlbum = "";
+                post("disposed");
+            },
+            diagnostics(label) {
+                const canvas = background?.getElement?.();
+                post("diagnostics", {
+                    label: String(label || ""),
+                    hasRenderer: Boolean(background),
+                    hasCanvas: Boolean(canvas),
+                    canvasWidth: canvas?.clientWidth || 0,
+                    canvasHeight: canvas?.clientHeight || 0,
+                    rootWidth: root.clientWidth,
+                    rootHeight: root.clientHeight,
+                    currentAlbumLength: currentAlbum.length,
+                    dynamic: currentConfig.dynamic !== false,
+                    fps: currentConfig.fps,
+                    flowSpeed: currentConfig.flowSpeed,
+                    renderScale: currentConfig.renderScale,
+                });
             },
         };
 
-        window.webkit?.messageHandlers?.backgroundReady?.postMessage({ type: "ready" });
-        ensureBackground();
+        const bootstrap = async () => {
+            post("bootstrap-start", { href: location.href });
+            const module = await import("./amll-background.js");
+            BackgroundRender = module.BackgroundRender;
+            MeshGradientRenderer = module.MeshGradientRenderer;
+            post("module-imported", {
+                hasBackgroundRender: Boolean(BackgroundRender),
+                hasMeshGradientRenderer: Boolean(MeshGradientRenderer),
+            });
+            const bg = ensureBackground();
+            await window.AMLLBackground.setAlbum("");
+            window.webkit?.messageHandlers?.backgroundReady?.postMessage({ type: "ready" });
+            post("bootstrap-ready", {
+                canvasWidth: bg.getElement().clientWidth,
+                canvasHeight: bg.getElement().clientHeight,
+            });
+        };
+
+        bootstrap().catch((error) => {
+            post("bootstrap-failed", {
+                message: String(error?.message || error),
+                stack: String(error?.stack || ""),
+            });
+        });
     </script>
 </body>
 </html>

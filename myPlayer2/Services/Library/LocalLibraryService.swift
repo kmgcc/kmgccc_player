@@ -799,7 +799,9 @@ final class LocalLibraryService {
             generatedHeaderArtworkFileName: existingSidecar?.generatedHeaderArtworkFileName,
             headerArtworkSource: existingSidecar?.headerArtworkSource,
             generatedArtworkSignature: existingSidecar?.generatedArtworkSignature,
-            artworkRevision: existingSidecar?.artworkRevision
+            artworkRevision: existingSidecar?.artworkRevision,
+            trackSortKey: existingSidecar?.trackSortKey,
+            trackSortOrder: existingSidecar?.trackSortOrder
         )
 
         do {
@@ -867,6 +869,50 @@ final class LocalLibraryService {
 
     func playlistArtworkRevision(playlistID: UUID) -> String? {
         loadPlaylistSidecar(playlistID: playlistID)?.artworkRevision
+    }
+
+    nonisolated func playlistSortPreference(playlistID: UUID) -> (key: String, order: String)? {
+        guard
+            let sidecar = loadPlaylistSidecar(playlistID: playlistID),
+            let key = sidecar.trackSortKey,
+            let order = sidecar.trackSortOrder
+        else {
+            return nil
+        }
+        return (key, order)
+    }
+
+    @discardableResult
+    nonisolated func updatePlaylistSortPreference(
+        playlistID: UUID,
+        key: String,
+        order: String
+    ) -> Bool {
+        guard let sidecar = loadPlaylistSidecar(playlistID: playlistID) else { return false }
+        let updated = PlaylistSidecar(
+            schemaVersion: sidecar.schemaVersion,
+            id: sidecar.id,
+            name: sidecar.name,
+            description: sidecar.description,
+            createdAt: sidecar.createdAt,
+            items: sidecar.items,
+            customHeaderArtworkFileName: sidecar.customHeaderArtworkFileName,
+            generatedHeaderArtworkFileName: sidecar.generatedHeaderArtworkFileName,
+            headerArtworkSource: sidecar.headerArtworkSource,
+            generatedArtworkSignature: sidecar.generatedArtworkSignature,
+            artworkRevision: sidecar.artworkRevision,
+            trackSortKey: key,
+            trackSortOrder: order
+        )
+        do {
+            let data = try Self.makeJSONEncoder().encode(updated)
+            let url = LocalLibraryPaths.playlistURL(for: playlistID)
+            try data.write(to: url, options: .atomic)
+            return true
+        } catch {
+            Log.error("Failed to update playlist sort preference: \(error)", category: .library)
+            return false
+        }
     }
 
     func savePlaylistCustomArtwork(playlistID: UUID, image: NSImage) {
@@ -986,7 +1032,9 @@ final class LocalLibraryService {
             generatedHeaderArtworkFileName: generatedFileName,
             headerArtworkSource: activeSource,
             generatedArtworkSignature: generatedSignature,
-            artworkRevision: artworkRevision
+            artworkRevision: artworkRevision,
+            trackSortKey: sidecar.trackSortKey,
+            trackSortOrder: sidecar.trackSortOrder
         )
         do {
             let data = try encoder.encode(updated)

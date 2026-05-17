@@ -721,12 +721,18 @@ final class LibraryViewModel {
             }
         }
 
+        let previousTrackCount = targetPlaylist.trackCount
+
         // Perform import
         let count = await service.importSelectedURLs(selectedURLs, to: targetPlaylist)
 
         // Only refresh if tracks were actually imported
         if count > 0 {
             await syncVisibleStateFromRepositoryAfterImport()
+            await refreshGeneratedArtworkIfPlaylistBecameNonEmpty(
+                playlistID: targetPlaylist.id,
+                previousTrackCount: previousTrackCount
+            )
         }
     }
 
@@ -742,10 +748,15 @@ final class LibraryViewModel {
             return
         }
 
+        let previousTrackCount = playlist.trackCount
         let count = await service.importSelectedURLs(selectedURLs, to: playlist)
 
         if count > 0 {
             await syncVisibleStateFromRepositoryAfterImport()
+            await refreshGeneratedArtworkIfPlaylistBecameNonEmpty(
+                playlistID: playlist.id,
+                previousTrackCount: previousTrackCount
+            )
         }
     }
 
@@ -854,9 +865,14 @@ final class LibraryViewModel {
     }
 
     func addTracksToPlaylist(_ tracks: [Track], playlist: Playlist) async {
+        let previousTrackCount = playlist.trackCount
         await repository.addTracks(tracks, to: playlist)
         playlists = await repository.fetchPlaylists()
         playlistItemAddedAtMap = await repository.fetchPlaylistItemAddedAtMap()
+        await refreshGeneratedArtworkIfPlaylistBecameNonEmpty(
+            playlistID: playlist.id,
+            previousTrackCount: previousTrackCount
+        )
         await invalidateDetailSelectionCacheIfNeeded(
             selectionIdentity: "playlist-\(playlist.id.uuidString)"
         )
@@ -869,6 +885,39 @@ final class LibraryViewModel {
         playlistItemAddedAtMap = await repository.fetchPlaylistItemAddedAtMap()
         await invalidateDetailSelectionCacheIfNeeded(
             selectionIdentity: "playlist-\(playlist.id.uuidString)"
+        )
+        refreshTrigger += 1
+    }
+
+    private func refreshGeneratedArtworkIfPlaylistBecameNonEmpty(
+        playlistID: UUID,
+        previousTrackCount: Int
+    ) async {
+        guard previousTrackCount == 0 else { return }
+        guard let playlist = playlists.first(where: { $0.id == playlistID }) else { return }
+        guard !playlist.tracks.isEmpty else { return }
+
+        let libraryService = LocalLibraryService.shared
+        let sidecar = libraryService.loadPlaylistSidecar(playlistID: playlistID)
+        if sidecar?.headerArtworkSource == .custom || sidecar?.customHeaderArtworkFileName != nil {
+            return
+        }
+
+        let snapshots = playlist.tracks.map { PlaylistArtworkSnapshot(track: $0) }
+        guard let image = await PlaylistArtworkGenerator.shared.generateArtwork(
+            playlistID: playlistID,
+            snapshots: snapshots
+        ) else {
+            return
+        }
+
+        libraryService.savePlaylistGeneratedArtwork(
+            playlistID: playlistID,
+            image: image,
+            signature: PlaylistArtworkGenerator.contentSignature(tracks: playlist.tracks)
+        )
+        await invalidateDetailSelectionCacheIfNeeded(
+            selectionIdentity: "playlist-\(playlistID.uuidString)"
         )
         refreshTrigger += 1
     }
@@ -1591,46 +1640,95 @@ final class LibraryViewModel {
     }
 
     private func persistSortPreferenceForCurrentSelection() {
-        // Track sort preferences (key + order) only persist for selections
-        // backed by a track list. Album / artist / home pages have their
-        // own dedicated sort keys and reuse `trackSortOrder` in-memory only,
-        // so they should not contaminate the per-playlist preference map.
-        switch currentSelection {
-        case .home, .allAlbums, .allArtists:
-            return
-        default:
-            break
-        }
-        var preferences = loadSortPreferencesMap()
-        preferences[sortContextKey] = SortPreference(
+        let preference = SortPreference(
             key: trackSortKey.rawValue,
             order: trackSortOrder.rawValue
         )
-        saveSortPreferencesMap(preferences)
-    }
 
-    private func applySortPreferenceForCurrentSelection() {
-        // Mirror the persistence guard: home / all-albums / all-artists
-        // do not own a track preference entry, so there's nothing to apply.
         switch currentSelection {
         case .home, .allAlbums, .allArtists:
             return
-        default:
-            break
+        case .playlist(let id):
+            if !LocalLibraryService.shared.updatePlaylistSortPreference(
+                playlistID: id,
+                key: preference.key,
+                order: preference.order
+            ) {
+                var preferences = loadSortPreferencesMap()
+                preferences[id.uuidString] = preference
+                saveSortPreferencesMap(preferences)
+            }
+        case .allSongs:
+            UserDefaults.standard.set(preference.key, forKey: DefaultsKey.trackSortKey)
+            UserDefaults.standard.set(preference.order, forKey: DefaultsKey.trackSortOrder)
+            var preferences = loadSortPreferencesMap()
+            preferences[sortContextKey] = preference
+            saveSortPreferencesMap(preferences)
+        case .artist, .album:
+            var preferences = loadSortPreferencesMap()
+            preferences[sortContextKey] = preference
+            saveSortPreferencesMap(preferences)
         }
-        let preferences = loadSortPreferencesMap()
-        guard let preference = preferences[sortContextKey] else { return }
-        guard
-            let key = TrackSortKey(rawValue: preference.key),
-            let order = TrackSortOrder(rawValue: preference.order)
-        else {
-            return
-        }
+    }
 
+    private func applySortPreferenceForCurrentSelection() {
+        switch currentSelection {
+        case .home, .allAlbums, .allArtists:
+            return
+        case .playlist(let id):
+            let preferences = loadSortPreferencesMap()
+            let preference =
+                validPlaylistSortPreference(playlistID: id)
+                ?? validSortPreference(preferences[id.uuidString])
+                ?? defaultTrackSortPreference()
+            applySortPreference(preference)
+        case .allSongs:
+            let preferences = loadSortPreferencesMap()
+            applySortPreference(
+                validSortPreference(preferences[sortContextKey])
+                    ?? defaultTrackSortPreference()
+            )
+        case .artist, .album:
+            let preferences = loadSortPreferencesMap()
+            guard let preference = validSortPreference(preferences[sortContextKey]) else { return }
+            applySortPreference(preference)
+        }
+    }
+
+    private func applySortPreference(_ preference: SortPreference) {
         isApplyingSortPreference = true
-        trackSortKey = key
-        trackSortOrder = order
+        trackSortKey = TrackSortKey(rawValue: preference.key) ?? .importedAt
+        trackSortOrder = TrackSortOrder(rawValue: preference.order) ?? .descending
         isApplyingSortPreference = false
+    }
+
+    private func validPlaylistSortPreference(playlistID: UUID) -> SortPreference? {
+        guard let persisted = LocalLibraryService.shared.playlistSortPreference(playlistID: playlistID) else {
+            return nil
+        }
+        return validSortPreference(SortPreference(key: persisted.key, order: persisted.order))
+    }
+
+    private func validSortPreference(_ preference: SortPreference?) -> SortPreference? {
+        guard
+            let preference,
+            TrackSortKey(rawValue: preference.key) != nil,
+            TrackSortOrder(rawValue: preference.order) != nil
+        else {
+            return nil
+        }
+        return preference
+    }
+
+    private func defaultTrackSortPreference() -> SortPreference {
+        let defaults = UserDefaults.standard
+        let key = TrackSortKey(
+            rawValue: defaults.string(forKey: DefaultsKey.trackSortKey) ?? ""
+        )?.rawValue ?? TrackSortKey.importedAt.rawValue
+        let order = TrackSortOrder(
+            rawValue: defaults.string(forKey: DefaultsKey.trackSortOrder) ?? ""
+        )?.rawValue ?? TrackSortOrder.descending.rawValue
+        return SortPreference(key: key, order: order)
     }
 
     private func loadSortPreferencesMap() -> [String: SortPreference] {

@@ -45,8 +45,8 @@ struct AMLLWebView: NSViewRepresentable {
     func makeNSView(context: Context) -> WebViewHostView {
         LyricsRuntimeProfile.increment("AMLLWebView.makeNSView")
         let hostView = WebViewHostView()
-        context.coordinator.updateLowResolutionMode(
-            effectiveLowResolutionModeEnabled,
+        context.coordinator.updateRenderQualityScale(
+            effectiveRenderQualityScale,
             reason: "makeNSView"
         )
 
@@ -63,8 +63,8 @@ struct AMLLWebView: NSViewRepresentable {
 
     func updateNSView(_ nsView: WebViewHostView, context: Context) {
         LyricsRuntimeProfile.increment("AMLLWebView.updateNSView")
-        context.coordinator.updateLowResolutionMode(
-            effectiveLowResolutionModeEnabled,
+        context.coordinator.updateRenderQualityScale(
+            effectiveRenderQualityScale,
             reason: "updateNSView"
         )
         // Always try to ensure WebView is attached with correct frame
@@ -131,11 +131,11 @@ struct AMLLWebView: NSViewRepresentable {
         Coordinator(store: store, animatesAttachment: animatesAttachment)
     }
 
-    private var effectiveLowResolutionModeEnabled: Bool {
+    private var effectiveRenderQualityScale: Double {
         guard let role = LyricsSurfaceRole(rawValue: store.role) else {
-            return settings.amllLowResolutionModeEnabled
+            return settings.amllLyricsRenderQualityScale
         }
-        return settings.amllLowResolutionModeEnabled && role.supportsAMLLLowResolutionMode
+        return role.supportsAMLLRenderQuality ? settings.amllLyricsRenderQualityScale : 1
     }
 
     static func dismantleNSView(_ nsView: WebViewHostView, coordinator: Coordinator) {
@@ -168,19 +168,17 @@ struct AMLLWebView: NSViewRepresentable {
         var lastWebViewAlphaValue: Double?
         private weak var hostView: WebViewHostView?
         private var hasAttemptedAttach = false
-        private var lowResolutionModeEnabled = false
+        private var renderQualityScale: CGFloat = 1
 
         init(store: LyricsWebViewStore, animatesAttachment: Bool) {
             self.store = store
             self.animatesAttachment = animatesAttachment
         }
 
-        func updateLowResolutionMode(_ enabled: Bool, reason: String) {
-            lowResolutionModeEnabled = enabled
-            hostView?.webViewLayoutScale = enabled
-                ? CGFloat(LyricsSurfaceRole.amllLowResolutionScale)
-                : 1
-            store.setLowResolutionModeEnabled(enabled, reason: reason)
+        func updateRenderQualityScale(_ scale: Double, reason: String) {
+            renderQualityScale = CGFloat(max(0.1, min(1, scale)))
+            hostView?.webViewLayoutScale = renderQualityScale
+            store.setRenderQualityScale(renderQualityScale, reason: reason)
         }
 
         /// Try to attach WebView to host, with detailed logging
@@ -242,9 +240,7 @@ struct AMLLWebView: NSViewRepresentable {
             }
 
             // Add to new host
-            hostView.webViewLayoutScale = lowResolutionModeEnabled
-                ? CGFloat(LyricsSurfaceRole.amllLowResolutionScale)
-                : 1
+            hostView.webViewLayoutScale = renderQualityScale
             store.layoutPreparedWebView(in: hostView.bounds, reason: "attachWebView")
             hostView.onLayout = { [weak store] bounds in
                 store?.layoutPreparedWebView(in: bounds, reason: "hostLayout")
@@ -259,8 +255,8 @@ struct AMLLWebView: NSViewRepresentable {
                 }
             }
             store.refreshMouseInteractionSuppression(reason: "attachWebView")
-            store.setLowResolutionModeEnabled(
-                lowResolutionModeEnabled,
+            store.setRenderQualityScale(
+                renderQualityScale,
                 reason: "attachWebView"
             )
             self.hostView = hostView

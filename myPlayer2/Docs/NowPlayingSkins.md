@@ -62,7 +62,8 @@ Skins can access `context.audio`:
 - `AppleStyleSkin` is the AMLL Mesh Gradient skin. It is registered for both window now playing and fullscreen now playing with the display name `Apple 风格`.
 - The skin background is hosted by `AMLLMeshGradientBackgroundView`, which loads `Resources/AMLL/background.html` and the independent `amll-background.js` bundle. Do not add Mesh Gradient imports to the lyric `amll-core.js` bundle.
 - The skin foreground reuses the classic cover/LED/spectrum artwork view. Window mode does not change lyrics styling.
-- Fullscreen mode reuses the classic fullscreen layout, but its AMLL lyrics config enables `fullscreenAppleStyleMode`: bright theme-derived colors plus opacity tiers, without cover blur's light/dark profile switching.
+- Fullscreen mode keeps the classic fullscreen placement/layout, but its AMLL lyric rendering path must reuse the mature fullscreen cover blur generic lyric system with a fixed `lighter` profile. Apple style does not maintain separate opacity, interlude dot, catch-up, or exit-fade CSS.
+- Fullscreen Apple lyrics use `plus-lighter` compositing and theme-derived bright colors. They do not use cover blur's light/dark auto switching, `plus-darker`, or the cover blur background.
 - Shared settings:
   - `skin.appleStyle.dynamicBackgroundEnabled`: pauses the renderer and releases the Apple background audio consumer when off.
   - `skin.appleStyle.flowSpeed`: `gentle`, `standard`, or `active`.
@@ -72,3 +73,12 @@ Skins can access `context.audio`:
   - `active`: `flowSpeed 0.55`, `60 FPS`.
   - render scale is fixed at `0.6`; do not add a clarity slider unless the skin design is revisited.
 - Audio sampling is an independent consumer of `AudioVisualizationService.shared`. It may share the underlying analysis hub with LED/spectrum, but must not depend on their toggles and must remove only its own consumer when hidden, disabled, or disposed.
+
+### Apple Style Debugging and Visual Constraints
+- `AMLLMeshGradientBackgroundView` must treat the `backgroundReady` script message as the only renderer-ready signal. `WKNavigationDelegate.didFinish` only proves `background.html` loaded; it does not prove the module import, renderer construction, fallback album, or canvas insertion succeeded.
+- The background WKWebView must allow file URL access to the local `AMLL` resource directory so `background.html` can import `amll-background.js`.
+- `background.html` owns a non-black CSS fallback and a generated fallback album image. Missing artwork should still produce a visible Mesh Gradient-like field instead of a pure black surface.
+- The host view should keep a Swift fallback behind the WebView, not a solid black background. A black fallback makes import or renderer failures indistinguishable from a valid but dark frame.
+- Fullscreen Apple lyrics intentionally differ from the classic fullscreen skin by reusing cover blur's tested generic lyric path: `coverBlurFullscreenGenericMode=true`, `coverBlurFullscreenGenericProfile=lighter`, and `plus-lighter` at the WebView layer. Do not add Apple-only opacity selector patches; they previously caused stale interlude dots and diverged exit/catch-up behavior.
+- Skin changes that alter fullscreen lyric semantics must force-reapply the fullscreen lyrics config/theme immediately. The quick settings skin picker and the full settings page must both land on the same `LyricsWebViewStore` config refresh path.
+- The Apple skin preview card must stay consistent with other skin cards: single-color line/fill treatment, simplified geometry, and no colorful mesh-poster artwork. It should symbolize fluid motion with abstract curves plus the classic cover shape.

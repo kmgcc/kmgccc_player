@@ -75,51 +75,73 @@ struct ClassicSkinPreview: View {
 
 // MARK: - Apple Style Skin Preview
 
-/// Apple style fingerprint: bright mesh gradient field with classic cover geometry.
+/// Apple style fingerprint: abstract fluid field + classic cover geometry.
 struct AppleStyleSkinPreview: View {
     let isSelected: Bool
     let accentColor: Color
     @Environment(\.colorScheme) private var colorScheme
 
+    private var strokeColor: Color {
+        SkinPreviewStyle.stroke(colorScheme, emphasis: isSelected ? 1.15 : 1.0)
+    }
+    private var fillColor: Color {
+        SkinPreviewStyle.fill(colorScheme, emphasis: isSelected ? 1.10 : 1.0)
+    }
+    private var glyphColor: Color {
+        SkinPreviewStyle.glyph(colorScheme, emphasis: isSelected ? 1.10 : 1.0)
+    }
+
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: SkinPreviewStyle.cornerRadius, style: .continuous)
-                .fill(
-                    AngularGradient(
-                        colors: [
-                            accentColor.opacity(isSelected ? 0.72 : 0.54),
-                            Color.cyan.opacity(0.46),
-                            Color.pink.opacity(0.40),
-                            Color.orange.opacity(0.36),
-                            accentColor.opacity(isSelected ? 0.72 : 0.54),
-                        ],
-                        center: .center
-                    )
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: SkinPreviewStyle.cornerRadius, style: .continuous)
-                        .stroke(Color.white.opacity(colorScheme == .dark ? 0.26 : 0.38), lineWidth: 1)
-                )
+                .fill(fillColor)
+                .stroke(strokeColor, lineWidth: SkinPreviewStyle.strokeWidth)
                 .frame(width: 56, height: 56)
 
+            AppleFluidPreviewLines()
+                .stroke(strokeColor.opacity(0.72), style: StrokeStyle(lineWidth: 1.1, lineCap: .round))
+                .frame(width: 42, height: 42)
+
+            AppleFluidPreviewLines(offset: 9)
+                .stroke(strokeColor.opacity(0.38), style: StrokeStyle(lineWidth: 0.9, lineCap: .round))
+                .frame(width: 42, height: 42)
+
             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill((colorScheme == .dark ? Color.black : Color.white).opacity(0.32))
+                .fill((colorScheme == .dark ? Color.black : Color.white).opacity(0.10))
+                .stroke(strokeColor, lineWidth: 1)
                 .frame(width: 32, height: 32)
                 .overlay(
                     Image(systemName: "music.note")
                         .font(.system(size: 11, weight: .light))
-                        .foregroundStyle(Color.white.opacity(0.88))
+                        .foregroundStyle(glyphColor)
                 )
-
-            HStack(spacing: 3) {
-                ForEach(0..<4) { index in
-                    Capsule()
-                        .fill(Color.white.opacity(0.52 + Double(index) * 0.08))
-                        .frame(width: 3, height: CGFloat(8 + index * 3))
-                }
-            }
-            .offset(y: 30)
         }
+    }
+}
+
+private struct AppleFluidPreviewLines: Shape {
+    var offset: CGFloat = 0
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let y1 = rect.minY + rect.height * 0.30 + offset * 0.08
+        let y2 = rect.minY + rect.height * 0.62 - offset * 0.05
+
+        path.move(to: CGPoint(x: rect.minX + 2, y: y1))
+        path.addCurve(
+            to: CGPoint(x: rect.maxX - 2, y: y1 + 5),
+            control1: CGPoint(x: rect.minX + rect.width * 0.28, y: y1 - 9 - offset * 0.12),
+            control2: CGPoint(x: rect.minX + rect.width * 0.70, y: y1 + 12 + offset * 0.08)
+        )
+
+        path.move(to: CGPoint(x: rect.minX + 4, y: y2))
+        path.addCurve(
+            to: CGPoint(x: rect.maxX - 4, y: y2 - 4),
+            control1: CGPoint(x: rect.minX + rect.width * 0.32, y: y2 + 8 + offset * 0.08),
+            control2: CGPoint(x: rect.minX + rect.width * 0.68, y: y2 - 11 - offset * 0.12)
+        )
+
+        return path
     }
 }
 

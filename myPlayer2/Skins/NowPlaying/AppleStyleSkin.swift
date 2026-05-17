@@ -41,16 +41,47 @@ private struct AppleMeshBackground: View {
     @AppStorage("skin.appleStyle.flowSpeed") private var flowSpeed: String = AppleMeshBackgroundSpeed.standard.rawValue
 
     var body: some View {
-        AMLLMeshGradientBackgroundView(configuration: .init(
-            artworkData: context.track?.artworkData,
-            artworkChecksum: context.track?.artworkChecksum ?? 0,
-            isPlaying: context.playback.isPlaying,
-            dynamicBackgroundEnabled: dynamicBackgroundEnabled && !context.theme.reduceMotion,
-            speed: AppleMeshBackgroundSpeed(rawValue: flowSpeed) ?? .standard
-        ))
-        .background(Color.black)
+        ZStack {
+            AppleMeshFallbackBackground(context: context)
+            AMLLMeshGradientBackgroundView(configuration: .init(
+                artworkData: context.track?.artworkData,
+                artworkChecksum: context.track?.artworkChecksum ?? 0,
+                isPlaying: context.playback.isPlaying,
+                dynamicBackgroundEnabled: dynamicBackgroundEnabled && !context.theme.reduceMotion,
+                speed: AppleMeshBackgroundSpeed(rawValue: flowSpeed) ?? .standard
+            ))
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea()
         .allowsHitTesting(false)
+    }
+}
+
+private struct AppleMeshFallbackBackground: View {
+    let context: SkinContext
+
+    var body: some View {
+        let base = context.theme.colorScheme == .dark
+            ? Color(red: 0.06, green: 0.065, blue: 0.08)
+            : Color(red: 0.86, green: 0.88, blue: 0.92)
+        let primary = context.theme.artworkAccentColor ?? context.theme.accentColor
+        let secondary = context.theme.accentColor
+
+        ZStack {
+            base
+            RadialGradient(
+                colors: [primary.opacity(0.24), .clear],
+                center: .topLeading,
+                startRadius: 18,
+                endRadius: 420
+            )
+            RadialGradient(
+                colors: [secondary.opacity(0.18), .clear],
+                center: .bottomTrailing,
+                startRadius: 12,
+                endRadius: 460
+            )
+        }
     }
 }
 

@@ -672,3 +672,85 @@
 - fork background bundle 通过 `scripts/sync-amll-from-fork.sh` 构建并同步。
 - `amll-background.js` 产物不包含 Pixi renderer 路径，歌词 `amll-core.js` 仍由 DOM-only entry 构建。
 - Xcode Debug build 通过后需在 App 中手动确认：窗口/全屏 Apple 背景显示、切歌换图、resize、切换皮肤停止渲染采样、动态背景开关与三档速度即时生效、重启后设置恢复。
+
+## 2026-05-16 Apple 风格黑屏与透明度修复
+
+目标：
+
+- 修复 Apple 风格窗口 / 全屏切入后 Mesh Gradient 背景实际不可见、只显示黑底的问题。
+- 修复 Apple 风格全屏歌词仍被经典全屏“不透明 + 明度层级”CSS 覆盖的问题。
+- 重做 Apple 风格 skin picker 预览卡片，使其回到现有皮肤卡片的单色、线框、符号化设计语言。
+
+黑屏根因：
+
+- 背景 WebView 的 `didFinish` 被当作 renderer ready 使用，但这只代表 `background.html` 导航完成，不代表 `amll-background.js` module import、`BackgroundRender.new(MeshGradientRenderer)`、canvas 插入或 fallback album 已完成。
+- 本地 file URL 下的 module import 缺少显式 file access 配置时，页面可以加载而 `./amll-background.js` 访问失败；旧页面没有把 module import failure / unhandled rejection 回传到 App 日志，Swift 侧 optional chaining 又会吞掉后续 bridge 调用。
+- Swift host 和 `background.html` 都使用黑色或透明黑底作为失败兜底，导致“renderer 没起来”和“深色有效帧”在实机上无法区分，最终表现为纯黑。
+
+修复：
+
+- `background.html` 改为动态 import `./amll-background.js`，在 bootstrap 内捕获并通过 `backgroundDebug` 回传 `bootstrap-start`、`module-imported`、`renderer-created`、`bootstrap-ready`、`bootstrap-failed`、`error` 和 `unhandledrejection`。
+- `AMLLMeshGradientBackgroundView` 新增 `backgroundDebug` message handler，开启 WebKit developer extras / file URL access，并只在收到 `backgroundReady` 后下发 config、artwork、playing 状态；`didFinish` 只记录导航完成日志。
+- `background.html` 增加非黑 CSS fallback 与生成式 fallback album。无封面时仍调用 `setAlbum(fallback)`，动态背景关闭时 pause renderer 但保留可见静态背景。
+- `AppleStyleSkin` 移除黑色 WebView 背景，改为主题色 Swift fallback 放在 Mesh WebView 下方。
+
+全屏歌词 opacity 根因与修复：
+
+- 初版 `fullscreenAppleStyleMode` CSS 放在较早位置，之后的经典 fullscreen CSS 又把行内 child/subline opacity 强制为 `1`，并把 background vocal hidden/opacity 归零，所以 Apple 风格实际仍呈现经典全屏的完全不透明语义。
+- 新增最后声明的 `.amll-surface-fullscreen-apple-style` 专属 override，只作用于 Apple 风格 fullscreen：
+  - inactive line opacity `0.42`；
+  - active 行容器保持 `1`，但未播放到的 word/char base opacity `0.48`；
+  - translation/subline opacity `0.34`，active translation `0.58`；
+  - background vocal opacity `0.18`，active background vocal `0.36`；
+  - active highlight 层 opacity `1`，bright mask alpha `1`，dark mask alpha `0`。
+- 时间轴相关自定义没有改变：lead-in、near switch、exit catch-up、completed highlight、discrete highlight 仍走原有 App/fork 链路。
+
+预览卡片：
+
+- 移除彩色 AngularGradient、频谱柱和海报化元素。
+- Apple 风格预览现在只保留单色 56x56 卡片、两条抽象流体曲线和经典封面 glyph，与其他 skin preview 的线框 / 单色 / 简化布局保持一致。
+
+验证：
+
+- `git diff --check` 通过。
+- Xcode Debug clean build 通过：`rm -rf /tmp/kmgccc_player_derived && xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player -configuration Debug -derivedDataPath /tmp/kmgccc_player_derived SWIFT_ENABLE_INCREMENTAL_COMPILATION=NO build`。
+- 实机可见验证使用 `/tmp/kmgccc_player_derived/Build/Products/Debug/kmgccc_player.app`：窗口 Apple 风格已从纯黑变为可见流体 / fallback 背景，经典前景封面与 LED 正常；设置 bundle 中 `background.html` / `index.html` 均确认包含本次修复后的 diagnostics 与 Apple fullscreen override。
+
+## 2026-05-17 Apple 风格全屏歌词改走 Cover Blur Lighter Path
+
+目标：
+
+- 修正 Apple 风格 fullscreen 歌词方向：不再从经典全屏歌词逻辑另起一套 AppleStyle opacity overlay。
+- Apple 风格 fullscreen 歌词改为复用已经打磨稳定的全屏大封面渐变模糊 generic lyric path，只固定为 `lighter` profile / `plus-lighter`。
+- 修复 fullscreen 快速设置切换 skin 后，歌词颜色与 surface 语义不立即刷新的问题。
+
+根因：
+
+- 上一版 `fullscreenAppleStyleMode` 在 `index.html` 中维护了 Apple 专属 line/subline/background vocal/interlude dots opacity 规则。
+- 这些规则没有复用 cover blur generic path 的成熟状态语义，导致 interlude dots 被固定为半透明、translation current/inactive 透明度分叉、exit fade/catch-up 与 cover blur 不一致。
+- Swift 侧 `fullscreenLyricsConfigSignature` 没包含 `settings.fullscreen.skinID`，且 `settings.fullscreen.skinID` 变化时只在涉及 cover blur skin 的转场中 reload lyrics surface。快速设置卡片切换到其他歌词语义 skin 时，旧 WebView CSS vars/config 可能继续保留，直到手动刷新歌词。
+
+修复：
+
+- `FullscreenPlayerView` 新增 `usesCoverBlurLyricsRenderingPath`，Apple fullscreen 与 cover blur fullscreen 在歌词合成层走同一判断。
+- Apple fullscreen 的主 AMLL WebView blend mode 固定为 `.plusLighter`，不使用 compositing group；普通经典 fullscreen 保持 `.normal`。
+- `applyFullscreenLyricsTheme()` 中 Apple fullscreen 不再调用独立 `makeAppleStyleLyricsColorSet()`，而是构造固定 `.lighter` 的 `FullscreenCoverBlurLyricsTheme`：
+  - theme color 来自 `resolveFullscreenLyricsBaseColor()` / 主题取色引擎；
+  - color set 复用 `makeCoverBlurLyricsColorSet(from:profile:.lighter)`；
+  - config 下发 `coverBlurFullscreenGenericMode=true`、`coverBlurFullscreenGenericProfile=lighter`、`coverBlurFullscreenThemeColor=<theme color>`；
+  - `fullscreenAppleStyleMode=false`，避免旧 Apple 专属 CSS 重新参与。
+- `index.html` 删除 `.amll-surface-fullscreen-apple-style` 的专属 opacity / dots CSS。
+- `index.html` 将 generic cover blur 的 interlude dots 也纳入 cover blur dots visibility 规则：默认 hidden，只有 renderer 打上 `enabled` 状态才 visible；dot body 使用 cover blur blend var，并在 generic root state 写入 `--amll-cb-main-blend`。
+- skin 切换时无论是否进入/离开 cover blur，都会强制 `applyFullscreenLyricsTheme(force:true)`；同时把 `settings.fullscreen.skinID` 纳入 `fullscreenLyricsConfigSignature`，保证快速设置和完整设置页都触发 config/theme 重新下发。
+
+边界：
+
+- 未改 fork core，未改 `amll-core.js` 生成链路。
+- Window Apple 风格不受影响：窗口只使用 Mesh Gradient 背景和经典前景，不改窗口歌词。
+- Cover blur 自动 lighter/darker profile 保持原逻辑；Apple 只固定为 lighter，不使用 `plus-darker` 或 cover blur 背景。
+- 普通经典 fullscreen 仍使用原有不透明/明度层级语义。
+
+验证：
+
+- `xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player -configuration Debug build` 通过。
+- 本轮按用户要求不继续执行 App UI 实机验证，由用户接手验证 fullscreen Apple 风格实际可见效果与快速设置切换结果。

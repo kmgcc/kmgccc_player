@@ -10,6 +10,8 @@ import CoreImage
 import ImageIO
 import SwiftUI
 
+private let coverGradientBlurRendererCacheVersion = "softProgressiveMaskV3"
+
 // MARK: - Edge Fill Mode
 
 enum CoverEdgeFillMode: String, Sendable, CaseIterable {
@@ -87,7 +89,8 @@ private struct RenderKey: Equatable {
             alphaCoeffStr = "default"
         }
         self.configHash = String(
-            format: "%.1f-%.3f-%.3f-%.3f-%.3f-%.3f-%.3f-%.3f-%@-%@-%.3f-%@",
+            format: "%@-%.1f-%.3f-%.3f-%.3f-%.3f-%.3f-%.3f-%.3f-%@-%@-%.3f-%@",
+            coverGradientBlurRendererCacheVersion,
             config.blurRadius,
             config.colorOverlayOpacity,
             config.edgeStripWidth,
@@ -486,12 +489,12 @@ enum CoverGradientBlurRenderer {
             return nil
         }
 
-        // Zone-based progressive blur:
+        // Progressive blur:
         //   Pass 0 — fixed cap ≤150, full mask — defines the base cover-edge
         //            transition and protects the left / cover-right-edge region.
-        //   Pass 1+ — each pass uses a right-shifted smoothstep zone mask so
-        //            extra radius is concentrated in the mid-to-right and
-        //            far-right lyrics-background region.
+        //   Pass 1+ — each pass uses a continuous power-feathered mask. The
+        //            previous zone-threshold remap produced visible vertical
+        //            seams where later blur passes entered/exited.
         var currentImage = clampedImage
         let basePassRadius: CGFloat = 150.0
         let totalRadius = max(0, config.blurRadius)
@@ -516,20 +519,9 @@ enum CoverGradientBlurRenderer {
             if passIndex == 0 {
                 passMask = nonLinearMask
             } else {
-                // Progressive right-shifted smoothstep zones.
-                // Each subsequent pass starts contributing further to the right.
-                let zoneLow: CGFloat
-                let zoneHigh: CGFloat
-                switch passIndex {
-                case 1:  zoneLow = 0.10; zoneHigh = 0.32
-                case 2:  zoneLow = 0.25; zoneHigh = 0.50
-                case 3:  zoneLow = 0.42; zoneHigh = 0.68
-                default: zoneLow = 0.55; zoneHigh = 0.82
-                }
-                passMask = zonedMask(
+                passMask = progressiveFeatherMask(
                     from: nonLinearMask,
-                    low: zoneLow,
-                    high: zoneHigh,
+                    passIndex: passIndex,
                     extent: canvasRect
                 ) ?? nonLinearMask
             }
@@ -628,50 +620,45 @@ enum CoverGradientBlurRenderer {
         return cgImage
     }
 
-    /// Smoothstep zone mask: remaps `sourceMask` alpha so the output is
-    /// 0 where α ≤ low, 1 where α ≥ high, and a smooth cubic ease-in-out
-    /// (smoothstep) in between.  This replaces the old hard scale+bias+clamp
-    /// with a soft gate that avoids visible blur-amount seams between passes.
-    private nonisolated static func zonedMask(
+    /// Continuous feather mask for later blur passes. Integer powers keep low
+    /// mask values near zero and let high values gradually reach full strength
+    /// without introducing threshold bands or clamp plateaus.
+    private nonisolated static func progressiveFeatherMask(
         from sourceMask: CIImage,
-        low: CGFloat,
-        high: CGFloat,
+        passIndex: Int,
         extent: CGRect
     ) -> CIImage? {
-        let range = max(0.001, high - low)
-        let scale = 1.0 / range
-        let bias = -low * scale
+        switch passIndex {
+        case 1:
+            return polynomialMask(sourceMask, power: 2, extent: extent)
+        case 2:
+            return polynomialMask(sourceMask, power: 3, extent: extent)
+        case 3:
+            guard let squared = polynomialMask(sourceMask, power: 2, extent: extent) else { return nil }
+            return polynomialMask(squared, power: 2, extent: extent)
+        default:
+            guard let squared = polynomialMask(sourceMask, power: 2, extent: extent) else { return nil }
+            return polynomialMask(squared, power: 3, extent: extent)
+        }
+    }
 
-        // Step 1: remap to t = (α - low) / range
-        guard let matrixFilter = CIFilter(name: "CIColorMatrix") else { return nil }
-        matrixFilter.setValue(sourceMask, forKey: kCIInputImageKey)
-        matrixFilter.setValue(CIVector(x: scale, y: 0, z: 0, w: 0), forKey: "inputRVector")
-        matrixFilter.setValue(CIVector(x: 0, y: scale, z: 0, w: 0), forKey: "inputGVector")
-        matrixFilter.setValue(CIVector(x: 0, y: 0, z: scale, w: 0), forKey: "inputBVector")
-        matrixFilter.setValue(CIVector(x: 0, y: 0, z: 0, w: scale), forKey: "inputAVector")
-        matrixFilter.setValue(
-            CIVector(x: bias, y: bias, z: bias, w: bias),
-            forKey: "inputBiasVector"
-        )
-        guard let remapped = matrixFilter.outputImage?.cropped(to: extent) else { return nil }
-
-        // Step 2: clamp t to [0, 1]
-        guard let clampFilter = CIFilter(name: "CIColorClamp") else { return remapped }
-        clampFilter.setValue(remapped, forKey: kCIInputImageKey)
-        clampFilter.setValue(CIVector(x: 0, y: 0, z: 0, w: 0), forKey: "inputMinComponents")
-        clampFilter.setValue(CIVector(x: 1, y: 1, z: 1, w: 1), forKey: "inputMaxComponents")
-        guard let t = clampFilter.outputImage?.cropped(to: extent) else { return remapped }
-
-        // Step 3: smoothstep — cubic 3t² − 2t³ → (0, 0, 3, −2)
-        guard let smoothFilter = CIFilter(name: "CIColorPolynomial") else { return t }
-        smoothFilter.setValue(t, forKey: kCIInputImageKey)
-        let sCoeff = CIVector(x: 0, y: 0, z: 3, w: -2)
-        smoothFilter.setValue(sCoeff, forKey: "inputRedCoefficients")
-        smoothFilter.setValue(sCoeff, forKey: "inputGreenCoefficients")
-        smoothFilter.setValue(sCoeff, forKey: "inputBlueCoefficients")
-        smoothFilter.setValue(sCoeff, forKey: "inputAlphaCoefficients")
-
-        return smoothFilter.outputImage?.cropped(to: extent) ?? t
+    private nonisolated static func polynomialMask(
+        _ sourceMask: CIImage,
+        power: Int,
+        extent: CGRect
+    ) -> CIImage? {
+        guard let filter = CIFilter(name: "CIColorPolynomial") else {
+            return sourceMask.cropped(to: extent)
+        }
+        filter.setValue(sourceMask, forKey: kCIInputImageKey)
+        let coefficients: CIVector = power == 3
+            ? CIVector(x: 0, y: 0, z: 0, w: 1)
+            : CIVector(x: 0, y: 0, z: 1, w: 0)
+        filter.setValue(coefficients, forKey: "inputRedCoefficients")
+        filter.setValue(coefficients, forKey: "inputGreenCoefficients")
+        filter.setValue(coefficients, forKey: "inputBlueCoefficients")
+        filter.setValue(coefficients, forKey: "inputAlphaCoefficients")
+        return filter.outputImage?.cropped(to: extent)
     }
 
     // MARK: - Render Base Image

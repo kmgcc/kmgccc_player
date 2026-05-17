@@ -396,27 +396,91 @@ public final class AppSettings {
     @ObservationIgnored
     @AppStorage("lyricsGlobalAdvanceMs") var lyricsGlobalAdvanceMs: Double = 0
 
-    private enum AMLLKeys {
-        static let highResolutionLyricsEnabled = "amllHighResolutionLyricsEnabled"
-        static let discreteWordHighlightEnabled = "amllDiscreteWordHighlightEnabled"
-    }
+    enum AMLLLyricsRenderQuality: String, CaseIterable, Identifiable {
+        case low
+        case medium
+        case high
 
-    /// Whether AMLL WebViews should render at native resolution instead of the default reduced mode.
-    var amllHighResolutionLyricsEnabled: Bool {
-        get {
-            access(keyPath: \.amllHighResolutionLyricsEnabled)
-            return UserDefaults.standard.bool(forKey: AMLLKeys.highResolutionLyricsEnabled)
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .low: return "低"
+            case .medium: return "中"
+            case .high: return "高"
+            }
         }
-        set {
-            withMutation(keyPath: \.amllHighResolutionLyricsEnabled) {
-                UserDefaults.standard.set(newValue, forKey: AMLLKeys.highResolutionLyricsEnabled)
+
+        var resolutionDescription: String {
+            switch self {
+            case .low: return "0.5x 分辨率"
+            case .medium: return "0.75x 分辨率"
+            case .high: return "原生分辨率"
+            }
+        }
+
+        var webViewScale: Double {
+            switch self {
+            case .low: return 0.5
+            case .medium: return 0.75
+            case .high: return 1.0
+            }
+        }
+
+        var sliderValue: Double {
+            switch self {
+            case .low: return 0
+            case .medium: return 1
+            case .high: return 2
+            }
+        }
+
+        init(sliderValue: Double) {
+            let index = Int(sliderValue.rounded())
+            switch index {
+            case 0: self = .low
+            case 2: self = .high
+            default: self = .medium
             }
         }
     }
 
-    /// Whether AMLL WebViews should render at reduced backing resolution.
-    var amllLowResolutionModeEnabled: Bool {
-        !amllHighResolutionLyricsEnabled
+    private enum AMLLKeys {
+        static let lyricsRenderQuality = "amllLyricsRenderQuality"
+        static let highResolutionLyricsEnabled = "amllHighResolutionLyricsEnabled"
+        static let discreteWordHighlightEnabled = "amllDiscreteWordHighlightEnabled"
+    }
+
+    /// Shared render quality for AMLL lyric WebViews.
+    var amllLyricsRenderQuality: AMLLLyricsRenderQuality {
+        get {
+            access(keyPath: \.amllLyricsRenderQuality)
+            let defaults = UserDefaults.standard
+            if let stored = defaults.string(forKey: AMLLKeys.lyricsRenderQuality),
+               let quality = AMLLLyricsRenderQuality(rawValue: stored)
+            {
+                return quality
+            }
+
+            if defaults.object(forKey: AMLLKeys.highResolutionLyricsEnabled) != nil {
+                let migratedQuality: AMLLLyricsRenderQuality =
+                    defaults.bool(forKey: AMLLKeys.highResolutionLyricsEnabled) ? .high : .medium
+                defaults.set(migratedQuality.rawValue, forKey: AMLLKeys.lyricsRenderQuality)
+                return migratedQuality
+            }
+
+            return .medium
+        }
+        set {
+            withMutation(keyPath: \.amllLyricsRenderQuality) {
+                UserDefaults.standard.set(newValue.rawValue, forKey: AMLLKeys.lyricsRenderQuality)
+            }
+        }
+    }
+
+    /// Shared WebView backing scale for user-facing AMLL lyric surfaces.
+    var amllLyricsRenderQualityScale: Double {
+        amllLyricsRenderQuality.webViewScale
     }
 
     /// Whether word-by-word AMLL highlighting should jump by whole words instead of sweeping left-to-right.

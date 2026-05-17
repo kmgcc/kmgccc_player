@@ -236,8 +236,8 @@ struct HomeHeroView: View {
 
     private var heroBlurConfig: CoverGradientBlurConfig {
         CoverGradientBlurConfig(
-            blurRadius: 90,
-            colorOverlayOpacity: 0.40,
+            blurRadius: 240,
+            colorOverlayOpacity: 0.46,
             transitionDuration: 0.35,
             edgeStripWidth: 3.0,
             blurStartRatio: 0.08,
@@ -248,8 +248,9 @@ struct HomeHeroView: View {
             edgeFillMode: .pixelStretch,
             // Start blur slightly inside the artwork's right half
             blurStartRatioFromEdge: 0.42,
-            // More linear ramp: reaches large blur values earlier than the default cubic
-            blurAlphaCoefficients: (0, 0.54, 0.30, 0.24)
+            // Keep the hero ramp earlier than fullscreen so the text area
+            // resolves into a cleaner colour field at card height.
+            blurAlphaCoefficients: (0, 0.62, 0.26, 0.12)
         )
     }
 
@@ -589,7 +590,7 @@ struct HomeHeroView: View {
     ) async -> CGImage? {
         let config = heroBlurConfig
         let targetSize = CGSize(width: 1280, height: 380)
-        let cacheKey = "\(checksum)-1280x380-home-hero-v2" as NSString
+        let cacheKey = "\(checksum)-1280x380-home-hero-v3" as NSString
 
         if let cached = HomeHeroBackdropCache.shared.image(for: cacheKey) {
             return cached

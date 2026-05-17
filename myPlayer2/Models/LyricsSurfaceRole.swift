@@ -10,7 +10,8 @@ import Foundation
 /// Identifies the role of a lyrics surface for proper WebView lifecycle management.
 /// Each role may have different lifecycle requirements and configuration.
 enum LyricsSurfaceRole: String, CaseIterable, Sendable {
-    static let amllLowResolutionScale: Double = 0.75
+    static let amllMediumResolutionScale: Double = 0.75
+    static let amllLowResolutionScale: Double = 0.5
 
     /// Main sidebar lyrics panel - shared with batch editing preview.
     case main = "main"
@@ -58,8 +59,8 @@ enum LyricsSurfaceRole: String, CaseIterable, Sendable {
         }
     }
 
-    /// Whether the user-facing AMLL low-resolution switch should affect this role.
-    var supportsAMLLLowResolutionMode: Bool {
+    /// Whether the user-facing AMLL render quality setting should affect this role.
+    var supportsAMLLRenderQuality: Bool {
         switch self {
         case .main, .fullscreen, .fullscreenCoverBlurHighlight, .standalone:
             return true
@@ -68,11 +69,11 @@ enum LyricsSurfaceRole: String, CaseIterable, Sendable {
         }
     }
 
-    func renderScale(lowResolutionModeEnabled: Bool) -> Double {
-        guard lowResolutionModeEnabled, supportsAMLLLowResolutionMode else {
+    func renderScale(renderQuality: AppSettings.AMLLLyricsRenderQuality) -> Double {
+        guard supportsAMLLRenderQuality else {
             return renderScale
         }
-        return min(renderScale, Self.amllLowResolutionScale)
+        return renderQuality.webViewScale
     }
 
     /// Whether the renderer should keep blur enabled for this role.

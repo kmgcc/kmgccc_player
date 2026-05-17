@@ -20,6 +20,8 @@ nonisolated struct PlaylistSidecar: Codable, Sendable {
     let headerArtworkSource: PlaylistArtworkSource?
     let generatedArtworkSignature: String?
     let artworkRevision: String?
+    let trackSortKey: String?
+    let trackSortOrder: String?
 
     var trackIDs: [UUID] {
         if schemaVersion >= 2 {
@@ -42,11 +44,13 @@ nonisolated struct PlaylistSidecar: Codable, Sendable {
         case headerArtworkSource
         case generatedArtworkSignature
         case artworkRevision
+        case trackSortKey
+        case trackSortOrder
         case legacyHeaderArtworkSignature = "headerArtworkSignature"
     }
 
     init(
-        schemaVersion: Int = 4,
+        schemaVersion: Int = 5,
         id: UUID,
         name: String,
         description: String? = nil,
@@ -56,7 +60,9 @@ nonisolated struct PlaylistSidecar: Codable, Sendable {
         generatedHeaderArtworkFileName: String? = nil,
         headerArtworkSource: PlaylistArtworkSource? = nil,
         generatedArtworkSignature: String? = nil,
-        artworkRevision: String? = nil
+        artworkRevision: String? = nil,
+        trackSortKey: String? = nil,
+        trackSortOrder: String? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.id = id
@@ -70,6 +76,8 @@ nonisolated struct PlaylistSidecar: Codable, Sendable {
         self.headerArtworkSource = headerArtworkSource
         self.generatedArtworkSignature = generatedArtworkSignature
         self.artworkRevision = artworkRevision
+        self.trackSortKey = trackSortKey
+        self.trackSortOrder = trackSortOrder
     }
 
     init(from decoder: Decoder) throws {
@@ -94,6 +102,8 @@ nonisolated struct PlaylistSidecar: Codable, Sendable {
             try c.decodeIfPresent(String.self, forKey: .generatedArtworkSignature)
             ?? c.decodeIfPresent(String.self, forKey: .legacyHeaderArtworkSignature)
         artworkRevision = try c.decodeIfPresent(String.self, forKey: .artworkRevision)
+        trackSortKey = try c.decodeIfPresent(String.self, forKey: .trackSortKey)
+        trackSortOrder = try c.decodeIfPresent(String.self, forKey: .trackSortOrder)
 
         if version >= 2 {
             items = try c.decodeIfPresent([PlaylistItemSidecar].self, forKey: .items) ?? []
@@ -110,7 +120,7 @@ nonisolated struct PlaylistSidecar: Codable, Sendable {
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(4, forKey: .schemaVersion)
+        try c.encode(5, forKey: .schemaVersion)
         try c.encode(id, forKey: .id)
         try c.encode(name, forKey: .name)
         try c.encodeIfPresent(description, forKey: .description)
@@ -121,6 +131,8 @@ nonisolated struct PlaylistSidecar: Codable, Sendable {
         try c.encodeIfPresent(headerArtworkSource, forKey: .headerArtworkSource)
         try c.encodeIfPresent(generatedArtworkSignature, forKey: .generatedArtworkSignature)
         try c.encodeIfPresent(artworkRevision, forKey: .artworkRevision)
+        try c.encodeIfPresent(trackSortKey, forKey: .trackSortKey)
+        try c.encodeIfPresent(trackSortOrder, forKey: .trackSortOrder)
     }
 }
 

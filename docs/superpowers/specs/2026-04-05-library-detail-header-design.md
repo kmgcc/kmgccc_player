@@ -298,13 +298,13 @@ One consistent callback. No mixed `Binding<NSImage?>` / callback patterns across
 
 - Stable hash from `playlist.id.uuidString`
 - Base image selection and track sampling both derived from the same hash
-- Same playlist produces identical artwork across launches unless content changes
+- Same playlist produces identical artwork across launches once a generated cover has been persisted. Content changes do not replace an existing generated cover except for the bootstrap transition from an empty playlist to a non-empty playlist, where the app regenerates the built-in cover if no custom cover is active.
 
 ### Cache Key
 
-`(playlistID, contentSignature)` where `contentSignature` is a hash over the sorted track IDs in the playlist (e.g., joined UUID strings hashed via DJB2). Changes when tracks are added or removed.
+Generated playlist artwork is persisted on disk and exposed through an `artworkRevision` stored in the playlist sidecar. Header, halo, and Home card artwork requests include that revision in their identity, so saving a new generated or custom cover naturally invalidates the rendered derivatives without a separate cache path.
 
-**Implementation:** `PlaylistArtworkGenerator` Swift actor. Cache is a `[UUID: (signature: String, image: NSImage)]` dictionary. On cache hit with matching signature, return immediately. On miss or stale signature, regenerate.
+**Implementation:** `PlaylistArtworkGenerator` Swift actor generates the image. `LocalLibraryService.savePlaylistGeneratedArtwork` stores it and updates `artworkRevision` when generated artwork is the active source. If a playlist already has custom artwork, automatic generation can update the generated file but must not activate it or replace the custom cover.
 
 ### Threading
 

@@ -24,7 +24,7 @@ struct NowPlayingLyricsTabView: View {
     @State private var lyricsTranslationFontSize: Double = AppSettings.shared.lyricsTranslationFontSize
     @State private var lyricsTranslationFontWeightLight: Int = AppSettings.shared.lyricsTranslationFontWeightLight
     @State private var lyricsTranslationFontWeightDark: Int = AppSettings.shared.lyricsTranslationFontWeightDark
-    @State private var amllHighResolutionLyricsEnabled: Bool = AppSettings.shared.amllHighResolutionLyricsEnabled
+    @State private var amllLyricsRenderQuality: AppSettings.AMLLLyricsRenderQuality = AppSettings.shared.amllLyricsRenderQuality
     @State private var amllDiscreteWordHighlightEnabled: Bool = AppSettings.shared.amllDiscreteWordHighlightEnabled
 
     private var fontFamilies: [String] {
@@ -60,13 +60,7 @@ struct NowPlayingLyricsTabView: View {
     private var renderingSection: some View {
         SettingsSection("外观") {
             VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
-                SettingsSwitchRow(
-                    title: "高分辨率",
-                    isOn: $amllHighResolutionLyricsEnabled,
-                    detail: "开启后歌词观感和 GPU 占用会提高",
-                    titleFont: presentationStyle.rowLabelFont,
-                    detailFont: presentationStyle.captionFont
-                )
+                AMLLLyricsRenderQualitySlider(quality: $amllLyricsRenderQuality)
 
                 SettingsSwitchRow(
                     title: "减弱高亮(beta)",
@@ -78,10 +72,10 @@ struct NowPlayingLyricsTabView: View {
             }
         }
         .onAppear {
-            amllHighResolutionLyricsEnabled = settings.amllHighResolutionLyricsEnabled
+            amllLyricsRenderQuality = settings.amllLyricsRenderQuality
             amllDiscreteWordHighlightEnabled = settings.amllDiscreteWordHighlightEnabled
         }
-        .onChange(of: amllHighResolutionLyricsEnabled) { _, _ in syncToSettings() }
+        .onChange(of: amllLyricsRenderQuality) { _, _ in syncToSettings() }
         .onChange(of: amllDiscreteWordHighlightEnabled) { _, _ in syncToSettings() }
     }
 
@@ -275,7 +269,7 @@ struct NowPlayingLyricsTabView: View {
         lyricsTranslationFontSize = settings.lyricsTranslationFontSize
         lyricsTranslationFontWeightLight = settings.lyricsTranslationFontWeightLight
         lyricsTranslationFontWeightDark = settings.lyricsTranslationFontWeightDark
-        amllHighResolutionLyricsEnabled = settings.amllHighResolutionLyricsEnabled
+        amllLyricsRenderQuality = settings.amllLyricsRenderQuality
         amllDiscreteWordHighlightEnabled = settings.amllDiscreteWordHighlightEnabled
     }
 
@@ -289,7 +283,7 @@ struct NowPlayingLyricsTabView: View {
         settings.lyricsTranslationFontSize = lyricsTranslationFontSize
         settings.lyricsTranslationFontWeightLight = lyricsTranslationFontWeightLight
         settings.lyricsTranslationFontWeightDark = lyricsTranslationFontWeightDark
-        settings.amllHighResolutionLyricsEnabled = amllHighResolutionLyricsEnabled
+        settings.amllLyricsRenderQuality = amllLyricsRenderQuality
         settings.amllDiscreteWordHighlightEnabled = amllDiscreteWordHighlightEnabled
         lyricsVM.refreshConfigFromSettings()
     }
