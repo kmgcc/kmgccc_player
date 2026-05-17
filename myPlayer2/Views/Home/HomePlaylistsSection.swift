@@ -152,10 +152,37 @@ struct HomePlaylistsSection: View {
 
     // MARK: - Cluster
 
-    /// Cluster width ratio (1.25 : 0.75 → 0.625 : 0.375 of the cluster width
-    /// minus the gap between the two columns).
-    private var clusterFeaturedRatio: CGFloat { 1.25 / 2.0 }   // = 0.625
-    private var clusterSideRatio: CGFloat { 0.75 / 2.0 }       // = 0.375
+    /// Cluster width ratio (1.30 : 0.70 → 0.65 : 0.35 of the cluster width
+    /// minus the gap between the two columns). Slightly tighter than the
+    /// previous 1.25 : 0.75 so the featured card has more visual weight
+    /// and gains room for additional preview-cover slots.
+    private var clusterFeaturedRatio: CGFloat { 1.30 / 2.0 }   // = 0.65
+    private var clusterSideRatio: CGFloat { 0.70 / 2.0 }       // = 0.35
+
+    /// How many preview-cover slots fit on the right side of the featured
+    /// card. Computed from the featured card's actual width minus the
+    /// artwork column and surrounding insets; the available width is
+    /// bucketed to 16 pt so the count doesn't jitter pixel-by-pixel as
+    /// the window resizes.
+    private func featuredPreviewLimit(
+        featuredCardWidth: CGFloat,
+        featuredHeight: CGFloat
+    ) -> Int {
+        let modeBaseline: Int = (mode == .wide || mode == .medium) ? 5 : 4
+        let artworkSide = max(0, featuredHeight - HomePlaylistCard.cardInset * 2)
+        // Featured body layout reserves, in order:
+        //   .padding(cardInset) on the card edges (cardInset * 2 total)
+        //   HStack(spacing: 14) between artwork and right column
+        //   .padding(.trailing, 6) on the right VStack
+        let reservedWidth = HomePlaylistCard.cardInset * 2 + 14 + 6
+        let available = max(0, featuredCardWidth - artworkSide - reservedWidth)
+        let bucketed = (available / 16).rounded(.down) * 16
+        let side = HomePlaylistCard.featuredPreviewSide(for: mode)
+        let spacing: CGFloat = 7
+        guard side > 0 else { return modeBaseline }
+        let fit = Int(floor((bucketed + spacing) / (side + spacing)))
+        return max(3, min(8, max(fit, modeBaseline)))
+    }
 
     @ViewBuilder
     private func clusterRow(
@@ -176,12 +203,17 @@ struct HomePlaylistsSection: View {
             let availableWidth = max(0, geo.size.width - gridSpacing)
             let featuredW = floor(availableWidth * clusterFeaturedRatio)
             let sideW = availableWidth - featuredW
+            let previewLimit = featuredPreviewLimit(
+                featuredCardWidth: featuredW,
+                featuredHeight: featuredH
+            )
 
             HStack(alignment: .top, spacing: gridSpacing) {
                 HomePlaylistCard(
                     playlist: featured,
                     mode: mode,
                     kind: .featured(height: featuredH),
+                    featuredPreviewLimit: previewLimit,
                     onFeaturedTrackPlay: { track in
                         play(track, in: featured)
                     }
@@ -215,9 +247,13 @@ struct HomePlaylistsSection: View {
 
     // MARK: - Remaining grid
     //
-    // Two-column staggered layout: left column slightly narrower, right
-    // column slightly wider — for visual rhythm, not masonry. Row heights
-    // stay constant. Narrow mode falls back to a single equal-width column.
+    // Two-column staggered layout with row-alternating proportions:
+    //   even rows (0, 2, 4 …): left narrow, right wide
+    //   odd rows (1, 3, 5 …):  left wide,   right narrow
+    // The widths themselves are unchanged — the narrow/wide pair is just
+    // swapped between left and right columns per row, so the row rhythm
+    // reads as zig-zagged rather than a fixed lean. Row heights stay
+    // constant; narrow mode falls back to a single equal-width column.
 
     private var staggeredLeftRatio: CGFloat { 0.84 / 2.0 }   // = 0.42
     private var staggeredRightRatio: CGFloat { 1.16 / 2.0 }  // = 0.58
@@ -305,7 +341,13 @@ struct HomePlaylistsSection: View {
         let rightIndex = leftIndex + 1
         let isSingleTrailingItem = rightIndex >= items.count
         let shouldExpandTrailingItem = isSingleTrailingItem && expandsSingleTrailingItem
-        let leftCardWidth = shouldExpandTrailingItem ? rowWidth : leftWidth
+        // Odd rows swap which column gets the wide width. The expansion
+        // override below replaces the leading width with the full row,
+        // so alternation doesn't affect single-trailing-item rows.
+        let swapColumns = rowIndex.isMultiple(of: 2) == false
+        let leftColumnWidth = swapColumns ? rightWidth : leftWidth
+        let rightColumnWidth = swapColumns ? leftWidth : rightWidth
+        let leftCardWidth = shouldExpandTrailingItem ? rowWidth : leftColumnWidth
 
         HStack(alignment: .top, spacing: gridSpacing) {
             HomePlaylistCard(
@@ -319,15 +361,15 @@ struct HomePlaylistsSection: View {
 
             if rightIndex < items.count {
                 HomePlaylistCard(playlist: items[rightIndex], mode: mode, kind: .normal)
-                    .frame(width: rightWidth)
+                    .frame(width: rightColumnWidth)
                     .onTapGesture { navigate(to: items[rightIndex]) }
                     .contextMenu { playlistContextMenu(for: items[rightIndex]) }
             } else if shouldExpandTrailingItem {
                 EmptyView()
             } else {
-                // Single trailing item on the last row keeps the wide-side
+                // Single trailing item on the last row keeps the opposite
                 // slot empty rather than stretching the lone card across.
-                Color.clear.frame(width: rightWidth)
+                Color.clear.frame(width: rightColumnWidth)
             }
         }
     }
@@ -412,6 +454,10 @@ private struct HomePlaylistCard: View {
     let playlist: Playlist
     let mode: HomeLayoutMode
     let kind: HomePlaylistCardKind
+    /// Parent-computed preview-cover slot count for the featured card.
+    /// Ignored by non-featured kinds. Defaults to the per-mode baseline
+    /// so callers that don't need dynamic sizing can omit it.
+    var featuredPreviewLimit: Int? = nil
     var onFeaturedTrackPlay: ((Track) -> Void)? = nil
 
     @State private var coverImage: NSImage?
@@ -466,17 +512,25 @@ private struct HomePlaylistCard: View {
     }
 
     private var featuredTrackPreviewLimit: Int {
-        switch mode {
-        case .wide, .medium: return 5
-        case .compact, .narrow: return 4
-        }
+        featuredPreviewLimit ?? Self.modeBaselinePreviewLimit(for: mode)
     }
 
     private var featuredTrackPreviewSide: CGFloat {
+        Self.featuredPreviewSide(for: mode)
+    }
+
+    fileprivate static func featuredPreviewSide(for mode: HomeLayoutMode) -> CGFloat {
         switch mode {
         case .wide: return 42
         case .medium: return 38
         case .compact, .narrow: return 34
+        }
+    }
+
+    fileprivate static func modeBaselinePreviewLimit(for mode: HomeLayoutMode) -> Int {
+        switch mode {
+        case .wide, .medium: return 5
+        case .compact, .narrow: return 4
         }
     }
 
@@ -788,6 +842,25 @@ private struct HomeFeaturedPlaylistTrackArtwork: View {
 
     @State private var image: NSImage?
 
+    init(
+        track: Track,
+        side: CGFloat,
+        cornerRadius: CGFloat,
+        onPlay: @escaping () -> Void
+    ) {
+        self.track = track
+        self.side = side
+        self.cornerRadius = cornerRadius
+        self.onPlay = onPlay
+        // Seed @State synchronously from the main-actor preview store so
+        // LazyVStack rematerialization doesn't flash the placeholder.
+        // Falling back to nil for first appearance is fine — the .task
+        // below populates and memoizes the image.
+        _image = State(
+            initialValue: HomePlaylistPreviewArtworkStore.shared.cachedImage(forTrackID: track.id)
+        )
+    }
+
     var body: some View {
         Button(action: onPlay) {
             ZStack {
@@ -816,35 +889,78 @@ private struct HomeFeaturedPlaylistTrackArtwork: View {
     }
 
     private func loadImage() async {
-        var data = track.artworkData
-        if data == nil || data!.isEmpty {
-            let artworkURL = track.resolvedArtworkURL()
-            if let artworkURL {
-                data = await Task.detached {
-                    try? Data(contentsOf: artworkURL)
-                }.value
-                if let data, !data.isEmpty {
-                    track.artworkData = data
-                }
-            }
-        }
-        guard let data, !data.isEmpty else {
+        // Single bucketed thumbnail tier for Home featured-card previews.
+        // 96 covers the 34–42 pt display range at 2× Retina without
+        // re-decoding per mode, so we keep one derivative key per track
+        // across the whole Home view.
+        let pixelSide = HomePlaylistPreviewArtworkStore.previewPixelSide
+        let displayedSize = CGSize(width: pixelSide, height: pixelSide)
+
+        // Track helper handles in-memory + disk read off the main thread
+        // and caches the bytes on the model — don't reimplement here.
+        guard let data = await track.loadArtworkDataOffMainIfNeeded(),
+              !data.isEmpty
+        else {
             image = nil
             return
         }
 
-        let targetSize = CGSize(width: side * 2, height: side * 2)
         let checksum = ArtworkLoader.checksum(for: data)
         let key = ArtworkLoader.cacheKey(
             trackID: track.id,
             checksum: checksum,
-            targetPixelSize: targetSize
+            targetPixelSize: displayedSize
         )
-        image = await ArtworkLoader.loadImage(
+
+        // ArtworkLoader's actor cache is async — read once asynchronously,
+        // then promote to the main-actor store so subsequent rematerializations
+        // hit synchronously via the State seed in init.
+        let loaded = await ArtworkLoader.loadImage(
             artworkData: data,
             cacheKey: key,
-            targetPixelSize: targetSize
+            targetPixelSize: displayedSize
         )
+
+        guard let loaded else { return }
+        HomePlaylistPreviewArtworkStore.shared.store(loaded, forTrackID: track.id)
+        if image !== loaded {
+            image = loaded
+        }
+    }
+}
+
+/// Main-actor synchronously-readable cache for Home featured-card preview
+/// thumbnails. Holds the decoded `NSImage` keyed by track ID so the small
+/// 4–8 covers can survive LazyVStack rematerialization without flashing
+/// the placeholder while the actor cache is hopped to.
+@MainActor
+private final class HomePlaylistPreviewArtworkStore {
+    static let shared = HomePlaylistPreviewArtworkStore()
+
+    /// Single bucketed thumbnail pixel size used across all Home layout
+    /// modes. Covers the 34–42 pt display range at 2× Retina with one
+    /// derivative key per track.
+    static let previewPixelSide: CGFloat = 96
+
+    private var images: [UUID: NSImage] = [:]
+    private var insertionOrder: [UUID] = []
+    private let capacity = 256
+
+    func cachedImage(forTrackID trackID: UUID) -> NSImage? {
+        images[trackID]
+    }
+
+    func store(_ image: NSImage, forTrackID trackID: UUID) {
+        if images[trackID] == nil {
+            insertionOrder.append(trackID)
+        }
+        images[trackID] = image
+        if insertionOrder.count > capacity {
+            let oldest = insertionOrder.removeFirst()
+            if oldest != trackID {
+                images.removeValue(forKey: oldest)
+            }
+        }
     }
 }
 
