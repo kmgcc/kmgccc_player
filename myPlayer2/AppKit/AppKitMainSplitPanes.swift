@@ -534,6 +534,29 @@ struct AppKitMainWindowArtBackgroundLayer: View {
     }
 }
 
+// MARK: - Flat AppKit lyrics background view
+
+/// Background layer for `LyricsFlatAppKitHostViewController`.
+/// Mirrors `LyricsPanelView.appKitInspectorBackgroundLayer` so the lyrics panel
+/// material setting is respected in the flat host diagnostic path.
+/// Observes `AppSettings.lyricsBackgroundMode` and updates live when changed.
+struct FlatLyricsBackgroundView: View {
+    @Environment(AppSettings.self) private var settings
+
+    var body: some View {
+        switch settings.lyricsBackgroundMode {
+        case .sidebar:
+            // System inspector pane provides the Liquid Glass background automatically.
+            Color.clear
+                .allowsHitTesting(false)
+        case .clear:
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .allowsHitTesting(false)
+        }
+    }
+}
+
 // MARK: - Flat AppKit lyrics driver view
 
 /// Zero-sized SwiftUI driver for the `lyrics.debug.windowUseFlatAppKitHost` diagnostic.
