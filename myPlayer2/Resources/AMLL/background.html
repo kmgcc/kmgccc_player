@@ -63,7 +63,7 @@
         let currentConfig = {
             dynamic: true,
             fps: 30,
-            flowSpeed: 0.32,
+            flowSpeed: 0.58,
             renderScale: 0.6,
         };
         let fallbackAlbumDataURL = "";
@@ -115,7 +115,7 @@
             const bg = ensureBackground();
             const renderScale = Number.isFinite(currentConfig.renderScale) ? currentConfig.renderScale : 0.6;
             const fps = Number.isFinite(currentConfig.fps) ? currentConfig.fps : 30;
-            const flowSpeed = Number.isFinite(currentConfig.flowSpeed) ? currentConfig.flowSpeed : 0.32;
+            const flowSpeed = Number.isFinite(currentConfig.flowSpeed) ? currentConfig.flowSpeed : 0.58;
             const dynamic = currentConfig.dynamic !== false;
 
             bg.setRenderScale(Math.max(0.1, Math.min(1, renderScale)));

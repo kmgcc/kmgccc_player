@@ -754,3 +754,98 @@
 
 - `xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player -configuration Debug build` 通过。
 - 本轮按用户要求不继续执行 App UI 实机验证，由用户接手验证 fullscreen Apple 风格实际可见效果与快速设置切换结果。
+
+## 2026-05-17 Apple 风格设置与 Cover Blur Generic Dots 回归修复
+
+目标：
+
+- 修复 Apple fullscreen 与全屏大封面渐变模糊皮肤间奏点出场时重复缩放 / 闪回最小的问题。
+- Apple 风格窗口 / 全屏 LED 始终使用偏亮配色。
+- 提升 Apple Mesh Gradient 三档流体速度。
+- Apple fullscreen 豁免背景压暗层，并在选中 Apple 风格时隐藏 `背景压暗强度` 设置项。
+- 全屏 skin picker 将 `大封面` 排在第一；优化大封面与 Apple 风格预览图。
+
+根因与修复：
+
+- Dots 抽搐：
+  - 根因是上一轮把 legacy cover blur 的 interlude dots `visibility:hidden` / `[enabled]` 可见性规则扩展到了 `.amll-surface-fullscreen-cover-blur-generic`。
+  - Generic cover blur path 本来由 AMLL renderer 自己管理 dots show/scale-in。新增 visibility 规则会在 renderer 切 `enabled` 状态时重新参与可见性，造成 scale-in 动画看起来被重启或闪回最小。
+  - 修复为移除 generic root 的 visibility hack；只保留 generic dots body 的颜色 / blend 适配，legacy cover blur 仍保留原规则。
+- LED：
+  - 根因是 Apple 风格复用 `ClassicCoverArtworkView`，而该 view 只有在 `artBackgroundIsUltraDark` 时才传 `forceBrightLEDColors`。浅色 App 外观下 LED resolver 会走偏暗策略。
+  - `ClassicCoverArtworkView` 新增可选 `forceBrightLEDColors` 参数，Apple 风格调用时固定传 `true`；其他皮肤默认值不变。
+- Mesh 速度：
+  - 三档 `flowSpeed` 上调为：`gentle 0.32`、`standard 0.58`、`active 0.92`。FPS 仍为 `30/30/60`，renderScale 仍为 `0.6`。
+  - `background.html` 默认 flowSpeed 同步更新为 `0.58`，避免 bridge config 前 fallback 使用旧标准速度。
+- 背景压暗：
+  - 根因是 `FullscreenPlayerView.fullscreenBackgroundLayer` 对所有 custom background skin 都统一叠 `effectiveDimmingIntensity * 0.7` 的黑层。
+  - Apple fullscreen 现在跳过这层；`FullscreenSkinTabView` 在 Apple skin 选中时隐藏 `背景压暗强度`，切回其他 skin 后恢复。
+- Picker / preview：
+  - `SkinRegistry.fullscreenOptions` 仅对 fullscreen selector 排序，把 `fullscreen.coverGradientBlur` 放到第一；window selector 不受影响。
+  - 大封面 preview 从小 `photo` glyph 改为更大的 60x60 单色圆角矩形 + photo glyph。
+  - Apple preview 删除流体细线，改为 56x56 单色圆角矩形 + `A`。
+
+边界：
+
+- 未改 AMLL fork core。
+- Apple fullscreen 仍复用 cover blur generic lighter / plus-lighter lyric path。
+- Cover blur 自动 lighter/darker profile、经典 fullscreen、窗口歌词、Mesh 背景采样生命周期均未改。
+
+验证：
+
+- `git diff --check` 通过。
+- Xcode Debug build 通过（使用独立 DerivedData：`xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player -configuration Debug -derivedDataPath /tmp/kmgccc_player_codex_build build`）。
+- App 内可见效果仍需手动确认：Apple / cover blur dots 单次出场、Apple LED 在浅/深色模式均偏亮、Apple 背景压暗项隐藏与预览卡片视觉。
+
+## 2026-05-17 Cover Blur Generic Interlude Dots Opacity 回归修复
+
+目标：
+
+- 只修 Apple fullscreen 与全屏大封面渐变模糊皮肤的 interlude dots 抽搐 / 三颗点全亮问题。
+- 不改 LED、Mesh flowSpeed、preview、背景压暗、AMLL fork core。
+
+正常路径 vs 异常路径：
+
+- 普通 fullscreen 正常路径只给 `[class*="interludeDots"] > *` 设置主题 `background-color`，不碰 dots root 的 `visibility` / `transition` / `transform`，也不碰三个 dot child 的 inline `opacity`。
+- AMLL core `InterludeDots.update()` 每帧直接写三颗 dot child 的 `style.opacity`：初始受 `globalOpacity` 控制为 0，随后 dot0 / dot1 / dot2 分阶段从 `0.25` 走到 `1`；root `style.transform` 负责出场 scale。
+- 异常 generic cover blur path 仍和 legacy cover blur 共用 dots child selector，强制写了 `opacity: 1 !important` 和 per-dot `mix-blend-mode`。上一轮只移除了 generic root visibility hack，但没有移除 child opacity 覆盖，所以 AMLL 写入的分阶段 opacity 仍被 CSS 压掉，三颗点一出现就全亮；全亮也让本应被 `globalOpacity` 隐藏的早期 scale 曲线直接暴露，视觉上像 scale-in 被重启/抽搐。
+
+修复：
+
+- 将 `.amll-surface-fullscreen-cover-blur-generic [class*="interludeDots"] > *` 从 legacy cover blur dots selector 中拆出。
+- Generic cover blur dots 现在只接收 cover-blur theme `background-color`。
+- Generic cover blur dots 不再覆盖 `opacity`、`visibility`、`transition`、`transform`、animation，也不再对 dot child 强制 `mix-blend-mode`；整体 plus-lighter 语义继续由 fullscreen WebView/skin blend 层承担。
+- Legacy `.amll-surface-fullscreen-cover-blur` dots 规则保持原状，避免扩大到旧 cover blur final-layer 兼容路径。
+
+验证：
+
+- `git diff --check` 通过。
+- 本轮按用户要求不做 App 内实测；需由用户确认 Apple fullscreen 与大封面渐变模糊 fullscreen dots 恢复初始半透明、逐颗变亮、单次出场和正常消失。
+
+## 2026-05-17 AMLL 渲染质量与窗口 Emphasis 回落调查
+
+目标：
+
+- 三档歌词渲染质量保持为低 `0.5x`、中 `0.75x`、高 `1.0x`，默认中。
+- 解释为什么恢复 CJK Segmenter 后，窗口歌词 emphasis 在 `0.75x` 下正常，但 `1.0x` / `0.5x` 仍可能出现上浮回落后的突降。
+- 不恢复旧离散高亮、exiting suppress 或旧 emphasis 动画 patch。
+
+根因：
+
+- 渲染质量的真实旧实现是 Swift host 的 WKWebView 几何路径：缩小 WebView frame、设置同档 `pageZoom`，再用 layer transform 放回宿主尺寸。
+- 本轮新增三档时，一度把 `settings.amllLyricsRenderQuality` 同时传给了 AMLL JS config 的 `renderScale`，导致 `LyricPlayer.setRenderScale()` 从原本稳定的 `0.75` 切到 `1.0` 或 `0.5`。
+- `0.75x` 正常不是因为它神奇修复 WebKit，而是因为它恰好等于窗口、fullscreen、cover blur 的 DOM renderer 默认 scale。`1.0x` / `0.5x` 异常来自“WebView backing quality”和“AMLL DOM renderer scale”被耦合后，WebKit 文本 transform / emphasis WebAnimation 在不同 CSS/layout 栅格上重新取整。
+- CJK Segmenter 修复解决的是长时值中文被逐字 chunk 导致的 emphasis envelope 断裂；本次问题是另一个层面：DOM renderer scale 改变后的 WebKit text/transform rasterization。
+
+修复：
+
+- `LyricsSurfaceRole.renderScale` 重新只表示 AMLL DOM renderer 的 per-surface 默认值：窗口、fullscreen、cover blur 为 `0.75`，batch preview 为 `0.45`。
+- 用户三档质量只由 `AMLLWebView` / `LyricsWebViewStore` 应用到 WKWebView frame、`pageZoom`、layer transform、hit-test scale。
+- `LyricsWebViewStore` 增加统一布局日志，记录 role、host bounds、web frame、`pageZoom`、layer scale、window backing scale、layer contents/rasterization scale、effective host backing scale。
+- `index.html` 增加 `[AMLLScaleMetrics]`，记录 surface role、DOM renderer scale、`devicePixelRatio`、visual viewport scale、CSS viewport 与 player rect，用于后续区分 CSS viewport 问题和 AppKit layer 问题。
+
+边界：
+
+- 未修改 fork core，未手改 generated `amll-core.js`。
+- 未改 lead-in、seek、pause、exit catch-up 或 CJK chunking。
+- Fullscreen 与 cover blur 仍使用同一用户质量设置控制 WebView backing scale；batch preview 保持独立默认，不受用户质量影响。

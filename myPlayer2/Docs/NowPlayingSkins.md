@@ -68,11 +68,13 @@ Skins can access `context.audio`:
   - `skin.appleStyle.dynamicBackgroundEnabled`: pauses the renderer and releases the Apple background audio consumer when off.
   - `skin.appleStyle.flowSpeed`: `gentle`, `standard`, or `active`.
 - Background parameters:
-  - `gentle`: `flowSpeed 0.18`, `30 FPS`.
-  - `standard`: `flowSpeed 0.32`, `30 FPS`.
-  - `active`: `flowSpeed 0.55`, `60 FPS`.
+  - `gentle`: `flowSpeed 0.32`, `30 FPS`.
+  - `standard`: `flowSpeed 0.58`, `30 FPS`.
+  - `active`: `flowSpeed 0.92`, `60 FPS`.
   - render scale is fixed at `0.6`; do not add a clarity slider unless the skin design is revisited.
 - Audio sampling is an independent consumer of `AudioVisualizationService.shared`. It may share the underlying analysis hub with LED/spectrum, but must not depend on their toggles and must remove only its own consumer when hidden, disabled, or disposed.
+- Apple style LED uses the existing bright LED policy unconditionally because the Mesh Gradient surface is dark in both app appearances. Do not tie Apple LED tone to the app light/dark scheme.
+- Apple fullscreen is exempt from the generic fullscreen background dimming overlay, and the fullscreen settings UI hides `背景压暗强度` while Apple style is selected.
 
 ### Apple Style Debugging and Visual Constraints
 - `AMLLMeshGradientBackgroundView` must treat the `backgroundReady` script message as the only renderer-ready signal. `WKNavigationDelegate.didFinish` only proves `background.html` loaded; it does not prove the module import, renderer construction, fallback album, or canvas insertion succeeded.
@@ -80,5 +82,7 @@ Skins can access `context.audio`:
 - `background.html` owns a non-black CSS fallback and a generated fallback album image. Missing artwork should still produce a visible Mesh Gradient-like field instead of a pure black surface.
 - The host view should keep a Swift fallback behind the WebView, not a solid black background. A black fallback makes import or renderer failures indistinguishable from a valid but dark frame.
 - Fullscreen Apple lyrics intentionally differ from the classic fullscreen skin by reusing cover blur's tested generic lyric path: `coverBlurFullscreenGenericMode=true`, `coverBlurFullscreenGenericProfile=lighter`, and `plus-lighter` at the WebView layer. Do not add Apple-only opacity selector patches; they previously caused stale interlude dots and diverged exit/catch-up behavior.
+- Generic cover blur interlude dots must keep upstream show/scale animation and per-dot opacity ownership. Do not apply the legacy cover blur root `visibility:hidden` / `[enabled]` rule to `.amll-surface-fullscreen-cover-blur-generic`, and do not force `opacity`, `transition`, `transform`, animation, or per-dot `mix-blend-mode` on generic dots. Generic dots may only receive the cover-blur theme `background-color`.
 - Skin changes that alter fullscreen lyric semantics must force-reapply the fullscreen lyrics config/theme immediately. The quick settings skin picker and the full settings page must both land on the same `LyricsWebViewStore` config refresh path.
-- The Apple skin preview card must stay consistent with other skin cards: single-color line/fill treatment, simplified geometry, and no colorful mesh-poster artwork. It should symbolize fluid motion with abstract curves plus the classic cover shape.
+- The fullscreen skin picker intentionally lists `大封面` first. Window skin ordering remains registry order.
+- The Apple skin preview card must stay consistent with other skin cards: single-color line/fill treatment, simplified geometry, and no colorful mesh-poster artwork. It is a rounded rectangle with the letter `A`, not a fluid-line drawing.

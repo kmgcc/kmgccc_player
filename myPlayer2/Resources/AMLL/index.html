@@ -449,24 +449,27 @@
             /* Use solid color instead of rgba for glow */
             filter: drop-shadow(0 0 0.12em rgb(0, 0, 0));
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="interludeDots"],
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-generic [class*="interludeDots"] {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="interludeDots"] {
             visibility: hidden !important;
             opacity: 1 !important;
             transition: none !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="interludeDots"][class*="enabled"],
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-generic [class*="interludeDots"][class*="enabled"] {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="interludeDots"][class*="enabled"] {
             visibility: visible !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="interludeDots"] > *,
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-generic [class*="interludeDots"] > * {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="interludeDots"] > * {
             background-color: var(
                 --amll-cb-main-active,
                 var(--amll-fs-main-active, var(--amll-active, var(--amll-lp-color, white)))
             ) !important;
             mix-blend-mode: var(--amll-cb-main-blend, plus-lighter) !important;
             opacity: 1 !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-generic [class*="interludeDots"] > * {
+            background-color: var(
+                --amll-cb-main-active,
+                var(--amll-fs-main-active, var(--amll-active, var(--amll-lp-color, white)))
+            ) !important;
         }
 
         /* Fullscreen surface: no additive compositing, no semi-transparent lyric states. */
@@ -1244,6 +1247,34 @@
         if (typeof lyricPlayer.setRenderScale === "function") {
             lyricPlayer.setRenderScale(renderScale);
         }
+        let lastScaleMetricsSignature = null;
+        const roundMetric = (value) => Number.isFinite(value)
+            ? Math.round(value * 1000) / 1000
+            : null;
+        const logScaleMetrics = (reason) => {
+            const playerElement = lyricPlayer.getElement?.();
+            const playerRect = playerElement?.getBoundingClientRect?.();
+            const visualViewport = window.visualViewport;
+            const metrics = {
+                reason,
+                role: surfaceRole,
+                rendererRenderScale: roundMetric(renderScale),
+                devicePixelRatio: roundMetric(window.devicePixelRatio),
+                visualViewportScale: roundMetric(visualViewport?.scale),
+                innerWidth: roundMetric(window.innerWidth),
+                innerHeight: roundMetric(window.innerHeight),
+                clientWidth: roundMetric(document.documentElement?.clientWidth),
+                clientHeight: roundMetric(document.documentElement?.clientHeight),
+                playerWidth: roundMetric(playerRect?.width),
+                playerHeight: roundMetric(playerRect?.height),
+                bodyZoom: getComputedStyle(document.body).zoom || "",
+            };
+            const signature = JSON.stringify(metrics);
+            if (signature === lastScaleMetricsSignature) return;
+            lastScaleMetricsSignature = signature;
+            console.log("[AMLLScaleMetrics]", metrics);
+        };
+        requestAnimationFrame(() => logScaleMetrics("boot"));
         // Use a stable FPS cap per surface instead of leaving the ticker uncapped.
         if (typeof lyricPlayer.setFPS === "function") {
             lyricPlayer.setFPS(defaultFPSCap);
@@ -2255,6 +2286,105 @@
                     a: Math.max(0, Math.min(1, sourceColor.a * alphaMultiplier)),
                 }) ?? match;
             });
+        };
+
+        // === Window/main emphasis glow color treatment ===
+        // Upstream AMLL `initEmphasizeAnimation()` emits per-character emphasis keyframes
+        // with `textShadow: "0 0 Xem rgba(255, 255, 255, glowLevel)"`. That is correct for
+        // light-on-dark presentation (window/fullscreen palettes with white-ish text),
+        // but visibly weak on dark-on-light window palettes — the white halo barely
+        // shows against light backgrounds while the glyph itself is dark.
+        //
+        // Window mode owns no upstream API to customize this color, so the adapter walks
+        // the live emphasis animations after `setLyricLines()` (and on color-scheme flips)
+        // and rewrites the textShadow color via `KeyframeEffect.setKeyframes()`. Timing,
+        // transform, easing, composite, duration, delay, and stagger stay verbatim.
+        //
+        // Only the `main` surface uses this path. Fullscreen, fullscreen cover-blur, and
+        // batch preview surfaces are unaffected.
+        const WINDOW_EMPHASIS_LIGHT_GLOW_BASE = { r: 24, g: 22, b: 32 };
+        const WINDOW_EMPHASIS_LIGHT_GLOW_ALPHA_GAIN = 0.55;
+        let windowEmphasisGlowScheme = null;
+        const detectWindowEmphasisGlowScheme = (textColor) => {
+            const parsed = parseRGBAColor(textColor);
+            if (!parsed) return null;
+            // Rec.601 luma works well enough at picking text-dark-vs-text-light.
+            const luma = (parsed.r * 0.299 + parsed.g * 0.587 + parsed.b * 0.114) / 255;
+            return luma < 0.5 ? "light" : "dark";
+        };
+        const recolorWindowEmphasisTextShadow = (textShadow) => {
+            if (typeof textShadow !== "string" || textShadow.length === 0) return textShadow;
+            const base = WINDOW_EMPHASIS_LIGHT_GLOW_BASE;
+            const gain = WINDOW_EMPHASIS_LIGHT_GLOW_ALPHA_GAIN;
+            return textShadow.replace(/rgba?\(([^)]+)\)/gi, (match) => {
+                const source = parseRGBAColor(match);
+                if (!source) return match;
+                const nextAlpha = Math.max(0, Math.min(1, source.a * gain));
+                return formatRGBAColor({
+                    r: base.r,
+                    g: base.g,
+                    b: base.b,
+                    a: nextAlpha,
+                }) ?? match;
+            });
+        };
+        const isWindowEmphasisAnimation = (animation) => {
+            if (!(animation instanceof Animation)) return false;
+            const id = typeof animation.id === "string" ? animation.id : "";
+            return id.includes("emphasize-word-") && !id.includes("float");
+        };
+        const retintSingleWindowEmphasisAnimation = (animation, scheme) => {
+            if (!isWindowEmphasisAnimation(animation)) return;
+            const effect = animation.effect;
+            if (!effect || typeof effect.getKeyframes !== "function" || typeof effect.setKeyframes !== "function") {
+                return;
+            }
+            const currentMark = animation.__windowEmphasisRetintScheme ?? "dark";
+            if (currentMark === scheme) return;
+            let originalKeyframes = animation.__windowEmphasisOriginalKeyframes;
+            if (!Array.isArray(originalKeyframes)) {
+                try {
+                    originalKeyframes = effect.getKeyframes();
+                } catch (_) {
+                    return;
+                }
+                if (!Array.isArray(originalKeyframes) || originalKeyframes.length === 0) return;
+                animation.__windowEmphasisOriginalKeyframes = originalKeyframes;
+            }
+            const nextKeyframes = scheme === "light"
+                ? originalKeyframes.map((frame) => {
+                    if (!frame || typeof frame !== "object") return frame;
+                    if (typeof frame.textShadow !== "string" || frame.textShadow.length === 0) return frame;
+                    return { ...frame, textShadow: recolorWindowEmphasisTextShadow(frame.textShadow) };
+                })
+                : originalKeyframes;
+            try {
+                effect.setKeyframes(nextKeyframes);
+                animation.__windowEmphasisRetintScheme = scheme;
+            } catch (_) {
+                // Setting keyframes can throw if the effect was already finalized; leave as-is.
+            }
+        };
+        const applyWindowEmphasisGlowScheme = (scheme) => {
+            if (!isMainSurface) return;
+            if (scheme !== "light" && scheme !== "dark") return;
+            if (!Array.isArray(lyricPlayer.currentLyricLineObjects)) return;
+            for (const lineObj of lyricPlayer.currentLyricLineObjects) {
+                const splitWords = Array.isArray(lineObj?.splittedWords) ? lineObj.splittedWords : [];
+                for (const splitWord of splitWords) {
+                    const animations = Array.isArray(splitWord?.elementAnimations)
+                        ? splitWord.elementAnimations
+                        : [];
+                    for (const animation of animations) {
+                        retintSingleWindowEmphasisAnimation(animation, scheme);
+                    }
+                }
+            }
+        };
+        const syncWindowEmphasisGlowForCurrentScheme = () => {
+            if (!isMainSurface) return;
+            const scheme = windowEmphasisGlowScheme ?? "dark";
+            applyWindowEmphasisGlowScheme(scheme);
         };
 
         const retintGlowKeyframes = (keyframes, colorValue, alphaMultiplier = 1) => {
@@ -4745,6 +4875,7 @@
 		                    lyricPlayer.setLyricLines(lines);
                                 console.log("[AMLL-BOOT] setLyrics setLyricLines done", { lineCount: lines.length });
 		                    emitParallelEmphasisNormalizationTrace();
+		                    syncWindowEmphasisGlowForCurrentScheme();
 		                    if (fullscreenOpaqueLyricsMode) {
 		                        enforceFullscreenNormalCompositing();
 		                        patchFullscreenLineOpacityBehavior();
@@ -4840,13 +4971,18 @@
 		                            lyricPlayer.setEnableSpring(springEnabled);
 		                        }
 		                    }
+                            let renderScaleDidChange = false;
 		                    if (typeof config.renderScale === "number" && !Number.isNaN(config.renderScale)) {
 		                        const nextRenderScale = Math.max(0.35, Math.min(1.0, config.renderScale));
 		                        if (nextRenderScale !== renderScale && typeof lyricPlayer.setRenderScale === "function") {
 		                            renderScale = nextRenderScale;
 		                            lyricPlayer.setRenderScale(renderScale);
+                                    renderScaleDidChange = true;
 		                        }
 		                    }
+                            if (renderScaleDidChange || hasOwn("renderScale")) {
+                                requestAnimationFrame(() => logScaleMetrics("setConfig"));
+                            }
 		                    if (typeof config.fpsCap === "number" && !Number.isNaN(config.fpsCap)) {
 		                        const nextFPSCap = Math.max(0, Math.min(120, Math.round(config.fpsCap)));
 		                        if (nextFPSCap !== fpsCap && typeof lyricPlayer.setFPS === "function") {
@@ -5138,18 +5274,30 @@
                                 ? toOpaqueColor(config.textColor)
                                 : config.textColor;
                             lyricPlayer.getElement().style.setProperty("--amll-lp-color", resolvedTextColor);
+                            if (isMainSurface) {
+                                const nextScheme = detectWindowEmphasisGlowScheme(config.textColor) ?? "dark";
+                                if (nextScheme !== windowEmphasisGlowScheme) {
+                                    windowEmphasisGlowScheme = nextScheme;
+                                    applyWindowEmphasisGlowScheme(nextScheme);
+                                }
+                            }
                         } else {
                             lyricPlayer.getElement().style.removeProperty("--amll-lp-color");
+                            if (isMainSurface && windowEmphasisGlowScheme !== "dark") {
+                                windowEmphasisGlowScheme = "dark";
+                                applyWindowEmphasisGlowScheme("dark");
+                            }
                         }
                     }
                     if (hasOwn("shadowColor")) {
-                        if (fullscreenOpaqueLyricsMode || fullscreenCoverBlurMode) {
-                            lyricPlayer.getElement().style.textShadow = "none";
-                        } else if (typeof config.shadowColor === "string" && config.shadowColor.length > 0) {
-                            lyricPlayer.getElement().style.textShadow = `0 1px 2px ${config.shadowColor}`;
-                        } else {
-                            lyricPlayer.getElement().style.textShadow = "";
-                        }
+                        // Window/main, fullscreen, and cover-blur all render without a
+                        // root-level static text-shadow. The previous `0 1px 2px shadowColor`
+                        // was visibly heavy in light mode and contributed no measurable
+                        // performance benefit when removed (A/B 1). shadowColor stays in
+                        // the config payload for compatibility but is no longer applied
+                        // here. Emphasis glow is owned by the per-character emphasize-word
+                        // animation, not by this root drop shadow.
+                        lyricPlayer.getElement().style.textShadow = "none";
                     }
 	                    if (typeof config.timeOffsetMs === "number" && !Number.isNaN(config.timeOffsetMs)) {
 	                        const nextTimeOffsetMs = Math.max(-15000, Math.min(15000, config.timeOffsetMs));
