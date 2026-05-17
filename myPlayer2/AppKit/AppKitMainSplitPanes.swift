@@ -533,3 +533,108 @@ struct AppKitMainWindowArtBackgroundLayer: View {
             : nil
     }
 }
+
+// MARK: - Flat AppKit lyrics driver view
+
+/// Zero-sized SwiftUI driver for the `lyrics.debug.windowUseFlatAppKitHost` diagnostic.
+/// Provides the same LyricsViewModel observation/lifecycle as LyricsPanelView
+/// with no visual content. Embedded as a zero-sized child NSHostingController
+/// inside LyricsFlatAppKitHostViewController.
+struct LyricsFlatDriverView: View {
+    @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+    @Environment(LibraryViewModel.self) private var libraryVM
+    @Environment(LyricsViewModel.self) private var lyricsVM
+    @Environment(UIStateViewModel.self) private var uiState
+    @Environment(AppSettings.self) private var settings
+    @EnvironmentObject private var themeStore: ThemeStore
+    // Key matches AMLLKeys.lyricsRenderQuality in AppSettings. Default "medium" matches AppSettings default.
+    @AppStorage("amllLyricsRenderQuality") private var amllLyricsRenderQuality: String = "medium"
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .onAppear {
+                setupSeekCallback()
+                reloadLyrics(reason: "flat driver appear")
+            }
+            .onDisappear {
+                LyricsSurfaceManager.shared.reportMainVisible(false)
+            }
+            .onChange(of: playbackCoordinator.presentation.lyricsIdentity) { oldId, newId in
+                guard oldId != newId else { return }
+                reloadLyrics(reason: "track changed", forceLyricsReload: true)
+            }
+            .onChange(of: uiState.lyricsVisible) { _, isVisible in
+                guard isVisible else { return }
+                LyricsSurfaceManager.shared.reportMainVisible(true)
+                reloadLyrics(reason: "lyrics expanded")
+            }
+            .onChange(of: playbackCoordinator.presentation.lyricsText) { _, _ in
+                guard playbackCoordinator.presentation.source.isExternal else { return }
+                reloadLyrics(reason: "external lyrics updated", forceLyricsReload: true)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .playbackTrackDidChange)) { _ in
+                reloadLyrics(reason: "playback track notification", forceLyricsReload: true)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .libraryTrackDidUpdate)) { notification in
+                guard
+                    let trackID = notification.userInfo?["trackID"] as? UUID,
+                    trackID == playbackCoordinator.presentation.localTrack?.id
+                else { return }
+                reloadLyrics(reason: "library track update", forceLyricsReload: true)
+            }
+            .onChange(of: themeStore.colorScheme) { _, _ in
+                lyricsVM.refreshConfigFromSettings()
+            }
+            // Real-time sync — inlined from LyricsRealtimeSyncObserver (which is private).
+            .onChange(of: playbackCoordinator.presentation.currentTime) { oldTime, newTime in
+                lyricsVM.syncTime(newTime)
+                if oldTime > 1.0, newTime < 0.2 {
+                    reloadLyrics(reason: "playback restarted", forceLyricsReload: true)
+                }
+            }
+            .onChange(of: playbackCoordinator.presentation.isPlaying) { _, newValue in
+                if !newValue {
+                    lyricsVM.syncTime(playbackCoordinator.presentation.currentTime)
+                }
+                lyricsVM.setPlaying(newValue)
+            }
+            .modifier(LyricsSettingsObserver(lyricsVM: lyricsVM))
+            .onChange(of: amllLyricsRenderQuality) { _, newValue in
+                let scale = AppSettings.AMLLLyricsRenderQuality(rawValue: newValue)?.webViewScale ?? 0.75
+                LyricsSurfaceManager.shared.mainStore.setRenderQualityScale(
+                    scale,
+                    reason: "flatDriver.qualityChanged"
+                )
+            }
+    }
+
+    private func setupSeekCallback() {
+        let coordinator = playbackCoordinator
+        lyricsVM.onSeekRequest = { seconds in
+            coordinator.seek(to: seconds)
+        }
+    }
+
+    private func reloadLyrics(reason: String, forceWebReload: Bool = false, forceLyricsReload: Bool = false) {
+        let presentation = playbackCoordinator.presentation
+        switch presentation.source {
+        case .local:
+            lyricsVM.ensureAMLLLoaded(
+                track: presentation.localTrack,
+                currentTime: presentation.currentTime,
+                isPlaying: presentation.isPlaying,
+                reason: reason,
+                forceWebReload: forceWebReload,
+                forceLyricsReload: forceLyricsReload
+            )
+        case .appleMusic, .systemNowPlaying:
+            lyricsVM.ensureExternalAMLLLoaded(
+                presentation: presentation,
+                reason: reason,
+                forceWebReload: forceWebReload,
+                forceLyricsReload: forceLyricsReload
+            )
+        }
+    }
+}
