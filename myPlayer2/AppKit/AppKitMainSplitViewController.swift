@@ -425,6 +425,7 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
     private let appSession: AppSessionHost
     private var attachmentID: UUID?
     private var driverVC: NSViewController?
+    private var backgroundVC: NSViewController?
     // WebViewHostView provides the correct superview type for mouse suppression and
     // scaled hit-testing (webViewLayoutScale) when render quality < 1.0.
     private var webViewHostView: WebViewHostView!
@@ -451,6 +452,20 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
         view = v
     }
 
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        // Background layer mirrors LyricsPanelView.appKitInspectorBackgroundLayer.
+        // Must be installed below webViewHostView in the z-order.
+        let bgVC = NSHostingController(
+            rootView: FlatLyricsBackgroundView().environment(AppSettings.shared)
+        )
+        bgVC.view.frame = view.bounds
+        bgVC.view.autoresizingMask = [.width, .height]
+        view.addSubview(bgVC.view, positioned: .below, relativeTo: webViewHostView)
+        addChild(bgVC)
+        backgroundVC = bgVC
+    }
+
     override func viewDidAppear() {
         super.viewDidAppear()
         // Call reportMainVisible BEFORE installDriver so the surface manager
@@ -460,6 +475,12 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
         mainStore.setRenderQualityScale(AppSettings.shared.amllLyricsRenderQualityScale, reason: "flatHost.appear")
         installDriverIfNeeded()
         attachWebViewIfNeeded()
+        // After attach, explicitly relayout with current host bounds.
+        // setRenderQualityScale early-exits when scale is unchanged (guard in the store
+        // skips layoutWebView). layoutPreparedWebView always applies renderQualityScale
+        // to the provided bounds, correcting any stale frame/transform left from before
+        // collapse or from a zero-bounds layout call during the expand animation.
+        mainStore.layoutPreparedWebView(in: webViewHostView.bounds, reason: "flatHost.appear.postAttach")
     }
 
     override func viewWillDisappear() {
@@ -471,12 +492,20 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
     override func viewDidLayout() {
         super.viewDidLayout()
         let inset = Self.horizontalInset
+        // Always update the host frame so webViewHostView.bounds is correct when
+        // viewDidAppear fires and attachWebViewIfNeeded reads it.
         webViewHostView.frame = CGRect(
             x: inset,
             y: 0,
             width: max(0, view.bounds.width - inset * 2),
             height: view.bounds.height
         )
+        // Guard: skip layout when the WebView is detached (attachmentID == nil).
+        // viewDidLayout fires during the NSSplitView collapse animation after
+        // viewWillDisappear + detachWebView. Without this guard, the shrinking panel
+        // bounds would corrupt the WebView's frame/transform, causing the "content
+        // shrunk to top-left corner" regression on the next reopen.
+        guard attachmentID != nil else { return }
         mainStore.layoutPreparedWebView(in: webViewHostView.bounds, reason: "flatHostLayout")
     }
 
