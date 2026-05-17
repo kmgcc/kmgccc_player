@@ -49,7 +49,7 @@ private struct HeaderArtworkBoundsReporter: View {
 
 struct LibraryDetailHeaderView: View {
     private static let artworkSide: CGFloat = 220
-    private static let visibleDescriptionLineCount = 3
+    private static let visibleDescriptionLineCount = 6
     private static let maxHeaderDescriptionContentLines = 15
 
     @Environment(LibraryViewModel.self) private var libraryVM
@@ -398,13 +398,13 @@ struct LibraryDetailHeaderView: View {
     }
 
     private var descriptionReadView: some View {
-        ScrollView(.vertical, showsIndicators: true) {
+        ScrollView(.vertical, showsIndicators: false) {
             Text(headerDescriptionText)
                 .font(.callout)
                 .lineSpacing(0)
                 .foregroundStyle(.secondary)
                 .lineLimit(nil)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .frame(height: headerDescriptionHeight(lineCount: Self.visibleDescriptionLineCount), alignment: .top)
         .scrollClipDisabled(false)

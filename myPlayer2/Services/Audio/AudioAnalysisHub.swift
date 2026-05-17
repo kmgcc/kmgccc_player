@@ -26,7 +26,7 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
 
     private let processingQueue = DispatchQueue(
         label: "AudioAnalysisHub.processing",
-        qos: .userInitiated
+        qos: .utility
     )
 
     private let fftSize: Int = 2048
@@ -53,6 +53,10 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
     private let consumerLock = NSLock()
     private nonisolated(unsafe) var timer: DispatchSourceTimer?
     private nonisolated(unsafe) var activeClients: Int = 0
+    private nonisolated(unsafe) var droppedTapBuffers: UInt64 = 0
+    private nonisolated(unsafe) var skippedProcessReads: UInt64 = 0
+    private nonisolated(unsafe) var processedFrames: UInt64 = 0
+    private nonisolated(unsafe) var lastDiagnosticsDumpUptime: TimeInterval = 0
 
     // Serializes start / stop / attachToMixer so the AVAudioMixerNode never
     // sees two concurrent installTap calls (which trip the
@@ -212,7 +216,10 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
         let frameLength = Int(buffer.frameLength)
         guard frameLength > 0 else { return }
 
-        ringLock.lock()
+        guard ringLock.try() else {
+            droppedTapBuffers &+= 1
+            return
+        }
         let samples = channelData[0]
         let capacity = ringBuffer.count
         for i in 0..<frameLength {
@@ -286,7 +293,11 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
 
     nonisolated private func process() {
         // 1. Read latest window from ring buffer
-        ringLock.lock()
+        guard ringLock.try() else {
+            skippedProcessReads &+= 1
+            dumpDiagnosticsIfNeeded()
+            return
+        }
         let capacity = ringBuffer.count
         // Read backward from writeIndex
         var readIdx = writeIndex - fftSize
@@ -344,6 +355,29 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
         for consumer in currentConsumers {
             consumer(data)
         }
+
+        processedFrames &+= 1
+        dumpDiagnosticsIfNeeded()
+    }
+
+    private nonisolated func dumpDiagnosticsIfNeeded() {
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastDiagnosticsDumpUptime >= 2.0 else { return }
+        lastDiagnosticsDumpUptime = now
+
+        let dropped = droppedTapBuffers
+        let skipped = skippedProcessReads
+        let processed = processedFrames
+        guard dropped > 0 || skipped > 0 else { return }
+
+        droppedTapBuffers = 0
+        skippedProcessReads = 0
+        processedFrames = 0
+
+        Log.warning(
+            "[AudioDiagnostics] sampleBus droppedTapBuffers=\(dropped) skippedProcessReads=\(skipped) processedFrames=\(processed) operation=\(FirstUseHitchDiagnostics.currentMainOperationDescription() ?? "none")",
+            category: .audio
+        )
     }
 
     private nonisolated func rebuildFFT() {

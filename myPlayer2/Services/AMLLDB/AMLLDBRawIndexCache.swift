@@ -84,11 +84,6 @@ final class AMLLDBRawIndexCache: ObservableObject {
         config.timeoutIntervalForRequest = 60
         config.timeoutIntervalForResource = 300
         self.session = URLSession(configuration: config)
-
-        // Try to load from cache on init
-        Task {
-            await loadFromCache()
-        }
     }
 
     // MARK: - Public API
@@ -143,25 +138,45 @@ final class AMLLDBRawIndexCache: ObservableObject {
 
     /// Load index from local cache
     private func loadFromCache() async -> Bool {
-        Self.logger.info("[AMLLDB] Loading from cache: \(self.localIndexURL.path)")
+        let indexURL = localIndexURL
+        Self.logger.info("[AMLLDB] Loading from cache: \(indexURL.path)")
 
-        guard FileManager.default.fileExists(atPath: localIndexURL.path) else {
+        guard FileManager.default.fileExists(atPath: indexURL.path) else {
             Self.logger.info("[AMLLDB] Cache file does not exist")
             lastError = "缓存文件不存在"
             return false
         }
 
         do {
-            let data = try Data(contentsOf: localIndexURL)
-            Self.logger.info("[AMLLDB] Cache file size: \(data.count) bytes")
+            let result = try await Task.detached(priority: .utility) { @Sendable in
+                let token = FirstUseHitchDiagnostics.begin(
+                    "AMLLDBRawIndexCache.loadFromCache.background",
+                    detail: indexURL.lastPathComponent
+                )
+                do {
+                    let result = try loadAMLLDBRawIndexEntries(from: indexURL)
+                    FirstUseHitchDiagnostics.end(
+                        token,
+                        detail: "bytes=\(result.byteCount), entries=\(result.entries.count), parseErrors=\(result.parseErrorCount)"
+                    )
+                    return result
+                } catch {
+                    FirstUseHitchDiagnostics.end(token, detail: "error=\(error.localizedDescription)")
+                    throw error
+                }
+            }.value
 
-            let parsed = try parseIndexData(data)
-            entries = parsed
-            entryCount = parsed.count
-            isReady = !parsed.isEmpty
+            let commitToken = FirstUseHitchDiagnostics.begin(
+                "AMLLDBRawIndexCache.loadFromCache.commit",
+                detail: "entries=\(result.entries.count)"
+            )
+            entries = result.entries
+            entryCount = result.entries.count
+            isReady = !result.entries.isEmpty
             lastError = nil
+            FirstUseHitchDiagnostics.end(commitToken)
 
-            Self.logger.info("[AMLLDB] Loaded \(parsed.count) entries from cache")
+            Self.logger.info("[AMLLDB] Loaded \(result.entries.count) entries from cache")
             return isReady
 
         } catch {
@@ -218,7 +233,24 @@ final class AMLLDBRawIndexCache: ObservableObject {
             Self.logger.info("[AMLLDB] Downloaded \(data.count) bytes")
 
             // Parse the data
-            let parsed = try parseIndexData(data)
+            let downloadedData = data
+            let parseResult = try await Task.detached(priority: .utility) { @Sendable in
+                let token = FirstUseHitchDiagnostics.begin(
+                    "AMLLDBRawIndexCache.parseDownloadedIndex.background",
+                    detail: "bytes=\(downloadedData.count)"
+                )
+                do {
+                    let (entries, parseErrorCount) = try parseAMLLDBRawIndexData(downloadedData)
+                    FirstUseHitchDiagnostics.end(
+                        token,
+                        detail: "entries=\(entries.count), parseErrors=\(parseErrorCount)"
+                    )
+                    return (entries, parseErrorCount)
+                } catch {
+                    FirstUseHitchDiagnostics.end(token, detail: "error=\(error.localizedDescription)")
+                    throw error
+                }
+            }.value
 
             // Save to cache
             try data.write(to: localIndexURL)
@@ -228,14 +260,14 @@ final class AMLLDBRawIndexCache: ObservableObject {
             try timestamp.write(to: lastUpdateFileURL, atomically: true, encoding: .utf8)
 
             // Update state
-            entries = parsed
-            entryCount = parsed.count
-            isReady = !parsed.isEmpty
+            entries = parseResult.0
+            entryCount = parseResult.0.count
+            isReady = !parseResult.0.isEmpty
             downloadProgress = 1.0
             isDownloading = false
             lastError = nil
 
-            Self.logger.info("[AMLLDB] Index download complete: \(parsed.count) entries cached")
+            Self.logger.info("[AMLLDB] Index download complete: \(parseResult.0.count) entries cached")
             return isReady
 
         } catch {
@@ -244,47 +276,6 @@ final class AMLLDBRawIndexCache: ObservableObject {
             isDownloading = false
             return false
         }
-    }
-
-    /// Parse JSONL data into entries
-    private func parseIndexData(_ data: Data) throws -> [AMLLDBRawIndexEntry] {
-        guard let text = String(data: data, encoding: .utf8) else {
-            throw AMLLDBCacheError.invalidEncoding
-        }
-
-        let lines = text.components(separatedBy: .newlines).filter { !$0.isEmpty }
-        Self.logger.info("[AMLLDB] Parsing \(lines.count) lines from index")
-
-        var entries: [AMLLDBRawIndexEntry] = []
-        entries.reserveCapacity(lines.count)
-
-        var parseErrorCount = 0
-        let decoder = JSONDecoder()
-
-        for (index, line) in lines.enumerated() {
-            guard let lineData = line.data(using: .utf8) else { continue }
-
-            do {
-                // Parse as JsonlRawEntry (metadata array format)
-                let rawEntry = try decoder.decode(AMLLDBJsonlRawEntry.self, from: lineData)
-                if let entry = rawEntry.toIndexEntry() {
-                    entries.append(entry)
-                }
-            } catch {
-                parseErrorCount += 1
-                if parseErrorCount <= 5 {
-                    Self.logger.warning("[AMLLDB] Parse error on line \(index + 1): \(error.localizedDescription)")
-                }
-            }
-        }
-
-        Self.logger.info("[AMLLDB] Parsed \(entries.count) valid entries, \(parseErrorCount) errors")
-
-        if entries.isEmpty {
-            throw AMLLDBCacheError.noValidEntries
-        }
-
-        return entries
     }
 
     /// Ensure cache directory exists
@@ -358,6 +349,62 @@ final class AMLLDBRawIndexCache: ObservableObject {
         }
         return size
     }
+}
+
+private struct AMLLDBRawIndexLoadResult: Sendable {
+    let entries: [AMLLDBRawIndexEntry]
+    let byteCount: Int
+    let parseErrorCount: Int
+}
+
+private nonisolated func loadAMLLDBRawIndexEntries(from url: URL) throws -> AMLLDBRawIndexLoadResult {
+    let data = try Data(contentsOf: url)
+    let (entries, parseErrorCount) = try parseAMLLDBRawIndexData(data)
+    return AMLLDBRawIndexLoadResult(
+        entries: entries,
+        byteCount: data.count,
+        parseErrorCount: parseErrorCount
+    )
+}
+
+private nonisolated func parseAMLLDBRawIndexData(_ data: Data) throws -> ([AMLLDBRawIndexEntry], Int) {
+    guard let text = String(data: data, encoding: .utf8) else {
+        throw AMLLDBCacheError.invalidEncoding
+    }
+
+    let logger = Logger(subsystem: "com.kmgccc.player", category: "AMLLDB")
+    let lines = text.components(separatedBy: .newlines).filter { !$0.isEmpty }
+    logger.info("[AMLLDB] Parsing \(lines.count) lines from index")
+
+    var entries: [AMLLDBRawIndexEntry] = []
+    entries.reserveCapacity(lines.count)
+
+    var parseErrorCount = 0
+    let decoder = JSONDecoder()
+
+    for (index, line) in lines.enumerated() {
+        guard let lineData = line.data(using: .utf8) else { continue }
+
+        do {
+            let rawEntry = try decoder.decode(AMLLDBJsonlRawEntry.self, from: lineData)
+            if let entry = rawEntry.toIndexEntry() {
+                entries.append(entry)
+            }
+        } catch {
+            parseErrorCount += 1
+            if parseErrorCount <= 5 {
+                logger.warning("[AMLLDB] Parse error on line \(index + 1): \(error.localizedDescription)")
+            }
+        }
+    }
+
+    logger.info("[AMLLDB] Parsed \(entries.count) valid entries, \(parseErrorCount) errors")
+
+    if entries.isEmpty {
+        throw AMLLDBCacheError.noValidEntries
+    }
+
+    return (entries, parseErrorCount)
 }
 
 // MARK: - Errors

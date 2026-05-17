@@ -9,7 +9,7 @@
 import Foundation
 
 /// Utility class for normalizing and comparing song titles
-struct AMLLDBTitleNormalizer {
+nonisolated struct AMLLDBTitleNormalizer {
 
     // MARK: - Title Normalization
 
@@ -306,7 +306,7 @@ struct AMLLDBTitleNormalizer {
 // MARK: - Levenshtein Distance
 
 /// Lightweight Levenshtein edit distance implementation
-struct Levenshtein {
+nonisolated struct Levenshtein {
 
     /// Calculate edit distance between two strings
     static func distance(_ s1: String, _ s2: String) -> Int {
@@ -363,7 +363,7 @@ struct Levenshtein {
 // MARK: - Artist Normalization
 
 /// Utility for normalizing and comparing artist names
-struct AMLLDBArtistNormalizer {
+nonisolated struct AMLLDBArtistNormalizer {
 
     /// Common artist separators
     static let separators = ["/", "、", ",", "&", "feat.", "ft.", " x ", "×", "；", ";"]
@@ -440,7 +440,7 @@ struct AMLLDBArtistNormalizer {
 // MARK: - Duration Comparison
 
 /// Utility for comparing song durations
-struct AMLLDBDurationComparator {
+nonisolated struct AMLLDBDurationComparator {
 
     /// Calculate duration similarity score using linear decay
     /// - Parameters:
@@ -470,7 +470,7 @@ struct AMLLDBDurationComparator {
 // MARK: - Album Comparison
 
 /// Utility for comparing album names
-struct AMLLDBAlbumComparator {
+nonisolated struct AMLLDBAlbumComparator {
 
     /// Calculate album similarity score
     static func compareAlbums(_ album1: String?, _ album2: String?) -> Double {

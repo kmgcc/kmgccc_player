@@ -31,7 +31,7 @@ actor PlaylistArtworkPipeline {
     static let shared = PlaylistArtworkPipeline()
 
     private let memoryCache = NSCache<NSString, CachedArtworkImage>()
-    private let decodeGate = ArtworkDecodeGate(maxConcurrent: 6)
+    private let decodeGate = ArtworkDecodeGate(maxConcurrent: 2)
 
     private init() {
         memoryCache.countLimit = 720

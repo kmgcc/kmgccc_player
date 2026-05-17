@@ -393,10 +393,11 @@ final class PlaylistPageController {
 
     private func activateFirstPaintPhases(for selection: LibrarySelection) {
         phaseTask?.cancel()
+        let playbackActive = playerVM?.isPlaying == true
         areRowSecondaryInteractionsEnabled = false
-        areRowArtworkLoadsEnabled = true
+        areRowArtworkLoadsEnabled = !playbackActive
         isRowArtworkPrefetchEnabled = false
-        isHeaderEffectsEnabled = selection == .allSongs
+        isHeaderEffectsEnabled = selection == .allSongs && !playbackActive
 
         let token = UUID()
         phaseToken = token
@@ -404,11 +405,20 @@ final class PlaylistPageController {
             try? await Task.sleep(nanoseconds: 130_000_000)
             guard !Task.isCancelled, self.phaseToken == token else { return }
             self.areRowSecondaryInteractionsEnabled = true
-            self.isRowArtworkPrefetchEnabled = true
+            if !playbackActive {
+                self.isRowArtworkPrefetchEnabled = true
+            }
+
+            if playbackActive {
+                try? await Task.sleep(nanoseconds: 420_000_000)
+                guard !Task.isCancelled, self.phaseToken == token else { return }
+                self.areRowArtworkLoadsEnabled = true
+            }
 
             guard selection != .allSongs else { return }
-            try? await Task.sleep(nanoseconds: 140_000_000)
+            try? await Task.sleep(nanoseconds: playbackActive ? 500_000_000 : 140_000_000)
             guard !Task.isCancelled, self.phaseToken == token else { return }
+            self.isRowArtworkPrefetchEnabled = true
             self.isHeaderEffectsEnabled = true
             LyricsRuntimeProfile.increment("header.effectsEnabled.true")
         }
@@ -802,6 +812,23 @@ final class PlaylistPageController {
     }
 
     private func scheduleInitialArtworkWarmup(for pageModel: PlaylistPageModel) {
+        if playerVM?.isPlaying == true {
+            let token = activeLoadToken
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 1_200_000_000)
+                guard !Task.isCancelled, self.activeLoadToken == token else { return }
+                guard self.playerVM?.isPlaying != true else {
+                    Log.info(
+                        "[PlaylistPageController] skipped initial artwork warmup while playback active selection=\(pageModel.selectionIdentity)",
+                        category: .perf
+                    )
+                    return
+                }
+                self.scheduleInitialArtworkWarmup(for: pageModel)
+            }
+            return
+        }
+
         let scale = NSScreen.main?.backingScaleFactor ?? 2.0
         let rows = Array(pageModel.rows.prefix(72))
         var requests: [PlaylistArtworkRequest] = []

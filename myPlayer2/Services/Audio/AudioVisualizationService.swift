@@ -31,7 +31,7 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
     private let hub = AudioAnalysisHub.shared
     private let processingQueue = DispatchQueue(
         label: "AudioVisualizationService.processing",
-        qos: .userInitiated
+        qos: .utility
     )
     private let consumerLock = NSLock()
 
@@ -290,9 +290,12 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
         let maxDelta = zip(outputWave, lastPublishedWave).reduce(Float.zero) { partial, pair in
             max(partial, abs(pair.0 - pair.1))
         }
+        let uiColdPathActive = FirstUseHitchDiagnostics.currentMainOperationDescription() != nil
+        let minPublishInterval = uiColdPathActive ? (1.0 / 15.0) : 0
         let shouldPublish =
-            maxDelta >= Constants.publishEpsilon
-            || (now - lastPublishTime) >= Constants.forcePublishInterval
+            (now - lastPublishTime) >= minPublishInterval
+            && (maxDelta >= Constants.publishEpsilon
+                || (now - lastPublishTime) >= Constants.forcePublishInterval)
 
         guard shouldPublish else { return }
         lastPublishTime = now
