@@ -115,6 +115,49 @@ A/B 结果：
 - hover 可以暂时回到旧错位状态；后续修复必须不截获 NSView 事件链、不改 `WebViewHostView.hitTest` / `mouseMoved` 转发、不影响 click seek。
 - 下一步应重点对照原本正确的 click 路径，优先考虑只处理 native `:hover` CSS 与 adapter class，或继续 JS 内部 A/B 取证。
 
+## 2026-05-18 窗口歌词 Hover 透明 Tracking Overlay 修复
+
+复核根因：
+
+- 完整事件链确认：click 通过 `WebViewHostView.hitTest` 在低分辨率分支直接返 `LyricsMouseGatedWebView`，`mouseDown` → `scaledMouseEvent` （`event.locationInWindow` 在 host 坐标乘 `quality`） → `super.mouseDown` → WebKit 内部除以 `pageZoom = quality`，CSS 坐标恢复为原始视觉点。所以 click 在 74f3df9 回滚之后**已经覆盖完整视觉区域**；先前怀疑"click 区域不全"在代码层面不成立，但需要用户验证。
+- hover 失效根因不是 `mouseMoved` 转发坏，而是**根本没经过 `LyricsMouseGatedWebView.mouseMoved` 覆写**。WebKit 内部 `WKContentView` 自带 `NSTrackingArea`，tracking 回调直接派给 tracking owner（WKContentView），不走外层 WKWebView 的 responder。所以缩放模式下：
+    - tracking area 用 NSView 几何（pre-transform），尺寸 = `host × quality`，事件只在视觉左上 q·100% 区域触发；
+    - 进入 WebKit 后 `event.locationInWindow` 在 WKContentView local 直接除以 `pageZoom = quality`，得到 `clientX/Y = 视觉/quality`，相对真实视觉坐标偏移因子 `1/quality`。
+- 这同时解释 A/B：`coord-mul` 反向消掉了 `1/q`，所以 hover 显示能贴合，但 tracking 入口仍受 WKContentView 几何限制，区域只覆盖左上 q·100%。
+- 前一轮 host-driven hover 失败是因为顺手改了 `WebViewHostView.hitTest` 进入 `webView.hitTest(webViewPoint)` 分支，事件落到内部子 view 绕过 `scaledMouseEvent`，把 click 也锁回了真实渲染 frame。Hover 自身没有结构性原因要破坏 click。
+
+修复（不动 core / generated bundle / emphasis / `WebViewHostView.hitTest` / `LyricsMouseGatedWebView.scaledMouseEvent`）：
+
+- 在 `myPlayer2/Views/Lyrics/AMLLWebView.swift` 新增 `LyricsHoverProxyView`：
+    - 透明 NSView，`isFlipped = true`，`acceptsFirstResponder = false`，`hitTest -> nil`；
+    - `updateTrackingAreas` 注册 `.inVisibleRect | .activeAlways | .mouseMoved | .mouseEnteredAndExited` tracking area；
+    - `mouseMoved` / `mouseEntered` 转 `convert(event.locationInWindow, from: nil)` 给回调；`mouseExited` 传 `nil`。
+- `WebViewHostView` 持有这个 proxy 作为子 view（`autoresizingMask = [.width, .height]`），并暴露 `onHoverPoint` 闭包；`isMouseInteractionSuppressed = true` 时显式向 JS push 一次 `clearHostHover`。
+- `LyricsWebViewStore.dispatchHostHoverPoint(_:)` 直接 `evaluateJavaScript` 调 `window.AMLL.setHostHoverPoint(x, y)` / `window.AMLL.clearHostHover()`，不走 `callJS` 队列（hover 流 60Hz 与 setConfig/time/lyrics 异构，不能 HOL block）。
+- `AMLLWebView.Coordinator.attachWebView` 像 `onLayout` 一样接 `hostView.onHoverPoint = { store?.dispatchHostHoverPoint($0) }`；`detachWebView` 解绑。
+- `Resources/AMLL/index.html`：
+    - 新增 `window.AMLL.setHostHoverPoint(x, y)` 与 `window.AMLL.clearHostHover()`；
+    - 命中流程 `document.elementFromPoint(x, y) → resolveLineFromTarget → setAppHoveredLine`，失败 fallback `resolveLineFromPoint({ clientX, clientY })`；
+    - **解绑** `playerElementForHover.addEventListener("pointermove", updateAppHoverFromPointer)`，并删除 `updateAppHoverFromPointer` / `logPointerMetrics` 死代码；
+    - 保留 `pointerleave` / `mouseleave` / `blur` / `visibilitychange` 清理 hover state，作为 host overlay 失效或 isMouseInteractionSuppressed 切换时的二线兜底。
+
+模型不变量：
+
+- host visual coords ≡ DOM CSS px：`pageZoom × layerInverseScale = q × (1/q) = 1`。所以 proxy 不需要任何坐标缩放，直接把 host local 点送给 `document.elementFromPoint`。
+- 三段几何：`WKWebView.frame = host × q`、`webView.pageZoom = q`、`webView.layer.affineTransform = scale(1/q)` 完整保留；render quality 三档差异仍来自这条真实低分辨率链路，与 hover 修复正交。
+- proxy 是 sibling overlay，不是 host 本体接管事件：`WebViewHostView.hitTest` 不变，`LyricsMouseGatedWebView.scaledMouseEvent` 不变，AppKit 的 click hit-test 路径完全没动；NSTrackingArea 与 hit-test 相互独立，所以 click 永远不会落到 proxy 上。
+
+验证：
+
+- `xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player -configuration Debug -destination 'platform=macOS' build` 成功。
+- 用户需手动验证三档质量（低 0.5 / 中 0.75 / 高 1.0）下：
+    1. 分辨率差异仍可见；
+    2. 整个视觉歌词区域都能 click seek（验证不是"巧合落在 q·100% 区域"）；
+    3. hover 背景贴合鼠标所在真实行，不缩到左上角；
+    4. emphasis 动画无变化；
+    5. fullscreen / cover blur 不崩、无明显异常。
+- 自动化测试无相关用例。
+
 ## 2026-05-15 翻译歌词 CSS hash 回归
 
 现象：
