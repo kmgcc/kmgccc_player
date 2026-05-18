@@ -181,7 +181,6 @@ private struct HomeArtistCircle: View {
 
     @Environment(LibraryViewModel.self) private var libraryVM
     @State private var image: NSImage?
-    @State private var isHovering = false
     @Environment(\.colorScheme) private var colorScheme
 
     private var circleSize: CGFloat {
@@ -240,21 +239,6 @@ private struct HomeArtistCircle: View {
             colorScheme: colorScheme,
             isFloating: false
         )
-        .overlay {
-            // Hover indicator gated on `isHovering` so the stroke layer
-            // isn't mounted at α=0 for every card during scroll. Previously
-            // every visible artist circle kept an always-present overlay
-            // node with `opacity(isHovering ? 0.18 : 0)` — cheap per node,
-            // but ~12-15 nodes per rail × LazyVStack of rails adds up.
-            if isHovering {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.18), lineWidth: 1)
-                    .allowsHitTesting(false)
-            }
-        }
-        .onHover { hovering in
-            isHovering = hovering
-        }
         .onTapGesture(perform: onOpen)
         .contextMenu {
             Button(action: onPlay) {

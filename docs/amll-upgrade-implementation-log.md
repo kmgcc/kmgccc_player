@@ -81,6 +81,40 @@
 
 - 实际启动验证显示 main surface 默认进入低分辨率：宿主约 `232x653` 时，WKWebView frame 约 `174x489`，`pageZoom=0.75`，layer scale 约 `1.33`，最终宿主布局尺寸不变。
 
+## 2026-05-18 窗口歌词 Hover A/B 与 Host-driven 回滚
+
+现象：
+
+- 真实低分辨率路径恢复后，`0.5x` / `0.75x` / `1.0x` 的渲染分辨率行为正确。
+- 非 `1.0x` 下窗口歌词 hover 背景错位；click seek 仍正确。
+
+A/B 结果：
+
+- `native-off,class-test,coord-raw`：错位。
+- `native-off,class-test,coord-div`：错位。
+- `native-off,class-test,click-path`：错位更明显。
+- 只有 `native-off,class-test,coord-mul` 让 hover 显示贴合正确歌词行。
+
+结论：
+
+- 坐标换算方向确定为：视觉坐标到 AMLL DOM 坐标 = `clientX * quality` / `clientY * quality`。
+- 但 JS 原生 `pointermove` 仍受缩小后的真实 WKWebView frame / WebKit tracking region 限制：`0.75x` 只能覆盖左上 75% 区域，`0.5x` 只能覆盖左上 50% 区域。
+- 直接在 `WebViewHostView` 捕获完整视觉区域 mouse move 看似能绕开 WebKit tracking region，但实测破坏了原本正确的 WKWebView 事件转发/点击路径。
+
+失败尝试与回滚：
+
+- 曾临时实现 Swift host-driven hover：`WebViewHostView` 捕获 `mouseMoved` / `mouseExited`，`LyricsWebViewStore` 发送 `window.AMLL.updateAppHoverPoint(x, y)`，`index.html` 用 app-driven API 设置 `amll-app-hover-line`。
+- 实测结果：hover 框完全不见；click seek 被修坏；非 `1.0x` 下点击区域被限制到真实渲染分辨率区域，能点到的区域坐标不偏，但完整视觉区域下方/右侧点不到。
+- 因此该 host-driven hover 方案已回滚，不再作为最终方案记录。
+
+当前状态：
+
+- 保持真实低分辨率模型不变：`webFrame = host × quality`、`pageZoom = quality`、`layer inverse scale = 1 / quality`。
+- click seek 的完整视觉区域命中依赖两段路径：`WebViewHostView.hitTest` 在完整 host bounds 内直接返回 `LyricsMouseGatedWebView`，随后 `LyricsMouseGatedWebView.scaledMouseEvent()` 把 window event location 乘 `quality` 后交给 WebKit。
+- 回滚 host-driven hover 后仍不能让 `WebViewHostView.hitTest` 先调用 `webView.hitTest(webViewPoint)`；这样事件可能落到 WKWebView 内部子 view，绕过 `scaledMouseEvent()`，点击区域又会被限制到真实渲染 frame。
+- hover 可以暂时回到旧错位状态；后续修复必须不截获 NSView 事件链、不改 `WebViewHostView.hitTest` / `mouseMoved` 转发、不影响 click seek。
+- 下一步应重点对照原本正确的 click 路径，优先考虑只处理 native `:hover` CSS 与 adapter class，或继续 JS 内部 A/B 取证。
+
 ## 2026-05-15 翻译歌词 CSS hash 回归
 
 现象：
