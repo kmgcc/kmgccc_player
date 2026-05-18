@@ -1879,57 +1879,36 @@
         };
         const clearAppHoveredLine = () => setAppHoveredLine(null);
 
-        let lastPointerMetricsSignature = null;
-        let lastPointerMetricsAt = 0;
-        const logPointerMetrics = (event, resolvedLineObj) => {
-            if (!event || typeof event.clientX !== "number" || typeof event.clientY !== "number") return;
-            const now = performance.now();
-            if (now - lastPointerMetricsAt < 250) return;
-
-            const targetLine = resolvedLineObj ?? resolveLineFromTarget(event.target);
-            const lineIndex = getLineObjectIndex(targetLine);
-            const lineRect = getLineObjectVisualRect(targetLine);
-            const rootRect = lyricPlayer.getElement?.()?.getBoundingClientRect?.();
-            const metrics = {
-                role: surfaceRole,
-                clientX: roundMetric(event.clientX),
-                clientY: roundMetric(event.clientY),
-                targetTag: event.target?.tagName ?? "",
-                lineIndex: Number.isInteger(lineIndex) ? lineIndex : null,
-                lineRect: lineRect ? {
-                    left: roundMetric(lineRect.left),
-                    top: roundMetric(lineRect.top),
-                    right: roundMetric(lineRect.right),
-                    bottom: roundMetric(lineRect.bottom),
-                } : null,
-                rootRect: rootRect ? {
-                    left: roundMetric(rootRect.left),
-                    top: roundMetric(rootRect.top),
-                    width: roundMetric(rootRect.width),
-                    height: roundMetric(rootRect.height),
-                } : null,
-                devicePixelRatio: roundMetric(window.devicePixelRatio),
-                innerWidth: roundMetric(window.innerWidth),
-                innerHeight: roundMetric(window.innerHeight),
+        // Host-driven click: at q < 1 the Swift WebViewHostView intercepts the
+        // full visible lyric card area (see WebViewHostView.hitTest) because
+        // WKWebView's actual NSView frame is `host × q` and native event
+        // delivery is only complete for that top-left sub-rectangle (the rest
+        // bubbles to the home view, causing click loss and scroll-wheel
+        // passthrough). The host forwards click coords here as CSS px (visual
+        // host coords ≡ CSS px under our scaling model:
+        //   visual = pageZoom × layerInverseScale × CSS = q × (1/q) × CSS).
+        // We re-emit the same seek path that native line-click / DOM click
+        // would have taken, just driven from JS rather than WebKit's event
+        // pipeline.
+        //
+        // Hover indicator is intentionally NOT driven from the host: the
+        // previous transparent tracking-overlay approach did not produce a
+        // visible hover state, and the product decision is to leave the
+        // rounded-rect hover indicator hidden in scaled-resolution mode
+        // rather than carry more complexity for it.
+        if (window.AMLL) {
+            window.AMLL.hostClickAt = (visualX, visualY) => {
+                if (!isMainSurface) return;
+                if (!Number.isFinite(visualX) || !Number.isFinite(visualY)) return;
+                emitSeek(null, null, { clientX: visualX, clientY: visualY });
             };
-            const signature = JSON.stringify(metrics);
-            if (signature === lastPointerMetricsSignature) return;
-
-            lastPointerMetricsAt = now;
-            lastPointerMetricsSignature = signature;
-            console.log("[AMLLPointerMetrics]", metrics);
-        };
-
-        const updateAppHoverFromPointer = (event) => {
-            if (!isMainSurface) return;
-            const lineObj = resolveLineFromTarget(event.target) ?? resolveLineFromPoint(event)?.lineObj;
-            setAppHoveredLine(lineObj);
-            logPointerMetrics(event, lineObj);
-        };
+        }
 
         if (isMainSurface) {
             const playerElementForHover = lyricPlayer.getElement();
-            playerElementForHover.addEventListener("pointermove", updateAppHoverFromPointer, { passive: true });
+            // pointermove intentionally NOT bound: misaligned and partial in
+            // scaled-resolution mode. Hover indicator is hidden in this mode
+            // by product decision; no host-driven hover replacement is wired.
             playerElementForHover.addEventListener("pointerleave", clearAppHoveredLine, { passive: true });
             playerElementForHover.addEventListener("mouseleave", clearAppHoveredLine, { passive: true });
             window.addEventListener("blur", clearAppHoveredLine, { passive: true });

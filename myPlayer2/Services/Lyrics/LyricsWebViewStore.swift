@@ -296,6 +296,24 @@ final class LyricsWebViewStore: NSObject {
         layer.sublayers?.forEach { applyContentsScale(contentsScale, to: $0) }
     }
 
+    /// Forwards a click position from `WebViewHostView` to the JS adapter.
+    /// Used at q < 1 where the host intercepts events on the full visual
+    /// area (see `WebViewHostView.hitTest`). The host visual coords equal
+    /// CSS px under our scaling model
+    /// (visual = pageZoom · layerInverseScale · CSS = q · 1/q · CSS = CSS),
+    /// so JS uses them directly with `document.elementFromPoint`.
+    ///
+    /// Direct `evaluateJavaScript` rather than the queued `callJS` path:
+    /// clicks are interactive and must not be HOL-blocked by pending
+    /// config/time updates.
+    func dispatchHostClickAt(_ point: CGPoint) {
+        guard !isShutDown, isReady, let webView = retainedWebView else { return }
+        let x = String(format: "%.2f", Double(point.x))
+        let y = String(format: "%.2f", Double(point.y))
+        let script = "if(window.AMLL&&typeof window.AMLL.hostClickAt==='function')window.AMLL.hostClickAt(\(x),\(y));"
+        webView.evaluateJavaScript(script, completionHandler: nil)
+    }
+
     private func updateWebContentPointerOcclusionState(_ suppressed: Bool) {
         guard isReady, let webView = retainedWebView else { return }
         let role = role

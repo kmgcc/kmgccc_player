@@ -2135,7 +2135,10 @@ struct FullscreenPlayerView: View {
 
     private var fullscreenQueueUsesBrightTextPalette: Bool {
         let skinID = settings.fullscreen.skinID
-        return skinID == "coverLed" || skinID == "rotatingCover" || skinID == "kmgccc.cassette"
+        return skinID == "coverLed"
+            || skinID == AppleStyleSkin.skinID
+            || skinID == "rotatingCover"
+            || skinID == "kmgccc.cassette"
     }
 
     private var fullscreenControlsColorScheme: ColorScheme {

@@ -245,6 +245,9 @@ struct AMLLWebView: NSViewRepresentable {
             hostView.onLayout = { [weak store] bounds in
                 store?.layoutPreparedWebView(in: bounds, reason: "hostLayout")
             }
+            hostView.onClickAt = { [weak store] point in
+                store?.dispatchHostClickAt(point)
+            }
             hostView.addSubview(webView)
             if shouldAnimateAttachment {
                 webView.alphaValue = 0
@@ -276,6 +279,7 @@ struct AMLLWebView: NSViewRepresentable {
                 self.hostView = nil
             }
             hostView.onLayout = nil
+            hostView.onClickAt = nil
             hostView.webViewLayoutScale = 1
         }
 
@@ -323,6 +327,12 @@ struct AMLLWebView: NSViewRepresentable {
 final class WebViewHostView: NSView {
     var onLayout: ((CGRect) -> Void)?
     var webViewLayoutScale: CGFloat = 1
+    /// Receives a click position in visual host (=CSS px under our scaling
+    /// model) coordinates. Wired by `AMLLWebView.Coordinator.attachWebView`
+    /// to `LyricsWebViewStore.dispatchHostClickAt`, which routes the click
+    /// to the JS adapter (`window.AMLL.hostClickAt`). Used only when the
+    /// host intercepts events for the full visual area (q < 1, see hitTest).
+    var onClickAt: ((CGPoint) -> Void)?
 
     var isMouseInteractionSuppressed = false {
         didSet {
@@ -332,16 +342,86 @@ final class WebViewHostView: NSView {
         }
     }
 
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("WebViewHostView does not support NSCoding")
+    }
+
     override var isFlipped: Bool { true }
 
+    /// At q < 1 we own the full visual area for mouse + scroll. WKWebView's
+    /// NSView frame is `host × q` (a top-left sub-rectangle); AppKit's default
+    /// hit-test recursion only reaches WKWebView's internal subviews for that
+    /// small rect. Outside it, the recursion returns this host, which has no
+    /// scrollWheel override — so scroll wheel bubbles up to the home view, and
+    /// mouseDown either reaches a wrong internal subview (bypassing
+    /// scaledMouseEvent) or also bubbles up. We fix both by intercepting the
+    /// entire visible host bounds here. Click seek is re-emitted via JS
+    /// `window.AMLL.hostClickAt`; scroll/drag/up are consumed (the lyric
+    /// player auto-scrolls; manual scroll has no defined behavior in this
+    /// surface, and home-view passthrough is unacceptable).
+    ///
+    /// At q ≥ 1 we fall through to `super.hitTest` so WebKit's native event
+    /// delivery (line-click events, native :hover, web content scroll if any)
+    /// is preserved for full-resolution surfaces (e.g. batchPreview).
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard !isMouseInteractionSuppressed else { return nil }
-        if webViewLayoutScale < 0.999, bounds.contains(point),
-           let webView = subviews.compactMap({ $0 as? WKWebView }).first
-        {
-            return webView
+        if webViewLayoutScale < 0.999 {
+            let localPoint = convert(point, from: superview)
+            if bounds.contains(localPoint) {
+                return self
+            }
         }
         return super.hitTest(point)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        // Visual host coords ≡ CSS px (pageZoom × layerInverseScale = q × 1/q = 1).
+        let local = convert(event.locationInWindow, from: nil)
+        onClickAt?(local)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        // Consume; suppress NSResponder default forward to home view.
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        // Consume.
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        // Consume; no context menu on the lyric card.
+    }
+
+    override func rightMouseUp(with event: NSEvent) {
+        // Consume.
+    }
+
+    override func rightMouseDragged(with event: NSEvent) {
+        // Consume.
+    }
+
+    override func otherMouseDown(with event: NSEvent) {
+        // Consume.
+    }
+
+    override func otherMouseUp(with event: NSEvent) {
+        // Consume.
+    }
+
+    override func otherMouseDragged(with event: NSEvent) {
+        // Consume.
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        // Consume. We intentionally do NOT call super: the AMLL lyric player
+        // does not need manual scroll, and forwarding to nextResponder would
+        // let the underlying home scroll view receive the wheel — which the
+        // user reported as unacceptable passthrough.
     }
 
     override func setFrameSize(_ newSize: NSSize) {
