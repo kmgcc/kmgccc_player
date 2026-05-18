@@ -339,11 +339,7 @@ final class WebViewHostView: NSView {
         if webViewLayoutScale < 0.999, bounds.contains(point),
            let webView = subviews.compactMap({ $0 as? WKWebView }).first
         {
-            let webViewPoint = NSPoint(
-                x: point.x * webViewLayoutScale,
-                y: point.y * webViewLayoutScale
-            )
-            return webView.hitTest(webViewPoint) ?? webView
+            return webView
         }
         return super.hitTest(point)
     }

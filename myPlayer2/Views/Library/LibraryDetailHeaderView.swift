@@ -385,16 +385,7 @@ struct LibraryDetailHeaderView: View {
     }
 
     private var headerDescriptionText: String {
-        let normalized = currentDescription.trimmingCharacters(in: .whitespacesAndNewlines)
-        let lines = normalized.components(separatedBy: .newlines)
-        guard lines.count > Self.maxHeaderDescriptionContentLines else { return normalized }
-
-        var clippedLines = Array(lines.prefix(Self.maxHeaderDescriptionContentLines))
-        if let lastIndex = clippedLines.indices.last {
-            let lastLine = clippedLines[lastIndex].trimmingCharacters(in: .whitespacesAndNewlines)
-            clippedLines[lastIndex] = lastLine.isEmpty ? "…" : "\(lastLine)…"
-        }
-        return clippedLines.joined(separator: "\n")
+        currentDescription.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private var descriptionReadView: some View {
@@ -403,13 +394,26 @@ struct LibraryDetailHeaderView: View {
                 .font(.callout)
                 .lineSpacing(0)
                 .foregroundStyle(.secondary)
-                .lineLimit(nil)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .lineLimit(Self.maxHeaderDescriptionContentLines)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(
+                    maxWidth: .infinity,
+                    maxHeight: headerDescriptionContentHeightLimit,
+                    alignment: .topLeading
+                )
         }
-        .frame(height: headerDescriptionHeight(lineCount: Self.visibleDescriptionLineCount), alignment: .top)
+        .frame(height: headerDescriptionVisibleHeight, alignment: .top)
         .scrollClipDisabled(false)
         .clipped()
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var headerDescriptionVisibleHeight: CGFloat {
+        headerDescriptionHeight(lineCount: Self.visibleDescriptionLineCount)
+    }
+
+    private var headerDescriptionContentHeightLimit: CGFloat {
+        headerDescriptionHeight(lineCount: Self.maxHeaderDescriptionContentLines)
     }
 
     private func headerDescriptionHeight(lineCount: Int) -> CGFloat {

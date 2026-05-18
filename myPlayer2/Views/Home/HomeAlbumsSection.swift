@@ -193,7 +193,6 @@ private struct HomeAlbumCard: View {
 
     @Environment(LibraryViewModel.self) private var libraryVM
     @State private var image: NSImage?
-    @State private var isHovering = false
     @Environment(\.colorScheme) private var colorScheme
 
     // Outer card geometry. Cover radius is derived so the cover and card
@@ -262,17 +261,6 @@ private struct HomeAlbumCard: View {
             colorScheme: colorScheme,
             isFloating: false
         )
-        .overlay {
-            // Conditional hover stroke — see HomeArtistCircle for rationale.
-            if isHovering {
-                RoundedRectangle(cornerRadius: outerCornerRadius, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.18), lineWidth: 1)
-                    .allowsHitTesting(false)
-            }
-        }
-        .onHover { hovering in
-            isHovering = hovering
-        }
         .onTapGesture(perform: onOpen)
         .contextMenu {
             Button(action: onPlay) {
