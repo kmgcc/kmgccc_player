@@ -57,9 +57,32 @@
 | Completed highlight state | `index.html` `updateFullscreenParallelHighlightState()` | `bufferedLines`、`scrollToIndex`、active class、`data-fs-completed-highlight` | 中高。语义是“仍在并行/foreground 组内”，不是 active。 | opacity 不按自身 endTime 熄灭；必须等真实退出组。 |
 | Exit catch-up overlay adapter | `index.html` CSS | `data-amll-exit-catch-up` | 中。容易把 catch-up 进度和 opacity fade 混在一起。 | `data-amll-exit-catch-up` 只管高亮扫到行尾所需的可见性；opacity fade 绑定行退出。当前 fullscreen / cover blur smooth overlay 的退出高亮 opacity 曲线为 `0.50s cubic-bezier(0.22, 0.61, 0.36, 1)`；只做视觉曲线调整时不要改 completed/catch-up 选择器。 |
 | CSS module semantic selectors | `index.html` CSS/JS diagnostics | `[class*="lyricLine"]`, `[class*="active"]`, `[class*="lyricSubLine"]` 等 | 中。仍是内部 CSS module 约定，但比 hash 稳定。 | 禁止回退到旧 `[class*="_active_"]` / hard-coded hash。 |
-| Lyrics render quality WebView scaling | Swift `AMLLWebView` / `LyricsWebViewStore` + App `index.html` CSS | WKWebView scaled frame、`pageZoom`、layer inverse transform、`WebViewHostView.hitTest`、`LyricsMouseGatedWebView.scaledMouseEvent`、`LyricsMouseGatedWebView.scrollWheel`、`window.AMLL.hostWheel`、`AppSettings.amllLyricsRenderQuality` | 中。与 AMLL core 解耦，但 AppKit/WebKit 坐标链路很容易被误改。Accepted：真实低分辨率模型仍是 `webFrame = host × quality`、`pageZoom = quality`、`layer inverse scale = 1 / quality`；host 的 `hitTest(_:)` 使用本地 `point` 检查完整视觉 `bounds`，低分辨率时直接返回 WKWebView 本身，让 click 继续进入 `LyricsMouseGatedWebView.scaledMouseEvent()` 和 WebKit 原生 `line-click`/DOM click 链路。AppKit flat host 与 SwiftUI host 都必须同步 `webViewLayoutScale`。滚轮在 q < 1 下不能 copy/rebuild `NSEvent` 后盲目 `super.scrollWheel`：WebKit 不稳定产生 DOM `wheel`。当前 App adapter 以 q >= 1 WebKit 原生 DOM wheel 为方向基准，把 AppKit 已按系统自然滚动设置处理过的 `scrollingDeltaX/Y` 取反后封装成 `window.AMLL.hostWheel(...)`，由 JS 在 lyric root 派发标准 `WheelEvent`，继续复用 AMLL core 已有 DOM `wheel` listener 更新 `scrollState` 并 `preventDefault()`；不能再根据 `isDirectionInvertedFromDevice` 额外翻转。q >= 1 仍保留 WebKit 原生 wheel 路径。`WebViewHostView.scrollWheel` 只消费临时没有 WebView 命中的 host 状态，不能作为常态吞滚轮。Hover 背景通过 `--amll-lp-hover-bg-color: transparent` 全 surface 隐藏，selection 通过 WebKit CSS 禁止。Rejected：contentsScale-only 不能真实降分辨率；把质量档写进 DOM `renderScale` 会污染 renderer；为防透传直接吞 `scrollWheel` 会杀死 AMLL 原生滚动；copy `CGEvent` 重建 scroll event 再交给 WebKit 会丢/扭曲 wheel 派发语义；host-driven hover / 透明 tracking overlay 代价高且不稳定；`window.AMLL.hostClickAt` 手工 seek 会绕开 WebKit 原生链路并误伤 fullscreen；不要调用 `webView.hitTest(webViewPoint)`，否则可能命中 WKWebView 内部子 view 并绕过 `scaledMouseEvent()`。 | 修渲染分辨率或事件时先查 Swift/WebKit 几何路径，且必须分别验证 main、fullscreen、cover blur highlight。JS adapter 不应模拟 click seek 或直接改 AMLL scroll state；q < 1 的 `hostWheel` 只负责派发与 q=1 原生方向一致的标准 DOM `WheelEvent` 到 lyric root，让 AMLL core 自己处理滚动。DOM `renderScale` 保持 role 默认值。Hover 当前是全 surface 隐藏策略，不再新增 hover proxy。若 1.0x 仍 snap 而 0.75x 正常，应按 WebKit/官方 AMLL transform 栅格化兼容问题记录，不能用低分辨率设置假装修复。 |
+| Lyrics render quality WebView scaling | Swift `AMLLWebView` / `LyricsWebViewStore` + App `index.html` CSS | WKWebView scaled frame、`pageZoom`、layer inverse transform、`WebViewHostView.hitTest`、`LyricsMouseGatedWebView.scaledMouseEvent`、`LyricsMouseGatedWebView.scrollWheel`、`window.AMLL.hostWheel`、`AppSettings.amllLyricsRenderQuality` | 中。正式模型与禁区见下一节。此 adapter 属于 App/WebKit 边界，不是 AMLL core patch。 | 保持 `webFrame = host × quality`、`pageZoom = quality`、`layer inverse scale = 1 / quality`；click/scroll 优先保留 WebKit/AMLL 原生语义，只在 AppKit 无法把事件送入 WebKit 时做最小桥接。 |
 
-## D. 未迁移或暂缓的旧能力
+## D. 低分辨率交互模型（Accepted / Rejected）
+
+Accepted：
+
+- 真实低分辨率模型是 `WKWebView.frame = host × quality`、`pageZoom = quality`、`layer inverse scale = 1 / quality`。`contentsScale-only` 不会改变 WebKit 实际内容渲染分辨率。
+- q < 1 时，`WebViewHostView.hitTest(_:)` 必须用本地 `point` 检查完整视觉 `bounds`，并直接返回承载的 `LyricsMouseGatedWebView`，让 click 继续走 `scaledMouseEvent()` → WebKit 原生 DOM click / `line-click`。
+- AppKit flat host 与 SwiftUI host 都必须同步 `webViewLayoutScale`，否则窗口主歌词会漏掉低分辨率 hit-test 分支。
+- q < 1 的 wheel bridge 只补齐事件入口：Swift 调 `window.AMLL.hostWheel(...)`，JS 在 lyric root 派发标准 `WheelEvent`，AMLL core 原有 wheel handler 继续负责 `scrollState`、clamp、layout 和 `preventDefault()`。
+- q < 1 wheel 方向以 q = 1 WebKit 原生 DOM wheel 为唯一基准：`WheelEvent.deltaX = -event.scrollingDeltaX`、`WheelEvent.deltaY = -event.scrollingDeltaY`、`deltaMode = DOM_DELTA_PIXEL`。Apple 已把自然滚动设置体现在 delta 中，不再根据 `isDirectionInvertedFromDevice` 额外翻转。
+- Hover indicator 当前是产品层关闭：App adapter 用 `--amll-lp-hover-bg-color: transparent` 隐藏 window / fullscreen hover 圆角背景。文本选择通过 `.amll-lyric-player` 子树的 `-webkit-user-select: none` / `user-select: none` 禁止。
+- 本轮交互修复只改 Swift host 与 App `index.html` adapter；不改 fork core，也不手改 generated `amll-core.js` / `amll-lyric.js` / `style.css`。
+
+Rejected：
+
+- 不用 `contentsScale-only` 作为低分辨率模型。
+- 不把用户质量档写进 DOM `renderScale`。
+- 不恢复 host-driven hover overlay / proxy / app hover class。
+- 不恢复 `window.AMLL.hostClickAt(...)` 或任何 JS seek 模拟来代替 WebKit 原生 click。
+- 不为防 Home 透传直接吞 `scrollWheel`。
+- 不 copy `CGEvent` / 重建 `NSEvent` 后期待 `super.scrollWheel` 稳定生成 DOM wheel。
+- 不调用 `webView.hitTest(webViewPoint)` 作为低分辨率事件入口；它可能命中 WKWebView 内部子 view 并绕过 `LyricsMouseGatedWebView.scaledMouseEvent()`。
+- 不凭直觉猜 wheel 方向；必须用 q = 1 原生 DOM wheel 对照。
+
+## E. 未迁移或暂缓的旧能力
 
 | 项目 | 当前状态 | 原因 |
 |---|---|---|

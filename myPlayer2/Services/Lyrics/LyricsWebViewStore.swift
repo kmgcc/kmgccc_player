@@ -1619,7 +1619,6 @@ final class LyricsWebViewStore: NSObject {
             || text.contains("[LyricsRenderer] Loaded lines")
             || text.contains("[LyricsRenderer] lineTimingOnlyMode")
             || text.contains("[AMLLScaleMetrics]")
-            || text.contains("[AMLLPointerMetrics]")
         {
             Log.info(message, category: .webview)
         } else {
