@@ -25,6 +25,13 @@
             font-weight: var(--amll-lp-main-font-weight, 600);
             mix-blend-mode: var(--amll-lp-mix-blend-mode, plus-lighter) !important;
             opacity: var(--amll-lp-mix-opacity, 1);
+            --amll-lp-hover-bg-color: transparent;
+            -webkit-user-select: none !important;
+            user-select: none !important;
+        }
+        .amll-lyric-player * {
+            -webkit-user-select: none !important;
+            user-select: none !important;
         }
         .amll-lyric-player.dom,
         .amll-lyric-player.dom-slim {
@@ -35,15 +42,10 @@
         ._lyricLine_1jop6_6 {
             overflow: visible;
         }
-        /* Window hover feedback is adapter-driven in scaled WebView mode.
-           Native :hover is tied to WebKit's transformed view tracking region,
-           while click seek already uses the app's scaled event path. */
-        .amll-lyric-player.amll-surface-main.amll-js-hover-enabled [class*="lyricLine"]:hover {
-            background-color: transparent !important;
-        }
-        .amll-lyric-player.amll-surface-main.amll-js-hover-enabled [class*="lyricLine"].amll-app-hover-line {
-            background-color: var(--amll-lp-hover-bg-color, #fff1) !important;
-        }
+        /* Upstream line hover/active backgrounds are driven by
+           --amll-lp-hover-bg-color in lyric-player.module.css. The product
+           now disables that indicator for every lyrics surface instead of
+           maintaining host-driven hover proxies. */
         [class*="lyricMainLine"],
         ._lyricMainLine_m23bz_99,
         ._lyricMainLine_1jop6_80 {
@@ -1108,6 +1110,7 @@
             surfaceRole === "fullscreen" || surfaceRole === "fullscreenCoverBlurHighlight";
         const isBatchPreviewSurface = surfaceRole === "batchPreview";
         const isMainSurface = surfaceRole === "main";
+        const scrollDiagnosticsEnabled = window.__AMLL_SCROLL_DIAGNOSTICS === true;
         const useFullscreenQualityProfile = isFullscreenSurface || isMainSurface;
         const defaultEnableSpring = useFullscreenQualityProfile;
         const defaultEnableBlur = useFullscreenQualityProfile;
@@ -1186,7 +1189,6 @@
         installAMLLUpgradeCompatAccessors(lyricPlayer);
         playerContainer.appendChild(lyricPlayer.getElement());
         lyricPlayer.getElement().classList.toggle("amll-surface-main", isMainSurface);
-        lyricPlayer.getElement().classList.toggle("amll-js-hover-enabled", isMainSurface);
         lyricPlayer.getElement().classList.toggle(
             "amll-surface-fullscreen-cover-blur-highlight-only",
             isCoverBlurHighlightSurface
@@ -1853,6 +1855,81 @@
             }
         };
 
+        const dispatchHostWheelToAMLL = (payload = {}) => {
+            const root = lyricPlayer.getElement();
+            if (!(root instanceof HTMLElement)) return false;
+
+            const deltaX = Number(payload.deltaX);
+            const deltaY = Number(payload.deltaY);
+            if (!Number.isFinite(deltaX) && !Number.isFinite(deltaY)) return false;
+
+            const clientX = Number.isFinite(Number(payload.clientX)) ? Number(payload.clientX) : 0;
+            const clientY = Number.isFinite(Number(payload.clientY)) ? Number(payload.clientY) : 0;
+            const event = new WheelEvent("wheel", {
+                bubbles: true,
+                cancelable: true,
+                view: window,
+                deltaX: Number.isFinite(deltaX) ? deltaX : 0,
+                deltaY: Number.isFinite(deltaY) ? deltaY : 0,
+                deltaMode: WheelEvent.DOM_DELTA_PIXEL,
+                clientX,
+                clientY,
+            });
+            Object.defineProperty(event, "__amllWheelSource", {
+                value: "hostWheel",
+                configurable: true,
+            });
+            Object.defineProperty(event, "__amllWheelPayload", {
+                value: payload,
+                configurable: true,
+            });
+
+            const notCancelled = root.dispatchEvent(event);
+            return event.defaultPrevented;
+        };
+
+        if (window.AMLL) {
+            window.AMLL.hostWheel = dispatchHostWheelToAMLL;
+        }
+
+        if (scrollDiagnosticsEnabled) {
+            lyricPlayer.getElement().addEventListener("wheel", (event) => {
+                const payload = event.__amllWheelPayload || {};
+                const target = event.target;
+                const targetDescription = target instanceof HTMLElement
+                    ? {
+                        tagName: target.tagName,
+                        id: target.id || "",
+                        className: String(target.className || ""),
+                    }
+                    : String(target);
+                console.log("[AMLLScroll][DOM]", {
+                    role: surfaceRole,
+                    renderQuality: Number.isFinite(Number(payload.scale))
+                        ? Number(payload.scale)
+                        : 1,
+                    source: event.__amllWheelSource === "hostWheel"
+                        ? "hostWheel"
+                        : "native",
+                    deltaX: event.deltaX,
+                    deltaY: event.deltaY,
+                    deltaMode: event.deltaMode,
+                    clientX: event.clientX,
+                    clientY: event.clientY,
+                    target: targetDescription,
+                    defaultPrevented: event.defaultPrevented,
+                    appKitDeltaX: payload.appKitDeltaX,
+                    appKitDeltaY: payload.appKitDeltaY,
+                    appKitScrollingDeltaX: payload.appKitScrollingDeltaX,
+                    appKitScrollingDeltaY: payload.appKitScrollingDeltaY,
+                    inverted: payload.inverted,
+                    phase: payload.phase,
+                    momentumPhase: payload.momentumPhase,
+                    precise: payload.precise,
+                });
+            });
+        }
+
         const resolveLineFromTarget = (target) => {
             let node = target;
             const root = lyricPlayer.getElement();
@@ -1863,59 +1940,6 @@
             }
             return null;
         };
-
-        let appHoveredLineElement = null;
-        const setAppHoveredLine = (lineObj) => {
-            if (!isMainSurface) return;
-            const nextElement = getLineObjectElement(lineObj);
-            if (nextElement === appHoveredLineElement) return;
-            if (appHoveredLineElement instanceof HTMLElement) {
-                appHoveredLineElement.classList.remove("amll-app-hover-line");
-            }
-            appHoveredLineElement = nextElement instanceof HTMLElement ? nextElement : null;
-            if (appHoveredLineElement) {
-                appHoveredLineElement.classList.add("amll-app-hover-line");
-            }
-        };
-        const clearAppHoveredLine = () => setAppHoveredLine(null);
-
-        // Host-driven click: at q < 1 the Swift WebViewHostView intercepts the
-        // full visible lyric card area (see WebViewHostView.hitTest) because
-        // WKWebView's actual NSView frame is `host × q` and native event
-        // delivery is only complete for that top-left sub-rectangle (the rest
-        // bubbles to the home view, causing click loss and scroll-wheel
-        // passthrough). The host forwards click coords here as CSS px (visual
-        // host coords ≡ CSS px under our scaling model:
-        //   visual = pageZoom × layerInverseScale × CSS = q × (1/q) × CSS).
-        // We re-emit the same seek path that native line-click / DOM click
-        // would have taken, just driven from JS rather than WebKit's event
-        // pipeline.
-        //
-        // Hover indicator is intentionally NOT driven from the host: the
-        // previous transparent tracking-overlay approach did not produce a
-        // visible hover state, and the product decision is to leave the
-        // rounded-rect hover indicator hidden in scaled-resolution mode
-        // rather than carry more complexity for it.
-        if (window.AMLL) {
-            window.AMLL.hostClickAt = (visualX, visualY) => {
-                if (!isMainSurface) return;
-                if (!Number.isFinite(visualX) || !Number.isFinite(visualY)) return;
-                emitSeek(null, null, { clientX: visualX, clientY: visualY });
-            };
-        }
-
-        if (isMainSurface) {
-            const playerElementForHover = lyricPlayer.getElement();
-            // pointermove intentionally NOT bound: misaligned and partial in
-            // scaled-resolution mode. Hover indicator is hidden in this mode
-            // by product decision; no host-driven hover replacement is wired.
-            playerElementForHover.addEventListener("pointerleave", clearAppHoveredLine, { passive: true });
-            playerElementForHover.addEventListener("mouseleave", clearAppHoveredLine, { passive: true });
-            window.addEventListener("blur", clearAppHoveredLine, { passive: true });
-            document.addEventListener("visibilitychange", () => {
-                if (document.visibilityState !== "visible") clearAppHoveredLine();
-            });
-        }
 
         const syncWordFadeWidth = () => {
             if (typeof lyricPlayer.setWordFadeWidth !== "function") return;
@@ -3725,8 +3749,6 @@
             const lineIndex = getLineObjectIndex(lineObj);
             emitSeek(lineObj, lineIndex, e);
         });
-        // Window hover feedback is adapter-driven so scaled WebView rendering uses the
-        // same line resolution path as click seek instead of WebKit's native :hover.
 
         const parseTTMLTimeToMs = (value) => {
             if (typeof value !== "string" || value.length === 0) return null;

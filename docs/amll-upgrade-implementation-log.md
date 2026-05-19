@@ -115,48 +115,130 @@ A/B 结果：
 - hover 可以暂时回到旧错位状态；后续修复必须不截获 NSView 事件链、不改 `WebViewHostView.hitTest` / `mouseMoved` 转发、不影响 click seek。
 - 下一步应重点对照原本正确的 click 路径，优先考虑只处理 native `:hover` CSS 与 adapter class，或继续 JS 内部 A/B 取证。
 
-## 2026-05-18 窗口歌词 Hover 透明 Tracking Overlay 修复
+## 2026-05-18 窗口歌词 Hover 透明 Tracking Overlay（Rejected / 已证伪）
 
-复核根因：
+> 本节只保留负结果。代码中不应再保留 `LyricsHoverProxyView`、host hover JS API、app-driven hover class 或 pointer metrics A/B harness。
 
-- 完整事件链确认：click 通过 `WebViewHostView.hitTest` 在低分辨率分支直接返 `LyricsMouseGatedWebView`，`mouseDown` → `scaledMouseEvent` （`event.locationInWindow` 在 host 坐标乘 `quality`） → `super.mouseDown` → WebKit 内部除以 `pageZoom = quality`，CSS 坐标恢复为原始视觉点。所以 click 在 74f3df9 回滚之后**已经覆盖完整视觉区域**；先前怀疑"click 区域不全"在代码层面不成立，但需要用户验证。
-- hover 失效根因不是 `mouseMoved` 转发坏，而是**根本没经过 `LyricsMouseGatedWebView.mouseMoved` 覆写**。WebKit 内部 `WKContentView` 自带 `NSTrackingArea`，tracking 回调直接派给 tracking owner（WKContentView），不走外层 WKWebView 的 responder。所以缩放模式下：
-    - tracking area 用 NSView 几何（pre-transform），尺寸 = `host × quality`，事件只在视觉左上 q·100% 区域触发；
-    - 进入 WebKit 后 `event.locationInWindow` 在 WKContentView local 直接除以 `pageZoom = quality`，得到 `clientX/Y = 视觉/quality`，相对真实视觉坐标偏移因子 `1/quality`。
-- 这同时解释 A/B：`coord-mul` 反向消掉了 `1/q`，所以 hover 显示能贴合，但 tracking 入口仍受 WKContentView 几何限制，区域只覆盖左上 q·100%。
-- 前一轮 host-driven hover 失败是因为顺手改了 `WebViewHostView.hitTest` 进入 `webView.hitTest(webViewPoint)` 分支，事件落到内部子 view 绕过 `scaledMouseEvent`，把 click 也锁回了真实渲染 frame。Hover 自身没有结构性原因要破坏 click。
+有价值的结论：
 
-修复（不动 core / generated bundle / emphasis / `WebViewHostView.hitTest` / `LyricsMouseGatedWebView.scaledMouseEvent`）：
+- `native-off,class-test,coord-mul` 证明低分辨率下 hover 坐标换算方向是 visual point → DOM point = `point * quality`。
+- 但 WebKit native tracking region 仍按真实缩小后的 `WKWebView.frame = host × quality` 建立，坐标修正不能扩大 hover 事件入口。
+- 透明 tracking overlay / host-driven hover 会引入 Swift→JS 高频通道，且历史实现曾干扰 click 路径诊断；产品现在也不需要保留 hover indicator。
+- `webView.hitTest(webViewPoint)` 不是 hover 修复捷径：它可能命中 WKWebView 内部子 view，绕过 `LyricsMouseGatedWebView.scaledMouseEvent()`，使 click 又退回只覆盖左上真实 frame。
 
-- 在 `myPlayer2/Views/Lyrics/AMLLWebView.swift` 新增 `LyricsHoverProxyView`：
-    - 透明 NSView，`isFlipped = true`，`acceptsFirstResponder = false`，`hitTest -> nil`；
-    - `updateTrackingAreas` 注册 `.inVisibleRect | .activeAlways | .mouseMoved | .mouseEnteredAndExited` tracking area；
-    - `mouseMoved` / `mouseEntered` 转 `convert(event.locationInWindow, from: nil)` 给回调；`mouseExited` 传 `nil`。
-- `WebViewHostView` 持有这个 proxy 作为子 view（`autoresizingMask = [.width, .height]`），并暴露 `onHoverPoint` 闭包；`isMouseInteractionSuppressed = true` 时显式向 JS push 一次 `clearHostHover`。
-- `LyricsWebViewStore.dispatchHostHoverPoint(_:)` 直接 `evaluateJavaScript` 调 `window.AMLL.setHostHoverPoint(x, y)` / `window.AMLL.clearHostHover()`，不走 `callJS` 队列（hover 流 60Hz 与 setConfig/time/lyrics 异构，不能 HOL block）。
-- `AMLLWebView.Coordinator.attachWebView` 像 `onLayout` 一样接 `hostView.onHoverPoint = { store?.dispatchHostHoverPoint($0) }`；`detachWebView` 解绑。
-- `Resources/AMLL/index.html`：
-    - 新增 `window.AMLL.setHostHoverPoint(x, y)` 与 `window.AMLL.clearHostHover()`；
-    - 命中流程 `document.elementFromPoint(x, y) → resolveLineFromTarget → setAppHoveredLine`，失败 fallback `resolveLineFromPoint({ clientX, clientY })`；
-    - **解绑** `playerElementForHover.addEventListener("pointermove", updateAppHoverFromPointer)`，并删除 `updateAppHoverFromPointer` / `logPointerMetrics` 死代码；
-    - 保留 `pointerleave` / `mouseleave` / `blur` / `visibilitychange` 清理 hover state，作为 host overlay 失效或 isMouseInteractionSuppressed 切换时的二线兜底。
+Rejected：
 
-模型不变量：
+- 不恢复 host-driven hover overlay / proxy。
+- 不恢复 `window.AMLL.setHostHoverPoint(...)` / `clearHostHover()`。
+- 不恢复 `amll-app-hover-line` / app-driven hover class。
+- 不继续用 hover 坐标修复污染 click / scroll 事件链。
 
-- host visual coords ≡ DOM CSS px：`pageZoom × layerInverseScale = q × (1/q) = 1`。所以 proxy 不需要任何坐标缩放，直接把 host local 点送给 `document.elementFromPoint`。
-- 三段几何：`WKWebView.frame = host × q`、`webView.pageZoom = q`、`webView.layer.affineTransform = scale(1/q)` 完整保留；render quality 三档差异仍来自这条真实低分辨率链路，与 hover 修复正交。
-- proxy 是 sibling overlay，不是 host 本体接管事件：`WebViewHostView.hitTest` 不变，`LyricsMouseGatedWebView.scaledMouseEvent` 不变，AppKit 的 click hit-test 路径完全没动；NSTrackingArea 与 hit-test 相互独立，所以 click 永远不会落到 proxy 上。
+## 2026-05-18 窗口/全屏低分辨率事件链路收敛（Accepted）
 
-验证：
+现象：
 
-- `xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player -configuration Debug -destination 'platform=macOS' build` 成功。
-- 用户需手动验证三档质量（低 0.5 / 中 0.75 / 高 1.0）下：
-    1. 分辨率差异仍可见；
-    2. 整个视觉歌词区域都能 click seek（验证不是"巧合落在 q·100% 区域"）；
-    3. hover 背景贴合鼠标所在真实行，不缩到左上角；
-    4. emphasis 动画无变化；
-    5. fullscreen / cover blur 不崩、无明显异常。
-- 自动化测试无相关用例。
+- `0.5x` / `0.75x` 下窗口歌词视觉区域完整，但 click seek 只在左上角真实低分辨率 WKWebView frame 内有效。
+- 在点不到的窗口歌词区域滚轮，会穿透到底下 Home 页面。
+- fullscreen 歌词此前可点击；最近修窗口低分辨率事件时变成不可点击。
+- 窗口 hover 圆角提示不再要求修复，产品决策是隐藏；后续复核扩展为 fullscreen hover 也隐藏。
+
+根因：
+
+- 真实低分辨率模型把 WKWebView 的 NSView frame 缩到 `host × quality`，再通过 `pageZoom = quality` 与 layer inverse scale 放回完整视觉尺寸。AppKit hit-testing 不理解 layer inverse scale，因此默认只会命中左上角真实 frame。
+- AppKit flat host 路径直接使用 `WebViewHostView`，但没有像 SwiftUI `AMLLWebView.Coordinator` 那样写入 `webViewLayoutScale`，导致窗口主歌词的 host 仍按 `1.0` 处理 hit-test，完整视觉区域没有进入 scaled event path。
+- 最近的 host-driven click 修复让 `WebViewHostView` 在 q < 1 时返回 `self` 并调用 `window.AMLL.hostClickAt(...)` 手工 seek。这把 AppKit/WebKit 事件到达问题变成 JS 语义模拟问题；更糟的是 `hostClickAt` 只允许 `isMainSurface`，所以 fullscreen surface 被 host 吞掉 click 后 JS 直接 no-op。
+- `WebViewHostView.hitTest(_:)` 曾把 AppKit 已经传入的本地 `point` 又当成 superview 坐标做 `convert(point, from: superview)`。宿主有 padding / 非零 origin 时，这会把完整 bounds 判断偏移，进一步制造局部命中。
+- 滚轮穿透的本质同样是命中结构不完整：事件没有稳定落在歌词 WebView/host 的完整视觉区域，Responder 链可继续把 wheel 交给下层 Home。
+
+修复：
+
+- 保留真实低分辨率渲染模型：`WKWebView.frame = host × quality`、`pageZoom = quality`、`layer inverse scale = 1 / quality`。
+- `LyricsWebViewStore.layoutWebView()` 在每次布局时把 `renderQualityScale` 同步回 `WebViewHostView.webViewLayoutScale`；AppKit flat host attach 时也立即写入当前质量 scale，避免窗口主歌词漏掉 scale。
+- `WebViewHostView.hitTest(_:)` 在 q < 1 时用本地 `point` 检查 `bounds.contains(point)`，并直接返回承载的 WKWebView 本身。不要返回 host/self，不要调用 `webView.hitTest(...)`，因为后者可能命中 WKWebView 内部子 view 并绕过 `LyricsMouseGatedWebView.scaledMouseEvent()`。
+- click 重新走原生链路：`LyricsMouseGatedWebView.mouseDown` → `scaledMouseEvent()` → `super.mouseDown` → WebKit 原生 `line-click` / DOM click fallback → Swift `onUserSeek`。
+- 2026-05-18 复核发现：`LyricsMouseGatedWebView.scrollWheel` 在 q < 1 时局部吞掉 wheel 会阻断 AMLL 原生 DOM wheel scroll；这是回归，不是 accepted 方案。最终修复见下一节。
+- 删除 Swift `dispatchHostClickAt`、`WebViewHostView.onClickAt` 和 JS `window.AMLL.hostClickAt`。
+- 删除 app-driven hover class / pointer cleanup 残留；hover indicator 最终改为所有歌词 surface 通过 upstream CSS variable 统一隐藏。
+
+Rejected / 保留负经验：
+
+- contentsScale-only：已实测不能真实降低 WKWebView 内容渲染分辨率。
+- DOM `renderScale` 绑定用户质量档：会把 WebView backing quality 与 AMLL renderer scale 耦合，导致 1.0 / 0.5 的 emphasis 回落异常。
+- 透明 hover tracking overlay / host-driven hover：坐标证据有价值，但不是产品需要，且增加不稳定通道。
+- host-driven click / `hostClickAt`：绕开 WebKit 原生 click，窗口右下仍可能不稳，并直接误伤 fullscreen。
+- 直接吞掉低分辨率 `scrollWheel`：可阻止 Home 穿透，但也杀死 AMLL 自身滚动。
+- `webView.hitTest(webViewPoint)`：会命中内部子 view，绕过外层 scaled event adapter。
+
+验证要求：
+
+- 三档质量下窗口歌词可见行全区域 click seek，重点测右下角和下半部分。
+- 三档质量下窗口歌词卡片全区域滚轮不滚动 Home，且自身仍可滚动。
+- fullscreen 歌词 click seek 恢复；cover blur highlight overlay 不接管 hit-testing。
+- 窗口/fullscreen hover 圆角背景不显示；不新增 app-driven hover 行为。
+- 低分辨率视觉差异仍存在。
+
+## 2026-05-18 滚动 / Hover / Selection 交互回归收敛（Accepted）
+
+现象：
+
+- 最近为了防止窗口歌词滚轮穿透 Home，在 `LyricsMouseGatedWebView.scrollWheel` 的 q < 1 分支直接 `return`，导致窗口和 fullscreen 歌词自身无法用鼠标滚轮 / 触摸板上下滚动。后一轮把 wheel copy 成新的 `NSEvent(cgEvent:)` 并修正 location 再 `super.scrollWheel`，仍未让 WebKit 稳定产生 DOM `wheel`。
+- fullscreen 仍显示 hover 圆角背景，说明此前只隐藏 window main selector，没有定位真实 hover 来源。
+- 鼠标左键拖动时，歌词文字会像普通网页文本一样被选中。
+
+根因：
+
+- AMLL 的手动滚动不是 AppKit `NSScrollView`，而是 upstream core 在 player 根元素上监听 DOM `wheel`，`preventDefault()` 后更新 `scrollState.scrollOffset`。Swift 层吞掉 `scrollWheel` 会同时阻断 Home 穿透和 AMLL 自身滚动。
+- q < 1 的 AppKit 入口已经由 `WebViewHostView.hitTest(_:)` 命中 `LyricsMouseGatedWebView`；断点不在 hit-test。断点在 `LyricsMouseGatedWebView.scrollWheel` 之后：scroll wheel 事件比 mouse event 更依赖原始 WebKit/AppKit 元数据，copy 底层 `CGEvent` 并重建 `NSEvent` 后交给 `super.scrollWheel`，不能作为稳定的 DOM `wheel` 派发方案。
+- hover 圆角背景真实来源是 fork/upstream `packages/core/src/styles/lyric-player.module.css`：`.lyricLine:has(> *):hover` / `:active` 使用 `--amll-lp-hover-bg-color` 设置背景色。此前只写 `.amll-surface-main [class*="lyricLine"]:hover`，所以 fullscreen surface 仍按 upstream 默认变量显示。
+- upstream `packages/core/src/styles/index.css` 只在 `.amll-lyric-player.dom` 上设置未加前缀的 `user-select: none`。WKWebView 下实际文本节点仍可能被拖选，需要 App adapter 在歌词根与子树补 `-webkit-user-select: none`。
+
+修复：
+
+- `WebViewHostView.hitTest(_:)` 仍负责让完整视觉 host 区域命中 `LyricsMouseGatedWebView`，不改回 `webView.hitTest(...)`，不走 JS seek 模拟。
+- `LyricsMouseGatedWebView.scrollWheel` 不再吞掉 q < 1 wheel，也不再 copy/rebuild `NSEvent` 后盲目交给 WebKit。q < 1 时 Swift 保留原始 wheel delta / phase / momentum / inverted metadata 做诊断，并调用很小的 App adapter `window.AMLL.hostWheel(...)`。
+- `window.AMLL.hostWheel(...)` 不直接改 AMLL protected/internal state；它只在 `lyricPlayer.getElement()` 上派发标准、cancelable 的 DOM `WheelEvent`。因此真正更新 `scrollState.scrollOffset`、`clampPlayerScrollOffset()`、`calcLayout()` 和 `preventDefault()` 的仍是 upstream core 的 `attachPlayerScrollHandlers(...).wheel` listener。
+- q >= 1 保持 `super.scrollWheel(with: event)`，走 WebKit 原生 DOM wheel 派发路径。
+- `WebViewHostView.scrollWheel` 只消费“短暂命中 host 而未命中 WebView”的状态，避免 nextResponder 把 wheel 交给 Home；常态滚动必须由 WKWebView 处理。
+- `index.html` 在 `.amll-lyric-player` 上设置 `--amll-lp-hover-bg-color: transparent`，覆盖 window / fullscreen / cover blur 的 upstream hover/active 背景来源。
+- `index.html` 在 `.amll-lyric-player` 与子树上设置 `-webkit-user-select: none` 和 `user-select: none`，不加 JS `selectstart`，避免为 CSS 可解问题再引入事件补丁。
+
+Rejected / 保留负经验：
+
+- 不为防 Home 穿透而吞掉低分辨率 `scrollWheel`。
+- 不再把 scroll wheel 当普通 mouse event：copy `CGEvent`、改 location、重建 `NSEvent` 再 `super.scrollWheel` 已证实不能作为稳定方案。
+- 不用 Swift/JS 直接改 AMLL scroll state；q < 1 的 adapter 只补齐 DOM `WheelEvent` 入口，滚动语义仍由 AMLL core wheel handler 执行。
+- 不继续用 surface-specific hover selector 猜测上游 CSS；当前稳定入口是 upstream 已暴露的 `--amll-lp-hover-bg-color`。
+- 不增加 JS `selectstart` 防线，除非未来目标 WebKit 证明 CSS 禁止选择不足。
+
+验证要求：
+
+- window / fullscreen 在 0.5 / 0.75 / 1.0 下都能滚轮/触摸板滚动歌词本身。
+- 在窗口歌词完整卡片区域滚动不再带动底层 Home。
+- window / fullscreen hover 圆角背景都不显示。
+- 拖动歌词文字不能产生选区。
+- click seek、fullscreen click、cover blur highlight、emphasis 动画和三档真实低分辨率效果不受影响。
+
+## 2026-05-19 低分辨率 Wheel Bridge 方向修正（Accepted）
+
+现象：
+
+- q < 1 已恢复能滚动，但鼠标滚轮和触摸板上下滚动方向都与 q = 1 WebKit 原生路径相反。
+
+根因：
+
+- 上一轮 q < 1 bridge 把 AppKit `NSEvent.scrollingDeltaX/Y` 原样写入 DOM `WheelEvent.deltaX/Y`。在 WebKit 的 DOM wheel 语义里，同一物理手势下 DOM `deltaY` 与 AppKit `scrollingDeltaY` 符号相反；因此原样传递会让 AMLL core 的 `scrollOffset += evt.deltaY` 反向。
+- `isDirectionInvertedFromDevice` 不是额外翻转开关。Apple 已经把用户的自然滚动设置体现在 `deltaX/Y` 与 `scrollingDeltaX/Y` 中；再基于该标志翻转会造成双重反转。
+
+修复：
+
+- q >= 1 继续作为 ground truth：`LyricsMouseGatedWebView.scrollWheel` 调用 `super.scrollWheel(with:)`，由 WebKit 原生生成 DOM `wheel`。
+- q < 1 的 `hostWheel` 映射规则为：`WheelEvent.deltaX = -event.scrollingDeltaX`、`WheelEvent.deltaY = -event.scrollingDeltaY`、`deltaMode = DOM_DELTA_PIXEL`。不乘 quality，不读取 `isDirectionInvertedFromDevice` 来改方向。
+- `KMGCCC_AMLL_SCROLL_DIAGNOSTICS=1` 时，Swift 日志同时输出 `event.deltaX/Y`、`event.scrollingDeltaX/Y`、映射后的 `domDeltaX/Y`、phase、momentum、precise、inverted；DOM root 日志输出 `source=native|hostWheel`、`deltaX/Y`、`deltaMode`、surface role、render quality 和 target，用于用同一物理手势对照 q=1 与 q<1。
+
+Rejected / 保留负经验：
+
+- 不把 `isDirectionInvertedFromDevice` 当作手动取反依据；它只描述设备方向和系统滚动方向的关系。
+- 不为调方向引入 quality 缩放或速度倍率；方向先和 q=1 原生 DOM wheel 对齐，速度问题单独处理。
 
 ## 2026-05-15 翻译歌词 CSS hash 回归
 

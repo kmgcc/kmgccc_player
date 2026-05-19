@@ -279,7 +279,6 @@
 /* Begin PBXShellScriptBuildPhase section */
 		93D91A122FA5000000010001 /* Copy QQMusic helper */ = {
 			isa = PBXShellScriptBuildPhase;
-			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
 			files = (
 			);
@@ -303,7 +302,6 @@
 		};
 		93D91A132FA5000000010002 /* Copy SACAD helper */ = {
 			isa = PBXShellScriptBuildPhase;
-			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
 			files = (
 			);
