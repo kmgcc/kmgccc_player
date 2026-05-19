@@ -291,10 +291,12 @@ final class LyricsSurfaceManager {
     private var onStoreReadyHandlers: [LyricsSurfaceRole: (LyricsWebViewStore) -> Void] = [:]
 
     /// Notify that a store is ready - called by LyricsWebViewStore
-    func notifyStoreReady(_ role: LyricsSurfaceRole, store: LyricsWebViewStore) {
-        guard let handler = onStoreReadyHandlers.removeValue(forKey: role) else { return }
+    @discardableResult
+    func notifyStoreReady(_ role: LyricsSurfaceRole, store: LyricsWebViewStore) -> Bool {
+        guard let handler = onStoreReadyHandlers.removeValue(forKey: role) else { return false }
         Log.debug("LyricsSurfaceManager: store ready for \(role), triggering ready handler", category: .webview)
         handler(store)
+        return true
     }
 
     /// Get or create a WebView store for the given role.
