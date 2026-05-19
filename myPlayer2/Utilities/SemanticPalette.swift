@@ -49,8 +49,16 @@ enum SemanticPaletteFactory {
             globalAccent = optimizedAccent(for: scheme, analysis: analysis)
         } else {
             globalAccent = isDark
-                ? ColorMath.clampLightness(userFallbackAccent, lo: 0.66, hi: 0.82)
-                : ColorMath.clampLightness(userFallbackAccent, lo: 0.30, hi: 0.50)
+                ? ColorMath.clampLightness(
+                    userFallbackAccent,
+                    lo: ColorSystemTokens.FallbackAccent.darkMinL,
+                    hi: ColorSystemTokens.FallbackAccent.darkMaxL
+                )
+                : ColorMath.clampLightness(
+                    userFallbackAccent,
+                    lo: ColorSystemTokens.FallbackAccent.lightMinL,
+                    hi: ColorSystemTokens.FallbackAccent.lightMaxL
+                )
             // Debug: log resolved accent RGB so we can confirm the runtime colour.
             let inC = ColorMath.hsl(of: userFallbackAccent)
             let outC = ColorMath.hsl(of: globalAccent)
@@ -104,11 +112,15 @@ enum SemanticPaletteFactory {
         // ochre band must not produce a red or pink accent — small brown spots
         // can drift the dominant bucket past the band, so snap back to avgHue.
         let avg = analysis.avgHue
-        let isWarmAvg = avg >= 0.07 && avg <= 0.20
-        let isWarmConfident = analysis.dominantHueConfidence >= 0.16
+        let isWarmAvg = avg >= ColorSystemTokens.Accent.warmGuardHueLo
+            && avg <= ColorSystemTokens.Accent.warmGuardHueHi
+        let isWarmConfident = analysis.dominantHueConfidence
+            >= ColorSystemTokens.Accent.warmGuardHueConfidenceMin
         if isWarmAvg && isWarmConfident {
-            let inWarmBand = (h >= 0.06 && h <= 0.20)
-            let drifted = ColorMath.circularHueDistance(h, avg) > 0.06
+            let inWarmBand = (h >= ColorSystemTokens.Accent.warmBandHueLo
+                              && h <= ColorSystemTokens.Accent.warmBandHueHi)
+            let drifted = ColorMath.circularHueDistance(h, avg)
+                > ColorSystemTokens.Accent.warmGuardDriftThreshold
             if !inWarmBand || drifted {
                 h = avg
             }
@@ -118,17 +130,22 @@ enum SemanticPaletteFactory {
         // at lower L; blue/violet/red need higher L to remain readable.
         let darkMinL: CGFloat = {
             switch h {
-            case 0.10..<0.18: return 0.66   // yellow / orange
-            case 0.18..<0.42: return 0.70   // green
-            case 0.42..<0.72: return 0.74   // cyan / blue
-            case 0.72..<0.85: return 0.76   // violet
-            default:           return 0.72  // red / magenta / pink
+            case 0.10..<0.18: return ColorSystemTokens.Accent.darkMinLByHueYellowOrange
+            case 0.18..<0.42: return ColorSystemTokens.Accent.darkMinLByHueGreen
+            case 0.42..<0.72: return ColorSystemTokens.Accent.darkMinLByHueCyanBlue
+            case 0.72..<0.85: return ColorSystemTokens.Accent.darkMinLByHueViolet
+            default:           return ColorSystemTokens.Accent.darkMinLByHueDefault
             }
         }()
-        let darkMaxL: CGFloat = 0.82
+        let darkMaxL: CGFloat = ColorSystemTokens.Accent.darkLightnessCeiling
 
         if scheme == .dark {
-            s = ColorMath.clamp(max(s * 1.06, 0.32), 0.32, 0.86)
+            s = ColorMath.clamp(
+                max(s * ColorSystemTokens.Accent.darkSaturationLift,
+                    ColorSystemTokens.Accent.darkSaturationFloor),
+                ColorSystemTokens.Accent.darkSaturationFloor,
+                ColorSystemTokens.Accent.darkSaturationCeiling
+            )
             l = ColorMath.clamp(max(l, darkMinL), darkMinL, darkMaxL)
         } else {
             // Light mode: hue-aware saturation ceiling. Cheap/garish hues
@@ -138,46 +155,66 @@ enum SemanticPaletteFactory {
             let lightSatCeiling: CGFloat = {
                 switch h {
                 case 0.83..<1.00, 0.00..<0.03:
-                    return 0.46                                 // pink / magenta / red-pink
+                    return ColorSystemTokens.Accent.lightSatCeilingPinkMagenta
                 case 0.72..<0.83:
-                    return 0.50                                 // purple / violet
+                    return ColorSystemTokens.Accent.lightSatCeilingPurpleViolet
                 case 0.30..<0.50:
-                    return 0.48                                 // medical green / cyan-green
+                    return ColorSystemTokens.Accent.lightSatCeilingMedicalGreen
                 case 0.50..<0.65:
-                    return 0.54                                 // industrial blue / cyan-blue
+                    return ColorSystemTokens.Accent.lightSatCeilingIndustrialBlue
                 case 0.65..<0.72:
-                    return 0.58                                 // deep blue
+                    return ColorSystemTokens.Accent.lightSatCeilingDeepBlue
                 case 0.03..<0.10:
-                    return 0.66                                 // warm red-orange
+                    return ColorSystemTokens.Accent.lightSatCeilingWarmRedOrange
                 case 0.10..<0.20:
-                    return 0.68                                 // yellow / amber
+                    return ColorSystemTokens.Accent.lightSatCeilingYellowAmber
                 case 0.20..<0.30:
-                    return 0.56                                 // yellow-green / chartreuse
+                    return ColorSystemTokens.Accent.lightSatCeilingChartreuse
                 default:
-                    return 0.54
+                    return ColorSystemTokens.Accent.lightSatCeilingDefault
                 }
             }()
-            let raised = max(s * 1.02, 0.30)
+            let raised = max(
+                s * ColorSystemTokens.Accent.lightSaturationLift,
+                ColorSystemTokens.Accent.lightSaturationFloor
+            )
             let softened = ColorMath.softShoulder(
                 raised,
                 ceiling: lightSatCeiling,
-                softness: 0.10
+                softness: ColorSystemTokens.Accent.lightSatShoulderSoftness
             )
-            s = ColorMath.clamp(softened, 0.30, 0.72)
-            l = ColorMath.clamp(min(l * 0.78, 0.50), 0.30, 0.50)
+            s = ColorMath.clamp(
+                softened,
+                ColorSystemTokens.Accent.lightSaturationFloor,
+                ColorSystemTokens.Accent.lightSaturationOuterCeiling
+            )
+            l = ColorMath.clamp(
+                min(l * ColorSystemTokens.Accent.lightLightnessScale,
+                    ColorSystemTokens.Accent.lightLightnessCeiling),
+                ColorSystemTokens.Accent.lightLightnessFloor,
+                ColorSystemTokens.Accent.lightLightnessCeiling
+            )
         }
 
         // Saturation safety net for low-colour covers — the dominant bucket on a
         // grey/black/white cover with a few pink/red noise pixels will *look*
         // saturated; cap it so the noise can't paint the accent neon.
         if analysis.isMonochrome {
-            s = min(s, scheme == .dark ? 0.18 : 0.14)
-        } else if analysis.colorfulness < 0.10 || analysis.avgSaturation < 0.12 {
+            s = min(s, scheme == .dark
+                ? ColorSystemTokens.Accent.strictMonoSatCapDark
+                : ColorSystemTokens.Accent.strictMonoSatCapLight)
+        } else if analysis.colorfulness < ColorSystemTokens.Accent.nearMonoColorfulnessThreshold
+                  || analysis.avgSaturation < ColorSystemTokens.Accent.nearMonoAvgSaturationThreshold {
             // Near-monochrome but not strict mono: low-sat photo, off-white
             // sleeve with a small logo, dim duo-tone, etc.
-            s = min(s, scheme == .dark ? 0.26 : 0.20)
-        } else if analysis.dominantHueConfidence < 0.18 {
-            s = min(s, scheme == .dark ? 0.40 : 0.32)
+            s = min(s, scheme == .dark
+                ? ColorSystemTokens.Accent.nearMonoSatCapDark
+                : ColorSystemTokens.Accent.nearMonoSatCapLight)
+        } else if analysis.dominantHueConfidence
+                    < ColorSystemTokens.Accent.lowConfidenceHueConfidenceThreshold {
+            s = min(s, scheme == .dark
+                ? ColorSystemTokens.Accent.lowConfidenceSatCapDark
+                : ColorSystemTokens.Accent.lowConfidenceSatCapLight)
         }
 
         return ColorMath.color(h: h, s: s, l: l)
@@ -188,38 +225,66 @@ enum SemanticPaletteFactory {
         analysis: ArtworkColorAnalysis
     ) -> NSColor {
         let average = ColorMath.hsl(of: analysis.averageColor)
-        let hasUsableAverageHue = average.s >= 0.055 && analysis.avgSaturation >= 0.055
+        let hasUsableAverageHue =
+            average.s >= ColorSystemTokens.NearMonochrome.avgHueUsableSaturation
+            && analysis.avgSaturation >= ColorSystemTokens.NearMonochrome.avgHueUsableAvgSaturation
         let neutralHue: CGFloat
         if hasUsableAverageHue {
             neutralHue = average.h
-        } else if analysis.avgHslLightness < 0.34 {
-            neutralHue = 0.58 // cool charcoal / silver-gray
+        } else if analysis.avgHslLightness
+                    < ColorSystemTokens.NearMonochrome.neutralHueChoiceLightnessThreshold {
+            neutralHue = ColorSystemTokens.NearMonochrome.neutralCoolHue
         } else {
-            neutralHue = 0.10 // warm paper / silver-gray
+            neutralHue = ColorSystemTokens.NearMonochrome.neutralWarmHue
         }
 
         let strictMono =
             analysis.isMonochrome
-            || analysis.colorfulness < 0.055
-            || analysis.avgSaturation < 0.085
-            || analysis.largestHighSaturationAreaShare < 0.06
+            || analysis.colorfulness < ColorSystemTokens.NearMonochrome.strictMonoColorfulness
+            || analysis.avgSaturation < ColorSystemTokens.NearMonochrome.strictMonoAvgSaturation
+            || analysis.largestHighSaturationAreaShare
+                < ColorSystemTokens.NearMonochrome.strictMonoHighSatAreaShare
         let saturationCeiling: CGFloat = strictMono
-            ? (scheme == .dark ? 0.08 : 0.07)
-            : (scheme == .dark ? 0.14 : 0.12)
-        let saturationFloor: CGFloat = scheme == .dark ? 0.035 : 0.025
+            ? (scheme == .dark
+                ? ColorSystemTokens.NearMonochrome.strictMonoSatCapDark
+                : ColorSystemTokens.NearMonochrome.strictMonoSatCapLight)
+            : (scheme == .dark
+                ? ColorSystemTokens.NearMonochrome.nearMonoSatCapDark
+                : ColorSystemTokens.NearMonochrome.nearMonoSatCapLight)
+        let saturationFloor: CGFloat = scheme == .dark
+            ? ColorSystemTokens.NearMonochrome.saturationFloorDark
+            : ColorSystemTokens.NearMonochrome.saturationFloorLight
         let saturation = ColorMath.clamp(
-            min(average.s * 0.72, saturationCeiling),
+            min(average.s * ColorSystemTokens.NearMonochrome.saturationScale, saturationCeiling),
             saturationFloor,
             saturationCeiling
         )
 
         let lightness: CGFloat
         if scheme == .dark {
-            let toneLift = ColorMath.clamp((0.42 - analysis.avgHslLightness) / 0.42, 0, 1)
-            lightness = ColorMath.clamp(0.66 + toneLift * 0.08, 0.66, 0.74)
+            let toneLift = ColorMath.clamp(
+                (ColorSystemTokens.NearMonochrome.darkLiftPivot - analysis.avgHslLightness)
+                    / ColorSystemTokens.NearMonochrome.darkLiftRange,
+                0, 1
+            )
+            lightness = ColorMath.clamp(
+                ColorSystemTokens.NearMonochrome.darkBaseLightness
+                    + toneLift * ColorSystemTokens.NearMonochrome.darkLiftMax,
+                ColorSystemTokens.NearMonochrome.darkBaseLightness,
+                ColorSystemTokens.NearMonochrome.darkCeilingLightness
+            )
         } else {
-            let toneDrop = ColorMath.clamp((analysis.avgHslLightness - 0.52) / 0.42, 0, 1)
-            lightness = ColorMath.clamp(0.40 - toneDrop * 0.08, 0.32, 0.42)
+            let toneDrop = ColorMath.clamp(
+                (analysis.avgHslLightness - ColorSystemTokens.NearMonochrome.lightDropPivot)
+                    / ColorSystemTokens.NearMonochrome.lightDropRange,
+                0, 1
+            )
+            lightness = ColorMath.clamp(
+                ColorSystemTokens.NearMonochrome.lightBaseLightness
+                    - toneDrop * ColorSystemTokens.NearMonochrome.lightDropMax,
+                ColorSystemTokens.NearMonochrome.lightFloorLightness,
+                ColorSystemTokens.NearMonochrome.lightCeilingLightness
+            )
         }
 
         return ColorMath.color(h: neutralHue, s: saturation, l: lightness)
@@ -251,20 +316,30 @@ enum SemanticPaletteFactory {
         if analysis.usesDarkForeground {
             return ColorMath.color(
                 h: hsl.h,
-                s: ColorMath.clamp(hsl.s + 0.04, 0.10, 0.34),
-                l: 0.12
+                s: ColorMath.clamp(
+                    hsl.s + ColorSystemTokens.ReadableText.darkForegroundSaturationLift,
+                    ColorSystemTokens.ReadableText.darkForegroundSatLo,
+                    ColorSystemTokens.ReadableText.darkForegroundSatHi
+                ),
+                l: ColorSystemTokens.ReadableText.darkForegroundLightness
             )
         } else {
             return ColorMath.color(
                 h: hsl.h,
-                s: ColorMath.clamp(hsl.s, 0.04, 0.24),
-                l: 0.92
+                s: ColorMath.clamp(
+                    hsl.s,
+                    ColorSystemTokens.ReadableText.lightForegroundSatLo,
+                    ColorSystemTokens.ReadableText.lightForegroundSatHi
+                ),
+                l: ColorSystemTokens.ReadableText.lightForegroundLightness
             )
         }
     }
 
     fileprivate static func secondaryTextOnArtwork(analysis: ArtworkColorAnalysis) -> NSColor {
-        analysis.bestTextSourceColor.withAlphaComponent(0.86)
+        analysis.bestTextSourceColor.withAlphaComponent(
+            ColorSystemTokens.ReadableText.secondaryAlpha
+        )
     }
 
     fileprivate static func windowLyricActive(
@@ -278,13 +353,16 @@ enum SemanticPaletteFactory {
         analysis: ArtworkColorAnalysis,
         isDark: Bool
     ) -> NSColor {
-        windowLyricActive(analysis: analysis, isDark: isDark).withAlphaComponent(0.35)
+        windowLyricActive(analysis: analysis, isDark: isDark)
+            .withAlphaComponent(ColorSystemTokens.WindowLyric.inactiveAlpha)
     }
 
     fileprivate static func fullscreenLyricBase(analysis: ArtworkColorAnalysis) -> NSColor {
         // High colorfulness + clear hue dominance → use the dominant cover hue.
         // Otherwise fall back to the best text source colour (already mid-tone, hue-rich).
-        if analysis.colorfulness >= 0.20 && analysis.dominantHueConfidence >= 0.20 {
+        if analysis.colorfulness >= ColorSystemTokens.FullscreenLyric.usesDominantColorfulnessMin
+           && analysis.dominantHueConfidence
+                >= ColorSystemTokens.FullscreenLyric.usesDominantHueConfidenceMin {
             return analysis.dominantColor
         }
         return analysis.bestTextSourceColor
@@ -303,8 +381,16 @@ enum SemanticPaletteFactory {
         // Drive cover-overlay tint from dominant hue. Keep moderate saturation
         // and never push past the cover's own brightness band.
         let hsl = ColorMath.hsl(of: analysis.dominantColor)
-        let s = ColorMath.clamp(hsl.s * 0.92, 0.10, 0.62)
-        let l = ColorMath.clamp(hsl.l, 0.22, 0.78)
+        let s = ColorMath.clamp(
+            hsl.s * ColorSystemTokens.CoverGradient.dominantSaturationScale,
+            ColorSystemTokens.CoverGradient.dominantSaturationLo,
+            ColorSystemTokens.CoverGradient.dominantSaturationHi
+        )
+        let l = ColorMath.clamp(
+            hsl.l,
+            ColorSystemTokens.CoverGradient.dominantLightnessLo,
+            ColorSystemTokens.CoverGradient.dominantLightnessHi
+        )
         return ColorMath.color(h: hsl.h, s: s, l: l)
     }
 
@@ -315,14 +401,22 @@ enum SemanticPaletteFactory {
         if analysis.usesDarkForeground {
             return ColorMath.color(
                 h: hsl.h,
-                s: ColorMath.clamp(hsl.s, 0.18, 0.36),
-                l: 0.16
+                s: ColorMath.clamp(
+                    hsl.s,
+                    ColorSystemTokens.CoverGradient.darkTextSatLo,
+                    ColorSystemTokens.CoverGradient.darkTextSatHi
+                ),
+                l: ColorSystemTokens.CoverGradient.darkTextLightness
             )
         } else {
             return ColorMath.color(
                 h: hsl.h,
-                s: ColorMath.clamp(hsl.s, 0.06, 0.20),
-                l: 0.94
+                s: ColorMath.clamp(
+                    hsl.s,
+                    ColorSystemTokens.CoverGradient.lightTextSatLo,
+                    ColorSystemTokens.CoverGradient.lightTextSatHi
+                ),
+                l: ColorSystemTokens.CoverGradient.lightTextLightness
             )
         }
     }

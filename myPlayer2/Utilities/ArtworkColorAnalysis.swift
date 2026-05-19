@@ -227,16 +227,30 @@ extension ArtworkColorExtractor {
             }
         }
 
-        let isMono = colorfulness < 0.04 && avgSat < 0.10
-        let isExtremeTone = avgHslL < 0.18 || avgHslL > 0.86
-        let highSatIsOnlyTinyNoise = largestHighSaturationAreaShare < 0.12
+        let isMono = colorfulness < ColorSystemTokens.EffectiveMonochrome.strictColorfulness
+            && avgSat < ColorSystemTokens.EffectiveMonochrome.strictAvgSaturation
+        let isExtremeTone =
+            avgHslL < ColorSystemTokens.EffectiveMonochrome.extremeToneLightnessLo
+            || avgHslL > ColorSystemTokens.EffectiveMonochrome.extremeToneLightnessHi
+        let highSatIsOnlyTinyNoise =
+            largestHighSaturationAreaShare < ColorSystemTokens.EffectiveMonochrome.branch2HighSatAreaShare
         let isEffectivelyMono =
             isMono
-            || (colorfulness < 0.10 && avgSat < 0.16 && highSatIsOnlyTinyNoise)
-            || (avgSat < 0.105 && colorfulness < 0.14 && largestHighSaturationAreaShare < 0.16)
-            || (isExtremeTone && avgSat < 0.18 && colorfulness < 0.16 && !hasStrong)
-            || (dominantSaturation < 0.18 && colorfulness < 0.16 && avgSat < 0.18)
-        let usesDark = avgHslL >= 0.58
+            || (colorfulness < ColorSystemTokens.EffectiveMonochrome.branch2Colorfulness
+                && avgSat < ColorSystemTokens.EffectiveMonochrome.branch2AvgSaturation
+                && highSatIsOnlyTinyNoise)
+            || (avgSat < ColorSystemTokens.EffectiveMonochrome.branch3AvgSaturation
+                && colorfulness < ColorSystemTokens.EffectiveMonochrome.branch3Colorfulness
+                && largestHighSaturationAreaShare
+                    < ColorSystemTokens.EffectiveMonochrome.branch3HighSatAreaShare)
+            || (isExtremeTone
+                && avgSat < ColorSystemTokens.EffectiveMonochrome.branch4AvgSaturation
+                && colorfulness < ColorSystemTokens.EffectiveMonochrome.branch4Colorfulness
+                && !hasStrong)
+            || (dominantSaturation < ColorSystemTokens.EffectiveMonochrome.branch5DominantSaturation
+                && colorfulness < ColorSystemTokens.EffectiveMonochrome.branch5Colorfulness
+                && avgSat < ColorSystemTokens.EffectiveMonochrome.branch5AvgSaturation)
+        let usesDark = avgHslL >= ColorSystemTokens.EffectiveMonochrome.usesDarkForegroundAvgHslL
 
         let averageColor = NSColor(
             deviceRed: ColorMath.clamp(weightedR / totalWeight, 0, 1),

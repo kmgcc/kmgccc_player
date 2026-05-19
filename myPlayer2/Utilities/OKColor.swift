@@ -2,22 +2,26 @@
 //  OKColor.swift
 //  myPlayer2
 //
-//  Standalone OKLab/OKLCH color conversion utility.
-//  Used ONLY by LEDColorResolver for LED meter colors.
-//  NOT a global color framework.
+//  Public OKLab/OKLCH colour math layer. Conversions, clamping, hue
+//  normalisation, chroma soft-shoulder, OKLab interpolation, and gamut-safe
+//  sRGB output. Used by `LEDColorResolver` today and by the wider colour
+//  system (Phase 2 onwards) as the OKLCH math primitives.
+//
+//  No callers should reach into perceptual colour math via ad-hoc HSL/RGB
+//  computations; route through this layer instead.
 //
 
 import AppKit
 
 nonisolated enum OKColor {
 
-    struct OKLab {
+    struct OKLab: Equatable, Sendable {
         var l: CGFloat
         var a: CGFloat
         var b: CGFloat
     }
 
-    struct OKLCH {
+    struct OKLCH: Equatable, Sendable {
         var l: CGFloat
         var c: CGFloat
         var h: CGFloat // 0...1 normalized, NOT degrees
@@ -144,10 +148,60 @@ nonisolated enum OKColor {
         )
     }
 
-    private static func normalizedHue(_ value: CGFloat) -> CGFloat {
+    // MARK: - Public primitives (Phase 1 math layer)
+
+    /// Wraps a hue into the `[0, 1)` range.
+    static func normalizedHue(_ value: CGFloat) -> CGFloat {
         var h = value.truncatingRemainder(dividingBy: 1)
         if h < 0 { h += 1 }
         return h
+    }
+
+    /// Returns the OKLCH triple with lightness clamped to `[lo, hi]`.
+    /// Hue and chroma are preserved.
+    static func clampLightness(_ lch: OKLCH, lo: CGFloat, hi: CGFloat) -> OKLCH {
+        OKLCH(l: clamp(lch.l, lo, hi), c: lch.c, h: lch.h)
+    }
+
+    /// Returns the OKLCH triple with chroma clamped to `[lo, hi]`.
+    /// Hue and lightness are preserved.
+    static func clampChroma(_ lch: OKLCH, lo: CGFloat, hi: CGFloat) -> OKLCH {
+        OKLCH(l: lch.l, c: clamp(lch.c, lo, hi), h: lch.h)
+    }
+
+    /// Reinhard-style soft shoulder on chroma above `ceiling`. Mirrors
+    /// `ColorMath.softShoulder` but in OKLCH space so the perceptual
+    /// asymptote is consistent regardless of hue.
+    static func chromaSoftShoulder(
+        _ lch: OKLCH,
+        ceiling: CGFloat,
+        softness: CGFloat
+    ) -> OKLCH {
+        if lch.c <= ceiling || softness <= 0 { return lch }
+        let excess = lch.c - ceiling
+        let shouldered = ceiling + softness * (excess / (excess + softness))
+        return OKLCH(l: lch.l, c: shouldered, h: lch.h)
+    }
+
+    /// Rotates the hue by `delta` (in normalised 0...1 units) and re-wraps
+    /// the result into `[0, 1)`.
+    static func rotateHue(_ lch: OKLCH, by delta: CGFloat) -> OKLCH {
+        OKLCH(l: lch.l, c: lch.c, h: normalizedHue(lch.h + delta))
+    }
+
+    /// Linear interpolation between two OKLCH triples performed in OKLab
+    /// (preserves perceptual straightness across the hue circle, unlike a
+    /// naive L/C/H lerp which can ring around the colour wheel).
+    static func oklabLerp(_ a: OKLCH, _ b: OKLCH, t: CGFloat) -> OKLCH {
+        let la = okLCHToOKLab(a)
+        let lb = okLCHToOKLab(b)
+        let oneMinusT = 1 - t
+        let lerped = OKLab(
+            l: la.l * oneMinusT + lb.l * t,
+            a: la.a * oneMinusT + lb.a * t,
+            b: la.b * oneMinusT + lb.b * t
+        )
+        return okLabToOKLCH(lerped)
     }
 
     private static func clamp(_ value: CGFloat, _ lo: CGFloat, _ hi: CGFloat) -> CGFloat {
