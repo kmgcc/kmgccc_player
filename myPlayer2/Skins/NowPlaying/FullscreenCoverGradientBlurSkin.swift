@@ -131,6 +131,7 @@ private struct CoverGradientBlurSkinBackground: View {
 
 private struct CoverGradientBlurArtwork: View {
     let context: SkinContext
+    @Environment(\.colorScheme) private var colorScheme
 
     // MARK: - Fullscreen Fine-tuning Constants
     private let fullscreenArtworkBoost: CGFloat = 1.15
@@ -183,7 +184,7 @@ private struct CoverGradientBlurArtwork: View {
                 .overlay {
                     Image(systemName: "music.note")
                         .font(.system(size: 48))
-                        .foregroundStyle(.white.opacity(0.5))
+                        .foregroundStyle(placeholderIconColor)
                 }
         }
     }
@@ -193,6 +194,15 @@ private struct CoverGradientBlurArtwork: View {
             return NSColor(accent)
         }
         return NSColor.controlAccentColor
+    }
+
+    /// Placeholder icon colour follows the current colour scheme. Reusing the
+    /// SwiftUI semantic `.primary` keeps it in sync with system foreground
+    /// without introducing a second readability judgement just for this icon.
+    private var placeholderIconColor: Color {
+        colorScheme == .dark
+            ? Color.white.opacity(0.5)
+            : Color.primary.opacity(0.45)
     }
 }
 

@@ -10,6 +10,14 @@ import AppKit
 import ImageIO
 
 public nonisolated enum ArtworkColorExtractor {
+    /// Single source of truth for the colour-extraction algorithm version.
+    /// Bumped whenever a change to `analyze` / palette helpers can produce a
+    /// different result for the same input. All caches that store extractor
+    /// output (`ArtworkAssetStore` snapshots, `ThemeStore.dominantColorCache`)
+    /// fold this into their keys, so previous-version entries cannot bleed
+    /// into a new algorithm.
+    public nonisolated static let cacheVersion: String = "semantic-near-mono-v2"
+
     struct TextPalette {
         let primary: NSColor
         let secondary: NSColor

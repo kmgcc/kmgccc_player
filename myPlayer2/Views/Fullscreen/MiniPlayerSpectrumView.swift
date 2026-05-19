@@ -95,13 +95,19 @@ struct MiniPlayerSpectrumView: View {
         .animation(.spring(response: 0.35, dampingFraction: 0.75, blendDuration: 0.1), value: isHovered)
     }
 
+    @MainActor
     private static func resolveStaticAccent(_ color: Color?) -> NSColor {
-        guard let swiftUIColor = color else { return NSColor(white: 0.7, alpha: 1.0) }
-        let resolved = NSColor(swiftUIColor)
-        guard let rgb = resolved.usingColorSpace(.deviceRGB) else {
-            return NSColor(white: 0.7, alpha: 1.0)
-        }
-        return NSColor(red: rgb.redComponent, green: rgb.greenComponent, blue: rgb.blueComponent, alpha: 1.0)
+        let resolved = NSColor(color ?? AppSettings.shared.accentColor)
+        let fallback = NSColor(AppSettings.shared.accentColor)
+        let rgb = resolved.usingColorSpace(.deviceRGB)
+            ?? fallback.usingColorSpace(.deviceRGB)
+            ?? fallback
+        return NSColor(
+            red: rgb.redComponent,
+            green: rgb.greenComponent,
+            blue: rgb.blueComponent,
+            alpha: 1.0
+        )
     }
 }
 

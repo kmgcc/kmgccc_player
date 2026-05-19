@@ -1377,7 +1377,6 @@ final class LyricsWebViewStore: NSObject {
         let config: [String: Any] = [
             "theme": themeName,
             "textColor": palette.text,
-            "shadowColor": palette.shadow,
         ]
 
         if let data = try? JSONSerialization.data(withJSONObject: config),
@@ -1386,16 +1385,17 @@ final class LyricsWebViewStore: NSObject {
             lastThemeConfigPatchJSON = json
         }
 
-        // 2. Inject CSS Variables (renderer-level styles)
+        // 2. Inject CSS Variables (renderer-level styles).
+        // Only `--amll-text` / `--amll-active` / `--amll-inactive` have live
+        // consumers in the renderer. `--amll-bg`, `--amll-accent` and
+        // `--amll-shadow` were removed as part of Phase 0 cleanup (see
+        // docs/oklch-color-system-migration-log.md).
         let css = """
             (function() {
                 var root = document.documentElement;
-                root.style.setProperty('--amll-bg', '\(palette.background)');
                 root.style.setProperty('--amll-text', '\(palette.text)');
                 root.style.setProperty('--amll-active', '\(palette.activeLine)');
                 root.style.setProperty('--amll-inactive', '\(palette.inactiveLine)');
-                root.style.setProperty('--amll-accent', '\(palette.accent)');
-                root.style.setProperty('--amll-shadow', '\(palette.shadow)');
             })();
             """
         lastThemeCSSScript = css

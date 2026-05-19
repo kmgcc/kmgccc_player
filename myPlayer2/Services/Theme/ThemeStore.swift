@@ -26,8 +26,6 @@ struct ThemePalette: Equatable {
     let text: String
     let activeLine: String
     let inactiveLine: String
-    let accent: String
-    let shadow: String
 }
 
 /// Global theme manager that resolves "Color Sources" (artwork, system accent)
@@ -71,7 +69,6 @@ final class ThemeStore: ObservableObject {
     private var lastProcessedChecksum: UInt64 = 0
     private var lastProcessedArtworkIdentity: String?
     private var averageColorCache: NSColor?
-    private let colorExtractionCacheVersion = "semantic-near-mono-v2"
 
     private init() {
         // Default theme color: soft warm amber, desaturated for calm light-mode appearance.
@@ -404,14 +401,12 @@ final class ThemeStore: ObservableObject {
         var text = isDark ? "rgba(255, 255, 255, 0.95)" : "rgba(30, 30, 30, 0.95)"
         var active = isDark ? "rgba(255, 255, 255, 1.0)" : "rgba(0, 0, 0, 1.0)"
         var inactive = isDark ? "rgba(255, 255, 255, 0.35)" : "rgba(0, 0, 0, 0.35)"
-        var accent = ArtworkColorExtractor.cssRGBA(resolvedAccentNS, alpha: 1.0)
-        var shadow = isDark ? "rgba(0, 0, 0, 0.3)" : "rgba(0, 0, 0, 0.1)"
 
         // If we have artwork, perform adaptive extraction
         if let data = currentArtworkData {
             // Use cached averageColor if available, otherwise compute it
             let avgColor = averageColorCache ?? ArtworkColorExtractor.averageColor(from: data)
-            
+
             if let rawColor = avgColor {
                 // Adjusted for readability in current scheme
                 let adjusted = ArtworkColorExtractor.adjustedAccent(
@@ -420,15 +415,8 @@ final class ThemeStore: ObservableObject {
                 text = ArtworkColorExtractor.cssRGBA(adjusted, alpha: 0.95)
                 active = ArtworkColorExtractor.cssRGBA(adjusted, alpha: 1.0)
                 inactive = ArtworkColorExtractor.cssRGBA(adjusted, alpha: 0.35)
-                accent = ArtworkColorExtractor.cssRGBA(resolvedAccentNS, alpha: 1.0)
 
-                if isDark {
-                    bg = "rgba(15, 15, 15, 0.7)"
-                    shadow = "rgba(0, 0, 0, 0.5)"
-                } else {
-                    bg = "rgba(250, 250, 250, 0.7)"
-                    shadow = "rgba(0, 0, 0, 0.15)"
-                }
+                bg = isDark ? "rgba(15, 15, 15, 0.7)" : "rgba(250, 250, 250, 0.7)"
             }
         }
 
@@ -437,9 +425,7 @@ final class ThemeStore: ObservableObject {
             background: bg,
             text: text,
             activeLine: active,
-            inactiveLine: inactive,
-            accent: accent,
-            shadow: shadow
+            inactiveLine: inactive
         )
 
         let paletteChanged = palette != newPalette
@@ -449,8 +435,6 @@ final class ThemeStore: ObservableObject {
             newPalette.text,
             newPalette.activeLine,
             newPalette.inactiveLine,
-            newPalette.accent,
-            newPalette.shadow,
         ].joined(separator: "|")
         let shouldLogApplyTheme = await LogStateTracker.shared.checkStateChanged(
             key: "theme.applyTheme.palette",
@@ -464,7 +448,7 @@ final class ThemeStore: ObservableObject {
 
         if shouldLogRefresh {
             Log.trace(
-                "refreshPalette details: reason=\(reason), accent=\(accent), background=\(bg), text=\(text)",
+                "refreshPalette details: reason=\(reason), background=\(bg), text=\(text)",
                 category: .theme
             )
         }
@@ -536,7 +520,7 @@ final class ThemeStore: ObservableObject {
     
     private func makeCacheKey(artworkIdentity: String?, checksum: UInt64) -> String? {
         guard let artworkIdentity, checksum != 0 else { return nil }
-        return "\(colorExtractionCacheVersion)-\(artworkIdentity)-\(checksum)"
+        return "\(ArtworkColorExtractor.cacheVersion)-\(artworkIdentity)-\(checksum)"
     }
 
     private func isCurrentExtraction(
