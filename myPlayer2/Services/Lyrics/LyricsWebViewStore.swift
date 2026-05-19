@@ -29,6 +29,24 @@ final class LyricsWebViewStore: NSObject {
         let call: JavaScriptCall
     }
 
+    private struct HostWheelPayload: Encodable {
+        let deltaX: Double
+        let deltaY: Double
+        let appKitDeltaX: Double
+        let appKitDeltaY: Double
+        let appKitScrollingDeltaX: Double
+        let appKitScrollingDeltaY: Double
+        let deltaMode: Int
+        let clientX: Double
+        let clientY: Double
+        let phase: Int
+        let momentumPhase: Int
+        let precise: Bool
+        let inverted: Bool
+        let scale: Double
+        let role: String
+    }
+
     // MARK: - Singleton
 
     static let shared = LyricsWebViewStore()
@@ -36,6 +54,8 @@ final class LyricsWebViewStore: NSObject {
         ProcessInfo.processInfo.environment["AMLL_TTML_DIAGNOSTICS"] == "1"
     private nonisolated static let visibleLayerProbeEnabled =
         ProcessInfo.processInfo.environment["KMGCCC_AMLL_VISIBLE_LAYER_PROBE"] == "1"
+    private nonisolated static let scrollDiagnosticsEnabled =
+        ProcessInfo.processInfo.environment["KMGCCC_AMLL_SCROLL_DIAGNOSTICS"] == "1"
     private nonisolated static let automaticRecycleTrackThreshold: Int = {
         guard
             let rawValue = ProcessInfo.processInfo.environment["KMGCCC_AMLL_WEBVIEW_RECYCLE_TRACKS"],
@@ -213,6 +233,7 @@ final class LyricsWebViewStore: NSObject {
         webView.autoresizingMask = usesScaledLayout ? [] : [.width, .height]
         webView.pageZoom = viewScale
         (webView as? LyricsMouseGatedWebView)?.eventCoordinateScale = viewScale
+        (webView.superview as? WebViewHostView)?.webViewLayoutScale = viewScale
         webView.wantsLayer = true
         webView.layer?.anchorPoint = CGPoint(x: 0, y: 0)
         webView.layer?.position = CGPoint(x: 0, y: 0)
@@ -296,24 +317,6 @@ final class LyricsWebViewStore: NSObject {
         layer.sublayers?.forEach { applyContentsScale(contentsScale, to: $0) }
     }
 
-    /// Forwards a click position from `WebViewHostView` to the JS adapter.
-    /// Used at q < 1 where the host intercepts events on the full visual
-    /// area (see `WebViewHostView.hitTest`). The host visual coords equal
-    /// CSS px under our scaling model
-    /// (visual = pageZoom · layerInverseScale · CSS = q · 1/q · CSS = CSS),
-    /// so JS uses them directly with `document.elementFromPoint`.
-    ///
-    /// Direct `evaluateJavaScript` rather than the queued `callJS` path:
-    /// clicks are interactive and must not be HOL-blocked by pending
-    /// config/time updates.
-    func dispatchHostClickAt(_ point: CGPoint) {
-        guard !isShutDown, isReady, let webView = retainedWebView else { return }
-        let x = String(format: "%.2f", Double(point.x))
-        let y = String(format: "%.2f", Double(point.y))
-        let script = "if(window.AMLL&&typeof window.AMLL.hostClickAt==='function')window.AMLL.hostClickAt(\(x),\(y));"
-        webView.evaluateJavaScript(script, completionHandler: nil)
-    }
-
     private func updateWebContentPointerOcclusionState(_ suppressed: Bool) {
         guard isReady, let webView = retainedWebView else { return }
         let role = role
@@ -329,9 +332,6 @@ final class LyricsWebViewStore: NSObject {
                         html.amll-native-pointer-occluded .amll-lyric-player,
                         html.amll-native-pointer-occluded .amll-lyric-player * {
                             pointer-events: none !important;
-                        }
-                        html.amll-native-pointer-occluded .amll-lyric-player [class*="_lyricLine_"]:hover {
-                            background-color: transparent !important;
                         }
                     `;
                     document.head.appendChild(style);
@@ -374,6 +374,52 @@ final class LyricsWebViewStore: NSObject {
                 )
             }
         }
+    }
+
+    private func dispatchHostWheel(_ event: NSEvent, from webView: WKWebView, scale: CGFloat) {
+        let pointInHost = webView.superview?.convert(event.locationInWindow, from: nil)
+            ?? webView.convert(event.locationInWindow, from: nil)
+        let clientPoint = CGPoint(
+            x: pointInHost.x * scale,
+            y: pointInHost.y * scale
+        )
+        let payload = HostWheelPayload(
+            // WebKit's DOM wheel delta sign is opposite AppKit's scrollingDelta sign.
+            // AppKit has already applied the user's natural-scrolling preference; do
+            // not use isDirectionInvertedFromDevice to flip the value again.
+            deltaX: Double(-event.scrollingDeltaX),
+            deltaY: Double(-event.scrollingDeltaY),
+            appKitDeltaX: Double(event.deltaX),
+            appKitDeltaY: Double(event.deltaY),
+            appKitScrollingDeltaX: Double(event.scrollingDeltaX),
+            appKitScrollingDeltaY: Double(event.scrollingDeltaY),
+            deltaMode: 0,
+            clientX: Double(clientPoint.x),
+            clientY: Double(clientPoint.y),
+            phase: Int(event.phase.rawValue),
+            momentumPhase: Int(event.momentumPhase.rawValue),
+            precise: event.hasPreciseScrollingDeltas,
+            inverted: event.isDirectionInvertedFromDevice,
+            scale: Double(scale),
+            role: role
+        )
+
+        if Self.scrollDiagnosticsEnabled {
+            Log.info(
+                "[AMLLScroll][Swift] role=\(role) q=\(String(format: "%.2f", scale)) deltaX=\(event.deltaX) deltaY=\(event.deltaY) scrollingDeltaX=\(event.scrollingDeltaX) scrollingDeltaY=\(event.scrollingDeltaY) domDeltaX=\(-event.scrollingDeltaX) domDeltaY=\(-event.scrollingDeltaY) phase=\(event.phase.rawValue) momentum=\(event.momentumPhase.rawValue) precise=\(event.hasPreciseScrollingDeltas) inverted=\(event.isDirectionInvertedFromDevice)",
+                category: .webview
+            )
+        }
+
+        guard
+            let data = try? JSONEncoder().encode(payload),
+            let json = String(data: data, encoding: .utf8)
+        else { return }
+
+        webView.evaluateJavaScript(
+            "window.AMLL&&typeof window.AMLL.hostWheel==='function'&&window.AMLL.hostWheel(\(json));",
+            completionHandler: nil
+        )
     }
 
     // MARK: - Content Loading
@@ -1596,8 +1642,9 @@ final class LyricsWebViewStore: NSObject {
         if let roleData = try? JSONEncoder().encode(role),
             let roleJSONString = String(data: roleData, encoding: .utf8)
         {
+            let scrollDiagnostics = Self.scrollDiagnosticsEnabled ? "true" : "false"
             let roleUserScript = WKUserScript(
-                source: "window.__AMLL_SURFACE_ROLE = \(roleJSONString);",
+                source: "window.__AMLL_SURFACE_ROLE = \(roleJSONString); window.__AMLL_SCROLL_DIAGNOSTICS = \(scrollDiagnostics);",
                 injectionTime: .atDocumentStart,
                 forMainFrameOnly: true
             )
@@ -1605,6 +1652,10 @@ final class LyricsWebViewStore: NSObject {
         }
 
         let webView = LyricsMouseGatedWebView(frame: .zero, configuration: config)
+        webView.onScaledScrollWheel = { [weak self, weak webView] event, scale in
+            guard let self, let webView else { return }
+            self.dispatchHostWheel(event, from: webView, scale: scale)
+        }
         webView.setValue(false, forKey: "drawsBackground")
         retainedWebView = webView
         applyMouseInteractionSuppression(reason: "ensureWebView")
@@ -1745,6 +1796,7 @@ final class LyricsWebViewStore: NSObject {
 
 private final class LyricsMouseGatedWebView: WKWebView {
     var eventCoordinateScale: CGFloat = 1
+    var onScaledScrollWheel: ((NSEvent, CGFloat) -> Void)?
 
     var isMouseInteractionSuppressed = false {
         didSet {
@@ -1850,6 +1902,10 @@ private final class LyricsMouseGatedWebView: WKWebView {
 
     override func scrollWheel(with event: NSEvent) {
         guard !isMouseInteractionSuppressed else { return }
+        if eventCoordinateScale < 0.999 {
+            onScaledScrollWheel?(event, eventCoordinateScale)
+            return
+        }
         super.scrollWheel(with: event)
     }
 }

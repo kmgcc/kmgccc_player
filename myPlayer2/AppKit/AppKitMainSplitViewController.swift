@@ -539,6 +539,7 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
         let webView = store.webView
         guard webView.superview !== webViewHostView else { return }
         webView.removeFromSuperview()
+        webViewHostView.webViewLayoutScale = CGFloat(AppSettings.shared.amllLyricsRenderQualityScale)
         webViewHostView.onLayout = { [weak store] bounds in
             store?.layoutPreparedWebView(in: bounds, reason: "hostLayout")
         }
