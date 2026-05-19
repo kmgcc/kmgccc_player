@@ -472,8 +472,11 @@ struct FullscreenPlayerView: View {
         }
         .onChange(of: playbackCoordinator.presentation.lyricsIdentity, handlePresentationLyricsIdentityChange)
         .onChange(of: playbackCoordinator.presentation.lyricsText) { _, _ in
-            guard playbackCoordinator.presentation.source.isExternal else { return }
-            reloadLyricsSurface(reason: "fullscreen external lyrics updated", forceLyricsReload: true)
+            guard playbackCoordinator.presentation.hasTrack else { return }
+            let reason = playbackCoordinator.presentation.source.isExternal
+                ? "fullscreen external lyrics updated"
+                : "fullscreen local lyrics hydrated"
+            reloadLyricsSurface(reason: reason, forceLyricsReload: true)
         }
         .onReceive(NotificationCenter.default.publisher(for: .libraryTrackDidUpdate)) { notification in
             handleLibraryTrackDidUpdate(notification)
@@ -535,9 +538,7 @@ struct FullscreenPlayerView: View {
         if hostContext == .embeddedWindow {
             embeddedInitialThemeUnlocked = false
         } else {
-            // Report visibility to manager - manager handles the switch with debouncing
-            LyricsSurfaceManager.shared.reportFullscreenVisible(true)
-            reloadLyricsSurface(reason: "fullscreen appear", forceLyricsReload: true)
+            startFullscreenLyricsSurface(reason: "fullscreen appear")
         }
         resetFullscreenBottomControlsAutoHideState()
         syncFullscreenMiniPlayerSpectrumLease()
@@ -2213,6 +2214,15 @@ struct FullscreenPlayerView: View {
         }
     }
 
+    private func startFullscreenLyricsSurface(reason: String) {
+        // Report visibility to manager first so a newly materialized surface can
+        // replay the latest snapshot, then push the same payload directly through
+        // the fullscreen reload path. Embedded fullscreen calls this after its
+        // geometry gate opens; system fullscreen calls it on appear.
+        LyricsSurfaceManager.shared.reportFullscreenVisible(true)
+        reloadLyricsSurface(reason: reason, forceLyricsReload: true)
+    }
+
     private func isLedEnabledForFullscreenSkin() -> Bool {
         // Drive LED service start/stop from the real per-skin visualizerMode key
         // (the same key the skin's display gate reads). `hasLedMeter` only
@@ -2516,6 +2526,7 @@ struct FullscreenPlayerView: View {
         }
 
         syncCoverBlurHighlightSurface(
+            playbackPayload: playbackPayload,
             forceWebReload: forceWebReload,
             recreateWebViewOnForceReload: recreateWebViewOnForceReload
         )
@@ -2587,13 +2598,13 @@ struct FullscreenPlayerView: View {
             return fileText
         }
 
-        let plain = track.lyricsText ?? (!playerVM.isPlaying ? track.loadLyricsIfNeeded() : nil)
+        let plain = track.lyricsText ?? track.loadLyricsIfNeeded()
         let userText = plain?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !userText.isEmpty {
             return plain!
         }
 
-        let ttml = track.ttmlLyricText ?? (!playerVM.isPlaying ? track.loadTTMLLyricsIfNeeded() : nil)
+        let ttml = track.ttmlLyricText ?? track.loadTTMLLyricsIfNeeded()
         let ttmlText = ttml?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !ttmlText.isEmpty {
             return ttml!
@@ -2635,6 +2646,7 @@ struct FullscreenPlayerView: View {
     }
 
     private func syncCoverBlurHighlightSurface(
+        playbackPayload: FullscreenPlaybackPayload? = nil,
         forceWebReload: Bool = false,
         recreateWebViewOnForceReload: Bool = false
     ) {
@@ -2649,14 +2661,12 @@ struct FullscreenPlayerView: View {
             store.applyTheme(palette)
         }
 
-        let track = playerVM.currentTrack
-        let lyricsText = resolvedFullscreenLyricsText(for: track)
-        let ttmlForStore: String? = track == nil ? nil : lyricsText
+        let payload = playbackPayload ?? updateFullscreenPlaybackSnapshot()
         store.applyTrack(
-            trackID: track?.id,
-            ttml: ttmlForStore,
-            currentTime: playerVM.currentTime,
-            isPlaying: playerVM.isPlaying
+            trackID: payload.trackID,
+            ttml: payload.ttml,
+            currentTime: payload.currentTime,
+            isPlaying: payload.isPlaying
         )
     }
 
@@ -3260,15 +3270,13 @@ struct FullscreenPlayerView: View {
         resetFullscreenLyricsBackgroundSnapshot()
         scheduleFullscreenLyricsBackgroundCapture()
         captureFullscreenLyricsBackgroundSnapshot(preferLiveSurface: true)
-        _ = updateFullscreenPlaybackSnapshot()
 
         if let palette = ThemeStore.shared.palette {
             fullscreenStore.applyTheme(palette)
         }
 
         embeddedInitialThemeUnlocked = true
-        applyFullscreenLyricsTheme(force: true, reason: reason)
-        LyricsSurfaceManager.shared.reportFullscreenVisible(true)
+        startFullscreenLyricsSurface(reason: reason)
     }
 
     private func isValidEmbeddedFullscreenGeometry(_ size: CGSize, scale: CGFloat) -> Bool {

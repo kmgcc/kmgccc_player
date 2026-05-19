@@ -876,12 +876,27 @@ final class LyricsWebViewStore: NSObject {
         )
 
         updateWebContentPointerOcclusionState(isMouseInteractionSuppressed)
+        discardPendingSnapshotManagedCalls(reason: "onReady")
 
-        // Flush pending calls
+        // Surface switches replay the manager's latest cross-surface snapshot.
+        // Standalone reload/recovery paths have no manager waiter, so the store
+        // replays its own preserved state.
+        let replayHandledBySurfaceManager: Bool
+        if let surfaceRole = LyricsSurfaceRole(rawValue: role) {
+            replayHandledBySurfaceManager = LyricsSurfaceManager.shared.notifyStoreReady(
+                surfaceRole,
+                store: self
+            )
+        } else {
+            replayHandledBySurfaceManager = false
+        }
+
+        if !replayHandledBySurfaceManager {
+            replayStateSnapshot()
+        }
+
+        // Flush only non-snapshot calls that survived the ready coalescing above.
         flushPendingCalls()
-
-        // Replay last state snapshot (strict order)
-        replayStateSnapshot()
         scheduleDebugVisibleLayerProbe(label: "\(role)-ready", delay: 0.75)
         scheduleTrackDiagnostics(
             stage: "onReady",
@@ -889,11 +904,6 @@ final class LyricsWebViewStore: NSObject {
             ttmlLength: lastTTML?.count ?? 0,
             delay: 0.2
         )
-
-        // Notify LyricsSurfaceManager that this store is ready
-        if let surfaceRole = LyricsSurfaceRole(rawValue: role) {
-            LyricsSurfaceManager.shared.notifyStoreReady(surfaceRole, store: self)
-        }
     }
 
     private func flushPendingCalls() {
@@ -916,6 +926,51 @@ final class LyricsWebViewStore: NSObject {
         }
         pendingCalls.removeAll()
         Log.debug("Flushed: \(queuedCount), objectID=\(webViewObjectID)", category: .webview)
+    }
+
+    private func discardPendingTrackStateCalls(reason: String) {
+        discardPendingCalls(
+            reason: reason,
+            shouldDiscard: { description in
+                description.contains("setLyricsTTML")
+                    || description.contains("clearState")
+                    || description.contains("setPlaying")
+                    || description.contains("beginTrackProfileSession")
+                    || description.contains("collectTrackProfileSession")
+            }
+        )
+    }
+
+    private func discardPendingSnapshotManagedCalls(reason: String) {
+        discardPendingCalls(
+            reason: reason,
+            shouldDiscard: { description in
+                description.contains("setLyricsTTML")
+                    || description.contains("clearState")
+                    || description.contains("setPlaying")
+                    || description.contains("setConfig")
+                    || description.contains("applyEffectiveTheme.css")
+                    || description.contains("beginTrackProfileSession")
+                    || description.contains("collectTrackProfileSession")
+            }
+        )
+    }
+
+    private func discardPendingCalls(
+        reason: String,
+        shouldDiscard: (String) -> Bool
+    ) {
+        let before = pendingCalls.count
+        guard before > 0 else { return }
+
+        pendingCalls.removeAll { shouldDiscard($0.debugDescription) }
+        let removed = before - pendingCalls.count
+        guard removed > 0 else { return }
+
+        Log.debug(
+            "Discarded \(removed) pending JS calls, kept=\(pendingCalls.count), reason=\(reason), role=\(role), objectID=\(webViewObjectID)",
+            category: .webview
+        )
     }
 
     /// Replay the last known state after recovery.
@@ -1057,6 +1112,8 @@ final class LyricsWebViewStore: NSObject {
             previousTrackID != nil
             && trackID != nil
             && previousTrackID != trackID
+
+        discardPendingTrackStateCalls(reason: "applyTrack")
 
         if didSwitchTracks {
             trackSwitchesSinceLastWebViewRecycle += 1
