@@ -22,7 +22,14 @@ final class ArtworkAssetSnapshot: NSObject, Sendable {
     let extractedAt: Date
     
     nonisolated var cacheKey: String {
-        "\(trackID.uuidString)-\(artworkChecksum)"
+        Self.cacheKey(trackID: trackID, artworkChecksum: artworkChecksum)
+    }
+
+    /// Build the canonical cache key without holding a snapshot instance. The
+    /// extractor's `cacheVersion` is folded in so a colour-algorithm bump
+    /// invalidates every previously stored entry automatically.
+    nonisolated static func cacheKey(trackID: UUID, artworkChecksum: UInt64) -> String {
+        "\(ArtworkColorExtractor.cacheVersion)-\(trackID.uuidString)-\(artworkChecksum)"
     }
     
     nonisolated init(

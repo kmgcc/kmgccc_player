@@ -360,7 +360,6 @@ final class LyricsViewModel {
             "activeScale": surfaceRole.activeScale,
             "textColor": (paletteMatchesScheme ? palette?.text : nil)
                 ?? (isDarkMode ? "rgba(255,255,255,0.98)" : "rgba(0,0,0,0.9)"),
-            "shadowColor": "rgba(0,0,0,0)",
         ]
 
         if let data = try? JSONSerialization.data(withJSONObject: config),

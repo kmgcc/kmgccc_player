@@ -5380,16 +5380,6 @@
                             applyWindowEmphasisGlowScheme(nextScheme);
                         }
                     }
-                    if (hasOwn("shadowColor")) {
-                        // Window/main, fullscreen, and cover-blur all render without a
-                        // root-level static text-shadow. The previous `0 1px 2px shadowColor`
-                        // was visibly heavy in light mode and contributed no measurable
-                        // performance benefit when removed (A/B 1). shadowColor stays in
-                        // the config payload for compatibility but is no longer applied
-                        // here. Emphasis glow is owned by the per-character emphasize-word
-                        // animation, not by this root drop shadow.
-                        lyricPlayer.getElement().style.textShadow = "none";
-                    }
 	                    if (typeof config.timeOffsetMs === "number" && !Number.isNaN(config.timeOffsetMs)) {
 	                        const nextTimeOffsetMs = Math.max(-15000, Math.min(15000, config.timeOffsetMs));
 	                        if (nextTimeOffsetMs !== timeOffsetMs) {

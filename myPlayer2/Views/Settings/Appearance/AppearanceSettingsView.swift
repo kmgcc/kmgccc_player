@@ -37,7 +37,7 @@ struct AppearanceSettingsView: View {
                     )
 
                     SettingsSwitchRow(
-                        title: "跟随系统",
+                        title: "深色/浅色跟随系统",
                         isOn: $followSystemAppearance,
                         detail: "开启后跟随系统深浅色，关闭后可用侧边栏按钮手动切换深/浅。"
                     )

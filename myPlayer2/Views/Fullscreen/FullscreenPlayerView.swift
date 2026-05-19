@@ -3434,9 +3434,7 @@ struct FullscreenPlayerView: View {
             background: "rgba(0,0,0,0)",
             text: active,
             activeLine: active,
-            inactiveLine: inactive,
-            accent: active,
-            shadow: "rgba(0,0,0,0)"
+            inactiveLine: inactive
         )
     }
 
@@ -3455,9 +3453,7 @@ struct FullscreenPlayerView: View {
             background: "rgba(0,0,0,0)",
             text: active,
             activeLine: active,
-            inactiveLine: inactive,
-            accent: active,
-            shadow: "rgba(0,0,0,0)"
+            inactiveLine: inactive
         )
     }
 

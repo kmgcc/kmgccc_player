@@ -67,7 +67,7 @@ actor ArtworkAssetStore {
     }
     
     func get(trackID: UUID, artworkChecksum: UInt64) -> ArtworkAssetSnapshot? {
-        let key = "\(trackID.uuidString)-\(artworkChecksum)"
+        let key = ArtworkAssetSnapshot.cacheKey(trackID: trackID, artworkChecksum: artworkChecksum)
         return cache.object(forKey: key as NSString)
     }
     
@@ -121,8 +121,8 @@ actor ArtworkAssetStore {
         artworkChecksum: UInt64,
         extract: @Sendable @escaping (Data, UInt64) async -> ArtworkAssetSnapshot?
     ) async -> ArtworkAssetSnapshot? {
-        let key = "\(trackID.uuidString)-\(artworkChecksum)"
-        
+        let key = ArtworkAssetSnapshot.cacheKey(trackID: trackID, artworkChecksum: artworkChecksum)
+
         if let cached = cache.object(forKey: key as NSString) {
             return cached
         }

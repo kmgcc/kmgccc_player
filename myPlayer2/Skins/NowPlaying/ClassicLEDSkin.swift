@@ -85,11 +85,13 @@ struct ClassicCoverArtworkView: View {
         let dotSize: CGFloat = usesFullscreenLayout ? 14 : 12
         let spacing: CGFloat = usesFullscreenLayout ? 9 : 7
 
+        let shadowOpacity: Double = context.theme.colorScheme == .dark ? 0.35 : 0.18
+
         VStack(spacing: effectSpacing) {
             artworkView
                 .frame(width: artworkSize, height: artworkSize)
                 // Shadow in base canvas coordinates - parent scaleEffect handles scaling
-                .shadow(color: .black.opacity(0.35), radius: 20, x: 0, y: 10)
+                .shadow(color: .black.opacity(shadowOpacity), radius: 20, x: 0, y: 10)
 
             if visualizerMode == "led" {
                 LedMeterView(
