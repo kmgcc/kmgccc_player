@@ -1,12 +1,14 @@
 # OKLCH Color System Migration Log
 
 本日志用于记录颜色系统重构与 OKLCH 迁移过程中的实际改动、验证结果、决策与后续接力点。\
+\
 设计文档：`docs/oklch-migration-color-system-investigation.md`（R1–R4 调查报告）。\
+\
 施工计划：`docs/oklch-color-system-execution-plan.md`。
 
 每条记录至少给出：本阶段目标、改动文件清单、决策点、验证结果、对后续阶段的"接力提示"。
 
----
+***
 
 ## Phase 0 — Pre-migration cleanup
 
@@ -53,7 +55,7 @@
 
 **端到端验证**（grep 残留）：
 
-```
+```javascript
 grep palette.accent | palette.shadow | palette?.accent | palette?.shadow
   → 无结果
 
@@ -135,7 +137,7 @@ grep "shadowColor" 在 Swift / HTML / JS / CSS 活动资源
 
 ### 构建验证
 
-```
+```text
 xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player \
   -configuration Debug -destination 'platform=macOS' build
 → ** BUILD SUCCEEDED **
@@ -147,7 +149,7 @@ xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player \
 
 ### 改动文件清单
 
-```
+```text
 docs/oklch-color-system-execution-plan.md                          (新增)
 docs/oklch-color-system-migration-log.md                            (新增 — 本文件)
 
@@ -168,19 +170,19 @@ myPlayer2/Skins/NowPlaying/FullscreenCoverGradientBlurSkin.swift    (0.5)
 
 ### 接力提示（→ Phase 1）
 
-1. **`ArtworkColorExtractor.cacheVersion` 命名约束**：未来任何对 `analyze` 或 palette 派生算法的非语义修改（例如重命名 helper、Unicode 标准化）**不**需要 bump 版本；只在算法输出**可能**变化时 bump。请在 Phase 2 升级决策引擎时同步 bump 这个常量。
-2. **`CoverGradientBlurArtwork`（`FullscreenCoverGradientBlurSkin.swift`）目前是 dead code**（`makeArtwork` 返回 `EmptyView()`）。Phase 7 旧分叉清理时统一删除，本轮不动。
-3. **`palette.text` 在歌词侧实际只剩 `textColor` JSON 路径在用**。Phase 5（"歌词颜色体系收敛"）建议进一步评估：是否把这条路径也下沉到 SemanticPalette 的歌词角色，让 LyricsWebViewStore 不再直接读 `ThemePalette`。
-4. **`ThemeStore.backgroundColor` 仍由 `LyricsPanelView` 消费**：Phase 5 评估歌词面板背景策略时，可以一起考虑把 `palette.background` 也下沉。
+1. `ArtworkColorExtractor.cacheVersion` **命名约束**：未来任何对 `analyze` 或 palette 派生算法的非语义修改（例如重命名 helper、Unicode 标准化）**不**需要 bump 版本；只在算法输出**可能**变化时 bump。请在 Phase 2 升级决策引擎时同步 bump 这个常量。
+2. `CoverGradientBlurArtwork`**（**`FullscreenCoverGradientBlurSkin.swift`**）目前是 dead code**（`makeArtwork` 返回 `EmptyView()`）。Phase 7 旧分叉清理时统一删除，本轮不动。
+3. `palette.text` **在歌词侧实际只剩** `textColor` **JSON 路径在用**。Phase 5（"歌词颜色体系收敛"）建议进一步评估：是否把这条路径也下沉到 SemanticPalette 的歌词角色，让 LyricsWebViewStore 不再直接读 `ThemePalette`。
+4. `ThemeStore.backgroundColor` **仍由** `LyricsPanelView` **消费**：Phase 5 评估歌词面板背景策略时，可以一起考虑把 `palette.background` 也下沉。
 5. **0.6 登记结论**：Phase 4 引入 Artwork Readability Profile 时，`MiniPlayerSpectrumView` 的 `usesDarkForeground` 应替换为语义化输入；那时再统一与 `LedMeterView` 的描述方式。
 
 下一步：进入 Phase 1（颜色规则 token 化 + OKLCH 公共数学层）。
 
----
+***
 
 ## Phase 1 — 颜色规则 token 化 + OKLCH 公共数学层
 
-**完成日期**：2026-05-19。
+**完成日期**：2026-05-19。\
 **分支**：`refactor/oklch-color-system`。
 
 ### 本阶段目标
@@ -219,16 +221,16 @@ myPlayer2/Skins/NowPlaying/FullscreenCoverGradientBlurSkin.swift    (0.5)
 
 **结构**：顶层 `nonisolated enum ColorSystemTokens`，按语义角色嵌套 enum 命名空间：
 
-| 命名空间 | 内容（决策点） |
-| --- | --- |
-| `Accent` | `optimizedAccent` 的深/浅模式 L 钳制、hue-aware 明度下限（按 5 个色相段）、hue-aware 饱和度上限（按 9 个色相段）、warm-band hue guard 阈值、3 层低色覆盖的饱和度安全网 |
-| `NearMonochrome` | `nearMonochromeAccent` 的 strict-mono 4 项判定门、深/浅模式 sat 上限与 floor、tone-lift 与 tone-drop 参数（base / pivot / range / max / floor / ceiling） |
-| `FallbackAccent` | `useArtworkTint == false` 时用户 fallback accent 的深/浅 L 钳制 |
-| `ReadableText` | `readableTextOnArtwork` 的深/浅 foreground 饱和度钳制范围与目标 L；`secondaryTextOnArtwork` 的透明度 |
-| `CoverGradient` | `coverGradientDominant` 与 `coverGradientText` 的 sat/L 钳制（含强对比偏置） |
-| `FullscreenLyric` | 切换"取 dominant 色"还是"取 best-text 源"的 colorfulness / hue confidence 双阈值 |
-| `WindowLyric` | inactive 行透明度 |
-| `EffectiveMonochrome` | `ArtworkColorAnalysis.isEffectivelyMonochrome` 的 5 个 OR 分支阈值（branch1–5 命名锁住，**便于 Phase 2 拆分 Ultra Dark / Near Monochrome 时单点重排**） |
+| 命名空间                  | 内容（决策点）                                                                                                                                |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `Accent`              | `optimizedAccent` 的深/浅模式 L 钳制、hue-aware 明度下限（按 5 个色相段）、hue-aware 饱和度上限（按 9 个色相段）、warm-band hue guard 阈值、3 层低色覆盖的饱和度安全网                 |
+| `NearMonochrome`      | `nearMonochromeAccent` 的 strict-mono 4 项判定门、深/浅模式 sat 上限与 floor、tone-lift 与 tone-drop 参数（base / pivot / range / max / floor / ceiling） |
+| `FallbackAccent`      | `useArtworkTint == false` 时用户 fallback accent 的深/浅 L 钳制                                                                                |
+| `ReadableText`        | `readableTextOnArtwork` 的深/浅 foreground 饱和度钳制范围与目标 L；`secondaryTextOnArtwork` 的透明度                                                     |
+| `CoverGradient`       | `coverGradientDominant` 与 `coverGradientText` 的 sat/L 钳制（含强对比偏置）                                                                       |
+| `FullscreenLyric`     | 切换"取 dominant 色"还是"取 best-text 源"的 colorfulness / hue confidence 双阈值                                                                   |
+| `WindowLyric`         | inactive 行透明度                                                                                                                          |
+| `EffectiveMonochrome` | `ArtworkColorAnalysis.isEffectivelyMonochrome` 的 5 个 OR 分支阈值（branch1–5 命名锁住，**便于 Phase 2 拆分 Ultra Dark / Near Monochrome 时单点重排**）      |
 
 **消费替换**：
 
@@ -247,13 +249,13 @@ myPlayer2/Skins/NowPlaying/FullscreenCoverGradientBlurSkin.swift    (0.5)
 - **不动 LED OKLCH 调参**（neutral baseline、hue-aware chroma caps、level-driven L/C 曲线、hue shift 表）。这些是 LED 视觉产品参数，不是通用决策阈值；属 Phase 6 的 Tone Ladder 范畴。
 - **不动 ArtworkColorExtractor 内部 palette filtering**（bucket weight、distinctness gap、WCAG contrast 循环、像素 alpha 阈值）。它们是 extractor private 行为，不是 palette 层的角色决策；改动量大且与 Phase 2 决策引擎升级强耦合，Phase 1 强行拆出来会两次返工。
 - **保留两个范围常量的语义分离**（`NearMonochrome.darkLiftRange` 与 `darkLiftPivot` 数值相等都是 `0.42`，但语义不同）。原代码用同一字面量 `0.42` 同时充当 pivot 与 range，token 化后把它们分成两个独立常量；Phase 2 若需要打破"pivot=range"的耦合，只改 token 即可，不再需要回到调用点。light 分支同理：`lightDropPivot` (0.52) ≠ `lightDropRange` (0.42)，原代码已经分离。
-- **5 个 isEffectivelyMonochrome 分支用 `branch1..5` 命名**。R4 J.2.c 已经标记 branch4 把 lightness 和 saturation 耦合到一个 OR 项里需要在 Phase 2 拆出；命名按位置标号而不是按"语义角色"，正是因为这些分支的语义还没正交化——一旦正交化（branch4 拆为独立的 "UltraDark" + "LowSat"），token 名也会同步改。Phase 1 仅冻结当前结构。
+- **5 个 isEffectivelyMonochrome 分支用** `branch1..5` **命名**。R4 J.2.c 已经标记 branch4 把 lightness 和 saturation 耦合到一个 OR 项里需要在 Phase 2 拆出；命名按位置标号而不是按"语义角色"，正是因为这些分支的语义还没正交化——一旦正交化（branch4 拆为独立的 "UltraDark" + "LowSat"），token 名也会同步改。Phase 1 仅冻结当前结构。
 
 ### 1.3 构建与测试
 
 **构建**：
 
-```
+```text
 xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player \
   -configuration Debug -destination 'platform=macOS' build
 → ** BUILD SUCCEEDED **
@@ -274,7 +276,7 @@ xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player \
 
 ### 改动文件清单
 
-```
+```text
 myPlayer2/Utilities/ColorSystemTokens.swift             (新增)
 myPlayer2/Utilities/OKColor.swift                       (公共原语扩展)
 myPlayer2/Utilities/SemanticPalette.swift               (token 替换)
@@ -286,9 +288,9 @@ docs/oklch-color-system-migration-log.md                (本节)
 
 1. **branch4 解耦**：R4 J.2.c 已识别 `EffectiveMonochrome.branch4*` 把 `isExtremeTone`（lightness）与 `branch4AvgSaturation` / `branch4Colorfulness`（色彩信号）耦合在同一个 OR 项里。Phase 2 应把"极暗 / 极亮"作为独立的 `UltraDark` 维度从这里拆出来，token 也对应改名。
 2. **OKLCH 数学层等价单测**：Phase 2 接入 `Accent.*` 的 OKLCH 等价版本时，需要先有针对 `OKColor.okLCHToNSColor` / `oklabLerp` 等的等价单测，避免颜色输出意外漂移。若 Phase 2 在没有测试 target 的情况下直接切换主派色链路，风险较大；建议优先补一个最小测试 target（哪怕只测颜色数学一个文件）。
-3. **`ColorSystemTokens.Accent.darkSaturationLift / lightSaturationLift` 的轻微提升系数**（`1.06` / `1.02`）：R4 报告这两个是经验值，未来调研 OKLCH 等价 chroma lift 时需要保留视觉口径校准点。
-4. **`NearMonochrome.darkLiftRange` 与 `darkLiftPivot` 数值相等但语义独立**：Phase 2 若需要让 dim 封面有更陡的 tone-lift 响应，只改 `darkLiftRange`（不动 pivot）即可；本来分离这两个常量就是为这个调参点准备的。
-5. **`OKColor.chromaSoftShoulder` 与 `ColorMath.softShoulder` 数学相同但维度不同**：Phase 2 把 `optimizedAccent` 迁到 OKLCH 时，原来 `ColorMath.softShoulder(saturation, ...)` 应该改为 `OKColor.chromaSoftShoulder(lch, ceiling: ..., softness: ...)`。token 已经准备好（`Accent.lightSatShoulderSoftness`），切换时数值不变即可。
-6. **`FallbackAccent.*L`** 是 HSL 钳制（走 `ColorMath.clampLightness`），不是 OKLCH。Phase 2 决定是否把 user fallback accent 也走 OKLCH 时，token 数值需要重新校准——HSL L 与 OKLCH L 不是 1:1 等价。
+3. `ColorSystemTokens.Accent.darkSaturationLift / lightSaturationLift` **的轻微提升系数**（`1.06` / `1.02`）：R4 报告这两个是经验值，未来调研 OKLCH 等价 chroma lift 时需要保留视觉口径校准点。
+4. `NearMonochrome.darkLiftRange` **与** `darkLiftPivot` **数值相等但语义独立**：Phase 2 若需要让 dim 封面有更陡的 tone-lift 响应，只改 `darkLiftRange`（不动 pivot）即可；本来分离这两个常量就是为这个调参点准备的。
+5. `OKColor.chromaSoftShoulder` **与** `ColorMath.softShoulder` **数学相同但维度不同**：Phase 2 把 `optimizedAccent` 迁到 OKLCH 时，原来 `ColorMath.softShoulder(saturation, ...)` 应该改为 `OKColor.chromaSoftShoulder(lch, ceiling: ..., softness: ...)`。token 已经准备好（`Accent.lightSatShoulderSoftness`），切换时数值不变即可。
+6. `FallbackAccent.*L` 是 HSL 钳制（走 `ColorMath.clampLightness`），不是 OKLCH。Phase 2 决定是否把 user fallback accent 也走 OKLCH 时，token 数值需要重新校准——HSL L 与 OKLCH L 不是 1:1 等价。
 
 下一步：进入 Phase 2（艺术取色决策引擎 2.0 — Ultra Dark / Near Monochrome 拆分、salient highlight palette）。
