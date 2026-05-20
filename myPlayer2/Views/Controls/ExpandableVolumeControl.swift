@@ -144,15 +144,16 @@ struct ExpandableVolumeControl: View {
     }
 
     private var controlPrimaryNSColor: NSColor {
+        let palette = themeStore.semanticPalette
         if usesAdaptiveForeground,
            materialStyle == .clear,
            themeStore.hasArtworkThemeColor,
            FullscreenMiniPlayerView.shouldUseDarkArtworkForeground(
-                for: themeStore.semanticPalette.analysis
+                for: palette.analysis
            ) {
-            return themeStore.semanticPalette.readableTextOnArtwork
+            return palette.readabilityProfile.foregroundPrimary
         }
-        return FullscreenMiniPlayerView.resolveControlAccentColor(from: themeStore.accentNSColor)
+        return palette.miniPlayerControl.primary
     }
 
     private var controlBlendMode: BlendMode {

@@ -69,6 +69,60 @@
 
 退出条件：同一 artwork 下，Home Hero / Library Header / Fullscreen Cover Gradient 三处的可读性策略一致；且近黑白封面下 Fullscreen MiniPlayer UI 不再出现伪 hue。
 
+### Phase 4.5 — 全局淡彩前景色体系（Global Tinted Neutral Foreground Palette）
+
+> **本阶段尚未实现，已于 Phase 4 完成后写入路线图。**
+
+#### 目标
+
+把当前 App 内大面积使用的纯白 / 纯黑 / 纯灰普通前景字体与图标，逐步纳入主题色体系，形成一种"高可读、乍看近似黑白灰、细看带有极低饱和度主题色"的全局前景色方案，类似 Material You 的 tonal neutral foreground 思路。
+
+#### 新增语义角色
+
+建立面向普通 App UI（非 artwork 压字场景）的前景色角色体系：
+
+| 角色 | 视觉目标 |
+| --- | --- |
+| `foregroundPrimary` | 主文字，视觉近似"亮白 / 深黑"，细看带极低 chroma 主题色 |
+| `foregroundSecondary` | 次级文字，视觉近似"浅灰 / 深灰" |
+| `foregroundTertiary` | 三级文字、辅助说明 |
+| `foregroundQuaternary` | 四级，非常弱的 hint / 占位符 |
+| `foregroundDisabled` | 禁用状态 |
+
+#### 设计原则
+
+- **可读性优先**：主文字对比度不得低于 WCAG AA；次级颜色不强制 AA，但不应偏色到影响辨识。
+- **chroma 极低**：前景色不做"彩色文字"，只做"带一点主题气质的中性色"，chroma ≤ 0.02（OKLCH）。
+- **深浅模式分开建模**：深色模式 primary 接近 off-white（OKLCH L≈0.96，C≤0.012）；浅色模式 primary 接近 near-black（OKLCH L≈0.14，C≤0.012）。
+- **与 artwork 压字场景分开**：Phase 4 的 `ArtworkReadabilityProfile` 管"压在 artwork 上"的前景；Phase 4.5 管普通 App UI（materials、窗口背景、设置面板上的字体）。
+- **保留固定光学常量**：纯光学白（登录按钮、高亮 fill）、纯光学黑（阴影、border）等设计常量不被"淡彩化"。
+- **不暴力全局替换**：必须先审计所有字体和 icon 来源，区分"来自系统语义色（`.primary`）"、"来自 ThemeStore.accentColor"、"来自硬编码 `.white`/`.black`"三类，再分策略渐进接入。
+
+#### 工作范围
+
+Phase 4.5 应包含：
+
+1. **全 App 字体 / 普通前景颜色审计**：列出使用 `.primary`/`.secondary`/`.tertiary`/`.white`/`.black`/`.gray` 等色的所有 View，标注语义类别（系统语义 vs. 主题强调 vs. 固定光学常量）。
+2. **主题化 foreground palette 设计**：在 `ColorSystemTokens` 新增 `TintedNeutral` 命名空间，定义每个角色的 OKLCH L、C 目标值与深浅模式变体。在 `SemanticPalette` 新增 `appForeground: AppForegroundPalette`，由 `SemanticPaletteFactory` 从 `globalAccent` 极低 chroma 派生。
+3. **渐进接入策略**：优先接入最常见的"中性文字"（artist 行、时间戳、描述文字），最后接入"强调 accent 文字"（selection 行等需保留 accent 气质的，留到后续）。
+4. **可读性与视觉回归标准**：接入一处必须过"主文字对比度 ≥ 4.5:1、次级对比度 ≥ 3.0:1、颜色 chroma ≤ 0.02"三项断言，并更新 `ColorSystemSelfCheck`。
+
+#### 与周边 Phase 的关系
+
+- Phase 4.5 建立在 Phase 4 的 `ArtworkReadabilityProfile` 语义思路之后，沿用 OKLCH-first 的低彩色阶方法。
+- Phase 5 歌词颜色收敛不应被 Phase 4.5 的全局 foreground palette 误伤——歌词色是 artwork-driven，不是 app-ui-neutral；两套 palette 完全正交。
+- Phase 6 Tone Ladder 可借用 Phase 4.5 建立的低彩色阶思想，但 Phase 4.5 本身不是 Phase 6 的前置依赖。
+
+#### 退出条件（待定）
+
+- 全 App 普通文字审计报告完成；
+- `AppForegroundPalette` 在 `SemanticPalette` 上就位；
+- 至少三类代表性 View（例如：artist 行、settings 描述、时间戳）接入新 foreground palette；
+- `ColorSystemSelfCheck` 增加 `AppForeground.*` chroma 断言通过；
+- Debug build 通过；视觉在多种 artwork 下无明显异常。
+
+---
+
 ### Phase 5 — 歌词颜色体系收敛
 
 - **Swift 侧歌词颜色决策集中**：把 `windowLyricActive` / `windowLyricInactive` / `fullscreenLyricBase` / `fullscreenLyricInactiveBase` 的决策路径正式整合到 `SemanticPalette`，减少 ThemeStore 与 LyricsWebViewStore 双写。
