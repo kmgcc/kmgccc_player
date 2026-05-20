@@ -53,6 +53,14 @@ final class ThemeStore: ObservableObject {
 
     let defaultBlue: Color
 
+    /// Phase 4.5 — convenience accessor for the tinted-neutral foreground
+    /// palette. Views that already have `@EnvironmentObject themeStore`
+    /// can read `themeStore.appForegroundPalette.primary` etc. without
+    /// deep-coupling to `semanticPalette`.
+    var appForegroundPalette: AppForegroundPalette {
+        semanticPalette.appForeground
+    }
+
     private let defaultBlueNS: NSColor
     private var rawDominantColor: NSColor
     private let dominantColorCache = NSCache<NSString, CachedArtworkBox>()

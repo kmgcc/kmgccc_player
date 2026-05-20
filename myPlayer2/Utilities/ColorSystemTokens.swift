@@ -446,6 +446,67 @@ nonisolated enum ColorSystemTokens {
         static let nearMonoChromaAssertion: CGFloat = 0.005
     }
 
+    // MARK: - AppForeground (Phase 4.5)
+    //
+    // OKLCH tinted-neutral foreground palette for ordinary App UI — sidebar
+    // navigation text, library list text, settings labels, Home section
+    // captions, empty-state copy. These are NOT for use over artwork; that
+    // job belongs to `ArtworkReadabilityProfile` (Phase 4).
+    //
+    // Design goal: foreground that reads as normal black/grey/white at a
+    // glance, but carries a barely-perceptible artwork-derived hue tint
+    // on careful inspection. Analogous to Material You's tonal neutral
+    // surface foreground, tuned to this app's artwork-driven theme system.
+    //
+    // Generation: hue taken from `globalAccent` OKLCH hue; chroma scales
+    // linearly with artwork `colorfulness` up to `colorfulnessSaturationPoint`,
+    // then caps at the per-tier limit. On `isNearMonochrome` covers the chroma
+    // is forced to 0 and all tiers are perceptually achromatic.
+    //
+    // Chroma values are intentionally MORE conservative than
+    // `ReadabilityProfile.nearMonoChromaCeiling` or `MiniPlayerControl.*`
+    // because legibility on arbitrary backgrounds takes priority over theme
+    // expressiveness for body text.
+
+    enum AppForeground {
+
+        // Dark-mode lightness targets (high L = bright foreground on dark surface).
+        static let darkPrimaryL: CGFloat    = 0.960
+        static let darkSecondaryL: CGFloat  = 0.780
+        static let darkTertiaryL: CGFloat   = 0.590
+        static let darkQuaternaryL: CGFloat = 0.440
+        static let darkDisabledL: CGFloat   = 0.360
+
+        // Light-mode lightness targets (low L = dark foreground on light surface).
+        static let lightPrimaryL: CGFloat    = 0.140
+        static let lightSecondaryL: CGFloat  = 0.300
+        static let lightTertiaryL: CGFloat   = 0.480
+        static let lightQuaternaryL: CGFloat = 0.600
+        static let lightDisabledL: CGFloat   = 0.650
+
+        // Per-tier OKLCH chroma caps — how "tinted" each tier can be.
+        // Primary receives the strongest tint (still barely perceptible at C=0.012).
+        // Disabled is always achromatic regardless of artwork.
+        static let primaryChromaCap: CGFloat    = 0.012
+        static let secondaryChromaCap: CGFloat  = 0.010
+        static let tertiaryChromaCap: CGFloat   = 0.008
+        static let quaternaryChromaCap: CGFloat = 0.006
+        static let disabledChromaCap: CGFloat   = 0.000
+
+        // Artwork colorfulness level at which tier caps are fully applied.
+        // Below this the chroma scales proportionally (linear ramp).
+        static let colorfulnessSaturationPoint: CGFloat = 0.40
+
+        // Absolute safety ceiling applied after per-tier cap.
+        static let chromaCeiling: CGFloat = 0.020
+
+        // Self-check assertions.
+        static let nearMonoChromaAssertion: CGFloat  = 0.005  // must be achromatic on nearMono
+        static let colorfulChromaAssertion: CGFloat  = 0.022  // with numerical slack
+        static let darkPrimaryLAssertion: CGFloat    = 0.90   // dark primary must stay near white
+        static let lightPrimaryLAssertion: CGFloat   = 0.20   // light primary must stay near black
+    }
+
     // MARK: - EffectiveMonochrome (Phase 1 — deprecated namespace)
     //
     // Phase 2 splits these branches into `UltraDark` (lightness) and

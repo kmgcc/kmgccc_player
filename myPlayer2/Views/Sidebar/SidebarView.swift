@@ -135,7 +135,7 @@ struct SidebarView: View {
                     HStack {
                         Text("sidebar.playlists")
                             .font(.caption.bold())
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
                         Spacer()
 
                         Button {
@@ -143,7 +143,7 @@ struct SidebarView: View {
                         } label: {
                             Image(systemName: "plus")
                                 .font(.system(size: 11, weight: .bold))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
                                 .frame(width: 18, height: 18)
                                 .background(.secondary.opacity(0.1))
                                 .clipShape(Circle())
@@ -210,11 +210,11 @@ struct SidebarView: View {
                         HStack {
                             Text("sidebar.artists")
                                 .font(.caption.bold())
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
                             Spacer()
                             Image(systemName: "chevron.right")
                                 .font(.caption2.bold())
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
                                 .rotationEffect(.degrees(isArtistsExpanded ? 90 : 0))
                                 .opacity(isHoveringArtists ? 1 : 0)
                         }
@@ -280,11 +280,11 @@ struct SidebarView: View {
                         HStack {
                             Text("sidebar.albums")
                                 .font(.caption.bold())
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
                             Spacer()
                             Image(systemName: "chevron.right")
                                 .font(.caption2.bold())
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
                                 .rotationEffect(.degrees(isAlbumsExpanded ? 90 : 0))
                                 .opacity(isHoveringAlbums ? 1 : 0)
                         }
@@ -596,7 +596,7 @@ struct SidebarView: View {
 
             Text(importEnrichmentService.progress.sidebarText)
                 .font(.caption2)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
                 .lineLimit(1)
 
             Spacer(minLength: 0)

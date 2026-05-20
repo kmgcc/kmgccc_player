@@ -113,13 +113,20 @@ Phase 4.5 应包含：
 - Phase 5 歌词颜色收敛不应被 Phase 4.5 的全局 foreground palette 误伤——歌词色是 artwork-driven，不是 app-ui-neutral；两套 palette 完全正交。
 - Phase 6 Tone Ladder 可借用 Phase 4.5 建立的低彩色阶思想，但 Phase 4.5 本身不是 Phase 6 的前置依赖。
 
-#### 退出条件（待定）
+#### 退出条件
 
-- 全 App 普通文字审计报告完成；
-- `AppForegroundPalette` 在 `SemanticPalette` 上就位；
-- 至少三类代表性 View（例如：artist 行、settings 描述、时间戳）接入新 foreground palette；
-- `ColorSystemSelfCheck` 增加 `AppForeground.*` chroma 断言通过；
-- Debug build 通过；视觉在多种 artwork 下无明显异常。
+> **首轮（Phase 4.5 第一批）已达成 — 2026-05-20**。
+
+- [x] 全 App 普通文字审计报告完成（见 migration log §5.1）；
+- [x] `ColorSystemTokens.AppForeground` 命名空间就位（L 目标、chroma cap、断言阈值）；
+- [x] `AppForegroundPalette` 类型与 `SemanticPalette.appForeground` 字段就位；
+- [x] `ThemeStore.appForegroundPalette` 便利属性就位；
+- [x] `SemanticPaletteFactory.appForeground(analysis:globalAccent:isDark:)` 实现：hue from accent OKLCH + 极低 chroma，nearMono 时 chromaScale=0；
+- [x] 三类代表性模块接入（SidebarView / HomeView / SettingsView `V2FeatureTipView`），共 23 处；
+- [x] `ColorSystemSelfCheck` 增加 5 个 `AppForeground.*` 场景全部通过（30/30）；
+- [x] Debug build 通过；
+- [ ] 第二批扩大接入（`TrackRowView` / `LibraryDetailHeaderView` / Library 列表 / LDDC 搜索 / BatchEdit）— 留待下一轮；
+- [ ] 视觉在多种 artwork 下实机确认（需运行 App 手测）。
 
 ---
 

@@ -1057,3 +1057,195 @@ docs/oklch-color-system-migration-log.md                 (本节)
 
 ***
 
+## Phase 4.5 — 全局淡彩前景色体系（Global Tinted Neutral Foreground Palette）
+
+**完成日期**：2026-05-20。\
+**分支**：`refactor/oklch-color-system`。
+
+### 本阶段目标
+
+三件事：
+1. **全 App 普通前景色审计**：系统性分类所有 `.primary`/`.secondary`/`.tertiary`/`Color.white` 等使用场景，输出 A/B/C/D 四类清单。
+2. **建立 AppForegroundPalette**：在 `SemanticPalette` 上新增全局淡彩中性前景色角色层，由 `SemanticPaletteFactory` 从 `globalAccent` OKLCH hue + 极低 chroma 派生，近黑白封面归零。
+3. **第一批系统性接入**：在已有 `@EnvironmentObject ThemeStore` 的三个公共性最高的模块（SidebarView / HomeView / SettingsView）中完成第一轮实际迁移。
+
+### 5.1 前景色审计结论
+
+全 App 约 200 处 `.primary/.secondary/.tertiary/.quaternary` 使用，按用途分四类：
+
+**A 类（应纳入 AppForegroundPalette，本轮第一批）：**
+- `SidebarView`：section 标题（"sidebar.playlists" / "sidebar.artists" / "sidebar.albums"）、折叠 chevron 图标、"+" 按钮图标、进度提示文字。
+- `HomeView`：快照卡片 artist/album 行、快照时间戳、stat 卡片标签/单位、排行榜序号/艺人/播放数、空状态图标/标题/描述、页脚引言。
+- `SettingsView`（`V2FeatureTipView`）：功能说明图标和文字。
+
+**A 类（已审计，暂未接入，下一轮）：**
+- `TrackRowView`：无 ThemeStore 引用（deliberate 设计，列表性能）。
+- `HomeInsightsSection`：明确用 `let` 代替 `@EnvironmentObject ThemeStore` 以避免不必要的刷新。
+- `LibraryDetailHeaderView`、`PlaylistDetailView`：需逐行确认哪些是 over-artwork、哪些是 normal UI。
+- `LDDCSearchSection`、`BatchTrackEditSheet`、`TrackInfoEditorCore`：高实例数，需在下一轮完成。
+
+**B 类（不接入，继续走 ArtworkReadabilityProfile）：**
+- `FullscreenPlayerView` / `FullscreenMiniPlayerView` 中压在 artwork 上的文字和图标（Phase 4 已管）。
+- `LibraryDetailHeaderView` 中渐变文字叠加层。
+- `MiniPlayerView` over-artwork 控件。
+
+**C 类（设计常量，不动）：**
+- `Color.white.opacity(0.045)` / `Color.black.opacity(0.035)` — material tint 背景，非前景。
+- `Color.black.opacity(0.18)` — 阴影。
+- Glass 边缘、光学白高光等。
+
+**D 类（暂缓，人工评估）：**
+- AMLL / 全屏歌词区（Phase 5 接力）。
+- 特殊 AppKit 控件混合视图。
+- 部分 NowPlaying 皮肤（全屏模式下依赖 artwork analysis，需分策略评估）。
+
+### 5.2 ColorSystemTokens 新增命名空间
+
+新增 `AppForeground` enum（Phase 4.5），含：
+
+| 常量组 | 含义 |
+| --- | --- |
+| `darkPrimaryL`–`darkDisabledL` | 深色模式各层 OKLCH L 目标（0.96→0.36） |
+| `lightPrimaryL`–`lightDisabledL` | 浅色模式各层 OKLCH L 目标（0.14→0.65） |
+| `primaryChromaCap`–`disabledChromaCap` | 各层 chroma 上限（0.012→0，disabled 恒为 0） |
+| `colorfulnessSaturationPoint` | chroma 线性 ramp 饱和点（colorfulness=0.40 时达到全 cap） |
+| `chromaCeiling` | 安全天花板 0.020（所有层生效后再 clamp） |
+| `nearMonoChromaAssertion` | 近黑白断言（≤0.005） |
+| `colorfulChromaAssertion` | 彩色断言（≤0.022，含数值余量） |
+| `darkPrimaryLAssertion` | 深色 primary L 最低下限（≥0.90） |
+| `lightPrimaryLAssertion` | 浅色 primary L 最高上限（≤0.20） |
+
+### 5.3 AppForegroundPalette 类型与 SemanticPalette 接入
+
+新增 value 类型（`Equatable, Sendable`）：
+
+**`AppForegroundPalette`**：
+- `primary` — 主标题 / 主图标；OKLCH L≈0.96 深 / L≈0.14 浅。
+- `secondary` — 副文字、副图标；L≈0.78 深 / L≈0.30 浅。
+- `tertiary` — 三级文字（时间戳、hint）；L≈0.59 深 / L≈0.48 浅。
+- `quaternary` — 四级占位、装饰；L≈0.44 深 / L≈0.60 浅。
+- `disabled` — 禁用态；chroma 恒为 0；L≈0.36 深 / L≈0.65 浅。
+
+`SemanticPalette` 新增字段：`appForeground: AppForegroundPalette`。
+
+`ThemeStore` 新增便利计算属性：
+```swift
+var appForegroundPalette: AppForegroundPalette { semanticPalette.appForeground }
+```
+
+### 5.4 生成规则（SemanticPaletteFactory.appForeground）
+
+```
+1. 从 globalAccent 读取 OKLCH hue
+2. chromaScale = isNearMonochrome ? 0 : min(colorfulness / 0.40, 1.0)
+3. 每层 c = min(chromaScale × tierChromaCap, chromaCeiling)
+4. 每层 NSColor = OKLCH(L = isDark ? darkTierL : lightTierL, c = c, h = hue)
+```
+
+**核心不变量**：
+- `isNearMonochrome == true` → 所有层 chroma = 0（完全中性灰阶）；
+- 彩色封面 → primary chroma ≤ 0.012，细看有主题色温但不构成"彩色文字"；
+- disabled 层无论如何 chroma = 0（设计语义：禁用不应带色调）。
+
+### 5.5 可访问性
+
+- 深色 primary L≈0.96 对比深色背景（L≈0.10~0.20 玻璃），对比度约 12:1，远超 WCAG AA（4.5:1）。
+- 浅色 primary L≈0.14 对比浅色背景（L≈0.90+），对比度约 13:1。
+- Secondary 层（L=0.78 深 / L=0.30 浅）均可通过 AA；tertiary 接近 AA 临界，不强制。
+- disabled 层刻意低于 WCAG AA（L≈0.36 深），符合标准对禁用控件对比度的豁免。
+
+### 5.6 与 ArtworkReadabilityProfile 的分离
+
+两套 palette 完全正交：
+
+| | `AppForegroundPalette` | `ArtworkReadabilityProfile` |
+| --- | --- | --- |
+| 使用场景 | 普通 App UI（sidebar、列表、settings、Home 卡片） | 压在 artwork/blur 上的 UI（HomeHero、Fullscreen MiniPlayer） |
+| 生成基准 | `globalAccent` OKLCH hue + 固定 L 目标 | `analysis.bestTextSourceColor` HSL 派生 + OKLCH nearMono 归零 |
+| chroma 上限 | ≤0.012（primary），其余更低 | 不限 chroma（artwork 直接派生，仅 nearMono 时归零） |
+| dark/light 分支 | 是（两套 L 目标） | 否（通过 `usesDarkForeground` 控制） |
+
+自检场景 `checkAppFgSeparateFromReadabilityProfile` 断言：同一 analysis 下两者 primary 颜色不同。
+
+### 5.7 第一批接入：改动文件与模式
+
+| 文件 | 替换内容 | 计数 |
+| --- | --- | --- |
+| `SidebarView.swift` | section 标题文字 + chevron/plus 图标 `.foregroundStyle(.secondary)` → `Color(nsColor: themeStore.appForegroundPalette.secondary)` | 8 处 |
+| `HomeView.swift` | 快照卡/stat 卡/排行榜/空状态/页脚各级 `.foregroundStyle(.secondary/.tertiary/.quaternary)` | 11 处 |
+| `SettingsView.swift` | `V2FeatureTipView` 功能说明图标+文字 `.foregroundStyle(.secondary)` | 4 处；同时补充 `@EnvironmentObject ThemeStore` |
+
+访问模式：`Color(nsColor: themeStore.appForegroundPalette.secondary)`。
+
+### 5.8 未接入区域与暂缓清单
+
+| 区域 | 原因 | 建议接入时机 |
+| --- | --- | --- |
+| `TrackRowView` | 无 ThemeStore（设计考量）；需先评估是否值得加 @EnvironmentObject | Phase 4.5 第二批 |
+| `HomeInsightsSection` | 明确 `let` 替代 `@EnvironmentObject` 以避免全局刷新 | 评估后决定是否加 themeStore |
+| `LibraryDetailHeaderView` | B 类（over-artwork）和 A 类（正文）混用，需逐行分类 | Phase 4.5 第二批 |
+| `PlaylistDetailView` / `AllAlbumsView` / `AllArtistsView` | Library 模块，整体接入体验更好 | Phase 4.5 第二批 |
+| `LDDCSearchSection` / `BatchTrackEditSheet` / `TrackInfoEditorCore` | 大量 `.primary/.secondary`，实例数多 | Phase 4.5 第二批 |
+| NowPlaying 皮肤 | 部分依赖 artwork analysis，策略需评估 | Phase 7 清理 |
+| AMLL / 歌词 | Phase 5 接力 | Phase 5 |
+
+**明确保留为 `.primary`/`.secondary` 的场景**（设计常量）：
+
+- `Color.white.opacity(0.045)` / `Color.black.opacity(0.035)` — settings card material tint，语义是背景层，非文字前景。
+- 玻璃高光边缘：`Color.white.opacity(0.12)` / `Color.primary.opacity(0.10)` 等 stroke/fill 语义。
+- `Color.black.opacity(...)` 阴影。
+- SidebarView `.background(.secondary.opacity(0.1))` — 圆形按钮的 fill 背景，非文字前景。
+- SidebarView/FullscreenPlayerView 中两参数 `foregroundStyle(.primary, themeStore.accentColor)` — accent 染色，不是普通前景。
+
+### 5.9 自检扩展（Phase 4.5 — 5 个新场景）
+
+| 场景 | 输入 | 断言 | 实测结果 |
+| --- | --- | --- | --- |
+| `AppForeground: near-mono all tiers achromatic` | 灰白 (200,200,200)，蓝色 accent | 所有层 OKLCH chroma ≤ 0.005 | worstChroma=0.000 tier=primary ✓ |
+| `AppForeground: colorful artwork has tint` | 中蓝 (40,100,200)，蓝色 accent | primary chroma > 0.001 且 ≤ 0.022 | primaryChroma=0.012 ✓ |
+| `AppForeground: dark mode L hierarchy` | 中蓝，深色模式 | primary>secondary>tertiary>quaternary>disabled（L 降序） | 0.960>0.780>0.590>0.440>0.360 ✓ |
+| `AppForeground: light mode L hierarchy` | 中蓝，浅色模式 | primary<secondary<tertiary<quaternary<disabled（L 升序） | 0.140<0.300<0.480<0.600<0.650 ✓ |
+| `AppForeground: separate from ReadabilityProfile` | 中蓝，深色模式 | AppFgPalette.primary ≠ ReadabilityProfile.foregroundPrimary | true ✓ |
+
+自检总计：**ALL PASS（30/30）**，`EXIT=0`。
+
+### 5.10 构建验证
+
+```text
+xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player \
+  -configuration Debug -destination 'platform=macOS' build
+→ ** BUILD SUCCEEDED **
+```
+
+### 5.11 改动文件清单
+
+```text
+myPlayer2/Utilities/ColorSystemTokens.swift              (新增 AppForeground 命名空间)
+myPlayer2/Utilities/SemanticPalette.swift                (AppForegroundPalette 类型；appForeground 字段；factory 方法；SelfCheck bridge 扩展)
+myPlayer2/Services/Theme/ThemeStore.swift                (appForegroundPalette 便利属性)
+myPlayer2/Utilities/ColorSystemSelfCheck.swift           (Phase 4.5 五个新场景)
+myPlayer2/Views/Sidebar/SidebarView.swift                (section 标题/图标 → appForegroundPalette.secondary，8 处)
+myPlayer2/Views/Home/HomeView.swift                      (stat/ranking/empty/footer 前景色，11 处)
+myPlayer2/Views/Settings/SettingsView.swift              (V2FeatureTipView 说明文字/图标，4 处；补 @EnvironmentObject)
+docs/oklch-color-system-execution-plan.md                (Phase 4.5 退出条件补全)
+docs/oklch-color-system-migration-log.md                 (本节)
+```
+
+### 5.12 边界遵守清单
+
+- [x] Phase 5 歌词颜色：未改。
+- [x] LED：未改。
+- [x] Phase 4 ArtworkReadabilityProfile 逻辑：未改。
+- [x] Phase 3 Shapes / BKArt / Spectrum：未改。
+- [x] 全局 `.primary/.secondary` 暴力替换：未做（仅改有把握的 A 类 View）。
+- [x] 固定光学常量（glass highlight、shadow、material tint fill）：均保留 `.primary`/固定透明度写法。
+- [x] Tone Ladder：未做。
+- [x] 用户在制品无关文件：未改。
+
+### 5.13 接力提示（→ Phase 4.5 第二批 / Phase 5）
+
+1. **Phase 4.5 第二批**：`TrackRowView`（评估 ThemeStore 接入成本）、`LibraryDetailHeaderView`（B/A 分类后接入正文部分）、`PlaylistDetailView` / `AllAlbumsView` / `AllArtistsView`、`LDDCSearchSection` / `BatchTrackEditSheet` / `TrackInfoEditorCore`。接入时直接用 `Color(nsColor: themeStore.appForegroundPalette.secondary)` 模式。
+2. **Phase 5**：歌词颜色收敛，`§3.12 Issue B`（窗口/全屏歌词 nearMono 偏粉问题）。
+
+***
+
