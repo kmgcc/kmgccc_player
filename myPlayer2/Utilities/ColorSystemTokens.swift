@@ -385,6 +385,67 @@ nonisolated enum ColorSystemTokens {
         static let rgbDistinctGap: CGFloat = 0.14
     }
 
+    // MARK: - ReadabilityProfile (Phase 4)
+    //
+    // Alpha tiers and OKLCH neutralisation thresholds used by the
+    // `ArtworkReadabilityProfile` semantic — the unified "compress UI on
+    // top of artwork" decision. Replaces ad-hoc `usesDarkForeground` reads
+    // and per-view alpha derivations across MiniPlayer / Home Hero /
+    // CoverGradient blur consumers.
+    //
+    // Near-mono neutralisation: when the cover lacks trustworthy hue, the
+    // profile clamps OKLCH chroma below the human perceptual threshold so
+    // overlaid text and icons read as honest neutral rather than as faint
+    // pink / blue / yellow tints.
+
+    enum ReadabilityProfile {
+        // Stacked-tier alphas (primary @ 1.0; secondary–quaternary derived).
+        static let secondaryAlpha: CGFloat = 0.78
+        static let tertiaryAlpha: CGFloat = 0.58
+        static let quaternaryAlpha: CGFloat = 0.40
+
+        // Maximum OKLCH chroma retained when `analysis.isNearMonochrome` is
+        // true. 0.004 is well below the perceptual threshold (~0.01 in
+        // OKLCH); pairs with `nearMonoHueDistanceAssertion` so the
+        // self-check can verify hue collapse rather than just chroma.
+        static let nearMonoChromaCeiling: CGFloat = 0.004
+
+        // Self-check assertion: near-mono foreground OKLCH chroma must not
+        // exceed this. Slightly above the ceiling for numerical slack.
+        static let nearMonoChromaAssertion: CGFloat = 0.005
+    }
+
+    // MARK: - MiniPlayerControl (Phase 4)
+    //
+    // OKLCH-lifted control palette consumed by `FullscreenMiniPlayerView`
+    // when the mini player surface is chrome (default liquid-glass pill).
+    // When the surface is the artwork itself (Cover Gradient Blur "clear"
+    // material), the view falls through to `ReadabilityProfile.foregroundPrimary`
+    // — the artwork-readability profile owns that path.
+    //
+    // Bands derive empirically from the legacy `resolveControlAccentColor`
+    // HSL bounds (min L 0.90, max L 0.98, min S 0.88) re-expressed in
+    // OKLCH and gated on `isNearMonochrome`. Near-mono covers force a
+    // perceptually-achromatic warm white at L≈0.94 so no residual hue
+    // bleeds into icons / progress bar / playback-mode capsule.
+
+    enum MiniPlayerControl {
+        // Coloured-accent path bounds (artwork has trustworthy hue).
+        static let liftedMinL: CGFloat = 0.88
+        static let liftedMaxL: CGFloat = 0.97
+        static let liftedChromaCap: CGFloat = 0.12
+
+        // Near-mono path constant (perceptually achromatic warm white).
+        static let neutralL: CGFloat = 0.94
+
+        // Self-check assertion: near-mono control OKLCH chroma must not
+        // exceed this. Smaller than ReadabilityProfile's value because the
+        // control path never goes through the artwork-text-source tint —
+        // it starts from globalAccent which already carries the nearMono
+        // accent's residual hue, and we want to crush it entirely.
+        static let nearMonoChromaAssertion: CGFloat = 0.005
+    }
+
     // MARK: - EffectiveMonochrome (Phase 1 — deprecated namespace)
     //
     // Phase 2 splits these branches into `UltraDark` (lightness) and

@@ -923,8 +923,137 @@ docs/oklch-migration-color-system-investigation.md                 (近黑白伪
 
 ### 3.15 Phase 4 / Phase 5 接力点（与 §3.12 对应）
 
-- **Phase 4 显式入口**：MiniPlayer 控件色 `nearMono` 中性化规则。代码切入点 `FullscreenMiniPlayerView.controlPrimaryNSColor` / `shouldUseDarkArtworkForeground(for:)`。验收：手测 Issue A 复现样本应不再出现淡蓝 / 淡黄。
+- **Phase 4 显式入口**：MiniPlayer 控件色 `nearMono` 中性化规则。代码切入点 `FullscreenMiniPlayerView.controlPrimaryNSColor` / `shouldUseDarkArtworkForeground(for:)`。验收：手测 Issue A 复现样本应不再出现淡蓝 / 淡黄。**Phase 4 已完成本轮任务：见下节。**
 - **Phase 5 显式入口**：Swift 侧统一歌词色彩决策函数（含窗口与全屏两面），增加 `analysis.isNearMonochrome == true` → chroma ≤ 0.005 规则。验收：手测 Issue B 复现样本应不再偏粉。
+
+***
+
+## Phase 4 — 交互与可读性语义色
+
+**完成日期**：2026-05-20。\
+**分支**：`refactor/oklch-color-system`。
+
+### 本阶段目标
+
+三件事：
+1. **MiniPlayer 控件色语义化**：把分散在 View 层的 HSL 控件色重算逻辑收束到 `MiniPlayerControlPalette`。
+2. **建立 Artwork Readability Profile**：统一"压在 artwork 上的 UI 文字 / 图标前景色决策"，通过 `ArtworkReadabilityProfile` 对外。
+3. **修复 Phase 3 接力问题**：近黑白 artwork 下 Fullscreen MiniPlayer UI 出现淡蓝 / 淡黄伪 hue（`§3.12 Issue A`）。
+
+### 4.1 ColorSystemTokens 新增命名空间
+
+新增两个命名空间：
+
+- `ReadabilityProfile`：`secondaryAlpha`（0.78）/ `tertiaryAlpha`（0.58）/ `quaternaryAlpha`（0.40）/ `nearMonoChromaCeiling`（0.004）/ `nearMonoChromaAssertion`（0.005）。
+- `MiniPlayerControl`：`liftedMinL`（0.88）/ `liftedMaxL`（0.97）/ `liftedChromaCap`（0.12）/ `neutralL`（0.94）/ `nearMonoChromaAssertion`（0.005）。
+
+### 4.2 SemanticPalette 新增类型与字段
+
+新增两个 value 类型（`Equatable, Sendable`）：
+
+**`ArtworkReadabilityProfile`**：
+- `usesDarkForeground: Bool` — 透传 `analysis.usesDarkForeground`（loose gate）。
+- `isNearMonochrome: Bool` — 便于消费者无需再依赖 analysis。
+- `foregroundPrimary / Secondary / Tertiary / Quaternary / iconForeground: NSColor` — 分层 alpha，当 nearMono 时 primary 已 OKLCH chroma-crushed（≤ 0.004），下级 alpha 叠加后也满足 ≤ assertion。
+
+**`MiniPlayerControlPalette`**：
+- `primary / secondary / progressFill / progressTrack: NSColor`。
+- 非 nearMono：通过 `liftedAccentControl(globalAccent)` 在 OKLCH 空间把 accent lift 到 L≥0.88，cap chroma≤0.12。
+- nearMono：通过 `neutralAchromaticControl()` 直接输出 OKLCH(L=0.94, C=0)，chroma = 0。
+
+`SemanticPalette` 新增两个字段：`readabilityProfile: ArtworkReadabilityProfile` 和 `miniPlayerControl: MiniPlayerControlPalette`。
+
+### 4.3 readableTextOnArtwork / secondaryTextOnArtwork 重定向
+
+`SemanticPaletteFactory.make` 现在先派生 `readabilityProfile`，然后把 `readabilityProfile.foregroundPrimary` 赋给 `readableTextOnArtwork`，`foregroundSecondary` 赋给 `secondaryTextOnArtwork`。
+
+**效果**：已有消费者（HomeHero `artworkTextPrimary`、`coverGradientText` 上游）在不改调用点的情况下自动获得 nearMono 中性化。
+
+**关于 `secondaryTextOnArtwork` 语义变更**：旧值是 `bestTextSourceColor.withAlphaComponent(0.86)`，外部无消费者（grep 确认）。新值是 `readableTextOnArtwork.withAlphaComponent(0.78)`，语义更清晰且与 HomeHero `artworkTextSecondary` 逻辑对齐。
+
+### 4.4 FullscreenMiniPlayerView 控件色迁移
+
+- `controlPrimaryNSColor`：
+  - `usesDarkArtworkForegroundForClear == true` → `semanticPalette.readabilityProfile.foregroundPrimary`（over-artwork surface）。
+  - 其他 → `semanticPalette.miniPlayerControl.primary`（chrome surface）。
+- 删除 `resolveControlAccentColor`、`resolveControlPrimaryColor`、三个 HSL 阈值常量以及所有 HSL helper 函数（`enforceMinimumHslLightness` / `enforceMaximumHslLightness` / `enforceMinimumHslSaturation` / `hslComponents` / `rgbColorFromHsl` / `clamp01`）。
+- 保留 `shouldUseDarkArtworkForeground(for:)` — 它是 over-blur surface 的专用 stricter gate，不属于 readabilityProfile 的通用 `usesDarkForeground`。
+
+### 4.5 全面收束：ExpandableVolumeControl / FullscreenPlayerView / FullscreenQueueView
+
+同一"over-artwork stricter gate / chrome fallback"模式原来散落在三个文件中：
+
+| 文件 | 旧路径 | 新路径 |
+| --- | --- | --- |
+| `ExpandableVolumeControl` | `FullscreenMiniPlayerView.resolveControlAccentColor(...)` | `palette.miniPlayerControl.primary` |
+| `FullscreenPlayerView` | `FullscreenMiniPlayerView.resolveControlAccentColor(...)` | `palette.miniPlayerControl.primary` |
+| `FullscreenQueueView` | 本地复制的 `resolveControlAccentColor(...)` + 全套 HSL helpers | `palette.miniPlayerControl.primary`（`processedThemeColor`） |
+
+`FullscreenQueueView` 的本地 HSL helper 全部删除（约 90 行），与 `FullscreenMiniPlayerView` 的 HSL helper 一起下线。
+
+### 4.6 HomeHeroView 显式接入 ReadabilityProfile
+
+- `artworkTextPrimary` → `heroPalette.readabilityProfile.foregroundPrimary`（等价于旧 `readableTextOnArtwork`，但现在语义清晰）。
+- `artworkTextSecondary` → `heroPalette.readabilityProfile.foregroundSecondary`（等价于旧 `readableTextOnArtwork.withAlphaComponent(0.78)`）。
+
+### 4.7 自检扩展（Phase 4 — 5 个新场景）
+
+| 场景 | 输入 | 断言 | 实测结果 |
+| --- | --- | --- | --- |
+| ReadabilityProfile: near-mono neutral | 灰白 (200,200,200) | foregroundPrimary OKLCH chroma ≤ 0.005 | chroma=0.004 ✓ |
+| ReadabilityProfile: bright artwork → dark fg | 浅米白 (240,235,228) | usesDarkForeground=true, L < 0.50 | L=0.250 ✓ |
+| ReadabilityProfile: dark artwork → light fg | 深黑紫 (25,22,30) | usesDarkForeground=false, L > 0.80 | L=0.933 ✓ |
+| MiniPlayerControl: near-mono neutral | neutralAchromaticControl() 直接 | chroma ≤ 0.005, L ≥ 0.88 | chroma=0.000, L=0.940 ✓ |
+| MiniPlayerControl: colourful hue preserved | liftedAccentControl(蓝色源) | Δhue ≤ 0.06, L ≥ 0.88 | srcH=outH=0.698, L=0.880 ✓ |
+
+自检总计：**ALL PASS（25/25）**，`EXIT=0`。
+
+### 4.8 构建验证
+
+```text
+xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player \
+  -configuration Debug -destination 'platform=macOS' build
+→ ** BUILD SUCCEEDED **
+```
+
+### 4.9 改动文件清单
+
+```text
+myPlayer2/Utilities/ColorSystemTokens.swift              (新增 ReadabilityProfile + MiniPlayerControl 命名空间)
+myPlayer2/Utilities/SemanticPalette.swift                (ArtworkReadabilityProfile + MiniPlayerControlPalette 类型；factory 新 derivation；nonisolated helpers；#if DEBUG bridge)
+myPlayer2/Utilities/ColorSystemSelfCheck.swift           (Phase 4 五个新场景；SemanticPaletteSelfCheck 桥接)
+myPlayer2/Views/Fullscreen/FullscreenMiniPlayerView.swift (controlPrimaryNSColor 切换；删除 HSL helpers)
+myPlayer2/Views/Fullscreen/FullscreenPlayerView.swift    (fullscreenMiniPlayerPrimaryNSColor 切换)
+myPlayer2/Views/Fullscreen/FullscreenQueueView.swift     (processedThemeColor 切换；删除本地 HSL 副本)
+myPlayer2/Views/Controls/ExpandableVolumeControl.swift   (controlPrimaryNSColor 切换)
+myPlayer2/Views/Home/HomeHeroView.swift                  (artworkTextPrimary / Secondary 接入 readabilityProfile)
+docs/oklch-color-system-execution-plan.md                (Phase 4.5 新增路线图；Phase 4 退出条件更新)
+docs/oklch-color-system-migration-log.md                 (本节)
+```
+
+### 4.10 边界遵守清单
+
+- [x] Phase 4.5（全局淡彩前景色）：仅写入文档，未实现。
+- [x] `.primary / .secondary` 系统颜色：未改。
+- [x] 普通 App 字体体系：未改。
+- [x] 歌词颜色策略：未改（Phase 5 接力）。
+- [x] Header 路径：未改。
+- [x] Tone Ladder：未做。
+- [x] LED：未改。
+- [x] Home Shapes / BKArt / Spectrum 的 Phase 3 行为：未改。
+- [x] `SemanticPaletteFactory.optimizedAccent` / `nearMonochromeAccent` 主逻辑：未改。
+
+### 4.11 接力提示（→ Phase 4.5 / Phase 5）
+
+1. **Phase 4.5（文档已登记）**：全局淡彩前景色体系。先做全 App 字体 / 普通前景颜色审计（区分系统语义色、ThemeStore accentColor 消费、固定光学常量），再设计 `AppForegroundPalette`，渐进接入。不要暴力替换 `.primary`。
+
+2. **Phase 5（歌词颜色收敛，Issue B）**：窗口与全屏歌词在 nearMono 封面下偏粉（`§3.12 Issue B`）。Phase 5 统一歌词颜色决策函数时，`isNearMonochrome == true` → 所有歌词可见色 OKLCH chroma ≤ 0.005，两端（窗口 + 全屏）同时验收。
+
+3. **`shouldUseDarkArtworkForeground` stricter gate**：目前在 `FullscreenMiniPlayerView` 留为静态方法，供 `FullscreenPlayerView` 与 `ExpandableVolumeControl` 共用。若未来 Phase 5/6 引入更多"压在 blur 上"的 UI surface，考虑把 stricter gate 提升到 `ArtworkReadabilityProfile` 的第二个字段（`usesDarkForegroundOverBlur: Bool`），让 view 层只做路由。
+
+4. **CoverGradientBlurSkin 面板 UI**（`CoverGradientBlurSettingsView`）仍读 `themeStore.accentColor`。这是 settings 面板，不属于"压在 artwork 上的前景"，Phase 4 明确不改。Phase 7 清理时评估是否纳入 Phase 4.5 的 App Foreground palette。
+
+5. **`readabilityProfile.foregroundSecondary` alpha = 0.78**：与旧 `HomeHeroView.artworkTextSecondary` 等价，与旧 `secondaryTextOnArtwork`（alpha=0.86）不同。旧 `secondaryTextOnArtwork` 无外部消费者（已确认），语义现在对齐 HomeHero 惯例（0.78）。
 
 ***
 

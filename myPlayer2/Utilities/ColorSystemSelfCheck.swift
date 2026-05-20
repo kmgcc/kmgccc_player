@@ -117,10 +117,125 @@ nonisolated enum ColorSystemSelfCheck {
         checkHomeShapesNearMonoChromaCeiling(&report)
         checkHomeShapesUltraDarkLightnessBand(&report)
 
+        report.section("Phase 4 — ReadabilityProfile + MiniPlayerControl")
+        checkReadabilityNearMonoNeutral(&report)
+        checkReadabilityBrightArtworkDarkForeground(&report)
+        checkReadabilityDarkArtworkLightForeground(&report)
+        checkControlNearMonoNeutral(&report)
+        checkControlColourfulPreservesHue(&report)
+
         report.lines.append(
             "Result: \(report.allPassed ? "ALL PASS" : "FAILURES PRESENT")"
         )
         return report
+    }
+
+    // MARK: - Phase 4 scenarios
+
+    /// Near-mono cover: readability profile foregroundPrimary must have
+    /// OKLCH chroma below the perceptual threshold so overlay text reads
+    /// as neutral, not as a tinted pastel.
+    private static func checkReadabilityNearMonoNeutral(_ report: inout CheckReport) {
+        guard let analysis = analyse(side: 32, fill: (200, 200, 200, 255)) else {
+            report.record("ReadabilityProfile: near-mono foreground neutral", false, "analysis nil")
+            return
+        }
+        guard analysis.isNearMonochrome else {
+            report.record(
+                "ReadabilityProfile: near-mono foreground neutral", false,
+                "synthetic sample not classified nearMono"
+            )
+            return
+        }
+        let profile = SemanticPaletteSelfCheck.readabilityProfile(analysis)
+        guard let lch = OKColor.nsColorToOKLCH(profile.foregroundPrimary) else {
+            report.record("ReadabilityProfile: near-mono foreground neutral", false, "OKLCH nil")
+            return
+        }
+        let limit = ColorSystemTokens.ReadabilityProfile.nearMonoChromaAssertion
+        let ok = lch.c <= limit
+        report.record(
+            "ReadabilityProfile: near-mono foreground neutral", ok,
+            "chroma=\(format(lch.c)) limit=\(format(limit)) usesDark=\(profile.usesDarkForeground)"
+        )
+    }
+
+    /// Bright artwork: readability profile must select dark foreground and
+    /// produce a low-L colour (charcoal, not near-white).
+    private static func checkReadabilityBrightArtworkDarkForeground(_ report: inout CheckReport) {
+        guard let analysis = analyse(side: 32, fill: (240, 235, 228, 255)) else {
+            report.record("ReadabilityProfile: bright artwork \u{2192} dark foreground", false, "analysis nil")
+            return
+        }
+        let profile = SemanticPaletteSelfCheck.readabilityProfile(analysis)
+        guard let lch = OKColor.nsColorToOKLCH(profile.foregroundPrimary) else {
+            report.record("ReadabilityProfile: bright artwork \u{2192} dark foreground", false, "OKLCH nil")
+            return
+        }
+        let ok = profile.usesDarkForeground && lch.l < 0.50
+        report.record(
+            "ReadabilityProfile: bright artwork \u{2192} dark foreground", ok,
+            "usesDark=\(profile.usesDarkForeground) L=\(format(lch.l))"
+        )
+    }
+
+    /// Dark artwork: readability profile must select light foreground and
+    /// produce a high-L colour (near-white).
+    private static func checkReadabilityDarkArtworkLightForeground(_ report: inout CheckReport) {
+        guard let analysis = analyse(side: 32, fill: (25, 22, 30, 255)) else {
+            report.record("ReadabilityProfile: dark artwork \u{2192} light foreground", false, "analysis nil")
+            return
+        }
+        let profile = SemanticPaletteSelfCheck.readabilityProfile(analysis)
+        guard let lch = OKColor.nsColorToOKLCH(profile.foregroundPrimary) else {
+            report.record("ReadabilityProfile: dark artwork \u{2192} light foreground", false, "OKLCH nil")
+            return
+        }
+        let ok = !profile.usesDarkForeground && lch.l > 0.80
+        report.record(
+            "ReadabilityProfile: dark artwork \u{2192} light foreground", ok,
+            "usesDark=\(profile.usesDarkForeground) L=\(format(lch.l))"
+        )
+    }
+
+    /// Near-mono cover: MiniPlayer control primary (chrome surface path)
+    /// must collapse to near-zero OKLCH chroma. Tests the
+    /// `neutralAchromaticControl` output directly.
+    private static func checkControlNearMonoNeutral(_ report: inout CheckReport) {
+        let primary = SemanticPaletteSelfCheck.neutralAchromaticControl()
+        guard let lch = OKColor.nsColorToOKLCH(primary) else {
+            report.record("MiniPlayerControl: near-mono primary neutral", false, "OKLCH nil")
+            return
+        }
+        let limit = ColorSystemTokens.MiniPlayerControl.nearMonoChromaAssertion
+        let ok = lch.c <= limit && lch.l >= 0.88
+        report.record(
+            "MiniPlayerControl: near-mono primary neutral", ok,
+            "chroma=\(format(lch.c)) limit=\(format(limit)) L=\(format(lch.l))"
+        )
+    }
+
+    /// Colourful source: lifted accent must preserve hue and reach the
+    /// minimum lightness target. Tests `liftedAccentControl` directly.
+    private static func checkControlColourfulPreservesHue(_ report: inout CheckReport) {
+        let sourceNS = NSColor(
+            calibratedRed: 40.0/255, green: 100.0/255, blue: 180.0/255, alpha: 1
+        )
+        let lifted = SemanticPaletteSelfCheck.liftedAccentControl(sourceNS)
+        guard
+            let srcLch = OKColor.nsColorToOKLCH(sourceNS),
+            let outLch = OKColor.nsColorToOKLCH(lifted)
+        else {
+            report.record("MiniPlayerControl: colourful preserves hue", false, "OKLCH nil")
+            return
+        }
+        let hueOK = ColorMath.circularHueDistance(srcLch.h, outLch.h) <= 0.06
+        let liftOK = outLch.l >= ColorSystemTokens.MiniPlayerControl.liftedMinL - 0.001
+        let ok = hueOK && liftOK
+        report.record(
+            "MiniPlayerControl: colourful preserves hue", ok,
+            "srcH=\(format(srcLch.h)) outH=\(format(outLch.h)) L=\(format(outLch.l))"
+        )
     }
 
     // MARK: - Phase 3 hotfix scenarios

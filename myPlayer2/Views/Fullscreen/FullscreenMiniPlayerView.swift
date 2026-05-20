@@ -35,9 +35,6 @@ struct FullscreenMiniPlayerView: View {
     var onEditExternalInfoRequested: () -> Void = {}
     
     private let fixedBarHeight: CGFloat = 60
-    private static let fullscreenThemeMinLightness: CGFloat = 0.90
-    private static let fullscreenThemeMaxLightness: CGFloat = 0.98
-    private static let fullscreenThemeMinSaturation: CGFloat = 0.88
 
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(AppSettings.self) private var settings
@@ -424,10 +421,20 @@ struct FullscreenMiniPlayerView: View {
     }
 
     private var controlPrimaryNSColor: NSColor {
+        let palette = themeStore.semanticPalette
         if usesDarkArtworkForegroundForClear {
-            return themeStore.semanticPalette.readableTextOnArtwork
+            // Surface is the artwork itself (Cover Gradient Blur "clear"
+            // material AND the cover is bright enough that the stricter
+            // dark-foreground gate fires). Use the readability profile so
+            // we share the near-mono neutralisation with HomeHero and
+            // other future on-artwork surfaces.
+            return palette.readabilityProfile.foregroundPrimary
         }
-        return Self.resolveControlAccentColor(from: themeStore.accentNSColor)
+        // Surface is the chrome material (darkened liquid-glass pill).
+        // The Phase 4 MiniPlayerControl palette collapses to OKLCH
+        // neutral white on near-mono covers, so the legacy "lift HSL
+        // saturation to ≥0.88" path can no longer leak a pastel tint.
+        return palette.miniPlayerControl.primary
     }
 
     private var usesAdaptiveClearForeground: Bool {
@@ -557,124 +564,21 @@ struct FullscreenMiniPlayerView: View {
         )
     }
 
-    // MARK: - HSL Color Helpers
+    // MARK: - Stricter readability gate
 
+    /// Stricter dark-foreground gate used by surfaces sitting on a blurred
+    /// artwork (Cover Gradient Blur clear material). `analysis.usesDarkForeground`
+    /// flips at HSL L≥0.58; over a blur we want a more conservative
+    /// threshold so a moderately bright cover still keeps light text.
+    /// Phase 4 keeps this in the view layer because the gate is specific
+    /// to the over-blur surface — the rest of the readability semantic
+    /// lives on `ArtworkReadabilityProfile`.
     static func shouldUseDarkArtworkForeground(for analysis: ArtworkColorAnalysis) -> Bool {
         guard analysis.usesDarkForeground else { return false }
         let averageLuma = ColorMath.relativeLuminance(of: analysis.averageColor)
         return analysis.avgHslLightness >= 0.68
             || averageLuma >= 0.58
             || (analysis.avgBrightness >= 0.82 && analysis.avgSaturation < 0.30)
-    }
-
-    static func resolveControlAccentColor(from color: NSColor) -> NSColor {
-        let saturated = enforceMinimumHslSaturation(
-            color,
-            minimumSaturation: fullscreenThemeMinSaturation
-        )
-        let lifted = enforceMinimumHslLightness(
-            saturated,
-            minimumLightness: fullscreenThemeMinLightness
-        )
-        return enforceMaximumHslLightness(
-            lifted,
-            maximumLightness: fullscreenThemeMaxLightness
-        )
-    }
-
-    static func resolveControlPrimaryColor(from color: NSColor) -> Color {
-        Color(nsColor: resolveControlAccentColor(from: color)).opacity(0.96)
-    }
-
-    private static func enforceMinimumHslLightness(_ color: NSColor, minimumLightness: CGFloat) -> NSColor {
-        guard let hsl = hslComponents(from: color) else { return color }
-        let targetL = max(hsl.l, minimumLightness)
-        if targetL <= hsl.l + 0.000_001 { return color }
-        return rgbColorFromHsl(h: hsl.h, s: hsl.s, l: targetL)
-    }
-
-    private static func enforceMaximumHslLightness(_ color: NSColor, maximumLightness: CGFloat) -> NSColor {
-        guard let hsl = hslComponents(from: color) else { return color }
-        let targetL = min(hsl.l, maximumLightness)
-        if targetL >= hsl.l - 0.000_001 { return color }
-        return rgbColorFromHsl(h: hsl.h, s: hsl.s, l: targetL)
-    }
-
-    private static func enforceMinimumHslSaturation(_ color: NSColor, minimumSaturation: CGFloat) -> NSColor {
-        guard let hsl = hslComponents(from: color) else { return color }
-        let targetS = max(hsl.s, minimumSaturation)
-        if targetS <= hsl.s + 0.000_001 { return color }
-        return rgbColorFromHsl(h: hsl.h, s: targetS, l: hsl.l)
-    }
-
-    private static func hslComponents(from color: NSColor) -> (h: CGFloat, s: CGFloat, l: CGFloat)? {
-        guard let rgb = color.usingColorSpace(.deviceRGB) else { return nil }
-
-        let r = clamp01(rgb.redComponent)
-        let g = clamp01(rgb.greenComponent)
-        let b = clamp01(rgb.blueComponent)
-
-        let maxV = max(r, max(g, b))
-        let minV = min(r, min(g, b))
-        let delta = maxV - minV
-        let l = (maxV + minV) * 0.5
-
-        var h: CGFloat = 0
-        if delta > 0.000_001 {
-            if maxV == r {
-                h = ((g - b) / delta).truncatingRemainder(dividingBy: 6)
-            } else if maxV == g {
-                h = ((b - r) / delta) + 2
-            } else {
-                h = ((r - g) / delta) + 4
-            }
-            h /= 6
-            if h < 0 { h += 1 }
-        }
-
-        var s: CGFloat = 0
-        if delta > 0.000_001 {
-            s = delta / (1 - abs(2 * l - 1))
-        }
-
-        return (h: h, s: s, l: l)
-    }
-
-    private static func rgbColorFromHsl(h: CGFloat, s: CGFloat, l: CGFloat) -> NSColor {
-        let c = (1 - abs(2 * l - 1)) * s
-        let hPrime = h * 6
-        let x = c * (1 - abs(hPrime.truncatingRemainder(dividingBy: 2) - 1))
-
-        var rp: CGFloat = 0
-        var gp: CGFloat = 0
-        var bp: CGFloat = 0
-
-        switch hPrime {
-        case 0..<1:
-            rp = c; gp = x; bp = 0
-        case 1..<2:
-            rp = x; gp = c; bp = 0
-        case 2..<3:
-            rp = 0; gp = c; bp = x
-        case 3..<4:
-            rp = 0; gp = x; bp = c
-        case 4..<5:
-            rp = x; gp = 0; bp = c
-        default:
-            rp = c; gp = 0; bp = x
-        }
-
-        let m = l - c * 0.5
-        return NSColor(
-            calibratedRed: clamp01(rp + m),
-            green: clamp01(gp + m),
-            blue: clamp01(bp + m),
-            alpha: 1.0
-        )
-    }
-
-    private static func clamp01(_ value: CGFloat) -> CGFloat {
-        Swift.min(Swift.max(value, 0), 1)
     }
 }
 
