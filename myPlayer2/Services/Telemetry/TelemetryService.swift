@@ -31,6 +31,61 @@ enum TelemetrySessionEndReason: String, Codable {
     case other
 }
 
+private enum TelemetryTimelineKind: String, Codable {
+    case foreground
+    case mode
+    case playback
+}
+
+private enum TelemetryTimelineValue: String, Codable {
+    case active
+    case inactive
+    case local
+    case appleMusic = "apple_music"
+    case external
+    case playing
+    case notPlaying = "not_playing"
+
+    init(foregroundActive: Bool) {
+        self = foregroundActive ? .active : .inactive
+    }
+
+    init(mode: TelemetryPlaybackMode) {
+        switch mode {
+        case .local:
+            self = .local
+        case .appleMusic:
+            self = .appleMusic
+        case .external:
+            self = .external
+        }
+    }
+
+    init(isPlaying: Bool) {
+        self = isPlaying ? .playing : .notPlaying
+    }
+}
+
+private struct TelemetryTimelineSegment: Codable {
+    let kind: TelemetryTimelineKind
+    let value: TelemetryTimelineValue
+    let startOffsetSeconds: Int
+    let endOffsetSeconds: Int
+
+    enum CodingKeys: String, CodingKey {
+        case kind
+        case value
+        case startOffsetSeconds = "start_offset_seconds"
+        case endOffsetSeconds = "end_offset_seconds"
+    }
+}
+
+private struct TelemetryOpenTimelineSegment: Codable {
+    let kind: TelemetryTimelineKind
+    let value: TelemetryTimelineValue
+    let startOffsetSeconds: Int
+}
+
 @MainActor
 final class TelemetryService: NSObject {
     static let shared = TelemetryService()
@@ -272,7 +327,7 @@ final class TelemetryService: NSObject {
             appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0",
             buildNumber: Bundle.main.infoDictionary?["CFBundleVersion"] as? String,
             platform: "macOS",
-            schemaVersion: 1,
+            schemaVersion: 2,
             properties: properties
         )
     }
@@ -297,7 +352,15 @@ final class TelemetryService: NSObject {
                     "apple_music": .int(summary.playbackAppleMusicDurationSeconds),
                     "external": .int(summary.playbackExternalDurationSeconds)
                 ]),
-                "session_end_reason": .string(summary.endReason.rawValue)
+                "session_end_reason": .string(summary.endReason.rawValue),
+                "timeline_segments": .array(summary.timelineSegments.map { segment in
+                    .object([
+                        "kind": .string(segment.kind.rawValue),
+                        "value": .string(segment.value.rawValue),
+                        "start_offset_seconds": .int(segment.startOffsetSeconds),
+                        "end_offset_seconds": .int(segment.endOffsetSeconds)
+                    ])
+                })
             ]
         )
     }
@@ -331,6 +394,8 @@ private final class AnonymousInstallIdentityStore {
 }
 
 private struct SessionMetricsAccumulator {
+    static let maxTimelineSegments = 300
+
     private(set) var sessionID: String
     private(set) var startedAt: Date
     private var lastCheckpointAt: Date
@@ -344,6 +409,9 @@ private struct SessionMetricsAccumulator {
     private var playbackLocalDuration: TimeInterval = 0
     private var playbackAppleMusicDuration: TimeInterval = 0
     private var playbackExternalDuration: TimeInterval = 0
+    private var timelineSegments: [TelemetryTimelineSegment] = []
+    private var openTimelineSegments: [TelemetryOpenTimelineSegment] = []
+    private var timelineLimitReached = false
 
     init(
         sessionID: String,
@@ -358,21 +426,49 @@ private struct SessionMetricsAccumulator {
         self.foregroundActive = foregroundActive
         self.mode = mode
         self.isPlaying = isPlaying
+        self.openTimelineSegments = [
+            TelemetryOpenTimelineSegment(
+                kind: .foreground,
+                value: TelemetryTimelineValue(foregroundActive: foregroundActive),
+                startOffsetSeconds: 0
+            ),
+            TelemetryOpenTimelineSegment(
+                kind: .mode,
+                value: TelemetryTimelineValue(mode: mode),
+                startOffsetSeconds: 0
+            ),
+            TelemetryOpenTimelineSegment(
+                kind: .playback,
+                value: TelemetryTimelineValue(isPlaying: isPlaying),
+                startOffsetSeconds: 0
+            )
+        ]
     }
 
     mutating func updateForeground(isActive: Bool) {
-        settle()
+        let now = Date()
+        settle(now: now)
+        transitionTimeline(
+            kind: .foreground,
+            value: TelemetryTimelineValue(foregroundActive: isActive),
+            at: now
+        )
         foregroundActive = isActive
     }
 
     mutating func update(mode: TelemetryPlaybackMode, isPlaying: Bool) {
-        settle()
+        let now = Date()
+        settle(now: now)
+        transitionTimeline(kind: .mode, value: TelemetryTimelineValue(mode: mode), at: now)
+        transitionTimeline(kind: .playback, value: TelemetryTimelineValue(isPlaying: isPlaying), at: now)
         self.mode = mode
         self.isPlaying = isPlaying
     }
 
     mutating func finish(reason: TelemetrySessionEndReason) -> TelemetrySessionSummary {
-        settle()
+        let now = Date()
+        settle(now: now)
+        closeOpenTimelineSegments(at: now)
         return summary(reason: reason)
     }
 
@@ -391,7 +487,10 @@ private struct SessionMetricsAccumulator {
             externalModeDurationSeconds: Int(externalModeDuration.rounded()),
             playbackLocalDurationSeconds: Int(playbackLocalDuration.rounded()),
             playbackAppleMusicDurationSeconds: Int(playbackAppleMusicDuration.rounded()),
-            playbackExternalDurationSeconds: Int(playbackExternalDuration.rounded())
+            playbackExternalDurationSeconds: Int(playbackExternalDuration.rounded()),
+            timelineSegments: timelineSegments,
+            openTimelineSegments: openTimelineSegments,
+            timelineLimitReached: timelineLimitReached
         )
     }
 
@@ -414,6 +513,87 @@ private struct SessionMetricsAccumulator {
         lastCheckpointAt = now
     }
 
+    private func offsetSeconds(at date: Date) -> Int {
+        Int(max(0, date.timeIntervalSince(startedAt)).rounded())
+    }
+
+    private mutating func transitionTimeline(
+        kind: TelemetryTimelineKind,
+        value: TelemetryTimelineValue,
+        at date: Date
+    ) {
+        guard !timelineLimitReached else { return }
+        let offset = offsetSeconds(at: date)
+        guard let openIndex = openTimelineSegments.firstIndex(where: { $0.kind == kind }) else {
+            openTimelineSegments.append(TelemetryOpenTimelineSegment(
+                kind: kind,
+                value: value,
+                startOffsetSeconds: offset
+            ))
+            return
+        }
+
+        let current = openTimelineSegments[openIndex]
+        guard current.value != value else { return }
+        appendClosedSegment(
+            kind: current.kind,
+            value: current.value,
+            startOffsetSeconds: current.startOffsetSeconds,
+            endOffsetSeconds: max(offset, current.startOffsetSeconds)
+        )
+        openTimelineSegments[openIndex] = TelemetryOpenTimelineSegment(
+            kind: kind,
+            value: value,
+            startOffsetSeconds: offset
+        )
+    }
+
+    private mutating func closeOpenTimelineSegments(at date: Date) {
+        guard !timelineLimitReached else { return }
+        let offset = offsetSeconds(at: date)
+        for openSegment in openTimelineSegments {
+            appendClosedSegment(
+                kind: openSegment.kind,
+                value: openSegment.value,
+                startOffsetSeconds: openSegment.startOffsetSeconds,
+                endOffsetSeconds: max(offset, openSegment.startOffsetSeconds)
+            )
+        }
+        openTimelineSegments.removeAll()
+    }
+
+    private mutating func appendClosedSegment(
+        kind: TelemetryTimelineKind,
+        value: TelemetryTimelineValue,
+        startOffsetSeconds: Int,
+        endOffsetSeconds: Int
+    ) {
+        guard endOffsetSeconds > startOffsetSeconds else { return }
+        if let last = timelineSegments.last,
+           last.kind == kind,
+           last.value == value,
+           last.endOffsetSeconds == startOffsetSeconds {
+            timelineSegments[timelineSegments.count - 1] = TelemetryTimelineSegment(
+                kind: kind,
+                value: value,
+                startOffsetSeconds: last.startOffsetSeconds,
+                endOffsetSeconds: endOffsetSeconds
+            )
+            return
+        }
+        guard timelineSegments.count < Self.maxTimelineSegments else {
+            timelineLimitReached = true
+            Log.warning("[Telemetry] timeline segment limit reached; remaining fine-grained segments dropped", category: .telemetry)
+            return
+        }
+        timelineSegments.append(TelemetryTimelineSegment(
+            kind: kind,
+            value: value,
+            startOffsetSeconds: startOffsetSeconds,
+            endOffsetSeconds: endOffsetSeconds
+        ))
+    }
+
     private func summary(reason: TelemetrySessionEndReason) -> TelemetrySessionSummary {
         let playbackTotal = playbackLocalDuration + playbackAppleMusicDuration + playbackExternalDuration
         return TelemetrySessionSummary(
@@ -427,7 +607,8 @@ private struct SessionMetricsAccumulator {
             playbackLocalDurationSeconds: Int(playbackLocalDuration.rounded()),
             playbackAppleMusicDurationSeconds: Int(playbackAppleMusicDuration.rounded()),
             playbackExternalDurationSeconds: Int(playbackExternalDuration.rounded()),
-            endReason: reason
+            endReason: reason,
+            timelineSegments: timelineSegments
         )
     }
 }
@@ -444,6 +625,7 @@ private struct TelemetrySessionSummary {
     let playbackAppleMusicDurationSeconds: Int
     let playbackExternalDurationSeconds: Int
     let endReason: TelemetrySessionEndReason
+    let timelineSegments: [TelemetryTimelineSegment]
 }
 
 private struct TelemetrySessionCheckpoint: Codable {
@@ -460,12 +642,21 @@ private struct TelemetrySessionCheckpoint: Codable {
     let playbackLocalDurationSeconds: Int
     let playbackAppleMusicDurationSeconds: Int
     let playbackExternalDurationSeconds: Int
+    let timelineSegments: [TelemetryTimelineSegment]
+    let openTimelineSegments: [TelemetryOpenTimelineSegment]
+    let timelineLimitReached: Bool
 
     func recoveredSummary() -> TelemetrySessionSummary {
         let sessionDuration = Int(max(0, lastCheckpointAt.timeIntervalSince(startedAt)).rounded())
         let playbackTotal = playbackLocalDurationSeconds
             + playbackAppleMusicDurationSeconds
             + playbackExternalDurationSeconds
+        let recoveredTimelineSegments = Self.closeOpenTimelineSegments(
+            closedSegments: timelineSegments,
+            openSegments: openTimelineSegments,
+            sessionDurationSeconds: sessionDuration,
+            limitReached: timelineLimitReached
+        )
         return TelemetrySessionSummary(
             sessionID: sessionID,
             sessionDurationSeconds: sessionDuration,
@@ -477,8 +668,31 @@ private struct TelemetrySessionCheckpoint: Codable {
             playbackLocalDurationSeconds: playbackLocalDurationSeconds,
             playbackAppleMusicDurationSeconds: playbackAppleMusicDurationSeconds,
             playbackExternalDurationSeconds: playbackExternalDurationSeconds,
-            endReason: .recoveredAfterUngracefulExit
+            endReason: .recoveredAfterUngracefulExit,
+            timelineSegments: recoveredTimelineSegments
         )
+    }
+
+    private static func closeOpenTimelineSegments(
+        closedSegments: [TelemetryTimelineSegment],
+        openSegments: [TelemetryOpenTimelineSegment],
+        sessionDurationSeconds: Int,
+        limitReached: Bool
+    ) -> [TelemetryTimelineSegment] {
+        guard !limitReached else { return closedSegments }
+        var segments = closedSegments
+        for openSegment in openSegments {
+            let endOffset = max(sessionDurationSeconds, openSegment.startOffsetSeconds)
+            guard endOffset > openSegment.startOffsetSeconds else { continue }
+            guard segments.count < SessionMetricsAccumulator.maxTimelineSegments else { break }
+            segments.append(TelemetryTimelineSegment(
+                kind: openSegment.kind,
+                value: openSegment.value,
+                startOffsetSeconds: openSegment.startOffsetSeconds,
+                endOffsetSeconds: endOffset
+            ))
+        }
+        return segments
     }
 }
 
@@ -486,6 +700,7 @@ private enum TelemetryJSONValue: Codable {
     case string(String)
     case int(Int)
     case object([String: TelemetryJSONValue])
+    case array([TelemetryJSONValue])
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
@@ -496,6 +711,8 @@ private enum TelemetryJSONValue: Codable {
             try container.encode(value)
         case .object(let value):
             try container.encode(value)
+        case .array(let value):
+            try container.encode(value)
         }
     }
 
@@ -505,6 +722,8 @@ private enum TelemetryJSONValue: Codable {
             self = .int(value)
         } else if let value = try? container.decode(String.self) {
             self = .string(value)
+        } else if let value = try? container.decode([TelemetryJSONValue].self) {
+            self = .array(value)
         } else {
             self = .object(try container.decode([String: TelemetryJSONValue].self))
         }
@@ -737,7 +956,7 @@ private final class TelemetryUploader {
                 appVersion: first.appVersion,
                 buildNumber: first.buildNumber,
                 platform: "macOS",
-                schemaVersion: 1
+                schemaVersion: 2
             ),
             events: events
         )

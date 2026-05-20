@@ -24,6 +24,8 @@ final class PlaybackCoordinator {
     private var cachedLyricsTrackID: UUID?
     private var cachedLyricsText: String?
     private var lastSyncedPlayingState: Bool?
+    private var lastTelemetrySource: PlaybackSource?
+    private var lastTelemetryIsPlaying: Bool?
     private var sidecarHydrationTask: Task<Void, Never>?
     private var sidecarHydratingTrackID: UUID?
 
@@ -94,6 +96,7 @@ final class PlaybackCoordinator {
         lastSyncedPlayingState = nil
         UserDefaults.standard.set(source.rawValue, forKey: Keys.activeSource)
         onActiveSourceChanged?(source)
+        notifyTelemetryIfNeeded(source: source, isPlaying: isPlayingForTelemetry(source))
         refreshPresentation()
         NowPlayingService.shared.updateNowPlaying(force: true)
     }
@@ -329,9 +332,10 @@ final class PlaybackCoordinator {
             }
         }
 
+        notifyTelemetryIfNeeded(source: activeSource, isPlaying: newPresentation.isPlaying)
+
         guard !newPresentation.isEffectivelyEqual(to: presentation) else { return }
         presentation = newPresentation
-        onTelemetryPlaybackStateChanged?(activeSource, newPresentation.isPlaying)
     }
 
     private var activeExternalProvider: (any ExternalPlaybackProvider)? {
@@ -412,6 +416,22 @@ final class PlaybackCoordinator {
             return appleMusicAdapter
         case .systemNowPlaying:
             return systemNowPlayingProvider
+        }
+    }
+
+    private func notifyTelemetryIfNeeded(source: PlaybackSource, isPlaying: Bool) {
+        guard lastTelemetrySource != source || lastTelemetryIsPlaying != isPlaying else { return }
+        lastTelemetrySource = source
+        lastTelemetryIsPlaying = isPlaying
+        onTelemetryPlaybackStateChanged?(source, isPlaying)
+    }
+
+    private func isPlayingForTelemetry(_ source: PlaybackSource) -> Bool {
+        switch source {
+        case .local:
+            return playerVM.isPlaying
+        case .appleMusic, .systemNowPlaying:
+            return externalProvider(for: source)?.presentation.isPlaying ?? false
         }
     }
 
