@@ -947,6 +947,25 @@ extension ArtworkColorExtractor {
     /// Quality-controlled merge of topPalette + salientHighlightPalette +
     /// richPalette for downstream multi-colour consumers. On near-mono
     /// covers we deliberately keep this palette narrow — no fabrication.
+    ///
+    /// Priority order (Phase-2 follow-up — the original `top → salient →
+    /// rich` order let a near-mono cap of 2 be fully consumed by two
+    /// distinguishable grey buckets, dropping the very salient highlight
+    /// the structure exists to preserve):
+    ///   1. `top.first` — the primary dominant colour. Never displaced by
+    ///      salient: if the cover has a single trustworthy core colour, it
+    ///      must lead the palette.
+    ///   2. All salient highlights, BEFORE the rest of `top`. These are
+    ///      the "designer accent" colours — small-area but high-impact —
+    ///      and would lose every race against any sufficiently large top
+    ///      bucket otherwise. Inserting them here gives them a guaranteed
+    ///      seat above the tail of `top` and above all of `rich`.
+    ///   3. Remaining `top` entries in their original (area-weighted)
+    ///      order.
+    ///   4. `rich` palette (skipped entirely on near-monochrome to honour
+    ///      K.3 "no fabricated multi-colour").
+    /// All adds are subject to the per-palette distinctness check (hue gap
+    /// OR RGB distance) and the per-regime cap.
     nonisolated static func computeDisplayPalette(
         top: [NSColor],
         salient: [NSColor],
@@ -974,13 +993,9 @@ extension ArtworkColorExtractor {
             }
         }
 
-        for color in top { add(color) }
-        // Salient highlights are *real* artwork colours, so we allow them
-        // through on near-monochrome covers too — they are the honest
-        // "second colour" on a 95% grey + 5% yellow sleeve. What we skip
-        // on near-monochrome is `richPalette`, whose extra buckets are
-        // the false-multicolour expansion K.3 wants us to avoid.
+        if let primary = top.first { add(primary) }
         for color in salient { add(color) }
+        for color in top.dropFirst() { add(color) }
         if isNearMonochrome { return picked }
         for color in rich { add(color) }
         return picked

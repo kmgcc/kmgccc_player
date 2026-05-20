@@ -551,3 +551,59 @@ docs/oklch-color-system-migration-log.md               (本节)
    - 暗红 / 酒红黑底（如 Radiohead "Kid A" 类型）
    预期视觉变化：accent 不再被强提到 0.66-0.74 的灰蓝带，能更忠实反映封面色相。
 
+---
+
+## Phase 2 收尾补记（2026-05-20）
+
+完成 Phase 2 主提交（`52857e4`）后对两处可加固点的复核与最小修订。两项变更都不改 UI、不扩 token 数量、不调阈值，纯属算法序与编译条件层面的强化。
+
+### 收尾.1 — displayPalette salient 优先级
+
+**发现的脆弱性**：原 `computeDisplayPalette` 顺序为 `top → salient → rich`。在 `isNearMonochrome=true` 时 `cap = nearMonoMaxCount = 2`，`topPalette` 的两个可分辨 grey bucket（如 (15,15,15) 与 (60,60,60)，RGB gap≈0.176 > `rgbDistinctGap` 0.14）会先于 salient 把两个槽占满，让 5% 高显著黄被挤出 `displayPalette`。原本通过的 `checkSalientYellowOnBlack` 之所以没暴露问题，是因为该场景里 `uiThemePalette` 走 near-mono 快速分支只返回 1 个 grey —— 偶发通过，并非设计保证。
+
+**修订**（`ArtworkColorExtractor.swift` `computeDisplayPalette`）：合并顺序改为
+
+1. `top.first` —— 主导核心色，绝不被 salient 顶掉；
+2. `salient[*]` —— 在 `top` 尾部之前进入，保证其至少与 top 第二项竞争；
+3. `top.dropFirst()` —— 其余 top 按原面积权重顺序；
+4. `rich[*]` —— 仅在非 near-mono 走完；
+   全部仍受 `hueDistinctGap` / `rgbDistinctGap` 与 cap 约束。
+
+**为什么不动 token**：本质是排序问题，不是阈值问题。新增 token 反而稀释意图。
+
+**对正常封面（cap=6）的影响**：`topPalette` 调用 `targetCount=4`，salient 最多 `maxCount=4`，6 槽足够容纳 `top[0] + salient(≤4) + top[1..3]` 中的多数主项，仅当 salient 极多时会把 `top` 尾部挤掉，但此时挤掉的是面积更小的 top 候选，符合"salient 的视觉点睛优先于 top 弱尾"的语义。`rich` 在正常封面仅作为补位。
+
+**新增自检**：`checkDisplayPaletteSalientPriorityUnderContention` —— 50%(15,15,15) + 45%(60,60,60) + 5%(255,200,30)。
+- 验证 `isNearMonochrome=true`、`top.count == 2`（两个可辨灰度都进 topPalette）、`display.count == 2`、`yellow ∈ displayPalette`、`yellow ∈ salientHighlightPalette`。
+- 旧序下该测试会失败（两 grey 占满 cap，黄被丢弃）；新序通过。这是从"偶发正确"升级到"机制保证"的硬证据。
+
+### 收尾.2 — ColorSystemSelfCheck Release 安全
+
+**原状**：`runIfRequested()` 只用 env var (`COLOR_SYSTEM_SELF_CHECK=1`) 作为门。理论上一个 Release 包如果用户/CI 误设该 env var，进程会在 `myPlayer2App.init()` 顶部 `exit()` —— 这是发布隐患。
+
+**修订**（`ColorSystemSelfCheck.swift`）：在 `runIfRequested()` 体外加 `#if DEBUG ... #endif`。Release 构建直接把整段编译掉，env var 不可达、`exit` 不可达；Debug 构建仍叠加 env var 二段门保证日常 Debug 启动 no-op。
+
+**验证矩阵**（实际执行）：
+| 配置 | env var | 行为 | 结果 |
+|---|---|---|---|
+| Debug | `COLOR_SYSTEM_SELF_CHECK=1` | 跑 14 + 1 = 15 个 check，`exit(0)` | `EXIT=0` ALL PASS |
+| Debug | 未设置 | 正常启动 GUI | 3s 后进程仍存活 → no-op |
+| Release | `COLOR_SYSTEM_SELF_CHECK=1` | 正常启动 GUI（`#if DEBUG` 已剥离） | 3s 后进程仍存活 → 无 self-check 执行 |
+| Release | 未设置 | 正常启动 GUI | 与上一致 |
+
+**为什么用 `#if DEBUG` 而非 Configuration 检查**：`#if DEBUG` 在编译期消除代码与符号，链接器都看不到 `runAll` 系列函数 —— 既排除运行时风险，也避免 Release 包里携带"看上去可调用"的 entry。Configuration 字符串检查只能做运行时跳过，安全等级更低。
+
+### 实际修改的文件（本收尾批次）
+
+- `myPlayer2/Utilities/ArtworkColorExtractor.swift` —— `computeDisplayPalette` 顺序重排 + 长 docstring 说明优先级语义；无新 token。
+- `myPlayer2/Utilities/ColorSystemSelfCheck.swift` —— `runIfRequested()` 加 `#if DEBUG` 包裹 + 文件头说明 Release 安全；新增 `checkDisplayPaletteSalientPriorityUnderContention`。
+- `docs/oklch-color-system-migration-log.md` —— 本节。
+
+### 验证
+
+- `xcodebuild ... -configuration Debug ... build` → `** BUILD SUCCEEDED **`
+- `xcodebuild ... -configuration Release ... build` → `** BUILD SUCCEEDED **`
+- `COLOR_SYSTEM_SELF_CHECK=1 ./kmgccc_player`（Debug）→ 15/15 PASS，`EXIT=0`
+- Debug 无 env var → 3s 进程存活
+- Release with env var → 3s 进程存活（self-check 被 `#if DEBUG` 完全剥离）
+
