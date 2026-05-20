@@ -1,0 +1,765 @@
+//
+//  TelemetryService.swift
+//  myPlayer2
+//
+//  kmgccc_player - Consent-based anonymous usage telemetry.
+//
+
+import AppKit
+import Foundation
+
+enum TelemetryPlaybackMode: String, Codable {
+    case local
+    case appleMusic = "apple_music"
+    case external
+
+    init(source: PlaybackSource) {
+        switch source {
+        case .local:
+            self = .local
+        case .appleMusic:
+            self = .appleMusic
+        case .systemNowPlaying:
+            self = .external
+        }
+    }
+}
+
+enum TelemetrySessionEndReason: String, Codable {
+    case appTerminated = "app_terminated"
+    case recoveredAfterUngracefulExit = "recovered_after_ungraceful_exit"
+    case other
+}
+
+@MainActor
+final class TelemetryService: NSObject {
+    static let shared = TelemetryService()
+
+    private let consentStore = TelemetryConsentStore()
+    private let identityStore = AnonymousInstallIdentityStore()
+    private let queue = TelemetryLocalQueue()
+    private let recoveryStore = TelemetryRecoveryStore()
+    private let uploader = TelemetryUploader()
+    private var accumulator: SessionMetricsAccumulator?
+    private weak var playbackCoordinator: PlaybackCoordinator?
+    private var checkpointTimer: Timer?
+    private var uploadTask: Task<Void, Never>?
+
+    var isTelemetryEnabled: Bool {
+        consentStore.isEnabled
+    }
+
+    var anonymousInstallID: String {
+        identityStore.installID
+    }
+
+    private override init() {
+        super.init()
+    }
+
+    func configure(playbackCoordinator: PlaybackCoordinator) {
+        self.playbackCoordinator = playbackCoordinator
+        playbackCoordinator.onTelemetryPlaybackStateChanged = { [weak self] source, isPlaying in
+            Task { @MainActor in
+                self?.updatePlaybackState(source: source, isPlaying: isPlaying)
+            }
+        }
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(appDidBecomeActive),
+            name: NSApplication.didBecomeActiveNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(appDidResignActive),
+            name: NSApplication.didResignActiveNotification,
+            object: nil
+        )
+
+        recoverPreviousSessionIfNeeded()
+        if consentStore.isEnabled {
+            startSessionIfNeeded()
+            flushQueue()
+        }
+    }
+
+    func setTelemetryEnabled(_ enabled: Bool) {
+        guard consentStore.isEnabled != enabled else { return }
+        consentStore.isEnabled = enabled
+
+        if enabled {
+            Log.info("[Telemetry] anonymous telemetry enabled", category: .telemetry)
+            enqueueInstallSeenIfNeeded()
+            startSessionIfNeeded()
+            flushQueue()
+        } else {
+            Log.info("[Telemetry] anonymous telemetry disabled", category: .telemetry)
+            accumulator = nil
+            checkpointTimer?.invalidate()
+            checkpointTimer = nil
+            queue.clear()
+            recoveryStore.clear()
+        }
+    }
+
+    func endSession(reason: TelemetrySessionEndReason) {
+        guard consentStore.isEnabled, let summary = accumulator?.finish(reason: reason) else { return }
+        queue.enqueue(summaryEvent(from: summary))
+        accumulator = nil
+        checkpointTimer?.invalidate()
+        checkpointTimer = nil
+        recoveryStore.clear()
+        if reason == .appTerminated {
+            flushQueueSynchronouslyForTermination()
+        } else {
+            flushQueue()
+        }
+    }
+
+    private func startSessionIfNeeded() {
+        guard consentStore.isEnabled, accumulator == nil else { return }
+        enqueueInstallSeenIfNeeded()
+
+        let source = playbackCoordinator?.activeSource ?? .local
+        let isPlaying = playbackCoordinator?.presentation.isPlaying ?? false
+        let sessionID = UUID().uuidString
+        let now = Date()
+        accumulator = SessionMetricsAccumulator(
+            sessionID: sessionID,
+            startedAt: now,
+            foregroundActive: NSApp.isActive,
+            mode: TelemetryPlaybackMode(source: source),
+            isPlaying: isPlaying
+        )
+        queue.enqueue(baseEvent(
+            eventID: UUID().uuidString,
+            occurredAt: now,
+            sessionID: sessionID,
+            eventType: "app_session_start",
+            properties: [:]
+        ))
+        checkpoint()
+        startCheckpointTimer()
+    }
+
+    private func recoverPreviousSessionIfNeeded() {
+        guard consentStore.isEnabled, let checkpoint = recoveryStore.load() else { return }
+        let summary = checkpoint.recoveredSummary()
+        queue.enqueue(summaryEvent(from: summary))
+        recoveryStore.clear()
+    }
+
+    private func enqueueInstallSeenIfNeeded() {
+        guard !UserDefaults.standard.bool(forKey: TelemetryDefaults.installSeenAcknowledgedKey) else { return }
+        let defaults = UserDefaults.standard
+        let eventID = defaults.string(forKey: TelemetryDefaults.installSeenEventIDKey) ?? UUID().uuidString
+        defaults.set(eventID, forKey: TelemetryDefaults.installSeenEventIDKey)
+        guard !queue.contains(eventID: eventID) else { return }
+        queue.enqueue(baseEvent(
+            eventID: eventID,
+            occurredAt: Date(),
+            sessionID: nil,
+            eventType: "app_install_seen",
+            properties: [:]
+        ))
+    }
+
+    private func updatePlaybackState(source: PlaybackSource, isPlaying: Bool) {
+        guard consentStore.isEnabled else { return }
+        startSessionIfNeeded()
+        accumulator?.update(mode: TelemetryPlaybackMode(source: source), isPlaying: isPlaying)
+        checkpoint()
+    }
+
+    @objc private func appDidBecomeActive() {
+        guard consentStore.isEnabled else { return }
+        startSessionIfNeeded()
+        accumulator?.updateForeground(isActive: true)
+        checkpoint()
+    }
+
+    @objc private func appDidResignActive() {
+        guard consentStore.isEnabled else { return }
+        accumulator?.updateForeground(isActive: false)
+        checkpoint()
+    }
+
+    private func startCheckpointTimer() {
+        checkpointTimer?.invalidate()
+        let timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.checkpoint()
+                self?.flushQueue()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        checkpointTimer = timer
+    }
+
+    private func checkpoint() {
+        guard var accumulator else { return }
+        recoveryStore.save(accumulator.checkpoint())
+        self.accumulator = accumulator
+    }
+
+    private func flushQueue() {
+        guard consentStore.isEnabled, uploadTask == nil else { return }
+        let events = queue.pendingEvents()
+        guard !events.isEmpty else { return }
+
+        uploadTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let response = try await uploader.upload(events: events)
+                await MainActor.run {
+                    self.applyUploadResponse(response)
+                    self.uploadTask = nil
+                    if !self.queue.pendingEvents().isEmpty {
+                        self.flushQueue()
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    Log.warning("[Telemetry] upload failed: \(error)", category: .telemetry)
+                    self.uploadTask = nil
+                }
+            }
+        }
+    }
+
+    private func flushQueueSynchronouslyForTermination() {
+        guard consentStore.isEnabled else { return }
+        let events = queue.pendingEvents()
+        guard !events.isEmpty else { return }
+
+        do {
+            let response = try uploader.uploadSynchronously(events: events, timeout: 3)
+            applyUploadResponse(response)
+        } catch {
+            Log.warning("[Telemetry] termination upload failed: \(error)", category: .telemetry)
+        }
+    }
+
+    private func applyUploadResponse(_ response: TelemetryUploadResponse) {
+        let completedIDs = response.acceptedEvents.map(\.eventID)
+        queue.remove(eventIDs: completedIDs)
+        for rejected in response.rejectedEvents {
+            if let event = queue.pendingEvents().dropFirst(rejected.index).first {
+                queue.remove(eventIDs: [event.eventID])
+            }
+        }
+        if let installSeenID = UserDefaults.standard.string(forKey: TelemetryDefaults.installSeenEventIDKey),
+           completedIDs.contains(installSeenID) {
+            UserDefaults.standard.set(true, forKey: TelemetryDefaults.installSeenAcknowledgedKey)
+        }
+    }
+
+    private func baseEvent(
+        eventID: String,
+        occurredAt: Date,
+        sessionID: String?,
+        eventType: String,
+        properties: [String: TelemetryJSONValue]
+    ) -> TelemetryQueuedEvent {
+        TelemetryQueuedEvent(
+            eventID: eventID,
+            occurredAt: occurredAt,
+            installID: identityStore.installID,
+            sessionID: sessionID,
+            eventType: eventType,
+            appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0",
+            buildNumber: Bundle.main.infoDictionary?["CFBundleVersion"] as? String,
+            platform: "macOS",
+            schemaVersion: 1,
+            properties: properties
+        )
+    }
+
+    private func summaryEvent(from summary: TelemetrySessionSummary) -> TelemetryQueuedEvent {
+        baseEvent(
+            eventID: UUID().uuidString,
+            occurredAt: Date(),
+            sessionID: summary.sessionID,
+            eventType: "app_session_summary",
+            properties: [
+                "session_duration_seconds": .int(summary.sessionDurationSeconds),
+                "foreground_duration_seconds": .int(summary.foregroundDurationSeconds),
+                "mode_duration_seconds": .object([
+                    "local": .int(summary.localModeDurationSeconds),
+                    "apple_music": .int(summary.appleMusicModeDurationSeconds),
+                    "external": .int(summary.externalModeDurationSeconds)
+                ]),
+                "playback_duration_seconds": .object([
+                    "total": .int(summary.playbackTotalDurationSeconds),
+                    "local": .int(summary.playbackLocalDurationSeconds),
+                    "apple_music": .int(summary.playbackAppleMusicDurationSeconds),
+                    "external": .int(summary.playbackExternalDurationSeconds)
+                ]),
+                "session_end_reason": .string(summary.endReason.rawValue)
+            ]
+        )
+    }
+}
+
+private enum TelemetryDefaults {
+    static let consentKey = "telemetry.anonymousUsageEnabled"
+    static let installIDKey = "telemetry.anonymousInstallID"
+    static let installSeenAcknowledgedKey = "telemetry.installSeenAcknowledged"
+    static let installSeenEventIDKey = "telemetry.installSeenEventID"
+}
+
+private final class TelemetryConsentStore {
+    var isEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: TelemetryDefaults.consentKey) }
+        set { UserDefaults.standard.set(newValue, forKey: TelemetryDefaults.consentKey) }
+    }
+}
+
+private final class AnonymousInstallIdentityStore {
+    var installID: String {
+        if let existing = UserDefaults.standard.string(forKey: TelemetryDefaults.installIDKey),
+           UUID(uuidString: existing) != nil {
+            return existing
+        }
+        let newID = UUID().uuidString
+        UserDefaults.standard.set(newID, forKey: TelemetryDefaults.installIDKey)
+        return newID
+    }
+
+}
+
+private struct SessionMetricsAccumulator {
+    private(set) var sessionID: String
+    private(set) var startedAt: Date
+    private var lastCheckpointAt: Date
+    private var foregroundActive: Bool
+    private var mode: TelemetryPlaybackMode
+    private var isPlaying: Bool
+    private var foregroundDuration: TimeInterval = 0
+    private var localModeDuration: TimeInterval = 0
+    private var appleMusicModeDuration: TimeInterval = 0
+    private var externalModeDuration: TimeInterval = 0
+    private var playbackLocalDuration: TimeInterval = 0
+    private var playbackAppleMusicDuration: TimeInterval = 0
+    private var playbackExternalDuration: TimeInterval = 0
+
+    init(
+        sessionID: String,
+        startedAt: Date,
+        foregroundActive: Bool,
+        mode: TelemetryPlaybackMode,
+        isPlaying: Bool
+    ) {
+        self.sessionID = sessionID
+        self.startedAt = startedAt
+        self.lastCheckpointAt = startedAt
+        self.foregroundActive = foregroundActive
+        self.mode = mode
+        self.isPlaying = isPlaying
+    }
+
+    mutating func updateForeground(isActive: Bool) {
+        settle()
+        foregroundActive = isActive
+    }
+
+    mutating func update(mode: TelemetryPlaybackMode, isPlaying: Bool) {
+        settle()
+        self.mode = mode
+        self.isPlaying = isPlaying
+    }
+
+    mutating func finish(reason: TelemetrySessionEndReason) -> TelemetrySessionSummary {
+        settle()
+        return summary(reason: reason)
+    }
+
+    mutating func checkpoint() -> TelemetrySessionCheckpoint {
+        settle()
+        return TelemetrySessionCheckpoint(
+            sessionID: sessionID,
+            startedAt: startedAt,
+            lastCheckpointAt: lastCheckpointAt,
+            foregroundActive: foregroundActive,
+            mode: mode,
+            isPlaying: isPlaying,
+            foregroundDurationSeconds: Int(foregroundDuration.rounded()),
+            localModeDurationSeconds: Int(localModeDuration.rounded()),
+            appleMusicModeDurationSeconds: Int(appleMusicModeDuration.rounded()),
+            externalModeDurationSeconds: Int(externalModeDuration.rounded()),
+            playbackLocalDurationSeconds: Int(playbackLocalDuration.rounded()),
+            playbackAppleMusicDurationSeconds: Int(playbackAppleMusicDuration.rounded()),
+            playbackExternalDurationSeconds: Int(playbackExternalDuration.rounded())
+        )
+    }
+
+    private mutating func settle(now: Date = Date()) {
+        let delta = max(0, min(now.timeIntervalSince(lastCheckpointAt), 24 * 60 * 60))
+        if foregroundActive {
+            foregroundDuration += delta
+        }
+        switch mode {
+        case .local:
+            localModeDuration += delta
+            if isPlaying { playbackLocalDuration += delta }
+        case .appleMusic:
+            appleMusicModeDuration += delta
+            if isPlaying { playbackAppleMusicDuration += delta }
+        case .external:
+            externalModeDuration += delta
+            if isPlaying { playbackExternalDuration += delta }
+        }
+        lastCheckpointAt = now
+    }
+
+    private func summary(reason: TelemetrySessionEndReason) -> TelemetrySessionSummary {
+        let playbackTotal = playbackLocalDuration + playbackAppleMusicDuration + playbackExternalDuration
+        return TelemetrySessionSummary(
+            sessionID: sessionID,
+            sessionDurationSeconds: Int(max(0, Date().timeIntervalSince(startedAt)).rounded()),
+            foregroundDurationSeconds: Int(foregroundDuration.rounded()),
+            localModeDurationSeconds: Int(localModeDuration.rounded()),
+            appleMusicModeDurationSeconds: Int(appleMusicModeDuration.rounded()),
+            externalModeDurationSeconds: Int(externalModeDuration.rounded()),
+            playbackTotalDurationSeconds: Int(playbackTotal.rounded()),
+            playbackLocalDurationSeconds: Int(playbackLocalDuration.rounded()),
+            playbackAppleMusicDurationSeconds: Int(playbackAppleMusicDuration.rounded()),
+            playbackExternalDurationSeconds: Int(playbackExternalDuration.rounded()),
+            endReason: reason
+        )
+    }
+}
+
+private struct TelemetrySessionSummary {
+    let sessionID: String
+    let sessionDurationSeconds: Int
+    let foregroundDurationSeconds: Int
+    let localModeDurationSeconds: Int
+    let appleMusicModeDurationSeconds: Int
+    let externalModeDurationSeconds: Int
+    let playbackTotalDurationSeconds: Int
+    let playbackLocalDurationSeconds: Int
+    let playbackAppleMusicDurationSeconds: Int
+    let playbackExternalDurationSeconds: Int
+    let endReason: TelemetrySessionEndReason
+}
+
+private struct TelemetrySessionCheckpoint: Codable {
+    let sessionID: String
+    let startedAt: Date
+    let lastCheckpointAt: Date
+    let foregroundActive: Bool
+    let mode: TelemetryPlaybackMode
+    let isPlaying: Bool
+    let foregroundDurationSeconds: Int
+    let localModeDurationSeconds: Int
+    let appleMusicModeDurationSeconds: Int
+    let externalModeDurationSeconds: Int
+    let playbackLocalDurationSeconds: Int
+    let playbackAppleMusicDurationSeconds: Int
+    let playbackExternalDurationSeconds: Int
+
+    func recoveredSummary() -> TelemetrySessionSummary {
+        let sessionDuration = Int(max(0, lastCheckpointAt.timeIntervalSince(startedAt)).rounded())
+        let playbackTotal = playbackLocalDurationSeconds
+            + playbackAppleMusicDurationSeconds
+            + playbackExternalDurationSeconds
+        return TelemetrySessionSummary(
+            sessionID: sessionID,
+            sessionDurationSeconds: sessionDuration,
+            foregroundDurationSeconds: foregroundDurationSeconds,
+            localModeDurationSeconds: localModeDurationSeconds,
+            appleMusicModeDurationSeconds: appleMusicModeDurationSeconds,
+            externalModeDurationSeconds: externalModeDurationSeconds,
+            playbackTotalDurationSeconds: playbackTotal,
+            playbackLocalDurationSeconds: playbackLocalDurationSeconds,
+            playbackAppleMusicDurationSeconds: playbackAppleMusicDurationSeconds,
+            playbackExternalDurationSeconds: playbackExternalDurationSeconds,
+            endReason: .recoveredAfterUngracefulExit
+        )
+    }
+}
+
+private enum TelemetryJSONValue: Codable {
+    case string(String)
+    case int(Int)
+    case object([String: TelemetryJSONValue])
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .string(let value):
+            try container.encode(value)
+        case .int(let value):
+            try container.encode(value)
+        case .object(let value):
+            try container.encode(value)
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let value = try? container.decode(Int.self) {
+            self = .int(value)
+        } else if let value = try? container.decode(String.self) {
+            self = .string(value)
+        } else {
+            self = .object(try container.decode([String: TelemetryJSONValue].self))
+        }
+    }
+}
+
+private struct TelemetryQueuedEvent: Codable {
+    let eventID: String
+    let occurredAt: Date
+    let installID: String
+    let sessionID: String?
+    let eventType: String
+    let appVersion: String
+    let buildNumber: String?
+    let platform: String
+    let schemaVersion: Int
+    let properties: [String: TelemetryJSONValue]
+
+    enum CodingKeys: String, CodingKey {
+        case eventID = "event_id"
+        case occurredAt = "occurred_at"
+        case installID = "install_id"
+        case sessionID = "session_id"
+        case eventType = "event_type"
+        case appVersion = "app_version"
+        case buildNumber = "build_number"
+        case platform
+        case schemaVersion = "schema_version"
+        case properties
+    }
+}
+
+private final class TelemetryLocalQueue {
+    private let maxEvents = 200
+    private let fileURL = TelemetryFilePaths.applicationSupport
+        .appendingPathComponent("telemetry-queue.json")
+
+    func enqueue(_ event: TelemetryQueuedEvent) {
+        var events = pendingEvents()
+        events.append(event)
+        if events.count > maxEvents {
+            events = Array(events.suffix(maxEvents))
+        }
+        save(events)
+    }
+
+    func pendingEvents() -> [TelemetryQueuedEvent] {
+        guard let data = try? Data(contentsOf: fileURL) else { return [] }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return (try? decoder.decode([TelemetryQueuedEvent].self, from: data)) ?? []
+    }
+
+    func remove(eventIDs: [String]) {
+        let removed = Set(eventIDs)
+        save(pendingEvents().filter { !removed.contains($0.eventID) })
+    }
+
+    func contains(eventID: String) -> Bool {
+        pendingEvents().contains { $0.eventID == eventID }
+    }
+
+    func clear() {
+        try? FileManager.default.removeItem(at: fileURL)
+    }
+
+    private func save(_ events: [TelemetryQueuedEvent]) {
+        TelemetryFilePaths.ensureApplicationSupportExists()
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        if let data = try? encoder.encode(events) {
+            try? data.write(to: fileURL, options: .atomic)
+        }
+    }
+}
+
+private final class TelemetryRecoveryStore {
+    private let fileURL = TelemetryFilePaths.applicationSupport
+        .appendingPathComponent("telemetry-session-checkpoint.json")
+
+    func save(_ checkpoint: TelemetrySessionCheckpoint) {
+        TelemetryFilePaths.ensureApplicationSupportExists()
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        if let data = try? encoder.encode(checkpoint) {
+            try? data.write(to: fileURL, options: .atomic)
+        }
+    }
+
+    func load() -> TelemetrySessionCheckpoint? {
+        guard let data = try? Data(contentsOf: fileURL) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try? decoder.decode(TelemetrySessionCheckpoint.self, from: data)
+    }
+
+    func clear() {
+        try? FileManager.default.removeItem(at: fileURL)
+    }
+}
+
+private enum TelemetryFilePaths {
+    static var applicationSupport: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let bundleID = Bundle.main.bundleIdentifier ?? "kmgccc_player"
+        return base.appendingPathComponent(bundleID, isDirectory: true)
+    }
+
+    static func ensureApplicationSupportExists() {
+        try? FileManager.default.createDirectory(at: applicationSupport, withIntermediateDirectories: true)
+    }
+}
+
+private struct TelemetryUploadRequest: Codable {
+    let client: TelemetryUploadClient
+    let events: [TelemetryQueuedEvent]
+}
+
+private struct TelemetryUploadClient: Codable {
+    let appVersion: String
+    let buildNumber: String?
+    let platform: String
+    let schemaVersion: Int
+
+    enum CodingKeys: String, CodingKey {
+        case appVersion = "app_version"
+        case buildNumber = "build_number"
+        case platform
+        case schemaVersion = "schema_version"
+    }
+}
+
+private struct TelemetryUploadResponse: Decodable {
+    let success: Bool
+    let acceptedCount: Int
+    let duplicateCount: Int
+    let rejectedCount: Int
+    let acceptedEvents: [TelemetryAcceptedEvent]
+    let rejectedEvents: [TelemetryRejectedEvent]
+
+    enum CodingKeys: String, CodingKey {
+        case success
+        case acceptedCount = "accepted_count"
+        case duplicateCount = "duplicate_count"
+        case rejectedCount = "rejected_count"
+        case acceptedEvents = "accepted_events"
+        case rejectedEvents = "rejected_events"
+    }
+}
+
+private struct TelemetryAcceptedEvent: Decodable {
+    let eventID: String
+    let status: String
+
+    enum CodingKeys: String, CodingKey {
+        case eventID = "event_id"
+        case status
+    }
+}
+
+private struct TelemetryRejectedEvent: Decodable {
+    let index: Int
+    let reason: String
+}
+
+private final class TelemetryUploader {
+    private let endpoint = URL(string: "https://player.kmgccc.cn/api/v1/telemetry/events/batch")!
+    private let session: URLSession
+
+    init() {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 5
+        configuration.timeoutIntervalForResource = 8
+        session = URLSession(configuration: configuration)
+    }
+
+    func upload(events: [TelemetryQueuedEvent]) async throws -> TelemetryUploadResponse {
+        let request = try makeRequest(events: events, timeout: 5)
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200..<300).contains(httpResponse.statusCode) else {
+            throw URLError(.badServerResponse)
+        }
+        let decoder = JSONDecoder()
+        return try decoder.decode(TelemetryUploadResponse.self, from: data)
+    }
+
+    func uploadSynchronously(events: [TelemetryQueuedEvent], timeout: TimeInterval) throws -> TelemetryUploadResponse {
+        let request = try makeRequest(events: events, timeout: timeout)
+        let semaphore = DispatchSemaphore(value: 0)
+        var receivedData: Data?
+        var receivedStatusCode: Int?
+        var receivedError: Error?
+
+        let task = session.dataTask(with: request) { data, response, error in
+            defer { semaphore.signal() }
+            if let error {
+                receivedError = error
+                return
+            }
+            receivedStatusCode = (response as? HTTPURLResponse)?.statusCode
+            receivedData = data
+        }
+        task.resume()
+
+        if semaphore.wait(timeout: .now() + timeout) == .timedOut {
+            task.cancel()
+            throw URLError(.timedOut)
+        }
+        if let receivedError {
+            throw receivedError
+        }
+        guard let statusCode = receivedStatusCode,
+              (200..<300).contains(statusCode),
+              let receivedData else {
+            throw URLError(.badServerResponse)
+        }
+        return try JSONDecoder().decode(TelemetryUploadResponse.self, from: receivedData)
+    }
+
+    private func makeRequest(events: [TelemetryQueuedEvent], timeout: TimeInterval) throws -> URLRequest {
+        guard let first = events.first else {
+            throw URLError(.badURL)
+        }
+
+        let requestBody = TelemetryUploadRequest(
+            client: TelemetryUploadClient(
+                appVersion: first.appVersion,
+                buildNumber: first.buildNumber,
+                platform: "macOS",
+                schemaVersion: 1
+            ),
+            events: events
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.timeoutInterval = timeout
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try encoder.encode(requestBody)
+        return request
+    }
+}
+
+private extension TelemetryUploadResponse {
+    static let empty = TelemetryUploadResponse(
+        success: true,
+        acceptedCount: 0,
+        duplicateCount: 0,
+        rejectedCount: 0,
+        acceptedEvents: [],
+        rejectedEvents: []
+    )
+}

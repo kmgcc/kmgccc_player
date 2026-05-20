@@ -31,6 +31,7 @@ final class PlaybackCoordinator {
     private(set) var presentation: NowPlayingPresentation = .emptyLocal
 
     var onActiveSourceChanged: ((PlaybackSource) -> Void)?
+    var onTelemetryPlaybackStateChanged: ((PlaybackSource, Bool) -> Void)?
 
     init(
         playerVM: PlayerViewModel,
@@ -330,6 +331,7 @@ final class PlaybackCoordinator {
 
         guard !newPresentation.isEffectivelyEqual(to: presentation) else { return }
         presentation = newPresentation
+        onTelemetryPlaybackStateChanged?(activeSource, newPresentation.isPlaying)
     }
 
     private var activeExternalProvider: (any ExternalPlaybackProvider)? {

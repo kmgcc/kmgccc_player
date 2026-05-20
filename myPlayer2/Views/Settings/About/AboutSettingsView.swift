@@ -11,8 +11,43 @@ import SwiftUI
 struct AboutSettingsView: View {
     @State private var aboutEasterEggTracker = AboutEasterEggTapTracker()
     @State private var showEasterEggImage: Bool = false
+    @State private var page: AboutSettingsPage = .main
 
     var body: some View {
+        Group {
+            switch page {
+            case .main:
+                mainAboutPage
+                    .overlay(alignment: .top) {
+                        easterEggOverlay
+                            .frame(height: 360)
+                    }
+            case .userAgreement:
+                legalDocumentPage(
+                    title: "用户协议",
+                    paragraphs: [
+                        "本应用用于个人音乐管理与播放，帮助用户整理本地音乐内容并获得更舒适的播放体验。",
+                        "用户在使用本应用时，应遵守适用的法律法规，并确保所管理与播放的内容来源合法。",
+                        "应用功能可能会根据产品规划、系统能力和用户反馈持续更新，具体能力以实际版本为准。",
+                        "完整用户协议将在正式发布前补充，本页面当前为占位说明。"
+                    ]
+                )
+            case .privacyPolicy:
+                legalDocumentPage(
+                    title: "隐私政策",
+                    paragraphs: [
+                        "本应用不收集歌曲、文件路径、歌词、账号或其他可识别个人身份的信息。",
+                        "若用户开启匿名使用统计，应用仅上传匿名安装标识、会话时长、播放模式使用时长、应用版本等基础统计信息。",
+                        "用户可随时在“数据”设置中关闭匿名使用统计。关闭后，应用将停止上传匿名统计数据。",
+                        "完整隐私政策将在正式发布前补充，本页面当前为占位说明。"
+                    ]
+                )
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var mainAboutPage: some View {
         VStack(alignment: .center, spacing: 10) {
             Spacer(minLength: 40)
 
@@ -79,10 +114,6 @@ struct AboutSettingsView: View {
             complianceSection
 
             Spacer()
-        }
-        .frame(maxWidth: .infinity)
-        .overlay {
-            easterEggOverlay
         }
     }
 
@@ -166,11 +197,64 @@ struct AboutSettingsView: View {
             }
             .padding(.top, 2)
 
+            legalDocumentsSection
+
             Text("settings.about.copyright")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var legalDocumentsSection: some View {
+        HStack(spacing: 10) {
+            Button("用户协议") {
+                showPage(.userAgreement)
+            }
+            .buttonStyle(.bordered)
+            .clipShape(Capsule())
+
+            Button("隐私政策") {
+                showPage(.privacyPolicy)
+            }
+            .buttonStyle(.bordered)
+            .clipShape(Capsule())
+        }
+        .padding(.top, 2)
+    }
+
+    private func legalDocumentPage(title: String, paragraphs: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Button {
+                showPage(.main)
+            } label: {
+                Label("返回关于", systemImage: "chevron.left")
+            }
+            .buttonStyle(.bordered)
+            .clipShape(Capsule())
+            .controlSize(.small)
+
+            Text(title)
+                .font(.title.bold())
+                .foregroundStyle(.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 12) {
+                ForEach(paragraphs, id: \.self) { paragraph in
+                    Text(paragraph)
+                        .settingsDescriptionStyle()
+                }
+            }
+
+            Spacer(minLength: 40)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func showPage(_ nextPage: AboutSettingsPage) {
+        withAnimation(.easeInOut(duration: 0.18)) {
+            page = nextPage
+        }
     }
 
     private var easterEggOverlay: some View {
@@ -274,6 +358,12 @@ struct AboutSettingsView: View {
 private enum AboutTapSide {
     case left
     case right
+}
+
+private enum AboutSettingsPage {
+    case main
+    case userAgreement
+    case privacyPolicy
 }
 
 private struct AboutEasterEggTapTracker {

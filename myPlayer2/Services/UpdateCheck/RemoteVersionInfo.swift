@@ -12,6 +12,35 @@ struct RemoteVersionInfo: Decodable {
     let latestVersion: String
     let releaseURL: String
     let notes: String
+
+    enum CodingKeys: String, CodingKey {
+        case latestVersion
+        case releaseURL
+        case notes
+        case latestVersionSnake = "latest_version"
+        case downloadURL = "download_url"
+        case releaseNotesURL = "release_notes_url"
+        case summary
+    }
+
+    init(latestVersion: String, releaseURL: String, notes: String) {
+        self.latestVersion = latestVersion
+        self.releaseURL = releaseURL
+        self.notes = notes
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        latestVersion = try container.decodeIfPresent(String.self, forKey: .latestVersion)
+            ?? container.decode(String.self, forKey: .latestVersionSnake)
+        releaseURL = try container.decodeIfPresent(String.self, forKey: .releaseURL)
+            ?? container.decodeIfPresent(String.self, forKey: .downloadURL)
+            ?? container.decodeIfPresent(String.self, forKey: .releaseNotesURL)
+            ?? "https://github.com/kmgcc/kmgccc_player/releases/latest"
+        notes = try container.decodeIfPresent(String.self, forKey: .notes)
+            ?? container.decodeIfPresent(String.self, forKey: .summary)
+            ?? ""
+    }
 }
 
 struct RemoteVersionInfoDecodeResult {
