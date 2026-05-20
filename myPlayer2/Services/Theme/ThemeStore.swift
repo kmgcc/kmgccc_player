@@ -394,6 +394,27 @@ final class ThemeStore: ObservableObject {
             "semantic accent resolved reason=\(reason), scheme=\(schemeState), h=\(Self.format01(accentHSL.h)), s=\(Self.format01(accentHSL.s)), l=\(Self.format01(accentHSL.l)), mono=\(analysis.isMonochrome), effectiveMono=\(analysis.isEffectivelyMonochrome), colorfulness=\(Self.format01(analysis.colorfulness)), avgS=\(Self.format01(analysis.avgSaturation)), domS=\(Self.format01(analysis.dominantSaturation)), highSatMaxShare=\(Self.format01(analysis.largestHighSaturationAreaShare)), nearMonoClamp=\(analysis.isEffectivelyMonochrome)",
             category: .theme
         )
+        // Phase 4.5 retrofit: print appForeground live-path values so the
+        // developer can verify warm/cool/nearMono tinting is actually varying.
+        // Remove or gate behind an env flag once the tint effect is confirmed.
+        #if DEBUG
+        do {
+            let fgPri = semantic.appForeground.primary
+            let fgSec = semantic.appForeground.secondary
+            if let lchPri = OKColor.nsColorToOKLCH(fgPri),
+               let lchSec = OKColor.nsColorToOKLCH(fgSec),
+               let rgbPri = fgPri.usingColorSpace(.deviceRGB) {
+                let r8 = Int((rgbPri.redComponent * 255).rounded())
+                let g8 = Int((rgbPri.greenComponent * 255).rounded())
+                let b8 = Int((rgbPri.blueComponent * 255).rounded())
+                print("[theme:appFg] reason=\(reason) nearMono=\(analysis.isNearMonochrome)"
+                    + " colorfulness=\(Self.format01(analysis.colorfulness))"
+                    + " primary(rgb:\(r8),\(g8),\(b8))"
+                    + " primary(oklch:L\(Self.format01(lchPri.l))C\(Self.format01(lchPri.c))H\(Self.format01(lchPri.h)))"
+                    + " secondary(oklch:L\(Self.format01(lchSec.l))C\(Self.format01(lchSec.c))H\(Self.format01(lchSec.h)))")
+            }
+        }
+        #endif
         let fillAlpha = colorScheme == .dark ? 0.20 : 0.14
         withAnimation(.easeInOut(duration: 0.20)) {
             baseColor = Color(nsColor: rawDominantColor)

@@ -453,20 +453,26 @@ nonisolated enum ColorSystemTokens {
     // captions, empty-state copy. These are NOT for use over artwork; that
     // job belongs to `ArtworkReadabilityProfile` (Phase 4).
     //
-    // Design goal: foreground that reads as normal black/grey/white at a
-    // glance, but carries a barely-perceptible artwork-derived hue tint
-    // on careful inspection. Analogous to Material You's tonal neutral
-    // surface foreground, tuned to this app's artwork-driven theme system.
+    // Design goal: foreground that carries a clearly detectable artwork-derived
+    // hue tint while still reading as "mostly neutral" text (no bold color).
+    // Analogous to Material You's tonal neutral surface foreground, tuned to
+    // this app's artwork-driven theme system.
     //
     // Generation: hue taken from `globalAccent` OKLCH hue; chroma scales
     // linearly with artwork `colorfulness` up to `colorfulnessSaturationPoint`,
     // then caps at the per-tier limit. On `isNearMonochrome` covers the chroma
     // is forced to 0 and all tiers are perceptually achromatic.
     //
-    // Chroma values are intentionally MORE conservative than
-    // `ReadabilityProfile.nearMonoChromaCeiling` or `MiniPlayerControl.*`
-    // because legibility on arbitrary backgrounds takes priority over theme
-    // expressiveness for body text.
+    // Phase 4.5 retrofit (2026-05): original caps (0.012/0.010/0.008/0.006)
+    // were below the perceptual detection threshold — at C≈0.012 the sRGB
+    // HSB saturation at L=0.96 is ~4 %, which many color pickers round to 0.
+    // Caps raised ~4x so real-world artwork (colorfulness ≥ 0.14) produces
+    // a measurable and subtly visible tint. At chromaScale=0.25 (colorfulness
+    // = 0.10, just above nearMono threshold) the effective primary chroma is
+    // ≈0.012 — matching the old cap at full colorfulness. Gamut clamping in
+    // `okLCHToNSColor` further limits primary near L=0.96 for warm hues
+    // (sRGB headroom is narrow at very high lightness). Disabled tier
+    // remains achromatic. `nearMono` path is unchanged.
 
     enum AppForeground {
 
@@ -485,12 +491,13 @@ nonisolated enum ColorSystemTokens {
         static let lightDisabledL: CGFloat   = 0.650
 
         // Per-tier OKLCH chroma caps — how "tinted" each tier can be.
-        // Primary receives the strongest tint (still barely perceptible at C=0.012).
+        // At chromaScale=1.0 (colorfulness ≥ 0.40) these are the effective
+        // maximums (before sRGB gamut clamping at high-L primaries).
         // Disabled is always achromatic regardless of artwork.
-        static let primaryChromaCap: CGFloat    = 0.012
-        static let secondaryChromaCap: CGFloat  = 0.010
-        static let tertiaryChromaCap: CGFloat   = 0.008
-        static let quaternaryChromaCap: CGFloat = 0.006
+        static let primaryChromaCap: CGFloat    = 0.048
+        static let secondaryChromaCap: CGFloat  = 0.038
+        static let tertiaryChromaCap: CGFloat   = 0.028
+        static let quaternaryChromaCap: CGFloat = 0.016
         static let disabledChromaCap: CGFloat   = 0.000
 
         // Artwork colorfulness level at which tier caps are fully applied.
@@ -498,11 +505,12 @@ nonisolated enum ColorSystemTokens {
         static let colorfulnessSaturationPoint: CGFloat = 0.40
 
         // Absolute safety ceiling applied after per-tier cap.
-        static let chromaCeiling: CGFloat = 0.020
+        // Must be ≥ primaryChromaCap; acts as a global backstop only.
+        static let chromaCeiling: CGFloat = 0.055
 
         // Self-check assertions.
         static let nearMonoChromaAssertion: CGFloat  = 0.005  // must be achromatic on nearMono
-        static let colorfulChromaAssertion: CGFloat  = 0.022  // with numerical slack
+        static let colorfulChromaAssertion: CGFloat  = 0.065  // ceiling check for colorful-tint test
         static let darkPrimaryLAssertion: CGFloat    = 0.90   // dark primary must stay near white
         static let lightPrimaryLAssertion: CGFloat   = 0.20   // light primary must stay near black
     }
