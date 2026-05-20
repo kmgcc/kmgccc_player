@@ -65,16 +65,18 @@
 
 - **MiniPlayer 控件色语义化**：去掉对 `themeStore.accentColor` 的硬读，改读 `controlPrimaryColor` / `controlSecondaryColor` 等显式角色。
 - **Artwork Readability Profile**：把"在 artwork 上叠字"的可读性策略（`readableTextOnArtwork` / `usesDarkForeground`）统一到一处。
+- **【接力自 Phase 3 回修】近黑白 artwork 下 Fullscreen MiniPlayer UI 不应出现淡蓝 / 淡黄 / 可感知伪 hue**。当前 `FullscreenMiniPlayerView.controlPrimaryNSColor` / `shouldUseDarkArtworkForeground` 仍从原 SemanticPalette accent / averageColor 推导，未走 nearMono 中性化通道。Phase 4 新增的 `MiniPlayerControlPalette` 必须在 `analysis.isNearMonochrome == true` 时强制把 UI 主色归到 OKLCH 中性轴（chroma ≈ 0），仅靠 L 区分。**验收**：纯灰封面下 UI 颜色 `chroma < 0.005` 且 `circularHueDistance < 0.01`（或直接降级到 system label color）。参见 `oklch-color-system-migration-log.md` §3.12 Issue A。
 
-退出条件：同一 artwork 下，Home Hero / Library Header / Fullscreen Cover Gradient 三处的可读性策略一致。
+退出条件：同一 artwork 下，Home Hero / Library Header / Fullscreen Cover Gradient 三处的可读性策略一致；且近黑白封面下 Fullscreen MiniPlayer UI 不再出现伪 hue。
 
 ### Phase 5 — 歌词颜色体系收敛
 
 - **Swift 侧歌词颜色决策集中**：把 `windowLyricActive` / `windowLyricInactive` / `fullscreenLyricBase` / `fullscreenLyricInactiveBase` 的决策路径正式整合到 `SemanticPalette`，减少 ThemeStore 与 LyricsWebViewStore 双写。
 - **不同 fullscreen skin 分策略**：cover gradient blur 与其他 skin 在歌词色策略上的差异显式化。
 - **glow / layer 策略整理**：halo / shadow / mix-blend-mode 这些 layer 从混杂的 CSS var 改为明确的语义层。
+- **【接力自 Phase 3 回修】近黑白 artwork 下窗口 / 全屏歌词不应偏粉**。Phase 5 集中决策时，**near-mono 中性化作为显式规则**进入统一函数：`analysis.isNearMonochrome == true` → 歌词所有可见色 OKLCH `chroma ≤ 0.005`，仅靠 L 与 alpha 体现层级。**两端同步验收**：窗口歌词与全屏歌词必须同一决策函数生效，避免单端修复造成视觉割裂。参见 `oklch-color-system-migration-log.md` §3.12 Issue B。
 
-退出条件：歌词颜色完全由 Swift 决策，CSS 层只剩"渲染"角色，无颜色决策残留。
+退出条件：歌词颜色完全由 Swift 决策，CSS 层只剩"渲染"角色，无颜色决策残留；且近黑白封面下窗口 / 全屏歌词都不再偏粉。
 
 ### Phase 6 — Tone Ladder 与 LED / 艺术歌词层级深化
 

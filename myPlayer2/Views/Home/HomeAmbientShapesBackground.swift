@@ -842,7 +842,7 @@ private enum HomeAmbientPalette {
     ///   - When the source palette only has 1–2 entries, we pad by
     ///     generating same-hue L variants of those real colours — no
     ///     fabricated hues.
-    private static func makePaletteFromDisplay(
+    nonisolated private static func makePaletteFromDisplay(
         analysis: ArtworkColorAnalysis,
         colorScheme: ColorScheme
     ) -> [NSColor]? {
@@ -896,27 +896,39 @@ private enum HomeAmbientPalette {
         let chromaScale: CGFloat
     }
 
-    private static func ambientTuning(
+    nonisolated private static func ambientTuning(
         isDark: Bool,
         isLowColor: Bool,
         isUltraDark: Bool
     ) -> AmbientTuning {
         if isDark {
             if isUltraDark {
-                // Ultra-dark covers stay night-deep even after projection.
+                // Phase 3 hotfix: ultra-dark covers must read as visibly
+                // darker than ordinary dark covers. The previous band
+                // (0.10–0.26) overlapped the normal dark band (0.18–0.34)
+                // by 8 percentage points of L, which made Home shapes look
+                // identical between "dark" and "ultra dark" artwork while
+                // BKArt was clearly darker. Crush the band to 0.05–0.18 so
+                // shapes track BKArt's UltraDark impression.
                 return AmbientTuning(
-                    lMin: 0.10, lMax: 0.26,
-                    lScale: 0.46, lOffset: 0.06,
-                    chromaCeiling: isLowColor ? 0.030 : 0.075,
-                    chromaScale: isLowColor ? 0.42 : 0.60
+                    lMin: 0.05, lMax: 0.18,
+                    lScale: 0.32, lOffset: 0.04,
+                    // Phase 3 hotfix: a near-mono ultraDark cover must
+                    // stay perceptually grey. 0.030 was still loud enough
+                    // for a salient micro-spot to show as pink.
+                    chromaCeiling: isLowColor ? 0.010 : 0.070,
+                    chromaScale: isLowColor ? 0.18 : 0.56
                 )
             }
             return AmbientTuning(
                 lMin: isLowColor ? 0.16 : 0.18,
                 lMax: isLowColor ? 0.28 : 0.34,
                 lScale: 0.52, lOffset: 0.08,
-                chromaCeiling: isLowColor ? 0.038 : 0.115,
-                chromaScale: isLowColor ? 0.46 : 0.72
+                // Phase 3 hotfix: near-mono dark needs a much lower ceiling.
+                // 0.038 with chromaScale 0.46 let salient highlights surface
+                // as visible pink/yellow on perceptually grey artwork.
+                chromaCeiling: isLowColor ? 0.012 : 0.115,
+                chromaScale: isLowColor ? 0.22 : 0.72
             )
         }
         // Light mode: pastel band, restrained chroma so it stays a quiet
@@ -925,12 +937,13 @@ private enum HomeAmbientPalette {
             lMin: isLowColor ? 0.78 : 0.74,
             lMax: isLowColor ? 0.90 : 0.86,
             lScale: 0.16, lOffset: 0.74,
-            chromaCeiling: isLowColor ? 0.022 : 0.058,
-            chromaScale: isLowColor ? 0.32 : 0.46
+            // Phase 3 hotfix: near-mono light mode same neutralisation.
+            chromaCeiling: isLowColor ? 0.008 : 0.058,
+            chromaScale: isLowColor ? 0.18 : 0.46
         )
     }
 
-    private static func project(_ color: NSColor, targets: AmbientTuning) -> NSColor? {
+    nonisolated private static func project(_ color: NSColor, targets: AmbientTuning) -> NSColor? {
         guard let lch = OKColor.nsColorToOKLCH(color) else { return nil }
         let newL = clamp(
             targets.lOffset + lch.l * targets.lScale,
@@ -942,7 +955,7 @@ private enum HomeAmbientPalette {
         return OKColor.okLCHToNSColor(tuned, alpha: 1)
     }
 
-    private static func tonalVariant(
+    nonisolated private static func tonalVariant(
         of color: NSColor,
         lDelta: CGFloat,
         targets: AmbientTuning
@@ -1813,6 +1826,33 @@ private struct HomeAmbientRandom {
     }
 }
 
-private func clamp(_ value: CGFloat, min lower: CGFloat, max upper: CGFloat) -> CGFloat {
+nonisolated private func clamp(_ value: CGFloat, min lower: CGFloat, max upper: CGFloat) -> CGFloat {
     Swift.min(Swift.max(value, lower), upper)
 }
+
+#if DEBUG
+/// Debug-only bridge exposing the Home ambient palette projection to
+/// `ColorSystemSelfCheck`. Lets the self-check verify the Phase 3 hotfix
+/// invariants (near-mono → low-chroma output; ultraDark → low-L output)
+/// without leaking `HomeAmbientPalette` itself across files.
+nonisolated enum HomeAmbientPaletteSelfCheck {
+    nonisolated static func project(
+        analysis: ArtworkColorAnalysis,
+        colorScheme: ColorScheme
+    ) -> [NSColor]? {
+        HomeAmbientPalette._selfCheckProjection(
+            analysis: analysis,
+            colorScheme: colorScheme
+        )
+    }
+}
+
+extension HomeAmbientPalette {
+    fileprivate nonisolated static func _selfCheckProjection(
+        analysis: ArtworkColorAnalysis,
+        colorScheme: ColorScheme
+    ) -> [NSColor]? {
+        makePaletteFromDisplay(analysis: analysis, colorScheme: colorScheme)
+    }
+}
+#endif

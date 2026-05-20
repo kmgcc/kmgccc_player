@@ -32,6 +32,7 @@
 
 import AppKit
 import Foundation
+import SwiftUI
 
 nonisolated enum ColorSystemSelfCheck {
 
@@ -109,10 +110,216 @@ nonisolated enum ColorSystemSelfCheck {
         checkDisplayPaletteNearMonoRestraint(&report)
         checkDisplayPaletteSalientPriorityUnderContention(&report)
 
+        report.section("Phase 3 hotfix — consumer projection")
+        checkSpectrumNearMonoNeutralised(&report)
+        checkSpectrumLowSaturationNotAmplified(&report)
+        checkSpectrumColourfulPassThrough(&report)
+        checkHomeShapesNearMonoChromaCeiling(&report)
+        checkHomeShapesUltraDarkLightnessBand(&report)
+
         report.lines.append(
             "Result: \(report.allPassed ? "ALL PASS" : "FAILURES PRESENT")"
         )
         return report
+    }
+
+    // MARK: - Phase 3 hotfix scenarios
+
+    /// A 95%-grey + 5% yellow accent cover is `isNearMonochrome == true`
+    /// (the salient yellow does not break the chromatic regime gate). The
+    /// Spectrum preparation must hard-clamp the yellow's OKLCH chroma to
+    /// near zero so the spectrum reads as grey, not yellow / pink.
+    private static func checkSpectrumNearMonoNeutralised(_ report: inout CheckReport) {
+        guard let analysis = analyseMix(side: 64, regions: [
+            (0.95, (15, 15, 15, 255)),
+            (0.05, (255, 200, 30, 255))
+        ]) else {
+            report.record("Spectrum: near-mono input neutralised", false, "analysis nil")
+            return
+        }
+        guard analysis.isNearMonochrome else {
+            report.record(
+                "Spectrum: near-mono input neutralised", false,
+                "synthetic sample was not classified near-mono"
+            )
+            return
+        }
+        let inputs = Array(analysis.displayPalette.prefix(2))
+        let prepared = SpectrumPaletteSelfCheck.prepare(inputs, analysis: analysis)
+        let chromas = prepared.compactMap { OKColor.nsColorToOKLCH($0)?.c }
+        let maxChroma = chromas.max() ?? 1.0
+        let ok = maxChroma <= 0.010
+        report.record(
+            "Spectrum: near-mono input neutralised", ok,
+            "maxOKLCHChroma=\(format(maxChroma)) limit=0.010 inputs=\(inputs.count)"
+        )
+    }
+
+    /// A muted dusty-blue cover (low colourfulness but NOT near-mono). The
+    /// Spectrum preparation must apply the soft chroma shoulder so the
+    /// downstream brightness/saturation tuner doesn't lift output chroma
+    /// far above the source.
+    private static func checkSpectrumLowSaturationNotAmplified(_ report: inout CheckReport) {
+        guard let analysis = analyseMix(side: 64, regions: [
+            (0.60, (110, 118, 132, 255)),
+            (0.40, (95, 104, 118, 255))
+        ]) else {
+            report.record("Spectrum: low-sat not amplified", false, "analysis nil")
+            return
+        }
+        let inputs = Array(analysis.displayPalette.prefix(2))
+        guard !inputs.isEmpty else {
+            report.record("Spectrum: low-sat not amplified", false, "empty displayPalette")
+            return
+        }
+        let prepared = SpectrumPaletteSelfCheck.prepare(inputs, analysis: analysis)
+        let sourceChromas: [CGFloat] = inputs.compactMap { OKColor.nsColorToOKLCH($0)?.c }
+        let outChromas: [CGFloat] = prepared.compactMap { OKColor.nsColorToOKLCH($0)?.c }
+        var worstAmp: CGFloat = 1
+        if sourceChromas.count == outChromas.count, !sourceChromas.isEmpty {
+            for i in 0..<sourceChromas.count {
+                let src = sourceChromas[i]
+                let out = outChromas[i]
+                let amp: CGFloat
+                if src > 0 {
+                    amp = out / src
+                } else {
+                    amp = out > 0.01 ? 99 : 1
+                }
+                if amp > worstAmp { worstAmp = amp }
+            }
+        } else {
+            worstAmp = 99
+        }
+        // Soft shoulder; we accept up to ~1.05× source chroma. Anything
+        // above means the tuner is fabricating colour.
+        let ok = worstAmp <= 1.05
+        report.record(
+            "Spectrum: low-sat not amplified", ok,
+            "worstChromaAmp=\(format(worstAmp)) src=\(sourceChromas.map(format)) out=\(outChromas.map(format))"
+        )
+    }
+
+    /// A vivid 4-way colourful cover. The Spectrum preparation must NOT
+    /// flatten it — colourfulness is well above the low-sat gate, so the
+    /// prepared output equals the input.
+    private static func checkSpectrumColourfulPassThrough(_ report: inout CheckReport) {
+        guard let analysis = analyseMix(side: 64, regions: [
+            (0.25, (210, 35, 45, 255)),
+            (0.25, (40, 180, 60, 255)),
+            (0.25, (40, 80, 200, 255)),
+            (0.25, (240, 200, 30, 255))
+        ]) else {
+            report.record("Spectrum: colourful pass-through", false, "analysis nil")
+            return
+        }
+        let inputs = Array(analysis.displayPalette.prefix(2))
+        guard !inputs.isEmpty else {
+            report.record("Spectrum: colourful pass-through", false, "empty displayPalette")
+            return
+        }
+        let prepared = SpectrumPaletteSelfCheck.prepare(inputs, analysis: analysis)
+        var allEqual = prepared.count == inputs.count
+        if allEqual {
+            for i in 0..<inputs.count {
+                if !isColorRGBEqual(prepared[i], inputs[i], epsilon: 1e-6) {
+                    allEqual = false
+                    break
+                }
+            }
+        }
+        let ok = !analysis.isNearMonochrome
+            && analysis.colorfulness >= 0.18
+            && allEqual
+        report.record(
+            "Spectrum: colourful pass-through", ok,
+            "nearMono=\(analysis.isNearMonochrome) colorfulness=\(format(analysis.colorfulness)) equal=\(prepared.count == inputs.count)"
+        )
+    }
+
+    /// Near-mono cover projected through the Home shape palette must come
+    /// out with chroma well below the perceptual visibility threshold.
+    /// The Phase-3-hotfix dark+nearMono ceiling is 0.012; we require all
+    /// output chromas to respect it.
+    private static func checkHomeShapesNearMonoChromaCeiling(_ report: inout CheckReport) {
+        guard let analysis = analyseMix(side: 64, regions: [
+            (0.95, (15, 15, 15, 255)),
+            (0.05, (255, 200, 30, 255))
+        ]) else {
+            report.record("HomeShapes: near-mono chroma ceiling", false, "analysis nil")
+            return
+        }
+        guard analysis.isNearMonochrome else {
+            report.record(
+                "HomeShapes: near-mono chroma ceiling", false,
+                "synthetic sample was not classified near-mono"
+            )
+            return
+        }
+        guard let projected = HomeAmbientPaletteSelfCheck.project(
+            analysis: analysis,
+            colorScheme: .dark
+        ), !projected.isEmpty else {
+            report.record("HomeShapes: near-mono chroma ceiling", false, "projection nil/empty")
+            return
+        }
+        let chromas = projected.compactMap { OKColor.nsColorToOKLCH($0)?.c }
+        let maxChroma = chromas.max() ?? 1.0
+        // Allow the configured ceiling 0.012 + 1e-6 numeric slack. ultraDark
+        // path uses 0.010; we test the normal dark+nearMono path here.
+        let limit: CGFloat = analysis.isUltraDark ? 0.0105 : 0.0125
+        let ok = maxChroma <= limit
+        report.record(
+            "HomeShapes: near-mono chroma ceiling", ok,
+            "maxOKLCHChroma=\(format(maxChroma)) limit=\(format(limit)) ultraDark=\(analysis.isUltraDark)"
+        )
+    }
+
+    /// An UltraDark deep-navy cover projected through Home shapes must
+    /// land in the [0.05, 0.18] L band per the Phase 3 hotfix. We sample
+    /// every projected colour to ensure no entry exceeds the band.
+    private static func checkHomeShapesUltraDarkLightnessBand(_ report: inout CheckReport) {
+        guard let analysis = analyse(side: 32, fill: (10, 25, 70, 255)) else {
+            report.record("HomeShapes: ultraDark lightness band", false, "analysis nil")
+            return
+        }
+        guard analysis.isUltraDark else {
+            report.record(
+                "HomeShapes: ultraDark lightness band", false,
+                "synthetic sample was not classified ultraDark"
+            )
+            return
+        }
+        guard let projected = HomeAmbientPaletteSelfCheck.project(
+            analysis: analysis,
+            colorScheme: .dark
+        ), !projected.isEmpty else {
+            report.record("HomeShapes: ultraDark lightness band", false, "projection nil/empty")
+            return
+        }
+        let ls = projected.compactMap { OKColor.nsColorToOKLCH($0)?.l }
+        let maxL = ls.max() ?? 1.0
+        let minL = ls.min() ?? 0.0
+        // Band is [0.05, 0.18]. Allow 1e-6 numeric slack on both sides.
+        let ok = maxL <= 0.1801 && minL >= 0.0499
+        report.record(
+            "HomeShapes: ultraDark lightness band", ok,
+            "L range=[\(format(minL)), \(format(maxL))] band=[0.05, 0.18]"
+        )
+    }
+
+    private static func isColorRGBEqual(
+        _ a: NSColor,
+        _ b: NSColor,
+        epsilon: CGFloat
+    ) -> Bool {
+        guard
+            let lhs = a.usingColorSpace(.deviceRGB),
+            let rhs = b.usingColorSpace(.deviceRGB)
+        else { return false }
+        return abs(lhs.redComponent - rhs.redComponent) <= epsilon
+            && abs(lhs.greenComponent - rhs.greenComponent) <= epsilon
+            && abs(lhs.blueComponent - rhs.blueComponent) <= epsilon
     }
 
     // MARK: - Quadrant scenarios
