@@ -24,6 +24,7 @@ struct HomeAlbumsSection: View {
     /// Distance from the right window edge inwards (right lyrics inspector
     /// width + horizontal padding inside the center column).
     let centerRightPad: CGFloat
+    var titleColor: Color = Color.primary
 
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(UIStateViewModel.self) private var uiState
@@ -126,6 +127,7 @@ struct HomeAlbumsSection: View {
             Text("专辑")
                 .font(.system(size: mode.sectionTitleFontSize, weight: .semibold))
                 .tracking(-0.3)
+                .foregroundStyle(titleColor)
             Spacer()
             viewAllButton
         }

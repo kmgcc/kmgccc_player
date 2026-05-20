@@ -11,6 +11,7 @@ import SwiftUI
 struct HomePlaylistsSection: View {
     let playlists: [Playlist]
     var mode: HomeLayoutMode = .wide
+    var titleColor: Color = Color.primary
 
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(UIStateViewModel.self) private var uiState
@@ -424,6 +425,7 @@ struct HomePlaylistsSection: View {
             Text("播放列表")
                 .font(.system(size: mode.sectionTitleFontSize, weight: .semibold))
                 .tracking(-0.3)
+                .foregroundStyle(titleColor)
             Spacer()
         }
     }

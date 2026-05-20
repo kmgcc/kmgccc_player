@@ -17,6 +17,7 @@ struct HomeArtistsSection: View {
     var mode: HomeLayoutMode = .wide
     let centerLeftPad: CGFloat
     let centerRightPad: CGFloat
+    var titleColor: Color = Color.primary
 
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(UIStateViewModel.self) private var uiState
@@ -115,6 +116,7 @@ struct HomeArtistsSection: View {
             Text("艺人")
                 .font(.system(size: mode.sectionTitleFontSize, weight: .semibold))
                 .tracking(-0.3)
+                .foregroundStyle(titleColor)
             Spacer()
             viewAllButton
         }

@@ -492,12 +492,14 @@ nonisolated enum ColorSystemTokens {
 
         // Per-tier OKLCH chroma caps — how "tinted" each tier can be.
         // At chromaScale=1.0 (colorfulness ≥ 0.40) these are the effective
-        // maximums (before sRGB gamut clamping at high-L primaries).
+        // maximums (before sRGB gamut clamping at high-L primaries). Values
+        // are intentionally bold so the tint is clearly perceptible; the
+        // gamut clamp in `okLCHToNSColor` keeps the result in sRGB.
         // Disabled is always achromatic regardless of artwork.
-        static let primaryChromaCap: CGFloat    = 0.048
-        static let secondaryChromaCap: CGFloat  = 0.038
-        static let tertiaryChromaCap: CGFloat   = 0.028
-        static let quaternaryChromaCap: CGFloat = 0.016
+        static let primaryChromaCap: CGFloat    = 0.070
+        static let secondaryChromaCap: CGFloat  = 0.056
+        static let tertiaryChromaCap: CGFloat   = 0.040
+        static let quaternaryChromaCap: CGFloat = 0.022
         static let disabledChromaCap: CGFloat   = 0.000
 
         // Artwork colorfulness level at which tier caps are fully applied.
@@ -506,11 +508,11 @@ nonisolated enum ColorSystemTokens {
 
         // Absolute safety ceiling applied after per-tier cap.
         // Must be ≥ primaryChromaCap; acts as a global backstop only.
-        static let chromaCeiling: CGFloat = 0.055
+        static let chromaCeiling: CGFloat = 0.080
 
         // Self-check assertions.
         static let nearMonoChromaAssertion: CGFloat  = 0.005  // must be achromatic on nearMono
-        static let colorfulChromaAssertion: CGFloat  = 0.065  // ceiling check for colorful-tint test
+        static let colorfulChromaAssertion: CGFloat  = 0.090  // ceiling check for colorful-tint test
         static let darkPrimaryLAssertion: CGFloat    = 0.90   // dark primary must stay near white
         static let lightPrimaryLAssertion: CGFloat   = 0.20   // light primary must stay near black
     }

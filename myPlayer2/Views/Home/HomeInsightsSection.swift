@@ -27,6 +27,9 @@ struct HomeInsightsSection: View {
     /// `@EnvironmentObject ThemeStore` subscription — one subscription at
     /// HomeView feeds ~30 ranking rows + the heatmap.
     var accentColor: Color = .accentColor
+    /// AppForegroundPalette primary resolved at HomeView level; same pattern
+    /// as `accentColor` — avoids per-child ThemeStore subscription.
+    var titleColor: Color = Color.primary
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
@@ -177,6 +180,7 @@ struct HomeInsightsSection: View {
             Text("音乐足迹")
                 .font(.system(size: mode.sectionTitleFontSize, weight: .semibold))
                 .tracking(-0.3)
+                .foregroundStyle(titleColor)
             Spacer()
         }
     }
