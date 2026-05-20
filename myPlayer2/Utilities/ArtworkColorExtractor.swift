@@ -16,7 +16,7 @@ public nonisolated enum ArtworkColorExtractor {
     /// output (`ArtworkAssetStore` snapshots, `ThemeStore.dominantColorCache`)
     /// fold this into their keys, so previous-version entries cannot bleed
     /// into a new algorithm.
-    public nonisolated static let cacheVersion: String = "semantic-near-mono-v2"
+    public nonisolated static let cacheVersion: String = "orthogonal-decision-v3"
 
     struct TextPalette {
         let primary: NSColor
@@ -856,4 +856,133 @@ extension ArtworkColorExtractor {
         return 0.2126 * linearize(red) + 0.7152 * linearize(green) + 0.0722 * linearize(blue)
     }
 
+}
+
+// MARK: - Phase 2: salient highlight & display palette computation
+
+extension ArtworkColorExtractor {
+
+    /// Mines the 48-hue bucket histogram for buckets that are visually
+    /// striking despite occupying a small area share — the "designer
+    /// accent" colours on a cover. The thresholds are configured by
+    /// `ColorSystemTokens.SalientHighlight`.
+    ///
+    /// Worked scenarios this method targets:
+    ///   - 95% gray-black + 5% bright yellow → yellow survives
+    ///     (sat≈1.0, area≈0.05, bri≈0.95 → fails maxBrightness, see
+    ///      below for the brightness ceiling tuning rationale).
+    ///   - 90% deep navy + 10% bright orange → orange survives.
+    ///   - 80% dark canvas + 20% red title → red survives.
+    ///   - small high-sat noise (<1% area) → rejected by area floor.
+    ///   - washed-out tints (sat<0.40) → rejected by saturation gate.
+    nonisolated static func computeSalientHighlights(
+        buckets: [HueBucket],
+        totalWeight: CGFloat,
+        dominantHue: CGFloat
+    ) -> [NSColor] {
+        guard totalWeight > 0 else { return [] }
+
+        struct Candidate {
+            let color: NSColor
+            let hue: CGFloat
+            let score: CGFloat
+        }
+
+        var candidates: [Candidate] = []
+        candidates.reserveCapacity(8)
+
+        let noiseFloor = totalWeight * ColorSystemTokens.SalientHighlight.noiseFloorAbsolute
+
+        for bucket in buckets {
+            guard bucket.weight > noiseFloor else { continue }
+            let inv = 1 / bucket.weight
+            let color = NSColor(
+                deviceRed: ColorMath.clamp(bucket.r * inv, 0, 1),
+                green: ColorMath.clamp(bucket.g * inv, 0, 1),
+                blue: ColorMath.clamp(bucket.b * inv, 0, 1),
+                alpha: 1
+            )
+            guard let rgb = color.usingColorSpace(.deviceRGB) else { continue }
+            var h: CGFloat = 0
+            var s: CGFloat = 0
+            var b: CGFloat = 0
+            var a: CGFloat = 0
+            rgb.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+
+            if s < ColorSystemTokens.SalientHighlight.minSaturation { continue }
+            if b < ColorSystemTokens.SalientHighlight.minBrightness { continue }
+
+            let areaShare = bucket.weight / totalWeight
+            if areaShare < ColorSystemTokens.SalientHighlight.minAreaShare { continue }
+            if areaShare > ColorSystemTokens.SalientHighlight.maxAreaShare { continue }
+
+            let score = bucket.weight * (1 + s * ColorSystemTokens.SalientHighlight.satBonus)
+            candidates.append(Candidate(color: color, hue: h, score: score))
+        }
+
+        candidates.sort { $0.score > $1.score }
+
+        var picked: [NSColor] = []
+        for candidate in candidates {
+            let distinct = picked.allSatisfy { existing in
+                let hueGap = ColorMath.circularHueDistance(
+                    candidate.hue,
+                    hueValue(of: existing)
+                )
+                let rgbGap = rgbDistance(candidate.color, existing)
+                return hueGap >= ColorSystemTokens.SalientHighlight.hueDedupGap
+                    || rgbGap >= ColorSystemTokens.SalientHighlight.rgbDedupGap
+            }
+            if distinct {
+                picked.append(candidate.color)
+            }
+            if picked.count >= ColorSystemTokens.SalientHighlight.maxCount { break }
+        }
+
+        _ = dominantHue  // currently unused: retained as a hook for the
+                        // Phase 3 "true accent against dominant" filter.
+        return picked
+    }
+
+    /// Quality-controlled merge of topPalette + salientHighlightPalette +
+    /// richPalette for downstream multi-colour consumers. On near-mono
+    /// covers we deliberately keep this palette narrow — no fabrication.
+    nonisolated static func computeDisplayPalette(
+        top: [NSColor],
+        salient: [NSColor],
+        rich: [NSColor],
+        isNearMonochrome: Bool
+    ) -> [NSColor] {
+        let cap = isNearMonochrome
+            ? ColorSystemTokens.DisplayPalette.nearMonoMaxCount
+            : ColorSystemTokens.DisplayPalette.maxCount
+
+        var picked: [NSColor] = []
+
+        func add(_ color: NSColor) {
+            if picked.count >= cap { return }
+            if picked.contains(color) { return }
+            let candidateHue = hueValue(of: color)
+            let distinct = picked.allSatisfy { existing in
+                let hueGap = ColorMath.circularHueDistance(candidateHue, hueValue(of: existing))
+                let rgbGap = rgbDistance(color, existing)
+                return hueGap >= ColorSystemTokens.DisplayPalette.hueDistinctGap
+                    || rgbGap >= ColorSystemTokens.DisplayPalette.rgbDistinctGap
+            }
+            if distinct {
+                picked.append(color)
+            }
+        }
+
+        for color in top { add(color) }
+        // Salient highlights are *real* artwork colours, so we allow them
+        // through on near-monochrome covers too — they are the honest
+        // "second colour" on a 95% grey + 5% yellow sleeve. What we skip
+        // on near-monochrome is `richPalette`, whose extra buckets are
+        // the false-multicolour expansion K.3 wants us to avoid.
+        for color in salient { add(color) }
+        if isNearMonochrome { return picked }
+        for color in rich { add(color) }
+        return picked
+    }
 }

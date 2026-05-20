@@ -100,7 +100,12 @@ enum SemanticPaletteFactory {
         for scheme: ColorScheme,
         analysis: ArtworkColorAnalysis
     ) -> NSColor {
-        if analysis.isEffectivelyMonochrome {
+        // The branch below is the "anti-fake-color" path — covers without a
+        // trustworthy hue (greyscale, near-white sleeves, dim duo-tones).
+        // It is NOT an ultra-dark protector: dark-but-colourful covers such
+        // as deep violet / midnight teal now correctly fall through to
+        // optimizedAccent and keep their hue (Phase 2 K.2).
+        if analysis.isNearMonochrome {
             return nearMonochromeAccent(for: scheme, analysis: analysis)
         }
 
@@ -220,6 +225,12 @@ enum SemanticPaletteFactory {
         return ColorMath.color(h: h, s: s, l: l)
     }
 
+    /// Anti-fake-color accent path. Triggered when `analysis.isNearMonochrome`
+    /// is true — the cover does not carry a hue we trust. Output is a heavily
+    /// desaturated tone, hue chosen from the average (if any tiny tint exists)
+    /// or a fixed neutral hue otherwise. Phase 2 explicitly removed
+    /// "ultra-dark protection" from this path's responsibility; that is now
+    /// `isUltraDark`'s job (consumed by future Phase 3+ branches).
     fileprivate static func nearMonochromeAccent(
         for scheme: ColorScheme,
         analysis: ArtworkColorAnalysis

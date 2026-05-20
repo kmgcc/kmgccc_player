@@ -3,23 +3,18 @@
 //  myPlayer2
 //
 //  Central registry for colour-decision thresholds, clamps, ceilings, and
-//  fixed targets used by the palette / theme system. Phase 1 lifts magic
+//  fixed targets used by the palette / theme system. Phase 1 lifted magic
 //  numbers from `SemanticPaletteFactory` (and the `isEffectivelyMonochrome`
-//  gate that drives it) into named constants without changing any value or
-//  algorithmic structure — so Phase 2's Ultra Dark / Near Monochrome split
-//  has a single place to retune from.
+//  gate that drives it) into named constants. Phase 2 splits the old
+//  `EffectiveMonochrome` gate into two orthogonal axes — `UltraDark`
+//  (lightness only) and `NearMonochromeProfile` (chromatic confidence only) —
+//  and adds tokens for the new structured outputs (`SalientHighlight`,
+//  `DisplayPalette`).
 //
 //  Naming reflects semantic intent (`Accent.darkMinLByHueViolet`,
-//  `EffectiveMonochrome.branch3HighSatAreaShare`) so future phases can swap
+//  `NearMonochromeProfile.strictColorfulness`) so future phases can swap
 //  the underlying expression — e.g., OKLCH equivalents — without touching
 //  call sites.
-//
-//  Out of scope for Phase 1:
-//  - LED OKLCH baseline / hue-aware chroma caps  → owned by LEDColorResolver
-//    until Phase 6 (Tone Ladder).
-//  - ArtworkColorExtractor's internal palette filtering thresholds (bucket
-//    weights, distinctness gaps, WCAG contrast loop)  → revisited in Phase 2
-//    when the extractor surfaces structured outputs.
 //
 
 import AppKit
@@ -102,9 +97,11 @@ nonisolated enum ColorSystemTokens {
 
     // MARK: - Near-monochrome accent (SemanticPaletteFactory.nearMonochromeAccent)
     //
-    // Drives the accent on covers where `isEffectivelyMonochrome == true`.
+    // Drives the accent on covers where `isNearMonochrome == true`.
     // Output is a desaturated tone, hue chosen from the average (if any
-    // hue is usable) or a fixed neutral hue otherwise.
+    // hue is usable) or a fixed neutral hue otherwise. This is the
+    // "anti-fake-color" path — it must not be relied on for ultra-dark
+    // protection (which is now a separate orthogonal axis).
 
     enum NearMonochrome {
 
@@ -237,48 +234,170 @@ nonisolated enum ColorSystemTokens {
         static let inactiveAlpha: CGFloat = 0.35
     }
 
-    // MARK: - isEffectivelyMonochrome (ArtworkColorAnalysis)
+    // MARK: - UltraDark profile (Phase 2)
     //
-    // The five OR-branches that decide whether the cover is treated as
-    // monochrome by the palette factory and LED resolver. R4 J.2.c / K.2
-    // calls out that these branches need to be re-orthogonalised into
-    // "Ultra Dark" (low lightness) vs "Near Monochrome" (low colour
-    // confidence) in Phase 2 — branch 4 in particular couples lightness
-    // and saturation into one gate. For Phase 1 we just give every
-    // threshold a name; the logic stays identical.
+    // Tone / Darkness axis — describes "the cover is so dark we should
+    // respect its night feel" independently of whether it has usable hue.
+    // Phase 2 introduces this as a standalone bool on ArtworkColorAnalysis
+    // so future phases can:
+    //   - relax the `darkMinL` accent floor on (UltraDark=T, NearMono=F)
+    //     covers (deep violet, dark teal, midnight red);
+    //   - keep `nearMonochromeAccent` strictly chromatic.
+    //
+    // Inputs: avgHslLightness, weighted relativeLuminance, brightest-bucket
+    // brightness. All thresholds are conservative — we want to capture
+    // night-feel covers, not merely "dim" ones. Anything brighter than
+    // `cutoffAvgHslL` is treated as normal lightness.
 
-    enum EffectiveMonochrome {
+    enum UltraDark {
 
-        // Branch 1: strict mono.
+        // Primary lightness gate: any cover whose `avgHslL` is at or below
+        // this falls into the UltraDark regime. Pick a slightly higher
+        // value than the old branch-4 `extremeToneLightnessLo` (0.18) so
+        // genuine night photos (0.20 ~ 0.22) are also covered.
+        static let cutoffAvgHslL: CGFloat = 0.22
+
+        // Secondary luminance gate (WCAG relative luminance, perceptual).
+        // A cover that passes the HSL gate but has a WCAG luma above this
+        // is excluded from UltraDark — the HSL average overestimates
+        // perceived brightness for hues like neon green / cyan.
+        static let cutoffWcagLuma: CGFloat = 0.18
+
+        // Optional brightest-bucket sanity check. UltraDark covers should
+        // not have a dominant bucket whose HSB brightness exceeds this —
+        // a single bright element on an otherwise dark canvas is still a
+        // "dark cover" but anything brighter than this rules out the
+        // UltraDark branch (it is a normal cover with a black background).
+        static let dominantBrightnessCeiling: CGFloat = 0.60
+    }
+
+    // MARK: - NearMonochromeProfile (Phase 2 — replaces EffectiveMonochrome)
+    //
+    // Chromatic confidence axis — describes "the cover does not carry a
+    // trustworthy hue" independently of lightness. The four branches below
+    // are the cleaned-up successors to the old five OR branches:
+    //   - Branch 4 (`isExtremeTone && low sat …`) is removed; the extreme-
+    //     tone signal now belongs to UltraDark, not here.
+    //   - Branches 1/2/3 retain their original chromatic semantics.
+    //   - Branch 5 (dominant-bucket low sat fallback) is preserved as the
+    //     last-resort gate — a cover whose own dominant hue carries no
+    //     saturation is chromatic-untrustworthy regardless of lightness.
+    //
+    // `isNearMonochrome` is the OR of these four chromatic gates and is
+    // exposed on `ArtworkColorAnalysis`. `isEffectivelyMonochrome` is now
+    // an alias of `isNearMonochrome` for backwards compatibility with
+    // existing consumers (LED resolver, Home shapes, BKArt, theme log).
+
+    enum NearMonochromeProfile {
+
+        // Branch 1 — strict mono (very flat hue distribution + very low
+        // average saturation). Same numbers as the old strict-mono gate.
         static let strictColorfulness: CGFloat = 0.04
         static let strictAvgSaturation: CGFloat = 0.10
 
-        // Branch 2: most monochrome covers.
-        static let branch2Colorfulness: CGFloat = 0.10
-        static let branch2AvgSaturation: CGFloat = 0.16
-        static let branch2HighSatAreaShare: CGFloat = 0.12
+        // Branch 2 — typical near-mono cover (subtle hue noise on a flat
+        // sleeve, low avgSat, no meaningful saturated region).
+        static let lowColorfulness: CGFloat = 0.10
+        static let lowAvgSaturation: CGFloat = 0.16
+        static let lowMaxHighSatAreaShare: CGFloat = 0.12
 
-        // Branch 3: subtler version of branch 2 (slightly lower avg sat
-        // but accepts a touch more colourfulness).
-        static let branch3AvgSaturation: CGFloat = 0.105
-        static let branch3Colorfulness: CGFloat = 0.14
-        static let branch3HighSatAreaShare: CGFloat = 0.16
+        // Branch 3 — subtler version of branch 2: lower avg sat with
+        // slightly more colourfulness tolerated (compressed/halftoned
+        // sleeves often look like this).
+        static let subtleAvgSaturation: CGFloat = 0.105
+        static let subtleColorfulness: CGFloat = 0.14
+        static let subtleMaxHighSatAreaShare: CGFloat = 0.16
 
-        // Branch 4: extreme tone (very dark or very bright) + low sat.
-        // Phase 2 should decouple the lightness factor from this branch
-        // and move it under "Ultra Dark".
-        static let extremeToneLightnessLo: CGFloat = 0.18
-        static let extremeToneLightnessHi: CGFloat = 0.86
-        static let branch4AvgSaturation: CGFloat = 0.18
-        static let branch4Colorfulness: CGFloat = 0.16
+        // Branch 4 — dominant-bucket fallback (was branch 5 in the old
+        // EffectiveMonochrome enum). Even if the average looks colourful,
+        // if the dominant bucket itself has no saturation we cannot trust
+        // a hue — that path is still near-monochrome.
+        static let dominantBucketSaturation: CGFloat = 0.18
+        static let dominantBucketColorfulness: CGFloat = 0.16
+        static let dominantBucketAvgSaturation: CGFloat = 0.18
+    }
 
-        // Branch 5: dominant-bucket fallback.
-        static let branch5DominantSaturation: CGFloat = 0.18
-        static let branch5Colorfulness: CGFloat = 0.16
-        static let branch5AvgSaturation: CGFloat = 0.18
+    // MARK: - usesDarkForeground gate
+    //
+    // The `avgHslL` cut-off used by `ArtworkColorAnalysis` for choosing
+    // whether text-over-cover should default to dark ink or light ink.
+    // Identical to the old `EffectiveMonochrome.usesDarkForegroundAvgHslL`
+    // value — Phase 2 just gives it its own namespace so the orthogonal
+    // axes don't pretend to own it.
 
-        // `usesDarkForeground` boundary (the same `avgHslL` cut-off as
-        // textPalette uses for its dark/light foreground decision).
-        static let usesDarkForegroundAvgHslL: CGFloat = 0.58
+    enum ReadabilityForeground {
+        static let usesDarkAvgHslL: CGFloat = 0.58
+    }
+
+    // MARK: - SalientHighlight (Phase 2)
+    //
+    // Structured output of small-area, high-visual-impact colours — the
+    // "accent" colours a designer would point to on a cover even if they
+    // do not dominate the area histogram. Computed from the same 48-hue
+    // buckets used by `analyzeInternal`, gated by:
+    //
+    //   - saturation ≥ `minSaturation` — the bucket has real colour, not
+    //     a low-chroma tint;
+    //   - brightness ≥ `minBrightness` — exclude dim noise. (No upper
+    //     bound: a bright saturated colour like FFD60A is exactly the
+    //     kind of highlight we want; pure-white blow-outs are already
+    //     rejected by `minSaturation`.);
+    //   - area share in [`minAreaShare`, `maxAreaShare`] — large enough
+    //     to be a real region, small enough to be a *highlight* (a 60%
+    //     dominant region is not a highlight, it IS the cover);
+    //   - absolute weight ≥ `noiseFloorAbsolute × totalWeight` — guards
+    //     against single-pixel sensor noise.
+    //
+    // After filtering, candidates are scored by `bucket.weight × (1 +
+    // sat × satBonus)` and deduplicated by hue.
+
+    enum SalientHighlight {
+        static let minSaturation: CGFloat = 0.40
+        static let minBrightness: CGFloat = 0.30
+        static let minAreaShare: CGFloat = 0.015
+        static let maxAreaShare: CGFloat = 0.30
+        static let noiseFloorAbsolute: CGFloat = 0.008
+        static let satBonus: CGFloat = 0.50
+        static let hueDedupGap: CGFloat = 0.05
+        static let rgbDedupGap: CGFloat = 0.14
+        static let maxCount: Int = 4
+    }
+
+    // MARK: - DisplayPalette (Phase 2)
+    //
+    // Quality-controlled merge of topPalette + salientHighlightPalette +
+    // a curated slice of richPalette. Intended for downstream UI surfaces
+    // (Home Shapes, BKArt, Spectrum) to consume in Phase 3 — Phase 2 only
+    // *produces* it; no UI surface reads it yet.
+    //
+    // Key guarantees:
+    //   - On `isNearMonochrome` covers, do NOT fabricate multi-colour. The
+    //     palette stays narrow (1-2 honest colours).
+    //   - Otherwise, merge sources in order of confidence (top → salient →
+    //     rich), keeping each candidate only when sufficiently distinct
+    //     from earlier entries (hue gap OR RGB distance).
+    //   - Cap at `maxCount` so consumers can size containers up-front.
+
+    enum DisplayPalette {
+        static let maxCount: Int = 6
+        static let nearMonoMaxCount: Int = 2
+        static let hueDistinctGap: CGFloat = 0.05
+        static let rgbDistinctGap: CGFloat = 0.14
+    }
+
+    // MARK: - EffectiveMonochrome (Phase 1 — deprecated namespace)
+    //
+    // Phase 2 splits these branches into `UltraDark` (lightness) and
+    // `NearMonochromeProfile` (chromatic). The old namespace is retained
+    // only so external references (debug log strings, future grep
+    // archeology) still resolve — every NUMERIC threshold has been moved.
+    //
+    // No production code path reads from this namespace anymore.
+
+    @available(*, deprecated, message: "Phase 2: use UltraDark or NearMonochromeProfile.")
+    enum EffectiveMonochrome {
+        static let strictColorfulness: CGFloat = NearMonochromeProfile.strictColorfulness
+        static let strictAvgSaturation: CGFloat = NearMonochromeProfile.strictAvgSaturation
+        static let usesDarkForegroundAvgHslL: CGFloat = ReadabilityForeground.usesDarkAvgHslL
     }
 }

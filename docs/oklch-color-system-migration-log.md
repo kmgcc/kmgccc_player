@@ -294,3 +294,260 @@ docs/oklch-color-system-migration-log.md                (本节)
 6. `FallbackAccent.*L` 是 HSL 钳制（走 `ColorMath.clampLightness`），不是 OKLCH。Phase 2 决定是否把 user fallback accent 也走 OKLCH 时，token 数值需要重新校准——HSL L 与 OKLCH L 不是 1:1 等价。
 
 下一步：进入 Phase 2（艺术取色决策引擎 2.0 — Ultra Dark / Near Monochrome 拆分、salient highlight palette）。
+
+***
+
+## Phase 2 — 艺术取色决策引擎 2.0
+
+**完成日期**：2026-05-20。\
+**分支**：`refactor/oklch-color-system`。
+
+### 本阶段目标
+
+四件事一次性完成（不拆 2A/2B/2C）：
+
+1. **Ultra Dark 与 Near Monochrome 分离建模**：两个正交维度，分别由亮度与色度信号决定，可以 (T,T) / (T,F) / (F,T) / (F,F) 四象限。
+2. **重构 `isEffectivelyMonochrome`**：拆掉 R4 J.2.c 标注的 branch 4（`isExtremeTone && low sat` 把"极暗"误归入"无色相"），让旧字段名继续可用但语义干净化。
+3. **小面积高显著色结构化输出**：`ArtworkColorAnalysis.salientHighlightPalette`。
+4. **多色 artwork palette 基础能力**：`ArtworkColorAnalysis.displayPalette`，给 Phase 3 的 Home Shapes / BKArt / Spectrum 接入做数据准备。
+
+本阶段不切换任何 UI 消费路径；只新增分析结果与结构能力。
+
+### 2.1 测试基础设施 — 内嵌自检入口
+
+**结果**：未新增 XCTest target（项目无测试 target，扩工程配置超 Phase 2 边界）。改用项目允许的备选方案 — **debug-only 自检入口**。
+
+**新增文件**：`myPlayer2/Utilities/ColorSystemSelfCheck.swift`。
+
+- 一个 `nonisolated enum ColorSystemSelfCheck`，通过环境变量 `COLOR_SYSTEM_SELF_CHECK=1` 在 `KmgcccPlayerApp.init()` 最前面触发；同步执行后 `exit(0)`（全部通过）或 `exit(1)`（任一失败）。
+- 通过新加的 `ArtworkColorExtractor.analyzeSyntheticSample(pixels:side:)` 把合成 RGBA buffer 直接喂给 `analyzeInternal`，绕过 `CGImageSource`，结果可重复、可断言。
+- 覆盖以下场景，每条单独 pass/fail：
+
+  | 类别 | 场景 | 期望 |
+  | --- | --- | --- |
+  | Quadrant | UltraDark 彩色（deep navy 10,25,70） | `UltraDark=true, NearMono=false` |
+  | Quadrant | UltraDark 近灰（15,15,15） | `UltraDark=true, NearMono=true` |
+  | Quadrant | 正常彩色（mid teal 40,180,160） | `UltraDark=false, NearMono=false` |
+  | Quadrant | 正常灰白（200,200,200） | `UltraDark=false, NearMono=true` |
+  | OKColor | RGB→OKLab→OKLCH→OKLab→RGB round-trip | worst-channel ΔRGB < 0.005 |
+  | OKColor | `clampLightness` / `clampChroma` | 精确钳制（误差 < 1e-9） |
+  | OKColor | `normalizedHue` / `rotateHue` | 1.20→0.20、-0.10→0.90、0.95+0.10→0.05 |
+  | OKColor | `chromaSoftShoulder` | input≤ceiling 透传；input≫ceiling 渐近至 ceiling+softness |
+  | Salient | 95% 黑 + 5% 鲜黄 | salient 含黄、displayPalette 含黄、即使整体 nearMono=true |
+  | Salient | 90% navy + 10% orange | salient 含 orange、displayPalette 至少 2 色 |
+  | Salient | 80% dark canvas + 20% red title | salient 含 red |
+  | Salient | 99% 黑 + 0.5%/0.5% 红/蓝噪点 | salient 为空 |
+  | Display | 25%×4 红/绿/蓝/琥珀 | displayPalette ≥ 3 项、distinctHues ≥ 3、非 nearMono |
+  | Display | 纯灰封面 | nearMono=true 且 displayPalette.count ≤ `nearMonoMaxCount`（=2） |
+
+**自检运行结果**（2026-05-20）：
+
+```
+ColorSystemSelfCheck — 2026-05-20 上午1:01:54 +0000
+cacheVersion=orthogonal-decision-v3
+...
+Result: ALL PASS
+EXIT=0
+```
+
+14/14 全部通过。完整输出含每个场景的关键诊断字段（`avgHslL`/`luma`/`avgSat`/`colorfulness`/`domBri`），便于 Phase 3 调试同一封面行为时回溯。
+
+**决策**：不强求 XCTest。Phase 2 自检入口覆盖了"四象限 + 显著色 + 多色 palette + OKLCH 数学"四个 Phase 2 真正引入的决策点；后续 Phase 3 若需要更细的 UI-端断言（例如某具体 cover 应触发哪个分支），仍建议补 XCTest target——但 Phase 2 自身的等价性已不依赖它。
+
+### 2.2 OKColor 数学层基础回归
+
+**结果**：自检确认现有 6 个公共原语行为正确。
+
+| 原语 | 自检断言 |
+| --- | --- |
+| `nsColorToOKLCH` / `okLCHToNSColor` | 四种典型 RGB（蓝、琥珀、中灰、暗色）round-trip worst-channel ΔRGB = 0.000 |
+| `clampLightness(_:lo:hi:)` | L=0.95 → clamp(0.20,0.50) → 0.50；不动 chroma |
+| `clampChroma(_:lo:hi:)` | C=0.20 → clamp(0.05,0.10) → 0.10；不动 lightness |
+| `normalizedHue(_:)` | 1.20→0.20, -0.10→0.90 |
+| `rotateHue(_:by:)` | 0.95+0.10 → 0.05（含环绕） |
+| `chromaSoftShoulder(_:ceiling:softness:)` | 0.05↦0.05（透传）；1.00↦0.147（渐近至 ceiling+softness=0.15） |
+
+LED `LEDColorResolver` 内部 OKLCH 调用未触动；Phase 6 Tone Ladder 再决定是否搬迁。
+
+### 2.3 ArtworkColorAnalysis — 新字段与正交化
+
+**改动**：`myPlayer2/Utilities/ArtworkColorAnalysis.swift`。
+
+新增字段：
+
+| 字段 | 类型 | 语义 |
+| --- | --- | --- |
+| `weightedLuma` | `CGFloat` | WCAG relative luminance（pixel-weighted），用于 UltraDark 的感知补充门 |
+| `dominantBrightness` | `CGFloat` | dominant bucket HSB B，用于排除"黑底单亮元素" |
+| `isUltraDark` | `Bool` | 纯亮度维度 — 极暗封面 |
+| `isNearMonochrome` | `Bool` | 纯色度维度 — 无可信色相 |
+| `salientHighlightPalette` | `[NSColor]` | 小面积高显著色（点睛色） |
+| `displayPalette` | `[NSColor]` | 质控合并 palette（Phase 3 多色消费基础） |
+
+保留并重新定义的字段：
+
+- `isEffectivelyMonochrome`：现在是 `isNearMonochrome` 的别名，**只用于向后兼容**（LED resolver / Home shapes / BKArt / ThemeStore log）。其语义换成"纯色度判定"——旧 branch 4（亮度耦合）已删除。
+
+**正交化后的判定**：
+
+`isNearMonochrome` 仅由四个色度 OR 分支决定（`ColorSystemTokens.NearMonochromeProfile`）：
+
+1. **strict mono**：`colorfulness<0.04 && avgSat<0.10`（同旧 branch 1）
+2. **low**：`colorfulness<0.10 && avgSat<0.16 && largestHighSat<0.12`（同旧 branch 2）
+3. **subtle**：`avgSat<0.105 && colorfulness<0.14 && largestHighSat<0.16`（同旧 branch 3）
+4. **dominant bucket fallback**：`dominantSat<0.18 && colorfulness<0.16 && avgSat<0.18`（同旧 branch 5）
+
+旧 branch 4（`isExtremeTone && avgSat<0.18 && colorfulness<0.16 && !hasStrong`）**已删除**。
+
+`isUltraDark` 由三个纯亮度门组成（`ColorSystemTokens.UltraDark`）：
+
+- `avgHslL ≤ 0.22`：HSL 平均亮度切线
+- `avgLuma ≤ 0.18`：WCAG 感知亮度（补足 HSL 在霓虹色上的过估）
+- `dominantBrightness ≤ 0.60`：排除"黑底单亮元素"（这种是普通封面 + 亮色 element，不是 UltraDark）
+
+### 2.4 isEffectivelyMonochrome 重构 — 影响下游消费者的边界说明
+
+旧定义命中而新定义不再命中的封面，**仅有一类**：
+
+> 极暗（`avgHslL<0.18 || avgHslL>0.86`）+ 中低饱和（`avgSat<0.18 && colorfulness<0.16`）+ 没有大块强彩 + 但 dominant bucket 自带 sat≥0.18 的封面。
+
+这正是 R4 J.2.d 给出的"深紫 / 夜蓝 / 酒红黑底"边界例 — 它们应该走 `optimizedAccent` 正常 path、保留色相。Phase 2 把它们从 nearMono path 解放出来。
+
+**下游影响**：
+
+- `LEDColorResolver`：`isEffectivelyMonochrome` 触发 `monoIndexColor` 与 `inactiveFromBase` 的 neutral fallback。新逻辑下"深紫 / 夜蓝"封面不再被强制 fallback，LED 会沿用其原色相。**这是 K.2 期望的行为修正，不是回退**。
+- `HomeAmbientShapesBackground`：`isEffectivelyMonochrome` 用作 `isLowColor` 判定。同上，"极暗有色"封面不再被强行视作低色相 → 进入正常彩色 shapes 路径。
+- `BKColorEngine`：使用的是 `isMonochrome`（strict 严格 mono），**未受影响**。
+- `ThemeStore` 日志：标注同步显示更新后的判定。
+
+这些行为差异仅出现在"极暗 + 中低饱和但有真实色相"的特定封面上，**正是本次重构要修正的对象**。其它封面在新旧定义下结果完全一致（自检的"normal colored" / "near-mono" 都已覆盖）。
+
+### 2.5 SalientHighlightPalette 实现
+
+**新增**：`ArtworkColorExtractor.computeSalientHighlights(buckets:totalWeight:dominantHue:)`。
+
+**算法**：复用 `analyzeInternal` 已经构建的 48-hue bucket histogram，逐桶过滤：
+
+| 门 | token | 设计意图 |
+| --- | --- | --- |
+| `s ≥ 0.40` | `SalientHighlight.minSaturation` | 排除低彩 tint |
+| `b ≥ 0.30` | `SalientHighlight.minBrightness` | 排除暗噪点 |
+| `area ∈ [0.015, 0.30]` | `SalientHighlight.minAreaShare` / `maxAreaShare` | 既不是噪点也不是主导色 |
+| `bucket.weight ≥ 0.008 × total` | `SalientHighlight.noiseFloorAbsolute` | 绝对权重防 single-pixel noise |
+
+通过后按 `bucket.weight × (1 + sat × 0.5)` 排序，按 hue gap ≥ 0.05 OR RGB distance ≥ 0.14 去重，取前 4。
+
+**关键设计**：salient palette **不再受 `isNearMonochrome` 阻断**。理由：95% 灰黑 + 5% 鲜黄是"整体 nearMono 但点睛色真实存在"的典型场景；如果整张图就只剩这 5% 是颜色信息，那它就是这张封面的真颜色。
+
+**自检覆盖**：
+
+- 95% 黑 + 5% 鲜黄 (255,200,30) → salient.count=1、含黄、displayPalette 也含黄 ✓
+- 90% navy (10,25,70) + 10% orange (255,130,30) → salient.count=1、含 orange、display.count=3 ✓
+- 80% 暗 canvas + 20% red title → salient.count=1、含 red ✓
+- 99% 黑 + 0.5%×2 高彩噪点 → salient.count=0（绝对权重门拦截）✓
+
+未触动 `ArtworkColorExtractor` 既有的 `uiThemePalette` / `uiThemePaletteRich` 算法 — 它们继续按既有逻辑生成 topPalette / richPalette；salient 是新增的第三条独立通道。
+
+### 2.6 DisplayPalette 实现
+
+**新增**：`ArtworkColorExtractor.computeDisplayPalette(top:salient:rich:isNearMonochrome:)`。
+
+**合并顺序**：`topPalette` → `salientHighlightPalette` → `richPalette`。
+
+每个候选与已选成员按 hue gap ≥ 0.05 OR RGB distance ≥ 0.14 去重。
+
+**封面色彩贫乏时的克制（K.3）**：
+
+- `isNearMonochrome == true` 时 **拒绝合入 `richPalette`**，并将上限收紧到 `nearMonoMaxCount = 2`。
+- salient 仍允许通过（点睛色是真实信息）。
+
+正常封面上限为 `maxCount = 6`。
+
+**自检覆盖**：
+
+- 4 色等分 → display.count=6、distinctHues=4、非 nearMono ✓
+- 纯灰 → nearMono=true、display.count=1（≤ 上限 2）✓
+- 95% 黑 + 5% 黄（nearMono=true）→ display.count=1，含黄（top 空，salient 进入）✓
+- 90% navy + 10% orange（非 nearMono）→ display.count=3 ✓
+
+### 2.7 cacheVersion bump
+
+**改动**：`ArtworkColorExtractor.cacheVersion`：`"semantic-near-mono-v2"` → `"orthogonal-decision-v3"`。
+
+**理由**：
+
+- 分析输出新增 6 字段（`weightedLuma` / `dominantBrightness` / `isUltraDark` / `isNearMonochrome` / `salientHighlightPalette` / `displayPalette`）。
+- `isEffectivelyMonochrome` 语义虽未改字段名，但实际判定逻辑剥离了旧 branch 4，特定封面（極暗有色）的结果会变化。
+- `ArtworkAssetStore` / `ThemeStore.dominantColorCache` 的 key 模板已经在 Phase 0 把 cacheVersion 折进 prefix；bump 后旧 entry 整体失效，无 partial-hydration 风险（snapshot 不持久化，只内存缓存）。
+- 兼容策略：snapshot 与 analysis 都是 in-memory + lazy compute，无外部存储字段，无需向后解码。
+
+### 2.8 token 命名空间整理
+
+**改动**：`myPlayer2/Utilities/ColorSystemTokens.swift`。
+
+- **新增**：
+  - `UltraDark`（`cutoffAvgHslL` / `cutoffWcagLuma` / `dominantBrightnessCeiling`）
+  - `NearMonochromeProfile`（4 个 OR 分支阈值，命名按"strict / low / subtle / dominantBucket"语义化）
+  - `ReadabilityForeground.usesDarkAvgHslL`（从旧 EffectiveMonochrome 抽出）
+  - `SalientHighlight`（10 个 token，含 maxCount、area share、dedup gap）
+  - `DisplayPalette`（4 个 token，含 maxCount、nearMonoMaxCount、hue/rgb distinct gap）
+- **重命名**（语义化）：旧 `EffectiveMonochrome.branch{1..5}*` → 新 `NearMonochromeProfile.{strict,low,subtle,dominantBucket}*`。数值未变（仅 branch4 整组删除）。
+- **保留并标记 deprecated**：旧 `EffectiveMonochrome` 命名空间仍存在（仅留下 forwarding 别名），加 `@available(*, deprecated)`，避免任何潜在外部 grep 直接失效。
+
+### 2.9 SemanticPaletteFactory 命名澄清
+
+**改动**：`myPlayer2/Utilities/SemanticPalette.swift`。
+
+- `optimizedAccent` 内部由 `analysis.isEffectivelyMonochrome` 改读 `analysis.isNearMonochrome`（同义但命名更准确）。
+- `nearMonochromeAccent` 顶部加 docstring：明确职责是"anti-fake-color"，**不**再承担"极暗保护"。
+- 数学逻辑零变化（数值、分支、token 均未动）。这两步纯命名清理。
+
+### 2.10 调试 / 诊断能力
+
+`ColorSystemSelfCheck` 输出本身就是一份结构化诊断（每条场景都打印 `avgHslL / luma / avgSat / colorfulness / domBri / salient.count / display.count / nearMono`）。Phase 3 调试同一封面行为时可以再 wire 一个 `ColorSystemSelfCheck.describe(analysis:)` 复用同样格式。
+
+**未做**：没有为正在播放的 artwork 加 runtime debug log（避免扩大成本）。Phase 3 若需要，复用 `describe(_:)` 即可。
+
+### 2.11 构建验证
+
+```text
+xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player \
+  -configuration Debug -destination 'platform=macOS' build
+→ ** BUILD SUCCEEDED **
+```
+
+自检：
+
+```text
+COLOR_SYSTEM_SELF_CHECK=1 \
+  ./kmgccc_player.app/Contents/MacOS/kmgccc_player
+→ Result: ALL PASS (14/14)
+→ EXIT=0
+```
+
+### 改动文件清单
+
+```text
+myPlayer2/Utilities/ColorSystemTokens.swift            (新增 UltraDark / NearMonochromeProfile / SalientHighlight / DisplayPalette / ReadabilityForeground 命名空间；保留 deprecated EffectiveMonochrome)
+myPlayer2/Utilities/ArtworkColorAnalysis.swift         (新增 6 字段；isEffectivelyMonochrome 重定义为 isNearMonochrome 别名)
+myPlayer2/Utilities/ArtworkColorExtractor.swift        (cacheVersion bump → v3；computeSalientHighlights / computeDisplayPalette / analyzeSyntheticSample 新增)
+myPlayer2/Utilities/SemanticPalette.swift              (命名清理：optimizedAccent 改读 isNearMonochrome；nearMonochromeAccent 加 docstring)
+myPlayer2/Utilities/ColorSystemSelfCheck.swift         (新增 — 自检入口)
+myPlayer2/myPlayer2App.swift                           (init() 顶部加一行 ColorSystemSelfCheck.runIfRequested())
+docs/oklch-color-system-migration-log.md               (本节)
+```
+
+### 接力提示（→ Phase 3）
+
+1. **`displayPalette` 暂无消费者**。Phase 3 接入 Home Shapes / BKArt / Spectrum 时，应读 `analysis.displayPalette`，**不要**再去自己跑 `uiThemePaletteRich` 或 hue 旋转构造 palette（K.1 / K.3）。本期已提供质控合并；UI 侧只需做投影到几何元素的工作。
+2. **`isUltraDark` 暂无消费者**。Phase 3 决定是否在 SemanticPaletteFactory 加 `(UltraDark=T, NearMono=F)` 分支（让 deep navy / midnight teal / dark crimson 保留暗 L 而非被 darkMinL 提到 0.74）时，token 已就位（`Accent.darkLightnessCeiling` 仍是上限，下限可考虑用 `UltraDark.cutoffAvgHslL` 派生一个 `darkMinLUltraDark`）。
+3. **`salientHighlightPalette` 暂无消费者**。Phase 3 / 4 决定是否让歌词色 / 频谱 / Home Shapes 优先取 salient 作为点睛时再接入。本期数据已可用。
+4. **OKLCH 等价校准**：Phase 3 把 `optimizedAccent` 整体迁到 OKLCH 时，建议先在 `ColorSystemSelfCheck` 加 `Accent.*` 的 HSL ↔ OKLCH 等价对照（例如 `optimizedAccent` 对相同 analysis 的旧/新输出 ΔL < 0.02、ΔC < 0.02）。
+5. **LED 内 OKLCH 路径仍未触动**。`LEDColorResolver.baseColorForIndex` 内联的 OKLab lerp 应该在 Phase 6 Tone Ladder 时统一改成 `OKColor.oklabLerp`；Phase 2 不动 LED 视觉参数。
+6. **`isEffectivelyMonochrome` 别名**：当所有现有消费者切到 `isNearMonochrome` 后（Phase 3 末或 Phase 4），可在该次 commit 一起删除别名字段。本期保留是为避免在颜色系统重构同时改动 LED / Home / BKArt 的读路径。
+7. **branch 4 删除带来的实际行为变化**：仅命中"极暗 + 中低饱和但 dominant bucket 有 sat ≥ 0.18 的有色封面"。Phase 3 上 UI 之前，建议在浅色/暗色模式下手测以下 artwork：
+   - 暗紫色（如 Lana Del Rey "Born to Die" cover 类型）
+   - 夜蓝（深空摄影、夜景封面）
+   - 暗红 / 酒红黑底（如 Radiohead "Kid A" 类型）
+   预期视觉变化：accent 不再被强提到 0.66-0.74 的灰蓝带，能更忠实反映封面色相。
+
