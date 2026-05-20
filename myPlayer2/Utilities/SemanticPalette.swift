@@ -48,6 +48,14 @@ struct SemanticPalette: Equatable, Sendable {
     /// palette is OKLCH-lifted and crushes near-mono hue so the controls
     /// never read as faint pastels under grey covers.
     let miniPlayerControl: MiniPlayerControlPalette
+
+    /// Phase 4.5 — tinted-neutral foreground palette for ordinary App
+    /// UI (sidebar text, library lists, settings labels, Home captions).
+    /// Each role is derived from `globalAccent` hue at very low OKLCH
+    /// chroma, crushing to achromatic on near-mono artwork. Replaces
+    /// SwiftUI `.primary` / `.secondary` / `.tertiary` in non-artwork
+    /// surfaces during Phase 4.5 first-batch migration.
+    let appForeground: AppForegroundPalette
 }
 
 /// "Compress UI on top of artwork" readability decision. One profile
@@ -92,6 +100,43 @@ struct ArtworkReadabilityProfile: Equatable, Sendable {
     /// later phases can dial in a different chroma cap for SF Symbol
     /// rendering without touching text consumers.
     let iconForeground: NSColor
+}
+
+/// Tinted-neutral foreground palette for ordinary App UI — sidebar
+/// navigation, library lists, settings labels, Home section captions,
+/// and empty-state copy. NOT for use over artwork; that is the domain
+/// of `ArtworkReadabilityProfile`.
+///
+/// Each role sits at a fixed OKLCH lightness target tuned for dark and
+/// light colour schemes. Chroma is extremely low (≤0.012) and scales
+/// with the current artwork's colorfulness — so the foreground reads as
+/// normal grey/white/black at a glance yet carries a barely-perceptible
+/// theme tint on close inspection.
+///
+/// Phase 4.5 invariant: when `analysis.isNearMonochrome == true`, all
+/// roles have OKLCH chroma = 0 (fully achromatic). When artwork is
+/// colourful, primary chroma ≤
+/// `ColorSystemTokens.AppForeground.chromaCeiling`.
+struct AppForegroundPalette: Equatable, Sendable {
+    /// Strongest foreground — main titles, primary list text, prominent
+    /// icons. OKLCH L≈0.96 dark / L≈0.14 light.
+    let primary: NSColor
+
+    /// Second-tier foreground — artist rows, secondary metadata,
+    /// captions. OKLCH L≈0.78 dark / L≈0.30 light.
+    let secondary: NSColor
+
+    /// Third-tier foreground — timestamps, hints, small metadata.
+    /// OKLCH L≈0.59 dark / L≈0.48 light.
+    let tertiary: NSColor
+
+    /// Fourth-tier foreground — faint hints, placeholder text.
+    /// OKLCH L≈0.44 dark / L≈0.60 light.
+    let quaternary: NSColor
+
+    /// Disabled state — always achromatic regardless of artwork
+    /// (chroma = 0). OKLCH L≈0.36 dark / L≈0.65 light.
+    let disabled: NSColor
 }
 
 /// Control palette for the fullscreen mini player when the surface is
@@ -163,6 +208,11 @@ enum SemanticPaletteFactory {
             analysis: analysis,
             globalAccent: globalAccent
         )
+        let appFg = appForeground(
+            analysis: analysis,
+            globalAccent: globalAccent,
+            isDark: isDark
+        )
 
         return SemanticPalette(
             scheme: scheme,
@@ -182,7 +232,8 @@ enum SemanticPaletteFactory {
             coverGradientDominant: coverGradientDominant(analysis: analysis, isDark: isDark),
             coverGradientText: coverGradientText(analysis: analysis),
             readabilityProfile: readability,
-            miniPlayerControl: control
+            miniPlayerControl: control,
+            appForeground: appFg
         )
     }
 
@@ -251,6 +302,55 @@ enum SemanticPaletteFactory {
             progressFill: progressFill,
             progressTrack: progressTrack
         )
+    }
+
+    /// Phase 4.5 — tinted-neutral foreground palette for ordinary App UI.
+    ///
+    /// Hue is taken from `globalAccent` in OKLCH; chroma scales linearly
+    /// with artwork `colorfulness` up to `colorfulnessSaturationPoint`
+    /// then caps at the per-tier limit. On `isNearMonochrome` artwork the
+    /// chroma collapses to 0 so all tiers are perceptually achromatic —
+    /// preventing any visible tint on grey/black/white covers.
+    nonisolated fileprivate static func appForeground(
+        analysis: ArtworkColorAnalysis,
+        globalAccent: NSColor,
+        isDark: Bool
+    ) -> AppForegroundPalette {
+        let hue = OKColor.nsColorToOKLCH(globalAccent)?.h ?? 0.0
+
+        // Chroma scale: 0 on nearMono, linear ramp on colorful artwork,
+        // clamped at 1 so the per-tier cap is the actual ceiling.
+        let chromaScale: CGFloat = analysis.isNearMonochrome ? 0 :
+            Swift.min(
+                analysis.colorfulness / ColorSystemTokens.AppForeground.colorfulnessSaturationPoint,
+                1.0
+            )
+
+        func make(targetL: CGFloat, chromaCap: CGFloat) -> NSColor {
+            let c = Swift.min(
+                chromaScale * chromaCap,
+                ColorSystemTokens.AppForeground.chromaCeiling
+            )
+            return OKColor.okLCHToNSColor(OKColor.OKLCH(l: targetL, c: c, h: hue), alpha: 1.0)
+        }
+
+        if isDark {
+            return AppForegroundPalette(
+                primary:    make(targetL: ColorSystemTokens.AppForeground.darkPrimaryL,    chromaCap: ColorSystemTokens.AppForeground.primaryChromaCap),
+                secondary:  make(targetL: ColorSystemTokens.AppForeground.darkSecondaryL,  chromaCap: ColorSystemTokens.AppForeground.secondaryChromaCap),
+                tertiary:   make(targetL: ColorSystemTokens.AppForeground.darkTertiaryL,   chromaCap: ColorSystemTokens.AppForeground.tertiaryChromaCap),
+                quaternary: make(targetL: ColorSystemTokens.AppForeground.darkQuaternaryL, chromaCap: ColorSystemTokens.AppForeground.quaternaryChromaCap),
+                disabled:   make(targetL: ColorSystemTokens.AppForeground.darkDisabledL,   chromaCap: ColorSystemTokens.AppForeground.disabledChromaCap)
+            )
+        } else {
+            return AppForegroundPalette(
+                primary:    make(targetL: ColorSystemTokens.AppForeground.lightPrimaryL,    chromaCap: ColorSystemTokens.AppForeground.primaryChromaCap),
+                secondary:  make(targetL: ColorSystemTokens.AppForeground.lightSecondaryL,  chromaCap: ColorSystemTokens.AppForeground.secondaryChromaCap),
+                tertiary:   make(targetL: ColorSystemTokens.AppForeground.lightTertiaryL,   chromaCap: ColorSystemTokens.AppForeground.tertiaryChromaCap),
+                quaternary: make(targetL: ColorSystemTokens.AppForeground.lightQuaternaryL, chromaCap: ColorSystemTokens.AppForeground.quaternaryChromaCap),
+                disabled:   make(targetL: ColorSystemTokens.AppForeground.lightDisabledL,   chromaCap: ColorSystemTokens.AppForeground.disabledChromaCap)
+            )
+        }
     }
 
     /// OKLCH-lift the resolved accent into the mini-player chrome band.
@@ -650,7 +750,7 @@ private func f3(_ value: CGFloat) -> String {
 }
 
 #if DEBUG
-/// Debug-only bridge that exposes the Phase 4 nonisolated factory helpers
+/// Debug-only bridge that exposes the Phase 4–4.5 nonisolated factory helpers
 /// to `ColorSystemSelfCheck` without requiring a full palette construction.
 /// Pattern mirrors `SpectrumPaletteSelfCheck` from Phase 3.
 nonisolated enum SemanticPaletteSelfCheck {
@@ -666,6 +766,18 @@ nonisolated enum SemanticPaletteSelfCheck {
 
     nonisolated static func liftedAccentControl(_ color: NSColor) -> NSColor {
         SemanticPaletteFactory.liftedAccentControl(color)
+    }
+
+    nonisolated static func appForeground(
+        analysis: ArtworkColorAnalysis,
+        globalAccent: NSColor,
+        isDark: Bool
+    ) -> AppForegroundPalette {
+        SemanticPaletteFactory.appForeground(
+            analysis: analysis,
+            globalAccent: globalAccent,
+            isDark: isDark
+        )
     }
 }
 #endif

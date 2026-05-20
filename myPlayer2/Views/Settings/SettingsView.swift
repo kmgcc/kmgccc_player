@@ -189,6 +189,7 @@ private struct SettingsWindowGroupBoxStyle: GroupBoxStyle {
 
 private struct V2FeatureTipView: View {
     let onClose: () -> Void
+    @EnvironmentObject private var themeStore: ThemeStore
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -209,18 +210,18 @@ private struct V2FeatureTipView: View {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Image(systemName: "folder.badge.gearshape")
                         .font(.callout)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
                     Text("支持自定义音乐资料库储存位置")
                         .font(.callout)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
                 }
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Image(systemName: "sparkles")
                         .font(.callout)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
                     Text("可为所有歌曲主动补全信息与封面")
                         .font(.callout)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
                 }
             }
         }

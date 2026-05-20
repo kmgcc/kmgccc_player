@@ -124,6 +124,13 @@ nonisolated enum ColorSystemSelfCheck {
         checkControlNearMonoNeutral(&report)
         checkControlColourfulPreservesHue(&report)
 
+        report.section("Phase 4.5 — AppForegroundPalette")
+        checkAppFgNearMonoAchromatic(&report)
+        checkAppFgColorfulHasTint(&report)
+        checkAppFgDarkLightnessHierarchy(&report)
+        checkAppFgLightLightnessHierarchy(&report)
+        checkAppFgSeparateFromReadabilityProfile(&report)
+
         report.lines.append(
             "Result: \(report.allPassed ? "ALL PASS" : "FAILURES PRESENT")"
         )
@@ -235,6 +242,174 @@ nonisolated enum ColorSystemSelfCheck {
         report.record(
             "MiniPlayerControl: colourful preserves hue", ok,
             "srcH=\(format(srcLch.h)) outH=\(format(outLch.h)) L=\(format(outLch.l))"
+        )
+    }
+
+    // MARK: - Phase 4.5 scenarios
+
+    /// Near-mono cover: all AppForegroundPalette tiers must be
+    /// perceptually achromatic (OKLCH chroma ≤ nearMonoChromaAssertion).
+    /// Uses a blue accent that would otherwise tint the foreground, to
+    /// confirm the isNearMonochrome override crushes chroma to zero.
+    private static func checkAppFgNearMonoAchromatic(_ report: inout CheckReport) {
+        guard let analysis = analyse(side: 32, fill: (200, 200, 200, 255)) else {
+            report.record("AppForeground: near-mono all tiers achromatic", false, "analysis nil")
+            return
+        }
+        guard analysis.isNearMonochrome else {
+            report.record(
+                "AppForeground: near-mono all tiers achromatic", false,
+                "synthetic sample not classified nearMono"
+            )
+            return
+        }
+        let blueAccent = NSColor(deviceRed: 0.20, green: 0.45, blue: 0.90, alpha: 1)
+        let palette = SemanticPaletteSelfCheck.appForeground(
+            analysis: analysis, globalAccent: blueAccent, isDark: true
+        )
+        let tiers: [(NSColor, String)] = [
+            (palette.primary, "primary"),
+            (palette.secondary, "secondary"),
+            (palette.tertiary, "tertiary"),
+            (palette.quaternary, "quaternary"),
+            (palette.disabled, "disabled"),
+        ]
+        let limit = ColorSystemTokens.AppForeground.nearMonoChromaAssertion
+        var worstChroma: CGFloat = 0
+        var worstTier = ""
+        for (color, name) in tiers {
+            if let lch = OKColor.nsColorToOKLCH(color) {
+                if lch.c > worstChroma { worstChroma = lch.c; worstTier = name }
+            }
+        }
+        let ok = worstChroma <= limit
+        report.record(
+            "AppForeground: near-mono all tiers achromatic", ok,
+            "worstChroma=\(format(worstChroma)) limit=\(format(limit)) tier=\(worstTier)"
+        )
+    }
+
+    /// Colourful artwork: dark-mode primary foreground must carry a
+    /// non-zero OKLCH chroma tint (from artwork hue) while staying well
+    /// below the colorfulChromaAssertion ceiling. Confirms the tinted-
+    /// neutral effect is actually applied on normal artwork.
+    private static func checkAppFgColorfulHasTint(_ report: inout CheckReport) {
+        guard let analysis = analyse(side: 32, fill: (40, 100, 200, 255)) else {
+            report.record("AppForeground: colorful artwork has tint", false, "analysis nil")
+            return
+        }
+        guard !analysis.isNearMonochrome else {
+            report.record(
+                "AppForeground: colorful artwork has tint", false,
+                "synthetic sample classified nearMono — need colourful input"
+            )
+            return
+        }
+        let blueAccent = NSColor(deviceRed: 0.20, green: 0.45, blue: 0.90, alpha: 1)
+        let palette = SemanticPaletteSelfCheck.appForeground(
+            analysis: analysis, globalAccent: blueAccent, isDark: true
+        )
+        guard let lch = OKColor.nsColorToOKLCH(palette.primary) else {
+            report.record("AppForeground: colorful artwork has tint", false, "OKLCH nil")
+            return
+        }
+        let ceiling = ColorSystemTokens.AppForeground.colorfulChromaAssertion
+        let hasTint = lch.c > 0.001
+        let withinCeiling = lch.c <= ceiling
+        let ok = hasTint && withinCeiling
+        report.record(
+            "AppForeground: colorful artwork has tint", ok,
+            "primaryChroma=\(format(lch.c)) ceiling=\(format(ceiling)) hasTint=\(hasTint)"
+        )
+    }
+
+    /// Dark mode: lightness hierarchy primary > secondary > tertiary >
+    /// quaternary > disabled. Ensures the visual weight ordering is
+    /// preserved even when the chroma scale shifts with artwork.
+    private static func checkAppFgDarkLightnessHierarchy(_ report: inout CheckReport) {
+        guard let analysis = analyse(side: 32, fill: (40, 100, 200, 255)) else {
+            report.record("AppForeground: dark mode L hierarchy", false, "analysis nil")
+            return
+        }
+        let accent = NSColor(deviceRed: 0.20, green: 0.45, blue: 0.90, alpha: 1)
+        let p = SemanticPaletteSelfCheck.appForeground(
+            analysis: analysis, globalAccent: accent, isDark: true
+        )
+        guard
+            let lPri = OKColor.nsColorToOKLCH(p.primary)?.l,
+            let lSec = OKColor.nsColorToOKLCH(p.secondary)?.l,
+            let lTer = OKColor.nsColorToOKLCH(p.tertiary)?.l,
+            let lQua = OKColor.nsColorToOKLCH(p.quaternary)?.l,
+            let lDis = OKColor.nsColorToOKLCH(p.disabled)?.l
+        else {
+            report.record("AppForeground: dark mode L hierarchy", false, "OKLCH nil")
+            return
+        }
+        let assertion = ColorSystemTokens.AppForeground.darkPrimaryLAssertion
+        let ok = lPri >= assertion
+            && lPri > lSec
+            && lSec > lTer
+            && lTer > lQua
+            && lQua > lDis
+        report.record(
+            "AppForeground: dark mode L hierarchy", ok,
+            "L: \(format(lPri))>\(format(lSec))>\(format(lTer))>\(format(lQua))>\(format(lDis))"
+        )
+    }
+
+    /// Light mode: lightness hierarchy primary < secondary < tertiary <
+    /// quaternary < disabled (low L = dark text on light background).
+    private static func checkAppFgLightLightnessHierarchy(_ report: inout CheckReport) {
+        guard let analysis = analyse(side: 32, fill: (40, 100, 200, 255)) else {
+            report.record("AppForeground: light mode L hierarchy", false, "analysis nil")
+            return
+        }
+        let accent = NSColor(deviceRed: 0.20, green: 0.45, blue: 0.90, alpha: 1)
+        let p = SemanticPaletteSelfCheck.appForeground(
+            analysis: analysis, globalAccent: accent, isDark: false
+        )
+        guard
+            let lPri = OKColor.nsColorToOKLCH(p.primary)?.l,
+            let lSec = OKColor.nsColorToOKLCH(p.secondary)?.l,
+            let lTer = OKColor.nsColorToOKLCH(p.tertiary)?.l,
+            let lQua = OKColor.nsColorToOKLCH(p.quaternary)?.l,
+            let lDis = OKColor.nsColorToOKLCH(p.disabled)?.l
+        else {
+            report.record("AppForeground: light mode L hierarchy", false, "OKLCH nil")
+            return
+        }
+        let assertion = ColorSystemTokens.AppForeground.lightPrimaryLAssertion
+        let ok = lPri <= assertion
+            && lPri < lSec
+            && lSec < lTer
+            && lTer < lQua
+            && lQua < lDis
+        report.record(
+            "AppForeground: light mode L hierarchy", ok,
+            "L: \(format(lPri))<\(format(lSec))<\(format(lTer))<\(format(lQua))<\(format(lDis))"
+        )
+    }
+
+    /// AppForegroundPalette.primary must differ from
+    /// ArtworkReadabilityProfile.foregroundPrimary for the same analysis.
+    /// They serve different surfaces; if they were equal something in the
+    /// factory pipeline has accidentally aliased the two paths.
+    private static func checkAppFgSeparateFromReadabilityProfile(_ report: inout CheckReport) {
+        guard let analysis = analyse(side: 32, fill: (40, 100, 200, 255)) else {
+            report.record("AppForeground: separate from ReadabilityProfile", false, "analysis nil")
+            return
+        }
+        let accent = NSColor(deviceRed: 0.20, green: 0.45, blue: 0.90, alpha: 1)
+        let appFg = SemanticPaletteSelfCheck.appForeground(
+            analysis: analysis, globalAccent: accent, isDark: true
+        )
+        let readability = SemanticPaletteSelfCheck.readabilityProfile(analysis)
+        let notIdentical = !isColorRGBEqual(
+            appFg.primary, readability.foregroundPrimary, epsilon: 0.01
+        )
+        report.record(
+            "AppForeground: separate from ReadabilityProfile", notIdentical,
+            "fgPrimary ≠ readabilityPrimary: \(notIdentical)"
         )
     }
 

@@ -150,12 +150,12 @@ struct HomeView: View {
                     .lineLimit(1)
                 Text([hero.artist, hero.album].filter { !$0.isEmpty }.joined(separator: " · "))
                     .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
                     .lineLimit(1)
             }
             Text("正在载入音乐库，先显示上次主页快照 · \(snapshot.generatedAt.formatted(date: .abbreviated, time: .shortened))")
                 .font(.caption)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.tertiary))
         }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -180,7 +180,7 @@ struct HomeView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(label)
                 .font(.caption.weight(.medium))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
             Spacer(minLength: 0)
             Text(value)
                 .font(.title3.weight(.semibold))
@@ -189,7 +189,7 @@ struct HomeView: View {
             if !unit.isEmpty {
                 Text(unit)
                     .font(.caption)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.tertiary))
                     .lineLimit(1)
             }
         }
@@ -227,7 +227,7 @@ struct HomeView: View {
                     HStack {
                         Text("\(index + 1)")
                             .font(.callout.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
                             .frame(width: 28)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(item.title)
@@ -235,13 +235,13 @@ struct HomeView: View {
                                 .lineLimit(1)
                             Text(item.artist)
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
                                 .lineLimit(1)
                         }
                         Spacer()
                         Text("\(item.playCount)")
                             .font(.caption.monospacedDigit())
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
                     }
                     .padding(.vertical, 8)
                     if index < min(items.count, 8) - 1 {
@@ -425,13 +425,13 @@ struct HomeView: View {
         VStack(spacing: 12) {
             Image(systemName: "music.note.house")
                 .font(.system(size: 48, weight: .light))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
             Text("你的音乐库是空的")
                 .font(.title3)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
             Text("导入一些音乐来开始吧")
                 .font(.callout)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.tertiary))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -440,15 +440,15 @@ struct HomeView: View {
         VStack(spacing: 8) {
             Text("\u{201C}Where words fail, music speaks.\u{201D}")
                 .font(.system(size: 20, weight: .ultraLight))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
             Text("\u{8A00}\u{6240}\u{4E0D}\u{53CA}\u{5904}\u{FF0C}\u{7B19}\u{7BAB}\u{76F8}\u{7EE7}\u{3002}")
                 .font(.system(.callout, weight: .ultraLight))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.tertiary))
             Text("— Hans Christian Andersen")
                 .font(.system(.caption2, weight: .ultraLight))
                 .textCase(.uppercase)
                 .tracking(0.8)
-                .foregroundStyle(.quaternary)
+                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.quaternary))
                 .padding(.top, 4)
         }
         .padding(.top, 36)
