@@ -513,6 +513,19 @@ private final class MiniPlayerSpectrumHostView: NSView {
             tunedSaturation = s * 0.88
         } else if s > 0.55 {
             tunedSaturation = s * 0.94
+        } else if s < 0.06 {
+            // Phase 3 hotfix: near-mono input must pass through. The legacy
+            // `max(0.18, s * 1.08)` floor amplified residual hue from grey
+            // artwork into visible pink/yellow tint. Caller has already
+            // OKLCH-neutralised near-mono colours, but enforce the floor
+            // removal here too as a defence-in-depth so any future spectrum
+            // consumer keeps the contract.
+            tunedSaturation = s
+        } else if s < 0.22 {
+            // Phase 3 hotfix: low-saturation but not near-mono. Preserve
+            // the artwork's muted impression instead of lifting toward
+            // 0.18+ (which read as "more colourful than the cover").
+            tunedSaturation = min(0.30, s * 1.04)
         } else {
             tunedSaturation = min(0.70, max(0.18, s * 1.08))
         }

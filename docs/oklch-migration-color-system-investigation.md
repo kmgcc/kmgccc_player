@@ -1630,3 +1630,32 @@ OKLCH 迁移完成后，下列指标应保持不变或更优：
 **输出去向**：作为 OKLCH 迁移所有阶段的设计依据 + 颜色系统 2.0 重构纲领。本报告与代码同步保留；任何与本报告冲突的代码变更视为对原始系统快照的偏离，需在变更说明中标注。
 
 **☆ 与代码事实的关系**：☆ 段落代表"系统目前不是这样，是未来要走的方向"。在 ☆ 落地前，代码中没有对应实现。落地节奏由后续每个阶段的 PR 决定，本报告不强制时间表。
+
+***
+
+## ⚠️ R5 — Phase 3 落地后用户手测暴露的近黑白伪 hue 遗留问题（2026-05-20）
+
+Phase 3 完成（commit `b2faae1`）并经回修补丁（本节同期提交）后，用户手测仍发现 **2 个跨阶段问题**。它们不在 Phase 3 回修范围（且本轮严禁修复，以免污染 Phase 4 / Phase 5 的整体语义化），但必须在本调查报告留下显眼记录：
+
+### R5.1 — 全屏 MiniPlayer UI 在近黑白封面下出现淡蓝 / 淡黄 / 轻微染色（Phase 4 接力）
+
+- **现象**：纯黑白灰、近零饱和度封面下，全屏 mini player 的文字 / 图标 / 控件色出现淡淡偏蓝 / 偏黄 / 其他轻微伪色相。
+- **根因方向**：`FullscreenMiniPlayerView.controlPrimaryNSColor` / `shouldUseDarkArtworkForeground` 仍从 SemanticPalette 旧路径 + averageColor 推导，没有 nearMono 中性化通道。即使 SemanticPalette accent 在 Phase 2 已识别 nearMono，accent 颜色本身仍可能携带 salient 的微弱 hue。
+- **必须由 Phase 4 完成**：MiniPlayer 控件色语义化 + Artwork Readability Profile 必须把 `analysis.isNearMonochrome == true` 当作显式规则，强制 UI 主色 OKLCH `chroma ≈ 0`。
+- **验收**：纯灰封面 UI 颜色 `chroma < 0.005` 且 `circularHueDistance < 0.01`（或退到 system label color）。
+- **追踪**：`docs/oklch-color-system-migration-log.md` §3.12 Issue A；`docs/oklch-color-system-execution-plan.md` §Phase 4 接力项。
+
+### R5.2 — 窗口 / 全屏歌词在近黑白封面下偏粉红（Phase 5 接力）
+
+- **现象**：纯黑白灰、近零饱和度封面下，窗口歌词面板与全屏歌词面板的高亮 / 文字色均偏粉红。
+- **根因方向**：歌词色彩链路（含 ThemeStore 与 LyricsWebViewStore 双写）部分仍走旧 HSL accent 路径，nearMono 时残留 hue 没有归零；窗口歌词当前整体观感虽好，但**近黑白这一边界场景必须修**；全屏歌词同步问题。
+- **必须由 Phase 5 完成**：Swift 侧统一歌词色彩决策函数（含窗口 + 全屏两面），增加 `analysis.isNearMonochrome == true` → 歌词所有可见色 OKLCH `chroma ≤ 0.005` 规则。**两端同步验收**，避免单端修复造成割裂。
+- **追踪**：`docs/oklch-color-system-migration-log.md` §3.12 Issue B；`docs/oklch-color-system-execution-plan.md` §Phase 5 接力项。
+
+### R5.3 — 共性结论
+
+R5.1 / R5.2 同样源自一个深层模式：
+
+> Phase 2 已经把 nearMono 识别做对了（`analysis.isNearMonochrome` 在 R3 ☆ K.7 中确立为单一封面明暗判定），但**消费端仍有多处没有把 nearMono 翻译成 chroma 压制规则**。Phase 3 在 Home Shapes / BKArt / Spectrum 三处补齐了；MiniPlayer 控件层（Phase 4）与歌词层（Phase 5）仍在欠款列表。
+
+后续 Phase 4 / 5 设计时，建议把"nearMono → chroma 中性化"作为**所有 UI 颜色决策的硬性规则**，而非每个消费端各自实现。可考虑在 `SemanticPalette` 层提供一个 `nearMonoNeutralizing(_:)` helper 强制所有消费端经此入口。这样后续新 UI（包括 Phase 6 Tone Ladder / LED）天然继承该保护。

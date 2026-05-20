@@ -793,3 +793,138 @@ docs/oklch-color-system-migration-log.md                           (本节)
 
 ***
 
+## Phase 3 回修补记（2026-05-20）
+
+用户手测 Phase 3 落地版本（commit `b2faae1`）后报告 5 个视觉问题。其中 3 个属于 Phase 3 退出条件未满足或新引入，必须本轮修复；2 个属于跨阶段问题，本轮**不修**但写入文档以确保 Phase 4 / Phase 5 不会遗忘。
+
+### 3.9 已修：Spectrum 在近黑白 / 低饱和封面下偏粉
+
+**症状**：纯黑白灰封面、几乎零饱和度封面、低饱和 muted 封面下，全屏 mini player 频谱出现可感知的粉色 / 偏色，与原封面气质背离。
+
+**根因**（两层叠加）：
+
+1. `displayPalette` 的排序 `top.first → salient → top.tail → rich` 在 nearMono 封面下，salient 槽承载的是面积极小但 hue 鲜明的微亮点（如黑白照片里的一抹粉色反光），`prefix(2)` 直接把它送进 Spectrum 右端。
+2. `MiniPlayerSpectrumView.adjustedSpectrumBase` 在 `s < 0.55` 时强行使用 `min(0.70, max(0.18, s * 1.08))`。任何残留 hue（例如 nearMono 调色板上的 s=0.02）都会被抬到 saturation 0.18，**视觉上从灰阶被推到粉/黄/蓝**。
+
+**修复**（两层防御）：
+
+1. `FullscreenMiniPlayerView.prepareSpectrumColors(_:analysis:)`：在送进 `MiniPlayerSpectrumView.updateColors` 之前做一次 OKLCH 预处理。
+   - `analysis.isNearMonochrome` 为真：每个色经 `OKColor.nsColorToOKLCH` → `min(c, 0.008)` → `okLCHToNSColor` 投回。**强制 chroma ≈ 0**，hue 槽虽然存在但视觉上是灰阶。
+   - 非 nearMono 但 `analysis.colorfulness < 0.18`：经 `OKColor.chromaSoftShoulder(ceiling: 0.05, softness: 0.04)` 软压。
+   - 其他（正常彩色封面）：原样直通。
+2. `MiniPlayerSpectrumView.adjustedSpectrumBase` 饱和度曲线分段重写：
+   - `s < 0.06`：原值通过（不再 `max(0.18, ...)`）。
+   - `0.06 ≤ s < 0.22`：`min(0.30, s * 1.04)`（轻提，**无 0.18 地板**）。
+   - `0.22 ≤ s ≤ 0.55`：保留旧 `min(0.70, max(0.18, s * 1.08))`。
+   - `s > 0.55 / s > 0.72`：保留旧 0.94× / 0.88× 收束。
+
+调用方端（`FullscreenMiniPlayerView`）已先 OKLCH 中性化；`adjustedSpectrumBase` 这条作为 defence-in-depth，未来如新 Spectrum 消费者直接调它也不会再放大伪色相。
+
+**自检覆盖**（`ColorSystemSelfCheck` 新增 §"Phase 3 hotfix — consumer projection"）：
+
+- `Spectrum: near-mono input neutralised` — 95% 黑 + 5% 鲜黄合成样，预处理后输出最大 OKLCH chroma ≤ 0.010。**实测 maxOKLCHChroma=0.008**。
+- `Spectrum: low-sat not amplified` — 低饱和灰蓝合成样，预处理后输出 chroma 比 ≤ 1.05×源。**实测 1.000×**。
+- `Spectrum: colourful pass-through` — 4 色鲜艳合成样，预处理输出与输入完全相等（按 sRGB ε=1e-6 比对）。**实测 equal=true**。
+
+### 3.10 已修：Home Art Shapes 在近黑白封面下偏粉
+
+**症状**：黑白灰、几乎无饱和度封面下，Home 背景的 6 个 ambient shape 出现可感知粉色。
+
+**根因**：`HomeAmbientPalette.ambientTuning` 在 `isLowColor=true` 时 chromaCeiling 仍是 `0.038`（dark）/ `0.022`（light），chromaScale 仍是 `0.46` / `0.32`。当 displayPalette 顺序把 salient 抬到第二槽时，salient 颜色的源 OKLCH chroma 可能在 0.06–0.12 区间，乘 0.46 得到约 0.028–0.055，再被 chromaCeiling 0.038 钉住——**远超灰阶视觉门槛**，看起来就是粉色。
+
+**修复**：`ambientTuning(...)` 的 nearMono 分支大幅收紧（Phase 3 hotfix 标注）：
+
+| 分支 | 旧 chromaCeiling | 新 chromaCeiling | 旧 chromaScale | 新 chromaScale |
+| --- | --- | --- | --- | --- |
+| dark + ultraDark + nearMono | 0.030 | **0.010** | 0.42 | **0.18** |
+| dark + 非 ultraDark + nearMono | 0.038 | **0.012** | 0.46 | **0.22** |
+| light + nearMono | 0.022 | **0.008** | 0.32 | **0.18** |
+
+非 nearMono 路径**完全未动**（正常彩色封面继续在 0.115 / 0.075 / 0.058 三档下工作）。
+
+**自检覆盖**（同 §3.12）：
+
+- `HomeShapes: near-mono chroma ceiling` — 95% 黑 + 5% 鲜黄合成样投影后，最大 OKLCH chroma ≤ 0.011（ultraDark+nearMono 路径，limit 0.0105）。**实测 maxOKLCHChroma=0.010**。
+
+### 3.11 已修：UltraDark 下 Home Art Shapes 未随 BKArt 压暗
+
+**症状**：UltraDark 极暗封面下，BKArt 走 UltraDark 渲染保护后整体压暗（`ultraDarkOverlay` opacity 0.50 + harmonizer 压低 L），但 Home Shapes 仍偏亮，与 BKArt 出现明度割裂。
+
+**根因**：`ambientTuning` ultraDark 分支 L 区间是 `[0.10, 0.26]`，lOffset 0.06，lScale 0.46。与"普通 dark + 非 ultraDark"分支 `[0.18, 0.34]` 重叠 8 个百分点；nearMono ultraDark 封面经投影后落在 0.20–0.26 区间——视觉上和普通 dark 几乎无差。
+
+**修复**：ultraDark 分支 L 区间下沉到 **`[0.05, 0.18]`**，lOffset → **0.04**，lScale → **0.32**。即任何 displayPalette 颜色（无论其原 L 是 0.05 还是 0.85）经 `0.04 + L*0.32` 都落进新区间。极暗封面（源 L ≈ 0.10）投影到 L ≈ 0.072；亮 salient（源 L ≈ 0.80）投影到 L ≈ 0.18 上限。整体感官现在与 BKArt 的"夜色"基调一致。
+
+**自检覆盖**：
+
+- `HomeShapes: ultraDark lightness band` — 深蓝 (10,25,70) 合成样投影后，所有 shape OKLCH L 都落在 `[0.05, 0.18]`。**实测 L range=[0.080, 0.180]**。
+
+### 3.12 未修但写入文档（跨阶段接力）：近黑白下 Fullscreen MiniPlayer UI 与 Lyrics 偏色
+
+以下两个用户报告**不在 Phase 3 回修范围**，本轮严格禁止修复以避免误触 Phase 4 / Phase 5 的整体语义化工作。但本节作为**显眼接力点**记录入此处，并同步登记到执行计划文档与调查报告：
+
+#### Issue A — 全屏 MiniPlayer UI 在近黑白封面下出现淡蓝 / 淡黄 / 轻微染色
+
+- **触发条件**：纯黑白灰、近零饱和度封面。
+- **症状**：全屏 mini player 的文字 / 图标 / 控件色出现淡淡偏蓝 / 偏黄 / 其他轻微伪色相。
+- **归属**：**Phase 4 — MiniPlayer 控件色语义化 + Artwork Readability Profile**。
+- **修复方向**：
+  - 当前 `FullscreenMiniPlayerView.controlPrimaryNSColor` / `usesDarkArtworkForegroundForClear` 仍从原 SemanticPalette accent / averageColor 推导，未走 nearMono 中性化通道。
+  - Phase 4 需要 `MiniPlayerControlPalette`（待新增）在 `analysis.isNearMonochrome` 时强制把 UI 主色去到 OKLCH 中性轴（chroma ≈ 0），仅保留 L 区分（提升与背景的对比即可，不要染色）。
+  - 验收：纯灰封面下 UI 颜色读取必须 `circularHueDistance < 0.01` 且 `chroma < 0.005`，或者直接是 system label color。
+
+#### Issue B — 窗口 / 全屏歌词在近黑白封面下偏粉红
+
+- **触发条件**：纯黑白灰、近零饱和度封面。
+- **症状**：窗口歌词面板与全屏歌词面板的高亮色 / 文字色均偏粉红。
+- **归属**：**Phase 5 — 歌词颜色体系收敛**。
+- **修复方向**：
+  - 当前歌词色彩链路（AMLL bridge 一侧设置的 `lyricsHighlight` / `lyricsForeground` 等）部分仍走旧 HSL accent 路径，nearMono 时残留 hue 没有归零。
+  - Phase 5 收敛时，**near-mono 中性化必须作为显式规则**写入 Swift 侧统一歌词色彩决策函数：
+    - `analysis.isNearMonochrome == true` → 歌词所有可见色去到 OKLCH chroma ≤ 0.005，仅靠 L 与 alpha 体现层级。
+  - 窗口歌词与全屏歌词共用同一决策函数后必须**两端同时验收**（避免单端修复造成视觉割裂）。
+
+### 3.13 构建 / 自检 / 文件 / 提交
+
+**构建**：
+
+```text
+xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player \
+  -configuration Debug -destination 'platform=macOS' build
+→ ** BUILD SUCCEEDED **
+```
+
+**自检**：
+
+```text
+COLOR_SYSTEM_SELF_CHECK=1 ./kmgccc_player.app/Contents/MacOS/kmgccc_player
+→ Result: ALL PASS  (5 phase-3-hotfix scenarios + 18 prior scenarios)
+```
+
+**改动文件清单**：
+
+```text
+myPlayer2/Views/Fullscreen/FullscreenMiniPlayerView.swift          (prepareSpectrumColors / OKLCH 预处理 / nonisolated 静态 / DEBUG 自检桥)
+myPlayer2/Views/Fullscreen/MiniPlayerSpectrumView.swift            (adjustedSpectrumBase 饱和度曲线分段重写)
+myPlayer2/Views/Home/HomeAmbientShapesBackground.swift             (ambientTuning ultraDark / nearMono 收紧 / 静态 nonisolated / DEBUG 自检桥)
+myPlayer2/Utilities/ColorSystemSelfCheck.swift                     (新增 Phase 3 hotfix 5 scenarios + SwiftUI import)
+docs/oklch-color-system-migration-log.md                           (本节)
+docs/oklch-color-system-execution-plan.md                          (Phase 4 / Phase 5 接力项)
+docs/oklch-migration-color-system-investigation.md                 (近黑白伪 hue 跨阶段备忘)
+```
+
+### 3.14 手测建议（4 类封面，验证回修无回归 + 新规则生效）
+
+| 封面类型 | Home Shapes 预期 | BKArt 预期 | Spectrum 预期 |
+| --- | --- | --- | --- |
+| **纯黑白灰 / 极低饱和无 hue** | 完全中性，6 个 shape L 阶梯分布；**无任何粉 / 黄 / 蓝染色** | 与 Phase 3 主体一致（不在回修范围，但应继续中性） | 9 个 capsule 从浅灰渐变到深灰；**无粉色** |
+| **极低饱和灰蓝 / 灰棕**（colorfulness ≈ 0.10–0.18） | 主体色保留原 muted 灰冷调 hue，但 chroma 不被抬高 | 保持低 chroma 气质 | 左右两端均贴近源色低饱和气质，**不出现"比封面鲜艳很多"的回弹** |
+| **UltraDark 深蓝 / 酒红 / 暗紫**（colorfulness ≥ 0.30，luma ≤ 0.18） | shapes 整体明显比"普通 dark"更暗（OKLCH L 落在 [0.05, 0.18]），hue 保留 | UltraDark 渲染保护层叠加，整体压暗 | 双端均深暗，但 hue 真实可辨 |
+| **正常高彩多色**（colorfulness ≥ 0.40） | 6 shape 覆盖到多个真实 hue，**回修未拖累彩色收益** | 多色 bg + shape pool 多色，与 Phase 3 主体一致 | 左右两色都是 displayPalette 前两色，差异明显 |
+
+### 3.15 Phase 4 / Phase 5 接力点（与 §3.12 对应）
+
+- **Phase 4 显式入口**：MiniPlayer 控件色 `nearMono` 中性化规则。代码切入点 `FullscreenMiniPlayerView.controlPrimaryNSColor` / `shouldUseDarkArtworkForeground(for:)`。验收：手测 Issue A 复现样本应不再出现淡蓝 / 淡黄。
+- **Phase 5 显式入口**：Swift 侧统一歌词色彩决策函数（含窗口与全屏两面），增加 `analysis.isNearMonochrome == true` → chroma ≤ 0.005 规则。验收：手测 Issue B 复现样本应不再偏粉。
+
+***
+
