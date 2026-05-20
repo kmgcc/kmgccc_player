@@ -133,6 +133,9 @@ final class HomeAmbientRootView: NSView {
         let colorfulnessBits: UInt32
         let avgSaturationBits: UInt32
         let isEffectivelyMonochrome: Bool
+        let isUltraDark: Bool
+        let displayPaletteHash: UInt64
+        let salientPaletteHash: UInt64
     }
 
     private let motion: HomeAmbientMotionState
@@ -368,12 +371,16 @@ final class HomeAmbientRootView: NSView {
         }
         let colorfulness = sourceAnalysis?.colorfulness ?? 0
         let avgSaturation = sourceAnalysis?.avgSaturation ?? 0
-        let mono = sourceAnalysis?.isEffectivelyMonochrome ?? false
+        let mono = sourceAnalysis?.isNearMonochrome ?? false
+        let ultraDark = sourceAnalysis?.isUltraDark ?? false
         return PaletteSignature(
             sourceColorRGBA: rgba,
             colorfulnessBits: UInt32(min(max(colorfulness, 0), 1) * 1024),
             avgSaturationBits: UInt32(min(max(avgSaturation, 0), 1) * 1024),
-            isEffectivelyMonochrome: mono
+            isEffectivelyMonochrome: mono,
+            isUltraDark: ultraDark,
+            displayPaletteHash: HomeAmbientPalette.colorListHash(sourceAnalysis?.displayPalette ?? []),
+            salientPaletteHash: HomeAmbientPalette.colorListHash(sourceAnalysis?.salientHighlightPalette ?? [])
         )
     }
 
@@ -754,10 +761,196 @@ private enum HomeAmbientPalette {
         analysis: ArtworkColorAnalysis?,
         colorScheme: ColorScheme
     ) -> [NSColor] {
+        // Phase 3 primary path: project the artwork's quality-controlled
+        // displayPalette (top.first → salient → top.tail → rich) into Home
+        // background tier through OKLCH per-mode tinting. No hue rotation —
+        // every shape colour traces back to a real artwork bucket or to a
+        // same-hue tonal variant of one.
+        if let analysis,
+           let palette = makePaletteFromDisplay(
+               analysis: analysis,
+               colorScheme: colorScheme
+           ),
+           !palette.isEmpty
+        {
+            Self.logChosenPalette(palette, analysis: analysis, colorScheme: colorScheme)
+            return palette
+        }
+
+        // Fallback: legacy single-source hue-rotate path. Only reachable when
+        // displayPalette is empty (no artwork / extractor failure) — kept so
+        // a missing analysis still produces 6 distinct shapes.
         if let sourceColor {
             return makePalette(from: sourceColor, analysis: analysis, colorScheme: colorScheme)
         }
         return fallbackPalette(colorScheme: colorScheme)
+    }
+
+    /// Stable signature for analysis palettes used in `PaletteSignature`.
+    static func colorListHash(_ colors: [NSColor]) -> UInt64 {
+        var hash: UInt64 = 0xCBF2_9CE4_8422_2325
+        for color in colors {
+            guard let rgb = color.usingColorSpace(.deviceRGB) else { continue }
+            let r = UInt8(min(max(rgb.redComponent, 0), 1) * 255)
+            let g = UInt8(min(max(rgb.greenComponent, 0), 1) * 255)
+            let b = UInt8(min(max(rgb.blueComponent, 0), 1) * 255)
+            hash ^= UInt64(r) << 16 | UInt64(g) << 8 | UInt64(b)
+            hash = hash &* 0x100000001B3
+        }
+        return hash
+    }
+
+    private static func logChosenPalette(
+        _ palette: [NSColor],
+        analysis: ArtworkColorAnalysis,
+        colorScheme: ColorScheme
+    ) {
+        guard LogConfig.isCategoryEnabled(.ui) else { return }
+        let salientHashes = Set(analysis.salientHighlightPalette.compactMap { colorHashHex($0) })
+        let containsSalient = palette.contains { color in
+            guard let hex = colorHashHex(color) else { return false }
+            return salientHashes.contains(hex)
+        }
+        let hexes = palette.prefix(8).compactMap(colorHashHex).joined(separator: " ")
+        Log.debug(
+            "[HomeAmbient/palette] scheme=\(colorScheme == .dark ? "dark" : "light") nearMono=\(analysis.isNearMonochrome) ultraDark=\(analysis.isUltraDark) hasSalient=\(containsSalient) colors=[\(hexes)]",
+            category: .ui
+        )
+    }
+
+    private static func colorHashHex(_ color: NSColor) -> String? {
+        guard let rgb = color.usingColorSpace(.deviceRGB) else { return nil }
+        let r = UInt8(min(max(rgb.redComponent, 0), 1) * 255)
+        let g = UInt8(min(max(rgb.greenComponent, 0), 1) * 255)
+        let b = UInt8(min(max(rgb.blueComponent, 0), 1) * 255)
+        return String(format: "#%02X%02X%02X", r, g, b)
+    }
+
+    /// Project analysis.displayPalette colours into the Home ambient tier
+    /// through OKLCH per-mode tinting. Returns nil only when the analysis
+    /// has no usable palette (caller falls back to legacy single-source).
+    ///
+    /// Behavior summary:
+    ///   - Dark mode: sink each colour's L to the Home-ambient deep band
+    ///     (0.10 – 0.30 for ultraDark covers, 0.16 – 0.32 otherwise) and
+    ///     pinch chroma so high-sat artwork doesn't ignite the shapes.
+    ///   - Light mode: lift each colour's L to the pastel band (0.74 – 0.86)
+    ///     and reduce chroma so they don't read as candy.
+    ///   - When the artwork is near-monochrome we KEEP whatever real hue
+    ///     remains in the palette (salient colours are not filtered out)
+    ///     but we further cut chroma so the field reads as quiet.
+    ///   - When the source palette only has 1–2 entries, we pad by
+    ///     generating same-hue L variants of those real colours — no
+    ///     fabricated hues.
+    private static func makePaletteFromDisplay(
+        analysis: ArtworkColorAnalysis,
+        colorScheme: ColorScheme
+    ) -> [NSColor]? {
+        let raw = analysis.displayPalette
+        guard !raw.isEmpty else { return nil }
+
+        let isDark = colorScheme == .dark
+        let isLowColor = analysis.isNearMonochrome
+        let isUltraDark = analysis.isUltraDark
+
+        let targets = ambientTuning(
+            isDark: isDark,
+            isLowColor: isLowColor,
+            isUltraDark: isUltraDark
+        )
+
+        let projected: [NSColor] = raw.compactMap { color in
+            project(color, targets: targets)
+        }
+
+        // The Home ambient layer wants exactly 6 entries (shapeSpec.colorIndex
+        // mod palette.count is used to assign colours per shape). When the
+        // analysis is colour-thin, repeat real colours and pad with same-hue
+        // L variants instead of fabricating new hues.
+        let needed = 6
+        if projected.count >= needed {
+            return Array(projected.prefix(needed))
+        }
+        guard let base = projected.first else { return nil }
+        var out = projected
+        // Tonal padding: shift L on existing real colours, alternating up
+        // and down. Each padded colour traces back to a real bucket.
+        var step = 0
+        while out.count < needed {
+            let donor = projected[step % projected.count]
+            let delta: CGFloat = (step.isMultiple(of: 2) ? 1 : -1) * (0.04 + CGFloat(step) * 0.02)
+            let variant = tonalVariant(of: donor, lDelta: delta, targets: targets) ?? base
+            out.append(variant)
+            step += 1
+            if step > 32 { break }
+        }
+        return Array(out.prefix(needed))
+    }
+
+    private struct AmbientTuning {
+        let lMin: CGFloat
+        let lMax: CGFloat
+        let lScale: CGFloat
+        let lOffset: CGFloat
+        let chromaCeiling: CGFloat
+        let chromaScale: CGFloat
+    }
+
+    private static func ambientTuning(
+        isDark: Bool,
+        isLowColor: Bool,
+        isUltraDark: Bool
+    ) -> AmbientTuning {
+        if isDark {
+            if isUltraDark {
+                // Ultra-dark covers stay night-deep even after projection.
+                return AmbientTuning(
+                    lMin: 0.10, lMax: 0.26,
+                    lScale: 0.46, lOffset: 0.06,
+                    chromaCeiling: isLowColor ? 0.030 : 0.075,
+                    chromaScale: isLowColor ? 0.42 : 0.60
+                )
+            }
+            return AmbientTuning(
+                lMin: isLowColor ? 0.16 : 0.18,
+                lMax: isLowColor ? 0.28 : 0.34,
+                lScale: 0.52, lOffset: 0.08,
+                chromaCeiling: isLowColor ? 0.038 : 0.115,
+                chromaScale: isLowColor ? 0.46 : 0.72
+            )
+        }
+        // Light mode: pastel band, restrained chroma so it stays a quiet
+        // background.
+        return AmbientTuning(
+            lMin: isLowColor ? 0.78 : 0.74,
+            lMax: isLowColor ? 0.90 : 0.86,
+            lScale: 0.16, lOffset: 0.74,
+            chromaCeiling: isLowColor ? 0.022 : 0.058,
+            chromaScale: isLowColor ? 0.32 : 0.46
+        )
+    }
+
+    private static func project(_ color: NSColor, targets: AmbientTuning) -> NSColor? {
+        guard let lch = OKColor.nsColorToOKLCH(color) else { return nil }
+        let newL = clamp(
+            targets.lOffset + lch.l * targets.lScale,
+            min: targets.lMin,
+            max: targets.lMax
+        )
+        let newC = min(targets.chromaCeiling, max(0, lch.c * targets.chromaScale))
+        let tuned = OKColor.OKLCH(l: newL, c: newC, h: lch.h)
+        return OKColor.okLCHToNSColor(tuned, alpha: 1)
+    }
+
+    private static func tonalVariant(
+        of color: NSColor,
+        lDelta: CGFloat,
+        targets: AmbientTuning
+    ) -> NSColor? {
+        guard let lch = OKColor.nsColorToOKLCH(color) else { return nil }
+        let newL = clamp(lch.l + lDelta, min: targets.lMin, max: targets.lMax)
+        let tuned = OKColor.OKLCH(l: newL, c: lch.c, h: lch.h)
+        return OKColor.okLCHToNSColor(tuned, alpha: 1)
     }
 
     static func layoutProgress(centerWidth: CGFloat) -> CGFloat {

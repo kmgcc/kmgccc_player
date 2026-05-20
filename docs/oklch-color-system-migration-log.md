@@ -607,3 +607,189 @@ docs/oklch-color-system-migration-log.md               (本节)
 - Debug 无 env var → 3s 进程存活
 - Release with env var → 3s 进程存活（self-check 被 `#if DEBUG` 完全剥离）
 
+***
+
+## Phase 3 — 装饰色与真实多色分发
+
+**完成日期**：2026-05-20。\
+**分支**：`refactor/oklch-color-system`。
+
+### 本阶段目标
+
+第一次把"真实 artwork 多色"正式接入 UI 消费端：
+
+1. **Home Shapes**：使用 artwork 多色（`displayPalette`）而非单 accent + hue rotate。
+2. **BKArt**：保留 Ultra Dark 保护，但用 `displayPalette` 启用真正多色背景；`isUltraDark` 进入晚期 UltraDark 判定。
+3. **Spectrum**：使用 artwork 两色 / 多色填充（`displayPalette.prefix(2)`），salient 自然成为右侧/高频段颜色；单色封面降级为同色调 L 变体（不再 fallback 中性灰，不再 hue rotate 假多色）。
+
+本期严格遵守 Phase 3 边界：不改 MiniPlayer 控件色语义化、不改歌词、不改 Header、不做 Tone Ladder、不动 LED；只改"颜色来源 + 场景化处理"。
+
+### 3.1 Home Shapes — displayPalette + OKLCH 背景化
+
+**改动**：`myPlayer2/Views/Home/HomeAmbientShapesBackground.swift`。
+
+**新接入路径**：
+
+`HomeAmbientPalette.palette(...)` 顶部新增 Phase 3 主路径：
+
+```text
+analysis.displayPalette  (top.first → salient → top.tail → rich)
+   ↓
+project(_:targets:)       OKLCH per-mode tint
+   ↓
+6-entry palette  ([NSColor] for shape colorIndex assignment)
+```
+
+`project(_:targets:)` 实现：
+
+- `OKColor.nsColorToOKLCH(color)` 拿到 OKLCH。
+- 按 `AmbientTuning` 对应深/浅、是否 ultraDark、是否 nearMono 取四象限对应钳制带：
+  | 模式 | UltraDark | NearMono | L 范围 | chromaCeiling |
+  | --- | --- | --- | --- | --- |
+  | Dark | ✓ | – | 0.10–0.26 | 0.030 / 0.075 |
+  | Dark | – | ✓ | 0.16–0.28 | 0.038 |
+  | Dark | – | – | 0.18–0.34 | 0.115 |
+  | Light | – | ✓ | 0.78–0.90 | 0.022 |
+  | Light | – | – | 0.74–0.86 | 0.058 |
+- `okLCHToNSColor(tuned, alpha: 1)`。
+
+**Padding 策略（K.3 — 不强行伪造多色）**：
+
+`displayPalette.count < 6` 时不再 hue-rotate，改为对真实色做 `tonalVariant(of:lDelta:targets:)` —— **只动 L，不动 H**，交替正负。padded 颜色仍可被签名识别为 palette 衍生项。
+
+**Fallback**：
+
+仅当 `analysis == nil`（无 artwork / extractor 失败）或 `displayPalette` 完全为空时，才走原有单 source-color + 6 hue-rotate variants 路径。这是 Phase 3 唯一保留的 hue-rotate 代码，触发频率从"正常路径"降级到"无 analysis 的退化路径"。
+
+**缓存签名增强**：
+
+`PaletteSignature` 增加三个字段：`isUltraDark`、`displayPaletteHash`、`salientPaletteHash`。这样同一 sourceColor 但 analysis.displayPalette 不同时能正确重建（之前仅根据 sourceColor + colorfulness + avgSaturation + isEffectivelyMonochrome 判断，会漏掉 displayPalette 内部变化）。`isEffectivelyMonochrome` 字段名保留但 Phase 2 后实际读 `isNearMonochrome`。
+
+**调试日志**：
+
+`LogConfig.isCategoryEnabled(.ui)` 开启时，每次 palette 重建打印一行：
+
+```text
+[HomeAmbient/palette] scheme=dark nearMono=false ultraDark=true hasSalient=true colors=[#... ...]
+```
+
+### 3.2 BKArt — displayPalette 多色背景 + 强化 Ultra Dark
+
+**改动**：`myPlayer2/Views/NowPlaying/BKArtBackgroundView.swift`。
+
+**Palette 源切换**：
+
+`applyResolvedPalette(...)` 通过新静态方法 `selectedExtractedPalette(analysis:basePalette:richPalette:)` 决定喂给 `BKColorEngine.make(extracted:...)` 的 palette：
+
+1. `analysis?.displayPalette` 非空 → 使用 displayPalette（Phase 2 质控合并 = top.first + salient + top.tail + rich，受 hueDistinctGap / rgbDistinctGap / cap 6 约束）。
+2. 否则 richPalette。
+3. 否则 basePalette。
+4. 否则 `BKArtBackgroundView.fallbackPalette`。
+
+**Salient 落点**：通过 displayPalette 的预排序（top.first → salient → ...），salient 进入 `BKColorEngine` 的候选 palette 输入。引擎内部已有的 `enforceCandidateHueSource` / `enforceDominantHueAffinity` / `makeShapePool` 会让 salient 自然成为 **shape pool / accent candidate**，而不是直接占据 bg 主色——这正符合 §4.4 "salient 不要直接作为最大面积主背景，可以作为次级 shape 色 / 局部强调色"的要求。
+
+**Ultra Dark 保护强化**：
+
+`isUltraDarkPalette(_:analysis:)` 第一判定从 `coverLuma < 0.36` 改为：
+
+```swift
+if let analysis, analysis.isUltraDark { return true }
+// fallback: 旧的 imageCoverLuma + areaDominantB + grayScore 判定（保留作为 analysis nil 时的 fallback）
+```
+
+意义：Phase 2 的 `isUltraDark` 是亮度维度（avgHslL ≤ 0.22 || avgLuma ≤ 0.18 || dominantBrightness ≤ 0.60），与 `isNearMonochrome` 正交。深紫 / 夜蓝 / 暗红 这类"极暗有色"封面会被识别为 UltraDark = true 同时 NearMono = false → 触发 BK 的 UltraDark 渲染叠层保护，但 displayPalette 中仍有真实色相，因此背景多色性不被淹没。
+
+**Snapshot 路径**：保持 `analysis = nil`（snapshot 不携带 displayPalette / isUltraDark）。该路径继续走 richPalette + 旧 UltraDark 判定，零行为变化。
+
+**调试日志**：`[BKArt/palette] ultraDark=... nearMono=... hasSalient=... colors=[...]`。
+
+### 3.3 Spectrum — displayPalette.prefix(2) + 同色调 L 变体兜底
+
+**改动**：`myPlayer2/Views/Fullscreen/FullscreenMiniPlayerView.swift`、`myPlayer2/Views/Fullscreen/MiniPlayerSpectrumView.swift`。
+
+**Color source**：`FullscreenMiniPlayerView.spectrumArtworkColors` 改为：
+
+```text
+analysis.displayPalette (优先)
+   ↓ prefix(2)
+fallback: analysis.topPalette.prefix(2)
+fallback: [artBackgroundPrimary, artBackgroundSecondary]
+```
+
+由于 displayPalette 顺序为 `top.first → salient → top.tail → rich`，2 色截取自然变成 **`[top.first, salient[0] (if any) | top[1]]`**——左端是主色，右端是点睛色或副色。9 个 capsule 跨左→右 lerp，频谱高频段（右侧）自动获得 salient（如果存在）。这是 §5.3 "salient 适合作为高频段 / 峰值段色 / 次色 / 发光点睛色"的最低代价实现。
+
+**单色封面兜底**：
+
+`MiniPlayerSpectrumView.resolveArtworkFaithfulColors` 当 displayPalette 只有 1 个色时，右端不再退到 accent / 中性灰；改用 `makeTonalRightEndpoint(of:usesDarkForeground:)`：
+
+- `OKColor.nsColorToOKLCH(color)` → 拿到 OKLCH。
+- L 偏移 ±0.10（`usesDarkForeground ? -0.10 : +0.10`），H/C 保持。
+- `okLCHToNSColor(tuned, alpha: 1)`。
+
+效果：单色封面下频谱仍是 "同色调略深 → 同色调略亮" 的 L 阶变，**不再 hue rotate 假多色**，也不再退到中性灰。仅在 OKLCH 转换都失败时才落到 accent。
+
+**`adjustedSpectrumBase` / 9-capsule lerp 几何 / 亮度饱和度曲线**：未触动。Phase 3 只换"颜色来源"，不调"发光后处理曲线"。
+
+**调试日志**：`[Spectrum/palette] ultraDark=... nearMono=... hasSalient=... colors=[...]`。
+
+### 3.4 边界遵守清单
+
+- [x] LED 未改（`LEDColorResolver` 内部 OKLCH 调参原封不动）。
+- [x] MiniPlayer 控件色未语义化（仍读 `accentColor`）。
+- [x] Artwork Readability Profile 未实现。
+- [x] 歌词颜色策略未改。
+- [x] Header 路径未改。
+- [x] Tone Ladder 未做。
+- [x] `SemanticPalette` 主 accent 仍是 HSL 路径，未切 OKLCH。
+- [x] Phase 2 算法（`analyzeInternal` / `computeSalientHighlights` / `computeDisplayPalette` / token 阈值）**完全未改**。
+- [x] Home Shapes 布局 / 动画 / 透明度未改（仅替换 `palette` 函数返回内容）。
+- [x] BKArt 动画 / 布局未改（仅替换 `BKColorEngine.make` 的 `extracted` 输入与 `isUltraDarkPalette` 的第一判定）。
+- [x] Spectrum 几何绘制 / AVAudio 驱动未改（仅替换 `spectrumArtworkColors` 与单色兜底）。
+
+### 3.5 构建验证
+
+```text
+xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player \
+  -configuration Debug -destination 'platform=macOS' build
+→ ** BUILD SUCCEEDED **
+```
+
+### 3.6 改动文件清单
+
+```text
+myPlayer2/Views/Home/HomeAmbientShapesBackground.swift             (displayPalette → OKLCH 背景化、PaletteSignature 增字段、调试日志)
+myPlayer2/Views/NowPlaying/BKArtBackgroundView.swift               (selectedExtractedPalette、isUltraDarkPalette 强化、调试日志)
+myPlayer2/Views/Fullscreen/FullscreenMiniPlayerView.swift          (spectrumArtworkColors 改读 displayPalette、调试日志)
+myPlayer2/Views/Fullscreen/MiniPlayerSpectrumView.swift            (makeTonalRightEndpoint 单色兜底)
+
+docs/oklch-color-system-migration-log.md                           (本节)
+```
+
+### 3.7 手测建议（5 类封面 × 3 个 UI surface）
+
+预期最低基线：
+
+| 封面类型 | Home Shapes | BKArt | Spectrum |
+| --- | --- | --- | --- |
+| **(A) 灰黑背景 + 小面积鲜黄**（如 some metal albums） | 大部分 shapes 是深灰 L 变体，**至少 1 个 shape 是 salient 黄**（OKLCH chroma 被收束但 hue 保留） | bg 走深灰，但 shape pool / dot tier 必须出现黄色调（salient 进入 candidate） | 左端深灰 / 黑，右端鲜黄（salient）→ 9 capsule 从灰渐变到黄 |
+| **(B) 深蓝绿 + 橙色点睛** | shapes 主体是深蓝绿 L 变体，**部分 shape 携橙色 hue**（salient orange 不被合并掉，displayPalette 至少 2-3 色） | bg primary = 深蓝绿，shape pool / accent 候选含橙 | 左 = 深蓝绿，右 = 橙 → 高频段 capsule 偏橙 |
+| **(C) 高饱和多色封面** | 6 shapes 大概率覆盖到 3-4 个真实 hue（不再 6 个全是同 hue 偏移） | bgVariants 多色更丰富，shape pool hueSpread > 之前的 hue-family 派生 | 左右两色都是真实 displayPalette 前两色，差异明显 |
+| **(D) 极暗彩色（深蓝 / 酒红 / 暗紫）** | shapes 保留深 L band（ultraDark profile：L 0.10–0.26），但 hue 不被洗成灰（chromaCeiling 0.075，不是 0.030） | `controller.setUltraDarkActive(true)` 仍触发；但 bg / shape pool 保留深紫 / 深酒红 hue，**不再被 BKColorEngine 误判为 grayscaleTrue 而走灰阶 fallback** | 左右两色都偏深，但 hue 真实可辨（非中性灰） |
+| **(E) 近灰阶或黑白封面** | shapes 全部走 nearMono 通道（chromaCeiling 0.038 / 0.022），整张图保持安静；如果有任何 salient，**至少 1 个 shape 是该 salient L 变体** | bg primary 几乎中性，shape pool 高度去饱和（已有的 `applyAnalysisBgSGating` 路径仍在 1.x ceiling 工作） | 左右几乎同色（同色 L 变体兜底），不再退到 #999 中性灰 |
+
+**关键退出条件复述**：
+
+- 监听同一封面时，Home Shapes / BKArt / Spectrum 三处颜色气质**同源**（都来自 displayPalette）。
+- Spectrum / Home Shapes 至少各**有机会消费一次 salient**（取决于 salient 是否存在 & 是否进入 displayPalette 前 2/6）。
+- Ultra Dark 暗色封面的"夜色感"不被多色 palette 接入破坏。
+
+### 3.8 留给后续 Phase 的问题
+
+1. **ArtworkAssetSnapshot 不携带 displayPalette / salient / isUltraDark / isNearMonochrome / weightedLuma / dominantBrightness**。当 BKArt 走 snapshot cache 路径时（已访问过的封面），analysis 仍为 nil → 退化到旧 rich+luma 判定，丢失多色性的部分增益。Phase 4 或 Phase 7 应评估：是否把 Phase 2 新字段持久化到 snapshot，或让 ThemeStore 在更早一层缓存 ArtworkColorAnalysis（不只是 dominantColor）。本期不动，避免与 BKArt UltraDark 渲染层耦合。
+2. **Home Shapes ambient base layer**（`HomeAmbientPalette.ambientBaseColor`）仍走旧 HSL 路径，使用单 sourceColor + `analysis?.isEffectivelyMonochrome` 短路判断。它绘制的是 **shapes 背后的纯色背景层**，与 shape palette 是两件事。Phase 5 / Phase 6 可考虑把这一层也走 OKLCH，但本期不动。
+3. **Spectrum salient 优先级**：当前是 "displayPalette.prefix(2)"，所以如果 salient 已是 displayPalette[1]，就会出现在右端。如果 artwork 的 displayPalette 顺序变成 `top[0] → top[1] → salient(later)`（即 salient 没排到前 2），salient 不会进入 Spectrum。这是 Phase 2 排序策略的内嵌结果，不在 Phase 3 调整范围。
+4. **BKArt 调试日志在 snapshot 路径上不打印 analysis 字段**（因为 analysis 为 nil）。Phase 4 持久化 analysis 后即可补全。
+5. **Phase 4 入口**：MiniPlayer 控件色语义化 + Artwork Readability Profile。`MiniPlayerSpectrumView` 的 `usesDarkForeground: Bool` 参数（来自 `FullscreenMiniPlayerView.usesDarkArtworkForegroundForClear`）届时应替换为语义化输入（参见 Phase 0 §0.6 已登记的后续）。
+
+***
+
