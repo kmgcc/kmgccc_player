@@ -250,8 +250,19 @@ struct BKArtBackgroundView: View {
         cachedRichPalette = richPalette
         lastArtworkSignature = signature
 
-        let chosen = richPalette.isEmpty ? basePalette : richPalette
-        let resolvedPalette = chosen.isEmpty ? Self.fallbackPalette : chosen
+        // Phase 3: when an analysis is available, feed BKColorEngine the
+        // Phase-2 displayPalette (top.first → salient → top.tail → rich).
+        // This is the quality-controlled multi-colour set: salient
+        // highlight enters the engine as an extracted candidate so it can
+        // surface on the decoration / shape tier without inflating the
+        // background. For cached snapshot reads (analysis == nil) we keep
+        // the existing rich+top fallback — snapshots do not yet carry
+        // displayPalette.
+        let resolvedPalette = Self.selectedExtractedPalette(
+            analysis: analysis,
+            basePalette: basePalette,
+            richPalette: richPalette
+        )
         controller.setCurrentSurfaceBackgroundColor(nil, for: trackID)
         palette = resolvedPalette
         let harmonized = BKColorEngine.make(
@@ -265,8 +276,71 @@ struct BKArtBackgroundView: View {
             ?? resolvedPalette.first
             ?? Self.fallbackPalette.first
         controller.setPrimaryBackgroundColor(primaryBackgroundColor, for: trackID)
-        controller.setUltraDarkActive(isUltraDarkPalette(harmonized), for: trackID)
+        controller.setUltraDarkActive(
+            isUltraDarkPalette(harmonized, analysis: analysis),
+            for: trackID
+        )
         controller.markLyricsColorSampleReady(for: trackID)
+        Self.logExtracted(resolvedPalette, analysis: analysis)
+    }
+
+    /// Phase 3 palette source resolution. Prefers `analysis.displayPalette`
+    /// when available (the Phase-2 quality-controlled merge of
+    /// top + salient + rich), falls back to rich → base → engine fallback.
+    private static func selectedExtractedPalette(
+        analysis: ArtworkColorAnalysis?,
+        basePalette: [NSColor],
+        richPalette: [NSColor]
+    ) -> [NSColor] {
+        if let display = analysis?.displayPalette, !display.isEmpty {
+            return display
+        }
+        if !richPalette.isEmpty {
+            return richPalette
+        }
+        if !basePalette.isEmpty {
+            return basePalette
+        }
+        return Self.fallbackPalette
+    }
+
+    private static func logExtracted(_ palette: [NSColor], analysis: ArtworkColorAnalysis?) {
+        guard LogConfig.isCategoryEnabled(.ui) else { return }
+        let hexes = palette.prefix(8).compactMap { color -> String? in
+            guard let rgb = color.usingColorSpace(.deviceRGB) else { return nil }
+            return String(
+                format: "#%02X%02X%02X",
+                UInt8(min(max(rgb.redComponent, 0), 1) * 255),
+                UInt8(min(max(rgb.greenComponent, 0), 1) * 255),
+                UInt8(min(max(rgb.blueComponent, 0), 1) * 255)
+            )
+        }.joined(separator: " ")
+        let salientHashes: Set<String> = {
+            guard let salients = analysis?.salientHighlightPalette else { return [] }
+            return Set(salients.compactMap { color -> String? in
+                guard let rgb = color.usingColorSpace(.deviceRGB) else { return nil }
+                return String(
+                    format: "#%02X%02X%02X",
+                    UInt8(min(max(rgb.redComponent, 0), 1) * 255),
+                    UInt8(min(max(rgb.greenComponent, 0), 1) * 255),
+                    UInt8(min(max(rgb.blueComponent, 0), 1) * 255)
+                )
+            })
+        }()
+        let hasSalient = palette.contains { color in
+            guard let rgb = color.usingColorSpace(.deviceRGB) else { return false }
+            let hex = String(
+                format: "#%02X%02X%02X",
+                UInt8(min(max(rgb.redComponent, 0), 1) * 255),
+                UInt8(min(max(rgb.greenComponent, 0), 1) * 255),
+                UInt8(min(max(rgb.blueComponent, 0), 1) * 255)
+            )
+            return salientHashes.contains(hex)
+        }
+        Log.debug(
+            "[BKArt/palette] ultraDark=\(analysis?.isUltraDark ?? false) nearMono=\(analysis?.isNearMonochrome ?? false) hasSalient=\(hasSalient) colors=[\(hexes)]",
+            category: .ui
+        )
     }
 
     private func predictedInitialBackgroundColor(from harmonized: HarmonizedPalette) -> NSColor? {
@@ -293,7 +367,19 @@ struct BKArtBackgroundView: View {
         return nil
     }
 
-    private func isUltraDarkPalette(_ harmonized: HarmonizedPalette) -> Bool {
+    private func isUltraDarkPalette(
+        _ harmonized: HarmonizedPalette,
+        analysis: ArtworkColorAnalysis? = nil
+    ) -> Bool {
+        // Phase 3: prefer the orthogonal analysis flag introduced in Phase 2.
+        // It separates the lightness regime from the chromatic regime, which
+        // means deep-but-coloured covers (deep navy, dark crimson, midnight
+        // teal) trigger the same darkness-preserving UltraDark protection
+        // path as truly grayscale covers, while still letting the engine
+        // expose their hue through the multi-colour shape tier.
+        if let analysis, analysis.isUltraDark {
+            return true
+        }
         let luma = harmonized.imageCoverLuma
         return (luma < 0.36 && harmonized.areaDominantB < 0.30)
             || (luma < 0.30 && harmonized.grayScore > 0.70)

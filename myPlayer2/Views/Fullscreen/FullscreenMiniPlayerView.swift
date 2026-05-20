@@ -452,13 +452,66 @@ struct FullscreenMiniPlayerView: View {
     private var spectrumArtworkColors: [NSColor] {
         guard usesAdaptiveClearForeground else { return [] }
         let analysis = themeStore.semanticPalette.analysis
-        let palette = analysis.topPalette.isEmpty
-            ? [
+        // Phase 3: switch the spectrum source from raw topPalette to the
+        // Phase-2 displayPalette. displayPalette is ordered
+        // `top.first → salient → top.tail → rich`, so when an artwork has
+        // a small-area but visually striking accent (5% bright yellow over
+        // a 95% black canvas), that salient highlight naturally lands as
+        // the second colour — which is exactly the "peak / high-band"
+        // endpoint of the L→R gradient drawn across 9 capsules.
+        let primary: [NSColor]
+        if !analysis.displayPalette.isEmpty {
+            primary = analysis.displayPalette
+        } else if !analysis.topPalette.isEmpty {
+            primary = analysis.topPalette
+        } else {
+            primary = [
                 themeStore.semanticPalette.artBackgroundPrimary,
                 themeStore.semanticPalette.artBackgroundSecondary,
             ]
-            : analysis.topPalette
-        return Array(palette.prefix(2))
+        }
+        let chosen = Array(primary.prefix(2))
+        Self.logSpectrumColors(chosen, analysis: analysis)
+        return chosen
+    }
+
+    private static func logSpectrumColors(
+        _ colors: [NSColor],
+        analysis: ArtworkColorAnalysis
+    ) {
+        guard LogConfig.isCategoryEnabled(.ui) else { return }
+        let hexes = colors.compactMap { color -> String? in
+            guard let rgb = color.usingColorSpace(.deviceRGB) else { return nil }
+            return String(
+                format: "#%02X%02X%02X",
+                UInt8(min(max(rgb.redComponent, 0), 1) * 255),
+                UInt8(min(max(rgb.greenComponent, 0), 1) * 255),
+                UInt8(min(max(rgb.blueComponent, 0), 1) * 255)
+            )
+        }.joined(separator: " ")
+        let salientHashes = Set(analysis.salientHighlightPalette.compactMap { color -> String? in
+            guard let rgb = color.usingColorSpace(.deviceRGB) else { return nil }
+            return String(
+                format: "#%02X%02X%02X",
+                UInt8(min(max(rgb.redComponent, 0), 1) * 255),
+                UInt8(min(max(rgb.greenComponent, 0), 1) * 255),
+                UInt8(min(max(rgb.blueComponent, 0), 1) * 255)
+            )
+        })
+        let hasSalient = colors.contains { color in
+            guard let rgb = color.usingColorSpace(.deviceRGB) else { return false }
+            let hex = String(
+                format: "#%02X%02X%02X",
+                UInt8(min(max(rgb.redComponent, 0), 1) * 255),
+                UInt8(min(max(rgb.greenComponent, 0), 1) * 255),
+                UInt8(min(max(rgb.blueComponent, 0), 1) * 255)
+            )
+            return salientHashes.contains(hex)
+        }
+        Log.debug(
+            "[Spectrum/palette] ultraDark=\(analysis.isUltraDark) nearMono=\(analysis.isNearMonochrome) hasSalient=\(hasSalient) colors=[\(hexes)]",
+            category: .ui
+        )
     }
 
     // MARK: - HSL Color Helpers

@@ -406,6 +406,14 @@ private final class MiniPlayerSpectrumHostView: NSView {
 
     /// Fullscreen mini player spectrum colors that faithfully represent artwork palette.
     /// Preserves artwork hue/chroma with minimal adjustment for visibility against glass background.
+    ///
+    /// Phase 3: callers now pass `analysis.displayPalette.prefix(2)`. When the
+    /// artwork is colour-thin (displayPalette has only 1 entry), avoid the
+    /// hue-rotate fabricate path that older builds used; instead derive the
+    /// right endpoint as a same-hue OKLCH tonal variant of the single real
+    /// colour. This keeps the L→R gradient quietly informative rather than
+    /// a flat strip while still being honest about what the artwork
+    /// actually contains.
     private static func resolveArtworkFaithfulColors(
         from artworkColors: [NSColor],
         fallback accentColor: NSColor,
@@ -413,7 +421,16 @@ private final class MiniPlayerSpectrumHostView: NSView {
     ) -> (fillColors: [CGColor], strokeColors: [CGColor]) {
         let sources = Array(artworkColors.prefix(2))
         let leftSource = sources.first ?? accentColor
-        let rightSource = sources.dropFirst().first ?? accentColor
+        let rightSource: NSColor = {
+            if let explicit = sources.dropFirst().first {
+                return explicit
+            }
+            // Single-colour path: build a same-hue L variant of the lone real
+            // colour. No hue rotation. Falls back to accent only when even
+            // OKLCH conversion fails.
+            return makeTonalRightEndpoint(of: leftSource, usesDarkForeground: usesDarkForeground)
+                ?? accentColor
+        }()
 
         guard
             let leftBase = adjustedSpectrumBase(
@@ -459,6 +476,27 @@ private final class MiniPlayerSpectrumHostView: NSView {
         }
         
         return (fillColors, strokeColors)
+    }
+
+    /// Build a same-hue tonal right endpoint for the single-real-colour
+    /// path. Used when only one displayPalette colour is available so the
+    /// gradient still has some L→R differentiation without inventing hues.
+    private static func makeTonalRightEndpoint(
+        of color: NSColor,
+        usesDarkForeground: Bool
+    ) -> NSColor? {
+        guard let lch = OKColor.nsColorToOKLCH(color) else { return nil }
+        // Push lightness one notch in the visibility direction; preserve hue
+        // and chroma so the right end is recognisably the same colour as
+        // the left, just lighter / darker.
+        let lDelta: CGFloat = usesDarkForeground ? -0.10 : 0.10
+        let newL = clamp01(lch.l + lDelta)
+        let tuned = OKColor.OKLCH(l: newL, c: lch.c, h: lch.h)
+        return OKColor.okLCHToNSColor(tuned, alpha: 1)
+    }
+
+    private static func clamp01(_ value: CGFloat) -> CGFloat {
+        min(1, max(0, value))
     }
 
     private static func adjustedSpectrumBase(
