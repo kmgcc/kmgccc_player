@@ -1249,3 +1249,88 @@ docs/oklch-color-system-migration-log.md                 (本节)
 
 ***
 
+---
+
+## §6 Phase 4.5 回修（2026-05）— 彩度过低导致实际渲染未生效
+
+### 6.1 问题描述
+
+用户实测后发现 Phase 4.5 提交（7aefd03）的效果没有呈现：
+
+- 肉眼看不出不同歌曲之间的前景色变化；
+- 吸管工具（macOS Digital Color Meter 等）测量文字颜色，饱和度读数稳定为 0；
+- 切换明显色彩不同的封面，前景色也无变化。
+
+### 6.2 根因分析
+
+**根因 A（确认）：OKLCH chroma 值太低，sRGB 转换后 HSB 饱和度接近 0**
+
+原始 chroma 上限：primary 0.012，secondary 0.010，tertiary 0.008，quaternary 0.006，chromaCeiling 0.020。
+
+在深色模式 primary L=0.96（接近白色）下，C=0.012 的 OKLCH 颜色对应 sRGB HSB 饱和度约 3–5%。RGB 最大/最小分量差约 3–5（/255），在文本抗锯齿叠加背景后几乎不可辨，数字色彩拾取工具显示接近 0%。
+
+**根因 B（推测，需运行日志确认）：部分封面被分类为 isNearMonochrome = true**
+
+`ArtworkColorAnalysis.colorfulness` 表示 HSB 饱和度 > 0.28 的像素占比。摄影类封面（人像、风景）中大量像素饱和度低于此阈值，colorfulness 可能落在 0.05–0.20。当 `isNearMonochrome = true` 时 chromaScale 强制为 0（设计正确），所有 tier 变成真正中性灰。
+
+**管线链路审查结论**
+
+- SemanticPaletteFactory.appForeground() 逻辑正确
+- ThemeStore.refreshPalette() 中 `semanticPalette = semantic` 是 @Published 赋值，视图依赖链正确
+- 已接入 View 的 `Color(nsColor: themeStore.appForegroundPalette.secondary)` 访问路径正确
+
+### 6.3 修复策略
+
+提高 chroma cap 约 4 倍，使中等色彩丰富度封面（colorfulness ≈ 0.14–0.40）也产生可被色彩拾取工具检测的着色效果。
+
+chromaScale = colorfulness / 0.40（≤ 1.0）。旧 cap 下，colorfulness = 0.25 → primary c = 0.0075，低于感知阈值。新 cap 下，同样情况 primary c = 0.030，L=0.96 对应 HSB 饱和度约 10–12%，数字拾取工具可明确读出。
+
+不变规则：nearMono → chromaScale = 0；disabled chromaCap = 0；L 目标不变；接入范围不扩大。
+
+### 6.4 chroma cap 前后对比
+
+| 参数                    | Phase 4.5 原始值 | 回修后 |
+|-------------------------|-----------------|--------|
+| primaryChromaCap        | 0.012           | 0.048  |
+| secondaryChromaCap      | 0.010           | 0.038  |
+| tertiaryChromaCap       | 0.008           | 0.028  |
+| quaternaryChromaCap     | 0.006           | 0.016  |
+| disabledChromaCap       | 0.000           | 0.000  |
+| chromaCeiling           | 0.020           | 0.055  |
+| colorfulChromaAssertion | 0.022           | 0.065  |
+
+注：primary 深色模式 L=0.96 时，暖色系方向 sRGB gamut headroom 很窄。`okLCHToNSColor` gamut clamp 会将实际 C 压低至约 0.020–0.040（取决于色相），属于预期行为。
+
+### 6.5 诊断日志
+
+ThemeStore.refreshPalette() 新增 `#if DEBUG` print，每次 palette 刷新输出：
+
+```text
+[theme:appFg] reason=track_artwork_extracted nearMono=false colorfulness=0.312
+  primary(rgb:246,238,229) primary(oklch:L0.960C0.034H0.212) secondary(oklch:L0.780C0.027H0.212)
+```
+
+验证方法：Debug build → 切换歌曲 → 查看 Xcode Console。
+
+预期：
+- 暖色封面：rgb R > B，oklch C 非零
+- 冷色封面：rgb B > R，oklch C 非零
+- nearMono 封面：`nearMono=true`，oklch C≈0.000，rgb 三值相等
+
+### 6.6 已修改文件
+
+```text
+myPlayer2/Utilities/ColorSystemTokens.swift   (AppForeground chroma caps ×4；chromaCeiling 0.020→0.055；colorfulChromaAssertion 0.022→0.065)
+myPlayer2/Services/Theme/ThemeStore.swift     (#if DEBUG appFg 诊断 print)
+docs/oklch-color-system-migration-log.md      (本节)
+```
+
+### 6.7 更新后的 Phase 4.5 退出条件
+
+- [x] factory self-check 全部通过（5 个 Phase 4.5 场景）
+- [ ] Debug build 运行，暖封面与冷封面 `[theme:appFg]` 日志中 primary rgb 三值不等
+- [ ] 吸管工具在已接入区域（SidebarView section header、HomeView caption）测量到非零 HSB 饱和度
+- [ ] nearMono 封面下 oklch C≈0.000，前景保持中性
+
+***
+
