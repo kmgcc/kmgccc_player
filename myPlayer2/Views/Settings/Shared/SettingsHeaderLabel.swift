@@ -94,6 +94,51 @@ struct SettingsSection<Content: View>: View {
     }
 }
 
+struct CollapsibleSectionHeader: View {
+    let title: LocalizedStringKey
+    let systemImage: String
+    @Binding var isExpanded: Bool
+
+    init(
+        _ title: LocalizedStringKey,
+        systemImage: String,
+        isExpanded: Binding<Bool>
+    ) {
+        self.title = title
+        self.systemImage = systemImage
+        self._isExpanded = isExpanded
+    }
+
+    init(
+        _ title: String,
+        systemImage: String,
+        isExpanded: Binding<Bool>
+    ) {
+        self.init(LocalizedStringKey(title), systemImage: systemImage, isExpanded: isExpanded)
+    }
+
+    var body: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.18)) {
+                isExpanded.toggle()
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                Label(title, systemImage: systemImage)
+                    .font(.headline)
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .padding(.vertical, 4)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 private struct SettingsSectionTitleStyleModifier: ViewModifier {
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
 

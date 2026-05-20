@@ -460,24 +460,11 @@ struct TrackInfoEditorCore: View {
 
     private var detailedMetadataSection: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.18)) {
-                    isDetailedMetadataExpanded.toggle()
-                }
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "chevron.right")
-                        .font(.caption.weight(.semibold))
-                        .rotationEffect(.degrees(isDetailedMetadataExpanded ? 90 : 0))
-                    Label("更多详细元数据", systemImage: "list.bullet.rectangle")
-                        .font(.headline)
-                    Spacer(minLength: 0)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-                .padding(.vertical, 4)
-            }
-            .buttonStyle(.plain)
+            CollapsibleSectionHeader(
+                "更多详细元数据",
+                systemImage: "list.bullet.rectangle",
+                isExpanded: $isDetailedMetadataExpanded
+            )
 
             if isDetailedMetadataExpanded {
                 VStack(alignment: .leading, spacing: 12) {
