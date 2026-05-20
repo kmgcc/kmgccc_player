@@ -144,9 +144,11 @@ struct HomeView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Home")
                 .font(.system(size: mode == .wide ? 34 : 28, weight: .semibold))
+                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.primary))
             if let hero {
                 Text(hero.title)
                     .font(.title3.weight(.semibold))
+                    .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.primary))
                     .lineLimit(1)
                 Text([hero.artist, hero.album].filter { !$0.isEmpty }.joined(separator: " · "))
                     .font(.callout)
@@ -184,6 +186,7 @@ struct HomeView: View {
             Spacer(minLength: 0)
             Text(value)
                 .font(.title3.weight(.semibold))
+                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.primary))
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
             if !unit.isEmpty {
@@ -202,6 +205,7 @@ struct HomeView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text(title)
                 .font(.headline)
+                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.primary))
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
                     ForEach(Array(items.prefix(10).enumerated()), id: \.offset) { _, item in
@@ -222,6 +226,7 @@ struct HomeView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("爱听排行")
                 .font(.headline)
+                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.primary))
             VStack(spacing: 0) {
                 ForEach(Array(items.prefix(8).enumerated()), id: \.element.id) { index, item in
                     HStack {
@@ -232,6 +237,7 @@ struct HomeView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(item.title)
                                 .font(.callout.weight(.semibold))
+                                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.primary))
                                 .lineLimit(1)
                             Text(item.artist)
                                 .font(.caption)
@@ -326,6 +332,7 @@ struct HomeView: View {
         // here is free and lets `HomeInsightsSection` / `HomeRankRow` /
         // `HomeListeningHeatmapView` opt out of the store entirely.
         let accentColor = themeStore.accentColor
+        let appFgPrimary = Color(nsColor: themeStore.appForegroundPalette.primary)
 
         return ScrollView(.vertical, showsIndicators: true) {
             // `LazyVStack` defers body evaluation and layout for sections
@@ -340,6 +347,7 @@ struct HomeView: View {
                         Text("精选")
                             .font(.system(size: mode.sectionTitleFontSize, weight: .semibold))
                             .tracking(-0.3)
+                            .foregroundStyle(appFgPrimary)
 
                         HomeHeroView(
                             track: heroTrack,
@@ -355,9 +363,13 @@ struct HomeView: View {
                 }
 
                 if !HomeDebugFlags.disablePlaylists, !homeVM.playlists.isEmpty {
-                    HomePlaylistsSection(playlists: homeVM.playlists, mode: mode)
-                        .padding(.leading, centerLeftPad)
-                        .padding(.trailing, centerRightPad)
+                    HomePlaylistsSection(
+                        playlists: homeVM.playlists,
+                        mode: mode,
+                        titleColor: appFgPrimary
+                    )
+                    .padding(.leading, centerLeftPad)
+                    .padding(.trailing, centerRightPad)
                 }
 
                 if !HomeDebugFlags.disableArtists, !homeVM.artists.isEmpty {
@@ -365,7 +377,8 @@ struct HomeView: View {
                         artists: homeVM.artists,
                         mode: mode,
                         centerLeftPad: centerLeftPad,
-                        centerRightPad: centerRightPad
+                        centerRightPad: centerRightPad,
+                        titleColor: appFgPrimary
                     )
                 }
 
@@ -374,7 +387,8 @@ struct HomeView: View {
                         albums: homeVM.albums,
                         mode: mode,
                         centerLeftPad: centerLeftPad,
-                        centerRightPad: centerRightPad
+                        centerRightPad: centerRightPad,
+                        titleColor: appFgPrimary
                     )
                 }
 
@@ -385,7 +399,8 @@ struct HomeView: View {
                         containerWidth: contentWidth,
                         centerLeftPad: centerLeftPad,
                         centerRightPad: centerRightPad,
-                        accentColor: accentColor
+                        accentColor: accentColor,
+                        titleColor: appFgPrimary
                     )
                 }
 

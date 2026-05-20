@@ -65,6 +65,7 @@ struct SidebarView: View {
                     Label("主页", systemImage: "house")
                     Spacer()
                 }
+                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.primary))
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
                 .background(
@@ -87,6 +88,7 @@ struct SidebarView: View {
                         systemImage: "music.note.list")
                     Spacer()
                 }
+                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.primary))
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
                 .background(

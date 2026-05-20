@@ -1334,3 +1334,95 @@ docs/oklch-color-system-migration-log.md      (本节)
 
 ***
 
+---
+
+## §7 Phase 4.5 第二轮回修（2026-05）— 显眼路径未接入 + chroma 进一步提升
+
+### 7.1 问题根因
+
+用户用吸管工具测量「主页标题」颜色，读到固定 `#dbdbdb`（RGB 219,219,219），切歌后完全不变。
+
+这是 macOS 系统 `.primary` 自适应色在深色模式下的典型值。原因：第一轮 Phase 4.5 只迁移了 section 辅助标签（小 caption），**最显眼的 section 大标题**（`精选`、`播放列表`、`艺人`、`专辑`、`音乐足迹`）以及 **Sidebar 主导航文字**（`主页`、`所有歌曲`）全部使用系统默认 `.primary` 颜色，没有接入 `AppForegroundPalette`。
+
+原因：
+- HomeView 的子 section 组件（`HomePlaylistsSection`、`HomeArtistsSection`、`HomeAlbumsSection`、`HomeInsightsSection`）按性能设计刻意不持有 `@EnvironmentObject ThemeStore`（见 HomeView 注释），只通过 `let` 参数接收值。第一轮没有向这些组件传递 titleColor。
+- SidebarView 的主导航 `Label("主页", ...)` / `Label("sidebar.all_songs", ...)` 的 HStack 没有显式 foregroundStyle。
+
+### 7.2 本轮新增接入区域
+
+| 文件 | 新接入文字 | 使用 tier |
+|------|-----------|----------|
+| HomeView.swift | `Text("精选")` section 大标题 | primary |
+| HomePlaylistsSection.swift | `Text("播放列表")` section 大标题 | primary |
+| HomeArtistsSection.swift | `Text("艺人")` section 大标题 | primary |
+| HomeAlbumsSection.swift | `Text("专辑")` section 大标题 | primary |
+| HomeInsightsSection.swift | `Text("音乐足迹")` section 大标题 | primary |
+| HomeView.swift (cached state) | `Text("Home")`、`Text(hero.title)` | primary |
+| HomeView.swift (cached state) | stat value `Text(value)` | primary |
+| HomeView.swift (cached state) | `Text(title)` in cachedStrip header | primary |
+| HomeView.swift (cached state) | `Text("爱听排行")` header | primary |
+| HomeView.swift (cached state) | `Text(item.title)` ranking row | primary |
+| SidebarView.swift | `Label("主页", ...)` 主导航 | primary |
+| SidebarView.swift | `Label("sidebar.all_songs", ...)` 主导航 | primary |
+
+实现方式：HomeView 在 `homeScrollView(...)` 函数中预解析 `let appFgPrimary = Color(nsColor: themeStore.appForegroundPalette.primary)`，与 `accentColor` 一样作为参数传入各子 section，保持"单点订阅"性能设计。
+
+### 7.3 chroma cap 第二次上调
+
+用户明确要求"下次改得大胆一点上色"。
+
+| 参数                    | 第一轮回修 | 第二轮回修 |
+|-------------------------|-----------|-----------|
+| primaryChromaCap        | 0.048     | 0.070     |
+| secondaryChromaCap      | 0.038     | 0.056     |
+| tertiaryChromaCap       | 0.028     | 0.040     |
+| quaternaryChromaCap     | 0.016     | 0.022     |
+| disabledChromaCap       | 0.000     | 0.000     |
+| chromaCeiling           | 0.055     | 0.080     |
+| colorfulChromaAssertion | 0.065     | 0.090     |
+
+### 7.4 预期效果（dark mode，colorfulness=0.40+）
+
+| 位置 | tier | 暖色封面 approx RGB | 冷色封面 approx RGB | HSB sat |
+|------|------|--------------------|--------------------|---------|
+| 精选标题 | primary L=0.96 | ≈(255,248,239) | ≈(237,248,255) | ~8-15% |
+| 播放列表/艺人/专辑/足迹标题 | primary L=0.96 | 同上 | 同上 | ~8-15% |
+| sidebar 主页/所有歌曲 | primary L=0.96 | 同上 | 同上 | ~8-15% |
+| HomeView caption | secondary L=0.78 | ≈(201,186,168) | ≈(180,196,212) | ~15-22% |
+
+注：primary L=0.96 在暖色方向受 sRGB gamut clamp 限制，实际 C≈0.025–0.050；secondary L=0.78 headroom 更宽，C 可达 0.056。
+
+### 7.5 用户最适合用吸管验证的位置
+
+**首选**：`Sidebar → 主页` 按钮文字（L label text "主页"）或`精选` section 标题。
+
+切换以下封面对比：
+1. 暖色封面（橙红色专辑，如爵士/流行）→ 文字应偏暖（R > B）
+2. 冷色封面（深蓝/绿色专辑）→ 文字应偏冷（B > R）
+3. 黑白/灰度封面 → 文字应保持中性（R≈G≈B）
+
+**备选**：HomeView section header 下方的 secondary caption（如 "本周常听" 艺人名，L=0.78 有更强 chroma，更容易用吸管读出差异）。
+
+### 7.6 已修改文件
+
+```text
+myPlayer2/Utilities/ColorSystemTokens.swift        (chroma caps: primary 0.048→0.070, secondary 0.038→0.056, tertiary 0.028→0.040, quaternary 0.016→0.022; chromaCeiling 0.055→0.080)
+myPlayer2/Views/Home/HomeView.swift                (精选标题；cached state 多处 primary 文字；pre-resolve appFgPrimary；传参子 sections)
+myPlayer2/Views/Home/HomePlaylistsSection.swift    (新增 titleColor 参数；播放列表标题接入)
+myPlayer2/Views/Home/HomeArtistsSection.swift      (新增 titleColor 参数；艺人标题接入)
+myPlayer2/Views/Home/HomeAlbumsSection.swift       (新增 titleColor 参数；专辑标题接入)
+myPlayer2/Views/Home/HomeInsightsSection.swift     (新增 titleColor 参数；音乐足迹标题接入)
+myPlayer2/Views/Sidebar/SidebarView.swift          (主页/所有歌曲 导航按钮接入 primary)
+docs/oklch-color-system-migration-log.md           (本节)
+```
+
+### 7.7 更新后的 Phase 4.5 退出条件
+
+- [x] factory self-check 全部通过
+- [x] 显眼文字（section 大标题、sidebar 主导航）已接入 AppForegroundPalette.primary
+- [ ] 用户吸管测量：`精选` / `主页` / `播放列表` 等大标题在暖色封面下 R > B，冷色封面下 B > R
+- [ ] nearMono 封面下标题保持 R≈G≈B（中性）
+- [ ] 构建通过，Debug 日志可见 `[theme:appFg]` 输出
+
+***
+
