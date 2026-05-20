@@ -22,6 +22,13 @@
 //  The app exits 0 if every scenario passed, 1 otherwise. Normal
 //  launches (without the env var) skip the check completely.
 //
+//  Release safety: the entire body of `runIfRequested` is guarded by
+//  `#if DEBUG`. A Release build will not read the env var, will not run
+//  the check, and cannot be made to `exit()` mid-launch by an attacker
+//  setting `COLOR_SYSTEM_SELF_CHECK=1`. The env-var gate remains as a
+//  second layer for Debug builds (the default install) so day-to-day
+//  development launches still no-op unless the engineer opts in.
+//
 
 import AppKit
 import Foundation
@@ -32,12 +39,23 @@ nonisolated enum ColorSystemSelfCheck {
 
     /// Reads the env var. When set to "1", runs the check and exits.
     /// Otherwise returns immediately — zero cost in production.
+    ///
+    /// Double-gated:
+    ///   1. `#if DEBUG` compiles the body out entirely in Release builds,
+    ///      so a shipped binary cannot be made to run the check or call
+    ///      `exit()` even if `COLOR_SYSTEM_SELF_CHECK=1` is set in the
+    ///      environment.
+    ///   2. In Debug builds the env-var gate still applies — normal Debug
+    ///      launches no-op, the check fires only when the engineer opts
+    ///      in.
     static func runIfRequested() {
+        #if DEBUG
         guard ProcessInfo.processInfo.environment[envVarName] == "1" else { return }
         let report = runAll()
         for line in report.lines { print(line) }
         FileHandle.standardOutput.synchronizeFile()
         exit(report.allPassed ? 0 : 1)
+        #endif
     }
 
     // MARK: - Report
@@ -89,6 +107,7 @@ nonisolated enum ColorSystemSelfCheck {
         report.section("Display palette")
         checkDisplayPaletteMultiColor(&report)
         checkDisplayPaletteNearMonoRestraint(&report)
+        checkDisplayPaletteSalientPriorityUnderContention(&report)
 
         report.lines.append(
             "Result: \(report.allPassed ? "ALL PASS" : "FAILURES PRESENT")"
@@ -343,6 +362,51 @@ nonisolated enum ColorSystemSelfCheck {
         report.record(
             "Display: 4-way multi-colour", ok,
             "display.count=\(a.displayPalette.count) distinctHues=\(distinctHues) nearMono=\(a.isNearMonochrome)"
+        )
+    }
+
+    private static func checkDisplayPaletteSalientPriorityUnderContention(
+        _ report: inout CheckReport
+    ) {
+        // Adversarial near-mono case: two distinguishable grey regions
+        // PLUS a 5% bright yellow. Under near-mono `cap=2`, the two greys
+        // are large area + low saturation → they will both populate
+        // `topPalette` (and pass DisplayPalette's RGB-gap distinctness
+        // check since |60-15|/255 ≈ 0.176 > 0.14). The yellow is small +
+        // high-sat → rejected from `topPalette` (uiThemePalette's
+        // isNearMono filter kicks it out) but accepted by salient.
+        //
+        // Under the OLD `top → salient → rich` ordering the two greys
+        // would consume both slots and the yellow would be dropped from
+        // displayPalette. The new ordering reserves slot 1 for the
+        // primary grey, then admits the yellow ahead of the tail of
+        // top — yellow MUST appear in displayPalette.
+        guard let a = analyseMix(side: 64, regions: [
+            (0.50, (15, 15, 15, 255)),
+            (0.45, (60, 60, 60, 255)),
+            (0.05, (255, 200, 30, 255))
+        ]) else {
+            report.record(
+                "Display: salient priority under near-mono contention",
+                false, "analysis nil"
+            )
+            return
+        }
+        let yellowInDisplay = a.displayPalette.contains {
+            isHueClose(of: $0, target: 0.13)
+        }
+        let yellowInSalient = a.salientHighlightPalette.contains {
+            isHueClose(of: $0, target: 0.13)
+        }
+        let displayWithinCap =
+            a.displayPalette.count <= ColorSystemTokens.DisplayPalette.nearMonoMaxCount
+        let ok = a.isNearMonochrome && yellowInSalient && yellowInDisplay
+            && displayWithinCap
+        report.record(
+            "Display: salient priority under near-mono contention", ok,
+            "nearMono=\(a.isNearMonochrome) salient.count=\(a.salientHighlightPalette.count) "
+                + "display.count=\(a.displayPalette.count) yellowInSalient=\(yellowInSalient) "
+                + "yellowInDisplay=\(yellowInDisplay) top.count=\(a.topPalette.count)"
         )
     }
 
