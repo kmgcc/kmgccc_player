@@ -1166,35 +1166,56 @@ extension BKColorEngine {
         var dotS: ClosedRange<CGFloat>
 
         if isDark {
-            bgB = 0.24...0.40
-            fgB = 0.44...0.64
-            dotB = 0.56...0.82
-            bgS = 0.24...0.50
-            fgS = 0.34...0.72
-            dotS = 0.30...0.62
+            // Phase 6.1 dark-mode tuning:
+            //   * `fgB` (floating shapes) and `dotB` (moving circles) upper
+            //     bounds lowered so the surface sits more in the background
+            //     and stops competing with foreground lyrics. `bgB` is
+            //     nudged down so BK1/BK2 variants — which clamp to `bgB` —
+            //     come out darker per the user's "BK 背景需要额外暗一点"
+            //     report.
+            //   * `bgS` / `fgS` / `dotS` upper bounds nudged up so the
+            //     darker tones do not read as "灰扑扑" — chroma compensates
+            //     for the lower L.
+            bgB = 0.18...0.32
+            fgB = 0.34...0.54
+            dotB = 0.46...0.68
+            bgS = 0.26...0.54
+            fgS = 0.36...0.74
+            dotS = 0.32...0.66
 
             if veryDarkCover || coverLuma < 0.22 {
-                bgB = 0.08...0.22
-                fgB = 0.30...0.52
-                dotB = 0.46...0.70
-                bgS = 0.08...0.26
+                bgB = 0.06...0.18
+                fgB = 0.22...0.42
+                dotB = 0.36...0.58
+                bgS = 0.10...0.28
             }
             if coverLuma < 0.34 && areaDominantB < 0.30 {
-                bgB = 0.08...0.18
-                fgB = 0.28...0.50
-                dotB = 0.42...0.66
-                bgS = makeRange(lower: 0.06, upper: min(bgS.upperBound, 0.20))
+                bgB = 0.06...0.16
+                fgB = 0.20...0.40
+                dotB = 0.34...0.54
+                bgS = makeRange(lower: 0.08, upper: min(bgS.upperBound, 0.22))
             }
             if areaDominantS < 0.14 {
                 bgS = makeRange(lower: 0.08, upper: min(bgS.upperBound, 0.24))
             }
         } else {
-            bgB = 0.78...0.85
-            fgB = 0.66...0.78
-            dotB = 0.50...0.62
-            bgS = 0.12...0.36
-            fgS = 0.26...0.60
-            dotS = 0.20...0.56
+            // Phase 6.1 light-mode tuning: lift the artistic background
+            // into a high-L band ("整体提高一个层级") so day-mode lyrics
+            // can invert to a dark ladder while still sitting on a clearly
+            // lighter background. Lyric L < bg L invariant is enforced
+            // numerically (see SelfCheck `checkLightModeLyricsUnderBg`).
+            //   * `bgB` 0.78–0.85 → 0.88–0.95 (much brighter solid bg).
+            //   * `fgB` 0.66–0.78 → 0.78–0.88 (shapes follow bg, still <).
+            //   * `dotB` 0.50–0.62 → 0.62–0.74 (circles lifted, still
+            //     above the artistic-bg L floor).
+            //   * Saturation slightly trimmed so the high-L band does not
+            //     blow into pastel territory.
+            bgB = 0.88...0.95
+            fgB = 0.78...0.88
+            dotB = 0.62...0.74
+            bgS = 0.10...0.30
+            fgS = 0.24...0.56
+            dotS = 0.20...0.52
         }
 
         if complexity == .monochrome {

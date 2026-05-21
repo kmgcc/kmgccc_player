@@ -163,6 +163,17 @@ nonisolated enum ColorSystemSelfCheck {
         checkArtisticLyricsHueIdentityPreserved(&report)
         checkCoverBlurProfileUnaffectedByArtisticToneLadder(&report)
 
+        report.section("Phase 6.1 — artistic lyrics tuning + seed selection + light-mode inversion")
+        checkLyricsActiveLightnessRaised(&report)
+        checkLyricsHighChromaSeedShouldered(&report)
+        checkLyricsMidChromaSeedPassthrough(&report)
+        checkLightModeArtisticLyricsInverted(&report)
+        checkLightModeArtisticLyricsTranslationMatchesInactive(&report)
+        checkSeedSelectionDominantFirstOnMidSat(&report)
+        checkSeedSelectionSalientFiresOnUniformDarkArt(&report)
+        checkSeedSelectionSalientSuppressedOnMultiColorArt(&report)
+        checkSeedSelectionNearMonoStaysNeutral(&report)
+
         report.lines.append(
             "Result: \(report.allPassed ? "ALL PASS" : "FAILURES PRESENT")"
         )
@@ -632,6 +643,261 @@ nonisolated enum ColorSystemSelfCheck {
         report.record(
             "Lyrics v2: cover blur profile remains separate", ok,
             "coverInactiveL=\(format(coverInactiveL)) artisticInactiveL=\(format(artisticInactiveL))"
+        )
+    }
+
+    // MARK: - Phase 6.1 — artistic lyric tuning + seed selection + light-mode
+
+    /// User complaint: "active 颜色，也就是高亮歌词，明度有点低；可以再调高一点".
+    /// Phase 6.1 raised `lyricsMainActiveL` 0.880 → 0.905. Guard the new floor.
+    private static func checkLyricsActiveLightnessRaised(_ report: inout CheckReport) {
+        let base = OKColor.OKLCH(l: 0.55, c: 0.14, h: 0.12)
+        let active = PerceptualToneLadder.artisticLyricsTone(
+            base: base, role: .mainActive,
+            isUltraDark: false, isNearMonochrome: false, scheme: .dark
+        )
+        let subActive = PerceptualToneLadder.artisticLyricsTone(
+            base: base, role: .subActive,
+            isUltraDark: false, isNearMonochrome: false, scheme: .dark
+        )
+        // Active floor for Phase 6.1: 0.90 (the new token sits at 0.905).
+        // Sub-active must keep its hierarchy gap below active.
+        let ok = active.l >= 0.90 && subActive.l < active.l
+        report.record(
+            "Phase 6.1: artistic mainActive L raised (≥ 0.90)", ok,
+            "active.L=\(format(active.l)) subActive.L=\(format(subActive.l))"
+        )
+    }
+
+    /// User complaint: "某些高饱和封面下，歌词饱和度略高… 高饱和场景稍微收敛一点".
+    /// Phase 6.1 added a soft chroma shoulder above
+    /// `lyricsChromaShoulderCeiling`. A very-high-chroma seed (c=0.22) must
+    /// land BELOW its raw `chromaScale` × `seed.c` and BELOW the
+    /// shoulder-saturated asymptote (`ceiling + softness`).
+    private static func checkLyricsHighChromaSeedShouldered(_ report: inout CheckReport) {
+        let T = ColorSystemTokens.ToneLadder.self
+        let base = OKColor.OKLCH(l: 0.55, c: 0.22, h: 0.04) // very saturated red
+        let active = PerceptualToneLadder.artisticLyricsTone(
+            base: base, role: .mainActive,
+            isUltraDark: false, isNearMonochrome: false, scheme: .dark
+        )
+        // Without the shoulder the path is `clamp(base.c * 0.92, floor, cap)`
+        // which for red (cap=0.130) lands at 0.130. With the shoulder it
+        // must land strictly below the cap AND below ceiling+softness.
+        let ceiling = T.lyricsChromaShoulderCeiling
+        let softness = T.lyricsChromaShoulderSoftness
+        let asymptote = ceiling + softness
+        let ok = active.c < asymptote && active.c > ceiling
+        report.record(
+            "Phase 6.1: high-chroma seed soft-shouldered", ok,
+            "seedC=\(format(base.c)) activeC=\(format(active.c)) ceiling=\(format(ceiling)) asymptote=\(format(asymptote))"
+        )
+    }
+
+    /// User complaint: "一些中饱和封面，歌词莫名取出来很低饱和". The chroma
+    /// soft shoulder must NOT touch mid-chroma seeds — only above the
+    /// ceiling. Verify the seed passes through (within `chromaScale`).
+    private static func checkLyricsMidChromaSeedPassthrough(_ report: inout CheckReport) {
+        let base = OKColor.OKLCH(l: 0.55, c: 0.060, h: 0.65)  // moderate blue
+        let active = PerceptualToneLadder.artisticLyricsTone(
+            base: base, role: .mainActive,
+            isUltraDark: false, isNearMonochrome: false, scheme: .dark
+        )
+        let inactive = PerceptualToneLadder.artisticLyricsTone(
+            base: base, role: .mainInactive,
+            isUltraDark: false, isNearMonochrome: false, scheme: .dark
+        )
+        // Mid-chroma seeds must stay clearly tinted in both roles.
+        let floor = ColorSystemTokens.ToneLadder.lyricsColorfulMinimumChroma
+        let ok = active.c >= floor && inactive.c >= floor
+        report.record(
+            "Phase 6.1: mid-chroma seed survives the shoulder", ok,
+            "seedC=\(format(base.c)) activeC=\(format(active.c)) inactiveC=\(format(inactive.c)) floor=\(format(floor))"
+        )
+    }
+
+    /// User requirement: "日间模式下，艺术背景 fullscreen lyrics 应使用深色
+    /// 歌词." Verify the light-mode artistic Tone Ladder inverts the L
+    /// order: active sits at the LOWEST L (darkest = most contrast on a
+    /// bright artistic background).
+    private static func checkLightModeArtisticLyricsInverted(_ report: inout CheckReport) {
+        let base = OKColor.OKLCH(l: 0.55, c: 0.10, h: 0.12)
+        let lookup: [PerceptualToneLadder.LyricsRole: OKColor.OKLCH] = Dictionary(
+            uniqueKeysWithValues: PerceptualToneLadder.LyricsRole.allCases.map {
+                ($0, PerceptualToneLadder.artisticLyricsTone(
+                    base: base,
+                    role: $0,
+                    isUltraDark: false,
+                    isNearMonochrome: false,
+                    scheme: .light
+                ))
+            }
+        )
+        guard
+            let active = lookup[.mainActive],
+            let subActive = lookup[.subActive],
+            let mainInactive = lookup[.mainInactive],
+            let subInactive = lookup[.subInactive],
+            let lineMain = lookup[.lineTimingMainInactive],
+            let lineSub = lookup[.lineTimingSubInactive]
+        else {
+            report.record("Phase 6.1: light-mode artistic lyrics inverted", false, "role lookup failed")
+            return
+        }
+        // Light mode: ASCENDING order. active is lowest (darkest =
+        // strongest contrast on bright bg), inactive/translation higher.
+        let ok = active.l < subActive.l
+            && subActive.l < mainInactive.l
+            && mainInactive.l <= subInactive.l
+            && subInactive.l < lineMain.l
+            && lineMain.l < lineSub.l
+        report.record(
+            "Phase 6.1: light-mode artistic lyrics inverted (ascending L)", ok,
+            "L active/sub/mainInact/subInact/lineMain/lineSub=\(format(active.l))/\(format(subActive.l))/\(format(mainInactive.l))/\(format(subInactive.l))/\(format(lineMain.l))/\(format(lineSub.l))"
+        )
+    }
+
+    /// User requirement: "translation L 接近 inactive main lyric L… 不能明显
+    /// 更暗". Hold in BOTH schemes — translation and main-inactive must sit
+    /// on the same perceptual tier (gap ≤ proximity assertion).
+    private static func checkLightModeArtisticLyricsTranslationMatchesInactive(_ report: inout CheckReport) {
+        let limit = ColorSystemTokens.ToneLadder.lyricsSubInactiveLightnessProximityAssertion
+        let base = OKColor.OKLCH(l: 0.55, c: 0.10, h: 0.65)
+        let mainInactive = PerceptualToneLadder.artisticLyricsTone(
+            base: base, role: .mainInactive,
+            isUltraDark: false, isNearMonochrome: false, scheme: .light
+        )
+        let subInactive = PerceptualToneLadder.artisticLyricsTone(
+            base: base, role: .subInactive,
+            isUltraDark: false, isNearMonochrome: false, scheme: .light
+        )
+        let gap = abs(subInactive.l - mainInactive.l)
+        let ok = gap <= limit
+        report.record(
+            "Phase 6.1: light-mode translation L matches inactive L", ok,
+            "mainInactive.L=\(format(mainInactive.l)) subInactive.L=\(format(subInactive.l)) gap=\(format(gap)) max=\(format(limit))"
+        )
+    }
+
+    /// User requirement: "默认 seed 选择改为主导色 / dominant 优先". A
+    /// mid-saturation cover (olive / mossy) must NOT collapse to a low-chroma
+    /// `bestTextSourceColor` — the dominant area color must lead.
+    private static func checkSeedSelectionDominantFirstOnMidSat(_ report: inout CheckReport) {
+        // 100% mossy mid-saturation olive: dominant has moderate chroma,
+        // bestTextSourceColor (mid-tone bucket) may not have visibly more.
+        // The new path must return the dominant.
+        guard let analysis = analyse(side: 32, fill: (108, 124, 60, 255)) else {
+            report.record("Phase 6.1: seed selection dominant-first on mid-sat", false, "analysis nil")
+            return
+        }
+        let preferred = analysis.bestTextSourceColor
+        guard let seed = SemanticPaletteSelfCheck.artisticLyricsSingleSeed(
+            preferred: preferred,
+            analysis: analysis
+        ) else {
+            report.record("Phase 6.1: seed selection dominant-first on mid-sat", false, "seed nil")
+            return
+        }
+        guard let dominantLCH = OKColor.nsColorToOKLCH(analysis.dominantColor) else {
+            report.record("Phase 6.1: seed selection dominant-first on mid-sat", false, "dominant OKLCH nil")
+            return
+        }
+        // Seed should match dominant hue closely AND not collapse below the
+        // dominant chroma minus a small tolerance for the candidate scan.
+        let hueGap = circularHueDelta(seed.h, dominantLCH.h)
+        let chromaOK = seed.c >= dominantLCH.c * 0.85
+        let ok = hueGap <= 0.04 && chromaOK
+        report.record(
+            "Phase 6.1: seed selection dominant-first on mid-sat", ok,
+            "dominantC=\(format(dominantLCH.c)) seedC=\(format(seed.c)) hueΔ=\(format(hueGap))"
+        )
+    }
+
+    /// User requirement: "黑灰 + 小面积黄，黄可以选". Verify the salient
+    /// override fires when the cover field is uniform + the salient is
+    /// chromatically distinct.
+    private static func checkSeedSelectionSalientFiresOnUniformDarkArt(_ report: inout CheckReport) {
+        // 92 % near-black + 8 % bright yellow — the canonical salient case.
+        // Field is uniform (mostly black), highlight is small + chromatic.
+        guard let analysis = analyseMix(side: 64, regions: [
+            (0.92, (12, 12, 12, 255)),
+            (0.08, (255, 205, 30, 255))
+        ]) else {
+            report.record("Phase 6.1: salient fires on uniform-dark + yellow", false, "analysis nil")
+            return
+        }
+        guard let seed = SemanticPaletteSelfCheck.artisticLyricsSingleSeed(
+            preferred: analysis.bestTextSourceColor,
+            analysis: analysis
+        ) else {
+            report.record("Phase 6.1: salient fires on uniform-dark + yellow", false, "seed nil")
+            return
+        }
+        // Yellow hue lies near 0.13 (HSB). In OKLCH it lands roughly
+        // 0.20…0.30; check the seed clearly carries yellow chroma, not a
+        // black-derived collapse.
+        let hueOK = seed.h > 0.18 && seed.h < 0.32
+        let chromaOK = seed.c >= 0.10
+        let ok = hueOK && chromaOK
+        report.record(
+            "Phase 6.1: salient fires on uniform-dark + yellow", ok,
+            "seed.h=\(format(seed.h)) seed.c=\(format(seed.c)) salientCount=\(analysis.salientHighlightPalette.count)"
+        )
+    }
+
+    /// User requirement: "普通多色封面不应乱跳到小色块". When the cover is
+    /// genuinely multi-colour (no uniform field), the salient gate MUST NOT
+    /// fire — the dominant rules.
+    private static func checkSeedSelectionSalientSuppressedOnMultiColorArt(_ report: inout CheckReport) {
+        // Mid-saturation mix: brown majority + smaller blue accent. The
+        // salient gate should NOT fire because `largestHighSaturationAreaShare`
+        // is too high (blue area > 22 %). Seed must be brown (dominant).
+        guard let analysis = analyseMix(side: 64, regions: [
+            (0.70, (160, 90, 40, 255)),
+            (0.30, (40, 90, 200, 255))
+        ]) else {
+            report.record("Phase 6.1: salient suppressed on multi-colour art", false, "analysis nil")
+            return
+        }
+        guard let seed = SemanticPaletteSelfCheck.artisticLyricsSingleSeed(
+            preferred: analysis.bestTextSourceColor,
+            analysis: analysis
+        ) else {
+            report.record("Phase 6.1: salient suppressed on multi-colour art", false, "seed nil")
+            return
+        }
+        guard let dominantLCH = OKColor.nsColorToOKLCH(analysis.dominantColor) else {
+            report.record("Phase 6.1: salient suppressed on multi-colour art", false, "dom OKLCH nil")
+            return
+        }
+        // Seed must align with the dominant brown hue, NOT the blue salient.
+        let hueGap = circularHueDelta(seed.h, dominantLCH.h)
+        let ok = hueGap <= 0.06
+        report.record(
+            "Phase 6.1: salient suppressed on multi-colour art", ok,
+            "seed.h=\(format(seed.h)) dominant.h=\(format(dominantLCH.h)) hueΔ=\(format(hueGap))"
+        )
+    }
+
+    /// nearMono path must remain neutral regardless of the seed-selection
+    /// changes. Salient gate must not fire on near-mono covers (the
+    /// neutralFallback path also goes through Step 1, not the salient gate).
+    private static func checkSeedSelectionNearMonoStaysNeutral(_ report: inout CheckReport) {
+        let analysis = ArtworkColorAnalysis.neutralFallback // isNearMonochrome=true
+        let neutralSeed = NSColor(deviceRed: 0.50, green: 0.50, blue: 0.51, alpha: 1)
+        guard let seed = SemanticPaletteSelfCheck.artisticLyricsSingleSeed(
+            preferred: neutralSeed,
+            analysis: analysis
+        ) else {
+            report.record("Phase 6.1: nearMono seed stays neutral", false, "seed nil")
+            return
+        }
+        // Output is the preferred seed unchanged (the neutralisation happens
+        // downstream in `neutraliseLyricsSurfaceIfNearMono`).
+        let ok = seed.c < ColorSystemTokens.ToneLadder.lyricsSeedChromaPreferred
+        report.record(
+            "Phase 6.1: nearMono seed stays neutral", ok,
+            "seed.c=\(format(seed.c))"
         )
     }
 
