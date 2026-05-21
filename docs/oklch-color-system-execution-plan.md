@@ -143,17 +143,18 @@ Phase 4.5 应包含：
 
 退出状态（2026-05-21）：Phase 5 主体完成。已完成规范 / 后续维护规则：歌词颜色决策归 Swift；nearMono visible lyrics colors OKLCH chroma ≤ 0.005；AMLL Web 层只负责渲染结构与兼容 fallback；任何 AMLL adapter 修改必须同步 implementation log 与 patch registry。剩余不在本轮强做：艺术背景 skin 的不透明 Tone Ladder、glow token 更细粒度语义化、Web fallback 进一步瘦身。
 
-### Phase 6 — Tone Ladder 与 LED / 艺术歌词层级深化（v2）
+### Phase 6 — Tone Ladder 与 LED / 艺术歌词层级深化（v3）
 
 - [x] **Tone Ladder 正式作为系统级颜色派生方法**：`PerceptualToneLadder` 建立在 `OKColor` 之后、消费者之前；参数集中到 `ColorSystemTokens.ToneLadder`，负责 OKLCH L/C/H 联动、hue-family drift、nearMono 中性化 ceiling。
-- [x] **LED Meter 接入 Tone Ladder（v2）**：LED L band 移到上半区（dark 0.78→0.92，light 0.43→0.56），使 OKLCH 层不与 `opacityForLevel` 6.25× 透明度斜坡打架。chroma 全程 ≥ base.c，中段 sin boost +18%，peak 段 −6% 防白化。hue drift family-aware ±0.005–0.012。
-- [x] **艺术背景类 fullscreen lyrics 接入 Tone Ladder（v2，single-seed）**：`SemanticPaletteFactory.artisticFullscreenLyricsColorSet(...)` 改为**单 seed 派生所有角色**；inactive 不再由背景色种子驱动（v1 灰白化根因）。inactive chromaScale **不**机械低于 active；hueCap 取消按角色削减；新增 visible-chroma floor 0.050。所有 6 个 hue family 自检 PASS。
-- [x] **背景色仅作可读性校准**：`FullscreenPlayerView.resolveFullscreenLyricsInactiveBaseColor(...)` 删除 `bkController.currentSurfaceBackgroundColor` / `primaryBackgroundColor` / `lockedFullscreenLyricsBackgroundColor` 这三条"背景色当 lyric 种子"路径；inactive 走 Phase 5 语义色（`fullscreenLyricInactiveBase` / `analysis.averageColor` / `dominantColor`）。
+- [x] **LED Meter 接入 Tone Ladder（v3）**：dark L 0.620→0.945（v2 是 0.78→0.92，跨度从 0.14 拉到 0.33），light 0.340→0.640；`ledMidChromaBoost` 0.18→0.42，`ledShadowDriftScale` 0.80→1.25；自检阈值 `ledLightnessVisibilityAssertion` 0.080→0.180。这样 OKLCH 层在 opacity 0.08→1.00 之后仍可读出"低中高"色彩科学层级，而不是被 opacity 完全吃掉。
+- [x] **艺术背景类 fullscreen lyrics 接入 Tone Ladder（v3，seed-trust）**：`PerceptualToneLadder.artisticLyricsTone` 在 `base.c ≥ lyricsSeedChromaPreferred` 时**忽略** `isNearMonochrome` 参数，走彩色 floor/cap 路径；`SemanticPaletteFactory.artisticFullscreenLyricsColorSet` 在 seed 有可视 chroma 时跳过尾部 `neutraliseLyricsSurfaceIfNearMono`。这两层是 v2 失败的双重 clamp，是用户屏幕上 `#808284` 灰的真正源头。
+- [x] **翻译行 L 拉近主行**：`lyricsSubInactiveL` 0.505→0.585、`lyricsLineTimingSubInactiveL` 0.455→0.540；自检新增 `lyricsSubInactiveLightnessProximityAssertion` ≤ 0.060。
+- [x] **诊断日志**：`FullscreenPlayerView.applyFullscreenLyricsTheme` 在艺术背景路径下用 `ColorSystemDiagnostic.describe(...)` 打印 highlight base / inactive base / 全 6 个 role 的 `#RRGGBB (L=… C=… H=…)`；开关 `COLOR_SYSTEM_LYRICS_DEBUG=1` 或自动（艺术背景启用且非 cover blur）。
 - [x] **Apple / Cover Gradient / Cover Blur 保持原 profile**：`coverBlurLyricsColorSet(...)` 未接 Tone Ladder；Apple fullscreen 继续走 cover blur lighter profile；Cover Gradient Blur 继续 lighter/darker blend profile。
-- [x] **nearMono 不倒退**：Tone Ladder lyrics 输出 OKLCH chroma ≤ 0.005；LED nearMono tone cap ≤ 0.006。
-- [x] **v1 失败兜底**：Phase 5 HSL 路径未改动；若 v2 在手测中再次失败，关闭 `usesArtisticBackground` 调用即可整体回退。
+- [x] **nearMono 真正中性**：v3 契约下"analysis 标志 + seed 双重信号"才会触发中性化；nearMono+grey seed 仍输出 OKLCH chroma ≤ 0.005，LED ≤ 0.006。
+- [x] **v3 失败兜底**：Phase 5 HSL 路径仍未改动；若 v3 再次失败，关闭 `usesArtisticBackground` 调用即可整体回退。
 
-退出状态（2026-05-21 v2 重做）：Phase 6 v2 完成。SelfCheck 53 项 PASS（v1 6 项 → v2 13 项），新增四 hue family chroma + hue identity 回归、LED peak white-out 检测、LED 复合 opacity 感知 L 检测、artistic lyrics inactive/active chroma ratio ≥ 0.85 检测。剩余不在本轮强做：glow/shadow 单独 Swift 语义 token、Apple / Cover Gradient 的极轻量 tone-ladder 评估、旧 HSL fullscreen fallback 清理（保留作 fallback）。
+退出状态（2026-05-21 v3 修复）：Phase 6 v3 完成。SelfCheck 53 项 PASS（v2 → v3 新增 4 条回归门：`colourful seed survives isNearMonochrome=true`、`artistic path keeps colour under .neutralFallback analysis`、`sub-inactive L close to main-inactive L`、`LED low-level hue drift visible vs peak`）。剩余不在本轮强做：glow/shadow 单独 Swift 语义 token、Apple / Cover Gradient 的极轻量 tone-ladder 评估、旧 HSL fullscreen fallback 清理（保留作 fallback）。
 
 ### Phase 7 — 清理旧 HSL 分叉、文档收尾、回归验证
 

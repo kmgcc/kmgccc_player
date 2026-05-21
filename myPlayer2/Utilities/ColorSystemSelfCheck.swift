@@ -143,13 +143,18 @@ nonisolated enum ColorSystemSelfCheck {
         checkLyricsColorfulWindowKeepsTint(&report)
         checkLyricsLightnessHierarchy(&report)
 
-        report.section("Phase 6 v2 — ToneLadder + LED + artistic lyrics")
+        report.section("Phase 6 v3 — Tone Ladder + LED + artistic lyrics")
         checkToneLadderBasicHierarchy(&report)
         checkToneLadderNearMonoNeutral(&report)
         checkToneLadderHueFamilyChromaPreserved(&report, family: "yellow", base: OKColor.OKLCH(l: 0.78, c: 0.14, h: 0.12))
         checkToneLadderHueFamilyChromaPreserved(&report, family: "red",    base: OKColor.OKLCH(l: 0.58, c: 0.16, h: 0.04))
         checkToneLadderHueFamilyChromaPreserved(&report, family: "blue",   base: OKColor.OKLCH(l: 0.55, c: 0.16, h: 0.69))
         checkToneLadderHueFamilyChromaPreserved(&report, family: "purple", base: OKColor.OKLCH(l: 0.50, c: 0.16, h: 0.85))
+        // v3 regression guards: the bugs the v2 selfcheck did NOT catch.
+        checkToneLadderColorfulSeedSurvivesNearMonoFlag(&report)
+        checkArtisticLyricsColorfulSeedSurvivesNeutralFallback(&report)
+        checkArtisticLyricsSubInactiveCloseToMainInactive(&report)
+        checkLEDLevelHueDriftVisible(&report)
         checkLEDToneStepsPerceptual(&report)
         checkLEDColorfulNotPale(&report)
         checkLEDPeakNotWhiteWashed(&report)
@@ -189,23 +194,157 @@ nonisolated enum ColorSystemSelfCheck {
             report.record("ToneLadder v2: artistic lyrics L hierarchy", false, "role lookup failed")
             return
         }
+        // v3 ordering: mainActive > subActive > mainInactive > subInactive
+        //              > lineTimingMainInactive > lineTimingSubInactive.
+        // Translation now sits next to its main counterpart at each tier.
         let lOK = active.l > subActive.l
             && subActive.l > inactive.l
-            && inactive.l > lineInactive.l
-            && lineInactive.l > subInactive.l
-            && subInactive.l > lineSubInactive.l
+            && inactive.l > subInactive.l
+            && subInactive.l > lineInactive.l
+            && lineInactive.l > lineSubInactive.l
         // v2 invariant: inactive must retain chroma identity — no longer
         // mechanically below the visible-chroma floor.
         let floor = ColorSystemTokens.ToneLadder.lyricsColorfulMinimumChroma
         let cOK = inactive.c >= floor && lineSubInactive.c >= floor * 0.85
         report.record(
-            "ToneLadder v2: artistic lyrics L hierarchy + chroma floor", lOK && cOK,
-            "L active/sub/inactive/line/sub/lineSub=\(format(active.l))/\(format(subActive.l))/\(format(inactive.l))/\(format(lineInactive.l))/\(format(subInactive.l))/\(format(lineSubInactive.l)) C active/inactive/lineSub=\(format(active.c))/\(format(inactive.c))/\(format(lineSubInactive.c)) floor=\(format(floor))"
+            "ToneLadder v3: artistic lyrics L hierarchy + chroma floor", lOK && cOK,
+            "L active/sub/inactive/subInact/lineInact/lineSubInact=\(format(active.l))/\(format(subActive.l))/\(format(inactive.l))/\(format(subInactive.l))/\(format(lineInactive.l))/\(format(lineSubInactive.l)) C active/inactive/lineSub=\(format(active.c))/\(format(inactive.c))/\(format(lineSubInactive.c)) floor=\(format(floor))"
+        )
+    }
+
+    /// v3 regression guard for the on-screen #80828X grey bug.
+    ///
+    /// v2 routed the artistic Tone Ladder through the analysis-level
+    /// `isNearMonochrome` flag. When `resolveLyricsAnalysis` returned
+    /// `.neutralFallback` (its `isNearMonochrome` is hardcoded `true`) the
+    /// ladder clamped every role's chroma to `nearMonoChromaCeiling` even
+    /// though the seed itself was colourful. The user picked #808284 off
+    /// screen.
+    ///
+    /// v3 trusts the seed: when `base.c >= lyricsSeedChromaPreferred`, the
+    /// `isNearMonochrome` flag is ignored and the colourful floor / cap
+    /// path runs. This test would have failed under v2 and must pass under
+    /// v3.
+    private static func checkToneLadderColorfulSeedSurvivesNearMonoFlag(_ report: inout CheckReport) {
+        let T = ColorSystemTokens.ToneLadder.self
+        // Colourful seed (red): chroma well above the seed-preferred floor.
+        let base = OKColor.OKLCH(l: 0.58, c: 0.16, h: 0.04)
+        let roles = PerceptualToneLadder.LyricsRole.allCases.map {
+            ($0, PerceptualToneLadder.artisticLyricsTone(
+                base: base,
+                role: $0,
+                isUltraDark: false,
+                isNearMonochrome: true   // <-- the buggy flag we now ignore
+            ))
+        }
+        let minC = roles.map(\.1.c).min() ?? 0
+        let limit = T.lyricsNearMonoSeedTrustChromaAssertion
+        let ok = minC >= limit
+        report.record(
+            "ToneLadder v3: colourful seed survives isNearMonochrome=true", ok,
+            "minRoleC=\(format(minC)) min=\(format(limit)) seedC=\(format(base.c))"
+        )
+    }
+
+    /// v3 regression guard wired through the SemanticPalette entry point so
+    /// the post-hoc `neutraliseLyricsSurfaceIfNearMono` skip is also
+    /// covered. With `.neutralFallback` (isNearMonochrome=true) + a
+    /// colourful highlight base, the artistic path must still produce
+    /// colourful lyrics. v2 returned #80828X-style grey here.
+    private static func checkArtisticLyricsColorfulSeedSurvivesNeutralFallback(_ report: inout CheckReport) {
+        let analysis = ArtworkColorAnalysis.neutralFallback // isNearMonochrome=true
+        let seedColor = NSColor(deviceRed: 0.92, green: 0.34, blue: 0.12, alpha: 1)
+        let set = SemanticPaletteSelfCheck.fullscreenLyricsColorSet(
+            analysis: analysis,
+            scheme: .dark,
+            highlightBaseColor: seedColor,
+            inactiveBaseColor: NSColor.darkGray,
+            isUltraDark: false,
+            usesArtisticBackground: true
+        )
+        let chromas: [CGFloat] = [
+            set.mainActive, set.mainInactive, set.subActive,
+            set.subInactive, set.lineTimingMainInactive, set.lineTimingSubInactive
+        ].compactMap { OKColor.nsColorToOKLCH($0)?.c }
+        let minC = chromas.min() ?? 0
+        let limit = ColorSystemTokens.ToneLadder.lyricsNearMonoSeedTrustChromaAssertion
+        // Hue identity must survive too — if the system white-washes the
+        // seed it would have an undefined hue.
+        let seedH = OKColor.nsColorToOKLCH(seedColor)?.h ?? 0
+        let inactiveH = OKColor.nsColorToOKLCH(set.mainInactive)?.h ?? .infinity
+        let hueOK = circularHueDelta(inactiveH, seedH) <= ColorSystemTokens.ToneLadder.lyricsHueIdentityAssertion
+        let ok = minC >= limit && hueOK
+        report.record(
+            "Lyrics v3: artistic path keeps colour under .neutralFallback analysis", ok,
+            "minRoleC=\(format(minC)) min=\(format(limit)) seedC=\(format(OKColor.nsColorToOKLCH(seedColor)?.c ?? 0)) inactiveHueΔ=\(format(circularHueDelta(inactiveH, seedH)))"
+        )
+    }
+
+    /// v3 invariant on translation rows: the user complaint was that sub /
+    /// translation L sat too far below main-inactive L. Verify the delta
+    /// between sub-inactive and main-inactive stays inside
+    /// `lyricsSubInactiveLightnessProximityAssertion` for both the
+    /// main-mode and line-timing-mode roles.
+    private static func checkArtisticLyricsSubInactiveCloseToMainInactive(_ report: inout CheckReport) {
+        let T = ColorSystemTokens.ToneLadder.self
+        let base = OKColor.OKLCH(l: 0.55, c: 0.14, h: 0.12)
+        let lookup: [PerceptualToneLadder.LyricsRole: OKColor.OKLCH] = Dictionary(
+            uniqueKeysWithValues: PerceptualToneLadder.LyricsRole.allCases.map {
+                ($0, PerceptualToneLadder.artisticLyricsTone(
+                    base: base,
+                    role: $0,
+                    isUltraDark: false,
+                    isNearMonochrome: false
+                ))
+            }
+        )
+        guard
+            let mainInactive = lookup[.mainInactive],
+            let subInactive = lookup[.subInactive],
+            let lineMain = lookup[.lineTimingMainInactive],
+            let lineSub = lookup[.lineTimingSubInactive]
+        else {
+            report.record("Lyrics v3: sub-inactive L close to main-inactive L", false, "role lookup failed")
+            return
+        }
+        let limit = T.lyricsSubInactiveLightnessProximityAssertion
+        let mainGap = mainInactive.l - subInactive.l
+        let lineGap = lineMain.l - lineSub.l
+        // Sub must stay below or equal to its main counterpart, but the gap
+        // must be small enough that the rows read as the same tier.
+        let ok = mainGap >= 0 && mainGap <= limit
+            && lineGap >= 0 && lineGap <= limit
+        report.record(
+            "Lyrics v3: sub-inactive L close to main-inactive L", ok,
+            "main-vs-subInactive Δ=\(format(mainGap)) line-main-vs-line-sub Δ=\(format(lineGap)) max=\(format(limit))"
+        )
+    }
+
+    /// v3 LED tone hierarchy needs visible *hue* shift between low / mid /
+    /// peak (in addition to L and chroma). v2's drift scales were too
+    /// small to read against the opacity ramp. Verify low and peak land in
+    /// different hue positions relative to the seed.
+    private static func checkLEDLevelHueDriftVisible(_ report: inout CheckReport) {
+        let base = OKColor.OKLCH(l: 0.84, c: 0.095, h: 0.09)
+        let low = PerceptualToneLadder.ledTone(base: base, level: 1, maxLevel: 9, scheme: .dark, isNearMonochrome: false)
+        let peak = PerceptualToneLadder.ledTone(base: base, level: 9, maxLevel: 9, scheme: .dark, isNearMonochrome: false)
+        let lowDrift = circularHueDelta(low.h, base.h)
+        let peakDrift = circularHueDelta(peak.h, base.h)
+        // Low must drift further from the seed than peak (shadow drift
+        // scale is heavier than highlight drift scale).
+        let ok = lowDrift > peakDrift && lowDrift >= 0.003
+        report.record(
+            "LED v3: low-level hue drift visible vs peak", ok,
+            "lowHueΔ=\(format(lowDrift)) peakHueΔ=\(format(peakDrift))"
         )
     }
 
     private static func checkToneLadderNearMonoNeutral(_ report: inout CheckReport) {
-        let base = OKColor.OKLCH(l: 0.50, c: 0.10, h: 0.67)
+        // v3 contract: neutralisation only fires when BOTH the analysis bit
+        // is true AND the seed itself has trivial chroma. Use a genuinely
+        // near-grey seed (c < lyricsSeedChromaPreferred) so the test still
+        // verifies the nearMono path the same way the runtime does.
+        let base = OKColor.OKLCH(l: 0.50, c: 0.003, h: 0.67)
         let lyricMaxC = PerceptualToneLadder.LyricsRole.allCases
             .map {
                 PerceptualToneLadder.artisticLyricsTone(
@@ -226,8 +365,8 @@ nonisolated enum ColorSystemSelfCheck {
         let lyricOK = lyricMaxC <= ColorSystemTokens.ToneLadder.nearMonoChromaAssertion
         let ledOK = led.c <= ColorSystemTokens.ToneLadder.ledNearMonoChromaCap
         report.record(
-            "ToneLadder v2: near-mono outputs neutral", lyricOK && ledOK,
-            "lyricsMaxC=\(format(lyricMaxC)) limit=\(format(ColorSystemTokens.ToneLadder.nearMonoChromaAssertion)) ledC=\(format(led.c)) ledLimit=\(format(ColorSystemTokens.ToneLadder.ledNearMonoChromaCap))"
+            "ToneLadder v3: nearMono+grey-seed outputs neutral", lyricOK && ledOK,
+            "lyricsMaxC=\(format(lyricMaxC)) limit=\(format(ColorSystemTokens.ToneLadder.nearMonoChromaAssertion)) ledC=\(format(led.c)) ledLimit=\(format(ColorSystemTokens.ToneLadder.ledNearMonoChromaCap)) seedC=\(format(base.c))"
         )
     }
 
