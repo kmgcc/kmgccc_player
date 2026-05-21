@@ -210,12 +210,29 @@ nonisolated enum OKColor {
     }
 }
 
-// MARK: - Phase 6 perceptual tone ladder
+// MARK: - Phase 6 perceptual tone ladder (v2)
+//
+// v2 redesign vs v1 (commit 8b6404a):
+//   * LED L band narrows to the upper register (dark 0.78..0.92, light
+//     0.43..0.56) so OKLCH brightness no longer fights the opacity ramp
+//     in `LEDColorResolver.opacityForLevel`. Chroma stays >= base.c at
+//     all levels, with a mid-level sin boost.
+//   * Artistic lyrics ladder is single-seed: callers pass ONE active
+//     seed; inactive / sub / line-timing are L-and-hue variants of the
+//     same hue, NOT a low-chroma "background" seed. Chroma scale is
+//     >= 0.92 across roles (mid roles can exceed 1.0) so inactive
+//     retains hue identity.
+//   * Per-role chroma cap is no longer monotonically decreasing; all
+//     roles share the same hue-family cap and rely on gamut clipping at
+//     extreme L to land in sRGB.
+//   * Hue family drift uses tighter amounts (max ±0.010 normalised) so
+//     "amber-leaning yellow shadow" reads as intentional, not as hue
+//     rotation.
+//
+// The module remains view-agnostic: callers (LEDColorResolver,
+// SemanticPaletteFactory) supply the seed and role, the ladder returns
+// an opaque OKLCH tone.
 
-/// Shared OKLCH tone ladder for colour roles that need perceptual distance
-/// and painterly hue/chroma coupling. It intentionally does not know about
-/// views, skins, or AMLL. Callers provide a semantic seed colour and a role;
-/// the ladder returns an opaque OKLCH tone.
 nonisolated enum PerceptualToneLadder {
     enum LyricsRole: CaseIterable {
         case mainActive
@@ -225,6 +242,8 @@ nonisolated enum PerceptualToneLadder {
         case subInactive
         case lineTimingSubInactive
     }
+
+    // MARK: LED
 
     static func ledTone(
         base: OKColor.OKLCH,
@@ -236,27 +255,36 @@ nonisolated enum PerceptualToneLadder {
     ) -> OKColor.OKLCH {
         let T = ColorSystemTokens.ToneLadder.self
         let safeMax = max(1, maxLevel)
-        let rawT = ColorMath.clamp(CGFloat(min(max(level, 0), safeMax)) / CGFloat(safeMax), 0, 1)
-        let t = pow(rawT, 0.88)
+        let t = ColorMath.clamp(CGFloat(min(max(level, 0), safeMax)) / CGFloat(safeMax), 0, 1)
         let isDark = scheme == .dark
         let lowL = isDark ? T.ledDarkMinL : T.ledLightMinL
         let peakL = isDark ? T.ledDarkPeakL : T.ledLightPeakL
-
-        var l = lowL + (peakL - lowL) * t
         let mid = sin(.pi * t)
-        let chromaScale = T.ledLowChromaScale * (1 - t)
-            + T.ledPeakChromaScale * t
-            + T.ledMidChromaBoost * mid * 0.18
-        var c = base.c * chromaScale
+
+        var l: CGFloat = lowL + (peakL - lowL) * t
+        // Chroma stays >= base.c at all levels; mid-level boost keeps the
+        // "color comes alive at mid" effect that LED level distinction needs.
+        let midBoost: CGFloat = T.ledMidChromaBoost * mid
+        let peakTrim: CGFloat = T.ledPeakChromaTrim * (max(0, t - 0.85) / 0.15)
+        let chromaScale: CGFloat = 1.0 + midBoost - peakTrim
+        var c: CGFloat = base.c * chromaScale
+
+        let cap = hueChromaCap(base.h, role: .led, scheme: scheme)
         if isNearMonochrome {
             c = min(c, T.ledNearMonoChromaCap)
         } else {
-            c = max(c, min(T.ledColorfulMinimumChroma, hueChromaCap(base.h, role: .led, scheme: scheme)))
-            c = min(c, hueChromaCap(base.h, role: .led, scheme: scheme))
+            // Floor uses a hue-aware visible-chroma threshold so colourful
+            // artwork never falls into "grey LED" territory even when the
+            // seed's chroma is low.
+            let floor = min(T.ledColorfulMinimumChroma, cap)
+            c = max(c, floor)
+            c = min(c, cap)
         }
 
-        let shadowAmount = 1 - t
-        let highlightAmount = max(0, t - 0.70) / 0.30
+        // Hue family drift: warmer at the low end, slightly cooler at the
+        // very top. Scale stays small (±0.005..0.008) so identity holds.
+        let shadowAmount = (1 - t) * T.ledShadowDriftScale
+        let highlightAmount = max(0, t - 0.65) / 0.35 * T.ledHighlightDriftScale
         var h = shiftedHue(
             base.h,
             shadowAmount: shadowAmount,
@@ -272,6 +300,11 @@ nonisolated enum PerceptualToneLadder {
         return OKColor.OKLCH(l: l, c: c, h: OKColor.normalizedHue(h))
     }
 
+    // MARK: Artistic fullscreen lyrics
+
+    /// Derives one lyric role colour from a single artistic seed. Callers
+    /// MUST pass the same seed for every role; the ladder owns the L / C /
+    /// hue split. Mixing seeds across roles was the v1 grey-wash regression.
     static func artisticLyricsTone(
         base: OKColor.OKLCH,
         role: LyricsRole,
@@ -289,31 +322,31 @@ nonisolated enum PerceptualToneLadder {
             targetL = T.lyricsMainActiveL - (isUltraDark ? T.lyricsUltraDarkActiveTrim : 0)
             chromaScale = T.lyricsMainActiveChromaScale
             shadowAmount = 0
-            highlightAmount = 0.75
+            highlightAmount = 0.55
         case .subActive:
             targetL = T.lyricsSubActiveL - (isUltraDark ? T.lyricsUltraDarkSubActiveTrim : 0)
             chromaScale = T.lyricsSubActiveChromaScale
             shadowAmount = 0.10
-            highlightAmount = 0.35
+            highlightAmount = 0.25
         case .mainInactive:
             targetL = T.lyricsMainInactiveL - (isUltraDark ? T.lyricsUltraDarkInactiveTrim : 0)
             chromaScale = T.lyricsMainInactiveChromaScale
-            shadowAmount = 0.62
+            shadowAmount = 0.55
             highlightAmount = 0
         case .lineTimingMainInactive:
             targetL = T.lyricsLineTimingMainInactiveL - (isUltraDark ? T.lyricsUltraDarkInactiveTrim : 0)
             chromaScale = T.lyricsLineTimingMainInactiveChromaScale
-            shadowAmount = 0.75
+            shadowAmount = 0.70
             highlightAmount = 0
         case .subInactive:
             targetL = T.lyricsSubInactiveL - (isUltraDark ? T.lyricsUltraDarkInactiveTrim : 0)
             chromaScale = T.lyricsSubInactiveChromaScale
-            shadowAmount = 0.82
+            shadowAmount = 0.78
             highlightAmount = 0
         case .lineTimingSubInactive:
             targetL = T.lyricsLineTimingSubInactiveL - (isUltraDark ? T.lyricsUltraDarkInactiveTrim : 0)
             chromaScale = T.lyricsLineTimingSubInactiveChromaScale
-            shadowAmount = 0.92
+            shadowAmount = 0.88
             highlightAmount = 0
         }
 
@@ -322,21 +355,12 @@ nonisolated enum PerceptualToneLadder {
             c = min(base.c * chromaScale, T.nearMonoChromaCeiling)
         } else {
             let cap = hueChromaCap(base.h, role: .lyrics(role), scheme: .dark)
-            let floor = min(T.lyricsColorfulMinimumChroma, cap * 0.55)
+            // Hue-identity floor: even if the seed has low chroma, force the
+            // result above the visible-chroma threshold so the hue family
+            // reads. Without this floor a desaturated seed produced grey
+            // inactive lyrics in v1.
+            let floor = min(T.lyricsColorfulMinimumChroma, cap * 0.85)
             c = ColorMath.clamp(base.c * chromaScale, floor, cap)
-            if targetL > 0.82 {
-                c = OKColor.chromaSoftShoulder(
-                    OKColor.OKLCH(l: targetL, c: c, h: base.h),
-                    ceiling: cap * 0.74,
-                    softness: T.brightToneChromaShoulder
-                ).c
-            } else if targetL < 0.46 {
-                c = OKColor.chromaSoftShoulder(
-                    OKColor.OKLCH(l: targetL, c: c, h: base.h),
-                    ceiling: cap * 0.62,
-                    softness: T.shadowToneChromaShoulder
-                ).c
-            }
         }
 
         let h = shiftedHue(
@@ -367,25 +391,27 @@ nonisolated enum PerceptualToneLadder {
     ) -> CGFloat {
         let scale: CGFloat
         switch intensity {
-        case .subtle: scale = 0.55
-        case .led: scale = 0.85
-        case .lyrics: scale = 1.00
+        case .subtle: scale = 0.50
+        case .led:    scale = 0.55
+        case .lyrics: scale = 0.85
         }
         let shadow = familyShadowDrift(h) * shadowAmount * scale
         let highlight = familyHighlightDrift(h) * highlightAmount * scale
         return OKColor.normalizedHue(h + shadow + highlight)
     }
 
+    // Family drifts — tighter than v1 so hue identity is preserved.
+    // Values are in normalised hue units (1.0 == 360°); ±0.012 ≈ ±4.3°.
     private static func familyShadowDrift(_ h: CGFloat) -> CGFloat {
         switch h {
-        case 0.00..<0.06, 0.94..<1.00: return 0.008   // red deepens toward ruby
-        case 0.06..<0.20:              return -0.014  // yellow/orange shadows warm to amber
-        case 0.20..<0.34:              return -0.010  // chartreuse avoids fluorescent green
-        case 0.34..<0.48:              return -0.006  // green shadows olive down
+        case 0.00..<0.06, 0.94..<1.00: return 0.006   // red deepens toward ruby
+        case 0.06..<0.20:              return -0.012  // yellow/orange shadows warm to amber
+        case 0.20..<0.34:              return -0.008  // chartreuse avoids fluorescent green
+        case 0.34..<0.48:              return -0.005  // green shadows olive down
         case 0.48..<0.62:              return 0.008   // cyan shadows toward blue
-        case 0.62..<0.76:              return 0.014   // blue shadows toward indigo
-        case 0.76..<0.92:              return -0.010  // violet shadows stay wine, not electric
-        default:                       return 0.006
+        case 0.62..<0.76:              return 0.010  // blue shadows toward indigo
+        case 0.76..<0.92:              return -0.008  // violet shadows lean wine
+        default:                       return 0.005
         }
     }
 
@@ -393,15 +419,19 @@ nonisolated enum PerceptualToneLadder {
         switch h {
         case 0.00..<0.06, 0.94..<1.00: return -0.004
         case 0.06..<0.20:              return 0.004
-        case 0.20..<0.34:              return -0.004
+        case 0.20..<0.34:              return -0.003
         case 0.34..<0.48:              return -0.003
         case 0.48..<0.62:              return -0.004
-        case 0.62..<0.76:              return -0.006  // blue highlights avoid over-cold ice
-        case 0.76..<0.92:              return 0.004
+        case 0.62..<0.76:              return -0.005   // blue highlights avoid over-cold ice
+        case 0.76..<0.92:              return 0.003
         default:                       return 0
         }
     }
 
+    // Hue chroma cap. v2 does NOT reduce the cap per lyric role — all roles
+    // share the family cap. v1's "active * 0.82 / inactive * 0.58 / sub
+    // * 0.38" multipliers were the second compression layer that turned
+    // colourful seeds into grey lyrics; removed.
     private static func hueChromaCap(
         _ h: CGFloat,
         role: ToneRole,
@@ -409,33 +439,20 @@ nonisolated enum PerceptualToneLadder {
     ) -> CGFloat {
         let baseCap: CGFloat
         switch h {
-        case 0.06..<0.20: baseCap = 0.090  // yellow/orange gets dirty quickly
-        case 0.20..<0.34: baseCap = 0.082  // chartreuse/green fluorescent risk
-        case 0.34..<0.48: baseCap = 0.095
-        case 0.48..<0.62: baseCap = 0.105
-        case 0.62..<0.76: baseCap = 0.118  // blue needs more C to feel alive
-        case 0.76..<0.92: baseCap = 0.104
-        default:          baseCap = 0.108
+        case 0.06..<0.20: baseCap = 0.110  // yellow/orange — keeps room for amber identity
+        case 0.20..<0.34: baseCap = 0.096  // chartreuse/green — fluorescent risk, slightly tighter
+        case 0.34..<0.48: baseCap = 0.115
+        case 0.48..<0.62: baseCap = 0.125
+        case 0.62..<0.76: baseCap = 0.140  // blue needs more C to feel alive
+        case 0.76..<0.92: baseCap = 0.120
+        default:          baseCap = 0.130
         }
 
         switch role {
         case .led:
-            return scheme == .dark ? baseCap * 1.12 : baseCap * 0.95
-        case .lyrics(let lyricsRole):
-            switch lyricsRole {
-            case .mainActive:
-                return baseCap * 0.82
-            case .subActive:
-                return baseCap * 0.68
-            case .mainInactive:
-                return baseCap * 0.58
-            case .lineTimingMainInactive:
-                return baseCap * 0.50
-            case .subInactive:
-                return baseCap * 0.44
-            case .lineTimingSubInactive:
-                return baseCap * 0.38
-            }
+            return scheme == .dark ? baseCap * 1.10 : baseCap * 0.92
+        case .lyrics:
+            return baseCap
         }
     }
 }
