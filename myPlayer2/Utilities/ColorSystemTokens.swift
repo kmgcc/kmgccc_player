@@ -519,6 +519,72 @@ nonisolated enum ColorSystemTokens {
         static let lyricsSalientSeedDominantConfidenceMin: CGFloat = 0.42
         static let lyricsSalientSeedMaxLargestHighSatArea: CGFloat = 0.22
 
+        // MARK: Phase 6.2 — Subjective focus-score seed selector.
+        //
+        // Phase 6.1's salient gate was four hard AND-thresholds. Users
+        // reported the trigger never fired on the "obvious" cases (95% dark
+        // + 5% bright accent). Phase 6.2 replaces it with a continuous
+        // `focusScore = visualContrast × salience × fieldUniformity
+        //             × designFocus - noisePenalty` so the decision can
+        // degrade gracefully when one signal is weak but others are strong.
+        // Dominant remains the default; salient only wins when its score
+        // clears `lyricsSeedFocusScoreThreshold`.
+        static let lyricsSeedFocusScoreThreshold: CGFloat = 0.55
+        // Visual-contrast component: salient.c vs. dominant.c (Δchroma)
+        // + ΔL + Δhue. Each term contributes additively, then the sum is
+        // normalised to [0,1].
+        static let lyricsSeedFocusChromaContrastWeight: CGFloat = 0.45
+        static let lyricsSeedFocusLightnessContrastWeight: CGFloat = 0.20
+        static let lyricsSeedFocusHueDistanceWeight: CGFloat = 0.35
+        // Salience component: salient OKLCH chroma alone (0..0.20 → 0..1).
+        static let lyricsSeedFocusSalientChromaSaturationPoint: CGFloat = 0.20
+        // Field-uniformity component: how much the dominant bucket
+        // dominates and how flat the rest of the field is.
+        static let lyricsSeedFocusUniformityColorfulnessTarget: CGFloat = 0.20
+        static let lyricsSeedFocusUniformityDominantConfidenceTarget: CGFloat = 0.45
+        // Design-focus component: small-area-but-high-chroma highlights
+        // read as "designed" — the area share itself penalises huge
+        // competing regions.
+        static let lyricsSeedFocusDesignAreaShareCeiling: CGFloat = 0.22
+        // Noise penalty: tiny isolated dots (area share too small) are
+        // likely JPEG artifacts.
+        static let lyricsSeedFocusNoiseAreaShareFloor: CGFloat = 0.005
+        static let lyricsSeedFocusNoisePenalty: CGFloat = 0.30
+        // Competing-salients penalty: if salientHighlightPalette has 2+
+        // distinct hue families with comparable chroma, the salient is no
+        // longer "designed focal" — penalise.
+        static let lyricsSeedFocusCompetingPenalty: CGFloat = 0.25
+
+        // Phase 6.2 — high-chroma shoulder trigger.
+        //
+        // Phase 6.1 applied the soft chroma shoulder unconditionally. Users
+        // reported mid-chroma covers still felt "soft-ceilinged". 6.2 only
+        // engages the shoulder when the scaled chroma exceeds this trigger.
+        static let lyricsHighChromaShoulderTrigger: CGFloat = 0.085
+
+        // Phase 6.2 — night tokens retune.
+        // Active L raised so high-saturation covers feel "more clearly the
+        // current line"; UltraDark inactive trim deepened so deep-night
+        // covers do not float their inactive line above the artwork.
+        static let lyricsActiveLightnessLiftPhase62: CGFloat = 0.015   // additive over Phase 6.1
+        static let lyricsUltraDarkInactiveTrimPhase62: CGFloat = 0.030 // additive over Phase 6.1
+
+        // Phase 6.2 — day artistic background lift.
+        // Day mode artistic backgrounds need to feel "airy"; lyrics shift
+        // from "death black" to a deeper-mid that still sits well below bg.
+        static let lyricsLightMainActiveLPhase62: CGFloat = 0.215   // was 0.150 — alive, not death-black
+        static let lyricsLightSubActiveLPhase62: CGFloat = 0.325
+        static let lyricsLightMainInactiveLPhase62: CGFloat = 0.470
+        static let lyricsLightSubInactiveLPhase62: CGFloat = 0.475
+        static let lyricsLightLineTimingMainInactiveLPhase62: CGFloat = 0.510
+        static let lyricsLightLineTimingSubInactiveLPhase62: CGFloat = 0.540
+
+        // SelfCheck token: day-mode invariant "lyric L < background L".
+        // `BKColorEngine.tierRanges` is asserted to produce bg L floor
+        // strictly above this. Day-mode active is the deepest lyric L; bg
+        // must be at least this many OKLCH L units brighter.
+        static let lyricsLightBackgroundLyricGapMin: CGFloat = 0.20
+
         // Chroma scales cluster around 1.0 so inactive states keep their hue
         // identity. Active dips slightly below 1.0 to absorb the gamut
         // shoulder near white; mid-L roles can mildly exceed 1.0 so they
@@ -633,6 +699,13 @@ nonisolated enum ColorSystemTokens {
         static let dominantBucketSaturation: CGFloat = 0.18
         static let dominantBucketColorfulness: CGFloat = 0.16
         static let dominantBucketAvgSaturation: CGFloat = 0.18
+
+        // Phase 6.2 — trust threshold. nearMono should NOT trigger merely
+        // because the average saturation is low. A cover where the
+        // dominant-bucket centroid (or any displayPalette / salient
+        // candidate) has OKLCH chroma >= this floor still has a trustworthy
+        // hue, and lyrics must keep that hue rather than grey-washing.
+        static let trustedHueChromaFloor: CGFloat = 0.045
     }
 
     // MARK: - usesDarkForeground gate
