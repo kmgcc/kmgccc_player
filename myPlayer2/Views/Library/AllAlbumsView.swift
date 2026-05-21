@@ -31,13 +31,25 @@ struct AllAlbumsView: View {
 
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(UIStateViewModel.self) private var uiState
+    @EnvironmentObject private var themeStore: ThemeStore
 
     @State private var deletionRequest: AlbumDeletionRequest?
     @State private var editingAlbum: AlbumEntry?
 
     var body: some View {
+        // Resolve once per ThemeStore tick so AlbumListRow receives plain
+        // Color params and doesn't need its own ThemeStore subscription.
+        let palette = themeStore.appForegroundPalette
+        let primary = Color(nsColor: palette.primary)
+        let secondary = Color(nsColor: palette.secondary)
+        let tertiary = Color(nsColor: palette.tertiary)
         let albums = filteredAlbums
-        return list(albums)
+        return list(
+            albums,
+            primary: primary,
+            secondary: secondary,
+            tertiary: tertiary
+        )
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onAppear {
             let token = FirstUseHitchDiagnostics.begin(
@@ -83,13 +95,21 @@ struct AllAlbumsView: View {
 
     // MARK: List
 
-    private func list(_ albums: [AlbumEntry]) -> some View {
+    private func list(
+        _ albums: [AlbumEntry],
+        primary: Color,
+        secondary: Color,
+        tertiary: Color
+    ) -> some View {
         ScrollView(.vertical) {
             LazyVStack(spacing: 2) {
                 ForEach(albums) { album in
                     AlbumListRow(
                         album: album,
                         trackCount: trackCount(for: album),
+                        titleColor: primary,
+                        subtitleColor: secondary,
+                        metaColor: tertiary,
                         onOpen: { open(album) },
                         onEdit: { editingAlbum = album },
                         onDelete: { requestDelete(album) }
@@ -189,6 +209,9 @@ struct AllAlbumsView: View {
 private struct AlbumListRow: View {
     let album: AlbumEntry
     let trackCount: Int
+    var titleColor: Color = .primary
+    var subtitleColor: Color = .secondary
+    var metaColor: Color = Color.secondary.opacity(0.7)
     let onOpen: () -> Void
     let onEdit: () -> Void
     let onDelete: () -> Void
@@ -263,10 +286,11 @@ private struct AlbumListRow: View {
         VStack(alignment: .leading, spacing: 2) {
             Text(album.displayTitle)
                 .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(titleColor)
                 .lineLimit(1)
             Text(album.primaryArtistDisplayName)
                 .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(subtitleColor)
                 .lineLimit(1)
             HStack(spacing: 6) {
                 Text("\(trackCount) 首歌曲")
@@ -280,7 +304,7 @@ private struct AlbumListRow: View {
                 }
             }
             .font(.system(size: 11))
-            .foregroundStyle(.tertiary)
+            .foregroundStyle(metaColor)
             .lineLimit(1)
         }
     }
@@ -300,7 +324,7 @@ private struct AlbumListRow: View {
         } label: {
             Image(systemName: "ellipsis")
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(subtitleColor)
                 .frame(width: 24, height: 24)
                 .contentShape(Rectangle())
         }

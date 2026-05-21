@@ -72,7 +72,7 @@ struct AboutSettingsView: View {
                 .font(.system(size: SettingsStyleTokens.rowFontSize, weight: .regular))
                 .fontWeight(.ultraLight)
                 .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
+                .settingsDescriptionStyle()
                 .frame(maxWidth: 320)
                 .padding(.top, 12)
 
@@ -201,7 +201,7 @@ struct AboutSettingsView: View {
 
             Text("settings.about.copyright")
                 .font(.caption2)
-                .foregroundStyle(.tertiary)
+                .settingsDescriptionStyle()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -236,7 +236,7 @@ struct AboutSettingsView: View {
 
             Text(title)
                 .font(.title.bold())
-                .foregroundStyle(.primary)
+                .settingsRowLabelStyle()
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             VStack(alignment: .leading, spacing: 12) {
