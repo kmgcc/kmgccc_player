@@ -254,7 +254,8 @@ struct PlaylistDetailView: View {
             pageController: pageController,
             menuBuilder: erasedTrackMenu(trackID:),
             rowPrimaryColor: Color(nsColor: themeStore.appForegroundPalette.primary),
-            rowSecondaryColor: Color(nsColor: themeStore.appForegroundPalette.secondary)
+            rowSecondaryColor: Color(nsColor: themeStore.appForegroundPalette.secondary),
+            rowTertiaryColor: Color(nsColor: themeStore.appForegroundPalette.tertiary)
         )
     }
 
@@ -817,6 +818,7 @@ private struct PlaylistTrackRowsSection: View {
     let menuBuilder: (UUID) -> AnyView
     var rowPrimaryColor: Color = ColorTokens.textPrimary
     var rowSecondaryColor: Color = ColorTokens.textSecondary
+    var rowTertiaryColor: Color = ColorTokens.textTertiary
 
     var body: some View {
         let _ = LyricsRuntimeProfile.markBody("PlaylistTrackRowsSection.body")
@@ -856,7 +858,8 @@ private struct PlaylistTrackRowsSection: View {
                     pageController.prefetchAroundTrackID(row.id)
                 },
                 rowPrimaryColor: rowPrimaryColor,
-                rowSecondaryColor: rowSecondaryColor
+                rowSecondaryColor: rowSecondaryColor,
+                rowTertiaryColor: rowTertiaryColor
             ) {
                 menuBuilder(row.id)
             }

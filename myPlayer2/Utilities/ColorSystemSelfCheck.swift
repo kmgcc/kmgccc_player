@@ -132,6 +132,10 @@ nonisolated enum ColorSystemSelfCheck {
         checkAppFgDarkLightnessHierarchy(&report)
         checkAppFgLightLightnessHierarchy(&report)
         checkAppFgSeparateFromReadabilityProfile(&report)
+        checkAppFgDarkSecondaryBelowPrimary(&report)
+        checkAppFgDarkTertiaryBelowSecondary(&report)
+        checkAppFgDarkCoolHueReduced(&report)
+        checkAppFgLightModeDirectional(&report)
 
         report.lines.append(
             "Result: \(report.allPassed ? "ALL PASS" : "FAILURES PRESENT")"
@@ -476,6 +480,116 @@ nonisolated enum ColorSystemSelfCheck {
         report.record(
             "AppForeground: light chroma > dark chroma", ok,
             "lightC=\(format(lchLight.c)) darkC=\(format(lchDark.c))"
+        )
+    }
+
+    /// Dark mode secondary chroma must be ≤ primary chroma × ratio cap.
+    /// Ensures the secondary tier reads as clearly subordinate so grey-tier
+    /// text does not appear unexpectedly chromatic.
+    private static func checkAppFgDarkSecondaryBelowPrimary(_ report: inout CheckReport) {
+        guard let analysis = analyse(side: 32, fill: (40, 100, 200, 255)) else {
+            report.record("AppForeground: dark secondary chroma ≤ primary × cap", false, "analysis nil")
+            return
+        }
+        let accent = NSColor(deviceRed: 0.20, green: 0.45, blue: 0.90, alpha: 1)
+        let p = SemanticPaletteSelfCheck.appForeground(analysis: analysis, globalAccent: accent, isDark: true)
+        guard
+            let priC = OKColor.nsColorToOKLCH(p.primary)?.c,
+            let secC = OKColor.nsColorToOKLCH(p.secondary)?.c
+        else {
+            report.record("AppForeground: dark secondary chroma ≤ primary × cap", false, "OKLCH nil")
+            return
+        }
+        let cap = ColorSystemTokens.AppForeground.darkSecondaryToPrimaryRatioCap
+        let ok = priC > 0 ? (secC / priC) <= cap : secC == 0
+        report.record(
+            "AppForeground: dark secondary chroma ≤ primary × cap", ok,
+            "sec/pri=\(format(priC > 0 ? secC / priC : 0)) cap=\(format(cap)) sec=\(format(secC)) pri=\(format(priC))"
+        )
+    }
+
+    /// Dark mode tertiary chroma must be ≤ secondary chroma × ratio cap.
+    private static func checkAppFgDarkTertiaryBelowSecondary(_ report: inout CheckReport) {
+        guard let analysis = analyse(side: 32, fill: (40, 100, 200, 255)) else {
+            report.record("AppForeground: dark tertiary chroma ≤ secondary × cap", false, "analysis nil")
+            return
+        }
+        let accent = NSColor(deviceRed: 0.20, green: 0.45, blue: 0.90, alpha: 1)
+        let p = SemanticPaletteSelfCheck.appForeground(analysis: analysis, globalAccent: accent, isDark: true)
+        guard
+            let secC = OKColor.nsColorToOKLCH(p.secondary)?.c,
+            let terC = OKColor.nsColorToOKLCH(p.tertiary)?.c
+        else {
+            report.record("AppForeground: dark tertiary chroma ≤ secondary × cap", false, "OKLCH nil")
+            return
+        }
+        let cap = ColorSystemTokens.AppForeground.darkTertiaryToSecondaryRatioCap
+        let ok = secC > 0 ? (terC / secC) <= cap : terC == 0
+        report.record(
+            "AppForeground: dark tertiary chroma ≤ secondary × cap", ok,
+            "ter/sec=\(format(secC > 0 ? terC / secC : 0)) cap=\(format(cap)) ter=\(format(terC)) sec=\(format(secC))"
+        )
+    }
+
+    /// Dark mode cool-hue accent must produce lower primary chroma than
+    /// an equivalent warm accent — confirming the hue-aware reduction
+    /// applies to the blue/cyan range.
+    private static func checkAppFgDarkCoolHueReduced(_ report: inout CheckReport) {
+        guard let analysis = analyse(side: 32, fill: (40, 100, 200, 255)) else {
+            report.record("AppForeground: dark cool hue chroma reduced vs warm", false, "analysis nil")
+            return
+        }
+        guard !analysis.isNearMonochrome else {
+            report.record("AppForeground: dark cool hue chroma reduced vs warm", false, "nearMono")
+            return
+        }
+        // Blue accent (OKLCH hue ≈ 0.62 — inside cool range 0.40…0.72)
+        let blueAccent = NSColor(deviceRed: 0.10, green: 0.35, blue: 0.90, alpha: 1)
+        // Warm amber accent (OKLCH hue ≈ 0.08 — outside cool range)
+        let warmAccent = NSColor(deviceRed: 0.90, green: 0.55, blue: 0.10, alpha: 1)
+        let blue = SemanticPaletteSelfCheck.appForeground(analysis: analysis, globalAccent: blueAccent, isDark: true)
+        let warm = SemanticPaletteSelfCheck.appForeground(analysis: analysis, globalAccent: warmAccent, isDark: true)
+        guard
+            let blueC = OKColor.nsColorToOKLCH(blue.primary)?.c,
+            let warmC = OKColor.nsColorToOKLCH(warm.primary)?.c
+        else {
+            report.record("AppForeground: dark cool hue chroma reduced vs warm", false, "OKLCH nil")
+            return
+        }
+        let ok = blueC < warmC
+        report.record(
+            "AppForeground: dark cool hue chroma reduced vs warm", ok,
+            "blueC=\(format(blueC)) warmC=\(format(warmC))"
+        )
+    }
+
+    /// Light mode directional tint test.
+    /// Warm artwork → sRGB red channel > blue channel (warm bias).
+    /// Cool artwork → sRGB blue channel > red channel (cool bias).
+    /// Both conditions must hold for the same analysis (switching accent).
+    private static func checkAppFgLightModeDirectional(_ report: inout CheckReport) {
+        guard let analysis = analyse(side: 32, fill: (40, 100, 200, 255)),
+              !analysis.isNearMonochrome else {
+            report.record("AppForeground: light mode warm/cool direction", false, "analysis nil or nearMono")
+            return
+        }
+        let warmAccent = NSColor(deviceRed: 0.90, green: 0.55, blue: 0.10, alpha: 1)
+        let coolAccent = NSColor(deviceRed: 0.10, green: 0.35, blue: 0.90, alpha: 1)
+        let warmPalette = SemanticPaletteSelfCheck.appForeground(analysis: analysis, globalAccent: warmAccent, isDark: false)
+        let coolPalette = SemanticPaletteSelfCheck.appForeground(analysis: analysis, globalAccent: coolAccent, isDark: false)
+        guard
+            let warmRGB = warmPalette.primary.usingColorSpace(.deviceRGB),
+            let coolRGB = coolPalette.primary.usingColorSpace(.deviceRGB)
+        else {
+            report.record("AppForeground: light mode warm/cool direction", false, "RGB conversion nil")
+            return
+        }
+        let warmIsWarm = warmRGB.redComponent > warmRGB.blueComponent
+        let coolIsCool = coolRGB.blueComponent > coolRGB.redComponent
+        let ok = warmIsWarm && coolIsCool
+        report.record(
+            "AppForeground: light mode warm/cool direction", ok,
+            "warm R>\u{3e}B: \(warmIsWarm) (R=\(format(warmRGB.redComponent)) B=\(format(warmRGB.blueComponent))) | cool B>R: \(coolIsCool) (R=\(format(coolRGB.redComponent)) B=\(format(coolRGB.blueComponent)))"
         )
     }
 

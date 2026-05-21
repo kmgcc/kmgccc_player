@@ -453,26 +453,28 @@ nonisolated enum ColorSystemTokens {
     // captions, empty-state copy. These are NOT for use over artwork; that
     // job belongs to `ArtworkReadabilityProfile` (Phase 4).
     //
-    // Design goal: foreground that carries a clearly detectable artwork-derived
-    // hue tint while still reading as "mostly neutral" text (no bold color).
-    // Analogous to Material You's tonal neutral surface foreground, tuned to
-    // this app's artwork-driven theme system.
+    // Design goal: foreground that carries a subtly detectable artwork-derived
+    // hue tint while reading as "mostly neutral" text at a glance.
     //
     // Generation: hue taken from `globalAccent` OKLCH hue; chroma scales
     // linearly with artwork `colorfulness` up to `colorfulnessSaturationPoint`,
-    // then caps at the per-tier limit. On `isNearMonochrome` covers the chroma
-    // is forced to 0 and all tiers are perceptually achromatic.
+    // then caps at the per-tier limit, then a hue-aware factor further reduces
+    // chroma for cool/violet hues in dark mode (blue-white text reads
+    // unnaturally at the same chroma as warm-white text). On `isNearMonochrome`
+    // covers the chroma is forced to 0 — all tiers are perceptually achromatic.
     //
-    // Phase 4.5 retrofit (2026-05): original caps (0.012/0.010/0.008/0.006)
-    // were below the perceptual detection threshold — at C≈0.012 the sRGB
-    // HSB saturation at L=0.96 is ~4 %, which many color pickers round to 0.
-    // Caps raised ~4x so real-world artwork (colorfulness ≥ 0.14) produces
-    // a measurable and subtly visible tint. At chromaScale=0.25 (colorfulness
-    // = 0.10, just above nearMono threshold) the effective primary chroma is
-    // ≈0.012 — matching the old cap at full colorfulness. Gamut clamping in
-    // `okLCHToNSColor` further limits primary near L=0.96 for warm hues
-    // (sRGB headroom is narrow at very high lightness). Disabled tier
-    // remains achromatic. `nearMono` path is unchanged.
+    // Phase 4.5 recalibration (2026-05 v2):
+    //   • Secondary/tertiary dark-mode caps tightened — ratio to primary ~0.60
+    //     and ~0.37 respectively, so grey-tier text does not appear chromatic.
+    //   • Dark-mode cool-hue reduction added: blue/cyan hues get 0.65× factor,
+    //     violet hues get 0.75× factor, matching the perceptual difference
+    //     between warm and cool neutrals in dark UI contexts.
+    //   • Light-mode primary L raised 0.14→0.22 so the tint is visible — at
+    //     L=0.14 (near-black) even C=0.100 is imperceptible; dark charcoal
+    //     (L=0.22) gives the chroma room to register. Secondary L similarly
+    //     raised to 0.38.
+    //   • Light-mode secondary/tertiary chroma caps reduced proportionally so
+    //     grey text stays clearly subordinate to primary tinted text.
 
     enum AppForeground {
 
@@ -484,33 +486,43 @@ nonisolated enum ColorSystemTokens {
         static let darkDisabledL: CGFloat   = 0.360
 
         // Light-mode lightness targets (low L = dark foreground on light surface).
-        static let lightPrimaryL: CGFloat    = 0.140
-        static let lightSecondaryL: CGFloat  = 0.300
-        static let lightTertiaryL: CGFloat   = 0.480
-        static let lightQuaternaryL: CGFloat = 0.600
-        static let lightDisabledL: CGFloat   = 0.650
+        // Primary/secondary raised from 0.14/0.30 → 0.22/0.38 so the hue tint
+        // is visually detectable on a bright window background.
+        static let lightPrimaryL: CGFloat    = 0.220
+        static let lightSecondaryL: CGFloat  = 0.380
+        static let lightTertiaryL: CGFloat   = 0.520
+        static let lightQuaternaryL: CGFloat = 0.620
+        static let lightDisabledL: CGFloat   = 0.670
 
-        // Dark-mode per-tier OKLCH chroma caps — how "tinted" each tier can be.
-        // At chromaScale=1.0 (colorfulness ≥ 0.40) these are the effective
-        // maximums (before sRGB gamut clamping at high-L primaries). Values
-        // are intentionally bold so the tint is clearly perceptible; the
-        // gamut clamp in `okLCHToNSColor` keeps the result in sRGB.
-        // Disabled is always achromatic regardless of artwork.
+        // Dark-mode per-tier OKLCH chroma caps. Secondary and tertiary are
+        // significantly tighter than primary so grey-tier text does not look
+        // unexpectedly chromatic. Disabled is always achromatic (C=0).
         static let primaryChromaCap: CGFloat    = 0.070
-        static let secondaryChromaCap: CGFloat  = 0.056
-        static let tertiaryChromaCap: CGFloat   = 0.040
-        static let quaternaryChromaCap: CGFloat = 0.022
+        static let secondaryChromaCap: CGFloat  = 0.042  // ~60 % of primary
+        static let tertiaryChromaCap: CGFloat   = 0.026  // ~37 % of primary
+        static let quaternaryChromaCap: CGFloat = 0.014
         static let disabledChromaCap: CGFloat   = 0.000
 
-        // Light-mode per-tier OKLCH chroma caps — raised above dark-mode caps
-        // because dark text at OKLCH L≈0.14 on a bright window surface needs
-        // more chroma for a perceptible warm/cool bias. At C=0.100 and
-        // L=0.14, OKLCH→sRGB produces a near-black with a clearly detectable
-        // hue shift. DisabledChromaCap stays 0 (achromatic) in both modes.
-        static let lightPrimaryChromaCap: CGFloat    = 0.100
-        static let lightSecondaryChromaCap: CGFloat  = 0.080
-        static let lightTertiaryChromaCap: CGFloat   = 0.060
-        static let lightQuaternaryChromaCap: CGFloat = 0.040
+        // Dark-mode hue-aware chroma scale factors.
+        // Cool (blue/cyan) and violet hues produce a visually "heavy" or
+        // "cold-dirty" tint at the same OKLCH chroma as warm hues, because
+        // the eye adapts to warm neutral white in dark UIs. Apply a moderate
+        // reduction so the tint reads as temperature rather than colour.
+        static let darkHueCoolScaleFactor: CGFloat   = 0.65  // hue 0.40…0.72
+        static let darkHueVioletScaleFactor: CGFloat = 0.75  // hue 0.72…0.88
+        static let darkHueCoolRangeLo: CGFloat       = 0.40
+        static let darkHueCoolRangeHi: CGFloat       = 0.72
+        static let darkHueVioletRangeLo: CGFloat     = 0.72
+        static let darkHueVioletRangeHi: CGFloat     = 0.88
+
+        // Light-mode per-tier OKLCH chroma caps. Primary cap is modestly
+        // reduced (0.100→0.095) because L=0.22 has wider sRGB gamut than
+        // L=0.14 and doesn't need as much chroma headroom. Secondary and
+        // tertiary caps tightened so grey text stays clearly subordinate.
+        static let lightPrimaryChromaCap: CGFloat    = 0.095
+        static let lightSecondaryChromaCap: CGFloat  = 0.060
+        static let lightTertiaryChromaCap: CGFloat   = 0.040
+        static let lightQuaternaryChromaCap: CGFloat = 0.022
 
         // Artwork colorfulness level at which tier caps are fully applied.
         // Below this the chroma scales proportionally (linear ramp).
@@ -522,14 +534,19 @@ nonisolated enum ColorSystemTokens {
 
         // Absolute safety ceiling for light-mode tiers.
         // Must be ≥ lightPrimaryChromaCap.
-        static let lightChromaCeiling: CGFloat = 0.110
+        static let lightChromaCeiling: CGFloat = 0.105
 
         // Self-check assertions.
         static let nearMonoChromaAssertion: CGFloat      = 0.005  // must be achromatic on nearMono
         static let colorfulChromaAssertion: CGFloat      = 0.090  // dark-mode colorful primary ceiling
-        static let lightColorfulChromaAssertion: CGFloat = 0.120  // light-mode colorful primary ceiling
+        static let lightColorfulChromaAssertion: CGFloat = 0.110  // light-mode colorful primary ceiling
         static let darkPrimaryLAssertion: CGFloat        = 0.90   // dark primary must stay near white
-        static let lightPrimaryLAssertion: CGFloat       = 0.20   // light primary must stay near black
+        static let lightPrimaryLAssertion: CGFloat       = 0.26   // light primary L ≥ 0.22
+
+        // Self-check ratio caps: secondary and tertiary must be significantly
+        // below primary so the visual hierarchy is unambiguous.
+        static let darkSecondaryToPrimaryRatioCap: CGFloat  = 0.65
+        static let darkTertiaryToSecondaryRatioCap: CGFloat = 0.70
     }
 
     // MARK: - EffectiveMonochrome (Phase 1 — deprecated namespace)

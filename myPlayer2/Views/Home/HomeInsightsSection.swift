@@ -61,7 +61,7 @@ struct HomeInsightsSection: View {
     private var wideLayout: some View {
         VStack(alignment: .leading, spacing: 14) {
             sectionHeader
-            ListeningStatsRow(homeVM: homeVM)
+            ListeningStatsRow(homeVM: homeVM, subtitleColor: subtitleColor, tertiaryColor: tertiaryColor)
             sideBySideInsights
                 .padding(.top, 4)
         }
@@ -83,6 +83,7 @@ struct HomeInsightsSection: View {
                 fixedHeight: rowHeight,
                 playbackCoordinator: playbackCoordinator,
                 accentColor: accentColor,
+                primaryColor: titleColor,
                 subtitleColor: subtitleColor,
                 tertiaryColor: tertiaryColor
             )
@@ -117,6 +118,7 @@ struct HomeInsightsSection: View {
                 items: homeVM.preferenceRanking,
                 playbackCoordinator: playbackCoordinator,
                 accentColor: accentColor,
+                primaryColor: titleColor,
                 subtitleColor: subtitleColor,
                 tertiaryColor: tertiaryColor
             )
@@ -132,8 +134,13 @@ struct HomeInsightsSection: View {
         let metrics = compactSummaryMetrics(for: max(220, containerWidth))
 
         HStack(alignment: .top, spacing: compactLayoutSpacing) {
-            ListeningStatsGridCompact(homeVM: homeVM, cardSize: metrics.statCardSize)
-                .frame(width: metrics.statsWidth, height: CompactSummaryRowMetrics.rowHeight)
+            ListeningStatsGridCompact(
+                homeVM: homeVM,
+                cardSize: metrics.statCardSize,
+                subtitleColor: subtitleColor,
+                tertiaryColor: tertiaryColor
+            )
+            .frame(width: metrics.statsWidth, height: CompactSummaryRowMetrics.rowHeight)
             compactCalendar(width: metrics.calendarWidth)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -236,6 +243,8 @@ private enum ListeningCalendarLayoutMetrics {
 
 private struct ListeningStatsRow: View {
     let homeVM: HomeViewModel
+    var subtitleColor: Color = Color.secondary
+    var tertiaryColor: Color = Color(nsColor: .tertiaryLabelColor)
 
     var body: some View {
         let weeklyDuration = formattedDurationParts(homeVM.weeklyListeningSeconds)
@@ -245,21 +254,27 @@ private struct ListeningStatsRow: View {
                 label: "总歌曲",
                 value: "\(homeVM.totalTrackCount)",
                 unit: "首",
-                subtitle: "音乐库"
+                subtitle: "音乐库",
+                subtitleColor: subtitleColor,
+                tertiaryColor: tertiaryColor
             )
             HomeStatCard(
                 label: "本周播放",
                 value: formattedNumber(homeVM.weeklyPlayCount),
                 unit: "次",
-                subtitle: "本周"
+                subtitle: "本周",
+                subtitleColor: subtitleColor,
+                tertiaryColor: tertiaryColor
             )
             HomeStatCard(
                 label: "本周时长",
                 value: weeklyDuration.value,
                 unit: weeklyDuration.unit,
-                subtitle: "本周"
+                subtitle: "本周",
+                subtitleColor: subtitleColor,
+                tertiaryColor: tertiaryColor
             )
-            FavoriteArtistCard(homeVM: homeVM)
+            FavoriteArtistCard(homeVM: homeVM, subtitleColor: subtitleColor, tertiaryColor: tertiaryColor)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -268,6 +283,8 @@ private struct ListeningStatsRow: View {
 private struct ListeningStatsGridCompact: View {
     let homeVM: HomeViewModel
     let cardSize: CGSize
+    var subtitleColor: Color = Color.secondary
+    var tertiaryColor: Color = Color(nsColor: .tertiaryLabelColor)
 
     var body: some View {
         let weeklyDuration = formattedDurationParts(homeVM.weeklyListeningSeconds)
@@ -280,7 +297,9 @@ private struct ListeningStatsGridCompact: View {
                     unit: "首",
                     subtitle: "音乐库",
                     fixedSize: cardSize,
-                    compact: true
+                    compact: true,
+                    subtitleColor: subtitleColor,
+                    tertiaryColor: tertiaryColor
                 )
                 HomeStatCard(
                     label: "本周播放",
@@ -288,7 +307,9 @@ private struct ListeningStatsGridCompact: View {
                     unit: "次",
                     subtitle: "本周",
                     fixedSize: cardSize,
-                    compact: true
+                    compact: true,
+                    subtitleColor: subtitleColor,
+                    tertiaryColor: tertiaryColor
                 )
             }
 
@@ -299,12 +320,16 @@ private struct ListeningStatsGridCompact: View {
                     unit: weeklyDuration.unit,
                     subtitle: "本周",
                     fixedSize: cardSize,
-                    compact: true
+                    compact: true,
+                    subtitleColor: subtitleColor,
+                    tertiaryColor: tertiaryColor
                 )
                 FavoriteArtistCard(
                     homeVM: homeVM,
                     fixedSize: cardSize,
-                    compact: true
+                    compact: true,
+                    subtitleColor: subtitleColor,
+                    tertiaryColor: tertiaryColor
                 )
             }
         }
@@ -320,6 +345,8 @@ private struct FavoriteArtistCard: View {
     let homeVM: HomeViewModel
     var fixedSize: CGSize? = nil
     var compact: Bool = false
+    var subtitleColor: Color = Color.secondary
+    var tertiaryColor: Color = Color(nsColor: .tertiaryLabelColor)
 
     var body: some View {
         HomeInsightsCardContainer(fixedSize: fixedSize, compact: compact) {
@@ -327,7 +354,7 @@ private struct FavoriteArtistCard: View {
                 Text("本周常听")
                     .font(.system(size: compact ? 11 : 12, weight: .medium))
                     .textCase(.uppercase)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(subtitleColor)
 
                 Spacer(minLength: 0)
 
@@ -339,13 +366,13 @@ private struct FavoriteArtistCard: View {
                             .minimumScaleFactor(0.78)
                         Text("\(homeVM.weeklyFavoriteArtistPlayCount) 次播放")
                             .font(.system(size: compact ? 10 : 11))
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(tertiaryColor)
                             .lineLimit(1)
                     }
                 } else {
                     Text("\u{2014}")
                         .font(.title2)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(tertiaryColor)
                 }
             }
         }
@@ -374,6 +401,8 @@ private struct HomeStatCard: View {
     /// fill its grid cell. Used by the narrow-layout horizontal summary row.
     var fixedSize: CGSize? = nil
     var compact: Bool = false
+    var subtitleColor: Color = Color.secondary
+    var tertiaryColor: Color = Color(nsColor: .tertiaryLabelColor)
 
     var body: some View {
         HomeInsightsCardContainer(fixedSize: fixedSize, compact: compact) {
@@ -381,7 +410,7 @@ private struct HomeStatCard: View {
                 Text(label)
                     .font(.system(size: compact ? 11 : 12, weight: .medium))
                     .textCase(.uppercase)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(subtitleColor)
 
                 Spacer(minLength: 0)
 
@@ -393,12 +422,12 @@ private struct HomeStatCard: View {
                         .minimumScaleFactor(0.7)
                     Text(unit)
                         .font(.system(size: compact ? 11 : 12))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(subtitleColor)
                 }
 
                 Text(subtitle)
                     .font(.system(size: compact ? 10 : 11))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(tertiaryColor)
             }
         }
     }
@@ -445,6 +474,7 @@ private struct HomePreferenceRankingView: View {
     var fixedHeight: CGFloat? = nil
     let playbackCoordinator: PlaybackCoordinator
     let accentColor: Color
+    var primaryColor: Color = Color.primary
     var subtitleColor: Color = Color.secondary
     var tertiaryColor: Color = Color(nsColor: .tertiaryLabelColor)
     @Environment(\.colorScheme) private var colorScheme
@@ -503,6 +533,7 @@ private struct HomePreferenceRankingView: View {
                                     queueTracks: queueTracks,
                                     playbackCoordinator: playbackCoordinator,
                                     accentColor: accentColor,
+                                    primaryColor: primaryColor,
                                     subtitleColor: subtitleColor,
                                     onEditTrack: { trackToEdit = $0 }
                                 )
@@ -539,6 +570,7 @@ private struct HomeRankRow: View {
     /// invalidations on every ThemeStore publish (track change, scheme
     /// flip, palette refresh) even though each row reads only one value.
     let accentColor: Color
+    var primaryColor: Color = Color.primary
     var subtitleColor: Color = Color.secondary
     let onEditTrack: (Track) -> Void
     @State private var isHovering = false
@@ -569,6 +601,7 @@ private struct HomeRankRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.title)
                     .font(.system(size: dense ? 13 : 14, weight: .semibold))
+                    .foregroundStyle(primaryColor)
                     .lineLimit(1)
                 Text(item.artist)
                     .font(dense ? .caption2 : .caption)

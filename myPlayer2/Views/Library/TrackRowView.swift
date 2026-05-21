@@ -42,6 +42,7 @@ struct TrackRowView<MenuContent: View>: View {
     /// callers that have no ThemeStore access still work correctly.
     var rowPrimaryColor: Color = ColorTokens.textPrimary
     var rowSecondaryColor: Color = ColorTokens.textSecondary
+    var rowTertiaryColor: Color = ColorTokens.textTertiary
     @ViewBuilder let menuContent: () -> MenuContent
 
     @State private var isHovering = false
@@ -63,6 +64,7 @@ struct TrackRowView<MenuContent: View>: View {
         onRowAppear: (() -> Void)? = nil,
         rowPrimaryColor: Color = ColorTokens.textPrimary,
         rowSecondaryColor: Color = ColorTokens.textSecondary,
+        rowTertiaryColor: Color = ColorTokens.textTertiary,
         @ViewBuilder menuContent: @escaping () -> MenuContent
     ) {
         self.model = model
@@ -74,6 +76,7 @@ struct TrackRowView<MenuContent: View>: View {
         self.onRowAppear = onRowAppear
         self.rowPrimaryColor = rowPrimaryColor
         self.rowSecondaryColor = rowSecondaryColor
+        self.rowTertiaryColor = rowTertiaryColor
         self.menuContent = menuContent
     }
 
@@ -131,7 +134,7 @@ struct TrackRowView<MenuContent: View>: View {
 
             Text(model.durationText)
                 .font(.caption)
-                .foregroundStyle(ColorTokens.textTertiary)
+                .foregroundStyle(rowTertiaryColor)
                 .monospacedDigit()
                 .frame(width: 42, alignment: .trailing)
 
@@ -313,6 +316,9 @@ extension TrackRowView: Equatable where MenuContent: View {
             && lhs.isSelected == rhs.isSelected
             && lhs.enableSecondaryInteractions == rhs.enableSecondaryInteractions
             && lhs.enableArtworkLoading == rhs.enableArtworkLoading
+            && lhs.rowPrimaryColor == rhs.rowPrimaryColor
+            && lhs.rowSecondaryColor == rhs.rowSecondaryColor
+            && lhs.rowTertiaryColor == rhs.rowTertiaryColor
     }
 }
 
