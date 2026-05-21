@@ -332,7 +332,9 @@ struct HomeView: View {
         // here is free and lets `HomeInsightsSection` / `HomeRankRow` /
         // `HomeListeningHeatmapView` opt out of the store entirely.
         let accentColor = themeStore.accentColor
-        let appFgPrimary = Color(nsColor: themeStore.appForegroundPalette.primary)
+        let appFgPrimary   = Color(nsColor: themeStore.appForegroundPalette.primary)
+        let appFgSecondary = Color(nsColor: themeStore.appForegroundPalette.secondary)
+        let appFgTertiary  = Color(nsColor: themeStore.appForegroundPalette.tertiary)
 
         return ScrollView(.vertical, showsIndicators: true) {
             // `LazyVStack` defers body evaluation and layout for sections
@@ -366,7 +368,8 @@ struct HomeView: View {
                     HomePlaylistsSection(
                         playlists: homeVM.playlists,
                         mode: mode,
-                        titleColor: appFgPrimary
+                        titleColor: appFgPrimary,
+                        subtitleColor: appFgSecondary
                     )
                     .padding(.leading, centerLeftPad)
                     .padding(.trailing, centerRightPad)
@@ -378,7 +381,8 @@ struct HomeView: View {
                         mode: mode,
                         centerLeftPad: centerLeftPad,
                         centerRightPad: centerRightPad,
-                        titleColor: appFgPrimary
+                        titleColor: appFgPrimary,
+                        subtitleColor: appFgSecondary
                     )
                 }
 
@@ -388,7 +392,8 @@ struct HomeView: View {
                         mode: mode,
                         centerLeftPad: centerLeftPad,
                         centerRightPad: centerRightPad,
-                        titleColor: appFgPrimary
+                        titleColor: appFgPrimary,
+                        subtitleColor: appFgSecondary
                     )
                 }
 
@@ -400,7 +405,9 @@ struct HomeView: View {
                         centerLeftPad: centerLeftPad,
                         centerRightPad: centerRightPad,
                         accentColor: accentColor,
-                        titleColor: appFgPrimary
+                        titleColor: appFgPrimary,
+                        subtitleColor: appFgSecondary,
+                        tertiaryColor: appFgTertiary
                     )
                 }
 

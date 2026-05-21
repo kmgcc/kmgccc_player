@@ -490,7 +490,7 @@ nonisolated enum ColorSystemTokens {
         static let lightQuaternaryL: CGFloat = 0.600
         static let lightDisabledL: CGFloat   = 0.650
 
-        // Per-tier OKLCH chroma caps — how "tinted" each tier can be.
+        // Dark-mode per-tier OKLCH chroma caps — how "tinted" each tier can be.
         // At chromaScale=1.0 (colorfulness ≥ 0.40) these are the effective
         // maximums (before sRGB gamut clamping at high-L primaries). Values
         // are intentionally bold so the tint is clearly perceptible; the
@@ -502,19 +502,34 @@ nonisolated enum ColorSystemTokens {
         static let quaternaryChromaCap: CGFloat = 0.022
         static let disabledChromaCap: CGFloat   = 0.000
 
+        // Light-mode per-tier OKLCH chroma caps — raised above dark-mode caps
+        // because dark text at OKLCH L≈0.14 on a bright window surface needs
+        // more chroma for a perceptible warm/cool bias. At C=0.100 and
+        // L=0.14, OKLCH→sRGB produces a near-black with a clearly detectable
+        // hue shift. DisabledChromaCap stays 0 (achromatic) in both modes.
+        static let lightPrimaryChromaCap: CGFloat    = 0.100
+        static let lightSecondaryChromaCap: CGFloat  = 0.080
+        static let lightTertiaryChromaCap: CGFloat   = 0.060
+        static let lightQuaternaryChromaCap: CGFloat = 0.040
+
         // Artwork colorfulness level at which tier caps are fully applied.
         // Below this the chroma scales proportionally (linear ramp).
         static let colorfulnessSaturationPoint: CGFloat = 0.40
 
-        // Absolute safety ceiling applied after per-tier cap.
+        // Absolute safety ceiling applied after per-tier cap (dark mode).
         // Must be ≥ primaryChromaCap; acts as a global backstop only.
         static let chromaCeiling: CGFloat = 0.080
 
+        // Absolute safety ceiling for light-mode tiers.
+        // Must be ≥ lightPrimaryChromaCap.
+        static let lightChromaCeiling: CGFloat = 0.110
+
         // Self-check assertions.
-        static let nearMonoChromaAssertion: CGFloat  = 0.005  // must be achromatic on nearMono
-        static let colorfulChromaAssertion: CGFloat  = 0.090  // ceiling check for colorful-tint test
-        static let darkPrimaryLAssertion: CGFloat    = 0.90   // dark primary must stay near white
-        static let lightPrimaryLAssertion: CGFloat   = 0.20   // light primary must stay near black
+        static let nearMonoChromaAssertion: CGFloat      = 0.005  // must be achromatic on nearMono
+        static let colorfulChromaAssertion: CGFloat      = 0.090  // dark-mode colorful primary ceiling
+        static let lightColorfulChromaAssertion: CGFloat = 0.120  // light-mode colorful primary ceiling
+        static let darkPrimaryLAssertion: CGFloat        = 0.90   // dark primary must stay near white
+        static let lightPrimaryLAssertion: CGFloat       = 0.20   // light primary must stay near black
     }
 
     // MARK: - EffectiveMonochrome (Phase 1 — deprecated namespace)

@@ -125,7 +125,8 @@ Phase 4.5 应包含：
 - [x] 三类代表性模块接入（SidebarView / HomeView / SettingsView `V2FeatureTipView`），共 23 处；
 - [x] `ColorSystemSelfCheck` 增加 5 个 `AppForeground.*` 场景全部通过（30/30）；
 - [x] Debug build 通过；
-- [ ] 第二批扩大接入（`TrackRowView` / `LibraryDetailHeaderView` / Library 列表 / LDDC 搜索 / BatchEdit）— 留待下一轮；
+- [x] 第二批扩大接入（2026-05-20，§8）：TrackRowView / PlaylistDetailView 列表 / TrackInfoEditorCore / HomeCard 内文字 / Sidebar 列表行 / SettingsSidebar / FullscreenQueueView；
+- [ ] 第三批（待）：AllAlbumsView / AllArtistsView / BatchTrackEditSheet / LDDCSearchSection / AppKit Toolbar 图标；
 - [ ] 视觉在多种 artwork 下实机确认（需运行 App 手测）。
 
 ---

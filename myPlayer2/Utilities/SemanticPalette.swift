@@ -316,39 +316,39 @@ enum SemanticPaletteFactory {
         globalAccent: NSColor,
         isDark: Bool
     ) -> AppForegroundPalette {
+        let T = ColorSystemTokens.AppForeground.self
         let hue = OKColor.nsColorToOKLCH(globalAccent)?.h ?? 0.0
 
         // Chroma scale: 0 on nearMono, linear ramp on colorful artwork,
         // clamped at 1 so the per-tier cap is the actual ceiling.
         let chromaScale: CGFloat = analysis.isNearMonochrome ? 0 :
-            Swift.min(
-                analysis.colorfulness / ColorSystemTokens.AppForeground.colorfulnessSaturationPoint,
-                1.0
-            )
+            Swift.min(analysis.colorfulness / T.colorfulnessSaturationPoint, 1.0)
+
+        // Light-mode dark-text tiers use higher caps than dark-mode bright-text
+        // tiers: at OKLCH L≈0.14 the chroma needed for a perceptible tint on a
+        // bright window is larger than at L≈0.96 (where gamut is already narrow).
+        let ceiling = isDark ? T.chromaCeiling : T.lightChromaCeiling
 
         func make(targetL: CGFloat, chromaCap: CGFloat) -> NSColor {
-            let c = Swift.min(
-                chromaScale * chromaCap,
-                ColorSystemTokens.AppForeground.chromaCeiling
-            )
+            let c = Swift.min(chromaScale * chromaCap, ceiling)
             return OKColor.okLCHToNSColor(OKColor.OKLCH(l: targetL, c: c, h: hue), alpha: 1.0)
         }
 
         if isDark {
             return AppForegroundPalette(
-                primary:    make(targetL: ColorSystemTokens.AppForeground.darkPrimaryL,    chromaCap: ColorSystemTokens.AppForeground.primaryChromaCap),
-                secondary:  make(targetL: ColorSystemTokens.AppForeground.darkSecondaryL,  chromaCap: ColorSystemTokens.AppForeground.secondaryChromaCap),
-                tertiary:   make(targetL: ColorSystemTokens.AppForeground.darkTertiaryL,   chromaCap: ColorSystemTokens.AppForeground.tertiaryChromaCap),
-                quaternary: make(targetL: ColorSystemTokens.AppForeground.darkQuaternaryL, chromaCap: ColorSystemTokens.AppForeground.quaternaryChromaCap),
-                disabled:   make(targetL: ColorSystemTokens.AppForeground.darkDisabledL,   chromaCap: ColorSystemTokens.AppForeground.disabledChromaCap)
+                primary:    make(targetL: T.darkPrimaryL,    chromaCap: T.primaryChromaCap),
+                secondary:  make(targetL: T.darkSecondaryL,  chromaCap: T.secondaryChromaCap),
+                tertiary:   make(targetL: T.darkTertiaryL,   chromaCap: T.tertiaryChromaCap),
+                quaternary: make(targetL: T.darkQuaternaryL, chromaCap: T.quaternaryChromaCap),
+                disabled:   make(targetL: T.darkDisabledL,   chromaCap: T.disabledChromaCap)
             )
         } else {
             return AppForegroundPalette(
-                primary:    make(targetL: ColorSystemTokens.AppForeground.lightPrimaryL,    chromaCap: ColorSystemTokens.AppForeground.primaryChromaCap),
-                secondary:  make(targetL: ColorSystemTokens.AppForeground.lightSecondaryL,  chromaCap: ColorSystemTokens.AppForeground.secondaryChromaCap),
-                tertiary:   make(targetL: ColorSystemTokens.AppForeground.lightTertiaryL,   chromaCap: ColorSystemTokens.AppForeground.tertiaryChromaCap),
-                quaternary: make(targetL: ColorSystemTokens.AppForeground.lightQuaternaryL, chromaCap: ColorSystemTokens.AppForeground.quaternaryChromaCap),
-                disabled:   make(targetL: ColorSystemTokens.AppForeground.lightDisabledL,   chromaCap: ColorSystemTokens.AppForeground.disabledChromaCap)
+                primary:    make(targetL: T.lightPrimaryL,    chromaCap: T.lightPrimaryChromaCap),
+                secondary:  make(targetL: T.lightSecondaryL,  chromaCap: T.lightSecondaryChromaCap),
+                tertiary:   make(targetL: T.lightTertiaryL,   chromaCap: T.lightTertiaryChromaCap),
+                quaternary: make(targetL: T.lightQuaternaryL, chromaCap: T.lightQuaternaryChromaCap),
+                disabled:   make(targetL: T.lightDisabledL,   chromaCap: T.disabledChromaCap)
             )
         }
     }

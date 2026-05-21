@@ -12,6 +12,7 @@ struct HomePlaylistsSection: View {
     let playlists: [Playlist]
     var mode: HomeLayoutMode = .wide
     var titleColor: Color = Color.primary
+    var subtitleColor: Color = Color.secondary
 
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(UIStateViewModel.self) private var uiState
@@ -217,7 +218,9 @@ struct HomePlaylistsSection: View {
                     featuredPreviewLimit: previewLimit,
                     onFeaturedTrackPlay: { track in
                         play(track, in: featured)
-                    }
+                    },
+                    titleColor: titleColor,
+                    subtitleColor: subtitleColor
                 )
                 .frame(width: featuredW)
                 .onTapGesture { navigate(to: featured) }
@@ -227,14 +230,18 @@ struct HomePlaylistsSection: View {
                     HomePlaylistCard(
                         playlist: sideA,
                         mode: mode,
-                        kind: .compact(height: smallH)
+                        kind: .compact(height: smallH),
+                        titleColor: titleColor,
+                        subtitleColor: subtitleColor
                     )
                     .onTapGesture { navigate(to: sideA) }
                     .contextMenu { playlistContextMenu(for: sideA) }
                     HomePlaylistCard(
                         playlist: sideB,
                         mode: mode,
-                        kind: .compact(height: smallH)
+                        kind: .compact(height: smallH),
+                        titleColor: titleColor,
+                        subtitleColor: subtitleColor
                     )
                     .onTapGesture { navigate(to: sideB) }
                     .contextMenu { playlistContextMenu(for: sideB) }
@@ -282,9 +289,12 @@ struct HomePlaylistsSection: View {
             spacing: gridSpacing
         ) {
             ForEach(items) { playlist in
-                HomePlaylistCard(playlist: playlist, mode: mode, kind: .normal)
-                    .onTapGesture { navigate(to: playlist) }
-                    .contextMenu { playlistContextMenu(for: playlist) }
+                HomePlaylistCard(
+                    playlist: playlist, mode: mode, kind: .normal,
+                    titleColor: titleColor, subtitleColor: subtitleColor
+                )
+                .onTapGesture { navigate(to: playlist) }
+                .contextMenu { playlistContextMenu(for: playlist) }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -354,17 +364,22 @@ struct HomePlaylistsSection: View {
             HomePlaylistCard(
                 playlist: items[leftIndex],
                 mode: mode,
-                kind: shouldExpandTrailingItem ? .expandedTrailing(height: expandedTrailingHeight) : .normal
+                kind: shouldExpandTrailingItem ? .expandedTrailing(height: expandedTrailingHeight) : .normal,
+                titleColor: titleColor,
+                subtitleColor: subtitleColor
             )
                 .frame(width: leftCardWidth)
                 .onTapGesture { navigate(to: items[leftIndex]) }
                 .contextMenu { playlistContextMenu(for: items[leftIndex]) }
 
             if rightIndex < items.count {
-                HomePlaylistCard(playlist: items[rightIndex], mode: mode, kind: .normal)
-                    .frame(width: rightColumnWidth)
-                    .onTapGesture { navigate(to: items[rightIndex]) }
-                    .contextMenu { playlistContextMenu(for: items[rightIndex]) }
+                HomePlaylistCard(
+                    playlist: items[rightIndex], mode: mode, kind: .normal,
+                    titleColor: titleColor, subtitleColor: subtitleColor
+                )
+                .frame(width: rightColumnWidth)
+                .onTapGesture { navigate(to: items[rightIndex]) }
+                .contextMenu { playlistContextMenu(for: items[rightIndex]) }
             } else if shouldExpandTrailingItem {
                 EmptyView()
             } else {
@@ -461,6 +476,8 @@ private struct HomePlaylistCard: View {
     /// so callers that don't need dynamic sizing can omit it.
     var featuredPreviewLimit: Int?
     var onFeaturedTrackPlay: ((Track) -> Void)?
+    var titleColor: Color = Color.primary
+    var subtitleColor: Color = Color.secondary
 
     @State private var coverImage: NSImage?
 
@@ -469,13 +486,17 @@ private struct HomePlaylistCard: View {
         mode: HomeLayoutMode,
         kind: HomePlaylistCardKind,
         featuredPreviewLimit: Int? = nil,
-        onFeaturedTrackPlay: ((Track) -> Void)? = nil
+        onFeaturedTrackPlay: ((Track) -> Void)? = nil,
+        titleColor: Color = Color.primary,
+        subtitleColor: Color = Color.secondary
     ) {
         self.playlist = playlist
         self.mode = mode
         self.kind = kind
         self.featuredPreviewLimit = featuredPreviewLimit
         self.onFeaturedTrackPlay = onFeaturedTrackPlay
+        self.titleColor = titleColor
+        self.subtitleColor = subtitleColor
         // Seed @State synchronously from the main-actor cover store so
         // LazyVStack rematerialization doesn't flash the placeholder and
         // doesn't kick off the async resolveImmediately/pipeline hop for
@@ -612,10 +633,11 @@ private struct HomePlaylistCard: View {
                 Text(playlist.name)
                     .font(.system(size: mode == .narrow ? 14 : 15, weight: .semibold))
                     .lineLimit(1)
+                    .foregroundStyle(titleColor)
 
                 trackCountLine
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(subtitleColor)
                     .lineLimit(1)
             }
 
@@ -658,10 +680,11 @@ private struct HomePlaylistCard: View {
                             .lineLimit(2)
                             .multilineTextAlignment(.leading)
                             .frame(maxWidth: .infinity, alignment: .leading)
+                            .foregroundStyle(titleColor)
 
                         trackCountLine
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(subtitleColor)
                             .lineLimit(1)
                             .frame(alignment: .trailing)
                     }
@@ -669,7 +692,7 @@ private struct HomePlaylistCard: View {
                     if !playlist.userDescription.isEmpty {
                         Text(playlist.userDescription)
                             .font(.caption2)
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(subtitleColor.opacity(0.75))
                             .lineLimit(featuredDescriptionLineLimit)
                             .multilineTextAlignment(.leading)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -728,10 +751,11 @@ private struct HomePlaylistCard: View {
                 Text(playlist.name)
                     .font(.system(size: 13, weight: .semibold))
                     .lineLimit(1)
+                    .foregroundStyle(titleColor)
 
                 trackCountLine
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(subtitleColor)
                     .lineLimit(1)
             }
 
