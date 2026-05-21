@@ -421,23 +421,27 @@ nonisolated enum ColorSystemTokens {
         static let nearMonoChromaCeiling: CGFloat = 0.004
         static let nearMonoChromaAssertion: CGFloat = 0.005
 
-        // LED ladder. The L band sits high so opacity multiplication still
-        // leaves the OKLCH layer in the visible range; the chroma boost peaks
-        // in the middle of the curve, where level distinction is hardest to
-        // read otherwise.
-        static let ledDarkMinL: CGFloat = 0.780
-        static let ledDarkPeakL: CGFloat = 0.920
-        static let ledLightMinL: CGFloat = 0.430
-        static let ledLightPeakL: CGFloat = 0.560
-        static let ledMidChromaBoost: CGFloat = 0.18
-        static let ledPeakChromaTrim: CGFloat = 0.06
-        static let ledShadowDriftScale: CGFloat = 0.80
-        static let ledHighlightDriftScale: CGFloat = 0.50
+        // LED ladder. v3 widens the L band substantially so the OKLCH
+        // lightness delta is visible *after* the opacity ramp (which is
+        // the dominant brightness driver). v2's narrow 0.78–0.92 band was
+        // visually flat because the perceived lightness difference between
+        // levels was dominated by opacity alone. The mid-level chroma boost
+        // is also significantly larger so mid-level pixels read as more
+        // "alive" than low or peak — this is the "color science hierarchy"
+        // the user expects from a LED meter.
+        static let ledDarkMinL: CGFloat = 0.620
+        static let ledDarkPeakL: CGFloat = 0.945
+        static let ledLightMinL: CGFloat = 0.340
+        static let ledLightPeakL: CGFloat = 0.640
+        static let ledMidChromaBoost: CGFloat = 0.42
+        static let ledPeakChromaTrim: CGFloat = 0.10
+        static let ledShadowDriftScale: CGFloat = 1.25
+        static let ledHighlightDriftScale: CGFloat = 0.70
         static let ledNearMonoChromaCap: CGFloat = 0.006
         static let ledColorfulMinimumChroma: CGFloat = 0.062
         static let ledColorfulMinimumChromaAssertion: CGFloat = 0.055
         static let ledPerceptualStepAssertion: CGFloat = 0.055
-        static let ledLightnessVisibilityAssertion: CGFloat = 0.080
+        static let ledLightnessVisibilityAssertion: CGFloat = 0.180
         static let ledPeakLightnessCeilingAssertion: CGFloat = 0.95
         static let ledStrokeLightnessTrimDark: CGFloat = 0.060
         static let ledStrokeLightnessTrimLight: CGFloat = 0.040
@@ -451,9 +455,18 @@ nonisolated enum ColorSystemTokens {
         static let lyricsMainActiveL: CGFloat = 0.880
         static let lyricsSubActiveL: CGFloat = 0.780
         static let lyricsMainInactiveL: CGFloat = 0.605
-        static let lyricsLineTimingMainInactiveL: CGFloat = 0.555
-        static let lyricsSubInactiveL: CGFloat = 0.505
-        static let lyricsLineTimingSubInactiveL: CGFloat = 0.455
+        // v3: translation / sub-inactive sits close to its main counterpart
+        // (within ~0.025). The v2 0.10 gap pushed translation rows into a
+        // muddy band that the user reported as "明度太低，要和 inactive 普通
+        // 歌词行明度一样". Hierarchy between main and sub is now carried by
+        // chroma drift / surrounding text-weight / opacity, not by lightness.
+        // Strict descending order is preserved so `checkToneLadderBasicHierarchy`
+        // stays valid:
+        //   mainActive > subActive > mainInactive > subInactive
+        //               > lineTimingMainInactive > lineTimingSubInactive.
+        static let lyricsSubInactiveL: CGFloat = 0.585
+        static let lyricsLineTimingMainInactiveL: CGFloat = 0.560
+        static let lyricsLineTimingSubInactiveL: CGFloat = 0.540
 
         static let lyricsUltraDarkActiveTrim: CGFloat = 0.030
         static let lyricsUltraDarkSubActiveTrim: CGFloat = 0.040
@@ -472,11 +485,25 @@ nonisolated enum ColorSystemTokens {
         static let lyricsColorfulMinimumChroma: CGFloat = 0.050
         static let lyricsSeedChromaPreferred: CGFloat = 0.045
 
-        // Self-check thresholds (Phase 6 v2 hardened).
+        // Self-check thresholds (Phase 6 v3 hardened).
         static let lyricsActiveInactiveLightnessGapAssertion: CGFloat = 0.22
-        static let lyricsSecondaryInactiveLightnessGapAssertion: CGFloat = 0.22
+        // v3: sub-active vs sub-inactive gap is smaller now that sub-inactive
+        // sits close to main-inactive L. Hierarchy is shifted onto chroma /
+        // surrounding text weight rather than lightness.
+        static let lyricsSecondaryInactiveLightnessGapAssertion: CGFloat = 0.15
+        // v3: translation / sub-inactive L must be close to main-inactive L
+        // (max delta). The v2 gap (~0.10) was the source of the "translation
+        // too dim" complaint.
+        static let lyricsSubInactiveLightnessProximityAssertion: CGFloat = 0.060
         static let lyricsInactiveChromaRatioAssertion: CGFloat = 0.85
         static let lyricsHueIdentityAssertion: CGFloat = 0.025
+        // v3: when the seed has visible chroma, the artistic Tone Ladder
+        // must produce lyric output whose chroma stays above this floor
+        // even when the upstream `analysis.isNearMonochrome` is true. This
+        // is the regression guard for the v2 "grey-wash on colourful art"
+        // bug — analysis=neutralFallback + colourful seed must NOT come out
+        // grey.
+        static let lyricsNearMonoSeedTrustChromaAssertion: CGFloat = 0.040
     }
 
     // MARK: - UltraDark profile (Phase 2)

@@ -798,12 +798,89 @@ LED chromaScale 改为 `1.0 + ledMidChromaBoost·sin(πt) - ledPeakChromaTrim·(
 - Debug build：`xcodebuild ... build` 成功。
 - 推荐手测：① 强彩色 artwork（黄/橙/蓝/紫）下开启艺术背景，确认 fullscreen 歌词 inactive 不再灰白；② 多 LED level 渐变下确认低、中、高 level 之间的色彩感知差异；③ nearMono artwork（纯灰 / 极暗）确认歌词仍中性；④ Apple / Cover Gradient / Cover Blur 视觉无变化；⑤ ultraDark artwork 下确认 active L 仍可读。
 
-### 6.8 Phase 7 接力（更新）
+### 6.8 Phase 7 接力（v2 时的展望）
 
 - v2 LED 的 mid chroma boost 与 opacity 模型仍是基于黑底假设；未来 LED 容器若改为非黑底（如 frosted glass），需要在 SelfCheck 中重新建模"复合后感知 L"；
 - 非艺术 fullscreen lyrics 仍走 Phase 5 HSL profile；如要统一到 Tone Ladder，需做 A/B 与实机验证；
 - glow / shadow 与 Apple / Cover Gradient 决策不变；
 - `isEffectivelyMonochrome` alias 仍可在 Phase 7 收掉。
+
+### 6.9 Phase 6 v3 — 渲染链路 audit + seed-trust 修复（2026-05-21）
+
+#### 6.9.1 v2 仍然失败的现象
+
+- 强彩色 artwork + 艺术背景皮肤下，用户人工吸管取色 ≈ `#808284`（L≈0.555、C≈0.004），完全中性灰。
+- 翻译行 / sub inactive 明度比 main inactive 低 0.10，用户反馈"翻译行明度太低"。
+- LED 级别差仍由 opacity 主导，OKLCH L / chroma / hue 变化肉眼几乎看不出，"色彩科学层级"未实现。
+
+#### 6.9.2 端到端 render-path audit 结论
+
+从 Swift 一路追到 WKWebView computed style：
+
+1. `FullscreenPlayerView.applyFullscreenLyricsTheme` 把 `colorSet.mainInactive` 等转成 `rgba(R,G,B,1.0)`，正确；
+2. `LyricsWebViewStore.setConfigJSON` → `window.AMLL.setConfig(config)`，正确；
+3. `index.html#applyFullscreenColorVar` 把 alpha 剥成 `rgb(R,G,B)` 写到 `--amll-fs-main-inactive` 等 CSS var，正确；
+4. CSS `.amll-fs-word-base` 强制 `color: var(--amll-fs-main-inactive,...)` `opacity:1!important` `mix-blend-mode:normal!important`，正确，没有任何 fallback 灰；
+5. `syncFullscreenDerivedColors` 在变量缺失时会落到 `computedStyle.color`，但本路径下变量是已写的；
+6. 因此**屏幕上的灰不是 web 层覆盖出来的**，而是 **Swift 端就已经下发了灰色**。
+
+进一步定位 Swift 内部：
+
+- `FullscreenPlayerView.resolveLyricsAnalysis(forTrackID:)` 在 `themeStore.paletteMatches` 不成立时返回 `ArtworkColorAnalysis.neutralFallback`；
+- `ArtworkColorAnalysis.neutralFallback.isNearMonochrome` 被硬编码为 `true`（`Utilities/ArtworkColorAnalysis.swift:93`）；
+- 这个 `true` 一路传入 `PerceptualToneLadder.artisticLyricsTone(..., isNearMonochrome: true)`，把所有角色 chroma 钳到 `nearMonoChromaCeiling = 0.004`；
+- 落出来后 `neutraliseLyricsSurfaceIfNearMono` 又再钳一遍。
+- 结果：即使 seed（highlightBaseColor / accentColor）是鲜艳颜色，最终 lyric 全部输出 OKLCH `L≈0.555 C≈0.004`，对应 sRGB ≈ `#808284`。完美命中用户吸管色。
+
+v2 SelfCheck 没有覆盖"`isNearMonochrome=true` + 彩色 seed"这条路径，所以 53/53 PASS 但屏幕上灰。
+
+#### 6.9.3 v3 修复策略
+
+**核心改动：信 seed 不信 analysis bit**。`isNearMonochrome` 由 analysis 全局决定，但艺术歌词的颜色身份由 seed 决定。两层耦合是 v2 的真正根因。
+
+1. `PerceptualToneLadder.artisticLyricsTone`：当 `base.c >= lyricsSeedChromaPreferred`（0.045）时，**忽略** `isNearMonochrome` 参数，走彩色 floor / cap 路径；
+2. `PerceptualToneLadder.ledTone`：同样规则；
+3. `SemanticPaletteFactory.artisticFullscreenLyricsColorSet`：seed 有可视 chroma 时跳过尾部的 `neutraliseLyricsSurfaceIfNearMono`（避免双重 clamp）；
+4. `FullscreenPlayerView.applyFullscreenLyricsTheme`：新增 v3 诊断日志，使用 `ColorSystemDiagnostic.describe(...)` 在艺术背景路径下打印 highlight base / inactive base / 全部 6 个 role 的 `#RRGGBB (L=… C=… H=…)`。开关：`COLOR_SYSTEM_LYRICS_DEBUG=1` 或艺术背景启用时自动。
+
+**翻译行 L 拉近**：
+
+- `lyricsSubInactiveL`：0.505 → 0.585（与 mainInactive 0.605 差 0.020）；
+- `lyricsLineTimingSubInactiveL`：0.455 → 0.540（与 lineTimingMainInactive 0.560 差 0.020）；
+- 严格顺序改为 `mainActive > subActive > mainInactive > subInactive > lineTimingMainInactive > lineTimingSubInactive`（v2 旧顺序 mainInactive > lineMain > subInactive 已不再适用）。
+
+**LED 拉开"色彩科学层级"**：
+
+- `ledDarkMinL` 0.780 → 0.620、`ledDarkPeakL` 0.920 → 0.945（dark L 跨度从 0.14 拉到 0.33）；
+- `ledLightMinL` 0.430 → 0.340、`ledLightPeakL` 0.560 → 0.640；
+- `ledMidChromaBoost` 0.18 → 0.42（中段更"活"）、`ledPeakChromaTrim` 0.06 → 0.10（peak 收口更稳）；
+- `ledShadowDriftScale` 0.80 → 1.25、`ledHighlightDriftScale` 0.50 → 0.70（低 level 暖偏更明显）；
+- `ledLightnessVisibilityAssertion` 0.080 → 0.180（自检阈值随之收紧）。
+
+#### 6.9.4 v3 SelfCheck 加固
+
+新增 4 条 v3 回归门（v2 漏检的就是这些）：
+
+1. **`ToneLadder v3: colourful seed survives isNearMonochrome=true`** — 直接把 `isNearMonochrome=true` + 彩色 seed 喂入 `artisticLyricsTone`，要求所有 6 个角色 chroma ≥ 0.040（v2 此处会 fail，输出 0.004）。
+2. **`Lyrics v3: artistic path keeps colour under .neutralFallback analysis`** — 走 `SemanticPaletteSelfCheck.fullscreenLyricsColorSet` 全链路，传入真实的 `.neutralFallback`（`isNearMonochrome=true`）+ 彩色 highlight，要求最终 set 全角色 chroma ≥ 0.040 且 inactive hueΔ ≤ 0.025。这是直接覆盖用户屏幕场景的回归门。
+3. **`Lyrics v3: sub-inactive L close to main-inactive L`** — main/sub inactive 与 line/line-sub inactive 的 L 差均 ≤ `lyricsSubInactiveLightnessProximityAssertion` (0.060)。
+4. **`LED v3: low-level hue drift visible vs peak`** — low level 的 family shadow drift 必须大于 peak 的 highlight drift，且 lowHueΔ ≥ 0.003。
+
+`checkToneLadderNearMonoNeutral` 改名为 v3 并使用真正灰色 seed（c=0.003）测试 nearMono 路径——v3 契约下"分析 bit + seed 双重信号"才会触发中性化，这条测试与新契约一致。
+
+#### 6.9.5 v3 验证
+
+- `ColorSystemSelfCheck` **53/53 PASS**（含 4 条新增 v3 门）。
+- Debug build：`xcodebuild ... build` 成功。
+- 关键数值（log 摘录）：
+  - `Lyrics v3: artistic path keeps colour under .neutralFallback analysis` — minRoleC=0.066，seedC=0.194，inactive hueΔ=0.006；
+  - `ToneLadder v3: colourful seed survives isNearMonochrome=true` — minRoleC=0.130，min limit=0.040；
+  - `Lyrics v3: sub-inactive L close to main-inactive L` — main vs sub Δ=0.020，line vs lineSub Δ=0.020；
+  - `LED v2: tone steps have perceptual distance` — L=0.685/0.815/0.945（v2 是 0.78/0.85/0.92，幅度从 0.14 拉到 0.26）；
+  - `LED v2: lightness survives opacity ramp` — perceived L Δ=0.872，远高于 0.180 阈值；
+  - `LED v3: low-level hue drift visible vs peak` — lowHueΔ=0.007、peakHueΔ=0.002。
+- Web layer：本轮未触动 `index.html` / `style.css` / `bridge.js` / `lyrics-renderer.js`；Phase 5 Swift-owned color contract 仍由 Swift 侧负责。
+- 推荐手测：① 强彩色 artwork（黄/橙/蓝/紫）+ 艺术背景开关下，全屏 inactive 行不再灰白，可以肉眼读出 hue；② 翻译行明度与 inactive 主歌词行接近；③ LED 1/3/5/7/10 级别从下至上应能感到 L 与色彩明显爬升；④ nearMono artwork 与 Apple / Cover Gradient / Cover Blur 视觉无任何变化；⑤ 设 `COLOR_SYSTEM_LYRICS_DEBUG=1` 启动并切换 tracks，`Log.debug` 应在艺术背景路径下打印每一组 highlight base / 6 个 role 的 hex+OKLCH。
 
 ---
 

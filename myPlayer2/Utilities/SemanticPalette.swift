@@ -656,6 +656,16 @@ enum SemanticPaletteFactory {
             subInactive: color(.subInactive),
             lineTimingSubInactive: color(.lineTimingSubInactive)
         )
+        // v3: skip the post-hoc neutralise when the seed itself has visible
+        // chroma. The Tone Ladder already owns the chroma decision (with a
+        // visible-chroma floor); a second neutralise here was double-jeopardy
+        // — when `analysis.isNearMonochrome` is true (e.g. `.neutralFallback`
+        // during a themeStore catch-up window) it clamped colourful seed
+        // output back to chroma ≤ `nearMonoChromaCeiling`, producing the
+        // on-screen #80828X grey for colourful artwork.
+        if seed.c >= ColorSystemTokens.ToneLadder.lyricsSeedChromaPreferred {
+            return set
+        }
         return neutraliseLyricsSurfaceIfNearMono(set, analysis: analysis)
     }
 

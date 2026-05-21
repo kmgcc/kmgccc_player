@@ -2913,6 +2913,35 @@ struct FullscreenPlayerView: View {
         let coverBlurThemeColor = activeCoverBlurTheme.map {
             ArtworkColorExtractor.cssRGBA($0.themeColor, alpha: 1.0)
         }
+        // v3 diagnostic: dump the actual colour set the WebView will receive
+        // so we can verify on a real run whether the Swift output is already
+        // grey (analysis / seed bug) or only the on-screen render is grey
+        // (Web-layer override / CSS opacity bug). The CSS vars are pushed by
+        // `applyFullscreenColorVar` inside `index.html`; the names below
+        // match those CSS var names so the user can grep DevTools styles.
+        if ProcessInfo.processInfo.environment["COLOR_SYSTEM_LYRICS_DEBUG"] == "1"
+            || (settings.fullscreenArtBackgroundEnabled
+                && activeCoverBlurTheme == nil)
+        {
+            let analysis = resolveLyricsAnalysis(forTrackID: displayTrackID)
+            let highlightBase = resolveFullscreenLyricsBaseColor(forTrackID: displayTrackID)
+            let inactiveBase = resolveFullscreenLyricsInactiveBaseColor(forTrackID: displayTrackID)
+            Log.debug(
+                "[OKLCH] artisticLyrics theme reason=\(reason) "
+                + "usesArtisticBackground=\(settings.fullscreenArtBackgroundEnabled) "
+                + "analysis.isNearMonochrome=\(analysis.isNearMonochrome) "
+                + "analysis.colorfulness=\(String(format: "%.3f", analysis.colorfulness)) "
+                + "highlightBase=\(ColorSystemDiagnostic.describe(highlightBase)) "
+                + "inactiveBase=\(ColorSystemDiagnostic.describe(inactiveBase)) "
+                + "mainActive=\(ColorSystemDiagnostic.describe(colorSet.mainActive)) "
+                + "mainInactive=\(ColorSystemDiagnostic.describe(colorSet.mainInactive)) "
+                + "subActive=\(ColorSystemDiagnostic.describe(colorSet.subActive)) "
+                + "subInactive=\(ColorSystemDiagnostic.describe(colorSet.subInactive)) "
+                + "lineTimingMainInactive=\(ColorSystemDiagnostic.describe(colorSet.lineTimingMainInactive)) "
+                + "lineTimingSubInactive=\(ColorSystemDiagnostic.describe(colorSet.lineTimingSubInactive))",
+                category: .theme
+            )
+        }
         let trackOffsetMs = max(-15000, min(15000, effectiveTrack?.lyricsTimeOffsetMs ?? 0))
         let effectiveGlobalAdvanceMs = max(
             -5000,

@@ -270,7 +270,12 @@ nonisolated enum PerceptualToneLadder {
         var c: CGFloat = base.c * chromaScale
 
         let cap = hueChromaCap(base.h, role: .led, scheme: scheme)
-        if isNearMonochrome {
+        // v3: trust the seed. Analysis-level nearMono only neutralises when
+        // the seed itself has no visible chroma — otherwise a colourful
+        // artwork that the analysis falsely flagged as nearMono (e.g. via
+        // `ArtworkColorAnalysis.neutralFallback`) would render grey LEDs.
+        let seedHasVisibleChroma = base.c >= T.lyricsSeedChromaPreferred
+        if isNearMonochrome && !seedHasVisibleChroma {
             c = min(c, T.ledNearMonoChromaCap)
         } else {
             // Floor uses a hue-aware visible-chroma threshold so colourful
@@ -351,7 +356,14 @@ nonisolated enum PerceptualToneLadder {
         }
 
         var c: CGFloat
-        if isNearMonochrome {
+        // v3: trust the seed. v2 routed the chroma decision through the
+        // upstream `analysis.isNearMonochrome` flag, but the analysis can
+        // be `.neutralFallback` (isNearMonochrome=true) on colourful
+        // artwork while the themeStore palette is still catching up — that
+        // is the exact path that produced the on-screen #80828X grey.
+        // The seed's actual chroma is the only reliable signal here.
+        let seedHasVisibleChroma = base.c >= T.lyricsSeedChromaPreferred
+        if isNearMonochrome && !seedHasVisibleChroma {
             c = min(base.c * chromaScale, T.nearMonoChromaCeiling)
         } else {
             let cap = hueChromaCap(base.h, role: .lyrics(role), scheme: .dark)
