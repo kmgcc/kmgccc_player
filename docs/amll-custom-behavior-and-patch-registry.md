@@ -19,11 +19,45 @@
 | Fullscreen CSS module selector 兼容 | 新版 CSS module hash 形态变化后，fullscreen overlay 仍能识别 lyric line/active/sub/bg。 | App `index.html` CSS/JS selector adapter | 使用 `[class*="lyricLine"]` / `[class*="active"]` 等语义片段；避免回退到旧 `[class*="_active_"]`。 |
 | 普通 fullscreen 明度语义 | 普通全屏主要通过颜色明度区分层级，不靠整体 opacity 发灰。 | App `index.html` fullscreen CSS variables / overlay | 修 fullscreen 视觉时先确认 surface role；不要把 cover blur 的透明合成语义套到普通 fullscreen。 |
 | Cover blur 混合模式语义 | 封面渐变模糊全屏允许透明度和 blend 参与合成。 | Swift fullscreen config + App `index.html` CSS | 当前 generic cover blur highlight 主要共用 `.amll-fs-*` 路径；legacy `.amll-cb-*` 路径仍保留兼容。 |
+| Swift-owned lyrics color contract / near-mono neutralization | 歌词颜色决策归 Swift，避免 Swift + Web 双端重复选择 hue，并防止 nearMono artwork 的微弱残留 hue 被 fullscreen/Web 派生逻辑放大成粉、蓝、黄。 | Swift `SemanticPalette.lyrics` + App `index.html` adapter | Web rendering-only / adapter contract：Web 可保留 opacity、mix-blend-mode、text-shadow、drop-shadow、shadow structure 与兼容 fallback，但不得重新决定 hue。`syncFullscreenDerivedColors()` 必须优先消费 Swift 显式颜色，缺失时才 fallback 派生。nearMono lyrics neutralization 要求 visible colors OKLCH chroma ≤ 0.005。 |
 | Cover blur emphasis 官方链路 adapter | 大封面渐变模糊皮肤只对官方 emphasis 的 glow 做 cover-blur 专属弱化/重染，避免重造一套独立 glow 动画。 | App `index.html` generic cover blur adapter（CSS + bridge JS） + Swift base/highlight overlay | `installFullscreenEmphasizedGlowLayer()` 只给强调词 `.amll-fs-word-stack` 写入 `data-amll-fs-emphasis-body="1"`，让 highlight-only WebView 恢复强调词主填充；不再创建 `.amll-fs-cover-blur-glow-layer`。`installFullscreenPackedElementAnimations()` 继续按官方 per-character target clone `emphasize-word-*`，保留 scale / translate / duration / delay / stagger，只在 clone keyframes 中对 `textShadow` 做 profile retint/rescale；base 层 `coverBlurSuppressEmphasisGlow=true` 时仅把 `textShadow` 置为 `none`，不移除 transform。当前 glow profile 为 lighter `rgba(255,255,255,0.12) × 1.0`、darker `rgba(0,0,0,0.16) × 1.0`。普通 fullscreen/window 不进入 cover-blur profile 调整。 |
 | Window/main emphasis glow 配色 adapter | 窗口主歌词在浅色调色板（深字 + 浅底）下，官方 `rgba(255,255,255,glowLevel)` emphasis 辉光基本看不见。adapter 仅在 light 模式下把 textShadow 的颜色改为深色低 α 光晕，让长时值强调有可见、低噪的视觉收尾。深色调色板（白字 + 深底）保持官方白色光晕不变。 | App `index.html` `applyWindowEmphasisGlowScheme()` / `retintSingleWindowEmphasisAnimation()` / `recolorWindowEmphasisTextShadow()` | 只在 `surfaceRole === "main"` 启用；fullscreen / fullscreen cover-blur / batch preview 不进入此分支。检测信号是 Swift 通过 `config.theme = "light" \| "dark"` 下发的 app appearance；不再使用 `config.textColor` 亮度推断（之前的亮度路径与 config 顺序竞争，导致 light 模式下halo 看不见）。`LyricsViewModel.refreshConfigFromSettings()` 与 `LyricsWebViewStore.applyEffectiveTheme()` 都会带 `theme` 字段，appearance 翻转时也会重发，所以单一信号足够。改写发生在 `KeyframeEffect.setKeyframes()` 上，每个 emphasis 动画首次改写前会缓存 `__windowEmphasisOriginalKeyframes`，scheme 翻转时使用缓存还原。动画 id / 时长 / delay / easing / composite / transform / scale / stagger 全部保持官方原值，只有 textShadow 颜色与 α 倍率变化。当前 light profile 为 `rgba(0, 0, 0, source.a × 0.55)`（source 峰值 ≈ 0.8，retint 峰值 ≈ 0.44，搭配官方 0.3em blur 形成清晰但不糊的字下阴影）。普通 fullscreen 走的是官方白色光晕路径，所以全屏不需要进入此 adapter。 |
 | 歌词渲染质量三档 | 按“低 / 中 / 高”控制 WKWebView 实际渲染分辨率，减轻渲染压力或使用原生分辨率。 | Swift/WebView adapter | 真实低分辨率路径是 WKWebView frame 按质量档缩小、`pageZoom` 按同一质量档缩小，再用 layer inverse scale 放回原视觉尺寸；低 `0.5`，中 `0.75`，高 `1.0`。2026-05-17 A/B 已否定 contentsScale-only：完整 frame + `pageZoom = 1` + identity transform + 只改 layer `contentsScale` 看起来仍是 1.0x，不能代表真正的低分辨率 WebView 渲染，也不能改善 1.0x emphasis snap。旧 `amllHighResolutionLyricsEnabled=true` 迁移为高，false/缺失迁移为中。AMLL DOM `renderScale` 必须继续使用各 surface 的默认 renderer scale（窗口/全屏/cover blur 为 `0.75`，batch preview 为 `0.45`），不要用用户质量档位驱动 `LyricPlayer.setRenderScale()`。 |
 | 歌词 surface hover / selection policy | 不显示窗口/全屏 hover 圆角背景；拖动时不允许选中文字。 | App `index.html` CSS | Upstream hover 背景真实来源是 `packages/core/src/styles/lyric-player.module.css` 中 `.lyricLine:has(> *):hover/:active` 使用的 `--amll-lp-hover-bg-color`。App adapter 对所有歌词 surface 将该变量置为 `transparent`，不维护 host-driven hover proxy。文本选择通过 `.amll-lyric-player` 子树的 `-webkit-user-select: none` + `user-select: none` 禁止；不加 JS `selectstart` 防线，除非未来证明 CSS 在目标 WebKit 下不足。 |
 | 翻译歌词字体控制 | App 设置控制翻译字体大小/字重。 | App `index.html` CSS variables + semantic selector | 依赖新版 CSS module 语义 selector，例如 `[class*="lyricSubLine"]`；不要绑定旧 hash。 |
+
+## A.1 Swift-owned lyrics color contract / near-mono neutralization
+
+目的：
+
+- 避免歌词颜色逻辑散落在 Swift 与 Web 双端，导致 `ThemeStore`、`SemanticPalette`、`FullscreenPlayerView`、`LyricsWebViewStore`、AMLL adapter 各自维护一套近似但不一致的派色规则。
+- 避免 nearMono artwork 下的微弱 residual hue 被 Web 或 fullscreen 派生逻辑放大成粉色、蓝色或黄色。
+- 为后续 AMLL 升级保留清晰边界：AMLL adapter 负责渲染结构，App Swift 色彩系统负责颜色决策。
+
+规则：
+
+- Swift 侧输出 window / fullscreen / cover blur 等 surface color set；当前入口为 `SemanticPalette.lyrics`、`LyricsColorPalette`、`LyricsSurfaceColorSet`、`LyricsCoverBlurBlendProfile`。
+- Web 侧不得重新选择 hue，不得用 CSS/JS 派生覆盖 Swift 已下发的语义色。
+- Web 侧可以保留 opacity、mix-blend-mode、text-shadow、drop-shadow、shadow structure、line-state class、动画 clone 等渲染行为。
+- `syncFullscreenDerivedColors()` 必须优先使用 Swift 显式颜色；fallback 派生只允许作为旧配置或缺省状态的兼容路径。
+
+nearMono lyrics neutralization：
+
+- `analysis.isNearMonochrome == true` 时，歌词 visible colors 的 OKLCH chroma ≤ 0.005。
+- 适用于窗口歌词与全屏歌词，包括 active / inactive / base / secondary / translation / cover blur 输入色。
+- glow 若为设计常量白/黑可保留；若未来改为主题化 glow，不得在 nearMono 下引入彩色 hue。
+
+AMLL 升级注意：
+
+- 未来升级 AMLL 或重建 `index.html` adapter 时，必须保留 Swift-owned lyrics color contract。
+- 不要把颜色决策重新搬回 Web / CSS，不要让 Web 根据 main color 自行选择 hue。
+- 不要删除 Swift 显式颜色字段后依赖 `syncFullscreenDerivedColors()` 的 fallback 派生作为主路径。
+
+验收：
+
+- black / white / grey artwork 下窗口与全屏歌词不偏粉、不偏蓝、不偏黄。
+- 彩色 artwork 下窗口歌词保留 Phase 5 前的基本观感与 theme tint。
+- Phase 5 `ColorSystemSelfCheck` 歌词项通过：nearMono window / fullscreen / cover blur chroma ≤ 0.005，彩色窗口 tint 保留，层级合理。
 
 ## B. Fork Patch Registry
 
@@ -52,6 +86,7 @@
 | Fullscreen smooth overlay | `index.html` | `lineObj.element`、`splittedWords`、word mask animations、CSS module class substring | 高。依赖 DOM renderer 内部结构。 | 不要散落新 selector；优先集中在 layer patch 和 semantic class matching。 |
 | Cover blur smooth overlay | `index.html` | `.amll-fs-*` generic path 与 `.amll-cb-*` legacy path | 高。两套路径容易只修一边。 | 修 fullscreen 高亮时同时确认 generic cover blur 和 legacy cover blur。 |
 | Apple style fullscreen cover-blur-lighter lyrics path | Swift `FullscreenPlayerView` fullscreen config/compositing + App `index.html` generic cover blur adapter | `coverBlurFullscreenGenericMode`、`coverBlurFullscreenGenericProfile=lighter`、`coverBlurFullscreenThemeColor`、Swift `.plusLighter` WebView blend、generic cover blur dots body color only | 中。Apple fullscreen 必须复用 cover blur generic lyric state/animation semantics，不能再维护 Apple-only opacity/dots selector patches，也不能把 legacy cover blur root visibility hack 或 child opacity/blend hack 套到 generic dots 上。 | 只影响 Apple 风格 fullscreen lyric surface。背景仍是 Mesh Gradient，布局仍按 Apple fullscreen/classic placement；歌词颜色来自主题取色引擎，并固定走 cover blur lighter profile / `plus-lighter`。不使用 cover blur light/dark 自动切换、`plus-darker` 或封面模糊背景。快速设置切换 skin 必须 force reapply fullscreen lyrics config/theme，避免旧 CSS vars/profile 留在 WebView。Generic dots 的 show/scale animation 与三颗点逐步变亮 opacity 由 AMLL renderer 管理；App adapter 只改 dot body `background-color`。 |
+| Swift-owned lyrics color contract | Swift `SemanticPalette.lyrics` / `FullscreenPlayerView` config assembly + App `index.html` `syncFullscreenDerivedColors()` | Swift 显式下发 window / fullscreen / cover blur surface color set；Web adapter 消费颜色并保留渲染行为。 | 中。字段遗漏会让 Web fallback 重新派生颜色，nearMono artwork 下可能再次放大 residual hue。 | 保持 `SemanticPalette.lyrics` 为主决策入口；`syncFullscreenDerivedColors()` 只在显式颜色缺失时 fallback 派生。`analysis.isNearMonochrome == true` 时 visible lyrics colors OKLCH chroma ≤ 0.005。未来 AMLL 升级不得把 hue 决策搬回 CSS/JS。 |
 | Apple style LED tone policy | `AppleStyleSkin` + `ClassicCoverArtworkView` + `LedMeterView` | `forceBrightLEDColors` 复用 LED resolver 的 dark/bright profile | 低。属于 skin 视觉策略，不改 LED resolver 本体。 | Apple Mesh Gradient 在 light/dark App appearance 下都按暗背景处理，窗口和 fullscreen 都固定传 `forceBrightLEDColors=true`。其他复用 `ClassicCoverArtworkView` 的 skin 默认仍只在 `artBackgroundIsUltraDark` 时强制亮色。 |
 | Cover blur emphasis 官方链路 adapter | `index.html` `installFullscreenEmphasizedGlowLayer()` / `installFullscreenPackedElementAnimations()` / `cloneAnimationToElement()` / `releaseSplitWordAuxiliaryState()` | AMLL emphasis WebAnimation id、effect/timing/keyframe composite、`textShadow` keyframes、word-stack `data-amll-fs-emphasis-body` 属性、`--amll-fs-cover-blur-body-color` CSS 变量、highlight-only line-state 选择器（`active` / `data-fs-completed-highlight` / `data-amll-exit-catch-up` / `data-amll-exiting-highlight`） | 高。仍依赖 DOM renderer 私有 `splitWord.elementAnimations` 和 WebAnimation target；如果把 per-character animation clone 到单个 target，或 clone 时丢掉 `composite: "add"`，官方长词/长时值的 scale + float 叠加会失真。 | 只在 `coverBlurFullscreenGenericMode` 下启用。`installFullscreenEmphasizedGlowLayer()` 只打 `data-amll-fs-emphasis-body="1"` 并清理旧 `.amll-fs-cover-blur-glow-layer`；主 body CSS 只恢复强调词 active fill，不承担动画语义。`installFullscreenPackedElementAnimations()` 必须继续 clone `emphasize-word-*` 到原 per-character mapped target；禁止整条跳过，因为该 animation 同时包含 `scale/translate` 与 `textShadow`。`cloneAnimationToElement()` 必须通过 `resolveAnimationComposite()` 保留 source composite，尤其是 `float-word` / `emphasize-word-float*` 的 `add`，否则 float 会 replace 掉 scale。cover blur 只能在 cloned keyframes 上弱化/重染 `textShadow`；base suppress 只能移除 `textShadow`，不能移除 transform。普通 window 不进入 cover-blur profile 调整。 |
 | Completed highlight state | `index.html` `updateFullscreenParallelHighlightState()` | `bufferedLines`、`scrollToIndex`、active class、`data-fs-completed-highlight` | 中高。语义是“仍在并行/foreground 组内”，不是 active。 | opacity 不按自身 endTime 熄灭；必须等真实退出组。 |

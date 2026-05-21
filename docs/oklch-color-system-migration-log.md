@@ -587,11 +587,18 @@ struct TrackRowView {
 
 `ThemeStore.refreshPalette` 不再为歌词重新跑一套 average/accent 决策，而是消费 `semantic.lyrics.windowActive/windowInactive` 回填 legacy `ThemePalette`。`FullscreenPlayerView` 不再内联 fullscreen HSL 派生与 cover blur HSL 参数，改为调用 `SemanticPaletteFactory.fullscreenLyricsColorSet(...)` / `coverBlurLyricsColorSet(...)`。
 
+Phase 5 的最终规范是 **Swift-owned lyrics color contract**：
+
+- 歌词颜色决策归 Swift，主要入口是 `SemanticPalette.lyrics` 与 `SemanticPaletteFactory.lyricsPalette(...)`。
+- Swift 明确输出 `LyricsColorPalette`、`LyricsSurfaceColorSet`、`LyricsCoverBlurBlendProfile` 对应的 window / fullscreen / cover blur surface colors。
+- Web rendering-only / adapter contract：AMLL Web 层只负责渲染、opacity、blend、shadow structure、mix-blend-mode 与兼容 fallback，不承担主要 hue 决策。
+- Phase 5 之后，任何 AMLL adapter 改动都必须同步更新 `docs/amll-upgrade-implementation-log.md` 与 `docs/amll-custom-behavior-and-patch-registry.md`。
+
 ### 5.2 nearMono 偏粉根因与修复
 
 **根因**：窗口歌词旧路径在 `ThemeStore` 内从 average color 重新走 `ArtworkColorExtractor.adjustedAccent`；该函数会对 dark-mode lyric active 加 saturation floor。全屏歌词旧路径在 `FullscreenPlayerView` 内对 highlight / inactive / cover blur 做 HSL 派生，也存在最小 saturation 与偏色 profile。nearMono 封面的 RGB 残留 hue 本来很弱，但这些 floor 会把残留 hue 放大成肉眼可见的粉 / 蓝 / 黄。
 
-**修复**：`analysis.isNearMonochrome == true` 时，歌词所有 Swift 可控可见色走 OKLCH 中性化，`chroma` 收敛到 `ColorSystemTokens.Lyrics.nearMonoChromaCeiling = 0.004`，自检断言上限为 `0.005`。层级不靠 hue，仍保留 active / inactive 的 L 与 alpha 差异。
+**修复 / nearMono lyrics neutralization**：`analysis.isNearMonochrome == true` 时，歌词所有 Swift 可控可见色走 OKLCH 中性化，`chroma` 收敛到 `ColorSystemTokens.Lyrics.nearMonoChromaCeiling = 0.004`，自检断言上限为 `0.005`。层级不靠 hue，仍保留 active / inactive 的 L 与 alpha 差异。黑白灰 / 近灰 artwork 下，不允许 visible lyrics colors 出现可见粉、蓝、黄等伪 hue。
 
 ### 5.3 彩色 artwork 窗口歌词观感
 
@@ -606,9 +613,11 @@ struct TrackRowView {
 
 `Resources/AMLL/index.html` 仍负责 AMLL 渲染、opacity、blend、shadow structure 和向后兼容 fallback。调整点：
 
-- `syncFullscreenDerivedColors()` 优先消费 Swift 下发的 `--amll-fs-sub-inactive` / `--amll-cb-sub-inactive`，不再无条件从 main inactive 派生 secondary/sub 颜色；
-- fullscreen / cover blur background active 只在 Swift 未给显式值时才 fallback 派生；
+- `syncFullscreenDerivedColors()` 优先消费 Swift 下发的显式颜色，例如 `--amll-fs-sub-inactive` / `--amll-cb-sub-inactive` 以及 fullscreen / cover blur background 输入，不再无条件从 main inactive 派生 secondary/sub 颜色；
+- fullscreen / cover blur background active 只在 Swift 未给显式值时才 fallback 派生，fallback 只是兼容缺省路径；
 - 固定白 / 黑 / blend 常量保留为渲染结构，不作为 hue 决策来源。
+
+AMLL adapter contract：后续重建 `index.html` 或升级 AMLL 时，必须保留 Swift 显式颜色字段与 `syncFullscreenDerivedColors()` 的优先级，不得删除字段后依赖 Web 派生作为主路径。
 
 ### 5.6 SelfCheck
 
@@ -620,6 +629,13 @@ struct TrackRowView {
 4. colorful window lyric 保留 theme tint，不被误中性化
 5. window / fullscreen active 与 inactive 明度/alpha 层级合理
 
+验证结果：
+
+- `ColorSystemSelfCheck` 41/41 PASS。
+- nearMono window / fullscreen / cover blur 歌词色 OKLCH chroma ≤ 0.005。
+- 彩色窗口歌词 tint 保留，不被误中性化。
+- Debug build succeeded：`xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player -configuration Debug -destination 'platform=macOS' build`。
+
 ### 5.7 Phase 6 接力
 
 Tone Ladder 不在 Phase 5 强做。下一阶段建议优先处理：
@@ -627,6 +643,8 @@ Tone Ladder 不在 Phase 5 强做。下一阶段建议优先处理：
 - 艺术背景类 fullscreen lyrics 的不透明 OKLCH 明度 / 彩度梯级；
 - glow / shadow 是否需要从渲染 structure 进一步拆出 Swift 语义 token；
 - Web fallback 继续瘦身，最终只保留 legacy-safe fallback 与纯渲染行为。
+
+Phase 6 不得破坏 Swift-owned lyrics color contract：Tone Ladder 可以优化艺术背景 fullscreen lyrics 的不透明明度 / 彩度层级，但颜色决策仍应留在 Swift 侧，Web 继续保持 rendering-only / adapter contract。
 
 ---
 

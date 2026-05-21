@@ -2,6 +2,37 @@
 
 本文记录新版 AMLL 接入过程中实际发生的问题、判断、修复和验证。迁移前审计与路线见 `docs/amll-upgrade-migration-audit.md`；长期自定义行为与 patch 维护清单见 `docs/amll-custom-behavior-and-patch-registry.md`。
 
+## 2026-05-21 App adapter contract change — Swift-owned lyrics color contract
+
+背景：
+
+- OKLCH Phase 5（commit `ae6210e` — `Converge lyrics color palette`）完成歌词颜色体系收敛。
+- 这不是 AMLL bundle 升级，也不是 upstream AMLL 行为变更。
+- 没有修改生成的 `amll-core.js` / `amll-lyric.js` bundle；改动点在 App 的 AMLL adapter / `Resources/AMLL/index.html` 与 Swift 侧语义色契约。
+
+职责边界：
+
+- Swift / `SemanticPalette.lyrics` 负责决定歌词语义色，包括窗口歌词、普通 fullscreen、cover blur / Apple-style cover blur surface color set。
+- AMLL Web 层负责渲染、blend、opacity、shadow structure、mix-blend-mode 以及兼容 fallback。
+- Web 层不应重新选择 hue，也不应把 Swift 已判定为 nearMono 的中性色重新染成可见粉、蓝、黄等伪 hue。
+
+`syncFullscreenDerivedColors()` 新规则：
+
+- 优先使用 Swift 下发的显式颜色变量，例如 fullscreen / cover blur 的 sub、background、line-timing 等颜色输入。
+- 只有缺失显式颜色时才 fallback 派生，以兼容旧 config 或过渡状态。
+- fallback 派生是缺省兼容路径，不是主要颜色决策入口。
+
+nearMono lyrics neutralization：
+
+- 黑白灰 / 近灰 artwork 下，歌词 visible colors 必须中性化。
+- `analysis.isNearMonochrome == true` 时，窗口与全屏歌词 active / inactive / base / secondary / cover blur 输入色的 OKLCH chroma ≤ 0.005。
+- glow 若为设计常量白/黑可以保留，但不得引入彩色 hue。
+
+验证：
+
+- Phase 5 `ColorSystemSelfCheck` 新增 nearMono window / fullscreen / cover blur 歌词 chroma 检查，41/41 PASS。
+- 彩色 artwork 下窗口歌词仍保留原有 tint 观感。
+
 ## 2026-05-14 新版基础接入
 
 现象/目标：
