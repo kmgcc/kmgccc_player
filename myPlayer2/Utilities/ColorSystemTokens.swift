@@ -234,6 +234,172 @@ nonisolated enum ColorSystemTokens {
         static let inactiveAlpha: CGFloat = 0.35
     }
 
+    // MARK: - Lyrics (Phase 5)
+    //
+    // Centralized Swift-side lyric colour policy. These values are the
+    // pre-Phase-5 fullscreen/window tuning lifted out of
+    // `FullscreenPlayerView`, plus the new near-mono OKLCH chroma ceiling
+    // that prevents grey / black / white artwork from acquiring visible
+    // pink, blue, or yellow residue in either window or fullscreen lyrics.
+
+    enum Lyrics {
+        static let nearMonoChromaCeiling: CGFloat = 0.004
+        static let nearMonoChromaAssertion: CGFloat = 0.005
+
+        static let fullscreenMinimumBaseLightness: CGFloat = 0.52
+        static let fullscreenMaximumBaseLightness: CGFloat = 0.66
+        static let fullscreenMinimumSubActiveLightness: CGFloat = 0.88
+        static let fullscreenMaximumSubActiveLightness: CGFloat = 0.94
+        static let fullscreenMinimumMainActiveLightness: CGFloat = 0.95
+        static let fullscreenMaximumMainActiveLightness: CGFloat = 0.98
+        static let fullscreenSaturationFloor: CGFloat = 0.10
+        static let fullscreenSaturationCeiling: CGFloat = 0.58
+
+        static let fullscreenInactiveDarkModeShift: CGFloat = 0.08
+        static let fullscreenInactiveUltraDarkShiftDark: CGFloat = 0.22
+        static let fullscreenInactiveUltraDarkShiftLight: CGFloat = 0.17
+        static let fullscreenActiveDarkModeShift: CGFloat = 0.02
+        static let fullscreenActiveUltraDarkShiftDark: CGFloat = 0.10
+        static let fullscreenActiveUltraDarkShiftLight: CGFloat = 0.06
+        static let fullscreenInactiveSaturationScaleDark: CGFloat = 0.42
+        static let fullscreenInactiveSaturationScaleLight: CGFloat = 0.48
+        static let fullscreenInactiveUltraDarkSaturationScaleDark: CGFloat = 0.34
+        static let fullscreenInactiveUltraDarkSaturationScaleLight: CGFloat = 0.40
+        static let fullscreenInactiveSaturationBiasDark: CGFloat = 0.015
+        static let fullscreenInactiveSaturationBiasLight: CGFloat = 0.020
+        static let fullscreenActiveSaturationScale: CGFloat = 0.70
+        static let fullscreenActiveSaturationBias: CGFloat = 0.06
+        static let fullscreenInactiveLightnessTrim: CGFloat = 0.02
+        static let fullscreenMinimumBaseShiftScale: CGFloat = 0.55
+        static let fullscreenMaximumBaseShiftScale: CGFloat = 0.95
+        static let fullscreenBaseLightnessFloor: CGFloat = 0.24
+        static let fullscreenBaseLightnessFallbackCeiling: CGFloat = 0.40
+        static let fullscreenSubActiveLightnessLift: CGFloat = 0.04
+        static let fullscreenSubActiveShiftScale: CGFloat = 0.75
+        static let fullscreenSubActiveMinimumGap: CGFloat = 0.04
+        static let fullscreenSubActiveFloor: CGFloat = 0.64
+        static let fullscreenSubActiveOffset: CGFloat = 0.08
+        static let fullscreenSubActiveMinimumShiftScale: CGFloat = 0.90
+        static let fullscreenSubActiveMaximumShiftScale: CGFloat = 0.75
+        static let fullscreenSubActiveFallbackCeiling: CGFloat = 0.74
+        static let fullscreenActiveLightnessLift: CGFloat = 0.18
+        static let fullscreenActiveShiftScale: CGFloat = 0.60
+        static let fullscreenActiveMinimumGap: CGFloat = 0.08
+        static let fullscreenActiveFloor: CGFloat = 0.84
+        static let fullscreenActiveMinimumShiftScale: CGFloat = 0.55
+        static let fullscreenActiveMaximumShiftScale: CGFloat = 0.45
+        static let fullscreenActiveFallbackCeiling: CGFloat = 0.90
+        static let fullscreenLineTimingSaturationScaleFloor: CGFloat = 0.28
+        static let fullscreenLineTimingSaturationScaleTrim: CGFloat = 0.03
+        static let fullscreenLineTimingSaturationBiasFloor: CGFloat = 0.010
+        static let fullscreenLineTimingSaturationBiasTrim: CGFloat = 0.005
+        static let fullscreenSubActiveSaturationScale: CGFloat = 0.78
+        static let fullscreenSubInactiveSaturationScaleFloor: CGFloat = 0.26
+        static let fullscreenSubInactiveSaturationScaleTrim: CGFloat = 0.05
+        static let fullscreenSubInactiveSaturationBiasFloor: CGFloat = 0.010
+        static let fullscreenSubInactiveSaturationBiasTrim: CGFloat = 0.005
+        static let fullscreenLineTimingSubSaturationScaleFloor: CGFloat = 0.24
+        static let fullscreenLineTimingSubSaturationScaleTrim: CGFloat = 0.08
+        static let fullscreenLineTimingSubSaturationBiasFloor: CGFloat = 0.008
+        static let fullscreenLineTimingSubSaturationBiasTrim: CGFloat = 0.008
+        static let fullscreenMainActiveSaturationScale: CGFloat = 1.12
+        static let fullscreenMainActiveSaturationBias: CGFloat = 0.02
+
+        static let coverBlurLighterVeryDarkThreshold: CGFloat = 0.05
+        static let coverBlurLighterBrightThreshold: CGFloat = 0.70
+        static let coverBlurLighterBrightInputMin: CGFloat = 0.64
+        static let coverBlurLighterMidInputMin: CGFloat = 0.46
+        static let coverBlurLighterNeutralInputMin: CGFloat = 0.18
+        static let coverBlurLighterBrightActiveLift: CGFloat = 0.01
+        static let coverBlurLighterBrightActiveMin: CGFloat = 0.90
+        static let coverBlurLighterBrightActiveMax: CGFloat = 0.935
+        static let coverBlurLighterBrightSaturationScale: CGFloat = 0.70
+        static let coverBlurLighterBrightSaturationBias: CGFloat = 0.04
+        static let coverBlurLighterBrightSaturationMin: CGFloat = 0.06
+        static let coverBlurLighterBrightSaturationMax: CGFloat = 0.48
+        static let coverBlurLighterMidActiveLift: CGFloat = 0.08
+        static let coverBlurLighterMidActiveMin: CGFloat = 0.85
+        static let coverBlurLighterMidActiveMax: CGFloat = 0.89
+        static let coverBlurLighterMidSaturationScale: CGFloat = 0.54
+        static let coverBlurLighterMidSaturationBias: CGFloat = 0.04
+        static let coverBlurLighterMidSaturationMin: CGFloat = 0.06
+        static let coverBlurLighterMidSaturationMax: CGFloat = 0.38
+        static let coverBlurLighterNeutralActiveLift: CGFloat = 0.06
+        static let coverBlurLighterNeutralActiveMin: CGFloat = 0.80
+        static let coverBlurLighterNeutralActiveMax: CGFloat = 0.84
+        static let coverBlurLighterNeutralSaturationScale: CGFloat = 0.48
+        static let coverBlurLighterNeutralSaturationBias: CGFloat = 0.04
+        static let coverBlurLighterNeutralSaturationMin: CGFloat = 0.05
+        static let coverBlurLighterNeutralSaturationMax: CGFloat = 0.34
+        static let coverBlurLighterDarkActiveLift: CGFloat = 0.38
+        static let coverBlurLighterDarkActiveMin: CGFloat = 0.67
+        static let coverBlurLighterDarkActiveMax: CGFloat = 0.78
+        static let coverBlurLighterDarkSaturationScale: CGFloat = 0.14
+        static let coverBlurLighterDarkSaturationBias: CGFloat = 0.06
+        static let coverBlurLighterDarkSaturationMin: CGFloat = 0.05
+        static let coverBlurLighterDarkSaturationMax: CGFloat = 0.18
+        static let coverBlurLighterVeryDarkInactiveBoost: CGFloat = 0.090
+        static let coverBlurLighterBrightInactiveTrim: CGFloat = 0.015
+        static let coverBlurLighterInactiveSaturationScale: CGFloat = 0.34
+        static let coverBlurLighterInactiveSaturationBias: CGFloat = 0.03
+        static let coverBlurLighterInactiveSaturationMin: CGFloat = 0.03
+        static let coverBlurLighterInactiveSaturationMax: CGFloat = 0.18
+        static let coverBlurLighterSubInactiveSaturationScale: CGFloat = 0.28
+        static let coverBlurLighterSubInactiveSaturationBias: CGFloat = 0.03
+        static let coverBlurLighterSubInactiveSaturationMin: CGFloat = 0.02
+        static let coverBlurLighterSubInactiveSaturationMax: CGFloat = 0.14
+        static let coverBlurLighterBaseInputScale: CGFloat = 0.08
+        static let coverBlurLighterBaseBias: CGFloat = 0.09
+        static let coverBlurLighterVeryDarkBaseMin: CGFloat = 0.13
+        static let coverBlurLighterBaseMin: CGFloat = 0.08
+        static let coverBlurLighterBaseMax: CGFloat = 0.20
+        static let coverBlurLighterVeryDarkLineTimingTrim: CGFloat = 0.025
+        static let coverBlurLighterLineTimingTrim: CGFloat = 0.04
+        static let coverBlurLighterVeryDarkLineTimingMin: CGFloat = 0.10
+        static let coverBlurLighterLineTimingMin: CGFloat = 0.05
+        static let coverBlurLighterVeryDarkSubActiveLift: CGFloat = 0.035
+        static let coverBlurLighterSubActiveLift: CGFloat = 0.045
+        static let coverBlurLighterVeryDarkSubActiveMin: CGFloat = 0.15
+        static let coverBlurLighterSubActiveMin: CGFloat = 0.13
+        static let coverBlurLighterSubActiveMax: CGFloat = 0.24
+        static let coverBlurLighterLineTimingSaturationScale: CGFloat = 0.92
+        static let coverBlurLighterSubActiveSaturationScale: CGFloat = 0.82
+        static let coverBlurLighterSubInactiveLightnessTrim: CGFloat = 0.02
+        static let coverBlurLighterLineTimingSubSaturationScale: CGFloat = 0.92
+        static let coverBlurLighterLineTimingSubLightnessTrim: CGFloat = 0.01
+
+        static let coverBlurDarkerHighlightSaturationScale: CGFloat = 0.34
+        static let coverBlurDarkerHighlightSaturationBias: CGFloat = 0.08
+        static let coverBlurDarkerHighlightSaturationMin: CGFloat = 0.05
+        static let coverBlurDarkerHighlightSaturationMax: CGFloat = 0.24
+        static let coverBlurDarkerInactiveSaturationScale: CGFloat = 0.18
+        static let coverBlurDarkerInactiveSaturationBias: CGFloat = 0.02
+        static let coverBlurDarkerInactiveSaturationMin: CGFloat = 0.01
+        static let coverBlurDarkerInactiveSaturationMax: CGFloat = 0.10
+        static let coverBlurDarkerSubInactiveSaturationScale: CGFloat = 0.90
+        static let coverBlurDarkerSubInactiveSaturationMin: CGFloat = 0.01
+        static let coverBlurDarkerSubInactiveSaturationMax: CGFloat = 0.09
+        static let coverBlurDarkerBaseLightnessAnchor: CGFloat = 0.82
+        static let coverBlurDarkerBaseLightnessScale: CGFloat = 0.18
+        static let coverBlurDarkerBaseLightnessMin: CGFloat = 0.76
+        static let coverBlurDarkerBaseLightnessMax: CGFloat = 0.88
+        static let coverBlurDarkerLineTimingTrim: CGFloat = 0.05
+        static let coverBlurDarkerLineTimingMin: CGFloat = 0.70
+        static let coverBlurDarkerLineTimingMax: CGFloat = 0.82
+        static let coverBlurDarkerSubActiveTrim: CGFloat = 0.10
+        static let coverBlurDarkerSubActiveMin: CGFloat = 0.62
+        static let coverBlurDarkerSubActiveMax: CGFloat = 0.76
+        static let coverBlurDarkerHighlightLightnessScale: CGFloat = 0.14
+        static let coverBlurDarkerHighlightLightnessBias: CGFloat = 0.32
+        static let coverBlurDarkerHighlightLightnessMin: CGFloat = 0.34
+        static let coverBlurDarkerHighlightLightnessMax: CGFloat = 0.50
+        static let coverBlurDarkerLineTimingSaturationScale: CGFloat = 0.90
+        static let coverBlurDarkerSubActiveSaturationScale: CGFloat = 0.78
+        static let coverBlurDarkerSubInactiveLightnessTrim: CGFloat = 0.02
+        static let coverBlurDarkerLineTimingSubSaturationScale: CGFloat = 0.95
+        static let coverBlurDarkerLineTimingSubLightnessTrim: CGFloat = 0.01
+    }
+
     // MARK: - UltraDark profile (Phase 2)
     //
     // Tone / Darkness axis — describes "the cover is so dark we should
@@ -543,9 +709,11 @@ nonisolated enum ColorSystemTokens {
         static let darkPrimaryLAssertion: CGFloat        = 0.90   // dark primary must stay near white
         static let lightPrimaryLAssertion: CGFloat       = 0.26   // light primary L ≥ 0.22
 
-        // Self-check ratio caps: secondary and tertiary must be significantly
-        // below primary so the visual hierarchy is unambiguous.
-        static let darkSecondaryToPrimaryRatioCap: CGFloat  = 0.65
+        // Self-check caps: secondary must remain low-chroma in absolute terms.
+        // Primary lives at very high L in dark mode, where sRGB gamut clipping
+        // can lower realised chroma below secondary for some hues; hierarchy is
+        // therefore asserted by lightness plus an absolute secondary cap.
+        static let darkSecondaryChromaAssertion: CGFloat     = 0.045
         static let darkTertiaryToSecondaryRatioCap: CGFloat = 0.70
     }
 

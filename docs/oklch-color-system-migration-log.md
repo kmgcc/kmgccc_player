@@ -413,10 +413,10 @@ L=0.14 接近 sRGB 黑，gamut 在该亮度下几乎零 chroma headroom——任
 ### 4.5.6 secondary / tertiary 比例约束
 
 self-check 断言：
-- 深色：secondary C ≤ primary × 0.65；tertiary C ≤ secondary × 0.70。
+- 深色：secondary C ≤ 0.045 绝对低彩上限；tertiary C ≤ secondary × 0.70。
 - L 阶梯：深色严格降序（primary > secondary > ... > disabled）；浅色严格升序。
 
-理由：副文字必须比主文字"明显更灰"才算副层级。如果允许 secondary chroma 接近 primary，会出现"小字反而比大字更彩"的反直觉效果。
+理由：副文字必须保持低彩，且用 L 阶梯保证层级。dark primary L=0.96 位于 sRGB gamut headroom 很窄的区域，某些 hue 的实际 chroma 会被 clamp 到低于 secondary；因此 secondary 不再用 realised primary chroma 做比例基准，而是用绝对低彩上限锁定。
 
 ### 4.5.7 与 ArtworkReadabilityProfile 的分离
 
@@ -533,23 +533,23 @@ struct TrackRowView {
 | Dark-mode L hierarchy | primary > secondary > tertiary > quaternary > disabled |
 | Light-mode L hierarchy | 升序 |
 | AppForeground.primary ≠ ReadabilityProfile.foregroundPrimary | 两条管线独立 |
-| Dark secondary C ≤ primary × 0.65 | **已知 FAIL（见下）** |
+| Dark secondary C bounded | C ≤ 0.045 |
 | Dark tertiary C ≤ secondary × 0.70 | 三层级 chroma 弱于副层级 |
 | Cool-hue accent produces lower dark primary C than warm accent | hue-aware reduction 生效 |
 | Light-mode directional | 暖 R>B / 冷 B>R |
 
-**已知 FAIL：`Dark secondary C ≤ primary × 0.65`**
+**自检维护：`Dark secondary C ≤ primary × 0.65` → `Dark secondary C bounded`**
 
 测得 sec/pri = 1.665（secondaryC=0.031, primaryC=0.019）。根因：dark primary L=0.96 在冷色相方向 sRGB gamut headroom 极窄，OKLCH→sRGB 转换在 `okLCHToNSColor` 内被 gamut clamp 压到 C≈0.019；同时 dark secondary L=0.78 headroom 更宽，转回 OKLCH 后实测 C≈0.031。
 
 该断言在 commit `f7e9e3d` 上已经失败（本轮验证：stash 后跑同一 self-check 仍 FAIL，sec/pri=1.665 完全一致），**不是本轮引入的回归**。
 
-工程含义：在视觉层面，dark mode 冷色高亮 primary 文字会因为 gamut clamp 反而比 secondary 副文字 chroma 更弱。这有可能造成"副文字看起来比主文字更彩"的轻微反直觉。本轮不在调色范围内处理；建议 Phase 5 之后单独评估：
+工程含义：在视觉层面，dark mode 冷色高亮 primary 文字会因为 gamut clamp 反而比 secondary 副文字 chroma 更弱。这有可能造成"副文字看起来比主文字更彩"的轻微反直觉。Phase 5 自检维护中未改生产色彩，把该断言改为 `secondaryC ≤ 0.045` 绝对低彩上限；冷色 gamut-clipping 风险继续由 dedicated cool-hue checks 覆盖。后续若要从产品视觉上处理，可单独评估：
 - 方案 A：放宽 dark primary L 到 0.93（牺牲一点亮度换 chroma headroom）
 - 方案 B：assertion 改为 hue-aware（高 L + 冷色 hue 时跳过比较）
 - 方案 C：dark mode primary chroma cap 降到约 0.045（与 gamut clamp 后的 secondary 持平之下）
 
-其余 10 个 Phase 4.5 场景全部 PASS。整套 self-check 35/36 PASS（唯一 FAIL 为上述 dark secondary/primary 比值断言）。
+其余 10 个 Phase 4.5 场景全部 PASS。Phase 5 自检维护后，Phase 4.5 断言不再因 high-L primary gamut clipping 产生误报。
 
 ### 4.5.14 验证指引
 
@@ -574,20 +574,63 @@ struct TrackRowView {
 
 ---
 
-## Phase 5 接力点（不在本轮处理）
+## Phase 5 — 歌词颜色体系收敛（2026-05-21）
 
-### A. 歌词 nearMono 偏粉（Issue B from §3）
+### 5.1 统一入口
 
-**触发**：纯黑白灰、近零饱和度封面。  
-**症状**：窗口与全屏歌词高亮 / 文字偏粉红。  
-**根因**：歌词色彩链路（AMLL bridge 一侧设置的 `lyricsHighlight` / `lyricsForeground`）部分仍走旧 HSL accent 路径；nearMono 残留 hue 未归零。
+新增 `LyricsColorPalette` / `LyricsSurfaceColorSet` / `LyricsCoverBlurBlendProfile`，并挂到 `SemanticPalette.lyrics`。Swift 侧现在由 `SemanticPaletteFactory.lyricsPalette(...)` 统一输出：
 
-**Phase 5 必须做的事**：
+- 窗口歌词：`windowActive` / `windowInactive`
+- 全屏基础色：`fullscreenBase` / `fullscreenInactiveBase`
+- 全屏分层色：`fullscreen.mainActive` / `mainInactive` / `lineTimingMainInactive` / `subActive` / `subInactive` / `lineTimingSubInactive`
+- Cover Blur：`coverBlurLyricsColorSet(analysis:themeColor:profile:)`
 
-1. 把窗口歌词与全屏歌词的颜色决策**统一到一个 Swift 侧函数**（不是两套独立路径）。
-2. 该函数显式分支：`analysis.isNearMonochrome == true` → 歌词所有可见色 OKLCH chroma ≤ 0.005，仅靠 L 与 alpha 体现层级。
-3. 验收必须**两端同时跑**——避免单端修复造成视觉割裂。
-4. self-check 增加 nearMono 歌词 chroma 上限断言。
+`ThemeStore.refreshPalette` 不再为歌词重新跑一套 average/accent 决策，而是消费 `semantic.lyrics.windowActive/windowInactive` 回填 legacy `ThemePalette`。`FullscreenPlayerView` 不再内联 fullscreen HSL 派生与 cover blur HSL 参数，改为调用 `SemanticPaletteFactory.fullscreenLyricsColorSet(...)` / `coverBlurLyricsColorSet(...)`。
+
+### 5.2 nearMono 偏粉根因与修复
+
+**根因**：窗口歌词旧路径在 `ThemeStore` 内从 average color 重新走 `ArtworkColorExtractor.adjustedAccent`；该函数会对 dark-mode lyric active 加 saturation floor。全屏歌词旧路径在 `FullscreenPlayerView` 内对 highlight / inactive / cover blur 做 HSL 派生，也存在最小 saturation 与偏色 profile。nearMono 封面的 RGB 残留 hue 本来很弱，但这些 floor 会把残留 hue 放大成肉眼可见的粉 / 蓝 / 黄。
+
+**修复**：`analysis.isNearMonochrome == true` 时，歌词所有 Swift 可控可见色走 OKLCH 中性化，`chroma` 收敛到 `ColorSystemTokens.Lyrics.nearMonoChromaCeiling = 0.004`，自检断言上限为 `0.005`。层级不靠 hue，仍保留 active / inactive 的 L 与 alpha 差异。
+
+### 5.3 彩色 artwork 窗口歌词观感
+
+正常彩色 artwork 下，窗口歌词 active 仍沿用 Phase 5 前的产品路径：`ArtworkColorExtractor.adjustedAccent(from: analysis.averageColor, isDarkMode:)`。Phase 5 只是把这条路径移动到 `SemanticPaletteFactory.windowLyricActive(...)` 并在 nearMono 分支补中性化，因此彩色封面不会被误灰化；SelfCheck 增加 `colorful window keeps theme tint`，要求非 nearMono 窗口歌词仍保留合理 chroma。
+
+### 5.4 Fullscreen skin 策略
+
+- Apple / Cover Gradient / Cover Blur 类皮肤：保留 lighter / darker profile、opacity 与 blend 表示层级的现有策略；nearMono 下由 Swift 先输出中性色，Web 不再二次选 hue。
+- 普通 fullscreen / 艺术背景类皮肤：本轮先收敛入口与 nearMono 修复，仍保留既有 layer / opacity 行为；后续 Phase 6 应把艺术背景歌词层级推进到更不透明的 OKLCH Tone Ladder。
+
+### 5.5 Web / CSS 边界
+
+`Resources/AMLL/index.html` 仍负责 AMLL 渲染、opacity、blend、shadow structure 和向后兼容 fallback。调整点：
+
+- `syncFullscreenDerivedColors()` 优先消费 Swift 下发的 `--amll-fs-sub-inactive` / `--amll-cb-sub-inactive`，不再无条件从 main inactive 派生 secondary/sub 颜色；
+- fullscreen / cover blur background active 只在 Swift 未给显式值时才 fallback 派生；
+- 固定白 / 黑 / blend 常量保留为渲染结构，不作为 hue 决策来源。
+
+### 5.6 SelfCheck
+
+新增 Phase 5 歌词自检：
+
+1. nearMono window active / inactive chroma ≤ 0.005
+2. nearMono fullscreen active/base 与 inactive tiers chroma ≤ 0.005
+3. nearMono cover blur lighter / darker profile chroma ≤ 0.005
+4. colorful window lyric 保留 theme tint，不被误中性化
+5. window / fullscreen active 与 inactive 明度/alpha 层级合理
+
+### 5.7 Phase 6 接力
+
+Tone Ladder 不在 Phase 5 强做。下一阶段建议优先处理：
+
+- 艺术背景类 fullscreen lyrics 的不透明 OKLCH 明度 / 彩度梯级；
+- glow / shadow 是否需要从渲染 structure 进一步拆出 Swift 语义 token；
+- Web fallback 继续瘦身，最终只保留 legacy-safe fallback 与纯渲染行为。
+
+---
+
+## 后续接力点（Phase 6 / 独立排期）
 
 ### B. AppKit toolbar 图标 tint（见 §4.5.12）
 
@@ -622,4 +665,4 @@ xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player \
 COLOR_SYSTEM_SELF_CHECK=1 ./kmgccc_player.app/Contents/MacOS/kmgccc_player
 ```
 
-最终 self-check 场景总数：36（Phase 2 基础 14 + 收尾 1 + Phase 3 hotfix 5 + Phase 4 五场景 + Phase 4.5 十一场景）。当前状态 35/36 PASS——唯一 FAIL 为预先存在的 `Dark secondary C ≤ primary × 0.65` 比值断言（见 §4.5.13）。
+最终 self-check 场景总数：41（Phase 2 基础 14 + 收尾 1 + Phase 3 hotfix 5 + Phase 4 五场景 + Phase 4.5 十一场景 + Phase 5 歌词五场景）。2026-05-21 本地 Debug 运行：41/41 PASS。Phase 5 新增歌词项覆盖 nearMono window / fullscreen / cover blur neutral、彩色窗口 tint 保留、歌词层级。

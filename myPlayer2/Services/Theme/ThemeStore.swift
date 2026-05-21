@@ -431,22 +431,19 @@ final class ThemeStore: ObservableObject {
         var active = isDark ? "rgba(255, 255, 255, 1.0)" : "rgba(0, 0, 0, 1.0)"
         var inactive = isDark ? "rgba(255, 255, 255, 0.35)" : "rgba(0, 0, 0, 0.35)"
 
-        // If we have artwork, perform adaptive extraction
-        if let data = currentArtworkData {
-            // Use cached averageColor if available, otherwise compute it
-            let avgColor = averageColorCache ?? ArtworkColorExtractor.averageColor(from: data)
-
-            if let rawColor = avgColor {
-                // Adjusted for readability in current scheme
-                let adjusted = ArtworkColorExtractor.adjustedAccent(
-                    from: rawColor, isDarkMode: isDark)
-
-                text = ArtworkColorExtractor.cssRGBA(adjusted, alpha: 0.95)
-                active = ArtworkColorExtractor.cssRGBA(adjusted, alpha: 1.0)
-                inactive = ArtworkColorExtractor.cssRGBA(adjusted, alpha: 0.35)
-
-                bg = isDark ? "rgba(15, 15, 15, 0.7)" : "rgba(250, 250, 250, 0.7)"
-            }
+        // If we have artwork, use the centralized semantic lyric palette.
+        // The factory preserves the old colourful-artwork window path
+        // (adjusted average artwork tint) but crushes near-mono OKLCH
+        // chroma so grey/black/white covers cannot leak pink/blue/yellow
+        // residue into the AMLL surface.
+        if currentArtworkData != nil {
+            text = ArtworkColorExtractor.cssRGBA(semantic.lyrics.windowActive, alpha: 0.95)
+            active = ArtworkColorExtractor.cssRGBA(semantic.lyrics.windowActive, alpha: 1.0)
+            inactive = ArtworkColorExtractor.cssRGBA(
+                semantic.lyrics.windowInactive,
+                alpha: semantic.lyrics.windowInactive.alphaComponent
+            )
+            bg = isDark ? "rgba(15, 15, 15, 0.7)" : "rgba(250, 250, 250, 0.7)"
         }
 
         let newPalette = ThemePalette(

@@ -56,6 +56,43 @@ struct SemanticPalette: Equatable, Sendable {
     /// SwiftUI `.primary` / `.secondary` / `.tertiary` in non-artwork
     /// surfaces during Phase 4.5 first-batch migration.
     let appForeground: AppForegroundPalette
+
+    /// Phase 5 — centralized lyric colour decisions. Swift owns the
+    /// artwork-driven hue / lightness / near-mono policy; the Web layer
+    /// only receives concrete colours and keeps rendering mechanics
+    /// (opacity, blend mode, masks, shadows).
+    let lyrics: LyricsColorPalette
+}
+
+enum LyricsCoverBlurBlendProfile: String, Equatable, Sendable {
+    case lighter
+    case darker
+
+    var paletteScheme: ColorScheme {
+        switch self {
+        case .lighter:
+            return .dark
+        case .darker:
+            return .light
+        }
+    }
+}
+
+struct LyricsSurfaceColorSet: Equatable, Sendable {
+    let mainActive: NSColor
+    let mainInactive: NSColor
+    let lineTimingMainInactive: NSColor
+    let subActive: NSColor
+    let subInactive: NSColor
+    let lineTimingSubInactive: NSColor
+}
+
+struct LyricsColorPalette: Equatable, Sendable {
+    let windowActive: NSColor
+    let windowInactive: NSColor
+    let fullscreenBase: NSColor
+    let fullscreenInactiveBase: NSColor
+    let fullscreen: LyricsSurfaceColorSet
 }
 
 /// "Compress UI on top of artwork" readability decision. One profile
@@ -213,6 +250,11 @@ enum SemanticPaletteFactory {
             globalAccent: globalAccent,
             isDark: isDark
         )
+        let lyrics = lyricsPalette(
+            analysis: analysis,
+            scheme: scheme,
+            isFullscreenUltraDark: false
+        )
 
         return SemanticPalette(
             scheme: scheme,
@@ -225,15 +267,16 @@ enum SemanticPaletteFactory {
             artBackgroundSecondary: artBackgroundSecondary(analysis: analysis, isDark: isDark),
             readableTextOnArtwork: readability.foregroundPrimary,
             secondaryTextOnArtwork: readability.foregroundSecondary,
-            windowLyricActive: windowLyricActive(analysis: analysis, isDark: isDark),
-            windowLyricInactive: windowLyricInactive(analysis: analysis, isDark: isDark),
-            fullscreenLyricBase: fullscreenLyricBase(analysis: analysis),
-            fullscreenLyricInactiveBase: fullscreenLyricInactiveBase(analysis: analysis),
+            windowLyricActive: lyrics.windowActive,
+            windowLyricInactive: lyrics.windowInactive,
+            fullscreenLyricBase: lyrics.fullscreenBase,
+            fullscreenLyricInactiveBase: lyrics.fullscreenInactiveBase,
             coverGradientDominant: coverGradientDominant(analysis: analysis, isDark: isDark),
             coverGradientText: coverGradientText(analysis: analysis),
             readabilityProfile: readability,
             miniPlayerControl: control,
-            appForeground: appFg
+            appForeground: appFg,
+            lyrics: lyrics
         )
     }
 
@@ -419,6 +462,356 @@ enum SemanticPaletteFactory {
             h: lch.h
         )
         return OKColor.okLCHToNSColor(crushed, alpha: color.alphaComponent)
+    }
+
+    // MARK: - Phase 5 lyric colour palette
+
+    nonisolated static func lyricsPalette(
+        analysis: ArtworkColorAnalysis,
+        scheme: ColorScheme,
+        isFullscreenUltraDark: Bool
+    ) -> LyricsColorPalette {
+        let isDark = scheme == .dark
+        let windowActive = windowLyricActive(analysis: analysis, isDark: isDark)
+        let windowInactive = windowLyricInactive(analysis: analysis, isDark: isDark)
+        let fullscreenBase = fullscreenLyricBase(analysis: analysis)
+        let fullscreenInactiveBase = fullscreenLyricInactiveBase(analysis: analysis)
+        let fullscreen = fullscreenLyricsColorSet(
+            analysis: analysis,
+            scheme: scheme,
+            highlightBaseColor: fullscreenBase,
+            inactiveBaseColor: fullscreenInactiveBase,
+            isUltraDark: isFullscreenUltraDark
+        )
+        return LyricsColorPalette(
+            windowActive: windowActive,
+            windowInactive: windowInactive,
+            fullscreenBase: fullscreenBase,
+            fullscreenInactiveBase: fullscreenInactiveBase,
+            fullscreen: fullscreen
+        )
+    }
+
+    nonisolated static func fullscreenLyricsColorSet(
+        analysis: ArtworkColorAnalysis,
+        scheme: ColorScheme,
+        highlightBaseColor: NSColor,
+        inactiveBaseColor: NSColor,
+        isUltraDark: Bool
+    ) -> LyricsSurfaceColorSet {
+        let T = ColorSystemTokens.Lyrics.self
+        let highlightHSL = ColorMath.hsl(of: highlightBaseColor)
+        let inactiveHSL = ColorMath.hsl(of: inactiveBaseColor)
+        let isDark = scheme == .dark
+        let inactiveDarkModeShift: CGFloat = isDark ? T.fullscreenInactiveDarkModeShift : 0
+        let inactiveUltraDarkShift: CGFloat = isUltraDark
+            ? (isDark ? T.fullscreenInactiveUltraDarkShiftDark : T.fullscreenInactiveUltraDarkShiftLight)
+            : 0
+        let totalInactiveShift = inactiveDarkModeShift + inactiveUltraDarkShift
+        let activeLightnessShift: CGFloat = isUltraDark
+            ? (isDark ? T.fullscreenActiveUltraDarkShiftDark : T.fullscreenActiveUltraDarkShiftLight)
+            : (isDark ? T.fullscreenActiveDarkModeShift : 0)
+        let inactiveSaturationScale: CGFloat = isUltraDark
+            ? (isDark ? T.fullscreenInactiveUltraDarkSaturationScaleDark : T.fullscreenInactiveUltraDarkSaturationScaleLight)
+            : (isDark ? T.fullscreenInactiveSaturationScaleDark : T.fullscreenInactiveSaturationScaleLight)
+        let inactiveSaturationBias: CGFloat = isDark
+            ? T.fullscreenInactiveSaturationBiasDark
+            : T.fullscreenInactiveSaturationBiasLight
+        let tunedSaturation = ColorMath.clamp(
+            highlightHSL.s * T.fullscreenActiveSaturationScale + T.fullscreenActiveSaturationBias,
+            T.fullscreenSaturationFloor,
+            T.fullscreenSaturationCeiling
+        )
+        let baseLightness = ColorMath.clamp(
+            max(
+                inactiveHSL.l - T.fullscreenInactiveLightnessTrim - totalInactiveShift,
+                T.fullscreenMinimumBaseLightness - totalInactiveShift * T.fullscreenMinimumBaseShiftScale
+            ),
+            max(T.fullscreenBaseLightnessFloor, T.fullscreenMinimumBaseLightness - totalInactiveShift),
+            max(T.fullscreenBaseLightnessFallbackCeiling, T.fullscreenMaximumBaseLightness - totalInactiveShift * T.fullscreenMaximumBaseShiftScale)
+        )
+        let subActiveLightness = ColorMath.clamp(
+            max(
+                highlightHSL.l + T.fullscreenSubActiveLightnessLift - activeLightnessShift * T.fullscreenSubActiveShiftScale,
+                baseLightness + T.fullscreenSubActiveMinimumGap
+            ),
+            max(T.fullscreenSubActiveFloor, T.fullscreenMinimumSubActiveLightness - T.fullscreenSubActiveOffset - activeLightnessShift * T.fullscreenSubActiveMinimumShiftScale),
+            max(T.fullscreenSubActiveFallbackCeiling, T.fullscreenMaximumSubActiveLightness - T.fullscreenSubActiveOffset - activeLightnessShift * T.fullscreenSubActiveMaximumShiftScale)
+        )
+        let activeLightness = ColorMath.clamp(
+            max(
+                highlightHSL.l + T.fullscreenActiveLightnessLift - activeLightnessShift * T.fullscreenActiveShiftScale,
+                subActiveLightness + T.fullscreenActiveMinimumGap
+            ),
+            max(T.fullscreenActiveFloor, T.fullscreenMinimumMainActiveLightness - activeLightnessShift * T.fullscreenActiveMinimumShiftScale),
+            max(T.fullscreenActiveFallbackCeiling, T.fullscreenMaximumMainActiveLightness - activeLightnessShift * T.fullscreenActiveMaximumShiftScale)
+        )
+        let mainInactiveColor = ColorMath.color(
+            h: inactiveHSL.h,
+            s: ColorMath.clamp(inactiveHSL.s * inactiveSaturationScale + inactiveSaturationBias, 0, 1),
+            l: baseLightness
+        )
+        let lineTimingMainInactiveColor = ColorMath.color(
+            h: inactiveHSL.h,
+            s: ColorMath.clamp(
+                inactiveHSL.s * max(T.fullscreenLineTimingSaturationScaleFloor, inactiveSaturationScale - T.fullscreenLineTimingSaturationScaleTrim)
+                    + max(T.fullscreenLineTimingSaturationBiasFloor, inactiveSaturationBias - T.fullscreenLineTimingSaturationBiasTrim),
+                0,
+                1
+            ),
+            l: baseLightness
+        )
+        let subActiveColor = ColorMath.color(
+            h: highlightHSL.h,
+            s: ColorMath.clamp(tunedSaturation * T.fullscreenSubActiveSaturationScale, 0, 1),
+            l: subActiveLightness
+        )
+        let subInactiveColor = ColorMath.color(
+            h: inactiveHSL.h,
+            s: ColorMath.clamp(
+                inactiveHSL.s * max(T.fullscreenSubInactiveSaturationScaleFloor, inactiveSaturationScale - T.fullscreenSubInactiveSaturationScaleTrim)
+                    + max(T.fullscreenSubInactiveSaturationBiasFloor, inactiveSaturationBias - T.fullscreenSubInactiveSaturationBiasTrim),
+                0,
+                1
+            ),
+            l: baseLightness
+        )
+        let lineTimingSubInactiveColor = ColorMath.color(
+            h: inactiveHSL.h,
+            s: ColorMath.clamp(
+                inactiveHSL.s * max(T.fullscreenLineTimingSubSaturationScaleFloor, inactiveSaturationScale - T.fullscreenLineTimingSubSaturationScaleTrim)
+                    + max(T.fullscreenLineTimingSubSaturationBiasFloor, inactiveSaturationBias - T.fullscreenLineTimingSubSaturationBiasTrim),
+                0,
+                1
+            ),
+            l: baseLightness
+        )
+        let set = LyricsSurfaceColorSet(
+            mainActive: ColorMath.color(
+                h: highlightHSL.h,
+                s: ColorMath.clamp(tunedSaturation * T.fullscreenMainActiveSaturationScale + T.fullscreenMainActiveSaturationBias, 0, 1),
+                l: activeLightness
+            ),
+            mainInactive: mainInactiveColor,
+            lineTimingMainInactive: lineTimingMainInactiveColor,
+            subActive: subActiveColor,
+            subInactive: subInactiveColor,
+            lineTimingSubInactive: lineTimingSubInactiveColor
+        )
+        return neutraliseLyricsSurfaceIfNearMono(set, analysis: analysis)
+    }
+
+    nonisolated static func coverBlurLyricsColorSet(
+        analysis: ArtworkColorAnalysis,
+        themeColor: NSColor,
+        profile: LyricsCoverBlurBlendProfile
+    ) -> LyricsSurfaceColorSet {
+        let T = ColorSystemTokens.Lyrics.self
+        let themeHSL = ColorMath.hsl(of: themeColor)
+        let set: LyricsSurfaceColorSet
+
+        switch profile {
+        case .lighter:
+            let inputLightness = themeHSL.l
+            let isVeryDarkTheme = inputLightness < T.coverBlurLighterVeryDarkThreshold
+            let isVeryBrightButStillLighter = inputLightness > T.coverBlurLighterBrightThreshold
+            let activeSaturation: CGFloat
+            let activeLightness: CGFloat
+
+            if inputLightness >= T.coverBlurLighterBrightInputMin {
+                activeLightness = ColorMath.clamp(
+                    max(inputLightness + T.coverBlurLighterBrightActiveLift, T.coverBlurLighterBrightActiveMin),
+                    T.coverBlurLighterBrightActiveMin,
+                    T.coverBlurLighterBrightActiveMax
+                )
+                activeSaturation = ColorMath.clamp(
+                    themeHSL.s * T.coverBlurLighterBrightSaturationScale + T.coverBlurLighterBrightSaturationBias,
+                    T.coverBlurLighterBrightSaturationMin,
+                    T.coverBlurLighterBrightSaturationMax
+                )
+            } else if inputLightness >= T.coverBlurLighterMidInputMin {
+                activeLightness = ColorMath.clamp(
+                    max(inputLightness + T.coverBlurLighterMidActiveLift, T.coverBlurLighterMidActiveMin),
+                    T.coverBlurLighterMidActiveMin,
+                    T.coverBlurLighterMidActiveMax
+                )
+                activeSaturation = ColorMath.clamp(
+                    themeHSL.s * T.coverBlurLighterMidSaturationScale + T.coverBlurLighterMidSaturationBias,
+                    T.coverBlurLighterMidSaturationMin,
+                    T.coverBlurLighterMidSaturationMax
+                )
+            } else if inputLightness >= T.coverBlurLighterNeutralInputMin {
+                activeLightness = ColorMath.clamp(
+                    max(inputLightness + T.coverBlurLighterNeutralActiveLift, T.coverBlurLighterNeutralActiveMin),
+                    T.coverBlurLighterNeutralActiveMin,
+                    T.coverBlurLighterNeutralActiveMax
+                )
+                activeSaturation = ColorMath.clamp(
+                    themeHSL.s * T.coverBlurLighterNeutralSaturationScale + T.coverBlurLighterNeutralSaturationBias,
+                    T.coverBlurLighterNeutralSaturationMin,
+                    T.coverBlurLighterNeutralSaturationMax
+                )
+            } else {
+                activeLightness = ColorMath.clamp(
+                    max(inputLightness + T.coverBlurLighterDarkActiveLift, T.coverBlurLighterDarkActiveMin),
+                    T.coverBlurLighterDarkActiveMin,
+                    T.coverBlurLighterDarkActiveMax
+                )
+                activeSaturation = ColorMath.clamp(
+                    themeHSL.s * T.coverBlurLighterDarkSaturationScale + T.coverBlurLighterDarkSaturationBias,
+                    T.coverBlurLighterDarkSaturationMin,
+                    T.coverBlurLighterDarkSaturationMax
+                )
+            }
+
+            let veryDarkInactiveBoost: CGFloat = isVeryDarkTheme ? T.coverBlurLighterVeryDarkInactiveBoost : 0
+            let brightInactiveTrim: CGFloat = isVeryBrightButStillLighter ? T.coverBlurLighterBrightInactiveTrim : 0
+            let inactiveSaturation = ColorMath.clamp(
+                themeHSL.s * T.coverBlurLighterInactiveSaturationScale + T.coverBlurLighterInactiveSaturationBias,
+                T.coverBlurLighterInactiveSaturationMin,
+                T.coverBlurLighterInactiveSaturationMax
+            )
+            let subInactiveSaturation = ColorMath.clamp(
+                themeHSL.s * T.coverBlurLighterSubInactiveSaturationScale + T.coverBlurLighterSubInactiveSaturationBias,
+                T.coverBlurLighterSubInactiveSaturationMin,
+                T.coverBlurLighterSubInactiveSaturationMax
+            )
+            let baseLightness = ColorMath.clamp(
+                inputLightness * T.coverBlurLighterBaseInputScale
+                    + T.coverBlurLighterBaseBias
+                    + veryDarkInactiveBoost
+                    - brightInactiveTrim,
+                isVeryDarkTheme ? T.coverBlurLighterVeryDarkBaseMin : T.coverBlurLighterBaseMin,
+                T.coverBlurLighterBaseMax
+            )
+            let lineTimingBaseLightness = ColorMath.clamp(
+                baseLightness - (isVeryDarkTheme ? T.coverBlurLighterVeryDarkLineTimingTrim : T.coverBlurLighterLineTimingTrim),
+                isVeryDarkTheme ? T.coverBlurLighterVeryDarkLineTimingMin : T.coverBlurLighterLineTimingMin,
+                T.coverBlurLighterBaseMax
+            )
+            let subActiveLightness = ColorMath.clamp(
+                baseLightness + (isVeryDarkTheme ? T.coverBlurLighterVeryDarkSubActiveLift : T.coverBlurLighterSubActiveLift),
+                isVeryDarkTheme ? T.coverBlurLighterVeryDarkSubActiveMin : T.coverBlurLighterSubActiveMin,
+                T.coverBlurLighterSubActiveMax
+            )
+            set = LyricsSurfaceColorSet(
+                mainActive: ColorMath.color(h: themeHSL.h, s: activeSaturation, l: activeLightness),
+                mainInactive: ColorMath.color(h: themeHSL.h, s: inactiveSaturation, l: baseLightness),
+                lineTimingMainInactive: ColorMath.color(
+                    h: themeHSL.h,
+                    s: ColorMath.clamp(inactiveSaturation * T.coverBlurLighterLineTimingSaturationScale, 0.02, 0.24),
+                    l: lineTimingBaseLightness
+                ),
+                subActive: ColorMath.color(
+                    h: themeHSL.h,
+                    s: ColorMath.clamp(activeSaturation * T.coverBlurLighterSubActiveSaturationScale, 0.08, 0.52),
+                    l: subActiveLightness
+                ),
+                subInactive: ColorMath.color(
+                    h: themeHSL.h,
+                    s: subInactiveSaturation,
+                    l: ColorMath.clamp(baseLightness - T.coverBlurLighterSubInactiveLightnessTrim, isVeryDarkTheme ? 0.09 : 0.07, 0.18)
+                ),
+                lineTimingSubInactive: ColorMath.color(
+                    h: themeHSL.h,
+                    s: ColorMath.clamp(subInactiveSaturation * T.coverBlurLighterLineTimingSubSaturationScale, 0.02, 0.12),
+                    l: ColorMath.clamp(lineTimingBaseLightness - T.coverBlurLighterLineTimingSubLightnessTrim, isVeryDarkTheme ? 0.07 : 0.04, 0.14)
+                )
+            )
+        case .darker:
+            let highlightSaturation = ColorMath.clamp(
+                themeHSL.s * T.coverBlurDarkerHighlightSaturationScale + T.coverBlurDarkerHighlightSaturationBias,
+                T.coverBlurDarkerHighlightSaturationMin,
+                T.coverBlurDarkerHighlightSaturationMax
+            )
+            let inactiveSaturation = ColorMath.clamp(
+                themeHSL.s * T.coverBlurDarkerInactiveSaturationScale + T.coverBlurDarkerInactiveSaturationBias,
+                T.coverBlurDarkerInactiveSaturationMin,
+                T.coverBlurDarkerInactiveSaturationMax
+            )
+            let subInactiveSaturation = ColorMath.clamp(
+                inactiveSaturation * T.coverBlurDarkerSubInactiveSaturationScale,
+                T.coverBlurDarkerSubInactiveSaturationMin,
+                T.coverBlurDarkerSubInactiveSaturationMax
+            )
+            let baseLightness = ColorMath.clamp(
+                T.coverBlurDarkerBaseLightnessAnchor - (1 - themeHSL.l) * T.coverBlurDarkerBaseLightnessScale,
+                T.coverBlurDarkerBaseLightnessMin,
+                T.coverBlurDarkerBaseLightnessMax
+            )
+            let lineTimingBaseLightness = ColorMath.clamp(
+                baseLightness - T.coverBlurDarkerLineTimingTrim,
+                T.coverBlurDarkerLineTimingMin,
+                T.coverBlurDarkerLineTimingMax
+            )
+            let subActiveLightness = ColorMath.clamp(
+                baseLightness - T.coverBlurDarkerSubActiveTrim,
+                T.coverBlurDarkerSubActiveMin,
+                T.coverBlurDarkerSubActiveMax
+            )
+            let highlightLightness = ColorMath.clamp(
+                themeHSL.l * T.coverBlurDarkerHighlightLightnessScale + T.coverBlurDarkerHighlightLightnessBias,
+                T.coverBlurDarkerHighlightLightnessMin,
+                T.coverBlurDarkerHighlightLightnessMax
+            )
+            set = LyricsSurfaceColorSet(
+                mainActive: ColorMath.color(h: themeHSL.h, s: highlightSaturation, l: highlightLightness),
+                mainInactive: ColorMath.color(h: themeHSL.h, s: inactiveSaturation, l: baseLightness),
+                lineTimingMainInactive: ColorMath.color(
+                    h: themeHSL.h,
+                    s: ColorMath.clamp(inactiveSaturation * T.coverBlurDarkerLineTimingSaturationScale, 0.06, 0.30),
+                    l: lineTimingBaseLightness
+                ),
+                subActive: ColorMath.color(
+                    h: themeHSL.h,
+                    s: ColorMath.clamp(highlightSaturation * T.coverBlurDarkerSubActiveSaturationScale, 0.04, 0.18),
+                    l: subActiveLightness
+                ),
+                subInactive: ColorMath.color(
+                    h: themeHSL.h,
+                    s: subInactiveSaturation,
+                    l: ColorMath.clamp(baseLightness - T.coverBlurDarkerSubInactiveLightnessTrim, 0.74, 0.88)
+                ),
+                lineTimingSubInactive: ColorMath.color(
+                    h: themeHSL.h,
+                    s: ColorMath.clamp(subInactiveSaturation * T.coverBlurDarkerLineTimingSubSaturationScale, 0.01, 0.08),
+                    l: ColorMath.clamp(lineTimingBaseLightness - T.coverBlurDarkerLineTimingSubLightnessTrim, 0.68, 0.82)
+                )
+            )
+        }
+
+        return neutraliseLyricsSurfaceIfNearMono(set, analysis: analysis)
+    }
+
+    nonisolated private static func neutraliseLyricsSurfaceIfNearMono(
+        _ set: LyricsSurfaceColorSet,
+        analysis: ArtworkColorAnalysis
+    ) -> LyricsSurfaceColorSet {
+        guard analysis.isNearMonochrome else { return set }
+        return LyricsSurfaceColorSet(
+            mainActive: neutraliseLyricIfNearMono(set.mainActive, analysis: analysis),
+            mainInactive: neutraliseLyricIfNearMono(set.mainInactive, analysis: analysis),
+            lineTimingMainInactive: neutraliseLyricIfNearMono(set.lineTimingMainInactive, analysis: analysis),
+            subActive: neutraliseLyricIfNearMono(set.subActive, analysis: analysis),
+            subInactive: neutraliseLyricIfNearMono(set.subInactive, analysis: analysis),
+            lineTimingSubInactive: neutraliseLyricIfNearMono(set.lineTimingSubInactive, analysis: analysis)
+        )
+    }
+
+    nonisolated private static func neutraliseLyricIfNearMono(
+        _ color: NSColor,
+        analysis: ArtworkColorAnalysis
+    ) -> NSColor {
+        guard analysis.isNearMonochrome else { return color }
+        guard let lch = OKColor.nsColorToOKLCH(color) else { return color }
+        return OKColor.okLCHToNSColor(
+            OKColor.OKLCH(
+                l: lch.l,
+                c: Swift.min(lch.c, ColorSystemTokens.Lyrics.nearMonoChromaCeiling),
+                h: lch.h
+            ),
+            alpha: color.alphaComponent
+        )
     }
 
     // MARK: - Role derivations (Phase 2 placeholders)
@@ -680,14 +1073,17 @@ enum SemanticPaletteFactory {
         )
     }
 
-    fileprivate static func windowLyricActive(
+    nonisolated fileprivate static func windowLyricActive(
         analysis: ArtworkColorAnalysis,
         isDark: Bool
     ) -> NSColor {
-        ArtworkColorExtractor.adjustedAccent(from: analysis.averageColor, isDarkMode: isDark)
+        neutraliseLyricIfNearMono(
+            ArtworkColorExtractor.adjustedAccent(from: analysis.averageColor, isDarkMode: isDark),
+            analysis: analysis
+        )
     }
 
-    fileprivate static func windowLyricInactive(
+    nonisolated fileprivate static func windowLyricInactive(
         analysis: ArtworkColorAnalysis,
         isDark: Bool
     ) -> NSColor {
@@ -695,9 +1091,12 @@ enum SemanticPaletteFactory {
             .withAlphaComponent(ColorSystemTokens.WindowLyric.inactiveAlpha)
     }
 
-    fileprivate static func fullscreenLyricBase(analysis: ArtworkColorAnalysis) -> NSColor {
+    nonisolated fileprivate static func fullscreenLyricBase(analysis: ArtworkColorAnalysis) -> NSColor {
         // High colorfulness + clear hue dominance → use the dominant cover hue.
         // Otherwise fall back to the best text source colour (already mid-tone, hue-rich).
+        if analysis.isNearMonochrome {
+            return neutraliseLyricIfNearMono(analysis.bestTextSourceColor, analysis: analysis)
+        }
         if analysis.colorfulness >= ColorSystemTokens.FullscreenLyric.usesDominantColorfulnessMin
            && analysis.dominantHueConfidence
                 >= ColorSystemTokens.FullscreenLyric.usesDominantHueConfidenceMin {
@@ -706,10 +1105,10 @@ enum SemanticPaletteFactory {
         return analysis.bestTextSourceColor
     }
 
-    fileprivate static func fullscreenLyricInactiveBase(analysis: ArtworkColorAnalysis) -> NSColor {
+    nonisolated fileprivate static func fullscreenLyricInactiveBase(analysis: ArtworkColorAnalysis) -> NSColor {
         // Inactive uses the average colour — more stable than dominantColor on
         // covers with strong but small high-saturation regions.
-        analysis.averageColor
+        neutraliseLyricIfNearMono(analysis.averageColor, analysis: analysis)
     }
 
     fileprivate static func coverGradientDominant(
@@ -793,6 +1192,46 @@ nonisolated enum SemanticPaletteSelfCheck {
             analysis: analysis,
             globalAccent: globalAccent,
             isDark: isDark
+        )
+    }
+
+    nonisolated static func lyricsPalette(
+        analysis: ArtworkColorAnalysis,
+        scheme: ColorScheme,
+        isFullscreenUltraDark: Bool = false
+    ) -> LyricsColorPalette {
+        SemanticPaletteFactory.lyricsPalette(
+            analysis: analysis,
+            scheme: scheme,
+            isFullscreenUltraDark: isFullscreenUltraDark
+        )
+    }
+
+    nonisolated static func fullscreenLyricsColorSet(
+        analysis: ArtworkColorAnalysis,
+        scheme: ColorScheme,
+        highlightBaseColor: NSColor,
+        inactiveBaseColor: NSColor,
+        isUltraDark: Bool = false
+    ) -> LyricsSurfaceColorSet {
+        SemanticPaletteFactory.fullscreenLyricsColorSet(
+            analysis: analysis,
+            scheme: scheme,
+            highlightBaseColor: highlightBaseColor,
+            inactiveBaseColor: inactiveBaseColor,
+            isUltraDark: isUltraDark
+        )
+    }
+
+    nonisolated static func coverBlurLyricsColorSet(
+        analysis: ArtworkColorAnalysis,
+        themeColor: NSColor,
+        profile: LyricsCoverBlurBlendProfile
+    ) -> LyricsSurfaceColorSet {
+        SemanticPaletteFactory.coverBlurLyricsColorSet(
+            analysis: analysis,
+            themeColor: themeColor,
+            profile: profile
         )
     }
 }

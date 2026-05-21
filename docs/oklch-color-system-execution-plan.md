@@ -133,18 +133,19 @@ Phase 4.5 应包含：
 
 ### Phase 5 — 歌词颜色体系收敛
 
-- **Swift 侧歌词颜色决策集中**：把 `windowLyricActive` / `windowLyricInactive` / `fullscreenLyricBase` / `fullscreenLyricInactiveBase` 的决策路径正式整合到 `SemanticPalette`，减少 ThemeStore 与 LyricsWebViewStore 双写。
-- **不同 fullscreen skin 分策略**：cover gradient blur 与其他 skin 在歌词色策略上的差异显式化。
-- **glow / layer 策略整理**：halo / shadow / mix-blend-mode 这些 layer 从混杂的 CSS var 改为明确的语义层。
-- **【接力自 Phase 3 回修】近黑白 artwork 下窗口 / 全屏歌词不应偏粉**。Phase 5 集中决策时，**near-mono 中性化作为显式规则**进入统一函数：`analysis.isNearMonochrome == true` → 歌词所有可见色 OKLCH `chroma ≤ 0.005`，仅靠 L 与 alpha 体现层级。**两端同步验收**：窗口歌词与全屏歌词必须同一决策函数生效，避免单端修复造成视觉割裂。参见 `oklch-color-system-migration-log.md` §3.12 Issue B。
+- [x] **Swift 侧歌词颜色决策集中**：`SemanticPalette.lyrics` / `LyricsColorPalette` 统一输出窗口歌词、全屏歌词与 cover blur 歌词色；`ThemeStore` 与 `FullscreenPlayerView` 不再各自重做 nearMono / HSL 决策。
+- [x] **不同 fullscreen skin 分策略**：普通 fullscreen 与艺术背景走 `fullscreenLyricsColorSet`；Apple / Cover Gradient cover blur 走 `coverBlurLyricsColorSet`，保留 lighter / darker profile 与 opacity 层级。
+- [x] **nearMono 歌词偏粉修复**：`analysis.isNearMonochrome == true` 时，歌词可见色经 OKLCH 中性化，SelfCheck 锁定窗口 / 全屏 / cover blur chroma ≤ 0.005。
+- [x] **Swift → Web 契约收敛**：Swift 明确下发 active / inactive / sub / line-timing 颜色；Web 层只保留渲染、opacity、blend、shadow structure 与向后兼容 fallback。
 
-退出条件：歌词颜色完全由 Swift 决策，CSS 层只剩"渲染"角色，无颜色决策残留；且近黑白封面下窗口 / 全屏歌词都不再偏粉。
+退出状态（2026-05-21）：Phase 5 主体完成。剩余不在本轮强做：艺术背景 skin 的不透明 Tone Ladder、glow token 更细粒度语义化、Web fallback 进一步瘦身。
 
 ### Phase 6 — Tone Ladder 与 LED / 艺术歌词层级深化
 
 - Tone Ladder 正式作为系统级颜色派生方法。
 - LED Meter 不再"按 brightness levels 切分"而是按 Tone Ladder 取等距点。
 - 艺术歌词分层（前景 / 高光 / 阴影）按 Tone Ladder 重排。
+- 接力自 Phase 5：艺术背景类 fullscreen lyrics 不应长期依赖 opacity 表示层级，应把 active / inactive / secondary / glow 收敛为更不透明的 OKLCH 明度 / 彩度梯级；cover blur 与 Apple 类皮肤可继续保留 opacity profile。
 
 退出条件：LED / 歌词的明度层级在 OKLCH 空间下是等距的，而不是当前 HSB 下肉眼接近等距的近似。
 
