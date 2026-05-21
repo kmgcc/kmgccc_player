@@ -135,10 +135,11 @@ Phase 4.5 应包含：
 
 - [x] **Swift 侧歌词颜色决策集中**：`SemanticPalette.lyrics` / `LyricsColorPalette` 统一输出窗口歌词、全屏歌词与 cover blur 歌词色；`ThemeStore` 与 `FullscreenPlayerView` 不再各自重做 nearMono / HSL 决策。
 - [x] **不同 fullscreen skin 分策略**：普通 fullscreen 与艺术背景走 `fullscreenLyricsColorSet`；Apple / Cover Gradient cover blur 走 `coverBlurLyricsColorSet`，保留 lighter / darker profile 与 opacity 层级。
-- [x] **nearMono 歌词偏粉修复**：`analysis.isNearMonochrome == true` 时，歌词可见色经 OKLCH 中性化，SelfCheck 锁定窗口 / 全屏 / cover blur chroma ≤ 0.005。
-- [x] **Swift → Web 契约收敛**：Swift 明确下发 active / inactive / sub / line-timing 颜色；Web 层只保留渲染、opacity、blend、shadow structure 与向后兼容 fallback。
+- [x] **nearMono lyrics neutralization**：`analysis.isNearMonochrome == true` 时，歌词可见色经 OKLCH 中性化，SelfCheck 锁定窗口 / 全屏 / cover blur OKLCH chroma ≤ 0.005。
+- [x] **Swift-owned lyrics color contract**：Swift 明确下发 active / inactive / sub / line-timing / cover blur surface colors；Web rendering-only / adapter contract 只保留渲染、opacity、blend、shadow structure 与向后兼容 fallback。
+- [x] **AMLL adapter contract**：`syncFullscreenDerivedColors()` 必须优先使用 Swift 显式颜色，缺失时才 fallback 派生；后续 AMLL adapter 或 bundle 升级必须同步更新 AMLL 文档，不得把 hue 决策搬回 Web/CSS。
 
-退出状态（2026-05-21）：Phase 5 主体完成。剩余不在本轮强做：艺术背景 skin 的不透明 Tone Ladder、glow token 更细粒度语义化、Web fallback 进一步瘦身。
+退出状态（2026-05-21）：Phase 5 主体完成。已完成规范 / 后续维护规则：歌词颜色决策归 Swift；nearMono visible lyrics colors OKLCH chroma ≤ 0.005；AMLL Web 层只负责渲染结构与兼容 fallback；任何 AMLL adapter 修改必须同步 implementation log 与 patch registry。剩余不在本轮强做：艺术背景 skin 的不透明 Tone Ladder、glow token 更细粒度语义化、Web fallback 进一步瘦身。
 
 ### Phase 6 — Tone Ladder 与 LED / 艺术歌词层级深化
 
@@ -146,6 +147,7 @@ Phase 4.5 应包含：
 - LED Meter 不再"按 brightness levels 切分"而是按 Tone Ladder 取等距点。
 - 艺术歌词分层（前景 / 高光 / 阴影）按 Tone Ladder 重排。
 - 接力自 Phase 5：艺术背景类 fullscreen lyrics 不应长期依赖 opacity 表示层级，应把 active / inactive / secondary / glow 收敛为更不透明的 OKLCH 明度 / 彩度梯级；cover blur 与 Apple 类皮肤可继续保留 opacity profile。
+- 接力自 Phase 5：Phase 6 不得重新把歌词颜色决策散回 Web；Tone Ladder 只能替换 Swift 侧 `LyricsSurfaceColorSet` 的派生策略，Web 继续遵守 rendering-only / adapter contract。
 
 退出条件：LED / 歌词的明度层级在 OKLCH 空间下是等距的，而不是当前 HSB 下肉眼接近等距的近似。
 
