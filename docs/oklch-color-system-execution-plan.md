@@ -1,10 +1,12 @@
 # OKLCH 颜色系统重构 — 总执行计划
 
 > 本文档是 `docs/oklch-migration-color-system-investigation.md`（R1–R4 最终调查报告）的施工面落地版本。\
+> \
 > 报告负责"为什么"和"现状如何"；本文件只负责"按什么顺序施工 / 每一步的边界 / 验收标准"。\
+> \
 > 真实改动日志请记到 `docs/oklch-color-system-migration-log.md`。
 
----
+***
 
 ## 1. 总体目标
 
@@ -24,7 +26,7 @@
 - 不在阶段边界以外重排 UI 视觉口径；
 - 每一阶段完成后更新 `docs/oklch-color-system-migration-log.md`。
 
----
+***
 
 ## 2. 阶段划分
 
@@ -81,13 +83,13 @@
 
 建立面向普通 App UI（非 artwork 压字场景）的前景色角色体系：
 
-| 角色 | 视觉目标 |
-| --- | --- |
-| `foregroundPrimary` | 主文字，视觉近似"亮白 / 深黑"，细看带极低 chroma 主题色 |
-| `foregroundSecondary` | 次级文字，视觉近似"浅灰 / 深灰" |
-| `foregroundTertiary` | 三级文字、辅助说明 |
-| `foregroundQuaternary` | 四级，非常弱的 hint / 占位符 |
-| `foregroundDisabled` | 禁用状态 |
+| 角色                     | 视觉目标                               |
+| ---------------------- | ---------------------------------- |
+| `foregroundPrimary`    | 主文字，视觉近似"亮白 / 深黑"，细看带极低 chroma 主题色 |
+| `foregroundSecondary`  | 次级文字，视觉近似"浅灰 / 深灰"                 |
+| `foregroundTertiary`   | 三级文字、辅助说明                          |
+| `foregroundQuaternary` | 四级，非常弱的 hint / 占位符                 |
+| `foregroundDisabled`   | 禁用状态                               |
 
 #### 设计原则
 
@@ -129,7 +131,7 @@ Phase 4.5 应包含：
 - [ ] 第三批（待）：AllAlbumsView / AllArtistsView / BatchTrackEditSheet / LDDCSearchSection / AppKit Toolbar 图标；
 - [ ] 视觉在多种 artwork 下实机确认（需运行 App 手测）。
 
----
+***
 
 ### Phase 5 — 歌词颜色体系收敛
 
@@ -159,7 +161,7 @@ Phase 4.5 应包含：
 
 退出条件：搜索"`.usingColorSpace(.deviceRGB)` + 手算 HSL"应只剩调试 / 日志路径；UI 路径全部通过 OKLCH token。
 
----
+***
 
 ## 3. Phase 0 详细执行表
 
@@ -179,69 +181,69 @@ Phase 4.5 应包含：
 
 ### 0.1 修复 `ArtworkAssetStore` 缓存版本号漏洞
 
-| 字段       | 内容                                                                                                                                                                                                                                                                                                                                                            |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 字段       | 内容                                                                                                                                                                                                                                                                                                                                                        |
+| -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 问题       | `ArtworkAssetStore` 的 in-memory snapshot 缓存 key 是 `"\(trackID.uuidString)-\(artworkChecksum)"`，**不包含颜色提取算法版本号**。`ThemeStore` 自己的 `dominantColorCache` 已经按 `colorExtractionCacheVersion` 命名，但走 `ArtworkAssetStore` 的路径绕过了这道防线。当颜色算法升级时（比如这次 R4 之后任何一次对 `analyze` 的修改），旧 snapshot 中的 `accentColor` / `dominantColor` / `palette` / `averageColor` 仍会被新逻辑读取。 |
-| 根因       | `ArtworkAssetSnapshot.cacheKey`（`Models/ArtworkAssetSnapshot.swift:24`）以及 `ArtworkAssetStore.get(trackID:artworkChecksum:)` 的 key 都没把算法版本绑进 key 域。                                                                                                                                                                                                            |
-| 修复目标     | 让 `colorExtractionCacheVersion` 成为 snapshot 缓存命中条件的一部分。算法版本一变，旧 snapshot 自动失效，**新 snapshot 仍能写入并复用**。                                                                                                                                                                                                                                                       |
-| 预计涉及文件   | `myPlayer2/Models/ArtworkAssetSnapshot.swift`、`myPlayer2/Services/Artwork/ArtworkAssetStore.swift`、`myPlayer2/Services/Theme/ThemeStore.swift`（共享版本号常量）。                                                                                                                                                                                                       |
-| 非目标      | 不重构 `ArtworkAssetStore` 的 actor 结构；不引入持久化缓存；不动 `LibraryDetailHeaderView` / `HomeHero` 各自的本地缓存键。                                                                                                                                                                                                                                                            |
-| 验收标准     | (1) 算法版本字符串变更后，`get(trackID:artworkChecksum:)` 无法命中旧 entry；(2) 同版本下新 entry 仍能正常 cache / hit；(3) 不引入额外的 race（in-progress 合并仍工作）；(4) 不破坏现有异步取色 / hydration 路径。                                                                                                                                                                                            |
+| 根因       | `ArtworkAssetSnapshot.cacheKey`（`Models/ArtworkAssetSnapshot.swift:24`）以及 `ArtworkAssetStore.get(trackID:artworkChecksum:)` 的 key 都没把算法版本绑进 key 域。                                                                                                                                                                                                        |
+| 修复目标     | 让 `colorExtractionCacheVersion` 成为 snapshot 缓存命中条件的一部分。算法版本一变，旧 snapshot 自动失效，**新 snapshot 仍能写入并复用**。                                                                                                                                                                                                                                                     |
+| 预计涉及文件   | `myPlayer2/Models/ArtworkAssetSnapshot.swift`、`myPlayer2/Services/Artwork/ArtworkAssetStore.swift`、`myPlayer2/Services/Theme/ThemeStore.swift`（共享版本号常量）。                                                                                                                                                                                                  |
+| 非目标      | 不重构 `ArtworkAssetStore` 的 actor 结构；不引入持久化缓存；不动 `LibraryDetailHeaderView` / `HomeHero` 各自的本地缓存键。                                                                                                                                                                                                                                                           |
+| 验收标准     | (1) 算法版本字符串变更后，`get(trackID:artworkChecksum:)` 无法命中旧 entry；(2) 同版本下新 entry 仍能正常 cache / hit；(3) 不引入额外的 race（in-progress 合并仍工作）；(4) 不破坏现有异步取色 / hydration 路径。                                                                                                                                                                                              |
 | 实现选择（备注） | 把 `colorExtractionCacheVersion` 抽到一个 module-level 静态常量（或 `ArtworkColorExtractor` 的 nonisolated static），然后在 `ArtworkAssetSnapshot.cacheKey` 上拼接前缀。理由：单点修改、所有 cache 自动跟随、零额外字段开销。**不**选"snapshot 内嵌 cacheVersion 字段"路线，那个方案要求每个 reader 主动校验，容易漏。                                                                                                            |
 
 ### 0.2 清理歌词 Swift → Web 颜色死字段
 
-| 字段     | 内容                                                                                                                                                                                                                                                                                                                                |
-| ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 字段     | 内容                                                                                                                                                                                                                                                                                                                                                         |
+| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 问题     | 报告 R3 J.1 / R4 J.1.c 已确认：CSS 变量 `--amll-bg` / `--amll-accent` / `--amll-shadow` 在 `index.html`、`style.css`、`amll-core.js`、`amll-lyric.js`、`lyrics-renderer.js` 里**全部 0 消费**。`config.shadowColor` JSON 字段是经 A/B 测试明确弃用（`index.html:5383-5392` 只剩 `textShadow = "none"` 的善后分支）。`ThemePalette.shadow` 与 `ThemePalette.accent` 字段在 Swift 侧除"把它写给 web"以外无任何消费者。 |
-| 根因     | 历史上歌词 web 层还有完整的"主题色"契约；新版 AMLL 渲染器改用 `--amll-active` / `--amll-inactive` / `--amll-lp-color` 后，旧契约一直没清。                                                                                                                                                                                                                          |
-| 修复目标   | 把"无人消费 / 已弃用"字段彻底从类型 → 序列化 → JS 注入三层移除：① `ThemePalette.shadow` 字段；② `ThemePalette.accent` 字段；③ `applyEffectiveTheme` 中的 `--amll-bg` / `--amll-accent` / `--amll-shadow` CSS 注入；④ `config.shadowColor` JSON 字段；⑤ `index.html` 中 `hasOwn("shadowColor")` 善后分支（在 4 完成后永远不会触发）。                                                          |
-| 预计涉及文件 | `myPlayer2/Services/Theme/ThemeStore.swift`、`myPlayer2/Services/Lyrics/LyricsWebViewStore.swift`、`myPlayer2/Resources/AMLL/index.html`。                                                                                                                                                                                            |
-| 非目标    | 不动 `--amll-active` / `--amll-inactive` / `--amll-lp-color`（仍是 live 契约）；不动 `--amll-text` CSS 变量（虽然当前 0 消费，但不在用户明确清理列表里，留给后续阶段评估）；不动 `palette.background` Swift 字段（被 `ThemeStore.backgroundColor` → `LyricsPanelView` 消费）；不改歌词实际视觉。                                                                                                  |
-| 验收标准   | (1) 项目内搜索 `ThemePalette.shadow` / `palette.shadow` / `palette.accent` / `palette?.accent` / `palette?.shadow` 应无残留；(2) 项目内搜索 `--amll-shadow` / `--amll-bg` / `--amll-accent` 应无残留（除已注释的死代码或.bak2 备份）；(3) `index.html` 内 `hasOwn("shadowColor")` 分支已移除；(4) 构建通过；(5) 歌词主面板与全屏歌词的 active / inactive 颜色保持不变。                          |
+| 根因     | 历史上歌词 web 层还有完整的"主题色"契约；新版 AMLL 渲染器改用 `--amll-active` / `--amll-inactive` / `--amll-lp-color` 后，旧契约一直没清。                                                                                                                                                                                                                                                   |
+| 修复目标   | 把"无人消费 / 已弃用"字段彻底从类型 → 序列化 → JS 注入三层移除：① `ThemePalette.shadow` 字段；② `ThemePalette.accent` 字段；③ `applyEffectiveTheme` 中的 `--amll-bg` / `--amll-accent` / `--amll-shadow` CSS 注入；④ `config.shadowColor` JSON 字段；⑤ `index.html` 中 `hasOwn("shadowColor")` 善后分支（在 4 完成后永远不会触发）。                                                                                |
+| 预计涉及文件 | `myPlayer2/Services/Theme/ThemeStore.swift`、`myPlayer2/Services/Lyrics/LyricsWebViewStore.swift`、`myPlayer2/Resources/AMLL/index.html`。                                                                                                                                                                                                                    |
+| 非目标    | 不动 `--amll-active` / `--amll-inactive` / `--amll-lp-color`（仍是 live 契约）；不动 `--amll-text` CSS 变量（虽然当前 0 消费，但不在用户明确清理列表里，留给后续阶段评估）；不动 `palette.background` Swift 字段（被 `ThemeStore.backgroundColor` → `LyricsPanelView` 消费）；不改歌词实际视觉。                                                                                                                          |
+| 验收标准   | (1) 项目内搜索 `ThemePalette.shadow` / `palette.shadow` / `palette.accent` / `palette?.accent` / `palette?.shadow` 应无残留；(2) 项目内搜索 `--amll-shadow` / `--amll-bg` / `--amll-accent` 应无残留（除已注释的死代码或.bak2 备份）；(3) `index.html` 内 `hasOwn("shadowColor")` 分支已移除；(4) 构建通过；(5) 歌词主面板与全屏歌词的 active / inactive 颜色保持不变。                                                   |
 
 ### 0.3 统一 `MiniPlayerSpectrumView` fallback
 
-| 字段     | 内容                                                                                                                                                                                                                                                                                                              |
-| ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 问题     | `MiniPlayerSpectrumView.resolveStaticAccent` 在 `accentColor == nil` 或无法转 RGB 时降到 `NSColor(white: 0.7, alpha: 1.0)`，与全局默认 accent `#E6C799`（`AppSettings.shared.accentColorHex` / `ThemeStore.defaultBlueNS`）口径不一致。                                                                                            |
-| 根因     | 局部硬编码，没复用项目已有的默认 accent。                                                                                                                                                                                                                                                                                       |
-| 修复目标   | fallback 改读项目级默认 accent（来源优先级 `ThemeStore.shared.defaultBlue` → `AppSettings.shared.accentColor`），避免再造第三套常量。                                                                                                                                                                                                  |
-| 预计涉及文件 | `myPlayer2/Views/Fullscreen/MiniPlayerSpectrumView.swift`。                                                                                                                                                                                                                                                      |
-| 非目标    | 不改 `resolveArtworkFaithfulColors` 内部的 tuning；不改 `adjustedSpectrumBase` 的 saturation / brightness 曲线；不改正常路径下从父视图传入 accent 的行为。                                                                                                                                                                                   |
-| 验收标准   | (1) 显式传入 accent 的路径保持原本行为；(2) 不传 accent / accent 无法转 RGB 时，spectrum 颜色基线为 `#E6C799` 而非中性灰；(3) 不引入新的 module-level 常量。                                                                                                                                                                                            |
+| 字段     | 内容                                                                                                                                                                                                                |
+| ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 问题     | `MiniPlayerSpectrumView.resolveStaticAccent` 在 `accentColor == nil` 或无法转 RGB 时降到 `NSColor(white: 0.7, alpha: 1.0)`，与全局默认 accent `#E6C799`（`AppSettings.shared.accentColorHex` / `ThemeStore.defaultBlueNS`）口径不一致。 |
+| 根因     | 局部硬编码，没复用项目已有的默认 accent。                                                                                                                                                                                          |
+| 修复目标   | fallback 改读项目级默认 accent（来源优先级 `ThemeStore.shared.defaultBlue` → `AppSettings.shared.accentColor`），避免再造第三套常量。                                                                                                      |
+| 预计涉及文件 | `myPlayer2/Views/Fullscreen/MiniPlayerSpectrumView.swift`。                                                                                                                                                        |
+| 非目标    | 不改 `resolveArtworkFaithfulColors` 内部的 tuning；不改 `adjustedSpectrumBase` 的 saturation / brightness 曲线；不改正常路径下从父视图传入 accent 的行为。                                                                                     |
+| 验收标准   | (1) 显式传入 accent 的路径保持原本行为；(2) 不传 accent / accent 无法转 RGB 时，spectrum 颜色基线为 `#E6C799` 而非中性灰；(3) 不引入新的 module-level 常量。                                                                                              |
 
 ### 0.4 修复 `ClassicLEDSkin` 固定黑阴影
 
-| 字段     | 内容                                                                                                                                                                                                                                                                  |
-| ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 问题     | 报告 C.4 "B 类潜在 bug"：`ClassicLEDSkin` 的封面阴影固定 `Color.black.opacity(0.35)`，浅色模式下偏重。                                                                                                                                                                                       |
-| 根因     | `.shadow(color: .black.opacity(0.35), radius: 20, x: 0, y: 10)`（`ClassicLEDSkin.swift:92`）不分支深浅模式。                                                                                                                                                                    |
-| 修复目标   | 阴影 opacity 按 `colorScheme` 分支：暗色保留 0.35（原始厚重感），浅色下沉到 0.18，避免在浅色封面下压抑过头。                                                                                                                                                                                                |
-| 预计涉及文件 | `myPlayer2/Skins/NowPlaying/ClassicLEDSkin.swift`。                                                                                                                                                                                                                    |
-| 非目标    | 不扩展成 LED 整体视觉重设；不动 radius / offset / 内部 `PillSpectrumView`；不引入按 artwork 派生的阴影色。                                                                                                                                                                                        |
-| 验收标准   | (1) 暗色模式阴影视觉与现状一致；(2) 浅色模式阴影明显减弱；(3) 仅修改阴影 opacity，不改其它参数。                                                                                                                                                                                                              |
+| 字段     | 内容                                                                                                 |
+| ------ | -------------------------------------------------------------------------------------------------- |
+| 问题     | 报告 C.4 "B 类潜在 bug"：`ClassicLEDSkin` 的封面阴影固定 `Color.black.opacity(0.35)`，浅色模式下偏重。                   |
+| 根因     | `.shadow(color: .black.opacity(0.35), radius: 20, x: 0, y: 10)`（`ClassicLEDSkin.swift:92`）不分支深浅模式。 |
+| 修复目标   | 阴影 opacity 按 `colorScheme` 分支：暗色保留 0.35（原始厚重感），浅色下沉到 0.18，避免在浅色封面下压抑过头。                            |
+| 预计涉及文件 | `myPlayer2/Skins/NowPlaying/ClassicLEDSkin.swift`。                                                 |
+| 非目标    | 不扩展成 LED 整体视觉重设；不动 radius / offset / 内部 `PillSpectrumView`；不引入按 artwork 派生的阴影色。                    |
+| 验收标准   | (1) 暗色模式阴影视觉与现状一致；(2) 浅色模式阴影明显减弱；(3) 仅修改阴影 opacity，不改其它参数。                                         |
 
 ### 0.5 修复 `FullscreenCoverGradientBlurSkin` 占位 icon 固定白色
 
-| 字段     | 内容                                                                                                                                                                                                                                                                                                                                                                                |
-| ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 字段     | 内容                                                                                                                                                                                                                                                                                    |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 问题     | 报告 C.4 "B 类潜在 bug" 标注 "FullscreenCoverGradient 箭头 `Color.white.opacity(0.5)`"。实际实现位于 `FullscreenCoverGradientBlurSkin.swift:186` 的 `CoverGradientBlurArtwork` 私有占位视图：当 `context.track?.artworkImage` 为 nil 时，绘制一个 `music.note` 占位 icon，固定 `.white.opacity(0.5)`。在浅色背景或亮 cover 下可读性不稳。 |
-| 根因     | 固定白色，不响应当前 `colorScheme` 或 artwork 可读性判定。                                                                                                                                                                                                                                                                                                                                          |
-| 修复目标   | icon 颜色改为跟随 `@Environment(\.colorScheme)`：暗色下保留白半透明，浅色下用 `.primary.opacity(0.45)`。复用 SwiftUI 现成的语义色，不为这一处单独造一个可读性判定。                                                                                                                                                                                                                                                              |
-| 预计涉及文件 | `myPlayer2/Skins/NowPlaying/FullscreenCoverGradientBlurSkin.swift`。                                                                                                                                                                                                                                                                                                               |
-| 非目标    | 不改 `CoverGradientBlurArtwork` 的 placeholder gradient / shadow / overlay 描边；不动 `makeArtwork` 返回 `EmptyView()` 的事实（这意味着 `CoverGradientBlurArtwork` 当前其实是 dead code，但该结论应交给后续 Phase 7 清理时再处理，本轮不删活路径之外的"似死非死"代码）。                                                                                                                                                                       |
-| 验收标准   | (1) 暗色模式占位 icon 视觉与现状一致；(2) 浅色模式占位 icon 不再是高对比白；(3) 编译通过。                                                                                                                                                                                                                                                                                                                            |
+| 根因     | 固定白色，不响应当前 `colorScheme` 或 artwork 可读性判定。                                                                                                                                                                                                                                             |
+| 修复目标   | icon 颜色改为跟随 `@Environment(\.colorScheme)`：暗色下保留白半透明，浅色下用 `.primary.opacity(0.45)`。复用 SwiftUI 现成的语义色，不为这一处单独造一个可读性判定。                                                                                                                                                                  |
+| 预计涉及文件 | `myPlayer2/Skins/NowPlaying/FullscreenCoverGradientBlurSkin.swift`。                                                                                                                                                                                                                   |
+| 非目标    | 不改 `CoverGradientBlurArtwork` 的 placeholder gradient / shadow / overlay 描边；不动 `makeArtwork` 返回 `EmptyView()` 的事实（这意味着 `CoverGradientBlurArtwork` 当前其实是 dead code，但该结论应交给后续 Phase 7 清理时再处理，本轮不删活路径之外的"似死非死"代码）。                                                                        |
+| 验收标准   | (1) 暗色模式占位 icon 视觉与现状一致；(2) 浅色模式占位 icon 不再是高对比白；(3) 编译通过。                                                                                                                                                                                                                             |
 
 ### 0.6 评估但**不**强制扩大：`MiniPlayerSpectrumView` 与 `LedMeterView` 的 colorScheme 响应方式
 
-| 字段     | 内容                                                                                                                                                                                                                                  |
-| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 问题     | `LedMeterView` 直接 `@Environment(\.colorScheme)`；`MiniPlayerSpectrumView` 走父视图传 `usesDarkForeground: Bool`。两条路径风格不一致。                                                                                                                |
-| 评估目标   | 判断是否有真实刷新遗漏。如果没有 → 本轮**不动**，只在 migration log 中登记为"后续架构一致性项"。                                                                                                                                                                       |
-| 验收     | 在 migration log 中给出结论。如果决定本轮改，仍要尊重边界（不破坏调用方传 accent 的路径）。                                                                                                                                                                          |
+| 字段   | 内容                                                                                                                   |
+| ---- | -------------------------------------------------------------------------------------------------------------------- |
+| 问题   | `LedMeterView` 直接 `@Environment(\.colorScheme)`；`MiniPlayerSpectrumView` 走父视图传 `usesDarkForeground: Bool`。两条路径风格不一致。 |
+| 评估目标 | 判断是否有真实刷新遗漏。如果没有 → 本轮**不动**，只在 migration log 中登记为"后续架构一致性项"。                                                         |
+| 验收   | 在 migration log 中给出结论。如果决定本轮改，仍要尊重边界（不破坏调用方传 accent 的路径）。                                                            |
 
----
+***
 
 ## 4. 退出 Phase 0 的条件
 

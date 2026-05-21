@@ -1,6 +1,5 @@
 //
 //  PlaybackCoordinator.swift
-//  myPlayer2
 //
 //  Source-aware playback command and presentation coordinator.
 //
