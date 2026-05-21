@@ -2,9 +2,8 @@
 //  LEDColorResolver.swift
 //  myPlayer2
 //
-//  LED-dedicated color resolver with dual-tone gradient, level-driven hue shift,
-//  adaptive light/dark, opaque Normal compositing.
-//  Internal color math uses OKLCH via OKColor utility.
+//  LED-dedicated color resolver with dual-tone gradient and Phase 6
+//  perceptual tone-ladder steps. Internal color math uses OKLCH via OKColor.
 //
 
 import AppKit
@@ -16,6 +15,9 @@ struct LEDColorResolver {
     let colorScheme: ColorScheme
     let brightnessLevels: Int
     let isEffectivelyMonochrome: Bool
+    private var isNearMonochrome: Bool {
+        palette?.analysis.isNearMonochrome ?? isEffectivelyMonochrome
+    }
 
     private var accentNS: NSColor {
         NSColor(accentColor)
@@ -282,22 +284,14 @@ struct LEDColorResolver {
               let edgeLCH = OKColor.nsColorToOKLCH(edgeColor) else {
             return centerColor
         }
-        let centerLab = OKColor.okLCHToOKLab(centerLCH)
-        let edgeLab = OKColor.okLCHToOKLab(edgeLCH)
         let center = Double(count - 1) / 2.0
         let distance = abs(Double(index) - center) / center
         let t = CGFloat(distance)
-        let oneMinusT = CGFloat(1.0) - t
-        let lerpedLab = OKColor.OKLab(
-            l: centerLab.l * oneMinusT + edgeLab.l * t,
-            a: centerLab.a * oneMinusT + edgeLab.a * t,
-            b: centerLab.b * oneMinusT + edgeLab.b * t
-        )
-        let lerpedLCH = OKColor.okLabToOKLCH(lerpedLab)
+        let lerpedLCH = OKColor.oklabLerp(centerLCH, edgeLCH, t: t)
         return OKColor.okLCHToNSColor(lerpedLCH, alpha: 1.0)
     }
 
-    // MARK: - Level-Driven Color (OKLCH)
+    // MARK: - Level-Driven Color (Tone Ladder)
 
     private func oklchColorForLevel(
         base baseNS: NSColor,
@@ -306,42 +300,15 @@ struct LEDColorResolver {
     ) -> NSColor {
         guard let baseLCH = OKColor.nsColorToOKLCH(baseNS) else { return baseNS }
         let maxLevel = max(1, brightnessLevels - 1)
-        let t = CGFloat(min(level, maxLevel)) / CGFloat(maxLevel)
-        let oneMinusT = 1.0 - t
-
-        let l: CGFloat
-        if colorScheme == .dark {
-            l = baseLCH.l - 0.020 * oneMinusT + 0.010 * t
-        } else {
-            l = baseLCH.l - 0.012 * oneMinusT + 0.008 * t
-        }
-
-        let c = baseLCH.c * (0.94 + 0.06 * t)
-
-        let h = ColorMath.normalizedHue(baseLCH.h + hueShift(baseLCH.h) * oneMinusT)
-
-        if isStroke {
-            let strokeL = l - (colorScheme == .dark ? 0.070 : 0.045)
-            let strokeC = c * 0.96
-            return OKColor.okLCHToNSColor(OKColor.OKLCH(l: strokeL, c: strokeC, h: h), alpha: 1.0)
-        }
-        return OKColor.okLCHToNSColor(OKColor.OKLCH(l: l, c: c, h: h), alpha: 1.0)
-    }
-
-    // Helper: returns max hue shift for a given hue (in normalized units, 0...1)
-    private func hueShift(_ h: CGFloat) -> CGFloat {
-        switch h {
-        case 0.0..<0.08, 0.92..<1.0: return +0.010
-        case 0.08..<0.20:             return -0.014
-        case 0.20..<0.25:             return -0.012
-        case 0.25..<0.42:             return +0.014
-        case 0.42..<0.52:             return +0.010
-        case 0.52..<0.65:             return +0.012
-        case 0.65..<0.75:             return +0.012
-        case 0.75..<0.85:             return -0.010
-        case 0.85..<0.92:             return -0.010
-        default:                      return 0
-        }
+        let tone = PerceptualToneLadder.ledTone(
+            base: baseLCH,
+            level: level,
+            maxLevel: maxLevel,
+            scheme: colorScheme,
+            isNearMonochrome: isNearMonochrome,
+            isStroke: isStroke
+        )
+        return OKColor.okLCHToNSColor(tone, alpha: 1.0)
     }
 
     // MARK: - Opacity (primary brightness control)

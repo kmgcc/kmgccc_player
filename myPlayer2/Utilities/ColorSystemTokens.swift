@@ -400,6 +400,73 @@ nonisolated enum ColorSystemTokens {
         static let coverBlurDarkerLineTimingSubLightnessTrim: CGFloat = 0.01
     }
 
+    // MARK: - ToneLadder (Phase 6)
+    //
+    // Shared OKLCH tone ladder used by surfaces that need perceptual colour
+    // steps rather than "same hue + opacity". The ladder is deliberately
+    // small: it owns tone roles and hue/chroma coupling, while each consumer
+    // still decides which seed colour is semantically appropriate.
+    //
+    // Key invariants:
+    //   - nearMono callers force chroma to the neutral ceiling; hue remains
+    //     numerically present but visually irrelevant.
+    //   - bright/highlight tones reduce chroma so they read as luminous paint,
+    //     not cheap neon.
+    //   - mid/dark tones can retain or slightly intensify chroma, then very
+    //     dark tones roll chroma off again to avoid dirty glowing edges.
+    //   - hue drift is small and hue-family-aware: warm shadows lean amber,
+    //     blue shadows lean indigo, greens avoid fluorescent lift.
+
+    enum ToneLadder {
+        static let nearMonoChromaCeiling: CGFloat = 0.004
+        static let nearMonoChromaAssertion: CGFloat = 0.005
+
+        // LED ladder: level 1 sits visibly lit but subdued; peak stays
+        // instrument-like. Opacity remains part of the physical LED glow, but
+        // these OKLCH targets now carry the perceived tone distance.
+        static let ledDarkMinL: CGFloat = 0.700
+        static let ledDarkPeakL: CGFloat = 0.890
+        static let ledLightMinL: CGFloat = 0.340
+        static let ledLightPeakL: CGFloat = 0.525
+        static let ledLowChromaScale: CGFloat = 0.74
+        static let ledMidChromaBoost: CGFloat = 1.12
+        static let ledPeakChromaScale: CGFloat = 1.02
+        static let ledNearMonoChromaCap: CGFloat = 0.006
+        static let ledColorfulMinimumChroma: CGFloat = 0.070
+        static let ledColorfulMinimumChromaAssertion: CGFloat = 0.058
+        static let ledPerceptualStepAssertion: CGFloat = 0.060
+        static let ledStrokeLightnessTrimDark: CGFloat = 0.070
+        static let ledStrokeLightnessTrimLight: CGFloat = 0.045
+        static let ledStrokeChromaScale: CGFloat = 0.92
+
+        // Artistic fullscreen lyrics. These are opaque surface colours sent
+        // through the Phase 5 Swift-owned contract; Web still handles blend,
+        // opacity, masks, and shadow structure only.
+        static let lyricsMainActiveL: CGFloat = 0.925
+        static let lyricsSubActiveL: CGFloat = 0.790
+        static let lyricsMainInactiveL: CGFloat = 0.545
+        static let lyricsLineTimingMainInactiveL: CGFloat = 0.485
+        static let lyricsSubInactiveL: CGFloat = 0.445
+        static let lyricsLineTimingSubInactiveL: CGFloat = 0.395
+
+        static let lyricsUltraDarkActiveTrim: CGFloat = 0.035
+        static let lyricsUltraDarkSubActiveTrim: CGFloat = 0.045
+        static let lyricsUltraDarkInactiveTrim: CGFloat = 0.080
+
+        static let lyricsMainActiveChromaScale: CGFloat = 0.78
+        static let lyricsSubActiveChromaScale: CGFloat = 0.60
+        static let lyricsMainInactiveChromaScale: CGFloat = 0.48
+        static let lyricsLineTimingMainInactiveChromaScale: CGFloat = 0.40
+        static let lyricsSubInactiveChromaScale: CGFloat = 0.34
+        static let lyricsLineTimingSubInactiveChromaScale: CGFloat = 0.28
+        static let lyricsColorfulMinimumChroma: CGFloat = 0.022
+        static let lyricsActiveInactiveLightnessGapAssertion: CGFloat = 0.25
+        static let lyricsSecondaryInactiveLightnessGapAssertion: CGFloat = 0.25
+
+        static let brightToneChromaShoulder: CGFloat = 0.018
+        static let shadowToneChromaShoulder: CGFloat = 0.022
+    }
+
     // MARK: - UltraDark profile (Phase 2)
     //
     // Tone / Darkness axis — describes "the cover is so dark we should

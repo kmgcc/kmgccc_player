@@ -3445,7 +3445,8 @@ struct FullscreenPlayerView: View {
             scheme: colorScheme,
             highlightBaseColor: resolveFullscreenLyricsBaseColor(forTrackID: trackID),
             inactiveBaseColor: resolveFullscreenLyricsInactiveBaseColor(forTrackID: trackID),
-            isUltraDark: lockedFullscreenLyricsUltraDark
+            isUltraDark: lockedFullscreenLyricsUltraDark,
+            usesArtisticBackground: settings.fullscreenArtBackgroundEnabled
         )
     }
 

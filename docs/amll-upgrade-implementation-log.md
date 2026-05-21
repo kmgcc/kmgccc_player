@@ -2,6 +2,37 @@
 
 本文记录新版 AMLL 接入过程中实际发生的问题、判断、修复和验证。迁移前审计与路线见 `docs/amll-upgrade-migration-audit.md`；长期自定义行为与 patch 维护清单见 `docs/amll-custom-behavior-and-patch-registry.md`。
 
+## 2026-05-21 App color contract extension — Artistic fullscreen lyrics Tone Ladder
+
+背景：
+
+- OKLCH Phase 6 在 Swift 色彩系统中新增 `PerceptualToneLadder`，并让艺术背景类 fullscreen lyrics 使用 OKLCH tone ladder 表达层级。
+- 这不是 AMLL bundle 升级，也没有修改 `Resources/AMLL/index.html`、`amll-core.js`、`amll-lyric.js` 或 generated CSS。
+- 改动点在 Swift 侧 `SemanticPaletteFactory.fullscreenLyricsColorSet(... usesArtisticBackground:)` 与 `FullscreenPlayerView` 的 fullscreen art background 判断。
+
+职责边界：
+
+- Swift 仍负责歌词语义色决策。Tone Ladder 只是在 Swift 侧深化 `LyricsSurfaceColorSet` 的生成策略。
+- AMLL Web 层继续只消费 Swift 下发的 explicit colors，并负责渲染、blend、opacity、shadow structure、mask 和 fallback。
+- Web 层不得因为 Tone Ladder 接入而重新选择 hue。
+
+策略：
+
+- `settings.fullscreenArtBackgroundEnabled == true` 时，普通 fullscreen lyrics 使用 Tone Ladder 输出 opaque active / inactive / secondary tiers。
+- Active / subActive 使用 highlight seed；inactive / line-timing / subInactive 使用 inactive/background seed，优先贴近 BKArt surface background。
+- Apple fullscreen 继续走 cover blur lighter profile；Cover Gradient Blur 继续走 cover blur lighter/darker profile，不接 Tone Ladder。
+
+nearMono：
+
+- 艺术 fullscreen lyrics Tone Ladder 输出仍执行 nearMono neutralization，visible lyrics colors OKLCH chroma ≤ 0.005。
+- LED Tone Ladder nearMono cap 为 OKLCH C≤0.006，避免低色封面下出现彩色噪声。
+
+验证：
+
+- Phase 6 `ColorSystemSelfCheck` 47/47 PASS。
+- 新增 cover blur profile separation 自检，确认 cover blur inactive L 与 artistic inactive L 仍分离。
+- Debug build succeeded：`xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player -configuration Debug -destination 'platform=macOS' build`。
+
 ## 2026-05-21 App adapter contract change — Swift-owned lyrics color contract
 
 背景：

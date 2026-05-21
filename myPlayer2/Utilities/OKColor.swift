@@ -12,6 +12,7 @@
 //
 
 import AppKit
+import SwiftUI
 
 nonisolated enum OKColor {
 
@@ -206,5 +207,235 @@ nonisolated enum OKColor {
 
     private static func clamp(_ value: CGFloat, _ lo: CGFloat, _ hi: CGFloat) -> CGFloat {
         Swift.min(hi, Swift.max(lo, value))
+    }
+}
+
+// MARK: - Phase 6 perceptual tone ladder
+
+/// Shared OKLCH tone ladder for colour roles that need perceptual distance
+/// and painterly hue/chroma coupling. It intentionally does not know about
+/// views, skins, or AMLL. Callers provide a semantic seed colour and a role;
+/// the ladder returns an opaque OKLCH tone.
+nonisolated enum PerceptualToneLadder {
+    enum LyricsRole: CaseIterable {
+        case mainActive
+        case subActive
+        case mainInactive
+        case lineTimingMainInactive
+        case subInactive
+        case lineTimingSubInactive
+    }
+
+    static func ledTone(
+        base: OKColor.OKLCH,
+        level: Int,
+        maxLevel: Int,
+        scheme: ColorScheme,
+        isNearMonochrome: Bool,
+        isStroke: Bool = false
+    ) -> OKColor.OKLCH {
+        let T = ColorSystemTokens.ToneLadder.self
+        let safeMax = max(1, maxLevel)
+        let rawT = ColorMath.clamp(CGFloat(min(max(level, 0), safeMax)) / CGFloat(safeMax), 0, 1)
+        let t = pow(rawT, 0.88)
+        let isDark = scheme == .dark
+        let lowL = isDark ? T.ledDarkMinL : T.ledLightMinL
+        let peakL = isDark ? T.ledDarkPeakL : T.ledLightPeakL
+
+        var l = lowL + (peakL - lowL) * t
+        let mid = sin(.pi * t)
+        let chromaScale = T.ledLowChromaScale * (1 - t)
+            + T.ledPeakChromaScale * t
+            + T.ledMidChromaBoost * mid * 0.18
+        var c = base.c * chromaScale
+        if isNearMonochrome {
+            c = min(c, T.ledNearMonoChromaCap)
+        } else {
+            c = max(c, min(T.ledColorfulMinimumChroma, hueChromaCap(base.h, role: .led, scheme: scheme)))
+            c = min(c, hueChromaCap(base.h, role: .led, scheme: scheme))
+        }
+
+        let shadowAmount = 1 - t
+        let highlightAmount = max(0, t - 0.70) / 0.30
+        var h = shiftedHue(
+            base.h,
+            shadowAmount: shadowAmount,
+            highlightAmount: highlightAmount,
+            intensity: .led
+        )
+
+        if isStroke {
+            l -= isDark ? T.ledStrokeLightnessTrimDark : T.ledStrokeLightnessTrimLight
+            c *= T.ledStrokeChromaScale
+            h = shiftedHue(h, shadowAmount: 0.25, highlightAmount: 0, intensity: .subtle)
+        }
+        return OKColor.OKLCH(l: l, c: c, h: OKColor.normalizedHue(h))
+    }
+
+    static func artisticLyricsTone(
+        base: OKColor.OKLCH,
+        role: LyricsRole,
+        isUltraDark: Bool,
+        isNearMonochrome: Bool
+    ) -> OKColor.OKLCH {
+        let T = ColorSystemTokens.ToneLadder.self
+        let targetL: CGFloat
+        let chromaScale: CGFloat
+        let shadowAmount: CGFloat
+        let highlightAmount: CGFloat
+
+        switch role {
+        case .mainActive:
+            targetL = T.lyricsMainActiveL - (isUltraDark ? T.lyricsUltraDarkActiveTrim : 0)
+            chromaScale = T.lyricsMainActiveChromaScale
+            shadowAmount = 0
+            highlightAmount = 0.75
+        case .subActive:
+            targetL = T.lyricsSubActiveL - (isUltraDark ? T.lyricsUltraDarkSubActiveTrim : 0)
+            chromaScale = T.lyricsSubActiveChromaScale
+            shadowAmount = 0.10
+            highlightAmount = 0.35
+        case .mainInactive:
+            targetL = T.lyricsMainInactiveL - (isUltraDark ? T.lyricsUltraDarkInactiveTrim : 0)
+            chromaScale = T.lyricsMainInactiveChromaScale
+            shadowAmount = 0.62
+            highlightAmount = 0
+        case .lineTimingMainInactive:
+            targetL = T.lyricsLineTimingMainInactiveL - (isUltraDark ? T.lyricsUltraDarkInactiveTrim : 0)
+            chromaScale = T.lyricsLineTimingMainInactiveChromaScale
+            shadowAmount = 0.75
+            highlightAmount = 0
+        case .subInactive:
+            targetL = T.lyricsSubInactiveL - (isUltraDark ? T.lyricsUltraDarkInactiveTrim : 0)
+            chromaScale = T.lyricsSubInactiveChromaScale
+            shadowAmount = 0.82
+            highlightAmount = 0
+        case .lineTimingSubInactive:
+            targetL = T.lyricsLineTimingSubInactiveL - (isUltraDark ? T.lyricsUltraDarkInactiveTrim : 0)
+            chromaScale = T.lyricsLineTimingSubInactiveChromaScale
+            shadowAmount = 0.92
+            highlightAmount = 0
+        }
+
+        var c: CGFloat
+        if isNearMonochrome {
+            c = min(base.c * chromaScale, T.nearMonoChromaCeiling)
+        } else {
+            let cap = hueChromaCap(base.h, role: .lyrics(role), scheme: .dark)
+            let floor = min(T.lyricsColorfulMinimumChroma, cap * 0.55)
+            c = ColorMath.clamp(base.c * chromaScale, floor, cap)
+            if targetL > 0.82 {
+                c = OKColor.chromaSoftShoulder(
+                    OKColor.OKLCH(l: targetL, c: c, h: base.h),
+                    ceiling: cap * 0.74,
+                    softness: T.brightToneChromaShoulder
+                ).c
+            } else if targetL < 0.46 {
+                c = OKColor.chromaSoftShoulder(
+                    OKColor.OKLCH(l: targetL, c: c, h: base.h),
+                    ceiling: cap * 0.62,
+                    softness: T.shadowToneChromaShoulder
+                ).c
+            }
+        }
+
+        let h = shiftedHue(
+            base.h,
+            shadowAmount: shadowAmount,
+            highlightAmount: highlightAmount,
+            intensity: .lyrics
+        )
+        return OKColor.OKLCH(l: targetL, c: c, h: OKColor.normalizedHue(h))
+    }
+
+    private enum HueIntensity {
+        case subtle
+        case led
+        case lyrics
+    }
+
+    private enum ToneRole {
+        case led
+        case lyrics(LyricsRole)
+    }
+
+    private static func shiftedHue(
+        _ h: CGFloat,
+        shadowAmount: CGFloat,
+        highlightAmount: CGFloat,
+        intensity: HueIntensity
+    ) -> CGFloat {
+        let scale: CGFloat
+        switch intensity {
+        case .subtle: scale = 0.55
+        case .led: scale = 0.85
+        case .lyrics: scale = 1.00
+        }
+        let shadow = familyShadowDrift(h) * shadowAmount * scale
+        let highlight = familyHighlightDrift(h) * highlightAmount * scale
+        return OKColor.normalizedHue(h + shadow + highlight)
+    }
+
+    private static func familyShadowDrift(_ h: CGFloat) -> CGFloat {
+        switch h {
+        case 0.00..<0.06, 0.94..<1.00: return 0.008   // red deepens toward ruby
+        case 0.06..<0.20:              return -0.014  // yellow/orange shadows warm to amber
+        case 0.20..<0.34:              return -0.010  // chartreuse avoids fluorescent green
+        case 0.34..<0.48:              return -0.006  // green shadows olive down
+        case 0.48..<0.62:              return 0.008   // cyan shadows toward blue
+        case 0.62..<0.76:              return 0.014   // blue shadows toward indigo
+        case 0.76..<0.92:              return -0.010  // violet shadows stay wine, not electric
+        default:                       return 0.006
+        }
+    }
+
+    private static func familyHighlightDrift(_ h: CGFloat) -> CGFloat {
+        switch h {
+        case 0.00..<0.06, 0.94..<1.00: return -0.004
+        case 0.06..<0.20:              return 0.004
+        case 0.20..<0.34:              return -0.004
+        case 0.34..<0.48:              return -0.003
+        case 0.48..<0.62:              return -0.004
+        case 0.62..<0.76:              return -0.006  // blue highlights avoid over-cold ice
+        case 0.76..<0.92:              return 0.004
+        default:                       return 0
+        }
+    }
+
+    private static func hueChromaCap(
+        _ h: CGFloat,
+        role: ToneRole,
+        scheme: ColorScheme
+    ) -> CGFloat {
+        let baseCap: CGFloat
+        switch h {
+        case 0.06..<0.20: baseCap = 0.090  // yellow/orange gets dirty quickly
+        case 0.20..<0.34: baseCap = 0.082  // chartreuse/green fluorescent risk
+        case 0.34..<0.48: baseCap = 0.095
+        case 0.48..<0.62: baseCap = 0.105
+        case 0.62..<0.76: baseCap = 0.118  // blue needs more C to feel alive
+        case 0.76..<0.92: baseCap = 0.104
+        default:          baseCap = 0.108
+        }
+
+        switch role {
+        case .led:
+            return scheme == .dark ? baseCap * 1.12 : baseCap * 0.95
+        case .lyrics(let lyricsRole):
+            switch lyricsRole {
+            case .mainActive:
+                return baseCap * 0.82
+            case .subActive:
+                return baseCap * 0.68
+            case .mainInactive:
+                return baseCap * 0.58
+            case .lineTimingMainInactive:
+                return baseCap * 0.50
+            case .subInactive:
+                return baseCap * 0.44
+            case .lineTimingSubInactive:
+                return baseCap * 0.38
+            }
+        }
     }
 }

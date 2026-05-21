@@ -143,13 +143,13 @@ Phase 4.5 应包含：
 
 ### Phase 6 — Tone Ladder 与 LED / 艺术歌词层级深化
 
-- Tone Ladder 正式作为系统级颜色派生方法。
-- LED Meter 不再"按 brightness levels 切分"而是按 Tone Ladder 取等距点。
-- 艺术歌词分层（前景 / 高光 / 阴影）按 Tone Ladder 重排。
-- 接力自 Phase 5：艺术背景类 fullscreen lyrics 不应长期依赖 opacity 表示层级，应把 active / inactive / secondary / glow 收敛为更不透明的 OKLCH 明度 / 彩度梯级；cover blur 与 Apple 类皮肤可继续保留 opacity profile。
-- 接力自 Phase 5：Phase 6 不得重新把歌词颜色决策散回 Web；Tone Ladder 只能替换 Swift 侧 `LyricsSurfaceColorSet` 的派生策略，Web 继续遵守 rendering-only / adapter contract。
+- [x] **Tone Ladder 正式作为系统级颜色派生方法**：`PerceptualToneLadder` 建立在 `OKColor` 之后、消费者之前；参数集中到 `ColorSystemTokens.ToneLadder`，负责 OKLCH L/C/H 联动、hue-family drift、nearMono 中性化 ceiling。
+- [x] **LED Meter 接入 Tone Ladder**：保留现有 LED 数量 / 中心向外亮起 / opacity glow 语义，但 lit level 色彩由 Tone Ladder 输出，不再用旧 level-driven HSB/OKLCH 微调；中间态有更明确的 OKLab 感知距离与 chroma 起伏。
+- [x] **艺术背景类 fullscreen lyrics 接入 Tone Ladder**：`settings.fullscreenArtBackgroundEnabled == true` 时，`SemanticPaletteFactory.fullscreenLyricsColorSet(...)` 使用 Tone Ladder 生成 opaque active / inactive / secondary tiers；Swift-owned lyrics color contract 保持有效。
+- [x] **Apple / Cover Gradient / Cover Blur 保持原 profile**：`coverBlurLyricsColorSet(...)` 未接 Tone Ladder；Apple fullscreen 继续走 cover blur lighter profile；Cover Gradient Blur 继续 lighter/darker blend profile。
+- [x] **nearMono 不倒退**：Tone Ladder lyrics 输出 OKLCH chroma ≤ 0.005；LED nearMono tone cap ≤ 0.006，避免黑白灰封面出现粉、蓝、黄伪 hue。
 
-退出条件：LED / 歌词的明度层级在 OKLCH 空间下是等距的，而不是当前 HSB 下肉眼接近等距的近似。
+退出状态（2026-05-21）：Phase 6 主体完成。SelfCheck 增至 47 项并覆盖 Tone Ladder 层级顺序、nearMono 中性、LED tone step 感知距离、彩色 LED 不过淡、艺术背景 fullscreen lyrics 层级、cover blur profile 分离。剩余不在本轮强做：glow/shadow 单独 Swift 语义 token、Apple / Cover Gradient 的极轻量 tone-ladder 评估、旧 HSL fullscreen fallback 清理。
 
 ### Phase 7 — 清理旧 HSL 分叉、文档收尾、回归验证
 

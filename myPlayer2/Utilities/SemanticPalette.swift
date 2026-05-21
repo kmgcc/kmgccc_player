@@ -497,8 +497,19 @@ enum SemanticPaletteFactory {
         scheme: ColorScheme,
         highlightBaseColor: NSColor,
         inactiveBaseColor: NSColor,
-        isUltraDark: Bool
+        isUltraDark: Bool,
+        usesArtisticBackground: Bool = false
     ) -> LyricsSurfaceColorSet {
+        if usesArtisticBackground,
+           let artistic = artisticFullscreenLyricsColorSet(
+                analysis: analysis,
+                highlightBaseColor: highlightBaseColor,
+                inactiveBaseColor: inactiveBaseColor,
+                isUltraDark: isUltraDark
+           ) {
+            return artistic
+        }
+
         let T = ColorSystemTokens.Lyrics.self
         let highlightHSL = ColorMath.hsl(of: highlightBaseColor)
         let inactiveHSL = ColorMath.hsl(of: inactiveBaseColor)
@@ -599,6 +610,66 @@ enum SemanticPaletteFactory {
             lineTimingSubInactive: lineTimingSubInactiveColor
         )
         return neutraliseLyricsSurfaceIfNearMono(set, analysis: analysis)
+    }
+
+    nonisolated private static func artisticFullscreenLyricsColorSet(
+        analysis: ArtworkColorAnalysis,
+        highlightBaseColor: NSColor,
+        inactiveBaseColor: NSColor,
+        isUltraDark: Bool
+    ) -> LyricsSurfaceColorSet? {
+        guard
+            let activeSeed = lyricsToneSeed(
+                preferred: highlightBaseColor,
+                fallback: inactiveBaseColor,
+                analysis: analysis
+            ),
+            let inactiveSeed = lyricsToneSeed(
+                preferred: inactiveBaseColor,
+                fallback: highlightBaseColor,
+                analysis: analysis
+            )
+        else {
+            return nil
+        }
+
+        func color(_ seed: OKColor.OKLCH, _ role: PerceptualToneLadder.LyricsRole) -> NSColor {
+            let tone = PerceptualToneLadder.artisticLyricsTone(
+                base: seed,
+                role: role,
+                isUltraDark: isUltraDark || analysis.isUltraDark,
+                isNearMonochrome: analysis.isNearMonochrome
+            )
+            return OKColor.okLCHToNSColor(tone, alpha: 1.0)
+        }
+
+        let set = LyricsSurfaceColorSet(
+            mainActive: color(activeSeed, .mainActive),
+            mainInactive: color(inactiveSeed, .mainInactive),
+            lineTimingMainInactive: color(inactiveSeed, .lineTimingMainInactive),
+            subActive: color(activeSeed, .subActive),
+            subInactive: color(inactiveSeed, .subInactive),
+            lineTimingSubInactive: color(inactiveSeed, .lineTimingSubInactive)
+        )
+        return neutraliseLyricsSurfaceIfNearMono(set, analysis: analysis)
+    }
+
+    nonisolated private static func lyricsToneSeed(
+        preferred: NSColor,
+        fallback: NSColor,
+        analysis: ArtworkColorAnalysis
+    ) -> OKColor.OKLCH? {
+        guard let preferredLCH = OKColor.nsColorToOKLCH(preferred) else {
+            return OKColor.nsColorToOKLCH(fallback)
+        }
+        guard !analysis.isNearMonochrome else { return preferredLCH }
+        guard preferredLCH.c < 0.018,
+              let fallbackLCH = OKColor.nsColorToOKLCH(fallback),
+              fallbackLCH.c > preferredLCH.c + 0.012
+        else {
+            return preferredLCH
+        }
+        return fallbackLCH
     }
 
     nonisolated static func coverBlurLyricsColorSet(
@@ -1212,14 +1283,16 @@ nonisolated enum SemanticPaletteSelfCheck {
         scheme: ColorScheme,
         highlightBaseColor: NSColor,
         inactiveBaseColor: NSColor,
-        isUltraDark: Bool = false
+        isUltraDark: Bool = false,
+        usesArtisticBackground: Bool = false
     ) -> LyricsSurfaceColorSet {
         SemanticPaletteFactory.fullscreenLyricsColorSet(
             analysis: analysis,
             scheme: scheme,
             highlightBaseColor: highlightBaseColor,
             inactiveBaseColor: inactiveBaseColor,
-            isUltraDark: isUltraDark
+            isUltraDark: isUltraDark,
+            usesArtisticBackground: usesArtisticBackground
         )
     }
 
