@@ -29,28 +29,8 @@ struct FullscreenPlayerView: View {
         uuidString: "E4D3575E-97CA-41EF-8322-FC3D845E7F28"
     )!
 
-    private struct FullscreenLyricsColorSet {
-        let mainActive: NSColor
-        let mainInactive: NSColor
-        let lineTimingMainInactive: NSColor
-        let subActive: NSColor
-        let subInactive: NSColor
-        let lineTimingSubInactive: NSColor
-    }
-
-    private enum FullscreenCoverBlurBlendProfile: String {
-        case lighter
-        case darker
-
-        var paletteScheme: ColorScheme {
-            switch self {
-            case .lighter:
-                return .dark
-            case .darker:
-                return .light
-            }
-        }
-    }
+    private typealias FullscreenLyricsColorSet = LyricsSurfaceColorSet
+    private typealias FullscreenCoverBlurBlendProfile = LyricsCoverBlurBlendProfile
 
     private struct FullscreenCoverBlurLyricsTheme {
         let trackID: UUID
@@ -97,14 +77,6 @@ struct FullscreenPlayerView: View {
     private let coverBlurLegacyLyricsColumnLeftNudge: CGFloat = 80
     private let coverBlurLegacyLyricsRightShift: CGFloat = 30
     private let coverBlurLegacyLeftExpansion: CGFloat = 80
-    private let fullscreenLyricsMinimumBaseLightness: CGFloat = 0.52
-    private let fullscreenLyricsMaximumBaseLightness: CGFloat = 0.66
-    private let fullscreenLyricsMinimumSubActiveLightness: CGFloat = 0.88
-    private let fullscreenLyricsMaximumSubActiveLightness: CGFloat = 0.94
-    private let fullscreenLyricsMinimumMainActiveLightness: CGFloat = 0.95
-    private let fullscreenLyricsMaximumMainActiveLightness: CGFloat = 0.98
-    private let fullscreenLyricsSaturationFloor: CGFloat = 0.10
-    private let fullscreenLyricsSaturationCeiling: CGFloat = 0.58
 
     private struct FullscreenHorizontalSplitLayout {
         let artworkWidth: CGFloat
@@ -3012,6 +2984,15 @@ struct FullscreenPlayerView: View {
         config["coverBlurFullscreenGenericMode"] = usesCoverBlurLyricsRenderingPath && activeCoverBlurTheme != nil
         config["coverBlurFullscreenGenericProfile"] = activeCoverBlurTheme?.profile.rawValue ?? NSNull()
         config["coverBlurFullscreenThemeColor"] = coverBlurThemeColor ?? NSNull()
+        if activeCoverBlurTheme != nil {
+            config["coverBlurMainActiveColor"] = mainActiveColor
+            config["coverBlurMainInactiveColor"] = mainInactiveColor
+            config["coverBlurSubActiveColor"] = subActiveColor
+            config["coverBlurSubInactiveColor"] = subInactiveColor
+            config["coverBlurBackgroundColor"] = backgroundColor
+            config["coverBlurLineTimingInactiveColor"] = lineTimingMainInactiveColor
+            config["coverBlurLineTimingSubInactiveColor"] = lineTimingSubInactiveColor
+        }
 
         let shouldUseHighlightOverlay = shouldRenderCoverBlurHighlightOverlay
         if shouldUseHighlightOverlay {
@@ -3459,95 +3440,12 @@ struct FullscreenPlayerView: View {
     }
 
     private func makeFullscreenLyricsColorSet(forTrackID trackID: UUID?) -> FullscreenLyricsColorSet {
-        let highlightBaseColor = resolveFullscreenLyricsBaseColor(forTrackID: trackID)
-        let highlightHSL = hslComponents(from: highlightBaseColor)
-        let inactiveBaseColor = resolveFullscreenLyricsInactiveBaseColor(forTrackID: trackID)
-        let inactiveHSL = hslComponents(from: inactiveBaseColor)
-        let inactiveDarkModeShift: CGFloat = colorScheme == .dark ? 0.08 : 0
-        let inactiveUltraDarkShift: CGFloat = lockedFullscreenLyricsUltraDark
-            ? (colorScheme == .dark ? 0.22 : 0.17)
-            : 0
-        let totalInactiveShift = inactiveDarkModeShift + inactiveUltraDarkShift
-        let activeLightnessShift: CGFloat = lockedFullscreenLyricsUltraDark
-            ? (colorScheme == .dark ? 0.10 : 0.06)
-            : (colorScheme == .dark ? 0.02 : 0)
-        let inactiveSaturationScale: CGFloat = lockedFullscreenLyricsUltraDark
-            ? (colorScheme == .dark ? 0.34 : 0.40)
-            : (colorScheme == .dark ? 0.42 : 0.48)
-        let inactiveSaturationBias: CGFloat = colorScheme == .dark ? 0.015 : 0.02
-        let tunedSaturation = clamp(
-            highlightHSL.saturation * 0.70 + 0.06,
-            min: fullscreenLyricsSaturationFloor,
-            max: fullscreenLyricsSaturationCeiling
-        )
-        let baseLightness = clamp(
-            max(
-                inactiveHSL.lightness - 0.02 - totalInactiveShift,
-                fullscreenLyricsMinimumBaseLightness - totalInactiveShift * 0.55
-            ),
-            min: max(0.24, fullscreenLyricsMinimumBaseLightness - totalInactiveShift),
-            max: max(0.40, fullscreenLyricsMaximumBaseLightness - totalInactiveShift * 0.95)
-        )
-        let subActiveLightness = clamp(
-            max(highlightHSL.lightness + 0.04 - activeLightnessShift * 0.75, baseLightness + 0.04),
-            min: max(0.64, fullscreenLyricsMinimumSubActiveLightness - 0.08 - activeLightnessShift * 0.9),
-            max: max(0.74, fullscreenLyricsMaximumSubActiveLightness - 0.08 - activeLightnessShift * 0.75)
-        )
-        let activeLightness = clamp(
-            max(highlightHSL.lightness + 0.18 - activeLightnessShift * 0.6, subActiveLightness + 0.08),
-            min: max(0.84, fullscreenLyricsMinimumMainActiveLightness - activeLightnessShift * 0.55),
-            max: max(0.90, fullscreenLyricsMaximumMainActiveLightness - activeLightnessShift * 0.45)
-        )
-        let mainInactiveColor = colorFromHSL(
-            hue: inactiveHSL.hue,
-            saturation: clamp(inactiveHSL.saturation * inactiveSaturationScale + inactiveSaturationBias, min: 0, max: 1),
-            lightness: baseLightness
-        )
-        let lineTimingMainInactiveColor = colorFromHSL(
-            hue: inactiveHSL.hue,
-            saturation: clamp(
-                inactiveHSL.saturation * max(0.28, inactiveSaturationScale - 0.03) + max(0.01, inactiveSaturationBias - 0.005),
-                min: 0,
-                max: 1
-            ),
-            lightness: baseLightness
-        )
-        let subActiveColor = colorFromHSL(
-            hue: highlightHSL.hue,
-            saturation: clamp(tunedSaturation * 0.78, min: 0, max: 1),
-            lightness: subActiveLightness
-        )
-        let subInactiveColor = colorFromHSL(
-            hue: inactiveHSL.hue,
-            saturation: clamp(
-                inactiveHSL.saturation * max(0.26, inactiveSaturationScale - 0.05) + max(0.01, inactiveSaturationBias - 0.005),
-                min: 0,
-                max: 1
-            ),
-            lightness: baseLightness
-        )
-        let lineTimingSubInactiveColor = colorFromHSL(
-            hue: inactiveHSL.hue,
-            saturation: clamp(
-                inactiveHSL.saturation * max(0.24, inactiveSaturationScale - 0.08) + max(0.008, inactiveSaturationBias - 0.008),
-                min: 0,
-                max: 1
-            ),
-            lightness: baseLightness
-        )
-
-        return FullscreenLyricsColorSet(
-            mainActive: colorFromHSL(
-                hue: highlightHSL.hue,
-                saturation: clamp(tunedSaturation * 1.12 + 0.02, min: 0, max: 1),
-                lightness: activeLightness
-            ),
-            mainInactive: mainInactiveColor,
-            lineTimingMainInactive: lineTimingMainInactiveColor,
-            // Translation lines stay in a readable light tier on fullscreen dark surface.
-            subActive: subActiveColor,
-            subInactive: subInactiveColor,
-            lineTimingSubInactive: lineTimingSubInactiveColor
+        SemanticPaletteFactory.fullscreenLyricsColorSet(
+            analysis: resolveLyricsAnalysis(forTrackID: trackID),
+            scheme: colorScheme,
+            highlightBaseColor: resolveFullscreenLyricsBaseColor(forTrackID: trackID),
+            inactiveBaseColor: resolveFullscreenLyricsInactiveBaseColor(forTrackID: trackID),
+            isUltraDark: lockedFullscreenLyricsUltraDark
         )
     }
 
@@ -3555,194 +3453,11 @@ struct FullscreenPlayerView: View {
         from themeColor: NSColor,
         profile: FullscreenCoverBlurBlendProfile
     ) -> FullscreenLyricsColorSet {
-        let themeHSL = hslComponents(from: themeColor)
-
-        switch profile {
-        case .lighter:
-            let inputLightness = themeHSL.lightness
-            let nonHighlightMaxLightness: CGFloat = 0.20
-            let isVeryDarkTheme = inputLightness < 0.05
-            let isVeryBrightButStillLighter = inputLightness > 0.70
-            let activeSaturation: CGFloat
-            let activeLightness: CGFloat
-
-            if inputLightness >= 0.64 {
-                // Bright lighter-profile artwork should stay bright, but a step below the
-                // previous cap so the plus-lighter result does not wash out.
-                activeLightness = clamp(
-                    max(inputLightness + 0.01, 0.90),
-                    min: 0.90,
-                    max: 0.935
-                )
-                activeSaturation = clamp(
-                    themeHSL.saturation * 0.70 + 0.04,
-                    min: 0.06,
-                    max: 0.48
-                )
-            } else if inputLightness >= 0.46 {
-                // Slightly bright input still needs a visible lift, but one notch lower
-                // than the bright branch above.
-                activeLightness = clamp(
-                    max(inputLightness + 0.08, 0.85),
-                    min: 0.85,
-                    max: 0.89
-                )
-                activeSaturation = clamp(
-                    themeHSL.saturation * 0.54 + 0.04,
-                    min: 0.06,
-                    max: 0.38
-                )
-            } else if inputLightness >= 0.18 {
-                // Neutral input remains clearly highlighted, but another step down from
-                // the brighter bands above.
-                activeLightness = clamp(
-                    max(inputLightness + 0.06, 0.80),
-                    min: 0.80,
-                    max: 0.84
-                )
-                activeSaturation = clamp(
-                    themeHSL.saturation * 0.48 + 0.04,
-                    min: 0.05,
-                    max: 0.34
-                )
-            } else {
-                // Very dark inputs must still render as a visible plus-lighter highlight.
-                activeLightness = clamp(
-                    max(inputLightness + 0.38, 0.67),
-                    min: 0.67,
-                    max: 0.78
-                )
-                activeSaturation = clamp(
-                    themeHSL.saturation * 0.14 + 0.06,
-                    min: 0.05,
-                    max: 0.18
-                )
-            }
-
-            let veryDarkInactiveBoost: CGFloat = isVeryDarkTheme ? 0.090 : 0
-            let brightInactiveTrim: CGFloat = isVeryBrightButStillLighter ? 0.015 : 0
-            let inactiveSaturation = clamp(
-                themeHSL.saturation * 0.34 + 0.03,
-                min: 0.03,
-                max: 0.18
-            )
-            let subInactiveSaturation = clamp(
-                themeHSL.saturation * 0.28 + 0.03,
-                min: 0.02,
-                max: 0.14
-            )
-            let baseLightness = clamp(
-                inputLightness * 0.08 + 0.09 + veryDarkInactiveBoost - brightInactiveTrim,
-                min: isVeryDarkTheme ? 0.13 : 0.08,
-                max: nonHighlightMaxLightness
-            )
-            let lineTimingBaseLightness = clamp(
-                baseLightness - (isVeryDarkTheme ? 0.025 : 0.04),
-                min: isVeryDarkTheme ? 0.10 : 0.05,
-                max: nonHighlightMaxLightness
-            )
-            let subActiveLightness = clamp(
-                baseLightness + (isVeryDarkTheme ? 0.035 : 0.045),
-                min: isVeryDarkTheme ? 0.15 : 0.13,
-                max: 0.24
-            )
-
-            return FullscreenLyricsColorSet(
-                mainActive: colorFromHSL(
-                    hue: themeHSL.hue,
-                    saturation: activeSaturation,
-                    lightness: activeLightness
-                ),
-                mainInactive: colorFromHSL(
-                    hue: themeHSL.hue,
-                    saturation: inactiveSaturation,
-                    lightness: baseLightness
-                ),
-                lineTimingMainInactive: colorFromHSL(
-                    hue: themeHSL.hue,
-                    saturation: clamp(inactiveSaturation * 0.92, min: 0.02, max: 0.24),
-                    lightness: lineTimingBaseLightness
-                ),
-                subActive: colorFromHSL(
-                    hue: themeHSL.hue,
-                    saturation: clamp(activeSaturation * 0.82, min: 0.08, max: 0.52),
-                    lightness: subActiveLightness
-                ),
-                subInactive: colorFromHSL(
-                    hue: themeHSL.hue,
-                    saturation: subInactiveSaturation,
-                    lightness: clamp(baseLightness - 0.02, min: isVeryDarkTheme ? 0.09 : 0.07, max: 0.18)
-                ),
-                lineTimingSubInactive: colorFromHSL(
-                    hue: themeHSL.hue,
-                    saturation: clamp(subInactiveSaturation * 0.92, min: 0.02, max: 0.12),
-                    lightness: clamp(lineTimingBaseLightness - 0.01, min: isVeryDarkTheme ? 0.07 : 0.04, max: 0.14)
-                )
-            )
-        case .darker:
-            // In darker mode the active layer stays in a darker band, but not so low that
-            // the highlight disappears entirely.
-            let highlightSaturation = clamp(
-                themeHSL.saturation * 0.34 + 0.08,
-                min: 0.05,
-                max: 0.24
-            )
-            let inactiveSaturation = clamp(
-                themeHSL.saturation * 0.18 + 0.02,
-                min: 0.01,
-                max: 0.10
-            )
-            let subInactiveSaturation = clamp(
-                inactiveSaturation * 0.90,
-                min: 0.01,
-                max: 0.09
-            )
-            let baseLightness = clamp(
-                0.82 - (1 - themeHSL.lightness) * 0.18,
-                min: 0.76,
-                max: 0.88
-            )
-            let lineTimingBaseLightness = clamp(baseLightness - 0.05, min: 0.70, max: 0.82)
-            let subActiveLightness = clamp(baseLightness - 0.10, min: 0.62, max: 0.76)
-            let highlightLightness = clamp(
-                themeHSL.lightness * 0.14 + 0.32,
-                min: 0.34,
-                max: 0.50
-            )
-
-            return FullscreenLyricsColorSet(
-                mainActive: colorFromHSL(
-                    hue: themeHSL.hue,
-                    saturation: highlightSaturation,
-                    lightness: highlightLightness
-                ),
-                mainInactive: colorFromHSL(
-                    hue: themeHSL.hue,
-                    saturation: inactiveSaturation,
-                    lightness: baseLightness
-                ),
-                lineTimingMainInactive: colorFromHSL(
-                    hue: themeHSL.hue,
-                    saturation: clamp(inactiveSaturation * 0.9, min: 0.06, max: 0.30),
-                    lightness: lineTimingBaseLightness
-                ),
-                subActive: colorFromHSL(
-                    hue: themeHSL.hue,
-                    saturation: clamp(highlightSaturation * 0.78, min: 0.04, max: 0.18),
-                    lightness: subActiveLightness
-                ),
-                subInactive: colorFromHSL(
-                    hue: themeHSL.hue,
-                    saturation: subInactiveSaturation,
-                    lightness: clamp(baseLightness - 0.02, min: 0.74, max: 0.88)
-                ),
-                lineTimingSubInactive: colorFromHSL(
-                    hue: themeHSL.hue,
-                    saturation: clamp(subInactiveSaturation * 0.95, min: 0.01, max: 0.08),
-                    lightness: clamp(lineTimingBaseLightness - 0.01, min: 0.68, max: 0.82)
-                )
-            )
-        }
+        SemanticPaletteFactory.coverBlurLyricsColorSet(
+            analysis: resolveLyricsAnalysis(forTrackID: currentArtworkTrackID),
+            themeColor: themeColor,
+            profile: profile
+        )
     }
 
     private func currentArtworkSnapshot(for track: Track?) -> ArtworkAssetSnapshot? {
@@ -3779,15 +3494,15 @@ struct FullscreenPlayerView: View {
             return nil
         }
 
-        let themeHSL = hslComponents(from: themeColor)
-        let profile: FullscreenCoverBlurBlendProfile = themeHSL.lightness > 0.72
+        let themeHSL = ColorMath.hsl(of: themeColor)
+        let profile: FullscreenCoverBlurBlendProfile = themeHSL.l > 0.72
             ? .darker
             : .lighter
 
         return FullscreenCoverBlurLyricsTheme(
             trackID: trackID,
             themeColor: themeColor,
-            themeLightness: themeHSL.lightness,
+            themeLightness: themeHSL.l,
             profile: profile,
             colors: makeCoverBlurLyricsColorSet(from: themeColor, profile: profile)
         )
@@ -3796,13 +3511,13 @@ struct FullscreenPlayerView: View {
     private func makeAppleStyleCoverBlurLyricsTheme(forTrackID trackID: UUID?) -> FullscreenCoverBlurLyricsTheme {
         let resolvedTrackID = trackID ?? Self.fallbackExternalTrackID
         let themeColor = resolveFullscreenLyricsBaseColor(forTrackID: trackID)
-        let themeHSL = hslComponents(from: themeColor)
+        let themeHSL = ColorMath.hsl(of: themeColor)
         let profile: FullscreenCoverBlurBlendProfile = .lighter
 
         return FullscreenCoverBlurLyricsTheme(
             trackID: resolvedTrackID,
             themeColor: themeColor,
-            themeLightness: themeHSL.lightness,
+            themeLightness: themeHSL.l,
             profile: profile,
             colors: makeCoverBlurLyricsColorSet(from: themeColor, profile: profile)
         )
@@ -3875,6 +3590,13 @@ struct FullscreenPlayerView: View {
         return NSColor(AppSettings.shared.accentColor)
     }
 
+    private func resolveLyricsAnalysis(forTrackID trackID: UUID?) -> ArtworkColorAnalysis {
+        if themeStorePaletteMatchesCurrentArtwork(forTrackID: trackID) {
+            return themeStore.semanticPalette.analysis
+        }
+        return .neutralFallback
+    }
+
     private func themeStorePaletteMatchesCurrentArtwork(forTrackID trackID: UUID?) -> Bool {
         let display = currentDisplayContext
         let checksum = ArtworkAssetStore.checksum(for: display.artworkData)
@@ -3936,101 +3658,6 @@ struct FullscreenPlayerView: View {
         return !presentation.isArtworkLoading
     }
 
-    private func hslComponents(from color: NSColor) -> (hue: CGFloat, saturation: CGFloat, lightness: CGFloat)
-    {
-        let rgb = color.usingColorSpace(.deviceRGB) ?? color
-        var red: CGFloat = 0
-        var green: CGFloat = 0
-        var blue: CGFloat = 0
-        var alpha: CGFloat = 0
-        rgb.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
-
-        let maxValue = max(red, green, blue)
-        let minValue = min(red, green, blue)
-        let delta = maxValue - minValue
-        let lightness = (maxValue + minValue) * 0.5
-
-        var hue: CGFloat = 0
-        var saturation: CGFloat = 0
-
-        if delta > 0.000_1 {
-            saturation = delta / (1 - abs(2 * lightness - 1))
-            if maxValue == red {
-                hue = ((green - blue) / delta).truncatingRemainder(dividingBy: 6)
-            } else if maxValue == green {
-                hue = ((blue - red) / delta) + 2
-            } else {
-                hue = ((red - green) / delta) + 4
-            }
-            hue /= 6
-            if hue < 0 {
-                hue += 1
-            }
-        }
-
-        return (
-            hue: clamp(hue, min: 0, max: 1),
-            saturation: clamp(saturation, min: 0, max: 1),
-            lightness: clamp(lightness, min: 0, max: 1)
-        )
-    }
-
-    private func colorFromHSL(hue: CGFloat, saturation: CGFloat, lightness: CGFloat) -> NSColor {
-        let h = clamp(hue, min: 0, max: 1)
-        let s = clamp(saturation, min: 0, max: 1)
-        let l = clamp(lightness, min: 0, max: 1)
-
-        if s < 0.000_1 {
-            return NSColor(calibratedRed: l, green: l, blue: l, alpha: 1)
-        }
-
-        let chroma = (1 - abs(2 * l - 1)) * s
-        let scaledHue = h * 6
-        let secondary = chroma * (1 - abs(scaledHue.truncatingRemainder(dividingBy: 2) - 1))
-        let match = l - chroma * 0.5
-
-        let redPrime: CGFloat
-        let greenPrime: CGFloat
-        let bluePrime: CGFloat
-
-        switch scaledHue {
-        case 0..<1:
-            redPrime = chroma
-            greenPrime = secondary
-            bluePrime = 0
-        case 1..<2:
-            redPrime = secondary
-            greenPrime = chroma
-            bluePrime = 0
-        case 2..<3:
-            redPrime = 0
-            greenPrime = chroma
-            bluePrime = secondary
-        case 3..<4:
-            redPrime = 0
-            greenPrime = secondary
-            bluePrime = chroma
-        case 4..<5:
-            redPrime = secondary
-            greenPrime = 0
-            bluePrime = chroma
-        default:
-            redPrime = chroma
-            greenPrime = 0
-            bluePrime = secondary
-        }
-
-        return NSColor(
-            calibratedRed: clamp(redPrime + match, min: 0, max: 1),
-            green: clamp(greenPrime + match, min: 0, max: 1),
-            blue: clamp(bluePrime + match, min: 0, max: 1),
-            alpha: 1
-        )
-    }
-
-    private func clamp(_ value: CGFloat, min lower: CGFloat, max upper: CGFloat) -> CGFloat {
-        Swift.min(upper, Swift.max(lower, value))
-    }
 }
 
 private struct PlaybackModeRetapTipView: View {

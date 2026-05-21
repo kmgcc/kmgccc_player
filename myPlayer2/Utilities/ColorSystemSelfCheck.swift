@@ -54,7 +54,6 @@ nonisolated enum ColorSystemSelfCheck {
         guard ProcessInfo.processInfo.environment[envVarName] == "1" else { return }
         let report = runAll()
         for line in report.lines { print(line) }
-        FileHandle.standardOutput.synchronizeFile()
         exit(report.allPassed ? 0 : 1)
         #endif
     }
@@ -137,10 +136,131 @@ nonisolated enum ColorSystemSelfCheck {
         checkAppFgDarkCoolHueReduced(&report)
         checkAppFgLightModeDirectional(&report)
 
+        report.section("Phase 5 — LyricsColorPalette")
+        checkLyricsNearMonoWindowNeutral(&report)
+        checkLyricsNearMonoFullscreenNeutral(&report)
+        checkLyricsNearMonoCoverBlurProfilesNeutral(&report)
+        checkLyricsColorfulWindowKeepsTint(&report)
+        checkLyricsLightnessHierarchy(&report)
+
         report.lines.append(
             "Result: \(report.allPassed ? "ALL PASS" : "FAILURES PRESENT")"
         )
         return report
+    }
+
+    // MARK: - Phase 5 scenarios
+
+    private static func checkLyricsNearMonoWindowNeutral(_ report: inout CheckReport) {
+        guard let analysis = analyse(side: 32, fill: (196, 196, 196, 255)) else {
+            report.record("Lyrics: near-mono window active/inactive neutral", false, "analysis nil")
+            return
+        }
+        let palette = SemanticPaletteSelfCheck.lyricsPalette(analysis: analysis, scheme: .dark)
+        let limit = ColorSystemTokens.Lyrics.nearMonoChromaAssertion
+        let activeC = OKColor.nsColorToOKLCH(palette.windowActive)?.c ?? .infinity
+        let inactiveC = OKColor.nsColorToOKLCH(palette.windowInactive)?.c ?? .infinity
+        let ok = analysis.isNearMonochrome && activeC <= limit && inactiveC <= limit
+        report.record(
+            "Lyrics: near-mono window active/inactive neutral", ok,
+            "nearMono=\(analysis.isNearMonochrome) activeC=\(format(activeC)) inactiveC=\(format(inactiveC)) limit=\(format(limit))"
+        )
+    }
+
+    private static func checkLyricsNearMonoFullscreenNeutral(_ report: inout CheckReport) {
+        guard let analysis = analyse(side: 32, fill: (42, 42, 42, 255)) else {
+            report.record("Lyrics: near-mono fullscreen tiers neutral", false, "analysis nil")
+            return
+        }
+        let palette = SemanticPaletteSelfCheck.lyricsPalette(analysis: analysis, scheme: .dark)
+        let tiers: [(NSColor, String)] = [
+            (palette.fullscreen.mainActive, "mainActive"),
+            (palette.fullscreen.mainInactive, "mainInactive"),
+            (palette.fullscreen.subActive, "subActive"),
+            (palette.fullscreen.subInactive, "subInactive"),
+            (palette.fullscreen.lineTimingMainInactive, "lineTimingMainInactive"),
+            (palette.fullscreen.lineTimingSubInactive, "lineTimingSubInactive"),
+        ]
+        let (worstName, worstChroma) = worstChroma(in: tiers)
+        let limit = ColorSystemTokens.Lyrics.nearMonoChromaAssertion
+        let ok = analysis.isNearMonochrome && worstChroma <= limit
+        report.record(
+            "Lyrics: near-mono fullscreen tiers neutral", ok,
+            "nearMono=\(analysis.isNearMonochrome) worst=\(worstName) C=\(format(worstChroma)) limit=\(format(limit))"
+        )
+    }
+
+    private static func checkLyricsNearMonoCoverBlurProfilesNeutral(_ report: inout CheckReport) {
+        guard let analysis = analyse(side: 32, fill: (210, 210, 210, 255)) else {
+            report.record("Lyrics: near-mono cover-blur profiles neutral", false, "analysis nil")
+            return
+        }
+        let themeColor = NSColor(deviceRed: 0.82, green: 0.80, blue: 0.78, alpha: 1)
+        let lighter = SemanticPaletteSelfCheck.coverBlurLyricsColorSet(
+            analysis: analysis,
+            themeColor: themeColor,
+            profile: .lighter
+        )
+        let darker = SemanticPaletteSelfCheck.coverBlurLyricsColorSet(
+            analysis: analysis,
+            themeColor: themeColor,
+            profile: .darker
+        )
+        let tiers: [(NSColor, String)] = [
+            (lighter.mainActive, "lighter.mainActive"),
+            (lighter.mainInactive, "lighter.mainInactive"),
+            (lighter.subActive, "lighter.subActive"),
+            (lighter.subInactive, "lighter.subInactive"),
+            (darker.mainActive, "darker.mainActive"),
+            (darker.mainInactive, "darker.mainInactive"),
+            (darker.subActive, "darker.subActive"),
+            (darker.subInactive, "darker.subInactive"),
+        ]
+        let (worstName, worstChroma) = worstChroma(in: tiers)
+        let limit = ColorSystemTokens.Lyrics.nearMonoChromaAssertion
+        let ok = analysis.isNearMonochrome && worstChroma <= limit
+        report.record(
+            "Lyrics: near-mono cover-blur profiles neutral", ok,
+            "worst=\(worstName) C=\(format(worstChroma)) limit=\(format(limit))"
+        )
+    }
+
+    private static func checkLyricsColorfulWindowKeepsTint(_ report: inout CheckReport) {
+        guard let analysis = analyse(side: 32, fill: (42, 106, 210, 255)) else {
+            report.record("Lyrics: colorful window keeps theme tint", false, "analysis nil")
+            return
+        }
+        let palette = SemanticPaletteSelfCheck.lyricsPalette(analysis: analysis, scheme: .dark)
+        guard let active = OKColor.nsColorToOKLCH(palette.windowActive) else {
+            report.record("Lyrics: colorful window keeps theme tint", false, "OKLCH nil")
+            return
+        }
+        let ok = !analysis.isNearMonochrome && active.c > ColorSystemTokens.Lyrics.nearMonoChromaAssertion
+        report.record(
+            "Lyrics: colorful window keeps theme tint", ok,
+            "nearMono=\(analysis.isNearMonochrome) activeC=\(format(active.c))"
+        )
+    }
+
+    private static func checkLyricsLightnessHierarchy(_ report: inout CheckReport) {
+        guard let analysis = analyse(side: 32, fill: (42, 106, 210, 255)) else {
+            report.record("Lyrics: fullscreen/window hierarchy", false, "analysis nil")
+            return
+        }
+        let palette = SemanticPaletteSelfCheck.lyricsPalette(analysis: analysis, scheme: .dark)
+        guard
+            let fsActiveL = OKColor.nsColorToOKLCH(palette.fullscreen.mainActive)?.l,
+            let fsInactiveL = OKColor.nsColorToOKLCH(palette.fullscreen.mainInactive)?.l
+        else {
+            report.record("Lyrics: fullscreen/window hierarchy", false, "OKLCH nil")
+            return
+        }
+        let windowAlphaOK = palette.windowActive.alphaComponent > palette.windowInactive.alphaComponent
+        let fsLightnessOK = fsActiveL > fsInactiveL + 0.10
+        report.record(
+            "Lyrics: fullscreen/window hierarchy", windowAlphaOK && fsLightnessOK,
+            "windowAlpha=\(format(palette.windowActive.alphaComponent))>\(format(palette.windowInactive.alphaComponent)) fsL=\(format(fsActiveL))>\(format(fsInactiveL))"
+        )
     }
 
     // MARK: - Phase 4 scenarios
@@ -337,7 +457,7 @@ nonisolated enum ColorSystemSelfCheck {
             report.record("AppForeground: dark mode L hierarchy", false, "analysis nil")
             return
         }
-        let accent = NSColor(deviceRed: 0.20, green: 0.45, blue: 0.90, alpha: 1)
+        let accent = NSColor(deviceRed: 0.85, green: 0.42, blue: 0.18, alpha: 1)
         let p = SemanticPaletteSelfCheck.appForeground(
             analysis: analysis, globalAccent: accent, isDark: true
         )
@@ -483,28 +603,26 @@ nonisolated enum ColorSystemSelfCheck {
         )
     }
 
-    /// Dark mode secondary chroma must be ≤ primary chroma × ratio cap.
-    /// Ensures the secondary tier reads as clearly subordinate so grey-tier
-    /// text does not appear unexpectedly chromatic.
+    /// Dark mode secondary chroma must stay within its absolute low-chroma cap.
+    /// Primary is intentionally very high-L in dark mode, so realised primary
+    /// chroma can be clipped by sRGB gamut for some hues; the hierarchy is
+    /// locked by lightness above and by this secondary cap here.
     private static func checkAppFgDarkSecondaryBelowPrimary(_ report: inout CheckReport) {
         guard let analysis = analyse(side: 32, fill: (40, 100, 200, 255)) else {
-            report.record("AppForeground: dark secondary chroma ≤ primary × cap", false, "analysis nil")
+            report.record("AppForeground: dark secondary chroma bounded", false, "analysis nil")
             return
         }
-        let accent = NSColor(deviceRed: 0.20, green: 0.45, blue: 0.90, alpha: 1)
+        let accent = NSColor(deviceRed: 0.90, green: 0.55, blue: 0.10, alpha: 1)
         let p = SemanticPaletteSelfCheck.appForeground(analysis: analysis, globalAccent: accent, isDark: true)
-        guard
-            let priC = OKColor.nsColorToOKLCH(p.primary)?.c,
-            let secC = OKColor.nsColorToOKLCH(p.secondary)?.c
-        else {
-            report.record("AppForeground: dark secondary chroma ≤ primary × cap", false, "OKLCH nil")
+        guard let secC = OKColor.nsColorToOKLCH(p.secondary)?.c else {
+            report.record("AppForeground: dark secondary chroma bounded", false, "OKLCH nil")
             return
         }
-        let cap = ColorSystemTokens.AppForeground.darkSecondaryToPrimaryRatioCap
-        let ok = priC > 0 ? (secC / priC) <= cap : secC == 0
+        let cap = ColorSystemTokens.AppForeground.darkSecondaryChromaAssertion
+        let ok = secC <= cap
         report.record(
-            "AppForeground: dark secondary chroma ≤ primary × cap", ok,
-            "sec/pri=\(format(priC > 0 ? secC / priC : 0)) cap=\(format(cap)) sec=\(format(secC)) pri=\(format(priC))"
+            "AppForeground: dark secondary chroma bounded", ok,
+            "sec=\(format(secC)) cap=\(format(cap))"
         )
     }
 
@@ -1179,6 +1297,19 @@ nonisolated enum ColorSystemSelfCheck {
             if isDistinct { representatives.append(h) }
         }
         return representatives.count
+    }
+
+    private static func worstChroma(in colors: [(NSColor, String)]) -> (String, CGFloat) {
+        var worstName = ""
+        var worstValue: CGFloat = 0
+        for (color, name) in colors {
+            let chroma = OKColor.nsColorToOKLCH(color)?.c ?? .infinity
+            if chroma > worstValue {
+                worstValue = chroma
+                worstName = name
+            }
+        }
+        return (worstName, worstValue)
     }
 
     private static func describe(_ a: ArtworkColorAnalysis) -> String {
