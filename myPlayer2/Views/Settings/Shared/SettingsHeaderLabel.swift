@@ -20,13 +20,34 @@ enum SettingsStyleTokens {
     static let inlineSpacing: CGFloat = 8
 }
 
+/// Phase 4.5 — bundle of pre-resolved tinted-neutral foreground colors for the
+/// Settings detail pages. Injected via `\.settingsAppForegroundColors`; nil on
+/// surfaces whose presentation style forces white text (fullscreen overlay).
+struct SettingsAppForegroundColors: Equatable {
+    let primary: Color
+    let secondary: Color
+    let tertiary: Color
+}
+
+private struct SettingsAppForegroundColorsKey: EnvironmentKey {
+    static let defaultValue: SettingsAppForegroundColors? = nil
+}
+
+extension EnvironmentValues {
+    var settingsAppForegroundColors: SettingsAppForegroundColors? {
+        get { self[SettingsAppForegroundColorsKey.self] }
+        set { self[SettingsAppForegroundColorsKey.self] = newValue }
+    }
+}
+
 /// A reusable header label for settings sections with icon and title.
 struct SettingsHeaderLabel: View {
     let title: LocalizedStringKey
     let systemImage: String
-    
+
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
+    @Environment(\.settingsAppForegroundColors) private var appColors
 
     var body: some View {
         HStack(spacing: presentationStyle.compactInlineSpacing) {
@@ -35,9 +56,18 @@ struct SettingsHeaderLabel: View {
                 .font(.system(size: presentationStyle.headerIconSize, weight: .bold))
             Text(title)
                 .font(.system(size: presentationStyle.headerTitleFontSize, weight: .bold))
-                .foregroundStyle(presentationStyle.primaryTextColor)
+                .foregroundStyle(resolvedTitleColor)
         }
         .padding(.bottom, presentationStyle.headerBottomPadding)
+    }
+
+    private var resolvedTitleColor: Color {
+        // The white-text hierarchy (fullscreen quick panel) intentionally bypasses
+        // the tinted palette so it stays high-contrast on artwork.
+        if let appColors, !presentationStyle.forcesWhiteText {
+            return appColors.primary
+        }
+        return presentationStyle.primaryTextColor
     }
 }
 
@@ -141,22 +171,40 @@ struct CollapsibleSectionHeader: View {
 
 private struct SettingsSectionTitleStyleModifier: ViewModifier {
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
+    @Environment(\.settingsAppForegroundColors) private var appColors
 
     func body(content: Content) -> some View {
-        content
+        let base: Color
+        if let appColors, !presentationStyle.forcesWhiteText {
+            // Section labels read as "softened primary"; the palette already
+            // ladders L by tier, so use secondary instead of opacity-fading
+            // primary (opacity on a tinted color compounds against background
+            // material and looks dirty).
+            base = appColors.secondary
+        } else {
+            base = presentationStyle.primaryTextColor.opacity(0.82)
+        }
+        return content
             .font(presentationStyle.sectionTitleFont)
-            .foregroundStyle(presentationStyle.primaryTextColor.opacity(0.82))
+            .foregroundStyle(base)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
 private struct SettingsDescriptionStyleModifier: ViewModifier {
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
+    @Environment(\.settingsAppForegroundColors) private var appColors
 
     func body(content: Content) -> some View {
-        content
+        let base: Color
+        if let appColors, !presentationStyle.forcesWhiteText {
+            base = appColors.tertiary
+        } else {
+            base = presentationStyle.secondaryTextColor
+        }
+        return content
             .font(presentationStyle.captionFont)
-            .foregroundStyle(presentationStyle.secondaryTextColor)
+            .foregroundStyle(base)
             .lineSpacing(SettingsStyleTokens.descriptionLineSpacing)
             .fixedSize(horizontal: false, vertical: true)
     }
@@ -164,11 +212,18 @@ private struct SettingsDescriptionStyleModifier: ViewModifier {
 
 private struct SettingsRowLabelStyleModifier: ViewModifier {
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
+    @Environment(\.settingsAppForegroundColors) private var appColors
 
     func body(content: Content) -> some View {
-        content
+        let base: Color
+        if let appColors, !presentationStyle.forcesWhiteText {
+            base = appColors.primary
+        } else {
+            base = presentationStyle.primaryTextColor
+        }
+        return content
             .font(presentationStyle.rowLabelFont)
-            .foregroundStyle(presentationStyle.primaryTextColor)
+            .foregroundStyle(base)
     }
 }
 
@@ -196,13 +251,14 @@ struct SettingsSwitchRow: View {
     var detailColor: Color?
 
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
+    @Environment(\.settingsAppForegroundColors) private var appColors
 
     var body: some View {
         VStack(alignment: .leading, spacing: detail == nil ? 0 : 6) {
             HStack(spacing: 12) {
                 Text(title)
                     .font(titleFont ?? presentationStyle.rowLabelFont)
-                    .foregroundStyle(titleColor ?? presentationStyle.primaryTextColor)
+                    .foregroundStyle(titleColor ?? resolvedTitleColor)
 
                 Spacer(minLength: 16)
 
@@ -214,11 +270,25 @@ struct SettingsSwitchRow: View {
             if let detail {
                 Text(detail)
                     .font(detailFont ?? presentationStyle.captionFont)
-                    .foregroundStyle(detailColor ?? presentationStyle.secondaryTextColor)
+                    .foregroundStyle(detailColor ?? resolvedDetailColor)
                     .lineSpacing(SettingsStyleTokens.descriptionLineSpacing)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var resolvedTitleColor: Color {
+        if let appColors, !presentationStyle.forcesWhiteText {
+            return appColors.primary
+        }
+        return presentationStyle.primaryTextColor
+    }
+
+    private var resolvedDetailColor: Color {
+        if let appColors, !presentationStyle.forcesWhiteText {
+            return appColors.tertiary
+        }
+        return presentationStyle.secondaryTextColor
     }
 }

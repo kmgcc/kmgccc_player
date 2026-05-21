@@ -31,13 +31,22 @@ struct AllArtistsView: View {
 
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(UIStateViewModel.self) private var uiState
+    @EnvironmentObject private var themeStore: ThemeStore
 
     @State private var deletionRequest: ArtistDeletionRequest?
     @State private var editingArtist: ArtistEntry?
 
     var body: some View {
+        // Single ThemeStore subscription; rows get plain Color params.
+        let palette = themeStore.appForegroundPalette
+        let primary = Color(nsColor: palette.primary)
+        let secondary = Color(nsColor: palette.secondary)
         let artists = filteredArtists
-        return list(artists)
+        return list(
+            artists,
+            primary: primary,
+            secondary: secondary
+        )
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onAppear {
             let token = FirstUseHitchDiagnostics.begin(
@@ -83,7 +92,11 @@ struct AllArtistsView: View {
 
     // MARK: List
 
-    private func list(_ artists: [ArtistEntry]) -> some View {
+    private func list(
+        _ artists: [ArtistEntry],
+        primary: Color,
+        secondary: Color
+    ) -> some View {
         ScrollView(.vertical) {
             LazyVStack(spacing: 2) {
                 ForEach(artists) { artist in
@@ -91,6 +104,8 @@ struct AllArtistsView: View {
                         artist: artist,
                         trackCount: trackCount(for: artist),
                         albumCount: albumCount(for: artist),
+                        titleColor: primary,
+                        subtitleColor: secondary,
                         onOpen: { open(artist) },
                         onEdit: { editingArtist = artist },
                         onDelete: { requestDelete(artist) }
@@ -196,6 +211,8 @@ private struct ArtistListRow: View {
     let artist: ArtistEntry
     let trackCount: Int
     let albumCount: Int
+    var titleColor: Color = .primary
+    var subtitleColor: Color = .secondary
     let onOpen: () -> Void
     let onEdit: () -> Void
     let onDelete: () -> Void
@@ -269,6 +286,7 @@ private struct ArtistListRow: View {
         VStack(alignment: .leading, spacing: 2) {
             Text(artist.displayName)
                 .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(titleColor)
                 .lineLimit(1)
             HStack(spacing: 6) {
                 Text("\(trackCount) 首歌曲")
@@ -282,7 +300,7 @@ private struct ArtistListRow: View {
                 }
             }
             .font(.system(size: 12))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(subtitleColor)
             .lineLimit(1)
         }
     }
@@ -302,7 +320,7 @@ private struct ArtistListRow: View {
         } label: {
             Image(systemName: "ellipsis")
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(subtitleColor)
                 .frame(width: 24, height: 24)
                 .contentShape(Rectangle())
         }

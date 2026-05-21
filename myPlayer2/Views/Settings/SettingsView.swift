@@ -73,7 +73,20 @@ struct SettingsView: View {
     // MARK: - Detail View
 
     private var detailView: some View {
-        ScrollView {
+        // Phase 4.5: resolve the tinted-neutral foreground palette once at the
+        // top of the detail pane. The shared SettingsHeaderLabel /
+        // SettingsSwitchRow / settingsRowLabelStyle / settingsSectionTitleStyle
+        // / settingsDescriptionStyle modifiers all read this environment and
+        // override their built-in `.primary`/`.secondary` defaults — except
+        // surfaces whose presentation style sets `forcesWhiteText` (fullscreen
+        // overlay panel), which keep the high-contrast white hierarchy.
+        let palette = themeStore.appForegroundPalette
+        let appColors = SettingsAppForegroundColors(
+            primary: Color(nsColor: palette.primary),
+            secondary: Color(nsColor: palette.secondary),
+            tertiary: Color(nsColor: palette.tertiary)
+        )
+        return ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 switch selection {
                 case .appearance:
@@ -96,6 +109,7 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .groupBoxStyle(SettingsWindowGroupBoxStyle())
+        .environment(\.settingsAppForegroundColors, appColors)
     }
 
     // MARK: - Feature Tip
