@@ -324,13 +324,29 @@ enum SemanticPaletteFactory {
         let chromaScale: CGFloat = analysis.isNearMonochrome ? 0 :
             Swift.min(analysis.colorfulness / T.colorfulnessSaturationPoint, 1.0)
 
-        // Light-mode dark-text tiers use higher caps than dark-mode bright-text
-        // tiers: at OKLCH L≈0.14 the chroma needed for a perceptible tint on a
-        // bright window is larger than at L≈0.96 (where gamut is already narrow).
+        // Dark-mode hue-aware reduction. Cool/violet hues produce a visually
+        // heavier or unnatural tint at the same chroma as warm hues because
+        // human vision adapts to warm neutral in dark UI contexts. Apply a
+        // moderate reduction factor so the temperature impression is kept but
+        // the colour impression is suppressed.
+        let hueChromaFactor: CGFloat
+        if isDark {
+            switch hue {
+            case T.darkHueCoolRangeLo..<T.darkHueCoolRangeHi:
+                hueChromaFactor = T.darkHueCoolScaleFactor
+            case T.darkHueVioletRangeLo..<T.darkHueVioletRangeHi:
+                hueChromaFactor = T.darkHueVioletScaleFactor
+            default:
+                hueChromaFactor = 1.0
+            }
+        } else {
+            hueChromaFactor = 1.0
+        }
+
         let ceiling = isDark ? T.chromaCeiling : T.lightChromaCeiling
 
         func make(targetL: CGFloat, chromaCap: CGFloat) -> NSColor {
-            let c = Swift.min(chromaScale * chromaCap, ceiling)
+            let c = Swift.min(chromaScale * chromaCap * hueChromaFactor, ceiling)
             return OKColor.okLCHToNSColor(OKColor.OKLCH(l: targetL, c: c, h: hue), alpha: 1.0)
         }
 
