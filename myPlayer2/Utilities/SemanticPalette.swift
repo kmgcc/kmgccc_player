@@ -505,7 +505,8 @@ enum SemanticPaletteFactory {
                 analysis: analysis,
                 highlightBaseColor: highlightBaseColor,
                 inactiveBaseColor: inactiveBaseColor,
-                isUltraDark: isUltraDark
+                isUltraDark: isUltraDark,
+                scheme: scheme
            ) {
             return artistic
         }
@@ -612,24 +613,32 @@ enum SemanticPaletteFactory {
         return neutraliseLyricsSurfaceIfNearMono(set, analysis: analysis)
     }
 
-    /// Phase 6 v2 single-seed artistic fullscreen lyrics ladder.
+    /// Phase 6.1 single-seed artistic fullscreen lyrics ladder.
     ///
     /// All six roles derive from ONE seed (the active highlight). The
     /// inactive parameter is kept in the signature for symmetry with the
-    /// Phase 5 path but is intentionally unused here. v1 mixed an "inactive
-    /// seed" (often the art surface background) into the ladder, which
-    /// collapsed inactive chroma toward neutral; the seed mixing is the
-    /// regression we are reverting.
+    /// Phase 5 path but is intentionally unused here.
     ///
-    /// If the seed has very low chroma, fall back to the highest-chroma
-    /// available source (`dominantColor` then `accentColor`) so colourful
-    /// artwork never lands on a desaturated seed. nearMono is detected up
-    /// front and neutralised by `neutraliseLyricsSurfaceIfNearMono`.
+    /// Seed selection (Phase 6.1):
+    ///   1. nearMono → keep the preferred neutralised seed (no fabrication).
+    ///   2. Conservative salient override: if the cover field is uniform
+    ///      AND a salient highlight clears chroma + hue-gap thresholds,
+    ///      use the salient as the seed. This is the "黑底 + 黄色重点 → 黄"
+    ///      path; it must NOT fire on ordinary multi-colour artwork.
+    ///   3. Default: area-dominant color (`analysis.dominantColor`) when
+    ///      its chroma clears `lyricsDominantSeedMinChroma`.
+    ///   4. Fall through to `topPalette.first` then `bestTextSourceColor`
+    ///      only when the dominant is too desaturated to anchor a hue.
+    ///
+    /// The chromatically-trusted seed (`.c >= lyricsSeedChromaPreferred`)
+    /// bypasses the post-hoc `neutraliseLyricsSurfaceIfNearMono` — that
+    /// double-clamp was the v2 grey-wash bug on `.neutralFallback`.
     nonisolated private static func artisticFullscreenLyricsColorSet(
         analysis: ArtworkColorAnalysis,
         highlightBaseColor: NSColor,
         inactiveBaseColor _: NSColor,
-        isUltraDark: Bool
+        isUltraDark: Bool,
+        scheme: ColorScheme
     ) -> LyricsSurfaceColorSet? {
         guard let seed = artisticLyricsSingleSeed(
             preferred: highlightBaseColor,
@@ -643,7 +652,8 @@ enum SemanticPaletteFactory {
                 base: seed,
                 role: role,
                 isUltraDark: isUltraDark || analysis.isUltraDark,
-                isNearMonochrome: analysis.isNearMonochrome
+                isNearMonochrome: analysis.isNearMonochrome,
+                scheme: scheme
             )
             return OKColor.okLCHToNSColor(tone, alpha: 1.0)
         }
@@ -656,50 +666,88 @@ enum SemanticPaletteFactory {
             subInactive: color(.subInactive),
             lineTimingSubInactive: color(.lineTimingSubInactive)
         )
-        // v3: skip the post-hoc neutralise when the seed itself has visible
-        // chroma. The Tone Ladder already owns the chroma decision (with a
-        // visible-chroma floor); a second neutralise here was double-jeopardy
-        // — when `analysis.isNearMonochrome` is true (e.g. `.neutralFallback`
-        // during a themeStore catch-up window) it clamped colourful seed
-        // output back to chroma ≤ `nearMonoChromaCeiling`, producing the
-        // on-screen #80828X grey for colourful artwork.
         if seed.c >= ColorSystemTokens.ToneLadder.lyricsSeedChromaPreferred {
             return set
         }
         return neutraliseLyricsSurfaceIfNearMono(set, analysis: analysis)
     }
 
-    nonisolated private static func artisticLyricsSingleSeed(
+    /// Phase 6.1 seed selection. Public for SelfCheck regression coverage.
+    nonisolated static func artisticLyricsSingleSeed(
         preferred: NSColor,
         analysis: ArtworkColorAnalysis
     ) -> OKColor.OKLCH? {
+        let T = ColorSystemTokens.ToneLadder.self
+
         if analysis.isNearMonochrome {
             return OKColor.nsColorToOKLCH(preferred)
         }
-        var candidates: [NSColor] = [
-            preferred,
-            analysis.dominantColor,
-            analysis.bestTextSourceColor
-        ]
-        if let top = analysis.topPalette.first {
-            candidates.append(top)
+
+        // Step 2 — conservative salient override.
+        if let salient = pickSalientLyricSeed(analysis: analysis) {
+            return salient
         }
+
+        // Step 3 — area-dominant first.
+        if let dominantLCH = OKColor.nsColorToOKLCH(analysis.dominantColor),
+           dominantLCH.c >= T.lyricsDominantSeedMinChroma {
+            return dominantLCH
+        }
+
+        // Step 4 — fall through. Prefer the chromatically-strongest candidate
+        // from {topPalette.first, bestTextSourceColor, preferred}; this is the
+        // safety net for covers whose dominant bucket is genuinely grey.
+        var candidates: [NSColor] = []
+        if let top = analysis.topPalette.first { candidates.append(top) }
+        candidates.append(analysis.bestTextSourceColor)
+        candidates.append(preferred)
         var best: OKColor.OKLCH?
         for candidate in candidates {
             guard let lch = OKColor.nsColorToOKLCH(candidate) else { continue }
             if best == nil { best = lch }
-            // Prefer the first candidate with visible chroma. Fall through
-            // to the next candidate when the preferred seed is greyer than
-            // the visible-identity threshold so colourful artwork is never
-            // anchored to a desaturated seed.
-            if lch.c >= ColorSystemTokens.ToneLadder.lyricsSeedChromaPreferred {
-                return lch
-            }
-            if let current = best, lch.c > current.c + 0.010 {
-                best = lch
-            }
+            if lch.c >= T.lyricsSeedChromaPreferred { return lch }
+            if let current = best, lch.c > current.c + 0.010 { best = lch }
         }
         return best
+    }
+
+    /// Phase 6.1 — conservative salient highlight gate. Returns a salient
+    /// seed ONLY when the cover field is uniform enough that the highlight
+    /// reads as the visual focus. Returns nil for ordinary multi-colour
+    /// artwork so the default "主色优先" path stays in charge.
+    nonisolated private static func pickSalientLyricSeed(
+        analysis: ArtworkColorAnalysis
+    ) -> OKColor.OKLCH? {
+        let T = ColorSystemTokens.ToneLadder.self
+        guard let salientColor = analysis.salientHighlightPalette.first,
+              let salientLCH = OKColor.nsColorToOKLCH(salientColor) else {
+            return nil
+        }
+        guard salientLCH.c >= T.lyricsSalientSeedMinChroma else { return nil }
+
+        // Field-uniformity gate: salient overrides only when the cover is
+        // mostly mono (low colourfulness elsewhere) AND no other big
+        // saturated region competes for the eye. Either signal alone is
+        // insufficient — both must hold.
+        let fieldIsUniform = analysis.colorfulness <= T.lyricsSalientSeedMaxFieldColorfulness
+            && analysis.dominantHueConfidence >= T.lyricsSalientSeedDominantConfidenceMin
+        let highlightIsIsolated = analysis.largestHighSaturationAreaShare
+            <= T.lyricsSalientSeedMaxLargestHighSatArea
+        guard fieldIsUniform && highlightIsIsolated else { return nil }
+
+        // Hue-gap gate: salient must visibly differ from the dominant.
+        if let dominantLCH = OKColor.nsColorToOKLCH(analysis.dominantColor) {
+            let hueGap = circularHueDistance(salientLCH.h, dominantLCH.h)
+            guard hueGap >= T.lyricsSalientSeedMinHueGapFromDominant else {
+                return nil
+            }
+        }
+        return salientLCH
+    }
+
+    nonisolated private static func circularHueDistance(_ a: CGFloat, _ b: CGFloat) -> CGFloat {
+        let raw = abs(a - b).truncatingRemainder(dividingBy: 1)
+        return min(raw, 1 - raw)
     }
 
     nonisolated static func coverBlurLyricsColorSet(
@@ -1193,16 +1241,22 @@ enum SemanticPaletteFactory {
     }
 
     nonisolated fileprivate static func fullscreenLyricBase(analysis: ArtworkColorAnalysis) -> NSColor {
-        // High colorfulness + clear hue dominance → use the dominant cover hue.
-        // Otherwise fall back to the best text source colour (already mid-tone, hue-rich).
+        // Phase 6.1: area-dominant first. The v2/v3 path swung to
+        // `bestTextSourceColor` whenever colorfulness < 0.20 — but
+        // `bestTextSourceColor` is sourced from the most chromatic mid-tone
+        // bucket regardless of area, which on certain mid-saturation covers
+        // (e.g. mostly olive-brown with one small bright spot) produced a
+        // de-saturated text-source seed and the user's "中饱和封面莫名取出来
+        // 很低饱和" report. Dominant-first with a chroma threshold gives the
+        // hue cluster that dominates the cover area the right of refusal.
         if analysis.isNearMonochrome {
             return neutraliseLyricIfNearMono(analysis.bestTextSourceColor, analysis: analysis)
         }
-        if analysis.colorfulness >= ColorSystemTokens.FullscreenLyric.usesDominantColorfulnessMin
-           && analysis.dominantHueConfidence
-                >= ColorSystemTokens.FullscreenLyric.usesDominantHueConfidenceMin {
+        if let dominantLCH = OKColor.nsColorToOKLCH(analysis.dominantColor),
+           dominantLCH.c >= ColorSystemTokens.ToneLadder.lyricsDominantSeedMinChroma {
             return analysis.dominantColor
         }
+        // Dominant is too desaturated — fall through to text source.
         return analysis.bestTextSourceColor
     }
 
@@ -1335,6 +1389,19 @@ nonisolated enum SemanticPaletteSelfCheck {
             analysis: analysis,
             themeColor: themeColor,
             profile: profile
+        )
+    }
+
+    /// Phase 6.1 — surface the seed-selection decision so regression checks
+    /// can verify the dominant-first + conservative-salient gate behaviour
+    /// without having to build a full surface set.
+    nonisolated static func artisticLyricsSingleSeed(
+        preferred: NSColor,
+        analysis: ArtworkColorAnalysis
+    ) -> OKColor.OKLCH? {
+        SemanticPaletteFactory.artisticLyricsSingleSeed(
+            preferred: preferred,
+            analysis: analysis
         )
     }
 }

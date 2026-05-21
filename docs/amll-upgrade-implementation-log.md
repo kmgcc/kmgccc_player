@@ -1036,3 +1036,31 @@ Rejected / 保留负经验：
 - 未修改 fork core，未手改 generated `amll-core.js`。
 - 未改 lead-in、seek、pause、exit catch-up 或 CJK chunking。
 - Fullscreen 与 cover blur 仍使用同一用户质量设置控制 WebView backing scale；batch preview 保持独立默认，不受用户质量影响。
+
+## 2026-05-21 Phase 6.1 — Swift 侧艺术歌词修正不触 AMLL bundle / Adapter（confirm-only）
+
+背景：Phase 6 v3 后用户人工反馈夜间艺术歌词需要 soft shoulder / active L 抬高 / translation 与 inactive 同档；艺术背景 BK1/BK2、移动圆形、floating shapes 需要重新调亮度；日间模式需要"亮背景 + 深色歌词"反相体系。
+
+处理路径（按 patch registry 的"先外层 adapter / CSS，再 timing，最后 fork core"原则）：
+
+- 所有修改集中在 Swift 端：`PerceptualToneLadder.artisticLyricsTone(... scheme:)`、`SemanticPaletteFactory.artisticLyricsSingleSeed` / `fullscreenLyricBase`、`BKColorEngine.tierRanges`、`ColorSystemTokens.ToneLadder`、`ColorSystemSelfCheck`。
+- Swift 下发的颜色字段名与 AMLL CSS 变量名不变；`fullscreenActiveColor` / `fullscreenInactiveColor` / `fullscreenSubActiveColor` / `fullscreenSubInactiveColor` / `fullscreenBackgroundColor` / `fullscreenLineTimingInactiveColor` / `fullscreenLineTimingSubInactiveColor` 依旧通过 bridge.js 写入 `--amll-fs-main-active` / `--amll-fs-main-inactive` / `--amll-fs-sub-active` / `--amll-fs-sub-inactive` / `--amll-fs-bg-active` / `--amll-fs-main-line-timing-inactive` / `--amll-fs-sub-line-timing-inactive`。
+- Interlude dots `[class*="interludeDots"] > *` 的 color fallback chain 是 `var(--amll-fs-main-active, …)`；Swift 在日间模式下发深色 active，dots 自动跟随变深。
+- Background lyric color 使用 `var(--amll-fs-sub-color, var(--amll-fs-main-inactive, …))`；Swift 不下发 `--amll-fs-sub-color`，自然落到 `--amll-fs-main-inactive`，反相后 background lyric 自动变深。
+- Glow / shadow 使用 `currentColor`，与 lyric color 同步；反相后自动变深，无硬编码白色阴影。
+
+因此本轮 **不修改**：
+
+- 生成 bundle `amll-core.js` / `amll-lyric.js`；
+- `index.html` 的 CSS 变量名、fallback chain、interlude dots / background lyric / glow 的 CSS rule；
+- `bridge.js` 的 color-var apply 函数；
+- AMLL fork core；
+- Apple / Cover Gradient / Cover Blur lyrics 路径；
+- AMLL timing preprocessing / lead-in / seek / exit catch-up / CJK chunking。
+
+验收手测对应：
+
+- 日间艺术背景下歌词全部反相为深色（active 最深 → translation/inactive → line-timing），interlude dots、background lyric、glow 都跟随；
+- 夜间艺术背景下 active 比 v3 更亮、inactive 更沉、translation 与 inactive 同档；高饱和封面歌词不刺眼、中饱和封面 hue 稳定；
+- nearMono artwork 在 light / dark 下都不引入伪色；
+- Apple / Cover Gradient / Cover Blur 视觉无任何变化。

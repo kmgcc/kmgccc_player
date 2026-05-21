@@ -156,6 +156,34 @@ Phase 4.5 应包含：
 
 退出状态（2026-05-21 v3 修复）：Phase 6 v3 完成。SelfCheck 53 项 PASS（v2 → v3 新增 4 条回归门：`colourful seed survives isNearMonochrome=true`、`artistic path keeps colour under .neutralFallback analysis`、`sub-inactive L close to main-inactive L`、`LED low-level hue drift visible vs peak`）。剩余不在本轮强做：glow/shadow 单独 Swift 语义 token、Apple / Cover Gradient 的极轻量 tone-ladder 评估、旧 HSL fullscreen fallback 清理（保留作 fallback）。
 
+### Phase 6.1 — 艺术背景 / 歌词层级 / 日间反相 修正
+
+用户人工测试 Phase 6 v3 后反馈：夜间模式艺术背景歌词已经有色，但需要 (a) 高饱和封面 soft shoulder；(b) 中饱和 seed 不再意外塌到低彩；(c) active L 再抬高一档；(d) translation L 与 inactive L 同档；(e) 艺术背景 BK1/BK2、纯色背景的移动圆形、floating shapes 的 L/C 重新调整；(f) 日间模式重设为"亮背景 + 深色歌词"反相体系。本节是 v3 后的视觉修正，**不进入 Phase 7**。
+
+- [x] **高饱和 seed 软压（chroma soft shoulder）**：`PerceptualToneLadder.artisticLyricsTone` 在彩色路径下不再直接 hard-clamp 到 hue-family cap，而是先对 `base.c * chromaScale` 做 `OKColor.chromaSoftShoulder(ceiling=0.095, softness=0.045)`，再 clamp 到 cap。中饱和 seed（`scaled < ceiling`）穿过原样不被压。新自检：`Phase 6.1: high-chroma seed soft-shouldered`、`mid-chroma seed survives the shoulder`。
+- [x] **active L 抬高 + inactive 下沉 + translation 与 inactive 同档**：
+  - `lyricsMainActiveL` 0.880 → 0.905；`lyricsSubActiveL` 0.780 → 0.830；
+  - `lyricsMainInactiveL` 0.605 → 0.580；`lyricsSubInactiveL` 0.585 → 0.575（gap 0.005，紧贴 mainInactive）；
+  - `lyricsSubInactiveLightnessProximityAssertion` 0.060 → 0.020（强约束 translation 必须与 inactive 同档）；
+  - `lyricsLineTimingMainInactiveL` 0.560 → 0.555、`lyricsLineTimingSubInactiveL` 0.540 → 0.535；严格降序仍保持。
+- [x] **seed selection 改为「dominant 优先 + 保守 salient gate」**：`SemanticPaletteFactory.artisticLyricsSingleSeed` / `fullscreenLyricBase` 流程：
+  1. `analysis.isNearMonochrome` → 保留 preferred + 后续 neutralise；
+  2. `pickSalientLyricSeed` 通过则用 `salientHighlightPalette.first`：要求 colorfulness ≤ 0.18、dominantHueConfidence ≥ 0.42、`largestHighSaturationAreaShare` ≤ 0.22、salient OKLCH chroma ≥ 0.09、与 dominant 的 hue 距 ≥ 0.08；
+  3. 否则用 `analysis.dominantColor`（要求 OKLCH c ≥ `lyricsDominantSeedMinChroma = 0.025`）；
+  4. dominant 太灰再回退 `topPalette.first` / `bestTextSourceColor` / `preferred`。
+  新自检：`seed selection dominant-first on mid-sat`、`salient fires on uniform-dark + yellow`、`salient suppressed on multi-colour art`、`nearMono seed stays neutral`。
+- [x] **`PerceptualToneLadder.artisticLyricsTone` 增加 `scheme: ColorScheme`**：默认 `.dark` 维持原行为；`.light` 时整套切换到反相 L 表（`lyricsLightMainActiveL = 0.150` 等，严格升序），并使用更小的 chroma shoulder ceiling（0.072）+ hue-cap 乘以 0.72，避免深色歌词带过亮的 hue。`SemanticPaletteFactory.artisticFullscreenLyricsColorSet` 透传 scheme；`FullscreenPlayerView` 已 wire `colorScheme` 进 `fullscreenLyricsColorSet`。日间不应用 `lyricsUltraDark*Trim`。
+- [x] **`BKColorEngine.tierRanges` 调整**（艺术背景视觉层）：
+  - 夜间普通：`bgB` 0.24…0.40 → 0.18…0.32；`fgB` 0.44…0.64 → 0.34…0.54；`dotB` 0.56…0.82 → 0.46…0.68（圆形仍 > bg，但低于 v3）；`bgS` / `fgS` / `dotS` 上限各 +0.02…0.04，用 chroma 补偿降亮带来的灰扑扑。
+  - 夜间 veryDark / UltraDark：`fgB`、`dotB` 同向再降，浮动形状 / 圆形进一步压低。
+  - 日间：`bgB` 0.78…0.85 → 0.88…0.95（背景大幅提高）；`fgB` 0.66…0.78 → 0.78…0.88；`dotB` 0.50…0.62 → 0.62…0.74；`bgS` / `fgS` / `dotS` 上限轻微下调，避免高 L 飘成 pastel。
+  - BK1/BK2 = `bgVariants`，brightness 直接 clamp 到 `tier.bgB`，所以"BK 背景更暗"由上面的 bgB 收紧自动达成；saturation 由 `variantSRange`（推自 `tier.bgS`）控制，对应"略提高饱和度"。
+- [x] **SelfCheck v3 → v3.1 扩展**：新增 9 项 `Phase 6.1` 段；既有 v3 项目（`ToneLadder v3: artistic lyrics L hierarchy + chroma floor`、`Lyrics v3: sub-inactive L close to main-inactive L`、`Lyrics v2: artistic fullscreen tone ladder hierarchy`、`hue identity preserved on colourful artwork`）在 Phase 6.1 token 下仍 PASS。
+- [x] **AMLL CSS 变量与生成 bundle**：**未修改** `amll-core.js` / `amll-lyric.js` / `index.html` CSS 变量名。颜色仍按 v3 契约下发：`fullscreenActiveColor`、`fullscreenInactiveColor`、`fullscreenSubActiveColor`、`fullscreenSubInactiveColor`、`fullscreenBackgroundColor`（= `colorSet.subActive`）、`fullscreenLineTimingInactiveColor`、`fullscreenLineTimingSubInactiveColor`。Interlude dots 与 background lyric 行通过 fallback chain (`--amll-fs-main-active` / `--amll-fs-main-inactive`) 继承 Swift 下发的 active / inactive，因此日间反相会自动套用到 dots 与 background lyric。
+- [x] **Apple / Cover Gradient / Cover Blur 保持原 profile**：`coverBlurLyricsColorSet` 路径未触；Phase 5 HSL fullscreen fallback 未触；只有 `artisticFullscreenLyricsColorSet` 这一条 surface 被新 token / scheme / shoulder 影响。
+
+退出状态（2026-05-21 Phase 6.1）：build PASS。剩余不在本轮强做：Apple / Cover Gradient 是否需要并行 light-mode 反相、glow/shadow 是否要单独 token、BK1/BK2 是否需要独立于纯色背景的 sat tier。
+
 ### Phase 7 — 清理旧 HSL 分叉、文档收尾、回归验证
 
 - 删除 HSL 分叉路径；保留 `ColorMath` 但只剩 OKLCH。

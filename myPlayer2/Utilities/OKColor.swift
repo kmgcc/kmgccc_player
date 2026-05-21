@@ -310,13 +310,24 @@ nonisolated enum PerceptualToneLadder {
     /// Derives one lyric role colour from a single artistic seed. Callers
     /// MUST pass the same seed for every role; the ladder owns the L / C /
     /// hue split. Mixing seeds across roles was the v1 grey-wash regression.
+    ///
+    /// Phase 6.1 adds `scheme`: in `.dark` the ladder produces light text
+    /// on a dark artistic background (the historical path); in `.light`
+    /// the ladder inverts and produces dark text on the lifted-L bright
+    /// artistic background. Light-mode order is ascending — see
+    /// `ColorSystemTokens.ToneLadder.lyricsLight*L`.
     static func artisticLyricsTone(
         base: OKColor.OKLCH,
         role: LyricsRole,
         isUltraDark: Bool,
-        isNearMonochrome: Bool
+        isNearMonochrome: Bool,
+        scheme: ColorScheme = .dark
     ) -> OKColor.OKLCH {
         let T = ColorSystemTokens.ToneLadder.self
+        let isLight = scheme == .light
+        // Light mode never inherits the dark `isUltraDark` lyric trim — the
+        // bright artistic background renders the trim meaningless.
+        let applyUltraDarkTrim = isUltraDark && !isLight
         let targetL: CGFloat
         let chromaScale: CGFloat
         let shadowAmount: CGFloat
@@ -324,55 +335,73 @@ nonisolated enum PerceptualToneLadder {
 
         switch role {
         case .mainActive:
-            targetL = T.lyricsMainActiveL - (isUltraDark ? T.lyricsUltraDarkActiveTrim : 0)
+            targetL = (isLight ? T.lyricsLightMainActiveL : T.lyricsMainActiveL)
+                - (applyUltraDarkTrim ? T.lyricsUltraDarkActiveTrim : 0)
             chromaScale = T.lyricsMainActiveChromaScale
             shadowAmount = 0
             highlightAmount = 0.55
         case .subActive:
-            targetL = T.lyricsSubActiveL - (isUltraDark ? T.lyricsUltraDarkSubActiveTrim : 0)
+            targetL = (isLight ? T.lyricsLightSubActiveL : T.lyricsSubActiveL)
+                - (applyUltraDarkTrim ? T.lyricsUltraDarkSubActiveTrim : 0)
             chromaScale = T.lyricsSubActiveChromaScale
             shadowAmount = 0.10
             highlightAmount = 0.25
         case .mainInactive:
-            targetL = T.lyricsMainInactiveL - (isUltraDark ? T.lyricsUltraDarkInactiveTrim : 0)
+            targetL = (isLight ? T.lyricsLightMainInactiveL : T.lyricsMainInactiveL)
+                - (applyUltraDarkTrim ? T.lyricsUltraDarkInactiveTrim : 0)
             chromaScale = T.lyricsMainInactiveChromaScale
             shadowAmount = 0.55
             highlightAmount = 0
         case .lineTimingMainInactive:
-            targetL = T.lyricsLineTimingMainInactiveL - (isUltraDark ? T.lyricsUltraDarkInactiveTrim : 0)
+            targetL = (isLight ? T.lyricsLightLineTimingMainInactiveL : T.lyricsLineTimingMainInactiveL)
+                - (applyUltraDarkTrim ? T.lyricsUltraDarkInactiveTrim : 0)
             chromaScale = T.lyricsLineTimingMainInactiveChromaScale
             shadowAmount = 0.70
             highlightAmount = 0
         case .subInactive:
-            targetL = T.lyricsSubInactiveL - (isUltraDark ? T.lyricsUltraDarkInactiveTrim : 0)
+            targetL = (isLight ? T.lyricsLightSubInactiveL : T.lyricsSubInactiveL)
+                - (applyUltraDarkTrim ? T.lyricsUltraDarkInactiveTrim : 0)
             chromaScale = T.lyricsSubInactiveChromaScale
             shadowAmount = 0.78
             highlightAmount = 0
         case .lineTimingSubInactive:
-            targetL = T.lyricsLineTimingSubInactiveL - (isUltraDark ? T.lyricsUltraDarkInactiveTrim : 0)
+            targetL = (isLight ? T.lyricsLightLineTimingSubInactiveL : T.lyricsLineTimingSubInactiveL)
+                - (applyUltraDarkTrim ? T.lyricsUltraDarkInactiveTrim : 0)
             chromaScale = T.lyricsLineTimingSubInactiveChromaScale
             shadowAmount = 0.88
             highlightAmount = 0
         }
 
         var c: CGFloat
-        // v3: trust the seed. v2 routed the chroma decision through the
-        // upstream `analysis.isNearMonochrome` flag, but the analysis can
-        // be `.neutralFallback` (isNearMonochrome=true) on colourful
-        // artwork while the themeStore palette is still catching up — that
-        // is the exact path that produced the on-screen #80828X grey.
-        // The seed's actual chroma is the only reliable signal here.
+        // v3: trust the seed (analysis.isNearMonochrome ≠ "no visible hue
+        // on screen" — `neutralFallback` carries the flag even on colourful
+        // artwork during a themeStore catch-up window).
         let seedHasVisibleChroma = base.c >= T.lyricsSeedChromaPreferred
         if isNearMonochrome && !seedHasVisibleChroma {
             c = min(base.c * chromaScale, T.nearMonoChromaCeiling)
         } else {
-            let cap = hueChromaCap(base.h, role: .lyrics(role), scheme: .dark)
-            // Hue-identity floor: even if the seed has low chroma, force the
-            // result above the visible-chroma threshold so the hue family
-            // reads. Without this floor a desaturated seed produced grey
-            // inactive lyrics in v1.
+            // Phase 6.1: apply a soft chroma shoulder so highly-saturated
+            // seeds compress smoothly toward an asymptote instead of
+            // hard-clamping to the hue-family cap. Mid-chroma seeds
+            // (`base.c * chromaScale` < ceiling) pass through untouched —
+            // that is the regression guard against the user's "中饱和封面
+            // 莫名取出来很低饱和" report.
+            let shoulderCeiling = isLight
+                ? T.lyricsLightChromaShoulderCeiling
+                : T.lyricsChromaShoulderCeiling
+            let shoulderSoftness = isLight
+                ? T.lyricsLightChromaShoulderSoftness
+                : T.lyricsChromaShoulderSoftness
+            let scaled = base.c * chromaScale
+            let shoulderedLCH = OKColor.chromaSoftShoulder(
+                OKColor.OKLCH(l: targetL, c: scaled, h: base.h),
+                ceiling: shoulderCeiling,
+                softness: shoulderSoftness
+            )
+            let cap = hueChromaCap(base.h, role: .lyrics(role), scheme: scheme)
+            // Hue-identity floor keeps low-chroma seeds visibly tinted.
             let floor = min(T.lyricsColorfulMinimumChroma, cap * 0.85)
-            c = ColorMath.clamp(base.c * chromaScale, floor, cap)
+            c = ColorMath.clamp(shoulderedLCH.c, floor, cap)
         }
 
         let h = shiftedHue(
@@ -464,7 +493,10 @@ nonisolated enum PerceptualToneLadder {
         case .led:
             return scheme == .dark ? baseCap * 1.10 : baseCap * 0.92
         case .lyrics:
-            return baseCap
+            // Phase 6.1: light-mode lyrics are dark text — push the cap
+            // down ~30 % so saturated artwork does not produce glowing
+            // tinted text on a bright artistic background.
+            return scheme == .dark ? baseCap : baseCap * 0.72
         }
     }
 }

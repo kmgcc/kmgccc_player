@@ -452,25 +452,72 @@ nonisolated enum ColorSystemTokens {
         // an optional small chroma adjust, and a family-aware hue drift.
         // Outputs are opaque (alpha = 1.0); the Web layer continues to own
         // opacity / blend / masks / shadow.
-        static let lyricsMainActiveL: CGFloat = 0.880
-        static let lyricsSubActiveL: CGFloat = 0.780
-        static let lyricsMainInactiveL: CGFloat = 0.605
-        // v3: translation / sub-inactive sits close to its main counterpart
-        // (within ~0.025). The v2 0.10 gap pushed translation rows into a
-        // muddy band that the user reported as "明度太低，要和 inactive 普通
-        // 歌词行明度一样". Hierarchy between main and sub is now carried by
-        // chroma drift / surrounding text-weight / opacity, not by lightness.
-        // Strict descending order is preserved so `checkToneLadderBasicHierarchy`
-        // stays valid:
+        //
+        // Phase 6.1 (dark mode): active L lifted further (`要再调高一点`),
+        // sub-active climbs proportionally so the active-line pair stays the
+        // most luminous tier, inactive sinks a touch (`更沉`), and
+        // translation / sub-inactive tracks main-inactive within ~0.005 so
+        // the proximity assertion (0.020) holds and the user's "translation
+        // 与 inactive 同明度" requirement is enforced numerically. Strict
+        // descending order is still required by `checkToneLadderBasicHierarchy`:
         //   mainActive > subActive > mainInactive > subInactive
         //               > lineTimingMainInactive > lineTimingSubInactive.
-        static let lyricsSubInactiveL: CGFloat = 0.585
-        static let lyricsLineTimingMainInactiveL: CGFloat = 0.560
-        static let lyricsLineTimingSubInactiveL: CGFloat = 0.540
+        static let lyricsMainActiveL: CGFloat = 0.905
+        static let lyricsSubActiveL: CGFloat = 0.830
+        static let lyricsMainInactiveL: CGFloat = 0.580
+        static let lyricsSubInactiveL: CGFloat = 0.575
+        static let lyricsLineTimingMainInactiveL: CGFloat = 0.555
+        static let lyricsLineTimingSubInactiveL: CGFloat = 0.535
 
         static let lyricsUltraDarkActiveTrim: CGFloat = 0.030
         static let lyricsUltraDarkSubActiveTrim: CGFloat = 0.040
         static let lyricsUltraDarkInactiveTrim: CGFloat = 0.060
+
+        // Phase 6.1 light mode (artistic background only): lyric inversion.
+        // Light-mode artistic backgrounds are lifted into a high-L band
+        // (see `BKColorEngine.tierRanges`), so lyrics flip to a dark
+        // ladder. `active` lives at the lowest L (most contrast), inactive
+        // and translation occupy a mid-low band. Strict ASCENDING order is
+        // required in light mode — opposite of dark — so the same
+        // hierarchy check parameterises by scheme:
+        //   mainActive < subActive < mainInactive < subInactive
+        //               < lineTimingMainInactive < lineTimingSubInactive.
+        // Translation (subInactive) sits within ~0.005 of main-inactive so
+        // the proximity assertion holds in both schemes.
+        static let lyricsLightMainActiveL: CGFloat = 0.150
+        static let lyricsLightSubActiveL: CGFloat = 0.260
+        static let lyricsLightMainInactiveL: CGFloat = 0.430
+        static let lyricsLightSubInactiveL: CGFloat = 0.435
+        static let lyricsLightLineTimingMainInactiveL: CGFloat = 0.470
+        static let lyricsLightLineTimingSubInactiveL: CGFloat = 0.500
+
+        // Phase 6.1 chroma soft-shoulder for high-chroma seeds. The v3 hard
+        // cap (~0.110…0.140 by hue) compressed high-C seeds to a fixed
+        // value, which the user reported as "高饱和封面歌词刺眼". A soft
+        // shoulder smoothly approaches an asymptote of
+        // `lyricsChromaShoulderCeiling + lyricsChromaShoulderSoftness`
+        // instead of jumping to the cap. Mid-C seeds (< ceiling) are
+        // untouched.
+        static let lyricsChromaShoulderCeiling: CGFloat = 0.095
+        static let lyricsChromaShoulderSoftness: CGFloat = 0.045
+        // Light-mode lyrics use a tighter chroma envelope so dark text on
+        // light artwork does not glow with residual hue.
+        static let lyricsLightChromaShoulderCeiling: CGFloat = 0.072
+        static let lyricsLightChromaShoulderSoftness: CGFloat = 0.030
+
+        // Phase 6.1 seed-selection. Drives `fullscreenLyricBase` /
+        // `artisticLyricsSingleSeed`: area-dominant first, salient highlight
+        // only as a conservative override.
+        static let lyricsDominantSeedMinChroma: CGFloat = 0.025
+        static let lyricsSalientSeedMinChroma: CGFloat = 0.090
+        static let lyricsSalientSeedMinHueGapFromDominant: CGFloat = 0.08
+        // Cover field is "uniform main + small accent" when EITHER the
+        // dominant hue commands a large share AND colorfulness elsewhere is
+        // low, OR the largest high-saturation region is small (the cover is
+        // mostly low-sat with a punch of colour somewhere).
+        static let lyricsSalientSeedMaxFieldColorfulness: CGFloat = 0.18
+        static let lyricsSalientSeedDominantConfidenceMin: CGFloat = 0.42
+        static let lyricsSalientSeedMaxLargestHighSatArea: CGFloat = 0.22
 
         // Chroma scales cluster around 1.0 so inactive states keep their hue
         // identity. Active dips slightly below 1.0 to absorb the gamut
@@ -485,16 +532,15 @@ nonisolated enum ColorSystemTokens {
         static let lyricsColorfulMinimumChroma: CGFloat = 0.050
         static let lyricsSeedChromaPreferred: CGFloat = 0.045
 
-        // Self-check thresholds (Phase 6 v3 hardened).
+        // Self-check thresholds (Phase 6.1 hardened).
+        // Active↔inactive L gap is asserted as a magnitude (works for both
+        // descending dark-mode order and ascending light-mode order).
         static let lyricsActiveInactiveLightnessGapAssertion: CGFloat = 0.22
-        // v3: sub-active vs sub-inactive gap is smaller now that sub-inactive
-        // sits close to main-inactive L. Hierarchy is shifted onto chroma /
-        // surrounding text weight rather than lightness.
         static let lyricsSecondaryInactiveLightnessGapAssertion: CGFloat = 0.15
-        // v3: translation / sub-inactive L must be close to main-inactive L
-        // (max delta). The v2 gap (~0.10) was the source of the "translation
-        // too dim" complaint.
-        static let lyricsSubInactiveLightnessProximityAssertion: CGFloat = 0.060
+        // Phase 6.1: tightened to 0.020 — translation MUST sit on the same
+        // perceptual L tier as main-inactive (the user's "和 inactive 普通
+        // 歌词行明度一样" requirement).
+        static let lyricsSubInactiveLightnessProximityAssertion: CGFloat = 0.020
         static let lyricsInactiveChromaRatioAssertion: CGFloat = 0.85
         static let lyricsHueIdentityAssertion: CGFloat = 0.025
         // v3: when the seed has visible chroma, the artistic Tone Ladder
