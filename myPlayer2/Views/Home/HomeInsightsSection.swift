@@ -30,6 +30,8 @@ struct HomeInsightsSection: View {
     /// AppForegroundPalette primary resolved at HomeView level; same pattern
     /// as `accentColor` — avoids per-child ThemeStore subscription.
     var titleColor: Color = Color.primary
+    var subtitleColor: Color = Color.secondary
+    var tertiaryColor: Color = Color(nsColor: .tertiaryLabelColor)
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
@@ -80,7 +82,9 @@ struct HomeInsightsSection: View {
                 items: homeVM.preferenceRanking,
                 fixedHeight: rowHeight,
                 playbackCoordinator: playbackCoordinator,
-                accentColor: accentColor
+                accentColor: accentColor,
+                subtitleColor: subtitleColor,
+                tertiaryColor: tertiaryColor
             )
                 .frame(maxWidth: .infinity)
                 .frame(height: rowHeight)
@@ -112,7 +116,9 @@ struct HomeInsightsSection: View {
             HomePreferenceRankingView(
                 items: homeVM.preferenceRanking,
                 playbackCoordinator: playbackCoordinator,
-                accentColor: accentColor
+                accentColor: accentColor,
+                subtitleColor: subtitleColor,
+                tertiaryColor: tertiaryColor
             )
                 .frame(maxWidth: .infinity)
                 .padding(.leading, centerLeftPad)
@@ -439,6 +445,8 @@ private struct HomePreferenceRankingView: View {
     var fixedHeight: CGFloat? = nil
     let playbackCoordinator: PlaybackCoordinator
     let accentColor: Color
+    var subtitleColor: Color = Color.secondary
+    var tertiaryColor: Color = Color(nsColor: .tertiaryLabelColor)
     @Environment(\.colorScheme) private var colorScheme
     @State private var trackToEdit: Track?
 
@@ -460,7 +468,7 @@ private struct HomePreferenceRankingView: View {
                 if visibleItems.isEmpty {
                     Text("暂无足够的听歌数据")
                         .font(.callout)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(tertiaryColor)
                         .frame(maxWidth: .infinity, minHeight: 100)
                 } else {
                     // Header row
@@ -479,7 +487,7 @@ private struct HomePreferenceRankingView: View {
                     .font(.caption2)
                     .textCase(.uppercase)
                     .tracking(0.6)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(tertiaryColor)
                     .padding(.horizontal, horizontalPadding)
                     .padding(.bottom, isHeightConstrained ? 4 : 6)
                     .frame(height: isHeightConstrained ? 18 : 20, alignment: .top)
@@ -495,6 +503,7 @@ private struct HomePreferenceRankingView: View {
                                     queueTracks: queueTracks,
                                     playbackCoordinator: playbackCoordinator,
                                     accentColor: accentColor,
+                                    subtitleColor: subtitleColor,
                                     onEditTrack: { trackToEdit = $0 }
                                 )
                                 if index < visibleItems.count - 1 {
@@ -530,6 +539,7 @@ private struct HomeRankRow: View {
     /// invalidations on every ThemeStore publish (track change, scheme
     /// flip, palette refresh) even though each row reads only one value.
     let accentColor: Color
+    var subtitleColor: Color = Color.secondary
     let onEditTrack: (Track) -> Void
     @State private var isHovering = false
     @Environment(\.colorScheme) private var colorScheme
@@ -549,7 +559,7 @@ private struct HomeRankRow: View {
         HStack(spacing: 0) {
             Text("\(rank)")
                 .font(.system(size: dense ? 14 : 15, weight: .semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(subtitleColor)
                 .frame(width: 28)
 
             HomeRankArtworkView(item: item, side: dense ? 30 : 34)
@@ -562,7 +572,7 @@ private struct HomeRankRow: View {
                     .lineLimit(1)
                 Text(item.artist)
                     .font(dense ? .caption2 : .caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(subtitleColor)
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -581,7 +591,7 @@ private struct HomeRankRow: View {
 
             Text("\(item.playCount)")
                 .font(.system(size: 12, design: .monospaced))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(subtitleColor)
                 .frame(width: playColumnWidth, alignment: .trailing)
         }
         .padding(.horizontal, rowHorizontalPadding)

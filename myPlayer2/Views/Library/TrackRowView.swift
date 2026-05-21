@@ -38,6 +38,10 @@ struct TrackRowView<MenuContent: View>: View {
     let enableArtworkLoading: Bool
     let onTap: (_ isShiftPressed: Bool) -> Void
     let onRowAppear: (() -> Void)?
+    /// Optional palette override from parent. Defaults to system colors so
+    /// callers that have no ThemeStore access still work correctly.
+    var rowPrimaryColor: Color = ColorTokens.textPrimary
+    var rowSecondaryColor: Color = ColorTokens.textSecondary
     @ViewBuilder let menuContent: () -> MenuContent
 
     @State private var isHovering = false
@@ -57,6 +61,8 @@ struct TrackRowView<MenuContent: View>: View {
         enableArtworkLoading: Bool = true,
         onTap: @escaping (_ isShiftPressed: Bool) -> Void,
         onRowAppear: (() -> Void)? = nil,
+        rowPrimaryColor: Color = ColorTokens.textPrimary,
+        rowSecondaryColor: Color = ColorTokens.textSecondary,
         @ViewBuilder menuContent: @escaping () -> MenuContent
     ) {
         self.model = model
@@ -66,6 +72,8 @@ struct TrackRowView<MenuContent: View>: View {
         self.enableArtworkLoading = enableArtworkLoading
         self.onTap = onTap
         self.onRowAppear = onRowAppear
+        self.rowPrimaryColor = rowPrimaryColor
+        self.rowSecondaryColor = rowSecondaryColor
         self.menuContent = menuContent
     }
 
@@ -186,12 +194,12 @@ struct TrackRowView<MenuContent: View>: View {
 
     private var textPrimaryColor: Color {
         if model.isMissing { return .secondary }
-        return isPlaying ? Color.accentColor : ColorTokens.textPrimary
+        return isPlaying ? Color.accentColor : rowPrimaryColor
     }
 
     private var textSecondaryColor: Color {
         if model.isMissing { return Color.gray.opacity(0.6) }
-        return ColorTokens.textSecondary
+        return rowSecondaryColor
     }
 
     private var backgroundFill: Color {

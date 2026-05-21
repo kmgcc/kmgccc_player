@@ -111,6 +111,7 @@ struct SidebarView: View {
                                 Label(playlist.name, systemImage: "music.note.list")
                                 Spacer()
                             }
+                            .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.primary))
                             .padding(.horizontal, 10)
                             .padding(.vertical, 6)
                             .background(
@@ -169,6 +170,7 @@ struct SidebarView: View {
                                     Text(artist.name)
                                     Spacer()
                                 }
+                                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.primary))
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 6)
                                 .background(
@@ -239,6 +241,7 @@ struct SidebarView: View {
                                     Text(album.name)
                                     Spacer()
                                 }
+                                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.primary))
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 6)
                                 .background(

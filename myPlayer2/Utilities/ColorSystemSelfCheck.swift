@@ -127,6 +127,8 @@ nonisolated enum ColorSystemSelfCheck {
         report.section("Phase 4.5 — AppForegroundPalette")
         checkAppFgNearMonoAchromatic(&report)
         checkAppFgColorfulHasTint(&report)
+        checkAppFgLightColorfulHasTint(&report)
+        checkAppFgLightChromaHigherThanDark(&report)
         checkAppFgDarkLightnessHierarchy(&report)
         checkAppFgLightLightnessHierarchy(&report)
         checkAppFgSeparateFromReadabilityProfile(&report)
@@ -410,6 +412,70 @@ nonisolated enum ColorSystemSelfCheck {
         report.record(
             "AppForeground: separate from ReadabilityProfile", notIdentical,
             "fgPrimary ≠ readabilityPrimary: \(notIdentical)"
+        )
+    }
+
+    /// Light-mode colourful artwork: light-mode primary foreground must carry
+    /// a non-zero OKLCH chroma tint while staying within lightColorfulChromaAssertion.
+    private static func checkAppFgLightColorfulHasTint(_ report: inout CheckReport) {
+        guard let analysis = analyse(side: 32, fill: (40, 100, 200, 255)) else {
+            report.record("AppForeground: light-mode colorful has tint", false, "analysis nil")
+            return
+        }
+        guard !analysis.isNearMonochrome else {
+            report.record(
+                "AppForeground: light-mode colorful has tint", false,
+                "synthetic sample classified nearMono"
+            )
+            return
+        }
+        let blueAccent = NSColor(deviceRed: 0.20, green: 0.45, blue: 0.90, alpha: 1)
+        let palette = SemanticPaletteSelfCheck.appForeground(
+            analysis: analysis, globalAccent: blueAccent, isDark: false
+        )
+        guard let lch = OKColor.nsColorToOKLCH(palette.primary) else {
+            report.record("AppForeground: light-mode colorful has tint", false, "OKLCH nil")
+            return
+        }
+        let ceiling = ColorSystemTokens.AppForeground.lightColorfulChromaAssertion
+        let hasTint = lch.c > 0.001
+        let withinCeiling = lch.c <= ceiling
+        let ok = hasTint && withinCeiling
+        report.record(
+            "AppForeground: light-mode colorful has tint", ok,
+            "primaryChroma=\(format(lch.c)) ceiling=\(format(ceiling))"
+        )
+    }
+
+    /// Light-mode primary chroma must exceed dark-mode primary chroma for
+    /// the same colourful artwork + accent. The wider cap for light mode
+    /// is the whole point of the per-mode split.
+    private static func checkAppFgLightChromaHigherThanDark(_ report: inout CheckReport) {
+        guard let analysis = analyse(side: 32, fill: (40, 100, 200, 255)) else {
+            report.record("AppForeground: light chroma > dark chroma", false, "analysis nil")
+            return
+        }
+        guard !analysis.isNearMonochrome else {
+            report.record(
+                "AppForeground: light chroma > dark chroma", false,
+                "synthetic sample classified nearMono"
+            )
+            return
+        }
+        let accent = NSColor(deviceRed: 0.20, green: 0.45, blue: 0.90, alpha: 1)
+        let dark  = SemanticPaletteSelfCheck.appForeground(analysis: analysis, globalAccent: accent, isDark: true)
+        let light = SemanticPaletteSelfCheck.appForeground(analysis: analysis, globalAccent: accent, isDark: false)
+        guard
+            let lchDark  = OKColor.nsColorToOKLCH(dark.primary),
+            let lchLight = OKColor.nsColorToOKLCH(light.primary)
+        else {
+            report.record("AppForeground: light chroma > dark chroma", false, "OKLCH nil")
+            return
+        }
+        let ok = lchLight.c > lchDark.c
+        report.record(
+            "AppForeground: light chroma > dark chroma", ok,
+            "lightC=\(format(lchLight.c)) darkC=\(format(lchDark.c))"
         )
     }
 

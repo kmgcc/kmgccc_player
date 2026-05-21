@@ -243,15 +243,21 @@ struct FullscreenQueueView: View {
     }
 
     private var primaryForegroundColor: Color {
-        usesBrightTextPalette ? Color.white.opacity(0.96) : Color.primary.opacity(0.96)
+        usesBrightTextPalette
+            ? Color.white.opacity(0.96)
+            : Color(nsColor: themeStore.appForegroundPalette.primary).opacity(0.96)
     }
 
     private var secondaryForegroundColor: Color {
-        usesBrightTextPalette ? Color.white.opacity(0.74) : Color.secondary.opacity(0.82)
+        usesBrightTextPalette
+            ? Color.white.opacity(0.74)
+            : Color(nsColor: themeStore.appForegroundPalette.secondary).opacity(0.82)
     }
 
     private var tertiaryForegroundColor: Color {
-        usesBrightTextPalette ? Color.white.opacity(0.58) : Color.secondary.opacity(0.72)
+        usesBrightTextPalette
+            ? Color.white.opacity(0.58)
+            : Color(nsColor: themeStore.appForegroundPalette.tertiary).opacity(0.72)
     }
 
     private var hoverFillColor: Color {

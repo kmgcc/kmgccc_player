@@ -1426,3 +1426,87 @@ docs/oklch-color-system-migration-log.md           (本节)
 
 ***
 
+## §8 Phase 4.5 Expansion — 全局普通前景色主体系接入
+
+**完成日期**：2026-05-20。
+
+### 8.1 本阶段目标
+
+将 Phase 4.5 从"局部 section title 试点"推进到"App 普通文字与前景图标的主体系接入"。具体：
+
+1. **浅色模式 chroma 加强**：深浅模式使用不同 chroma cap，使浅色模式下深色字也有可感知的暖/冷偏向。
+2. **Home 卡片文字**：专辑/艺人/播放列表卡片内标题、副标题、排行榜行接入。
+3. **Sidebar 列表条目**：艺人行、专辑行接入。
+4. **Settings 侧边栏**：分类标题、图标（未选中）接入。
+5. **全屏队列**：非 artwork 模式下 primary/secondary/tertiary 文字接入。
+6. **Library 列表**：TrackRowView 新增可选颜色参数，PlaylistDetailView 预解析向下传递。
+7. **曲目信息编辑**：TrackInfoEditorCore 的 label / helper / metadata 接入。
+
+### 8.2 浅色模式 chroma 优化
+
+新增 per-mode chroma caps（`ColorSystemTokens.AppForeground`）：
+
+```
+lightPrimaryChromaCap    = 0.100   (dark: 0.070)
+lightSecondaryChromaCap  = 0.080   (dark: 0.056)
+lightTertiaryChromaCap   = 0.060   (dark: 0.040)
+lightQuaternaryChromaCap = 0.040   (dark: 0.022)
+lightChromaCeiling       = 0.110   (dark: 0.080)
+lightColorfulChromaAssertion = 0.120
+```
+
+SelfCheck 新增 2 个断言（总计 32/32）：`light-mode colorful has tint`，`light chroma > dark chroma`。
+
+### 8.3 新增接入模块
+
+| 模块 | 接入文字类型 | palette 层级 |
+|---|---|---|
+| HomePlaylistCard | 播放列表名、track count、描述 | primary / secondary |
+| HomeAlbumCard | 专辑名、artist 副标题 | primary / secondary |
+| HomeArtistCircle | 艺人名 | primary |
+| HomeRankRow | 排行序号、歌手名、播放次数 | secondary |
+| HomePreferenceRankingView | 列标题行、空态文字 | tertiary |
+| SidebarView 艺人行/专辑行 | 条目文字 | primary |
+| SettingsSidebarView | "设置"标题、分类图标（未选中）、分类文字 | primary |
+| FullscreenQueueView | 队列标题、track count（non-artwork mode）| primary / secondary / tertiary |
+| TrackRowView | 歌曲标题（非播放）、艺人名 | primary / secondary |
+| TrackInfoEditorCore | label / helper text / metadata 副标题 | secondary / tertiary |
+
+### 8.4 性能策略（父层预解析 + 透传）
+
+- HomeView 预解析 primary/secondary/tertiary 传给 4 个子区段
+- HomePlaylistsSection / HomeAlbumsSection → 私有 card 组件
+- PlaylistDetailView 新增 ThemeStore 订阅（单次），预解析后传给 PlaylistTrackRowsSection → TrackRowView
+- TrackRowView 新增 `rowPrimaryColor` / `rowSecondaryColor` 可选参数（默认 ColorTokens 值）
+
+### 8.5 暂未迁移区域
+
+| 区域 | 原因 |
+|---|---|
+| HomeStatCard / FavoriteArtistCard | 需多层透传；优先级低 |
+| ListeningCalendarCard / HeatmapView | heatmap 颜色另有 accent 控制 |
+| AppKit Toolbar 图标 | NSToolbarItem 无直接颜色注入路径 |
+| AllAlbumsView / AllArtistsView | 留下一批 |
+| BatchTrackEditSheet / LDDCSearchSection | 留下一批 |
+
+### 8.6 构建结果
+
+`** BUILD SUCCEEDED **`（Debug）
+
+### 8.7 吸管验证 8 位
+
+| 位置 | 暖色封面 | 冷色封面 | nearMono |
+|---|---|---|---|
+| 主页专辑卡 — 专辑标题 | R > B | B > R | R≈G≈B |
+| 主页艺人圆 — 艺人名 | R > B | B > R | R≈G≈B |
+| 主页播放列表卡 — 名称 | R > B | B > R | R≈G≈B |
+| 主页排行榜 — 序号/歌手 | R > B（略）| B > R（略）| R≈G≈B |
+| Sidebar 艺人/专辑条目 | R > B | B > R | R≈G≈B |
+| Settings 分类文字 | R > B | B > R | R≈G≈B |
+| Library 列表行 — 歌曲标题 | R > B | B > R | R≈G≈B |
+| 全屏队列 — 队列标题 | R > B | B > R | R≈G≈B |
+
+浅色模式下，上述颜色在饱和度上应明显强于深色模式（light cap 提高到 0.100）。
+
+***
+

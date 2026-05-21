@@ -198,7 +198,7 @@ struct TrackInfoEditorCore: View {
                     .font(.headline)
                 Text("修改会保存为本 app 的匹配覆盖与解析缓存，不会回写外部播放源的原始元数据。")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
             }
         }
         .padding(12)
@@ -228,7 +228,7 @@ struct TrackInfoEditorCore: View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(label)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
                 .frame(width: 34, alignment: .leading)
             Text(value.isEmpty ? "未提供" : value)
                 .font(.callout)
@@ -318,7 +318,7 @@ struct TrackInfoEditorCore: View {
             } else {
                 Image(systemName: "music.note")
                     .font(.system(size: size * 0.36, weight: .medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
             }
         }
         .frame(width: size, height: size)
@@ -429,10 +429,10 @@ struct TrackInfoEditorCore: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("来自专辑介绍")
                                 .font(.caption)
-                                .foregroundStyle(.tertiary)
+                                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.tertiary))
                             Text(descriptionFallback)
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
                                 .lineLimit(3)
                         }
                         .padding(10)
@@ -450,9 +450,9 @@ struct TrackInfoEditorCore: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("edit.track.duration")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
                     Text(formatDuration(duration))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
                 }
             }
         }
@@ -499,7 +499,7 @@ struct TrackInfoEditorCore: View {
             if let metadataLookupMessage {
                 Text(metadataLookupMessage)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
             }
         }
     }
@@ -515,7 +515,7 @@ struct TrackInfoEditorCore: View {
             )
         }
         .font(.caption)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
         .padding(.top, 2)
     }
 
@@ -523,7 +523,7 @@ struct TrackInfoEditorCore: View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(label)
                 .frame(width: 118, alignment: .leading)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.tertiary))
             Text(value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未记录" : value)
                 .textSelection(.enabled)
         }
@@ -537,7 +537,7 @@ struct TrackInfoEditorCore: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label)
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
             TextField(prompt, text: text)
                 .textFieldStyle(.roundedBorder)
         }
@@ -551,7 +551,7 @@ struct TrackInfoEditorCore: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label)
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
 
             ZStack(alignment: .topLeading) {
                 TextEditor(text: text)
@@ -563,7 +563,7 @@ struct TrackInfoEditorCore: View {
 
                 if text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Text(prompt)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.tertiary))
                         .font(.body)
                         .padding(.horizontal, 13)
                         .padding(.vertical, 16)
@@ -618,7 +618,7 @@ struct TrackInfoEditorCore: View {
                 "AMLL DB 歌词库中的 TTML 专为 AMLL 组件设计，支持对唱歌词、背景歌词等高级特性，来自网络的转换歌词仅为歌词缺失情况下的备选。您也可以使用 AMLL TTML Tool 自己制作歌词使用或贡献到 AMLL DB。"
             )
             .font(.caption)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
             .fixedSize(horizontal: false, vertical: true)
 
             TextEditor(text: $lyricsText)
@@ -632,7 +632,7 @@ struct TrackInfoEditorCore: View {
 
             Text("edit.track.paste_desc")
                 .font(.caption)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.tertiary))
 
             if allowsLyricsOffset {
                 lyricsOffsetSection
@@ -660,10 +660,10 @@ struct TrackInfoEditorCore: View {
             HStack {
                 Text("edit.track.offset")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
                 Spacer()
                 Text(String(format: "%+.2f s", lyricsTimeOffsetMs / 1000.0))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
                     .monospacedDigit()
                 Button(LocalizedStringKey("edit.track.reset")) {
                     lyricsTimeOffsetMs = 0
@@ -677,7 +677,7 @@ struct TrackInfoEditorCore: View {
 
             Text(NSLocalizedString("edit.track.offset_desc", comment: ""))
                 .font(.caption)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.tertiary))
         }
     }
 
