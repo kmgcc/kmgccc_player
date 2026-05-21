@@ -3559,25 +3559,14 @@ struct FullscreenPlayerView: View {
     }
 
     private func resolveFullscreenLyricsInactiveBaseColor(forTrackID trackID: UUID?) -> NSColor {
-        if let backgroundColor = lockedFullscreenLyricsBackgroundColor {
-            return backgroundColor
-        }
-
-        if settings.fullscreenArtBackgroundEnabled, bkController.lyricsColorTrackID == trackID {
-            if pendingFullscreenLyricsBackgroundCapture,
-                let backgroundColor = bkController.primaryBackgroundColor
-            {
-                return backgroundColor
-            }
-
-            if let backgroundColor = bkController.currentSurfaceBackgroundColor {
-                return backgroundColor
-            }
-
-            if let backgroundColor = bkController.primaryBackgroundColor {
-                return backgroundColor
-            }
-        }
+        // Phase 6 v2 contract: art surface background colours
+        // (`bkController.currentSurfaceBackgroundColor`,
+        // `primaryBackgroundColor`, `lockedFullscreenLyricsBackgroundColor`)
+        // are readability calibration inputs only — they must NOT be used as
+        // the seed for inactive lyric colours. Doing so collapses inactive
+        // chroma toward neutral and was the root cause of the Phase 6 v1
+        // "grey-wash" regression. Inactive lyric colour is now derived from
+        // the artwork semantic palette in the same way as the Phase 5 path.
 
         if themeStorePaletteMatchesCurrentArtwork(forTrackID: trackID) {
             return themeStore.semanticPalette.fullscreenLyricInactiveBase

@@ -711,16 +711,98 @@ Phase 6 新增 6 个自检，总数 47：
 5. Artistic fullscreen tone ladder hierarchy；
 6. Cover blur profile remains separate。
 
-验证结果：
+验证结果（Phase 6 v1）：47/47 PASS。
 
-- `ColorSystemSelfCheck` 47/47 PASS。
-- Debug build succeeded：`xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player -configuration Debug -destination 'platform=macOS' build`。
+**但 v1 的自检设计本身有缺陷**，详见 6.7 失败复盘——v1 数学距离合格、视觉灰白化。
 
-### 6.6 Phase 7 接力
+### 6.6 Phase 7 接力（v1 时的展望，部分已被 v2 覆盖）
 
 - 清理旧 HSL fullscreen fallback：非艺术 fullscreen 仍保留 Phase 5 HSL profile，Phase 7 可评估是否以 Tone Ladder 复述并做视觉 A/B。
 - glow / shadow 仍是 Web 渲染 structure；若要主题化 glow，应新增 Swift semantic glow token，不能让 Web 决定 hue。
-- Apple / Cover Gradient 是否需要“极轻量 Tone Ladder”只可作为单独审美评估，默认保留当前 profile。
+- Apple / Cover Gradient 是否需要"极轻量 Tone Ladder"只可作为单独审美评估，默认保留当前 profile。
+- `isEffectivelyMonochrome` alias 仍可在 Phase 7 收掉。
+
+### 6.7 Phase 6 v1 失败复盘与 v2 重做（2026-05-21）
+
+#### 6.7.1 v1 的视觉表现
+
+人工检查结论：
+
+1. LED 各 level 的色彩科学明度层级在视觉上**不明显，甚至比旧版更不明显**；
+2. 艺术背景类 fullscreen lyrics 的 active / inactive / secondary 几乎变成灰白色，hue identity 丢失；
+3. v1 的 SelfCheck 47/47 PASS，但视觉是失败的。
+
+#### 6.7.2 v1 根因
+
+**根因 A：艺术歌词的 dual-seed 把背景色当成 inactive 种子**。`FullscreenPlayerView.resolveFullscreenLyricsInactiveBaseColor(...)` 在 `settings.fullscreenArtBackgroundEnabled == true` 时返回 `bkController.currentSurfaceBackgroundColor` / `primaryBackgroundColor`——这是渲染后的**艺术背景表面色**，OKLCH chroma 通常只有 0.03–0.06。这一去饱和种子进入 Tone Ladder 后，inactive 永远不可能恢复 hue identity。
+
+**根因 B：v1 Tone Ladder 内多层 chroma 压缩链路叠加**：
+
+- chromaScale 跨角色单调下降 (0.78 → 0.60 → 0.48 → 0.40 → 0.34 → 0.28)；
+- hueCap 按角色再压一档 (×0.82 / ×0.68 / ×0.58 / ×0.50 / ×0.44 / ×0.38)；
+- 在 L > 0.82 / L < 0.46 再叠 brightShoulder×0.74 / shadowShoulder×0.62。
+
+这三层乘下来，inactive C 普遍落在 0.02–0.04 区间，低于"可视有彩"阈值（≈0.04），就是用户看到的"几乎变成灰白色"。
+
+**根因 C：LED OKLCH L 与 opacity 打架**。v1 把 LED L 下沿拉到 0.700（dark mode），但 LED 渲染层还叠着 `opacity 0.08 → 1.00` 的 6.25× 透明度斜坡。低 level 的 OKLCH L=0.725 被 opacity 0.16 再次压缩，最终落点更暗——级别差不是"色彩科学层级"，而是"看不见 vs 看得见"。
+
+**根因 D：v1 SelfCheck 门槛过松**。`inactive.c > 0.018` 是"不是纯灰"，不是"可视有彩"；`oklabDistance(low, mid) >= 0.060` 不把 opacity 多重叠加纳入感知模型；完全没有 hue identity 检查；没有四 hue family 的具体数值回归。
+
+#### 6.7.3 v2 重做策略
+
+**策略 1：歌词 single-seed**。`artisticFullscreenLyricsColorSet` 改为只用一个 seed（active highlight）派生所有角色。`FullscreenPlayerView.resolveFullscreenLyricsInactiveBaseColor(...)` 移除 `bkController.currentSurfaceBackgroundColor` / `primaryBackgroundColor` / `lockedFullscreenLyricsBackgroundColor` 三条"用背景色当 lyric 种子"的旧路径——背景色仅作可读性校准参考，不得作为 lyric 颜色种子。
+
+如果 preferred seed 自身 chroma 过低，按 `analysis.dominantColor` → `analysis.bestTextSourceColor` → `analysis.topPalette.first` 顺序换更鲜活的源（`artisticLyricsSingleSeed`）。
+
+**策略 2：v2 Tone Ladder 的 chroma 哲学反过来**：
+
+- 角色 chromaScale **不再单调下降**，而是聚集在 1.0 附近：0.92 / 0.96 / 1.04 / 1.02 / 1.00 / 0.96。inactive scale 略**高于** active，正好抵消 active L=0.88 处的 gamut 收口；
+- hueCap **取消按角色削减**，所有 lyrics 角色共享 hue family cap（黄 0.110、红 0.130、蓝 0.140、紫 0.120）；
+- 取消 brightShoulder / shadowShoulder——v1 这两层是把好端端的彩色压成灰的元凶；
+- 引入 visible-chroma floor `lyricsColorfulMinimumChroma = 0.050`，彩色路径下任何角色都不允许低于这条线；
+- hue drift 紧缩到 ±0.005–0.012（v1 是 ±0.014–0.018），保证 hue identity 在所有角色下守住。
+
+**策略 3：LED L band 退到上半区**：dark mode 0.780 → 0.920、light mode 0.430 → 0.560。这让 OKLCH 层 stay 在视觉可见范围内，不再被 opacity 压到看不见。低 level 不是"夹缝里挣扎的暗色"，而是"opacity dim 的鲜活色"。
+
+LED chromaScale 改为 `1.0 + ledMidChromaBoost·sin(πt) - ledPeakChromaTrim·(t−0.85)/0.15` 在 [0.85, 1.0] 段做温和的 peak 收口。chroma 全程 ≥ base.c，中段比 base.c 高 18%；peak 比 base.c 低 6%（防止白化）。hue drift family-aware 但 scale 收到 0.55（v1 是 0.85）。
+
+#### 6.7.4 v2 失败兜底
+
+如果未来 v2 在手测中再次失败，回退路径是把 `usesArtisticBackground` 这条分支关掉——艺术背景 fullscreen 会自动回到 Phase 5 HSL profile。Phase 5 路径**未改动**，作为 fallback 始终可用。
+
+#### 6.7.5 v2 SelfCheck 加固
+
+新增/重写 9 个自检（Phase 6 总数 13，全部 PASS）：
+
+1. v2 artistic lyrics L hierarchy + chroma floor（要求 inactive ≥ 视觉 floor 0.050）；
+2. v2 near-mono outputs neutral；
+3. v2 (yellow) chroma + hue identity preserved；
+4. v2 (red) chroma + hue identity preserved；
+5. v2 (blue) chroma + hue identity preserved；
+6. v2 (purple) chroma + hue identity preserved；
+7. v2 LED tone steps have perceptual distance；
+8. v2 LED colorful artwork not pale；
+9. v2 LED peak not white-washed（peakL ≤ 0.95 + hueΔ ≤ 0.025）；
+10. v2 LED lightness survives opacity ramp（perceived L Δ ≥ 0.080）；
+11. v2 artistic fullscreen hierarchy（新增 inactive/active chroma ratio ≥ 0.85）；
+12. v2 hue identity preserved on colourful artwork（四角色 hueΔ 全 ≤ 0.025）；
+13. v2 cover blur profile remains separate。
+
+四 hue family 全部 PASS：每个家族 6 个角色都 cap 在 family chroma 上限（黄 0.110 / 红 0.130 / 蓝 0.140 / 紫 0.120），hueΔ 全部 ≤ 0.009。LED 真实 opacity 下感知 L Δ = 0.832（阈值 0.080）。
+
+总数 53/53 PASS（旧 47 + 新 9，删除 v1 弱门槛 3）。
+
+#### 6.7.6 v2 验证
+
+- `ColorSystemSelfCheck` 53/53 PASS。
+- Debug build：`xcodebuild ... build` 成功。
+- 推荐手测：① 强彩色 artwork（黄/橙/蓝/紫）下开启艺术背景，确认 fullscreen 歌词 inactive 不再灰白；② 多 LED level 渐变下确认低、中、高 level 之间的色彩感知差异；③ nearMono artwork（纯灰 / 极暗）确认歌词仍中性；④ Apple / Cover Gradient / Cover Blur 视觉无变化；⑤ ultraDark artwork 下确认 active L 仍可读。
+
+### 6.8 Phase 7 接力（更新）
+
+- v2 LED 的 mid chroma boost 与 opacity 模型仍是基于黑底假设；未来 LED 容器若改为非黑底（如 frosted glass），需要在 SelfCheck 中重新建模"复合后感知 L"；
+- 非艺术 fullscreen lyrics 仍走 Phase 5 HSL profile；如要统一到 Tone Ladder，需做 A/B 与实机验证；
+- glow / shadow 与 Apple / Cover Gradient 决策不变；
 - `isEffectivelyMonochrome` alias 仍可在 Phase 7 收掉。
 
 ---

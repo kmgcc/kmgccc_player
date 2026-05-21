@@ -143,15 +143,17 @@ Phase 4.5 应包含：
 
 退出状态（2026-05-21）：Phase 5 主体完成。已完成规范 / 后续维护规则：歌词颜色决策归 Swift；nearMono visible lyrics colors OKLCH chroma ≤ 0.005；AMLL Web 层只负责渲染结构与兼容 fallback；任何 AMLL adapter 修改必须同步 implementation log 与 patch registry。剩余不在本轮强做：艺术背景 skin 的不透明 Tone Ladder、glow token 更细粒度语义化、Web fallback 进一步瘦身。
 
-### Phase 6 — Tone Ladder 与 LED / 艺术歌词层级深化
+### Phase 6 — Tone Ladder 与 LED / 艺术歌词层级深化（v2）
 
 - [x] **Tone Ladder 正式作为系统级颜色派生方法**：`PerceptualToneLadder` 建立在 `OKColor` 之后、消费者之前；参数集中到 `ColorSystemTokens.ToneLadder`，负责 OKLCH L/C/H 联动、hue-family drift、nearMono 中性化 ceiling。
-- [x] **LED Meter 接入 Tone Ladder**：保留现有 LED 数量 / 中心向外亮起 / opacity glow 语义，但 lit level 色彩由 Tone Ladder 输出，不再用旧 level-driven HSB/OKLCH 微调；中间态有更明确的 OKLab 感知距离与 chroma 起伏。
-- [x] **艺术背景类 fullscreen lyrics 接入 Tone Ladder**：`settings.fullscreenArtBackgroundEnabled == true` 时，`SemanticPaletteFactory.fullscreenLyricsColorSet(...)` 使用 Tone Ladder 生成 opaque active / inactive / secondary tiers；Swift-owned lyrics color contract 保持有效。
+- [x] **LED Meter 接入 Tone Ladder（v2）**：LED L band 移到上半区（dark 0.78→0.92，light 0.43→0.56），使 OKLCH 层不与 `opacityForLevel` 6.25× 透明度斜坡打架。chroma 全程 ≥ base.c，中段 sin boost +18%，peak 段 −6% 防白化。hue drift family-aware ±0.005–0.012。
+- [x] **艺术背景类 fullscreen lyrics 接入 Tone Ladder（v2，single-seed）**：`SemanticPaletteFactory.artisticFullscreenLyricsColorSet(...)` 改为**单 seed 派生所有角色**；inactive 不再由背景色种子驱动（v1 灰白化根因）。inactive chromaScale **不**机械低于 active；hueCap 取消按角色削减；新增 visible-chroma floor 0.050。所有 6 个 hue family 自检 PASS。
+- [x] **背景色仅作可读性校准**：`FullscreenPlayerView.resolveFullscreenLyricsInactiveBaseColor(...)` 删除 `bkController.currentSurfaceBackgroundColor` / `primaryBackgroundColor` / `lockedFullscreenLyricsBackgroundColor` 这三条"背景色当 lyric 种子"路径；inactive 走 Phase 5 语义色（`fullscreenLyricInactiveBase` / `analysis.averageColor` / `dominantColor`）。
 - [x] **Apple / Cover Gradient / Cover Blur 保持原 profile**：`coverBlurLyricsColorSet(...)` 未接 Tone Ladder；Apple fullscreen 继续走 cover blur lighter profile；Cover Gradient Blur 继续 lighter/darker blend profile。
-- [x] **nearMono 不倒退**：Tone Ladder lyrics 输出 OKLCH chroma ≤ 0.005；LED nearMono tone cap ≤ 0.006，避免黑白灰封面出现粉、蓝、黄伪 hue。
+- [x] **nearMono 不倒退**：Tone Ladder lyrics 输出 OKLCH chroma ≤ 0.005；LED nearMono tone cap ≤ 0.006。
+- [x] **v1 失败兜底**：Phase 5 HSL 路径未改动；若 v2 在手测中再次失败，关闭 `usesArtisticBackground` 调用即可整体回退。
 
-退出状态（2026-05-21）：Phase 6 主体完成。SelfCheck 增至 47 项并覆盖 Tone Ladder 层级顺序、nearMono 中性、LED tone step 感知距离、彩色 LED 不过淡、艺术背景 fullscreen lyrics 层级、cover blur profile 分离。剩余不在本轮强做：glow/shadow 单独 Swift 语义 token、Apple / Cover Gradient 的极轻量 tone-ladder 评估、旧 HSL fullscreen fallback 清理。
+退出状态（2026-05-21 v2 重做）：Phase 6 v2 完成。SelfCheck 53 项 PASS（v1 6 项 → v2 13 项），新增四 hue family chroma + hue identity 回归、LED peak white-out 检测、LED 复合 opacity 感知 L 检测、artistic lyrics inactive/active chroma ratio ≥ 0.85 检测。剩余不在本轮强做：glow/shadow 单独 Swift 语义 token、Apple / Cover Gradient 的极轻量 tone-ladder 评估、旧 HSL fullscreen fallback 清理（保留作 fallback）。
 
 ### Phase 7 — 清理旧 HSL 分叉、文档收尾、回归验证
 

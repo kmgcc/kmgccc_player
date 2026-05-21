@@ -143,12 +143,19 @@ nonisolated enum ColorSystemSelfCheck {
         checkLyricsColorfulWindowKeepsTint(&report)
         checkLyricsLightnessHierarchy(&report)
 
-        report.section("Phase 6 — ToneLadder + LED + artistic lyrics")
+        report.section("Phase 6 v2 — ToneLadder + LED + artistic lyrics")
         checkToneLadderBasicHierarchy(&report)
         checkToneLadderNearMonoNeutral(&report)
+        checkToneLadderHueFamilyChromaPreserved(&report, family: "yellow", base: OKColor.OKLCH(l: 0.78, c: 0.14, h: 0.12))
+        checkToneLadderHueFamilyChromaPreserved(&report, family: "red",    base: OKColor.OKLCH(l: 0.58, c: 0.16, h: 0.04))
+        checkToneLadderHueFamilyChromaPreserved(&report, family: "blue",   base: OKColor.OKLCH(l: 0.55, c: 0.16, h: 0.69))
+        checkToneLadderHueFamilyChromaPreserved(&report, family: "purple", base: OKColor.OKLCH(l: 0.50, c: 0.16, h: 0.85))
         checkLEDToneStepsPerceptual(&report)
         checkLEDColorfulNotPale(&report)
+        checkLEDPeakNotWhiteWashed(&report)
+        checkLEDLightnessSurvivesOpacity(&report)
         checkArtisticLyricsToneLadderHierarchy(&report)
+        checkArtisticLyricsHueIdentityPreserved(&report)
         checkCoverBlurProfileUnaffectedByArtisticToneLadder(&report)
 
         report.lines.append(
@@ -157,19 +164,20 @@ nonisolated enum ColorSystemSelfCheck {
         return report
     }
 
-    // MARK: - Phase 6 scenarios
+    // MARK: - Phase 6 v2 scenarios
 
     private static func checkToneLadderBasicHierarchy(_ report: inout CheckReport) {
-        let base = OKColor.OKLCH(l: 0.52, c: 0.13, h: 0.12)
-        let roles = PerceptualToneLadder.LyricsRole.allCases.map {
-            ($0, PerceptualToneLadder.artisticLyricsTone(
-                base: base,
-                role: $0,
-                isUltraDark: false,
-                isNearMonochrome: false
-            ))
-        }
-        let lookup = Dictionary(uniqueKeysWithValues: roles.map { ($0.0, $0.1) })
+        let base = OKColor.OKLCH(l: 0.55, c: 0.14, h: 0.12)
+        let lookup: [PerceptualToneLadder.LyricsRole: OKColor.OKLCH] = Dictionary(
+            uniqueKeysWithValues: PerceptualToneLadder.LyricsRole.allCases.map {
+                ($0, PerceptualToneLadder.artisticLyricsTone(
+                    base: base,
+                    role: $0,
+                    isUltraDark: false,
+                    isNearMonochrome: false
+                ))
+            }
+        )
         guard
             let active = lookup[.mainActive],
             let subActive = lookup[.subActive],
@@ -178,7 +186,7 @@ nonisolated enum ColorSystemSelfCheck {
             let subInactive = lookup[.subInactive],
             let lineSubInactive = lookup[.lineTimingSubInactive]
         else {
-            report.record("ToneLadder: artistic lyrics L hierarchy", false, "role lookup failed")
+            report.record("ToneLadder v2: artistic lyrics L hierarchy", false, "role lookup failed")
             return
         }
         let lOK = active.l > subActive.l
@@ -186,10 +194,13 @@ nonisolated enum ColorSystemSelfCheck {
             && inactive.l > lineInactive.l
             && lineInactive.l > subInactive.l
             && subInactive.l > lineSubInactive.l
-        let cOK = active.c < base.c && inactive.c > 0.018 && lineSubInactive.c < inactive.c
+        // v2 invariant: inactive must retain chroma identity — no longer
+        // mechanically below the visible-chroma floor.
+        let floor = ColorSystemTokens.ToneLadder.lyricsColorfulMinimumChroma
+        let cOK = inactive.c >= floor && lineSubInactive.c >= floor * 0.85
         report.record(
-            "ToneLadder: artistic lyrics L/chroma hierarchy", lOK && cOK,
-            "L active/sub/inactive/line/sub/lineSub=\(format(active.l))/\(format(subActive.l))/\(format(inactive.l))/\(format(lineInactive.l))/\(format(subInactive.l))/\(format(lineSubInactive.l)) C active/inactive/lineSub=\(format(active.c))/\(format(inactive.c))/\(format(lineSubInactive.c))"
+            "ToneLadder v2: artistic lyrics L hierarchy + chroma floor", lOK && cOK,
+            "L active/sub/inactive/line/sub/lineSub=\(format(active.l))/\(format(subActive.l))/\(format(inactive.l))/\(format(lineInactive.l))/\(format(subInactive.l))/\(format(lineSubInactive.l)) C active/inactive/lineSub=\(format(active.c))/\(format(inactive.c))/\(format(lineSubInactive.c)) floor=\(format(floor))"
         )
     }
 
@@ -215,8 +226,69 @@ nonisolated enum ColorSystemSelfCheck {
         let lyricOK = lyricMaxC <= ColorSystemTokens.ToneLadder.nearMonoChromaAssertion
         let ledOK = led.c <= ColorSystemTokens.ToneLadder.ledNearMonoChromaCap
         report.record(
-            "ToneLadder: near-mono outputs neutral", lyricOK && ledOK,
+            "ToneLadder v2: near-mono outputs neutral", lyricOK && ledOK,
             "lyricsMaxC=\(format(lyricMaxC)) limit=\(format(ColorSystemTokens.ToneLadder.nearMonoChromaAssertion)) ledC=\(format(led.c)) ledLimit=\(format(ColorSystemTokens.ToneLadder.ledNearMonoChromaCap))"
+        )
+    }
+
+    /// For each hue family, verifies the v2 invariants on the artistic lyric
+    /// ladder:
+    ///   - inactive chroma is at least 85% of active chroma (no grey-wash)
+    ///   - sub-inactive chroma is at least 75% of active chroma
+    ///   - final hue stays within `lyricsHueIdentityAssertion` of the seed
+    ///     hue (circular distance)
+    ///   - final chroma is above the visible-identity floor
+    private static func checkToneLadderHueFamilyChromaPreserved(
+        _ report: inout CheckReport,
+        family: String,
+        base: OKColor.OKLCH
+    ) {
+        let T = ColorSystemTokens.ToneLadder.self
+        let roles = PerceptualToneLadder.LyricsRole.allCases.map {
+            ($0, PerceptualToneLadder.artisticLyricsTone(
+                base: base,
+                role: $0,
+                isUltraDark: false,
+                isNearMonochrome: false
+            ))
+        }
+        let lookup = Dictionary(uniqueKeysWithValues: roles)
+        guard
+            let active = lookup[.mainActive],
+            let inactive = lookup[.mainInactive],
+            let lineInactive = lookup[.lineTimingMainInactive],
+            let subInactive = lookup[.subInactive],
+            let lineSubInactive = lookup[.lineTimingSubInactive]
+        else {
+            report.record("ToneLadder v2 (\(family)): chroma + hue identity preserved", false, "role lookup failed")
+            return
+        }
+
+        let ratioInactive = active.c > 0 ? inactive.c / active.c : 0
+        let ratioLineInactive = active.c > 0 ? lineInactive.c / active.c : 0
+        let ratioSubInactive = active.c > 0 ? subInactive.c / active.c : 0
+        let ratioLineSubInactive = active.c > 0 ? lineSubInactive.c / active.c : 0
+        let chromaRatioOK = ratioInactive >= T.lyricsInactiveChromaRatioAssertion
+            && ratioLineInactive >= T.lyricsInactiveChromaRatioAssertion * 0.95
+            && ratioSubInactive >= 0.75
+            && ratioLineSubInactive >= 0.70
+
+        let floor = T.lyricsColorfulMinimumChroma
+        let chromaFloorOK = inactive.c >= floor
+            && lineInactive.c >= floor * 0.95
+            && subInactive.c >= floor * 0.85
+            && lineSubInactive.c >= floor * 0.80
+
+        let hueLimit = T.lyricsHueIdentityAssertion
+        let hueOK = circularHueDelta(active.h, base.h) <= hueLimit
+            && circularHueDelta(inactive.h, base.h) <= hueLimit
+            && circularHueDelta(subInactive.h, base.h) <= hueLimit
+            && circularHueDelta(lineSubInactive.h, base.h) <= hueLimit
+
+        let ok = chromaRatioOK && chromaFloorOK && hueOK
+        report.record(
+            "ToneLadder v2 (\(family)): chroma + hue identity preserved", ok,
+            "C active/inact/lineInact/subInact/lineSubInact=\(format(active.c))/\(format(inactive.c))/\(format(lineInactive.c))/\(format(subInactive.c))/\(format(lineSubInactive.c)) ratios=\(format(ratioInactive))/\(format(ratioLineInactive))/\(format(ratioSubInactive))/\(format(ratioLineSubInactive)) min=\(format(T.lyricsInactiveChromaRatioAssertion)) hueΔ active/inact/subInact=\(format(circularHueDelta(active.h, base.h)))/\(format(circularHueDelta(inactive.h, base.h)))/\(format(circularHueDelta(subInactive.h, base.h)))"
         )
     }
 
@@ -228,9 +300,11 @@ nonisolated enum ColorSystemSelfCheck {
         let d1 = oklabDistance(low, mid)
         let d2 = oklabDistance(mid, peak)
         let minDistance = ColorSystemTokens.ToneLadder.ledPerceptualStepAssertion
-        let ok = low.l < mid.l && mid.l < peak.l && d1 >= minDistance && d2 >= minDistance * 0.55 && mid.c > low.c
+        let ok = low.l < mid.l && mid.l < peak.l
+            && d1 >= minDistance && d2 >= minDistance * 0.5
+            && mid.c >= base.c
         report.record(
-            "LED: tone steps have perceptual distance", ok,
+            "LED v2: tone steps have perceptual distance", ok,
             "L=\(format(low.l))/\(format(mid.l))/\(format(peak.l)) C=\(format(low.c))/\(format(mid.c))/\(format(peak.c)) d=\(format(d1))/\(format(d2))"
         )
     }
@@ -247,8 +321,55 @@ nonisolated enum ColorSystemSelfCheck {
         let limit = ColorSystemTokens.ToneLadder.ledColorfulMinimumChromaAssertion
         let ok = tone.c >= limit
         report.record(
-            "LED: colorful artwork not pale", ok,
+            "LED v2: colorful artwork not pale", ok,
             "C=\(format(tone.c)) min=\(format(limit)) L=\(format(tone.l))"
+        )
+    }
+
+    private static func checkLEDPeakNotWhiteWashed(_ report: inout CheckReport) {
+        // Peak LED must stay below the white-out ceiling AND must retain hue
+        // identity. v1 sat at L=0.890 which was visible, but the new wider
+        // band must not overshoot.
+        let base = OKColor.OKLCH(l: 0.84, c: 0.095, h: 0.09)
+        let peak = PerceptualToneLadder.ledTone(base: base, level: 10, maxLevel: 10, scheme: .dark, isNearMonochrome: false)
+        let ceiling = ColorSystemTokens.ToneLadder.ledPeakLightnessCeilingAssertion
+        let hueLimit = ColorSystemTokens.ToneLadder.lyricsHueIdentityAssertion
+        let ok = peak.l <= ceiling
+            && peak.c >= ColorSystemTokens.ToneLadder.ledColorfulMinimumChromaAssertion
+            && circularHueDelta(peak.h, base.h) <= hueLimit
+        report.record(
+            "LED v2: peak not white-washed", ok,
+            "peakL=\(format(peak.l)) ceiling=\(format(ceiling)) C=\(format(peak.c)) hueΔ=\(format(circularHueDelta(peak.h, base.h)))"
+        )
+    }
+
+    /// LED renders OKLCH-coloured cells against a dark background with an
+    /// opacity ramp on top. The Phase 6 v1 ladder placed the OKLCH L band
+    /// so low that opacity multiplication pushed low levels below the
+    /// visibility threshold. v2 enforces a minimum spread of the
+    /// opacity-multiplied L between low and peak levels.
+    private static func checkLEDLightnessSurvivesOpacity(_ report: inout CheckReport) {
+        let base = OKColor.OKLCH(l: 0.84, c: 0.095, h: 0.09)
+        // Models the real consumer: brightnessLevels = 10 maps to maxLevel
+        // = brightnessLevels - 1 = 9 (see LEDColorResolver.oklchColorForLevel).
+        let brightnessLevels = 10
+        let maxLevel = brightnessLevels - 1
+        let low = PerceptualToneLadder.ledTone(base: base, level: 1, maxLevel: maxLevel, scheme: .dark, isNearMonochrome: false)
+        let peak = PerceptualToneLadder.ledTone(base: base, level: maxLevel, maxLevel: maxLevel, scheme: .dark, isNearMonochrome: false)
+        let opacityLow = ledOpacity(level: 1, levels: brightnessLevels)
+        let opacityPeak = ledOpacity(level: maxLevel, levels: brightnessLevels)
+        // Approximate perceived L on black background after opacity multiply.
+        // OKLCH L approximates lightness on a perceptual scale; multiplying
+        // by alpha against black is a usable first-order model for the
+        // delta a user actually sees.
+        let perceivedLow = low.l * opacityLow
+        let perceivedPeak = peak.l * opacityPeak
+        let visibilityDelta = perceivedPeak - perceivedLow
+        let minDelta = ColorSystemTokens.ToneLadder.ledLightnessVisibilityAssertion
+        let ok = visibilityDelta >= minDelta
+        report.record(
+            "LED v2: lightness survives opacity ramp", ok,
+            "perceivedL low/peak=\(format(perceivedLow))/\(format(perceivedPeak)) Δ=\(format(visibilityDelta)) min=\(format(minDelta))"
         )
     }
 
@@ -257,7 +378,7 @@ nonisolated enum ColorSystemSelfCheck {
             (0.65, (20, 32, 70, 255)),
             (0.35, (235, 96, 34, 255)),
         ]) else {
-            report.record("Lyrics: artistic fullscreen tone ladder hierarchy", false, "analysis nil")
+            report.record("Lyrics v2: artistic fullscreen tone ladder hierarchy", false, "analysis nil")
             return
         }
         let set = SemanticPaletteSelfCheck.fullscreenLyricsColorSet(
@@ -274,7 +395,7 @@ nonisolated enum ColorSystemSelfCheck {
             let subActive = OKColor.nsColorToOKLCH(set.subActive),
             let subInactive = OKColor.nsColorToOKLCH(set.subInactive)
         else {
-            report.record("Lyrics: artistic fullscreen tone ladder hierarchy", false, "OKLCH nil")
+            report.record("Lyrics v2: artistic fullscreen tone ladder hierarchy", false, "OKLCH nil")
             return
         }
         let lOK = active.l > inactive.l + ColorSystemTokens.ToneLadder.lyricsActiveInactiveLightnessGapAssertion
@@ -284,15 +405,67 @@ nonisolated enum ColorSystemSelfCheck {
         let alphaOK = set.mainActive.alphaComponent == 1
             && set.mainInactive.alphaComponent == 1
             && set.subInactive.alphaComponent == 1
+        // v2 invariant on the wired path: single-seed must produce inactive
+        // chroma no lower than 85% of active chroma.
+        let chromaRatio = active.c > 0 ? inactive.c / active.c : 0
+        let chromaOK = chromaRatio >= ColorSystemTokens.ToneLadder.lyricsInactiveChromaRatioAssertion
+            && inactive.c >= ColorSystemTokens.ToneLadder.lyricsColorfulMinimumChroma * 0.85
         report.record(
-            "Lyrics: artistic fullscreen tone ladder hierarchy", lOK && alphaOK,
-            "L active/sub/inactive/subInactive=\(format(active.l))/\(format(subActive.l))/\(format(inactive.l))/\(format(subInactive.l)) alpha=\(format(set.mainInactive.alphaComponent))"
+            "Lyrics v2: artistic fullscreen tone ladder hierarchy", lOK && alphaOK && chromaOK,
+            "L active/sub/inactive/subInactive=\(format(active.l))/\(format(subActive.l))/\(format(inactive.l))/\(format(subInactive.l)) C active/inactive ratio=\(format(active.c))/\(format(inactive.c))/\(format(chromaRatio))"
+        )
+    }
+
+    /// Covers a strongly-tinted artwork (red/orange) and verifies the
+    /// emitted artistic lyric set still reads as "the same hue family". v1
+    /// pulled inactive/sub colours toward neutral via the background-as-seed
+    /// path; v2 must keep all roles within the seed hue band.
+    private static func checkArtisticLyricsHueIdentityPreserved(_ report: inout CheckReport) {
+        guard let analysis = analyse(side: 32, fill: (220, 80, 30, 255)) else {
+            report.record("Lyrics v2: hue identity preserved on colourful artwork", false, "analysis nil")
+            return
+        }
+        let seedColor = NSColor(deviceRed: 0.86, green: 0.31, blue: 0.12, alpha: 1)
+        guard let seedLCH = OKColor.nsColorToOKLCH(seedColor) else {
+            report.record("Lyrics v2: hue identity preserved on colourful artwork", false, "seed OKLCH nil")
+            return
+        }
+        let set = SemanticPaletteSelfCheck.fullscreenLyricsColorSet(
+            analysis: analysis,
+            scheme: .dark,
+            highlightBaseColor: seedColor,
+            inactiveBaseColor: NSColor.darkGray,
+            isUltraDark: false,
+            usesArtisticBackground: true
+        )
+        guard
+            let active = OKColor.nsColorToOKLCH(set.mainActive),
+            let inactive = OKColor.nsColorToOKLCH(set.mainInactive),
+            let subInactive = OKColor.nsColorToOKLCH(set.subInactive),
+            let lineSubInactive = OKColor.nsColorToOKLCH(set.lineTimingSubInactive)
+        else {
+            report.record("Lyrics v2: hue identity preserved on colourful artwork", false, "set OKLCH nil")
+            return
+        }
+        let hueLimit = ColorSystemTokens.ToneLadder.lyricsHueIdentityAssertion
+        let hueOK = circularHueDelta(active.h, seedLCH.h) <= hueLimit
+            && circularHueDelta(inactive.h, seedLCH.h) <= hueLimit
+            && circularHueDelta(subInactive.h, seedLCH.h) <= hueLimit
+            && circularHueDelta(lineSubInactive.h, seedLCH.h) <= hueLimit
+        let floor = ColorSystemTokens.ToneLadder.lyricsColorfulMinimumChroma
+        let chromaOK = active.c >= floor
+            && inactive.c >= floor
+            && subInactive.c >= floor * 0.85
+            && lineSubInactive.c >= floor * 0.80
+        report.record(
+            "Lyrics v2: hue identity preserved on colourful artwork", hueOK && chromaOK,
+            "seedH=\(format(seedLCH.h)) hueΔ active/inact/subInact/lineSubInact=\(format(circularHueDelta(active.h, seedLCH.h)))/\(format(circularHueDelta(inactive.h, seedLCH.h)))/\(format(circularHueDelta(subInactive.h, seedLCH.h)))/\(format(circularHueDelta(lineSubInactive.h, seedLCH.h))) C=\(format(active.c))/\(format(inactive.c))/\(format(subInactive.c))/\(format(lineSubInactive.c))"
         )
     }
 
     private static func checkCoverBlurProfileUnaffectedByArtisticToneLadder(_ report: inout CheckReport) {
         guard let analysis = analyse(side: 32, fill: (46, 92, 210, 255)) else {
-            report.record("Lyrics: cover blur profile remains separate", false, "analysis nil")
+            report.record("Lyrics v2: cover blur profile remains separate", false, "analysis nil")
             return
         }
         let themeColor = NSColor(deviceRed: 0.18, green: 0.34, blue: 0.82, alpha: 1)
@@ -313,14 +486,30 @@ nonisolated enum ColorSystemSelfCheck {
             let coverInactiveL = OKColor.nsColorToOKLCH(cover.mainInactive)?.l,
             let artisticInactiveL = OKColor.nsColorToOKLCH(artistic.mainInactive)?.l
         else {
-            report.record("Lyrics: cover blur profile remains separate", false, "OKLCH nil")
+            report.record("Lyrics v2: cover blur profile remains separate", false, "OKLCH nil")
             return
         }
-        let ok = coverInactiveL < 0.26 && artisticInactiveL > 0.40
+        let ok = coverInactiveL < 0.30 && artisticInactiveL > 0.45
         report.record(
-            "Lyrics: cover blur profile remains separate", ok,
+            "Lyrics v2: cover blur profile remains separate", ok,
             "coverInactiveL=\(format(coverInactiveL)) artisticInactiveL=\(format(artisticInactiveL))"
         )
+    }
+
+    // MARK: Phase 6 v2 helpers
+
+    private static func ledOpacity(level: Int, levels: Int) -> CGFloat {
+        // Mirrors `LEDColorResolver.opacityForLevel` in dark scheme so the
+        // self-check stays an accurate model of what the user actually sees.
+        guard level > 0, levels > 1 else { return 0 }
+        let maxLevel = levels - 1
+        let t = CGFloat(level) / CGFloat(maxLevel)
+        return 0.08 + pow(t, 1.55) * 0.92
+    }
+
+    private static func circularHueDelta(_ a: CGFloat, _ b: CGFloat) -> CGFloat {
+        let raw = abs(a - b).truncatingRemainder(dividingBy: 1)
+        return min(raw, 1 - raw)
     }
 
     // MARK: - Phase 5 scenarios

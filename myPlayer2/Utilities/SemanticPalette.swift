@@ -612,28 +612,33 @@ enum SemanticPaletteFactory {
         return neutraliseLyricsSurfaceIfNearMono(set, analysis: analysis)
     }
 
+    /// Phase 6 v2 single-seed artistic fullscreen lyrics ladder.
+    ///
+    /// All six roles derive from ONE seed (the active highlight). The
+    /// inactive parameter is kept in the signature for symmetry with the
+    /// Phase 5 path but is intentionally unused here. v1 mixed an "inactive
+    /// seed" (often the art surface background) into the ladder, which
+    /// collapsed inactive chroma toward neutral; the seed mixing is the
+    /// regression we are reverting.
+    ///
+    /// If the seed has very low chroma, fall back to the highest-chroma
+    /// available source (`dominantColor` then `accentColor`) so colourful
+    /// artwork never lands on a desaturated seed. nearMono is detected up
+    /// front and neutralised by `neutraliseLyricsSurfaceIfNearMono`.
     nonisolated private static func artisticFullscreenLyricsColorSet(
         analysis: ArtworkColorAnalysis,
         highlightBaseColor: NSColor,
-        inactiveBaseColor: NSColor,
+        inactiveBaseColor _: NSColor,
         isUltraDark: Bool
     ) -> LyricsSurfaceColorSet? {
-        guard
-            let activeSeed = lyricsToneSeed(
-                preferred: highlightBaseColor,
-                fallback: inactiveBaseColor,
-                analysis: analysis
-            ),
-            let inactiveSeed = lyricsToneSeed(
-                preferred: inactiveBaseColor,
-                fallback: highlightBaseColor,
-                analysis: analysis
-            )
-        else {
+        guard let seed = artisticLyricsSingleSeed(
+            preferred: highlightBaseColor,
+            analysis: analysis
+        ) else {
             return nil
         }
 
-        func color(_ seed: OKColor.OKLCH, _ role: PerceptualToneLadder.LyricsRole) -> NSColor {
+        func color(_ role: PerceptualToneLadder.LyricsRole) -> NSColor {
             let tone = PerceptualToneLadder.artisticLyricsTone(
                 base: seed,
                 role: role,
@@ -644,32 +649,47 @@ enum SemanticPaletteFactory {
         }
 
         let set = LyricsSurfaceColorSet(
-            mainActive: color(activeSeed, .mainActive),
-            mainInactive: color(inactiveSeed, .mainInactive),
-            lineTimingMainInactive: color(inactiveSeed, .lineTimingMainInactive),
-            subActive: color(activeSeed, .subActive),
-            subInactive: color(inactiveSeed, .subInactive),
-            lineTimingSubInactive: color(inactiveSeed, .lineTimingSubInactive)
+            mainActive: color(.mainActive),
+            mainInactive: color(.mainInactive),
+            lineTimingMainInactive: color(.lineTimingMainInactive),
+            subActive: color(.subActive),
+            subInactive: color(.subInactive),
+            lineTimingSubInactive: color(.lineTimingSubInactive)
         )
         return neutraliseLyricsSurfaceIfNearMono(set, analysis: analysis)
     }
 
-    nonisolated private static func lyricsToneSeed(
+    nonisolated private static func artisticLyricsSingleSeed(
         preferred: NSColor,
-        fallback: NSColor,
         analysis: ArtworkColorAnalysis
     ) -> OKColor.OKLCH? {
-        guard let preferredLCH = OKColor.nsColorToOKLCH(preferred) else {
-            return OKColor.nsColorToOKLCH(fallback)
+        if analysis.isNearMonochrome {
+            return OKColor.nsColorToOKLCH(preferred)
         }
-        guard !analysis.isNearMonochrome else { return preferredLCH }
-        guard preferredLCH.c < 0.018,
-              let fallbackLCH = OKColor.nsColorToOKLCH(fallback),
-              fallbackLCH.c > preferredLCH.c + 0.012
-        else {
-            return preferredLCH
+        var candidates: [NSColor] = [
+            preferred,
+            analysis.dominantColor,
+            analysis.bestTextSourceColor
+        ]
+        if let top = analysis.topPalette.first {
+            candidates.append(top)
         }
-        return fallbackLCH
+        var best: OKColor.OKLCH?
+        for candidate in candidates {
+            guard let lch = OKColor.nsColorToOKLCH(candidate) else { continue }
+            if best == nil { best = lch }
+            // Prefer the first candidate with visible chroma. Fall through
+            // to the next candidate when the preferred seed is greyer than
+            // the visible-identity threshold so colourful artwork is never
+            // anchored to a desaturated seed.
+            if lch.c >= ColorSystemTokens.ToneLadder.lyricsSeedChromaPreferred {
+                return lch
+            }
+            if let current = best, lch.c > current.c + 0.010 {
+                best = lch
+            }
+        }
+        return best
     }
 
     nonisolated static func coverBlurLyricsColorSet(
