@@ -64,6 +64,23 @@ Phase 6.1 seed-selection 与 chroma soft shoulder（Swift 内部）：
 - `PerceptualToneLadder.artisticLyricsTone` 在彩色路径下先 `OKColor.chromaSoftShoulder(ceiling=0.095, softness=0.045)` 再 clamp 到 hue-family cap；日间用 ceiling=0.072 / softness=0.030 / cap*0.72。
 - 这些都属于 Swift-owned decision，Web 不感知。
 
+Phase 6.2 增量 — focus-score seed / nearMono trust override / 反粉红 shapes / 日夜 token 收尾（2026-05-21）：
+
+- `SemanticPaletteFactory.focusScore(...)` 用连续打分替代 Phase 6.1 的 4-AND 硬 gate：`visualContrast × salience × fieldUniformity × designFocus - noisePenalty/competing`，阈值 0.55。`visualContrast` 在 dominant.c < 0.045（真灰/真黑）时把 hue distance 当作 max contrast，让 "黑底 + 5% 亮黄" 这种典型设计封面能稳定 fire。
+- `ArtworkColorAnalysis` 引入 `trustedHueChromaFloor=0.045`：dominant / topPalette / salient 任一 OKLCH chroma ≥ floor 即跳过 nearMono 非严格分支。pure-grey / 极暗封面仍 nearMono。
+- `BKColorEngine.make(...)` 末尾在 true nearMono 且无 trusted hue 候选时对 bgStops / shapePool / dotBase / bgVariants 做 OKLCH chroma crush 到 ≤ 0.008（`OKColor.neutralise`），消除淡粉残留。
+- `PerceptualToneLadder.artisticLyricsTone` 的 soft shoulder 改为 gated：只有 `base.c × chromaScale >= lyricsHighChromaShoulderTrigger=0.085` 才生效；mid-C seed 穿过原样到 cap。
+- 夜间 token: active L 0.905 → 0.920、sub-active 0.830 → 0.855、UltraDark inactive trim 0.060 → 0.095、active/sub-active chromaScale 0.92/0.96 → 0.98/1.00。
+- 日间 token: active L 0.150 → 0.215（不死黑）、inactive 0.430 → 0.470、translation 0.435 → 0.475、line-timing 0.470/0.500 → 0.510/0.540。严格升序保持。
+- `BKColorEngine.tierRanges` 夜间: `bgB` 0.18…0.32 → 0.14…0.28、`fgB` 0.34…0.54 → 0.28…0.46、`dotB` 0.46…0.68 → 0.40…0.58（dotB.upper 等于 inactive L floor 0.580）。日间: `bgB` 0.88…0.95 → 0.92…0.97、`fgB` 0.78…0.88 → 0.80…0.90、`dotB` 0.62…0.74 → 0.66…0.78、`bgS` 上限 0.30 → 0.22 避免 pastel。
+- `FullscreenMiniPlayerView` 新增 `usesDarkControlForegroundForLightArtisticBackground`：日间艺术背景 + `hasArtworkThemeColor` → `controlPrimaryNSColor = readabilityProfile.foregroundPrimary`（dark on bright artistic glass，自动获得 Phase-4 nearMono 反粉红行为）。
+- glow / interlude dots / background lyric / translation 仍走 CSS fallback chain，无需新 CSS 变量；**未修改** `amll-core.js` / `amll-lyric.js` 生成 bundle、`index.html` CSS 变量名 / fallback chain、`bridge.js`。
+- Phase 6.2 进一步（2026-05-21）：在 v3 seed-trust 之上 (a) Phase 6.1 salient hard gate 升级为连续 focusScore；(b) `analysis.isNearMonochrome` 受 trusted-hue 覆盖；(c) chroma soft shoulder 改为只在 scaled C ≥ 0.085 时触发；(d) 夜间 active L 0.905 → 0.920、UltraDark inactive trim 0.060 → 0.095；(e) 日间艺术背景 bg / shapes 大幅提亮；(f) 日间歌词 active L=0.150 改为 0.215（不死黑），仍严格 ASC 且 < bg L；(g) FullscreenMiniPlayer 日间艺术背景下控件主色切到 dark foreground readability profile。glow / interlude dots / background lyric 仍走 CSS fallback chain 自动跟随 Swift 下发色，**无 generated bundle / index.html 改动**。Self-check 新增 20+ 个 Phase 6.2 场景；3 个既有测试更新以反映 Phase 6.2 语义。
+
+Phase 6.2 outstanding work / Phase 7 candidates:
+
+- **AMLL highlight transition 内层颜色过渡**：fullscreen 线级 transition (`color .14s/.18s ease-out`) 由浏览器在 sRGB 空间做 RGB interp。per-word/character 的 mask-image / linear-gradient 边缘 "seam" 颜色由 `amll-core.js` 内联，Swift 无 CSS 变量 hook。要实现 OKLCH-interpolated mid color 需要 fork core patch（暴露 `transitionColor` / `--amll-fs-edge` CSS 变量给 renderer 消费）。本轮 Phase 6.2 不做。审计结论：见 `docs/amll-upgrade-implementation-log.md` Phase 6.2 节。
+
 nearMono lyrics neutralization：
 
 - `analysis.isNearMonochrome == true` 时，歌词 visible colors 的 OKLCH chroma ≤ 0.005。
