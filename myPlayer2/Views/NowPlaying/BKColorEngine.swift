@@ -1233,23 +1233,25 @@ extension BKColorEngine {
                 bgS = makeRange(lower: 0.08, upper: min(bgS.upperBound, 0.24))
             }
         } else {
-            // Phase 6.1 light-mode tuning: lift the artistic background
-            // into a high-L band ("整体提高一个层级") so day-mode lyrics
-            // can invert to a dark ladder while still sitting on a clearly
-            // lighter background. Lyric L < bg L invariant is enforced
-            // numerically (see SelfCheck `checkLightModeLyricsUnderBg`).
-            //   * `bgB` 0.78–0.85 → 0.88–0.95 (much brighter solid bg).
-            //   * `fgB` 0.66–0.78 → 0.78–0.88 (shapes follow bg, still <).
-            //   * `dotB` 0.50–0.62 → 0.62–0.74 (circles lifted, still
-            //     above the artistic-bg L floor).
-            //   * Saturation slightly trimmed so the high-L band does not
+            // Phase 6.2 light-mode tuning: lift the artistic background
+            // into a VERY high L band ("airy" feel) so day-mode lyrics
+            // can invert to a deeper-but-alive ladder while still sitting
+            // on a clearly lighter background. Lyric L < bg L invariant
+            // is enforced numerically (see SelfCheck
+            // `checkDayArtBackgroundBrighterThanLyrics` / `checkDayLyricsAllBelowBackgroundL`).
+            //   * `bgB` 0.88–0.95 → 0.92–0.97 (much brighter solid bg).
+            //   * `fgB` 0.78–0.88 → 0.80–0.90 (shapes lift in lockstep).
+            //   * `dotB` 0.62–0.74 → 0.66–0.78 (circles lifted too, still
+            //     above the artistic-bg L floor and below day lyric
+            //     inactive 0.470).
+            //   * `bgS` trimmed further so the higher-L band does not
             //     blow into pastel territory.
-            bgB = 0.88...0.95
-            fgB = 0.78...0.88
-            dotB = 0.62...0.74
-            bgS = 0.10...0.30
-            fgS = 0.24...0.56
-            dotS = 0.20...0.52
+            bgB = 0.92...0.97
+            fgB = 0.80...0.90
+            dotB = 0.66...0.78
+            bgS = 0.06...0.22
+            fgS = 0.20...0.50
+            dotS = 0.16...0.46
         }
 
         if complexity == .monochrome {
