@@ -392,28 +392,35 @@ nonisolated enum PerceptualToneLadder {
         if isNearMonochrome && !seedHasVisibleChroma {
             c = min(base.c * chromaScale, T.nearMonoChromaCeiling)
         } else {
-            // Phase 6.1: apply a soft chroma shoulder so highly-saturated
-            // seeds compress smoothly toward an asymptote instead of
-            // hard-clamping to the hue-family cap. Mid-chroma seeds
-            // (`base.c * chromaScale` < ceiling) pass through untouched —
-            // that is the regression guard against the user's "中饱和封面
-            // 莫名取出来很低饱和" report.
-            let shoulderCeiling = isLight
-                ? T.lyricsLightChromaShoulderCeiling
-                : T.lyricsChromaShoulderCeiling
-            let shoulderSoftness = isLight
-                ? T.lyricsLightChromaShoulderSoftness
-                : T.lyricsChromaShoulderSoftness
+            // Phase 6.2: the chroma soft shoulder is now GATED. Phase 6.1
+            // applied it unconditionally and the user reported mid-chroma
+            // covers still felt "soft-ceilinged". The shoulder only fires
+            // when `scaled >= lyricsHighChromaShoulderTrigger`; mid-chroma
+            // seeds pass straight through and the hue-family cap is the
+            // only ceiling.
             let scaled = base.c * chromaScale
-            let shoulderedLCH = OKColor.chromaSoftShoulder(
-                OKColor.OKLCH(l: targetL, c: scaled, h: base.h),
-                ceiling: shoulderCeiling,
-                softness: shoulderSoftness
-            )
+            let appliesShoulder = scaled >= T.lyricsHighChromaShoulderTrigger
+            let resolvedC: CGFloat
+            if appliesShoulder {
+                let shoulderCeiling = isLight
+                    ? T.lyricsLightChromaShoulderCeiling
+                    : T.lyricsChromaShoulderCeiling
+                let shoulderSoftness = isLight
+                    ? T.lyricsLightChromaShoulderSoftness
+                    : T.lyricsChromaShoulderSoftness
+                let shoulderedLCH = OKColor.chromaSoftShoulder(
+                    OKColor.OKLCH(l: targetL, c: scaled, h: base.h),
+                    ceiling: shoulderCeiling,
+                    softness: shoulderSoftness
+                )
+                resolvedC = shoulderedLCH.c
+            } else {
+                resolvedC = scaled
+            }
             let cap = hueChromaCap(base.h, role: .lyrics(role), scheme: scheme)
             // Hue-identity floor keeps low-chroma seeds visibly tinted.
             let floor = min(T.lyricsColorfulMinimumChroma, cap * 0.85)
-            c = ColorMath.clamp(shoulderedLCH.c, floor, cap)
+            c = ColorMath.clamp(resolvedC, floor, cap)
         }
 
         let h = shiftedHue(

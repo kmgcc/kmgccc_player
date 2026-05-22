@@ -462,8 +462,14 @@ nonisolated enum ColorSystemTokens {
         // descending order is still required by `checkToneLadderBasicHierarchy`:
         //   mainActive > subActive > mainInactive > subInactive
         //               > lineTimingMainInactive > lineTimingSubInactive.
-        static let lyricsMainActiveL: CGFloat = 0.905
-        static let lyricsSubActiveL: CGFloat = 0.830
+        // Phase 6.2 night retune:
+        //   * Active L 0.905 → 0.920; sub-active 0.830 → 0.855 (current line
+        //     reads more clearly "alive" on saturated covers).
+        //   * Inactive / line-timing unchanged from Phase 6.1.
+        //   * UltraDark inactive trim 0.060 → 0.095 — deep-night covers no
+        //     longer float their inactive line above the artwork.
+        static let lyricsMainActiveL: CGFloat = 0.920
+        static let lyricsSubActiveL: CGFloat = 0.855
         static let lyricsMainInactiveL: CGFloat = 0.580
         static let lyricsSubInactiveL: CGFloat = 0.575
         static let lyricsLineTimingMainInactiveL: CGFloat = 0.555
@@ -471,7 +477,7 @@ nonisolated enum ColorSystemTokens {
 
         static let lyricsUltraDarkActiveTrim: CGFloat = 0.030
         static let lyricsUltraDarkSubActiveTrim: CGFloat = 0.040
-        static let lyricsUltraDarkInactiveTrim: CGFloat = 0.060
+        static let lyricsUltraDarkInactiveTrim: CGFloat = 0.095
 
         // Phase 6.1 light mode (artistic background only): lyric inversion.
         // Light-mode artistic backgrounds are lifted into a high-L band
@@ -589,8 +595,12 @@ nonisolated enum ColorSystemTokens {
         // identity. Active dips slightly below 1.0 to absorb the gamut
         // shoulder near white; mid-L roles can mildly exceed 1.0 so they
         // don't read as desaturated.
-        static let lyricsMainActiveChromaScale: CGFloat = 0.92
-        static let lyricsSubActiveChromaScale: CGFloat = 0.96
+        //
+        // Phase 6.2: active scales bumped (0.92 → 0.98 / 0.96 → 1.00) so the
+        // active line reads as "more rich". Combined with the shoulder
+        // trigger at 0.085, mid-chroma seeds still pass through untouched.
+        static let lyricsMainActiveChromaScale: CGFloat = 0.98
+        static let lyricsSubActiveChromaScale: CGFloat = 1.00
         static let lyricsMainInactiveChromaScale: CGFloat = 1.04
         static let lyricsLineTimingMainInactiveChromaScale: CGFloat = 1.02
         static let lyricsSubInactiveChromaScale: CGFloat = 1.00
