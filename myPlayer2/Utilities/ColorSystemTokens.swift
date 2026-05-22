@@ -479,7 +479,7 @@ nonisolated enum ColorSystemTokens {
         static let lyricsUltraDarkSubActiveTrim: CGFloat = 0.040
         static let lyricsUltraDarkInactiveTrim: CGFloat = 0.095
 
-        // Phase 6.1 light mode (artistic background only): lyric inversion.
+        // Phase 6.2 light mode (artistic background only): lyric inversion.
         // Light-mode artistic backgrounds are lifted into a high-L band
         // (see `BKColorEngine.tierRanges`), so lyrics flip to a dark
         // ladder. `active` lives at the lowest L (most contrast), inactive
@@ -490,12 +490,17 @@ nonisolated enum ColorSystemTokens {
         //               < lineTimingMainInactive < lineTimingSubInactive.
         // Translation (subInactive) sits within ~0.005 of main-inactive so
         // the proximity assertion holds in both schemes.
-        static let lyricsLightMainActiveL: CGFloat = 0.150
-        static let lyricsLightSubActiveL: CGFloat = 0.260
-        static let lyricsLightMainInactiveL: CGFloat = 0.430
-        static let lyricsLightSubInactiveL: CGFloat = 0.435
-        static let lyricsLightLineTimingMainInactiveL: CGFloat = 0.470
-        static let lyricsLightLineTimingSubInactiveL: CGFloat = 0.500
+        //
+        // Phase 6.2 retune: active L 0.150 → 0.215 (alive, not death-black),
+        // inactive 0.430 → 0.470, translation 0.435 → 0.475, line-timing
+        // lifted in lockstep. All still strictly below day bgB lower bound
+        // 0.92 — gap >= `lyricsLightBackgroundLyricGapMin = 0.20`.
+        static let lyricsLightMainActiveL: CGFloat = 0.215
+        static let lyricsLightSubActiveL: CGFloat = 0.325
+        static let lyricsLightMainInactiveL: CGFloat = 0.470
+        static let lyricsLightSubInactiveL: CGFloat = 0.475
+        static let lyricsLightLineTimingMainInactiveL: CGFloat = 0.510
+        static let lyricsLightLineTimingSubInactiveL: CGFloat = 0.540
 
         // Phase 6.1 chroma soft-shoulder for high-chroma seeds. The v3 hard
         // cap (~0.110…0.140 by hue) compressed high-C seeds to a fixed
@@ -568,22 +573,11 @@ nonisolated enum ColorSystemTokens {
         // engages the shoulder when the scaled chroma exceeds this trigger.
         static let lyricsHighChromaShoulderTrigger: CGFloat = 0.085
 
-        // Phase 6.2 — night tokens retune.
-        // Active L raised so high-saturation covers feel "more clearly the
-        // current line"; UltraDark inactive trim deepened so deep-night
-        // covers do not float their inactive line above the artwork.
-        static let lyricsActiveLightnessLiftPhase62: CGFloat = 0.015   // additive over Phase 6.1
-        static let lyricsUltraDarkInactiveTrimPhase62: CGFloat = 0.030 // additive over Phase 6.1
-
-        // Phase 6.2 — day artistic background lift.
-        // Day mode artistic backgrounds need to feel "airy"; lyrics shift
-        // from "death black" to a deeper-mid that still sits well below bg.
-        static let lyricsLightMainActiveLPhase62: CGFloat = 0.215   // was 0.150 — alive, not death-black
-        static let lyricsLightSubActiveLPhase62: CGFloat = 0.325
-        static let lyricsLightMainInactiveLPhase62: CGFloat = 0.470
-        static let lyricsLightSubInactiveLPhase62: CGFloat = 0.475
-        static let lyricsLightLineTimingMainInactiveLPhase62: CGFloat = 0.510
-        static let lyricsLightLineTimingSubInactiveLPhase62: CGFloat = 0.540
+        // Phase 6.2 — night + day retune values have been promoted into the
+        // canonical `lyrics*L` / `lyricsUltraDark*Trim` / `lyricsLight*L`
+        // tokens above (see Task 5 + Task 8 sections). The "Phase62" alias
+        // staging set has been removed now that the canonical names hold
+        // the Phase 6.2 values.
 
         // SelfCheck token: day-mode invariant "lyric L < background L".
         // `BKColorEngine.tierRanges` is asserted to produce bg L floor
