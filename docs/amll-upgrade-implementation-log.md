@@ -1109,3 +1109,52 @@ Swift 下发字段名与 AMLL CSS 变量名不变；不修改 `amll-core.js` / `
 - low-sat chromatic 封面（暖灰、复古）：Phase 6.2 不再灰白化，保留封面色相；
 - 日间艺术背景：背景明显比 6.1 更亮（airy）；shapes 跟着亮；active 是深色但 "alive"（不死黑）；translation = inactive；glow 自动是 dark glow；interlude dots 深色；background lyric 深色；MiniPlayer 控件切到 dark foreground；
 - Apple / Cover Gradient / Cover Blur 关掉艺术背景：视觉无变化。
+
+## 2026-05-22 Phase 6.3 — Artistic Color System Stabilization（Swift-owned + adapter consume-only）
+
+背景：Phase 6.2 人工验收仍未通过。主要问题集中在 seed selection 不像人的视觉焦点判断、nearMono 误伤有色封面、true nearMono 下 art shapes 仍可能偏粉、夜间艺术背景偏灰或偏亮、日间艺术背景和歌词偏暗、日间 MiniPlayer UI 仍随封面切白、切歌先掉默认色、日间 fullscreen emphasis glow 仍像白色。
+
+本轮边界：
+
+- 不进入 Phase 7。
+- 不处理 active/inactive feather transition；不展开高亮过渡实现。
+- 不改 fork core，不手改 generated `amll-core.js` / `amll-lyric.js`。
+- 颜色决策仍在 Swift；Web adapter 只消费 Swift 下发颜色。
+
+处理：
+
+- Swift `ArtworkColorAnalysis`：
+  - `salientHighlightAreaShares` 加入 analysis contract；
+  - nearMono 改为“无 trusted hue anywhere”，trusted sources 覆盖 dominant / top / rich / display / salient / bestTextSource；
+  - strict mono 不再绕过 trusted hue，避免低平均饱和但有真实焦点的封面被灰白化。
+- Swift `SemanticPaletteFactory`：
+  - `focusScore` 改为主观焦点评分：OKLab distance、ΔC、ΔL、Δhue、dominant confidence、competing high-sat area、nonlinear area gate；
+  - seed area 使用 salient 自身面积，不再用整张图 `highSaturationAreaShare`；
+  - 验收目标覆盖黑底小黄、蓝底小橙、70% 棕 + 30% 蓝、普通多色、噪点。
+- Swift `BKColorEngine`：
+  - true nearMono + no trusted hue 时 bgStops / BK variants / shapePool / dotBase 统一 OKLCH neutralize；
+  - 夜间 tier 降亮，warm/red trusted hue 保留 chroma，UltraDark shapes/circle 更暗；
+  - 日间 tier 升到 airy high-B 背景，为 dark lyric/UI foreground 服务。
+- Swift lyrics：
+  - 夜间 active L/C 更明确，inactive 高 C 更克制，UltraDark inactive 更暗；
+  - 日间 active/inactive/translation 提亮但保持深色体系，所有 lyric L 低于 day background。
+- Swift → App adapter：
+  - `FullscreenPlayerView` 新增 `fullscreenEmphasisGlowColor`，来源为 Swift `colorSet.mainActive`；
+  - `index.html` 新增 `--amll-fs-emphasis-glow`，用于 fullscreen drop-shadow fallback 和 cloned emphasis textShadow retint；
+  - 这不是 Web 重新决定 hue，只是消费 Swift 色值。
+- Fullscreen UI：
+  - `FullscreenMiniPlayerView` 与 `FullscreenPlayerView` bottom controls 在 light + fullscreen artistic background 下固定走 `readabilityProfile.foregroundPrimary`；
+  - icon blend mode 在该 profile 下走 normal，避免白色/cover-driven profile 闪烁。
+- ThemeStore：
+  - 新 artwork cache miss / analysis pending 时保留上一首 palette；
+  - 不再发布 `.neutralFallback` / default accent / quick-only palette；
+  - full analysis ready 后一次性刷新；真正 missing artwork 才 fallback。
+
+验证：
+
+- `COLOR_SYSTEM_SELF_CHECK=1`：ALL PASS。新增 Phase 6.3 gate 覆盖 focus seed、nearMono trust、BK true nearMono 防粉、night/day art background、day dark glow source、MiniPlayer dark profile。
+- `xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player -configuration Debug -destination 'platform=macOS' build`：PASS。
+
+后续仍保留：
+
+- AMLL highlight transition / feather：继续 backlog；需要 fork core patch 才能让 word-level mask edge 参与 OKLCH mid-color，不在 Phase 6.3 实现。

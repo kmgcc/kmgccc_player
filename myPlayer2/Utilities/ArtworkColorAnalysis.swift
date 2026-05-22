@@ -65,9 +65,14 @@ nonisolated struct ArtworkColorAnalysis: Equatable, Sendable {
     let topPalette: [NSColor]           // up to 4 distinct colours
     let richPalette: [NSColor]          // up to 8 (artistic)
     /// Small-area, high-visual-impact colours suitable as accents /
-    /// decorative highlights. Empty on near-monochrome covers (no
-    /// fabrication).
+    /// decorative highlights. Computed even when the average field is
+    /// low-chroma; true near-mono is decided by whether any such candidate
+    /// carries trusted chroma.
     let salientHighlightPalette: [NSColor]
+    /// Area share for each `salientHighlightPalette` entry, same ordering.
+    /// Used by the subjective focus-seed selector so a tiny accent is not
+    /// confused with the total high-saturation area of the whole cover.
+    let salientHighlightAreaShares: [CGFloat]
     /// Quality-controlled multi-colour palette for downstream visual
     /// consumers (Phase 3: Home Shapes, BKArt, Spectrum). Narrowed on
     /// near-monochrome covers; never synthesised via hue rotation.
@@ -100,6 +105,7 @@ nonisolated struct ArtworkColorAnalysis: Equatable, Sendable {
         topPalette: [],
         richPalette: [],
         salientHighlightPalette: [],
+        salientHighlightAreaShares: [],
         displayPalette: [],
         bestTextSourceColor: NSColor(deviceRed: 0.20, green: 0.20, blue: 0.22, alpha: 1)
     )
@@ -302,35 +308,42 @@ extension ArtworkColorExtractor {
         // Phase 2 drops it and gives that responsibility to UltraDark.
         // The remaining four branches are pure colour-confidence tests.
 
-        // Phase 6.2 — chromatic trust override. If the dominant centroid OR
-        // any topPalette / salient candidate carries OKLCH chroma at or
+        // Phase 6.3 — chromatic trust override. If the dominant centroid OR
+        // any top / rich / salient candidate carries OKLCH chroma at or
         // above `trustedHueChromaFloor`, the cover has a hue identity even
         // when the average saturation looks low (compressed JPEGs, vintage
         // prints, warm-tinted photos). Without this override the historical
         // 4-branch OR would grey-wash these covers — exactly the "明明有颜色
         // 但歌词变成灰白" report.
-        let phase62TopPalette = uiThemePalette(from: sample, targetCount: 4)
-        let phase62SalientCandidates = computeSalientHighlights(
+        let phase63TopPalette = uiThemePalette(from: sample, targetCount: 4)
+        let phase63RichPalette = uiThemePaletteRich(from: sample, targetCount: 8)
+        let phase63SalientCandidates = computeSalientHighlightCandidates(
             buckets: buckets,
             totalWeight: totalWeight,
             dominantHue: dominantHue
         )
         let dominantLCH = OKColor.nsColorToOKLCH(dominantColor)
-        let topLCHs: [OKColor.OKLCH] = phase62TopPalette.compactMap { OKColor.nsColorToOKLCH($0) }
-        let salientLCHs: [OKColor.OKLCH] = phase62SalientCandidates
+        let topLCHs: [OKColor.OKLCH] = phase63TopPalette.compactMap { OKColor.nsColorToOKLCH($0) }
+        let richLCHs: [OKColor.OKLCH] = phase63RichPalette.compactMap { OKColor.nsColorToOKLCH($0) }
+        let salientLCHs: [OKColor.OKLCH] = phase63SalientCandidates
+            .map(\.color)
             .compactMap { OKColor.nsColorToOKLCH($0) }
         let hasTrustedHue =
             (dominantLCH?.c ?? 0) >= ColorSystemTokens.NearMonochromeProfile.trustedHueChromaFloor
             || topLCHs.contains(where: { $0.c >= ColorSystemTokens.NearMonochromeProfile.trustedHueChromaFloor })
+            || richLCHs.contains(where: { $0.c >= ColorSystemTokens.NearMonochromeProfile.trustedHueChromaFloor })
             || salientLCHs.contains(where: { $0.c >= ColorSystemTokens.NearMonochromeProfile.trustedHueChromaFloor })
 
         let isMono = colorfulness < ColorSystemTokens.NearMonochromeProfile.strictColorfulness
             && avgSat < ColorSystemTokens.NearMonochromeProfile.strictAvgSaturation
-        // Phase 6.2: strict mono (branch 1) is unconditional; the other 3
-        // OR branches are skipped when `hasTrustedHue == true`.
+        // Phase 6.3: true nearMono means "no trusted hue exists anywhere".
+        // Phase 6.2 still let strict mono fire unconditionally, so a
+        // low-average cover with a real small chromatic focus could enter the
+        // grey path before the focus selector had a chance to use it.
         let isNearMonochrome =
-            isMono
-            || (!hasTrustedHue && (
+            !hasTrustedHue && (
+                isMono
+                ||
                 (colorfulness < ColorSystemTokens.NearMonochromeProfile.lowColorfulness
                     && avgSat < ColorSystemTokens.NearMonochromeProfile.lowAvgSaturation
                     && largestHighSaturationAreaShare
@@ -345,7 +358,7 @@ extension ArtworkColorExtractor {
                         < ColorSystemTokens.NearMonochromeProfile.dominantBucketColorfulness
                     && avgSat
                         < ColorSystemTokens.NearMonochromeProfile.dominantBucketAvgSaturation)
-            ))
+            )
 
         // -------- Lightness axis (Phase 2: isUltraDark) --------
         //
@@ -371,8 +384,8 @@ extension ArtworkColorExtractor {
 
         // Reuse existing palette helpers so dominantHue / topPalette stay in sync
         // with the rest of the system.
-        let topPalette = uiThemePalette(from: sample, targetCount: 4)
-        let richPalette = uiThemePaletteRich(from: sample, targetCount: 8)
+        let topPalette = phase63TopPalette
+        let richPalette = phase63RichPalette
         let bestText = textSourceColor(from: buckets, fallback: averageColor)
 
         // Phase 2 structured outputs.
@@ -388,11 +401,8 @@ extension ArtworkColorExtractor {
         // multi-colour: on near-monochrome covers it caps to a small
         // count (top + salient, no rich expansion) so downstream UI
         // doesn't gain a colour the cover doesn't really have.
-        let salient = computeSalientHighlights(
-            buckets: buckets,
-            totalWeight: totalWeight,
-            dominantHue: dominantHue
-        )
+        let salient = phase63SalientCandidates.map(\.color)
+        let salientAreaShares = phase63SalientCandidates.map(\.areaShare)
 
         let displayPalette = computeDisplayPalette(
             top: topPalette,
@@ -427,6 +437,7 @@ extension ArtworkColorExtractor {
             topPalette: topPalette,
             richPalette: richPalette,
             salientHighlightPalette: salient,
+            salientHighlightAreaShares: salientAreaShares,
             displayPalette: displayPalette,
             bestTextSourceColor: bestText
         )

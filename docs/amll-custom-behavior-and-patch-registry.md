@@ -77,6 +77,18 @@ Phase 6.2 增量 — focus-score seed / nearMono trust override / 反粉红 shap
 - glow / interlude dots / background lyric / translation 仍走 CSS fallback chain，无需新 CSS 变量；**未修改** `amll-core.js` / `amll-lyric.js` 生成 bundle、`index.html` CSS 变量名 / fallback chain、`bridge.js`。
 - Phase 6.2 进一步（2026-05-21）：在 v3 seed-trust 之上 (a) Phase 6.1 salient hard gate 升级为连续 focusScore；(b) `analysis.isNearMonochrome` 受 trusted-hue 覆盖；(c) chroma soft shoulder 改为只在 scaled C ≥ 0.085 时触发；(d) 夜间 active L 0.905 → 0.920、UltraDark inactive trim 0.060 → 0.095；(e) 日间艺术背景 bg / shapes 大幅提亮；(f) 日间歌词 active L=0.150 改为 0.215（不死黑），仍严格 ASC 且 < bg L；(g) FullscreenMiniPlayer 日间艺术背景下控件主色切到 dark foreground readability profile。glow / interlude dots / background lyric 仍走 CSS fallback chain 自动跟随 Swift 下发色，**无 generated bundle / index.html 改动**。Self-check 新增 20+ 个 Phase 6.2 场景；3 个既有测试更新以反映 Phase 6.2 语义。
 
+Phase 6.3 增量 — artistic color system stabilization（2026-05-22）：
+
+- `ArtworkColorAnalysis` 重新定义 nearMono：只有 dominant / topPalette / richPalette / displayPalette / salientHighlightPalette / bestTextSource 都没有可信 OKLCH hue 时才进入 true nearMono；同时 `salientHighlightAreaShares` 进入 contract，让 seed selector 使用“该 salient 自身面积”而不是整张图 high-sat 面积。
+- `SemanticPaletteFactory.focusScore(...)` 改为主观视觉焦点评分：OKLab 感知距离 + ΔC + ΔL + Δhue + dominant-field confidence + competing-high-sat area + nonlinear area gate。dominant 仍是默认；小面积强对比标题/Logo 可胜出；普通多色、大色块、噪点被抑制。
+- `BKColorEngine.analysisHasTrustedHueCandidate(...)` 与 analyzer 对齐；true nearMono 且无 trusted hue 时，对 bgStops / BK variants / shapePool / dotBase 统一 OKLCH neutralise，防止 floating shapes / moving circle 走伪 hue / fallback pink 路径。
+- 夜间艺术背景 token/tier 重新校准：背景更暗、circle 更低、UltraDark shapes 更低；暖红 trusted hue 在 saturation gating 中保留更高下限/上限，避免灰淡。
+- 日间艺术背景改为独立 airy light 设计：high-B background / BK / shapes / circle，为深色歌词和 dark foreground UI 服务。
+- 日间 fullscreen emphasis glow 现在由 Swift 下发 `fullscreenEmphasisGlowColor`，App `index.html` adapter 仅消费该值重染 fullscreen emphasis textShadow / drop-shadow。Web 不重新选择 hue；generated AMLL bundle 不改。
+- FullscreenMiniPlayerView 与 FullscreenPlayerView bottom controls：`fullscreenArtBackgroundEnabled && colorScheme == .light` 固定走 `readabilityProfile.foregroundPrimary`（dark foreground profile），不再按封面明度切白；icon blend mode 使用 normal。
+- ThemeStore 切歌稳定：artwork cache miss / full analysis pending 时保留上一首 semantic palette；不发布 `.neutralFallback` / default accent / quick-only palette。真正无 artwork 才 fallback。
+- AMLL active/inactive highlight transition / feather 本轮不处理，继续作为 backlog；不改 fork core、不手改 `amll-core.js` / `amll-lyric.js`。
+
 Phase 6.2 outstanding work / Phase 7 candidates:
 
 - **AMLL highlight transition 内层颜色过渡**：fullscreen 线级 transition (`color .14s/.18s ease-out`) 由浏览器在 sRGB 空间做 RGB interp。per-word/character 的 mask-image / linear-gradient 边缘 "seam" 颜色由 `amll-core.js` 内联，Swift 无 CSS 变量 hook。要实现 OKLCH-interpolated mid color 需要 fork core patch（暴露 `transitionColor` / `--amll-fs-edge` CSS 变量给 renderer 消费）。本轮 Phase 6.2 不做。审计结论：见 `docs/amll-upgrade-implementation-log.md` Phase 6.2 节。

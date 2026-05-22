@@ -672,7 +672,7 @@ enum SemanticPaletteFactory {
         return neutraliseLyricsSurfaceIfNearMono(set, analysis: analysis)
     }
 
-    /// Phase 6.1 seed selection. Public for SelfCheck regression coverage.
+    /// Phase 6.3 seed selection. Public for SelfCheck regression coverage.
     nonisolated static func artisticLyricsSingleSeed(
         preferred: NSColor,
         analysis: ArtworkColorAnalysis
@@ -683,7 +683,8 @@ enum SemanticPaletteFactory {
             return OKColor.nsColorToOKLCH(preferred)
         }
 
-        // Step 2 — conservative salient override.
+        // Step 2 — subjective salient override. Dominant is still the default;
+        // a highlight only wins when it looks like an intentional focal mark.
         if let salient = pickSalientLyricSeed(analysis: analysis) {
             return salient
         }
@@ -711,16 +712,11 @@ enum SemanticPaletteFactory {
         return best
     }
 
-    /// Phase 6.2 — subjective focus score for the salient-vs-dominant
+    /// Phase 6.3 — subjective focus score for the salient-vs-dominant
     /// decision. Returns 0..1; salient wins when score >= threshold.
     ///
-    /// Components (each in 0..1, then weighted):
-    ///   - visualContrast: Δchroma + ΔL + Δhue between salient & dominant
-    ///   - salience: salient OKLCH chroma alone
-    ///   - fieldUniformity: dominant dominates + low ambient colorfulness
-    ///   - designFocus: salient area share is small but not noise
-    ///   - noisePenalty: tiny isolated dots get penalised
-    ///   - competingPenalty: more than one big-chroma salient hue family
+    /// This models the human read of "mostly one field, one strong accent"
+    /// rather than treating total high-saturation area as the accent size.
     nonisolated private static func focusScore(
         salient: OKColor.OKLCH,
         salientAreaShare: CGFloat,
@@ -729,19 +725,22 @@ enum SemanticPaletteFactory {
     ) -> CGFloat {
         let T = ColorSystemTokens.ToneLadder.self
 
-        // Visual contrast (0..1):
-        //
-        // dC normalises absolute chroma delta against a "designed accent"
-        // saturation point (0.20 in OKLCH). dL normalises lightness delta
-        // against a half-tone span. dH normalises hue delta against half a
-        // hue circle (max possible is 0.50 since circular distance caps
-        // there). When the dominant has near-zero chroma (true dark / true
-        // grey), the hue value is undefined / numerical noise — treat that
-        // case as MAX hue contrast so the canonical "dark canvas + colourful
-        // accent" scenario can clear the threshold. Without this hook, the
-        // formula penalises designed dark-canvas covers because the
-        // achromatic dominant has random hue.
-        let dC = max(0, salient.c - dominant.c) / 0.20
+        guard salientAreaShare >= T.lyricsSeedFocusNoiseAreaShareFloor else {
+            return 0
+        }
+        guard salientAreaShare <= T.lyricsSeedFocusDesignAreaShareHardCeiling else {
+            return 0
+        }
+
+        let salientLab = OKColor.okLCHToOKLab(salient)
+        let dominantLab = OKColor.okLCHToOKLab(dominant)
+        let labDistance = sqrt(
+            pow(salientLab.l - dominantLab.l, 2)
+            + pow(salientLab.a - dominantLab.a, 2)
+            + pow(salientLab.b - dominantLab.b, 2)
+        )
+        let perceptualDistance = ColorMath.clamp(labDistance / 0.34, 0, 1)
+        let dC = abs(salient.c - dominant.c) / 0.20
         let dL = abs(salient.l - dominant.l) / 0.50
         let dominantHasUsableHue =
             dominant.c >= ColorSystemTokens.NearMonochromeProfile.trustedHueChromaFloor
@@ -754,44 +753,52 @@ enum SemanticPaletteFactory {
             dH = 1.0
         }
         let visualContrast = ColorMath.clamp(
-            dC * T.lyricsSeedFocusChromaContrastWeight
+            perceptualDistance * 0.34
+          + dC * T.lyricsSeedFocusChromaContrastWeight
           + dL * T.lyricsSeedFocusLightnessContrastWeight
           + dH * T.lyricsSeedFocusHueDistanceWeight,
             0, 1)
 
-        // Salience (0..1):
         let salience = ColorMath.clamp(
             salient.c / T.lyricsSeedFocusSalientChromaSaturationPoint, 0, 1)
 
-        // Field uniformity (0..1):
-        let invColorful = 1 - ColorMath.clamp(
-            analysis.colorfulness / T.lyricsSeedFocusUniformityColorfulnessTarget, 0, 1)
         let dominantWeight = ColorMath.clamp(
             analysis.dominantHueConfidence / T.lyricsSeedFocusUniformityDominantConfidenceTarget,
             0, 1)
-        let fieldUniformity = (invColorful + dominantWeight) * 0.5
 
-        // Design focus (0..1): area within (noiseFloor, designCeiling)
+        let largestAccentArea = max(analysis.largestHighSaturationAreaShare, salientAreaShare)
+        let competingHighSatArea = max(0, analysis.highSaturationAreaShare - largestAccentArea)
+        let lowCompetingArea = 1 - ColorMath.clamp(
+            competingHighSatArea / T.lyricsSeedFocusUniformityColorfulnessTarget, 0, 1)
+        let fieldUniformity = ColorMath.clamp(
+            dominantWeight * 0.62 + lowCompetingArea * 0.38,
+            0, 1
+        )
+
         let designFocus: CGFloat
-        if salientAreaShare < T.lyricsSeedFocusNoiseAreaShareFloor {
-            designFocus = 0
-        } else if salientAreaShare <= T.lyricsSeedFocusDesignAreaShareCeiling {
-            // Sweet spot — small enough to feel "intentional".
+        if salientAreaShare <= T.lyricsSeedFocusDesignAreaShareCeiling {
             designFocus = 1
         } else {
-            // Beyond ceiling — it's a region, not a focal point. Falls off
-            // linearly to 0 at twice the ceiling.
-            let fall = (salientAreaShare - T.lyricsSeedFocusDesignAreaShareCeiling)
-                / T.lyricsSeedFocusDesignAreaShareCeiling
-            designFocus = max(0, 1 - fall)
+            let span = max(
+                0.001,
+                T.lyricsSeedFocusDesignAreaShareHardCeiling
+                    - T.lyricsSeedFocusDesignAreaShareCeiling
+            )
+            let t = ColorMath.clamp(
+                (salientAreaShare - T.lyricsSeedFocusDesignAreaShareCeiling) / span,
+                0,
+                1
+            )
+            designFocus = 1 - pow(t, 0.70)
         }
 
-        var score = visualContrast * salience * fieldUniformity * designFocus
+        var score =
+            visualContrast * 0.42
+            + salience * 0.22
+            + fieldUniformity * 0.24
+            + designFocus * 0.12
+        score *= designFocus
 
-        // Noise penalty if size is below the noise floor.
-        if salientAreaShare < T.lyricsSeedFocusNoiseAreaShareFloor {
-            score -= T.lyricsSeedFocusNoisePenalty
-        }
         // Competing salient penalty.
         if hasCompetingSalients(analysis: analysis) {
             score -= T.lyricsSeedFocusCompetingPenalty
@@ -817,11 +824,9 @@ enum SemanticPaletteFactory {
         return false
     }
 
-    /// Phase 6.2 — focus-score gate replacing the Phase 6.1 hard-AND
-    /// thresholds. Returns a salient seed only when its focus score clears
-    /// `lyricsSeedFocusScoreThreshold`. Dominant remains the default;
-    /// salient only wins on "designed focal" covers (dark + bright accent,
-    /// uniform field + small high-chroma punch).
+    /// Phase 6.3 — focus-score gate. Returns a salient seed only when its
+    /// score clears `lyricsSeedFocusScoreThreshold`. Dominant remains the
+    /// default; salient only wins on designed-focal covers.
     nonisolated private static func pickSalientLyricSeed(
         analysis: ArtworkColorAnalysis
     ) -> OKColor.OKLCH? {
@@ -834,10 +839,11 @@ enum SemanticPaletteFactory {
         guard let dominantLCH = OKColor.nsColorToOKLCH(analysis.dominantColor) else {
             return nil
         }
-        // Phase 6.2: focus-score replaces the Phase 6.1 hard AND-thresholds.
+        let salientAreaShare = analysis.salientHighlightAreaShares.first
+            ?? analysis.largestHighSaturationAreaShare
         let score = focusScore(
             salient: salientLCH,
-            salientAreaShare: analysis.highSaturationAreaShare,
+            salientAreaShare: salientAreaShare,
             dominant: dominantLCH,
             analysis: analysis
         )
@@ -1341,7 +1347,7 @@ enum SemanticPaletteFactory {
     }
 
     nonisolated fileprivate static func fullscreenLyricBase(analysis: ArtworkColorAnalysis) -> NSColor {
-        // Phase 6.2: dominant-first when the dominant centroid carries
+        // Phase 6.3: dominant-first when the dominant centroid carries
         // a trustworthy hue; fall through to topPalette → bestTextSource
         // only when the dominant is genuinely grey.
         let T = ColorSystemTokens.ToneLadder.self
