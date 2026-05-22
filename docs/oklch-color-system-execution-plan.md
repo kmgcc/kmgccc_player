@@ -184,6 +184,26 @@ Phase 4.5 应包含：
 
 退出状态（2026-05-21 Phase 6.1）：build PASS。剩余不在本轮强做：Apple / Cover Gradient 是否需要并行 light-mode 反相、glow/shadow 是否要单独 token、BK1/BK2 是否需要独立于纯色背景的 sat tier。
 
+### Phase 6.2 — 艺术背景歌词 / Seed 选择 / 日夜视觉最终化
+
+人工测试 Phase 6.1 后用户反馈 (a) salient gate 太保守，重点色没被歌词捕捉到；(b) nearMono 把低饱和但仍有色的封面灰白化；(c) nearMono 下艺术背景 floating shapes 仍有淡粉残留；(d) 夜间高饱和封面 inactive 仍过饱和、active 不够亮、UltraDark inactive 不够暗、纯色 + 移动圆形里圆形太亮；(e) 日间艺术背景与 shapes 太暗，歌词死黑、glow 仍是白色 glow、MiniPlayer UI 没切 dark profile。
+
+本轮做：
+
+- [x] **重点色 seed selection（focus score v2）**：用连续 `focusScore = visualContrast × salience × fieldUniformity × designFocus - noisePenalty` 替代 Phase 6.1 的硬 AND gate，dominant 仍是默认值，salient 只有 score ≥ 0.55 才胜出。`visualContrast` 当 dominant 是真灰/真黑时把 hue distance 当作 max contrast，让 "黑底 + 5% 亮黄" 这种典型设计封面能稳定触发。
+- [x] **`isNearMonochrome` 修正**：dominant / topPalette / salient 任一 OKLCH chroma ≥ `trustedHueChromaFloor=0.045` 即视为有可信色相，跳过 4-branch OR 的非严格分支；真灰封面仍中性化。
+- [x] **BKColorEngine 艺术背景 shapes 反粉红**：在 true nearMono（且无 trusted hue 候选）下，对 bgStops / shapePool / dotBase / bgVariants 做 OKLCH chroma crush 到 ≤ 0.008，消除淡粉残留。
+- [x] **夜间艺术歌词 retune**：`lyricsHighChromaShoulderTrigger=0.085` 让 mid-C seed 不再被压；active L 0.905 → 0.920；sub-active L 0.830 → 0.855；UltraDark inactive trim 0.060 → 0.095；active / sub-active chromaScale 0.92/0.96 → 0.98/1.00。
+- [x] **夜间 BK tier 收紧**：`bgB` 0.18…0.32 → 0.14…0.28；`fgB` 0.34…0.54 → 0.28…0.46；`dotB` 0.46…0.68 → 0.40…0.58（圆形上限刚好等于 inactive L floor 0.580）；UltraDark 分支 `dotB` 拉到 0.28…0.46。
+- [x] **日间艺术背景大幅提亮**：`bgB` 0.88…0.95 → 0.92…0.97；`fgB` 0.78…0.88 → 0.80…0.90；`dotB` 0.62…0.74 → 0.66…0.78；`bgS` 上限从 0.30 收到 0.22 避免 pastel。
+- [x] **日间歌词 retune（alive but below bg）**：active L 0.150 → 0.215（不死黑）；sub-active 0.260 → 0.325；inactive 0.430 → 0.470；translation 0.435 → 0.475；line-timing inactive 0.470 → 0.510 / 0.500 → 0.540。严格升序保持；与 `bgB.lower=0.92` 的 gap ≥ 0.20 invariant 满足。
+- [x] **glow / interlude dots / background lyric / translation 自动跟随**：通过 CSS fallback chain (`var(--amll-fs-main-active, …)` / `var(--amll-fs-main-inactive, …)` / `currentColor`) 由 Swift 下发的反相色自动传播，**不触 generated bundle**。
+- [x] **FullscreenMiniPlayer UI**：日间艺术背景模式（`settings.fullscreenArtBackgroundEnabled && colorScheme == .light && themeStore.hasArtworkThemeColor`）下控件主色切到 `readabilityProfile.foregroundPrimary`（dark on light artistic glass）。
+- [x] **AMLL highlight transition 审计**：fullscreen line-level transition 走 `transition: color .14s/.18s ease-out` 已经在 `index.html`，但 transition 内部的 RGB interpolation 颜色空间发生在浏览器，非 Swift 可控。per-word/character "seam" 由生成 bundle 的 mask-image / linear-gradient 内联在 `amll-core.js` 中，无现有 CSS 变量可注入 OKLCH 中间色 → **延期到 Phase 7 / AMLL backlog**，需要 fork core patch；已在 `docs/amll-custom-behavior-and-patch-registry.md` 和 `docs/amll-upgrade-implementation-log.md` 登记。
+- [x] **SelfCheck 新增 20 个 Phase 6.2 场景**：focus-score 5 个、nearMono trust 3 个、art shape 反粉红 2 个、夜间 shoulder/active/UltraDark/moving circle 5 个、日间 bg/lyric/translation 4 个、MiniPlayer day-profile 1 个。同时修正 3 个 Phase 5/6 既有测试以反映 Phase 6.2 语义：Spectrum/HomeShapes nearMono synthetic 换为纯灰，Display salient priority 不再要求 nearMono=true，ToneLadder hue identity 在 sRGB gamut 极限下放宽 active.c floor。最终 `ALL PASS`。
+
+退出条件：Debug build 通过；`COLOR_SYSTEM_SELF_CHECK=1` 自检全 PASS；用户手测七场景（夜间高饱、夜间中饱、黑底小亮色、多色封面、UltraDark、日间 + 艺术背景、日间 nearMono）按预期表现。AMLL highlight transition 留作 Phase 7 backlog。
+
 ### Phase 7 — 清理旧 HSL 分叉、文档收尾、回归验证
 
 - 删除 HSL 分叉路径；保留 `ColorMath` 但只剩 OKLCH。

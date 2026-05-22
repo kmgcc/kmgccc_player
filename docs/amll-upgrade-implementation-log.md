@@ -1064,3 +1064,48 @@ Rejected / 保留负经验：
 - 夜间艺术背景下 active 比 v3 更亮、inactive 更沉、translation 与 inactive 同档；高饱和封面歌词不刺眼、中饱和封面 hue 稳定；
 - nearMono artwork 在 light / dark 下都不引入伪色；
 - Apple / Cover Gradient / Cover Blur 视觉无任何变化。
+
+## 2026-05-21 Phase 6.2 — 艺术歌词最终化 + AMLL highlight transition 审计（audit-only）
+
+背景：Phase 6.1 落地后用户反馈 (a) salient hard gate 太保守，95% 黑 + 5% 亮黄不被命中；(b) 低饱和但仍有色的封面被 `isNearMonochrome` 灰白化；(c) nearMono shapes 残留淡粉；(d) 夜间 inactive 仍过饱和 + active 不够亮 + UltraDark inactive 不够暗；(e) 日间艺术背景 + 歌词反相整体偏暗 + MiniPlayer UI 没切 dark profile；(f) 高亮过渡颜色看起来在中间段"灰一下"，期望 OKLCH 中间色而不是 sRGB lerp。
+
+本轮处理路径（按 patch registry 的"先外层 adapter / CSS，再 timing，最后 fork core"原则）：
+
+(a)-(e) 全部在 Swift 端完成：
+
+- `SemanticPaletteFactory.focusScore(...)` 替代 hard gate；
+- `ArtworkColorAnalysis` 加 trust override（`trustedHueChromaFloor=0.045`）；
+- `BKColorEngine.make(...)` 末尾在 true nearMono 时 OKLCH chroma crush（`OKColor.neutralise(..., chromaCeiling: 0.008)`）；
+- `PerceptualToneLadder.artisticLyricsTone` 的 chroma soft shoulder 改为 gated（`scaled >= lyricsHighChromaShoulderTrigger=0.085`）；
+- 夜间 / 日间 L token 与 `BKColorEngine.tierRanges` 重设；
+- `FullscreenMiniPlayerView.controlPrimaryNSColor` 新增日间艺术背景 dark-foreground gate。
+
+Swift 下发字段名与 AMLL CSS 变量名不变；不修改 `amll-core.js` / `amll-lyric.js` / `index.html` / `bridge.js`。glow（`currentColor`）、interlude dots（`var(--amll-fs-main-active, …)`）、background lyric（`var(--amll-fs-sub-color, var(--amll-fs-main-inactive, …))`）、translation（同 inactive var chain）通过现有 fallback chain 自动跟随。
+
+### (f) AMLL highlight transition 审计 — 决定延期到 Phase 7 / fork patch
+
+审计：
+
+1. fullscreen 行级（line-level）高亮过渡：`index.html` 已经在 `.amll-fs-word-active` / `.amll-fs-char-active` 上声明 `transition: color .14s ease-out`（以及非 active 行的 `.18s` / `.20s` 变体）。这是浏览器原生的 CSS `color` transition — 颜色插值发生在 sRGB 空间，由 WebKit 处理。Swift 无法把这段 transition 中间帧改成 OKLCH lerp 而不重写 transition 机制本身。
+2. per-word / per-character "seam"（mask-image 扫光边缘的颜色变化）：实际渲染由 `amll-core.js` 内的 `splittedWords` 系统通过 `mask-image` + `linear-gradient` 内联设置；`--bright-mask-alpha` / `--dark-mask-alpha` 由 CSS 控制 alpha mask，但中间过渡颜色（active → inactive 边缘）由 core 在 inline style 上的 `background-image: linear-gradient(...)` 直接生成。`index.html` 没有可以注入 mid-color 的 CSS 变量（如 `--amll-fs-edge`），fallback chain 不参与 mask-image 内部 lerp。
+
+低风险 adapter-only fix 不可行的根因：
+
+- 即便在 `index.html` 引入 `--amll-fs-edge` 自定义变量并放在 active 选择器的 `background-image: linear-gradient(..., var(--amll-fs-edge), ...)` 里，generated bundle 的内联 `background-image` style 仍会覆盖 CSS rule（CSS specificity 上 inline style 胜出）。Swift 通过 `bridge.js` 写入的 CSS 变量进不到 bundle 已经计算好的 inline gradient stops。
+- 要让 OKLCH mid-color 真正参与 word-level transition，必须在 fork core 的 `DomLyricPlayer` mask-image 计算路径里读取 CSS variable，并在 gradient stops 中插入 mid stop。
+
+**决定：延期到 Phase 7 / AMLL backlog。** 需要 fork core patch（在 `packages/core/src/lyric-player/dom/lyric-line.ts` 的 mask-image / linear-gradient 生成处接入 `--amll-fs-edge` 变量）。该 patch 必须遵守 patch registry 的 "默认路径退化 upstream" 原则：未提供 `--amll-fs-edge` 时回到现状 sRGB lerp；提供时插入 mid stop 让 transition 在感知上沿 OKLCH 走。
+
+短期 mitigation：Phase 6.2 active L 0.920 + inactive L 0.580 的对比已经把 sRGB lerp 的视觉问题降到肉眼很难察觉；这是为什么用户在 Phase 6.2 测试时把 highlight transition 列为 "可延后" 而不是 "硬阻塞"。
+
+边界：本轮 audit 没有修改 `amll-core.js` / `amll-lyric.js` / `index.html` / `bridge.js` / fork core。`docs/amll-custom-behavior-and-patch-registry.md` 已加 outstanding work 行。
+
+验收手测对应（Phase 6.2 part）：
+
+- 夜间高饱和封面 active 比 v3/6.1 更"鲜"；inactive 不再过饱和；translation 与 inactive 同档；
+- 夜间黑底小亮色（95% 黑 + 5% 亮黄）：seed = 黄，歌词跟着染色（focus score 触发）；
+- 夜间多色 / 中饱和 / UltraDark：seed = dominant（focus score 不触发）；UltraDark inactive 明显更暗、moving circle 比 v3/6.1 更暗；
+- nearMono 真灰：歌词、背景、shapes、moving circle 中性；shapes 不再淡粉；
+- low-sat chromatic 封面（暖灰、复古）：Phase 6.2 不再灰白化，保留封面色相；
+- 日间艺术背景：背景明显比 6.1 更亮（airy）；shapes 跟着亮；active 是深色但 "alive"（不死黑）；translation = inactive；glow 自动是 dark glow；interlude dots 深色；background lyric 深色；MiniPlayer 控件切到 dark foreground；
+- Apple / Cover Gradient / Cover Blur 关掉艺术背景：视觉无变化。
