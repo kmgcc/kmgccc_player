@@ -38,6 +38,7 @@ struct FullscreenMiniPlayerView: View {
 
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(AppSettings.self) private var settings
+    @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
 
     @State private var isDragging = false
@@ -430,11 +431,39 @@ struct FullscreenMiniPlayerView: View {
             // other future on-artwork surfaces.
             return palette.readabilityProfile.foregroundPrimary
         }
+        if usesDarkControlForegroundForLightArtisticBackground {
+            // Phase 6.2: dark icons on bright artistic glass. When the
+            // fullscreen artistic background is enabled and the system is
+            // in `.light`, the chrome material is sitting on a high-L
+            // artwork-tinted background (Phase 6.2 day bgB lifted to
+            // 0.92…0.97). The default MiniPlayerControl palette emits a
+            // light foreground built for dark surfaces — that produces
+            // low-contrast lift here. Switch to the readability dark
+            // foreground so labels and SF Symbols read as dark text on
+            // bright glass. `readabilityProfile.foregroundPrimary` is
+            // Phase-4 OKLCH-neutralised on nearMono so we keep the
+            // anti-pink behaviour for free.
+            return palette.readabilityProfile.foregroundPrimary
+        }
         // Surface is the chrome material (darkened liquid-glass pill).
         // The Phase 4 MiniPlayerControl palette collapses to OKLCH
         // neutral white on near-mono covers, so the legacy "lift HSL
         // saturation to ≥0.88" path can no longer leak a pastel tint.
         return palette.miniPlayerControl.primary
+    }
+
+    /// Phase 6.2 — fullscreen artistic background is enabled AND the
+    /// system is in `.light`. In this configuration the chrome material is
+    /// sitting on a high-L artwork-tinted background; the default chrome
+    /// control palette is built for dark surfaces and would emit a
+    /// low-contrast lift. Switch the chrome control foreground to the
+    /// readability-profile dark foreground so icons and labels read as
+    /// dark text on bright glass. Gate requires `hasArtworkThemeColor` so
+    /// we never fight an in-flight artwork-load placeholder palette.
+    private var usesDarkControlForegroundForLightArtisticBackground: Bool {
+        settings.fullscreenArtBackgroundEnabled
+            && colorScheme == .light
+            && themeStore.hasArtworkThemeColor
     }
 
     private var usesAdaptiveClearForeground: Bool {
