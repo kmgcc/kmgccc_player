@@ -1198,33 +1198,35 @@ extension BKColorEngine {
         var dotS: ClosedRange<CGFloat>
 
         if isDark {
-            // Phase 6.1 dark-mode tuning:
+            // Phase 6.2 dark-mode tuning (tightens Phase 6.1):
             //   * `fgB` (floating shapes) and `dotB` (moving circles) upper
-            //     bounds lowered so the surface sits more in the background
-            //     and stops competing with foreground lyrics. `bgB` is
-            //     nudged down so BK1/BK2 variants — which clamp to `bgB` —
-            //     come out darker per the user's "BK 背景需要额外暗一点"
+            //     bounds compressed further so the entire shape band sits
+            //     clearly below the lyric inactive L floor (~0.58). This
+            //     stops the "moving circle floats above the inactive line"
             //     report.
-            //   * `bgS` / `fgS` / `dotS` upper bounds nudged up so the
-            //     darker tones do not read as "灰扑扑" — chroma compensates
-            //     for the lower L.
-            bgB = 0.18...0.32
-            fgB = 0.34...0.54
-            dotB = 0.46...0.68
+            //   * `bgB` upper bound lowered slightly so BK1/BK2 variants
+            //     come out marginally darker (matches the user's deeper
+            //     night-feel expectation under Phase 6.2 active L lift).
+            //   * UltraDark branch pushes `dotB` further still.
+            //   * `bgS` / `fgS` / `dotS` upper bounds unchanged from 6.1 —
+            //     chroma still compensates for the lower L.
+            bgB = 0.14...0.28
+            fgB = 0.28...0.46
+            dotB = 0.40...0.58
             bgS = 0.26...0.54
             fgS = 0.36...0.74
             dotS = 0.32...0.66
 
             if veryDarkCover || coverLuma < 0.22 {
-                bgB = 0.06...0.18
-                fgB = 0.22...0.42
-                dotB = 0.36...0.58
+                bgB = 0.04...0.14
+                fgB = 0.18...0.34
+                dotB = 0.28...0.46
                 bgS = 0.10...0.28
             }
             if coverLuma < 0.34 && areaDominantB < 0.30 {
-                bgB = 0.06...0.16
-                fgB = 0.20...0.40
-                dotB = 0.34...0.54
+                bgB = 0.04...0.12
+                fgB = 0.16...0.32
+                dotB = 0.26...0.44
                 bgS = makeRange(lower: 0.08, upper: min(bgS.upperBound, 0.22))
             }
             if areaDominantS < 0.14 {
