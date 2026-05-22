@@ -332,6 +332,38 @@ struct BKColorEngine {
             triggered: &globalTriggers
         )
 
+        // Phase 6.2 — anti-pink under true nearMono. When the cover has no
+        // trustworthy hue (dominant / top / salient OKLCH chroma all below
+        // `trustedHueChromaFloor`), the floating shapes, moving circle, and
+        // BK1/BK2 variants must NOT carry residual warm tint from the
+        // HSB-based shape resolver. Crush chroma in OKLCH so L is preserved
+        // but no hue leaks. Mirrors the existing
+        // `FullscreenMiniPlayerView.neutralizeForNearMono` pass on Spectrum.
+        let neutraliseShapes =
+            (analysis?.isNearMonochrome ?? false)
+            && !analysisHasTrustedHueCandidate(analysis)
+
+        let finalBgStops = bgStopsHSB.map(toCGColor(_:))
+        let finalShapePool = shapePoolHSB.map(toCGColor(_:))
+        let finalDotBase = toCGColor(dotBaseHSB)
+        let finalBgVariants = bgVariantsHSB.map { $0.map(toCGColor(_:)) }
+
+        let bgStopsOut: [CGColor]
+        let shapePoolOut: [CGColor]
+        let dotBaseOut: CGColor
+        let bgVariantsOut: [[CGColor]]
+        if neutraliseShapes {
+            bgStopsOut = finalBgStops.map { neutraliseCGColor($0) }
+            shapePoolOut = finalShapePool.map { neutraliseCGColor($0) }
+            dotBaseOut = neutraliseCGColor(finalDotBase)
+            bgVariantsOut = finalBgVariants.map { $0.map { neutraliseCGColor($0) } }
+        } else {
+            bgStopsOut = finalBgStops
+            shapePoolOut = finalShapePool
+            dotBaseOut = finalDotBase
+            bgVariantsOut = finalBgVariants
+        }
+
         let harmonized = HarmonizedPalette(
             primaryHue: normalizeHue(primaryAfter),
             imageHue: normalizeHue(stats.areaDominantHue),
@@ -348,10 +380,10 @@ struct BKColorEngine {
             accentHue: stats.accentHue,
             accentStrength: stats.accentStrength,
             accentEnabled: stats.accentEnabled,
-            bgStops: bgStopsHSB.map(toCGColor(_:)),
-            bgVariants: bgVariantsHSB.map { $0.map(toCGColor(_:)) },
-            shapePool: shapePoolHSB.map(toCGColor(_:)),
-            dotBase: toCGColor(dotBaseHSB),
+            bgStops: bgStopsOut,
+            bgVariants: bgVariantsOut,
+            shapePool: shapePoolOut,
+            dotBase: dotBaseOut,
             bgBRange: tier.bgB,
             fgBRange: tier.fgB,
             dotBRange: tier.dotB,
@@ -2972,6 +3004,45 @@ extension BKColorEngine {
         case .shape: return "shape"
         case .dot: return "dot"
         }
+    }
+
+    /// Phase 6.2 — trusted-hue evidence over the analysis. Mirrors the
+    /// trust override the analyser uses to decide whether `isNearMonochrome`
+    /// fires. If any of dominant / top / salient OKLCH chroma is at or above
+    /// `NearMonochromeProfile.trustedHueChromaFloor`, the cover has a usable
+    /// hue and shape colours must keep their tint. Otherwise (true grey
+    /// regime) the post-process pass crushes residual chroma in OKLCH.
+    fileprivate nonisolated static func analysisHasTrustedHueCandidate(
+        _ analysis: ArtworkColorAnalysis?
+    ) -> Bool {
+        guard let analysis else { return true }
+        let floor = ColorSystemTokens.NearMonochromeProfile.trustedHueChromaFloor
+        if let lch = OKColor.nsColorToOKLCH(analysis.dominantColor), lch.c >= floor {
+            return true
+        }
+        for color in analysis.topPalette {
+            if let lch = OKColor.nsColorToOKLCH(color), lch.c >= floor {
+                return true
+            }
+        }
+        for color in analysis.salientHighlightPalette {
+            if let lch = OKColor.nsColorToOKLCH(color), lch.c >= floor {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Phase 6.2 — crush a CGColor's OKLCH chroma to the nearMono ceiling so
+    /// the rendered shape reads as a perceptual grey while preserving L.
+    /// Ceiling matches `FullscreenMiniPlayerView.neutralizeForNearMono` (the
+    /// Spectrum nearMono pass) for visual consistency across surfaces.
+    fileprivate nonisolated static func neutraliseCGColor(_ color: CGColor) -> CGColor {
+        guard let ns = NSColor(cgColor: color)?.usingColorSpace(.deviceRGB) else {
+            return color
+        }
+        let crushed = OKColor.neutralise(ns, chromaCeiling: 0.008)
+        return (crushed.usingColorSpace(.deviceRGB) ?? crushed).cgColor
     }
 
     fileprivate nonisolated static func hsb(from color: NSColor) -> HSBColor? {

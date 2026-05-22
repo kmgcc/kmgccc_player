@@ -208,6 +208,18 @@ nonisolated enum OKColor {
     private static func clamp(_ value: CGFloat, _ lo: CGFloat, _ hi: CGFloat) -> CGFloat {
         Swift.min(hi, Swift.max(lo, value))
     }
+
+    /// Phase 6.2 — neutralise a colour by crushing its OKLCH chroma to a
+    /// ceiling while preserving lightness. Used by the artistic-background
+    /// shape resolver under true nearMono to eliminate residual hue tint
+    /// (e.g. the historical "shapes are slightly pink even on grey covers"
+    /// regression). Mirrors the inline helper in
+    /// `FullscreenMiniPlayerView.neutralizeForNearMono`.
+    static func neutralise(_ color: NSColor, chromaCeiling: CGFloat) -> NSColor {
+        guard let lch = nsColorToOKLCH(color) else { return color }
+        let crushed = OKLCH(l: lch.l, c: Swift.min(lch.c, chromaCeiling), h: lch.h)
+        return okLCHToNSColor(crushed, alpha: 1.0)
+    }
 }
 
 // MARK: - Phase 6 perceptual tone ladder (v2)
