@@ -302,24 +302,50 @@ extension ArtworkColorExtractor {
         // Phase 2 drops it and gives that responsibility to UltraDark.
         // The remaining four branches are pure colour-confidence tests.
 
+        // Phase 6.2 — chromatic trust override. If the dominant centroid OR
+        // any topPalette / salient candidate carries OKLCH chroma at or
+        // above `trustedHueChromaFloor`, the cover has a hue identity even
+        // when the average saturation looks low (compressed JPEGs, vintage
+        // prints, warm-tinted photos). Without this override the historical
+        // 4-branch OR would grey-wash these covers — exactly the "明明有颜色
+        // 但歌词变成灰白" report.
+        let phase62TopPalette = uiThemePalette(from: sample, targetCount: 4)
+        let phase62SalientCandidates = computeSalientHighlights(
+            buckets: buckets,
+            totalWeight: totalWeight,
+            dominantHue: dominantHue
+        )
+        let dominantLCH = OKColor.nsColorToOKLCH(dominantColor)
+        let topLCHs: [OKColor.OKLCH] = phase62TopPalette.compactMap { OKColor.nsColorToOKLCH($0) }
+        let salientLCHs: [OKColor.OKLCH] = phase62SalientCandidates
+            .compactMap { OKColor.nsColorToOKLCH($0) }
+        let hasTrustedHue =
+            (dominantLCH?.c ?? 0) >= ColorSystemTokens.NearMonochromeProfile.trustedHueChromaFloor
+            || topLCHs.contains(where: { $0.c >= ColorSystemTokens.NearMonochromeProfile.trustedHueChromaFloor })
+            || salientLCHs.contains(where: { $0.c >= ColorSystemTokens.NearMonochromeProfile.trustedHueChromaFloor })
+
         let isMono = colorfulness < ColorSystemTokens.NearMonochromeProfile.strictColorfulness
             && avgSat < ColorSystemTokens.NearMonochromeProfile.strictAvgSaturation
+        // Phase 6.2: strict mono (branch 1) is unconditional; the other 3
+        // OR branches are skipped when `hasTrustedHue == true`.
         let isNearMonochrome =
             isMono
-            || (colorfulness < ColorSystemTokens.NearMonochromeProfile.lowColorfulness
-                && avgSat < ColorSystemTokens.NearMonochromeProfile.lowAvgSaturation
-                && largestHighSaturationAreaShare
-                    < ColorSystemTokens.NearMonochromeProfile.lowMaxHighSatAreaShare)
-            || (avgSat < ColorSystemTokens.NearMonochromeProfile.subtleAvgSaturation
-                && colorfulness < ColorSystemTokens.NearMonochromeProfile.subtleColorfulness
-                && largestHighSaturationAreaShare
-                    < ColorSystemTokens.NearMonochromeProfile.subtleMaxHighSatAreaShare)
-            || (dominantSaturation
-                    < ColorSystemTokens.NearMonochromeProfile.dominantBucketSaturation
-                && colorfulness
-                    < ColorSystemTokens.NearMonochromeProfile.dominantBucketColorfulness
-                && avgSat
-                    < ColorSystemTokens.NearMonochromeProfile.dominantBucketAvgSaturation)
+            || (!hasTrustedHue && (
+                (colorfulness < ColorSystemTokens.NearMonochromeProfile.lowColorfulness
+                    && avgSat < ColorSystemTokens.NearMonochromeProfile.lowAvgSaturation
+                    && largestHighSaturationAreaShare
+                        < ColorSystemTokens.NearMonochromeProfile.lowMaxHighSatAreaShare)
+                || (avgSat < ColorSystemTokens.NearMonochromeProfile.subtleAvgSaturation
+                    && colorfulness < ColorSystemTokens.NearMonochromeProfile.subtleColorfulness
+                    && largestHighSaturationAreaShare
+                        < ColorSystemTokens.NearMonochromeProfile.subtleMaxHighSatAreaShare)
+                || (dominantSaturation
+                        < ColorSystemTokens.NearMonochromeProfile.dominantBucketSaturation
+                    && colorfulness
+                        < ColorSystemTokens.NearMonochromeProfile.dominantBucketColorfulness
+                    && avgSat
+                        < ColorSystemTokens.NearMonochromeProfile.dominantBucketAvgSaturation)
+            ))
 
         // -------- Lightness axis (Phase 2: isUltraDark) --------
         //
