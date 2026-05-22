@@ -861,6 +861,12 @@ extension ArtworkColorExtractor {
 // MARK: - Phase 2: salient highlight & display palette computation
 
 extension ArtworkColorExtractor {
+    nonisolated struct SalientHighlightCandidate: Sendable {
+        let color: NSColor
+        let hue: CGFloat
+        let areaShare: CGFloat
+        let score: CGFloat
+    }
 
     /// Mines the 48-hue bucket histogram for buckets that are visually
     /// striking despite occupying a small area share — the "designer
@@ -880,15 +886,21 @@ extension ArtworkColorExtractor {
         totalWeight: CGFloat,
         dominantHue: CGFloat
     ) -> [NSColor] {
+        computeSalientHighlightCandidates(
+            buckets: buckets,
+            totalWeight: totalWeight,
+            dominantHue: dominantHue
+        ).map(\.color)
+    }
+
+    nonisolated static func computeSalientHighlightCandidates(
+        buckets: [HueBucket],
+        totalWeight: CGFloat,
+        dominantHue: CGFloat
+    ) -> [SalientHighlightCandidate] {
         guard totalWeight > 0 else { return [] }
 
-        struct Candidate {
-            let color: NSColor
-            let hue: CGFloat
-            let score: CGFloat
-        }
-
-        var candidates: [Candidate] = []
+        var candidates: [SalientHighlightCandidate] = []
         candidates.reserveCapacity(8)
 
         let noiseFloor = totalWeight * ColorSystemTokens.SalientHighlight.noiseFloorAbsolute
@@ -917,24 +929,29 @@ extension ArtworkColorExtractor {
             if areaShare > ColorSystemTokens.SalientHighlight.maxAreaShare { continue }
 
             let score = bucket.weight * (1 + s * ColorSystemTokens.SalientHighlight.satBonus)
-            candidates.append(Candidate(color: color, hue: h, score: score))
+            candidates.append(SalientHighlightCandidate(
+                color: color,
+                hue: h,
+                areaShare: areaShare,
+                score: score
+            ))
         }
 
         candidates.sort { $0.score > $1.score }
 
-        var picked: [NSColor] = []
+        var picked: [SalientHighlightCandidate] = []
         for candidate in candidates {
             let distinct = picked.allSatisfy { existing in
                 let hueGap = ColorMath.circularHueDistance(
                     candidate.hue,
-                    hueValue(of: existing)
+                    existing.hue
                 )
-                let rgbGap = rgbDistance(candidate.color, existing)
+                let rgbGap = rgbDistance(candidate.color, existing.color)
                 return hueGap >= ColorSystemTokens.SalientHighlight.hueDedupGap
                     || rgbGap >= ColorSystemTokens.SalientHighlight.rgbDedupGap
             }
             if distinct {
-                picked.append(candidate.color)
+                picked.append(candidate)
             }
             if picked.count >= ColorSystemTokens.SalientHighlight.maxCount { break }
         }

@@ -227,12 +227,10 @@ final class ThemeStore: ObservableObject {
         currentArtworkData = data
         currentArtworkChecksum = checksum
         averageColorCache = nil
-        hasArtworkThemeColor = false
-        usesFallbackThemeColor = true
-        analysis = .neutralFallback
-        rawDominantColor = defaultBlueNS
-        
-        Log.trace("Cleared averageColorCache for new track", category: .theme)
+        Log.trace(
+            "Holding previous palette while new artwork analysis is pending",
+            category: .theme
+        )
 
         if let cacheKey, let cached = dominantColorCache.object(forKey: cacheKey as NSString) {
             Log.debug("Cache hit for dominant color cache key \(cacheKey)", category: .theme)
@@ -251,34 +249,19 @@ final class ThemeStore: ObservableObject {
             return
         }
 
-        await refreshPalette(reason: "track_artwork_pending")
-
         Log.debug(
             "Extraction started for identity \(shortIdentity(artworkIdentity))",
             category: .theme
         )
 
-        // Quick color for immediate UI feedback, then full extraction
-        async let quick = extractQuickColor(from: data)
+        // Phase 6.3: do not publish the quick sample by itself. It has no
+        // trusted nearMono/salient context and was the visible default-color
+        // flash during track changes. Keep the previous semantic palette until
+        // the full analysis is ready, then publish once.
         async let cachedArtworkSnapshot: ArtworkAssetSnapshot? = {
             guard let assetTrackID else { return nil }
             return await ArtworkAssetStore.shared.snapshotMetadata(trackID: assetTrackID, artworkData: data)
         }()
-
-        // Apply quick color first for immediate feedback
-        if let quickColor = await quick,
-           isCurrentExtraction(
-                token: token,
-                artworkIdentity: artworkIdentity,
-                assetTrackID: assetTrackID,
-                checksum: checksum
-           ) {
-            Log.trace("Applying quick color", category: .theme)
-            rawDominantColor = quickColor
-            hasArtworkThemeColor = true
-            usesFallbackThemeColor = false
-            await refreshPalette(reason: "track_artwork_quick")
-        }
 
         // Then apply full extraction
         let artworkSnapshot = await cachedArtworkSnapshot
@@ -304,8 +287,9 @@ final class ThemeStore: ObservableObject {
         }
 
         Log.trace("Applying extracted color", category: .theme)
-        
-        let resolved = extractedColor ?? rawDominantColor
+
+        let hasResolvedArtworkTheme = extractedColor != nil || extractedAnalysis != nil
+        let resolved = extractedColor ?? extractedAnalysis?.dominantColor ?? defaultBlueNS
         let resolvedAnalysis = extractedAnalysis ?? .neutralFallback
         if let cacheKey {
             dominantColorCache.setObject(
@@ -315,7 +299,7 @@ final class ThemeStore: ObservableObject {
         }
         rawDominantColor = resolved
         self.analysis = resolvedAnalysis
-        hasArtworkThemeColor = extractedColor != nil || hasArtworkThemeColor
+        hasArtworkThemeColor = hasResolvedArtworkTheme
         usesFallbackThemeColor = !hasArtworkThemeColor
         lastProcessedChecksum = checksum
         lastProcessedArtworkIdentity = artworkIdentity

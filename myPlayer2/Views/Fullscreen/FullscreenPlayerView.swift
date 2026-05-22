@@ -2069,6 +2069,9 @@ struct FullscreenPlayerView: View {
 
     private var fullscreenMiniPlayerPrimaryNSColor: NSColor {
         let palette = themeStore.semanticPalette
+        if usesDarkControlForegroundForLightArtisticBackground {
+            return palette.readabilityProfile.foregroundPrimary
+        }
         if isCoverBlurFullscreenSkin,
            fullscreenControlsGlassStyle.materialStyle == .clear,
            themeStore.hasArtworkThemeColor,
@@ -2081,6 +2084,9 @@ struct FullscreenPlayerView: View {
     }
 
     private var fullscreenMiniPlayerIconBlendMode: BlendMode {
+        if usesDarkControlForegroundForLightArtisticBackground {
+            return .normal
+        }
         if isCoverBlurFullscreenSkin,
            fullscreenControlsGlassStyle.materialStyle == .clear,
            themeStore.hasArtworkThemeColor,
@@ -2091,6 +2097,11 @@ struct FullscreenPlayerView: View {
             return .normal
         }
         return .screen
+    }
+
+    private var usesDarkControlForegroundForLightArtisticBackground: Bool {
+        settings.fullscreenArtBackgroundEnabled
+            && colorScheme == .light
     }
 
     private var fullscreenControlsGlassStyle: FullscreenControlsGlassStyle {
@@ -2906,6 +2917,10 @@ struct FullscreenPlayerView: View {
             colorSet.lineTimingSubInactive,
             alpha: 1.0
         )
+        let emphasisGlowColor = ArtworkColorExtractor.cssRGBA(
+            colorSet.mainActive,
+            alpha: colorScheme == .light && activeCoverBlurTheme == nil ? 0.36 : 0.50
+        )
         let backgroundColor = ArtworkColorExtractor.cssRGBA(
             colorSet.subActive,
             alpha: 1.0
@@ -2992,6 +3007,7 @@ struct FullscreenPlayerView: View {
             "fullscreenSubActiveColor": subActiveColor,
             "fullscreenSubInactiveColor": subInactiveColor,
             "fullscreenBackgroundColor": backgroundColor,
+            "fullscreenEmphasisGlowColor": emphasisGlowColor,
             "fullscreenLineTimingInactiveColor": lineTimingMainInactiveColor,
             "fullscreenLineTimingSubInactiveColor": lineTimingSubInactiveColor,
             "alignAnchor": "top",

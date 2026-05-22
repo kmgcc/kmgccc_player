@@ -204,6 +204,25 @@ Phase 4.5 应包含：
 
 退出条件：Debug build 通过；`COLOR_SYSTEM_SELF_CHECK=1` 自检全 PASS；用户手测七场景（夜间高饱、夜间中饱、黑底小亮色、多色封面、UltraDark、日间 + 艺术背景、日间 nearMono）按预期表现。AMLL highlight transition 留作 Phase 7 backlog。
 
+### Phase 6.3 — Artistic Color System Stabilization
+
+人工测试 Phase 6.2 后确认视觉仍未验收：小面积强焦点仍不稳、nearMono 误伤有色封面、true nearMono 下 floating shapes 仍可能偏粉、夜间艺术背景偏灰/偏亮、日间艺术背景与歌词仍偏暗、日间 fullscreen MiniPlayer UI 仍会随封面切黑白、切歌时颜色会短暂掉默认色、日间 emphasis glow 仍像白色 glow。高亮 feather / active-inactive transition 本轮明确不处理，继续留在 AMLL backlog。
+
+本轮做：
+
+- [x] **focus seed selection v3**：`ArtworkColorAnalysis` 为 `salientHighlightPalette` 同步记录 `salientHighlightAreaShares`；`focusScore` 改为感知距离 + ΔC + ΔL + Δhue + dominant-field confidence + competing-high-sat area + nonlinear area gate。小焦点不再被整张图的 `highSaturationAreaShare` 误惩罚；70% 棕 + 30% 蓝仍按 dominant；普通多色与噪点被压制。
+- [x] **nearMono / trusted hue 重新定义**：nearMono 必须满足“无可信 hue”。可信来源扩展为 dominant / topPalette / richPalette / displayPalette / salient / bestTextSource；strict mono 也不能绕过 trusted hue。低饱和彩色封面保留温度，真灰仍中性。
+- [x] **true nearMono art shapes 防粉**：BKColorEngine 的 trusted-hue 判定与 analyzer 对齐；true nearMono 且无 trusted hue 时，bgStops / BK1/BK2 variants / shapePool / dotBase 全部 OKLCH chroma crush 到 ≤ 0.008。
+- [x] **夜间艺术背景重新校准**：暗色常规 `bgB=0.12…0.24`、`fgB=0.24…0.42`、`dotB=0.34…0.52`；UltraDark 进一步降到 `dotB=0.22…0.38` / 深分支 `0.20…0.34`。暖红低彩 trusted hue 会保留更高 bgS ceiling/floor，避免灰淡；亮封面不再把背景抬亮。
+- [x] **日间艺术背景独立高明度体系**：light tier 改为 `bgB=0.94…0.985`、`fgB=0.88…0.96`、`dotB=0.78…0.90`，作为深色歌词 / 深色 UI 的 airy background。
+- [x] **日间歌词 dark but alive**：light lyrics L 提升为 active 0.255 / sub-active 0.365 / inactive 0.515 / translation 0.520 / line timing 0.550…0.575；仍全部低于 day bg。
+- [x] **日间 emphasis glow dark profile**：Swift 新增 `fullscreenEmphasisGlowColor`，来源为 `colorSet.mainActive`；App adapter 仅消费此变量重染 fullscreen emphasis textShadow / drop-shadow，不把 hue 决策放回 Web，不改 generated bundle。
+- [x] **日间艺术背景 MiniPlayer fixed dark foreground**：FullscreenMiniPlayerView 与 FullscreenPlayerView bottom controls 在 `fullscreenArtBackgroundEnabled && colorScheme == .light` 下固定走 `readabilityProfile.foregroundPrimary`，blend mode 固定 normal，不再按封面明度跳白。
+- [x] **切歌不掉默认色**：ThemeStore 不再在新 artwork cache miss / quick sample 阶段发布 `.neutralFallback` 或 default accent；保留上一首 palette，等 full analysis ready 后一次性发布。真正无 artwork 时才走 fallback。
+- [x] **SelfCheck / Debug**：新增 Phase 6.3 自检，覆盖小焦点、普通多色、噪点、nearMono trust、true nearMono BK shapes 防粉、夜间 / UltraDark / 日间背景与歌词、dark glow source、MiniPlayer dark profile。`ThemeStore` 增加 pending log，便于手测切歌时确认“hold previous palette”。
+
+退出状态：Debug build 通过；`COLOR_SYSTEM_SELF_CHECK=1` 运行 `ALL PASS`。AMLL highlighter transition / feather 本轮不实现，保留 backlog；未进入 Phase 7。
+
 ### Phase 7 — 清理旧 HSL 分叉、文档收尾、回归验证
 
 - 删除 HSL 分叉路径；保留 `ColorMath` 但只剩 OKLCH。

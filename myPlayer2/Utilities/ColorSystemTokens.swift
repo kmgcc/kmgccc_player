@@ -462,24 +462,23 @@ nonisolated enum ColorSystemTokens {
         // descending order is still required by `checkToneLadderBasicHierarchy`:
         //   mainActive > subActive > mainInactive > subInactive
         //               > lineTimingMainInactive > lineTimingSubInactive.
-        // Phase 6.2 night retune:
-        //   * Active L 0.905 → 0.920; sub-active 0.830 → 0.855 (current line
-        //     reads more clearly "alive" on saturated covers).
-        //   * Inactive / line-timing unchanged from Phase 6.1.
-        //   * UltraDark inactive trim 0.060 → 0.095 — deep-night covers no
-        //     longer float their inactive line above the artwork.
-        static let lyricsMainActiveL: CGFloat = 0.920
-        static let lyricsSubActiveL: CGFloat = 0.855
-        static let lyricsMainInactiveL: CGFloat = 0.580
-        static let lyricsSubInactiveL: CGFloat = 0.575
-        static let lyricsLineTimingMainInactiveL: CGFloat = 0.555
-        static let lyricsLineTimingSubInactiveL: CGFloat = 0.535
+        // Phase 6.3 night retune:
+        //   * Active line gets a clearer high-L, high-C identity.
+        //   * Inactive roles stay lower and less saturated on high-C seeds.
+        //   * UltraDark inactive trim deepens again so night covers do not
+        //     float grey text above the artwork layer.
+        static let lyricsMainActiveL: CGFloat = 0.935
+        static let lyricsSubActiveL: CGFloat = 0.875
+        static let lyricsMainInactiveL: CGFloat = 0.555
+        static let lyricsSubInactiveL: CGFloat = 0.550
+        static let lyricsLineTimingMainInactiveL: CGFloat = 0.530
+        static let lyricsLineTimingSubInactiveL: CGFloat = 0.510
 
         static let lyricsUltraDarkActiveTrim: CGFloat = 0.030
         static let lyricsUltraDarkSubActiveTrim: CGFloat = 0.040
-        static let lyricsUltraDarkInactiveTrim: CGFloat = 0.095
+        static let lyricsUltraDarkInactiveTrim: CGFloat = 0.125
 
-        // Phase 6.2 light mode (artistic background only): lyric inversion.
+        // Phase 6.3 light mode (artistic background only): lyric inversion.
         // Light-mode artistic backgrounds are lifted into a high-L band
         // (see `BKColorEngine.tierRanges`), so lyrics flip to a dark
         // ladder. `active` lives at the lowest L (most contrast), inactive
@@ -491,16 +490,15 @@ nonisolated enum ColorSystemTokens {
         // Translation (subInactive) sits within ~0.005 of main-inactive so
         // the proximity assertion holds in both schemes.
         //
-        // Phase 6.2 retune: active L 0.150 → 0.215 (alive, not death-black),
-        // inactive 0.430 → 0.470, translation 0.435 → 0.475, line-timing
-        // lifted in lockstep. All still strictly below day bgB lower bound
-        // 0.92 — gap >= `lyricsLightBackgroundLyricGapMin = 0.20`.
-        static let lyricsLightMainActiveL: CGFloat = 0.215
-        static let lyricsLightSubActiveL: CGFloat = 0.325
-        static let lyricsLightMainInactiveL: CGFloat = 0.470
-        static let lyricsLightSubInactiveL: CGFloat = 0.475
-        static let lyricsLightLineTimingMainInactiveL: CGFloat = 0.510
-        static let lyricsLightLineTimingSubInactiveL: CGFloat = 0.540
+        // Phase 6.3 retune: the day background is now an independent airy
+        // light design, so the dark lyric ladder can be lifted away from
+        // dead black while staying unmistakably below the background.
+        static let lyricsLightMainActiveL: CGFloat = 0.255
+        static let lyricsLightSubActiveL: CGFloat = 0.365
+        static let lyricsLightMainInactiveL: CGFloat = 0.515
+        static let lyricsLightSubInactiveL: CGFloat = 0.520
+        static let lyricsLightLineTimingMainInactiveL: CGFloat = 0.550
+        static let lyricsLightLineTimingSubInactiveL: CGFloat = 0.575
 
         // Phase 6.1 chroma soft-shoulder for high-chroma seeds. The v3 hard
         // cap (~0.110…0.140 by hue) compressed high-C seeds to a fixed
@@ -530,17 +528,13 @@ nonisolated enum ColorSystemTokens {
         static let lyricsSalientSeedDominantConfidenceMin: CGFloat = 0.42
         static let lyricsSalientSeedMaxLargestHighSatArea: CGFloat = 0.22
 
-        // MARK: Phase 6.2 — Subjective focus-score seed selector.
+        // MARK: Phase 6.3 — Subjective focus-score seed selector.
         //
-        // Phase 6.1's salient gate was four hard AND-thresholds. Users
-        // reported the trigger never fired on the "obvious" cases (95% dark
-        // + 5% bright accent). Phase 6.2 replaces it with a continuous
-        // `focusScore = visualContrast × salience × fieldUniformity
-        //             × designFocus - noisePenalty` so the decision can
-        // degrade gracefully when one signal is weak but others are strong.
-        // Dominant remains the default; salient only wins when its score
-        // clears `lyricsSeedFocusScoreThreshold`.
-        static let lyricsSeedFocusScoreThreshold: CGFloat = 0.55
+        // The selector models "mostly one field, one intentional accent"
+        // with perceptual contrast, salient chroma, dominant-field confidence,
+        // competing-high-sat area, and a nonlinear area gate. Dominant remains
+        // the default; salient only wins when its score clears this threshold.
+        static let lyricsSeedFocusScoreThreshold: CGFloat = 0.62
         // Visual-contrast component: salient.c vs. dominant.c (Δchroma)
         // + ΔL + Δhue. Each term contributes additively, then the sum is
         // normalised to [0,1].
@@ -556,7 +550,8 @@ nonisolated enum ColorSystemTokens {
         // Design-focus component: small-area-but-high-chroma highlights
         // read as "designed" — the area share itself penalises huge
         // competing regions.
-        static let lyricsSeedFocusDesignAreaShareCeiling: CGFloat = 0.22
+        static let lyricsSeedFocusDesignAreaShareCeiling: CGFloat = 0.18
+        static let lyricsSeedFocusDesignAreaShareHardCeiling: CGFloat = 0.30
         // Noise penalty: tiny isolated dots (area share too small) are
         // likely JPEG artifacts.
         static let lyricsSeedFocusNoiseAreaShareFloor: CGFloat = 0.005
@@ -566,18 +561,18 @@ nonisolated enum ColorSystemTokens {
         // longer "designed focal" — penalise.
         static let lyricsSeedFocusCompetingPenalty: CGFloat = 0.25
 
-        // Phase 6.2 — high-chroma shoulder trigger.
+        // Phase 6.3 — high-chroma shoulder trigger.
         //
         // Phase 6.1 applied the soft chroma shoulder unconditionally. Users
         // reported mid-chroma covers still felt "soft-ceilinged". 6.2 only
         // engages the shoulder when the scaled chroma exceeds this trigger.
         static let lyricsHighChromaShoulderTrigger: CGFloat = 0.085
 
-        // Phase 6.2 — night + day retune values have been promoted into the
+        // Phase 6.3 — night + day retune values have been promoted into the
         // canonical `lyrics*L` / `lyricsUltraDark*Trim` / `lyricsLight*L`
         // tokens above (see Task 5 + Task 8 sections). The "Phase62" alias
         // staging set has been removed now that the canonical names hold
-        // the Phase 6.2 values.
+        // the Phase 6.3 values.
 
         // SelfCheck token: day-mode invariant "lyric L < background L".
         // `BKColorEngine.tierRanges` is asserted to produce bg L floor
@@ -590,15 +585,15 @@ nonisolated enum ColorSystemTokens {
         // shoulder near white; mid-L roles can mildly exceed 1.0 so they
         // don't read as desaturated.
         //
-        // Phase 6.2: active scales bumped (0.92 → 0.98 / 0.96 → 1.00) so the
-        // active line reads as "more rich". Combined with the shoulder
-        // trigger at 0.085, mid-chroma seeds still pass through untouched.
-        static let lyricsMainActiveChromaScale: CGFloat = 0.98
-        static let lyricsSubActiveChromaScale: CGFloat = 1.00
-        static let lyricsMainInactiveChromaScale: CGFloat = 1.04
-        static let lyricsLineTimingMainInactiveChromaScale: CGFloat = 1.02
-        static let lyricsSubInactiveChromaScale: CGFloat = 1.00
-        static let lyricsLineTimingSubInactiveChromaScale: CGFloat = 0.96
+        // Phase 6.3: active stays chromatic, while inactive/translation/line
+        // timing use lower chroma scales so saturated covers no longer make
+        // inactive text feel hot.
+        static let lyricsMainActiveChromaScale: CGFloat = 1.00
+        static let lyricsSubActiveChromaScale: CGFloat = 0.96
+        static let lyricsMainInactiveChromaScale: CGFloat = 0.90
+        static let lyricsLineTimingMainInactiveChromaScale: CGFloat = 0.86
+        static let lyricsSubInactiveChromaScale: CGFloat = 0.88
+        static let lyricsLineTimingSubInactiveChromaScale: CGFloat = 0.82
         static let lyricsColorfulMinimumChroma: CGFloat = 0.050
         static let lyricsSeedChromaPreferred: CGFloat = 0.045
 
@@ -704,7 +699,7 @@ nonisolated enum ColorSystemTokens {
         static let dominantBucketColorfulness: CGFloat = 0.16
         static let dominantBucketAvgSaturation: CGFloat = 0.18
 
-        // Phase 6.2 — trust threshold. nearMono should NOT trigger merely
+        // Phase 6.3 — trust threshold. nearMono should NOT trigger merely
         // because the average saturation is low. A cover where the
         // dominant-bucket centroid (or any displayPalette / salient
         // candidate) has OKLCH chroma >= this floor still has a trustworthy

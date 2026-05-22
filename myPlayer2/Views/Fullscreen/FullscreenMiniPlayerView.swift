@@ -432,11 +432,10 @@ struct FullscreenMiniPlayerView: View {
             return palette.readabilityProfile.foregroundPrimary
         }
         if usesDarkControlForegroundForLightArtisticBackground {
-            // Phase 6.2: dark icons on bright artistic glass. When the
+            // Phase 6.3: dark icons on bright artistic glass. When the
             // fullscreen artistic background is enabled and the system is
             // in `.light`, the chrome material is sitting on a high-L
-            // artwork-tinted background (Phase 6.2 day bgB lifted to
-            // 0.92…0.97). The default MiniPlayerControl palette emits a
+            // artwork-tinted background. The default MiniPlayerControl palette emits a
             // light foreground built for dark surfaces — that produces
             // low-contrast lift here. Switch to the readability dark
             // foreground so labels and SF Symbols read as dark text on
@@ -452,18 +451,18 @@ struct FullscreenMiniPlayerView: View {
         return palette.miniPlayerControl.primary
     }
 
-    /// Phase 6.2 — fullscreen artistic background is enabled AND the
+    /// Phase 6.3 — fullscreen artistic background is enabled AND the
     /// system is in `.light`. In this configuration the chrome material is
     /// sitting on a high-L artwork-tinted background; the default chrome
     /// control palette is built for dark surfaces and would emit a
     /// low-contrast lift. Switch the chrome control foreground to the
     /// readability-profile dark foreground so icons and labels read as
-    /// dark text on bright glass. Gate requires `hasArtworkThemeColor` so
-    /// we never fight an in-flight artwork-load placeholder palette.
+    /// dark text on bright glass. ThemeStore now holds the previous palette
+    /// while analysis is pending, so this gate stays stable during track
+    /// changes instead of flashing to the light chrome profile.
     private var usesDarkControlForegroundForLightArtisticBackground: Bool {
         settings.fullscreenArtBackgroundEnabled
             && colorScheme == .light
-            && themeStore.hasArtworkThemeColor
     }
 
     private var usesAdaptiveClearForeground: Bool {

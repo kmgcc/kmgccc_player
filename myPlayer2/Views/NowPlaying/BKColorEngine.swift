@@ -121,7 +121,11 @@ struct BKColorEngine {
         )
 
         // Gate background saturation on artwork analysis (only narrows, never widens).
-        let adjustedBgS = applyAnalysisBgSGating(tier.bgS, analysis: analysis)
+        let adjustedBgS = applyAnalysisBgSGating(
+            tier.bgS,
+            analysis: analysis,
+            isDark: isDark
+        )
         if adjustedBgS != tier.bgS {
             tier = TierRanges(
                 bgB: tier.bgB, fgB: tier.fgB, dotB: tier.dotB,
@@ -332,7 +336,7 @@ struct BKColorEngine {
             triggered: &globalTriggers
         )
 
-        // Phase 6.2 — anti-pink under true nearMono. When the cover has no
+        // Phase 6.3 — anti-pink under true nearMono. When the cover has no
         // trustworthy hue (dominant / top / salient OKLCH chroma all below
         // `trustedHueChromaFloor`), the floating shapes, moving circle, and
         // BK1/BK2 variants must NOT carry residual warm tint from the
@@ -1198,60 +1202,46 @@ extension BKColorEngine {
         var dotS: ClosedRange<CGFloat>
 
         if isDark {
-            // Phase 6.2 dark-mode tuning (tightens Phase 6.1):
-            //   * `fgB` (floating shapes) and `dotB` (moving circles) upper
-            //     bounds compressed further so the entire shape band sits
-            //     clearly below the lyric inactive L floor (~0.58). This
-            //     stops the "moving circle floats above the inactive line"
-            //     report.
-            //   * `bgB` upper bound lowered slightly so BK1/BK2 variants
-            //     come out marginally darker (matches the user's deeper
-            //     night-feel expectation under Phase 6.2 active L lift).
-            //   * UltraDark branch pushes `dotB` further still.
-            //   * `bgS` / `fgS` / `dotS` upper bounds unchanged from 6.1 —
-            //     chroma still compensates for the lower L.
-            bgB = 0.14...0.28
-            fgB = 0.28...0.46
-            dotB = 0.40...0.58
-            bgS = 0.26...0.54
-            fgS = 0.36...0.74
-            dotS = 0.32...0.66
+            // Phase 6.3 dark-mode tuning:
+            //   * background B is capped lower so bright artwork cannot lift
+            //     BK1/BK2 into a washed night surface;
+            //   * saturation floors are higher for normal chromatic covers so
+            //     warm/red artwork keeps enough colour instead of greying out;
+            //   * moving circles sit lower than 6.2 while remaining above the
+            //     base background band.
+            bgB = 0.12...0.24
+            fgB = 0.24...0.42
+            dotB = 0.34...0.52
+            bgS = 0.30...0.60
+            fgS = 0.42...0.78
+            dotS = 0.38...0.72
 
             if veryDarkCover || coverLuma < 0.22 {
-                bgB = 0.04...0.14
-                fgB = 0.18...0.34
-                dotB = 0.28...0.46
-                bgS = 0.10...0.28
+                bgB = 0.035...0.12
+                fgB = 0.14...0.28
+                dotB = 0.22...0.38
+                bgS = 0.12...0.32
             }
             if coverLuma < 0.34 && areaDominantB < 0.30 {
-                bgB = 0.04...0.12
-                fgB = 0.16...0.32
-                dotB = 0.26...0.44
-                bgS = makeRange(lower: 0.08, upper: min(bgS.upperBound, 0.22))
+                bgB = 0.035...0.105
+                fgB = 0.12...0.26
+                dotB = 0.20...0.34
+                bgS = makeRange(lower: 0.10, upper: min(bgS.upperBound, 0.24))
             }
             if areaDominantS < 0.14 {
-                bgS = makeRange(lower: 0.08, upper: min(bgS.upperBound, 0.24))
+                bgS = makeRange(lower: 0.10, upper: min(bgS.upperBound, 0.26))
             }
         } else {
-            // Phase 6.2 light-mode tuning: lift the artistic background
-            // into a VERY high L band ("airy" feel) so day-mode lyrics
-            // can invert to a deeper-but-alive ladder while still sitting
-            // on a clearly lighter background. Lyric L < bg L invariant
-            // is enforced numerically (see SelfCheck
-            // `checkDayArtBackgroundBrighterThanLyrics` / `checkDayLyricsAllBelowBackgroundL`).
-            //   * `bgB` 0.88–0.95 → 0.92–0.97 (much brighter solid bg).
-            //   * `fgB` 0.78–0.88 → 0.80–0.90 (shapes lift in lockstep).
-            //   * `dotB` 0.62–0.74 → 0.66–0.78 (circles lifted too, still
-            //     above the artistic-bg L floor and below day lyric
-            //     inactive 0.470).
-            //   * `bgS` trimmed further so the higher-L band does not
-            //     blow into pastel territory.
-            bgB = 0.92...0.97
-            fgB = 0.80...0.90
-            dotB = 0.66...0.78
-            bgS = 0.06...0.22
-            fgS = 0.20...0.50
-            dotS = 0.16...0.46
+            // Phase 6.3 light-mode tuning: this is an independent airy-light
+            // design, not a shallow copy of the night palette. Backgrounds,
+            // BK variants, shapes, and moving circles all live in a high-B
+            // band that can support dark lyric/UI foregrounds.
+            bgB = 0.94...0.985
+            fgB = 0.88...0.96
+            dotB = 0.78...0.90
+            bgS = 0.08...0.24
+            fgS = 0.22...0.46
+            dotS = 0.16...0.40
         }
 
         if complexity == .monochrome {
@@ -1319,15 +1309,21 @@ extension BKColorEngine {
     /// analysis-derived ceiling/floor.  Only ever narrows — never widens.
     fileprivate nonisolated static func applyAnalysisBgSGating(
         _ existing: ClosedRange<CGFloat>,
-        analysis: ArtworkColorAnalysis?
+        analysis: ArtworkColorAnalysis?,
+        isDark: Bool
     ) -> ClosedRange<CGFloat> {
         let colorfulness = analysis?.colorfulness ?? 0.5
         let isMono = analysis?.isMonochrome ?? false
         let confidence = analysis?.dominantHueConfidence ?? 0.5
+        let trusted = analysisHasTrustedHueCandidate(analysis)
+        let hue = analysis?.dominantHue ?? 0
+        let warmRed = hue <= 0.12 || hue >= 0.92
 
         let ceiling: CGFloat
         if isMono {
             ceiling = 0.10
+        } else if isDark && trusted && warmRed && colorfulness < 0.24 {
+            ceiling = 0.44
         } else if colorfulness < 0.20 {
             ceiling = 0.32
         } else if colorfulness < 0.45 {
@@ -1335,7 +1331,7 @@ extension BKColorEngine {
         } else {
             ceiling = 0.78
         }
-        let floor: CGFloat = isMono ? 0.0 : 0.06
+        let floor: CGFloat = isMono ? 0.0 : (isDark && trusted && warmRed ? 0.14 : 0.06)
 
         // Intersect: never widen the engine's own range.
         let intersectedLower = max(existing.lowerBound, floor)
@@ -3010,12 +3006,13 @@ extension BKColorEngine {
         }
     }
 
-    /// Phase 6.2 — trusted-hue evidence over the analysis. Mirrors the
+    /// Phase 6.3 — trusted-hue evidence over the analysis. Mirrors the
     /// trust override the analyser uses to decide whether `isNearMonochrome`
-    /// fires. If any of dominant / top / salient OKLCH chroma is at or above
-    /// `NearMonochromeProfile.trustedHueChromaFloor`, the cover has a usable
-    /// hue and shape colours must keep their tint. Otherwise (true grey
-    /// regime) the post-process pass crushes residual chroma in OKLCH.
+    /// fires. If any of dominant / top / rich / display / salient OKLCH
+    /// chroma is at or above `NearMonochromeProfile.trustedHueChromaFloor`,
+    /// the cover has a usable hue and shape colours may keep their tint.
+    /// Otherwise (true grey regime) the post-process pass crushes residual
+    /// chroma in OKLCH.
     fileprivate nonisolated static func analysisHasTrustedHueCandidate(
         _ analysis: ArtworkColorAnalysis?
     ) -> Bool {
@@ -3029,15 +3026,28 @@ extension BKColorEngine {
                 return true
             }
         }
+        for color in analysis.richPalette {
+            if let lch = OKColor.nsColorToOKLCH(color), lch.c >= floor {
+                return true
+            }
+        }
+        for color in analysis.displayPalette {
+            if let lch = OKColor.nsColorToOKLCH(color), lch.c >= floor {
+                return true
+            }
+        }
         for color in analysis.salientHighlightPalette {
             if let lch = OKColor.nsColorToOKLCH(color), lch.c >= floor {
                 return true
             }
         }
+        if let lch = OKColor.nsColorToOKLCH(analysis.bestTextSourceColor), lch.c >= floor {
+            return true
+        }
         return false
     }
 
-    /// Phase 6.2 — crush a CGColor's OKLCH chroma to the nearMono ceiling so
+    /// Phase 6.3 — crush a CGColor's OKLCH chroma to the nearMono ceiling so
     /// the rendered shape reads as a perceptual grey while preserving L.
     /// Ceiling matches `FullscreenMiniPlayerView.neutralizeForNearMono` (the
     /// Spectrum nearMono pass) for visual consistency across surfaces.
