@@ -730,9 +730,29 @@ enum SemanticPaletteFactory {
         let T = ColorSystemTokens.ToneLadder.self
 
         // Visual contrast (0..1):
+        //
+        // dC normalises absolute chroma delta against a "designed accent"
+        // saturation point (0.20 in OKLCH). dL normalises lightness delta
+        // against a half-tone span. dH normalises hue delta against half a
+        // hue circle (max possible is 0.50 since circular distance caps
+        // there). When the dominant has near-zero chroma (true dark / true
+        // grey), the hue value is undefined / numerical noise — treat that
+        // case as MAX hue contrast so the canonical "dark canvas + colourful
+        // accent" scenario can clear the threshold. Without this hook, the
+        // formula penalises designed dark-canvas covers because the
+        // achromatic dominant has random hue.
         let dC = max(0, salient.c - dominant.c) / 0.20
         let dL = abs(salient.l - dominant.l) / 0.50
-        let dH = circularHueDistance(salient.h, dominant.h) / 0.50
+        let dominantHasUsableHue =
+            dominant.c >= ColorSystemTokens.NearMonochromeProfile.trustedHueChromaFloor
+        let dH: CGFloat
+        if dominantHasUsableHue {
+            dH = circularHueDistance(salient.h, dominant.h) / 0.50
+        } else {
+            // Achromatic dominant — hue distance is meaningless. Treat as
+            // max contrast so dC + dL carry the decision.
+            dH = 1.0
+        }
         let visualContrast = ColorMath.clamp(
             dC * T.lyricsSeedFocusChromaContrastWeight
           + dL * T.lyricsSeedFocusLightnessContrastWeight

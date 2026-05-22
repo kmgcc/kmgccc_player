@@ -174,6 +174,28 @@ nonisolated enum ColorSystemSelfCheck {
         checkSeedSelectionSalientSuppressedOnMultiColorArt(&report)
         checkSeedSelectionNearMonoStaysNeutral(&report)
 
+        report.section("Phase 6.2 — focus seed + nearMono trust + day-night finalize")
+        checkSeedFocusFiresOnBlackPlusBrightYellow(&report)
+        checkSeedFocusFiresOnBluePlusOrange(&report)
+        checkSeedFocusSuppressedOn70Brown30Blue(&report)
+        checkSeedFocusSuppressedOnTinyNoise(&report)
+        checkSeedFocusSuppressedOnMultiColor(&report)
+        checkNearMonoNotTriggeredByLowSatChromaticCover(&report)
+        checkNearMonoStillTriggersOnTrueGrey(&report)
+        checkNearMonoBlackWithBrightSpotCanStillUseSalient(&report)
+        checkArtShapesNeutralUnderNearMono(&report)
+        checkArtShapesKeepTintWhenTrustedHueExists(&report)
+        checkNightLyricsHighChromaInactiveSoftened(&report)
+        checkNightLyricsMidChromaPassesThrough(&report)
+        checkNightLyricsActiveLightnessLifted(&report)
+        checkNightLyricsUltraDarkInactiveDeeper(&report)
+        checkNightMovingCircleBelowLyricL(&report)
+        checkDayArtBackgroundBrighterThanLyrics(&report)
+        checkDayLyricsAliveNotDeathBlack(&report)
+        checkDayLyricsAllBelowBackgroundL(&report)
+        checkDayTranslationCloseToInactive(&report)
+        checkMiniPlayerDayProfileSwitchesToDarkForeground(&report)
+
         report.lines.append(
             "Result: \(report.allPassed ? "ALL PASS" : "FAILURES PRESENT")"
         )
@@ -318,7 +340,11 @@ nonisolated enum ColorSystemSelfCheck {
             report.record("Lyrics v3: sub-inactive L close to main-inactive L", false, "role lookup failed")
             return
         }
-        let limit = T.lyricsSubInactiveLightnessProximityAssertion
+        // IEEE-754 floating-point noise margin. The token literals 0.555 and
+        // 0.535 are not exactly representable, so `0.555 - 0.535` may emit a
+        // value epsilon-above 0.020. The visible-tier invariant we care
+        // about is `gap ≈ limit`, so allow a 1e-6 numerical margin.
+        let limit = T.lyricsSubInactiveLightnessProximityAssertion + 1e-6
         let mainGap = mainInactive.l - subInactive.l
         let lineGap = lineMain.l - lineSub.l
         // Sub must stay below or equal to its main counterpart, but the gap
@@ -603,7 +629,13 @@ nonisolated enum ColorSystemSelfCheck {
             && circularHueDelta(subInactive.h, seedLCH.h) <= hueLimit
             && circularHueDelta(lineSubInactive.h, seedLCH.h) <= hueLimit
         let floor = ColorSystemTokens.ToneLadder.lyricsColorfulMinimumChroma
-        let chromaOK = active.c >= floor
+        // Phase 6.2 active L 0.920 + red hue h≈0.04 hits the sRGB gamut
+        // boundary — maximum representable chroma there is ~0.045. Active
+        // therefore floors at the gamut-clipped value rather than the
+        // lyrics-floor token. Assert that active retains visible chroma
+        // (≥ 0.035, well above neutral grey); inactive / sub / line-timing
+        // sit at lower L where they CAN hold the floor.
+        let chromaOK = active.c >= 0.035
             && inactive.c >= floor
             && subInactive.c >= floor * 0.85
             && lineSubInactive.c >= floor * 0.80
@@ -1486,10 +1518,12 @@ nonisolated enum ColorSystemSelfCheck {
     /// Spectrum preparation must hard-clamp the yellow's OKLCH chroma to
     /// near zero so the spectrum reads as grey, not yellow / pink.
     private static func checkSpectrumNearMonoNeutralised(_ report: inout CheckReport) {
-        guard let analysis = analyseMix(side: 64, regions: [
-            (0.95, (15, 15, 15, 255)),
-            (0.05, (255, 200, 30, 255))
-        ]) else {
+        // Phase 6.2: a pure-grey field is the canonical nearMono input
+        // (no salient candidate carries a trusted hue, so the trust
+        // override does not fire). The historical 95% black + 5% yellow
+        // synthetic is no longer nearMono under Phase 6.2 — that case is
+        // explicitly covered by `checkNearMonoBlackWithBrightSpotCanStillUseSalient`.
+        guard let analysis = analyse(side: 32, fill: (160, 160, 160, 255)) else {
             report.record("Spectrum: near-mono input neutralised", false, "analysis nil")
             return
         }
@@ -1598,10 +1632,10 @@ nonisolated enum ColorSystemSelfCheck {
     /// The Phase-3-hotfix dark+nearMono ceiling is 0.012; we require all
     /// output chromas to respect it.
     private static func checkHomeShapesNearMonoChromaCeiling(_ report: inout CheckReport) {
-        guard let analysis = analyseMix(side: 64, regions: [
-            (0.95, (15, 15, 15, 255)),
-            (0.05, (255, 200, 30, 255))
-        ]) else {
+        // Phase 6.2: pure-grey is the canonical nearMono input. A dark canvas
+        // + bright accent now passes the trust-override guard and is no
+        // longer nearMono.
+        guard let analysis = analyse(side: 32, fill: (60, 60, 60, 255)) else {
             report.record("HomeShapes: near-mono chroma ceiling", false, "analysis nil")
             return
         }
@@ -1961,10 +1995,14 @@ nonisolated enum ColorSystemSelfCheck {
         let yellowInSalient = a.salientHighlightPalette.contains {
             isHueClose(of: $0, target: 0.13)
         }
-        let displayWithinCap =
-            a.displayPalette.count <= ColorSystemTokens.DisplayPalette.nearMonoMaxCount
-        let ok = a.isNearMonochrome && yellowInSalient && yellowInDisplay
-            && displayWithinCap
+        // Phase 6.2 trust override: this synthetic carries a salient yellow
+        // with OKLCH chroma well above `trustedHueChromaFloor`, so the
+        // analyser no longer flags `isNearMonochrome=true`. The invariant we
+        // CARE about is: yellow survives both salient AND displayPalette —
+        // it must not be dropped. The nearMono cap test is folded into
+        // `checkDisplayPaletteNearMonoRestraint` (pure-grey input) which
+        // still exercises the cap path.
+        let ok = yellowInSalient && yellowInDisplay
         report.record(
             "Display: salient priority under near-mono contention", ok,
             "nearMono=\(a.isNearMonochrome) salient.count=\(a.salientHighlightPalette.count) "
@@ -1986,6 +2024,449 @@ nonisolated enum ColorSystemSelfCheck {
         report.record(
             "Display: near-mono restraint (pure grey)", ok,
             "nearMono=\(a.isNearMonochrome) display.count=\(a.displayPalette.count) cap=\(ColorSystemTokens.DisplayPalette.nearMonoMaxCount)"
+        )
+    }
+
+    // MARK: - Phase 6.2 scenarios
+
+    /// Phase 6.2 token-coupled tier-range fixture mirroring
+    /// `BKColorEngine.tierRanges` literals. Used by assertions that depend
+    /// on the day/night BG / shape / circle bands. If the engine's tier
+    /// literals change, update these fixtures in lockstep — the self-check
+    /// is the canonical "if these drift, build a story about why".
+    private struct Phase62TierFixture {
+        // Night (dark, normal, non-UltraDark).
+        let nightBgB: ClosedRange<CGFloat> = 0.14...0.28
+        let nightFgB: ClosedRange<CGFloat> = 0.28...0.46
+        let nightDotB: ClosedRange<CGFloat> = 0.40...0.58
+        // Night UltraDark.
+        let nightUltraDarkDotB: ClosedRange<CGFloat> = 0.28...0.46
+        // Day (light, normal).
+        let dayBgB: ClosedRange<CGFloat> = 0.92...0.97
+        let dayFgB: ClosedRange<CGFloat> = 0.80...0.90
+        let dayDotB: ClosedRange<CGFloat> = 0.66...0.78
+    }
+
+    /// 95% near-black + 5% bright yellow. The canonical Phase 6.2 focus-score
+    /// fire-case the Phase 6.1 hard gate sometimes missed. Seed must read as
+    /// yellow chroma, not as a black-derived collapse.
+    private static func checkSeedFocusFiresOnBlackPlusBrightYellow(_ report: inout CheckReport) {
+        guard let analysis = analyseMix(side: 64, regions: [
+            (0.95, (16, 16, 16, 255)),
+            (0.05, (255, 200, 50, 255))
+        ]) else {
+            report.record("Phase 6.2: focus seed fires on 95% black + 5% yellow", false, "analysis nil")
+            return
+        }
+        guard let seed = SemanticPaletteSelfCheck.artisticLyricsSingleSeed(
+            preferred: analysis.bestTextSourceColor,
+            analysis: analysis
+        ) else {
+            report.record("Phase 6.2: focus seed fires on 95% black + 5% yellow", false, "seed nil")
+            return
+        }
+        // Yellow lands near OKLCH h ~ 0.20…0.30, c >= 0.10.
+        let hueOK = seed.h > 0.18 && seed.h < 0.32
+        let chromaOK = seed.c >= 0.10
+        let ok = hueOK && chromaOK
+        report.record(
+            "Phase 6.2: focus seed fires on 95% black + 5% yellow", ok,
+            "seed.h=\(format(seed.h)) seed.c=\(format(seed.c))"
+        )
+    }
+
+    /// Blue dominant + orange salient — distinct hue families, uniform field.
+    /// Focus score should fire because Δhue + ΔC are both high.
+    private static func checkSeedFocusFiresOnBluePlusOrange(_ report: inout CheckReport) {
+        guard let analysis = analyseMix(side: 64, regions: [
+            (0.93, (24, 48, 140, 255)),
+            (0.07, (245, 130, 30, 255))
+        ]) else {
+            report.record("Phase 6.2: focus seed fires on blue + orange salient", false, "analysis nil")
+            return
+        }
+        guard let seed = SemanticPaletteSelfCheck.artisticLyricsSingleSeed(
+            preferred: analysis.bestTextSourceColor,
+            analysis: analysis
+        ) else {
+            report.record("Phase 6.2: focus seed fires on blue + orange salient", false, "seed nil")
+            return
+        }
+        // Either the orange salient won (good — focus-score fired) OR the
+        // blue dominant. Both are acceptable; what we MUST NOT see is grey.
+        let ok = seed.c >= 0.08
+        report.record(
+            "Phase 6.2: focus seed fires on blue + orange salient", ok,
+            "seed.h=\(format(seed.h)) seed.c=\(format(seed.c))"
+        )
+    }
+
+    /// 70 % mid-brown + 30 % mid-blue. The blue area is huge — far above the
+    /// `lyricsSeedFocusDesignAreaShareCeiling`. Focus score must NOT fire;
+    /// dominant brown rules.
+    private static func checkSeedFocusSuppressedOn70Brown30Blue(_ report: inout CheckReport) {
+        guard let analysis = analyseMix(side: 64, regions: [
+            (0.70, (160, 90, 40, 255)),
+            (0.30, (40, 90, 200, 255))
+        ]) else {
+            report.record("Phase 6.2: focus suppressed on 70% brown + 30% blue", false, "analysis nil")
+            return
+        }
+        guard let seed = SemanticPaletteSelfCheck.artisticLyricsSingleSeed(
+            preferred: analysis.bestTextSourceColor,
+            analysis: analysis
+        ) else {
+            report.record("Phase 6.2: focus suppressed on 70% brown + 30% blue", false, "seed nil")
+            return
+        }
+        guard let dominantLCH = OKColor.nsColorToOKLCH(analysis.dominantColor) else {
+            report.record("Phase 6.2: focus suppressed on 70% brown + 30% blue", false, "dominant nil")
+            return
+        }
+        let hueGap = circularHueDelta(seed.h, dominantLCH.h)
+        let ok = hueGap <= 0.06
+        report.record(
+            "Phase 6.2: focus suppressed on 70% brown + 30% blue", ok,
+            "seed.h=\(format(seed.h)) dominant.h=\(format(dominantLCH.h)) hueΔ=\(format(hueGap))"
+        )
+    }
+
+    /// 99.8 % black + 0.2 % bright cyan — area share is below
+    /// `lyricsSeedFocusNoiseAreaShareFloor`. The noise penalty must drag the
+    /// score below threshold, so dominant black wins (lyrics neutralised
+    /// downstream, but the SEED itself should not be the cyan salient).
+    private static func checkSeedFocusSuppressedOnTinyNoise(_ report: inout CheckReport) {
+        guard let analysis = analyseMix(side: 64, regions: [
+            (0.998, (10, 10, 10, 255)),
+            (0.002, (50, 220, 240, 255))
+        ]) else {
+            report.record("Phase 6.2: focus suppressed on tiny noise dot", false, "analysis nil")
+            return
+        }
+        let seed = SemanticPaletteSelfCheck.artisticLyricsSingleSeed(
+            preferred: analysis.bestTextSourceColor,
+            analysis: analysis
+        )
+        // Either no seed (nil — pure-grey path), or the seed is NOT the cyan
+        // (h ~ 0.55 in OKLCH). Anything else is the noise-dot misfire.
+        if let seed {
+            let cyanHueDelta = circularHueDelta(seed.h, 0.55)
+            let ok = cyanHueDelta > 0.10
+            report.record(
+                "Phase 6.2: focus suppressed on tiny noise dot", ok,
+                "seed.h=\(format(seed.h)) cyanΔ=\(format(cyanHueDelta))"
+            )
+        } else {
+            // nil is acceptable — Phase 6.2 nearMono path or salient gate
+            // dropped through cleanly. Anti-test: the seed was NOT cyan.
+            report.record(
+                "Phase 6.2: focus suppressed on tiny noise dot", true,
+                "seed=nil (nearMono path)"
+            )
+        }
+    }
+
+    /// 4 distinct hue families at comparable chroma — competing-salients
+    /// penalty must drag the score below threshold; dominant wins.
+    private static func checkSeedFocusSuppressedOnMultiColor(_ report: inout CheckReport) {
+        guard let analysis = analyseMix(side: 64, regions: [
+            (0.25, (220, 60, 60, 255)),
+            (0.25, (60, 200, 80, 255)),
+            (0.25, (60, 90, 220, 255)),
+            (0.25, (220, 200, 50, 255))
+        ]) else {
+            report.record("Phase 6.2: focus suppressed on multi-colour", false, "analysis nil")
+            return
+        }
+        guard let seed = SemanticPaletteSelfCheck.artisticLyricsSingleSeed(
+            preferred: analysis.bestTextSourceColor,
+            analysis: analysis
+        ) else {
+            report.record("Phase 6.2: focus suppressed on multi-colour", false, "seed nil")
+            return
+        }
+        guard let dominantLCH = OKColor.nsColorToOKLCH(analysis.dominantColor) else {
+            report.record("Phase 6.2: focus suppressed on multi-colour", false, "dom nil")
+            return
+        }
+        // Seed must NOT be a synthesized "designer pick" — must align
+        // closely with the analyser's dominant hue choice.
+        let hueGap = circularHueDelta(seed.h, dominantLCH.h)
+        let ok = hueGap <= 0.10
+        report.record(
+            "Phase 6.2: focus suppressed on multi-colour", ok,
+            "seed.h=\(format(seed.h)) dominant.h=\(format(dominantLCH.h)) hueΔ=\(format(hueGap))"
+        )
+    }
+
+    /// A vintage/warm-toned cover: low avgSaturation but the dominant centroid
+    /// has visible OKLCH chroma. Phase 6.2 trust-override must keep
+    /// `isNearMonochrome` false here so the cover keeps its hue identity.
+    private static func checkNearMonoNotTriggeredByLowSatChromaticCover(_ report: inout CheckReport) {
+        // Mid-brown / warm tan — HSB saturation is moderate but the OKLCH
+        // chroma stays well above `trustedHueChromaFloor=0.045`.
+        guard let analysis = analyse(side: 32, fill: (170, 138, 100, 255)) else {
+            report.record("Phase 6.2: nearMono NOT triggered by low-sat chromatic cover", false, "analysis nil")
+            return
+        }
+        // Sanity: the dominant centroid carries a hue.
+        let dominantC = OKColor.nsColorToOKLCH(analysis.dominantColor)?.c ?? 0
+        let trusted = dominantC >= ColorSystemTokens.NearMonochromeProfile.trustedHueChromaFloor
+        let ok = trusted && !analysis.isNearMonochrome
+        report.record(
+            "Phase 6.2: nearMono NOT triggered by low-sat chromatic cover", ok,
+            "isNearMono=\(analysis.isNearMonochrome) dominantC=\(format(dominantC)) trustedFloor=\(format(ColorSystemTokens.NearMonochromeProfile.trustedHueChromaFloor))"
+        )
+    }
+
+    /// Pure mid-grey cover. Branch-1 strict mono must still fire — no
+    /// trusted hue can override it.
+    private static func checkNearMonoStillTriggersOnTrueGrey(_ report: inout CheckReport) {
+        guard let analysis = analyse(side: 32, fill: (160, 160, 160, 255)) else {
+            report.record("Phase 6.2: nearMono still triggers on true grey", false, "analysis nil")
+            return
+        }
+        let ok = analysis.isNearMonochrome
+        report.record(
+            "Phase 6.2: nearMono still triggers on true grey", ok,
+            "isNearMono=\(analysis.isNearMonochrome) colorfulness=\(format(analysis.colorfulness)) avgSat=\(format(analysis.avgSaturation))"
+        )
+    }
+
+    /// 95 % black + 5 % bright orange — the dominant is achromatic (black),
+    /// the salient carries OKLCH chroma well above the trust floor. The
+    /// trust-override path keeps `isNearMonochrome` false so the focus seed
+    /// can pick the orange salient.
+    private static func checkNearMonoBlackWithBrightSpotCanStillUseSalient(_ report: inout CheckReport) {
+        guard let analysis = analyseMix(side: 64, regions: [
+            (0.95, (12, 12, 12, 255)),
+            (0.05, (245, 130, 40, 255))
+        ]) else {
+            report.record("Phase 6.2: black + bright salient avoids nearMono", false, "analysis nil")
+            return
+        }
+        // Salient palette must carry a usable hue.
+        let salientHasHue = analysis.salientHighlightPalette.contains { color in
+            (OKColor.nsColorToOKLCH(color)?.c ?? 0)
+                >= ColorSystemTokens.NearMonochromeProfile.trustedHueChromaFloor
+        }
+        let ok = !analysis.isNearMonochrome && salientHasHue
+        report.record(
+            "Phase 6.2: black + bright salient avoids nearMono", ok,
+            "isNearMono=\(analysis.isNearMonochrome) salientHasHue=\(salientHasHue)"
+        )
+    }
+
+    /// `OKColor.neutralise(color, chromaCeiling: 0.008)` on a tinted colour
+    /// must crush chroma at or below the ceiling, preserving L.
+    private static func checkArtShapesNeutralUnderNearMono(_ report: inout CheckReport) {
+        // Pinkish tint — the historical "art shapes still pink" colour.
+        let pink = NSColor(deviceRed: 0.78, green: 0.50, blue: 0.55, alpha: 1)
+        let neutralised = OKColor.neutralise(pink, chromaCeiling: 0.008)
+        let outLCH = OKColor.nsColorToOKLCH(neutralised)
+        let inLCH = OKColor.nsColorToOKLCH(pink)
+        let c = outLCH?.c ?? .infinity
+        let dL = abs((outLCH?.l ?? 0) - (inLCH?.l ?? 0))
+        let ok = c <= 0.012 && dL < 0.05
+        report.record(
+            "Phase 6.2: OKColor.neutralise crushes chroma + preserves L", ok,
+            "outC=\(format(c)) lDelta=\(format(dL))"
+        )
+    }
+
+    /// Inverse: when the analysis carries a trusted hue, the BKColorEngine
+    /// neutralisation path must NOT fire — shapes keep their tint. We assert
+    /// against the `analysisHasTrustedHueCandidate` semantics via the
+    /// analyser flag and the trust floor.
+    private static func checkArtShapesKeepTintWhenTrustedHueExists(_ report: inout CheckReport) {
+        // Olive cover — low avg-sat by HSB but the dominant centroid is
+        // chromatic in OKLCH; should NOT trigger nearMono → shapes keep tint.
+        guard let analysis = analyse(side: 32, fill: (110, 125, 60, 255)) else {
+            report.record("Phase 6.2: shapes keep tint when trusted hue exists", false, "analysis nil")
+            return
+        }
+        let dominantC = OKColor.nsColorToOKLCH(analysis.dominantColor)?.c ?? 0
+        let trusted = dominantC >= ColorSystemTokens.NearMonochromeProfile.trustedHueChromaFloor
+        // BKColorEngine post-process gate fires only when isNearMono && !trusted.
+        // Verify: this scenario should NOT engage the gate.
+        let gateWouldFire = analysis.isNearMonochrome && !trusted
+        let ok = !gateWouldFire
+        report.record(
+            "Phase 6.2: shapes keep tint when trusted hue exists", ok,
+            "isNearMono=\(analysis.isNearMonochrome) trusted=\(trusted) dominantC=\(format(dominantC))"
+        )
+    }
+
+    /// User: "高饱和封面 inactive 太刺眼". Phase 6.2 gate keeps the shoulder
+    /// in play above `lyricsHighChromaShoulderTrigger`, so a very-high-chroma
+    /// inactive must land BELOW the cap.
+    private static func checkNightLyricsHighChromaInactiveSoftened(_ report: inout CheckReport) {
+        let highC = OKColor.OKLCH(l: 0.55, c: 0.20, h: 0.12)
+        let inactive = PerceptualToneLadder.artisticLyricsTone(
+            base: highC, role: .mainInactive,
+            isUltraDark: false, isNearMonochrome: false, scheme: .dark)
+        // scaled = 0.20 * 1.04 = 0.208 > shoulder trigger 0.085 → shouldered.
+        // Asymptote ≈ ceiling 0.095 + softness 0.045 = 0.140 → expect inactive.c < ~0.140.
+        let ok = inactive.c < 0.14
+        report.record(
+            "Phase 6.2: night high-chroma inactive softened", ok,
+            "scaledC=\(format(0.20 * 1.04)) inactive.c=\(format(inactive.c))"
+        )
+    }
+
+    /// Mid-chroma seed must pass through the shoulder gate untouched. Phase
+    /// 6.1's unconditional shoulder compressed these; Phase 6.2 routes them
+    /// straight to the cap.
+    private static func checkNightLyricsMidChromaPassesThrough(_ report: inout CheckReport) {
+        let midC = OKColor.OKLCH(l: 0.55, c: 0.06, h: 0.12)
+        let inactive = PerceptualToneLadder.artisticLyricsTone(
+            base: midC, role: .mainInactive,
+            isUltraDark: false, isNearMonochrome: false, scheme: .dark)
+        // scaled = 0.06 * 1.04 = 0.0624 < trigger 0.085 → no shoulder.
+        // Final c == scaled, clamped only by floor / cap (yellow cap = 0.110).
+        let ok = inactive.c >= 0.060 && inactive.c <= 0.080
+        report.record(
+            "Phase 6.2: night mid-chroma passes through (no shoulder)", ok,
+            "scaledC=\(format(0.06 * 1.04)) inactive.c=\(format(inactive.c))"
+        )
+    }
+
+    /// Phase 6.2 night active L lifted to 0.920 (was 0.905). Verify the
+    /// numerical floor for non-UltraDark covers.
+    private static func checkNightLyricsActiveLightnessLifted(_ report: inout CheckReport) {
+        let base = OKColor.OKLCH(l: 0.55, c: 0.14, h: 0.12)
+        let active = PerceptualToneLadder.artisticLyricsTone(
+            base: base, role: .mainActive,
+            isUltraDark: false, isNearMonochrome: false, scheme: .dark)
+        let ok = active.l >= 0.915
+        report.record(
+            "Phase 6.2: night active L lifted (>= 0.915)", ok,
+            "active.L=\(format(active.l)) tokenTarget=\(format(ColorSystemTokens.ToneLadder.lyricsMainActiveL))"
+        )
+    }
+
+    /// Phase 6.2 UltraDark inactive trim deepened from 0.060 to 0.095. The
+    /// post-trim inactive L must be measurably lower than the non-UltraDark
+    /// inactive (gap >= 0.080 ≈ 0.095 - small softening tolerance).
+    private static func checkNightLyricsUltraDarkInactiveDeeper(_ report: inout CheckReport) {
+        let base = OKColor.OKLCH(l: 0.55, c: 0.14, h: 0.12)
+        let normal = PerceptualToneLadder.artisticLyricsTone(
+            base: base, role: .mainInactive,
+            isUltraDark: false, isNearMonochrome: false, scheme: .dark)
+        let ultra = PerceptualToneLadder.artisticLyricsTone(
+            base: base, role: .mainInactive,
+            isUltraDark: true, isNearMonochrome: false, scheme: .dark)
+        let drop = normal.l - ultra.l
+        let ok = drop >= 0.080
+        report.record(
+            "Phase 6.2: UltraDark inactive deeper (drop >= 0.080)", ok,
+            "normalL=\(format(normal.l)) ultraL=\(format(ultra.l)) drop=\(format(drop))"
+        )
+    }
+
+    /// Phase 6.2 night BK tier `dotB` upper bound must sit below the lyric
+    /// inactive L (0.580). Slack 0.005 — `dotB` is exactly 0.40…0.58 by
+    /// design but the moving-circle midpoint must NOT exceed inactive.
+    private static func checkNightMovingCircleBelowLyricL(_ report: inout CheckReport) {
+        let fixture = Phase62TierFixture()
+        let dotBUpper = fixture.nightDotB.upperBound
+        let inactiveL = ColorSystemTokens.ToneLadder.lyricsMainInactiveL
+        let ok = dotBUpper <= inactiveL + 0.005
+        report.record(
+            "Phase 6.2: night moving circle dotB.upper <= lyric inactive L (+0.005)", ok,
+            "dotB.upper=\(format(dotBUpper)) inactiveL=\(format(inactiveL))"
+        )
+    }
+
+    /// Phase 6.2 day BG floor must clear the deepest day lyric L by at
+    /// least `lyricsLightBackgroundLyricGapMin` (0.20).
+    private static func checkDayArtBackgroundBrighterThanLyrics(_ report: inout CheckReport) {
+        let fixture = Phase62TierFixture()
+        let bgLower = fixture.dayBgB.lowerBound
+        let activeL = ColorSystemTokens.ToneLadder.lyricsLightMainActiveL
+        let gap = bgLower - activeL
+        let required = ColorSystemTokens.ToneLadder.lyricsLightBackgroundLyricGapMin
+        let ok = gap >= required
+        report.record(
+            "Phase 6.2: day bg L floor >= active L + gapMin", ok,
+            "bgB.lower=\(format(bgLower)) activeL=\(format(activeL)) gap=\(format(gap)) required=\(format(required))"
+        )
+    }
+
+    /// Phase 6.2 day active L 0.215 (was 0.150). Alive, not death-black.
+    private static func checkDayLyricsAliveNotDeathBlack(_ report: inout CheckReport) {
+        let activeL = ColorSystemTokens.ToneLadder.lyricsLightMainActiveL
+        let ok = activeL >= 0.180
+        report.record(
+            "Phase 6.2: day active L >= 0.180 (alive, not death-black)", ok,
+            "activeL=\(format(activeL))"
+        )
+    }
+
+    /// Every day-mode lyric L token must be strictly below the day bgB
+    /// lower bound (no lyric ever sits on or above the bg).
+    private static func checkDayLyricsAllBelowBackgroundL(_ report: inout CheckReport) {
+        let T = ColorSystemTokens.ToneLadder.self
+        let fixture = Phase62TierFixture()
+        let bgLower = fixture.dayBgB.lowerBound
+        let allLs: [(String, CGFloat)] = [
+            ("active", T.lyricsLightMainActiveL),
+            ("sub-active", T.lyricsLightSubActiveL),
+            ("inactive", T.lyricsLightMainInactiveL),
+            ("sub-inactive", T.lyricsLightSubInactiveL),
+            ("line-timing-main", T.lyricsLightLineTimingMainInactiveL),
+            ("line-timing-sub", T.lyricsLightLineTimingSubInactiveL)
+        ]
+        var worstName = ""
+        var worstValue: CGFloat = 0
+        for (name, value) in allLs where value > worstValue {
+            worstName = name
+            worstValue = value
+        }
+        let ok = worstValue < bgLower
+        report.record(
+            "Phase 6.2: every day lyric L < day bg L floor", ok,
+            "worst=\(worstName)@\(format(worstValue)) bgB.lower=\(format(bgLower))"
+        )
+    }
+
+    /// Day translation (subInactive) must sit close to main inactive — same
+    /// proximity invariant as Phase 6.1.
+    private static func checkDayTranslationCloseToInactive(_ report: inout CheckReport) {
+        let main = ColorSystemTokens.ToneLadder.lyricsLightMainInactiveL
+        let sub = ColorSystemTokens.ToneLadder.lyricsLightSubInactiveL
+        let gap = abs(main - sub)
+        let ok = gap <= 0.020
+        report.record(
+            "Phase 6.2: day translation L close to inactive L (<= 0.020)", ok,
+            "mainInactive=\(format(main)) subInactive=\(format(sub)) gap=\(format(gap))"
+        )
+    }
+
+    /// The MiniPlayer day-mode gate switches `controlPrimary` to
+    /// `readabilityProfile.foregroundPrimary` (a dark foreground on bright
+    /// covers). Verify the readability profile produces a darker primary
+    /// than `MiniPlayerControl.primary` (which is white-based) for a sample
+    /// bright artwork analysis. This is the headless equivalent of the
+    /// in-view gate firing.
+    private static func checkMiniPlayerDayProfileSwitchesToDarkForeground(_ report: inout CheckReport) {
+        // Sample bright colourful artwork: mid-orange that yields
+        // `usesDarkForeground == true` from the analyser.
+        guard let analysis = analyse(side: 32, fill: (240, 165, 60, 255)) else {
+            report.record("Phase 6.2: MiniPlayer dark profile gate", false, "analysis nil")
+            return
+        }
+        let readability = SemanticPaletteSelfCheck.readabilityProfile(analysis)
+        let readableL = OKColor.nsColorToOKLCH(readability.foregroundPrimary)?.l ?? 0
+        // White-based MiniPlayer primary (the default chrome control path)
+        // sits around L >= 0.85. The readability profile under a bright
+        // cover sits well below that.
+        let darkerThanWhiteChrome = readableL < 0.50
+        let usesDarkFg = analysis.usesDarkForeground
+        let ok = usesDarkFg && darkerThanWhiteChrome
+        report.record(
+            "Phase 6.2: MiniPlayer day profile swaps to dark foreground", ok,
+            "usesDarkFg=\(usesDarkFg) readabilityL=\(format(readableL))"
         )
     }
 
