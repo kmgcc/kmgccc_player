@@ -480,7 +480,8 @@ struct AppKitMainWindowArtBackgroundLayer: View {
                     resourceProfile: settings.selectedNowPlayingSkinID == "kmgccc.cassette"
                         ? .cassetteForeground
                         : .standard,
-                    initialPalette: [themeStore.accentNSColor]
+                    initialPalette: [themeStore.accentNSColor],
+                    holdPaletteWhenArtworkMissing: playbackCoordinator.presentation.isArtworkLoading
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .ignoresSafeArea(.container, edges: .all)

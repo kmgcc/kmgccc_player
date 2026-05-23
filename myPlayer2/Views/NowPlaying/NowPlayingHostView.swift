@@ -122,6 +122,22 @@ struct NowPlayingHostView: View {
             progress: presentation.progress
         )
 
+        let analysis = themeStore.semanticPalette.analysis
+        let primary: [NSColor]
+        if !analysis.displayPalette.isEmpty {
+            primary = analysis.displayPalette
+        } else if !analysis.topPalette.isEmpty {
+            primary = analysis.topPalette
+        } else {
+            primary = [
+                themeStore.semanticPalette.artBackgroundPrimary,
+                themeStore.semanticPalette.artBackgroundSecondary,
+            ]
+        }
+        let chosen = Array(primary.prefix(2))
+        let spectrumArtworkColors = SpectrumColorResolver.prepareSpectrumColors(chosen, analysis: analysis)
+        let spectrumUsesDarkForeground = analysis.usesDarkForeground
+
         let theme = SkinContext.ThemeTokens(
             accentColor: themeStore.accentColor,
             colorScheme: colorScheme,
@@ -143,6 +159,8 @@ struct NowPlayingHostView: View {
             artworkRichPalette: artworkSnapshot?.richPalette ?? [],
             artworkAverageColor: artworkSnapshot?.averageColor,
             artBackgroundIsUltraDark: artBackgroundIsUltraDark,
+            spectrumArtworkColors: spectrumArtworkColors,
+            spectrumUsesDarkForeground: spectrumUsesDarkForeground,
             kickToBrightnessMix: AppSettings.shared.bgKickToBrightnessMix,
             kickDisplaceAmount: AppSettings.shared.bgKickDisplaceAmount,
             kickScaleAmount: AppSettings.shared.bgKickScaleAmount

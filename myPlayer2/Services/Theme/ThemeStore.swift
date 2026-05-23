@@ -205,6 +205,24 @@ final class ThemeStore: ObservableObject {
         }
 
         guard let data, data.isEmpty == false else {
+            if sourceChanged {
+                // Phase 6.6 — do not flash neutralFallback during a track transition.
+                // The previous track's theme is a better visual than a sudden reset.
+                // Hold it until real artwork data arrives, then extraction will
+                // replace it naturally. If the new track truly has no artwork,
+                // the neutral fallback will persist from the init default.
+                Log.debug(
+                    "No artwork data during source change, holding previous theme",
+                    category: .theme
+                )
+                holdCurrentThemeForPendingArtwork(
+                    artworkIdentity: artworkIdentity,
+                    assetTrackID: assetTrackID,
+                    checksum: 0,
+                    reason: "artwork_data_nil_source_changed"
+                )
+                return
+            }
             Log.debug("No artwork data, resetting to default", category: .theme)
             clearPendingArtworkTheme()
             currentArtworkData = nil
@@ -438,8 +456,12 @@ final class ThemeStore: ObservableObject {
             accentNSColor = resolvedAccentNS
             artworkBaseNSColor = rawDominantColor
             selectionFill = Color(nsColor: resolvedAccentNS).opacity(fillAlpha)
-            semanticPalette = semantic
         }
+        // Phase 6.9: semanticPalette must snap instantly. Animating it causes
+        // MiniPlayer controls that compute Color(nsColor:) inside body to get
+        // trapped in a stuck intermediate state when combined with
+        // .compositingGroup().blendMode(...).
+        semanticPalette = semantic
 
         // Default fallbacks
         var bg = isDark ? "rgba(20, 20, 20, 0.85)" : "rgba(245, 245, 245, 0.85)"

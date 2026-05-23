@@ -486,41 +486,9 @@ struct FullscreenMiniPlayerView: View {
         // the spectrum stays faithful to the grey impression. Low-but-not-
         // near-mono covers are preserved with a soft chroma shoulder so we
         // don't over-saturate; honest colour artworks pass through.
-        let prepared = Self.prepareSpectrumColors(chosen, analysis: analysis)
+        let prepared = SpectrumColorResolver.prepareSpectrumColors(chosen, analysis: analysis)
         Self.logSpectrumColors(prepared, analysis: analysis)
         return prepared
-    }
-
-    nonisolated private static func prepareSpectrumColors(
-        _ colors: [NSColor],
-        analysis: ArtworkColorAnalysis
-    ) -> [NSColor] {
-        guard !colors.isEmpty else { return colors }
-        if analysis.isNearMonochrome && !analysis.hasTrustedHueCandidate {
-            return colors.map { neutralizeForNearMono($0) ?? $0 }
-        }
-        if analysis.colorfulness < 0.18 {
-            return colors.map { dampenLowSaturation($0) ?? $0 }
-        }
-        return colors
-    }
-
-    /// Force a near-monochrome source to perceptual grey: preserve L,
-    /// crush chroma to ~0 in OKLCH. Guarantees no visible hue tint
-    /// regardless of which salient highlight the displayPalette surfaced.
-    nonisolated private static func neutralizeForNearMono(_ color: NSColor) -> NSColor? {
-        guard let lch = OKColor.nsColorToOKLCH(color) else { return nil }
-        let neutral = OKColor.OKLCH(l: lch.l, c: min(lch.c, 0.008), h: lch.h)
-        return OKColor.okLCHToNSColor(neutral, alpha: 1)
-    }
-
-    /// Soft-clamp chroma on low-saturation (but not near-mono) covers so
-    /// downstream visibility tuning doesn't lift them above their natural
-    /// muted impression.
-    nonisolated private static func dampenLowSaturation(_ color: NSColor) -> NSColor? {
-        guard let lch = OKColor.nsColorToOKLCH(color) else { return nil }
-        let shouldered = OKColor.chromaSoftShoulder(lch, ceiling: 0.05, softness: 0.04)
-        return OKColor.okLCHToNSColor(shouldered, alpha: 1)
     }
 
     private static func logSpectrumColors(
@@ -767,16 +735,7 @@ nonisolated enum SpectrumPaletteSelfCheck {
         _ colors: [NSColor],
         analysis: ArtworkColorAnalysis
     ) -> [NSColor] {
-        FullscreenMiniPlayerView._selfCheckPrepareSpectrum(colors, analysis: analysis)
-    }
-}
-
-extension FullscreenMiniPlayerView {
-    fileprivate nonisolated static func _selfCheckPrepareSpectrum(
-        _ colors: [NSColor],
-        analysis: ArtworkColorAnalysis
-    ) -> [NSColor] {
-        prepareSpectrumColors(colors, analysis: analysis)
+        SpectrumColorResolver.prepareSpectrumColors(colors, analysis: analysis)
     }
 }
 #endif
