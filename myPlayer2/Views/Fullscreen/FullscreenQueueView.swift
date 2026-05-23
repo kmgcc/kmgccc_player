@@ -71,17 +71,6 @@ struct FullscreenQueueView: View {
 
     private static let scrollCoordinateSpaceName = "fullscreen.queue.scroll"
 
-    // MARK: - Theme Color (Phase 4 — semantic mini-player control palette)
-
-    /// Theme-tinted accent for the currently-playing queue row indicator.
-    /// Phase 4: consumes the semantic `miniPlayerControl.primary` so the
-    /// near-mono neutralisation is shared with FullscreenMiniPlayerView
-    /// and ExpandableVolumeControl instead of being re-derived locally.
-    private var processedThemeColor: Color {
-        Color(nsColor: themeStore.semanticPalette.miniPlayerControl.primary)
-            .opacity(0.96)
-    }
-
     // MARK: - Title Text (mode-appropriate Chinese labels)
 
     private var titleText: String {
@@ -166,8 +155,7 @@ struct FullscreenQueueView: View {
                             textPalette: textPalette,
                             scale: scale,
                             artworkSize: artworkSize,
-                            rowHeight: rowHeight,
-                            accentColor: processedThemeColor
+                            rowHeight: rowHeight
                         )
                         .id(track.id)
                         .onTapGesture {
@@ -350,7 +338,6 @@ private struct QueueRow: View {
     let scale: CGFloat
     let artworkSize: CGFloat
     let rowHeight: CGFloat
-    let accentColor: Color
 
     @State private var isHovering = false
     @State private var artworkImage: NSImage?
@@ -367,7 +354,7 @@ private struct QueueRow: View {
                     text: track.title,
                     fontSize: 14 * scale,
                     fontWeight: isPlaying ? .semibold : .medium,
-                    color: isPlaying ? accentColor : textPalette.primary,
+                    color: isPlaying ? currentRowForegroundColor : textPalette.primary,
                     shouldAnimate: isPlaying
                 )
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -383,7 +370,7 @@ private struct QueueRow: View {
             if isPlaying {
                 Image(systemName: "speaker.wave.2.fill")
                     .font(.system(size: 12 * scale, weight: .medium))
-                    .foregroundStyle(accentColor)
+                    .foregroundStyle(currentRowForegroundColor)
                     .frame(width: 24 * scale)
             } else {
                 Text(formatDuration(track.duration))
@@ -421,7 +408,7 @@ private struct QueueRow: View {
             ArtworkPlaceholderView.queueRow(
                 artworkSize: 44,
                 scale: scale,
-                themeColor: accentColor
+                themeColor: isPlaying ? currentRowForegroundColor : textPalette.secondary
             )
         }
     }
@@ -430,9 +417,13 @@ private struct QueueRow: View {
 
     private var backgroundFill: Color {
         if isPlaying {
-            return accentColor.opacity(0.15)
+            return currentRowForegroundColor.opacity(0.14)
         }
         return isHovering ? textPalette.hoverFill : Color.clear
+    }
+
+    private var currentRowForegroundColor: Color {
+        textPalette.primary
     }
 
     // MARK: - Artist Text

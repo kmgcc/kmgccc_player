@@ -2301,7 +2301,8 @@ nonisolated enum ColorSystemSelfCheck {
 
     /// Full BKColorEngine path: even if a stale/pseudo warm source hue enters
     /// the art engine, a true nearMono analysis with no trusted hue must crush
-    /// BK1/BK2, floating shapes, and moving circle to neutral.
+    /// BK1/BK2, floating shapes, and moving circle to neutral. Phase 6.10 also
+    /// keeps the designed shape preset out of yellow / pink hue bands.
     private static func checkBKArtTrueNearMonoShapesNeutral(_ report: inout CheckReport) {
         guard let analysis = analyse(side: 32, fill: (150, 150, 150, 255)) else {
             report.record("Phase 6.3: BK art true nearMono shapes neutral", false, "analysis nil")
@@ -2321,10 +2322,14 @@ nonisolated enum ColorSystemSelfCheck {
             + palette.bgVariants.flatMap { $0 }
         let chromas = colors.compactMap { cgColorToOKLCH($0)?.c }
         let maxC = chromas.max() ?? .infinity
-        let ok = analysis.isNearMonochrome && maxC <= 0.012
+        let shapeLCH = palette.shapePool.compactMap(cgColorToOKLCH(_:))
+        let forbiddenShapeHue = shapeLCH.contains { lch in
+            (0.10...0.23).contains(lch.h) || lch.h >= 0.86
+        }
+        let ok = analysis.isNearMonochrome && maxC <= 0.012 && !forbiddenShapeHue
         report.record(
             "Phase 6.3: BK art true nearMono shapes neutral", ok,
-            "nearMono=\(analysis.isNearMonochrome) maxC=\(format(maxC)) limit=0.012"
+            "nearMono=\(analysis.isNearMonochrome) maxC=\(format(maxC)) limit=0.012 forbiddenHue=\(forbiddenShapeHue)"
         )
     }
 
