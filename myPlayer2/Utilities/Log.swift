@@ -76,6 +76,22 @@ enum LogConfig {
         return .warning
         #endif
     }
+
+    nonisolated static var webViewDebugEnabled: Bool {
+        ProcessInfo.processInfo.environment["KMGCCC_DEBUG_WEBVIEW"] == "1"
+    }
+
+    nonisolated static var perfDebugEnabled: Bool {
+        ProcessInfo.processInfo.environment["KMGCCC_DEBUG_PERF"] == "1"
+    }
+
+    nonisolated static var libraryScanDebugEnabled: Bool {
+        ProcessInfo.processInfo.environment["KMGCCC_DEBUG_LIBRARY_SCAN"] == "1"
+    }
+
+    nonisolated static var miniPlayerFGDebugEnabled: Bool {
+        ProcessInfo.processInfo.environment["KMGCCC_DEBUG_MINIPLAYER_FG"] == "1"
+    }
     
     nonisolated static var debugEnabledCategories: Set<LogCategory> {
         _logConfigLock.lock()
@@ -208,6 +224,21 @@ enum Log {
         case .trace: trace(message(), category: .playback)
         }
     }
+
+    /// Dedicated output path for MiniPlayer foreground diagnostics.
+    /// Bypasses Log's level/category gates — controlled solely by
+    /// `KMGCCC_DEBUG_MINIPLAYER_FG=1` at process launch.
+    nonisolated static func miniPlayerFG(
+        _ message: @autoclosure () -> String
+    ) {
+        guard LogConfig.miniPlayerFGDebugEnabled else { return }
+        let msg = message()
+        let logger = _getLogger(for: .ui)
+        logger.info("\(msg)")
+        if LogConfig.printToConsole {
+            print(msg)
+        }
+    }
 }
 
 // MARK: - Internal Log Function
@@ -293,10 +324,12 @@ nonisolated enum FirstUseHitchDiagnostics {
         }
         lock.unlock()
 
-        Log.info(
-            "[FirstUseHitch] begin key=\(key) phase=\(occurrence == 1 ? "cold" : "warm") occurrence=\(occurrence) thread=\(Thread.isMainThread ? "main" : "background")\(detail.map { " detail=\($0)" } ?? "")",
-            category: .perf
-        )
+        if LogConfig.perfDebugEnabled {
+            Log.info(
+                "[FirstUseHitch] begin key=\(key) phase=\(occurrence == 1 ? "cold" : "warm") occurrence=\(occurrence) thread=\(Thread.isMainThread ? "main" : "background")\(detail.map { " detail=\($0)" } ?? "")",
+                category: .perf
+            )
+        }
 
         return FirstUseHitchToken(
             id: id,
@@ -322,10 +355,12 @@ nonisolated enum FirstUseHitchDiagnostics {
             signposter.endInterval("FirstUseHitch", state)
         }
 
-        Log.info(
-            "[FirstUseHitch] end key=\(token.key) phase=\(token.phase) occurrence=\(token.occurrence) durationMs=\(String(format: "%.1f", durationMs))\(detail.map { " detail=\($0)" } ?? "")",
-            category: .perf
-        )
+        if LogConfig.perfDebugEnabled {
+            Log.info(
+                "[FirstUseHitch] end key=\(token.key) phase=\(token.phase) occurrence=\(token.occurrence) durationMs=\(String(format: "%.1f", durationMs))\(detail.map { " detail=\($0)" } ?? "")",
+                category: .perf
+            )
+        }
     }
 
     nonisolated static func currentMainOperationDescription() -> String? {

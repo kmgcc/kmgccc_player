@@ -20,6 +20,7 @@ struct MiniPlayerProgressSpectrumRow: View {
     let isPlaying: Bool
     let accentColor: Color?
     let foregroundColor: Color?
+    let foregroundProfile: FullscreenMiniPlayerForegroundProfile?
     let enforceBrightForeground: Bool
     let spectrumArtworkColors: [NSColor]
     let spectrumUsesDarkForeground: Bool
@@ -53,6 +54,7 @@ struct MiniPlayerProgressSpectrumRow: View {
         isPlaying: Bool,
         accentColor: Color?,
         foregroundColor: Color? = nil,
+        foregroundProfile: FullscreenMiniPlayerForegroundProfile? = nil,
         enforceBrightForeground: Bool = true,
         spectrumArtworkColors: [NSColor] = [],
         spectrumUsesDarkForeground: Bool = false,
@@ -70,6 +72,7 @@ struct MiniPlayerProgressSpectrumRow: View {
         self.isPlaying = isPlaying
         self.accentColor = accentColor
         self.foregroundColor = foregroundColor
+        self.foregroundProfile = foregroundProfile
         self.enforceBrightForeground = enforceBrightForeground
         self.spectrumArtworkColors = spectrumArtworkColors
         self.spectrumUsesDarkForeground = spectrumUsesDarkForeground
@@ -189,9 +192,9 @@ struct MiniPlayerProgressSpectrumRow: View {
     private var spectrumSection: some View {
         MiniPlayerSpectrumView(
             isPlaying: isPlaying,
-            accentColor: accentColor,
+            accentColor: spectrumFallbackColor,
             artworkColors: spectrumArtworkColors,
-            usesDarkForeground: spectrumUsesDarkForeground,
+            usesDarkForeground: resolvedSpectrumUsesDarkForeground,
             scale: scale,
             isHovered: isRowHovered,
             pausedBehavior: .minimalDots
@@ -218,26 +221,48 @@ struct MiniPlayerProgressSpectrumRow: View {
     }
 
     private var progressFillColor: Color {
-        let base = foregroundColor ?? accentColor ?? Color.primary
-        let resolved = enforceBrightForeground
+        let base = resolvedForegroundColor
+        let resolved = resolvedEnforceBrightForeground
             ? enforceMinLightness(base, minLightness: Self.minLightness)
             : base
         return resolved.opacity(isSeekEnabled ? 0.9 : 0.5)
     }
 
     private var progressTrackColor: Color {
-        let base = foregroundColor ?? accentColor ?? Color.secondary
-        let resolved = enforceBrightForeground
+        let base = resolvedForegroundColor
+        let resolved = resolvedEnforceBrightForeground
             ? enforceMinLightness(base, minLightness: Self.minLightness)
             : base
         return resolved.opacity(0.25)
     }
 
     private var timeColor: Color {
-        let base = foregroundColor ?? accentColor ?? Color.primary
-        return enforceBrightForeground
+        let base = resolvedForegroundColor
+        return resolvedEnforceBrightForeground
             ? enforceMinLightness(base, minLightness: Self.minLightness)
             : base
+    }
+
+    private var resolvedForegroundColor: Color {
+        if let foregroundProfile {
+            return Color(nsColor: foregroundProfile.primary).opacity(0.96)
+        }
+        return foregroundColor ?? accentColor ?? Color.primary
+    }
+
+    private var spectrumFallbackColor: Color? {
+        if let foregroundProfile {
+            return Color(nsColor: foregroundProfile.primary)
+        }
+        return foregroundColor ?? accentColor
+    }
+
+    private var resolvedEnforceBrightForeground: Bool {
+        foregroundProfile?.enforceBrightProgressForeground ?? enforceBrightForeground
+    }
+
+    private var resolvedSpectrumUsesDarkForeground: Bool {
+        foregroundProfile?.spectrumUsesDarkForeground ?? spectrumUsesDarkForeground
     }
 
     // MARK: - HSL Color Processing

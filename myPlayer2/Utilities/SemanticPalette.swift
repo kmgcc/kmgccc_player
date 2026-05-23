@@ -618,8 +618,9 @@ enum SemanticPaletteFactory {
     /// Phase 6.1 single-seed artistic fullscreen lyrics ladder.
     ///
     /// All six roles derive from ONE seed (the active highlight). The
-    /// inactive parameter is kept in the signature for symmetry with the
-    /// Phase 5 path but is intentionally unused here.
+    /// inactive parameter carries the average-derived lyrics base used by
+    /// the non-artistic fullscreen/window paths; it is only consulted as a
+    /// small-highlight fallback before dominant can win.
     ///
     /// Seed selection (Phase 6.1):
     ///   1. nearMono → keep the preferred neutralised seed (no fabrication).
@@ -638,12 +639,13 @@ enum SemanticPaletteFactory {
     nonisolated private static func artisticFullscreenLyricsColorSet(
         analysis: ArtworkColorAnalysis,
         highlightBaseColor: NSColor,
-        inactiveBaseColor _: NSColor,
+        inactiveBaseColor: NSColor,
         isUltraDark: Bool,
         scheme: ColorScheme
     ) -> LyricsSurfaceColorSet? {
         guard let seed = artisticLyricsSingleSeed(
             preferred: highlightBaseColor,
+            averageBaseColor: inactiveBaseColor,
             analysis: analysis
         ) else {
             return nil
@@ -683,6 +685,7 @@ enum SemanticPaletteFactory {
     /// Phase 6.3 seed selection. Public for SelfCheck regression coverage.
     nonisolated static func artisticLyricsSingleSeed(
         preferred: NSColor,
+        averageBaseColor: NSColor? = nil,
         analysis: ArtworkColorAnalysis
     ) -> OKColor.OKLCH? {
         let T = ColorSystemTokens.ToneLadder.self
@@ -704,13 +707,28 @@ enum SemanticPaletteFactory {
             return salient
         }
 
-        // Step 3 — area-dominant first.
+        // Step 3 — reuse the analyser's display palette ordering before
+        // falling back to area-dominant. This preserves the existing
+        // window / cover-blur "black field + tiny yellow mark reads yellow"
+        // behaviour without letting ordinary multi-colour artwork jump to
+        // arbitrary small regions.
+        if let displayHighlight = pickDisplayHighlightLyricSeed(analysis: analysis) {
+            return displayHighlight
+        }
+        if let averageSeed = averageDerivedLyricSeed(
+            averageBaseColor: averageBaseColor,
+            analysis: analysis
+        ) {
+            return averageSeed
+        }
+
+        // Step 4 — area-dominant first.
         if let dominantLCH = OKColor.nsColorToOKLCH(analysis.dominantColor),
            dominantLCH.c >= T.lyricsDominantSeedMinChroma {
             return dominantLCH
         }
 
-        // Step 4 — fall through. Prefer the chromatically-strongest candidate
+        // Step 5 — fall through. Prefer the chromatically-strongest candidate
         // from {topPalette.first, bestTextSourceColor, preferred}; this is the
         // safety net for covers whose dominant bucket is genuinely grey.
         var candidates: [NSColor] = []
@@ -864,6 +882,66 @@ enum SemanticPaletteFactory {
         )
         guard score >= T.lyricsSeedFocusScoreThreshold else { return nil }
         return salientLCH
+    }
+
+    /// DisplayPalette is already the quality-controlled merge of
+    /// top.first -> salient -> top tail -> rich. For lyrics we only inspect
+    /// entries after the dominant slot, and only on "mostly one field plus a
+    /// small high-sat mark" covers.
+    nonisolated private static func pickDisplayHighlightLyricSeed(
+        analysis: ArtworkColorAnalysis
+    ) -> OKColor.OKLCH? {
+        let T = ColorSystemTokens.ToneLadder.self
+        guard analysis.hasTrustedHueCandidate else { return nil }
+        guard analysis.displayPalette.count >= 2 else { return nil }
+        guard !hasCompetingSalients(analysis: analysis) else { return nil }
+        guard analysis.largestHighSaturationAreaShare <= T.lyricsSalientSeedMaxLargestHighSatArea else {
+            return nil
+        }
+        guard let dominantLCH = OKColor.nsColorToOKLCH(analysis.dominantColor) else {
+            return nil
+        }
+
+        for color in analysis.displayPalette.dropFirst() {
+            guard let candidate = OKColor.nsColorToOKLCH(color) else { continue }
+            guard candidate.c >= T.lyricsSalientSeedMinChroma else { continue }
+            let hueGap = dominantLCH.c >= ColorSystemTokens.NearMonochromeProfile.trustedHueChromaFloor
+                ? circularHueDistance(candidate.h, dominantLCH.h)
+                : T.lyricsSalientSeedMinHueGapFromDominant
+            let chromaGap = candidate.c - dominantLCH.c
+            let lightnessGap = candidate.l - dominantLCH.l
+            if hueGap >= T.lyricsSalientSeedMinHueGapFromDominant
+                || chromaGap >= 0.055
+                || lightnessGap >= 0.18 {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    /// Average-derived seed mirrors the successful window / Cover Blur hue
+    /// source. It only participates when the dominant field itself has no
+    /// useful chroma, so background stability remains dominant-owned.
+    nonisolated private static func averageDerivedLyricSeed(
+        averageBaseColor: NSColor?,
+        analysis: ArtworkColorAnalysis
+    ) -> OKColor.OKLCH? {
+        let T = ColorSystemTokens.ToneLadder.self
+        guard analysis.hasTrustedHueCandidate else { return nil }
+        guard analysis.largestHighSaturationAreaShare <= T.lyricsSalientSeedMaxLargestHighSatArea else {
+            return nil
+        }
+        guard let averageBaseColor,
+              let averageLCH = OKColor.nsColorToOKLCH(averageBaseColor),
+              let dominantLCH = OKColor.nsColorToOKLCH(analysis.dominantColor) else {
+            return nil
+        }
+        guard dominantLCH.c < T.lyricsDominantSeedMinChroma else { return nil }
+
+        let averageHSL = ColorMath.hsl(of: averageBaseColor)
+        let carriesHue = averageHSL.s >= 0.18
+            || averageLCH.c >= ColorSystemTokens.NearMonochromeProfile.mutedTrustedHueChromaFloor
+        return carriesHue ? averageLCH : nil
     }
 
     nonisolated private static func circularHueDistance(_ a: CGFloat, _ b: CGFloat) -> CGFloat {
@@ -1518,10 +1596,12 @@ nonisolated enum SemanticPaletteSelfCheck {
     /// without having to build a full surface set.
     nonisolated static func artisticLyricsSingleSeed(
         preferred: NSColor,
+        averageBaseColor: NSColor? = nil,
         analysis: ArtworkColorAnalysis
     ) -> OKColor.OKLCH? {
         SemanticPaletteFactory.artisticLyricsSingleSeed(
             preferred: preferred,
+            averageBaseColor: averageBaseColor,
             analysis: analysis
         )
     }

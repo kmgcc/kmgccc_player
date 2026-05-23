@@ -49,6 +49,7 @@ struct FullscreenMiniPlayerView: View {
     @State private var nextSymbolEffectTrigger = 0
     @State private var artworkImage: NSImage?
     @State private var isPlaybackModeExpanded = false
+    @State private var isMiniPlayerHovering = false
 
     // Computed properties based on settings and scale
     private var barHeight: CGFloat { fixedBarHeight * scale }
@@ -88,6 +89,20 @@ struct FullscreenMiniPlayerView: View {
     }
 
     var body: some View {
+#if DEBUG
+        let _ = MiniPlayerFGDiagnostics.logIfChanged(
+            trackID: playbackCoordinator.presentation.localTrack?.id,
+            skinID: settings.fullscreen.skinID,
+            materialStyle: glassStyle.materialStyle,
+            colorScheme: colorScheme,
+            isPlaying: playbackCoordinator.presentation.isPlaying,
+            isHovering: isMiniPlayerHovering,
+            isExpanded: isPlaybackModeExpanded,
+            hasArtworkThemeColor: themeStore.hasArtworkThemeColor,
+            artworkUsesDarkForeground: themeStore.semanticPalette.analysis.usesDarkForeground,
+            profile: resolvedForegroundProfile
+        )
+#endif
         HStack(spacing: hStackSpacing) {
             // Left: Cover + Title/Artist
             FullscreenMiniPlayerLeftSection(
@@ -139,6 +154,7 @@ struct FullscreenMiniPlayerView: View {
             isFloating: true
         )
         .onHover { hovering in
+            isMiniPlayerHovering = hovering
             onHoverStateChanged(hovering)
             if hovering {
                 onInteraction()
@@ -221,7 +237,7 @@ struct FullscreenMiniPlayerView: View {
                     isExpanded: isPlaybackModeExpanded,
                     iconSize: 16 * scale,
                     selectedColor: controlPrimaryColor,
-                    unselectedColor: controlPrimaryColor.opacity(0.62),
+                    unselectedColor: controlSecondaryColor,
                     useScreenBlend: usesScreenBlendForControls,
                     pillTintColor: fullscreenControlPillTintColor,
                     pillTintBlendMode: .normal,
@@ -240,7 +256,7 @@ struct FullscreenMiniPlayerView: View {
                     isExpanded: isPlaybackModeExpanded,
                     iconSize: 16 * scale,
                     selectedColor: controlPrimaryColor,
-                    unselectedColor: controlPrimaryColor.opacity(0.62),
+                    unselectedColor: controlSecondaryColor,
                     useScreenBlend: usesScreenBlendForControls,
                     pillTintColor: fullscreenControlPillTintColor,
                     pillTintBlendMode: .normal,
@@ -278,6 +294,7 @@ struct FullscreenMiniPlayerView: View {
             isPlaying: playbackCoordinator.presentation.isPlaying,
             accentColor: themeStore.usesFallbackThemeColor ? nil : themeStore.accentColor,
             foregroundColor: controlPrimaryColor,
+            foregroundProfile: resolvedForegroundProfile,
             enforceBrightForeground: resolvedForegroundProfile.enforceBrightProgressForeground,
             spectrumArtworkColors: spectrumArtworkColors,
             spectrumUsesDarkForeground: resolvedForegroundProfile.spectrumUsesDarkForeground,
@@ -412,6 +429,10 @@ struct FullscreenMiniPlayerView: View {
 
     private var lyricsDynamicSecondaryColor: Color {
         controlPrimaryColor.opacity(0.78)
+    }
+
+    private var controlSecondaryColor: Color {
+        Color(nsColor: resolvedForegroundProfile.secondary).opacity(0.96)
     }
 
     private var controlPrimaryColor: Color {
@@ -677,6 +698,73 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
         }
     }
 }
+
+// MARK: - MiniPlayer Foreground Diagnostics
+
+#if DEBUG
+private nonisolated enum MiniPlayerFGDiagnostics {
+    private static let lock = NSLock()
+    private nonisolated(unsafe) static var lastSnapshotKey: String = ""
+
+    static func logIfChanged(
+        trackID: UUID?,
+        skinID: String,
+        materialStyle: LiquidGlassPillMaterialStyle,
+        colorScheme: ColorScheme,
+        isPlaying: Bool,
+        isHovering: Bool,
+        isExpanded: Bool,
+        hasArtworkThemeColor: Bool,
+        artworkUsesDarkForeground: Bool,
+        profile: FullscreenMiniPlayerForegroundProfile
+    ) {
+        guard LogConfig.miniPlayerFGDebugEnabled else { return }
+
+        let trackIDString = trackID?.uuidString ?? "none"
+        let primaryHex = hexString(for: profile.primary)
+        let secondaryHex = hexString(for: profile.secondary)
+        let disabledHex = hexString(for: profile.disabled)
+        let snapshotKey = [
+            trackIDString,
+            skinID,
+            "\(materialStyle)",
+            "\(colorScheme)",
+            "\(isPlaying)",
+            "\(isHovering)",
+            "\(isExpanded)",
+            "\(hasArtworkThemeColor)",
+            "\(artworkUsesDarkForeground)",
+            profile.role.rawValue,
+            primaryHex,
+            secondaryHex,
+            disabledHex,
+            "\(profile.iconBlendMode)",
+            "\(profile.useScreenBlend)",
+            "\(profile.enforceBrightProgressForeground)",
+            "\(profile.spectrumUsesDarkForeground)",
+        ].joined(separator: "|")
+
+        lock.lock()
+        defer { lock.unlock() }
+        guard snapshotKey != lastSnapshotKey else { return }
+        lastSnapshotKey = snapshotKey
+
+        Log.miniPlayerFG(
+            "[MiniPlayerFG] trackID=\(trackIDString) skin=\(skinID) material=\(materialStyle) colorScheme=\(colorScheme) isPlaying=\(isPlaying) isHovering=\(isHovering) orderExpanded=\(isExpanded) artworkTheme=\(hasArtworkThemeColor) artworkUsesDarkFG=\(artworkUsesDarkForeground) role=\(profile.role.rawValue) primary=\(primaryHex) secondary=\(secondaryHex) disabled=\(disabledHex) blend=\(profile.iconBlendMode) screenBlend=\(profile.useScreenBlend) progressEnforceBright=\(profile.enforceBrightProgressForeground) spectrumDarkFG=\(profile.spectrumUsesDarkForeground) sources=title:profile.primary artist:profile.primary.opacity controls:profile.primary order:profile.primary/profile.secondary progress:profile.primary spectrum:profile.primary+artwork volume:profile.primary leftButtons:profile.primary"
+        )
+    }
+
+    private static func hexString(for color: NSColor) -> String {
+        guard let rgb = color.usingColorSpace(.deviceRGB) else { return "unknown" }
+        return String(
+            format: "#%02X%02X%02X",
+            UInt8(min(max(rgb.redComponent, 0), 1) * 255),
+            UInt8(min(max(rgb.greenComponent, 0), 1) * 255),
+            UInt8(min(max(rgb.blueComponent, 0), 1) * 255)
+        )
+    }
+}
+#endif
 
 // MARK: - Preview
 

@@ -88,16 +88,15 @@ nonisolated enum FullscreenMiniPlayerForegroundStrategy {
         )
     }
 
-    /// Stricter dark-foreground gate for controls over blurred artwork.
-    /// `analysis.usesDarkForeground` flips at the general text-over-cover
-    /// threshold; cover blur needs a brighter background before dark ink is
-    /// safe.
+    /// Foreground polarity for controls over blurred artwork.
+    ///
+    /// Cover Blur must keep the foreground role and blend flags in lockstep
+    /// with the shared readability profile. A previous stricter luma gate
+    /// could reject borderline bright covers after `analysis.usesDarkForeground`
+    /// had already selected a dark text color, producing a mixed profile:
+    /// dark primary color with light-foreground screen-blend flags.
     static func shouldUseDarkArtworkForeground(for analysis: ArtworkColorAnalysis) -> Bool {
-        guard analysis.usesDarkForeground else { return false }
-        let averageLuma = ColorMath.relativeLuminance(of: analysis.averageColor)
-        return analysis.avgHslLightness >= 0.68
-            || averageLuma >= 0.58
-            || (analysis.avgBrightness >= 0.82 && analysis.avgSaturation < 0.30)
+        analysis.usesDarkForeground
     }
 
     private static func isClearMaterial(_ materialStyle: LiquidGlassPillMaterialStyle) -> Bool {
