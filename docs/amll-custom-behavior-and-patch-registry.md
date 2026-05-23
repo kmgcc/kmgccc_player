@@ -77,26 +77,19 @@ Phase 6.2 增量 — focus-score seed / nearMono trust override / 反粉红 shap
 - glow / interlude dots / background lyric / translation 仍走 CSS fallback chain，无需新 CSS 变量；**未修改** `amll-core.js` / `amll-lyric.js` 生成 bundle、`index.html` CSS 变量名 / fallback chain、`bridge.js`。
 - Phase 6.2 进一步（2026-05-21）：在 v3 seed-trust 之上 (a) Phase 6.1 salient hard gate 升级为连续 focusScore；(b) `analysis.isNearMonochrome` 受 trusted-hue 覆盖；(c) chroma soft shoulder 改为只在 scaled C ≥ 0.085 时触发；(d) 夜间 active L 0.905 → 0.920、UltraDark inactive trim 0.060 → 0.095；(e) 日间艺术背景 bg / shapes 大幅提亮；(f) 日间歌词 active L=0.150 改为 0.215（不死黑），仍严格 ASC 且 < bg L；(g) FullscreenMiniPlayer 日间艺术背景下控件主色切到 dark foreground readability profile。glow / interlude dots / background lyric 仍走 CSS fallback chain 自动跟随 Swift 下发色，**无 generated bundle / index.html 改动**。Self-check 新增 20+ 个 Phase 6.2 场景；3 个既有测试更新以反映 Phase 6.2 语义。
 
-Phase 6.3 增量 — artistic color system stabilization（2026-05-22）：
+Phase 6.3 增量 — artistic color system stabilization（2026-05-22，2026-05-23 人工复测未通过）：
 
-- `ArtworkColorAnalysis` 重新定义 nearMono：只有 dominant / topPalette / richPalette / displayPalette / salientHighlightPalette / bestTextSource 都没有可信 OKLCH hue 时才进入 true nearMono；同时 `salientHighlightAreaShares` 进入 contract，让 seed selector 使用“该 salient 自身面积”而不是整张图 high-sat 面积。
-- `SemanticPaletteFactory.focusScore(...)` 改为主观视觉焦点评分：OKLab 感知距离 + ΔC + ΔL + Δhue + dominant-field confidence + competing-high-sat area + nonlinear area gate。dominant 仍是默认；小面积强对比标题/Logo 可胜出；普通多色、大色块、噪点被抑制。
-- `BKColorEngine.analysisHasTrustedHueCandidate(...)` 与 analyzer 对齐；true nearMono 且无 trusted hue 时，对 bgStops / BK variants / shapePool / dotBase 统一 OKLCH neutralise，防止 floating shapes / moving circle 走伪 hue / fallback pink 路径。
-- 夜间艺术背景 token/tier 重新校准：背景更暗、circle 更低、UltraDark shapes 更低；暖红 trusted hue 在 saturation gating 中保留更高下限/上限，避免灰淡。
-- 日间艺术背景改为独立 airy light 设计：high-B background / BK / shapes / circle，为深色歌词和 dark foreground UI 服务。
-- 日间 fullscreen emphasis glow 现在由 Swift 下发 `fullscreenEmphasisGlowColor`，App `index.html` adapter 仅消费该值重染 fullscreen emphasis textShadow / drop-shadow。Web 不重新选择 hue；generated AMLL bundle 不改。
-- FullscreenMiniPlayerView 与 FullscreenPlayerView bottom controls：`fullscreenArtBackgroundEnabled && colorScheme == .light` 固定走 `readabilityProfile.foregroundPrimary`（dark foreground profile），不再按封面明度切白；icon blend mode 使用 normal。
-- ThemeStore 切歌稳定：artwork cache miss / full analysis pending 时保留上一首 semantic palette；不发布 `.neutralFallback` / default accent / quick-only palette。真正无 artwork 才 fallback。
+- Phase 6.3 的 nearMono / trusted hue、focus score、BK true-nearMono neutralise、日间 light tier、MiniPlayer dark foreground 和 ThemeStore pending hold 都是中间实现尝试，不能再写成已修复事实。
+- 人工复测确认：小面积强焦点仍不稳定；有色封面仍会被 nearMono 灰白化；true nearMono 下 floating shapes 淡粉有回归；日间艺术背景仍偏暗；日间歌词 active / inactive 仍阴沉；Fullscreen MiniPlayer UI 仍有多条颜色路径；切歌仍会闪 default / 错误深浅色。
+- `fullscreenEmphasisGlowColor` 由 Swift 下发、App `index.html` adapter 消费的 dark glow 方向保留；后续需确认不要回退，但不应把 hue 决策放回 Web。
 - AMLL active/inactive highlight transition / feather 本轮不处理，继续作为 backlog；不改 fork core、不手改 `amll-core.js` / `amll-lyric.js`。
 
-Phase 6.4 增量 — artistic architecture stabilization（2026-05-23）：
+Phase 6.4 增量 — artistic architecture stabilization（2026-05-23，2026-05-23 人工复测未通过）：
 
 - Swift-owned lyrics color contract 不变；Web / AMLL adapter 仍只消费 Swift 下发颜色。本轮未修改 `index.html`、`bridge.js`、fork core 或 generated `amll-core.js` / `amll-lyric.js`。
-- 日间艺术背景下 UltraDark 被限定为 dark-scheme-only：Swift 侧不再在 light + artistic background 时向歌词 tone ladder、BKArt 或 skin tokens 传递 UltraDark 压暗信号。
-- Fullscreen MiniPlayer 与 bottom controls 的 light + artistic foreground 全链路固定到 `readabilityProfile.foregroundPrimary`：progress/time row、playback mode pill、volume expanded/hover 状态不再各自回到 bright / cover-driven profile。
-- Fullscreen lyrics pending 稳定：`resolveLyricsAnalysis` 不再在 palette mismatch 时返回 `.neutralFallback`；snapshot analysis 可用时使用 snapshot，不可用时保留上一首 ThemeStore semantic palette，并在 theme injection 前 hold，避免 AMLL WebView 收到中间 default/neutral 色。
-- `ArtworkAssetSnapshot.analysis` 进入 App 色彩 contract：cache-hit 路径必须携带 analyzer 的 trusted hue / nearMono / UltraDark / displayPalette / salient 信息，避免 Swift 在不同消费者之间重新推断出互相矛盾的状态。
-- Phase 6.3 的 `fullscreenEmphasisGlowColor` dark glow contract 保持；Phase 6.4 不改 glow adapter，不改变 official AMLL emphasis 动画结构。
+- Phase 6.4 曾尝试把日间 UltraDark 限定为 dark-scheme-only、统一 Fullscreen MiniPlayer / bottom controls 的 dark foreground、在 fullscreen lyrics pending 时 hold palette、让 `ArtworkAssetSnapshot.analysis` 携带 analyzer 状态；这些实现仍未通过人工验收，不能写成最终稳定架构。
+- 当前待重新调查的架构问题集中在：日间艺术背景体系仍偏暗、日间歌词仍偏暗、MiniPlayer / 左右控制 / volume / progress / text / hover-expanded 状态颜色来源分裂、切歌 pending palette 仍闪 default、nearMono 仍误伤有色封面、true nearMono shapes 淡粉回归。
+- Phase 6.3 的 `fullscreenEmphasisGlowColor` dark glow contract 保持正确方向；Phase 6.4 不改 glow adapter，不改变 official AMLL emphasis 动画结构。
 - AMLL active/inactive feather transition 仍是 Phase 7 / fork-core backlog；本轮继续不处理。
 
 Phase 6.2 outstanding work / Phase 7 candidates:

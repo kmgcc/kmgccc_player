@@ -200,7 +200,7 @@ Phase 4.5 应包含：
 - [x] **glow / interlude dots / background lyric / translation 自动跟随**：通过 CSS fallback chain (`var(--amll-fs-main-active, …)` / `var(--amll-fs-main-inactive, …)` / `currentColor`) 由 Swift 下发的反相色自动传播，**不触 generated bundle**。
 - [x] **FullscreenMiniPlayer UI**：日间艺术背景模式（`settings.fullscreenArtBackgroundEnabled && colorScheme == .light && themeStore.hasArtworkThemeColor`）下控件主色切到 `readabilityProfile.foregroundPrimary`（dark on light artistic glass）。
 - [x] **AMLL highlight transition 审计**：fullscreen line-level transition 走 `transition: color .14s/.18s ease-out` 已经在 `index.html`，但 transition 内部的 RGB interpolation 颜色空间发生在浏览器，非 Swift 可控。per-word/character "seam" 由生成 bundle 的 mask-image / linear-gradient 内联在 `amll-core.js` 中，无现有 CSS 变量可注入 OKLCH 中间色 → **延期到 Phase 7 / AMLL backlog**，需要 fork core patch；已在 `docs/amll-custom-behavior-and-patch-registry.md` 和 `docs/amll-upgrade-implementation-log.md` 登记。
-- [x] **SelfCheck 新增 20 个 Phase 6.2 场景**：focus-score 5 个、nearMono trust 3 个、art shape 反粉红 2 个、夜间 shoulder/active/UltraDark/moving circle 5 个、日间 bg/lyric/translation 4 个、MiniPlayer day-profile 1 个。同时修正 3 个 Phase 5/6 既有测试以反映 Phase 6.2 语义：Spectrum/HomeShapes nearMono synthetic 换为纯灰，Display salient priority 不再要求 nearMono=true，ToneLadder hue identity 在 sRGB gamut 极限下放宽 active.c floor。最终 `ALL PASS`。
+- [x] **SelfCheck 新增 20 个 Phase 6.2 场景**：focus-score 5 个、nearMono trust 3 个、art shape 反粉红 2 个、夜间 shoulder/active/UltraDark/moving circle 5 个、日间 bg/lyric/translation 4 个、MiniPlayer day-profile 1 个。同时修正 3 个 Phase 5/6 既有测试以反映 Phase 6.2 语义：Spectrum/HomeShapes nearMono synthetic 换为纯灰，Display salient priority 不再要求 nearMono=true，ToneLadder hue identity 在 sRGB gamut 极限下放宽 active.c floor。该阶段曾 `ALL PASS`，但后续 Phase 6.3 / 6.4 人工复测已证明 self-check 不能代表视觉验收。
 
 退出条件：Debug build 通过；`COLOR_SYSTEM_SELF_CHECK=1` 自检全 PASS；用户手测七场景（夜间高饱、夜间中饱、黑底小亮色、多色封面、UltraDark、日间 + 艺术背景、日间 nearMono）按预期表现。AMLL highlight transition 留作 Phase 7 backlog。
 
@@ -208,36 +208,34 @@ Phase 4.5 应包含：
 
 人工测试 Phase 6.2 后确认视觉仍未验收：小面积强焦点仍不稳、nearMono 误伤有色封面、true nearMono 下 floating shapes 仍可能偏粉、夜间艺术背景偏灰/偏亮、日间艺术背景与歌词仍偏暗、日间 fullscreen MiniPlayer UI 仍会随封面切黑白、切歌时颜色会短暂掉默认色、日间 emphasis glow 仍像白色 glow。高亮 feather / active-inactive transition 本轮明确不处理，继续留在 AMLL backlog。
 
-本轮做：
+本轮曾尝试以下方向，但 2026-05-23 人工复测确认 Phase 6.3 未通过。下列条目不能再作为完成结论，只能作为下一轮审计时的历史背景：
 
-- [x] **focus seed selection v3**：`ArtworkColorAnalysis` 为 `salientHighlightPalette` 同步记录 `salientHighlightAreaShares`；`focusScore` 改为感知距离 + ΔC + ΔL + Δhue + dominant-field confidence + competing-high-sat area + nonlinear area gate。小焦点不再被整张图的 `highSaturationAreaShare` 误惩罚；70% 棕 + 30% 蓝仍按 dominant；普通多色与噪点被压制。
-- [x] **nearMono / trusted hue 重新定义**：nearMono 必须满足“无可信 hue”。可信来源扩展为 dominant / topPalette / richPalette / displayPalette / salient / bestTextSource；strict mono 也不能绕过 trusted hue。低饱和彩色封面保留温度，真灰仍中性。
-- [x] **true nearMono art shapes 防粉**：BKColorEngine 的 trusted-hue 判定与 analyzer 对齐；true nearMono 且无 trusted hue 时，bgStops / BK1/BK2 variants / shapePool / dotBase 全部 OKLCH chroma crush 到 ≤ 0.008。
-- [x] **夜间艺术背景重新校准**：暗色常规 `bgB=0.12…0.24`、`fgB=0.24…0.42`、`dotB=0.34…0.52`；UltraDark 进一步降到 `dotB=0.22…0.38` / 深分支 `0.20…0.34`。暖红低彩 trusted hue 会保留更高 bgS ceiling/floor，避免灰淡；亮封面不再把背景抬亮。
-- [x] **日间艺术背景独立高明度体系**：light tier 改为 `bgB=0.94…0.985`、`fgB=0.88…0.96`、`dotB=0.78…0.90`，作为深色歌词 / 深色 UI 的 airy background。
-- [x] **日间歌词 dark but alive**：light lyrics L 提升为 active 0.255 / sub-active 0.365 / inactive 0.515 / translation 0.520 / line timing 0.550…0.575；仍全部低于 day bg。
-- [x] **日间 emphasis glow dark profile**：Swift 新增 `fullscreenEmphasisGlowColor`，来源为 `colorSet.mainActive`；App adapter 仅消费此变量重染 fullscreen emphasis textShadow / drop-shadow，不把 hue 决策放回 Web，不改 generated bundle。
-- [x] **日间艺术背景 MiniPlayer fixed dark foreground**：FullscreenMiniPlayerView 与 FullscreenPlayerView bottom controls 在 `fullscreenArtBackgroundEnabled && colorScheme == .light` 下固定走 `readabilityProfile.foregroundPrimary`，blend mode 固定 normal，不再按封面明度跳白。
-- [x] **切歌不掉默认色**：ThemeStore 不再在新 artwork cache miss / quick sample 阶段发布 `.neutralFallback` 或 default accent；保留上一首 palette，等 full analysis ready 后一次性发布。真正无 artwork 时才走 fallback。
-- [x] **SelfCheck / Debug**：新增 Phase 6.3 自检，覆盖小焦点、普通多色、噪点、nearMono trust、true nearMono BK shapes 防粉、夜间 / UltraDark / 日间背景与歌词、dark glow source、MiniPlayer dark profile。`ThemeStore` 增加 pending log，便于手测切歌时确认“hold previous palette”。
+- [ ] **focus seed selection v3 未通过人工验收**：曾为 `salientHighlightPalette` 同步记录 `salientHighlightAreaShares`，并把 `focusScore` 改为感知距离 + ΔC + ΔL + Δhue + dominant-field confidence + competing-high-sat area + nonlinear area gate；但小面积强焦点仍不稳定。
+- [ ] **nearMono / trusted hue 仍需重新调查**：曾把 nearMono 定义为“无可信 hue”，并扩展 trusted sources；但很多有色封面仍被误判成黑白。
+- [ ] **true nearMono art shapes 防粉未完成**：曾对 true nearMono 无 trusted hue 的 BK 颜色做 OKLCH chroma crush；但淡粉问题有回归。保留“极淡低彩 tint 适配黑白”的方向，不得写成完全解决。
+- [ ] **日间艺术背景仍偏暗**：曾把 light tier 改为高明度体系；但背景、BK1/BK2、floating shapes、moving circle 仍不够 bright / airy。
+- [ ] **日间歌词仍偏暗阴沉**：曾提高 active / inactive / translation L；但日间 active / inactive 仍不够有生命。
+- [x] **日间 emphasis glow dark profile 是正确方向**：Swift 新增 `fullscreenEmphasisGlowColor`，App adapter 消费此变量；后续要确认不要回退，但不要把 hue 决策放回 Web。
+- [ ] **日间艺术背景 MiniPlayer fixed dark foreground 未完成**：主 MiniPlayer、左右按钮、音量、进度、文字路径仍分裂，并仍会随封面 / hover / expanded 状态变化。
+- [ ] **切歌不掉默认色未完成**：仍会闪 default / neutral / 错误深浅色。下一轮必须从颜色状态机和所有消费者 fallback 入口重新审计。
+- [ ] **SelfCheck / Debug 不等于验收**：Phase 6.3 self-check 曾通过，但不能覆盖人工失败结论。
 
-退出状态：Debug build 通过；`COLOR_SYSTEM_SELF_CHECK=1` 运行 `ALL PASS`。AMLL highlighter transition / feather 本轮不实现，保留 backlog；未进入 Phase 7。
+退出状态修正（2026-05-23 文档止血）：Phase 6.3 是未通过人工验收的中间尝试。AMLL highlighter transition / feather 本轮不实现，继续保留 backlog；未进入 Phase 7。
 
 ### Phase 6.4 — 艺术背景颜色架构稳定化
 
 人工验收 Phase 6.3 仍未通过后，Phase 6.4 不再继续零散调 token，而是收敛颜色状态链路：
 
-- [x] **日间艺术背景独立 light profile**：`BKColorEngine` light tier 升到 high-B airy band（bg / BK / shapes / circle 都高明度），并移除 light path 的低明度硬上限。日间艺术背景是深色歌词与深色 UI 的亮底，不再复用夜间逻辑的浅版。
-- [x] **日间艺术背景禁用 UltraDark**：UltraDark 只在 `colorScheme == .dark` 下传入艺术背景、歌词、BK skin token 与 fullscreen theme。light + artistic background 下不再压暗背景、floating shapes、moving circle、BK1/BK2 或歌词。
-- [x] **日间歌词 deep but alive**：light artistic lyrics 的 active / inactive / translation 全部提亮；active 仍比 inactive 更深，translation 与 inactive 同层，所有 L 仍低于 day background。
-- [x] **Fullscreen MiniPlayer fixed dark profile 全链路统一**：退出全屏按钮、标题/歌手、播放控制、播放顺序块、progress/time、volume 都在 light + artistic background 下统一读 `readabilityProfile.foregroundPrimary`，blend mode normal。hover / expanded 不再走 cover-driven 或 bright-enforced 分支。
-- [x] **切歌 pending 不发布 default / neutral**：ThemeStore 保留上一首 palette；FullscreenPlayerView 不再在 `paletteMatches == false` 时返回 `.neutralFallback`，而是优先 snapshot analysis，未 ready 时 hold 当前 artistic lyrics theme，等新 palette ready 后再切换。
-- [x] **Artwork snapshot 持有完整 analysis**：`ArtworkAssetSnapshot.analysis` 让 cache-hit 路径保留 displayPalette / salient / trusted hue / nearMono / UltraDark 信息，避免有色封面在缓存或 pending 阶段被 neutralFallback 吞掉。
-- [x] **nearMono 方向保持**：true nearMono 下 shapes 保持极淡、克制、适配黑白的低彩方向；不回退死灰，也不允许 fallback pink。
-- [x] **AMLL glow contract 保持**：Phase 6.3 的日间 dark emphasis glow 不回退；本轮不改 `index.html`、不改 generated AMLL bundle。
-- [x] **SelfCheck / Debug**：新增 Phase 6.4 自检覆盖 light artistic ignores UltraDark 与 airy day background band；pending hold 路径有 debug log 可手测切歌不闪 default。
+- [ ] **日间艺术背景仍未通过**：虽然曾提高 high-B band 并尝试禁用日间 UltraDark，人工复测仍确认整体偏暗；UltraDark 是否仍通过其他路径影响日间需要重新调查。
+- [ ] **日间歌词仍未通过**：active / inactive / translation 曾提亮，但人工复测仍偏暗、阴沉。
+- [ ] **Fullscreen MiniPlayer fixed dark profile 未统一**：退出全屏按钮、标题/歌手、播放控制、播放顺序块、progress/time、volume、hover / expanded 状态仍需逐项审计颜色来源。
+- [ ] **切歌 pending 不发布 default / neutral 未完成**：仍会闪 default / neutral / 错误深浅色；下一轮需审计 ThemeStore、snapshot、LyricsSurfaceManager、LyricsWebViewStore、BKColorEngine、AppForegroundPalette 等所有 fallback。
+- [ ] **nearMono 误判仍未解决**：`ArtworkAssetSnapshot.analysis` 是一次尝试，但有色封面仍被误判黑白；不要把 cache-hit 修复当作真实根因已解决。
+- [ ] **nearMono shapes 方向保留但防粉未完成**：允许极淡低彩 tint，不要回退死灰；但淡粉回归需要重新调查。
+- [x] **AMLL glow contract 保持正确方向**：Phase 6.3 的日间 dark emphasis glow 不回退；本轮不改 generated AMLL bundle。后续只需确认视觉不回退。
+- [ ] **SelfCheck / Debug 不等于验收**：Phase 6.4 自检通过不能覆盖人工失败结论。
 
-退出状态：Debug build 通过；`COLOR_SYSTEM_SELF_CHECK=1` 运行 `ALL PASS`。高亮 feather / active-inactive 过渡继续保留 backlog；未进入 Phase 7。
+退出状态修正（2026-05-23 文档止血）：Phase 6.4 未通过人工验收。当前进入下一轮应从架构审计开始，而不是继续基于“已完成”结论微调。高亮 feather / active-inactive 过渡继续保留 backlog；未进入 Phase 7。
 
 ### Phase 7 — 清理旧 HSL 分叉、文档收尾、回归验证
 
