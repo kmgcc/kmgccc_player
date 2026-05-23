@@ -44,6 +44,14 @@ struct ExpandableVolumeControl: View {
     private var sliderTrailingPadding: CGFloat { 18 * scale }
 
     var body: some View {
+        let _ = VolumeFGDiagnostics.logIfChanged(
+            isExpanded: isExpanded,
+            isEnabled: isEnabled,
+            materialStyle: materialStyle,
+            profile: foregroundProfile,
+            controlPrimary: controlPrimaryNSColor,
+            blendMode: controlBlendMode
+        )
         HStack(spacing: 0) {
             volumeIconButton
 
@@ -193,6 +201,45 @@ struct ExpandableVolumeControl: View {
             let lastVolume = UserDefaults.standard.double(forKey: "_expandableVolume_lastVolume")
             volume = lastVolume > 0 ? lastVolume : 0.5
         }
+    }
+}
+
+private nonisolated enum VolumeFGDiagnostics {
+    private static let lock = NSLock()
+    private nonisolated(unsafe) static var lastSnapshotKey: String = ""
+
+    static func logIfChanged(
+        isExpanded: Bool,
+        isEnabled: Bool,
+        materialStyle: LiquidGlassPillMaterialStyle,
+        profile: FullscreenMiniPlayerForegroundProfile?,
+        controlPrimary: NSColor,
+        blendMode: BlendMode
+    ) {
+        guard LogConfig.miniPlayerFGDebugEnabled else { return }
+
+        let primaryHex = hexString(for: controlPrimary)
+        let role = profile?.role.rawValue ?? "legacy-local"
+        let snapshotKey = "\(isExpanded)|\(isEnabled)|\(materialStyle)|\(role)|\(primaryHex)|\(blendMode)"
+
+        lock.lock()
+        defer { lock.unlock() }
+        guard snapshotKey != lastSnapshotKey else { return }
+        lastSnapshotKey = snapshotKey
+
+        Log.miniPlayerFG(
+            "[MiniPlayerFG:Volume] expanded=\(isExpanded) enabled=\(isEnabled) material=\(materialStyle) source=\(profile == nil ? "legacy-local" : "foregroundProfile") role=\(role) primary=\(primaryHex) blend=\(blendMode)"
+        )
+    }
+
+    private static func hexString(for color: NSColor) -> String {
+        guard let rgb = color.usingColorSpace(.deviceRGB) else { return "unknown" }
+        return String(
+            format: "#%02X%02X%02X",
+            UInt8(min(max(rgb.redComponent, 0), 1) * 255),
+            UInt8(min(max(rgb.greenComponent, 0), 1) * 255),
+            UInt8(min(max(rgb.blueComponent, 0), 1) * 255)
+        )
     }
 }
 

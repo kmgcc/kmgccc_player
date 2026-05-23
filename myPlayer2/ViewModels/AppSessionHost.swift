@@ -629,7 +629,9 @@ private final class MainThreadStallMonitor {
         self.timer = timer
         timer.resume()
 
-        Log.info("[MainThreadStall] monitor started thresholdMs=50", category: .perf)
+        if LogConfig.perfDebugEnabled {
+            Log.info("[MainThreadStall] monitor started thresholdMs=50", category: .perf)
+        }
     }
 
     private func tick() {

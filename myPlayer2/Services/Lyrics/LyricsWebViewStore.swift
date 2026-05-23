@@ -1149,10 +1149,12 @@ final class LyricsWebViewStore: NSObject {
             "applyTrack: trackID=\(trackID?.uuidString.prefix(8) ?? "nil"), ttmlLen=\(ttml?.count ?? 0), time=\(currentTime), playing=\(isPlaying), objectID=\(webViewObjectID)",
             category: .webview
         )
-        Log.info(
-            "[LyricsWebViewStore] applyTrack role=\(role), trackID=\(trackID?.uuidString.prefix(8) ?? "nil"), ttmlLen=\(ttml?.count ?? 0), ttmlHash=\(ttml?.hashValue ?? 0), time=\(String(format: "%.3f", currentTime)), playing=\(isPlaying), objectID=\(webViewObjectID)",
-            category: .webview
-        )
+        if LogConfig.webViewDebugEnabled {
+            Log.info(
+                "[LyricsWebViewStore] applyTrack role=\(role), trackID=\(trackID?.uuidString.prefix(8) ?? "nil"), ttmlLen=\(ttml?.count ?? 0), ttmlHash=\(ttml?.hashValue ?? 0), time=\(String(format: "%.3f", currentTime)), playing=\(isPlaying), objectID=\(webViewObjectID)",
+                category: .webview
+            )
+        }
         let activeProfileSessionID = beginTrackProfileSession(
             trackID: trackID,
             ttmlLength: ttml?.count ?? 0,
@@ -1677,9 +1679,13 @@ final class LyricsWebViewStore: NSObject {
             || text.contains("[LyricsRenderer] lineTimingOnlyMode")
             || text.contains("[AMLLScaleMetrics]")
         {
-            Log.info(message, category: .webview)
+            if LogConfig.webViewDebugEnabled {
+                Log.info(message, category: .webview)
+            }
         } else {
-            Log.trace(message, category: .webview)
+            if LogConfig.webViewDebugEnabled {
+                Log.trace(message, category: .webview)
+            }
         }
     }
 

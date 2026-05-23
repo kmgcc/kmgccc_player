@@ -83,6 +83,7 @@ nonisolated struct LibraryDiskScanner: Sendable {
         var manifestEntries: [String: ManifestTrackEntry] = [:]
         var cached = 0
         var rescanned = 0
+        var missingMeta = 0
         var seen = Set<String>()
 
         for folderURL in folders {
@@ -92,10 +93,13 @@ nonisolated struct LibraryDiskScanner: Sendable {
 
             guard let fingerprint = fingerprint(for: rootURL.appendingPathComponent(metaRelativePath)) else {
                 if fileManager.fileExists(atPath: folderURL.path) {
-                    Log.warning(
-                        "[LibraryIncrementalScan] skipped track missing meta: \(folderRelativePath)",
-                        category: .library
-                    )
+                    missingMeta += 1
+                    if LogConfig.libraryScanDebugEnabled {
+                        Log.warning(
+                            "[LibraryIncrementalScan] skipped track missing meta: \(folderRelativePath)",
+                            category: .library
+                        )
+                    }
                 }
                 continue
             }
@@ -132,7 +136,7 @@ nonisolated struct LibraryDiskScanner: Sendable {
         return ScanResult(
             values: values,
             manifestEntries: manifestEntries,
-            stats: ScanStats(total: values.count, cached: cached, rescanned: rescanned, removed: removed)
+            stats: ScanStats(total: values.count, cached: cached, rescanned: rescanned, removed: removed, missingMeta: missingMeta)
         )
     }
 
@@ -279,7 +283,7 @@ nonisolated struct LibraryDiskScanner: Sendable {
         return ScanResult(
             values: values,
             manifestEntries: manifestEntries,
-            stats: ScanStats(total: values.count, cached: cached, rescanned: rescanned, removed: removed)
+            stats: ScanStats(total: values.count, cached: cached, rescanned: rescanned, removed: removed, missingMeta: 0)
         )
     }
 
@@ -379,7 +383,7 @@ nonisolated struct LibraryDiskScanner: Sendable {
 
     private func logSummary(kind: String, stats: ScanStats) {
         Log.info(
-            "[LibraryIncrementalScan] \(kind) total=\(stats.total) cached=\(stats.cached) rescanned=\(stats.rescanned) removed=\(stats.removed)",
+            "[LibraryIncrementalScan] \(kind) total=\(stats.total) cached=\(stats.cached) rescanned=\(stats.rescanned) removed=\(stats.removed) missingMeta=\(stats.missingMeta)",
             category: .library
         )
     }
@@ -397,6 +401,7 @@ nonisolated private struct ScanStats {
     let cached: Int
     let rescanned: Int
     let removed: Int
+    let missingMeta: Int
 }
 
 nonisolated private struct ScanResult<Value, Entry> {

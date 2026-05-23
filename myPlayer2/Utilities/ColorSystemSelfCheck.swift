@@ -176,6 +176,7 @@ nonisolated enum ColorSystemSelfCheck {
 
         report.section("Phase 6.3 — artistic colour stabilization")
         checkSeedFocusFiresOnBlackPlusBrightYellow(&report)
+        checkArtisticSeedUsesDisplayHighlightBeforeDominant(&report)
         checkSeedFocusFiresOnBluePlusOrange(&report)
         checkSeedFocusSuppressedOn70Brown30Blue(&report)
         checkSeedFocusSuppressedOnTinyNoise(&report)
@@ -2081,6 +2082,89 @@ nonisolated enum ColorSystemSelfCheck {
         )
     }
 
+    /// Regression for the Artistic-only failure mode: the analyser has already
+    /// surfaced a tiny yellow mark in displayPalette, but the artistic seed path
+    /// must not bind lyrics back to the dominant black field.
+    private static func checkArtisticSeedUsesDisplayHighlightBeforeDominant(_ report: inout CheckReport) {
+        guard let base = analyseMix(side: 64, regions: [
+            (0.50, (15, 15, 15, 255)),
+            (0.45, (60, 60, 60, 255)),
+            (0.05, (255, 200, 30, 255))
+        ]) else {
+            report.record("Phase 6.3: artistic seed uses display highlight before dominant", false, "analysis nil")
+            return
+        }
+        let analysis = ArtworkColorAnalysis(
+            avgHue: base.avgHue,
+            dominantHue: base.dominantHue,
+            dominantHueConfidence: base.dominantHueConfidence,
+            avgSaturation: base.avgSaturation,
+            avgBrightness: base.avgBrightness,
+            avgHslLightness: base.avgHslLightness,
+            weightedLuma: base.weightedLuma,
+            saturationVariance: base.saturationVariance,
+            lightnessVariance: base.lightnessVariance,
+            colorfulness: base.colorfulness,
+            dominantSaturation: base.dominantSaturation,
+            dominantBrightness: base.dominantBrightness,
+            largestHighSaturationAreaShare: base.largestHighSaturationAreaShare,
+            highSaturationAreaShare: base.highSaturationAreaShare,
+            isMonochrome: base.isMonochrome,
+            isNearMonochrome: base.isNearMonochrome,
+            isUltraDark: base.isUltraDark,
+            isEffectivelyMonochrome: base.isEffectivelyMonochrome,
+            hasStrongAccentRegion: base.hasStrongAccentRegion,
+            usesDarkForeground: base.usesDarkForeground,
+            dominantColor: base.dominantColor,
+            averageColor: base.averageColor,
+            topPalette: Array(base.topPalette.prefix(1)),
+            richPalette: base.richPalette,
+            salientHighlightPalette: [],
+            salientHighlightAreaShares: [],
+            displayPalette: base.displayPalette,
+            bestTextSourceColor: base.dominantColor
+        )
+        let yellowInDisplay = analysis.displayPalette.dropFirst().contains {
+            isHueClose(of: $0, target: 0.13)
+        }
+        guard yellowInDisplay else {
+            report.record(
+                "Phase 6.3: artistic seed uses display highlight before dominant",
+                false,
+                "yellow missing from displayPalette display.count=\(analysis.displayPalette.count)"
+            )
+            return
+        }
+        guard let seed = SemanticPaletteSelfCheck.artisticLyricsSingleSeed(
+            preferred: analysis.dominantColor,
+            averageBaseColor: analysis.averageColor,
+            analysis: analysis
+        ) else {
+            report.record("Phase 6.3: artistic seed uses display highlight before dominant", false, "seed nil")
+            return
+        }
+        let finalSet = SemanticPaletteSelfCheck.fullscreenLyricsColorSet(
+            analysis: analysis,
+            scheme: .dark,
+            highlightBaseColor: analysis.dominantColor,
+            inactiveBaseColor: analysis.averageColor,
+            isUltraDark: analysis.isUltraDark,
+            usesArtisticBackground: true
+        )
+        let dominant = OKColor.nsColorToOKLCH(analysis.dominantColor)
+        let backgroundSeed = analysis.topPalette.first.flatMap(OKColor.nsColorToOKLCH(_:))
+        let displayHighlight = analysis.displayPalette.dropFirst().first.flatMap(OKColor.nsColorToOKLCH(_:))
+        let active = OKColor.nsColorToOKLCH(finalSet.mainActive)
+        let inactive = OKColor.nsColorToOKLCH(finalSet.mainInactive)
+        let hueOK = seed.h > 0.18 && seed.h < 0.32
+        let chromaOK = seed.c >= 0.10
+        report.record(
+            "Phase 6.3: artistic seed uses display highlight before dominant",
+            hueOK && chromaOK,
+            "dominant=\(describeLCH(dominant)) backgroundSeed=\(describeLCH(backgroundSeed)) salient.count=\(analysis.salientHighlightPalette.count) displayHighlight=\(describeLCH(displayHighlight)) seed=\(describeLCH(seed)) active=\(describeLCH(active)) inactive=\(describeLCH(inactive)) nearMono=\(analysis.isNearMonochrome) ultraDark=\(analysis.isUltraDark) trusted=\(analysis.hasTrustedHueCandidate) highSatMax=\(format(analysis.largestHighSaturationAreaShare))"
+        )
+    }
+
     /// Blue dominant + orange salient — distinct hue families, uniform field.
     /// Focus score should fire because Δhue + ΔC are both high.
     private static func checkSeedFocusFiresOnBluePlusOrange(_ report: inout CheckReport) {
@@ -2536,6 +2620,7 @@ nonisolated enum ColorSystemSelfCheck {
     /// fixed dark, Artistic night = fixed light.
     private static func checkMiniPlayerDayProfileSwitchesToDarkForeground(_ report: inout CheckReport) {
         guard let brightAnalysis = analyse(side: 32, fill: (245, 196, 120, 255)),
+              let borderlineBrightAnalysis = analyse(side: 32, fill: (176, 154, 154, 255)),
               let darkAnalysis = analyse(side: 32, fill: (18, 24, 42, 255)) else {
             report.record("Phase 6.5: MiniPlayer foreground strategy", false, "analysis nil")
             return
@@ -2543,6 +2628,11 @@ nonisolated enum ColorSystemSelfCheck {
         let fallbackAccent = NSColor(deviceRed: 0.30, green: 0.48, blue: 0.95, alpha: 1)
         let brightPalette = foregroundStrategyPalette(
             analysis: brightAnalysis,
+            scheme: .light,
+            fallbackAccent: fallbackAccent
+        )
+        let borderlineBrightPalette = foregroundStrategyPalette(
+            analysis: borderlineBrightAnalysis,
             scheme: .light,
             fallbackAccent: fallbackAccent
         )
@@ -2583,6 +2673,14 @@ nonisolated enum ColorSystemSelfCheck {
             materialStyle: .clear,
             fullscreenArtBackgroundEnabled: false
         )
+        let coverBorderlineBright = FullscreenMiniPlayerForegroundStrategy.resolve(
+            palette: borderlineBrightPalette,
+            hasArtworkThemeColor: true,
+            skinID: "fullscreen.coverGradientBlur",
+            colorScheme: .light,
+            materialStyle: .clear,
+            fullscreenArtBackgroundEnabled: false
+        )
         let coverDark = FullscreenMiniPlayerForegroundStrategy.resolve(
             palette: darkPalette,
             hasArtworkThemeColor: true,
@@ -2595,6 +2693,7 @@ nonisolated enum ColorSystemSelfCheck {
         let artisticNightL = OKColor.nsColorToOKLCH(artisticNight.primary)?.l ?? 0
         let appleL = OKColor.nsColorToOKLCH(apple.primary)?.l ?? 0
         let coverBrightL = OKColor.nsColorToOKLCH(coverBright.primary)?.l ?? 1
+        let coverBorderlineBrightL = OKColor.nsColorToOKLCH(coverBorderlineBright.primary)?.l ?? 1
         let coverDarkL = OKColor.nsColorToOKLCH(coverDark.primary)?.l ?? 0
         let ok = artisticDay.role == .artisticDayDarkForeground
             && artisticDayL < 0.55
@@ -2605,11 +2704,17 @@ nonisolated enum ColorSystemSelfCheck {
             && appleL > 0.80
             && coverBright.role == .coverBlurDarkForeground
             && coverBrightL < 0.55
+            && borderlineBrightAnalysis.usesDarkForeground
+            && coverBorderlineBright.role == .coverBlurDarkForeground
+            && !coverBorderlineBright.useScreenBlend
+            && !coverBorderlineBright.enforceBrightProgressForeground
+            && coverBorderlineBright.spectrumUsesDarkForeground
+            && coverBorderlineBrightL < 0.55
             && coverDark.role == .coverBlurLightForeground
             && coverDarkL > 0.80
         report.record(
             "Phase 6.5: MiniPlayer foreground strategy", ok,
-            "artDay=\(artisticDay.role.rawValue)/L\(format(artisticDayL)) artNight=\(artisticNight.role.rawValue)/L\(format(artisticNightL)) apple=\(apple.role.rawValue)/L\(format(appleL)) coverBright=\(coverBright.role.rawValue)/L\(format(coverBrightL)) coverDark=\(coverDark.role.rawValue)/L\(format(coverDarkL))"
+            "artDay=\(artisticDay.role.rawValue)/L\(format(artisticDayL)) artNight=\(artisticNight.role.rawValue)/L\(format(artisticNightL)) apple=\(apple.role.rawValue)/L\(format(appleL)) coverBright=\(coverBright.role.rawValue)/L\(format(coverBrightL)) coverBorderline=\(coverBorderlineBright.role.rawValue)/L\(format(coverBorderlineBrightL))/screen=\(coverBorderlineBright.useScreenBlend) coverDark=\(coverDark.role.rawValue)/L\(format(coverDarkL))"
         )
     }
 
@@ -2817,6 +2922,11 @@ nonisolated enum ColorSystemSelfCheck {
             + "avgHslL=\(format(a.avgHslLightness)) luma=\(format(a.weightedLuma)) "
             + "avgSat=\(format(a.avgSaturation)) colorfulness=\(format(a.colorfulness)) "
             + "domBri=\(format(a.dominantBrightness))"
+    }
+
+    private static func describeLCH(_ value: OKColor.OKLCH?) -> String {
+        guard let value else { return "nil" }
+        return "L\(format(value.l))/C\(format(value.c))/H\(format(value.h))"
     }
 
     private static func format(_ value: CGFloat) -> String {
