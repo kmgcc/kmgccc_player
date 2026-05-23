@@ -195,7 +195,7 @@ struct BKArtBackgroundView: View {
                 )
             {
                 extracted = (snapshot.palette, snapshot.richPalette)
-                analysis = nil
+                analysis = snapshot.analysis
             } else {
                 let resolvedAnalysis = await Task.detached(priority: .userInitiated) {
                     ArtworkColorExtractor.analyze(from: data)
@@ -236,7 +236,7 @@ struct BKArtBackgroundView: View {
             ?? seededPalette.first
             ?? Self.fallbackPalette.first
         controller.setPrimaryBackgroundColor(primaryBackgroundColor, for: trackID)
-        controller.setUltraDarkActive(isUltraDarkPalette(harmonized), for: trackID)
+        controller.setUltraDarkActive(colorScheme == .dark && isUltraDarkPalette(harmonized), for: trackID)
     }
 
     private func applyResolvedPalette(
@@ -277,7 +277,7 @@ struct BKArtBackgroundView: View {
             ?? Self.fallbackPalette.first
         controller.setPrimaryBackgroundColor(primaryBackgroundColor, for: trackID)
         controller.setUltraDarkActive(
-            isUltraDarkPalette(harmonized, analysis: analysis),
+            colorScheme == .dark && isUltraDarkPalette(harmonized, analysis: analysis),
             for: trackID
         )
         controller.markLyricsColorSampleReady(for: trackID)

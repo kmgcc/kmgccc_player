@@ -21,6 +21,7 @@ struct ExpandableVolumeControl: View {
     var materialStyle: LiquidGlassPillMaterialStyle = .clear
     var isEnabled: Bool = true
     var usesAdaptiveForeground: Bool = false
+    var forceDarkForegroundProfile: Bool = false
     var usesInternalHoverExpansion: Bool = true
     
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -145,6 +146,9 @@ struct ExpandableVolumeControl: View {
 
     private var controlPrimaryNSColor: NSColor {
         let palette = themeStore.semanticPalette
+        if forceDarkForegroundProfile {
+            return palette.readabilityProfile.foregroundPrimary
+        }
         if usesAdaptiveForeground,
            materialStyle == .clear,
            themeStore.hasArtworkThemeColor,
@@ -157,6 +161,9 @@ struct ExpandableVolumeControl: View {
     }
 
     private var controlBlendMode: BlendMode {
+        if forceDarkForegroundProfile {
+            return .normal
+        }
         if usesAdaptiveForeground,
            materialStyle == .clear,
            themeStore.hasArtworkThemeColor,

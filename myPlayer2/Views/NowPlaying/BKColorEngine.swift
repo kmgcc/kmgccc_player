@@ -1168,7 +1168,7 @@ extension BKColorEngine {
         if isDark {
             return clamp(0.18 + 0.70 * coverLuma, min: 0.10, max: 0.62)
         }
-        return clamp(0.55 + 0.55 * coverLuma, min: 0.65, max: 0.90)
+        return clamp(0.88 + 0.16 * coverLuma, min: 0.90, max: 0.985)
     }
 
     fileprivate nonisolated static func lumaBlendK(coverKind: CoverKind) -> CGFloat {
@@ -1236,12 +1236,12 @@ extension BKColorEngine {
             // design, not a shallow copy of the night palette. Backgrounds,
             // BK variants, shapes, and moving circles all live in a high-B
             // band that can support dark lyric/UI foregrounds.
-            bgB = 0.94...0.985
-            fgB = 0.88...0.96
-            dotB = 0.78...0.90
-            bgS = 0.08...0.24
-            fgS = 0.22...0.46
-            dotS = 0.16...0.40
+            bgB = 0.975...0.995
+            fgB = 0.930...0.985
+            dotB = 0.860...0.950
+            bgS = 0.07...0.22
+            fgS = 0.18...0.42
+            dotS = 0.14...0.36
         }
 
         if complexity == .monochrome {
@@ -1519,12 +1519,12 @@ extension BKColorEngine {
             )
         }
         return TierRanges(
-            bgB: 0.80...0.85,
-            fgB: 0.68...0.78,
-            dotB: 0.52...0.62,
-            bgS: 0.01...0.04,
-            fgS: 0.04...0.12,
-            dotS: 0.05...0.14
+            bgB: 0.940...0.980,
+            fgB: 0.860...0.940,
+            dotB: 0.780...0.880,
+            bgS: 0.008...0.030,
+            fgS: 0.030...0.090,
+            dotS: 0.035...0.105
         )
     }
 
@@ -1634,7 +1634,7 @@ extension BKColorEngine {
         let remapped = lerp(tierMid, lumaTarget, t: lumaK)
         var bMid = clamp(remapped, min: tier.bgB.lowerBound, max: tier.bgB.upperBound)
         if !isDark {
-            bMid = min(0.85, bMid)
+            bMid = min(tier.bgB.upperBound, bMid)
         }
         let sMid = midpoint(tier.bgS)
         let bOffsets: [CGFloat] = isDark ? [-0.04, -0.01, 0.03] : [-0.02, 0.00, 0.03]

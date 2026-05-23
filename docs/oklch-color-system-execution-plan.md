@@ -223,6 +223,22 @@ Phase 4.5 应包含：
 
 退出状态：Debug build 通过；`COLOR_SYSTEM_SELF_CHECK=1` 运行 `ALL PASS`。AMLL highlighter transition / feather 本轮不实现，保留 backlog；未进入 Phase 7。
 
+### Phase 6.4 — 艺术背景颜色架构稳定化
+
+人工验收 Phase 6.3 仍未通过后，Phase 6.4 不再继续零散调 token，而是收敛颜色状态链路：
+
+- [x] **日间艺术背景独立 light profile**：`BKColorEngine` light tier 升到 high-B airy band（bg / BK / shapes / circle 都高明度），并移除 light path 的低明度硬上限。日间艺术背景是深色歌词与深色 UI 的亮底，不再复用夜间逻辑的浅版。
+- [x] **日间艺术背景禁用 UltraDark**：UltraDark 只在 `colorScheme == .dark` 下传入艺术背景、歌词、BK skin token 与 fullscreen theme。light + artistic background 下不再压暗背景、floating shapes、moving circle、BK1/BK2 或歌词。
+- [x] **日间歌词 deep but alive**：light artistic lyrics 的 active / inactive / translation 全部提亮；active 仍比 inactive 更深，translation 与 inactive 同层，所有 L 仍低于 day background。
+- [x] **Fullscreen MiniPlayer fixed dark profile 全链路统一**：退出全屏按钮、标题/歌手、播放控制、播放顺序块、progress/time、volume 都在 light + artistic background 下统一读 `readabilityProfile.foregroundPrimary`，blend mode normal。hover / expanded 不再走 cover-driven 或 bright-enforced 分支。
+- [x] **切歌 pending 不发布 default / neutral**：ThemeStore 保留上一首 palette；FullscreenPlayerView 不再在 `paletteMatches == false` 时返回 `.neutralFallback`，而是优先 snapshot analysis，未 ready 时 hold 当前 artistic lyrics theme，等新 palette ready 后再切换。
+- [x] **Artwork snapshot 持有完整 analysis**：`ArtworkAssetSnapshot.analysis` 让 cache-hit 路径保留 displayPalette / salient / trusted hue / nearMono / UltraDark 信息，避免有色封面在缓存或 pending 阶段被 neutralFallback 吞掉。
+- [x] **nearMono 方向保持**：true nearMono 下 shapes 保持极淡、克制、适配黑白的低彩方向；不回退死灰，也不允许 fallback pink。
+- [x] **AMLL glow contract 保持**：Phase 6.3 的日间 dark emphasis glow 不回退；本轮不改 `index.html`、不改 generated AMLL bundle。
+- [x] **SelfCheck / Debug**：新增 Phase 6.4 自检覆盖 light artistic ignores UltraDark 与 airy day background band；pending hold 路径有 debug log 可手测切歌不闪 default。
+
+退出状态：Debug build 通过；`COLOR_SYSTEM_SELF_CHECK=1` 运行 `ALL PASS`。高亮 feather / active-inactive 过渡继续保留 backlog；未进入 Phase 7。
+
 ### Phase 7 — 清理旧 HSL 分叉、文档收尾、回归验证
 
 - 删除 HSL 分叉路径；保留 `ColorMath` 但只剩 OKLCH。

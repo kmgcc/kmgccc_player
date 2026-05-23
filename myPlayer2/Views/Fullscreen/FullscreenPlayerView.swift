@@ -1200,7 +1200,8 @@ struct FullscreenPlayerView: View {
                 volume: volumeBinding,
                 isExpanded: $isVolumeExpanded,
                 isEnabled: playbackCoordinator.presentation.isVolumeControlEnabled,
-                usesAdaptiveForeground: isCoverBlurFullscreenSkin
+                usesAdaptiveForeground: isCoverBlurFullscreenSkin,
+                forceDarkForegroundProfile: usesDarkControlForegroundForLightArtisticBackground
             )
             .frame(width: volumeWidth, height: buttonSize)
             .environment(\.colorScheme, fullscreenControlsColorScheme)
@@ -1754,6 +1755,7 @@ struct FullscreenPlayerView: View {
                         materialStyle: fullscreenControlsGlassStyle.materialStyle,
                         isEnabled: playbackCoordinator.presentation.isVolumeControlEnabled,
                         usesAdaptiveForeground: isCoverBlurFullscreenSkin,
+                        forceDarkForegroundProfile: usesDarkControlForegroundForLightArtisticBackground,
                         usesInternalHoverExpansion: false
                     )
                     .glassEffectTransition(.materialize)
@@ -2833,6 +2835,16 @@ struct FullscreenPlayerView: View {
             }
             return nil
         }()
+        if shouldHoldFullscreenArtisticThemeWhilePalettePending(
+            forTrackID: displayTrackID,
+            activeCoverBlurTheme: activeCoverBlurTheme
+        ) {
+            Log.debug(
+                "[OKLCH] hold fullscreen artistic lyrics palette pending reason=\(reason) track=\(displayTrackID?.uuidString.prefix(8) ?? "nil")",
+                category: .theme
+            )
+            return
+        }
         let colorSet = activeCoverBlurTheme?.colors
             ?? makeFullscreenLyricsColorSet(forTrackID: displayTrackID)
 
@@ -3367,7 +3379,8 @@ struct FullscreenPlayerView: View {
             artworkPalette: artworkSnapshot?.palette ?? [],
             artworkRichPalette: artworkSnapshot?.richPalette ?? [],
             artworkAverageColor: artworkSnapshot?.averageColor,
-            artBackgroundIsUltraDark: settings.fullscreenArtBackgroundEnabled
+            artBackgroundIsUltraDark: colorScheme == .dark
+                && settings.fullscreenArtBackgroundEnabled
                 && bkController.isUltraDarkActive,
             kickToBrightnessMix: AppSettings.shared.bgKickToBrightnessMix,
             kickDisplaceAmount: AppSettings.shared.bgKickDisplaceAmount,
@@ -3490,9 +3503,33 @@ struct FullscreenPlayerView: View {
             scheme: colorScheme,
             highlightBaseColor: resolveFullscreenLyricsBaseColor(forTrackID: trackID),
             inactiveBaseColor: resolveFullscreenLyricsInactiveBaseColor(forTrackID: trackID),
-            isUltraDark: lockedFullscreenLyricsUltraDark,
+            isUltraDark: colorScheme == .dark && lockedFullscreenLyricsUltraDark,
             usesArtisticBackground: settings.fullscreenArtBackgroundEnabled
         )
+    }
+
+    private func shouldHoldFullscreenArtisticThemeWhilePalettePending(
+        forTrackID trackID: UUID?,
+        activeCoverBlurTheme: FullscreenCoverBlurLyricsTheme?
+    ) -> Bool {
+        guard settings.fullscreenArtBackgroundEnabled,
+              activeCoverBlurTheme == nil,
+              currentDisplayContext.hasTrack,
+              ArtworkAssetStore.checksum(for: currentDisplayContext.artworkData) != 0
+        else {
+            return false
+        }
+
+        if themeStorePaletteMatchesCurrentArtwork(forTrackID: trackID) {
+            return false
+        }
+
+        if let snapshot = currentArtworkSnapshot(forTrackID: trackID) ?? currentArtworkSnapshotForDisplay(),
+           snapshot.analysis != nil {
+            return false
+        }
+
+        return true
     }
 
     private func makeCoverBlurLyricsColorSet(
@@ -3629,7 +3666,11 @@ struct FullscreenPlayerView: View {
         if themeStorePaletteMatchesCurrentArtwork(forTrackID: trackID) {
             return themeStore.semanticPalette.analysis
         }
-        return .neutralFallback
+        if let snapshot = currentArtworkSnapshot(forTrackID: trackID) ?? currentArtworkSnapshotForDisplay(),
+           let analysis = snapshot.analysis {
+            return analysis
+        }
+        return themeStore.semanticPalette.analysis
     }
 
     private func themeStorePaletteMatchesCurrentArtwork(forTrackID trackID: UUID?) -> Bool {

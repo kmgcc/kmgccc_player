@@ -197,6 +197,8 @@ nonisolated enum ColorSystemSelfCheck {
         checkDayTranslationCloseToInactive(&report)
         checkDayEmphasisGlowUsesDarkSource(&report)
         checkMiniPlayerDayProfileSwitchesToDarkForeground(&report)
+        checkPhase64LightArtisticIgnoresUltraDark(&report)
+        checkPhase64DayArtBackgroundAiryBand(&report)
 
         report.lines.append(
             "Result: \(report.allPassed ? "ALL PASS" : "FAILURES PRESENT")"
@@ -2045,9 +2047,9 @@ nonisolated enum ColorSystemSelfCheck {
         // Night UltraDark.
         let nightUltraDarkDotB: ClosedRange<CGFloat> = 0.22...0.38
         // Day (light, normal).
-        let dayBgB: ClosedRange<CGFloat> = 0.94...0.985
-        let dayFgB: ClosedRange<CGFloat> = 0.88...0.96
-        let dayDotB: ClosedRange<CGFloat> = 0.78...0.90
+        let dayBgB: ClosedRange<CGFloat> = 0.975...0.995
+        let dayFgB: ClosedRange<CGFloat> = 0.930...0.985
+        let dayDotB: ClosedRange<CGFloat> = 0.860...0.950
     }
 
     /// 95% near-black + 5% bright yellow. The canonical Phase 6.3 focus-score
@@ -2427,13 +2429,16 @@ nonisolated enum ColorSystemSelfCheck {
         )
     }
 
-    /// Phase 6.3 day active L 0.255. Alive, not death-black.
+    /// Phase 6.4 day active L is lifted again. It remains the deepest
+    /// lyric tier, but is no longer a dead-black anchor on the airy light
+    /// background.
     private static func checkDayLyricsAliveNotDeathBlack(_ report: inout CheckReport) {
         let activeL = ColorSystemTokens.ToneLadder.lyricsLightMainActiveL
-        let ok = activeL >= 0.180
+        let inactiveL = ColorSystemTokens.ToneLadder.lyricsLightMainInactiveL
+        let ok = activeL >= 0.290 && activeL < inactiveL
         report.record(
-            "Phase 6.3: day active L >= 0.180 (alive, not death-black)", ok,
-            "activeL=\(format(activeL))"
+            "Phase 6.4: day active L lifted (alive, not death-black)", ok,
+            "activeL=\(format(activeL)) inactiveL=\(format(inactiveL))"
         )
     }
 
@@ -2527,6 +2532,50 @@ nonisolated enum ColorSystemSelfCheck {
         report.record(
             "Phase 6.3: MiniPlayer day profile swaps to dark foreground", ok,
             "usesDarkFg=\(usesDarkFg) readabilityL=\(format(readableL))"
+        )
+    }
+
+    /// Phase 6.4 architecture rule: UltraDark is a night-only modifier for
+    /// artistic fullscreen lyrics. Light mode must be invariant even when the
+    /// same analysis reports `isUltraDark`.
+    private static func checkPhase64LightArtisticIgnoresUltraDark(_ report: inout CheckReport) {
+        guard let analysis = analyse(side: 32, fill: (5, 10, 28, 255)) else {
+            report.record("Phase 6.4: light artistic ignores UltraDark", false, "analysis nil")
+            return
+        }
+        let normal = SemanticPaletteSelfCheck.fullscreenLyricsColorSet(
+            analysis: analysis,
+            scheme: .light,
+            highlightBaseColor: analysis.bestTextSourceColor,
+            inactiveBaseColor: analysis.bestTextSourceColor,
+            isUltraDark: false,
+            usesArtisticBackground: true
+        )
+        let ultra = SemanticPaletteSelfCheck.fullscreenLyricsColorSet(
+            analysis: analysis,
+            scheme: .light,
+            highlightBaseColor: analysis.bestTextSourceColor,
+            inactiveBaseColor: analysis.bestTextSourceColor,
+            isUltraDark: true,
+            usesArtisticBackground: true
+        )
+        let normalL = OKColor.nsColorToOKLCH(normal.mainInactive)?.l ?? -1
+        let ultraL = OKColor.nsColorToOKLCH(ultra.mainInactive)?.l ?? -2
+        let ok = analysis.isUltraDark && abs(normalL - ultraL) <= 0.002
+        report.record(
+            "Phase 6.4: light artistic ignores UltraDark", ok,
+            "analysisUltraDark=\(analysis.isUltraDark) normalInactiveL=\(format(normalL)) ultraInactiveL=\(format(ultraL))"
+        )
+    }
+
+    private static func checkPhase64DayArtBackgroundAiryBand(_ report: inout CheckReport) {
+        let fixture = Phase63TierFixture()
+        let ok = fixture.dayBgB.lowerBound >= 0.970
+            && fixture.dayFgB.lowerBound >= 0.920
+            && fixture.dayDotB.lowerBound >= 0.840
+        report.record(
+            "Phase 6.4: day art background uses airy high-B bands", ok,
+            "bg=\(format(fixture.dayBgB.lowerBound))...\(format(fixture.dayBgB.upperBound)) fg=\(format(fixture.dayFgB.lowerBound))...\(format(fixture.dayFgB.upperBound)) dot=\(format(fixture.dayDotB.lowerBound))...\(format(fixture.dayDotB.upperBound))"
         )
     }
 

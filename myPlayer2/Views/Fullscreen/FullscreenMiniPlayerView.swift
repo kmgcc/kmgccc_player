@@ -222,7 +222,7 @@ struct FullscreenMiniPlayerView: View {
                     selectedColor: controlPrimaryColor,
                     unselectedColor: controlPrimaryColor.opacity(0.62),
                     useScreenBlend: usesScreenBlendForControls,
-                    pillTintColor: themeStore.accentColor,
+                    pillTintColor: fullscreenControlPillTintColor,
                     pillTintBlendMode: .normal,
                     onInteraction: onInteraction,
                     scale: scale,
@@ -241,7 +241,7 @@ struct FullscreenMiniPlayerView: View {
                     selectedColor: controlPrimaryColor,
                     unselectedColor: controlPrimaryColor.opacity(0.62),
                     useScreenBlend: usesScreenBlendForControls,
-                    pillTintColor: themeStore.accentColor,
+                    pillTintColor: fullscreenControlPillTintColor,
                     pillTintBlendMode: .normal,
                     onInteraction: onInteraction,
                     scale: scale,
@@ -277,7 +277,8 @@ struct FullscreenMiniPlayerView: View {
             isPlaying: playbackCoordinator.presentation.isPlaying,
             accentColor: themeStore.usesFallbackThemeColor ? nil : themeStore.accentColor,
             foregroundColor: controlPrimaryColor,
-            enforceBrightForeground: !usesAdaptiveClearForeground,
+            enforceBrightForeground: !usesAdaptiveClearForeground
+                && !usesDarkControlForegroundForLightArtisticBackground,
             spectrumArtworkColors: spectrumArtworkColors,
             spectrumUsesDarkForeground: usesDarkArtworkForegroundForClear,
             progress: progressDisplayTime,
@@ -421,6 +422,10 @@ struct FullscreenMiniPlayerView: View {
         controlPrimaryColor.opacity(0.45)
     }
 
+    private var fullscreenControlPillTintColor: Color? {
+        usesDarkControlForegroundForLightArtisticBackground ? controlPrimaryColor : themeStore.accentColor
+    }
+
     private var controlPrimaryNSColor: NSColor {
         let palette = themeStore.semanticPalette
         if usesDarkArtworkForegroundForClear {
@@ -481,7 +486,11 @@ struct FullscreenMiniPlayerView: View {
     }
 
     private var usesScreenBlendForControls: Bool {
-        !usesDarkArtworkForegroundForClear || ColorMath.relativeLuminance(of: controlPrimaryNSColor) >= 0.58
+        if usesDarkControlForegroundForLightArtisticBackground {
+            return false
+        }
+        return !usesDarkArtworkForegroundForClear
+            || ColorMath.relativeLuminance(of: controlPrimaryNSColor) >= 0.58
     }
 
     private var spectrumArtworkColors: [NSColor] {

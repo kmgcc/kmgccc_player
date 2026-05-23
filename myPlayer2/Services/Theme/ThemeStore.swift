@@ -271,7 +271,12 @@ final class ThemeStore: ObservableObject {
         } else {
             extractedColor = await extractDominantColor(from: data)
         }
-        let extractedAnalysis = await extractAnalysis(from: data)
+        let extractedAnalysis: ArtworkColorAnalysis?
+        if let snapshotAnalysis = artworkSnapshot?.analysis {
+            extractedAnalysis = snapshotAnalysis
+        } else {
+            extractedAnalysis = await extractAnalysis(from: data)
+        }
 
         guard isCurrentExtraction(
             token: token,

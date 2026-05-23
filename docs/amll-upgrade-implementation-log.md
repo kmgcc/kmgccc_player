@@ -1158,3 +1158,44 @@ Swift 下发字段名与 AMLL CSS 变量名不变；不修改 `amll-core.js` / `
 后续仍保留：
 
 - AMLL highlight transition / feather：继续 backlog；需要 fork core patch 才能让 word-level mask edge 参与 OKLCH mid-color，不在 Phase 6.3 实现。
+
+## 2026-05-23 Phase 6.4 — Artistic Color System Architecture Stabilization（Swift-owned, no AMLL adapter change）
+
+背景：Phase 6.3 后人工验收仍发现日间艺术背景偏暗、日间 MiniPlayer UI 有些元素仍会变白、hover / expanded 状态会临时切到正确深色又回退、切歌时歌词和背景会短暂掉到 default/neutral、nearMono 在 cache-hit / pending 场景仍误伤有色封面。
+
+AMLL 边界：
+
+- 不进入 Phase 7。
+- 不处理 active/inactive feather transition。
+- 不修改 fork core。
+- 不手改 generated `amll-core.js` / `amll-lyric.js`。
+- 不修改 `Resources/AMLL/index.html` / `bridge.js`。
+- Phase 6.3 的 `fullscreenEmphasisGlowColor` dark glow contract 保持不变；Web 仍只消费 Swift 下发色值。
+
+处理：
+
+- Swift day artistic background：
+  - `BKColorEngine` light tier 提升到 high-B airy profile，移除 light path 的低明度硬 cap；
+  - light + artistic background 下不再使用 UltraDark 压暗背景、shapes、circle、BK variants。
+- Swift lyrics:
+  - light artistic lyrics active / inactive / translation 提亮但保持深色体系；
+  - UltraDark 只在 dark scheme 下进入 `artisticFullscreenLyricsColorSet`。
+- Fullscreen controls:
+  - `FullscreenMiniPlayerView` 的 progress/time row 不再在 light artistic 下 `enforceBrightForeground`；
+  - playback mode pill tint 使用 semantic dark foreground；
+  - `ExpandableVolumeControl` 增加 `forceDarkForegroundProfile`，expanded / hover 状态与常态使用同一 dark foreground profile；
+  - bottom controls 统一从 `readabilityProfile.foregroundPrimary` 取色，blend mode normal。
+- Pending / cache state:
+  - `ArtworkAssetSnapshot` 增加 `analysis`，`ArtworkAssetStore.snapshotMetadata` 在 snapshot 中保留 `ArtworkColorAnalysis`；
+  - ThemeStore cache-hit path 优先复用 snapshot analysis；
+  - `FullscreenPlayerView.resolveLyricsAnalysis` 不再在 palette mismatch 时返回 `.neutralFallback`，改用 snapshot analysis 或上一首 semantic palette；
+  - fullscreen artistic lyrics theme injection 在新 snapshot analysis 尚未 ready 时 hold，避免把 neutral/default 色推给 AMLL WebView。
+
+验证：
+
+- `COLOR_SYSTEM_SELF_CHECK=1`：ALL PASS。新增 Phase 6.4 gate 覆盖 light artistic ignores UltraDark 与 day art background airy high-B band。
+- `xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player -configuration Debug -destination 'platform=macOS' build`：PASS。
+
+后续仍保留：
+
+- AMLL highlight transition / feather：继续 backlog；需要 fork core patch 才能让 word-level mask edge 参与 OKLCH mid-color，不在 Phase 6.4 实现。
