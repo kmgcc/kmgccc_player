@@ -14,7 +14,14 @@ final class UpdateChecker: ObservableObject {
     static let shared = UpdateChecker()
     
     /// Remote version JSON URL
-    private let versionURL = URL(string: "https://kmgcc.github.io/kmgccc_player/version.json")!
+    private let primaryVersionURL = UpdateChecker.url(
+        fromEnvironment: "KMGCCC_UPDATE_PRIMARY_URL",
+        fallback: "https://player.kmgccc.cn/api/v1/updates/latest"
+    )
+    private let fallbackVersionURL = UpdateChecker.url(
+        fromEnvironment: "KMGCCC_UPDATE_FALLBACK_URL",
+        fallback: "https://kmgcc.github.io/kmgccc_player/version.json"
+    )
     
     /// Current app version (from bundle)
     var localVersion: String {
@@ -30,9 +37,22 @@ final class UpdateChecker: ObservableObject {
     /// Whether a check is in progress
     @Published private(set) var isChecking = false
     
-    private var cancellable: AnyCancellable?
+    private let session: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 4
+        configuration.timeoutIntervalForResource = 6
+        return URLSession(configuration: configuration)
+    }()
     
     private init() {}
+
+    private static func url(fromEnvironment key: String, fallback: String) -> URL {
+        if let rawValue = ProcessInfo.processInfo.environment[key],
+           let url = URL(string: rawValue) {
+            return url
+        }
+        return URL(string: fallback)!
+    }
     
     /// Check for updates from remote
     func checkForUpdates() async {
@@ -41,20 +61,7 @@ final class UpdateChecker: ObservableObject {
         remoteInfo = nil
         
         do {
-            // Add timestamp to bypass GitHub Pages cache
-            let timestamp = Int(Date().timeIntervalSince1970)
-            let urlWithCache = versionURL.appending(queryItems: [
-                URLQueryItem(name: "t", value: String(timestamp))
-            ])
-            
-            let (data, response) = try await URLSession.shared.data(from: urlWithCache)
-            
-            guard let httpResponse = response as? HTTPURLResponse,
-                  httpResponse.statusCode == 200 else {
-                throw UpdateError.invalidResponse
-            }
-            
-            let decodeResult = try RemoteVersionInfo.decodeResult(from: data)
+            let decodeResult = try await fetchVersionInfo()
             let info = decodeResult.info
             self.remoteInfo = info
             
@@ -86,6 +93,49 @@ final class UpdateChecker: ObservableObject {
         }
         
         isChecking = false
+    }
+
+    private func fetchVersionInfo() async throws -> RemoteVersionInfoDecodeResult {
+        do {
+            let result = try await fetchVersionInfo(from: primaryVersionURL, cacheBust: false)
+            print("[UpdateChecker] ✅ Primary update endpoint succeeded")
+            return result
+        } catch {
+            print("[UpdateChecker] ⚠️ Primary update endpoint failed, falling back to GitHub Pages: \(error)")
+            do {
+                let result = try await fetchVersionInfo(from: fallbackVersionURL, cacheBust: true)
+                print("[UpdateChecker] ✅ GitHub Pages fallback succeeded")
+                return result
+            } catch {
+                print("[UpdateChecker] ❌ GitHub Pages fallback failed: \(error)")
+                throw error
+            }
+        }
+    }
+
+    private func fetchVersionInfo(from url: URL, cacheBust: Bool) async throws -> RemoteVersionInfoDecodeResult {
+        let requestURL: URL
+        if cacheBust {
+            let timestamp = Int(Date().timeIntervalSince1970)
+            requestURL = url.appending(queryItems: [
+                URLQueryItem(name: "t", value: String(timestamp))
+            ])
+        } else {
+            requestURL = url
+        }
+
+        var request = URLRequest(url: requestURL)
+        request.timeoutInterval = cacheBust ? 6 : 4
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+
+        let (data, response) = try await session.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse,
+              httpResponse.statusCode == 200 else {
+            throw UpdateError.invalidResponse
+        }
+
+        return try RemoteVersionInfo.decodeResult(from: data)
     }
     
     /// Check if update should be shown based on version comparison

@@ -404,7 +404,8 @@ private struct PlaybackThemeArtworkWatcher: View {
             ?? presentation.lyricsIdentity
             ?? presentation.localTrack?.id.uuidString
             ?? "none"
-        return "\(presentation.source.rawValue)|track:\(presentation.hasTrack)|art:\(identity)"
+        let checksum = ArtworkAssetStore.checksum(for: presentation.artworkData)
+        return "\(presentation.source.rawValue)|track:\(presentation.hasTrack)|art:\(identity)|loading:\(presentation.isArtworkLoading)|checksum:\(checksum)"
     }
 }
 
@@ -479,7 +480,8 @@ struct AppKitMainWindowArtBackgroundLayer: View {
                     resourceProfile: settings.selectedNowPlayingSkinID == "kmgccc.cassette"
                         ? .cassetteForeground
                         : .standard,
-                    initialPalette: [themeStore.accentNSColor]
+                    initialPalette: [themeStore.accentNSColor],
+                    holdPaletteWhenArtworkMissing: playbackCoordinator.presentation.isArtworkLoading
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .ignoresSafeArea(.container, edges: .all)

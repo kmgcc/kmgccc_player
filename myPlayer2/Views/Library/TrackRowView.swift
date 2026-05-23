@@ -38,6 +38,11 @@ struct TrackRowView<MenuContent: View>: View {
     let enableArtworkLoading: Bool
     let onTap: (_ isShiftPressed: Bool) -> Void
     let onRowAppear: (() -> Void)?
+    /// Optional palette override from parent. Defaults to system colors so
+    /// callers that have no ThemeStore access still work correctly.
+    var rowPrimaryColor: Color = ColorTokens.textPrimary
+    var rowSecondaryColor: Color = ColorTokens.textSecondary
+    var rowTertiaryColor: Color = ColorTokens.textTertiary
     @ViewBuilder let menuContent: () -> MenuContent
 
     @State private var isHovering = false
@@ -57,6 +62,9 @@ struct TrackRowView<MenuContent: View>: View {
         enableArtworkLoading: Bool = true,
         onTap: @escaping (_ isShiftPressed: Bool) -> Void,
         onRowAppear: (() -> Void)? = nil,
+        rowPrimaryColor: Color = ColorTokens.textPrimary,
+        rowSecondaryColor: Color = ColorTokens.textSecondary,
+        rowTertiaryColor: Color = ColorTokens.textTertiary,
         @ViewBuilder menuContent: @escaping () -> MenuContent
     ) {
         self.model = model
@@ -66,6 +74,9 @@ struct TrackRowView<MenuContent: View>: View {
         self.enableArtworkLoading = enableArtworkLoading
         self.onTap = onTap
         self.onRowAppear = onRowAppear
+        self.rowPrimaryColor = rowPrimaryColor
+        self.rowSecondaryColor = rowSecondaryColor
+        self.rowTertiaryColor = rowTertiaryColor
         self.menuContent = menuContent
     }
 
@@ -123,7 +134,7 @@ struct TrackRowView<MenuContent: View>: View {
 
             Text(model.durationText)
                 .font(.caption)
-                .foregroundStyle(ColorTokens.textTertiary)
+                .foregroundStyle(rowTertiaryColor)
                 .monospacedDigit()
                 .frame(width: 42, alignment: .trailing)
 
@@ -186,12 +197,12 @@ struct TrackRowView<MenuContent: View>: View {
 
     private var textPrimaryColor: Color {
         if model.isMissing { return .secondary }
-        return isPlaying ? Color.accentColor : ColorTokens.textPrimary
+        return isPlaying ? Color.accentColor : rowPrimaryColor
     }
 
     private var textSecondaryColor: Color {
         if model.isMissing { return Color.gray.opacity(0.6) }
-        return ColorTokens.textSecondary
+        return rowSecondaryColor
     }
 
     private var backgroundFill: Color {
@@ -305,6 +316,9 @@ extension TrackRowView: Equatable where MenuContent: View {
             && lhs.isSelected == rhs.isSelected
             && lhs.enableSecondaryInteractions == rhs.enableSecondaryInteractions
             && lhs.enableArtworkLoading == rhs.enableArtworkLoading
+            && lhs.rowPrimaryColor == rhs.rowPrimaryColor
+            && lhs.rowSecondaryColor == rhs.rowSecondaryColor
+            && lhs.rowTertiaryColor == rhs.rowTertiaryColor
     }
 }
 

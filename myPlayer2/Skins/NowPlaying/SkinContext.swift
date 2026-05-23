@@ -63,6 +63,10 @@ struct SkinContext {
         let artworkRichPalette: [NSColor]
         let artworkAverageColor: NSColor?
         let artBackgroundIsUltraDark: Bool
+        /// Spectrum-specific prepared palette and foreground mode.
+        /// Reuses the exact same inputs as MiniPlayerSpectrumView.
+        let spectrumArtworkColors: [NSColor]
+        let spectrumUsesDarkForeground: Bool
         /// Background dynamics (transient overlays).
         let kickToBrightnessMix: Double
         let kickDisplaceAmount: Double

@@ -1,6 +1,5 @@
 //
 //  PlaybackCoordinator.swift
-//  myPlayer2
 //
 //  Source-aware playback command and presentation coordinator.
 //
@@ -24,6 +23,8 @@ final class PlaybackCoordinator {
     private var cachedLyricsTrackID: UUID?
     private var cachedLyricsText: String?
     private var lastSyncedPlayingState: Bool?
+    private var lastTelemetrySource: PlaybackSource?
+    private var lastTelemetryIsPlaying: Bool?
     private var sidecarHydrationTask: Task<Void, Never>?
     private var sidecarHydratingTrackID: UUID?
 
@@ -31,6 +32,7 @@ final class PlaybackCoordinator {
     private(set) var presentation: NowPlayingPresentation = .emptyLocal
 
     var onActiveSourceChanged: ((PlaybackSource) -> Void)?
+    var onTelemetryPlaybackStateChanged: ((PlaybackSource, Bool) -> Void)?
 
     init(
         playerVM: PlayerViewModel,
@@ -93,6 +95,7 @@ final class PlaybackCoordinator {
         lastSyncedPlayingState = nil
         UserDefaults.standard.set(source.rawValue, forKey: Keys.activeSource)
         onActiveSourceChanged?(source)
+        notifyTelemetryIfNeeded(source: source, isPlaying: isPlayingForTelemetry(source))
         refreshPresentation()
         NowPlayingService.shared.updateNowPlaying(force: true)
     }
@@ -328,6 +331,8 @@ final class PlaybackCoordinator {
             }
         }
 
+        notifyTelemetryIfNeeded(source: activeSource, isPlaying: newPresentation.isPlaying)
+
         guard !newPresentation.isEffectivelyEqual(to: presentation) else { return }
         presentation = newPresentation
     }
@@ -413,6 +418,22 @@ final class PlaybackCoordinator {
         }
     }
 
+    private func notifyTelemetryIfNeeded(source: PlaybackSource, isPlaying: Bool) {
+        guard lastTelemetrySource != source || lastTelemetryIsPlaying != isPlaying else { return }
+        lastTelemetrySource = source
+        lastTelemetryIsPlaying = isPlaying
+        onTelemetryPlaybackStateChanged?(source, isPlaying)
+    }
+
+    private func isPlayingForTelemetry(_ source: PlaybackSource) -> Bool {
+        switch source {
+        case .local:
+            return playerVM.isPlaying
+        case .appleMusic, .systemNowPlaying:
+            return externalProvider(for: source)?.presentation.isPlaying ?? false
+        }
+    }
+
     private func stopExternalProviders(except retainedSource: PlaybackSource? = nil) {
         for source in PlaybackSource.allCases where source.isExternal && source != retainedSource {
             externalProvider(for: source)?.stop()
@@ -441,6 +462,7 @@ final class PlaybackCoordinator {
 
         let lyricsText = preferredLyricsTextSnapshot(for: track)
         let artworkData = track.artworkData
+        let isArtworkLoading = track.artworkData?.isEmpty != false && track.resolvedArtworkURL() != nil
         scheduleSidecarHydrationIfNeeded(for: track)
         return NowPlayingPresentation(
             source: .local,
@@ -451,7 +473,7 @@ final class PlaybackCoordinator {
             artworkData: artworkData,
             artworkIdentity: "\(track.id.uuidString):\(ArtworkAssetStore.checksum(for: artworkData))",
             artworkDisplayTrackID: track.id,
-            isArtworkLoading: false,
+            isArtworkLoading: isArtworkLoading,
             duration: playerVM.duration,
             currentTime: playerVM.currentTime,
             isPlaying: playerVM.isPlaying,

@@ -17,6 +17,8 @@ struct HomeArtistsSection: View {
     var mode: HomeLayoutMode = .wide
     let centerLeftPad: CGFloat
     let centerRightPad: CGFloat
+    var titleColor: Color = Color.primary
+    var subtitleColor: Color = Color.secondary
 
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(UIStateViewModel.self) private var uiState
@@ -83,6 +85,7 @@ struct HomeArtistsSection: View {
                 HomeArtistCircle(
                     artist: artist,
                     mode: mode,
+                    titleColor: titleColor,
                     onOpen: { open(artist) },
                     onPlay: { play(artist) },
                     onEdit: { editingArtist = artist },
@@ -115,6 +118,7 @@ struct HomeArtistsSection: View {
             Text("艺人")
                 .font(.system(size: mode.sectionTitleFontSize, weight: .semibold))
                 .tracking(-0.3)
+                .foregroundStyle(titleColor)
             Spacer()
             viewAllButton
         }
@@ -133,7 +137,7 @@ struct HomeArtistsSection: View {
                     .font(.system(size: 10, weight: .semibold))
             }
             .font(.system(size: 12, weight: .medium))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(subtitleColor)
         }
         .buttonStyle(.plain)
     }
@@ -174,6 +178,7 @@ private struct HomeArtistDeletionRequest: Identifiable {
 private struct HomeArtistCircle: View {
     let artist: ArtistEntry
     let mode: HomeLayoutMode
+    var titleColor: Color = Color.primary
     let onOpen: () -> Void
     let onPlay: () -> Void
     let onEdit: () -> Void
@@ -223,6 +228,7 @@ private struct HomeArtistCircle: View {
                 Text(artist.displayName)
                     .font(.system(size: titleFontSize, weight: .semibold))
                     .lineLimit(1)
+                    .foregroundStyle(titleColor)
             }
         }
         .padding(.horizontal, 8)

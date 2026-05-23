@@ -50,8 +50,17 @@ final class ThemeStore: ObservableObject {
     @Published private(set) var paletteTrackID: UUID?
     @Published private(set) var paletteArtworkIdentity: String?
     @Published private(set) var paletteArtworkChecksum: UInt64 = 0
+    @Published private(set) var isArtworkThemePending: Bool = false
 
     let defaultBlue: Color
+
+    /// Phase 4.5 — convenience accessor for the tinted-neutral foreground
+    /// palette. Views that already have `@EnvironmentObject themeStore`
+    /// can read `themeStore.appForegroundPalette.primary` etc. without
+    /// deep-coupling to `semanticPalette`.
+    var appForegroundPalette: AppForegroundPalette {
+        semanticPalette.appForeground
+    }
 
     private let defaultBlueNS: NSColor
     private var rawDominantColor: NSColor
@@ -68,6 +77,9 @@ final class ThemeStore: ObservableObject {
     private var currentArtworkChecksum: UInt64 = 0
     private var lastProcessedChecksum: UInt64 = 0
     private var lastProcessedArtworkIdentity: String?
+    private var pendingArtworkIdentity: String?
+    private var pendingAssetTrackID: UUID?
+    private var pendingArtworkChecksum: UInt64 = 0
     private var averageColorCache: NSColor?
 
     private init() {
@@ -134,6 +146,19 @@ final class ThemeStore: ObservableObject {
             ?? presentation.lyricsIdentity
         let assetTrackID = presentation.artworkDisplayTrackID ?? presentation.localTrack?.id
 
+        if presentation.hasTrack,
+           presentation.isArtworkLoading,
+           presentation.artworkData?.isEmpty != false {
+            extractionToken = UUID()
+            holdCurrentThemeForPendingArtwork(
+                artworkIdentity: artworkIdentity,
+                assetTrackID: assetTrackID,
+                checksum: 0,
+                reason: "presentation_artwork_loading"
+            )
+            return
+        }
+
         await updateThemeFromArtworkData(
             presentation.artworkData,
             artworkIdentity: artworkIdentity,
@@ -180,7 +205,26 @@ final class ThemeStore: ObservableObject {
         }
 
         guard let data, data.isEmpty == false else {
+            if sourceChanged {
+                // Phase 6.6 — do not flash neutralFallback during a track transition.
+                // The previous track's theme is a better visual than a sudden reset.
+                // Hold it until real artwork data arrives, then extraction will
+                // replace it naturally. If the new track truly has no artwork,
+                // the neutral fallback will persist from the init default.
+                Log.debug(
+                    "No artwork data during source change, holding previous theme",
+                    category: .theme
+                )
+                holdCurrentThemeForPendingArtwork(
+                    artworkIdentity: artworkIdentity,
+                    assetTrackID: assetTrackID,
+                    checksum: 0,
+                    reason: "artwork_data_nil_source_changed"
+                )
+                return
+            }
             Log.debug("No artwork data, resetting to default", category: .theme)
+            clearPendingArtworkTheme()
             currentArtworkData = nil
             currentArtworkChecksum = 0
             lastProcessedChecksum = 0
@@ -207,6 +251,7 @@ final class ThemeStore: ObservableObject {
 
         // Deduplication: palette extraction depends on artwork bytes; identity may change when AM upgrades source.
         if checksum == lastProcessedChecksum, checksum != 0 {
+            clearPendingArtworkTheme()
             lastProcessedArtworkIdentity = artworkIdentity
             Log.trace(
                 "Skipping duplicate artwork (checksum match: \(checksum))",
@@ -219,15 +264,20 @@ final class ThemeStore: ObservableObject {
         currentArtworkData = data
         currentArtworkChecksum = checksum
         averageColorCache = nil
-        hasArtworkThemeColor = false
-        usesFallbackThemeColor = true
-        analysis = .neutralFallback
-        rawDominantColor = defaultBlueNS
-        
-        Log.trace("Cleared averageColorCache for new track", category: .theme)
+        holdCurrentThemeForPendingArtwork(
+            artworkIdentity: artworkIdentity,
+            assetTrackID: assetTrackID,
+            checksum: checksum,
+            reason: "analysis_pending"
+        )
+        Log.trace(
+            "Holding previous palette while new artwork analysis is pending",
+            category: .theme
+        )
 
         if let cacheKey, let cached = dominantColorCache.object(forKey: cacheKey as NSString) {
             Log.debug("Cache hit for dominant color cache key \(cacheKey)", category: .theme)
+            clearPendingArtworkTheme()
             rawDominantColor = cached.color
             self.analysis = cached.analysis
             hasArtworkThemeColor = true
@@ -243,34 +293,19 @@ final class ThemeStore: ObservableObject {
             return
         }
 
-        await refreshPalette(reason: "track_artwork_pending")
-
         Log.debug(
             "Extraction started for identity \(shortIdentity(artworkIdentity))",
             category: .theme
         )
 
-        // Quick color for immediate UI feedback, then full extraction
-        async let quick = extractQuickColor(from: data)
+        // Phase 6.3: do not publish the quick sample by itself. It has no
+        // trusted nearMono/salient context and was the visible default-color
+        // flash during track changes. Keep the previous semantic palette until
+        // the full analysis is ready, then publish once.
         async let cachedArtworkSnapshot: ArtworkAssetSnapshot? = {
             guard let assetTrackID else { return nil }
             return await ArtworkAssetStore.shared.snapshotMetadata(trackID: assetTrackID, artworkData: data)
         }()
-
-        // Apply quick color first for immediate feedback
-        if let quickColor = await quick,
-           isCurrentExtraction(
-                token: token,
-                artworkIdentity: artworkIdentity,
-                assetTrackID: assetTrackID,
-                checksum: checksum
-           ) {
-            Log.trace("Applying quick color", category: .theme)
-            rawDominantColor = quickColor
-            hasArtworkThemeColor = true
-            usesFallbackThemeColor = false
-            await refreshPalette(reason: "track_artwork_quick")
-        }
 
         // Then apply full extraction
         let artworkSnapshot = await cachedArtworkSnapshot
@@ -280,7 +315,12 @@ final class ThemeStore: ObservableObject {
         } else {
             extractedColor = await extractDominantColor(from: data)
         }
-        let extractedAnalysis = await extractAnalysis(from: data)
+        let extractedAnalysis: ArtworkColorAnalysis?
+        if let snapshotAnalysis = artworkSnapshot?.analysis {
+            extractedAnalysis = snapshotAnalysis
+        } else {
+            extractedAnalysis = await extractAnalysis(from: data)
+        }
 
         guard isCurrentExtraction(
             token: token,
@@ -296,9 +336,11 @@ final class ThemeStore: ObservableObject {
         }
 
         Log.trace("Applying extracted color", category: .theme)
-        
-        let resolved = extractedColor ?? rawDominantColor
+
+        let hasResolvedArtworkTheme = extractedColor != nil || extractedAnalysis != nil
+        let resolved = extractedColor ?? extractedAnalysis?.dominantColor ?? defaultBlueNS
         let resolvedAnalysis = extractedAnalysis ?? .neutralFallback
+        clearPendingArtworkTheme()
         if let cacheKey {
             dominantColorCache.setObject(
                 CachedArtworkBox(color: resolved, analysis: resolvedAnalysis),
@@ -307,7 +349,7 @@ final class ThemeStore: ObservableObject {
         }
         rawDominantColor = resolved
         self.analysis = resolvedAnalysis
-        hasArtworkThemeColor = extractedColor != nil || hasArtworkThemeColor
+        hasArtworkThemeColor = hasResolvedArtworkTheme
         usesFallbackThemeColor = !hasArtworkThemeColor
         lastProcessedChecksum = checksum
         lastProcessedArtworkIdentity = artworkIdentity
@@ -386,6 +428,27 @@ final class ThemeStore: ObservableObject {
             "semantic accent resolved reason=\(reason), scheme=\(schemeState), h=\(Self.format01(accentHSL.h)), s=\(Self.format01(accentHSL.s)), l=\(Self.format01(accentHSL.l)), mono=\(analysis.isMonochrome), effectiveMono=\(analysis.isEffectivelyMonochrome), colorfulness=\(Self.format01(analysis.colorfulness)), avgS=\(Self.format01(analysis.avgSaturation)), domS=\(Self.format01(analysis.dominantSaturation)), highSatMaxShare=\(Self.format01(analysis.largestHighSaturationAreaShare)), nearMonoClamp=\(analysis.isEffectivelyMonochrome)",
             category: .theme
         )
+        // Phase 4.5 retrofit: print appForeground live-path values so the
+        // developer can verify warm/cool/nearMono tinting is actually varying.
+        // Remove or gate behind an env flag once the tint effect is confirmed.
+        #if DEBUG
+        do {
+            let fgPri = semantic.appForeground.primary
+            let fgSec = semantic.appForeground.secondary
+            if let lchPri = OKColor.nsColorToOKLCH(fgPri),
+               let lchSec = OKColor.nsColorToOKLCH(fgSec),
+               let rgbPri = fgPri.usingColorSpace(.deviceRGB) {
+                let r8 = Int((rgbPri.redComponent * 255).rounded())
+                let g8 = Int((rgbPri.greenComponent * 255).rounded())
+                let b8 = Int((rgbPri.blueComponent * 255).rounded())
+                print("[theme:appFg] reason=\(reason) nearMono=\(analysis.isNearMonochrome)"
+                    + " colorfulness=\(Self.format01(analysis.colorfulness))"
+                    + " primary(rgb:\(r8),\(g8),\(b8))"
+                    + " primary(oklch:L\(Self.format01(lchPri.l))C\(Self.format01(lchPri.c))H\(Self.format01(lchPri.h)))"
+                    + " secondary(oklch:L\(Self.format01(lchSec.l))C\(Self.format01(lchSec.c))H\(Self.format01(lchSec.h)))")
+            }
+        }
+        #endif
         let fillAlpha = colorScheme == .dark ? 0.20 : 0.14
         withAnimation(.easeInOut(duration: 0.20)) {
             baseColor = Color(nsColor: rawDominantColor)
@@ -393,8 +456,12 @@ final class ThemeStore: ObservableObject {
             accentNSColor = resolvedAccentNS
             artworkBaseNSColor = rawDominantColor
             selectionFill = Color(nsColor: resolvedAccentNS).opacity(fillAlpha)
-            semanticPalette = semantic
         }
+        // Phase 6.9: semanticPalette must snap instantly. Animating it causes
+        // MiniPlayer controls that compute Color(nsColor:) inside body to get
+        // trapped in a stuck intermediate state when combined with
+        // .compositingGroup().blendMode(...).
+        semanticPalette = semantic
 
         // Default fallbacks
         var bg = isDark ? "rgba(20, 20, 20, 0.85)" : "rgba(245, 245, 245, 0.85)"
@@ -402,22 +469,19 @@ final class ThemeStore: ObservableObject {
         var active = isDark ? "rgba(255, 255, 255, 1.0)" : "rgba(0, 0, 0, 1.0)"
         var inactive = isDark ? "rgba(255, 255, 255, 0.35)" : "rgba(0, 0, 0, 0.35)"
 
-        // If we have artwork, perform adaptive extraction
-        if let data = currentArtworkData {
-            // Use cached averageColor if available, otherwise compute it
-            let avgColor = averageColorCache ?? ArtworkColorExtractor.averageColor(from: data)
-
-            if let rawColor = avgColor {
-                // Adjusted for readability in current scheme
-                let adjusted = ArtworkColorExtractor.adjustedAccent(
-                    from: rawColor, isDarkMode: isDark)
-
-                text = ArtworkColorExtractor.cssRGBA(adjusted, alpha: 0.95)
-                active = ArtworkColorExtractor.cssRGBA(adjusted, alpha: 1.0)
-                inactive = ArtworkColorExtractor.cssRGBA(adjusted, alpha: 0.35)
-
-                bg = isDark ? "rgba(15, 15, 15, 0.7)" : "rgba(250, 250, 250, 0.7)"
-            }
+        // If we have artwork, use the centralized semantic lyric palette.
+        // The factory preserves the old colourful-artwork window path
+        // (adjusted average artwork tint) but crushes near-mono OKLCH
+        // chroma so grey/black/white covers cannot leak pink/blue/yellow
+        // residue into the AMLL surface.
+        if currentArtworkData != nil {
+            text = ArtworkColorExtractor.cssRGBA(semantic.lyrics.windowActive, alpha: 0.95)
+            active = ArtworkColorExtractor.cssRGBA(semantic.lyrics.windowActive, alpha: 1.0)
+            inactive = ArtworkColorExtractor.cssRGBA(
+                semantic.lyrics.windowInactive,
+                alpha: semantic.lyrics.windowInactive.alphaComponent
+            )
+            bg = isDark ? "rgba(15, 15, 15, 0.7)" : "rgba(250, 250, 250, 0.7)"
         }
 
         let newPalette = ThemePalette(
@@ -493,6 +557,36 @@ final class ThemeStore: ObservableObject {
             && expectedIdentity == nil && paletteIdentity == nil
     }
 
+    func artworkThemePending(
+        trackID: UUID?,
+        artworkIdentity: String?,
+        artworkChecksum: UInt64
+    ) -> Bool {
+        guard isArtworkThemePending else { return false }
+
+        let expectedIdentity = normalizedIdentity(artworkIdentity)
+        let pendingIdentity = normalizedIdentity(pendingArtworkIdentity)
+        let identityMatches: Bool
+        if let expectedIdentity, let pendingIdentity {
+            identityMatches = expectedIdentity == pendingIdentity
+        } else {
+            identityMatches = expectedIdentity == nil && pendingIdentity == nil
+        }
+
+        let trackMatches: Bool
+        if let trackID, let pendingAssetTrackID {
+            trackMatches = trackID == pendingAssetTrackID
+        } else {
+            trackMatches = trackID == nil && pendingAssetTrackID == nil
+        }
+
+        let checksumMatches = pendingArtworkChecksum == artworkChecksum
+            || pendingArtworkChecksum == 0
+            || artworkChecksum == 0
+
+        return checksumMatches && (identityMatches || trackMatches)
+    }
+
     var textColor: Color {
         guard let css = palette?.text, let color = Color(rgbaString: css) else {
             return .primary
@@ -521,6 +615,46 @@ final class ThemeStore: ObservableObject {
     private func makeCacheKey(artworkIdentity: String?, checksum: UInt64) -> String? {
         guard let artworkIdentity, checksum != 0 else { return nil }
         return "\(ArtworkColorExtractor.cacheVersion)-\(artworkIdentity)-\(checksum)"
+    }
+
+    private func holdCurrentThemeForPendingArtwork(
+        artworkIdentity: String?,
+        assetTrackID: UUID?,
+        checksum: UInt64,
+        reason: String
+    ) {
+        let identity = normalizedIdentity(artworkIdentity)
+        if pendingArtworkIdentity == identity,
+           pendingAssetTrackID == assetTrackID,
+           pendingArtworkChecksum == checksum,
+           isArtworkThemePending {
+            return
+        }
+
+        activeArtworkIdentity = artworkIdentity
+        activeAssetTrackID = assetTrackID
+        pendingArtworkIdentity = identity
+        pendingAssetTrackID = assetTrackID
+        pendingArtworkChecksum = checksum
+        isArtworkThemePending = true
+        Log.debug(
+            "Holding previous artwork theme while pending reason=\(reason), identity=\(shortIdentity(identity)), checksum=\(checksum)",
+            category: .theme
+        )
+    }
+
+    private func clearPendingArtworkTheme() {
+        guard isArtworkThemePending
+            || pendingArtworkIdentity != nil
+            || pendingAssetTrackID != nil
+            || pendingArtworkChecksum != 0
+        else {
+            return
+        }
+        isArtworkThemePending = false
+        pendingArtworkIdentity = nil
+        pendingAssetTrackID = nil
+        pendingArtworkChecksum = 0
     }
 
     private func isCurrentExtraction(

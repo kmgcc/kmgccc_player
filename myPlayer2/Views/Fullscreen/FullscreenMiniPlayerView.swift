@@ -33,14 +33,13 @@ struct FullscreenMiniPlayerView: View {
     var onProgressDraggingChanged: (Bool) -> Void = { _ in }
     var onEditTrackRequested: (Track) -> Void = { _ in }
     var onEditExternalInfoRequested: () -> Void = {}
+    var foregroundProfile: FullscreenMiniPlayerForegroundProfile? = nil
     
     private let fixedBarHeight: CGFloat = 60
-    private static let fullscreenThemeMinLightness: CGFloat = 0.90
-    private static let fullscreenThemeMaxLightness: CGFloat = 0.98
-    private static let fullscreenThemeMinSaturation: CGFloat = 0.88
 
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(AppSettings.self) private var settings
+    @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
 
     @State private var isDragging = false
@@ -224,7 +223,7 @@ struct FullscreenMiniPlayerView: View {
                     selectedColor: controlPrimaryColor,
                     unselectedColor: controlPrimaryColor.opacity(0.62),
                     useScreenBlend: usesScreenBlendForControls,
-                    pillTintColor: themeStore.accentColor,
+                    pillTintColor: fullscreenControlPillTintColor,
                     pillTintBlendMode: .normal,
                     onInteraction: onInteraction,
                     scale: scale,
@@ -243,7 +242,7 @@ struct FullscreenMiniPlayerView: View {
                     selectedColor: controlPrimaryColor,
                     unselectedColor: controlPrimaryColor.opacity(0.62),
                     useScreenBlend: usesScreenBlendForControls,
-                    pillTintColor: themeStore.accentColor,
+                    pillTintColor: fullscreenControlPillTintColor,
                     pillTintBlendMode: .normal,
                     onInteraction: onInteraction,
                     scale: scale,
@@ -279,9 +278,9 @@ struct FullscreenMiniPlayerView: View {
             isPlaying: playbackCoordinator.presentation.isPlaying,
             accentColor: themeStore.usesFallbackThemeColor ? nil : themeStore.accentColor,
             foregroundColor: controlPrimaryColor,
-            enforceBrightForeground: !usesAdaptiveClearForeground,
+            enforceBrightForeground: resolvedForegroundProfile.enforceBrightProgressForeground,
             spectrumArtworkColors: spectrumArtworkColors,
-            spectrumUsesDarkForeground: usesDarkArtworkForegroundForClear,
+            spectrumUsesDarkForeground: resolvedForegroundProfile.spectrumUsesDarkForeground,
             progress: progressDisplayTime,
             duration: playbackCoordinator.presentation.duration,
             isSeekEnabled: playbackCoordinator.presentation.isSeekEnabled,
@@ -423,162 +422,125 @@ struct FullscreenMiniPlayerView: View {
         controlPrimaryColor.opacity(0.45)
     }
 
+    private var fullscreenControlPillTintColor: Color? {
+        Color(nsColor: resolvedForegroundProfile.pillTint).opacity(0.96)
+    }
+
     private var controlPrimaryNSColor: NSColor {
-        if usesDarkArtworkForegroundForClear {
-            return themeStore.semanticPalette.readableTextOnArtwork
-        }
-        return Self.resolveControlAccentColor(from: themeStore.accentNSColor)
-    }
-
-    private var usesAdaptiveClearForeground: Bool {
-        settings.fullscreen.skinID == FullscreenSkinID.coverGradientBlur.rawValue
-            && glassStyle.materialStyle == .clear
-            && themeStore.hasArtworkThemeColor
-    }
-
-    private var usesDarkArtworkForegroundForClear: Bool {
-        usesAdaptiveClearForeground
-            && Self.shouldUseDarkArtworkForeground(for: themeStore.semanticPalette.analysis)
+        resolvedForegroundProfile.primary
     }
 
     private var controlBlendMode: BlendMode {
-        usesScreenBlendForControls ? .screen : .normal
+        resolvedForegroundProfile.iconBlendMode
     }
 
     private var usesScreenBlendForControls: Bool {
-        !usesDarkArtworkForegroundForClear || ColorMath.relativeLuminance(of: controlPrimaryNSColor) >= 0.58
+        resolvedForegroundProfile.useScreenBlend
+    }
+
+    private var resolvedForegroundProfile: FullscreenMiniPlayerForegroundProfile {
+        if let foregroundProfile {
+            return foregroundProfile
+        }
+        return FullscreenMiniPlayerForegroundStrategy.resolve(
+            palette: themeStore.semanticPalette,
+            hasArtworkThemeColor: themeStore.hasArtworkThemeColor,
+            skinID: settings.fullscreen.skinID,
+            colorScheme: colorScheme,
+            materialStyle: glassStyle.materialStyle,
+            fullscreenArtBackgroundEnabled: settings.fullscreenArtBackgroundEnabled
+        )
     }
 
     private var spectrumArtworkColors: [NSColor] {
-        guard usesAdaptiveClearForeground else { return [] }
+        guard resolvedForegroundProfile.role == .coverBlurDarkForeground
+            || resolvedForegroundProfile.role == .coverBlurLightForeground
+        else { return [] }
         let analysis = themeStore.semanticPalette.analysis
-        let palette = analysis.topPalette.isEmpty
-            ? [
+        // Phase 3: switch the spectrum source from raw topPalette to the
+        // Phase-2 displayPalette. displayPalette is ordered
+        // `top.first → salient → top.tail → rich`, so when an artwork has
+        // a small-area but visually striking accent (5% bright yellow over
+        // a 95% black canvas), that salient highlight naturally lands as
+        // the second colour — which is exactly the "peak / high-band"
+        // endpoint of the L→R gradient drawn across 9 capsules.
+        let primary: [NSColor]
+        if !analysis.displayPalette.isEmpty {
+            primary = analysis.displayPalette
+        } else if !analysis.topPalette.isEmpty {
+            primary = analysis.topPalette
+        } else {
+            primary = [
                 themeStore.semanticPalette.artBackgroundPrimary,
                 themeStore.semanticPalette.artBackgroundSecondary,
             ]
-            : analysis.topPalette
-        return Array(palette.prefix(2))
+        }
+        let chosen = Array(primary.prefix(2))
+        // Phase 3 hotfix: when the artwork is near-monochrome, the
+        // displayPalette ordering still surfaces the salient highlight as
+        // the second colour. That salient slot legitimately carries a
+        // small-area but visibly hued micro-spot (e.g. a 3% pink reflection
+        // on a black-and-white photograph). Letting it through unchanged
+        // makes the spectrum read as "pink" even when the cover is
+        // perceptually grey. Project to neutral via OKLCH chroma clamp so
+        // the spectrum stays faithful to the grey impression. Low-but-not-
+        // near-mono covers are preserved with a soft chroma shoulder so we
+        // don't over-saturate; honest colour artworks pass through.
+        let prepared = SpectrumColorResolver.prepareSpectrumColors(chosen, analysis: analysis)
+        Self.logSpectrumColors(prepared, analysis: analysis)
+        return prepared
     }
 
-    // MARK: - HSL Color Helpers
+    private static func logSpectrumColors(
+        _ colors: [NSColor],
+        analysis: ArtworkColorAnalysis
+    ) {
+        guard LogConfig.isCategoryEnabled(.ui) else { return }
+        let hexes = colors.compactMap { color -> String? in
+            guard let rgb = color.usingColorSpace(.deviceRGB) else { return nil }
+            return String(
+                format: "#%02X%02X%02X",
+                UInt8(min(max(rgb.redComponent, 0), 1) * 255),
+                UInt8(min(max(rgb.greenComponent, 0), 1) * 255),
+                UInt8(min(max(rgb.blueComponent, 0), 1) * 255)
+            )
+        }.joined(separator: " ")
+        let salientHashes = Set(analysis.salientHighlightPalette.compactMap { color -> String? in
+            guard let rgb = color.usingColorSpace(.deviceRGB) else { return nil }
+            return String(
+                format: "#%02X%02X%02X",
+                UInt8(min(max(rgb.redComponent, 0), 1) * 255),
+                UInt8(min(max(rgb.greenComponent, 0), 1) * 255),
+                UInt8(min(max(rgb.blueComponent, 0), 1) * 255)
+            )
+        })
+        let hasSalient = colors.contains { color in
+            guard let rgb = color.usingColorSpace(.deviceRGB) else { return false }
+            let hex = String(
+                format: "#%02X%02X%02X",
+                UInt8(min(max(rgb.redComponent, 0), 1) * 255),
+                UInt8(min(max(rgb.greenComponent, 0), 1) * 255),
+                UInt8(min(max(rgb.blueComponent, 0), 1) * 255)
+            )
+            return salientHashes.contains(hex)
+        }
+        Log.debug(
+            "[Spectrum/palette] ultraDark=\(analysis.isUltraDark) nearMono=\(analysis.isNearMonochrome) hasSalient=\(hasSalient) colors=[\(hexes)]",
+            category: .ui
+        )
+    }
 
+    // MARK: - Stricter readability gate
+
+    /// Stricter dark-foreground gate used by surfaces sitting on a blurred
+    /// artwork (Cover Gradient Blur clear material). `analysis.usesDarkForeground`
+    /// flips at HSL L≥0.58; over a blur we want a more conservative
+    /// threshold so a moderately bright cover still keeps light text.
+    /// Phase 4 keeps this in the view layer because the gate is specific
+    /// to the over-blur surface — the rest of the readability semantic
+    /// lives on `ArtworkReadabilityProfile`.
     static func shouldUseDarkArtworkForeground(for analysis: ArtworkColorAnalysis) -> Bool {
-        guard analysis.usesDarkForeground else { return false }
-        let averageLuma = ColorMath.relativeLuminance(of: analysis.averageColor)
-        return analysis.avgHslLightness >= 0.68
-            || averageLuma >= 0.58
-            || (analysis.avgBrightness >= 0.82 && analysis.avgSaturation < 0.30)
-    }
-
-    static func resolveControlAccentColor(from color: NSColor) -> NSColor {
-        let saturated = enforceMinimumHslSaturation(
-            color,
-            minimumSaturation: fullscreenThemeMinSaturation
-        )
-        let lifted = enforceMinimumHslLightness(
-            saturated,
-            minimumLightness: fullscreenThemeMinLightness
-        )
-        return enforceMaximumHslLightness(
-            lifted,
-            maximumLightness: fullscreenThemeMaxLightness
-        )
-    }
-
-    static func resolveControlPrimaryColor(from color: NSColor) -> Color {
-        Color(nsColor: resolveControlAccentColor(from: color)).opacity(0.96)
-    }
-
-    private static func enforceMinimumHslLightness(_ color: NSColor, minimumLightness: CGFloat) -> NSColor {
-        guard let hsl = hslComponents(from: color) else { return color }
-        let targetL = max(hsl.l, minimumLightness)
-        if targetL <= hsl.l + 0.000_001 { return color }
-        return rgbColorFromHsl(h: hsl.h, s: hsl.s, l: targetL)
-    }
-
-    private static func enforceMaximumHslLightness(_ color: NSColor, maximumLightness: CGFloat) -> NSColor {
-        guard let hsl = hslComponents(from: color) else { return color }
-        let targetL = min(hsl.l, maximumLightness)
-        if targetL >= hsl.l - 0.000_001 { return color }
-        return rgbColorFromHsl(h: hsl.h, s: hsl.s, l: targetL)
-    }
-
-    private static func enforceMinimumHslSaturation(_ color: NSColor, minimumSaturation: CGFloat) -> NSColor {
-        guard let hsl = hslComponents(from: color) else { return color }
-        let targetS = max(hsl.s, minimumSaturation)
-        if targetS <= hsl.s + 0.000_001 { return color }
-        return rgbColorFromHsl(h: hsl.h, s: targetS, l: hsl.l)
-    }
-
-    private static func hslComponents(from color: NSColor) -> (h: CGFloat, s: CGFloat, l: CGFloat)? {
-        guard let rgb = color.usingColorSpace(.deviceRGB) else { return nil }
-
-        let r = clamp01(rgb.redComponent)
-        let g = clamp01(rgb.greenComponent)
-        let b = clamp01(rgb.blueComponent)
-
-        let maxV = max(r, max(g, b))
-        let minV = min(r, min(g, b))
-        let delta = maxV - minV
-        let l = (maxV + minV) * 0.5
-
-        var h: CGFloat = 0
-        if delta > 0.000_001 {
-            if maxV == r {
-                h = ((g - b) / delta).truncatingRemainder(dividingBy: 6)
-            } else if maxV == g {
-                h = ((b - r) / delta) + 2
-            } else {
-                h = ((r - g) / delta) + 4
-            }
-            h /= 6
-            if h < 0 { h += 1 }
-        }
-
-        var s: CGFloat = 0
-        if delta > 0.000_001 {
-            s = delta / (1 - abs(2 * l - 1))
-        }
-
-        return (h: h, s: s, l: l)
-    }
-
-    private static func rgbColorFromHsl(h: CGFloat, s: CGFloat, l: CGFloat) -> NSColor {
-        let c = (1 - abs(2 * l - 1)) * s
-        let hPrime = h * 6
-        let x = c * (1 - abs(hPrime.truncatingRemainder(dividingBy: 2) - 1))
-
-        var rp: CGFloat = 0
-        var gp: CGFloat = 0
-        var bp: CGFloat = 0
-
-        switch hPrime {
-        case 0..<1:
-            rp = c; gp = x; bp = 0
-        case 1..<2:
-            rp = x; gp = c; bp = 0
-        case 2..<3:
-            rp = 0; gp = c; bp = x
-        case 3..<4:
-            rp = 0; gp = x; bp = c
-        case 4..<5:
-            rp = x; gp = 0; bp = c
-        default:
-            rp = c; gp = 0; bp = x
-        }
-
-        let m = l - c * 0.5
-        return NSColor(
-            calibratedRed: clamp01(rp + m),
-            green: clamp01(gp + m),
-            blue: clamp01(bp + m),
-            alpha: 1.0
-        )
-    }
-
-    private static func clamp01(_ value: CGFloat) -> CGFloat {
-        Swift.min(Swift.max(value, 0), 1)
+        FullscreenMiniPlayerForegroundStrategy.shouldUseDarkArtworkForeground(for: analysis)
     }
 }
 
@@ -762,3 +724,18 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
         playerVM.playTracks([track])
     }
 }
+
+#if DEBUG
+/// Debug-only bridge exposing the Spectrum colour preparation step to
+/// `ColorSystemSelfCheck`. Verifies the Phase 3 hotfix invariant that
+/// near-monochrome cover inputs leave the spectrum source with effectively
+/// zero chroma, and that low-saturation covers don't get amplified.
+nonisolated enum SpectrumPaletteSelfCheck {
+    nonisolated static func prepare(
+        _ colors: [NSColor],
+        analysis: ArtworkColorAnalysis
+    ) -> [NSColor] {
+        SpectrumColorResolver.prepareSpectrumColors(colors, analysis: analysis)
+    }
+}
+#endif

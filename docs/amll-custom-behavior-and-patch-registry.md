@@ -19,11 +19,105 @@
 | Fullscreen CSS module selector 兼容 | 新版 CSS module hash 形态变化后，fullscreen overlay 仍能识别 lyric line/active/sub/bg。 | App `index.html` CSS/JS selector adapter | 使用 `[class*="lyricLine"]` / `[class*="active"]` 等语义片段；避免回退到旧 `[class*="_active_"]`。 |
 | 普通 fullscreen 明度语义 | 普通全屏主要通过颜色明度区分层级，不靠整体 opacity 发灰。 | App `index.html` fullscreen CSS variables / overlay | 修 fullscreen 视觉时先确认 surface role；不要把 cover blur 的透明合成语义套到普通 fullscreen。 |
 | Cover blur 混合模式语义 | 封面渐变模糊全屏允许透明度和 blend 参与合成。 | Swift fullscreen config + App `index.html` CSS | 当前 generic cover blur highlight 主要共用 `.amll-fs-*` 路径；legacy `.amll-cb-*` 路径仍保留兼容。 |
+| Swift-owned lyrics color contract / near-mono neutralization | 歌词颜色决策归 Swift，避免 Swift + Web 双端重复选择 hue，并防止 nearMono artwork 的微弱残留 hue 被 fullscreen/Web 派生逻辑放大成粉、蓝、黄。 | Swift `SemanticPalette.lyrics` + App `index.html` adapter | Web rendering-only / adapter contract：Web 可保留 opacity、mix-blend-mode、text-shadow、drop-shadow、shadow structure 与兼容 fallback，但不得重新决定 hue。`syncFullscreenDerivedColors()` 必须优先消费 Swift 显式颜色，缺失时才 fallback 派生。nearMono lyrics neutralization 要求 visible colors OKLCH chroma ≤ 0.005。 |
+| Artistic fullscreen lyrics Tone Ladder (v3 seed-trust) | 艺术背景类 fullscreen lyrics 用不透明 OKLCH tone ladder 表达 active / inactive / secondary 层级。v3 在 v2 single-seed 基础上加 seed-trust 契约：当 seed `c ≥ lyricsSeedChromaPreferred` 时 Tone Ladder **忽略** `isNearMonochrome` 参数，且 `artisticFullscreenLyricsColorSet` 跳过尾部的 `neutraliseLyricsSurfaceIfNearMono`。v2 失败的根因是 `ArtworkColorAnalysis.neutralFallback` 把 `isNearMonochrome=true` 注入 Tone Ladder，使彩色 seed 在 Swift 内就被 clamp 成 OKLCH `c≈0.004`，屏幕落色 `#808284`。 | Swift `PerceptualToneLadder.artisticLyricsTone` + `SemanticPaletteFactory.artisticFullscreenLyricsColorSet(...)` + `FullscreenPlayerView.resolveFullscreenLyricsInactiveBaseColor(...)` + `ColorSystemDiagnostic.describe(...)` | 仅在 Swift 侧 `settings.fullscreenArtBackgroundEnabled` 路径启用；Web 继续只消费显式颜色与渲染结构，不重新决定 hue。`resolveFullscreenLyricsInactiveBaseColor(...)` 不允许引用 BKArt surface background / `primaryBackgroundColor` / `lockedFullscreenLyricsBackgroundColor` 三条旧路径（v1 灰白化根因）。inactive C ≥ active C × 0.85、hueΔ vs seed ≤ 0.025。sub-inactive L 与 main-inactive L 差 ≤ 0.060（v3 翻译行不再偏暗）。Apple / Cover Gradient / Cover Blur profile 保持原 lighter/darker blend 语言。nearMono **+** grey seed 的双重信号仍输出 OKLCH chroma ≤ 0.005；只要 seed 有可视 chroma，无论 analysis bit 为 true 或 false，输出都保持 ≥ 0.040 的色彩身份。Self-check 必含 v3 四条新增回归门：`ToneLadder v3: colourful seed survives isNearMonochrome=true`、`Lyrics v3: artistic path keeps colour under .neutralFallback analysis`、`Lyrics v3: sub-inactive L close to main-inactive L`、`LED v3: low-level hue drift visible vs peak`。`COLOR_SYSTEM_LYRICS_DEBUG=1`（或艺术背景启用时自动）会在 `Log.debug(.theme)` 打印 highlight base / inactive base / 全 6 个 role 的 `#RRGGBB (L=… C=… H=…)`，用于现场吸管色复盘。 |
 | Cover blur emphasis 官方链路 adapter | 大封面渐变模糊皮肤只对官方 emphasis 的 glow 做 cover-blur 专属弱化/重染，避免重造一套独立 glow 动画。 | App `index.html` generic cover blur adapter（CSS + bridge JS） + Swift base/highlight overlay | `installFullscreenEmphasizedGlowLayer()` 只给强调词 `.amll-fs-word-stack` 写入 `data-amll-fs-emphasis-body="1"`，让 highlight-only WebView 恢复强调词主填充；不再创建 `.amll-fs-cover-blur-glow-layer`。`installFullscreenPackedElementAnimations()` 继续按官方 per-character target clone `emphasize-word-*`，保留 scale / translate / duration / delay / stagger，只在 clone keyframes 中对 `textShadow` 做 profile retint/rescale；base 层 `coverBlurSuppressEmphasisGlow=true` 时仅把 `textShadow` 置为 `none`，不移除 transform。当前 glow profile 为 lighter `rgba(255,255,255,0.12) × 1.0`、darker `rgba(0,0,0,0.16) × 1.0`。普通 fullscreen/window 不进入 cover-blur profile 调整。 |
 | Window/main emphasis glow 配色 adapter | 窗口主歌词在浅色调色板（深字 + 浅底）下，官方 `rgba(255,255,255,glowLevel)` emphasis 辉光基本看不见。adapter 仅在 light 模式下把 textShadow 的颜色改为深色低 α 光晕，让长时值强调有可见、低噪的视觉收尾。深色调色板（白字 + 深底）保持官方白色光晕不变。 | App `index.html` `applyWindowEmphasisGlowScheme()` / `retintSingleWindowEmphasisAnimation()` / `recolorWindowEmphasisTextShadow()` | 只在 `surfaceRole === "main"` 启用；fullscreen / fullscreen cover-blur / batch preview 不进入此分支。检测信号是 Swift 通过 `config.theme = "light" \| "dark"` 下发的 app appearance；不再使用 `config.textColor` 亮度推断（之前的亮度路径与 config 顺序竞争，导致 light 模式下halo 看不见）。`LyricsViewModel.refreshConfigFromSettings()` 与 `LyricsWebViewStore.applyEffectiveTheme()` 都会带 `theme` 字段，appearance 翻转时也会重发，所以单一信号足够。改写发生在 `KeyframeEffect.setKeyframes()` 上，每个 emphasis 动画首次改写前会缓存 `__windowEmphasisOriginalKeyframes`，scheme 翻转时使用缓存还原。动画 id / 时长 / delay / easing / composite / transform / scale / stagger 全部保持官方原值，只有 textShadow 颜色与 α 倍率变化。当前 light profile 为 `rgba(0, 0, 0, source.a × 0.55)`（source 峰值 ≈ 0.8，retint 峰值 ≈ 0.44，搭配官方 0.3em blur 形成清晰但不糊的字下阴影）。普通 fullscreen 走的是官方白色光晕路径，所以全屏不需要进入此 adapter。 |
 | 歌词渲染质量三档 | 按“低 / 中 / 高”控制 WKWebView 实际渲染分辨率，减轻渲染压力或使用原生分辨率。 | Swift/WebView adapter | 真实低分辨率路径是 WKWebView frame 按质量档缩小、`pageZoom` 按同一质量档缩小，再用 layer inverse scale 放回原视觉尺寸；低 `0.5`，中 `0.75`，高 `1.0`。2026-05-17 A/B 已否定 contentsScale-only：完整 frame + `pageZoom = 1` + identity transform + 只改 layer `contentsScale` 看起来仍是 1.0x，不能代表真正的低分辨率 WebView 渲染，也不能改善 1.0x emphasis snap。旧 `amllHighResolutionLyricsEnabled=true` 迁移为高，false/缺失迁移为中。AMLL DOM `renderScale` 必须继续使用各 surface 的默认 renderer scale（窗口/全屏/cover blur 为 `0.75`，batch preview 为 `0.45`），不要用用户质量档位驱动 `LyricPlayer.setRenderScale()`。 |
 | 歌词 surface hover / selection policy | 不显示窗口/全屏 hover 圆角背景；拖动时不允许选中文字。 | App `index.html` CSS | Upstream hover 背景真实来源是 `packages/core/src/styles/lyric-player.module.css` 中 `.lyricLine:has(> *):hover/:active` 使用的 `--amll-lp-hover-bg-color`。App adapter 对所有歌词 surface 将该变量置为 `transparent`，不维护 host-driven hover proxy。文本选择通过 `.amll-lyric-player` 子树的 `-webkit-user-select: none` + `user-select: none` 禁止；不加 JS `selectstart` 防线，除非未来证明 CSS 在目标 WebKit 下不足。 |
 | 翻译歌词字体控制 | App 设置控制翻译字体大小/字重。 | App `index.html` CSS variables + semantic selector | 依赖新版 CSS module 语义 selector，例如 `[class*="lyricSubLine"]`；不要绑定旧 hash。 |
+
+## A.1 Swift-owned lyrics color contract / near-mono neutralization
+
+目的：
+
+- 避免歌词颜色逻辑散落在 Swift 与 Web 双端，导致 `ThemeStore`、`SemanticPalette`、`FullscreenPlayerView`、`LyricsWebViewStore`、AMLL adapter 各自维护一套近似但不一致的派色规则。
+- 避免 nearMono artwork 下的微弱 residual hue 被 Web 或 fullscreen 派生逻辑放大成粉色、蓝色或黄色。
+- 为后续 AMLL 升级保留清晰边界：AMLL adapter 负责渲染结构，App Swift 色彩系统负责颜色决策。
+
+规则：
+
+- Swift 侧输出 window / fullscreen / cover blur 等 surface color set；当前入口为 `SemanticPalette.lyrics`、`LyricsColorPalette`、`LyricsSurfaceColorSet`、`LyricsCoverBlurBlendProfile`。
+- Phase 6 v2 / v3 后，艺术背景类 fullscreen lyrics 通过 single-seed `PerceptualToneLadder` 深化 `LyricsSurfaceColorSet`；v3 引入 seed-trust，绕过 `analysis.isNearMonochrome` 在 colourful seed 上的双重 clamp；Phase 6.1 继续在同一 Swift-owned 层加入 chroma soft shoulder、dominant-first seed selection、scheme-aware L 表（日间反相）。仍是 Swift 端决策，Web adapter 不需对应改动。
+- Web 侧不得重新选择 hue，不得用 CSS/JS 派生覆盖 Swift 已下发的语义色。
+- Web 侧可以保留 opacity、mix-blend-mode、text-shadow、drop-shadow、shadow structure、line-state class、动画 clone 等渲染行为。
+- `syncFullscreenDerivedColors()` 必须优先使用 Swift 显式颜色；fallback 派生只允许作为旧配置或缺省状态的兼容路径。
+
+Phase 6.1 增量 — 日间模式 / 反相歌词 / 高饱和软压：
+
+- Swift 通过 `colorScheme` 自动决定艺术 fullscreen lyrics 走 dark（高 L 高亮）还是 light（低 L 反相）。Swift 下发的字段名与 CSS 变量名不变：
+  - `fullscreenActiveColor` → `--amll-fs-main-active`
+  - `fullscreenInactiveColor` → `--amll-fs-main-inactive`
+  - `fullscreenSubActiveColor` → `--amll-fs-sub-active`
+  - `fullscreenSubInactiveColor` → `--amll-fs-sub-inactive`（translation 行）
+  - `fullscreenBackgroundColor` → `--amll-fs-bg-active`（= `colorSet.subActive`，沿 v3 行为）
+  - `fullscreenLineTimingInactiveColor` → `--amll-fs-main-line-timing-inactive`
+  - `fullscreenLineTimingSubInactiveColor` → `--amll-fs-sub-line-timing-inactive`
+- Interlude dots `[class*="interludeDots"] > *` 的 color fallback chain 是 `var(--amll-fs-main-active, var(--amll-active, var(--amll-lp-color, white)))`；Swift 下发的 active 颜色会被自动套用，日间反相时 dots 自动变深。
+- Background lyric base 是 `var(--amll-fs-sub-color, var(--amll-fs-main-inactive, …))`；Swift 不下发 `--amll-fs-sub-color`，自然落到 `--amll-fs-main-inactive`，日间反相时背景歌词自动变深。
+- Glow / shadow 用 `currentColor` 推导，与 lyric color 同步，反相后自动变深。无硬编码白色阴影。
+- 因此 Phase 6.1 **不修改** `amll-core.js` / `amll-lyric.js` 生成 bundle，也**不修改** `index.html` 的 CSS 变量名或 fallback chain。
+
+Phase 6.1 seed-selection 与 chroma soft shoulder（Swift 内部）：
+
+- `SemanticPaletteFactory.artisticLyricsSingleSeed` 改为：nearMono → preferred；`pickSalientLyricSeed` 通过则用 `salientHighlightPalette.first`（要求 cover 主域均匀 + salient 与 dominant hue 距 ≥ 0.08 + salient OKLCH chroma ≥ 0.09）；否则用 `analysis.dominantColor`（OKLCH c ≥ 0.025）；都失败再走 candidate scan 兜底。
+- `PerceptualToneLadder.artisticLyricsTone` 在彩色路径下先 `OKColor.chromaSoftShoulder(ceiling=0.095, softness=0.045)` 再 clamp 到 hue-family cap；日间用 ceiling=0.072 / softness=0.030 / cap*0.72。
+- 这些都属于 Swift-owned decision，Web 不感知。
+
+Phase 6.2 增量 — focus-score seed / nearMono trust override / 反粉红 shapes / 日夜 token 收尾（2026-05-21）：
+
+- `SemanticPaletteFactory.focusScore(...)` 用连续打分替代 Phase 6.1 的 4-AND 硬 gate：`visualContrast × salience × fieldUniformity × designFocus - noisePenalty/competing`，阈值 0.55。`visualContrast` 在 dominant.c < 0.045（真灰/真黑）时把 hue distance 当作 max contrast，让 "黑底 + 5% 亮黄" 这种典型设计封面能稳定 fire。
+- `ArtworkColorAnalysis` 引入 `trustedHueChromaFloor=0.045`：dominant / topPalette / salient 任一 OKLCH chroma ≥ floor 即跳过 nearMono 非严格分支。pure-grey / 极暗封面仍 nearMono。
+- `BKColorEngine.make(...)` 末尾在 true nearMono 且无 trusted hue 候选时对 bgStops / shapePool / dotBase / bgVariants 做 OKLCH chroma crush 到 ≤ 0.008（`OKColor.neutralise`），消除淡粉残留。
+- `PerceptualToneLadder.artisticLyricsTone` 的 soft shoulder 改为 gated：只有 `base.c × chromaScale >= lyricsHighChromaShoulderTrigger=0.085` 才生效；mid-C seed 穿过原样到 cap。
+- 夜间 token: active L 0.905 → 0.920、sub-active 0.830 → 0.855、UltraDark inactive trim 0.060 → 0.095、active/sub-active chromaScale 0.92/0.96 → 0.98/1.00。
+- 日间 token: active L 0.150 → 0.215（不死黑）、inactive 0.430 → 0.470、translation 0.435 → 0.475、line-timing 0.470/0.500 → 0.510/0.540。严格升序保持。
+- `BKColorEngine.tierRanges` 夜间: `bgB` 0.18…0.32 → 0.14…0.28、`fgB` 0.34…0.54 → 0.28…0.46、`dotB` 0.46…0.68 → 0.40…0.58（dotB.upper 等于 inactive L floor 0.580）。日间: `bgB` 0.88…0.95 → 0.92…0.97、`fgB` 0.78…0.88 → 0.80…0.90、`dotB` 0.62…0.74 → 0.66…0.78、`bgS` 上限 0.30 → 0.22 避免 pastel。
+- `FullscreenMiniPlayerView` 新增 `usesDarkControlForegroundForLightArtisticBackground`：日间艺术背景 + `hasArtworkThemeColor` → `controlPrimaryNSColor = readabilityProfile.foregroundPrimary`（dark on bright artistic glass，自动获得 Phase-4 nearMono 反粉红行为）。
+- glow / interlude dots / background lyric / translation 仍走 CSS fallback chain，无需新 CSS 变量；**未修改** `amll-core.js` / `amll-lyric.js` 生成 bundle、`index.html` CSS 变量名 / fallback chain、`bridge.js`。
+- Phase 6.2 进一步（2026-05-21）：在 v3 seed-trust 之上 (a) Phase 6.1 salient hard gate 升级为连续 focusScore；(b) `analysis.isNearMonochrome` 受 trusted-hue 覆盖；(c) chroma soft shoulder 改为只在 scaled C ≥ 0.085 时触发；(d) 夜间 active L 0.905 → 0.920、UltraDark inactive trim 0.060 → 0.095；(e) 日间艺术背景 bg / shapes 大幅提亮；(f) 日间歌词 active L=0.150 改为 0.215（不死黑），仍严格 ASC 且 < bg L；(g) FullscreenMiniPlayer 日间艺术背景下控件主色切到 dark foreground readability profile。glow / interlude dots / background lyric 仍走 CSS fallback chain 自动跟随 Swift 下发色，**无 generated bundle / index.html 改动**。Self-check 新增 20+ 个 Phase 6.2 场景；3 个既有测试更新以反映 Phase 6.2 语义。
+
+Phase 6.3 增量 — artistic color system stabilization（2026-05-22，2026-05-23 人工复测未通过）：
+
+- Phase 6.3 的 nearMono / trusted hue、focus score、BK true-nearMono neutralise、日间 light tier、MiniPlayer dark foreground 和 ThemeStore pending hold 都是中间实现尝试，不能再写成已修复事实。
+- 人工复测确认：小面积强焦点仍不稳定；有色封面仍会被 nearMono 灰白化；true nearMono 下 floating shapes 淡粉有回归；日间艺术背景仍偏暗；日间歌词 active / inactive 仍阴沉；Fullscreen MiniPlayer UI 仍有多条颜色路径；切歌仍会闪 default / 错误深浅色。
+- `fullscreenEmphasisGlowColor` 由 Swift 下发、App `index.html` adapter 消费的 dark glow 方向保留；后续需确认不要回退，但不应把 hue 决策放回 Web。
+- AMLL active/inactive highlight transition / feather 本轮不处理，继续作为 backlog；不改 fork core、不手改 `amll-core.js` / `amll-lyric.js`。
+
+Phase 6.4 增量 — artistic architecture stabilization（2026-05-23，2026-05-23 人工复测未通过）：
+
+- Swift-owned lyrics color contract 不变；Web / AMLL adapter 仍只消费 Swift 下发颜色。本轮未修改 `index.html`、`bridge.js`、fork core 或 generated `amll-core.js` / `amll-lyric.js`。
+- Phase 6.4 曾尝试把日间 UltraDark 限定为 dark-scheme-only、统一 Fullscreen MiniPlayer / bottom controls 的 dark foreground、在 fullscreen lyrics pending 时 hold palette、让 `ArtworkAssetSnapshot.analysis` 携带 analyzer 状态；这些实现仍未通过人工验收，不能写成最终稳定架构。
+
+Phase 6.5 增量 — artistic color system architecture repair（2026-05-23）：
+
+- Swift-owned lyrics color contract 继续保持：AMLL Web adapter 只消费 Swift 下发的 fullscreen surface colors，不重新选择 hue。本轮未修改 `index.html`、`bridge.js`、fork core 或 generated `amll-core.js` / `amll-lyric.js`。
+- nearMono 语义改为 `analysis.isNearMonochrome && !analysis.hasTrustedHueCandidate` 才执行歌词中性化。`hasTrustedHueCandidate` 需要 palette/salient 或 dominant + real sampling support，`.neutralFallback` 的 fallback orange 不能作为真实 hue；muted coherent covers 保留颜色，true grey 仍中性。
+- 日间 artistic fullscreen lyrics token 提亮为 active L=0.335、inactive L=0.620、translation L=0.622；translation 与 inactive 同层，dark emphasis glow 方向保留。AMLL active/inactive feather transition 未处理，继续 backlog。
+- ThemeStore pending / fullscreen lyrics / BKArt hold 属于 Swift 状态链路修复；AMLL adapter contract 不变。AMLL active/inactive feather transition 仍是 Phase 7 / fork-core backlog；本轮继续不处理。
+
+Phase 6.2 outstanding work / Phase 7 candidates:
+
+- **AMLL highlight transition 内层颜色过渡**：fullscreen 线级 transition (`color .14s/.18s ease-out`) 由浏览器在 sRGB 空间做 RGB interp。per-word/character 的 mask-image / linear-gradient 边缘 "seam" 颜色由 `amll-core.js` 内联，Swift 无 CSS 变量 hook。要实现 OKLCH-interpolated mid color 需要 fork core patch（暴露 `transitionColor` / `--amll-fs-edge` CSS 变量给 renderer 消费）。本轮 Phase 6.2 不做。审计结论：见 `docs/amll-upgrade-implementation-log.md` Phase 6.2 节。
+
+nearMono lyrics neutralization：
+
+- Phase 6.5 起，`analysis.isNearMonochrome && !analysis.hasTrustedHueCandidate` 时，歌词 visible colors 的 OKLCH chroma ≤ 0.005。
+- 适用于窗口歌词与全屏歌词，包括 active / inactive / base / secondary / translation / cover blur 输入色。
+- glow 若为设计常量白/黑可保留；若未来改为主题化 glow，不得在 nearMono 下引入彩色 hue。
+- Tone Ladder 输出同样受 nearMono neutralization 约束：lyrics visible colors OKLCH chroma ≤ 0.005；LED nearMono tone cap ≤ 0.006。
+
+AMLL 升级注意：
+
+- 未来升级 AMLL 或重建 `index.html` adapter 时，必须保留 Swift-owned lyrics color contract。
+- 不要把颜色决策重新搬回 Web / CSS，不要让 Web 根据 main color 自行选择 hue。
+- 不要删除 Swift 显式颜色字段后依赖 `syncFullscreenDerivedColors()` 的 fallback 派生作为主路径。
+
+验收：
+
+- black / white / grey artwork 下窗口与全屏歌词不偏粉、不偏蓝、不偏黄。
+- 彩色 artwork 下窗口歌词保留 Phase 5 前的基本观感与 theme tint。
+- Phase 5 `ColorSystemSelfCheck` 歌词项通过：nearMono window / fullscreen / cover blur chroma ≤ 0.005，彩色窗口 tint 保留，层级合理。
 
 ## B. Fork Patch Registry
 
@@ -52,6 +146,7 @@
 | Fullscreen smooth overlay | `index.html` | `lineObj.element`、`splittedWords`、word mask animations、CSS module class substring | 高。依赖 DOM renderer 内部结构。 | 不要散落新 selector；优先集中在 layer patch 和 semantic class matching。 |
 | Cover blur smooth overlay | `index.html` | `.amll-fs-*` generic path 与 `.amll-cb-*` legacy path | 高。两套路径容易只修一边。 | 修 fullscreen 高亮时同时确认 generic cover blur 和 legacy cover blur。 |
 | Apple style fullscreen cover-blur-lighter lyrics path | Swift `FullscreenPlayerView` fullscreen config/compositing + App `index.html` generic cover blur adapter | `coverBlurFullscreenGenericMode`、`coverBlurFullscreenGenericProfile=lighter`、`coverBlurFullscreenThemeColor`、Swift `.plusLighter` WebView blend、generic cover blur dots body color only | 中。Apple fullscreen 必须复用 cover blur generic lyric state/animation semantics，不能再维护 Apple-only opacity/dots selector patches，也不能把 legacy cover blur root visibility hack 或 child opacity/blend hack 套到 generic dots 上。 | 只影响 Apple 风格 fullscreen lyric surface。背景仍是 Mesh Gradient，布局仍按 Apple fullscreen/classic placement；歌词颜色来自主题取色引擎，并固定走 cover blur lighter profile / `plus-lighter`。不使用 cover blur light/dark 自动切换、`plus-darker` 或封面模糊背景。快速设置切换 skin 必须 force reapply fullscreen lyrics config/theme，避免旧 CSS vars/profile 留在 WebView。Generic dots 的 show/scale animation 与三颗点逐步变亮 opacity 由 AMLL renderer 管理；App adapter 只改 dot body `background-color`。 |
+| Swift-owned lyrics color contract | Swift `SemanticPalette.lyrics` / `FullscreenPlayerView` config assembly + App `index.html` `syncFullscreenDerivedColors()` | Swift 显式下发 window / fullscreen / cover blur surface color set；Web adapter 消费颜色并保留渲染行为。 | 中。字段遗漏会让 Web fallback 重新派生颜色，nearMono artwork 下可能再次放大 residual hue。 | 保持 `SemanticPalette.lyrics` 为主决策入口；`syncFullscreenDerivedColors()` 只在显式颜色缺失时 fallback 派生。Phase 6.5 起，只有 `analysis.isNearMonochrome && !analysis.hasTrustedHueCandidate` 才触发 visible lyrics OKLCH chroma ≤ 0.005 的中性化；有可信 muted hue 的封面必须保留颜色。未来 AMLL 升级不得把 hue 决策搬回 CSS/JS。艺术背景类 fullscreen lyrics 通过 Swift `PerceptualToneLadder.artisticLyricsTone(... scheme:)` 在 light / dark 各产出 ascending / descending L ladder；Web adapter 不需新字段，dots / background lyric / glow 通过 `--amll-fs-main-active` / `--amll-fs-main-inactive` fallback chain 自动跟随 Swift 下发的反相色。 |
 | Apple style LED tone policy | `AppleStyleSkin` + `ClassicCoverArtworkView` + `LedMeterView` | `forceBrightLEDColors` 复用 LED resolver 的 dark/bright profile | 低。属于 skin 视觉策略，不改 LED resolver 本体。 | Apple Mesh Gradient 在 light/dark App appearance 下都按暗背景处理，窗口和 fullscreen 都固定传 `forceBrightLEDColors=true`。其他复用 `ClassicCoverArtworkView` 的 skin 默认仍只在 `artBackgroundIsUltraDark` 时强制亮色。 |
 | Cover blur emphasis 官方链路 adapter | `index.html` `installFullscreenEmphasizedGlowLayer()` / `installFullscreenPackedElementAnimations()` / `cloneAnimationToElement()` / `releaseSplitWordAuxiliaryState()` | AMLL emphasis WebAnimation id、effect/timing/keyframe composite、`textShadow` keyframes、word-stack `data-amll-fs-emphasis-body` 属性、`--amll-fs-cover-blur-body-color` CSS 变量、highlight-only line-state 选择器（`active` / `data-fs-completed-highlight` / `data-amll-exit-catch-up` / `data-amll-exiting-highlight`） | 高。仍依赖 DOM renderer 私有 `splitWord.elementAnimations` 和 WebAnimation target；如果把 per-character animation clone 到单个 target，或 clone 时丢掉 `composite: "add"`，官方长词/长时值的 scale + float 叠加会失真。 | 只在 `coverBlurFullscreenGenericMode` 下启用。`installFullscreenEmphasizedGlowLayer()` 只打 `data-amll-fs-emphasis-body="1"` 并清理旧 `.amll-fs-cover-blur-glow-layer`；主 body CSS 只恢复强调词 active fill，不承担动画语义。`installFullscreenPackedElementAnimations()` 必须继续 clone `emphasize-word-*` 到原 per-character mapped target；禁止整条跳过，因为该 animation 同时包含 `scale/translate` 与 `textShadow`。`cloneAnimationToElement()` 必须通过 `resolveAnimationComposite()` 保留 source composite，尤其是 `float-word` / `emphasize-word-float*` 的 `add`，否则 float 会 replace 掉 scale。cover blur 只能在 cloned keyframes 上弱化/重染 `textShadow`；base suppress 只能移除 `textShadow`，不能移除 transform。普通 window 不进入 cover-blur profile 调整。 |
 | Completed highlight state | `index.html` `updateFullscreenParallelHighlightState()` | `bufferedLines`、`scrollToIndex`、active class、`data-fs-completed-highlight` | 中高。语义是“仍在并行/foreground 组内”，不是 active。 | opacity 不按自身 endTime 熄灭；必须等真实退出组。 |

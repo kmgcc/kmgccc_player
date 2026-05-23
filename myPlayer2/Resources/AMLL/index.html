@@ -856,8 +856,7 @@
 
         /* Use drop-shadow filter for glow - it extends beyond element boundaries */
         .amll-lyric-player.amll-surface-fullscreen .amll-fs-glow-layer.active-glow {
-            /* Use solid color instead of rgba for glow */
-            filter: drop-shadow(0 0 0.10em rgba(255, 255, 255, 0.55));
+            filter: drop-shadow(0 0 0.10em var(--amll-fs-emphasis-glow, rgba(255, 255, 255, 0.55)));
         }
 
         .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-generic .amll-fs-glow-layer.amll-fs-cover-blur-glow-layer {
@@ -2006,6 +2005,7 @@
             "--amll-fs-main-line-timing-inactive",
             "--amll-fs-sub-line-timing-inactive",
             "--amll-fs-bg-active",
+            "--amll-fs-emphasis-glow",
         ];
         const fullscreenDerivedColorVarNames = [
             "--amll-fs-sub-color",
@@ -2270,12 +2270,20 @@
                     "--amll-active",
                     computedStyle.color
                 ) ?? fsMainInactive;
-                playerElement.style.setProperty("--amll-fs-sub-color", fsMainInactive);
+                const fsSubInactive = resolveComputedOpaqueColor(
+                    computedStyle,
+                    "--amll-fs-sub-inactive",
+                    fsMainInactive
+                ) ?? fsMainInactive;
+                playerElement.style.setProperty("--amll-fs-sub-color", fsSubInactive);
                 playerElement.style.setProperty("--amll-fs-bg-inactive", fsMainInactive);
-                playerElement.style.setProperty(
-                    "--amll-fs-bg-active",
-                    deriveOpaqueColorFromMainColor(fsMainActive, 0.84)
-                );
+                const explicitFsBgActive = playerElement.style.getPropertyValue("--amll-fs-bg-active");
+                if (typeof explicitFsBgActive !== "string" || explicitFsBgActive.trim().length === 0) {
+                    playerElement.style.setProperty(
+                        "--amll-fs-bg-active",
+                        deriveOpaqueColorFromMainColor(fsMainActive, 0.84)
+                    );
+                }
             } else {
                 removeStyleVars(playerElement, fullscreenDerivedColorVarNames);
             }
@@ -2293,12 +2301,20 @@
                     "--amll-active",
                     computedStyle.color
                 ) ?? cbMainInactive;
-                playerElement.style.setProperty("--amll-cb-sub-color", cbMainInactive);
+                const cbSubInactive = resolveComputedOpaqueColor(
+                    computedStyle,
+                    "--amll-cb-sub-inactive",
+                    cbMainInactive
+                ) ?? cbMainInactive;
+                playerElement.style.setProperty("--amll-cb-sub-color", cbSubInactive);
                 playerElement.style.setProperty("--amll-cb-bg-inactive", cbMainInactive);
-                playerElement.style.setProperty(
-                    "--amll-cb-bg-active",
-                    deriveOpaqueColorFromMainColor(cbMainActive, 0.84)
-                );
+                const explicitCbBgActive = playerElement.style.getPropertyValue("--amll-cb-bg-active");
+                if (typeof explicitCbBgActive !== "string" || explicitCbBgActive.trim().length === 0) {
+                    playerElement.style.setProperty(
+                        "--amll-cb-bg-active",
+                        deriveOpaqueColorFromMainColor(cbMainActive, 0.84)
+                    );
+                }
             } else {
                 removeStyleVars(playerElement, coverBlurDerivedColorVarNames);
             }
@@ -3131,6 +3147,21 @@
                                 colorValue: glowThemeColor,
                                 alphaMultiplier: glowAlphaMultiplier,
                                 suppressGlow: fullscreenCoverBlurSuppressEmphasisGlow === true,
+                            },
+                        ),
+                    });
+                } else if (isEmphasisTextShadowAnimation(sourceAnimation)) {
+                    const playerElement = lyricPlayer.getElement();
+                    const fullscreenGlowColor = playerElement instanceof HTMLElement
+                        ? playerElement.style.getPropertyValue("--amll-fs-emphasis-glow").trim()
+                        : "";
+                    clone = cloneAnimationToElement(sourceAnimation, packedTarget, {
+                        transformKeyframes: (keyframes) => adaptCoverBlurEmphasisKeyframes(
+                            keyframes,
+                            {
+                                colorValue: fullscreenGlowColor || null,
+                                alphaMultiplier: 1,
+                                suppressGlow: false,
                             },
                         ),
                     });
@@ -5308,6 +5339,7 @@
                         applyFullscreenColorVar("fullscreenSubActiveColor", "--amll-fs-sub-active");
                         applyFullscreenColorVar("fullscreenSubInactiveColor", "--amll-fs-sub-inactive");
                         applyFullscreenColorVar("fullscreenBackgroundColor", "--amll-fs-bg-active");
+                        applyFullscreenColorVar("fullscreenEmphasisGlowColor", "--amll-fs-emphasis-glow");
                         applyFullscreenColorVar(
                             "fullscreenLineTimingInactiveColor",
                             "--amll-fs-main-line-timing-inactive"

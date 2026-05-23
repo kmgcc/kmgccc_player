@@ -72,11 +72,11 @@ struct HomeHeroView: View {
     }
 
     private var artworkTextPrimary: Color {
-        Color(nsColor: heroPalette.readableTextOnArtwork)
+        Color(nsColor: heroPalette.readabilityProfile.foregroundPrimary)
     }
 
     private var artworkTextSecondary: Color {
-        Color(nsColor: heroPalette.readableTextOnArtwork.withAlphaComponent(0.78))
+        Color(nsColor: heroPalette.readabilityProfile.foregroundSecondary)
     }
 
     private var artworkDominantColor: NSColor {
