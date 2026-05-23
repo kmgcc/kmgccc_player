@@ -1095,6 +1095,33 @@ Phase 6.3 后的人工验收说明：剩余问题已经不是单个 token，而�
 
 ---
 
+### 6.14 Phase 6.5 — Artistic Color System Architecture Repair（2026-05-23）
+
+Phase 6.5 重新审计了颜色状态机、fullscreen MiniPlayer 前景色策略、艺术背景日间路径、nearMono / trusted hue 语义和 BKArt shape fallback。结论：Phase 6.3 / 6.4 的问题不是单点 token，而是多个消费者各自 fallback、各自判断可读性。
+
+**最终架构决策**：
+
+- 新增 `FullscreenMiniPlayerForegroundStrategy`，把 fullscreen MiniPlayer、左侧退出全屏歌词按钮、底部 transport、progress/time、queue/order pill、volume、hover / expanded 状态统一到一个 `FullscreenMiniPlayerForegroundProfile`。Apple skin 固定 light profile；Cover Gradient Blur / clear blur 根据 artwork readability 统一切 light/dark；Artistic day 固定 dark profile；Artistic night 固定 light profile。
+- `ThemeStore` 引入 explicit pending hold：presentation artwork loading / cache miss / full analysis pending 时保留上一套有效 semantic palette，不发布 `.neutralFallback` 中间态；只有真正 no artwork 或 extraction 失败才 fallback。`PlaybackThemeArtworkWatcher` 的 task id 加入 loading + artwork checksum，避免 artwork ready 后不触发主题更新。
+- Fullscreen lyrics / cover blur / BKArt 消费端不再在 pending 时自行发 default：lyrics seed fallback 在 palette pending 时复用 `themeStore.semanticPalette`；cover blur 可复用 held theme；`BKArtBackgroundView` 在 artwork loading 时保留上一帧 palette。
+- nearMono 重新定义为“没有可信色相”，不是“平均饱和度低”。`ArtworkHueTrust` 需要 palette/top/rich/salient 或 dominant + real sampling support；`.neutralFallback` 的 fallback orange 不再能冒充真实 hue。muted coherent hue floor 降到 0.024，但必须有 avg saturation / colorfulness / dominant confidence / coherent palette 支撑。
+- `SemanticPalette`、MiniPlayer spectrum、BKColorEngine 使用统一的 effective nearMono：`analysis.isNearMonochrome && !analysis.hasTrustedHueCandidate`。有可信 hue 的低饱和封面不再被歌词、AppForeground、MiniPlayer、BKArt 二次灰化。
+- true nearMono BKArt shapes 仍允许极淡低彩，但全部经 OKLCH chroma crush，避免淡粉 / 淡黄 / 淡蓝 fallback hue 失控。
+- 日间艺术背景独立为 airy high-B profile：`bgB=0.990...1.000`、`fgB=0.955...0.995`、`dotB=0.920...0.980`；fullscreen 背景层日间不再叠 `effectiveDimmingIntensity` 黑色压暗层。
+- 日间艺术歌词提升为干净深灰体系：active L=0.335、inactive L=0.620、translation L=0.622、line timing L=0.650/0.668。active 更清楚但不死黑；translation 与 inactive 同层；dark emphasis glow 方向保留。
+
+**SelfCheck / Build**：
+
+- `COLOR_SYSTEM_SELF_CHECK=1 /Users/developer/Library/Developer/Xcode/DerivedData/kmgccc_player-aswiqhmbwwcbdpglyofdrjkjowjq/Build/Products/Debug/kmgccc_player.app/Contents/MacOS/kmgccc_player`：`Result: ALL PASS`。
+- `xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player -configuration Debug -destination 'platform=macOS' build`：PASS。
+
+**仍不处理**：
+
+- AMLL active / inactive feather transition 继续留在 backlog。
+- 未修改 generated `myPlayer2/Resources/AMLL/amll-core.js` / `amll-lyric.js`，未修改 fork core。
+
+---
+
 ## 后续接力点（Phase 7 / 独立排期）
 
 ### B. AppKit toolbar 图标 tint（见 §4.5.12）
@@ -1110,7 +1137,7 @@ Phase 6.3 后的人工验收说明：剩余问题已经不是单个 token，而�
 
 ### D. 跨阶段技术债
 
-- `ArtworkAssetSnapshot` 不携带 Phase 2 新字段（displayPalette / salient / isUltraDark）。BKArt 走 snapshot cache 路径时 analysis 仍为 nil，丢失多色性增益。Phase 4/7 评估持久化或让 ThemeStore 在更早一层缓存 `ArtworkColorAnalysis`。
+- `ArtworkAssetSnapshot.analysis` 已在 Phase 6.4/6.5 路径中用于 cache-hit 复用；后续若扩展持久化格式，需确认 displayPalette / salient / UltraDark / trusted hue 字段不会退化成旧 fallback analysis。
 - `isEffectivelyMonochrome` 别名仍保留向后兼容；所有现有消费者切到 `isNearMonochrome` 后可删。
 - `HomeAmbientPalette.ambientBaseColor` 仍走旧 HSL 单 sourceColor 路径。
 
@@ -1129,4 +1156,4 @@ xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player \
 COLOR_SYSTEM_SELF_CHECK=1 ./kmgccc_player.app/Contents/MacOS/kmgccc_player
 ```
 
-Self-check 场景随 Phase 6.1–6.4 持续扩展，但只能作为 synthetic 回归辅助。2026-05-23 本地 Debug 曾运行 `Result: ALL PASS`，覆盖 focus seed、nearMono trusted hue、BK true nearMono shapes、日夜艺术背景、日间 dark glow、MiniPlayer fixed dark profile、light-mode UltraDark 禁用与 pending palette hold 相关断言；同日人工复测已否定多个可见结论。下一轮不得把 self-check pass 当作 Phase 6 验收通过。
+Self-check 场景随 Phase 6.1–6.5 持续扩展，但只能作为 synthetic 回归辅助。2026-05-23 Phase 6.5 本地 Debug 运行 `Result: ALL PASS`，覆盖 focus seed、muted trusted hue、true nearMono neutralization、BK true nearMono shapes、日间 airy BKArt、日间歌词深灰层级、MiniPlayer foreground strategy 与 pending palette hold 相关断言。最终验收仍以真实封面手测矩阵为准。

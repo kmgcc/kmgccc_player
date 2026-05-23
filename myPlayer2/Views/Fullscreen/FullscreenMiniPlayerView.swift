@@ -33,6 +33,7 @@ struct FullscreenMiniPlayerView: View {
     var onProgressDraggingChanged: (Bool) -> Void = { _ in }
     var onEditTrackRequested: (Track) -> Void = { _ in }
     var onEditExternalInfoRequested: () -> Void = {}
+    var foregroundProfile: FullscreenMiniPlayerForegroundProfile? = nil
     
     private let fixedBarHeight: CGFloat = 60
 
@@ -277,10 +278,9 @@ struct FullscreenMiniPlayerView: View {
             isPlaying: playbackCoordinator.presentation.isPlaying,
             accentColor: themeStore.usesFallbackThemeColor ? nil : themeStore.accentColor,
             foregroundColor: controlPrimaryColor,
-            enforceBrightForeground: !usesAdaptiveClearForeground
-                && !usesDarkControlForegroundForLightArtisticBackground,
+            enforceBrightForeground: resolvedForegroundProfile.enforceBrightProgressForeground,
             spectrumArtworkColors: spectrumArtworkColors,
-            spectrumUsesDarkForeground: usesDarkArtworkForegroundForClear,
+            spectrumUsesDarkForeground: resolvedForegroundProfile.spectrumUsesDarkForeground,
             progress: progressDisplayTime,
             duration: playbackCoordinator.presentation.duration,
             isSeekEnabled: playbackCoordinator.presentation.isSeekEnabled,
@@ -423,78 +423,39 @@ struct FullscreenMiniPlayerView: View {
     }
 
     private var fullscreenControlPillTintColor: Color? {
-        usesDarkControlForegroundForLightArtisticBackground ? controlPrimaryColor : themeStore.accentColor
+        Color(nsColor: resolvedForegroundProfile.pillTint).opacity(0.96)
     }
 
     private var controlPrimaryNSColor: NSColor {
-        let palette = themeStore.semanticPalette
-        if usesDarkArtworkForegroundForClear {
-            // Surface is the artwork itself (Cover Gradient Blur "clear"
-            // material AND the cover is bright enough that the stricter
-            // dark-foreground gate fires). Use the readability profile so
-            // we share the near-mono neutralisation with HomeHero and
-            // other future on-artwork surfaces.
-            return palette.readabilityProfile.foregroundPrimary
-        }
-        if usesDarkControlForegroundForLightArtisticBackground {
-            // Phase 6.3: dark icons on bright artistic glass. When the
-            // fullscreen artistic background is enabled and the system is
-            // in `.light`, the chrome material is sitting on a high-L
-            // artwork-tinted background. The default MiniPlayerControl palette emits a
-            // light foreground built for dark surfaces — that produces
-            // low-contrast lift here. Switch to the readability dark
-            // foreground so labels and SF Symbols read as dark text on
-            // bright glass. `readabilityProfile.foregroundPrimary` is
-            // Phase-4 OKLCH-neutralised on nearMono so we keep the
-            // anti-pink behaviour for free.
-            return palette.readabilityProfile.foregroundPrimary
-        }
-        // Surface is the chrome material (darkened liquid-glass pill).
-        // The Phase 4 MiniPlayerControl palette collapses to OKLCH
-        // neutral white on near-mono covers, so the legacy "lift HSL
-        // saturation to ≥0.88" path can no longer leak a pastel tint.
-        return palette.miniPlayerControl.primary
-    }
-
-    /// Phase 6.3 — fullscreen artistic background is enabled AND the
-    /// system is in `.light`. In this configuration the chrome material is
-    /// sitting on a high-L artwork-tinted background; the default chrome
-    /// control palette is built for dark surfaces and would emit a
-    /// low-contrast lift. Switch the chrome control foreground to the
-    /// readability-profile dark foreground so icons and labels read as
-    /// dark text on bright glass. ThemeStore now holds the previous palette
-    /// while analysis is pending, so this gate stays stable during track
-    /// changes instead of flashing to the light chrome profile.
-    private var usesDarkControlForegroundForLightArtisticBackground: Bool {
-        settings.fullscreenArtBackgroundEnabled
-            && colorScheme == .light
-    }
-
-    private var usesAdaptiveClearForeground: Bool {
-        settings.fullscreen.skinID == FullscreenSkinID.coverGradientBlur.rawValue
-            && glassStyle.materialStyle == .clear
-            && themeStore.hasArtworkThemeColor
-    }
-
-    private var usesDarkArtworkForegroundForClear: Bool {
-        usesAdaptiveClearForeground
-            && Self.shouldUseDarkArtworkForeground(for: themeStore.semanticPalette.analysis)
+        resolvedForegroundProfile.primary
     }
 
     private var controlBlendMode: BlendMode {
-        usesScreenBlendForControls ? .screen : .normal
+        resolvedForegroundProfile.iconBlendMode
     }
 
     private var usesScreenBlendForControls: Bool {
-        if usesDarkControlForegroundForLightArtisticBackground {
-            return false
+        resolvedForegroundProfile.useScreenBlend
+    }
+
+    private var resolvedForegroundProfile: FullscreenMiniPlayerForegroundProfile {
+        if let foregroundProfile {
+            return foregroundProfile
         }
-        return !usesDarkArtworkForegroundForClear
-            || ColorMath.relativeLuminance(of: controlPrimaryNSColor) >= 0.58
+        return FullscreenMiniPlayerForegroundStrategy.resolve(
+            palette: themeStore.semanticPalette,
+            hasArtworkThemeColor: themeStore.hasArtworkThemeColor,
+            skinID: settings.fullscreen.skinID,
+            colorScheme: colorScheme,
+            materialStyle: glassStyle.materialStyle,
+            fullscreenArtBackgroundEnabled: settings.fullscreenArtBackgroundEnabled
+        )
     }
 
     private var spectrumArtworkColors: [NSColor] {
-        guard usesAdaptiveClearForeground else { return [] }
+        guard resolvedForegroundProfile.role == .coverBlurDarkForeground
+            || resolvedForegroundProfile.role == .coverBlurLightForeground
+        else { return [] }
         let analysis = themeStore.semanticPalette.analysis
         // Phase 3: switch the spectrum source from raw topPalette to the
         // Phase-2 displayPalette. displayPalette is ordered
@@ -535,7 +496,7 @@ struct FullscreenMiniPlayerView: View {
         analysis: ArtworkColorAnalysis
     ) -> [NSColor] {
         guard !colors.isEmpty else { return colors }
-        if analysis.isNearMonochrome {
+        if analysis.isNearMonochrome && !analysis.hasTrustedHueCandidate {
             return colors.map { neutralizeForNearMono($0) ?? $0 }
         }
         if analysis.colorfulness < 0.18 {
@@ -611,11 +572,7 @@ struct FullscreenMiniPlayerView: View {
     /// to the over-blur surface — the rest of the readability semantic
     /// lives on `ArtworkReadabilityProfile`.
     static func shouldUseDarkArtworkForeground(for analysis: ArtworkColorAnalysis) -> Bool {
-        guard analysis.usesDarkForeground else { return false }
-        let averageLuma = ColorMath.relativeLuminance(of: analysis.averageColor)
-        return analysis.avgHslLightness >= 0.68
-            || averageLuma >= 0.58
-            || (analysis.avgBrightness >= 0.82 && analysis.avgSaturation < 0.30)
+        FullscreenMiniPlayerForegroundStrategy.shouldUseDarkArtworkForeground(for: analysis)
     }
 }
 

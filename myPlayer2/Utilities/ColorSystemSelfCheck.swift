@@ -181,6 +181,7 @@ nonisolated enum ColorSystemSelfCheck {
         checkSeedFocusSuppressedOnTinyNoise(&report)
         checkSeedFocusSuppressedOnMultiColor(&report)
         checkNearMonoNotTriggeredByLowSatChromaticCover(&report)
+        checkNearMonoNotTriggeredByMutedCoherentChromaticCover(&report)
         checkNearMonoStillTriggersOnTrueGrey(&report)
         checkNearMonoBlackWithBrightSpotCanStillUseSalient(&report)
         checkArtShapesNeutralUnderNearMono(&report)
@@ -2047,9 +2048,9 @@ nonisolated enum ColorSystemSelfCheck {
         // Night UltraDark.
         let nightUltraDarkDotB: ClosedRange<CGFloat> = 0.22...0.38
         // Day (light, normal).
-        let dayBgB: ClosedRange<CGFloat> = 0.975...0.995
-        let dayFgB: ClosedRange<CGFloat> = 0.930...0.985
-        let dayDotB: ClosedRange<CGFloat> = 0.860...0.950
+        let dayBgB: ClosedRange<CGFloat> = 0.990...1.000
+        let dayFgB: ClosedRange<CGFloat> = 0.955...0.995
+        let dayDotB: ClosedRange<CGFloat> = 0.920...0.980
     }
 
     /// 95% near-black + 5% bright yellow. The canonical Phase 6.3 focus-score
@@ -2227,6 +2228,22 @@ nonisolated enum ColorSystemSelfCheck {
         )
     }
 
+    /// Muted blue-grey cover: the average saturation is low enough to look
+    /// risky, but the dominant centroid and hue field are coherent. Phase 6.5
+    /// must keep it chromatic instead of flattening it to lyric grey.
+    private static func checkNearMonoNotTriggeredByMutedCoherentChromaticCover(_ report: inout CheckReport) {
+        guard let analysis = analyse(side: 32, fill: (118, 132, 145, 255)) else {
+            report.record("Phase 6.5: muted coherent cover keeps trusted hue", false, "analysis nil")
+            return
+        }
+        let dominantC = OKColor.nsColorToOKLCH(analysis.dominantColor)?.c ?? 0
+        let ok = analysis.hasTrustedHueCandidate && !analysis.isNearMonochrome
+        report.record(
+            "Phase 6.5: muted coherent cover keeps trusted hue", ok,
+            "isNearMono=\(analysis.isNearMonochrome) trusted=\(analysis.hasTrustedHueCandidate) dominantC=\(format(dominantC)) avgSat=\(format(analysis.avgSaturation))"
+        )
+    }
+
     /// Pure mid-grey cover. Branch-1 strict mono must still fire — no
     /// trusted hue can override it.
     private static func checkNearMonoStillTriggersOnTrueGrey(_ report: inout CheckReport) {
@@ -2234,10 +2251,10 @@ nonisolated enum ColorSystemSelfCheck {
             report.record("Phase 6.3: nearMono still triggers on true grey", false, "analysis nil")
             return
         }
-        let ok = analysis.isNearMonochrome
+        let ok = analysis.isNearMonochrome && !analysis.hasTrustedHueCandidate
         report.record(
             "Phase 6.3: nearMono still triggers on true grey", ok,
-            "isNearMono=\(analysis.isNearMonochrome) colorfulness=\(format(analysis.colorfulness)) avgSat=\(format(analysis.avgSaturation))"
+            "isNearMono=\(analysis.isNearMonochrome) trusted=\(analysis.hasTrustedHueCandidate) colorfulness=\(format(analysis.colorfulness)) avgSat=\(format(analysis.avgSaturation))"
         )
     }
 
@@ -2508,30 +2525,134 @@ nonisolated enum ColorSystemSelfCheck {
         )
     }
 
-    /// The MiniPlayer day-mode gate switches `controlPrimary` to
-    /// `readabilityProfile.foregroundPrimary` (a dark foreground on bright
-    /// covers). Verify the readability profile produces a darker primary
-    /// than `MiniPlayerControl.primary` (which is white-based) for a sample
-    /// bright artwork analysis. This is the headless equivalent of the
-    /// in-view gate firing.
+    /// Fullscreen MiniPlayer foreground is resolved once per surface. This
+    /// locks the three fullscreen skin families to their intended profiles:
+    /// Apple = fixed light, Cover Blur = readability driven, Artistic day =
+    /// fixed dark, Artistic night = fixed light.
     private static func checkMiniPlayerDayProfileSwitchesToDarkForeground(_ report: inout CheckReport) {
-        // Sample bright colourful artwork: mid-orange that yields
-        // `usesDarkForeground == true` from the analyser.
-        guard let analysis = analyse(side: 32, fill: (240, 165, 60, 255)) else {
-            report.record("Phase 6.3: MiniPlayer dark profile gate", false, "analysis nil")
+        guard let brightAnalysis = analyse(side: 32, fill: (245, 196, 120, 255)),
+              let darkAnalysis = analyse(side: 32, fill: (18, 24, 42, 255)) else {
+            report.record("Phase 6.5: MiniPlayer foreground strategy", false, "analysis nil")
             return
         }
-        let readability = SemanticPaletteSelfCheck.readabilityProfile(analysis)
-        let readableL = OKColor.nsColorToOKLCH(readability.foregroundPrimary)?.l ?? 0
-        // White-based MiniPlayer primary (the default chrome control path)
-        // sits around L >= 0.85. The readability profile under a bright
-        // cover sits well below that.
-        let darkerThanWhiteChrome = readableL < 0.50
-        let usesDarkFg = analysis.usesDarkForeground
-        let ok = usesDarkFg && darkerThanWhiteChrome
+        let fallbackAccent = NSColor(deviceRed: 0.30, green: 0.48, blue: 0.95, alpha: 1)
+        let brightPalette = foregroundStrategyPalette(
+            analysis: brightAnalysis,
+            scheme: .light,
+            fallbackAccent: fallbackAccent
+        )
+        let darkPalette = foregroundStrategyPalette(
+            analysis: darkAnalysis,
+            scheme: .dark,
+            fallbackAccent: fallbackAccent
+        )
+        let artisticDay = FullscreenMiniPlayerForegroundStrategy.resolve(
+            palette: brightPalette,
+            hasArtworkThemeColor: true,
+            skinID: "fullscreen.artisticBackground",
+            colorScheme: .light,
+            materialStyle: .regular,
+            fullscreenArtBackgroundEnabled: true
+        )
+        let artisticNight = FullscreenMiniPlayerForegroundStrategy.resolve(
+            palette: darkPalette,
+            hasArtworkThemeColor: true,
+            skinID: "fullscreen.artisticBackground",
+            colorScheme: .dark,
+            materialStyle: .regular,
+            fullscreenArtBackgroundEnabled: true
+        )
+        let apple = FullscreenMiniPlayerForegroundStrategy.resolve(
+            palette: brightPalette,
+            hasArtworkThemeColor: true,
+            skinID: "appleStyle",
+            colorScheme: .light,
+            materialStyle: .darkGlass,
+            fullscreenArtBackgroundEnabled: true
+        )
+        let coverBright = FullscreenMiniPlayerForegroundStrategy.resolve(
+            palette: brightPalette,
+            hasArtworkThemeColor: true,
+            skinID: "fullscreen.coverGradientBlur",
+            colorScheme: .light,
+            materialStyle: .clear,
+            fullscreenArtBackgroundEnabled: false
+        )
+        let coverDark = FullscreenMiniPlayerForegroundStrategy.resolve(
+            palette: darkPalette,
+            hasArtworkThemeColor: true,
+            skinID: "fullscreen.coverGradientBlur",
+            colorScheme: .dark,
+            materialStyle: .clear,
+            fullscreenArtBackgroundEnabled: false
+        )
+        let artisticDayL = OKColor.nsColorToOKLCH(artisticDay.primary)?.l ?? 1
+        let artisticNightL = OKColor.nsColorToOKLCH(artisticNight.primary)?.l ?? 0
+        let appleL = OKColor.nsColorToOKLCH(apple.primary)?.l ?? 0
+        let coverBrightL = OKColor.nsColorToOKLCH(coverBright.primary)?.l ?? 1
+        let coverDarkL = OKColor.nsColorToOKLCH(coverDark.primary)?.l ?? 0
+        let ok = artisticDay.role == .artisticDayDarkForeground
+            && artisticDayL < 0.55
+            && !artisticDay.useScreenBlend
+            && artisticNight.role == .artisticNightLightForeground
+            && artisticNightL > 0.80
+            && apple.role == .appleFixedLight
+            && appleL > 0.80
+            && coverBright.role == .coverBlurDarkForeground
+            && coverBrightL < 0.55
+            && coverDark.role == .coverBlurLightForeground
+            && coverDarkL > 0.80
         report.record(
-            "Phase 6.3: MiniPlayer day profile swaps to dark foreground", ok,
-            "usesDarkFg=\(usesDarkFg) readabilityL=\(format(readableL))"
+            "Phase 6.5: MiniPlayer foreground strategy", ok,
+            "artDay=\(artisticDay.role.rawValue)/L\(format(artisticDayL)) artNight=\(artisticNight.role.rawValue)/L\(format(artisticNightL)) apple=\(apple.role.rawValue)/L\(format(appleL)) coverBright=\(coverBright.role.rawValue)/L\(format(coverBrightL)) coverDark=\(coverDark.role.rawValue)/L\(format(coverDarkL))"
+        )
+    }
+
+    private static func foregroundStrategyPalette(
+        analysis: ArtworkColorAnalysis,
+        scheme: ColorScheme,
+        fallbackAccent: NSColor
+    ) -> SemanticPalette {
+        let readability = SemanticPaletteSelfCheck.readabilityProfile(analysis)
+        let primary = analysis.isNearMonochrome && !analysis.hasTrustedHueCandidate
+            ? SemanticPaletteSelfCheck.neutralAchromaticControl()
+            : SemanticPaletteSelfCheck.liftedAccentControl(fallbackAccent)
+        let control = MiniPlayerControlPalette(
+            primary: primary,
+            secondary: primary.withAlphaComponent(ColorSystemTokens.ReadabilityProfile.secondaryAlpha),
+            progressFill: primary,
+            progressTrack: primary.withAlphaComponent(ColorSystemTokens.ReadabilityProfile.tertiaryAlpha)
+        )
+        let appForeground = SemanticPaletteSelfCheck.appForeground(
+            analysis: analysis,
+            globalAccent: fallbackAccent,
+            isDark: scheme == .dark
+        )
+        let lyrics = SemanticPaletteSelfCheck.lyricsPalette(
+            analysis: analysis,
+            scheme: scheme
+        )
+        return SemanticPalette(
+            scheme: scheme,
+            analysis: analysis,
+            globalAccent: fallbackAccent,
+            uiAccentOnDark: fallbackAccent,
+            uiAccentOnLight: fallbackAccent,
+            ambientSurface: fallbackAccent,
+            artBackgroundPrimary: fallbackAccent,
+            artBackgroundSecondary: fallbackAccent,
+            readableTextOnArtwork: readability.foregroundPrimary,
+            secondaryTextOnArtwork: readability.foregroundSecondary,
+            windowLyricActive: lyrics.windowActive,
+            windowLyricInactive: lyrics.windowInactive,
+            fullscreenLyricBase: lyrics.fullscreenBase,
+            fullscreenLyricInactiveBase: lyrics.fullscreenInactiveBase,
+            coverGradientDominant: fallbackAccent,
+            coverGradientText: readability.foregroundPrimary,
+            readabilityProfile: readability,
+            miniPlayerControl: control,
+            appForeground: appForeground,
+            lyrics: lyrics
         )
     }
 
@@ -2570,9 +2691,9 @@ nonisolated enum ColorSystemSelfCheck {
 
     private static func checkPhase64DayArtBackgroundAiryBand(_ report: inout CheckReport) {
         let fixture = Phase63TierFixture()
-        let ok = fixture.dayBgB.lowerBound >= 0.970
-            && fixture.dayFgB.lowerBound >= 0.920
-            && fixture.dayDotB.lowerBound >= 0.840
+        let ok = fixture.dayBgB.lowerBound >= 0.985
+            && fixture.dayFgB.lowerBound >= 0.950
+            && fixture.dayDotB.lowerBound >= 0.900
         report.record(
             "Phase 6.4: day art background uses airy high-B bands", ok,
             "bg=\(format(fixture.dayBgB.lowerBound))...\(format(fixture.dayBgB.upperBound)) fg=\(format(fixture.dayFgB.lowerBound))...\(format(fixture.dayFgB.upperBound)) dot=\(format(fixture.dayDotB.lowerBound))...\(format(fixture.dayDotB.upperBound))"

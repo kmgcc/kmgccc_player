@@ -109,6 +109,93 @@ nonisolated struct ArtworkColorAnalysis: Equatable, Sendable {
         displayPalette: [],
         bestTextSourceColor: NSColor(deviceRed: 0.20, green: 0.20, blue: 0.22, alpha: 1)
     )
+
+    var hasTrustedHueCandidate: Bool {
+        ArtworkHueTrust.hasTrustedHueCandidate(
+            dominant: OKColor.nsColorToOKLCH(dominantColor),
+            top: topPalette.compactMap { OKColor.nsColorToOKLCH($0) },
+            rich: richPalette.compactMap { OKColor.nsColorToOKLCH($0) },
+            salient: salientHighlightPalette.compactMap { OKColor.nsColorToOKLCH($0) },
+            salientAreaShares: salientHighlightAreaShares,
+            avgSaturation: avgSaturation,
+            colorfulness: colorfulness,
+            dominantSaturation: dominantSaturation,
+            dominantHueConfidence: dominantHueConfidence,
+            largestHighSaturationAreaShare: largestHighSaturationAreaShare,
+            isMonochrome: isMonochrome
+        )
+    }
+}
+
+nonisolated enum ArtworkHueTrust {
+    static func hasTrustedHueCandidate(
+        dominant: OKColor.OKLCH?,
+        top: [OKColor.OKLCH],
+        rich: [OKColor.OKLCH],
+        salient: [OKColor.OKLCH],
+        salientAreaShares: [CGFloat],
+        avgSaturation: CGFloat,
+        colorfulness: CGFloat,
+        dominantSaturation: CGFloat,
+        dominantHueConfidence: CGFloat,
+        largestHighSaturationAreaShare: CGFloat,
+        isMonochrome: Bool
+    ) -> Bool {
+        let T = ColorSystemTokens.NearMonochromeProfile.self
+        let paletteCandidates = top + rich + salient
+        if paletteCandidates.contains(where: { $0.c >= T.trustedHueChromaFloor }) {
+            return true
+        }
+        let hasDominantSamplingSupport =
+            !isMonochrome
+            && (avgSaturation >= T.strictAvgSaturation
+            || colorfulness >= T.strictColorfulness
+            || dominantSaturation >= T.mutedTrustedDominantSaturationFloor
+            || largestHighSaturationAreaShare >= T.mutedTrustedLargestHighSatAreaFloor)
+        if let dominant,
+           dominant.c >= T.trustedHueChromaFloor,
+           hasDominantSamplingSupport {
+            return true
+        }
+
+        for (index, candidate) in salient.enumerated()
+            where candidate.c >= T.mutedTrustedHueChromaFloor {
+            let share = index < salientAreaShares.count ? salientAreaShares[index] : 0
+            if share >= ColorSystemTokens.SalientHighlight.minAreaShare {
+                return true
+            }
+        }
+
+        let hasChromaticSupport =
+            avgSaturation >= T.mutedTrustedAvgSaturationFloor
+            || colorfulness >= T.mutedTrustedColorfulnessFloor
+            || dominantSaturation >= T.mutedTrustedDominantSaturationFloor
+            || largestHighSaturationAreaShare >= T.mutedTrustedLargestHighSatAreaFloor
+
+        guard hasChromaticSupport else { return false }
+
+        if let dominant,
+           dominant.c >= T.mutedTrustedHueChromaFloor,
+           dominantHueConfidence >= T.mutedTrustedDominantConfidenceFloor {
+            return true
+        }
+
+        let allCandidates = [dominant].compactMap { $0 } + paletteCandidates
+        let mutedCandidates = allCandidates.filter { $0.c >= T.mutedTrustedHueChromaFloor }
+        guard mutedCandidates.count >= 2 else { return false }
+
+        for i in mutedCandidates.indices {
+            for j in mutedCandidates.indices where j > i {
+                if ColorMath.circularHueDistance(
+                    mutedCandidates[i].h,
+                    mutedCandidates[j].h
+                ) <= T.mutedTrustedCoherentHueGap {
+                    return true
+                }
+            }
+        }
+        return false
+    }
 }
 
 extension ArtworkColorExtractor {
@@ -328,14 +415,22 @@ extension ArtworkColorExtractor {
         let salientLCHs: [OKColor.OKLCH] = phase63SalientCandidates
             .map(\.color)
             .compactMap { OKColor.nsColorToOKLCH($0) }
-        let hasTrustedHue =
-            (dominantLCH?.c ?? 0) >= ColorSystemTokens.NearMonochromeProfile.trustedHueChromaFloor
-            || topLCHs.contains(where: { $0.c >= ColorSystemTokens.NearMonochromeProfile.trustedHueChromaFloor })
-            || richLCHs.contains(where: { $0.c >= ColorSystemTokens.NearMonochromeProfile.trustedHueChromaFloor })
-            || salientLCHs.contains(where: { $0.c >= ColorSystemTokens.NearMonochromeProfile.trustedHueChromaFloor })
-
         let isMono = colorfulness < ColorSystemTokens.NearMonochromeProfile.strictColorfulness
             && avgSat < ColorSystemTokens.NearMonochromeProfile.strictAvgSaturation
+        let hasTrustedHue = ArtworkHueTrust.hasTrustedHueCandidate(
+            dominant: dominantLCH,
+            top: topLCHs,
+            rich: richLCHs,
+            salient: salientLCHs,
+            salientAreaShares: phase63SalientCandidates.map(\.areaShare),
+            avgSaturation: avgSat,
+            colorfulness: colorfulness,
+            dominantSaturation: dominantSaturation,
+            dominantHueConfidence: dominantHueConfidence,
+            largestHighSaturationAreaShare: largestHighSaturationAreaShare,
+            isMonochrome: isMono
+        )
+
         // Phase 6.3: true nearMono means "no trusted hue exists anywhere".
         // Phase 6.2 still let strict mono fire unconditionally, so a
         // low-average cover with a real small chromatic focus could enter the

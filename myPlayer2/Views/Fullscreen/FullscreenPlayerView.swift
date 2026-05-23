@@ -367,6 +367,10 @@ struct FullscreenPlayerView: View {
         return base
     }
 
+    private var artisticBackgroundDimmingIntensity: Double {
+        colorScheme == .light ? 0 : effectiveDimmingIntensity
+    }
+
     var body: some View {
         GeometryReader { proxy in
             fullscreenContent(for: proxy)
@@ -729,11 +733,12 @@ struct FullscreenPlayerView: View {
                     ? .cassetteForeground
                     : .standard,
                 dotRenderStyle: .solidCircles,
-                initialPalette: fullscreenArtBackgroundSeedPalette
+                initialPalette: fullscreenArtBackgroundSeedPalette,
+                holdPaletteWhenArtworkMissing: currentDisplayContext.isArtworkLoading
             )
             .ignoresSafeArea()
 
-            Color.black.opacity(effectiveDimmingIntensity)
+            Color.black.opacity(artisticBackgroundDimmingIntensity)
                 .ignoresSafeArea()
         } else {
             selectedSkin.makeBackground(context: context)
@@ -1183,7 +1188,8 @@ struct FullscreenPlayerView: View {
                 },
                 onEditExternalInfoRequested: {
                     isShowingExternalMatchEditor = true
-                }
+                },
+                foregroundProfile: fullscreenMiniPlayerForegroundProfile
             )
                 .frame(width: currentMiniPlayerWidth, height: buttonSize)
                 .overlay(alignment: .top) {
@@ -1201,7 +1207,8 @@ struct FullscreenPlayerView: View {
                 isExpanded: $isVolumeExpanded,
                 isEnabled: playbackCoordinator.presentation.isVolumeControlEnabled,
                 usesAdaptiveForeground: isCoverBlurFullscreenSkin,
-                forceDarkForegroundProfile: usesDarkControlForegroundForLightArtisticBackground
+                forceDarkForegroundProfile: false,
+                foregroundProfile: fullscreenMiniPlayerForegroundProfile
             )
             .frame(width: volumeWidth, height: buttonSize)
             .environment(\.colorScheme, fullscreenControlsColorScheme)
@@ -1708,7 +1715,8 @@ struct FullscreenPlayerView: View {
                         onEditExternalInfoRequested: {
                             registerFullscreenBottomControlsInteraction()
                             isShowingExternalMatchEditor = true
-                        }
+                        },
+                        foregroundProfile: fullscreenMiniPlayerForegroundProfile
                     )
                     .glassEffectTransition(.materialize)
                     .frame(width: scaledMiniPlayerWidth, height: scaledButtonSize)
@@ -1755,8 +1763,9 @@ struct FullscreenPlayerView: View {
                         materialStyle: fullscreenControlsGlassStyle.materialStyle,
                         isEnabled: playbackCoordinator.presentation.isVolumeControlEnabled,
                         usesAdaptiveForeground: isCoverBlurFullscreenSkin,
-                        forceDarkForegroundProfile: usesDarkControlForegroundForLightArtisticBackground,
-                        usesInternalHoverExpansion: false
+                        forceDarkForegroundProfile: false,
+                        usesInternalHoverExpansion: false,
+                        foregroundProfile: fullscreenMiniPlayerForegroundProfile
                     )
                     .glassEffectTransition(.materialize)
                     .frame(width: scaledVolumeWidth, height: scaledButtonSize)
@@ -2070,40 +2079,22 @@ struct FullscreenPlayerView: View {
     }
 
     private var fullscreenMiniPlayerPrimaryNSColor: NSColor {
-        let palette = themeStore.semanticPalette
-        if usesDarkControlForegroundForLightArtisticBackground {
-            return palette.readabilityProfile.foregroundPrimary
-        }
-        if isCoverBlurFullscreenSkin,
-           fullscreenControlsGlassStyle.materialStyle == .clear,
-           themeStore.hasArtworkThemeColor,
-           FullscreenMiniPlayerView.shouldUseDarkArtworkForeground(
-                for: palette.analysis
-           ) {
-            return palette.readabilityProfile.foregroundPrimary
-        }
-        return palette.miniPlayerControl.primary
+        fullscreenMiniPlayerForegroundProfile.primary
     }
 
     private var fullscreenMiniPlayerIconBlendMode: BlendMode {
-        if usesDarkControlForegroundForLightArtisticBackground {
-            return .normal
-        }
-        if isCoverBlurFullscreenSkin,
-           fullscreenControlsGlassStyle.materialStyle == .clear,
-           themeStore.hasArtworkThemeColor,
-           FullscreenMiniPlayerView.shouldUseDarkArtworkForeground(
-                for: themeStore.semanticPalette.analysis
-           ),
-           ColorMath.relativeLuminance(of: fullscreenMiniPlayerPrimaryNSColor) < 0.58 {
-            return .normal
-        }
-        return .screen
+        fullscreenMiniPlayerForegroundProfile.iconBlendMode
     }
 
-    private var usesDarkControlForegroundForLightArtisticBackground: Bool {
-        settings.fullscreenArtBackgroundEnabled
-            && colorScheme == .light
+    private var fullscreenMiniPlayerForegroundProfile: FullscreenMiniPlayerForegroundProfile {
+        FullscreenMiniPlayerForegroundStrategy.resolve(
+            palette: themeStore.semanticPalette,
+            hasArtworkThemeColor: themeStore.hasArtworkThemeColor,
+            skinID: settings.fullscreen.skinID,
+            colorScheme: colorScheme,
+            materialStyle: fullscreenControlsGlassStyle.materialStyle,
+            fullscreenArtBackgroundEnabled: settings.fullscreenArtBackgroundEnabled
+        )
     }
 
     private var fullscreenControlsGlassStyle: FullscreenControlsGlassStyle {
@@ -2129,7 +2120,7 @@ struct FullscreenPlayerView: View {
     }
 
     private var fullscreenControlsColorScheme: ColorScheme {
-        isCoverBlurFullscreenSkin ? .dark : colorScheme
+        (isCoverBlurFullscreenSkin || isAppleStyleFullscreenSkin) ? .dark : colorScheme
     }
 
     private var shouldKeepFullscreenMiniPlayerSpectrumAlive: Bool {
@@ -2829,7 +2820,8 @@ struct FullscreenPlayerView: View {
                 return readyCoverBlurTheme
             }
             if let heldCoverBlurTheme {
-                if heldCoverBlurTheme.trackID == displayTrackID {
+                if heldCoverBlurTheme.trackID == displayTrackID
+                    || themeStoreArtworkThemePending(forTrackID: displayTrackID) {
                     return heldCoverBlurTheme
                 }
             }
@@ -3637,6 +3629,10 @@ struct FullscreenPlayerView: View {
                 ?? NSColor(AppSettings.shared.accentColor)
         }
 
+        if themeStoreArtworkThemePending(forTrackID: trackID) {
+            return themeStore.semanticPalette.fullscreenLyricBase
+        }
+
         return NSColor(AppSettings.shared.accentColor)
     }
 
@@ -3659,6 +3655,10 @@ struct FullscreenPlayerView: View {
                 ?? NSColor(AppSettings.shared.accentColor)
         }
 
+        if themeStoreArtworkThemePending(forTrackID: trackID) {
+            return themeStore.semanticPalette.fullscreenLyricInactiveBase
+        }
+
         return NSColor(AppSettings.shared.accentColor)
     }
 
@@ -3671,6 +3671,18 @@ struct FullscreenPlayerView: View {
             return analysis
         }
         return themeStore.semanticPalette.analysis
+    }
+
+    private func themeStoreArtworkThemePending(forTrackID trackID: UUID?) -> Bool {
+        let display = currentDisplayContext
+        let checksum = ArtworkAssetStore.checksum(for: display.artworkData)
+        let identity = display.artworkIdentity ?? display.lyricsIdentity
+        let expectedTrackID = trackID ?? display.artworkTrackID ?? display.trackID
+        return themeStore.artworkThemePending(
+            trackID: expectedTrackID,
+            artworkIdentity: identity,
+            artworkChecksum: checksum
+        )
     }
 
     private func themeStorePaletteMatchesCurrentArtwork(forTrackID trackID: UUID?) -> Bool {

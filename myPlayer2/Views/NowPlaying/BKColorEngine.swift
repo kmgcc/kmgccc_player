@@ -1236,12 +1236,12 @@ extension BKColorEngine {
             // design, not a shallow copy of the night palette. Backgrounds,
             // BK variants, shapes, and moving circles all live in a high-B
             // band that can support dark lyric/UI foregrounds.
-            bgB = 0.975...0.995
-            fgB = 0.930...0.985
-            dotB = 0.860...0.950
-            bgS = 0.07...0.22
-            fgS = 0.18...0.42
-            dotS = 0.14...0.36
+            bgB = 0.990...1.000
+            fgB = 0.955...0.995
+            dotB = 0.920...0.980
+            bgS = 0.04...0.16
+            fgS = 0.12...0.30
+            dotS = 0.10...0.26
         }
 
         if complexity == .monochrome {
@@ -1519,9 +1519,9 @@ extension BKColorEngine {
             )
         }
         return TierRanges(
-            bgB: 0.940...0.980,
-            fgB: 0.860...0.940,
-            dotB: 0.780...0.880,
+            bgB: 0.970...0.995,
+            fgB: 0.920...0.980,
+            dotB: 0.880...0.950,
             bgS: 0.008...0.030,
             fgS: 0.030...0.090,
             dotS: 0.035...0.105
@@ -3006,45 +3006,14 @@ extension BKColorEngine {
         }
     }
 
-    /// Phase 6.3 — trusted-hue evidence over the analysis. Mirrors the
-    /// trust override the analyser uses to decide whether `isNearMonochrome`
-    /// fires. If any of dominant / top / rich / display / salient OKLCH
-    /// chroma is at or above `NearMonochromeProfile.trustedHueChromaFloor`,
-    /// the cover has a usable hue and shape colours may keep their tint.
-    /// Otherwise (true grey regime) the post-process pass crushes residual
-    /// chroma in OKLCH.
+    /// Trusted-hue evidence over the analysis. Mirrors the analyser's
+    /// canonical trust decision, including muted coherent hue support. True
+    /// nearMono covers crush residual chroma in OKLCH; chromatic covers keep
+    /// their tint even when average saturation is low.
     fileprivate nonisolated static func analysisHasTrustedHueCandidate(
         _ analysis: ArtworkColorAnalysis?
     ) -> Bool {
-        guard let analysis else { return true }
-        let floor = ColorSystemTokens.NearMonochromeProfile.trustedHueChromaFloor
-        if let lch = OKColor.nsColorToOKLCH(analysis.dominantColor), lch.c >= floor {
-            return true
-        }
-        for color in analysis.topPalette {
-            if let lch = OKColor.nsColorToOKLCH(color), lch.c >= floor {
-                return true
-            }
-        }
-        for color in analysis.richPalette {
-            if let lch = OKColor.nsColorToOKLCH(color), lch.c >= floor {
-                return true
-            }
-        }
-        for color in analysis.displayPalette {
-            if let lch = OKColor.nsColorToOKLCH(color), lch.c >= floor {
-                return true
-            }
-        }
-        for color in analysis.salientHighlightPalette {
-            if let lch = OKColor.nsColorToOKLCH(color), lch.c >= floor {
-                return true
-            }
-        }
-        if let lch = OKColor.nsColorToOKLCH(analysis.bestTextSourceColor), lch.c >= floor {
-            return true
-        }
-        return false
+        analysis?.hasTrustedHueCandidate ?? true
     }
 
     /// Phase 6.3 — crush a CGColor's OKLCH chroma to the nearMono ceiling so

@@ -404,7 +404,8 @@ private struct PlaybackThemeArtworkWatcher: View {
             ?? presentation.lyricsIdentity
             ?? presentation.localTrack?.id.uuidString
             ?? "none"
-        return "\(presentation.source.rawValue)|track:\(presentation.hasTrack)|art:\(identity)"
+        let checksum = ArtworkAssetStore.checksum(for: presentation.artworkData)
+        return "\(presentation.source.rawValue)|track:\(presentation.hasTrack)|art:\(identity)|loading:\(presentation.isArtworkLoading)|checksum:\(checksum)"
     }
 }
 

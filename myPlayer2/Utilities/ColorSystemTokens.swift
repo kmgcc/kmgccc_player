@@ -493,12 +493,12 @@ nonisolated enum ColorSystemTokens {
         // Phase 6.4 retune: the day background is now an independent airy
         // light design, so the dark lyric ladder can be lifted away from
         // dead black while staying unmistakably below the background.
-        static let lyricsLightMainActiveL: CGFloat = 0.305
-        static let lyricsLightSubActiveL: CGFloat = 0.410
-        static let lyricsLightMainInactiveL: CGFloat = 0.560
-        static let lyricsLightSubInactiveL: CGFloat = 0.565
-        static let lyricsLightLineTimingMainInactiveL: CGFloat = 0.590
-        static let lyricsLightLineTimingSubInactiveL: CGFloat = 0.610
+        static let lyricsLightMainActiveL: CGFloat = 0.335
+        static let lyricsLightSubActiveL: CGFloat = 0.450
+        static let lyricsLightMainInactiveL: CGFloat = 0.620
+        static let lyricsLightSubInactiveL: CGFloat = 0.622
+        static let lyricsLightLineTimingMainInactiveL: CGFloat = 0.650
+        static let lyricsLightLineTimingSubInactiveL: CGFloat = 0.668
 
         // Phase 6.1 chroma soft-shoulder for high-chroma seeds. The v3 hard
         // cap (~0.110…0.140 by hue) compressed high-C seeds to a fixed
@@ -705,6 +705,20 @@ nonisolated enum ColorSystemTokens {
         // candidate) has OKLCH chroma >= this floor still has a trustworthy
         // hue, and lyrics must keep that hue rather than grey-washing.
         static let trustedHueChromaFloor: CGFloat = 0.045
+
+        // Phase 6.5 — muted-but-real hue evidence. Many real covers have a
+        // coherent low-chroma palette whose average saturation stays low
+        // (paper scans, vintage photos, compressed album art). They should
+        // not be nearMono merely because no single candidate reaches the
+        // strong floor above. The muted floor only counts with coherence /
+        // area support in `ArtworkHueTrust`.
+        static let mutedTrustedHueChromaFloor: CGFloat = 0.024
+        static let mutedTrustedAvgSaturationFloor: CGFloat = 0.130
+        static let mutedTrustedColorfulnessFloor: CGFloat = 0.080
+        static let mutedTrustedDominantSaturationFloor: CGFloat = 0.150
+        static let mutedTrustedDominantConfidenceFloor: CGFloat = 0.140
+        static let mutedTrustedLargestHighSatAreaFloor: CGFloat = 0.035
+        static let mutedTrustedCoherentHueGap: CGFloat = 0.100
     }
 
     // MARK: - usesDarkForeground gate
