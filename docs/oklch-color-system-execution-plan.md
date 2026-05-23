@@ -266,12 +266,24 @@ Phase 6.6 对 BKArt 和艺术歌词的完整颜色链路做全路径审计，确
 
 Phase 6.7 对 Phase 6.6 后人工测试发现的 4 个剩余问题进行定点修复：
 
-- **nearMono Art Shapes 粉色残留**：用 4 色预设 palette（pale cyan-blue、yellow、mint、sky）替换 hue 旋转，彻底消除 pink/magenta 泄漏。
+- **nearMono Art Shapes 粉色残留**：用 4 色预设 palette 替换 hue 旋转，避免 pink/magenta 泄漏。Phase 6.10 已确认其中 yellow 一路审美不成立并继续收敛。
 - **Light BK1/BK2 UltraDark 压暗**：ultraDark overlay 限制为 `harmonized.isDark`，light mode 不再压暗。
 - **Light inactive 歌词偏暗**：日间 inactive 歌词 L +0.030，SelfCheck 阈值同步放宽。
 - **Paused/playing 颜色身份分裂**：删除 `deferredPaletteUpdate` 机制，palette 立即 apply，playback state 只控制动画不控制颜色。
 
 退出状态（2026-05-23）：build PASS；`COLOR_SYSTEM_SELF_CHECK=1` ALL PASS。最终验收仍以真实封面手测矩阵为准。
+
+### Phase 6.10 — Merge to main + bounded queue / NearMono fixes（2026-05-23）
+
+本轮先把 `refactor/oklch-color-system` 合并进 `main`，再在 `main` 上继续修复。合并前工作区已清理；未跟踪 `.antigravitycli/` 已单独 stash 保留；`main <- refactor/oklch-color-system` 无冲突。合并后 Debug build PASS，`COLOR_SYSTEM_SELF_CHECK=1` ALL PASS。
+
+本轮只处理明确问题，不继续追两首特定 Track ID 在 Cover Blur / 大封面皮肤下的 MiniPlayer 控件灰色半透明、hover 跳色、progress / spectrum / volume 中间态问题。这些复杂状态问题继续保留 backlog。
+
+- [x] **NearMono Art Shapes preset 审美微调**：仅改 true NearMono Art Shapes preset。去掉 yellow；不再保留粉色主导路径；palette 收敛为极低 chroma 的淡蓝、青蓝、薄荷、偏紫蓝。BK 主背景仍走原有中性 nearMono 背景，不把 shape preset 回染到 BK1/BK2。
+- [x] **Cover Blur queue current row foreground**：队列 current row 不再从 `miniPlayerControl.primary` 读取固定浅色 accent。`FullscreenQueueView` 继续复用 MiniPlayer foreground strategy 的明暗 profile 判断，但队列内部只切换自己的 text palette tier：亮封面走 dark queue foreground，暗封面走 light queue foreground。
+- [x] **Artistic light queue current row foreground**：Artistic light 继承 MiniPlayer strategy 的 dark profile；Artistic dark 保持 light profile。普通 row 与 current row 使用同一套 queue text hierarchy，current row 仅通过 weight、speaker icon 和 current background 强调。
+
+退出状态（2026-05-23）：Debug build PASS；`COLOR_SYSTEM_SELF_CHECK=1` ALL PASS。未进入 Phase 7。
 
 ### Phase 7 — 清理旧 HSL 分叉、文档收尾、回归验证
 

@@ -3072,19 +3072,20 @@ extension BKColorEngine {
         analysis?.hasTrustedHueCandidate ?? true
     }
 
-    /// Phase 6.7 — designed preset palette for true nearMono Art Shapes.
+    /// Phase 6.10 — designed preset palette for true nearMono Art Shapes.
     /// Replaces extracted-hue pools that leak pink/magenta because the HSB
-    /// resolver has no trustworthy hue to work from. Colors are very pale
-    /// (chroma ≤ 0.008) so they read as tinted neutrals, not vivid hues.
+    /// resolver has no trustworthy hue to work from. Colors are intentionally
+    /// very pale and cool so they read as blue/mint/periwinkle-tinted neutrals,
+    /// never yellow or pink-led.
     fileprivate nonisolated static let nearMonoShapePreset: [CGColor] = {
-        let specs: [(l: CGFloat, h: CGFloat)] = [
-            (0.62, 0.58), // pale cyan-blue
-            (0.70, 0.15), // pale yellow
-            (0.58, 0.35), // pale mint
-            (0.66, 0.55), // pale sky
+        let specs: [(l: CGFloat, c: CGFloat, h: CGFloat)] = [
+            (0.63, 0.0052, 0.57), // pale blue
+            (0.69, 0.0046, 0.49), // pale mint-cyan
+            (0.60, 0.0054, 0.66), // pale purple-blue
+            (0.66, 0.0048, 0.53), // pale aqua
         ]
         return specs.map { spec in
-            let oklch = OKColor.OKLCH(l: spec.l, c: 0.006, h: spec.h)
+            let oklch = OKColor.OKLCH(l: spec.l, c: spec.c, h: spec.h)
             let ns = OKColor.okLCHToNSColor(oklch, alpha: 1.0)
             return (ns.usingColorSpace(.deviceRGB) ?? ns).cgColor
         }
@@ -3092,7 +3093,7 @@ extension BKColorEngine {
 
     /// Phase 6.3 — crush a CGColor's OKLCH chroma to the nearMono ceiling and
     /// rotate warm (pink/red) hues to the cool neutral hue so nearMono shapes
-    /// read as blue/mint/yellow dominant instead of residual warm tint.
+    /// read as blue/mint/purple-blue dominant instead of residual warm tint.
     /// Ceiling matches `FullscreenMiniPlayerView.neutralizeForNearMono` (the
     /// Spectrum nearMono pass) for visual consistency across surfaces.
     fileprivate nonisolated static func neutraliseCGColor(_ color: CGColor) -> CGColor {
@@ -3103,7 +3104,7 @@ extension BKColorEngine {
             return color
         }
         // Rotate warm/pink hues (red-orange-magenta band) to the canonical
-        // cool neutral hue so nearMono shapes are blue/mint/yellow dominant.
+        // cool neutral hue so nearMono shapes are blue/mint/purple-blue dominant.
         let warmBandUpper: CGFloat = 0.22   // ~80°  (orange/yellow boundary)
         let warmBandLower: CGFloat = 0.92   // ~331° (magenta/pink)
         let isWarm = lch.h <= warmBandUpper || lch.h >= warmBandLower
