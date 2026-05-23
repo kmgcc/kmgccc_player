@@ -50,6 +50,7 @@ final class ThemeStore: ObservableObject {
     @Published private(set) var paletteTrackID: UUID?
     @Published private(set) var paletteArtworkIdentity: String?
     @Published private(set) var paletteArtworkChecksum: UInt64 = 0
+    @Published private(set) var isArtworkThemePending: Bool = false
 
     let defaultBlue: Color
 
@@ -76,6 +77,9 @@ final class ThemeStore: ObservableObject {
     private var currentArtworkChecksum: UInt64 = 0
     private var lastProcessedChecksum: UInt64 = 0
     private var lastProcessedArtworkIdentity: String?
+    private var pendingArtworkIdentity: String?
+    private var pendingAssetTrackID: UUID?
+    private var pendingArtworkChecksum: UInt64 = 0
     private var averageColorCache: NSColor?
 
     private init() {
@@ -142,6 +146,19 @@ final class ThemeStore: ObservableObject {
             ?? presentation.lyricsIdentity
         let assetTrackID = presentation.artworkDisplayTrackID ?? presentation.localTrack?.id
 
+        if presentation.hasTrack,
+           presentation.isArtworkLoading,
+           presentation.artworkData?.isEmpty != false {
+            extractionToken = UUID()
+            holdCurrentThemeForPendingArtwork(
+                artworkIdentity: artworkIdentity,
+                assetTrackID: assetTrackID,
+                checksum: 0,
+                reason: "presentation_artwork_loading"
+            )
+            return
+        }
+
         await updateThemeFromArtworkData(
             presentation.artworkData,
             artworkIdentity: artworkIdentity,
@@ -189,6 +206,7 @@ final class ThemeStore: ObservableObject {
 
         guard let data, data.isEmpty == false else {
             Log.debug("No artwork data, resetting to default", category: .theme)
+            clearPendingArtworkTheme()
             currentArtworkData = nil
             currentArtworkChecksum = 0
             lastProcessedChecksum = 0
@@ -215,6 +233,7 @@ final class ThemeStore: ObservableObject {
 
         // Deduplication: palette extraction depends on artwork bytes; identity may change when AM upgrades source.
         if checksum == lastProcessedChecksum, checksum != 0 {
+            clearPendingArtworkTheme()
             lastProcessedArtworkIdentity = artworkIdentity
             Log.trace(
                 "Skipping duplicate artwork (checksum match: \(checksum))",
@@ -227,6 +246,12 @@ final class ThemeStore: ObservableObject {
         currentArtworkData = data
         currentArtworkChecksum = checksum
         averageColorCache = nil
+        holdCurrentThemeForPendingArtwork(
+            artworkIdentity: artworkIdentity,
+            assetTrackID: assetTrackID,
+            checksum: checksum,
+            reason: "analysis_pending"
+        )
         Log.trace(
             "Holding previous palette while new artwork analysis is pending",
             category: .theme
@@ -234,6 +259,7 @@ final class ThemeStore: ObservableObject {
 
         if let cacheKey, let cached = dominantColorCache.object(forKey: cacheKey as NSString) {
             Log.debug("Cache hit for dominant color cache key \(cacheKey)", category: .theme)
+            clearPendingArtworkTheme()
             rawDominantColor = cached.color
             self.analysis = cached.analysis
             hasArtworkThemeColor = true
@@ -296,6 +322,7 @@ final class ThemeStore: ObservableObject {
         let hasResolvedArtworkTheme = extractedColor != nil || extractedAnalysis != nil
         let resolved = extractedColor ?? extractedAnalysis?.dominantColor ?? defaultBlueNS
         let resolvedAnalysis = extractedAnalysis ?? .neutralFallback
+        clearPendingArtworkTheme()
         if let cacheKey {
             dominantColorCache.setObject(
                 CachedArtworkBox(color: resolved, analysis: resolvedAnalysis),
@@ -508,6 +535,36 @@ final class ThemeStore: ObservableObject {
             && expectedIdentity == nil && paletteIdentity == nil
     }
 
+    func artworkThemePending(
+        trackID: UUID?,
+        artworkIdentity: String?,
+        artworkChecksum: UInt64
+    ) -> Bool {
+        guard isArtworkThemePending else { return false }
+
+        let expectedIdentity = normalizedIdentity(artworkIdentity)
+        let pendingIdentity = normalizedIdentity(pendingArtworkIdentity)
+        let identityMatches: Bool
+        if let expectedIdentity, let pendingIdentity {
+            identityMatches = expectedIdentity == pendingIdentity
+        } else {
+            identityMatches = expectedIdentity == nil && pendingIdentity == nil
+        }
+
+        let trackMatches: Bool
+        if let trackID, let pendingAssetTrackID {
+            trackMatches = trackID == pendingAssetTrackID
+        } else {
+            trackMatches = trackID == nil && pendingAssetTrackID == nil
+        }
+
+        let checksumMatches = pendingArtworkChecksum == artworkChecksum
+            || pendingArtworkChecksum == 0
+            || artworkChecksum == 0
+
+        return checksumMatches && (identityMatches || trackMatches)
+    }
+
     var textColor: Color {
         guard let css = palette?.text, let color = Color(rgbaString: css) else {
             return .primary
@@ -536,6 +593,46 @@ final class ThemeStore: ObservableObject {
     private func makeCacheKey(artworkIdentity: String?, checksum: UInt64) -> String? {
         guard let artworkIdentity, checksum != 0 else { return nil }
         return "\(ArtworkColorExtractor.cacheVersion)-\(artworkIdentity)-\(checksum)"
+    }
+
+    private func holdCurrentThemeForPendingArtwork(
+        artworkIdentity: String?,
+        assetTrackID: UUID?,
+        checksum: UInt64,
+        reason: String
+    ) {
+        let identity = normalizedIdentity(artworkIdentity)
+        if pendingArtworkIdentity == identity,
+           pendingAssetTrackID == assetTrackID,
+           pendingArtworkChecksum == checksum,
+           isArtworkThemePending {
+            return
+        }
+
+        activeArtworkIdentity = artworkIdentity
+        activeAssetTrackID = assetTrackID
+        pendingArtworkIdentity = identity
+        pendingAssetTrackID = assetTrackID
+        pendingArtworkChecksum = checksum
+        isArtworkThemePending = true
+        Log.debug(
+            "Holding previous artwork theme while pending reason=\(reason), identity=\(shortIdentity(identity)), checksum=\(checksum)",
+            category: .theme
+        )
+    }
+
+    private func clearPendingArtworkTheme() {
+        guard isArtworkThemePending
+            || pendingArtworkIdentity != nil
+            || pendingAssetTrackID != nil
+            || pendingArtworkChecksum != 0
+        else {
+            return
+        }
+        isArtworkThemePending = false
+        pendingArtworkIdentity = nil
+        pendingAssetTrackID = nil
+        pendingArtworkChecksum = 0
     }
 
     private func isCurrentExtraction(

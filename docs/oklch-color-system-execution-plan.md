@@ -237,6 +237,20 @@ Phase 4.5 应包含：
 
 退出状态修正（2026-05-23 文档止血）：Phase 6.4 未通过人工验收。当前进入下一轮应从架构审计开始，而不是继续基于“已完成”结论微调。高亮 feather / active-inactive 过渡继续保留 backlog；未进入 Phase 7。
 
+### Phase 6.5 — Artistic Color System Architecture Repair
+
+Phase 6.5 的施工原则：先审计颜色状态机与 fullscreen skin 前景色策略，再做系统性修复，不继续做单点 token 微调。
+
+- [x] **统一 Fullscreen MiniPlayer foreground strategy**：新增 `FullscreenMiniPlayerForegroundStrategy` / `FullscreenMiniPlayerForegroundProfile`。Apple skin 固定 light profile；Cover Gradient Blur / cover blur 类 skin 统一根据 artwork readability 判断；Artistic day 固定 dark profile；Artistic night 固定 light profile。MiniPlayer 主体、左右按钮、播放控制、progress/time、queue/order pill、volume、hover / expanded 状态共用同一 profile。
+- [x] **ThemeStore pending hold**：artwork loading / cache miss / full analysis pending 不再发布 default / `.neutralFallback` 中间态，保留上一套有效 semantic palette；checksum + loading 进入 watcher task id，确保新 artwork ready 后触发更新。
+- [x] **消费者 fallback 收口**：Fullscreen lyrics palette、cover blur held theme、BKArt palette 在 pending 时保留旧色；只有真正 no artwork 才 fallback。
+- [x] **nearMono trusted hue 修复**：trusted hue 不再只看平均饱和度或 fallback dominant；需要 palette/salient 或 dominant + real sampling support。muted coherent covers 保留颜色，true grey / true nearMono 保持中性。
+- [x] **nearMono shapes 防粉**：BKArt、lyrics、MiniPlayer spectrum、SemanticPalette 使用统一 effective nearMono；true nearMono 下 shapes / moving circle OKLCH chroma crush，不能被 pseudo hue 染粉。
+- [x] **日间艺术背景与歌词重设**：day BKArt high-B airy profile；日间 fullscreen 不叠黑色 dimming；歌词提升到干净深灰体系，translation 与 inactive 同层，emphasis glow 保持暗色方向。
+- [x] **验证**：Debug build PASS；`COLOR_SYSTEM_SELF_CHECK=1` PASS。Self-check 仍只是 synthetic 回归，最终验收需按手测矩阵确认。
+
+退出状态（2026-05-23）：Phase 6.5 架构修复已完成本地 build / self-check。AMLL active-inactive feather transition 不处理，继续保留 backlog；未进入 Phase 7。
+
 ### Phase 7 — 清理旧 HSL 分叉、文档收尾、回归验证
 
 - 删除 HSL 分叉路径；保留 `ColorMath` 但只剩 OKLCH。

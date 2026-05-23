@@ -326,8 +326,9 @@ enum SemanticPaletteFactory {
         analysis: ArtworkColorAnalysis,
         globalAccent: NSColor
     ) -> MiniPlayerControlPalette {
+        let hasNoTrustedHue = analysis.isNearMonochrome && !analysis.hasTrustedHueCandidate
         let primary: NSColor
-        if analysis.isNearMonochrome {
+        if hasNoTrustedHue {
             primary = neutralAchromaticControl()
         } else {
             primary = liftedAccentControl(globalAccent)
@@ -362,9 +363,10 @@ enum SemanticPaletteFactory {
         let T = ColorSystemTokens.AppForeground.self
         let hue = OKColor.nsColorToOKLCH(globalAccent)?.h ?? 0.0
 
-        // Chroma scale: 0 on nearMono, linear ramp on colorful artwork,
-        // clamped at 1 so the per-tier cap is the actual ceiling.
-        let chromaScale: CGFloat = analysis.isNearMonochrome ? 0 :
+        // Chroma scale: 0 only when no trustworthy hue survived analysis;
+        // muted-but-real color stays on the chromatic ramp.
+        let hasNoTrustedHue = analysis.isNearMonochrome && !analysis.hasTrustedHueCandidate
+        let chromaScale: CGFloat = hasNoTrustedHue ? 0 :
             Swift.min(analysis.colorfulness / T.colorfulnessSaturationPoint, 1.0)
 
         // Dark-mode hue-aware reduction. Cool/violet hues produce a visually
@@ -454,7 +456,7 @@ enum SemanticPaletteFactory {
         _ color: NSColor,
         analysis: ArtworkColorAnalysis
     ) -> NSColor {
-        guard analysis.isNearMonochrome else { return color }
+        guard analysis.isNearMonochrome && !analysis.hasTrustedHueCandidate else { return color }
         guard let lch = OKColor.nsColorToOKLCH(color) else { return color }
         let crushed = OKColor.OKLCH(
             l: lch.l,
@@ -649,11 +651,13 @@ enum SemanticPaletteFactory {
 
         func color(_ role: PerceptualToneLadder.LyricsRole) -> NSColor {
             let effectiveUltraDark = scheme == .dark && (isUltraDark || analysis.isUltraDark)
+            let effectiveNearMono = analysis.isNearMonochrome
+                && !analysis.hasTrustedHueCandidate
             let tone = PerceptualToneLadder.artisticLyricsTone(
                 base: seed,
                 role: role,
                 isUltraDark: effectiveUltraDark,
-                isNearMonochrome: analysis.isNearMonochrome,
+                isNearMonochrome: effectiveNearMono,
                 scheme: scheme
             )
             return OKColor.okLCHToNSColor(tone, alpha: 1.0)
@@ -670,6 +674,9 @@ enum SemanticPaletteFactory {
         if seed.c >= ColorSystemTokens.ToneLadder.lyricsSeedChromaPreferred {
             return set
         }
+        if analysis.hasTrustedHueCandidate {
+            return set
+        }
         return neutraliseLyricsSurfaceIfNearMono(set, analysis: analysis)
     }
 
@@ -680,8 +687,15 @@ enum SemanticPaletteFactory {
     ) -> OKColor.OKLCH? {
         let T = ColorSystemTokens.ToneLadder.self
 
-        if analysis.isNearMonochrome {
-            return OKColor.nsColorToOKLCH(preferred)
+        if analysis.isNearMonochrome && !analysis.hasTrustedHueCandidate {
+            guard let preferredLCH = OKColor.nsColorToOKLCH(preferred) else { return nil }
+            let fallbackChromaCap = T.lyricsChromaShoulderCeiling
+                + T.lyricsChromaShoulderSoftness
+            return OKColor.OKLCH(
+                l: preferredLCH.l,
+                c: Swift.min(preferredLCH.c, fallbackChromaCap),
+                h: preferredLCH.h
+            )
         }
 
         // Step 2 — subjective salient override. Dominant is still the default;
@@ -1043,7 +1057,7 @@ enum SemanticPaletteFactory {
         _ set: LyricsSurfaceColorSet,
         analysis: ArtworkColorAnalysis
     ) -> LyricsSurfaceColorSet {
-        guard analysis.isNearMonochrome else { return set }
+        guard analysis.isNearMonochrome && !analysis.hasTrustedHueCandidate else { return set }
         return LyricsSurfaceColorSet(
             mainActive: neutraliseLyricIfNearMono(set.mainActive, analysis: analysis),
             mainInactive: neutraliseLyricIfNearMono(set.mainInactive, analysis: analysis),
@@ -1058,7 +1072,7 @@ enum SemanticPaletteFactory {
         _ color: NSColor,
         analysis: ArtworkColorAnalysis
     ) -> NSColor {
-        guard analysis.isNearMonochrome else { return color }
+        guard analysis.isNearMonochrome && !analysis.hasTrustedHueCandidate else { return color }
         guard let lch = OKColor.nsColorToOKLCH(color) else { return color }
         return OKColor.okLCHToNSColor(
             OKColor.OKLCH(
@@ -1081,7 +1095,7 @@ enum SemanticPaletteFactory {
         // It is NOT an ultra-dark protector: dark-but-colourful covers such
         // as deep violet / midnight teal now correctly fall through to
         // optimizedAccent and keep their hue (Phase 2 K.2).
-        if analysis.isNearMonochrome {
+        if analysis.isNearMonochrome && !analysis.hasTrustedHueCandidate {
             return nearMonochromeAccent(for: scheme, analysis: analysis)
         }
 
@@ -1352,7 +1366,7 @@ enum SemanticPaletteFactory {
         // a trustworthy hue; fall through to topPalette → bestTextSource
         // only when the dominant is genuinely grey.
         let T = ColorSystemTokens.ToneLadder.self
-        if analysis.isNearMonochrome {
+        if analysis.isNearMonochrome && !analysis.hasTrustedHueCandidate {
             return neutraliseLyricIfNearMono(analysis.bestTextSourceColor, analysis: analysis)
         }
         if let dominantLCH = OKColor.nsColorToOKLCH(analysis.dominantColor),

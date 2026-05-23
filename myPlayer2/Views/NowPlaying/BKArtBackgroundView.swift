@@ -88,6 +88,7 @@ struct BKArtBackgroundView: View {
     var resourceProfile: ResourceProfile = .standard
     var dotRenderStyle: DotRenderStyle = .dotGrid
     var initialPalette: [NSColor]? = nil
+    var holdPaletteWhenArtworkMissing: Bool = false
     @Environment(\.colorScheme) private var colorScheme
 
     @State private var palette: [NSColor] = Self.fallbackPalette
@@ -152,6 +153,13 @@ struct BKArtBackgroundView: View {
         paletteRefreshTask?.cancel()
 
         guard let data = artworkData else {
+            if holdPaletteWhenArtworkMissing {
+                Log.debug(
+                    "[BKArt/palette] holding previous palette while artwork data is pending",
+                    category: .ui
+                )
+                return
+            }
             controller.beginLyricsColorSampling(for: trackID)
             palette = Self.fallbackPalette
             controller.setPrimaryBackgroundColor(Self.fallbackPalette.first, for: trackID)

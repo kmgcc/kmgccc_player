@@ -23,6 +23,7 @@ struct ExpandableVolumeControl: View {
     var usesAdaptiveForeground: Bool = false
     var forceDarkForegroundProfile: Bool = false
     var usesInternalHoverExpansion: Bool = true
+    var foregroundProfile: FullscreenMiniPlayerForegroundProfile? = nil
     
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
@@ -145,6 +146,9 @@ struct ExpandableVolumeControl: View {
     }
 
     private var controlPrimaryNSColor: NSColor {
+        if let foregroundProfile {
+            return foregroundProfile.primary
+        }
         let palette = themeStore.semanticPalette
         if forceDarkForegroundProfile {
             return palette.readabilityProfile.foregroundPrimary
@@ -161,6 +165,9 @@ struct ExpandableVolumeControl: View {
     }
 
     private var controlBlendMode: BlendMode {
+        if let foregroundProfile {
+            return foregroundProfile.iconBlendMode
+        }
         if forceDarkForegroundProfile {
             return .normal
         }
