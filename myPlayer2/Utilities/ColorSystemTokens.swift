@@ -490,15 +490,15 @@ nonisolated enum ColorSystemTokens {
         // Translation (subInactive) sits within ~0.005 of main-inactive so
         // the proximity assertion holds in both schemes.
         //
-        // Phase 6.3 retune: the day background is now an independent airy
+        // Phase 6.4 retune: the day background is now an independent airy
         // light design, so the dark lyric ladder can be lifted away from
         // dead black while staying unmistakably below the background.
-        static let lyricsLightMainActiveL: CGFloat = 0.255
-        static let lyricsLightSubActiveL: CGFloat = 0.365
-        static let lyricsLightMainInactiveL: CGFloat = 0.515
-        static let lyricsLightSubInactiveL: CGFloat = 0.520
-        static let lyricsLightLineTimingMainInactiveL: CGFloat = 0.550
-        static let lyricsLightLineTimingSubInactiveL: CGFloat = 0.575
+        static let lyricsLightMainActiveL: CGFloat = 0.305
+        static let lyricsLightSubActiveL: CGFloat = 0.410
+        static let lyricsLightMainInactiveL: CGFloat = 0.560
+        static let lyricsLightSubInactiveL: CGFloat = 0.565
+        static let lyricsLightLineTimingMainInactiveL: CGFloat = 0.590
+        static let lyricsLightLineTimingSubInactiveL: CGFloat = 0.610
 
         // Phase 6.1 chroma soft-shoulder for high-chroma seeds. The v3 hard
         // cap (~0.110…0.140 by hue) compressed high-C seeds to a fixed

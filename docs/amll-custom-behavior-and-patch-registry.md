@@ -89,6 +89,16 @@ Phase 6.3 增量 — artistic color system stabilization（2026-05-22）：
 - ThemeStore 切歌稳定：artwork cache miss / full analysis pending 时保留上一首 semantic palette；不发布 `.neutralFallback` / default accent / quick-only palette。真正无 artwork 才 fallback。
 - AMLL active/inactive highlight transition / feather 本轮不处理，继续作为 backlog；不改 fork core、不手改 `amll-core.js` / `amll-lyric.js`。
 
+Phase 6.4 增量 — artistic architecture stabilization（2026-05-23）：
+
+- Swift-owned lyrics color contract 不变；Web / AMLL adapter 仍只消费 Swift 下发颜色。本轮未修改 `index.html`、`bridge.js`、fork core 或 generated `amll-core.js` / `amll-lyric.js`。
+- 日间艺术背景下 UltraDark 被限定为 dark-scheme-only：Swift 侧不再在 light + artistic background 时向歌词 tone ladder、BKArt 或 skin tokens 传递 UltraDark 压暗信号。
+- Fullscreen MiniPlayer 与 bottom controls 的 light + artistic foreground 全链路固定到 `readabilityProfile.foregroundPrimary`：progress/time row、playback mode pill、volume expanded/hover 状态不再各自回到 bright / cover-driven profile。
+- Fullscreen lyrics pending 稳定：`resolveLyricsAnalysis` 不再在 palette mismatch 时返回 `.neutralFallback`；snapshot analysis 可用时使用 snapshot，不可用时保留上一首 ThemeStore semantic palette，并在 theme injection 前 hold，避免 AMLL WebView 收到中间 default/neutral 色。
+- `ArtworkAssetSnapshot.analysis` 进入 App 色彩 contract：cache-hit 路径必须携带 analyzer 的 trusted hue / nearMono / UltraDark / displayPalette / salient 信息，避免 Swift 在不同消费者之间重新推断出互相矛盾的状态。
+- Phase 6.3 的 `fullscreenEmphasisGlowColor` dark glow contract 保持；Phase 6.4 不改 glow adapter，不改变 official AMLL emphasis 动画结构。
+- AMLL active/inactive feather transition 仍是 Phase 7 / fork-core backlog；本轮继续不处理。
+
 Phase 6.2 outstanding work / Phase 7 candidates:
 
 - **AMLL highlight transition 内层颜色过渡**：fullscreen 线级 transition (`color .14s/.18s ease-out`) 由浏览器在 sRGB 空间做 RGB interp。per-word/character 的 mask-image / linear-gradient 边缘 "seam" 颜色由 `amll-core.js` 内联，Swift 无 CSS 变量 hook。要实现 OKLCH-interpolated mid color 需要 fork core patch（暴露 `transitionColor` / `--amll-fs-edge` CSS 变量给 renderer 消费）。本轮 Phase 6.2 不做。审计结论：见 `docs/amll-upgrade-implementation-log.md` Phase 6.2 节。

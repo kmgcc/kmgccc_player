@@ -648,10 +648,11 @@ enum SemanticPaletteFactory {
         }
 
         func color(_ role: PerceptualToneLadder.LyricsRole) -> NSColor {
+            let effectiveUltraDark = scheme == .dark && (isUltraDark || analysis.isUltraDark)
             let tone = PerceptualToneLadder.artisticLyricsTone(
                 base: seed,
                 role: role,
-                isUltraDark: isUltraDark || analysis.isUltraDark,
+                isUltraDark: effectiveUltraDark,
                 isNearMonochrome: analysis.isNearMonochrome,
                 scheme: scheme
             )

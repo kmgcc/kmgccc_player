@@ -19,6 +19,7 @@ final class ArtworkAssetSnapshot: NSObject, Sendable {
     let palette: [NSColor]
     let richPalette: [NSColor]
     let averageColor: NSColor?
+    let analysis: ArtworkColorAnalysis?
     let extractedAt: Date
     
     nonisolated var cacheKey: String {
@@ -41,7 +42,8 @@ final class ArtworkAssetSnapshot: NSObject, Sendable {
         accentColor: NSColor? = nil,
         palette: [NSColor] = [],
         richPalette: [NSColor] = [],
-        averageColor: NSColor? = nil
+        averageColor: NSColor? = nil,
+        analysis: ArtworkColorAnalysis? = nil
     ) {
         self.trackID = trackID
         self.artworkChecksum = artworkChecksum
@@ -52,6 +54,7 @@ final class ArtworkAssetSnapshot: NSObject, Sendable {
         self.palette = palette
         self.richPalette = richPalette
         self.averageColor = averageColor
+        self.analysis = analysis
         self.extractedAt = Date()
         super.init()
     }
@@ -66,7 +69,8 @@ final class ArtworkAssetSnapshot: NSObject, Sendable {
             accentColor: accentColor,
             palette: palette,
             richPalette: richPalette,
-            averageColor: averageColor
+            averageColor: averageColor,
+            analysis: analysis
         )
     }
 }

@@ -237,6 +237,11 @@ actor ArtworkAssetStore {
         let richPalette =
             analysisSample.map { ArtworkColorExtractor.uiThemePaletteRich(from: $0, targetCount: 6) }
             ?? []
+        let analysis =
+            analysisSample.flatMap {
+                ArtworkColorExtractor.analyzeSyntheticSample(pixels: $0.pixels, side: $0.side)
+            }
+            ?? ArtworkColorExtractor.analyze(from: artworkData)
         let accentColor = palette.first
         let averageColor =
             analysisSample.flatMap { ArtworkColorExtractor.averageColor(from: $0) }
@@ -252,7 +257,8 @@ actor ArtworkAssetStore {
             accentColor: accentColor,
             palette: palette,
             richPalette: richPalette,
-            averageColor: averageColor
+            averageColor: averageColor,
+            analysis: analysis
         )
     }
     
