@@ -73,7 +73,20 @@ struct SettingsView: View {
     // MARK: - Detail View
 
     private var detailView: some View {
-        ScrollView {
+        // Phase 4.5: resolve the tinted-neutral foreground palette once at the
+        // top of the detail pane. The shared SettingsHeaderLabel /
+        // SettingsSwitchRow / settingsRowLabelStyle / settingsSectionTitleStyle
+        // / settingsDescriptionStyle modifiers all read this environment and
+        // override their built-in `.primary`/`.secondary` defaults — except
+        // surfaces whose presentation style sets `forcesWhiteText` (fullscreen
+        // overlay panel), which keep the high-contrast white hierarchy.
+        let palette = themeStore.appForegroundPalette
+        let appColors = SettingsAppForegroundColors(
+            primary: Color(nsColor: palette.primary),
+            secondary: Color(nsColor: palette.secondary),
+            tertiary: Color(nsColor: palette.tertiary)
+        )
+        return ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 switch selection {
                 case .appearance:
@@ -96,6 +109,7 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .groupBoxStyle(SettingsWindowGroupBoxStyle())
+        .environment(\.settingsAppForegroundColors, appColors)
     }
 
     // MARK: - Feature Tip
@@ -189,6 +203,7 @@ private struct SettingsWindowGroupBoxStyle: GroupBoxStyle {
 
 private struct V2FeatureTipView: View {
     let onClose: () -> Void
+    @EnvironmentObject private var themeStore: ThemeStore
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -209,18 +224,18 @@ private struct V2FeatureTipView: View {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Image(systemName: "folder.badge.gearshape")
                         .font(.callout)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
                     Text("支持自定义音乐资料库储存位置")
                         .font(.callout)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
                 }
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Image(systemName: "sparkles")
                         .font(.callout)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
                     Text("可为所有歌曲主动补全信息与封面")
                         .font(.callout)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
                 }
             }
         }

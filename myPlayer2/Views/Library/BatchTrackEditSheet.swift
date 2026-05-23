@@ -72,6 +72,11 @@ struct BatchTrackEditSheet: View {
     private let amllDbURL = URL(string: "https://github.com/amll-dev/amll-ttml-db")!
     private let ttmlToolURL = URL(string: "https://amll-ttml-tool.stevexmh.net/")!
 
+    // Phase 4.5: ordinary-text foregrounds tinted from the active ThemeStore palette.
+    private var appFgPrimary: Color { Color(nsColor: themeStore.appForegroundPalette.primary) }
+    private var appFgSecondary: Color { Color(nsColor: themeStore.appForegroundPalette.secondary) }
+    private var appFgTertiary: Color { Color(nsColor: themeStore.appForegroundPalette.tertiary) }
+
     var body: some View {
         VStack(spacing: 0) {
             headerView
@@ -199,7 +204,7 @@ struct BatchTrackEditSheet: View {
                         "当前：\(currentIndex + 1)/\(tracks.count) · \(track.title) · \(displayArtist(track.artist)) · \(displayAlbum(track.album))"
                     )
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(appFgSecondary)
                 }
             }
 
@@ -230,9 +235,9 @@ struct BatchTrackEditSheet: View {
             Spacer()
             Image(systemName: "music.note.list")
                 .font(.system(size: 40))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(appFgTertiary)
             Text("未传入批量处理歌曲")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(appFgSecondary)
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -265,16 +270,17 @@ struct BatchTrackEditSheet: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(track.title)
                         .font(.subheadline)
+                        .foregroundStyle(appFgPrimary)
                         .lineLimit(1)
 
                     Text(displayArtist(track.artist))
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(appFgSecondary)
                         .lineLimit(1)
 
                     Text(displayAlbum(track.album))
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(appFgSecondary)
                         .lineLimit(1)
 
                     Text(status.text)
@@ -315,7 +321,7 @@ struct BatchTrackEditSheet: View {
             } else {
                 Image(systemName: "music.note")
                     .font(.body)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(appFgSecondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(Color(nsColor: .windowBackgroundColor).opacity(0.8))
             }
@@ -353,7 +359,7 @@ struct BatchTrackEditSheet: View {
                         } else {
                             Image(systemName: "music.note")
                                 .font(.title2)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(appFgSecondary)
                         }
                     }
                     .frame(width: 84, height: 84)
@@ -421,7 +427,7 @@ struct BatchTrackEditSheet: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("标题")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(appFgSecondary)
                     TextField("标题", text: $title)
                         .textFieldStyle(.roundedBorder)
                 }
@@ -429,7 +435,7 @@ struct BatchTrackEditSheet: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("艺人")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(appFgSecondary)
                     TextField("艺人", text: $artist)
                         .textFieldStyle(.roundedBorder)
                 }
@@ -437,7 +443,7 @@ struct BatchTrackEditSheet: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("专辑")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(appFgSecondary)
                     TextField("专辑", text: $album)
                         .textFieldStyle(.roundedBorder)
                 }
@@ -476,7 +482,7 @@ struct BatchTrackEditSheet: View {
                         )
                     }
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(appFgSecondary)
                     .padding(.top, 2)
                 }
             }
@@ -530,16 +536,16 @@ struct BatchTrackEditSheet: View {
 
             Text("TTML 文本区仅用于快速核对/微调；主要操作建议在下方 LDDC 区域完成。")
                 .font(.caption2)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(appFgSecondary)
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Text("歌词时间偏移")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(appFgSecondary)
                     Spacer()
                     Text(String(format: "%+.2f s", lyricsTimeOffsetMs / 1000.0))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(appFgSecondary)
                         .monospacedDigit()
                     Button("重置") {
                         lyricsTimeOffsetMs = 0
@@ -592,7 +598,7 @@ struct BatchTrackEditSheet: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(appFgSecondary)
             TextField(prompt, text: text)
                 .textFieldStyle(.roundedBorder)
         }
@@ -602,7 +608,7 @@ struct BatchTrackEditSheet: View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(label)
                 .frame(width: 118, alignment: .leading)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(appFgTertiary)
             Text(value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未记录" : value)
                 .lineLimit(1)
                 .textSelection(.enabled)
@@ -619,7 +625,7 @@ struct BatchTrackEditSheet: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(appFgSecondary)
 
             ZStack(alignment: .topLeading) {
                 TextEditor(text: text)
@@ -631,7 +637,7 @@ struct BatchTrackEditSheet: View {
 
                 if text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Text(prompt)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(appFgTertiary)
                         .font(.callout)
                         .padding(.horizontal, 13)
                         .padding(.vertical, 16)
@@ -652,7 +658,8 @@ struct BatchTrackEditSheet: View {
         BatchAMLLPreviewPanel(
             previewLyricsVM: previewLyricsVM,
             editedTrack: currentTrack,
-            isDarkMode: colorScheme == .dark
+            isDarkMode: colorScheme == .dark,
+            secondaryTextColor: themeStore.appForegroundPalette.secondary
         )
         .equatable()
         .padding(14)
@@ -664,7 +671,7 @@ struct BatchTrackEditSheet: View {
             if let statusMessage {
                 Text(statusMessage)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(appFgSecondary)
                     .lineLimit(1)
             }
 
@@ -1097,11 +1104,13 @@ private struct BatchAMLLPreviewPanel: View, Equatable {
     let previewLyricsVM: LyricsViewModel?
     let editedTrack: Track?
     let isDarkMode: Bool
+    let secondaryTextColor: NSColor
 
     static func == (lhs: BatchAMLLPreviewPanel, rhs: BatchAMLLPreviewPanel) -> Bool {
         lhs.previewIdentity == rhs.previewIdentity
             && lhs.editedTrack?.id == rhs.editedTrack?.id
             && lhs.isDarkMode == rhs.isDarkMode
+            && lhs.secondaryTextColor.isEqual(rhs.secondaryTextColor)
     }
 
     private var previewIdentity: Int {
@@ -1115,13 +1124,14 @@ private struct BatchAMLLPreviewPanel: View, Equatable {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let appFgSecondary = Color(nsColor: secondaryTextColor)
+        return VStack(alignment: .leading, spacing: 10) {
             Text("AMLL 渲染预览")
                 .font(.headline)
 
             Text("当前编辑歌曲的 AMLL 实际渲染效果")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(appFgSecondary)
 
             ZStack {
                 RoundedRectangle(cornerRadius: 10)
@@ -1133,7 +1143,7 @@ private struct BatchAMLLPreviewPanel: View, Equatable {
                 if editedTrack == nil {
                     Text("无可预览歌曲")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(appFgSecondary)
                 } else if let previewLyricsVM {
                     AMLLWebView(store: previewLyricsVM.webViewStore)
                         .padding(.horizontal, 8)

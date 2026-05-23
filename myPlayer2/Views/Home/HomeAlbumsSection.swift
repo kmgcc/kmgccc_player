@@ -24,6 +24,8 @@ struct HomeAlbumsSection: View {
     /// Distance from the right window edge inwards (right lyrics inspector
     /// width + horizontal padding inside the center column).
     let centerRightPad: CGFloat
+    var titleColor: Color = Color.primary
+    var subtitleColor: Color = Color.secondary
 
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(UIStateViewModel.self) private var uiState
@@ -94,6 +96,8 @@ struct HomeAlbumsSection: View {
                 HomeAlbumCard(
                     album: album,
                     mode: mode,
+                    titleColor: titleColor,
+                    subtitleColor: subtitleColor,
                     onOpen: { open(album) },
                     onPlay: { play(album) },
                     onEdit: { editingAlbum = album },
@@ -126,6 +130,7 @@ struct HomeAlbumsSection: View {
             Text("专辑")
                 .font(.system(size: mode.sectionTitleFontSize, weight: .semibold))
                 .tracking(-0.3)
+                .foregroundStyle(titleColor)
             Spacer()
             viewAllButton
         }
@@ -144,7 +149,7 @@ struct HomeAlbumsSection: View {
                     .font(.system(size: 10, weight: .semibold))
             }
             .font(.system(size: 12, weight: .medium))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(subtitleColor)
         }
         .buttonStyle(.plain)
     }
@@ -186,6 +191,8 @@ private struct HomeAlbumDeletionRequest: Identifiable {
 private struct HomeAlbumCard: View {
     let album: AlbumEntry
     let mode: HomeLayoutMode
+    var titleColor: Color = Color.primary
+    var subtitleColor: Color = Color.secondary
     let onOpen: () -> Void
     let onPlay: () -> Void
     let onEdit: () -> Void
@@ -245,10 +252,11 @@ private struct HomeAlbumCard: View {
                     .font(.system(size: titleFontSize, weight: .semibold))
                     .lineLimit(1)
                     .truncationMode(.tail)
+                    .foregroundStyle(titleColor)
 
                 Text(album.primaryArtistDisplayName)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(subtitleColor)
                     .lineLimit(1)
             }
         }

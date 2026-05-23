@@ -82,6 +82,11 @@ struct LDDCSearchSection: View {
     private let amlldbService = AMLLDBService.shared
     private let panelMaxWidth: CGFloat = 380
     private let visibleLDDCSources: [LDDCSource] = [.QM, .KG, .NE]
+
+    // Phase 4.5: ordinary-text foregrounds tinted from the active palette.
+    private var appFgPrimary: Color { Color(nsColor: themeStore.appForegroundPalette.primary) }
+    private var appFgSecondary: Color { Color(nsColor: themeStore.appForegroundPalette.secondary) }
+    private var appFgTertiary: Color { Color(nsColor: themeStore.appForegroundPalette.tertiary) }
     
     init(
         track: Track,
@@ -226,29 +231,29 @@ struct LDDCSearchSection: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("歌曲名")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(appFgSecondary)
                     TextField(
                         "歌曲名", text: $searchTitle
                     )
                     .textFieldStyle(.roundedBorder)
                 }
-                
+
                 VStack(alignment: .leading, spacing: 4) {
                     Text("艺人")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(appFgSecondary)
                     TextField(
                         "艺人", text: $searchArtist
                     )
                     .textFieldStyle(.roundedBorder)
                 }
             }
-            
+
             HStack(spacing: 12) {
                 HStack(spacing: 4) {
                     Text("模式")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(appFgSecondary)
 
                     SlidingSelector(
                         segments: LDDCMode.allCases,
@@ -282,7 +287,7 @@ struct LDDCSearchSection: View {
                 HStack(spacing: 4) {
                     Text("翻译")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(appFgSecondary)
 
                     SlidingSelector(
                         segments: [true, false],
@@ -320,7 +325,7 @@ struct LDDCSearchSection: View {
             HStack(spacing: 12) {
                 Text("平台")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(appFgSecondary)
 
                 // AMLLDB Toggle (separate from LDDC)
                 Toggle(
@@ -383,7 +388,7 @@ struct LDDCSearchSection: View {
             HStack {
                 Text("搜索结果：\(searchResults.count)")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(appFgSecondary)
                 Spacer()
             }
 
@@ -422,7 +427,7 @@ struct LDDCSearchSection: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("搜索结果：\(searchResults.count)")
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(appFgSecondary)
 
             Group {
                 if isSearching {
@@ -449,9 +454,9 @@ struct LDDCSearchSection: View {
             Spacer()
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 32))
-                .foregroundStyle(.secondary.opacity(0.5))
+                .foregroundStyle(appFgTertiary)
             Text("未找到歌词")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(appFgSecondary)
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -465,12 +470,12 @@ struct LDDCSearchSection: View {
                 if let candidate = selectedCandidate {
                     Text("预览：\(candidate.title) - \(candidate.artist ?? "未知")")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(appFgSecondary)
                         .lineLimit(1)
                 } else {
                     Text("预览")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(appFgSecondary)
                 }
 
                 Spacer()
@@ -511,9 +516,9 @@ struct LDDCSearchSection: View {
             Spacer()
             Image(systemName: "doc.text")
                 .font(.system(size: 32))
-                .foregroundStyle(.secondary.opacity(0.5))
+                .foregroundStyle(appFgTertiary)
             Text("选择歌词查看预览")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(appFgSecondary)
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -526,7 +531,7 @@ struct LDDCSearchSection: View {
             HStack {
                 Text("歌词预览")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(appFgSecondary)
 
                 Spacer()
 
@@ -576,8 +581,8 @@ struct LDDCSearchSection: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("原文")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
-                
+                    .foregroundStyle(appFgSecondary)
+
                 TextEditor(text: $editableOrig)
                     .font(.system(.body, design: .monospaced))
                     .frame(height: 120)
@@ -585,13 +590,13 @@ struct LDDCSearchSection: View {
                     .clipShape(RoundedRectangle(cornerRadius: 4))
                     .padding(.trailing, 18)
             }
-            
+
             // Translation editor (if available)
             if !editableTrans.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("翻译")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(appFgSecondary)
                     
                     TextEditor(text: $editableTrans)
                         .font(.system(.body, design: .monospaced))
@@ -627,21 +632,22 @@ struct LDDCSearchSection: View {
                     Text(candidate.title)
                         .font(.subheadline)
                         .fontWeight(.medium)
+                        .foregroundStyle(appFgPrimary)
                         .lineLimit(1)
 
                     HStack(spacing: 4) {
                         Text(candidate.artist ?? "未知")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(appFgSecondary)
                             .lineLimit(1)
 
                         if let album = candidate.album, !album.isEmpty {
                             Text("·")
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(appFgSecondary)
                             Text(album)
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(appFgSecondary)
                                 .lineLimit(1)
                         }
                     }
@@ -652,7 +658,7 @@ struct LDDCSearchSection: View {
                 // Score badge - properly normalized 0-100%
                 Text(String(format: "%.0f%%", displayScore))
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(appFgTertiary)
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 6)

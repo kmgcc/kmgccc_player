@@ -121,7 +121,11 @@ struct BKColorEngine {
         )
 
         // Gate background saturation on artwork analysis (only narrows, never widens).
-        let adjustedBgS = applyAnalysisBgSGating(tier.bgS, analysis: analysis)
+        let adjustedBgS = applyAnalysisBgSGating(
+            tier.bgS,
+            analysis: analysis,
+            isDark: isDark
+        )
         if adjustedBgS != tier.bgS {
             tier = TierRanges(
                 bgB: tier.bgB, fgB: tier.fgB, dotB: tier.dotB,
@@ -138,21 +142,58 @@ struct BKColorEngine {
             var triggered = Set<RiskFlag>()
             let grayscalePalette = makeGrayscalePalette(
                 stats: stats, isDark: isDark, triggered: &triggered)
+            let neutraliseShapes =
+                (analysis?.isNearMonochrome ?? false)
+                && !analysisHasTrustedHueCandidate(analysis)
+            let finalPalette: HarmonizedPalette
+            if neutraliseShapes {
+                finalPalette = HarmonizedPalette(
+                    primaryHue: grayscalePalette.primaryHue,
+                    imageHue: grayscalePalette.imageHue,
+                    isDark: grayscalePalette.isDark,
+                    complexity: grayscalePalette.complexity,
+                    grayScore: grayscalePalette.grayScore,
+                    isGrayscaleCover: grayscalePalette.isGrayscaleCover,
+                    isNearGray: grayscalePalette.isNearGray,
+                    coverLuma: grayscalePalette.coverLuma,
+                    imageCoverLuma: grayscalePalette.imageCoverLuma,
+                    coverAvgS: grayscalePalette.coverAvgS,
+                    areaDominantS: grayscalePalette.areaDominantS,
+                    areaDominantB: grayscalePalette.areaDominantB,
+                    accentHue: grayscalePalette.accentHue,
+                    accentStrength: grayscalePalette.accentStrength,
+                    accentEnabled: grayscalePalette.accentEnabled,
+                    bgStops: grayscalePalette.bgStops.map { neutraliseCGColor($0) },
+                    bgVariants: grayscalePalette.bgVariants.map { $0.map { neutraliseCGColor($0) } },
+                    shapePool: Array(nearMonoShapePreset.indices.map {
+                        nearMonoShapePreset[$0 % nearMonoShapePreset.count]
+                    }),
+                    dotBase: neutraliseCGColor(grayscalePalette.dotBase),
+                    bgBRange: grayscalePalette.bgBRange,
+                    fgBRange: grayscalePalette.fgBRange,
+                    dotBRange: grayscalePalette.dotBRange,
+                    bgSRange: grayscalePalette.bgSRange,
+                    fgSRange: grayscalePalette.fgSRange,
+                    dotSRange: grayscalePalette.dotSRange
+                )
+            } else {
+                finalPalette = grayscalePalette
+            }
             logPalette(
-                primaryBefore: grayscalePalette.primaryHue,
-                primaryAfter: grayscalePalette.primaryHue,
+                primaryBefore: finalPalette.primaryHue,
+                primaryAfter: finalPalette.primaryHue,
                 primarySource: .grayscaleFallback,
                 stats: stats,
                 tier: grayscaleTierRanges(isDark: isDark),
                 triggered: triggered,
-                bgStops: grayscalePalette.bgStops.compactMap(hsb(from:)),
-                shapePool: grayscalePalette.shapePool.compactMap(hsb(from:)),
-                dotBase: hsb(from: grayscalePalette.dotBase)
+                bgStops: finalPalette.bgStops.compactMap(hsb(from:)),
+                shapePool: finalPalette.shapePool.compactMap(hsb(from:)),
+                dotBase: hsb(from: finalPalette.dotBase)
                     ?? HSBColor(
-                        h: grayscalePalette.primaryHue, s: 0.24, b: isDark ? 0.72 : 0.56, a: 1),
+                        h: finalPalette.primaryHue, s: 0.24, b: isDark ? 0.72 : 0.56, a: 1),
                 injectedAccentCount: 0
             )
-            return grayscalePalette
+            return finalPalette
         }
 
         var globalTriggers = Set<RiskFlag>()
@@ -332,6 +373,40 @@ struct BKColorEngine {
             triggered: &globalTriggers
         )
 
+        // Phase 6.3 — anti-pink under true nearMono. When the cover has no
+        // trustworthy hue (dominant / top / salient OKLCH chroma all below
+        // `trustedHueChromaFloor`), the floating shapes, moving circle, and
+        // BK1/BK2 variants must NOT carry residual warm tint from the
+        // HSB-based shape resolver. Crush chroma in OKLCH so L is preserved
+        // but no hue leaks. Mirrors the existing
+        // `FullscreenMiniPlayerView.neutralizeForNearMono` pass on Spectrum.
+        let neutraliseShapes =
+            (analysis?.isNearMonochrome ?? false)
+            && !analysisHasTrustedHueCandidate(analysis)
+
+        let finalBgStops = bgStopsHSB.map(toCGColor(_:))
+        let finalShapePool = shapePoolHSB.map(toCGColor(_:))
+        let finalDotBase = toCGColor(dotBaseHSB)
+        let finalBgVariants = bgVariantsHSB.map { $0.map(toCGColor(_:)) }
+
+        let bgStopsOut: [CGColor]
+        let shapePoolOut: [CGColor]
+        let dotBaseOut: CGColor
+        let bgVariantsOut: [[CGColor]]
+        if neutraliseShapes {
+            bgStopsOut = finalBgStops.map { neutraliseCGColor($0) }
+            shapePoolOut = Array(finalShapePool.indices.map {
+                nearMonoShapePreset[$0 % nearMonoShapePreset.count]
+            })
+            dotBaseOut = neutraliseCGColor(finalDotBase)
+            bgVariantsOut = finalBgVariants.map { $0.map { neutraliseCGColor($0) } }
+        } else {
+            bgStopsOut = finalBgStops
+            shapePoolOut = finalShapePool
+            dotBaseOut = finalDotBase
+            bgVariantsOut = finalBgVariants
+        }
+
         let harmonized = HarmonizedPalette(
             primaryHue: normalizeHue(primaryAfter),
             imageHue: normalizeHue(stats.areaDominantHue),
@@ -348,10 +423,10 @@ struct BKColorEngine {
             accentHue: stats.accentHue,
             accentStrength: stats.accentStrength,
             accentEnabled: stats.accentEnabled,
-            bgStops: bgStopsHSB.map(toCGColor(_:)),
-            bgVariants: bgVariantsHSB.map { $0.map(toCGColor(_:)) },
-            shapePool: shapePoolHSB.map(toCGColor(_:)),
-            dotBase: toCGColor(dotBaseHSB),
+            bgStops: bgStopsOut,
+            bgVariants: bgVariantsOut,
+            shapePool: shapePoolOut,
+            dotBase: dotBaseOut,
             bgBRange: tier.bgB,
             fgBRange: tier.fgB,
             dotBRange: tier.dotB,
@@ -380,8 +455,23 @@ struct BKColorEngine {
         seed: UInt64,
         extracted: [NSColor],
         fallback: [NSColor],
-        isDark: Bool
+        isDark: Bool,
+        analysis: ArtworkColorAnalysis? = nil
     ) -> ShapeSwatchResult {
+        if analysis?.isNearMonochrome == true {
+            return ShapeSwatchResult(
+                colors: Array(nearMonoShapePreset.indices.map {
+                    nearMonoShapePreset[$0 % nearMonoShapePreset.count]
+                }),
+                diagnostics: ShapeSwatchDiagnostics(
+                    avgS: 0.02,
+                    hueSpread: 0,
+                    swatchCount: nearMonoShapePreset.count,
+                    swatchHSB: nearMonoShapePreset.compactMap(hsb(from:)).map(hsbString(_:)),
+                    nearestCandidateHueDiff: [0]
+                )
+            )
+        }
         let input = (extracted.isEmpty ? fallback : extracted)
             .compactMap(hsb(from:))
             .map(normalizeCandidateColor(_:))
@@ -1132,7 +1222,7 @@ extension BKColorEngine {
         if isDark {
             return clamp(0.18 + 0.70 * coverLuma, min: 0.10, max: 0.62)
         }
-        return clamp(0.55 + 0.55 * coverLuma, min: 0.65, max: 0.90)
+        return clamp(0.88 + 0.16 * coverLuma, min: 0.90, max: 0.975)
     }
 
     fileprivate nonisolated static func lumaBlendK(coverKind: CoverKind) -> CGFloat {
@@ -1166,35 +1256,46 @@ extension BKColorEngine {
         var dotS: ClosedRange<CGFloat>
 
         if isDark {
-            bgB = 0.24...0.40
-            fgB = 0.44...0.64
-            dotB = 0.56...0.82
-            bgS = 0.24...0.50
-            fgS = 0.34...0.72
-            dotS = 0.30...0.62
+            // Phase 6.3 dark-mode tuning:
+            //   * background B is capped lower so bright artwork cannot lift
+            //     BK1/BK2 into a washed night surface;
+            //   * saturation floors are higher for normal chromatic covers so
+            //     warm/red artwork keeps enough colour instead of greying out;
+            //   * moving circles sit lower than 6.2 while remaining above the
+            //     base background band.
+            bgB = 0.12...0.24
+            fgB = 0.24...0.42
+            dotB = 0.34...0.52
+            bgS = 0.30...0.60
+            fgS = 0.42...0.78
+            dotS = 0.38...0.72
 
             if veryDarkCover || coverLuma < 0.22 {
-                bgB = 0.08...0.22
-                fgB = 0.30...0.52
-                dotB = 0.46...0.70
-                bgS = 0.08...0.26
+                bgB = 0.035...0.12
+                fgB = 0.14...0.28
+                dotB = 0.22...0.38
+                bgS = 0.12...0.32
             }
             if coverLuma < 0.34 && areaDominantB < 0.30 {
-                bgB = 0.08...0.18
-                fgB = 0.28...0.50
-                dotB = 0.42...0.66
-                bgS = makeRange(lower: 0.06, upper: min(bgS.upperBound, 0.20))
+                bgB = 0.035...0.105
+                fgB = 0.12...0.26
+                dotB = 0.20...0.34
+                bgS = makeRange(lower: 0.10, upper: min(bgS.upperBound, 0.24))
             }
             if areaDominantS < 0.14 {
-                bgS = makeRange(lower: 0.08, upper: min(bgS.upperBound, 0.24))
+                bgS = makeRange(lower: 0.10, upper: min(bgS.upperBound, 0.26))
             }
         } else {
-            bgB = 0.78...0.85
-            fgB = 0.66...0.78
-            dotB = 0.50...0.62
-            bgS = 0.12...0.36
-            fgS = 0.26...0.60
-            dotS = 0.20...0.56
+            // Phase 6.3 light-mode tuning: this is an independent airy-light
+            // design, not a shallow copy of the night palette. Backgrounds,
+            // BK variants, shapes, and moving circles all live in a high-B
+            // band that can support dark lyric/UI foregrounds.
+            bgB = 0.990...0.995
+            fgB = 0.955...0.995
+            dotB = 0.920...0.980
+            bgS = 0.04...0.16
+            fgS = 0.12...0.30
+            dotS = 0.10...0.26
         }
 
         if complexity == .monochrome {
@@ -1219,14 +1320,16 @@ extension BKColorEngine {
             bgS = makeRange(
                 lower: bgS.lowerBound, upper: min(isDark ? 0.42 : 0.36, bgS.upperBound * 1.10))
 
-            fgB = makeRange(
-                lower: min(1, fgB.lowerBound * 1.05),
-                upper: min(1, fgB.upperBound * 1.10)
-            )
-            dotB = makeRange(
-                lower: min(1, dotB.lowerBound * 1.05),
-                upper: min(1, dotB.upperBound * 1.12)
-            )
+            if isDark {
+                fgB = makeRange(
+                    lower: min(1, fgB.lowerBound * 1.05),
+                    upper: min(1, fgB.upperBound * 1.10)
+                )
+                dotB = makeRange(
+                    lower: min(1, dotB.lowerBound * 1.05),
+                    upper: min(1, dotB.upperBound * 1.12)
+                )
+            }
         }
 
         let ultraLowSatCover =
@@ -1262,15 +1365,21 @@ extension BKColorEngine {
     /// analysis-derived ceiling/floor.  Only ever narrows — never widens.
     fileprivate nonisolated static func applyAnalysisBgSGating(
         _ existing: ClosedRange<CGFloat>,
-        analysis: ArtworkColorAnalysis?
+        analysis: ArtworkColorAnalysis?,
+        isDark: Bool
     ) -> ClosedRange<CGFloat> {
         let colorfulness = analysis?.colorfulness ?? 0.5
         let isMono = analysis?.isMonochrome ?? false
         let confidence = analysis?.dominantHueConfidence ?? 0.5
+        let trusted = analysisHasTrustedHueCandidate(analysis)
+        let hue = analysis?.dominantHue ?? 0
+        let warmRed = hue <= 0.12 || hue >= 0.92
 
         let ceiling: CGFloat
         if isMono {
             ceiling = 0.10
+        } else if isDark && trusted && warmRed && colorfulness < 0.24 {
+            ceiling = 0.44
         } else if colorfulness < 0.20 {
             ceiling = 0.32
         } else if colorfulness < 0.45 {
@@ -1278,7 +1387,7 @@ extension BKColorEngine {
         } else {
             ceiling = 0.78
         }
-        let floor: CGFloat = isMono ? 0.0 : 0.06
+        let floor: CGFloat = isMono ? 0.0 : (isDark && trusted && warmRed ? 0.14 : 0.06)
 
         // Intersect: never widen the engine's own range.
         let intersectedLower = max(existing.lowerBound, floor)
@@ -1466,12 +1575,12 @@ extension BKColorEngine {
             )
         }
         return TierRanges(
-            bgB: 0.80...0.85,
-            fgB: 0.68...0.78,
-            dotB: 0.52...0.62,
-            bgS: 0.01...0.04,
-            fgS: 0.04...0.12,
-            dotS: 0.05...0.14
+            bgB: 0.970...0.995,
+            fgB: 0.920...0.980,
+            dotB: 0.880...0.950,
+            bgS: 0.008...0.030,
+            fgS: 0.030...0.090,
+            dotS: 0.035...0.105
         )
     }
 
@@ -1581,7 +1690,7 @@ extension BKColorEngine {
         let remapped = lerp(tierMid, lumaTarget, t: lumaK)
         var bMid = clamp(remapped, min: tier.bgB.lowerBound, max: tier.bgB.upperBound)
         if !isDark {
-            bMid = min(0.85, bMid)
+            bMid = min(tier.bgB.upperBound, bMid)
         }
         let sMid = midpoint(tier.bgS)
         let bOffsets: [CGFloat] = isDark ? [-0.04, -0.01, 0.03] : [-0.02, 0.00, 0.03]
@@ -2951,6 +3060,61 @@ extension BKColorEngine {
         case .shape: return "shape"
         case .dot: return "dot"
         }
+    }
+
+    /// Trusted-hue evidence over the analysis. Mirrors the analyser's
+    /// canonical trust decision, including muted coherent hue support. True
+    /// nearMono covers crush residual chroma in OKLCH; chromatic covers keep
+    /// their tint even when average saturation is low.
+    fileprivate nonisolated static func analysisHasTrustedHueCandidate(
+        _ analysis: ArtworkColorAnalysis?
+    ) -> Bool {
+        analysis?.hasTrustedHueCandidate ?? true
+    }
+
+    /// Phase 6.7 — designed preset palette for true nearMono Art Shapes.
+    /// Replaces extracted-hue pools that leak pink/magenta because the HSB
+    /// resolver has no trustworthy hue to work from. Colors are very pale
+    /// (chroma ≤ 0.008) so they read as tinted neutrals, not vivid hues.
+    fileprivate nonisolated static let nearMonoShapePreset: [CGColor] = {
+        let specs: [(l: CGFloat, h: CGFloat)] = [
+            (0.62, 0.58), // pale cyan-blue
+            (0.70, 0.15), // pale yellow
+            (0.58, 0.35), // pale mint
+            (0.66, 0.55), // pale sky
+        ]
+        return specs.map { spec in
+            let oklch = OKColor.OKLCH(l: spec.l, c: 0.006, h: spec.h)
+            let ns = OKColor.okLCHToNSColor(oklch, alpha: 1.0)
+            return (ns.usingColorSpace(.deviceRGB) ?? ns).cgColor
+        }
+    }()
+
+    /// Phase 6.3 — crush a CGColor's OKLCH chroma to the nearMono ceiling and
+    /// rotate warm (pink/red) hues to the cool neutral hue so nearMono shapes
+    /// read as blue/mint/yellow dominant instead of residual warm tint.
+    /// Ceiling matches `FullscreenMiniPlayerView.neutralizeForNearMono` (the
+    /// Spectrum nearMono pass) for visual consistency across surfaces.
+    fileprivate nonisolated static func neutraliseCGColor(_ color: CGColor) -> CGColor {
+        guard let ns = NSColor(cgColor: color)?.usingColorSpace(.deviceRGB) else {
+            return color
+        }
+        guard let lch = OKColor.nsColorToOKLCH(ns) else {
+            return color
+        }
+        // Rotate warm/pink hues (red-orange-magenta band) to the canonical
+        // cool neutral hue so nearMono shapes are blue/mint/yellow dominant.
+        let warmBandUpper: CGFloat = 0.22   // ~80°  (orange/yellow boundary)
+        let warmBandLower: CGFloat = 0.92   // ~331° (magenta/pink)
+        let isWarm = lch.h <= warmBandUpper || lch.h >= warmBandLower
+        let targetHue = isWarm ? ColorSystemTokens.NearMonochrome.neutralCoolHue : lch.h
+        let crushed = OKColor.OKLCH(
+            l: lch.l,
+            c: min(lch.c, 0.008),
+            h: targetHue
+        )
+        let nsCrushed = OKColor.okLCHToNSColor(crushed, alpha: 1.0)
+        return (nsCrushed.usingColorSpace(.deviceRGB) ?? nsCrushed).cgColor
     }
 
     fileprivate nonisolated static func hsb(from color: NSColor) -> HSBColor? {

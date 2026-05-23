@@ -6,6 +6,26 @@
 //  colors (ThemeStore accent, BKArt background, lyrics colors, Home Hero
 //  text) derive from this structure rather than re-running pixel sampling.
 //
+//  Phase 2 introduces two orthogonal axes on top of the original signal:
+//    - `isUltraDark` — pure lightness / luminance regime, "is this a
+//      night-feel cover regardless of whether it carries hue?"
+//    - `isNearMonochrome` — pure chromatic confidence regime, "is the
+//      cover's hue trustworthy or is it grey/black/white at heart?"
+//
+//  These two flags are independent (any of four combinations is possible).
+//  The legacy `isEffectivelyMonochrome` is kept as an alias of
+//  `isNearMonochrome` so existing consumers (LED resolver, Home shapes,
+//  BKArt, theme log) compile unchanged. Their behaviour changes only for
+//  the narrow class of covers that the old definition mis-classified —
+//  i.e. dark covers with usable hue ("極暗有色"), which the new flag
+//  correctly leaves in the non-mono regime per K.2.
+//
+//  Phase 2 also exposes two new structured palettes:
+//    - `salientHighlightPalette` — small-area but visually striking
+//      colours (designer-grade "accent" picks);
+//    - `displayPalette` — quality-controlled merge intended for the
+//      Phase 3 multi-colour consumers (Home Shapes, BKArt, Spectrum).
+//
 
 import AppKit
 
@@ -16,13 +36,26 @@ nonisolated struct ArtworkColorAnalysis: Equatable, Sendable {
     let avgSaturation: CGFloat
     let avgBrightness: CGFloat          // HSB
     let avgHslLightness: CGFloat
+    let weightedLuma: CGFloat           // WCAG relative luminance, weighted
     let saturationVariance: CGFloat
     let lightnessVariance: CGFloat
     let colorfulness: CGFloat           // 0..1
     let dominantSaturation: CGFloat
+    let dominantBrightness: CGFloat     // HSB B of dominant bucket
     let largestHighSaturationAreaShare: CGFloat
     let highSaturationAreaShare: CGFloat
     let isMonochrome: Bool
+    /// Pure chromatic-confidence regime. True when the cover lacks a
+    /// trustworthy hue. Independent of lightness.
+    let isNearMonochrome: Bool
+    /// Pure lightness regime. True when the cover is a night-feel cover
+    /// (very dark on both HSL average and WCAG luma). Independent of hue.
+    let isUltraDark: Bool
+    /// Backwards-compatible alias of `isNearMonochrome`. Pre-Phase-2
+    /// callers (LED, Home shapes, BKArt) read this; Phase 2 deliberately
+    /// leaves the name in place but corrects its definition (the old
+    /// branch 4, which folded extreme lightness into chromatic
+    /// classification, is gone — see K.2 / J.2.d).
     let isEffectivelyMonochrome: Bool
     let hasStrongAccentRegion: Bool
     let usesDarkForeground: Bool
@@ -31,6 +64,19 @@ nonisolated struct ArtworkColorAnalysis: Equatable, Sendable {
     let averageColor: NSColor
     let topPalette: [NSColor]           // up to 4 distinct colours
     let richPalette: [NSColor]          // up to 8 (artistic)
+    /// Small-area, high-visual-impact colours suitable as accents /
+    /// decorative highlights. Computed even when the average field is
+    /// low-chroma; true near-mono is decided by whether any such candidate
+    /// carries trusted chroma.
+    let salientHighlightPalette: [NSColor]
+    /// Area share for each `salientHighlightPalette` entry, same ordering.
+    /// Used by the subjective focus-seed selector so a tiny accent is not
+    /// confused with the total high-saturation area of the whole cover.
+    let salientHighlightAreaShares: [CGFloat]
+    /// Quality-controlled multi-colour palette for downstream visual
+    /// consumers (Phase 3: Home Shapes, BKArt, Spectrum). Narrowed on
+    /// near-monochrome covers; never synthesised via hue rotation.
+    let displayPalette: [NSColor]
     let bestTextSourceColor: NSColor    // most colourful mid-tone bucket
 
     static let neutralFallback = ArtworkColorAnalysis(
@@ -40,13 +86,17 @@ nonisolated struct ArtworkColorAnalysis: Equatable, Sendable {
         avgSaturation: 0.18,
         avgBrightness: 0.62,
         avgHslLightness: 0.62,
+        weightedLuma: 0.55,
         saturationVariance: 0,
         lightnessVariance: 0,
         colorfulness: 0,
         dominantSaturation: 0.10,
+        dominantBrightness: 0.62,
         largestHighSaturationAreaShare: 0,
         highSaturationAreaShare: 0,
         isMonochrome: true,
+        isNearMonochrome: true,
+        isUltraDark: false,
         isEffectivelyMonochrome: true,
         hasStrongAccentRegion: false,
         usesDarkForeground: true,
@@ -54,8 +104,98 @@ nonisolated struct ArtworkColorAnalysis: Equatable, Sendable {
         averageColor: NSColor(deviceRed: 1.0, green: 200/255, blue: 120/255, alpha: 1),
         topPalette: [],
         richPalette: [],
+        salientHighlightPalette: [],
+        salientHighlightAreaShares: [],
+        displayPalette: [],
         bestTextSourceColor: NSColor(deviceRed: 0.20, green: 0.20, blue: 0.22, alpha: 1)
     )
+
+    var hasTrustedHueCandidate: Bool {
+        ArtworkHueTrust.hasTrustedHueCandidate(
+            dominant: OKColor.nsColorToOKLCH(dominantColor),
+            top: topPalette.compactMap { OKColor.nsColorToOKLCH($0) },
+            rich: richPalette.compactMap { OKColor.nsColorToOKLCH($0) },
+            salient: salientHighlightPalette.compactMap { OKColor.nsColorToOKLCH($0) },
+            salientAreaShares: salientHighlightAreaShares,
+            avgSaturation: avgSaturation,
+            colorfulness: colorfulness,
+            dominantSaturation: dominantSaturation,
+            dominantHueConfidence: dominantHueConfidence,
+            largestHighSaturationAreaShare: largestHighSaturationAreaShare,
+            isMonochrome: isMonochrome
+        )
+    }
+}
+
+nonisolated enum ArtworkHueTrust {
+    static func hasTrustedHueCandidate(
+        dominant: OKColor.OKLCH?,
+        top: [OKColor.OKLCH],
+        rich: [OKColor.OKLCH],
+        salient: [OKColor.OKLCH],
+        salientAreaShares: [CGFloat],
+        avgSaturation: CGFloat,
+        colorfulness: CGFloat,
+        dominantSaturation: CGFloat,
+        dominantHueConfidence: CGFloat,
+        largestHighSaturationAreaShare: CGFloat,
+        isMonochrome: Bool
+    ) -> Bool {
+        let T = ColorSystemTokens.NearMonochromeProfile.self
+        let paletteCandidates = top + rich + salient
+        if paletteCandidates.contains(where: { $0.c >= T.trustedHueChromaFloor }) {
+            return true
+        }
+        let hasDominantSamplingSupport =
+            !isMonochrome
+            && (avgSaturation >= T.strictAvgSaturation
+            || colorfulness >= T.strictColorfulness
+            || dominantSaturation >= T.mutedTrustedDominantSaturationFloor
+            || largestHighSaturationAreaShare >= T.mutedTrustedLargestHighSatAreaFloor)
+        if let dominant,
+           dominant.c >= T.trustedHueChromaFloor,
+           hasDominantSamplingSupport {
+            return true
+        }
+
+        for (index, candidate) in salient.enumerated()
+            where candidate.c >= T.mutedTrustedHueChromaFloor {
+            let share = index < salientAreaShares.count ? salientAreaShares[index] : 0
+            if share >= ColorSystemTokens.SalientHighlight.minAreaShare {
+                return true
+            }
+        }
+
+        let hasChromaticSupport =
+            avgSaturation >= T.mutedTrustedAvgSaturationFloor
+            || colorfulness >= T.mutedTrustedColorfulnessFloor
+            || dominantSaturation >= T.mutedTrustedDominantSaturationFloor
+            || largestHighSaturationAreaShare >= T.mutedTrustedLargestHighSatAreaFloor
+
+        guard hasChromaticSupport else { return false }
+
+        if let dominant,
+           dominant.c >= T.mutedTrustedHueChromaFloor,
+           dominantHueConfidence >= T.mutedTrustedDominantConfidenceFloor {
+            return true
+        }
+
+        let allCandidates = [dominant].compactMap { $0 } + paletteCandidates
+        let mutedCandidates = allCandidates.filter { $0.c >= T.mutedTrustedHueChromaFloor }
+        guard mutedCandidates.count >= 2 else { return false }
+
+        for i in mutedCandidates.indices {
+            for j in mutedCandidates.indices where j > i {
+                if ColorMath.circularHueDistance(
+                    mutedCandidates[i].h,
+                    mutedCandidates[j].h
+                ) <= T.mutedTrustedCoherentHueGap {
+                    return true
+                }
+            }
+        }
+        return false
+    }
 }
 
 extension ArtworkColorExtractor {
@@ -64,6 +204,18 @@ extension ArtworkColorExtractor {
     /// surface (BKColorEngine, HomeHero, CoverGradientBlur, lyrics).
     nonisolated static func analyze(from data: Data) -> ArtworkColorAnalysis? {
         guard let sample = sampledBitmap(from: data, side: 64) else { return nil }
+        return analyzeInternal(sample: sample)
+    }
+
+    /// Test / self-check entry point. Accepts a synthetic RGBA pixel buffer
+    /// without going through `CGImageSource`, so the colour decision engine
+    /// can be exercised with deterministic inputs (see
+    /// `ColorSystemSelfCheck`).
+    nonisolated static func analyzeSyntheticSample(
+        pixels: [UInt8],
+        side: Int
+    ) -> ArtworkColorAnalysis? {
+        let sample = ArtworkBitmapSample(pixels: pixels, side: side)
         return analyzeInternal(sample: sample)
     }
 
@@ -83,6 +235,7 @@ extension ArtworkColorExtractor {
         var satSum: CGFloat = 0
         var briSum: CGFloat = 0
         var hslLSum: CGFloat = 0
+        var lumaSum: CGFloat = 0
         var hueSinSum: CGFloat = 0
         var hueCosSum: CGFloat = 0
         var vividWeight: CGFloat = 0
@@ -111,6 +264,7 @@ extension ArtworkColorExtractor {
             let maxRGB = max(r, max(g, b))
             let minRGB = min(r, min(g, b))
             let hslL = (maxRGB + minRGB) * 0.5
+            let luma = ColorMath.relativeLuminance(of: rgb)
 
             // Mirror the existing uiThemePalette weighting so that downstream
             // dominantHue / topPalette are consistent with the rest of the system.
@@ -128,6 +282,7 @@ extension ArtworkColorExtractor {
             satSum += sat * weight
             briSum += bri * weight
             hslLSum += hslL * weight
+            lumaSum += luma * weight
 
             // Circular hue mean via vector sum.
             let theta = hue * 2 * .pi
@@ -157,6 +312,7 @@ extension ArtworkColorExtractor {
         let avgSat = satSum / totalWeight
         let avgBri = briSum / totalWeight
         let avgHslL = hslLSum / totalWeight
+        let avgLuma = lumaSum / totalWeight
         let satVar = weightProcessed > 0 ? satM2 / weightProcessed : 0
         let lVar   = weightProcessed > 0 ? lM2 / weightProcessed   : 0
         let colorfulness = ColorMath.clamp(vividWeight / totalWeight, 0, 1)
@@ -197,6 +353,12 @@ extension ArtworkColorExtractor {
             rgb.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
             return h
         }()
+        let dominantBrightness: CGFloat = {
+            let rgb = dominantColor.usingColorSpace(.deviceRGB) ?? dominantColor
+            var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            rgb.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+            return b
+        }()
 
         var dominantSaturation: CGFloat = 0
         var highSaturationAreaShare: CGFloat = 0
@@ -227,16 +389,86 @@ extension ArtworkColorExtractor {
             }
         }
 
-        let isMono = colorfulness < 0.04 && avgSat < 0.10
-        let isExtremeTone = avgHslL < 0.18 || avgHslL > 0.86
-        let highSatIsOnlyTinyNoise = largestHighSaturationAreaShare < 0.12
-        let isEffectivelyMono =
-            isMono
-            || (colorfulness < 0.10 && avgSat < 0.16 && highSatIsOnlyTinyNoise)
-            || (avgSat < 0.105 && colorfulness < 0.14 && largestHighSaturationAreaShare < 0.16)
-            || (isExtremeTone && avgSat < 0.18 && colorfulness < 0.16 && !hasStrong)
-            || (dominantSaturation < 0.18 && colorfulness < 0.16 && avgSat < 0.18)
-        let usesDark = avgHslL >= 0.58
+        // -------- Chromatic axis (Phase 2: isNearMonochrome) --------
+        //
+        // Branch 4 of the legacy gate folded lightness into this signal —
+        // Phase 2 drops it and gives that responsibility to UltraDark.
+        // The remaining four branches are pure colour-confidence tests.
+
+        // Phase 6.3 — chromatic trust override. If the dominant centroid OR
+        // any top / rich / salient candidate carries OKLCH chroma at or
+        // above `trustedHueChromaFloor`, the cover has a hue identity even
+        // when the average saturation looks low (compressed JPEGs, vintage
+        // prints, warm-tinted photos). Without this override the historical
+        // 4-branch OR would grey-wash these covers — exactly the "明明有颜色
+        // 但歌词变成灰白" report.
+        let phase63TopPalette = uiThemePalette(from: sample, targetCount: 4)
+        let phase63RichPalette = uiThemePaletteRich(from: sample, targetCount: 8)
+        let phase63SalientCandidates = computeSalientHighlightCandidates(
+            buckets: buckets,
+            totalWeight: totalWeight,
+            dominantHue: dominantHue
+        )
+        let dominantLCH = OKColor.nsColorToOKLCH(dominantColor)
+        let topLCHs: [OKColor.OKLCH] = phase63TopPalette.compactMap { OKColor.nsColorToOKLCH($0) }
+        let richLCHs: [OKColor.OKLCH] = phase63RichPalette.compactMap { OKColor.nsColorToOKLCH($0) }
+        let salientLCHs: [OKColor.OKLCH] = phase63SalientCandidates
+            .map(\.color)
+            .compactMap { OKColor.nsColorToOKLCH($0) }
+        let isMono = colorfulness < ColorSystemTokens.NearMonochromeProfile.strictColorfulness
+            && avgSat < ColorSystemTokens.NearMonochromeProfile.strictAvgSaturation
+        let hasTrustedHue = ArtworkHueTrust.hasTrustedHueCandidate(
+            dominant: dominantLCH,
+            top: topLCHs,
+            rich: richLCHs,
+            salient: salientLCHs,
+            salientAreaShares: phase63SalientCandidates.map(\.areaShare),
+            avgSaturation: avgSat,
+            colorfulness: colorfulness,
+            dominantSaturation: dominantSaturation,
+            dominantHueConfidence: dominantHueConfidence,
+            largestHighSaturationAreaShare: largestHighSaturationAreaShare,
+            isMonochrome: isMono
+        )
+
+        // Phase 6.3: true nearMono means "no trusted hue exists anywhere".
+        // Phase 6.2 still let strict mono fire unconditionally, so a
+        // low-average cover with a real small chromatic focus could enter the
+        // grey path before the focus selector had a chance to use it.
+        let isNearMonochrome =
+            !hasTrustedHue && (
+                isMono
+                ||
+                (colorfulness < ColorSystemTokens.NearMonochromeProfile.lowColorfulness
+                    && avgSat < ColorSystemTokens.NearMonochromeProfile.lowAvgSaturation
+                    && largestHighSaturationAreaShare
+                        < ColorSystemTokens.NearMonochromeProfile.lowMaxHighSatAreaShare)
+                || (avgSat < ColorSystemTokens.NearMonochromeProfile.subtleAvgSaturation
+                    && colorfulness < ColorSystemTokens.NearMonochromeProfile.subtleColorfulness
+                    && largestHighSaturationAreaShare
+                        < ColorSystemTokens.NearMonochromeProfile.subtleMaxHighSatAreaShare)
+                || (dominantSaturation
+                        < ColorSystemTokens.NearMonochromeProfile.dominantBucketSaturation
+                    && colorfulness
+                        < ColorSystemTokens.NearMonochromeProfile.dominantBucketColorfulness
+                    && avgSat
+                        < ColorSystemTokens.NearMonochromeProfile.dominantBucketAvgSaturation)
+            )
+
+        // -------- Lightness axis (Phase 2: isUltraDark) --------
+        //
+        // Three gates, all pure lightness. A cover only counts as UltraDark
+        // when it is dim on the HSL average AND on perceptual luma AND its
+        // dominant bucket itself is not bright (a single neon highlight on
+        // a black background is not UltraDark — `dominantBrightnessCeiling`
+        // is what rules that out).
+
+        let isUltraDark =
+            avgHslL <= ColorSystemTokens.UltraDark.cutoffAvgHslL
+            && avgLuma <= ColorSystemTokens.UltraDark.cutoffWcagLuma
+            && dominantBrightness <= ColorSystemTokens.UltraDark.dominantBrightnessCeiling
+
+        let usesDark = avgHslL >= ColorSystemTokens.ReadabilityForeground.usesDarkAvgHslL
 
         let averageColor = NSColor(
             deviceRed: ColorMath.clamp(weightedR / totalWeight, 0, 1),
@@ -247,9 +479,32 @@ extension ArtworkColorExtractor {
 
         // Reuse existing palette helpers so dominantHue / topPalette stay in sync
         // with the rest of the system.
-        let topPalette = uiThemePalette(from: sample, targetCount: 4)
-        let richPalette = uiThemePaletteRich(from: sample, targetCount: 8)
+        let topPalette = phase63TopPalette
+        let richPalette = phase63RichPalette
         let bestText = textSourceColor(from: buckets, fallback: averageColor)
+
+        // Phase 2 structured outputs.
+        //
+        // `salientHighlightPalette` is computed *regardless* of
+        // isNearMonochrome — the whole point of the structure is to
+        // recover small-area but high-impact accents on covers whose
+        // chromatic average looks bland. The 95% gray + 5% bright yellow
+        // case lives here: the cover IS near-monochrome on average, but
+        // the yellow is a real highlight and must survive.
+        //
+        // `displayPalette` is the place where we resist fabricating
+        // multi-colour: on near-monochrome covers it caps to a small
+        // count (top + salient, no rich expansion) so downstream UI
+        // doesn't gain a colour the cover doesn't really have.
+        let salient = phase63SalientCandidates.map(\.color)
+        let salientAreaShares = phase63SalientCandidates.map(\.areaShare)
+
+        let displayPalette = computeDisplayPalette(
+            top: topPalette,
+            salient: salient,
+            rich: richPalette,
+            isNearMonochrome: isNearMonochrome
+        )
 
         return ArtworkColorAnalysis(
             avgHue: avgHue,
@@ -258,20 +513,27 @@ extension ArtworkColorExtractor {
             avgSaturation: avgSat,
             avgBrightness: avgBri,
             avgHslLightness: avgHslL,
+            weightedLuma: avgLuma,
             saturationVariance: satVar,
             lightnessVariance: lVar,
             colorfulness: colorfulness,
             dominantSaturation: dominantSaturation,
+            dominantBrightness: dominantBrightness,
             largestHighSaturationAreaShare: largestHighSaturationAreaShare,
             highSaturationAreaShare: highSaturationAreaShare,
             isMonochrome: isMono,
-            isEffectivelyMonochrome: isEffectivelyMono,
+            isNearMonochrome: isNearMonochrome,
+            isUltraDark: isUltraDark,
+            isEffectivelyMonochrome: isNearMonochrome,
             hasStrongAccentRegion: hasStrong,
             usesDarkForeground: usesDark,
             dominantColor: dominantColor,
             averageColor: averageColor,
             topPalette: topPalette,
             richPalette: richPalette,
+            salientHighlightPalette: salient,
+            salientHighlightAreaShares: salientAreaShares,
+            displayPalette: displayPalette,
             bestTextSourceColor: bestText
         )
     }

@@ -25,6 +25,7 @@ struct PlaylistDetailView: View {
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(UIStateViewModel.self) private var uiState
+    @EnvironmentObject private var themeStore: ThemeStore
 
     let pageController: PlaylistPageController
 
@@ -251,7 +252,10 @@ struct PlaylistDetailView: View {
             selectionIdentity: selectionIdentity,
             currentTrackID: playerVM.currentTrack?.id,
             pageController: pageController,
-            menuBuilder: erasedTrackMenu(trackID:)
+            menuBuilder: erasedTrackMenu(trackID:),
+            rowPrimaryColor: Color(nsColor: themeStore.appForegroundPalette.primary),
+            rowSecondaryColor: Color(nsColor: themeStore.appForegroundPalette.secondary),
+            rowTertiaryColor: Color(nsColor: themeStore.appForegroundPalette.tertiary)
         )
     }
 
@@ -812,6 +816,9 @@ private struct PlaylistTrackRowsSection: View {
     let currentTrackID: UUID?
     let pageController: PlaylistPageController
     let menuBuilder: (UUID) -> AnyView
+    var rowPrimaryColor: Color = ColorTokens.textPrimary
+    var rowSecondaryColor: Color = ColorTokens.textSecondary
+    var rowTertiaryColor: Color = ColorTokens.textTertiary
 
     var body: some View {
         let _ = LyricsRuntimeProfile.markBody("PlaylistTrackRowsSection.body")
@@ -849,7 +856,10 @@ private struct PlaylistTrackRowsSection: View {
                 },
                 onRowAppear: {
                     pageController.prefetchAroundTrackID(row.id)
-                }
+                },
+                rowPrimaryColor: rowPrimaryColor,
+                rowSecondaryColor: rowSecondaryColor,
+                rowTertiaryColor: rowTertiaryColor
             ) {
                 menuBuilder(row.id)
             }

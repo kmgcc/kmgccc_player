@@ -21,7 +21,9 @@ struct ExpandableVolumeControl: View {
     var materialStyle: LiquidGlassPillMaterialStyle = .clear
     var isEnabled: Bool = true
     var usesAdaptiveForeground: Bool = false
+    var forceDarkForegroundProfile: Bool = false
     var usesInternalHoverExpansion: Bool = true
+    var foregroundProfile: FullscreenMiniPlayerForegroundProfile? = nil
     
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
@@ -144,18 +146,31 @@ struct ExpandableVolumeControl: View {
     }
 
     private var controlPrimaryNSColor: NSColor {
+        if let foregroundProfile {
+            return foregroundProfile.primary
+        }
+        let palette = themeStore.semanticPalette
+        if forceDarkForegroundProfile {
+            return palette.readabilityProfile.foregroundPrimary
+        }
         if usesAdaptiveForeground,
            materialStyle == .clear,
            themeStore.hasArtworkThemeColor,
            FullscreenMiniPlayerView.shouldUseDarkArtworkForeground(
-                for: themeStore.semanticPalette.analysis
+                for: palette.analysis
            ) {
-            return themeStore.semanticPalette.readableTextOnArtwork
+            return palette.readabilityProfile.foregroundPrimary
         }
-        return FullscreenMiniPlayerView.resolveControlAccentColor(from: themeStore.accentNSColor)
+        return palette.miniPlayerControl.primary
     }
 
     private var controlBlendMode: BlendMode {
+        if let foregroundProfile {
+            return foregroundProfile.iconBlendMode
+        }
+        if forceDarkForegroundProfile {
+            return .normal
+        }
         if usesAdaptiveForeground,
            materialStyle == .clear,
            themeStore.hasArtworkThemeColor,

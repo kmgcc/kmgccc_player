@@ -13,12 +13,14 @@ struct DataManagementSettingsView: View {
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+    @AppStorage("telemetry.anonymousUsageEnabled") private var telemetryEnabled: Bool = false
 
     @State private var showResetDataAlert: Bool = false
     @State private var showClearIndexCacheAlert: Bool = false
     @State private var showClearArtworkColorCacheAlert: Bool = false
     @State private var showClearExternalCacheAlert: Bool = false
     @State private var isClearingExternalCaches: Bool = false
+    @State private var isMoreSettingsExpanded: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -57,55 +59,6 @@ struct DataManagementSettingsView: View {
                 }
             }
 
-            // Cache management (all cache-related actions grouped)
-            SettingsSection {
-                VStack(alignment: .leading, spacing: 16) {
-                    // Index cache
-                    VStack(alignment: .leading, spacing: 8) {
-                        Button("清除索引缓存") {
-                            showClearIndexCacheAlert = true
-                        }
-                            .buttonStyle(.bordered)
-                            .clipShape(Capsule())
-
-                        Text("重新建立音乐资料库的索引，供 app 内显示使用，不会影响资料库歌曲文件")
-                            .settingsDescriptionStyle()
-                    }
-
-                    // Artwork color cache
-                    VStack(alignment: .leading, spacing: 8) {
-                        Button("清除取色缓存") {
-                            showClearArtworkColorCacheAlert = true
-                        }
-                            .buttonStyle(.bordered)
-                            .clipShape(Capsule())
-
-                        Text("若遇到取色异常、颜色显示不正确，可尝试清除取色缓存")
-                            .settingsDescriptionStyle()
-                    }
-
-                    // External playback cache
-                    VStack(alignment: .leading, spacing: 8) {
-                        Button(role: .destructive) {
-                            showClearExternalCacheAlert = true
-                        } label: {
-                            if isClearingExternalCaches {
-                                ProgressView()
-                                    .controlSize(.small)
-                            } else {
-                                Text("清理外部播放元数据缓存")
-                            }
-                        }
-                        .buttonStyle(.bordered)
-                        .clipShape(Capsule())
-                        .disabled(isClearingExternalCaches)
-
-                        Text("遇到问题时，可以尝试清除来自外部播放过程中产生的歌曲元数据匹配结果缓存、手动覆盖元数据。此操作不影响本地播放歌曲的数据")
-                            .settingsDescriptionStyle()
-                    }
-                }
-            }
-
             // Reset app settings
             SettingsSection {
                 VStack(alignment: .leading, spacing: 12) {
@@ -120,21 +73,31 @@ struct DataManagementSettingsView: View {
                 }
             }
 
-            // Music preference reset
+            // More settings
             SettingsSection {
-                VStack(alignment: .leading, spacing: 12) {
-                    Button("重置音乐播放数据", role: .destructive) {
-                        MusicPreferenceResetDialogPresenter.present(
-                            libraryVM: libraryVM,
-                            playerVM: playerVM
-                        )
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .clipShape(Capsule())
+                VStack(alignment: .leading, spacing: 0) {
+                    CollapsibleSectionHeader(
+                        "更多设置",
+                        systemImage: "list.bullet.rectangle",
+                        isExpanded: $isMoreSettingsExpanded
+                    )
 
-                    Text("清除播放统计数据，包括歌曲聆听计数、播放时长等")
-                        .settingsDescriptionStyle()
+                    if isMoreSettingsExpanded {
+                        VStack(alignment: .leading, spacing: 16) {
+                            cacheManagementControls
+                            musicPreferenceResetControl
+                        }
+                        .padding(.top, 12)
+                    }
                 }
+            }
+
+            SettingsSection("数据共享") {
+                SettingsSwitchRow(
+                    title: "帮助改进 kmgccc_player",
+                    isOn: telemetryEnabledBinding,
+                    detail: "以完全匿名的方式分享用户数量、使用时长、以及播放模式的大致使用情况，帮助确定未来 kmgccc_player 的开发方向。我们不会获取用户信息、音乐统计等隐私数据，所有数据加密传输。"
+                )
             }
         }
         .alert("初始化应用数据？", isPresented: $showResetDataAlert) {
@@ -178,7 +141,9 @@ struct DataManagementSettingsView: View {
     private func resetAppDataExceptMusicLibrary() {
         AppVersionGate.shared.resetStoredState()
         guard let bundleIdentifier = Bundle.main.bundleIdentifier else { return }
+        let preservedTelemetryState = PreservedAnonymousTelemetryState()
         UserDefaults.standard.removePersistentDomain(forName: bundleIdentifier)
+        preservedTelemetryState.restore()
         UserDefaults.standard.synchronize()
     }
 
@@ -188,4 +153,103 @@ struct DataManagementSettingsView: View {
             playbackCoordinator: playbackCoordinator
         )
     }
+
+    private var telemetryEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { telemetryEnabled },
+            set: { newValue in
+                telemetryEnabled = newValue
+                TelemetryService.shared.setTelemetryEnabled(newValue)
+            }
+        )
+    }
+
+    private var cacheManagementControls: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 8) {
+                Button("清除索引缓存") {
+                    showClearIndexCacheAlert = true
+                }
+                .buttonStyle(.bordered)
+                .clipShape(Capsule())
+
+                Text("重新建立音乐资料库的索引，供 app 内显示使用，不会影响资料库歌曲文件")
+                    .settingsDescriptionStyle()
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Button("清除取色缓存") {
+                    showClearArtworkColorCacheAlert = true
+                }
+                .buttonStyle(.bordered)
+                .clipShape(Capsule())
+
+                Text("若遇到取色异常、颜色显示不正确，可尝试清除取色缓存")
+                    .settingsDescriptionStyle()
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Button(role: .destructive) {
+                    showClearExternalCacheAlert = true
+                } label: {
+                    if isClearingExternalCaches {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Text("清理外部播放元数据缓存")
+                    }
+                }
+                .buttonStyle(.bordered)
+                .clipShape(Capsule())
+                .disabled(isClearingExternalCaches)
+
+                Text("遇到问题时，可以尝试清除来自外部播放过程中产生的歌曲元数据匹配结果缓存、手动覆盖元数据。此操作不影响本地播放歌曲的数据")
+                    .settingsDescriptionStyle()
+            }
+        }
+    }
+
+    private var musicPreferenceResetControl: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Button("重置音乐播放数据", role: .destructive) {
+                MusicPreferenceResetDialogPresenter.present(
+                    libraryVM: libraryVM,
+                    playerVM: playerVM
+                )
+            }
+            .buttonStyle(.borderedProminent)
+            .clipShape(Capsule())
+
+            Text("清除播放统计数据，包括歌曲聆听计数、播放时长等")
+                .settingsDescriptionStyle()
+        }
+    }
+}
+
+private struct PreservedAnonymousTelemetryState {
+    private let installID: String?
+    private let installSeenAcknowledged: Bool?
+    private let installSeenEventID: String?
+
+    init(defaults: UserDefaults = .standard) {
+        installID = defaults.string(forKey: Self.installIDKey)
+        installSeenAcknowledged = defaults.object(forKey: Self.installSeenAcknowledgedKey) as? Bool
+        installSeenEventID = defaults.string(forKey: Self.installSeenEventIDKey)
+    }
+
+    func restore(defaults: UserDefaults = .standard) {
+        if let installID {
+            defaults.set(installID, forKey: Self.installIDKey)
+        }
+        if let installSeenAcknowledged {
+            defaults.set(installSeenAcknowledged, forKey: Self.installSeenAcknowledgedKey)
+        }
+        if let installSeenEventID {
+            defaults.set(installSeenEventID, forKey: Self.installSeenEventIDKey)
+        }
+    }
+
+    private static let installIDKey = "telemetry.anonymousInstallID"
+    private static let installSeenAcknowledgedKey = "telemetry.installSeenAcknowledged"
+    private static let installSeenEventIDKey = "telemetry.installSeenEventID"
 }
