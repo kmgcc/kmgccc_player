@@ -2517,7 +2517,7 @@ nonisolated enum ColorSystemSelfCheck {
         let active = OKColor.nsColorToOKLCH(set.mainActive)
         let inactive = OKColor.nsColorToOKLCH(set.mainInactive)
         let ok = (active?.l ?? 1) < 0.40
-            && (inactive?.l ?? 1) < 0.62
+            && (inactive?.l ?? 1) < 0.72
             && (active?.l ?? 1) < (inactive?.l ?? 0)
         report.record(
             "Phase 6.3: day emphasis glow source is dark", ok,

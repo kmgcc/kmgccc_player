@@ -60,7 +60,7 @@ nonisolated enum FullscreenMiniPlayerForegroundStrategy {
                     spectrumUsesDarkForeground: true
                 )
             }
-            return lightProfile(
+            return coverBlurLightProfile(
                 role: .coverBlurLightForeground,
                 palette: palette,
                 enforceBrightProgressForeground: true
@@ -115,6 +115,25 @@ nonisolated enum FullscreenMiniPlayerForegroundStrategy {
         enforceBrightProgressForeground: Bool
     ) -> FullscreenMiniPlayerForegroundProfile {
         let primary = palette.miniPlayerControl.primary
+        return FullscreenMiniPlayerForegroundProfile(
+            role: role,
+            primary: primary,
+            secondary: primary.withAlphaComponent(0.78),
+            disabled: primary.withAlphaComponent(0.45),
+            pillTint: primary,
+            iconBlendMode: .screen,
+            useScreenBlend: true,
+            enforceBrightProgressForeground: enforceBrightProgressForeground,
+            spectrumUsesDarkForeground: false
+        )
+    }
+
+    private static func coverBlurLightProfile(
+        role: FullscreenMiniPlayerForegroundProfile.Role,
+        palette: SemanticPalette,
+        enforceBrightProgressForeground: Bool
+    ) -> FullscreenMiniPlayerForegroundProfile {
+        let primary = palette.coverGradientText
         return FullscreenMiniPlayerForegroundProfile(
             role: role,
             primary: primary,

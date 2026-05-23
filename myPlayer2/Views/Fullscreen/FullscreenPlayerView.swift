@@ -1199,6 +1199,10 @@ struct FullscreenPlayerView: View {
                     }
                 }
                 .animation(bottomControlsAnimation, value: showPlaybackModeRetapTip)
+                // Phase 6.9: suppress inherited implicit animation on color-profile
+                // changes so controls using .compositingGroup().blendMode() do not
+                // get trapped in a stuck gray intermediate state.
+                .transaction { $0.animation = nil }
                 .environment(\.colorScheme, fullscreenControlsGlassStyle.colorScheme)
                 .offset(x: miniPlayerOriginX)
 
@@ -1211,6 +1215,10 @@ struct FullscreenPlayerView: View {
                 foregroundProfile: fullscreenMiniPlayerForegroundProfile
             )
             .frame(width: volumeWidth, height: buttonSize)
+            // Phase 6.9: suppress inherited implicit animation on color-profile
+            // changes so controls using .compositingGroup().blendMode() do not
+            // get trapped in a stuck gray intermediate state.
+            .transaction { $0.animation = nil }
             .environment(\.colorScheme, fullscreenControlsColorScheme)
             .offset(x: volumeOriginX)
         }
@@ -2112,11 +2120,9 @@ struct FullscreenPlayerView: View {
     }
 
     private var fullscreenQueueUsesBrightTextPalette: Bool {
-        let skinID = settings.fullscreen.skinID
-        return skinID == "coverLed"
-            || skinID == AppleStyleSkin.skinID
-            || skinID == "rotatingCover"
-            || skinID == "kmgccc.cassette"
+        // Phase 6.8: queue card text palette must match the MiniPlayer's
+        // foreground judgment, not a hardcoded skin list.
+        fullscreenMiniPlayerForegroundProfile.useScreenBlend
     }
 
     private var fullscreenControlsColorScheme: ColorScheme {
@@ -3351,6 +3357,28 @@ struct FullscreenPlayerView: View {
             progress: display.duration > 0 ? display.currentTime / display.duration : 0
         )
 
+        let analysis = themeStore.semanticPalette.analysis
+        let fgProfile = fullscreenMiniPlayerForegroundProfile
+        let spectrumArtworkColors: [NSColor]
+        if fgProfile.role == .coverBlurDarkForeground || fgProfile.role == .coverBlurLightForeground {
+            let primary: [NSColor]
+            if !analysis.displayPalette.isEmpty {
+                primary = analysis.displayPalette
+            } else if !analysis.topPalette.isEmpty {
+                primary = analysis.topPalette
+            } else {
+                primary = [
+                    themeStore.semanticPalette.artBackgroundPrimary,
+                    themeStore.semanticPalette.artBackgroundSecondary,
+                ]
+            }
+            let chosen = Array(primary.prefix(2))
+            spectrumArtworkColors = SpectrumColorResolver.prepareSpectrumColors(chosen, analysis: analysis)
+        } else {
+            spectrumArtworkColors = []
+        }
+        let spectrumUsesDarkForeground = fgProfile.spectrumUsesDarkForeground
+
         let theme = SkinContext.ThemeTokens(
             accentColor: themeStore.accentColor,
             colorScheme: colorScheme,
@@ -3374,6 +3402,8 @@ struct FullscreenPlayerView: View {
             artBackgroundIsUltraDark: colorScheme == .dark
                 && settings.fullscreenArtBackgroundEnabled
                 && bkController.isUltraDarkActive,
+            spectrumArtworkColors: spectrumArtworkColors,
+            spectrumUsesDarkForeground: spectrumUsesDarkForeground,
             kickToBrightnessMix: AppSettings.shared.bgKickToBrightnessMix,
             kickDisplaceAmount: AppSettings.shared.bgKickDisplaceAmount,
             kickScaleAmount: AppSettings.shared.bgKickScaleAmount

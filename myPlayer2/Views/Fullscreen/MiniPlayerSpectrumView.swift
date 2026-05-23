@@ -168,7 +168,188 @@ extension MiniPlayerSpectrumContainer: Equatable {
 
 // MARK: - Host View
 
-@MainActor
+nonisolated enum SpectrumColorResolver {
+
+    /// Fullscreen mini player spectrum colors that faithfully represent artwork palette.
+    /// Preserves artwork hue/chroma with minimal adjustment for visibility against glass background.
+    ///
+    /// Phase 3: callers now pass `analysis.displayPalette.prefix(2)`. When the
+    /// artwork is colour-thin (displayPalette has only 1 entry), avoid the
+    /// hue-rotate fabricate path that older builds used; instead derive the
+    /// right endpoint as a same-hue OKLCH tonal variant of the single real
+    /// colour. This keeps the L→R gradient quietly informative rather than
+    /// a flat strip while still being honest about what the artwork
+    /// actually contains.
+    static func resolveArtworkFaithfulColors(
+        from artworkColors: [NSColor],
+        fallback accentColor: NSColor,
+        usesDarkForeground: Bool
+    ) -> (fillColors: [CGColor], strokeColors: [CGColor]) {
+        let sources = Array(artworkColors.prefix(2))
+        let leftSource = sources.first ?? accentColor
+        let rightSource: NSColor = {
+            if let explicit = sources.dropFirst().first {
+                return explicit
+            }
+            // Single-colour path: build a same-hue L variant of the lone real
+            // colour. No hue rotation. Falls back to accent only when even
+            // OKLCH conversion fails.
+            return makeTonalRightEndpoint(of: leftSource, usesDarkForeground: usesDarkForeground)
+                ?? accentColor
+        }()
+
+        guard
+            let leftBase = adjustedSpectrumBase(
+                from: leftSource,
+                usesDarkForeground: usesDarkForeground,
+                alpha: 0.86
+            ),
+            let rightBase = adjustedSpectrumBase(
+                from: rightSource,
+                usesDarkForeground: usesDarkForeground,
+                alpha: 0.80
+            )
+        else {
+            return (Array(repeating: CGColor(gray: 0.6, alpha: 0.85), count: 9),
+                    Array(repeating: CGColor(gray: 0.5, alpha: 0.7), count: 9))
+        }
+
+        let total = max(1, 9 - 1)
+        var fillColors: [CGColor] = []
+        var strokeColors: [CGColor] = []
+
+        for index in 0..<9 {
+            let t = CGFloat(index) / CGFloat(total)
+            let r = leftBase.redComponent + (rightBase.redComponent - leftBase.redComponent) * t
+            let g = leftBase.greenComponent + (rightBase.greenComponent - leftBase.greenComponent) * t
+            let bComp = leftBase.blueComponent + (rightBase.blueComponent - leftBase.blueComponent) * t
+
+            let fillAlpha = 0.85 - t * 0.08
+            let fillColor = NSColor(calibratedRed: r, green: g, blue: bComp, alpha: fillAlpha)
+
+            let strokeHSB = fillColor.usingColorSpace(.deviceRGB) ?? fillColor
+            var sh: CGFloat = 0, ss: CGFloat = 0, sb: CGFloat = 0, sa: CGFloat = 0
+            strokeHSB.getHue(&sh, saturation: &ss, brightness: &sb, alpha: &sa)
+
+            let strokeBri = usesDarkForeground
+                ? min(0.36, max(0.12, sb - 0.05))
+                : min(1.0, max(0.58, sb + 0.08))
+            let strokeAlpha = usesDarkForeground ? 0.78 : 0.92
+            let strokeColor = NSColor(hue: sh, saturation: ss, brightness: strokeBri, alpha: strokeAlpha)
+
+            fillColors.append(fillColor.cgColor)
+            strokeColors.append(strokeColor.cgColor)
+        }
+
+        return (fillColors, strokeColors)
+    }
+
+    /// Build a same-hue tonal right endpoint for the single-real-colour
+    /// path. Used when only one displayPalette colour is available so the
+    /// gradient still has some L→R differentiation without inventing hues.
+    static func makeTonalRightEndpoint(
+        of color: NSColor,
+        usesDarkForeground: Bool
+    ) -> NSColor? {
+        guard let lch = OKColor.nsColorToOKLCH(color) else { return nil }
+        // Push lightness one notch in the visibility direction; preserve hue
+        // and chroma so the right end is recognisably the same colour as
+        // the left, just lighter / darker.
+        let lDelta: CGFloat = usesDarkForeground ? -0.10 : 0.10
+        let newL = clamp01(lch.l + lDelta)
+        let tuned = OKColor.OKLCH(l: newL, c: lch.c, h: lch.h)
+        return OKColor.okLCHToNSColor(tuned, alpha: 1)
+    }
+
+    static func clamp01(_ value: CGFloat) -> CGFloat {
+        min(1, max(0, value))
+    }
+
+    static func adjustedSpectrumBase(
+        from color: NSColor,
+        usesDarkForeground: Bool,
+        alpha: CGFloat
+    ) -> NSColor? {
+        guard let rgb = color.usingColorSpace(.deviceRGB) else { return nil }
+        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        rgb.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+
+        let tunedSaturation: CGFloat
+        if s > 0.72 {
+            tunedSaturation = s * 0.88
+        } else if s > 0.55 {
+            tunedSaturation = s * 0.94
+        } else if s < 0.06 {
+            // Phase 3 hotfix: near-mono input must pass through. The legacy
+            // `max(0.18, s * 1.08)` floor amplified residual hue from grey
+            // artwork into visible pink/yellow tint. Caller has already
+            // OKLCH-neutralised near-mono colours, but enforce the floor
+            // removal here too as a defence-in-depth so any future spectrum
+            // consumer keeps the contract.
+            tunedSaturation = s
+        } else if s < 0.22 {
+            // Phase 3 hotfix: low-saturation but not near-mono. Preserve
+            // the artwork's muted impression instead of lifting toward
+            // 0.18+ (which read as "more colourful than the cover").
+            tunedSaturation = min(0.30, s * 1.04)
+        } else {
+            tunedSaturation = min(0.70, max(0.18, s * 1.08))
+        }
+
+        let tunedBrightness: CGFloat
+        if usesDarkForeground {
+            tunedBrightness = min(0.42, max(0.18, b * 0.46))
+        } else if b < 0.34 {
+            tunedBrightness = min(0.92, b + 0.34)
+        } else if b > 0.88 {
+            tunedBrightness = max(0.70, b - 0.10)
+        } else {
+            tunedBrightness = min(0.94, max(0.58, b + 0.10))
+        }
+
+        return NSColor(
+            hue: h,
+            saturation: tunedSaturation,
+            brightness: tunedBrightness,
+            alpha: alpha
+        )
+    }
+
+    // MARK: - Palette preparation
+
+    static func prepareSpectrumColors(
+        _ colors: [NSColor],
+        analysis: ArtworkColorAnalysis
+    ) -> [NSColor] {
+        guard !colors.isEmpty else { return colors }
+        if analysis.isNearMonochrome && !analysis.hasTrustedHueCandidate {
+            return colors.map { neutralizeForNearMono($0) ?? $0 }
+        }
+        if analysis.colorfulness < 0.18 {
+            return colors.map { dampenLowSaturation($0) ?? $0 }
+        }
+        return colors
+    }
+
+    /// Force a near-monochrome source to perceptual grey: preserve L,
+    /// crush chroma to ~0 in OKLCH. Guarantees no visible hue tint
+    /// regardless of which salient highlight the displayPalette surfaced.
+    static func neutralizeForNearMono(_ color: NSColor) -> NSColor? {
+        guard let lch = OKColor.nsColorToOKLCH(color) else { return nil }
+        let neutral = OKColor.OKLCH(l: lch.l, c: min(lch.c, 0.008), h: lch.h)
+        return OKColor.okLCHToNSColor(neutral, alpha: 1)
+    }
+
+    /// Soft-clamp chroma on low-saturation (but not near-mono) covers so
+    /// downstream visibility tuning doesn't lift them above their natural
+    /// muted impression.
+    static func dampenLowSaturation(_ color: NSColor) -> NSColor? {
+        guard let lch = OKColor.nsColorToOKLCH(color) else { return nil }
+        let shouldered = OKColor.chromaSoftShoulder(lch, ceiling: 0.05, softness: 0.04)
+        return OKColor.okLCHToNSColor(shouldered, alpha: 1)
+    }
+}
+
 private final class MiniPlayerSpectrumHostView: NSView {
     private let service = AudioVisualizationService.shared
     private let rootLayer = CALayer()
@@ -286,7 +467,7 @@ private final class MiniPlayerSpectrumHostView: NSView {
         // Use the artwork's two strongest colours for fullscreen mini player spectrum.
         // The same foreground-mode decision as the rest of the Clear mini player
         // decides whether the bars are darkened or lifted for readability.
-        let resolved = Self.resolveArtworkFaithfulColors(
+        let resolved = SpectrumColorResolver.resolveArtworkFaithfulColors(
             from: artworkColors,
             fallback: accentColor,
             usesDarkForeground: usesDarkForeground
@@ -404,150 +585,6 @@ private final class MiniPlayerSpectrumHostView: NSView {
         CATransaction.commit()
     }
 
-    /// Fullscreen mini player spectrum colors that faithfully represent artwork palette.
-    /// Preserves artwork hue/chroma with minimal adjustment for visibility against glass background.
-    ///
-    /// Phase 3: callers now pass `analysis.displayPalette.prefix(2)`. When the
-    /// artwork is colour-thin (displayPalette has only 1 entry), avoid the
-    /// hue-rotate fabricate path that older builds used; instead derive the
-    /// right endpoint as a same-hue OKLCH tonal variant of the single real
-    /// colour. This keeps the L→R gradient quietly informative rather than
-    /// a flat strip while still being honest about what the artwork
-    /// actually contains.
-    private static func resolveArtworkFaithfulColors(
-        from artworkColors: [NSColor],
-        fallback accentColor: NSColor,
-        usesDarkForeground: Bool
-    ) -> (fillColors: [CGColor], strokeColors: [CGColor]) {
-        let sources = Array(artworkColors.prefix(2))
-        let leftSource = sources.first ?? accentColor
-        let rightSource: NSColor = {
-            if let explicit = sources.dropFirst().first {
-                return explicit
-            }
-            // Single-colour path: build a same-hue L variant of the lone real
-            // colour. No hue rotation. Falls back to accent only when even
-            // OKLCH conversion fails.
-            return makeTonalRightEndpoint(of: leftSource, usesDarkForeground: usesDarkForeground)
-                ?? accentColor
-        }()
-
-        guard
-            let leftBase = adjustedSpectrumBase(
-                from: leftSource,
-                usesDarkForeground: usesDarkForeground,
-                alpha: 0.86
-            ),
-            let rightBase = adjustedSpectrumBase(
-                from: rightSource,
-                usesDarkForeground: usesDarkForeground,
-                alpha: 0.80
-            )
-        else {
-            return (Array(repeating: CGColor(gray: 0.6, alpha: 0.85), count: 9),
-                    Array(repeating: CGColor(gray: 0.5, alpha: 0.7), count: 9))
-        }
-        
-        let total = max(1, 9 - 1)
-        var fillColors: [CGColor] = []
-        var strokeColors: [CGColor] = []
-        
-        for index in 0..<9 {
-            let t = CGFloat(index) / CGFloat(total)
-            let r = leftBase.redComponent + (rightBase.redComponent - leftBase.redComponent) * t
-            let g = leftBase.greenComponent + (rightBase.greenComponent - leftBase.greenComponent) * t
-            let bComp = leftBase.blueComponent + (rightBase.blueComponent - leftBase.blueComponent) * t
-            
-            let fillAlpha = 0.85 - t * 0.08
-            let fillColor = NSColor(calibratedRed: r, green: g, blue: bComp, alpha: fillAlpha)
-            
-            let strokeHSB = fillColor.usingColorSpace(.deviceRGB) ?? fillColor
-            var sh: CGFloat = 0, ss: CGFloat = 0, sb: CGFloat = 0, sa: CGFloat = 0
-            strokeHSB.getHue(&sh, saturation: &ss, brightness: &sb, alpha: &sa)
-            
-            let strokeBri = usesDarkForeground
-                ? min(0.36, max(0.12, sb - 0.05))
-                : min(1.0, max(0.58, sb + 0.08))
-            let strokeAlpha = usesDarkForeground ? 0.78 : 0.92
-            let strokeColor = NSColor(hue: sh, saturation: ss, brightness: strokeBri, alpha: strokeAlpha)
-            
-            fillColors.append(fillColor.cgColor)
-            strokeColors.append(strokeColor.cgColor)
-        }
-        
-        return (fillColors, strokeColors)
-    }
-
-    /// Build a same-hue tonal right endpoint for the single-real-colour
-    /// path. Used when only one displayPalette colour is available so the
-    /// gradient still has some L→R differentiation without inventing hues.
-    private static func makeTonalRightEndpoint(
-        of color: NSColor,
-        usesDarkForeground: Bool
-    ) -> NSColor? {
-        guard let lch = OKColor.nsColorToOKLCH(color) else { return nil }
-        // Push lightness one notch in the visibility direction; preserve hue
-        // and chroma so the right end is recognisably the same colour as
-        // the left, just lighter / darker.
-        let lDelta: CGFloat = usesDarkForeground ? -0.10 : 0.10
-        let newL = clamp01(lch.l + lDelta)
-        let tuned = OKColor.OKLCH(l: newL, c: lch.c, h: lch.h)
-        return OKColor.okLCHToNSColor(tuned, alpha: 1)
-    }
-
-    private static func clamp01(_ value: CGFloat) -> CGFloat {
-        min(1, max(0, value))
-    }
-
-    private static func adjustedSpectrumBase(
-        from color: NSColor,
-        usesDarkForeground: Bool,
-        alpha: CGFloat
-    ) -> NSColor? {
-        guard let rgb = color.usingColorSpace(.deviceRGB) else { return nil }
-        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        rgb.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
-
-        let tunedSaturation: CGFloat
-        if s > 0.72 {
-            tunedSaturation = s * 0.88
-        } else if s > 0.55 {
-            tunedSaturation = s * 0.94
-        } else if s < 0.06 {
-            // Phase 3 hotfix: near-mono input must pass through. The legacy
-            // `max(0.18, s * 1.08)` floor amplified residual hue from grey
-            // artwork into visible pink/yellow tint. Caller has already
-            // OKLCH-neutralised near-mono colours, but enforce the floor
-            // removal here too as a defence-in-depth so any future spectrum
-            // consumer keeps the contract.
-            tunedSaturation = s
-        } else if s < 0.22 {
-            // Phase 3 hotfix: low-saturation but not near-mono. Preserve
-            // the artwork's muted impression instead of lifting toward
-            // 0.18+ (which read as "more colourful than the cover").
-            tunedSaturation = min(0.30, s * 1.04)
-        } else {
-            tunedSaturation = min(0.70, max(0.18, s * 1.08))
-        }
-
-        let tunedBrightness: CGFloat
-        if usesDarkForeground {
-            tunedBrightness = min(0.42, max(0.18, b * 0.46))
-        } else if b < 0.34 {
-            tunedBrightness = min(0.92, b + 0.34)
-        } else if b > 0.88 {
-            tunedBrightness = max(0.70, b - 0.10)
-        } else {
-            tunedBrightness = min(0.94, max(0.58, b + 0.10))
-        }
-
-        return NSColor(
-            hue: h,
-            saturation: tunedSaturation,
-            brightness: tunedBrightness,
-            alpha: alpha
-        )
-    }
 }
 
 private extension NSColor {

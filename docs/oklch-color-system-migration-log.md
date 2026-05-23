@@ -1122,6 +1122,80 @@ Phase 6.5 重新审计了颜色状态机、fullscreen MiniPlayer 前景色策略
 
 ---
 
+### 6.15 Phase 6.6 — BKArt / Lyrics Color Path Audit & State Chain Fixes（2026-05-23）
+
+Phase 6.6 对 BKArt 和艺术歌词的完整颜色链路做了 paused / playing / pending / seeded / resolved 全路径审计，并对 4 个已发现问题做了手术级修复。详见独立审计文档 `docs/superpowers/plans/2026-05-23-phase-6.6-path-audit.md`。
+
+**审计结论**：
+
+- **paused vs playing 不是颜色差异根因**：`isPlaying` 参数只传给 `BKArtBackgroundRepresentable`（NSView 动画层），不参与 SwiftUI 层的 `BKColorEngine.make()`、palette 提取、analysis 传递或 lyrics 颜色决策。两条状态的颜色计算路径完全一致。
+- **真实的颜色分裂来自以下 6 个根因**：(1) Seeded vs resolved palette 输入不同（seeded 无 analysis，resolved 有 analysis）；(2) Now Playing seeded 是单 accent 色，fullscreen seeded 是完整 rich palette；(3) ThemeStore 初始 `.neutralFallback` 是 warm amber，消费者提前读取会闪黄；(4) Fullscreen lyrics 有独立于 ThemeStore 的 resolution 层，可绕过 ThemeStore 已发布的状态；(5) `resolveFullscreenLyricsBaseColor()` 最终 fallback 是 `AppSettings.accentColor`，与 artwork 无关；(6) `BKArtBackgroundView` 的 `@State harmonized` 默认初始值永远是 light-mode 冷灰，暗色模式下先闪一下才切回正确色。
+
+**修复内容**：
+
+1. **Track-change default color flash（优先级 #1）** — 三处协调修改：
+   - `AppKitMainSplitPanes.swift`：Now Playing `BKArtBackgroundView` 新增 `holdPaletteWhenArtworkMissing: playbackCoordinator.presentation.isArtworkLoading`，切歌 artwork pending 时不再立即回退到 cold gray fallback。
+   - `ThemeStore.swift`：`updateThemeFromArtworkData()` 在 `artworkData == nil && sourceChanged` 时调用 `holdCurrentThemeForPendingArtwork()` 保留上一首有效 semantic palette，不再发布 `.neutralFallback` 中间态。
+   - `PlaybackCoordinator.swift`：`makeLocalPresentation()` 的 `isArtworkLoading` 从硬编码 `false` 改为 `track.artworkData?.isEmpty != false && track.resolvedArtworkURL() != nil`，让 view layer 能正确感知 artwork 是否在加载中。
+
+2. **Paused / playing 路径统一（优先级 #2）** — 审计确认无需代码修改。`isPlaying` 不进入任何颜色决策链路。任务标记为已完成。
+
+3. **nearMono shapes 防粉（优先级 #3）** — `BKColorEngine.neutraliseCGColor()`（~line 3023）在 true nearMono 且无 trusted hue 时，把 warm residual hue 旋转到 `ColorSystemTokens.NearMonochrome.neutralCoolHue`（~209° cyan-blue），使 shapes 呈现蓝 / 薄荷 / 黄主导的极淡低彩，而非 residual pink。之前版本只是 chroma crush 但没有 hue 纠偏，导致不同 fallback 路径下 residual pink / yellow / blue 不可控。
+
+4. **日间亮度 fine-tune（优先级 #4）** — `BKColorEngine.tierRanges()` 中 `lowSatColorCover` 块的 `fgB` 和 `dotB` 亮度 boost 原本对 dark / light 无条件执行。在 light mode 下，基础 `fgB = 0.955...0.995`、`dotB = 0.920...0.980`，乘以 `1.05 / 1.10` 后上限全部顶到 `1.0...1.0`（纯白）；随后 `enforceBrightnessHierarchy` 的 light branch 把 `bgMin` 提升到 `fgMax + 0.08`，背景也被推到纯白。结果是低饱和彩色封面在日间艺术背景下 shapes 和背景都变成纯白、完全不可见。**修复**：把 `fgB` 和 `dotB` 的 brightness boost 用 `if isDark { ... }` 保护，保留 `fgS / dotS / bgS` 的饱和度提升对两种模式都生效。
+
+**SelfCheck / Build**：
+
+- `COLOR_SYSTEM_SELF_CHECK=1`：`Result: ALL PASS`（61/61）。
+- `xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player -configuration Debug -destination 'platform=macOS' build`：PASS。
+
+**边界**：
+
+- 未进入 Phase 7。
+- 未处理 AMLL active-inactive feather transition；保留已有 backlog。
+- 未修改 generated `amll-core.js` / `amll-lyric.js`。
+- 未改 Apple / Cover Gradient / Cover Blur profile、普通 AppForegroundPalette、Home Shapes / Spectrum。
+
+---
+
+### 6.16 Phase 6.7 — Artistic Color System Final Stabilization（2026-05-23）
+
+Phase 6.7 针对 Phase 6.6 后剩余的 4 个具体视觉问题进行定点修复。
+
+**修复内容**：
+
+1. **Fix A — nearMono Art Shapes 粉色残留**：
+   - 根因：`BKColorEngine.neutraliseCGColor()` 把 warm residual hue（h ≤ 0.22 或 h ≥ 0.92）旋转到 cool neutral（~209°），但 pink/magenta 区间 ~0.80–0.90 刚好不在旋转范围内，导致 true nearMono 下 shapes 仍呈淡粉。
+   - 修复：新增静态 `nearMonoShapePreset`（4 色预设：pale cyan-blue、yellow、mint、sky），`neutraliseShapes == true` 时 `shapePoolOut` 不再用 hue 旋转，而是直接循环使用预设 palette。保证 true nearMono 下 shapes 永远不出粉。
+   - 涉及文件：`BKColorEngine.swift`
+
+2. **Fix B — Light 模式 BK1/BK2 UltraDark 压暗**：
+   - 根因：`updateUltraDarkOverlay` 在 `isUltraDarkCover == true` 时无条件叠加黑色 overlay（opacity 0.50），light mode 下 airy bright 背景也被压暗。
+   - 修复：把 `shouldShowOverlay` 增加 `harmonized.isDark` 条件，仅 dark mode 下显示 overlay。light mode 下 UltraDark 封面保留 airy bright 背景。
+   - 涉及文件：`BKArtBackgroundView.swift`
+
+3. **Fix C — Light 模式 Artistic inactive 歌词偏暗**：
+   - 根因：light mode 下 inactive 歌词 L token（`lyricsLightMainInactiveL = 0.620` 等）在 airy bright 背景下对比度不足，显得偏暗。
+   - 修复：日间 inactive 歌词 L 全部 +0.030（main 0.620→0.650 / sub 0.622→0.652 / lineTiming 0.650→0.680 / lineTimingSub 0.668→0.698）。SelfCheck 对应阈值同步放宽。
+   - 涉及文件：`ColorSystemTokens.swift`、`ColorSystemSelfCheck.swift`
+
+4. **Fix D — Paused / playing fullscreen 颜色身份不一致**：
+   - 根因：`BKArtBackgroundLayerView` 在 `shouldFreezeVisualUpdates`（speedCurrent ≤ 0.01）时把 palette update defer 到 `deferredPaletteUpdate`，在 resume 时才 apply。paused 状态下 artwork 变化或颜色重算会记录旧 palette，resume 时突然跳色。
+   - 修复：删除 `deferredPaletteUpdate` 机制。`updatePalette` 立即 apply palette；`setPlayback(isPlaying:)` 不再消费 deferred update。playback state 只影响动画/transition speed，不再影响颜色身份。
+   - 涉及文件：`BKArtBackgroundView.swift`
+
+**SelfCheck / Build**：
+- `COLOR_SYSTEM_SELF_CHECK=1`：`Result: ALL PASS`。
+- `xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player -configuration Debug -destination 'platform=macOS' build`：PASS。
+
+**边界**：
+- 未进入 Phase 7。
+- 未处理 AMLL active/inactive feather transition；保留已有 backlog。
+- 未修改 generated `amll-core.js` / `amll-lyric.js`。
+- 未改 Apple / Cover Gradient / Cover Blur profile、普通 AppForegroundPalette、Home Shapes / Spectrum。
+
+---
+
 ## 后续接力点（Phase 7 / 独立排期）
 
 ### B. AppKit toolbar 图标 tint（见 §4.5.12）
@@ -1156,4 +1230,4 @@ xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player \
 COLOR_SYSTEM_SELF_CHECK=1 ./kmgccc_player.app/Contents/MacOS/kmgccc_player
 ```
 
-Self-check 场景随 Phase 6.1–6.5 持续扩展，但只能作为 synthetic 回归辅助。2026-05-23 Phase 6.5 本地 Debug 运行 `Result: ALL PASS`，覆盖 focus seed、muted trusted hue、true nearMono neutralization、BK true nearMono shapes、日间 airy BKArt、日间歌词深灰层级、MiniPlayer foreground strategy 与 pending palette hold 相关断言。最终验收仍以真实封面手测矩阵为准。
+Self-check 场景随 Phase 6.1–6.6 持续扩展，但只能作为 synthetic 回归辅助。2026-05-23 Phase 6.6 本地 Debug 运行 `Result: ALL PASS`，覆盖 focus seed、muted trusted hue、true nearMono neutralization、BK true nearMono shapes、日间 airy BKArt、日间歌词深灰层级、MiniPlayer foreground strategy、pending palette hold、track-change flash、nearMono hue rotation、lowSatColorCover light-mode brightness gating 相关断言。最终验收仍以真实封面手测矩阵为准。

@@ -462,6 +462,7 @@ final class PlaybackCoordinator {
 
         let lyricsText = preferredLyricsTextSnapshot(for: track)
         let artworkData = track.artworkData
+        let isArtworkLoading = track.artworkData?.isEmpty != false && track.resolvedArtworkURL() != nil
         scheduleSidecarHydrationIfNeeded(for: track)
         return NowPlayingPresentation(
             source: .local,
@@ -472,7 +473,7 @@ final class PlaybackCoordinator {
             artworkData: artworkData,
             artworkIdentity: "\(track.id.uuidString):\(ArtworkAssetStore.checksum(for: artworkData))",
             artworkDisplayTrackID: track.id,
-            isArtworkLoading: false,
+            isArtworkLoading: isArtworkLoading,
             duration: playerVM.duration,
             currentTime: playerVM.currentTime,
             isPlaying: playerVM.isPlaying,

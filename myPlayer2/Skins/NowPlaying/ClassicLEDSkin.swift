@@ -243,8 +243,8 @@ private struct PillSpectrumView: View {
     var body: some View {
         PillSpectrumContainer(
             isPlaying: context.playback.isPlaying,
-            isDark: context.theme.colorScheme == .dark,
-            artworkPalette: Array(context.theme.artworkPalette.prefix(2)),
+            usesDarkForeground: context.theme.spectrumUsesDarkForeground,
+            artworkColors: context.theme.spectrumArtworkColors,
             artworkAccentColor: NSColor(pillTint ?? .white),
             capsuleWidth: capsuleWidth,
             capsuleSpacing: capsuleSpacing
@@ -266,8 +266,8 @@ private struct PillSpectrumView: View {
 
 private struct PillSpectrumContainer: NSViewRepresentable {
     let isPlaying: Bool
-    let isDark: Bool
-    let artworkPalette: [NSColor]
+    let usesDarkForeground: Bool
+    let artworkColors: [NSColor]
     let artworkAccentColor: NSColor
     let capsuleWidth: CGFloat
     let capsuleSpacing: CGFloat
@@ -276,7 +276,7 @@ private struct PillSpectrumContainer: NSViewRepresentable {
         let view = PillSpectrumHostView()
         view.capsuleWidth = capsuleWidth
         view.capsuleSpacing = capsuleSpacing
-        view.updatePalette(artworkPalette, accentColor: artworkAccentColor, isDark: isDark)
+        view.updatePalette(artworkColors, accentColor: artworkAccentColor, usesDarkForeground: usesDarkForeground)
         view.start()
         view.setPlayback(isPlaying: isPlaying)
         return view
@@ -285,7 +285,7 @@ private struct PillSpectrumContainer: NSViewRepresentable {
     func updateNSView(_ nsView: PillSpectrumHostView, context: Context) {
         nsView.capsuleWidth = capsuleWidth
         nsView.capsuleSpacing = capsuleSpacing
-        nsView.updatePalette(artworkPalette, accentColor: artworkAccentColor, isDark: isDark)
+        nsView.updatePalette(artworkColors, accentColor: artworkAccentColor, usesDarkForeground: usesDarkForeground)
         nsView.setPlayback(isPlaying: isPlaying)
     }
 
@@ -358,19 +358,19 @@ private final class PillSpectrumHostView: NSView {
         service.updatePlaybackState(isPlaying: isPlaying)
     }
 
-    func updatePalette(_ palette: [NSColor], accentColor: NSColor, isDark: Bool) {
+    func updatePalette(_ artworkColors: [NSColor], accentColor: NSColor, usesDarkForeground: Bool) {
         let signature = Self.paletteSignature(
-            palette: palette,
+            artworkColors: artworkColors,
             accentColor: accentColor,
-            isDark: isDark
+            usesDarkForeground: usesDarkForeground
         )
         guard signature != paletteSignature else { return }
 
         paletteSignature = signature
-        let (fillColors, strokeColors) = Self.makeCapsuleColorsWithStroke(
-            palette: palette,
-            accentColor: accentColor,
-            isDark: isDark
+        let (fillColors, strokeColors) = SpectrumColorResolver.resolveArtworkFaithfulColors(
+            from: artworkColors,
+            fallback: accentColor,
+            usesDarkForeground: usesDarkForeground
         )
         cachedColors = fillColors
         cachedStrokeColors = strokeColors
@@ -470,10 +470,10 @@ private final class PillSpectrumHostView: NSView {
         CATransaction.commit()
     }
 
-    private static func paletteSignature(palette: [NSColor], accentColor: NSColor, isDark: Bool) -> Int {
+    private static func paletteSignature(artworkColors: [NSColor], accentColor: NSColor, usesDarkForeground: Bool) -> Int {
         var hasher = Hasher()
-        hasher.combine(isDark)
-        for color in palette.prefix(2) {
+        hasher.combine(usesDarkForeground)
+        for color in artworkColors.prefix(2) {
             append(color: color, to: &hasher)
         }
         append(color: accentColor, to: &hasher)
@@ -488,135 +488,4 @@ private final class PillSpectrumHostView: NSView {
         hasher.combine(Int(resolved.alphaComponent * 1_000))
     }
 
-    private static func makeCapsuleColors(
-        palette: [NSColor],
-        accentColor: NSColor,
-        isDark: Bool
-    ) -> [CGColor] {
-        let colors: [NSColor]
-        if palette.count >= 2 {
-            colors = Array(palette.prefix(2))
-        } else {
-            colors = [accentColor, accentColor.withAlphaComponent(0.7)]
-        }
-
-        let leftBase = colors[0]
-        let rightBase = colors[min(1, colors.count - 1)]
-        let total = max(1, 9 - 1)
-
-        return (0..<9).map { index in
-            let t = CGFloat(index) / CGFloat(total)
-            return makeInterpolatedColor(
-                leftBase: leftBase,
-                rightBase: rightBase,
-                t: t,
-                isDark: isDark
-            ).cgColor
-        }
-    }
-
-    private static func makeCapsuleColorsWithStroke(
-        palette: [NSColor],
-        accentColor: NSColor,
-        isDark: Bool
-    ) -> (fill: [CGColor], stroke: [CGColor]) {
-        let colors: [NSColor]
-        if palette.count >= 2 {
-            colors = Array(palette.prefix(2))
-        } else {
-            colors = [accentColor, accentColor.withAlphaComponent(0.7)]
-        }
-
-        let leftBase = colors[0]
-        let rightBase = colors[min(1, colors.count - 1)]
-        let total = max(1, 9 - 1)
-
-        var fillColors: [CGColor] = []
-        var strokeColors: [CGColor] = []
-
-        for index in 0..<9 {
-            let t = CGFloat(index) / CGFloat(total)
-            let fillColor = makeInterpolatedColor(
-                leftBase: leftBase,
-                rightBase: rightBase,
-                t: t,
-                isDark: isDark
-            )
-            fillColors.append(fillColor.cgColor)
-
-            var hue: CGFloat = 0
-            var saturation: CGFloat = 0
-            var brightness: CGFloat = 0
-            var alpha: CGFloat = 0
-            fillColor.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
-
-            let strokeBrightness: CGFloat
-            let strokeSaturation: CGFloat
-            let strokeAlpha: CGFloat
-
-            if isDark {
-                strokeBrightness = min(1.0, brightness + 0.35)
-                strokeSaturation = min(1.0, saturation + 0.25)
-                strokeAlpha = min(1.0, alpha + 0.1)
-            } else {
-                strokeBrightness = max(0.0, brightness - 0.06)
-                strokeSaturation = min(1.0, saturation + 0.15)
-                strokeAlpha = min(1.0, alpha + 0.1)
-            }
-
-            let strokeColor = NSColor(
-                hue: hue,
-                saturation: strokeSaturation,
-                brightness: strokeBrightness,
-                alpha: strokeAlpha
-            )
-            strokeColors.append(strokeColor.cgColor)
-        }
-
-        return (fillColors, strokeColors)
-    }
-
-    private static func makeInterpolatedColor(
-        leftBase: NSColor,
-        rightBase: NSColor,
-        t: CGFloat,
-        isDark: Bool
-    ) -> NSColor {
-        guard
-            let c1 = leftBase.usingColorSpace(.deviceRGB),
-            let c2 = rightBase.usingColorSpace(.deviceRGB)
-        else {
-            return leftBase
-        }
-
-        let red = c1.redComponent + (c2.redComponent - c1.redComponent) * t
-        let green = c1.greenComponent + (c2.greenComponent - c1.greenComponent) * t
-        let blue = c1.blueComponent + (c2.blueComponent - c1.blueComponent) * t
-        let interpolated = NSColor(calibratedRed: red, green: green, blue: blue, alpha: 1)
-
-        var hue: CGFloat = 0
-        var saturation: CGFloat = 0
-        var brightness: CGFloat = 0
-        var alpha: CGFloat = 0
-        interpolated.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
-
-        let targetBrightness: CGFloat
-        let targetAlpha: CGFloat
-
-        if isDark {
-            targetBrightness = max(0.10, min(0.14, brightness * 0.4))
-            targetAlpha = 0.8
-            saturation *= 0.9
-        } else {
-            targetBrightness = min(max(0.1, brightness * 0.7), 0.55)
-            targetAlpha = 0.85
-        }
-
-        return NSColor(
-            hue: hue,
-            saturation: saturation,
-            brightness: targetBrightness,
-            alpha: targetAlpha
-        )
-    }
 }

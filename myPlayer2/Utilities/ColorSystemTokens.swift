@@ -495,10 +495,10 @@ nonisolated enum ColorSystemTokens {
         // dead black while staying unmistakably below the background.
         static let lyricsLightMainActiveL: CGFloat = 0.335
         static let lyricsLightSubActiveL: CGFloat = 0.450
-        static let lyricsLightMainInactiveL: CGFloat = 0.620
-        static let lyricsLightSubInactiveL: CGFloat = 0.622
-        static let lyricsLightLineTimingMainInactiveL: CGFloat = 0.650
-        static let lyricsLightLineTimingSubInactiveL: CGFloat = 0.668
+        static let lyricsLightMainInactiveL: CGFloat = 0.650
+        static let lyricsLightSubInactiveL: CGFloat = 0.652
+        static let lyricsLightLineTimingMainInactiveL: CGFloat = 0.680
+        static let lyricsLightLineTimingSubInactiveL: CGFloat = 0.698
 
         // Phase 6.1 chroma soft-shoulder for high-chroma seeds. The v3 hard
         // cap (~0.110…0.140 by hue) compressed high-C seeds to a fixed

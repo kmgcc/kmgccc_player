@@ -97,6 +97,7 @@ struct BKArtBackgroundView: View {
     @State private var cachedRichPalette: [NSColor] = []
     @State private var paletteRefreshTask: Task<Void, Never>?
     @State private var paletteRefreshToken = UUID()
+    @State private var currentAnalysis: ArtworkColorAnalysis? = nil
 
     var body: some View {
         BKArtBackgroundRepresentable(
@@ -109,7 +110,8 @@ struct BKArtBackgroundView: View {
             isPlaying: isPlaying,
             avoidanceRect: avoidanceRect,
             resourceProfile: resourceProfile,
-            dotRenderStyle: dotRenderStyle
+            dotRenderStyle: dotRenderStyle,
+            analysis: currentAnalysis
         )
         .allowsHitTesting(false)
         .onAppear {
@@ -254,6 +256,7 @@ struct BKArtBackgroundView: View {
         signature: Int,
         trackID: UUID?
     ) {
+        currentAnalysis = analysis
         cachedBasePalette = basePalette
         cachedRichPalette = richPalette
         lastArtworkSignature = signature
@@ -411,12 +414,13 @@ private struct BKArtBackgroundRepresentable: NSViewRepresentable {
     let avoidanceRect: CGRect?
     let resourceProfile: BKArtBackgroundView.ResourceProfile
     let dotRenderStyle: BKArtBackgroundView.DotRenderStyle
+    let analysis: ArtworkColorAnalysis?
 
     func makeNSView(context: Context) -> BKArtBackgroundLayerView {
         let contentView = BKArtBackgroundLayerView()
         contentView.backgroundController = controller
         contentView.trackID = trackID
-        contentView.updatePalette(palette, isDark: isDark)
+        contentView.updatePalette(palette, isDark: isDark, analysis: analysis)
         contentView.updateAvoidanceRect(avoidanceRect)
         contentView.updateResourceProfile(resourceProfile)
         contentView.updateDotRenderStyle(dotRenderStyle)
@@ -429,7 +433,7 @@ private struct BKArtBackgroundRepresentable: NSViewRepresentable {
     func updateNSView(_ nsView: BKArtBackgroundLayerView, context: Context) {
         nsView.backgroundController = controller
         nsView.trackID = trackID
-        nsView.updatePalette(palette, isDark: isDark)
+        nsView.updatePalette(palette, isDark: isDark, analysis: analysis)
         nsView.updateAvoidanceRect(avoidanceRect)
         nsView.updateResourceProfile(resourceProfile)
         nsView.updateDotRenderStyle(dotRenderStyle)
@@ -622,6 +626,7 @@ private final class BKArtBackgroundLayerView: NSView {
         fallback: BKArtBackgroundView.fallbackPalette,
         isDark: false
     )
+    private var currentAnalysis: ArtworkColorAnalysis? = nil
     private var extractedPaletteForSwatches: [NSColor] = BKArtBackgroundView.fallbackPalette
     private var paletteSignature: String = ""
     private var loadedBackgrounds: [CGImage] = []
@@ -668,7 +673,6 @@ private final class BKArtBackgroundLayerView: NSView {
     private var didPauseBackgroundTimerForTransition = false
     private var didPauseDotTimerForTransition = false
     private var rebuildDebounceTask: Task<Void, Never>?
-    private var deferredPaletteUpdate: ([NSColor], Bool)?
     private let ultraDarkOverlayOpacity: Float = 0.50
     private var activeAvoidanceRect: CGRect?
     private var backgroundAssetMode: BackgroundAssetMode = .currentPhaseLowRes
@@ -729,7 +733,6 @@ private final class BKArtBackgroundLayerView: NSView {
     func prepareForDismissal() {
         stopTimers()
         releaseHeavyResources()
-        deferredPaletteUpdate = nil
         activeAvoidanceRect = nil
         backgroundController = nil
         trackID = nil
@@ -803,14 +806,10 @@ private final class BKArtBackgroundLayerView: NSView {
         }
     }
 
-    func updatePalette(_ colors: [NSColor], isDark: Bool) {
+    func updatePalette(_ colors: [NSColor], isDark: Bool, analysis: ArtworkColorAnalysis? = nil) {
         guard !colors.isEmpty else { return }
         let converted = colors.map { $0.usingColorSpace(.deviceRGB) ?? $0 }
-        if shouldFreezeVisualUpdates {
-            deferredPaletteUpdate = (converted, isDark)
-            return
-        }
-        applyPalette(converted, isDark: isDark)
+        applyPalette(converted, isDark: isDark, analysis: analysis)
     }
 
     func updateAvoidanceRect(_ rect: CGRect?) {
@@ -836,10 +835,6 @@ private final class BKArtBackgroundLayerView: NSView {
             if autoTransitionTimer == nil {
                 scheduleNextAutoTransition()
             }
-            if let deferred = deferredPaletteUpdate {
-                deferredPaletteUpdate = nil
-                applyPalette(deferred.0, isDark: deferred.1)
-            }
         } else {
             autoTransitionTimer?.cancel()
             autoTransitionTimer = nil
@@ -848,8 +843,9 @@ private final class BKArtBackgroundLayerView: NSView {
         startSpeedRampTimerIfNeeded()
     }
 
-    private func applyPalette(_ converted: [NSColor], isDark: Bool) {
+    private func applyPalette(_ converted: [NSColor], isDark: Bool, analysis: ArtworkColorAnalysis? = nil) {
         extractedPaletteForSwatches = converted
+        currentAnalysis = analysis
         let colorSignature = Self.paletteSignature(for: converted.map(\.cgColor))
         let signature = "\(colorSignature)|dark:\(isDark ? 1 : 0)"
         guard signature != paletteSignature else { return }
@@ -857,7 +853,8 @@ private final class BKArtBackgroundLayerView: NSView {
         harmonized = BKColorEngine.make(
             extracted: converted,
             fallback: BKArtBackgroundView.fallbackPalette,
-            isDark: isDark
+            isDark: isDark,
+            analysis: analysis
         )
         paletteSignature = signature
         cancelBackgroundRenderTasks()
@@ -1059,7 +1056,8 @@ private final class BKArtBackgroundLayerView: NSView {
             seed: normalizedSeed ^ 0xA54F_66D1_9E37_79B9,
             extracted: extractedPaletteForSwatches,
             fallback: BKArtBackgroundView.fallbackPalette,
-            isDark: harmonized.isDark
+            isDark: harmonized.isDark,
+            analysis: currentAnalysis
         )
         container.shapeSwatches = swatchResult.colors.isEmpty ? harmonized.shapePool : swatchResult.colors
         container.swatchDiagnostics = swatchResult.diagnostics
@@ -1202,7 +1200,7 @@ private final class BKArtBackgroundLayerView: NSView {
         guard let overlay = container.ultraDarkOverlay else { return }
         overlay.frame = expandedBounds
         overlay.contentsScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
-        let shouldShowOverlay = container.style == .image && isUltraDarkCover
+        let shouldShowOverlay = container.style == .image && isUltraDarkCover && harmonized.isDark
         if shouldShowOverlay {
             overlay.opacity = ultraDarkOverlayOpacity
             overlay.isHidden = false
@@ -1335,7 +1333,8 @@ private final class BKArtBackgroundLayerView: NSView {
             seed: swatchSeed,
             extracted: extractedPaletteForSwatches,
             fallback: BKArtBackgroundView.fallbackPalette,
-            isDark: harmonized.isDark
+            isDark: harmonized.isDark,
+            analysis: currentAnalysis
         )
         container.shapeSwatches = swatchResult.colors.isEmpty ? harmonized.shapePool : swatchResult.colors
         container.swatchDiagnostics = swatchResult.diagnostics
