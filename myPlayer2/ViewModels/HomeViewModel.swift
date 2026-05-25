@@ -343,17 +343,19 @@ final class HomeViewModel {
     }
 
     private func topAlbums(from libraryVM: LibraryViewModel) -> [AlbumEntry] {
-        libraryVM.albumEntries
+        let aggregateStats = LibraryAggregateStats(tracks: libraryVM.allTracks)
+        return libraryVM.albumEntries
             .filter { !$0.isOrphaned }
-            .sorted { compareAlbums($0, $1, libraryVM: libraryVM) }
+            .sorted { compareAlbums($0, $1, libraryVM: libraryVM, aggregateStats: aggregateStats) }
             .prefix(20)
             .map { $0 }
     }
 
     private func topArtists(from libraryVM: LibraryViewModel) -> [ArtistEntry] {
-        libraryVM.artistEntries
+        let aggregateStats = LibraryAggregateStats(tracks: libraryVM.allTracks)
+        return libraryVM.artistEntries
             .filter { !$0.isOrphaned }
-            .sorted { compareArtists($0, $1, libraryVM: libraryVM) }
+            .sorted { compareArtists($0, $1, libraryVM: libraryVM, aggregateStats: aggregateStats) }
             .prefix(15)
             .map { $0 }
     }
@@ -361,23 +363,45 @@ final class HomeViewModel {
     private func compareArtists(
         _ lhs: ArtistEntry,
         _ rhs: ArtistEntry,
-        libraryVM: LibraryViewModel
+        libraryVM: LibraryViewModel,
+        aggregateStats: LibraryAggregateStats
     ) -> Bool {
         let result: ComparisonResult
+        let useNaturalDescending: Bool
         switch libraryVM.artistSortKey {
         case .name:
             result = lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName)
+            useNaturalDescending = false
         case .trackCount:
             result = compareInt(lhs.trackCount, rhs.trackCount)
+            useNaturalDescending = false
         case .albumCount:
             result = compareInt(lhs.albumCount, rhs.albumCount)
+            useNaturalDescending = false
+        case .playCountTotal:
+            result = compareAggregateMetric(
+                aggregateStats.artistPlayCount(for: lhs),
+                aggregateStats.artistPlayCount(for: rhs)
+            )
+            useNaturalDescending = true
+        case .preferenceTotal:
+            result = compareAggregateMetric(
+                aggregateStats.artistPreferenceScore(for: lhs),
+                aggregateStats.artistPreferenceScore(for: rhs)
+            )
+            useNaturalDescending = true
         case .totalDuration:
             result = compareDouble(lhs.totalDuration, rhs.totalDuration)
+            useNaturalDescending = false
         case .updatedAt:
             result = compareDate(lhs.updatedAt, rhs.updatedAt)
+            useNaturalDescending = false
         }
         if result == .orderedSame {
             return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
+        }
+        if useNaturalDescending {
+            return result == .orderedDescending
         }
         return libraryVM.trackSortOrder == .ascending
             ? result == .orderedAscending
@@ -387,24 +411,46 @@ final class HomeViewModel {
     private func compareAlbums(
         _ lhs: AlbumEntry,
         _ rhs: AlbumEntry,
-        libraryVM: LibraryViewModel
+        libraryVM: LibraryViewModel,
+        aggregateStats: LibraryAggregateStats
     ) -> Bool {
         let result: ComparisonResult
+        let useNaturalDescending: Bool
         switch libraryVM.albumSortKey {
         case .title:
             result = lhs.displayTitle.localizedCaseInsensitiveCompare(rhs.displayTitle)
+            useNaturalDescending = false
         case .artist:
             result = lhs.primaryArtistDisplayName
                 .localizedCaseInsensitiveCompare(rhs.primaryArtistDisplayName)
+            useNaturalDescending = false
         case .trackCount:
             result = compareInt(lhs.trackCount, rhs.trackCount)
+            useNaturalDescending = false
+        case .playCountTotal:
+            result = compareAggregateMetric(
+                aggregateStats.albumPlayCount(for: lhs),
+                aggregateStats.albumPlayCount(for: rhs)
+            )
+            useNaturalDescending = true
+        case .preferenceTotal:
+            result = compareAggregateMetric(
+                aggregateStats.albumPreferenceScore(for: lhs),
+                aggregateStats.albumPreferenceScore(for: rhs)
+            )
+            useNaturalDescending = true
         case .totalDuration:
             result = compareDouble(lhs.totalDuration, rhs.totalDuration)
+            useNaturalDescending = false
         case .updatedAt:
             result = compareDate(lhs.updatedAt, rhs.updatedAt)
+            useNaturalDescending = false
         }
         if result == .orderedSame {
             return lhs.displayTitle.localizedCaseInsensitiveCompare(rhs.displayTitle) == .orderedAscending
+        }
+        if useNaturalDescending {
+            return result == .orderedDescending
         }
         return libraryVM.trackSortOrder == .ascending
             ? result == .orderedAscending
@@ -421,6 +467,16 @@ final class HomeViewModel {
 
     private func compareDate(_ a: Date, _ b: Date) -> ComparisonResult {
         a == b ? .orderedSame : (a < b ? .orderedAscending : .orderedDescending)
+    }
+
+    private func compareAggregateMetric(
+        _ lhs: LibraryAggregateStats.Metric,
+        _ rhs: LibraryAggregateStats.Metric
+    ) -> ComparisonResult {
+        if lhs.hasData != rhs.hasData {
+            return lhs.hasData ? .orderedDescending : .orderedAscending
+        }
+        return compareDouble(lhs.value, rhs.value)
     }
 
     private func refreshStats(from libraryVM: LibraryViewModel, allTracks: [Track]) {

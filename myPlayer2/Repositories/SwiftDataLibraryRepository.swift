@@ -132,6 +132,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         playlists = loadedPlaylists.sorted { $0.createdAt < $1.createdAt }
         rebuildRuntimeDerivedState()
         rebuildTrackIndexCache()
+        scheduleSearchIndexRebuild(reason: "repositoryReload")
         let (artists, albums) = metadataSync.sync(
             derivedArtists: runtimeArtists,
             derivedAlbums: runtimeAlbums,
@@ -142,6 +143,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         )
         artistEntries = artists
         albumEntries = albums
+        await performLibraryMaintenanceAfterReload(reason: "repositoryReload")
     }
 
     // MARK: - Track Operations
@@ -160,6 +162,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     func addTrack(_ track: Track) async {
         allTracks.append(track)
         persistImportedTrackResources([track], reason: "initialImport")
+        scheduleSearchIndexUpsert(for: [track], reason: "initialImport")
         rebuildRuntimeDerivedState()
         rebuildTrackIndexCache()
         let (artistSidecars, albumSidecars) = await Task.detached { @Sendable in
@@ -181,6 +184,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     func addTracks(_ tracks: [Track]) async {
         allTracks.append(contentsOf: tracks)
         persistImportedTrackResources(tracks, reason: "initialImport")
+        scheduleSearchIndexUpsert(for: tracks, reason: "initialImport")
         rebuildRuntimeDerivedState()
         rebuildTrackIndexCache()
         let (artistSidecars, albumSidecars) = await Task.detached { @Sendable in
@@ -307,6 +311,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         }
         rebuildRuntimeDerivedState()
         rebuildTrackIndexCache()
+        scheduleSearchIndexRebuild(reason: "refreshTracks")
         let (artistSidecars, albumSidecars) = await Task.detached { @Sendable in
             let scanner = LibraryDiskScanner()
             return (scanner.loadArtistSidecars(), scanner.loadAlbumSidecars())
@@ -686,6 +691,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         {
             try? fileManager.removeItem(at: url)
         }
+        await LibrarySearchIndex.shared.removeStoreFiles()
         allTracks.removeAll()
         playlists.removeAll()
         runtimeArtists.removeAll()
@@ -781,6 +787,56 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
                 ?? LibraryNormalization.normalizedAlbumKey(album: track.album)
         }
         runtimeAlbums = albumGrouping.sections
+    }
+
+    private func performLibraryMaintenanceAfterReload(reason: String) async {
+        let importActivity = await LibraryImportCoordinator.shared.snapshot()
+        guard !importActivity.isImporting else {
+            Log.info(
+                "[LibraryMaintenance] skipped after reload reason=\(reason) activeImport=true",
+                category: .library
+            )
+            return
+        }
+
+        let maintenance = LibraryMaintenanceService()
+        let orphanReport = maintenance.cleanupOrphanMetadataEntries(
+            artistEntries: artistEntries,
+            albumEntries: albumEntries,
+            reason: reason
+        )
+
+        if !orphanReport.deletedArtistIDs.isEmpty {
+            let deletedIDs = Set(orphanReport.deletedArtistIDs)
+            artistEntries.removeAll { deletedIDs.contains($0.id) }
+            for artistID in orphanReport.deletedArtistIDs {
+                libraryService.deleteArtistEntry(id: artistID)
+            }
+        }
+        if !orphanReport.deletedAlbumIDs.isEmpty {
+            let deletedIDs = Set(orphanReport.deletedAlbumIDs)
+            albumEntries.removeAll { deletedIDs.contains($0.id) }
+            for albumID in orphanReport.deletedAlbumIDs {
+                libraryService.deleteAlbumEntry(id: albumID)
+            }
+        }
+
+        let referencedTrackIDs = Set(allTracks.map(\.id))
+        let cleanupReport = await Task.detached(priority: .utility) { @Sendable in
+            LibraryMaintenanceService().cleanupFailedImportTrackDirectories(
+                referencedTrackIDs: referencedTrackIDs,
+                importActivity: importActivity,
+                reason: reason
+            )
+        }.value
+
+        if cleanupReport.deletedCount > 0 || cleanupReport.failedDeleteCount > 0
+            || !orphanReport.deletedArtistIDs.isEmpty || !orphanReport.deletedAlbumIDs.isEmpty {
+            Log.info(
+                "[LibraryMaintenance] after reload complete reason=\(reason) deletedTrackDirs=\(cleanupReport.deletedCount) failedTrackDirDeletes=\(cleanupReport.failedDeleteCount) deletedArtists=\(orphanReport.deletedArtistIDs.count) deletedAlbums=\(orphanReport.deletedAlbumIDs.count)",
+                category: .library
+            )
+        }
     }
 
     private func writePlaylistToDisk(_ playlist: Playlist) {
@@ -963,6 +1019,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             }
             PreferenceStatsService.shared.removeStats(for: deletedTrackIDSet)
             deleteTrackIndexEntries(ids: deletedTrackIDs)
+            scheduleSearchIndexDeletion(ids: deletedTrackIDs, reason: reason)
         }
 
         rebuildRuntimeDerivedState()
@@ -1201,6 +1258,56 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         }
     }
 
+    private func scheduleSearchIndexRebuild(reason: String) {
+        let sources = makeSearchDocumentSources(for: allTracks)
+        Task(priority: .utility) {
+            await LibrarySearchIndex.shared.scheduleFullRebuild(from: sources, reason: reason)
+        }
+    }
+
+    private func scheduleSearchIndexUpsert(for tracks: [Track], reason: String) {
+        let sources = makeSearchDocumentSources(for: tracks)
+        guard !sources.isEmpty else { return }
+        Task(priority: .utility) {
+            await LibrarySearchIndex.shared.upsertDocuments(sources, reason: reason)
+        }
+    }
+
+    private func scheduleSearchIndexDeletion(ids: [UUID], reason: String) {
+        guard !ids.isEmpty else { return }
+        Task(priority: .utility) {
+            await LibrarySearchIndex.shared.deleteTrackIDs(ids, reason: reason)
+        }
+    }
+
+    private func makeSearchDocumentSources(for tracks: [Track]) -> [SearchDocumentSource] {
+        let statsByTrackID = PreferenceStatsService.shared.getStats(for: tracks.map(\.id))
+        return tracks.map { track in
+            let stats = statsByTrackID[track.id] ?? TrackPreferenceStats()
+            let folderURL = track.resolvedTrackFolderURL()
+            let ttmlURL = track.resolvedTTMLURL()
+                ?? folderURL?.appendingPathComponent("lyrics.ttml")
+            let plainURL = track.resolvedLyricsURL()
+                ?? folderURL?.appendingPathComponent("lyrics.txt")
+
+            return SearchDocumentSource(
+                trackID: track.id,
+                titleRaw: track.title,
+                artistRaw: track.artist,
+                albumRaw: track.album,
+                albumArtistRaw: track.albumArtist,
+                ttmlLyricsFileURL: ttmlURL,
+                plainLyricsFileURL: plainURL,
+                inlineTTMLText: track.ttmlLyricText,
+                inlinePlainLyricsText: track.lyricsText,
+                playCount: stats.playCount,
+                preferenceScore: stats.preferenceScoreCache,
+                lastPlayedAt: stats.lastPlayedAt,
+                updatedAt: Date()
+            )
+        }
+    }
+
     private func applyPersistenceReferences(_ results: [TrackPersistenceWriteResult]) {
         let referencesByTrackID = Dictionary(
             uniqueKeysWithValues: results.compactMap { result -> (UUID, TrackPersistenceReferences)? in
@@ -1282,7 +1389,9 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         if !persistedResults.isEmpty {
             applyPersistenceReferences(persistedResults)
             rebuildRuntimeDerivedState()
-            upsertTrackIndexEntries(for: allTracks.filter { persistedTrackIDSet.contains($0.id) })
+            let persistedTracks = allTracks.filter { persistedTrackIDSet.contains($0.id) }
+            upsertTrackIndexEntries(for: persistedTracks)
+            scheduleSearchIndexUpsert(for: persistedTracks, reason: reason)
         }
 
         if !persistedTrackIDs.isEmpty {

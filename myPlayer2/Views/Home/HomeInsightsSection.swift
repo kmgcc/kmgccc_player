@@ -192,7 +192,6 @@ struct HomeInsightsSection: View {
         HStack(alignment: .firstTextBaseline) {
             Text("音乐足迹")
                 .font(.system(size: mode.sectionTitleFontSize, weight: .semibold))
-                .tracking(-0.3)
                 .foregroundStyle(titleColor)
             Spacer()
         }

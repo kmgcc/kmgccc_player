@@ -348,7 +348,6 @@ struct HomeView: View {
                     VStack(alignment: .leading, spacing: 14) {
                         Text("精选")
                             .font(.system(size: mode.sectionTitleFontSize, weight: .semibold))
-                            .tracking(-0.3)
                             .foregroundStyle(appFgPrimary)
 
                         HomeHeroView(
@@ -523,10 +522,10 @@ enum HomeLayoutMode: Hashable {
 
     var sectionTitleFontSize: CGFloat {
         switch self {
-        case .wide: return 22
-        case .medium: return 20
-        case .compact: return 18
-        case .narrow: return 17
+        case .wide: return 24
+        case .medium: return 22
+        case .compact: return 20
+        case .narrow: return 19
         }
     }
 

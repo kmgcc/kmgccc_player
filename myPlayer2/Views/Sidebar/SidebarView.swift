@@ -11,6 +11,7 @@
 //
 
 import Observation
+import AppKit
 import SwiftUI
 
 /// Sidebar view for navigation and playlists.
@@ -107,13 +108,15 @@ struct SidebarView: View {
                         Button {
                             handleSelection(.playlist(playlist.id))
                         } label: {
-                            HStack {
-                                Label(playlist.name, systemImage: "music.note.list")
+                            HStack(spacing: 9) {
+                                SidebarPlaylistThumbnail(playlistID: playlist.id)
+                                Text(playlist.name)
+                                    .lineLimit(1)
                                 Spacer()
                             }
                             .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.primary))
                             .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
+                            .padding(.vertical, 5)
                             .background(
                                 selectionFill(
                                     isSelected: currentSelection == .playlist(playlist.id))
@@ -162,6 +165,29 @@ struct SidebarView: View {
                 // Artists Section
                 Section {
                     if isArtistsExpanded {
+                        Button {
+                            handleSelection(.allArtists)
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "person.2")
+                                    .font(.system(size: 13, weight: .medium))
+                                    .frame(width: 18, height: 18)
+                                Text("查看全部艺人")
+                                    .lineLimit(1)
+                                Spacer()
+                            }
+                            .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.primary))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(
+                                selectionFill(isSelected: currentSelection == .allArtists)
+                            )
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .listRowInsets(EdgeInsets(top: 1, leading: 6, bottom: 1, trailing: 6))
+                        .listRowBackground(Color.clear)
+
                         ForEach(libraryVM.runtimeArtists) { artist in
                             Button {
                                 handleSelection(.artist(artist.key))
@@ -233,6 +259,29 @@ struct SidebarView: View {
                 // Albums Section
                 Section {
                     if isAlbumsExpanded {
+                        Button {
+                            handleSelection(.allAlbums)
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "square.stack")
+                                    .font(.system(size: 13, weight: .medium))
+                                    .frame(width: 18, height: 18)
+                                Text("查看全部专辑")
+                                    .lineLimit(1)
+                                Spacer()
+                            }
+                            .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.primary))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(
+                                selectionFill(isSelected: currentSelection == .allAlbums)
+                            )
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .listRowInsets(EdgeInsets(top: 1, leading: 6, bottom: 1, trailing: 6))
+                        .listRowBackground(Color.clear)
+
                         ForEach(libraryVM.runtimeAlbums) { album in
                             Button {
                                 handleSelection(.album(album.key))
@@ -561,6 +610,12 @@ struct SidebarView: View {
             libraryVM.currentSelection = .home
         case .allSongs:
             libraryVM.currentSelection = .allSongs
+        case .allAlbums:
+            uiState.pushSelectionInHomeContext(.allAlbums, libraryVM: libraryVM)
+            return
+        case .allArtists:
+            uiState.pushSelectionInHomeContext(.allArtists, libraryVM: libraryVM)
+            return
         case .playlist(let id):
             libraryVM.currentSelection = .playlist(id)
         case .artist(let key):
@@ -574,8 +629,12 @@ struct SidebarView: View {
     private var currentSelection: SidebarSelection {
         // Use the explicit currentSelection from LibraryViewModel
         switch libraryVM.currentSelection {
-        case .home, .allAlbums, .allArtists:
+        case .home:
             return .home
+        case .allAlbums:
+            return .allAlbums
+        case .allArtists:
+            return .allArtists
         case .allSongs:
             return .allSongs
         case .playlist(let id):
@@ -589,7 +648,7 @@ struct SidebarView: View {
 
     @ViewBuilder
     private func selectionFill(isSelected: Bool) -> some View {
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
+        Capsule(style: .continuous)
             .fill(isSelected ? themeStore.selectionFill : Color.clear)
     }
 
@@ -631,9 +690,98 @@ struct SidebarView: View {
 private enum SidebarSelection: Hashable {
     case home
     case allSongs
+    case allAlbums
+    case allArtists
     case playlist(UUID)
     case artist(String)
     case album(String)
+}
+
+private struct SidebarPlaylistThumbnail: View {
+    let playlistID: UUID
+
+    @State private var image: NSImage?
+
+    private let side: CGFloat = 24
+    private var pixelSide: CGFloat {
+        side * max(1, NSScreen.main?.backingScaleFactor ?? 2)
+    }
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: side, height: side)
+                    .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+            } else {
+                Image(systemName: "music.note.list")
+                    .font(.system(size: 15, weight: .medium))
+                    .frame(width: side, height: side)
+            }
+        }
+        .frame(width: side, height: side)
+        .task(id: playlistID) {
+            await loadArtwork()
+        }
+    }
+
+    private func loadArtwork() async {
+        guard let request = await Self.thumbnailRequest(
+            playlistID: playlistID,
+            pixelSide: pixelSide
+        ) else {
+            image = nil
+            return
+        }
+        image = await PlaylistArtworkPipeline.shared.load(request)
+    }
+
+    private static func thumbnailRequest(
+        playlistID: UUID,
+        pixelSide: CGFloat
+    ) async -> PlaylistArtworkRequest? {
+        await Task.detached(priority: .utility) {
+            makeThumbnailRequest(playlistID: playlistID, pixelSide: pixelSide)
+        }.value
+    }
+
+    private nonisolated static func makeThumbnailRequest(
+        playlistID: UUID,
+        pixelSide: CGFloat
+    ) -> PlaylistArtworkRequest? {
+        guard let sidecar = loadPlaylistSidecar(playlistID: playlistID) else {
+            return nil
+        }
+
+        let fileName: String?
+        switch sidecar.headerArtworkSource {
+        case .some(.generated):
+            fileName = sidecar.generatedHeaderArtworkFileName ?? sidecar.customHeaderArtworkFileName
+        case .some(.custom), .some(.none), nil:
+            fileName = sidecar.customHeaderArtworkFileName ?? sidecar.generatedHeaderArtworkFileName
+        }
+        guard let fileName, !fileName.isEmpty else { return nil }
+
+        let fileURL = LocalLibraryPaths.playlistsRootURL.appendingPathComponent(fileName)
+        let revision = sidecar.artworkRevision ?? fileName
+        return PlaylistArtworkRequest(
+            sourceIdentity: "sidebar-playlist-\(playlistID.uuidString)-\(revision)",
+            variant: .rowHigh,
+            artworkData: nil,
+            fileURL: fileURL,
+            pixelSize: CGSize(width: pixelSide, height: pixelSide)
+        )
+    }
+
+    private nonisolated static func loadPlaylistSidecar(playlistID: UUID) -> PlaylistSidecar? {
+        let url = LocalLibraryPaths.playlistURL(for: playlistID)
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try? decoder.decode(PlaylistSidecar.self, from: data)
+    }
 }
 
 private enum SidebarDeletionRequest: Identifiable {

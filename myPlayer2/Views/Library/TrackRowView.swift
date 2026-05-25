@@ -13,6 +13,7 @@ struct TrackRowModel: Identifiable, Equatable {
     let id: UUID
     let title: String
     let artist: String
+    let lyricSnippet: String?
     let durationText: String
     let artworkData: Data?
     let artworkFileURL: URL?
@@ -23,6 +24,7 @@ struct TrackRowModel: Identifiable, Equatable {
         lhs.id == rhs.id
             && lhs.title == rhs.title
             && lhs.artist == rhs.artist
+            && lhs.lyricSnippet == rhs.lyricSnippet
             && lhs.durationText == rhs.durationText
             && lhs.artworkIdentity == rhs.artworkIdentity
             && lhs.isMissing == rhs.isMissing
@@ -106,7 +108,7 @@ struct TrackRowView<MenuContent: View>: View {
                 .layoutPriority(1)
 
                 SeamlessMarqueeText(
-                    text: artistText,
+                    text: secondaryText,
                     style: .subheadline,
                     fontWeight: .regular,
                     color: textSecondaryColor,
@@ -193,6 +195,14 @@ struct TrackRowView<MenuContent: View>: View {
         model.artist.isEmpty
             ? NSLocalizedString("library.unknown_artist", comment: "")
             : model.artist
+    }
+
+    private var secondaryText: String {
+        guard let snippet = model.lyricSnippet?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !snippet.isEmpty else {
+            return artistText
+        }
+        return "\(artistText) · \(snippet)"
     }
 
     private var textPrimaryColor: Color {
@@ -331,6 +341,7 @@ extension TrackRowView: Equatable where MenuContent: View {
                 id: UUID(),
                 title: "Blinding Lights",
                 artist: "The Weeknd",
+                lyricSnippet: nil,
                 durationText: "3:23",
                 artworkData: nil,
                 artworkFileURL: nil,
@@ -351,6 +362,7 @@ extension TrackRowView: Equatable where MenuContent: View {
                 id: UUID(),
                 title: "Missing Track",
                 artist: "Unknown Artist",
+                lyricSnippet: nil,
                 durationText: "0:00",
                 artworkData: nil,
                 artworkFileURL: nil,

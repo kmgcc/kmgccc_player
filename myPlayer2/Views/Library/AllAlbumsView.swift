@@ -143,25 +143,47 @@ struct AllAlbumsView: View {
                 || $0.primaryArtistDisplayName.lowercased().contains(trimmed)
             }
         }
+        let aggregateStats = LibraryAggregateStats(tracks: libraryVM.allTracks)
         let ascending = (libraryVM.trackSortOrder == .ascending)
         return base.sorted { lhs, rhs in
             let result: ComparisonResult
+            let useNaturalDescending: Bool
             switch libraryVM.albumSortKey {
             case .title:
                 result = lhs.displayTitle.localizedCaseInsensitiveCompare(rhs.displayTitle)
+                useNaturalDescending = false
             case .artist:
                 result = lhs.primaryArtistDisplayName
                     .localizedCaseInsensitiveCompare(rhs.primaryArtistDisplayName)
+                useNaturalDescending = false
             case .trackCount:
                 result = compareInt(lhs.trackCount, rhs.trackCount)
+                useNaturalDescending = false
+            case .playCountTotal:
+                result = compareAggregateMetric(
+                    aggregateStats.albumPlayCount(for: lhs),
+                    aggregateStats.albumPlayCount(for: rhs)
+                )
+                useNaturalDescending = true
+            case .preferenceTotal:
+                result = compareAggregateMetric(
+                    aggregateStats.albumPreferenceScore(for: lhs),
+                    aggregateStats.albumPreferenceScore(for: rhs)
+                )
+                useNaturalDescending = true
             case .totalDuration:
                 result = compareDouble(lhs.totalDuration, rhs.totalDuration)
+                useNaturalDescending = false
             case .updatedAt:
                 result = compareDate(lhs.updatedAt, rhs.updatedAt)
+                useNaturalDescending = false
             }
             if result == .orderedSame {
                 return lhs.displayTitle.localizedCaseInsensitiveCompare(rhs.displayTitle)
                     == .orderedAscending
+            }
+            if useNaturalDescending {
+                return result == .orderedDescending
             }
             return ascending
                 ? result == .orderedAscending
@@ -201,6 +223,16 @@ struct AllAlbumsView: View {
     }
     private func compareDate(_ a: Date, _ b: Date) -> ComparisonResult {
         a == b ? .orderedSame : (a < b ? .orderedAscending : .orderedDescending)
+    }
+
+    private func compareAggregateMetric(
+        _ lhs: LibraryAggregateStats.Metric,
+        _ rhs: LibraryAggregateStats.Metric
+    ) -> ComparisonResult {
+        if lhs.hasData != rhs.hasData {
+            return lhs.hasData ? .orderedDescending : .orderedAscending
+        }
+        return compareDouble(lhs.value, rhs.value)
     }
 }
 

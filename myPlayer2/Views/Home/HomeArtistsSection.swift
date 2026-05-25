@@ -117,7 +117,6 @@ struct HomeArtistsSection: View {
         HStack(alignment: .firstTextBaseline) {
             Text("艺人")
                 .font(.system(size: mode.sectionTitleFontSize, weight: .semibold))
-                .tracking(-0.3)
                 .foregroundStyle(titleColor)
             Spacer()
             viewAllButton
