@@ -119,9 +119,9 @@ struct HomeView: View {
                 VStack(alignment: .leading, spacing: mode.sectionSpacing) {
                     cachedHero(snapshot.hero, snapshot: snapshot, mode: mode)
                     cachedSummary(snapshot)
-                    cachedStrip(title: "播放列表", items: snapshot.playlists.map { "\($0.name) · \($0.trackCount) 首" })
                     cachedStrip(title: "艺人", items: snapshot.artists.map { "\($0.name) · \($0.albumCount) 张专辑" })
                     cachedStrip(title: "专辑", items: snapshot.albums.map { "\($0.title) · \($0.artist)" })
+                    cachedStrip(title: "播放列表", items: snapshot.playlists.map { "\($0.name) · \($0.trackCount) 首" })
                     cachedRanking(snapshot.preferenceRanking)
                     Color.clear.frame(height: 120)
                 }
@@ -363,17 +363,6 @@ struct HomeView: View {
                     .padding(.trailing, centerRightPad)
                 }
 
-                if !HomeDebugFlags.disablePlaylists, !homeVM.playlists.isEmpty {
-                    HomePlaylistsSection(
-                        playlists: homeVM.playlists,
-                        mode: mode,
-                        titleColor: appFgPrimary,
-                        subtitleColor: appFgSecondary
-                    )
-                    .padding(.leading, centerLeftPad)
-                    .padding(.trailing, centerRightPad)
-                }
-
                 if !HomeDebugFlags.disableArtists, !homeVM.artists.isEmpty {
                     HomeArtistsSection(
                         artists: homeVM.artists,
@@ -394,6 +383,17 @@ struct HomeView: View {
                         titleColor: appFgPrimary,
                         subtitleColor: appFgSecondary
                     )
+                }
+
+                if !HomeDebugFlags.disablePlaylists, !homeVM.playlists.isEmpty {
+                    HomePlaylistsSection(
+                        playlists: homeVM.playlists,
+                        mode: mode,
+                        titleColor: appFgPrimary,
+                        subtitleColor: appFgSecondary
+                    )
+                    .padding(.leading, centerLeftPad)
+                    .padding(.trailing, centerRightPad)
                 }
 
                 if !HomeDebugFlags.disableInsights {
@@ -522,10 +522,10 @@ enum HomeLayoutMode: Hashable {
 
     var sectionTitleFontSize: CGFloat {
         switch self {
-        case .wide: return 24
-        case .medium: return 22
-        case .compact: return 20
-        case .narrow: return 19
+        case .wide: return 28
+        case .medium: return 26
+        case .compact: return 24
+        case .narrow: return 22
         }
     }
 
