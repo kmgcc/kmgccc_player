@@ -1209,3 +1209,105 @@ AMLL 边界：
 后续仍保留：
 
 - AMLL highlight transition / feather：继续 backlog；需要 fork core patch 才能让 word-level mask edge 参与 OKLCH mid-color，不在 Phase 6.4 实现。
+
+## 2026-05-25 — Fullscreen active highlight overlay lifecycle replay（App adapter, no generated bundle change）
+
+背景：
+
+- 用户反馈全屏歌词当前行 active 高亮层经常丢失或卡住；普通 AMLL 行切换、滚动、主动画仍正常。
+- 更容易触发于首次进入全屏、seek 后、部分歌词、低/中 AMLL 渲染质量；切换分辨率、切歌或退出再进全屏可能恢复。
+- 用户复测确认本轮修复成功。
+
+调查结论：
+
+- 这不是 Swift ready/replay 队列或 AMLL 主时间轴整体失效。Swift 侧上一轮 fullscreen reload、pending JS 丢弃、store ready replay、local lyrics hydrate reload 已能稳定把正确 TTML / time / playing / config 送到 WebView。
+- 真正分叉在 App `Resources/AMLL/index.html` 的 fullscreen / cover-blur overlay adapter：它依赖 `currentLyricLineObjects`、`lineObj.element`、`lineObj.splittedWords`、`splitWord.maskAnimations`、`splitWord.elementAnimations` 去包裹 `.amll-fs-*` / `.amll-cb-*` active 层并 clone animations。
+- AMLL DOM core 的 `LyricLineEl` 是懒构建：`setLyricLines()` 先创建 line objects，但具体 word DOM / `splittedWords` / animations 只有行进入可视区后在 `show()` / `rebuildElement()` 中生成；离开可视区会 `hide()` / dispose elements。
+- seek 或首次进入全屏时，`setCurrentTime(..., force=true)` 可以先把目标行 `enable()`，但此时目标行可能尚未 built，`splittedWords` 为空，core 的 mask/emphasis animation 无法定位到当前播放进度。随后行进入可视区才 build，旧 fullscreen adapter 没有 lifecycle replay，于是 active overlay 层缺失，或 cloned mask/emphasis animation 停在 0 附近。
+- 低/中渲染质量更容易触发，是因为 WKWebView 低分辨率模型改变 frame/pageZoom/layout 时机，active 行更容易在 `enable()` 时仍处于未 built / 未 inSight 状态。高质量下该行更常已落在可视区/overscan，概率较低。
+- 切分辨率、切歌、退出再进全屏能恢复，是因为这些动作会重跑 config / setLyrics / layout / surface patch；如果恢复时 active 行已经 built，overlay 就会被重新建回。过去这是偶然副作用，不是可靠刷新机制。
+
+修复：
+
+- 只改 App adapter `myPlayer2/Resources/AMLL/index.html`；不改 fork core，不手改 generated `amll-core.js` / `amll-lyric.js` / `style.css`。
+- 新增 `[AMLLActiveHighlight]` 诊断：
+  - surface role、fullscreen / cover-blur mode、current time、playing、hot / buffered lines、scrollToIndex；
+  - active line id/index、built、inSight、visible、`splittedWords` 数量；
+  - `.amll-fs-*` / `.amll-cb-*` active/base layer 数量；
+  - mask / element animation 数量、sample animation currentTime / playState / duration / delay / target；
+  - renderer scale、DPR、visualViewport scale、viewport size。
+- `debugDumpVisibleLayers()` 增加 `activeHighlight` 快照，方便 Swift visible-layer probe 与 Web console 日志对齐。
+- 新增 fullscreen active layer lifecycle replay：
+  - 给 fullscreen / cover-blur line objects 安装 `show()` / `rebuildElement()` hook；
+  - 当 active line 在 hook 后出现非空 `splittedWords`，下一帧可重入执行对应 overlay patch；
+  - patch 新建 layer 或 force sync 后，用当前 `lastKnownTimeMs` 与 `externalIsPlaying` 调用 `lineObj.enable(currentMs, externalIsPlaying)`，把原始/克隆后的 mask/emphasis animations 同步到当前播放进度。
+- `patchFullscreenLineOpacityBehavior()` 与 `patchCoverBlurLineBehavior()` 支持 `reason` / `forceActiveSync`，确保普通 fullscreen 与 cover-blur/highlight surface 共用同一套补建和 animation sync 规则。
+
+边界：
+
+- 普通窗口歌词不受影响：所有新逻辑均由 `fullscreenOpaqueLyricsMode || fullscreenCoverBlurMode` 守卫。
+- 逐行/无有效逐词 timing 的歌词仍可走行级颜色路径；修复不强行制造不存在的逐词 active overlay。
+- 这是 App adapter 层能解决的问题，不需要恢复旧 core 的 hide/show 不 dispose hack，也不需要 fork core patch。
+
+验证：
+
+- `node --check /tmp/amll-index-module.js`：PASS。
+- `git diff --check`：PASS。
+- `xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player -configuration Debug -destination 'platform=macOS' build`：PASS。
+- 用户复测：Fullscreen active 高亮丢失/卡住问题已修复。
+
+后续排查规则：
+
+- 遇到 fullscreen active overlay 丢失/卡住，先看 `[AMLLActiveHighlight]`：如果 active line `built=false` 或 `splittedWords=0`，不要先怀疑 TTML 或 Swift time sync；应优先查 lazy build / overlay replay。
+- 如果 active line `splittedWords>0` 但 `.amll-fs-*` / `.amll-cb-*` active layer 数为 0，说明 adapter patch 未覆盖该 surface 或 hook 未安装。
+- 如果 layer 存在但 animation currentTime 不推进，再查 `setPlaying` / `externalIsPlaying` / cloned animation target 与 `lineObj.enable(currentMs, playing)` sync。
+- 低/中质量相关问题要同时记录 WebView quality scale、DPR、viewport、inSight 判定；不要把用户质量档写进 AMLL DOM `renderScale`。
+
+## 2026-05-25 — Emphasis Glow theme live retint（App adapter, no generated bundle change）
+
+背景：
+
+- 用户反馈艺术背景歌词在 App 浅色模式进入播放时 emphasis glow 为正确的深色光晕；播放中切到深色夜间模式后，普通歌词颜色已变成深色模式的浅色文字，但 Emphasis Glow 仍停在浅色模式的深色光晕；只有切歌后才恢复。
+- 该现象说明 Swift palette / CSS theme variables 已经实时更新，问题集中在 emphasis glow 创建后的缓存状态。
+
+调查结论：
+
+- Swift 侧 `ThemeStore.refreshPalette()` 会通过 `LyricsSurfaceManager.applyTheme()` 推送新的 `ThemePalette`，`LyricsWebViewStore.applyEffectiveTheme()` 会把 `theme` / `textColor` 通过 `setConfig` 下发，并注入 `--amll-text` / `--amll-active` / `--amll-inactive`。全屏艺术背景还会在 `FullscreenPlayerView.applyFullscreenLyricsTheme()` 下发 `fullscreenEmphasisGlowColor`。
+- 普通歌词颜色走 CSS variable / style，所以 theme 变化能立即响应。
+- 官方 AMLL emphasis glow 来自 `initEmphasizeAnimation()` 生成的 Web Animation keyframes：`textShadow: rgba(255,255,255,glowLevel)`。App fullscreen / cover-blur adapter 又会 clone 这些 `emphasize-word-*` animations，并在 clone keyframes 中写入 `fullscreenEmphasisGlowColor` 或 cover-blur profile 色。
+- Web Animation keyframes 是一次性值，不会因为之后 CSS variable 或 Swift palette 变化而自动重算。旧 adapter 只在 `setLyrics` / DOM build / clone 阶段 retint，所以已 built 的行在 theme 变化后保留旧 glow；切歌重建歌词 DOM / animations 后才恢复。
+- 窗口 main emphasis glow 也有同类懒构建风险：`setLyricLines()` 后同步只能覆盖当时已有 `splittedWords` 的行；未来滚入视口才 build 的行如果没有 lifecycle replay，会继续使用旧 scheme / upstream 默认 glow。
+
+修复：
+
+- 只改 App adapter `myPlayer2/Resources/AMLL/index.html`；不改 fork core，不手改 generated `amll-core.js` / `amll-lyric.js`。
+- 新增 `[AMLLThemeGlow]` 诊断：
+  - `window-sync` / `window-line-built` 记录 scheme、line count、animation count、surface role；
+  - `fullscreen-sync` 记录 retint signature、line count、animation count、changed count、fullscreen / cover-blur / generic mode。
+- Window/main：
+  - `applyWindowEmphasisGlowScheme()` 可带 reason 并输出统计；
+  - `installWindowEmphasisGlowLifecycleHooks()` hook line `show()` / `rebuildElement()`，让未 built 的行未来 build 后也按当前 `config.theme` retint；
+  - theme replay 即使 scheme 字符串未变，也会重新 sync 已 built animations。
+- Fullscreen / artistic / cover-blur：
+  - clone `emphasize-word-*` animation 时缓存官方原始 keyframes 到 `__amllFullscreenEmphasisSourceKeyframes`；
+  - `syncFullscreenEmphasisGlowForCurrentTheme()` 在 `fullscreenEmphasisGlowColor`、cover-blur profile、generic mode、suppress glow 等 config 变化后，从原始 keyframes 重新生成 textShadow keyframes 并 `setKeyframes()`；
+  - retint 时保留 animation `currentTime` 与 `playState`，避免通过重载歌词破坏 seek / 滚动 / 当前播放状态；
+  - 后续新 build 的行仍走同一 clone 入口，读取最新 config，不会继承旧 scheme。
+
+边界：
+
+- 不通过重新 `setLyrics`、固定 delay 或 WebView reload 修复；避免破坏当前行、seek、滚动与动画状态。
+- Window/main、普通 fullscreen、generic cover blur / highlight surface 共享“已 built 立即 retint，未 built 未来 build replay”的规则，但各自仍保留原 surface-specific glow profile。
+- 生成 bundle 未改，fork core 未改。
+
+验证：
+
+- `node --check /tmp/amll-index-module.js`：PASS。
+- `git diff --check`：PASS。
+- `xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player -configuration Debug -destination 'platform=macOS' build`：PASS。
+
+后续排查规则：
+
+- 如果普通歌词色变了而 Emphasis Glow 不变，优先查 `[AMLLThemeGlow] fullscreen-sync` / `window-sync` 是否在 theme/config 变化后触发，以及 `animations` / `changed` 是否大于 0。
+- 如果只有滚到新行时 glow 错，优先查 line `show()` / `rebuildElement()` lifecycle hook 是否安装。
+- 如果 repeated retint 导致 glow 越来越淡，说明没有从官方原始 keyframes 重算，而是在已 retint keyframes 上二次缩放 alpha；必须恢复 `__amllFullscreenEmphasisSourceKeyframes` 作为来源。
