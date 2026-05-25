@@ -2442,6 +2442,12 @@
             const id = typeof animation.id === "string" ? animation.id : "";
             return id.includes("emphasize-word-") && !id.includes("float");
         };
+        const cloneKeyframes = (keyframes) => {
+            if (!Array.isArray(keyframes)) return [];
+            return keyframes
+                .filter((frame) => frame && typeof frame === "object")
+                .map((frame) => ({ ...frame }));
+        };
         const retintSingleWindowEmphasisAnimation = (animation, scheme) => {
             if (!isWindowEmphasisAnimation(animation)) return;
             const effect = animation.effect;
@@ -2474,26 +2480,82 @@
                 // Setting keyframes can throw if the effect was already finalized; leave as-is.
             }
         };
-        const applyWindowEmphasisGlowScheme = (scheme) => {
-            if (!isMainSurface) return;
-            if (scheme !== "light" && scheme !== "dark") return;
-            if (!Array.isArray(lyricPlayer.currentLyricLineObjects)) return;
-            for (const lineObj of lyricPlayer.currentLyricLineObjects) {
-                const splitWords = Array.isArray(lineObj?.splittedWords) ? lineObj.splittedWords : [];
-                for (const splitWord of splitWords) {
-                    const animations = Array.isArray(splitWord?.elementAnimations)
-                        ? splitWord.elementAnimations
-                        : [];
-                    for (const animation of animations) {
-                        retintSingleWindowEmphasisAnimation(animation, scheme);
+        const collectWindowEmphasisAnimationsFromLine = (lineObj) => {
+            const result = [];
+            const splitWords = Array.isArray(lineObj?.splittedWords) ? lineObj.splittedWords : [];
+            for (const splitWord of splitWords) {
+                const animations = Array.isArray(splitWord?.elementAnimations)
+                    ? splitWord.elementAnimations
+                    : [];
+                for (const animation of animations) {
+                    if (isWindowEmphasisAnimation(animation)) {
+                        result.push(animation);
                     }
                 }
             }
+            return result;
         };
-        const syncWindowEmphasisGlowForCurrentScheme = () => {
+        const applyWindowEmphasisGlowScheme = (scheme, reason = "sync") => {
+            if (!isMainSurface) return { lines: 0, animations: 0 };
+            if (scheme !== "light" && scheme !== "dark") return;
+            if (!Array.isArray(lyricPlayer.currentLyricLineObjects)) return { lines: 0, animations: 0 };
+            let touchedLines = 0;
+            let touchedAnimations = 0;
+            for (const lineObj of lyricPlayer.currentLyricLineObjects) {
+                const animations = collectWindowEmphasisAnimationsFromLine(lineObj);
+                if (animations.length > 0) touchedLines += 1;
+                for (const animation of animations) {
+                    retintSingleWindowEmphasisAnimation(animation, scheme);
+                    touchedAnimations += 1;
+                }
+            }
+            console.log("[AMLLThemeGlow] window-sync", {
+                reason,
+                scheme,
+                lines: touchedLines,
+                animations: touchedAnimations,
+                surfaceRole,
+            });
+            return { lines: touchedLines, animations: touchedAnimations };
+        };
+        const syncWindowEmphasisGlowForCurrentScheme = (reason = "sync") => {
             if (!isMainSurface) return;
             const scheme = windowEmphasisGlowScheme ?? "dark";
-            applyWindowEmphasisGlowScheme(scheme);
+            applyWindowEmphasisGlowScheme(scheme, reason);
+        };
+        const installWindowEmphasisGlowLifecycleHooks = () => {
+            if (!isMainSurface) return;
+            const lineObjects = Array.isArray(lyricPlayer.currentLyricLineObjects)
+                ? lyricPlayer.currentLyricLineObjects
+                : [];
+            for (let lineIdx = 0; lineIdx < lineObjects.length; lineIdx++) {
+                const lineObj = lineObjects[lineIdx];
+                if (!lineObj || lineObj.__amllWindowEmphasisGlowHooksInstalled === true) continue;
+                const wrapLineMethod = (methodName) => {
+                    if (typeof lineObj[methodName] !== "function") return;
+                    const original = lineObj[methodName].bind(lineObj);
+                    lineObj[methodName] = (...args) => {
+                        const result = original(...args);
+                        const animations = collectWindowEmphasisAnimationsFromLine(lineObj);
+                        if (animations.length > 0) {
+                            for (const animation of animations) {
+                                retintSingleWindowEmphasisAnimation(animation, windowEmphasisGlowScheme);
+                            }
+                            console.log("[AMLLThemeGlow] window-line-built", {
+                                reason: `line-${methodName}`,
+                                scheme: windowEmphasisGlowScheme,
+                                lineIdx,
+                                animations: animations.length,
+                                surfaceRole,
+                            });
+                        }
+                        return result;
+                    };
+                };
+                wrapLineMethod("show");
+                wrapLineMethod("rebuildElement");
+                lineObj.__amllWindowEmphasisGlowHooksInstalled = true;
+            }
         };
 
         const retintGlowKeyframes = (keyframes, colorValue, alphaMultiplier = 1) => {
@@ -3041,6 +3103,142 @@
             }
         };
 
+        const resolveFullscreenEmphasisGlowRetintOptions = () => {
+            if (!isFullscreenSurface) return null;
+            if (isFullscreenCoverBlurGenericMode()) {
+                const profile = getFullscreenCoverBlurGenericProfile();
+                return {
+                    colorValue: resolveFullscreenCoverBlurGlowColor(profile),
+                    alphaMultiplier: resolveFullscreenCoverBlurGlowAlphaMultiplier(profile),
+                    suppressGlow: fullscreenCoverBlurSuppressEmphasisGlow === true,
+                    signature: JSON.stringify({
+                        mode: "coverBlurGeneric",
+                        profile,
+                        suppressGlow: fullscreenCoverBlurSuppressEmphasisGlow === true,
+                    }),
+                };
+            }
+
+            const playerElement = lyricPlayer.getElement();
+            const fullscreenGlowColor = playerElement instanceof HTMLElement
+                ? playerElement.style.getPropertyValue("--amll-fs-emphasis-glow").trim()
+                : "";
+            return {
+                colorValue: fullscreenGlowColor || null,
+                alphaMultiplier: 1,
+                suppressGlow: false,
+                signature: JSON.stringify({
+                    mode: "fullscreen",
+                    colorValue: fullscreenGlowColor || null,
+                }),
+            };
+        };
+
+        const rememberFullscreenEmphasisSourceKeyframes = (animation, sourceKeyframes, signature) => {
+            if (!(animation instanceof Animation)) return;
+            const clonedSourceKeyframes = cloneKeyframes(sourceKeyframes);
+            if (clonedSourceKeyframes.length > 0) {
+                animation.__amllFullscreenEmphasisSourceKeyframes = clonedSourceKeyframes;
+            }
+            animation.__amllFullscreenEmphasisGlowSignature = signature;
+        };
+
+        const retintFullscreenEmphasisAnimation = (animation, options) => {
+            if (!isEmphasisTextShadowAnimation(animation) || !options) {
+                return false;
+            }
+            if (animation.__amllFullscreenEmphasisGlowSignature === options.signature) {
+                return false;
+            }
+            const effect = animation.effect;
+            if (!effect || typeof effect.setKeyframes !== "function" || typeof effect.getKeyframes !== "function") {
+                return false;
+            }
+            let sourceKeyframes = animation.__amllFullscreenEmphasisSourceKeyframes;
+            if (!Array.isArray(sourceKeyframes) || sourceKeyframes.length === 0) {
+                try {
+                    sourceKeyframes = cloneKeyframes(effect.getKeyframes());
+                } catch (_) {
+                    sourceKeyframes = [];
+                }
+                if (sourceKeyframes.length === 0) return false;
+                animation.__amllFullscreenEmphasisSourceKeyframes = sourceKeyframes;
+            }
+            let currentTime = null;
+            let playState = "";
+            try { currentTime = animation.currentTime; } catch (_) {}
+            try { playState = animation.playState; } catch (_) {}
+            const nextKeyframes = adaptCoverBlurEmphasisKeyframes(
+                cloneKeyframes(sourceKeyframes),
+                {
+                    colorValue: options.colorValue,
+                    alphaMultiplier: options.alphaMultiplier,
+                    suppressGlow: options.suppressGlow,
+                },
+            );
+            try {
+                effect.setKeyframes(nextKeyframes);
+                if (typeof currentTime === "number" && Number.isFinite(currentTime)) {
+                    animation.currentTime = currentTime;
+                }
+                if (playState === "running") {
+                    animation.play();
+                } else if (playState === "paused") {
+                    animation.pause();
+                }
+                animation.__amllFullscreenEmphasisGlowSignature = options.signature;
+                return true;
+            } catch (error) {
+                console.warn("[AMLLThemeGlow] fullscreen-retint-failed", {
+                    signature: options.signature,
+                    error: String(error),
+                    surfaceRole,
+                });
+                return false;
+            }
+        };
+
+        const syncFullscreenEmphasisGlowForCurrentTheme = (reason = "sync") => {
+            if (!isFullscreenSurface) return;
+            if (!(fullscreenOpaqueLyricsMode || fullscreenCoverBlurMode)) return;
+            if (!Array.isArray(lyricPlayer.currentLyricLineObjects)) return;
+            const options = resolveFullscreenEmphasisGlowRetintOptions();
+            if (!options) return;
+
+            let lines = 0;
+            let animations = 0;
+            let changed = 0;
+            for (const lineObj of lyricPlayer.currentLyricLineObjects) {
+                const splitWords = Array.isArray(lineObj?.splittedWords) ? lineObj.splittedWords : [];
+                let lineAnimationCount = 0;
+                for (const splitWord of splitWords) {
+                    const installedAnimations = Array.isArray(splitWord?.__fsInstalledElementAnimations)
+                        ? splitWord.__fsInstalledElementAnimations
+                        : [];
+                    for (const animation of installedAnimations) {
+                        if (!isEmphasisTextShadowAnimation(animation)) continue;
+                        animations += 1;
+                        lineAnimationCount += 1;
+                        if (retintFullscreenEmphasisAnimation(animation, options)) {
+                            changed += 1;
+                        }
+                    }
+                }
+                if (lineAnimationCount > 0) lines += 1;
+            }
+            console.log("[AMLLThemeGlow] fullscreen-sync", {
+                reason,
+                signature: options.signature,
+                lines,
+                animations,
+                changed,
+                surfaceRole,
+                fullscreenOpaqueLyricsMode,
+                fullscreenCoverBlurMode,
+                coverBlurGeneric: isFullscreenCoverBlurGenericMode(),
+            });
+        };
+
         const createFullscreenPackedWordAnimation = (stackElement, splitWord, lineObj, sourceAnimations) => {
             if (!(stackElement instanceof HTMLElement) || typeof stackElement.animate !== "function") return null;
             const existingAnimations = Array.isArray(sourceAnimations)
@@ -3137,34 +3335,33 @@
                 if (!(packedTarget instanceof Element)) continue;
                 let clone = null;
                 if (isFullscreenCoverBlurGenericMode() && isEmphasisTextShadowAnimation(sourceAnimation)) {
-                    const profile = getFullscreenCoverBlurGenericProfile();
-                    const glowThemeColor = resolveFullscreenCoverBlurGlowColor(profile);
-                    const glowAlphaMultiplier = resolveFullscreenCoverBlurGlowAlphaMultiplier(profile);
+                    const retintOptions = resolveFullscreenEmphasisGlowRetintOptions();
+                    const sourceKeyframes = cloneKeyframes(sourceAnimation.effect?.getKeyframes?.());
                     clone = cloneAnimationToElement(sourceAnimation, packedTarget, {
                         transformKeyframes: (keyframes) => adaptCoverBlurEmphasisKeyframes(
                             keyframes,
                             {
-                                colorValue: glowThemeColor,
-                                alphaMultiplier: glowAlphaMultiplier,
-                                suppressGlow: fullscreenCoverBlurSuppressEmphasisGlow === true,
+                                colorValue: retintOptions?.colorValue ?? null,
+                                alphaMultiplier: retintOptions?.alphaMultiplier ?? 1,
+                                suppressGlow: retintOptions?.suppressGlow === true,
                             },
                         ),
                     });
+                    rememberFullscreenEmphasisSourceKeyframes(clone, sourceKeyframes, retintOptions?.signature);
                 } else if (isEmphasisTextShadowAnimation(sourceAnimation)) {
-                    const playerElement = lyricPlayer.getElement();
-                    const fullscreenGlowColor = playerElement instanceof HTMLElement
-                        ? playerElement.style.getPropertyValue("--amll-fs-emphasis-glow").trim()
-                        : "";
+                    const retintOptions = resolveFullscreenEmphasisGlowRetintOptions();
+                    const sourceKeyframes = cloneKeyframes(sourceAnimation.effect?.getKeyframes?.());
                     clone = cloneAnimationToElement(sourceAnimation, packedTarget, {
                         transformKeyframes: (keyframes) => adaptCoverBlurEmphasisKeyframes(
                             keyframes,
                             {
-                                colorValue: fullscreenGlowColor || null,
-                                alphaMultiplier: 1,
+                                colorValue: retintOptions?.colorValue ?? null,
+                                alphaMultiplier: retintOptions?.alphaMultiplier ?? 1,
                                 suppressGlow: false,
                             },
                         ),
                     });
+                    rememberFullscreenEmphasisSourceKeyframes(clone, sourceKeyframes, retintOptions?.signature);
                 } else {
                     clone = cloneAnimationToElement(sourceAnimation, packedTarget);
                 }
@@ -3186,6 +3383,230 @@
         };
 
         let patchFullscreenLastProcessedTime = -1;
+        let pendingFullscreenActiveLayerPatchRaf = 0;
+        let pendingFullscreenActiveLayerPatchReason = "";
+        let pendingFullscreenActiveLayerPatchForceSync = false;
+        let lastActiveHighlightTraceSignature = "";
+        let lastActiveHighlightTraceTime = 0;
+
+        const collectLineActiveHighlightState = (lineObj, lineIdx) => {
+            const lineElement = lineObj?.element;
+            const splitWords = Array.isArray(lineObj?.splittedWords) ? lineObj.splittedWords : [];
+            const line = typeof lineObj?.getLine === "function"
+                ? lineObj.getLine()
+                : lineObj?.lyricLine;
+            const elementAnimations = [];
+            const maskAnimations = [];
+            for (const splitWord of splitWords) {
+                if (Array.isArray(splitWord?.elementAnimations)) {
+                    elementAnimations.push(...splitWord.elementAnimations.filter((animation) => animation instanceof Animation));
+                }
+                if (Array.isArray(splitWord?.maskAnimations)) {
+                    maskAnimations.push(...splitWord.maskAnimations.filter((animation) => animation instanceof Animation));
+                }
+            }
+            const summarizeAnimation = (animation) => {
+                if (!(animation instanceof Animation)) return null;
+                const timing = typeof animation.effect?.getComputedTiming === "function"
+                    ? animation.effect.getComputedTiming()
+                    : null;
+                const target = animation.effect?.target;
+                return {
+                    id: typeof animation.id === "string" ? animation.id : "",
+                    playState: animation.playState,
+                    currentTime: Number.isFinite(animation.currentTime)
+                        ? Math.round(animation.currentTime)
+                        : null,
+                    duration: Number.isFinite(timing?.duration)
+                        ? Math.round(timing.duration)
+                        : null,
+                    delay: Number.isFinite(timing?.delay)
+                        ? Math.round(timing.delay)
+                        : null,
+                    targetClass: target instanceof HTMLElement ? target.className : null,
+                };
+            };
+            return {
+                lineIdx,
+                activeObject: lineObj?.isEnabled === true,
+                activeElement: isFullscreenLineActiveElement(lineElement),
+                built: lineObj?.built === true,
+                inSight: lineObj?.isInSight === true,
+                hasElement: lineElement instanceof HTMLElement,
+                visible: isProbeVisibleElement(lineElement),
+                words: Array.isArray(line?.words) ? line.words.length : null,
+                splittedWords: splitWords.length,
+                fsActiveLayers: lineElement instanceof HTMLElement
+                    ? lineElement.querySelectorAll(".amll-fs-word-active, .amll-fs-char-active").length
+                    : 0,
+                fsBaseLayers: lineElement instanceof HTMLElement
+                    ? lineElement.querySelectorAll(".amll-fs-word-base, .amll-fs-char-base").length
+                    : 0,
+                cbActiveLayers: lineElement instanceof HTMLElement
+                    ? lineElement.querySelectorAll(".amll-cb-word-active, .amll-cb-char-active").length
+                    : 0,
+                cbBaseLayers: lineElement instanceof HTMLElement
+                    ? lineElement.querySelectorAll(".amll-cb-word-base, .amll-cb-char-base").length
+                    : 0,
+                elementAnimations: elementAnimations.length,
+                maskAnimations: maskAnimations.length,
+                sampleElementAnimation: summarizeAnimation(elementAnimations[0]),
+                sampleMaskAnimation: summarizeAnimation(maskAnimations[0]),
+                text: lineElement instanceof HTMLElement
+                    ? (lineElement.textContent || "").trim().slice(0, 80)
+                    : "",
+            };
+        };
+
+        const collectActiveHighlightState = (reason = "") => {
+            const lineObjects = Array.isArray(lyricPlayer.currentLyricLineObjects)
+                ? lyricPlayer.currentLyricLineObjects
+                : [];
+            const hotLines = lyricPlayer.hotLines instanceof Set ? Array.from(lyricPlayer.hotLines) : [];
+            const bufferedLines = lyricPlayer.bufferedLines instanceof Set ? Array.from(lyricPlayer.bufferedLines) : [];
+            const activeLines = [];
+            for (let lineIdx = 0; lineIdx < lineObjects.length; lineIdx++) {
+                const lineObj = lineObjects[lineIdx];
+                if (!isFullscreenLineActiveObject(lineObj, lineIdx)) continue;
+                activeLines.push(collectLineActiveHighlightState(lineObj, lineIdx));
+            }
+            return {
+                reason,
+                role: surfaceRole,
+                fullscreenOpaqueLyricsMode,
+                fullscreenCoverBlurMode,
+                lineTimingOnlyMode,
+                currentTime: Number.isFinite(lastKnownTimeMs) ? Math.round(lastKnownTimeMs) : null,
+                externalIsPlaying,
+                hotLines,
+                bufferedLines,
+                scrollToIndex: Number.isFinite(lyricPlayer.scrollToIndex) ? lyricPlayer.scrollToIndex : null,
+                initialLayoutFinished: lyricPlayer.initialLayoutFinished === true,
+                rendererRenderScale: renderScale,
+                devicePixelRatio: window.devicePixelRatio,
+                visualViewportScale: window.visualViewport?.scale ?? null,
+                innerWidth: window.innerWidth,
+                innerHeight: window.innerHeight,
+                activeLines,
+            };
+        };
+
+        const logActiveHighlightState = (reason, { important = false } = {}) => {
+            if (!(fullscreenOpaqueLyricsMode || fullscreenCoverBlurMode)) return;
+            const state = collectActiveHighlightState(reason);
+            const hasMissingLayer = state.activeLines.some((line) => (
+                line.splittedWords > 0
+                && line.fsActiveLayers + line.cbActiveLayers === 0
+                && line.words !== 1
+            ));
+            const hasUnbuiltActiveLine = state.activeLines.some((line) => (
+                line.activeObject && (!line.built || line.splittedWords === 0)
+            ));
+            if (!important && !hasMissingLayer && !hasUnbuiltActiveLine) return;
+
+            const signature = JSON.stringify({
+                reason,
+                activeLines: state.activeLines.map((line) => ({
+                    lineIdx: line.lineIdx,
+                    built: line.built,
+                    inSight: line.inSight,
+                    splittedWords: line.splittedWords,
+                    fsActiveLayers: line.fsActiveLayers,
+                    cbActiveLayers: line.cbActiveLayers,
+                    sampleMaskAnimation: line.sampleMaskAnimation,
+                    sampleElementAnimation: line.sampleElementAnimation,
+                })),
+                currentTime: state.currentTime,
+                playing: state.externalIsPlaying,
+                renderScale: state.rendererRenderScale,
+                dpr: state.devicePixelRatio,
+            });
+            const now = performance.now();
+            if (!important && signature === lastActiveHighlightTraceSignature && now - lastActiveHighlightTraceTime < 750) {
+                return;
+            }
+            lastActiveHighlightTraceSignature = signature;
+            lastActiveHighlightTraceTime = now;
+            console.log(`[AMLLActiveHighlight] ${reason} ${JSON.stringify(state)}`);
+        };
+
+        const syncActiveLineLayerAnimations = (lineObj, lineIdx, reason) => {
+            if (!isFullscreenLineActiveObject(lineObj, lineIdx)) return;
+            const splitWords = Array.isArray(lineObj?.splittedWords) ? lineObj.splittedWords : [];
+            if (splitWords.length === 0) return;
+            if (typeof lineObj?.enable !== "function") return;
+            const currentMs = Number.isFinite(lastKnownTimeMs)
+                ? lastKnownTimeMs
+                : (typeof lyricPlayer.getCurrentTime === "function" ? lyricPlayer.getCurrentTime() : 0);
+            try {
+                lineObj.enable(currentMs, externalIsPlaying);
+                logActiveHighlightState(`active-layer-sync:${reason}`, { important: true });
+            } catch (error) {
+                console.warn("[AMLLActiveHighlight] active-layer-sync failed", {
+                    reason,
+                    lineIdx,
+                    error: String(error),
+                });
+            }
+        };
+
+        const scheduleFullscreenActiveLayerPatch = (reason, forceActiveSync = false) => {
+            if (!(fullscreenOpaqueLyricsMode || fullscreenCoverBlurMode)) return;
+            pendingFullscreenActiveLayerPatchReason = reason;
+            pendingFullscreenActiveLayerPatchForceSync =
+                pendingFullscreenActiveLayerPatchForceSync || forceActiveSync;
+            if (pendingFullscreenActiveLayerPatchRaf) return;
+            pendingFullscreenActiveLayerPatchRaf = requestAnimationFrame(() => {
+                const scheduledReason = pendingFullscreenActiveLayerPatchReason || "scheduled";
+                const scheduledForceSync = pendingFullscreenActiveLayerPatchForceSync;
+                pendingFullscreenActiveLayerPatchRaf = 0;
+                pendingFullscreenActiveLayerPatchReason = "";
+                pendingFullscreenActiveLayerPatchForceSync = false;
+                if (fullscreenOpaqueLyricsMode) {
+                    patchFullscreenLineOpacityBehavior({
+                        reason: scheduledReason,
+                        forceActiveSync: scheduledForceSync,
+                    });
+                } else if (fullscreenCoverBlurMode) {
+                    patchCoverBlurLineBehavior({
+                        reason: scheduledReason,
+                        forceActiveSync: scheduledForceSync,
+                    });
+                }
+            });
+        };
+
+        const installFullscreenLayerLifecycleHooks = () => {
+            if (!(fullscreenOpaqueLyricsMode || fullscreenCoverBlurMode)) return;
+            const lineObjects = Array.isArray(lyricPlayer.currentLyricLineObjects)
+                ? lyricPlayer.currentLyricLineObjects
+                : [];
+            for (let lineIdx = 0; lineIdx < lineObjects.length; lineIdx++) {
+                const lineObj = lineObjects[lineIdx];
+                if (!lineObj || lineObj.__amllFullscreenLayerHooksInstalled === true) continue;
+                const wrapLineMethod = (methodName) => {
+                    if (typeof lineObj[methodName] !== "function") return;
+                    const original = lineObj[methodName].bind(lineObj);
+                    lineObj[methodName] = (...args) => {
+                        const result = original(...args);
+                        const splitWords = Array.isArray(lineObj?.splittedWords) ? lineObj.splittedWords : [];
+                        if (
+                            splitWords.length > 0
+                            && (fullscreenOpaqueLyricsMode || fullscreenCoverBlurMode)
+                            && isFullscreenLineActiveObject(lineObj, lineIdx)
+                        ) {
+                            logActiveHighlightState(`line-${methodName}-active-built`, { important: true });
+                            scheduleFullscreenActiveLayerPatch(`line-${methodName}`, true);
+                        }
+                        return result;
+                    };
+                };
+                wrapLineMethod("show");
+                wrapLineMethod("rebuildElement");
+                lineObj.__amllFullscreenLayerHooksInstalled = true;
+            }
+        };
+
         const updateFullscreenFadingHighlightState = () => {
             if (!Array.isArray(lyricPlayer.currentLyricLineObjects)) return;
 
@@ -3259,10 +3680,11 @@
                 clearFullscreenDiscreteLayerLock(element);
             }
         };
-        const patchFullscreenLineOpacityBehavior = () => {
+        const patchFullscreenLineOpacityBehavior = ({ reason = "patch", forceActiveSync = false } = {}) => {
             if (!fullscreenOpaqueLyricsMode) return;
             if (!Array.isArray(lyricPlayer.currentLyricLineObjects)) return;
 
+            installFullscreenLayerLifecycleHooks();
             for (let lineIdx = 0; lineIdx < lyricPlayer.currentLyricLineObjects.length; lineIdx++) {
                 const lineObj = lyricPlayer.currentLyricLineObjects[lineIdx];
                 const lineElement = lineObj?.element;
@@ -3281,6 +3703,7 @@
                 }
 
                 const splitWords = Array.isArray(lineObj?.splittedWords) ? lineObj.splittedWords : [];
+                let installedLayerForLine = false;
                 for (const splitWord of splitWords) {
                     const activeWordElement = splitWord?.mainElement;
                     if (!(activeWordElement instanceof HTMLElement)) continue;
@@ -3300,6 +3723,7 @@
 
                         parent.insertBefore(stackElement, activeWordElement);
                         stackElement.appendChild(activeWordElement);
+                        installedLayerForLine = true;
                     } else {
                         activeWordElement.dataset.fsLayeredWord = "1";
                         splitWord.__fsActiveWordElement = activeWordElement;
@@ -3314,6 +3738,7 @@
                             if (!(baseWordElement instanceof HTMLElement)) continue;
                             stackElement.insertBefore(baseWordElement, activeWordElement);
                             splitWord.__fsBaseWordElement = baseWordElement;
+                            installedLayerForLine = true;
                         }
                         baseWordElement.classList.add("amll-fs-word-base");
                         baseWordElement.setAttribute("aria-hidden", "true");
@@ -3322,6 +3747,7 @@
                         ensureFullscreenEmphasizedCharStacks(splitWord);
                         if (shouldRefreshFullscreenEmphasizedMaskAnimations(splitWord)) {
                             installFullscreenEmphasizedMaskAnimations(splitWord);
+                            installedLayerForLine = true;
                         }
                         if (isFullscreenCoverBlurGenericMode()) {
                             installFullscreenEmphasizedGlowLayer(splitWord);
@@ -3330,8 +3756,12 @@
 
                     installFullscreenPackedElementAnimations(splitWord, lineObj);
                 }
+                if (forceActiveSync || installedLayerForLine) {
+                    syncActiveLineLayerAnimations(lineObj, lineIdx, reason);
+                }
             }
             updateFullscreenFadingHighlightState();
+            logActiveHighlightState(`patch-fullscreen:${reason}`);
         };
         let coverBlurPackedAnimationTargetMap = new WeakMap();
 
@@ -3685,11 +4115,12 @@
         };
         let lastCoverBlurBlendSignature = "";
 
-        const patchCoverBlurLineBehavior = () => {
+        const patchCoverBlurLineBehavior = ({ reason = "patch", forceActiveSync = false } = {}) => {
             if (!fullscreenCoverBlurMode) return;
             syncCoverBlurRootState();
             if (!Array.isArray(lyricPlayer.currentLyricLineObjects)) return;
 
+            installFullscreenLayerLifecycleHooks();
             let didMutate = false;
             for (let lineIdx = 0; lineIdx < lyricPlayer.currentLyricLineObjects.length; lineIdx++) {
                 const lineObj = lyricPlayer.currentLyricLineObjects[lineIdx];
@@ -3703,6 +4134,7 @@
                 }
 
                 const splitWords = Array.isArray(lineObj?.splittedWords) ? lineObj.splittedWords : [];
+                let installedLayerForLine = false;
                 for (const splitWord of splitWords) {
                     const activeWordElement = splitWord?.mainElement;
                     if (!(activeWordElement instanceof HTMLElement)) continue;
@@ -3723,6 +4155,7 @@
                         parent.insertBefore(stackElement, activeWordElement);
                         stackElement.appendChild(activeWordElement);
                         didMutate = true;
+                        installedLayerForLine = true;
                     } else {
                         activeWordElement.dataset.cbLayeredWord = "1";
                         splitWord.__cbActiveWordElement = activeWordElement;
@@ -3738,6 +4171,7 @@
                             stackElement.insertBefore(baseWordElement, activeWordElement);
                             splitWord.__cbBaseWordElement = baseWordElement;
                             didMutate = true;
+                            installedLayerForLine = true;
                         }
                         baseWordElement.classList.add("amll-cb-word-base");
                         baseWordElement.setAttribute("aria-hidden", "true");
@@ -3747,14 +4181,19 @@
                         if (shouldRefreshCoverBlurEmphasizedMaskAnimations(splitWord)) {
                             installCoverBlurEmphasizedMaskAnimations(splitWord);
                             didMutate = true;
+                            installedLayerForLine = true;
                         }
                         if (!(splitWord?.__cbGlowLayer instanceof HTMLElement)) {
                             installCoverBlurEmphasizedGlowLayer(splitWord);
                             didMutate = true;
+                            installedLayerForLine = true;
                         }
                     }
 
                     installCoverBlurPackedElementAnimations(splitWord, lineObj);
+                }
+                if (forceActiveSync || installedLayerForLine) {
+                    syncActiveLineLayerAnimations(lineObj, lineIdx, reason);
                 }
             }
             const nextBlendSignature = `${getCoverBlurMainBlendMode()}|${getCoverBlurHighlightBlendMode()}|${fullscreenCoverBlurProfile}`;
@@ -3762,6 +4201,7 @@
                 applyCoverBlurFinalLayerStyles();
                 lastCoverBlurBlendSignature = nextBlendSignature;
             }
+            logActiveHighlightState(`patch-cover-blur:${reason}`);
         };
 
         syncCoverBlurRootState();
@@ -4636,9 +5076,15 @@
             traceParallelEmphasisState(timeMs);
             if (fullscreenOpaqueLyricsMode) {
                 enforceFullscreenNormalCompositing();
-                patchFullscreenLineOpacityBehavior();
+                patchFullscreenLineOpacityBehavior({
+                    reason: force ? "setCurrentTime-force" : "setCurrentTime",
+                    forceActiveSync: force === true,
+                });
 	            } else if (fullscreenCoverBlurMode) {
-	                patchCoverBlurLineBehavior();
+	                patchCoverBlurLineBehavior({
+	                    reason: force ? "setCurrentTime-force" : "setCurrentTime",
+	                    forceActiveSync: force === true,
+	                });
 	            }
 	            // Always update parallel highlight tracking for fullscreen modes
 	            if (fullscreenOpaqueLyricsMode || fullscreenCoverBlurMode) {
@@ -4927,6 +5373,7 @@
                         '[class*="lyricLine"]:not([class*="active"]) .amll-cb-word-base, [class*="lyricLine"]:not([class*="active"]) .amll-fs-word-base'
                     ),
                 },
+                activeHighlight: collectActiveHighlightState(`debugDump:${label}`),
             };
             console.log(`[LyricsRenderer][Probe] ${label} ${JSON.stringify(payload)}`);
             return payload;
@@ -4993,11 +5440,12 @@
                                     "fs-line-timing-only",
                                     lineTimingOnlyMode === true
                                 );
-                                console.log("[AMLL-BOOT] setLyrics setLyricLines start", { lineCount: lines.length });
+		                    console.log("[AMLL-BOOT] setLyrics setLyricLines start", { lineCount: lines.length });
 		                    lyricPlayer.setLyricLines(lines);
                                 console.log("[AMLL-BOOT] setLyrics setLyricLines done", { lineCount: lines.length });
 		                    emitParallelEmphasisNormalizationTrace();
-		                    syncWindowEmphasisGlowForCurrentScheme();
+		                    installWindowEmphasisGlowLifecycleHooks();
+		                    syncWindowEmphasisGlowForCurrentScheme("setLyrics");
 		                    if (fullscreenOpaqueLyricsMode) {
 		                        enforceFullscreenNormalCompositing();
 		                        patchFullscreenLineOpacityBehavior();
@@ -5046,6 +5494,12 @@
 	                originalSetCurrentTime(timeInMs, needsForce || timeDelta > 500);
                     externalTimeMs = timeInMs;
                     externalTimeAnchorPerfMs = performance.now();
+                    if (timeDelta > 500 || needsForce) {
+                        logActiveHighlightState(
+                            `setCurrentTime:${timeInMs}:delta=${Math.round(timeDelta)}:force=${needsForce || timeDelta > 500}`,
+                            { important: true }
+                        );
+                    }
 	            },
 	            
 	            setPlaying: (isPlaying) => {
@@ -5059,6 +5513,7 @@
                     } else if (typeof lyricPlayer.pause === "function") {
                         lyricPlayer.pause();
                     }
+                    logActiveHighlightState(`setPlaying:${externalIsPlaying}`, { important: true });
 	            },
 
 	            setConfig: (config) => {
@@ -5104,6 +5559,7 @@
 		                    }
                             if (renderScaleDidChange || hasOwn("renderScale")) {
                                 requestAnimationFrame(() => logScaleMetrics("setConfig"));
+                                logActiveHighlightState(`setConfig:renderScale:${renderScale}`, { important: true });
                             }
 		                    if (typeof config.fpsCap === "number" && !Number.isNaN(config.fpsCap)) {
 		                        const nextFPSCap = Math.max(0, Math.min(120, Math.round(config.fpsCap)));
@@ -5202,6 +5658,10 @@
                         const previousGenericCoverBlurEnabled = fullscreenCoverBlurGenericState.enabled;
                         const previousGenericCoverBlurProfile = fullscreenCoverBlurGenericState.profile;
                         const previousGenericCoverBlurThemeColor = fullscreenCoverBlurGenericState.themeColor;
+                        const previousFullscreenEmphasisGlowColor =
+                            playerElement instanceof HTMLElement
+                                ? playerElement.style.getPropertyValue("--amll-fs-emphasis-glow").trim()
+                                : "";
 
                         if (hasOwn("fullscreenCoverBlurMode")) {
                             fullscreenCoverBlurMode = isFullscreenSurface && config.fullscreenCoverBlurMode === true;
@@ -5409,7 +5869,9 @@
                         const nextScheme = config.theme === "light" ? "light" : "dark";
                         if (nextScheme !== windowEmphasisGlowScheme) {
                             windowEmphasisGlowScheme = nextScheme;
-                            applyWindowEmphasisGlowScheme(nextScheme);
+                            applyWindowEmphasisGlowScheme(nextScheme, "setConfig:theme-change");
+                        } else {
+                            syncWindowEmphasisGlowForCurrentScheme("setConfig:theme-replay");
                         }
                     }
 	                    if (typeof config.timeOffsetMs === "number" && !Number.isNaN(config.timeOffsetMs)) {
@@ -5441,6 +5903,25 @@
                             previousGenericCoverBlurEnabled !== fullscreenCoverBlurGenericState.enabled
                             || previousGenericCoverBlurProfile !== fullscreenCoverBlurGenericState.profile
                             || previousGenericCoverBlurThemeColor !== fullscreenCoverBlurGenericState.themeColor;
+                        const currentFullscreenEmphasisGlowColor =
+                            playerElement instanceof HTMLElement
+                                ? playerElement.style.getPropertyValue("--amll-fs-emphasis-glow").trim()
+                                : "";
+                        const fullscreenEmphasisGlowChanged =
+                            previousFullscreenEmphasisGlowColor !== currentFullscreenEmphasisGlowColor;
+                        if (
+                            isFullscreenSurface
+                            && !needsLyricsReload
+                            && (
+                                fullscreenEmphasisGlowChanged
+                                || genericCoverBlurChanged
+                                || coverBlurSuppressEmphasisGlowChanged
+                                || coverBlurProfileChanged
+                                || hasOwn("fullscreenEmphasisGlowColor")
+                            )
+                        ) {
+                            syncFullscreenEmphasisGlowForCurrentTheme("setConfig:theme-glow-change");
+                        }
                         if ((switchedIntoCoverBlur || switchedOutOfCoverBlur || switchedBetweenFullscreenModes) && lastTTML) {
                             needsLyricsReload = true;
                         }
@@ -5461,6 +5942,15 @@
 	                    if (needsLyricsReload && lastTTML) {
 	                        window.LyricsRenderer.setLyrics(lastTTML);
 	                    }
+                        if (
+                            needsLyricsReload
+                            || switchedIntoCoverBlur
+                            || switchedOutOfCoverBlur
+                            || switchedBetweenFullscreenModes
+                            || genericCoverBlurChanged
+                        ) {
+                            logActiveHighlightState("setConfig:surface-or-reload", { important: true });
+                        }
 		                    console.log("[LyricsRenderer] Config updated:", config);
 		                } catch (e) {
 		                    console.error("[LyricsRenderer] Config Error:", e);
