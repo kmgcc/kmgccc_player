@@ -439,7 +439,6 @@ struct HomePlaylistsSection: View {
         HStack(alignment: .firstTextBaseline) {
             Text("播放列表")
                 .font(.system(size: mode.sectionTitleFontSize, weight: .semibold))
-                .tracking(-0.3)
                 .foregroundStyle(titleColor)
             Spacer()
         }

@@ -475,6 +475,7 @@ final class PlaylistPageController {
             for: displayedTracks,
             libraryVM: libraryVM
         )
+        let isSearching = !trimmedSearch.isEmpty
 
         let modelKey = await PlaylistPageModelCacheService.shared.cacheKey(
             selectionIdentity: selectionIdentity,
@@ -484,7 +485,8 @@ final class PlaylistPageController {
             sortOrderRawValue: libraryVM.trackSortOrder.rawValue
         )
 
-        if let cached = await PlaylistPageModelCacheService.shared.model(for: modelKey),
+        if !isSearching,
+           let cached = await PlaylistPageModelCacheService.shared.model(for: modelKey),
            let cachedPage = hydratedPageModel(
                 selection: selection,
                 selectionIdentity: selectionIdentity,
@@ -522,6 +524,9 @@ final class PlaylistPageController {
                 playlistItemAddedAt: playlistItemAddedAtMap?[$0.id]
             )
         }
+        let searchHits = isSearching
+            ? await Self.searchHits(for: trimmedSearch, displayedTrackIDs: displayedTracks.map(\.id))
+            : [:]
         let pageTrackSources = displayedTracks.map {
             PageTrackSource(
                 id: $0.id,
@@ -539,6 +544,7 @@ final class PlaylistPageController {
             displayedTracks: pageTrackSources,
             entries: sortableEntries,
             searchText: trimmedSearch,
+            searchHits: searchHits,
             sortKey: libraryVM.trackSortKey,
             sortOrder: libraryVM.trackSortOrder
         )
@@ -574,24 +580,26 @@ final class PlaylistPageController {
             )
         )
 
-        await PlaylistPageModelCacheService.shared.store(
-            PlaylistPageModelCacheEntry(
-                key: modelKey,
-                selectionIdentity: selectionIdentity,
-                sourceFingerprint: sourceFingerprint,
-                searchText: trimmedSearch,
-                sortKeyRawValue: libraryVM.trackSortKey.rawValue,
-                sortOrderRawValue: libraryVM.trackSortOrder.rawValue,
-                displayedTrackIDs: displayedTracks.map(\.id),
-                rowRecords: buildResult.rowRecords,
-                queueTrackIDs: buildResult.queueTrackIDs,
-                queueIndexMap: buildResult.queueIndexMap,
-                displayedTrackCount: buildResult.displayedTrackCount,
-                filteredTrackCount: buildResult.filteredTrackCount,
-                displayedTotalDuration: buildResult.displayedTotalDuration,
-                cachedAt: Date()
+        if !isSearching {
+            await PlaylistPageModelCacheService.shared.store(
+                PlaylistPageModelCacheEntry(
+                    key: modelKey,
+                    selectionIdentity: selectionIdentity,
+                    sourceFingerprint: sourceFingerprint,
+                    searchText: trimmedSearch,
+                    sortKeyRawValue: libraryVM.trackSortKey.rawValue,
+                    sortOrderRawValue: libraryVM.trackSortOrder.rawValue,
+                    displayedTrackIDs: displayedTracks.map(\.id),
+                    rowRecords: buildResult.rowRecords,
+                    queueTrackIDs: buildResult.queueTrackIDs,
+                    queueIndexMap: buildResult.queueIndexMap,
+                    displayedTrackCount: buildResult.displayedTrackCount,
+                    filteredTrackCount: buildResult.filteredTrackCount,
+                    displayedTotalDuration: buildResult.displayedTotalDuration,
+                    cachedAt: Date()
+                )
             )
-        )
+        }
 
         guard !Task.isCancelled, activeLoadToken == token else { return }
         applyPageModel(pageModel, restoreScroll: restoreScroll)
@@ -1403,10 +1411,26 @@ final class PlaylistPageController {
         }
     }
 
+    private static func searchHits(
+        for searchText: String,
+        displayedTrackIDs: [UUID]
+    ) async -> [UUID: LibrarySearchHit] {
+        let scope = Set(displayedTrackIDs)
+        guard !scope.isEmpty else { return [:] }
+        let limit = max(100, min(2_000, scope.count))
+        let hits = await LibrarySearchIndex.shared.search(
+            query: searchText,
+            scopedTo: scope,
+            limit: limit
+        )
+        return Dictionary(uniqueKeysWithValues: hits.map { ($0.trackID, $0) })
+    }
+
     private static func buildPageResult(
         displayedTracks: [PageTrackSource],
         entries: [SortableTrackEntry],
         searchText: String,
+        searchHits: [UUID: LibrarySearchHit],
         sortKey: TrackSortKey,
         sortOrder: TrackSortOrder
     ) async -> BuildResult {
@@ -1416,12 +1440,18 @@ final class PlaylistPageController {
                 filteredEntries = entries
             } else {
                 filteredEntries = entries.filter {
-                    $0.title.localizedCaseInsensitiveContains(searchText)
+                    searchHits[$0.id] != nil
                 }
             }
 
-            let sortedFiltered = filteredEntries.sorted {
-                compareSortableTracks($0, $1, sortKey: sortKey, sortOrder: sortOrder)
+            let sortedFiltered = filteredEntries.sorted { lhs, rhs in
+                if !searchText.isEmpty,
+                   let lhsHit = searchHits[lhs.id],
+                   let rhsHit = searchHits[rhs.id],
+                   abs(lhsHit.score - rhsHit.score) > 0.000_1 {
+                    return lhsHit.score > rhsHit.score
+                }
+                return compareSortableTracks(lhs, rhs, sortKey: sortKey, sortOrder: sortOrder)
             }
             let queueEntries = searchText.isEmpty
                 ? sortedFiltered
@@ -1437,6 +1467,7 @@ final class PlaylistPageController {
                     id: track.id,
                     title: track.title,
                     artist: track.artist,
+                    lyricSnippet: searchHits[track.id]?.lyricSnippet,
                     durationText: formatDuration(track.duration),
                     artworkIdentity: PlaylistArtworkPipeline.rowSourceIdentity(
                         trackID: track.id,

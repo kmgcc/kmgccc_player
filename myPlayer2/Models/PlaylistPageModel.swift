@@ -12,6 +12,7 @@ struct PlaylistPageRowRecord: Sendable, Equatable {
     let id: UUID
     let title: String
     let artist: String
+    let lyricSnippet: String?
     let durationText: String
     let artworkIdentity: String
     let artworkFileURL: URL?
@@ -22,6 +23,7 @@ struct PlaylistPageRowModel: Identifiable, Equatable {
     let id: UUID
     let title: String
     let artist: String
+    let lyricSnippet: String?
     let durationText: String
     let artworkData: Data?
     let artworkFileURL: URL?
@@ -32,6 +34,7 @@ struct PlaylistPageRowModel: Identifiable, Equatable {
         id: UUID,
         title: String,
         artist: String,
+        lyricSnippet: String? = nil,
         durationText: String,
         artworkData: Data?,
         artworkFileURL: URL? = nil,
@@ -41,6 +44,7 @@ struct PlaylistPageRowModel: Identifiable, Equatable {
         self.id = id
         self.title = title
         self.artist = artist
+        self.lyricSnippet = lyricSnippet
         self.durationText = durationText
         self.artworkData = artworkData
         self.artworkFileURL = artworkFileURL
@@ -53,6 +57,7 @@ struct PlaylistPageRowModel: Identifiable, Equatable {
             id: record.id,
             title: record.title,
             artist: record.artist,
+            lyricSnippet: record.lyricSnippet,
             durationText: record.durationText,
             artworkData: artworkData,
             artworkFileURL: record.artworkFileURL,
@@ -66,6 +71,7 @@ struct PlaylistPageRowModel: Identifiable, Equatable {
             id: id,
             title: title,
             artist: artist,
+            lyricSnippet: lyricSnippet,
             durationText: durationText,
             artworkData: artworkData,
             artworkFileURL: artworkFileURL,

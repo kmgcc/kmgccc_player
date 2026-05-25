@@ -129,7 +129,6 @@ struct HomeAlbumsSection: View {
         HStack(alignment: .firstTextBaseline) {
             Text("专辑")
                 .font(.system(size: mode.sectionTitleFontSize, weight: .semibold))
-                .tracking(-0.3)
                 .foregroundStyle(titleColor)
             Spacer()
             viewAllButton

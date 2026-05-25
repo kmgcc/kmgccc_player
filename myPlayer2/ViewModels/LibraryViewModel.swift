@@ -71,6 +71,8 @@ enum AlbumSortKey: String, CaseIterable, Identifiable {
     case title
     case artist
     case trackCount
+    case playCountTotal
+    case preferenceTotal
     case totalDuration
     case updatedAt
 
@@ -81,6 +83,8 @@ enum AlbumSortKey: String, CaseIterable, Identifiable {
         case .title:         return "标题"
         case .artist:        return "艺人"
         case .trackCount:    return "歌曲数"
+        case .playCountTotal: return "播放次数"
+        case .preferenceTotal: return "偏好"
         case .totalDuration: return "总时长"
         case .updatedAt:     return "最近更新"
         }
@@ -93,6 +97,8 @@ enum ArtistSortKey: String, CaseIterable, Identifiable {
     case name
     case trackCount
     case albumCount
+    case playCountTotal
+    case preferenceTotal
     case totalDuration
     case updatedAt
 
@@ -103,6 +109,8 @@ enum ArtistSortKey: String, CaseIterable, Identifiable {
         case .name:          return "名称"
         case .trackCount:    return "歌曲数"
         case .albumCount:    return "专辑数"
+        case .playCountTotal: return "播放次数"
+        case .preferenceTotal: return "偏好"
         case .totalDuration: return "总时长"
         case .updatedAt:     return "最近更新"
         }

@@ -109,6 +109,7 @@ nonisolated private enum BatchImportStage {
     case importingFiles
     case enrichingMetadata
     case savingLibrary
+    case cancelled
     case completed
 
     var title: String {
@@ -127,6 +128,8 @@ nonisolated private enum BatchImportStage {
             return "正在补全导入信息"
         case .savingLibrary:
             return "正在保存到资料库"
+        case .cancelled:
+            return "导入已取消"
         case .completed:
             return "导入完成"
         }
@@ -148,6 +151,8 @@ nonisolated private enum BatchImportStage {
             return 0.82...0.96
         case .savingLibrary:
             return 0.96...0.995
+        case .cancelled:
+            return 1.0...1.0
         case .completed:
             return 1.0...1.0
         }
@@ -2573,6 +2578,7 @@ final class FileImportService: FileImportServiceProtocol {
 
     private struct ImportTaskOutput: Sendable {
         let index: Int
+        let trackID: UUID
         let progressID: String
         let displayName: String
         let metadata: ImportPreview
@@ -2585,6 +2591,12 @@ final class FileImportService: FileImportServiceProtocol {
         let needsArtistArtworkEnrichment: Bool
         let needsAlbumArtworkEnrichment: Bool
         let errorDescription: String?
+    }
+
+    private struct ImportBatchResult {
+        let records: [ImportedTrackRecord]
+        let createdTrackIDs: Set<UUID>
+        let cancelled: Bool
     }
 
     private struct ImportEnrichmentSnapshot: Sendable {
@@ -2640,6 +2652,7 @@ final class FileImportService: FileImportServiceProtocol {
     private let repository: LibraryRepositoryProtocol
     private let libraryService: LocalLibraryService
     private let importEnrichmentService: ImportEnrichmentService
+    private var importInProgress = false
 
     // MARK: - Initialization
 
@@ -2696,6 +2709,23 @@ final class FileImportService: FileImportServiceProtocol {
             "importSelectedURLs called for playlist: '\(playlist.name)' (id=\(playlist.id)) count=\(selectedURLs.count)",
             category: .import
         )
+
+        guard !importInProgress else {
+            Log.warning(
+                "[Import] rejected concurrent import request playlist=\(playlist.id.uuidString)",
+                category: .import
+            )
+            return 0
+        }
+        importInProgress = true
+        await LibraryImportCoordinator.shared.beginBatch(reason: "fileImport")
+        defer {
+            importInProgress = false
+            Task {
+                await LibraryImportCoordinator.shared.endBatch(reason: "fileImport")
+            }
+        }
+
         let progressController = BatchImportProgressDialogController()
         defer { progressController.closeNow() }
         progressController.update(
@@ -2773,6 +2803,16 @@ final class FileImportService: FileImportServiceProtocol {
             return 0
         }
 
+        if progressController.isCancellationRequested {
+            return await finishCancelledImport(
+                importedRecords: [],
+                createdTrackIDs: [],
+                to: playlist,
+                progressController: progressController,
+                totalCount: discoveredFileCount
+            )
+        }
+
         let discoveredItems = (filesToImport + ncmFiles).map {
             BatchImportProgressItemSeed(id: $0.path, fileName: $0.lastPathComponent)
         }
@@ -2806,6 +2846,15 @@ final class FileImportService: FileImportServiceProtocol {
         if !ncmFiles.isEmpty {
             Log.debug("Found \(ncmFiles.count) NCM files to convert", category: .import)
             let results = await convertNCMFiles(ncmFiles, progressController: progressController)
+            if progressController.isCancellationRequested {
+                return await finishCancelledImport(
+                    importedRecords: [],
+                    createdTrackIDs: [],
+                    to: playlist,
+                    progressController: progressController,
+                    totalCount: discoveredFileCount
+                )
+            }
             for output in results {
                 guard let result = output.result else { continue }
                 resolvedFiles.append(
@@ -2853,6 +2902,16 @@ final class FileImportService: FileImportServiceProtocol {
         )
         let uniqueCandidates = preparedCandidates.unique
         let duplicateRows = preparedCandidates.duplicates
+
+        if progressController.isCancellationRequested {
+            return await finishCancelledImport(
+                importedRecords: [],
+                createdTrackIDs: [],
+                to: playlist,
+                progressController: progressController,
+                totalCount: discoveredFileCount
+            )
+        }
 
         var selectedDuplicates: [ImportCandidate] = []
         if !duplicateRows.isEmpty {
@@ -2924,14 +2983,26 @@ final class FileImportService: FileImportServiceProtocol {
 
         let enrichmentMode: ImportEnrichmentMode =
             AppSettings.shared.deferImportEnrichment ? .deferred : .immediate
-        let importedRecords = await importCandidatesWithProgress(
+        let importBatch = await importCandidatesWithProgress(
             finalCandidates,
             progressController: progressController,
             enrichmentMode: enrichmentMode
         )
+        let importedRecords = importBatch.records
+
+        if importBatch.cancelled || progressController.isCancellationRequested {
+            return await finishCancelledImport(
+                importedRecords: importedRecords,
+                createdTrackIDs: importBatch.createdTrackIDs,
+                to: playlist,
+                progressController: progressController,
+                totalCount: finalCandidates.count
+            )
+        }
 
         guard !importedRecords.isEmpty else {
             print("⚠️ No tracks to import")
+            _ = await cleanupFailedImportResidue(reason: "importNoSuccessfulTracks")
             return 0
         }
 
@@ -2945,6 +3016,15 @@ final class FileImportService: FileImportServiceProtocol {
                     importedRecords: recordsNeedingEnrichment,
                     progressController: progressController
                 )
+                if progressController.isCancellationRequested {
+                    return await finishCancelledImport(
+                        importedRecords: importedRecords,
+                        createdTrackIDs: importBatch.createdTrackIDs,
+                        to: playlist,
+                        progressController: progressController,
+                        totalCount: finalCandidates.count
+                    )
+                }
             } else {
                 progressController.update(
                     stage: .enrichingMetadata,
@@ -2994,6 +3074,8 @@ final class FileImportService: FileImportServiceProtocol {
                 await importEnrichmentService.enqueueTracks(recordsNeedingEnrichment.map(\.track))
             }
         }
+
+        _ = await cleanupFailedImportResidue(reason: "importCompleted")
 
         for record in importedRecords {
             progressController.completeImportedItem(id: record.progressID)
@@ -3061,8 +3143,10 @@ final class FileImportService: FileImportServiceProtocol {
         _ candidates: [ImportCandidate],
         progressController: BatchImportProgressDialogController,
         enrichmentMode: ImportEnrichmentMode
-    ) async -> [ImportedTrackRecord] {
-        guard !candidates.isEmpty else { return [] }
+    ) async -> ImportBatchResult {
+        guard !candidates.isEmpty else {
+            return ImportBatchResult(records: [], createdTrackIDs: [], cancelled: false)
+        }
 
         var orderedRecords = Array<ImportedTrackRecord?>(repeating: nil, count: candidates.count)
         var iterator = Array(candidates.enumerated()).makeIterator()
@@ -3070,6 +3154,8 @@ final class FileImportService: FileImportServiceProtocol {
         var processedCount = 0
         var importedCount = 0
         var failedCount = 0
+        var createdTrackIDs: Set<UUID> = []
+        var cancelled = false
 
         await withTaskGroup(of: ImportTaskOutput.self) { group in
             for _ in 0..<min(maxConcurrent, candidates.count) {
@@ -3089,6 +3175,7 @@ final class FileImportService: FileImportServiceProtocol {
 
             while let output = await group.next() {
                 processedCount += 1
+                createdTrackIDs.insert(output.trackID)
 
                 if let payload = output.payload {
                     importedCount += 1
@@ -3162,6 +3249,21 @@ final class FileImportService: FileImportServiceProtocol {
                     totalCount: candidates.count
                 )
 
+                if progressController.isCancellationRequested {
+                    cancelled = true
+                    while let (_, skippedCandidate) = iterator.next() {
+                        progressController.updateItem(
+                            id: skippedCandidate.progressID,
+                            title: skippedCandidate.metadata.title,
+                            artist: skippedCandidate.metadata.artist,
+                            stage: .importing,
+                            status: .skipped,
+                            detail: "用户已取消，未开始导入"
+                        )
+                    }
+                    continue
+                }
+
                 if let (index, candidate) = iterator.next() {
                     progressController.updateItem(
                         id: candidate.progressID,
@@ -3178,7 +3280,11 @@ final class FileImportService: FileImportServiceProtocol {
             }
         }
 
-        return orderedRecords.compactMap { $0 }
+        return ImportBatchResult(
+            records: orderedRecords.compactMap { $0 },
+            createdTrackIDs: createdTrackIDs,
+            cancelled: cancelled
+        )
     }
 
     private func saveImportedTracks(
@@ -3215,6 +3321,55 @@ final class FileImportService: FileImportServiceProtocol {
             completedCount: 2,
             totalCount: 2
         )
+    }
+
+    private func finishCancelledImport(
+        importedRecords: [ImportedTrackRecord],
+        createdTrackIDs: Set<UUID>,
+        to playlist: Playlist,
+        progressController: BatchImportProgressDialogController,
+        totalCount: Int
+    ) async -> Int {
+        let importedTracks = importedRecords.map(\.track)
+        if !importedTracks.isEmpty {
+            await saveImportedTracks(importedTracks, to: playlist, progressController: progressController)
+        }
+
+        let cleanupReport = await cleanupFailedImportResidue(reason: "importCancelled")
+        let retainedCount = importedTracks.count
+        let cleanedCount = cleanupReport.deletedCount
+        let incompleteCount = max(0, createdTrackIDs.count - Set(importedTracks.map(\.id)).count)
+
+        progressController.update(
+            stage: .cancelled,
+            progress: 1.0,
+            detail: "已取消，已保留 \(retainedCount) 首完整导入歌曲，清理 \(cleanedCount) 个未完成项目",
+            completedCount: retainedCount,
+            totalCount: max(totalCount, retainedCount)
+        )
+
+        Log.info(
+            "[Import] cancelled retained=\(retainedCount) createdTrackDirs=\(createdTrackIDs.count) incomplete=\(incompleteCount) cleaned=\(cleanedCount) cleanupFailures=\(cleanupReport.failedDeleteCount)",
+            category: .import
+        )
+        try? await Task.sleep(nanoseconds: 700_000_000)
+        return retainedCount
+    }
+
+    @discardableResult
+    private func cleanupFailedImportResidue(reason: String) async -> TrackDirectoryCleanupReport {
+        let tracks = await repository.fetchTracks(in: nil)
+        let referencedTrackIDs = Set(tracks.map(\.id))
+        return await Task.detached(priority: .utility) { @Sendable in
+            LibraryMaintenanceService().cleanupFailedImportTrackDirectories(
+                referencedTrackIDs: referencedTrackIDs,
+                importActivity: LibraryImportActivitySnapshot(
+                    isImporting: false,
+                    activeTrackIDs: []
+                ),
+                reason: reason
+            )
+        }.value
     }
 
     private func makeTrack(from payload: ImportedTrackPayload) -> Track {
@@ -4409,6 +4564,12 @@ final class FileImportService: FileImportServiceProtocol {
     ) async -> ImportTaskOutput {
         let trackId = UUID()
         let importedAt = Date()
+        await LibraryImportCoordinator.shared.beginTrack(trackId)
+        defer {
+            Task {
+                await LibraryImportCoordinator.shared.endTrack(trackId)
+            }
+        }
 
         async let extractedArtworkTask: Data? = {
             if let preloadedArtworkData = candidate.metadata.artworkData {
@@ -4432,6 +4593,7 @@ final class FileImportService: FileImportServiceProtocol {
 
             return ImportTaskOutput(
                 index: index,
+                trackID: trackId,
                 progressID: candidate.progressID,
                 displayName: candidate.displayName,
                 metadata: candidate.metadata,
@@ -4463,6 +4625,7 @@ final class FileImportService: FileImportServiceProtocol {
             let _ = await embeddedLyricsTask
             return ImportTaskOutput(
                 index: index,
+                trackID: trackId,
                 progressID: candidate.progressID,
                 displayName: candidate.displayName,
                 metadata: candidate.metadata,
@@ -4592,9 +4755,14 @@ private final class BatchImportProgressViewModel {
     var completedCount: Int = 0
     var totalCount: Int = 0
     var items: [BatchImportProgressItemModel] = []
+    var isCancellationRequested = false
 
     var sortedItems: [BatchImportProgressItemModel] {
         items
+    }
+
+    var canCancel: Bool {
+        stage != .completed && stage != .cancelled && !isCancellationRequested
     }
 }
 
@@ -4603,6 +4771,7 @@ private final class BatchImportProgressDialogController: NSObject, NSWindowDeleg
     private var panel: NSPanel?
     private let viewModel = BatchImportProgressViewModel()
     private var isClosed = false
+    private var allowsClose = false
 
     override init() {
         super.init()
@@ -4610,7 +4779,7 @@ private final class BatchImportProgressDialogController: NSObject, NSWindowDeleg
         let windowSize = NSSize(width: 600, height: 560)
         let panel = NSPanel(
             contentRect: NSRect(origin: .zero, size: windowSize),
-            styleMask: [.titled, .closable, .fullSizeContentView],
+            styleMask: [.titled, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
@@ -4634,7 +4803,10 @@ private final class BatchImportProgressDialogController: NSObject, NSWindowDeleg
         visualEffect.autoresizingMask = [.width, .height]
         panel.contentView = visualEffect
 
-        let rootView = BatchImportProgressDialogView(viewModel: viewModel)
+        let rootView = BatchImportProgressDialogView(
+            viewModel: viewModel,
+            onCancel: { [weak self] in self?.requestCancel() }
+        )
             .frame(width: windowSize.width, height: windowSize.height)
         let hostingView = NSHostingView(rootView: rootView)
         hostingView.frame = NSRect(origin: .zero, size: windowSize)
@@ -4645,6 +4817,10 @@ private final class BatchImportProgressDialogController: NSObject, NSWindowDeleg
         panel.makeKeyAndOrderFront(nil)
         panel.orderFrontRegardless()
         self.panel = panel
+    }
+
+    var isCancellationRequested: Bool {
+        viewModel.isCancellationRequested
     }
 
     func setItems(_ items: [BatchImportProgressItemSeed]) {
@@ -4729,9 +4905,21 @@ private final class BatchImportProgressDialogController: NSObject, NSWindowDeleg
     func closeNow() {
         guard !isClosed else { return }
         isClosed = true
+        allowsClose = true
         viewModel.items.removeAll()
         panel?.close()
         panel = nil
+    }
+
+    func requestCancel() {
+        guard viewModel.canCancel else { return }
+        viewModel.isCancellationRequested = true
+        viewModel.detail = "正在取消导入，等待当前文件写入安全结束"
+        Log.info("[Import] user requested cancellation", category: .import)
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        allowsClose
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -4743,6 +4931,7 @@ private final class BatchImportProgressDialogController: NSObject, NSWindowDeleg
 
 private struct BatchImportProgressDialogView: View {
     @Bindable var viewModel: BatchImportProgressViewModel
+    let onCancel: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -4752,6 +4941,11 @@ private struct BatchImportProgressDialogView: View {
                 .opacity(0.45)
 
             contentView
+
+            Divider()
+                .opacity(0.35)
+
+            footerView
         }
     }
 
@@ -4809,6 +5003,20 @@ private struct BatchImportProgressDialogView: View {
                 }
             }
         }
+    }
+
+    private var footerView: some View {
+        HStack {
+            Spacer()
+            Button("取消") {
+                onCancel()
+            }
+            .keyboardShortcut(.cancelAction)
+            .disabled(!viewModel.canCancel)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+        .background(.thinMaterial)
     }
 }
 
