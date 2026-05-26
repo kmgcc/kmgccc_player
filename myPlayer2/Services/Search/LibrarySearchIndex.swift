@@ -143,7 +143,8 @@ actor LibrarySearchIndex {
                 return LibrarySearchHit(
                     trackID: document.trackID,
                     score: ranking.score,
-                    lyricSnippet: ranking.lyricSnippet,
+                    lyricSnippetLine: ranking.lyricSnippet?.line,
+                    lyricHighlightRanges: ranking.lyricSnippet?.highlightRanges ?? [],
                     matchedLyrics: ranking.matchedLyrics
                 )
             }
@@ -563,8 +564,13 @@ actor LibrarySearchIndex {
 
     private struct RankingResult {
         let score: Double
-        let lyricSnippet: String?
+        let lyricSnippet: LyricSnippetResult?
         let matchedLyrics: Bool
+    }
+
+    private struct LyricSnippetResult {
+        let line: String
+        let highlightRanges: [SearchHighlightRange]
     }
 
     private func rank(
@@ -631,10 +637,14 @@ actor LibrarySearchIndex {
             score += max(0, 5 - min(5, days / 14))
         }
 
+        let lyricSnippet = lyricsScore > 0
+            ? lyricSnippet(in: document.lyricsPlainTextRaw, query: query)
+            : nil
+
         return RankingResult(
             score: score,
-            lyricSnippet: lyricsScore > 0 ? lyricSnippet(in: document.lyricsPlainTextRaw, query: query) : nil,
-            matchedLyrics: lyricsScore > 0
+            lyricSnippet: lyricSnippet,
+            matchedLyrics: lyricSnippet != nil
         )
     }
 
@@ -752,29 +762,139 @@ actor LibrarySearchIndex {
         return score
     }
 
-    private func lyricSnippet(in rawLyrics: String, query: SearchQuery) -> String? {
-        guard !rawLyrics.isEmpty else { return nil }
+    private func lyricSnippet(in rawLyrics: String, query: SearchQuery) -> LyricSnippetResult? {
+        guard !rawLyrics.isEmpty, query.compact.count > 1 else { return nil }
         let lines = rawLyrics
             .components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
 
-        let bestLine = lines.first { line in
-            let normalized = LibrarySearchTextNormalizer.normalize(line)
-            let compact = LibrarySearchTextNormalizer.compact(normalized)
-            return normalized.contains(query.normalized)
-                || compact.contains(query.compact)
-                || query.tokens.contains(where: { $0.count > 1 && normalized.contains($0) })
+        var bestResult: LyricSnippetResult?
+        var bestScore = 0.0
+
+        for line in lines {
+            let result = lyricSnippetResult(for: line, query: query)
+            guard let result else { continue }
+            let score = lyricLineScore(line: line, result: result, query: query)
+            if score > bestScore {
+                bestScore = score
+                bestResult = result
+            }
         }
 
-        guard let bestLine else { return nil }
-        return clippedSnippet(bestLine)
+        return bestResult
     }
 
-    private func clippedSnippet(_ line: String, maxLength: Int = 96) -> String {
-        guard line.count > maxLength else { return line }
-        let end = line.index(line.startIndex, offsetBy: maxLength)
-        return String(line[..<end]).trimmingCharacters(in: .whitespacesAndNewlines) + "..."
+    private func lyricSnippetResult(for line: String, query: SearchQuery) -> LyricSnippetResult? {
+        let mapped = LibrarySearchTextNormalizer.mappedNormalize(line)
+        guard !mapped.compact.isEmpty else { return nil }
+
+        var ranges: [SearchHighlightRange] = []
+
+        if !query.normalized.isEmpty {
+            ranges.append(contentsOf: originalRanges(
+                needle: query.normalized,
+                haystack: mapped.normalized,
+                offsets: mapped.normalizedCharacterOffsets
+            ))
+        }
+        if !query.compact.isEmpty {
+            ranges.append(contentsOf: originalRanges(
+                needle: query.compact,
+                haystack: mapped.compact,
+                offsets: mapped.compactCharacterOffsets
+            ))
+        }
+        for token in query.tokens where token.count > 1 {
+            ranges.append(contentsOf: originalRanges(
+                needle: token,
+                haystack: mapped.normalized,
+                offsets: mapped.normalizedCharacterOffsets
+            ))
+            let compactToken = LibrarySearchTextNormalizer.compact(token)
+            if compactToken != token {
+                ranges.append(contentsOf: originalRanges(
+                    needle: compactToken,
+                    haystack: mapped.compact,
+                    offsets: mapped.compactCharacterOffsets
+                ))
+            }
+        }
+
+        let merged = mergeHighlightRanges(ranges)
+        guard !merged.isEmpty else { return nil }
+        return LyricSnippetResult(line: line, highlightRanges: merged)
+    }
+
+    private func originalRanges(
+        needle: String,
+        haystack: String,
+        offsets: [Int]
+    ) -> [SearchHighlightRange] {
+        let needleCharacters = Array(needle)
+        let haystackCharacters = Array(haystack)
+        guard !needleCharacters.isEmpty,
+              needleCharacters.count <= haystackCharacters.count,
+              offsets.count == haystackCharacters.count
+        else { return [] }
+
+        var ranges: [SearchHighlightRange] = []
+        let lastStart = haystackCharacters.count - needleCharacters.count
+        for start in 0...lastStart {
+            let end = start + needleCharacters.count
+            guard Array(haystackCharacters[start..<end]) == needleCharacters else { continue }
+            let originalStart = offsets[start]
+            let originalEnd = (start..<end).reduce(originalStart) { partial, index in
+                max(partial, offsets[index])
+            }
+            ranges.append(SearchHighlightRange(location: originalStart, length: originalEnd - originalStart + 1))
+        }
+        return ranges
+    }
+
+    private func mergeHighlightRanges(_ ranges: [SearchHighlightRange]) -> [SearchHighlightRange] {
+        let sorted = ranges
+            .filter { $0.length > 0 }
+            .sorted {
+                if $0.location == $1.location {
+                    return $0.length > $1.length
+                }
+                return $0.location < $1.location
+            }
+        guard var current = sorted.first else { return [] }
+        var merged: [SearchHighlightRange] = []
+
+        for range in sorted.dropFirst() {
+            let currentEnd = current.location + current.length
+            let rangeEnd = range.location + range.length
+            if range.location <= currentEnd {
+                current = SearchHighlightRange(
+                    location: current.location,
+                    length: max(currentEnd, rangeEnd) - current.location
+                )
+            } else {
+                merged.append(current)
+                current = range
+            }
+        }
+        merged.append(current)
+        return merged
+    }
+
+    private func lyricLineScore(line: String, result: LyricSnippetResult, query: SearchQuery) -> Double {
+        let normalized = LibrarySearchTextNormalizer.normalize(line)
+        let compact = LibrarySearchTextNormalizer.compact(normalized)
+        var score = Double(result.highlightRanges.reduce(0) { $0 + $1.length })
+        if normalized.contains(query.normalized) {
+            score += 120
+        }
+        if compact.contains(query.compact) {
+            score += 90
+        }
+        let tokenHits = query.tokens.filter { $0.count > 1 && normalized.contains($0) }.count
+        score += Double(tokenHits) * 18
+        score -= min(30, Double(line.count) * 0.08)
+        return score
     }
 
     private func minimumScore(for query: SearchQuery) -> Double {

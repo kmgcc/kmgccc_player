@@ -1423,6 +1423,7 @@ final class LibraryViewModel {
         case .metaLyricsAndArtwork:
             await repository.persistTrackMetaLyricsAndArtwork(track, reason: reason)
         }
+        notifyTrackAuxiliaryDataChanged(trackIDs: [track.id])
     }
 
     @discardableResult

@@ -21,6 +21,7 @@ final class PlaybackCoordinator {
     private let meterProvider: AudioLevelMeterProtocol?
     private var presentationTimer: Timer?
     private var cachedLyricsTrackID: UUID?
+    private var cachedLyricsSignature: String?
     private var cachedLyricsText: String?
     private var lastSyncedPlayingState: Bool?
     private var lastTelemetrySource: PlaybackSource?
@@ -501,7 +502,8 @@ final class PlaybackCoordinator {
     }
 
     private func preferredLyricsTextSnapshot(for track: Track) -> String? {
-        if cachedLyricsTrackID == track.id {
+        let signature = lyricsCacheSignature(for: track)
+        if cachedLyricsTrackID == track.id, cachedLyricsSignature == signature {
             return cachedLyricsText
         }
         let plain = track.lyricsText
@@ -512,13 +514,24 @@ final class PlaybackCoordinator {
             let trimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty {
                 cachedLyricsTrackID = track.id
+                cachedLyricsSignature = signature
                 cachedLyricsText = candidate
                 return candidate
             }
         }
         cachedLyricsTrackID = track.id
+        cachedLyricsSignature = signature
         cachedLyricsText = nil
         return nil
+    }
+
+    private func lyricsCacheSignature(for track: Track) -> String {
+        [
+            track.lyricsText ?? "",
+            track.ttmlLyricText ?? "",
+            track.lyricsFileName ?? "",
+            track.ttmlLyricsFileName ?? "",
+        ].joined(separator: "|lyrics-cache|")
     }
 
     private func scheduleSidecarHydrationIfNeeded(for track: Track) {
@@ -594,6 +607,7 @@ final class PlaybackCoordinator {
             }
             if self.playerVM.currentTrack?.id == trackID {
                 self.cachedLyricsTrackID = nil
+                self.cachedLyricsSignature = nil
                 self.refreshPresentation()
             }
         }

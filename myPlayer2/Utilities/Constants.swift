@@ -31,8 +31,29 @@ nonisolated enum Constants {
         static let miniPlayerHeight: CGFloat = 50
         static let miniPlayerPadding: CGFloat = 16
 
-        static let trackRowHeight: CGFloat = 48
-        static let artworkSmallSize: CGFloat = 40
+        enum TrackRow {
+            static let height: CGFloat = 52
+            static let lyricSnippetHeight: CGFloat = 64
+            static let artworkSize: CGFloat = 44
+            static let horizontalSpacing: CGFloat = 13
+            static let textColumnSpacing: CGFloat = 10
+            static let textVerticalSpacing: CGFloat = 3
+            static let horizontalPadding: CGFloat = 10
+            static let verticalPadding: CGFloat = 5
+            static let titleLineHeight: CGFloat = 25
+            static let titleFontSize: CGFloat = 14.5
+            static let subtitleFontSize: CGFloat = 12.5
+            static let lyricSnippetFontSize: CGFloat = 11.5
+            static let durationFontSize: CGFloat = 11.5
+            static let playingIndicatorFontSize: CGFloat = 12.5
+            static let cornerRadius: CGFloat = 9
+            static let artworkCornerRadius: CGFloat = 7
+            static let trailingMenuGlyphSize: CGFloat = 14
+            static let trailingMenuHitSize: CGFloat = 30
+        }
+
+        static let trackRowHeight: CGFloat = TrackRow.height
+        static let artworkSmallSize: CGFloat = TrackRow.artworkSize
         static let artworkMediumSize: CGFloat = 64
         static let artworkLargeSize: CGFloat = 300
     }

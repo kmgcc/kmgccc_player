@@ -522,10 +522,10 @@ enum HomeLayoutMode: Hashable {
 
     var sectionTitleFontSize: CGFloat {
         switch self {
-        case .wide: return 28
-        case .medium: return 26
-        case .compact: return 24
-        case .narrow: return 22
+        case .wide: return 26
+        case .medium: return 24
+        case .compact: return 22
+        case .narrow: return 21
         }
     }
 

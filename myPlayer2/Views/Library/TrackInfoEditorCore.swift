@@ -612,6 +612,17 @@ struct TrackInfoEditorCore: View {
                 .buttonStyle(.bordered)
                 .clipShape(Capsule())
                 .font(.caption)
+
+                if mode == .local {
+                    Button("清除歌词", role: .destructive) {
+                        lyricsText = ""
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.red)
+                    .clipShape(Capsule())
+                    .font(.caption)
+                    .disabled(lyricsText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
             }
 
             Text(

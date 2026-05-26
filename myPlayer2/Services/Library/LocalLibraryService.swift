@@ -1006,9 +1006,11 @@ final class LocalLibraryService {
 
         if let ttml = ttmlText, !ttml.isEmpty {
             try ttml.write(to: ttmlURL, atomically: true, encoding: .utf8)
-            if fileManager.fileExists(atPath: plainLyricsURL.path) {
-                try? fileManager.removeItem(at: plainLyricsURL)
-            }
+            Self.removeLyricAssetFiles(
+                named: [existing.lyricsFileName, "lyrics.txt"],
+                in: folder,
+                fileManager: fileManager
+            )
             return TrackPersistenceReferences(
                 artworkFileName: existing.artworkFileName,
                 lyricsFileName: nil,
@@ -1021,9 +1023,11 @@ final class LocalLibraryService {
             let isTTML = legacy.lowercased().contains("<tt") && legacy.contains("</")
             if isTTML {
                 try legacy.write(to: ttmlURL, atomically: true, encoding: .utf8)
-                if fileManager.fileExists(atPath: plainLyricsURL.path) {
-                    try? fileManager.removeItem(at: plainLyricsURL)
-                }
+                Self.removeLyricAssetFiles(
+                    named: [existing.lyricsFileName, "lyrics.txt"],
+                    in: folder,
+                    fileManager: fileManager
+                )
                 return TrackPersistenceReferences(
                     artworkFileName: existing.artworkFileName,
                     lyricsFileName: nil,
@@ -1033,9 +1037,11 @@ final class LocalLibraryService {
             }
 
             try legacy.write(to: plainLyricsURL, atomically: true, encoding: .utf8)
-            if fileManager.fileExists(atPath: ttmlURL.path) {
-                try? fileManager.removeItem(at: ttmlURL)
-            }
+            Self.removeLyricAssetFiles(
+                named: [existing.ttmlLyricsFileName, "lyrics.ttml"],
+                in: folder,
+                fileManager: fileManager
+            )
             return TrackPersistenceReferences(
                 artworkFileName: existing.artworkFileName,
                 lyricsFileName: "lyrics.txt",
@@ -1044,12 +1050,11 @@ final class LocalLibraryService {
             )
         }
 
-        if fileManager.fileExists(atPath: ttmlURL.path) {
-            try? fileManager.removeItem(at: ttmlURL)
-        }
-        if fileManager.fileExists(atPath: plainLyricsURL.path) {
-            try? fileManager.removeItem(at: plainLyricsURL)
-        }
+        Self.removeLyricAssetFiles(
+            named: [existing.lyricsFileName, existing.ttmlLyricsFileName, "lyrics.ttml", "lyrics.txt"],
+            in: folder,
+            fileManager: fileManager
+        )
 
         return TrackPersistenceReferences(
             artworkFileName: existing.artworkFileName,
@@ -1072,9 +1077,11 @@ final class LocalLibraryService {
 
         if let ttml = ttmlText, !ttml.isEmpty {
             try ttml.write(to: ttmlURL, atomically: true, encoding: .utf8)
-            if fileManager.fileExists(atPath: plainLyricsURL.path) {
-                try? fileManager.removeItem(at: plainLyricsURL)
-            }
+            removeLyricAssetFiles(
+                named: [existing.lyricsFileName, "lyrics.txt"],
+                in: folder,
+                fileManager: fileManager
+            )
             return TrackPersistenceReferences(
                 artworkFileName: existing.artworkFileName,
                 lyricsFileName: nil,
@@ -1087,9 +1094,11 @@ final class LocalLibraryService {
             let isTTML = legacy.lowercased().contains("<tt") && legacy.contains("</")
             if isTTML {
                 try legacy.write(to: ttmlURL, atomically: true, encoding: .utf8)
-                if fileManager.fileExists(atPath: plainLyricsURL.path) {
-                    try? fileManager.removeItem(at: plainLyricsURL)
-                }
+                removeLyricAssetFiles(
+                    named: [existing.lyricsFileName, "lyrics.txt"],
+                    in: folder,
+                    fileManager: fileManager
+                )
                 return TrackPersistenceReferences(
                     artworkFileName: existing.artworkFileName,
                     lyricsFileName: nil,
@@ -1099,9 +1108,11 @@ final class LocalLibraryService {
             }
 
             try legacy.write(to: plainLyricsURL, atomically: true, encoding: .utf8)
-            if fileManager.fileExists(atPath: ttmlURL.path) {
-                try? fileManager.removeItem(at: ttmlURL)
-            }
+            removeLyricAssetFiles(
+                named: [existing.ttmlLyricsFileName, "lyrics.ttml"],
+                in: folder,
+                fileManager: fileManager
+            )
             return TrackPersistenceReferences(
                 artworkFileName: existing.artworkFileName,
                 lyricsFileName: "lyrics.txt",
@@ -1110,12 +1121,11 @@ final class LocalLibraryService {
             )
         }
 
-        if fileManager.fileExists(atPath: ttmlURL.path) {
-            try? fileManager.removeItem(at: ttmlURL)
-        }
-        if fileManager.fileExists(atPath: plainLyricsURL.path) {
-            try? fileManager.removeItem(at: plainLyricsURL)
-        }
+        removeLyricAssetFiles(
+            named: [existing.lyricsFileName, existing.ttmlLyricsFileName, "lyrics.ttml", "lyrics.txt"],
+            in: folder,
+            fileManager: fileManager
+        )
 
         return TrackPersistenceReferences(
             artworkFileName: existing.artworkFileName,
@@ -1123,6 +1133,27 @@ final class LocalLibraryService {
             lyricsType: nil,
             ttmlLyricsFileName: nil
         )
+    }
+
+    private nonisolated static func removeLyricAssetFiles(
+        named fileNames: [String?],
+        in folder: URL,
+        fileManager: FileManager
+    ) {
+        let folderURL = folder.standardizedFileURL
+        let folderPath = folderURL.path
+        var seen = Set<String>()
+
+        for fileName in fileNames {
+            let trimmed = fileName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { continue }
+
+            let candidate = folderURL.appendingPathComponent(trimmed, isDirectory: false).standardizedFileURL
+            guard candidate.deletingLastPathComponent().path == folderPath else { continue }
+            guard fileManager.fileExists(atPath: candidate.path) else { continue }
+
+            try? fileManager.removeItem(at: candidate)
+        }
     }
 
     private func dataMatches(_ lhs: Data, _ rhs: Data?) -> Bool {
