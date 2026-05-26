@@ -254,6 +254,7 @@ struct AMLLWebView: NSViewRepresentable {
                     webView.animator().alphaValue = 1
                 }
             }
+            store.requestLayoutResync(reason: "attachWebView:postAdd")
             store.refreshMouseInteractionSuppression(reason: "attachWebView")
             store.setRenderQualityScale(
                 renderQualityScale,

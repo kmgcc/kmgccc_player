@@ -141,6 +141,10 @@ final class LyricsWebViewStore: NSObject {
     private var renderQualityScale: CGFloat = 1
     private var lastAppliedBackingScale: CGFloat?
     private var lastLoggedRenderQualityLayoutSignature: String?
+    private var pendingLayoutResyncWorkItem: DispatchWorkItem?
+    private var pendingLayoutResyncReason: String?
+    private var layoutResyncGeneration: Int = 0
+    private var awaitingValidLayoutBounds = false
     // MARK: - Callbacks
 
     var onUserSeek: ((Double) -> Void)?
@@ -190,6 +194,9 @@ final class LyricsWebViewStore: NSObject {
         let clampedScale = max(0.1, min(1, scale))
         guard abs(renderQualityScale - clampedScale) >= 0.001 else {
             applyBackingScaleForRenderQuality(reason: reason)
+            if awaitingValidLayoutBounds {
+                requestLayoutResync(reason: "renderQualityUnchanged:\(reason)")
+            }
             return
         }
 
@@ -200,14 +207,21 @@ final class LyricsWebViewStore: NSObject {
             "AMLL render quality scale=\(String(format: "%.2f", clampedScale)), role=\(role), reason=\(reason), objectID=\(webViewObjectID)",
             category: .webview
         )
-        if let webView = retainedWebView {
-            layoutWebView(webView, in: webView.superview?.bounds ?? webView.frame, reason: reason)
-        }
+        requestLayoutResync(reason: "renderQuality:\(reason)")
         applyBackingScaleForRenderQuality(reason: reason)
     }
 
     func layoutPreparedWebView(in bounds: CGRect, reason: String) {
         guard let webView = retainedWebView else { return }
+        guard isValidHostBounds(bounds) else {
+            awaitingValidLayoutBounds = true
+            Log.debug(
+                "Deferred AMLL layout: invalid host bounds=\(bounds), role=\(role), reason=\(reason), objectID=\(webViewObjectID)",
+                category: .webview
+            )
+            return
+        }
+        awaitingValidLayoutBounds = false
         layoutWebView(webView, in: bounds, reason: reason)
     }
 
@@ -250,6 +264,63 @@ final class LyricsWebViewStore: NSObject {
             viewScale: viewScale,
             reason: reason
         )
+    }
+
+    func requestLayoutResync(reason: String) {
+        guard !isShutDown else { return }
+
+        layoutResyncGeneration &+= 1
+        let generation = layoutResyncGeneration
+        pendingLayoutResyncReason = reason
+        pendingLayoutResyncWorkItem?.cancel()
+
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.performLayoutResync(generation: generation)
+        }
+        pendingLayoutResyncWorkItem = workItem
+        DispatchQueue.main.async(execute: workItem)
+    }
+
+    private func performLayoutResync(generation: Int) {
+        guard generation == layoutResyncGeneration else { return }
+
+        let reason = pendingLayoutResyncReason ?? "unknown"
+        pendingLayoutResyncReason = nil
+        pendingLayoutResyncWorkItem = nil
+
+        guard let webView = retainedWebView else {
+            awaitingValidLayoutBounds = true
+            return
+        }
+        guard let hostView = webView.superview else {
+            awaitingValidLayoutBounds = true
+            Log.debug(
+                "Deferred AMLL layout resync: no host, role=\(role), reason=\(reason), objectID=\(webViewObjectID)",
+                category: .webview
+            )
+            return
+        }
+
+        hostView.layoutSubtreeIfNeeded()
+        let bounds = hostView.bounds
+        guard isValidHostBounds(bounds) else {
+            awaitingValidLayoutBounds = true
+            Log.debug(
+                "Deferred AMLL layout resync: invalid host bounds=\(bounds), role=\(role), reason=\(reason), objectID=\(webViewObjectID)",
+                category: .webview
+            )
+            return
+        }
+
+        awaitingValidLayoutBounds = false
+        layoutWebView(webView, in: bounds, reason: "layoutResync:\(reason)")
+    }
+
+    private func isValidHostBounds(_ bounds: CGRect) -> Bool {
+        bounds.width.isFinite
+            && bounds.height.isFinite
+            && bounds.width > 1
+            && bounds.height > 1
     }
 
     private func logRenderQualityLayout(
@@ -472,6 +543,9 @@ final class LyricsWebViewStore: NSObject {
         pendingTrackDiagnosticsProbe = nil
         pendingTrackProfileCollection?.cancel()
         pendingTrackProfileCollection = nil
+        pendingLayoutResyncWorkItem?.cancel()
+        pendingLayoutResyncWorkItem = nil
+        pendingLayoutResyncReason = nil
         pendingCalls.removeAll()
         onUserSeek = nil
 
@@ -496,6 +570,7 @@ final class LyricsWebViewStore: NSObject {
         trackSwitchesSinceLastWebViewRecycle = 0
         didRegisterMessageHandlers = false
         lastAppliedBackingScale = nil
+        awaitingValidLayoutBounds = false
 
         // Clean up WebView
         if let webView = retainedWebView {
@@ -581,6 +656,9 @@ final class LyricsWebViewStore: NSObject {
         pendingTrackDiagnosticsProbe = nil
         pendingTrackProfileCollection?.cancel()
         pendingTrackProfileCollection = nil
+        pendingLayoutResyncWorkItem?.cancel()
+        pendingLayoutResyncWorkItem = nil
+        pendingLayoutResyncReason = nil
         pendingCalls.removeAll()
         queuedTimeSync = nil
         isTimeSyncInFlight = false
@@ -589,6 +667,7 @@ final class LyricsWebViewStore: NSObject {
         isRecoveryInProgress = false
         didRegisterMessageHandlers = false
         lastAppliedBackingScale = nil
+        awaitingValidLayoutBounds = false
 
         guard let webView = retainedWebView else {
             Log.debug("Release skipped, no prepared WebView: role=\(role), reason=\(reason)", category: .webview)
@@ -777,6 +856,8 @@ final class LyricsWebViewStore: NSObject {
                     "JS error: \(error.localizedDescription), call: \(pendingCall.debugDescription)",
                     category: .webview
                 )
+            } else if self.isLayoutSensitiveJavaScriptCall(pendingCall.debugDescription) {
+                self.requestLayoutResync(reason: "js:\(bridgeCategory)")
             }
             completion?(result, error)
         }
@@ -827,6 +908,12 @@ final class LyricsWebViewStore: NSObject {
             return "collectDiagnostics"
         }
         return "other"
+    }
+
+    private func isLayoutSensitiveJavaScriptCall(_ debugDescription: String) -> Bool {
+        debugDescription.contains("setLyricsTTML")
+            || debugDescription.contains("clearState")
+            || debugDescription.contains("setConfig")
     }
 
     private func runDebugVisibleLayerProbe(label: String) {
@@ -897,6 +984,7 @@ final class LyricsWebViewStore: NSObject {
 
         // Flush only non-snapshot calls that survived the ready coalescing above.
         flushPendingCalls()
+        requestLayoutResync(reason: "onReady")
         scheduleDebugVisibleLayerProbe(label: "\(role)-ready", delay: 0.75)
         scheduleTrackDiagnostics(
             stage: "onReady",
@@ -1050,6 +1138,9 @@ final class LyricsWebViewStore: NSObject {
     func forceReload(recreateWebView: Bool = false) {
         guard !isShutDown else { return }
         isReady = false
+        pendingLayoutResyncWorkItem?.cancel()
+        pendingLayoutResyncWorkItem = nil
+        pendingLayoutResyncReason = nil
         pendingCalls.removeAll()
         queuedTimeSync = nil
         isTimeSyncInFlight = false
@@ -1296,6 +1387,9 @@ final class LyricsWebViewStore: NSObject {
         pendingTrackDiagnosticsProbe = nil
         pendingTrackProfileCollection?.cancel()
         pendingTrackProfileCollection = nil
+        pendingLayoutResyncWorkItem?.cancel()
+        pendingLayoutResyncWorkItem = nil
+        pendingLayoutResyncReason = nil
         pendingCalls.removeAll()
 
         // Clear all state
@@ -1314,6 +1408,7 @@ final class LyricsWebViewStore: NSObject {
         contentLoadRevision = 0
         trackSwitchesSinceLastWebViewRecycle = 0
         lastAppliedBackingScale = nil
+        awaitingValidLayoutBounds = false
         onUserSeek = nil
 
         // Detach from view hierarchy
@@ -1781,7 +1876,8 @@ final class LyricsWebViewStore: NSObject {
 
         if let hostView {
             hostView.addSubview(newWebView)
-            layoutWebView(newWebView, in: hostView.bounds, reason: "rebuildWebViewForFreshContent")
+            layoutPreparedWebView(in: hostView.bounds, reason: "rebuildWebViewForFreshContent")
+            requestLayoutResync(reason: "rebuildWebViewForFreshContent:postAdd")
         }
         applyMouseInteractionSuppression(reason: "rebuildWebViewForFreshContent")
 
