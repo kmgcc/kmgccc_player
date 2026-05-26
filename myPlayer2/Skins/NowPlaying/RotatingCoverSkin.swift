@@ -274,7 +274,8 @@ private final class RotatingCoverRotation: ObservableObject {
 private final class RotatingCoverCDMotionBlurCache: ObservableObject {
     @Published private(set) var blurredImage: NSImage?
 
-    private static let blurVersion = 4
+    private static let blurVersion = 5
+    private static let maxRenderPixelSize = 640
 
     private struct CacheKey: Equatable, Sendable {
         let artworkSignature: String
@@ -302,7 +303,10 @@ private final class RotatingCoverCDMotionBlurCache: ObservableObject {
         }
 
         let scale = NSScreen.main?.backingScaleFactor ?? 2
-        let pixelSize = max(quantizedPixelSize(for: discSize * scale), 64)
+        let pixelSize = max(
+            min(quantizedPixelSize(for: discSize * scale), Self.maxRenderPixelSize),
+            96
+        )
         let key = CacheKey(
             artworkSignature: artworkSignature,
             pixelSize: pixelSize,
@@ -356,6 +360,9 @@ private final class RotatingCoverCDMotionBlurCache: ObservableObject {
 // remaining cause of `_dispatch_assert_queue_fail` after the previous patch.
 private enum RotatingCoverCDMotionBlurRenderer {
     nonisolated static let ciContext = CIContext(options: nil)
+    nonisolated private static let angularBlurRadiusDegrees: CGFloat = 180
+    nonisolated private static let angularSampleStepDegrees: CGFloat = 0.75
+    nonisolated private static let angularBlurAccumulationAlpha: CGFloat = 18.0
 
     nonisolated static func render(sourceImage: CGImage, pixelSize: Int) -> CGImage? {
         let bounds = CGRect(x: 0, y: 0, width: pixelSize, height: pixelSize)
@@ -374,11 +381,15 @@ private enum RotatingCoverCDMotionBlurRenderer {
             return nil
         }
 
-        let sampleOffsets = stride(from: -120, through: 120, by: 2).map(CGFloat.init)
-        let maxOffset: CGFloat = 120
+        let sampleOffsets = stride(
+            from: -angularBlurRadiusDegrees,
+            through: angularBlurRadiusDegrees,
+            by: angularSampleStepDegrees
+        ).map(CGFloat.init)
+        let maxOffset = angularBlurRadiusDegrees
         let sampleWeights = sampleOffsets.map { angle in
             let normalizedDistance = abs(angle) / maxOffset
-            return 0.28 + pow(1 - normalizedDistance, 0.38) * 1.22
+            return 0.20 + pow(1 - normalizedDistance, 0.42) * 1.35
         }
         let weightSum = sampleWeights.reduce(0, +)
         let drawRect = aspectFillRect(
@@ -395,7 +406,7 @@ private enum RotatingCoverCDMotionBlurRenderer {
         for (angle, weight) in zip(sampleOffsets, sampleWeights) {
             context.saveGState()
             context.rotate(by: angle * .pi / 180)
-            context.setAlpha(weight / weightSum * 14.0)
+            context.setAlpha(weight / weightSum * angularBlurAccumulationAlpha)
             context.draw(
                 sourceImage,
                 in: CGRect(
@@ -445,7 +456,7 @@ private enum RotatingCoverCDMotionBlurRenderer {
         let bounds = CGRect(x: 0, y: 0, width: pixelSize, height: pixelSize)
         let blurred = CIImage(cgImage: image)
             .clampedToExtent()
-            .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: 1.4])
+            .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: 2.2])
             .cropped(to: bounds)
         return ciContext.createCGImage(blurred, from: bounds)
     }

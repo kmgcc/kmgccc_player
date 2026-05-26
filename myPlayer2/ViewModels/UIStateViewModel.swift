@@ -29,15 +29,27 @@ final class UIStateViewModel {
         static let sidebarLastWidth = "ui.sidebarLastWidth"
         static let lyricsVisible = "ui.lyricsVisible"
         static let lyricsWidth = "ui.lyricsWidth"
+        static let embeddedFullscreenTransientPaneState = "ui.embeddedFullscreenTransientPaneState"
+        static let lastNonEmbeddedSidebarVisible = "ui.lastNonEmbedded.sidebarVisible"
+        static let lastNonEmbeddedLyricsVisible = "ui.lastNonEmbedded.lyricsVisible"
+        static let lastNonEmbeddedSidebarWidth = "ui.lastNonEmbedded.sidebarWidth"
+        static let lastNonEmbeddedLyricsWidth = "ui.lastNonEmbedded.lyricsWidth"
+        static let splitAutosaveFrames = "NSSplitView Subview Frames AppKitMainSplitView"
     }
 
     private let defaults = UserDefaults.standard
+    private var isLoadingPersistedLayoutState = false
 
     // MARK: - Layout Visibility
 
     /// Whether the sidebar is currently visible.
     var sidebarVisible: Bool = true {
         didSet {
+            traceLayoutWrite(
+                property: "sidebarVisible",
+                value: sidebarVisible,
+                oldValue: oldValue
+            )
             defaults.set(sidebarVisible, forKey: StorageKey.sidebarVisible)
         }
     }
@@ -45,6 +57,11 @@ final class UIStateViewModel {
     /// Last known visible sidebar width (used when restoring).
     var sidebarLastWidth: CGFloat = Constants.Layout.sidebarDefaultWidth {
         didSet {
+            traceLayoutWrite(
+                property: "sidebarLastWidth",
+                value: sidebarLastWidth,
+                oldValue: oldValue
+            )
             defaults.set(Double(sidebarLastWidth), forKey: StorageKey.sidebarLastWidth)
         }
     }
@@ -52,6 +69,11 @@ final class UIStateViewModel {
     /// Whether the lyrics panel is visible (toggleable).
     var lyricsVisible: Bool = false {
         didSet {
+            traceLayoutWrite(
+                property: "lyricsVisible",
+                value: lyricsVisible,
+                oldValue: oldValue
+            )
             defaults.set(lyricsVisible, forKey: StorageKey.lyricsVisible)
         }
     }
@@ -63,6 +85,11 @@ final class UIStateViewModel {
     /// Current lyrics panel width (user-resizable).
     var lyricsWidth: CGFloat = Constants.Layout.lyricsPanelDefaultWidth {
         didSet {
+            traceLayoutWrite(
+                property: "lyricsWidth",
+                value: lyricsWidth,
+                oldValue: oldValue
+            )
             defaults.set(Double(lyricsWidth), forKey: StorageKey.lyricsWidth)
         }
     }
@@ -103,6 +130,17 @@ final class UIStateViewModel {
     var isHomeDrilldown: Bool = false
 
     init() {
+        isLoadingPersistedLayoutState = true
+        defer { isLoadingPersistedLayoutState = false }
+
+        PaneLayoutTrace.log(
+            "UIState.init defaults sidebar=\(describeDefault(StorageKey.sidebarVisible)) lyrics=\(describeDefault(StorageKey.lyricsVisible)) sidebarWidth=\(describeDefault(StorageKey.sidebarLastWidth)) lyricsWidth=\(describeDefault(StorageKey.lyricsWidth)) transient=\(describeDefault(StorageKey.embeddedFullscreenTransientPaneState)) splitAutosave=\(describeDefault(StorageKey.splitAutosaveFrames))"
+        )
+
+        if consumeEmbeddedFullscreenTransientPaneStateIfNeeded(reason: "UIState.init") {
+            return
+        }
+
         if defaults.object(forKey: StorageKey.sidebarVisible) != nil {
             sidebarVisible = defaults.bool(forKey: StorageKey.sidebarVisible)
         }
@@ -124,6 +162,81 @@ final class UIStateViewModel {
         {
             lyricsWidth = CGFloat(savedLyricsWidth)
         }
+
+        PaneLayoutTrace.log(
+            "UIState.init applied sidebar=\(sidebarVisible) lyrics=\(lyricsVisible) sidebarWidth=\(sidebarLastWidth) lyricsWidth=\(lyricsWidth)"
+        )
+    }
+
+    func beginEmbeddedFullscreenTransientPaneState(
+        sidebarVisible liveSidebarVisible: Bool,
+        lyricsVisible liveLyricsVisible: Bool,
+        sidebarWidth liveSidebarWidth: CGFloat,
+        lyricsWidth liveLyricsWidth: CGFloat,
+        reason: String
+    ) {
+        let resolvedSidebarWidth = validSidebarWidth(liveSidebarWidth) ? liveSidebarWidth : sidebarLastWidth
+        let resolvedLyricsWidth = validLyricsWidth(liveLyricsWidth) ? liveLyricsWidth : lyricsWidth
+
+        defaults.set(liveSidebarVisible, forKey: StorageKey.lastNonEmbeddedSidebarVisible)
+        defaults.set(liveLyricsVisible, forKey: StorageKey.lastNonEmbeddedLyricsVisible)
+        defaults.set(Double(resolvedSidebarWidth), forKey: StorageKey.lastNonEmbeddedSidebarWidth)
+        defaults.set(Double(resolvedLyricsWidth), forKey: StorageKey.lastNonEmbeddedLyricsWidth)
+        defaults.set(true, forKey: StorageKey.embeddedFullscreenTransientPaneState)
+
+        PaneLayoutTrace.log(
+            "beginEmbeddedTransient reason=\(reason) sidebar=\(liveSidebarVisible) lyrics=\(liveLyricsVisible) sidebarWidth=\(resolvedSidebarWidth) lyricsWidth=\(resolvedLyricsWidth) caller=\(PaneLayoutTrace.callerSummary(skip: 3))"
+        )
+    }
+
+    func clearEmbeddedFullscreenTransientPaneState(reason: String) {
+        let wasSet = defaults.object(forKey: StorageKey.embeddedFullscreenTransientPaneState) != nil
+        defaults.removeObject(forKey: StorageKey.embeddedFullscreenTransientPaneState)
+        PaneLayoutTrace.log("clearEmbeddedTransient reason=\(reason) wasSet=\(wasSet)")
+    }
+
+    @discardableResult
+    func consumeEmbeddedFullscreenTransientPaneStateIfNeeded(reason: String) -> Bool {
+        guard defaults.bool(forKey: StorageKey.embeddedFullscreenTransientPaneState) else {
+            PaneLayoutTrace.log("consumeEmbeddedTransient skipped reason=\(reason) marker=false")
+            return false
+        }
+
+        let hasSavedSidebar = defaults.object(forKey: StorageKey.lastNonEmbeddedSidebarVisible) != nil
+        let hasSavedLyrics = defaults.object(forKey: StorageKey.lastNonEmbeddedLyricsVisible) != nil
+
+        sidebarVisible = hasSavedSidebar
+            ? defaults.bool(forKey: StorageKey.lastNonEmbeddedSidebarVisible)
+            : true
+        lyricsVisible = hasSavedLyrics
+            ? defaults.bool(forKey: StorageKey.lastNonEmbeddedLyricsVisible)
+            : true
+
+        let savedSidebarWidth = defaults.double(forKey: StorageKey.lastNonEmbeddedSidebarWidth)
+        if validSidebarWidth(CGFloat(savedSidebarWidth)) {
+            sidebarLastWidth = CGFloat(savedSidebarWidth)
+        } else {
+            sidebarLastWidth = Constants.Layout.sidebarDefaultWidth
+        }
+
+        let savedLyricsWidth = defaults.double(forKey: StorageKey.lastNonEmbeddedLyricsWidth)
+        if validLyricsWidth(CGFloat(savedLyricsWidth)) {
+            lyricsWidth = CGFloat(savedLyricsWidth)
+        } else {
+            lyricsWidth = Constants.Layout.lyricsPanelDefaultWidth
+        }
+
+        defaults.set(sidebarVisible, forKey: StorageKey.sidebarVisible)
+        defaults.set(lyricsVisible, forKey: StorageKey.lyricsVisible)
+        defaults.set(Double(sidebarLastWidth), forKey: StorageKey.sidebarLastWidth)
+        defaults.set(Double(lyricsWidth), forKey: StorageKey.lyricsWidth)
+        defaults.removeObject(forKey: StorageKey.splitAutosaveFrames)
+        defaults.removeObject(forKey: StorageKey.embeddedFullscreenTransientPaneState)
+
+        PaneLayoutTrace.log(
+            "consumeEmbeddedTransient repaired reason=\(reason) savedSidebar=\(hasSavedSidebar) savedLyrics=\(hasSavedLyrics) final sidebar=\(sidebarVisible) lyrics=\(lyricsVisible) sidebarWidth=\(sidebarLastWidth) lyricsWidth=\(lyricsWidth) removedSplitAutosave=true"
+        )
+        return true
     }
 
     // MARK: - Actions
@@ -257,5 +370,30 @@ final class UIStateViewModel {
         homeBackStack.removeAll()
         homeForwardStack.removeAll()
         isHomeDrilldown = false
+    }
+
+    private func validSidebarWidth(_ width: CGFloat) -> Bool {
+        width >= Constants.Layout.sidebarMinWidth
+            && width <= Constants.Layout.sidebarMaxWidth
+    }
+
+    private func validLyricsWidth(_ width: CGFloat) -> Bool {
+        width >= Constants.Layout.lyricsPanelMinWidth
+            && width <= Constants.Layout.lyricsPanelMaxWidth
+    }
+
+    private func describeDefault(_ key: String) -> String {
+        guard let value = defaults.object(forKey: key) else { return "nil" }
+        return String(describing: value)
+    }
+
+    private func traceLayoutWrite<T>(
+        property: String,
+        value: T,
+        oldValue: T
+    ) {
+        PaneLayoutTrace.log(
+            "UIState.\(property) \(oldValue) -> \(value) loading=\(isLoadingPersistedLayoutState) embedded=\(FullscreenWindowManager.shared.presentationMode) homeEmbedded=\(HomeWindowLayoutState.shared.isEmbeddedFullscreenActive) caller=\(PaneLayoutTrace.callerSummary(skip: 4))"
+        )
     }
 }

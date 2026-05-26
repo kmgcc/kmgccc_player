@@ -378,7 +378,7 @@ final class AppSessionHost: ObservableObject {
         playerVM: PlayerViewModel
     ) async {
         Log.debug(
-            "DebugLaunch scenario: trackID=\(scenario.trackID?.uuidString ?? "nil"), fullscreenSkin=\(scenario.fullscreenSkinID ?? "nil"), showFullscreen=\(scenario.showFullscreen), quitAfter=\(scenario.quitAfterSeconds ?? -1), autoNextInterval=\(scenario.autoNextInterval ?? -1), autoNextCount=\(scenario.autoNextCount ?? -1), librarySelection=\(scenario.librarySelectionMode?.rawValue ?? "nil"), forceLyricsVisible=\(scenario.forceLyricsVisible), resizePulses=\(scenario.resizePulseCount ?? -1), resizeInterval=\(scenario.resizePulseInterval ?? -1)",
+            "DebugLaunch scenario: trackID=\(scenario.trackID?.uuidString ?? "nil"), fullscreenSkin=\(scenario.fullscreenSkinID ?? "nil"), showFullscreen=\(scenario.showFullscreen), showEmbeddedFullscreen=\(scenario.showEmbeddedFullscreen), quitAfter=\(scenario.quitAfterSeconds ?? -1), autoNextInterval=\(scenario.autoNextInterval ?? -1), autoNextCount=\(scenario.autoNextCount ?? -1), librarySelection=\(scenario.librarySelectionMode?.rawValue ?? "nil"), forceLyricsVisible=\(scenario.forceLyricsVisible), resizePulses=\(scenario.resizePulseCount ?? -1), resizeInterval=\(scenario.resizePulseInterval ?? -1)",
             category: .ui
         )
 
@@ -452,6 +452,14 @@ final class AppSessionHost: ObservableObject {
             DispatchQueue.main.asyncAfter(deadline: .now() + openDelay) {
                 Log.debug("DebugLaunch: opening fullscreen window", category: .ui)
                 FullscreenWindowManager.shared.showFullscreenWindow()
+            }
+        }
+
+        if scenario.showEmbeddedFullscreen {
+            let openDelay: TimeInterval = scenario.trackID == nil ? 0.25 : 0.9
+            DispatchQueue.main.asyncAfter(deadline: .now() + openDelay) {
+                Log.info("DebugLaunch: opening embedded fullscreen", category: .ui)
+                FullscreenWindowManager.shared.showFullscreenPlayerInWindow()
             }
         }
 
@@ -710,6 +718,7 @@ private struct DebugLaunchScenario {
     let trackID: UUID?
     let fullscreenSkinID: String?
     let showFullscreen: Bool
+    let showEmbeddedFullscreen: Bool
     let quitAfterSeconds: TimeInterval?
     let autoNextInterval: TimeInterval?
     let autoNextCount: Int?
@@ -722,6 +731,7 @@ private struct DebugLaunchScenario {
         trackID != nil
             || fullscreenSkinID != nil
             || showFullscreen
+            || showEmbeddedFullscreen
             || quitAfterSeconds != nil
             || autoNextInterval != nil
             || autoNextCount != nil
@@ -737,6 +747,9 @@ private struct DebugLaunchScenario {
             .trimmingCharacters(in: .whitespaces)
             .nilIfEmpty
         let showFullscreen = environment["KMGCCC_DEBUG_PROOF_SHOW_FULLSCREEN"].map {
+            ["1", "true", "yes", "on"].contains($0.lowercased())
+        } ?? false
+        let showEmbeddedFullscreen = environment["KMGCCC_DEBUG_PROOF_SHOW_EMBEDDED_FULLSCREEN"].map {
             ["1", "true", "yes", "on"].contains($0.lowercased())
         } ?? false
         let quitAfterSeconds = environment["KMGCCC_DEBUG_PROOF_QUIT_AFTER_SECONDS"].flatMap {
@@ -760,6 +773,7 @@ private struct DebugLaunchScenario {
             trackID: trackID,
             fullscreenSkinID: fullscreenSkinID,
             showFullscreen: showFullscreen,
+            showEmbeddedFullscreen: showEmbeddedFullscreen,
             quitAfterSeconds: quitAfterSeconds,
             autoNextInterval: autoNextInterval,
             autoNextCount: autoNextCount,
