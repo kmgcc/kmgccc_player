@@ -410,6 +410,14 @@ enum TrackLyricsDraft {
         let draft = storage(from: editorText)
         track.ttmlLyricText = draft.ttmlText
         track.lyricsText = draft.plainText
+        if draft.ttmlText != nil {
+            track.lyricsFileName = nil
+        } else if draft.plainText != nil {
+            track.ttmlLyricsFileName = nil
+        } else {
+            track.lyricsFileName = nil
+            track.ttmlLyricsFileName = nil
+        }
     }
 
     private static func looksLikeTTML(_ text: String) -> Bool {

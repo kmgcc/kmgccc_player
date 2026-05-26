@@ -44,9 +44,20 @@ nonisolated struct SearchIndexedDocument: Sendable {
     let updatedAt: Date
 }
 
+nonisolated struct SearchHighlightRange: Sendable, Hashable {
+    let location: Int
+    let length: Int
+
+    init(location: Int, length: Int) {
+        self.location = max(0, location)
+        self.length = max(0, length)
+    }
+}
+
 nonisolated struct LibrarySearchHit: Sendable, Equatable {
     let trackID: UUID
     let score: Double
-    let lyricSnippet: String?
+    let lyricSnippetLine: String?
+    let lyricHighlightRanges: [SearchHighlightRange]
     let matchedLyrics: Bool
 }

@@ -109,13 +109,13 @@ struct ArtworkPlaceholderView: View {
 
     // MARK: - Convenience Presets
 
-    /// Small placeholder for track rows (40x40)
+    /// Small placeholder for track rows.
     static func trackRow(isGrayscale: Bool = false, themeColor: Color? = nil) -> ArtworkPlaceholderView {
         ArtworkPlaceholderView(
-            size: 40,
-            cornerRadius: 6,
+            size: Constants.Layout.TrackRow.artworkSize,
+            cornerRadius: Constants.Layout.TrackRow.artworkCornerRadius,
             clipShape: .rounded,
-            iconSize: 16,
+            iconSize: max(16, Constants.Layout.TrackRow.artworkSize * 0.36),
             isGrayscale: isGrayscale,
             themeColor: themeColor
         )

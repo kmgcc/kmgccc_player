@@ -13,7 +13,8 @@ struct TrackRowModel: Identifiable, Equatable {
     let id: UUID
     let title: String
     let artist: String
-    let lyricSnippet: String?
+    let lyricSnippetLine: String?
+    let lyricHighlightRanges: [SearchHighlightRange]
     let durationText: String
     let artworkData: Data?
     let artworkFileURL: URL?
@@ -24,7 +25,8 @@ struct TrackRowModel: Identifiable, Equatable {
         lhs.id == rhs.id
             && lhs.title == rhs.title
             && lhs.artist == rhs.artist
-            && lhs.lyricSnippet == rhs.lyricSnippet
+            && lhs.lyricSnippetLine == rhs.lyricSnippetLine
+            && lhs.lyricHighlightRanges == rhs.lyricHighlightRanges
             && lhs.durationText == rhs.durationText
             && lhs.artworkIdentity == rhs.artworkIdentity
             && lhs.isMissing == rhs.isMissing
@@ -93,31 +95,42 @@ struct TrackRowView<MenuContent: View>: View {
             let _ = TintTimelineProbe.noteRootConsumer("TrackRowView.isSelected")
         }
 
-        HStack(spacing: 12) {
+        HStack(spacing: Constants.Layout.TrackRow.horizontalSpacing) {
             artworkView
 
-            HStack(spacing: 10) {
-                SeamlessMarqueeText(
-                    text: model.title,
-                    style: .body,
-                    fontWeight: isPlaying ? .semibold : .regular,
-                    color: textPrimaryColor,
-                    shouldAnimate: isPlaying || isHovering
-                )
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .layoutPriority(1)
+            VStack(alignment: .leading, spacing: Constants.Layout.TrackRow.textVerticalSpacing) {
+                HStack(spacing: Constants.Layout.TrackRow.textColumnSpacing) {
+                    SeamlessMarqueeText(
+                        text: model.title,
+                        fontSize: Constants.Layout.TrackRow.titleFontSize,
+                        fontWeight: isPlaying ? .semibold : .regular,
+                        color: textPrimaryColor,
+                        shouldAnimate: isPlaying || isHovering
+                    )
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .layoutPriority(1)
 
-                SeamlessMarqueeText(
-                    text: secondaryText,
-                    style: .subheadline,
-                    fontWeight: .regular,
-                    color: textSecondaryColor,
-                    shouldAnimate: isPlaying || isHovering
-                )
-                .frame(width: artistColumnWidth, alignment: .leading)
+                    SeamlessMarqueeText(
+                        text: artistText,
+                        fontSize: Constants.Layout.TrackRow.subtitleFontSize,
+                        fontWeight: .regular,
+                        color: textSecondaryColor,
+                        shouldAnimate: isPlaying || isHovering
+                    )
+                    .frame(width: artistColumnWidth, alignment: .leading)
+                }
+                .frame(height: Constants.Layout.TrackRow.titleLineHeight)
+
+                if let lyricSnippetAttributedString {
+                    Text(lyricSnippetAttributedString)
+                        .font(.system(size: Constants.Layout.TrackRow.lyricSnippetFontSize))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityLabel(lyricSnippetPlainText)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .frame(height: 24)
 
             if model.isMissing {
                 Image(systemName: "exclamationmark.triangle.fill")
@@ -126,7 +139,7 @@ struct TrackRowView<MenuContent: View>: View {
                     .frame(width: playingIndicatorColumnWidth)
             } else if isPlaying {
                 Image(systemName: "speaker.wave.2.fill")
-                    .font(.caption)
+                    .font(.system(size: Constants.Layout.TrackRow.playingIndicatorFontSize, weight: .medium))
                     .foregroundStyle(Color.accentColor)
                     .frame(width: playingIndicatorColumnWidth)
             } else {
@@ -135,7 +148,7 @@ struct TrackRowView<MenuContent: View>: View {
             }
 
             Text(model.durationText)
-                .font(.caption)
+                .font(.system(size: Constants.Layout.TrackRow.durationFontSize, weight: .regular))
                 .foregroundStyle(rowTertiaryColor)
                 .monospacedDigit()
                 .frame(width: 42, alignment: .trailing)
@@ -155,11 +168,11 @@ struct TrackRowView<MenuContent: View>: View {
                     .allowsHitTesting(false)
             }
         }
-        .padding(.vertical, 4)
-        .padding(.horizontal, 8)
-        .frame(height: Constants.Layout.trackRowHeight)
+        .padding(.vertical, Constants.Layout.TrackRow.verticalPadding)
+        .padding(.horizontal, Constants.Layout.TrackRow.horizontalPadding)
+        .frame(height: rowHeight)
         .background(
-            RoundedRectangle(cornerRadius: 8)
+            RoundedRectangle(cornerRadius: Constants.Layout.TrackRow.cornerRadius)
                 .fill(backgroundFill)
         )
         .contentShape(Rectangle())
@@ -197,14 +210,6 @@ struct TrackRowView<MenuContent: View>: View {
             : model.artist
     }
 
-    private var secondaryText: String {
-        guard let snippet = model.lyricSnippet?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !snippet.isEmpty else {
-            return artistText
-        }
-        return "\(artistText) · \(snippet)"
-    }
-
     private var textPrimaryColor: Color {
         if model.isMissing { return .secondary }
         return isPlaying ? Color.accentColor : rowPrimaryColor
@@ -213,6 +218,53 @@ struct TrackRowView<MenuContent: View>: View {
     private var textSecondaryColor: Color {
         if model.isMissing { return Color.gray.opacity(0.6) }
         return rowSecondaryColor
+    }
+
+    private var rowHeight: CGFloat {
+        hasLyricSnippet ? Constants.Layout.TrackRow.lyricSnippetHeight : Constants.Layout.TrackRow.height
+    }
+
+    private var hasLyricSnippet: Bool {
+        !lyricSnippetPlainText.isEmpty
+    }
+
+    private var lyricSnippetPlainText: String {
+        model.lyricSnippetLine?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    private var lyricSnippetAttributedString: AttributedString? {
+        let snippet = lyricSnippetPlainText
+        guard !snippet.isEmpty else { return nil }
+
+        var attributed = AttributedString(snippet)
+        attributed.foregroundColor = rowTertiaryColor
+        attributed.font = .system(size: Constants.Layout.TrackRow.lyricSnippetFontSize)
+
+        for highlightRange in model.lyricHighlightRanges {
+            guard let stringRange = characterRange(
+                location: highlightRange.location,
+                length: highlightRange.length,
+                in: snippet
+            ),
+            let attributedRange = Range(stringRange, in: attributed)
+            else { continue }
+
+            attributed[attributedRange].foregroundColor = Color.accentColor
+            attributed[attributedRange].font = Font
+                .system(size: Constants.Layout.TrackRow.lyricSnippetFontSize)
+                .weight(.semibold)
+        }
+
+        return attributed
+    }
+
+    private func characterRange(location: Int, length: Int, in value: String) -> Range<String.Index>? {
+        guard location >= 0, length > 0, location < value.count else { return nil }
+        let start = value.index(value.startIndex, offsetBy: location)
+        let upperBound = min(value.count, location + length)
+        guard upperBound > location else { return nil }
+        let end = value.index(value.startIndex, offsetBy: upperBound)
+        return start..<end
     }
 
     private var backgroundFill: Color {
@@ -224,9 +276,12 @@ struct TrackRowView<MenuContent: View>: View {
 
     private var trailingMenuGlyph: some View {
         Image(systemName: "ellipsis")
-            .font(.system(size: 14, weight: .regular))
+            .font(.system(size: Constants.Layout.TrackRow.trailingMenuGlyphSize, weight: .regular))
             .foregroundStyle(.secondary)
-            .frame(width: 28, height: 28)
+            .frame(
+                width: Constants.Layout.TrackRow.trailingMenuHitSize,
+                height: Constants.Layout.TrackRow.trailingMenuHitSize
+            )
             .contentShape(Rectangle())
     }
 
@@ -247,7 +302,7 @@ struct TrackRowView<MenuContent: View>: View {
                     width: Constants.Layout.artworkSmallSize,
                     height: Constants.Layout.artworkSmallSize
                 )
-                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .clipShape(RoundedRectangle(cornerRadius: Constants.Layout.TrackRow.artworkCornerRadius))
                 .grayscale(model.isMissing ? 1.0 : 0.0)
                 .opacity(isArtworkReady ? 1.0 : 0.0)
         } else {
@@ -341,7 +396,8 @@ extension TrackRowView: Equatable where MenuContent: View {
                 id: UUID(),
                 title: "Blinding Lights",
                 artist: "The Weeknd",
-                lyricSnippet: nil,
+                lyricSnippetLine: "I said, ooh, I'm blinded by the lights",
+                lyricHighlightRanges: [SearchHighlightRange(location: 18, length: 7)],
                 durationText: "3:23",
                 artworkData: nil,
                 artworkFileURL: nil,
@@ -362,7 +418,8 @@ extension TrackRowView: Equatable where MenuContent: View {
                 id: UUID(),
                 title: "Missing Track",
                 artist: "Unknown Artist",
-                lyricSnippet: nil,
+                lyricSnippetLine: nil,
+                lyricHighlightRanges: [],
                 durationText: "0:00",
                 artworkData: nil,
                 artworkFileURL: nil,

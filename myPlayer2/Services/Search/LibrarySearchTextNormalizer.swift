@@ -10,6 +10,13 @@ import Foundation
 nonisolated enum LibrarySearchTextNormalizer {
     private static let foldLocale = Locale(identifier: "en_US_POSIX")
 
+    struct NormalizedTextMap: Sendable {
+        let normalized: String
+        let compact: String
+        let normalizedCharacterOffsets: [Int]
+        let compactCharacterOffsets: [Int]
+    }
+
     static func normalize(_ value: String) -> String {
         let folded = value
             .precomposedStringWithCompatibilityMapping
@@ -50,6 +57,60 @@ nonisolated enum LibrarySearchTextNormalizer {
             .split(separator: " ")
             .map(String.init)
             .filter { !$0.isEmpty }
+    }
+
+    static func mappedNormalize(_ value: String) -> NormalizedTextMap {
+        var normalizedCharacters: [Character] = []
+        var normalizedOffsets: [Int] = []
+        var previousWasSpace = true
+
+        for (characterOffset, character) in value.enumerated() {
+            let folded = String(character)
+                .precomposedStringWithCompatibilityMapping
+                .folding(
+                    options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+                    locale: foldLocale
+                )
+                .lowercased()
+
+            for scalar in folded.unicodeScalars {
+                if isSearchableScalar(scalar) {
+                    normalizedCharacters.append(Character(scalar))
+                    normalizedOffsets.append(characterOffset)
+                    previousWasSpace = false
+                } else if !previousWasSpace {
+                    normalizedCharacters.append(" ")
+                    normalizedOffsets.append(characterOffset)
+                    previousWasSpace = true
+                }
+            }
+        }
+
+        while normalizedCharacters.first == " " {
+            normalizedCharacters.removeFirst()
+            normalizedOffsets.removeFirst()
+        }
+        while normalizedCharacters.last == " " {
+            normalizedCharacters.removeLast()
+            normalizedOffsets.removeLast()
+        }
+
+        var compactCharacters: [Character] = []
+        var compactOffsets: [Int] = []
+        compactCharacters.reserveCapacity(normalizedCharacters.count)
+        compactOffsets.reserveCapacity(normalizedOffsets.count)
+
+        for (index, character) in normalizedCharacters.enumerated() where !character.isWhitespace {
+            compactCharacters.append(character)
+            compactOffsets.append(normalizedOffsets[index])
+        }
+
+        return NormalizedTextMap(
+            normalized: String(normalizedCharacters),
+            compact: String(compactCharacters),
+            normalizedCharacterOffsets: normalizedOffsets,
+            compactCharacterOffsets: compactOffsets
+        )
     }
 
     static func characterNgrams(
