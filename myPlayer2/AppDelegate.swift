@@ -38,6 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        PaneLayoutTrace.log("AppDelegate.applicationWillTerminate")
         Self.applicationWillTerminateHandler?()
     }
 

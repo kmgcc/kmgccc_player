@@ -115,6 +115,7 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
     }
 
     static func setLyricsVisible(_ visible: Bool) {
+        PaneLayoutTrace.log("windowController.setLyricsVisible \(visible)")
         sharedController?.splitViewController.setLyricsVisible(visible)
     }
 
@@ -123,6 +124,7 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
     }
 
     static func setSidebarVisible(_ visible: Bool) {
+        PaneLayoutTrace.log("windowController.setSidebarVisible \(visible)")
         sharedController?.splitViewController.setSidebarVisible(visible)
     }
 
@@ -131,8 +133,17 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
     }
 
     static func setEmbeddedFullscreenActive(_ active: Bool) {
+        PaneLayoutTrace.log("windowController.setEmbeddedFullscreenActive \(active)")
         HomeWindowLayoutState.shared.setEmbeddedFullscreenActive(active)
         sharedController?.splitViewController.setEmbeddedFullscreenActive(active)
+    }
+
+    static func currentSidebarWidth() -> CGFloat {
+        sharedController?.splitViewController.currentSidebarWidth ?? 0
+    }
+
+    static func currentLyricsWidth() -> CGFloat {
+        sharedController?.splitViewController.currentLyricsWidth ?? 0
     }
 
     init(appSession: AppSessionHost) {
@@ -200,6 +211,9 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
     func windowWillClose(_ notification: Notification) {
         isClosingMainWindow = true
         if let closingWindow = notification.object as? NSWindow {
+            PaneLayoutTrace.log(
+                "windowWillClose frameSave embedded=\(FullscreenWindowManager.shared.presentationMode) sidebar=\(splitViewController.isSidebarVisible) lyrics=\(splitViewController.isLyricsVisible)"
+            )
             closingWindow.saveFrame(usingName: WindowMetrics.frameAutosaveName)
             FullscreenWindowManager.shared.mainWindowWillClose(closingWindow)
             toolbarController?.detachFromWindow(closingWindow)

@@ -39,7 +39,8 @@ struct NowPlayingHostView: View {
             let context = makeContext(windowSize: proxy.size, contentBounds: contentBounds)
 
             ZStack(alignment: .topLeading) {
-                if settings.nowPlayingArtBackgroundEnabled && selectedSkinID != AppleStyleSkin.skinID {
+                if selectedSkinID == AppleStyleSkin.skinID
+                    || (settings.nowPlayingArtBackgroundEnabled && selectedSkinID != AppleStyleSkin.skinID) {
                     Color.clear
                 } else {
                     selectedSkin.makeBackground(context: context)

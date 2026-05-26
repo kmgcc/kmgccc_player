@@ -229,6 +229,9 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
 
     /// Present the fullscreen player UI inside the main window detail area.
     func showFullscreenPlayerInWindow() {
+        PaneLayoutTrace.log(
+            "fullscreen.showEmbedded begin mode=\(presentationMode) ui sidebar=\(uiState?.sidebarVisible.description ?? "nil") lyrics=\(uiState?.lyricsVisible.description ?? "nil") live sidebar=\(AppKitMainSplitWindowController.isSidebarVisible()) lyrics=\(AppKitMainSplitWindowController.isLyricsVisible())"
+        )
         if EmbeddedFullscreenTrace.enabled {
             Log.info(
                 "[EFS t=\(EmbeddedFullscreenTrace.stamp())] showFullscreenPlayerInWindow.begin mode=\(presentationMode) transitioning=\(isTransitioning)",
@@ -263,8 +266,8 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
             )
         }
         LyricsSurfaceManager.shared.requestMode(.fullscreen)
-        suspendMainLyricsIfNeeded()
         suspendMainSidebarForEmbeddedFullscreenIfNeeded()
+        suspendMainLyricsIfNeeded()
         if EmbeddedFullscreenTrace.enabled {
             Log.info(
                 "[EFS t=\(EmbeddedFullscreenTrace.stamp())] showFullscreenPlayerInWindow.setMode embeddedInWindow",
@@ -283,17 +286,23 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
 
     func closeFullscreenPlayerInWindow() {
         guard presentationMode == .embeddedInWindow else { return }
+        PaneLayoutTrace.log("fullscreen.closeEmbedded begin")
         LyricsSurfaceManager.shared.requestMode(.main)
         presentationMode = .none
         removeEscapeMonitor()
         restoreEmbeddedHostWindowFrameIfNeeded()
         restoreSuspendedMainSidebarForEmbeddedFullscreenIfNeeded()
         restoreSuspendedMainLyricsIfNeeded()
+        uiState?.clearEmbeddedFullscreenTransientPaneState(reason: "closeFullscreenPlayerInWindow")
+        PaneLayoutTrace.log("fullscreen.closeEmbedded end")
     }
 
     func mainWindowWillClose(_ window: NSWindow) {
         guard presentationMode == .embeddedInWindow || embeddedHostWindow === window else { return }
 
+        PaneLayoutTrace.log(
+            "fullscreen.mainWindowWillClose begin mode=\(presentationMode) markerPreservedForNextLaunch=true sidebarSaved=\(String(describing: suspendedMainSidebarVisibility)) lyricsSaved=\(String(describing: suspendedMainLyricsVisibility))"
+        )
         LyricsSurfaceManager.shared.requestMode(.main)
         presentationMode = .none
         removeEscapeMonitor()
@@ -319,6 +328,9 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         }
 
         HomeWindowLayoutState.shared.setEmbeddedFullscreenActive(false)
+        PaneLayoutTrace.log(
+            "fullscreen.mainWindowWillClose end ui sidebar=\(uiState?.sidebarVisible.description ?? "nil") lyrics=\(uiState?.lyricsVisible.description ?? "nil") transientMarkerLeftForStartupRepair=true"
+        )
     }
 
     func resetStaleEmbeddedFullscreenForMainWindowAttach(_ window: NSWindow) {
@@ -378,6 +390,9 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
     private func suspendMainLyricsIfNeeded() {
         let isVisible = AppKitMainSplitWindowController.isLyricsVisible() || uiState?.lyricsVisible == true
         suspendedMainLyricsVisibility = isVisible
+        PaneLayoutTrace.log(
+            "fullscreen.suspendLyrics visible=\(isVisible) live=\(AppKitMainSplitWindowController.isLyricsVisible()) ui=\(uiState?.lyricsVisible.description ?? "nil")"
+        )
         if isVisible {
             AppKitMainSplitWindowController.setLyricsVisible(false)
         }
@@ -387,6 +402,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         let shouldRestoreLyrics = suspendedMainLyricsVisibility == true
         suspendedMainLyricsVisibility = nil
 
+        PaneLayoutTrace.log("fullscreen.restoreLyrics shouldRestore=\(shouldRestoreLyrics)")
         guard shouldRestoreLyrics else { return }
         DispatchQueue.main.async {
             AppKitMainSplitWindowController.setLyricsVisible(true)
@@ -396,6 +412,16 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
     private func suspendMainSidebarForEmbeddedFullscreenIfNeeded() {
         let isVisible = AppKitMainSplitWindowController.isSidebarVisible() || uiState?.sidebarVisible == true
         suspendedMainSidebarVisibility = isVisible
+        uiState?.beginEmbeddedFullscreenTransientPaneState(
+            sidebarVisible: AppKitMainSplitWindowController.isSidebarVisible(),
+            lyricsVisible: AppKitMainSplitWindowController.isLyricsVisible(),
+            sidebarWidth: AppKitMainSplitWindowController.currentSidebarWidth(),
+            lyricsWidth: AppKitMainSplitWindowController.currentLyricsWidth(),
+            reason: "suspendMainSidebarForEmbeddedFullscreen"
+        )
+        PaneLayoutTrace.log(
+            "fullscreen.suspendSidebar visible=\(isVisible) live=\(AppKitMainSplitWindowController.isSidebarVisible()) ui=\(uiState?.sidebarVisible.description ?? "nil")"
+        )
         AppKitMainSplitWindowController.setEmbeddedFullscreenActive(true)
     }
 
@@ -404,6 +430,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         suspendedMainSidebarVisibility = nil
         AppKitMainSplitWindowController.setEmbeddedFullscreenActive(false)
 
+        PaneLayoutTrace.log("fullscreen.restoreSidebar shouldRestore=\(shouldRestoreSidebar)")
         guard shouldRestoreSidebar else { return }
         DispatchQueue.main.async {
             AppKitMainSplitWindowController.setSidebarVisible(true)

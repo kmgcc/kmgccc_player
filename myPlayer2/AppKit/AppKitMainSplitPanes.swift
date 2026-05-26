@@ -6,6 +6,7 @@
 //  These views intentionally avoid SwiftUI .toolbar/.searchable and custom glass backgrounds.
 //
 
+import AppKit
 import SwiftData
 import SwiftUI
 
@@ -455,38 +456,54 @@ struct AppKitMainWindowArtBackgroundLayer: View {
     @State private var settings = AppSettings.shared
 
     var body: some View {
-        ZStack {
-            if shouldShowPlaylistHeaderBackground {
-                HeaderFullWindowBackgroundView(
-                    state: playlistPageController.haloState,
-                    currentSource: playlistPageController.haloCurrentImage,
-                    incomingSource: playlistPageController.haloIncomingImage,
-                    sourceBlendOpacity: playlistPageController.haloSourceBlendOpacity,
-                    presentationOpacity: playlistPageController.haloPresentationOpacity,
-                    xOffset: playlistHeaderBackgroundXOffset,
-                    yOffset: 32
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .ignoresSafeArea(.container, edges: .all)
-            }
+        GeometryReader { proxy in
+            ZStack {
+                if shouldShowPlaylistHeaderBackground {
+                    HeaderFullWindowBackgroundView(
+                        state: playlistPageController.haloState,
+                        currentSource: playlistPageController.haloCurrentImage,
+                        incomingSource: playlistPageController.haloIncomingImage,
+                        sourceBlendOpacity: playlistPageController.haloSourceBlendOpacity,
+                        presentationOpacity: playlistPageController.haloPresentationOpacity,
+                        xOffset: playlistHeaderBackgroundXOffset,
+                        yOffset: 32
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .ignoresSafeArea(.container, edges: .all)
+                }
 
-            if let playbackCoordinator = appSession.playbackCoordinator,
-               shouldShowArtBackground(playbackCoordinator: playbackCoordinator) {
-                BKArtBackgroundView(
-                    controller: artBackgroundController,
-                    trackID: artworkBackgroundTrackID(playbackCoordinator: playbackCoordinator),
-                    artworkData: playbackCoordinator.presentation.artworkData,
-                    isPlaying: playbackCoordinator.presentation.isPlaying,
-                    resourceProfile: settings.selectedNowPlayingSkinID == "kmgccc.cassette"
-                        ? .cassetteForeground
-                        : .standard,
-                    initialPalette: [themeStore.accentNSColor],
-                    holdPaletteWhenArtworkMissing: playbackCoordinator.presentation.isArtworkLoading
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .ignoresSafeArea(.container, edges: .all)
-                .allowsHitTesting(false)
+                if let playbackCoordinator = appSession.playbackCoordinator,
+                   shouldShowAppleStyleWindowBackground(playbackCoordinator: playbackCoordinator) {
+                    SkinRegistry.skin(for: AppleStyleSkin.skinID)
+                        .makeBackground(context: makeAppleStyleWindowContext(
+                            windowSize: proxy.size,
+                            playbackCoordinator: playbackCoordinator
+                        ))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        .ignoresSafeArea(.container, edges: .all)
+                        .allowsHitTesting(false)
+                }
+
+                if let playbackCoordinator = appSession.playbackCoordinator,
+                   shouldShowArtBackground(playbackCoordinator: playbackCoordinator) {
+                    BKArtBackgroundView(
+                        controller: artBackgroundController,
+                        trackID: artworkBackgroundTrackID(playbackCoordinator: playbackCoordinator),
+                        artworkData: playbackCoordinator.presentation.artworkData,
+                        isPlaying: playbackCoordinator.presentation.isPlaying,
+                        resourceProfile: settings.selectedNowPlayingSkinID == "kmgccc.cassette"
+                            ? .cassetteForeground
+                            : .standard,
+                        initialPalette: [themeStore.accentNSColor],
+                        holdPaletteWhenArtworkMissing: playbackCoordinator.presentation.isArtworkLoading
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .ignoresSafeArea(.container, edges: .all)
+                    .allowsHitTesting(false)
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .ignoresSafeArea(.container, edges: .all)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea(.container, edges: .all)
@@ -522,6 +539,12 @@ struct AppKitMainWindowArtBackgroundLayer: View {
             && !fullscreenWindowManager.usesFullscreenPlayerUI
     }
 
+    private func shouldShowAppleStyleWindowBackground(playbackCoordinator: PlaybackCoordinator) -> Bool {
+        appSession.uiState.contentMode == .nowPlaying
+            && settings.selectedNowPlayingSkinID == AppleStyleSkin.skinID
+            && !fullscreenWindowManager.usesFullscreenPlayerUI
+    }
+
     private func artworkBackgroundTrackID(playbackCoordinator: PlaybackCoordinator) -> UUID? {
         let presentation = playbackCoordinator.presentation
         if let artworkTrackID = presentation.artworkDisplayTrackID {
@@ -533,6 +556,98 @@ struct AppKitMainWindowArtBackgroundLayer: View {
         return presentation.source.isExternal && presentation.hasTrack
             ? UUID(uuidString: "3C7BB22E-1A57-4B8B-8461-A48B9646AA7C")
             : nil
+    }
+
+    private func makeAppleStyleWindowContext(
+        windowSize: CGSize,
+        playbackCoordinator: PlaybackCoordinator
+    ) -> SkinContext {
+        let presentation = playbackCoordinator.presentation
+        let artworkChecksum = ArtworkAssetStore.checksum(for: presentation.artworkData)
+
+        let trackMeta: SkinContext.TrackMetadata? = presentation.hasTrack
+            ? SkinContext.TrackMetadata(
+                id: presentation.artworkDisplayTrackID
+                    ?? presentation.displayTrackID
+                    ?? presentation.localTrack?.id
+                    ?? UUID(uuidString: "9D7D2E53-8CC0-4E65-8B19-7D9E772E6D43")!,
+                title: presentation.title,
+                artist: presentation.artist,
+                album: presentation.album ?? "",
+                duration: presentation.duration,
+                artworkChecksum: artworkChecksum,
+                artworkData: presentation.artworkData,
+                artworkImage: nil
+            )
+            : nil
+
+        let playback = SkinContext.PlaybackState(
+            isPlaying: presentation.isPlaying,
+            currentTime: presentation.currentTime,
+            duration: presentation.duration,
+            progress: presentation.progress
+        )
+
+        let analysis = themeStore.semanticPalette.analysis
+        let primary: [NSColor]
+        if !analysis.displayPalette.isEmpty {
+            primary = analysis.displayPalette
+        } else if !analysis.topPalette.isEmpty {
+            primary = analysis.topPalette
+        } else {
+            primary = [
+                themeStore.semanticPalette.artBackgroundPrimary,
+                themeStore.semanticPalette.artBackgroundSecondary,
+            ]
+        }
+        let chosen = Array(primary.prefix(2))
+        let spectrumArtworkColors = SpectrumColorResolver.prepareSpectrumColors(chosen, analysis: analysis)
+
+        let audioMetrics = appSession.ledMeterProvider?.getOrCreate().audioMetrics ?? .zero
+        let ledMetrics = appSession.ledMeterProvider?.getOrCreate().metrics
+            ?? LEDMeterMetrics.zero(count: LEDDefaults.ledCount)
+
+        let theme = SkinContext.ThemeTokens(
+            accentColor: themeStore.accentColor,
+            colorScheme: themeStore.colorScheme,
+            reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+            reduceTransparency: NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency,
+            glassIntensity: settings.liquidGlassIntensity,
+            backgroundBlur: settings.nowPlayingBackgroundBlur,
+            backgroundBrightness: settings.nowPlayingBackgroundBrightness,
+            backgroundSaturation: settings.nowPlayingBackgroundSaturation,
+            meshAmplitude: settings.nowPlayingMeshAmplitude,
+            meshFlowSpeed: settings.nowPlayingMeshFlowSpeed,
+            meshSharpness: settings.nowPlayingMeshSharpness,
+            meshSoftness: settings.nowPlayingMeshSoftness,
+            meshColorBoost: settings.nowPlayingMeshColorBoost,
+            meshContrast: settings.nowPlayingMeshContrast,
+            meshBassImpact: settings.nowPlayingMeshBassImpact,
+            artworkAccentColor: themeStore.hasArtworkThemeColor ? themeStore.accentColor : nil,
+            artworkPalette: primary,
+            artworkRichPalette: analysis.displayPalette,
+            artworkAverageColor: nil,
+            artBackgroundIsUltraDark: false,
+            spectrumArtworkColors: spectrumArtworkColors,
+            spectrumUsesDarkForeground: analysis.usesDarkForeground,
+            kickToBrightnessMix: settings.bgKickToBrightnessMix,
+            kickDisplaceAmount: settings.bgKickDisplaceAmount,
+            kickScaleAmount: settings.bgKickScaleAmount
+        )
+
+        return SkinContext(
+            track: trackMeta,
+            playback: playback,
+            audio: audioMetrics,
+            led: ledMetrics,
+            theme: theme,
+            windowSize: windowSize,
+            contentBounds: CGRect(origin: .zero, size: windowSize),
+            fullscreenScale: 1.0,
+            lyricsVisible: appSession.uiState.lyricsVisible,
+            presentationMode: .nowPlaying,
+            fullscreenHostMode: .none
+        )
     }
 }
 
