@@ -54,27 +54,48 @@ final class BKThemeAssets: @unchecked Sendable {
     }
 
     private struct ShapeEntry {
-        let url: URL
+        let logicalName: String
+        let plainURL: URL?
         let sourceIndex: Int?
+        let fileName: String
+    }
+
+    private struct AssetEntry {
+        let logicalName: String
+        let plainURL: URL?
+        let fileName: String
     }
 
     private let bundle: Bundle?
-    private let backgroundURLs: [URL]
+    private let backgroundEntries: [AssetEntry]
     private let shapeEntries: [ShapeEntry]
-    private let maskFrameURLs: [URL]
+    private let maskFrameEntries: [AssetEntry]
+    private let usePlainArtAssetsInDebug: Bool
 
     private let backgroundCache = NSCache<NSString, ImageArrayBox>()
     private let shapeCache = NSCache<NSString, ShapeLoadResultBox>()
     private let maskCache = NSCache<NSString, ImageArrayBox>()
+    private let encryptedLoader = EncryptedArtAssetLoader.shared
 
     private static let maskProcessingContext = CIContext(options: [.cacheIntermediates: false])
 
     private init() {
         let resolvedBundle = Self.resolveBundle()
+        let usePlainArtAssetsInDebug = Self.usePlainArtAssetsInDebug
         self.bundle = resolvedBundle
-        self.backgroundURLs = Self.resolveBackgroundURLs(from: resolvedBundle)
-        self.shapeEntries = Self.resolveShapeEntries(from: resolvedBundle)
-        self.maskFrameURLs = Self.resolveMaskFrameURLs(from: resolvedBundle)
+        self.usePlainArtAssetsInDebug = usePlainArtAssetsInDebug
+        self.backgroundEntries = Self.resolveBackgroundEntries(
+            from: resolvedBundle,
+            preferPlain: usePlainArtAssetsInDebug
+        )
+        self.shapeEntries = Self.resolveShapeEntries(
+            from: resolvedBundle,
+            preferPlain: usePlainArtAssetsInDebug
+        )
+        self.maskFrameEntries = Self.resolveMaskFrameEntries(
+            from: resolvedBundle,
+            preferPlain: usePlainArtAssetsInDebug
+        )
 
         backgroundCache.countLimit = 4
         backgroundCache.totalCostLimit = 32 * 1024 * 1024
@@ -90,25 +111,25 @@ final class BKThemeAssets: @unchecked Sendable {
             return cached.images
         }
 
-        let images = backgroundURLs.compactMap { Self.downsampledImage(from: $0, maxPixel: maxPixel) }
+        let images = backgroundEntries.compactMap { downsampledImage(from: $0, maxPixel: maxPixel) }
         let box = ImageArrayBox(images: images)
         backgroundCache.setObject(box, forKey: key, cost: Self.byteCost(for: images))
         return images
     }
 
     var backgroundCount: Int {
-        backgroundURLs.count
+        backgroundEntries.count
     }
 
     func background(at index: Int, maxPixel: Int) -> CGImage? {
-        guard index >= 0, index < backgroundURLs.count else { return nil }
+        guard index >= 0, index < backgroundEntries.count else { return nil }
 
         let key = "background-\(index)-\(maxPixel)" as NSString
         if let cached = backgroundCache.object(forKey: key) {
             return cached.images.first
         }
 
-        guard let image = Self.downsampledImage(from: backgroundURLs[index], maxPixel: maxPixel) else {
+        guard let image = downsampledImage(from: backgroundEntries[index], maxPixel: maxPixel) else {
             return nil
         }
 
@@ -129,11 +150,16 @@ final class BKThemeAssets: @unchecked Sendable {
         var fileNames: [String] = []
 
         for entry in shapeEntries {
-            guard let image = Self.downsampledImage(from: entry.url, maxPixel: maxPixel) else {
+            let asset = AssetEntry(
+                logicalName: entry.logicalName,
+                plainURL: entry.plainURL,
+                fileName: entry.fileName
+            )
+            guard let image = downsampledImage(from: asset, maxPixel: maxPixel) else {
                 continue
             }
             images.append(image)
-            fileNames.append(entry.url.lastPathComponent)
+            fileNames.append(entry.fileName)
             if entry.sourceIndex == 10 {
                 scaleByIndex[images.count - 1] = 3.0
                 edgePinnedIndices.insert(images.count - 1)
@@ -160,8 +186,8 @@ final class BKThemeAssets: @unchecked Sendable {
             return cached.images
         }
 
-        let frames = maskFrameURLs.compactMap { url -> CGImage? in
-            guard let sampled = Self.downsampledImage(from: url, maxPixel: maxPixel) else {
+        let frames = maskFrameEntries.compactMap { entry -> CGImage? in
+            guard let sampled = downsampledImage(from: entry, maxPixel: maxPixel) else {
                 return nil
             }
             return Self.maskAlphaImage(from: sampled) ?? sampled
@@ -182,6 +208,7 @@ final class BKThemeAssets: @unchecked Sendable {
         shapeCache.removeAllObjects()
         maskCache.removeAllObjects()
         Self.maskProcessingContext.clearCaches()
+        encryptedLoader.purgeCache()
     }
 
     private static func resolveBundle() -> Bundle? {
@@ -208,6 +235,12 @@ final class BKThemeAssets: @unchecked Sendable {
             }
         }
 
+        if EncryptedArtAssetLoader.shared.assetURL(logicalName: "BKThemes/Backgrounds/bk1", in: Bundle.main)
+            != nil
+        {
+            return Bundle.main
+        }
+
         if Bundle.main.url(forResource: "bk1", withExtension: "png", subdirectory: "BKThemes/Backgrounds")
             != nil
         {
@@ -227,17 +260,30 @@ final class BKThemeAssets: @unchecked Sendable {
             }
     }
 
-    private static func resolveBackgroundURLs(from bundle: Bundle?) -> [URL] {
+    private static func resolveBackgroundEntries(from bundle: Bundle?, preferPlain: Bool) -> [AssetEntry] {
         let searchBundles = uniqueBundles([bundle, Bundle.main])
+        let names = ["bk1", "bk2"]
 
-        for source in searchBundles {
-            let urls = ["bk1", "bk2"].compactMap { backgroundURL(named: $0, in: source) }
-            if !urls.isEmpty {
-                return urls
+        let entries = names.compactMap { name -> AssetEntry? in
+            let logicalName = "BKThemes/Backgrounds/\(name)"
+            let encryptedExists = searchBundles.contains {
+                EncryptedArtAssetLoader.shared.assetURL(logicalName: logicalName, in: $0) != nil
             }
+            let plainURL = preferPlain ? backgroundURL(named: name, in: searchBundles) : nil
+            guard encryptedExists || plainURL != nil else { return nil }
+            return AssetEntry(logicalName: logicalName, plainURL: plainURL, fileName: "\(name).png")
         }
 
-        return []
+        return entries
+    }
+
+    private static func backgroundURL(named name: String, in bundles: [Bundle]) -> URL? {
+        for bundle in bundles {
+            if let url = backgroundURL(named: name, in: bundle) {
+                return url
+            }
+        }
+        return debugPlainAssetURL(relativePath: "Backgrounds/\(name).png")
     }
 
     private static func backgroundURL(named name: String, in bundle: Bundle) -> URL? {
@@ -254,10 +300,11 @@ final class BKThemeAssets: @unchecked Sendable {
         return nil
     }
 
-    private static func resolveShapeEntries(from bundle: Bundle?) -> [ShapeEntry] {
-        guard let bundle else { return [] }
+    private static func resolveShapeEntries(from bundle: Bundle?, preferPlain: Bool) -> [ShapeEntry] {
+        let searchBundles = uniqueBundles([bundle, Bundle.main])
 
-        if let shapesDir = bundle.url(forResource: "Shapes", withExtension: nil, subdirectory: "BKThemes"),
+        if preferPlain,
+           let shapesDir = debugPlainAssetURL(relativePath: "Shapes"),
             let enumerated = try? FileManager.default.contentsOfDirectory(
                 at: shapesDir,
                 includingPropertiesForKeys: nil,
@@ -266,7 +313,14 @@ final class BKThemeAssets: @unchecked Sendable {
         {
             let entries = enumerated
                 .filter { $0.pathExtension.lowercased() == "png" }
-                .map { ShapeEntry(url: $0, sourceIndex: shapeIndex(from: $0.lastPathComponent)) }
+                .map {
+                    ShapeEntry(
+                        logicalName: "BKThemes/Shapes/\(($0.deletingPathExtension().lastPathComponent))",
+                        plainURL: $0,
+                        sourceIndex: shapeIndex(from: $0.lastPathComponent),
+                        fileName: $0.lastPathComponent
+                    )
+                }
                 .sorted { lhs, rhs in
                     switch (lhs.sourceIndex, rhs.sourceIndex) {
                     case let (.some(left), .some(right)):
@@ -276,7 +330,7 @@ final class BKThemeAssets: @unchecked Sendable {
                     case (.none, .some):
                         return false
                     case (.none, .none):
-                        return lhs.url.lastPathComponent < rhs.url.lastPathComponent
+                        return lhs.fileName < rhs.fileName
                     }
                 }
             if !entries.isEmpty {
@@ -285,41 +339,81 @@ final class BKThemeAssets: @unchecked Sendable {
         }
 
         return (1...128).compactMap { index in
-            guard
-                let url = bundle.url(
-                    forResource: "shape\(index)",
-                    withExtension: "png",
-                    subdirectory: "BKThemes/Shapes"
-                )
-            else {
-                return nil
+            let name = "shape\(index)"
+            let logicalName = "BKThemes/Shapes/\(name)"
+            let encryptedExists = searchBundles.contains {
+                EncryptedArtAssetLoader.shared.assetURL(logicalName: logicalName, in: $0) != nil
             }
-            return ShapeEntry(url: url, sourceIndex: index)
+            let plainURL = preferPlain
+                ? debugPlainAssetURL(relativePath: "Shapes/\(name).png")
+                    ?? searchBundles.compactMap {
+                        $0.url(
+                            forResource: name,
+                            withExtension: "png",
+                            subdirectory: "BKThemes/Shapes"
+                        )
+                    }.first
+                : nil
+            guard encryptedExists || plainURL != nil else { return nil }
+            return ShapeEntry(
+                logicalName: logicalName,
+                plainURL: plainURL,
+                sourceIndex: index,
+                fileName: "\(name).png"
+            )
         }
     }
 
-    private static func resolveMaskFrameURLs(from bundle: Bundle?) -> [URL] {
+    private static func resolveMaskFrameEntries(from bundle: Bundle?, preferPlain: Bool) -> [AssetEntry] {
         let searchBundles = uniqueBundles([bundle, Bundle.main])
-        for source in searchBundles {
-            var urls: [URL] = []
-            var index = 0
-            while true {
-                let name = String(format: "frame_%02d", index)
-                guard let url = source.url(
-                    forResource: name,
-                    withExtension: "png",
-                    subdirectory: "BKThemes/Mask"
-                ) else {
-                    break
-                }
-                urls.append(url)
-                index += 1
+        var entries: [AssetEntry] = []
+        var index = 0
+        while true {
+            let name = String(format: "frame_%02d", index)
+            let logicalName = "BKThemes/Mask/\(name)"
+            let encryptedExists = searchBundles.contains {
+                EncryptedArtAssetLoader.shared.assetURL(logicalName: logicalName, in: $0) != nil
             }
-            if !urls.isEmpty {
-                return urls
+            let plainURL = preferPlain
+                ? debugPlainAssetURL(relativePath: "Mask/\(name).png")
+                    ?? searchBundles.compactMap {
+                        $0.url(
+                            forResource: name,
+                            withExtension: "png",
+                            subdirectory: "BKThemes/Mask"
+                        )
+                    }.first
+                : nil
+            guard encryptedExists || plainURL != nil else {
+                break
             }
+            entries.append(AssetEntry(logicalName: logicalName, plainURL: plainURL, fileName: "\(name).png"))
+            index += 1
         }
-        return []
+        return entries
+    }
+
+    private func downsampledImage(from entry: AssetEntry, maxPixel: Int) -> CGImage? {
+        guard maxPixel > 0 else { return nil }
+        if usePlainArtAssetsInDebug, let plainURL = entry.plainURL {
+            return Self.downsampledImage(from: plainURL, maxPixel: maxPixel)
+        }
+
+        if let encrypted = encryptedLoader.cgImage(logicalName: entry.logicalName, in: bundle, maxPixel: maxPixel) {
+            return encrypted
+        }
+
+        #if DEBUG
+        if let plainURL = entry.plainURL {
+            Log.warning(
+                "[BKThemeAssets] Falling back to plaintext art asset after encrypted load failed: \(entry.logicalName)",
+                category: .theme
+            )
+            return Self.downsampledImage(from: plainURL, maxPixel: maxPixel)
+        }
+        #endif
+
+        return nil
     }
 
     private static func downsampledImage(from url: URL, maxPixel: Int) -> CGImage? {
@@ -354,6 +448,50 @@ final class BKThemeAssets: @unchecked Sendable {
             .replacingOccurrences(of: ".png", with: "")
         guard stem.hasPrefix("shape") else { return nil }
         return Int(stem.dropFirst("shape".count))
+    }
+
+    private static var usePlainArtAssetsInDebug: Bool {
+        #if DEBUG
+        return ProcessInfo.processInfo.environment["KMG_USE_PLAIN_ART_ASSETS"] != "0"
+        #else
+        return false
+        #endif
+    }
+
+    private static func debugPlainAssetURL(relativePath: String) -> URL? {
+        #if DEBUG
+        let environment = ProcessInfo.processInfo.environment["KMG_ART_ASSETS_PLAIN_ROOT"]
+        let roots: [URL?] = [
+            environment.map { URL(fileURLWithPath: $0) },
+            debugPlainBKThemesRootURL(),
+        ]
+        for root in roots.compactMap({ $0 }) {
+            let candidate = root.appendingPathComponent(relativePath)
+            if FileManager.default.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+        }
+        #endif
+        return nil
+    }
+
+    private static func debugPlainBKThemesRootURL() -> URL? {
+        #if DEBUG
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<4 {
+            root.deleteLastPathComponent()
+        }
+        let candidate = root.appendingPathComponent("BKThemes")
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDirectory),
+              isDirectory.boolValue
+        else {
+            return nil
+        }
+        return candidate
+        #else
+        return nil
+        #endif
     }
 
     private static func byteCost(for images: [CGImage]) -> Int {
