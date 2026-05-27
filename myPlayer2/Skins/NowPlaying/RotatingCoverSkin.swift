@@ -276,6 +276,7 @@ private final class RotatingCoverCDMotionBlurCache: ObservableObject {
 
     private static let blurVersion = 5
     private static let maxRenderPixelSize = 640
+    private static let minRenderableDiscSize: CGFloat = 24
 
     private struct CacheKey: Equatable, Sendable {
         let artworkSignature: String
@@ -294,6 +295,8 @@ private final class RotatingCoverCDMotionBlurCache: ObservableObject {
     ) {
         guard
             enabled,
+            discSize.isFinite,
+            discSize >= Self.minRenderableDiscSize,
             let artworkImage,
             let artworkSignature,
             let sourceImage = artworkImage.cgImageSnapshot()
@@ -303,10 +306,12 @@ private final class RotatingCoverCDMotionBlurCache: ObservableObject {
         }
 
         let scale = NSScreen.main?.backingScaleFactor ?? 2
-        let pixelSize = max(
-            min(quantizedPixelSize(for: discSize * scale), Self.maxRenderPixelSize),
-            96
-        )
+        let quantizedSize = quantizedPixelSize(for: discSize * scale)
+        guard quantizedSize > 0 else {
+            clear()
+            return
+        }
+        let pixelSize = max(min(quantizedSize, Self.maxRenderPixelSize), 96)
         let key = CacheKey(
             artworkSignature: artworkSignature,
             pixelSize: pixelSize,
@@ -324,10 +329,13 @@ private final class RotatingCoverCDMotionBlurCache: ObservableObject {
 
         let targetDiscSize = discSize
         renderTask = Task.detached(priority: .userInitiated) { [weak self] in
-            let rendered = RotatingCoverCDMotionBlurRenderer.render(
-                sourceImage: sourceImage,
-                pixelSize: pixelSize
-            )
+            let rendered = autoreleasepool {
+                guard !Task.isCancelled else { return nil as CGImage? }
+                return RotatingCoverCDMotionBlurRenderer.render(
+                    sourceImage: sourceImage,
+                    pixelSize: pixelSize
+                )
+            }
             guard !Task.isCancelled, let rendered else { return }
             await MainActor.run {
                 guard let self, self.currentKey == key else { return }
@@ -347,6 +355,7 @@ private final class RotatingCoverCDMotionBlurCache: ObservableObject {
     }
 
     private func quantizedPixelSize(for rawPixelSize: CGFloat) -> Int {
+        guard rawPixelSize.isFinite, rawPixelSize > 0 else { return 0 }
         let bucket: CGFloat = 12
         return Int((rawPixelSize / bucket).rounded(.toNearestOrAwayFromZero) * bucket)
     }
@@ -365,6 +374,14 @@ private enum RotatingCoverCDMotionBlurRenderer {
     nonisolated private static let angularBlurAccumulationAlpha: CGFloat = 18.0
 
     nonisolated static func render(sourceImage: CGImage, pixelSize: Int) -> CGImage? {
+        guard
+            pixelSize > 1,
+            sourceImage.width > 0,
+            sourceImage.height > 0
+        else {
+            return nil
+        }
+
         let bounds = CGRect(x: 0, y: 0, width: pixelSize, height: pixelSize)
         guard
             let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
@@ -403,7 +420,11 @@ private enum RotatingCoverCDMotionBlurRenderer {
         context.addEllipse(in: CGRect(x: -bounds.width / 2, y: -bounds.height / 2, width: bounds.width, height: bounds.height))
         context.clip()
 
-        for (angle, weight) in zip(sampleOffsets, sampleWeights) {
+        for (index, pair) in zip(sampleOffsets, sampleWeights).enumerated() {
+            if index.isMultiple(of: 16), Task.isCancelled {
+                return nil
+            }
+            let (angle, weight) = pair
             context.saveGState()
             context.rotate(by: angle * .pi / 180)
             context.setAlpha(weight / weightSum * angularBlurAccumulationAlpha)
@@ -420,32 +441,8 @@ private enum RotatingCoverCDMotionBlurRenderer {
         }
         context.restoreGState()
 
-        context.saveGState()
-        context.setBlendMode(.destinationIn)
-        let maskGradient = CGGradient(
-            colorsSpace: colorSpace,
-            colors: [
-                NSColor.white.withAlphaComponent(0.52).cgColor,
-                NSColor.white.withAlphaComponent(0.66).cgColor,
-                NSColor.white.withAlphaComponent(0.90).cgColor,
-                NSColor.white.withAlphaComponent(1.0).cgColor,
-                NSColor.white.withAlphaComponent(0.90).cgColor,
-            ] as CFArray,
-            locations: [0.0, 0.16, 0.48, 0.90, 1.0]
-        )
-        if let maskGradient {
-            context.drawRadialGradient(
-                maskGradient,
-                startCenter: CGPoint(x: bounds.midX, y: bounds.midY),
-                startRadius: 0,
-                endCenter: CGPoint(x: bounds.midX, y: bounds.midY),
-                endRadius: bounds.width / 2,
-                options: [.drawsAfterEndLocation]
-            )
-        }
-        context.restoreGState()
-
         guard let compositedImage = context.makeImage() else { return nil }
+        guard !Task.isCancelled else { return nil }
         guard let lightlyBlurred = lightlyBlurredImage(from: compositedImage, pixelSize: pixelSize) else {
             return compositedImage
         }
@@ -498,6 +495,14 @@ private enum RotatingCoverCDMotionBlurRenderer {
 }
 
 private nonisolated func aspectFillRect(sourceSize: CGSize, targetRect: CGRect) -> CGRect {
+    guard
+        sourceSize.width.isFinite,
+        sourceSize.height.isFinite,
+        sourceSize.width > 0,
+        sourceSize.height > 0
+    else {
+        return targetRect
+    }
     let scale = max(targetRect.width / sourceSize.width, targetRect.height / sourceSize.height)
     let scaledSize = CGSize(width: sourceSize.width * scale, height: sourceSize.height * scale)
     return CGRect(
@@ -621,8 +626,9 @@ private final class RotatingDiscHostView: NSView {
 
     init(rootView: AnyView, discSize: CGFloat) {
         hostingView = NSHostingView(rootView: rootView)
-        widthConstraint = hostingView.widthAnchor.constraint(equalToConstant: discSize)
-        heightConstraint = hostingView.heightAnchor.constraint(equalToConstant: discSize)
+        let safeDiscSize = Self.sanitizedDiscSize(discSize)
+        widthConstraint = hostingView.widthAnchor.constraint(equalToConstant: safeDiscSize)
+        heightConstraint = hostingView.heightAnchor.constraint(equalToConstant: safeDiscSize)
         super.init(frame: .zero)
 
         wantsLayer = true
@@ -653,8 +659,9 @@ private final class RotatingDiscHostView: NSView {
     }
 
     func updateDiscSize(_ discSize: CGFloat) {
-        widthConstraint.constant = discSize
-        heightConstraint.constant = discSize
+        let safeDiscSize = Self.sanitizedDiscSize(discSize)
+        widthConstraint.constant = safeDiscSize
+        heightConstraint.constant = safeDiscSize
         needsLayout = true
     }
 
@@ -674,12 +681,18 @@ private final class RotatingDiscHostView: NSView {
     private func updateRotationAnchor() {
         guard let layer = hostingView.layer else { return }
         let position = CGPoint(x: bounds.midX, y: bounds.midY)
+        guard position.x.isFinite, position.y.isFinite else { return }
         if layer.anchorPoint != CGPoint(x: 0.5, y: 0.5) {
             layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
         }
         if layer.position != position {
             layer.position = position
         }
+    }
+
+    private static func sanitizedDiscSize(_ discSize: CGFloat) -> CGFloat {
+        guard discSize.isFinite, discSize > 0 else { return 0 }
+        return discSize
     }
 }
 
@@ -756,12 +769,14 @@ private final class RotatingCDDiscHostView: NSView {
 
         blurLayer.contentsGravity = .resizeAspectFill
         blurLayer.masksToBounds = true
+        blurLayer.isOpaque = true
         blurLayer.opacity = 0
         blurLayer.minificationFilter = .trilinear
         blurLayer.magnificationFilter = .trilinear
 
         artworkLayer.contentsGravity = .resizeAspectFill
         artworkLayer.masksToBounds = true
+        artworkLayer.isOpaque = true
         artworkLayer.minificationFilter = .trilinear
         artworkLayer.magnificationFilter = .trilinear
 
@@ -781,6 +796,15 @@ private final class RotatingCDDiscHostView: NSView {
 
     override func layout() {
         super.layout()
+        guard discSize.isFinite, discSize > 1 else {
+            discRootLayer.bounds = .zero
+            blurLayer.frame = .zero
+            artworkLayer.frame = .zero
+            borderLayer.frame = .zero
+            borderLayer.path = nil
+            return
+        }
+
         let discBounds = CGRect(origin: .zero, size: CGSize(width: discSize, height: discSize))
         discRootLayer.bounds = discBounds
         blurLayer.frame = discBounds
@@ -793,7 +817,7 @@ private final class RotatingCDDiscHostView: NSView {
     }
 
     func updateGeometry(discSize: CGFloat) {
-        self.discSize = discSize
+        self.discSize = discSize.isFinite && discSize > 0 ? discSize : 0
         needsLayout = true
     }
 
@@ -816,22 +840,21 @@ private final class RotatingCDDiscHostView: NSView {
     }
 
     func setBlurStrength(_ ratio: Double) {
-        // Smooth fade with no cutoff: smoothstep gives slope→0 at ratio=0,
-        // and the sqrt biases the curve toward stronger blur in the middle of
-        // the speed range without raising the floor near zero.
-        // ratio=0 → 0, ratio=0.25 → ~0.40, ratio=0.5 → ~0.71, ratio=1 → 1.
+        // Smooth fade with no cutoff, biased toward dense coverage once the
+        // CD starts moving so the motion-blur layer covers the opaque artwork.
         let clamped = max(0, min(ratio, 1))
         let smoothed = clamped * clamped * (3 - 2 * clamped)
-        let eased = sqrt(smoothed)
+        let coverage = smoothed > 0 ? pow(smoothed, 0.22) : 0
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        blurLayer.opacity = Float(eased)
+        blurLayer.opacity = Float(coverage)
         artworkLayer.opacity = 1
         CATransaction.commit()
     }
 
     private func updateRotationAnchor() {
         let position = CGPoint(x: bounds.midX, y: bounds.midY)
+        guard position.x.isFinite, position.y.isFinite else { return }
         if discRootLayer.anchorPoint != CGPoint(x: 0.5, y: 0.5) {
             discRootLayer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
         }

@@ -473,6 +473,7 @@ struct AppKitMainWindowArtBackgroundLayer: View {
                 }
 
                 if let playbackCoordinator = appSession.playbackCoordinator,
+                   isRenderableWindowBackgroundSize(proxy.size),
                    shouldShowAppleStyleWindowBackground(playbackCoordinator: playbackCoordinator) {
                     SkinRegistry.skin(for: AppleStyleSkin.skinID)
                         .makeBackground(context: makeAppleStyleWindowContext(
@@ -543,6 +544,13 @@ struct AppKitMainWindowArtBackgroundLayer: View {
         appSession.uiState.contentMode == .nowPlaying
             && settings.selectedNowPlayingSkinID == AppleStyleSkin.skinID
             && !fullscreenWindowManager.usesFullscreenPlayerUI
+    }
+
+    private func isRenderableWindowBackgroundSize(_ size: CGSize) -> Bool {
+        size.width.isFinite
+            && size.height.isFinite
+            && size.width > 1
+            && size.height > 1
     }
 
     private func artworkBackgroundTrackID(playbackCoordinator: PlaybackCoordinator) -> UUID? {

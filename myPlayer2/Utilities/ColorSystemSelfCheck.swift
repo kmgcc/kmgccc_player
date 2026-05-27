@@ -34,6 +34,7 @@ import AppKit
 import Foundation
 import SwiftUI
 
+#if DEBUG
 nonisolated enum ColorSystemSelfCheck {
 
     static let envVarName = "COLOR_SYSTEM_SELF_CHECK"
@@ -2933,3 +2934,4 @@ nonisolated enum ColorSystemSelfCheck {
         String(format: "%.3f", Double(value))
     }
 }
+#endif

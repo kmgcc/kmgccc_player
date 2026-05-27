@@ -51,7 +51,9 @@ struct AboutSettingsView: View {
         VStack(alignment: .center, spacing: 10) {
             Spacer(minLength: 40)
 
-            Image(showEasterEggImage ? "jntm" : "EmptyLyric")
+            (showEasterEggImage
+                ? EncryptedAssetImages.image(named: "jntm", maxPixel: 800)
+                : Image("EmptyLyric"))
                 .resizable()
                 .scaledToFit()
                 .frame(width: 230, height: 230)

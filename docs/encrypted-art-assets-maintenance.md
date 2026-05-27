@@ -2,169 +2,144 @@
 
 ## 1. 目标与安全边界
 
-艺术素材加密保护的目标是防止 App 被解包后直接复制原创图片素材。当前重点保护 `BKThemes` 下的艺术背景、遮罩动画帧和形状素材，避免 Release 产物中继续包含可直接打开的 PNG 文件。
+艺术素材加密保护用于降低 App 被解包后直接复制原创图片素材的风险。当前保护对象包括 `BKThemes` 文件夹素材，以及从 `Assets.xcassets` 中迁出的高价值原创视觉素材。
 
-这套机制不是绝对 DRM，也不承诺防住专业逆向。它的安全边界是：
+这不是绝对 DRM，也不承诺抵御专业逆向。当前安全边界是：
 
-- App bundle 中不应出现受保护素材的明文 PNG/JPG/WebP。
-- App 运行时按需读取 `.kmgasset` 文件并在内存中解密。
-- 解密后的明文图片数据不写入磁盘，只在内存中解码为 `CGImage` 并进入图片缓存。
-- 本地开发母版素材继续保留在 `BKThemes/`，但不提交 Git，也不进入 Release bundle。
+- Release bundle 中不保留已保护素材的明文 PNG/JPG/WebP。
+- App 运行时按需读取 `.kmgasset`，在内存中认证解密并解码为 `CGImage` / `NSImage`。
+- 解密后的明文图片数据不写入磁盘。
+- 本地开发母版素材保留在固定私有目录中，但不提交 Git，不进入 Release bundle。
 
-因此，这套机制解决的是“解包后直接复制图片文件”的风险，而不是对运行时内存、二进制逆向或密钥提取提供完整防护。
+维护原则是“一个素材只保留一个母版来源”。迁移后的 xcassets 原图统一放在 `PrivateArtSources/XCAssetsOriginals/`；旧的 `myPlayer2/Resources/CassetteSkin/` 明文副本已移除，避免多路径维护。
 
 ## 2. 当前加密机制
 
-当前实现使用 Apple CryptoKit 的 `AES.GCM`，代码位置如下：
+加密使用 Apple CryptoKit 的 `AES.GCM`。这是 AEAD 算法，密文带认证标签；文件被篡改、截断或密钥不匹配时，运行时解密会失败并 fallback，不会静默显示错误图像。
 
-- 加密工具：`scripts/encrypt_art_assets.swift`
-- 运行时加载器：`myPlayer2/Services/Theme/EncryptedArtAssetLoader.swift`
-
-`AES.GCM` 是 AEAD 算法，密文带认证标签。运行时加载器会用认证标签验证密文完整性；如果 `.kmgasset` 被篡改、截断或使用了错误密钥，解密会失败，并由加载器记录主题日志后返回 `nil`，调用端再走 fallback。
-
-`.kmgasset` 文件不是把 PNG 做 Base64、XOR 或简单改后缀。当前二进制结构如下：
+`.kmgasset` 文件结构：
 
 | 字段 | 长度 | 说明 |
 | --- | ---: | --- |
-| magic | 8 bytes | 固定为 `KMGASSET`，用于识别文件格式 |
+| magic | 8 bytes | 固定 `KMGASSET` |
 | version | 1 byte | 当前为 `1` |
-| algorithm | 1 byte | 当前为 `1`，表示 `AES_GCM_256` |
-| flags | 1 byte | 当前保留，写入 `0` |
-| nonceLength | UInt16 big-endian | nonce 字节长度 |
-| tagLength | UInt16 big-endian | GCM auth tag 字节长度 |
-| ciphertextLength | UInt64 big-endian | 密文字节长度 |
+| algorithm | 1 byte | 当前为 `1`，表示 AES-GCM-256 |
+| flags | 1 byte | 保留，当前为 `0` |
+| nonceLength | UInt16 big-endian | nonce 长度 |
+| tagLength | UInt16 big-endian | GCM auth tag 长度 |
+| ciphertextLength | UInt64 big-endian | 密文长度 |
 | nonce | variable | AES-GCM nonce |
-| ciphertext | variable | 图片原始数据的密文 |
+| ciphertext | variable | 图片原始数据密文 |
 | auth tag | variable | AES-GCM 认证标签 |
 
-运行时加载器会校验 magic、version、algorithm 和长度字段。格式错误、版本不支持、算法不支持、认证失败、图片解码失败会被区分为不同错误类型。
+这不是 Base64、XOR 或改后缀。运行时会校验 magic、version、algorithm 和长度，再执行 AES-GCM 认证解密。
 
-密钥目前没有作为单一明文字符串写入源码。加密工具和运行时加载器都采用多段 `UInt8` 材料，运行时重组后结合固定上下文字符串做 `SHA256` 派生，得到 `SymmetricKey`。文档不记录真实密钥内容。
-
-Debug 和 Release 差异：
-
-- Debug 下 `EncryptedArtAssetLoader` 支持通过环境变量 `KMG_ART_ASSET_KEY_HEX` 使用 64 个十六进制字符形式的 256-bit 开发密钥。
-- Debug 下 `BKThemeAssets` 默认允许从本地 `BKThemes/` 明文母版加载。设置 `KMG_USE_PLAIN_ART_ASSETS=0` 可强制走加密资源。
-- Debug 下 `KMG_ART_ASSETS_PLAIN_ROOT` 可以指定本地明文 `BKThemes` 根目录。
-- Release 下 `BKThemeAssets.usePlainArtAssetsInDebug` 为 `false`，不会依赖本地明文素材 fallback。
+密钥没有作为单一明文字符串写入源码。加密脚本和运行时 loader 使用多段 `UInt8` 材料，运行时组合后结合固定上下文字符串做 `SHA256` 派生。Debug 可用 `KMG_ART_ASSET_KEY_HEX` 覆盖开发密钥；Release 不依赖该环境变量。
 
 ## 3. 目录结构与相关文件
 
-本地明文母版素材目录：
+本地母版素材目录：
 
 - `BKThemes/Backgrounds/`
 - `BKThemes/Mask/`
 - `BKThemes/Shapes/`
+- `PrivateArtSources/XCAssetsOriginals/`
 
 加密输出目录：
 
 - `EncryptedArtAssets/BKThemes/Backgrounds/`
 - `EncryptedArtAssets/BKThemes/Mask/`
 - `EncryptedArtAssets/BKThemes/Shapes/`
+- `EncryptedArtAssets/XCAssets/`
 
-manifest：
+核心文件：
 
-- `EncryptedArtAssets/manifest.json`
+- `scripts/encrypt_art_assets.swift`：加密工具。
+- `scripts/encrypted_asset_allowlist.json`：允许迁移的 xcassets allowlist。
+- `EncryptedArtAssets/manifest.json`：加密产物清单。
+- `myPlayer2/Services/Theme/EncryptedArtAssetLoader.swift`：运行时 loader 和 SwiftUI 包装。
+- `myPlayer2/Views/NowPlaying/BKThemeAssets.swift`：BKThemes 统一入口。
+- `myPlayer2/Skins/NowPlaying/KmgcccCassetteSkin.swift`：磁带皮肤和相关视觉素材调用端。
+- `myPlayer2/Services/Library/PlaylistArtworkGenerator.swift`：播放列表默认封面底图调用端。
+- `myPlayer2/Views/Settings/About/AboutSettingsView.swift`：关于页彩蛋图调用端。
+- `kmgccc_player.xcodeproj/project.pbxproj`：`BKArt` target 复制 `EncryptedArtAssets`，主 App 复制 `BKArt.bundle`。
 
-加密工具：
-
-- `scripts/encrypt_art_assets.swift`
-
-运行时加载器：
-
-- `myPlayer2/Services/Theme/EncryptedArtAssetLoader.swift`
-
-统一调用端和主要使用位置：
-
-- `myPlayer2/Views/NowPlaying/BKThemeAssets.swift`
-  - 统一维护 BKThemes 的 logicalName、Debug 明文 fallback、加密加载、下采样和缓存。
-- `myPlayer2/Views/NowPlaying/BKArtBackgroundView.swift`
-  - 使用 `BKThemeAssets.shared` 加载背景、形状和 mask 动画帧。
-  - 背景、形状、mask 的布局、随机、颜色、视差和动画逻辑仍保留在原视图中。
-- `myPlayer2/Views/Home/HomeAmbientShapesBackground.swift`
-  - 使用 `BKThemeAssets.shared.shapes(maxPixel:)` 加载首页 ambient shapes。
-
-构建配置：
-
-- `kmgccc_player.xcodeproj/project.pbxproj`
-  - `BKArt` target 的 Resources 阶段包含 `EncryptedArtAssets in Resources`。
-  - `BKArt` target 不再复制 `BKThemes` 明文 PNG。
-  - 主 App target 复制 `BKArt.bundle`。
+当前没有自动 Build Phase 运行加密脚本。构建前需要手动运行脚本并提交加密产物。
 
 ## 4. 已加密素材清单
 
-当前 `EncryptedArtAssets/manifest.json` 记录 31 个加密条目，算法为 `AES.GCM.256`，formatVersion 为 `1`。
+当前 `EncryptedArtAssets/manifest.json` 记录 46 个条目：31 个 `bkThemes`，15 个 `xcassets`。算法为 `AES.GCM.256`，formatVersion 为 `1`。
 
 | 分类 | 原始路径 | 加密后路径 | 数量 | 当前用途 | 调用端 | 状态 |
 | --- | --- | --- | ---: | --- | --- | --- |
-| Backgrounds | `BKThemes/Backgrounds/bk1.png`, `BKThemes/Backgrounds/bk2.png` | `EncryptedArtAssets/BKThemes/Backgrounds/bk1.kmgasset`, `EncryptedArtAssets/BKThemes/Backgrounds/bk2.kmgasset` | 2 | BKArt 背景图轮换 | `BKThemeAssets.backgrounds(maxPixel:)`, `BKThemeAssets.background(at:maxPixel:)`, `BKArtBackgroundView` | 已加密 |
-| Mask | `BKThemes/Mask/frame_00.png` 到 `BKThemes/Mask/frame_17.png` | `EncryptedArtAssets/BKThemes/Mask/frame_00.kmgasset` 到 `EncryptedArtAssets/BKThemes/Mask/frame_17.kmgasset` | 18 | BKArt 转场 mask 动画帧 | `BKThemeAssets.maskFrames(maxPixel:)`, `BKThemeAssets.cachedMaskFrames(maxPixel:)`, `BKArtBackgroundView` | 已加密 |
-| Shapes | `BKThemes/Shapes/shape1.png` 到 `BKThemes/Shapes/shape11.png` | `EncryptedArtAssets/BKThemes/Shapes/shape1.kmgasset` 到 `EncryptedArtAssets/BKThemes/Shapes/shape11.kmgasset` | 11 | BKArt 和 Home ambient shapes | `BKThemeAssets.shapes(maxPixel:)`, `BKArtBackgroundView`, `HomeAmbientShapesBackground` | 已加密 |
+| BKThemes Backgrounds | `BKThemes/Backgrounds/bk1.png`, `bk2.png` | `EncryptedArtAssets/BKThemes/Backgrounds/*.kmgasset` | 2 | BKArt 背景图轮换 | `BKThemeAssets`, `BKArtBackgroundView` | 已加密 |
+| BKThemes Mask | `BKThemes/Mask/frame_00.png` 到 `frame_17.png` | `EncryptedArtAssets/BKThemes/Mask/*.kmgasset` | 18 | BKArt 转场 mask 动画帧 | `BKThemeAssets`, `BKArtBackgroundView` | 已加密 |
+| BKThemes Shapes | `BKThemes/Shapes/shape1.png` 到 `shape11.png` | `EncryptedArtAssets/BKThemes/Shapes/*.kmgasset` | 11 | BKArt 和 Home ambient shapes | `BKThemeAssets`, `BKArtBackgroundView`, `HomeAmbientShapesBackground` | 已加密 |
+| XCAssets Playlist Covers | `PrivateArtSources/XCAssetsOriginals/cov1.imageset` 到 `cov4.imageset` | `EncryptedArtAssets/XCAssets/cov1.kmgasset` 到 `cov4.kmgasset` | 4 | 播放列表默认封面底图 | `PlaylistArtworkGenerator` | 已加密 |
+| XCAssets Cassette Skin | `PrivateArtSources/XCAssetsOriginals/tape*.imageset`, `darkhole.imageset`, `lighthole.imageset`, `kmglook.imageset`, `seasons.imageset` | `EncryptedArtAssets/XCAssets/*.kmgasset` | 10 | 磁带皮肤、孔洞、标识、默认唱片图 | `KmgcccCassetteSkin` | 已加密 |
+| XCAssets About Easter Egg | `PrivateArtSources/XCAssetsOriginals/jntm.imageset` | `EncryptedArtAssets/XCAssets/jntm.kmgasset` | 1 | 关于页彩蛋图 | `AboutSettingsView` | 已加密 |
+
+已迁移 xcassets logicalName：
+
+- `XCAssets/cov1` 到 `XCAssets/cov4`
+- `XCAssets/darkhole`
+- `XCAssets/jntm`
+- `XCAssets/kmglook`
+- `XCAssets/lighthole`
+- `XCAssets/seasons`
+- `XCAssets/tape`
+- `XCAssets/tapedark`
+- `XCAssets/tapegray`
+- `XCAssets/tapemask`
+- `XCAssets/tapeoutline`
+- `XCAssets/tapepaper`
 
 ## 5. Assets.xcassets 审计状态
 
-当前 `myPlayer2/Assets.xcassets` 下的图片集包括：
+不要全量加密 `Assets.xcassets`。原因是 asset catalog 中包含颜色、音频 dataset、低风险 UI 图、疑似 unused 图片等不同类型资源；全量迁移会扩大调用端改动，也容易破坏 SwiftUI 静态资源、template rendering、scale 或 appearance 行为。
 
-- `EmptyLyric`
-- `cov1` 到 `cov4`
-- `darkhole`
-- `jntm`
-- `kmglook`
-- `lighthole`
-- `seasons`
-- `snowflake1` 到 `snowflake5`
-- `tape`
-- `tapedark`
-- `tapegray`
-- `tapemask`
-- `tapeoutline`
-- `tapepaper`
+审计状态：
 
-确认仍在使用的图片：
+| Asset 名称 | 类型 | 是否被引用 | 引用位置 | 是否原创艺术素材 | 本轮处理 |
+| --- | --- | --- | --- | --- | --- |
+| `AccentColor` | colorset | 是 | Xcode global accent | 否 | skip-color |
+| `EmptyLyric` | imageset | 是 | `LyricsPanelView`, `AboutSettingsView` | 普通空状态插图 | keep-xcassets |
+| `cov1` 到 `cov4` | imageset | 是 | `PlaylistArtworkGenerator` | 是，默认封面视觉素材 | migrate |
+| `darkhole` | imageset | 是 | `KmgcccCassetteSkin` | 是，磁带皮肤素材 | migrate |
+| `jntm` | imageset | 是 | `AboutSettingsView` | 是，关于页彩蛋图 | migrate |
+| `kmglook` | imageset | 是 | `KmgcccCassetteSkin` | 是，磁带皮肤标识 | migrate |
+| `lighthole` | imageset | 是 | `KmgcccCassetteSkin` | 是，磁带皮肤素材 | migrate |
+| `seasons` | imageset | 是 | `KmgcccCassetteSkin` | 是，默认唱片视觉素材 | migrate |
+| `snowflake1` 到 `snowflake5` | imageset | 未发现运行时引用 | 无 | 未确认 | unused-candidate |
+| `tape`, `tapedark` | imageset | 是 | `KmgcccCassetteSkin` | 是，磁带主体 | migrate |
+| `tapegray` | imageset | 是 | `KmgcccCassetteSkin` | 是，磁带皮肤灰色层 | migrate |
+| `tapemask` | imageset | 是 | `KmgcccCassetteSkin` | 是，磁带 mask | migrate |
+| `tapeoutline` | imageset | 是 | `KmgcccCassetteSkin` | 是，磁带描边 | migrate |
+| `tapepaper` | imageset | 是 | `KmgcccCassetteSkin` | 是，磁带纸面层 | migrate |
+| `youdowhat` | dataset | 是 | `EasterEggSFXService` | 非图片，音频数据 | keep-xcassets |
+| `youdowhatr` | dataset | 是 | `EasterEggSFXService` | 非图片，音频数据 | keep-xcassets |
 
-| 资源 | 引用位置 | 用途 |
-| --- | --- | --- |
-| `EmptyLyric` | `myPlayer2/Views/Lyrics/LyricsPanelView.swift`, `myPlayer2/Views/Settings/About/AboutSettingsView.swift` | 空歌词/关于页图像 |
-| `jntm` | `myPlayer2/Views/Settings/About/AboutSettingsView.swift` | 关于页彩蛋图像 |
-| `cov1` 到 `cov4` | `myPlayer2/Services/Library/PlaylistArtworkGenerator.swift` | 播放列表默认封面生成 |
-| `kmglook` | `myPlayer2/Skins/NowPlaying/KmgcccCassetteSkin.swift` | 磁带皮肤图层 |
-| `seasons` | `myPlayer2/Skins/NowPlaying/KmgcccCassetteSkin.swift` | 磁带皮肤图层 |
-| `tape`, `tapedark` | `myPlayer2/Skins/NowPlaying/KmgcccCassetteSkin.swift` | 明暗磁带主体 |
-| `tapegray` | `myPlayer2/Skins/NowPlaying/KmgcccCassetteSkin.swift` | 磁带皮肤灰色层 |
-| `tapemask` | `myPlayer2/Skins/NowPlaying/KmgcccCassetteSkin.swift` | 磁带皮肤 mask |
-| `tapeoutline` | `myPlayer2/Skins/NowPlaying/KmgcccCassetteSkin.swift` | 磁带皮肤描边 |
-| `tapepaper` | `myPlayer2/Skins/NowPlaying/KmgcccCassetteSkin.swift` | 磁带皮肤纸面层 |
-| `darkhole`, `lighthole` | `myPlayer2/Skins/NowPlaying/KmgcccCassetteSkin.swift` | 明暗主题孔洞图层 |
-
-疑似未使用资源：
-
-| 资源 | 状态 |
-| --- | --- |
-| `snowflake1` 到 `snowflake5` | 当前未在 Swift、SwiftUI、AppKit、HTML、CSS、plist 或运行时字符串审计中发现项目内引用，标记为 unused candidate |
-
-本轮没有迁移任何 `Assets.xcassets` 图片。原因是本轮优先完成 `BKThemes` 的完整闭环：生成加密文件、替换实际调用链、调整 bundle 资源、验证 Release 资源包不含明文 PNG。`Assets.xcassets` 需要逐个确认引用、资产性质和迁移价值后再迁移。
-
-不要在本轮删除 `snowflake1` 到 `snowflake5` 等疑似 unused 资源。删除 unused 资源必须单独处理，不能和素材加密迁移混在同一提交中。
-
-`AccentColor` 是颜色资源，不属于图片加密范围。
+迁移后，`myPlayer2/Assets.xcassets` 中保留 `AccentColor`、`EmptyLyric`、`snowflake1` 到 `snowflake5`、`youdowhat.dataset`、`youdowhatr.dataset`。`snowflake` 系列仅标记为 unused candidate，不在本轮删除。
 
 ## 6. 加密生成流程
 
-### A. 开发时新增或修改原始素材
+### A. 修改或新增母版素材
 
-1. 修改本地 `BKThemes/Backgrounds/`、`BKThemes/Mask/` 或 `BKThemes/Shapes/` 下的 PNG 原始素材。
-2. 运行加密脚本重新生成 `.kmgasset`。
-3. 检查 `EncryptedArtAssets/manifest.json` 是否更新。
-4. 提交 `.kmgasset`、`manifest.json`、加密脚本或调用端代码修改。
-5. 不提交 `BKThemes/` 下的原始 PNG。
+1. 修改 `BKThemes/` 或 `PrivateArtSources/XCAssetsOriginals/` 下的本地母版。
+2. 如新增 xcassets 艺术素材，先加入 `scripts/encrypted_asset_allowlist.json`。
+3. 运行加密脚本。
+4. 检查 `EncryptedArtAssets/manifest.json` 是否更新。
+5. 提交 `.kmgasset`、manifest、allowlist 和代码修改。
+6. 不提交本地母版原图。
 
-当前脚本是手动工具，未接入 Xcode Build Phase。推荐命令：
+推荐命令：
 
 ```sh
 scripts/encrypt_art_assets.swift \
   --input BKThemes \
   --output EncryptedArtAssets \
-  --logical-root BKThemes
+  --logical-root BKThemes \
+  --allowlist scripts/encrypted_asset_allowlist.json
 ```
 
 强制重加密：
@@ -174,268 +149,189 @@ scripts/encrypt_art_assets.swift \
   --input BKThemes \
   --output EncryptedArtAssets \
   --logical-root BKThemes \
+  --allowlist scripts/encrypted_asset_allowlist.json \
   --force
 ```
 
-如果需要使用开发密钥覆盖默认嵌入密钥：
+脚本行为：
 
-```sh
-KMG_ART_ASSET_KEY_HEX=<64-hex-characters> \
-scripts/encrypt_art_assets.swift \
-  --input BKThemes \
-  --output EncryptedArtAssets \
-  --logical-root BKThemes
-```
+- `BKThemes`：按目录递归处理支持的图片文件。
+- `XCAssets`：只处理 allowlist 中列出的 `.imageset`。
+- `sourceKind` 写入 `bkThemes` 或 `xcassets`。
+- `xcassets` 条目写入 `originalAssetName`、`originalPath`、`appearance`、`scale`。
+- 若原图 sha256 未变化且加密文件存在，则跳过。
 
-不要把真实密钥写入命令历史、仓库文件、Xcode build setting 或文档。
-
-脚本当前行为：
-
-- 只处理输入目录下的 `.png` 文件。
-- 保持相对路径结构。
-- 输出 `.kmgasset`，不把明文图片复制到 `EncryptedArtAssets/`。
-- 读取已有 manifest；如果原图 sha256 未变化且加密文件存在，则跳过。
-- 输出加密、跳过、失败数量和输出目录。
+当前迁移的 xcassets 都是单图 universal imageset，没有 dark/light 或多 scale 明文变体。若以后遇到 appearance 或 scale 变体，必须保留为多份 logicalName，不得丢失差异。
 
 ### B. 构建时
 
-Release bundle 只应包含 `.kmgasset` 和 manifest，不应包含 `BKThemes` 明文 PNG。
+Release bundle 应只包含 `.kmgasset` 和 manifest。`BKThemes`、`PrivateArtSources`、已迁移 imageset 原图、旧 `Resources/CassetteSkin` 明文副本都不应进入 bundle。
 
-当前没有自动加密 Build Phase。构建前需要手动运行 `scripts/encrypt_art_assets.swift`，并确保生成产物已提交或在本地存在。
-
-Debug 下 `BKThemeAssets` 默认允许从本地明文 `BKThemes/` 加载，便于开发调试；Release 下该分支关闭。Debug 要模拟 Release 加密加载时，可设置：
-
-```sh
-KMG_USE_PLAIN_ART_ASSETS=0
-```
+当前没有自动 Build Phase。发布前需要手动运行加密脚本，并确认 `BKArt.bundle` 中 `EncryptedArtAssets` 是最新的。
 
 ### C. App 运行时
 
-1. 调用端通过 `BKThemeAssets` 请求素材 logicalName，例如 `BKThemes/Shapes/shape1`。
-2. `BKThemeAssets` 在 Release 下调用 `EncryptedArtAssetLoader`；Debug 下默认优先使用本地明文母版，或在 `KMG_USE_PLAIN_ART_ASSETS=0` 时走加密加载。
-3. `EncryptedArtAssetLoader` 根据 logicalName 在 `EncryptedArtAssets/` 下定位 `.kmgasset`。
-4. loader 读取文件并校验 header：magic、version、algorithm、长度字段。
-5. loader 使用 `AES.GCM.open` 做认证解密。
-6. loader 使用 ImageIO 从内存中的明文 `Data` 下采样解码为 `CGImage`。
-7. loader 将 `CGImage` 写入 `NSCache`，缓存 key 包含 logicalName 和 maxPixel。
-8. `BKThemeAssets` 继续维护背景、形状、mask 帧级缓存，并返回给 UI。
-9. 失败时 loader 写入主题日志并返回 `nil`；调用端跳过该素材或保留原有 fallback，不崩溃。
+1. BKThemes 调用端通过 `BKThemeAssets` 请求 logicalName。
+2. 已迁移 xcassets 调用端通过 `EncryptedArtAssetLoader.shared.xcAssetImage(named:maxPixel:)` 或 `EncryptedAssetImages.image(named:maxPixel:)` 请求资源。
+3. loader 定位 `EncryptedArtAssets/<logicalName>.kmgasset`。
+4. loader 校验 header 并用 AES-GCM 认证解密。
+5. loader 用 ImageIO 解码和下采样。
+6. loader 将 `CGImage` 写入 `NSCache`。
+7. 调用端得到 `NSImage` 或 SwiftUI `Image`。
+8. 失败时记录主题日志并返回 fallback，不崩溃。
 
 ## 7. App 运行时加载流程
 
-运行时加载职责分为两层：
+职责边界：
 
-- `EncryptedArtAssetLoader` 只负责加密文件读取、格式校验、解密、图片解码和底层 `CGImage` 缓存。
-- `BKThemeAssets` 负责业务素材枚举、Debug 明文路径、按场景下采样、BKArt/Home 共享缓存和 mask alpha 处理。
+- `EncryptedArtAssetLoader`：加密文件读取、格式校验、解密、图片解码、底层缓存、SwiftUI 包装。
+- `BKThemeAssets`：BKThemes 的业务枚举、Debug 明文 fallback、下采样、mask alpha 处理。
+- `KmgcccCassetteSkin`：只负责磁带皮肤布局和渲染，不再直接读取明文皮肤 PNG。
 
-当前 logicalName 规则：
+示例：
 
-- `BKThemes/Backgrounds/bk1`
-- `BKThemes/Backgrounds/bk2`
-- `BKThemes/Mask/frame_00` 到 `BKThemes/Mask/frame_17`
-- `BKThemes/Shapes/shape1` 到 `BKThemes/Shapes/shape11`
-
-文件定位规则由 `EncryptedArtAssetLoader.encryptedURL(logicalName:in:)` 实现。例：
-
-```text
-BKThemes/Shapes/shape1
--> EncryptedArtAssets/BKThemes/Shapes/shape1.kmgasset
+```swift
+EncryptedArtAssetLoader.shared.xcAssetImage(named: "kmglook", maxPixel: 800)
+EncryptedAssetImages.image(named: "seasons", maxPixel: 1600)
 ```
-
-加载器搜索 bundle 顺序为：传入 bundle、`Bundle.main`、`Bundle(for: EncryptedArtAssetLoader.self)`，并去重。
 
 ## 8. Git 与本地素材管理
 
-原始明文素材保留在本地 `BKThemes/`，但不提交 Git。当前 `.gitignore` 中使用根目录规则：
+`.gitignore` 规则：
 
 ```gitignore
 /BKThemes/
+/PrivateArtSources/
 ```
 
-该规则只忽略项目根目录的本地母版素材，不忽略 `EncryptedArtAssets/BKThemes/` 下的加密产物。
+原始明文素材保留在本地，不提交 Git。加密后的 `.kmgasset`、`manifest.json`、allowlist、脚本、loader 和调用端代码需要提交。
 
-检查是否有原始素材被 Git 追踪：
+如果发现原始明文素材已被 Git 追踪，只从索引移除，不删除本地文件：
 
 ```sh
 git ls-files | grep 'BKThemes'
-```
-
-如果发现原始素材已经被追踪，应只从索引移除，不删除本地文件：
-
-```sh
+git ls-files | grep 'PrivateArtSources'
 git rm --cached <path>
 ```
 
-需要提交的内容：
+旧的 `myPlayer2/Resources/CassetteSkin/` 是重复明文来源，已移除。不要重新引入该目录；磁带皮肤母版统一维护在 `PrivateArtSources/XCAssetsOriginals/`。
 
-- `EncryptedArtAssets/**/*.kmgasset`
-- `EncryptedArtAssets/manifest.json`
-- `scripts/encrypt_art_assets.swift`
-- `myPlayer2/Services/Theme/EncryptedArtAssetLoader.swift`
-- `myPlayer2/Views/NowPlaying/BKThemeAssets.swift`
-- `kmgccc_player.xcodeproj/project.pbxproj`
-- 相关维护文档
-
-不应提交的内容：
-
-- `BKThemes/` 下的原始明文 PNG
-- 真实密钥或本地密钥配置
-- 临时解密产物
-- DerivedData、构建中间目录和手动测试产生的临时文件
+不要提交真实密钥、临时解密产物、DerivedData 或构建中间目录。
 
 ## 9. 发布前验证清单
 
-发布前至少检查以下项目：
+- `.app` / `BKArt.bundle` 内没有 `BKThemes/**/*.png`。
+- `.app` / `BKArt.bundle` 内没有 `PrivateArtSources`。
+- `.app` / `BKArt.bundle` 内没有已迁移 xcassets 原图，例如 `cov1.png`、`jntm.png`、`seasons.jpg`、`tapeskin*.png`、`lighthole.png`。
+- `.app` / `BKArt.bundle` 内有 46 个 `.kmgasset` 和 `EncryptedArtAssets/manifest.json`。
+- `Assets.car` 中不包含已迁移 asset 名称，只允许保留 `EmptyLyric`、`snowflake*`、颜色和 dataset。
+- `.kmgasset` 不能被 Preview/Finder 直接作为图片打开。
+- BKArt 背景、mask、shape 正常显示。
+- 磁带皮肤、孔洞、`kmglook`、`seasons` 默认图、播放列表默认封面正常显示。
+- 缺失 `.kmgasset` 时 App 不崩溃，有主题日志和 fallback。
+- 篡改 `.kmgasset` 后 AES-GCM 认证失败，并 fallback。
+- 重复显示同一素材命中缓存，不反复解密。
+- Release 模式不依赖本地明文素材。
 
-- `.app` 或 `BKArt.bundle` 内没有 `BKThemes/Backgrounds/*.png`。
-- `.app` 或 `BKArt.bundle` 内没有 `BKThemes/Mask/*.png`。
-- `.app` 或 `BKArt.bundle` 内没有 `BKThemes/Shapes/*.png`。
-- `.app` 或 `BKArt.bundle` 内存在对应 `.kmgasset` 和 `EncryptedArtAssets/manifest.json`。
-- 用 Finder、Preview 或 `file` 命令不能把 `.kmgasset` 直接当图片打开。
-- App 中 BKArt 背景、mask 转场、shape 元素正常显示。
-- Home ambient shapes 正常显示。
-- mask 动画帧预热和缓存正常，不在播放每帧时反复解密造成卡顿。
-- 临时移走一个 `.kmgasset` 时 App 不崩溃，并有主题日志。
-- 修改 `.kmgasset` 若干字节后解密失败，App 不崩溃，并有认证失败或解密失败日志。
-- 重复显示同一素材时命中缓存，不反复读取和解密。
-- Release 模式不依赖本地 `BKThemes/` 明文素材。
-
-可使用以下命令检查 `BKArt.bundle` 的资源内容：
+检查示例：
 
 ```sh
 xcodebuild \
   -project kmgccc_player.xcodeproj \
-  -scheme BKArt \
-  -configuration Release \
+  -scheme kmgccc_player \
+  -configuration Debug \
   -derivedDataPath .derivedDataAssetEncryption \
   CODE_SIGNING_ALLOWED=NO \
   build
 
-bundle=".derivedDataAssetEncryption/Build/Products/Release/BKArt.bundle/Contents/Resources"
+app=".derivedDataAssetEncryption/Build/Products/Debug/kmgccc_player.app/Contents/Resources"
 
-find "$bundle/EncryptedArtAssets" -name '*.kmgasset' | wc -l
-test -f "$bundle/EncryptedArtAssets/manifest.json" && echo manifest-ok
-find "$bundle" -type f \( \
-  -path '*/BKThemes/*.png' \
-  -o -name 'bk1.png' \
-  -o -name 'bk2.png' \
-  -o -name 'frame_*.png' \
-  -o -name 'shape*.png' \
+find "$app" -type f \( \
+  -name 'cov1.png' -o -name 'cov2.png' -o -name 'cov3.png' -o -name 'cov4.png' \
+  -o -name 'jntm.png' -o -name 'seasons.jpg' -o -name 'tapeskin*.png' \
+  -o -name 'lighthole.png' -o -name 'Untitled_Artwork 4.png' \
 \)
+
+find "$app" -path '*/EncryptedArtAssets/*' -name '*.kmgasset' | wc -l
+xcrun assetutil --info "$app/Assets.car" | rg 'cov1|cov2|cov3|cov4|darkhole|jntm|kmglook|lighthole|seasons|tape|tapedark|tapegray|tapemask|tapeoutline|tapepaper'
 ```
 
-最后一个 `find` 命令不应输出任何明文 BKThemes PNG。
+最后一个 `assetutil` 命令不应输出已迁移 asset 名称。
 
 ## 10. 后续维护规范
 
 ### 新增 BKThemes 素材
 
-1. 将原始 PNG 放入本地 `BKThemes/` 对应目录。
-2. 如新增目录或命名规则超出当前范围，更新 `scripts/encrypt_art_assets.swift` 的输入策略或更新调用端枚举逻辑。
+1. 放入本地 `BKThemes/`。
+2. 更新调用端 logicalName 枚举。
 3. 运行加密脚本。
-4. 在调用端使用新的 logicalName，例如 `BKThemes/Shapes/shape12`。
-5. 检查 `EncryptedArtAssets/manifest.json` 新增条目。
-6. 提交加密产物和代码修改，不提交原图。
+4. 检查 manifest。
+5. 提交加密产物，不提交原图。
 
-### 替换现有素材
+### 新增 xcassets 艺术素材
+
+1. 先审计是否真实运行时引用。
+2. 只迁移确认在用且属于原创艺术/视觉资产的图片。
+3. 将母版放入 `PrivateArtSources/XCAssetsOriginals/<name>.imageset`。
+4. 加入 `scripts/encrypted_asset_allowlist.json`。
+5. 运行加密脚本。
+6. 将调用端改为 `EncryptedArtAssetLoader` 或 `EncryptedAssetImages`。
+7. 确认 `Assets.car` 不含该 asset 名称。
+
+### 替换素材
 
 1. 保持 logicalName 不变。
-2. 替换本地 `BKThemes/` 下的原始 PNG。
+2. 替换唯一母版路径中的原图。
 3. 重新运行加密脚本。
-4. 检查 manifest 中对应条目的 `sha256Plaintext` 和 `sha256CipherFile` 已变化。
-5. 回归测试显示效果，特别是背景切换、mask 动画和 shape 布局。
+4. 检查 manifest hash 变化。
+5. 回归测试显示效果。
 
 ### 删除素材
 
-1. 先确认没有调用引用。
-2. 删除对应 `.kmgasset`。
-3. 重新生成或手动更新 manifest，确保不保留失效条目。
-4. 删除调用端 logicalName 或枚举引用。
-5. 原始素材是否保留由本地素材管理决定，不要误删本地母版文件。
+1. 先确认无调用引用。
+2. 从 allowlist 和调用端移除。
+3. 删除对应 `.kmgasset`。
+4. 更新 manifest。
+5. 本地母版是否保留由素材管理决定，但不要误删仍在用的唯一母版。
 
-### 迁移 xcassets
+### 特殊资源
 
-1. 必须先做引用审计。
-2. 只迁移确认仍在使用且属于原创艺术资产的图片。
-3. 不迁移 `AccentColor`、系统图标、普通低价值 UI 资源或非图片资源。
-4. 不能直接删除 `snowflake1` 到 `snowflake5` 等疑似 unused 资源；删除必须单独提交。
-5. 迁移后应把调用端从 `Image("name")`、`NSImage(named:)` 等资源名加载改为统一的加密加载入口。
+- `AccentColor`、colorset：skip-color。
+- dataset / 音频：不属于图片加密范围。
+- PDF/vector/template image：迁移前必须确认不会破坏矢量缩放或 template tint；不确定时标记 `needs-manual-check`。
+- dark/light appearance：必须输出不同 logicalName，如 `XCAssets/name/light`、`XCAssets/name/dark`。
+- 1x/2x/3x：不得降低 Retina 清晰度；必要时保留多份或选择最高质量源图。
+- unused candidate：只记录，不和加密迁移同轮删除。
 
 ## 11. 常见问题排查
 
-### 图片显示为空白怎么办
+### 图片显示为空白
 
-先检查 logicalName 是否存在对应加密文件。例如：
+检查 logicalName 是否有对应 `.kmgasset`，并查看主题日志中的 `EncryptedArtAssetLoader` 错误。Debug 下可设置 `KMG_USE_PLAIN_ART_ASSETS=0` 复现 Release 加密路径。
 
-```text
-BKThemes/Shapes/shape1
--> EncryptedArtAssets/BKThemes/Shapes/shape1.kmgasset
-```
+### Debug 能显示，Release 不显示
 
-再检查 `BKThemeAssets` 是否枚举到了该资源，以及主题日志中是否有 `EncryptedArtAssetLoader` 的错误。
+通常是 Debug 走了本地明文 fallback，Release 缺少加密产物。检查 `EncryptedArtAssets` 是否复制进 `BKArt.bundle`，并确认 manifest 包含对应 logicalName。
 
-### 解密失败怎么办
+### Assets.car 中仍有已迁移素材
 
-解密失败通常来自密钥不一致、文件被篡改、文件截断或 header 异常。确认：
+说明对应 `.imageset` 仍在 `myPlayer2/Assets.xcassets` 中，或被其他 asset catalog 引入。把母版移到 `PrivateArtSources/XCAssetsOriginals/`，不要保留在 target asset catalog 内。
 
-- 生成 `.kmgasset` 和运行 App 使用的是同一套密钥。
-- 文件没有被手动编辑。
-- manifest 中的 `sha256CipherFile` 与当前文件一致。
-- Debug 环境变量 `KMG_ART_ASSET_KEY_HEX` 没有覆盖成错误值。
+### bundle 中仍有明文 PNG/JPG
 
-### manifest 找不到怎么办
+检查 Copy Bundle Resources、file-system synchronized group、旧目录副本和 Build Phase。不要恢复 `myPlayer2/Resources/CassetteSkin/` 这类重复明文路径。
 
-运行时当前不依赖 manifest 定位文件；manifest 主要用于审计、增量生成和维护检查。若 manifest 缺失，重新运行加密脚本生成：
+### 解密失败
 
-```sh
-scripts/encrypt_art_assets.swift \
-  --input BKThemes \
-  --output EncryptedArtAssets \
-  --logical-root BKThemes
-```
+确认生成和运行时使用同一密钥。修改密钥后，所有旧 `.kmgasset` 都必须重新生成。
 
-发布前仍应确保 `EncryptedArtAssets/manifest.json` 被提交并复制进 bundle。
+### 性能变差
 
-### Debug 能显示，Release 显示不了怎么办
-
-Debug 默认可能走本地明文 `BKThemes/`，Release 不会。排查步骤：
-
-1. 在 Debug 设置 `KMG_USE_PLAIN_ART_ASSETS=0`，模拟 Release 加密加载。
-2. 检查 `EncryptedArtAssets/**/*.kmgasset` 是否存在。
-3. 检查 `BKArt.bundle` 是否复制了 `EncryptedArtAssets`。
-4. 检查 Release bundle 中是否错误缺失 `.kmgasset`。
-
-### App bundle 里仍然出现 PNG 怎么办
-
-检查 `kmgccc_player.xcodeproj/project.pbxproj` 中 `BKArt` target 的 Resources 阶段，确认没有 `BKThemes in Resources` 或文件系统同步规则把 `BKThemes` 自动复制进 bundle。
-
-同时检查是否有新的资源目录、Build Phase 或 Copy Files 阶段把 `BKThemes` 复制进产物。
-
-### 新增图片后 App 读取不到怎么办
-
-确认三件事：
-
-1. 原图已放在 `BKThemes/` 下。
-2. 已重新运行加密脚本，`EncryptedArtAssets/manifest.json` 有新条目。
-3. 调用端 logicalName 与生成路径一致，且 Xcode 复制了新的 `.kmgasset`。
-
-### 性能变差怎么办
-
-检查是否绕过了缓存，或是否在高频动画路径中不断改变 `maxPixel` 导致 cache key 变化。当前缓存层级包括：
-
-- `EncryptedArtAssetLoader` 的 `NSCache<logicalName|maxPixel, CGImage>`。
-- `BKThemeAssets` 的背景、shape、mask 帧缓存。
-
-mask 帧应通过 `maskFrames(maxPixel:)` 预热或通过 `cachedMaskFrames(maxPixel:)` 复用，避免每帧动画时重新解密。
-
-### 修改密钥后旧资源全部无法加载怎么办
-
-这是预期行为。AES-GCM 认证要求生成和运行时使用同一密钥。修改密钥后，必须用新密钥重新生成所有 `.kmgasset`，并提交新的加密产物和 manifest。
+检查是否不断改变 `maxPixel` 导致 cache key 变化。`EncryptedArtAssetLoader` 和 `BKThemeAssets` 都有缓存；mask 动画帧应预热或复用，不应逐帧重新解密。
 
 ## 12. 后续改进建议
 
-- 将加密脚本接入可选 Build Phase，但必须保留增量逻辑，避免每次构建无意义重加密。
-- 为 `EncryptedArtAssetLoader` 增加仅 Debug 启用的命中率或解密计数诊断，便于发布前确认缓存行为。
-- 为 `.kmgasset` 增加独立校验工具，按 manifest 扫描缺失、篡改和过期文件。
-- 分批迁移 `Assets.xcassets` 中确认仍在使用、确属原创艺术资产的图片。
-- 为 Release 构建增加自动检查脚本，发现 `BKThemes` 明文 PNG 时直接失败。
+- 增加 manifest 校验脚本，扫描缺失、过期、篡改和 bundle 明文泄漏。
+- 增加 Release 构建检查，发现已迁移素材出现在 `Assets.car` 或 bundle 明文路径时失败。
+- 为 Debug 增加 loader cache hit / decrypt counter。
+- 继续按审计结果评估 `EmptyLyric` 是否需要迁移；当前保留在 xcassets。
