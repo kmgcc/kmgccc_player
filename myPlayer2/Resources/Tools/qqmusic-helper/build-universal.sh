@@ -2,9 +2,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BUILD_DIR="${SCRIPT_DIR}/.build-universal"
+BUILD_DIR="${SCRIPT_DIR}/.build-arm64"
 ARM_PYTHON="${QQMUSIC_HELPER_ARM_PYTHON:-/opt/homebrew/bin/python3.12}"
-X86_PYTHON="${QQMUSIC_HELPER_X86_PYTHON:-/usr/local/bin/python3.11}"
 APP_NAME="qqmusic-helper"
 INTERNAL_DIR_NAME="_internal.bundle"
 FINAL_EXE="${SCRIPT_DIR}/${APP_NAME}"
@@ -63,35 +62,15 @@ is_macho() {
   file "$1" | grep -q 'Mach-O'
 }
 
-merge_universal() {
+install_arm64_output() {
   local arm_dir="${BUILD_DIR}/dist-arm64/${APP_NAME}"
-  local x86_dir="${BUILD_DIR}/dist-x86_64/${APP_NAME}"
-  local final_dir="${BUILD_DIR}/universal/${APP_NAME}"
-
-  rm -rf "${BUILD_DIR}/universal"
-  mkdir -p "${final_dir}"
-  ditto --noextattr --norsrc "${arm_dir}/" "${final_dir}/"
-
-  while IFS= read -r -d '' x86_file; do
-    local rel="${x86_file#${x86_dir}/}"
-    local arm_file="${arm_dir}/${rel}"
-    local final_file="${final_dir}/${rel}"
-    mkdir -p "$(dirname "${final_file}")"
-
-    if [[ ! -e "${arm_file}" ]]; then
-      ditto --noextattr --norsrc "${x86_file}" "${final_file}"
-      continue
-    fi
-
-    if [[ -f "${arm_file}" && -f "${x86_file}" ]] && is_macho "${arm_file}" && is_macho "${x86_file}"; then
-      lipo -create "${arm_file}" "${x86_file}" -output "${final_file}"
-    fi
-  done < <(find "${x86_dir}" -type f -print0)
 
   rm -rf "${FINAL_EXE}" "${FINAL_INTERNAL}" "${SCRIPT_DIR}/_internal"
-  ditto --noextattr --norsrc "${final_dir}/${APP_NAME}" "${FINAL_EXE}"
-  if [[ -d "${final_dir}/${INTERNAL_DIR_NAME}" ]]; then
-    ditto --noextattr --norsrc "${final_dir}/${INTERNAL_DIR_NAME}" "${FINAL_INTERNAL}"
+  find "${SCRIPT_DIR}" -maxdepth 1 -type d -name '_internal *.bundle' -exec rm -rf {} +
+  find "${SCRIPT_DIR}" -maxdepth 1 -type f -name 'qqmusic-helper [0-9]*' -exec rm -f {} +
+  ditto --noextattr --norsrc "${arm_dir}/${APP_NAME}" "${FINAL_EXE}"
+  if [[ -d "${arm_dir}/${INTERNAL_DIR_NAME}" ]]; then
+    ditto --noextattr --norsrc "${arm_dir}/${INTERNAL_DIR_NAME}" "${FINAL_INTERNAL}"
   fi
 }
 
@@ -113,8 +92,12 @@ sign_outputs() {
 
 smoke_test() {
   log "$(file "${FINAL_EXE}")"
-  if ! file "${FINAL_EXE}" | grep -q 'x86_64' || ! file "${FINAL_EXE}" | grep -q 'arm64'; then
-    echo "error: ${FINAL_EXE} is not universal arm64 + x86_64" >&2
+  if ! lipo -info "${FINAL_EXE}" 2>/dev/null | grep -q 'arm64'; then
+    echo "error: ${FINAL_EXE} is not arm64" >&2
+    exit 1
+  fi
+  if lipo -info "${FINAL_EXE}" 2>/dev/null | grep -q 'x86_64'; then
+    echo "error: ${FINAL_EXE} still contains x86_64" >&2
     exit 1
   fi
 
@@ -129,12 +112,10 @@ smoke_test() {
 }
 
 require_python arm64 "${ARM_PYTHON}"
-require_python x86_64 "${X86_PYTHON}"
 rm -rf "${BUILD_DIR}"
 mkdir -p "${BUILD_DIR}"
 install_and_build_arch arm64 "${ARM_PYTHON}"
-install_and_build_arch x86_64 "${X86_PYTHON}"
-merge_universal
+install_arm64_output
 chmod 755 "${FINAL_EXE}"
 sign_outputs
 smoke_test
