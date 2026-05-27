@@ -8,7 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		933AAE3F2F3CCBBB0081B59C /* BKArt.bundle in Resources */ = {isa = PBXBuildFile; fileRef = 933AADFD2F3CC8D40081B59C /* BKArt.bundle */; };
-		933AAE422F3CCCDF0081B59C /* BKThemes in Resources */ = {isa = PBXBuildFile; fileRef = 933AAE412F3CCCDF0081B59C /* BKThemes */; };
+		9340EE102FA6000000010001 /* EncryptedArtAssets in Resources */ = {isa = PBXBuildFile; fileRef = 9340EE0F2FA6000000010001 /* EncryptedArtAssets */; };
 		9351198E2F33149A00766A5F /* AMLL in Resources */ = {isa = PBXBuildFile; fileRef = 9351198D2F33149A00766A5F /* AMLL */; };
 		938818D32F7925E800880C23 /* WhatsNewKit in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000002 /* WhatsNewKit */; };
 		9396ADAB2FA12C0100000002 /* mediaremote-adapter in Resources */ = {isa = PBXBuildFile; fileRef = 9396ADAB2FA12C0100000001 /* mediaremote-adapter */; };
@@ -28,6 +28,7 @@
 /* Begin PBXFileReference section */
 		933AADFD2F3CC8D40081B59C /* BKArt.bundle */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BKArt.bundle; sourceTree = BUILT_PRODUCTS_DIR; };
 		933AAE412F3CCCDF0081B59C /* BKThemes */ = {isa = PBXFileReference; lastKnownFileType = folder; path = BKThemes; sourceTree = "<group>"; };
+		9340EE0F2FA6000000010001 /* EncryptedArtAssets */ = {isa = PBXFileReference; lastKnownFileType = folder; path = EncryptedArtAssets; sourceTree = "<group>"; };
 		935118922F3231C500766A5F /* kmgccc_player.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = kmgccc_player.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		9351198D2F33149A00766A5F /* AMLL */ = {isa = PBXFileReference; lastKnownFileType = folder; name = AMLL; path = myPlayer2/Resources/AMLL; sourceTree = "<group>"; };
 		9396ADAB2FA12C0100000001 /* mediaremote-adapter */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "mediaremote-adapter"; path = "myPlayer2/Resources/mediaremote-adapter"; sourceTree = "<group>"; };
@@ -36,43 +37,6 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		933AAE402F3CCCB60081B59C /* Exceptions for "BKThemes" folder in "BKArt" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				Backgrounds/bk1.png,
-				Backgrounds/bk2.png,
-				Mask/frame_00.png,
-				Mask/frame_01.png,
-				Mask/frame_02.png,
-				Mask/frame_03.png,
-				Mask/frame_04.png,
-				Mask/frame_05.png,
-				Mask/frame_06.png,
-				Mask/frame_07.png,
-				Mask/frame_08.png,
-				Mask/frame_09.png,
-				Mask/frame_10.png,
-				Mask/frame_11.png,
-				Mask/frame_12.png,
-				Mask/frame_13.png,
-				Mask/frame_14.png,
-				Mask/frame_15.png,
-				Mask/frame_16.png,
-				Mask/frame_17.png,
-				Shapes/shape1.png,
-				Shapes/shape2.png,
-				Shapes/shape3.png,
-				Shapes/shape4.png,
-				Shapes/shape5.png,
-				Shapes/shape6.png,
-				Shapes/shape7.png,
-				Shapes/shape8.png,
-				Shapes/shape9.png,
-				Shapes/shape10.png,
-				Shapes/shape11.png,
-			);
-			target = 933AADFC2F3CC8D40081B59C /* BKArt */;
-		};
 		9351197F2F33130A00766A5F /* Exceptions for "myPlayer2" folder in "kmgccc_player" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
@@ -93,14 +57,6 @@
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		933AAE202F3CC8EB0081B59C /* BKThemes */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				933AAE402F3CCCB60081B59C /* Exceptions for "BKThemes" folder in "BKArt" target */,
-			);
-			path = BKThemes;
-			sourceTree = "<group>";
-		};
 		935118942F3231C500766A5F /* myPlayer2 */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
@@ -134,6 +90,7 @@
 			isa = PBXGroup;
 			children = (
 				933AAE412F3CCCDF0081B59C /* BKThemes */,
+				9340EE0F2FA6000000010001 /* EncryptedArtAssets */,
 				93CF3F822F344E9F0004C8E3 /* lddc-server */,
 				93D91A102FA5000000010001 /* Tools */,
 				9351198D2F33149A00766A5F /* AMLL */,
@@ -156,7 +113,6 @@
 		93EBF7BA2F8A113D007F15E3 /* Recovered References */ = {
 			isa = PBXGroup;
 			children = (
-				933AAE202F3CC8EB0081B59C /* BKThemes */,
 			);
 			name = "Recovered References";
 			sourceTree = "<group>";
@@ -177,7 +133,6 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				933AAE202F3CC8EB0081B59C /* BKThemes */,
 			);
 			name = BKArt;
 			packageProductDependencies = (
@@ -259,7 +214,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				933AAE422F3CCCDF0081B59C /* BKThemes in Resources */,
+				9340EE102FA6000000010001 /* EncryptedArtAssets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

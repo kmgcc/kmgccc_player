@@ -1,5 +1,7 @@
 # Manual exclusions
-BKThemes/
+# BKThemes PNGs are local development master art assets. Ship encrypted
+# EncryptedArtAssets/*.kmgasset instead.
+/BKThemes/
 apple-audio-visualization-main/
 # AMLL source worktrees live in ../amll-sources/.
 applemusic-like-lyrics-full-refractor/
