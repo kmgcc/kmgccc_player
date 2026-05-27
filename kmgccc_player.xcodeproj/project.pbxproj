@@ -39,31 +39,29 @@
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
 		9351197F2F33130A00766A5F /* Exceptions for "myPlayer2" folder in "kmgccc_player" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-				membershipExceptions = (
-					Info.plist,
-					Resources/.DS_Store,
-					Resources/AMLL,
-					Resources/AMLL/amll-background.js,
-					Resources/AMLL/amll-core.js,
-					Resources/AMLL/amll-lyric.js,
-					Resources/AMLL/background.html,
-					Resources/AMLL/bridge.js,
-					Resources/AMLL/index.html,
-					Resources/AMLL/index.html.bak2,
-					Resources/AMLL/lyrics-renderer.js,
-					Resources/AMLL/sample.ttml,
-					Resources/AMLL/style.css,
-					"Resources/mediaremote-adapter/bin/mediaremote-adapter.pl",
-					"Resources/mediaremote-adapter/build/MediaRemoteAdapter.framework",
-					"Resources/mediaremote-adapter/build/MediaRemoteAdapterTestClient",
-					"Resources/mediaremote-adapter/LICENSE",
-					"Resources/mediaremote-adapter/README.md",
-					"Resources/Tools/qqmusic-helper/__pycache__",
-					"Resources/Tools/qqmusic-helper/_internal 2.bundle",
-					"Resources/Tools/qqmusic-helper/build-universal.sh",
-					"Resources/Tools/qqmusic-helper/main.py",
-					"Resources/Tools/qqmusic-helper/requirements.txt",
-					Resources/Tools/sacad/sacad,
+			membershipExceptions = (
+				Info.plist,
+				Resources/.DS_Store,
+				"Resources/AMLL/amll-background.js",
+				"Resources/AMLL/amll-core.js",
+				"Resources/AMLL/amll-lyric.js",
+				Resources/AMLL/background.html,
+				Resources/AMLL/bridge.js,
+				Resources/AMLL/index.html,
+				Resources/AMLL/index.html.bak2,
+				"Resources/AMLL/lyrics-renderer.js",
+				Resources/AMLL/sample.ttml,
+				Resources/AMLL/style.css,
+				"Resources/mediaremote-adapter/bin/mediaremote-adapter.pl",
+				"Resources/mediaremote-adapter/build/MediaRemoteAdapter.framework",
+				"Resources/mediaremote-adapter/build/MediaRemoteAdapterTestClient",
+				"Resources/mediaremote-adapter/LICENSE",
+				"Resources/mediaremote-adapter/README.md",
+				"Resources/Tools/qqmusic-helper/_internal 2.bundle",
+				"Resources/Tools/qqmusic-helper/build-universal.sh",
+				"Resources/Tools/qqmusic-helper/main.py",
+				"Resources/Tools/qqmusic-helper/requirements.txt",
+				Resources/Tools/sacad/sacad,
 				scan_ui.py,
 			);
 			target = 935118912F3231C500766A5F /* kmgccc_player */;
@@ -429,6 +427,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
@@ -505,11 +504,17 @@
 					"$(inherited)",
 					.venv,
 					".qqmusic-helper-venv",
+					".build-arm64",
 					".build-universal",
-					"_internal 2.bundle",
+					"_internal*.bundle",
+					_internal,
+					2.bundle,
+					_internal,
+					3.bundle,
 					_internal,
 					_internal.bundle,
-					".DS_Store",
+					.DS_Store,
+					"qqmusic-helper*",
 					"qqmusic-helper",
 					__pycache__,
 					"*.bak*",
@@ -534,7 +539,13 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				LIBRARY_SEARCH_PATHS = "$(inherited)";
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/myPlayer2/Resources/Tools/qqmusic-helper/.build-arm64/venv-arm64/lib/python3.12/site-packages/orjson",
+					"$(PROJECT_DIR)/myPlayer2/Resources/Tools/qqmusic-helper/.build-arm64/venv-arm64/lib/python3.12/site-packages/tarsio",
+					"$(PROJECT_DIR)/myPlayer2/Resources/Tools/qqmusic-helper/.build-arm64/venv-arm64/lib/python3.12/site-packages/cryptography/hazmat/bindings",
+					"$(PROJECT_DIR)/myPlayer2/Resources/Tools/qqmusic-helper/.build-arm64/venv-arm64/lib/python3.12/site-packages/pydantic_core",
+				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 2.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = kmgccc.player;
@@ -558,6 +569,7 @@
 		9351189F2F3231C700766A5F /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = kmgccc;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
@@ -577,11 +589,17 @@
 					"$(inherited)",
 					.venv,
 					".qqmusic-helper-venv",
+					".build-arm64",
 					".build-universal",
-					"_internal 2.bundle",
+					"_internal*.bundle",
+					_internal,
+					2.bundle,
+					_internal,
+					3.bundle,
 					_internal,
 					_internal.bundle,
-					".DS_Store",
+					.DS_Store,
+					"qqmusic-helper*",
 					"qqmusic-helper",
 					__pycache__,
 					"*.bak*",
@@ -606,7 +624,13 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				LIBRARY_SEARCH_PATHS = "$(inherited)";
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/myPlayer2/Resources/Tools/qqmusic-helper/.build-arm64/venv-arm64/lib/python3.12/site-packages/orjson",
+					"$(PROJECT_DIR)/myPlayer2/Resources/Tools/qqmusic-helper/.build-arm64/venv-arm64/lib/python3.12/site-packages/tarsio",
+					"$(PROJECT_DIR)/myPlayer2/Resources/Tools/qqmusic-helper/.build-arm64/venv-arm64/lib/python3.12/site-packages/cryptography/hazmat/bindings",
+					"$(PROJECT_DIR)/myPlayer2/Resources/Tools/qqmusic-helper/.build-arm64/venv-arm64/lib/python3.12/site-packages/pydantic_core",
+				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 2.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = kmgccc.player;

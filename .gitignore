@@ -57,8 +57,11 @@ dist/
 *.spec
 myPlayer2/Resources/Tools/qqmusic-helper/.venv/
 myPlayer2/Resources/Tools/qqmusic-helper/.venv
+myPlayer2/Resources/Tools/qqmusic-helper/.build-arm64/
 myPlayer2/Resources/Tools/qqmusic-helper/.build-universal/
+myPlayer2/Resources/Tools/qqmusic-helper/_internal *.bundle/
 myPlayer2/Resources/Tools/qqmusic-helper/_internal 2.bundle/
+myPlayer2/Resources/Tools/qqmusic-helper/qqmusic-helper [0-9]*
 .qqmusic-helper-venv/
 
 # Tools / Binary distributions
