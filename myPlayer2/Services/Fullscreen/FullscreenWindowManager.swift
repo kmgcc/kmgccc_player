@@ -266,8 +266,6 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
             )
         }
         LyricsSurfaceManager.shared.requestMode(.fullscreen)
-        suspendMainSidebarForEmbeddedFullscreenIfNeeded()
-        suspendMainLyricsIfNeeded()
         if EmbeddedFullscreenTrace.enabled {
             Log.info(
                 "[EFS t=\(EmbeddedFullscreenTrace.stamp())] showFullscreenPlayerInWindow.setMode embeddedInWindow",
@@ -275,6 +273,8 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
             )
         }
         presentationMode = .embeddedInWindow
+        suspendMainSidebarForEmbeddedFullscreenIfNeeded()
+        suspendMainLyricsIfNeeded()
         installEscapeMonitorIfNeeded()
         if EmbeddedFullscreenTrace.enabled {
             Log.info(

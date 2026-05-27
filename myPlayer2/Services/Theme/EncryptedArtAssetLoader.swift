@@ -9,15 +9,16 @@ import AppKit
 import CryptoKit
 import Foundation
 import ImageIO
+import SwiftUI
 
 final class EncryptedArtAssetLoader: @unchecked Sendable {
-    static let shared = EncryptedArtAssetLoader()
+    nonisolated static let shared = EncryptedArtAssetLoader()
 
     private enum Constants {
-        static let magic = Array("KMGASSET".utf8)
-        static let version: UInt8 = 1
-        static let algorithmAESGCM256: UInt8 = 1
-        static let headerLength = 23
+        nonisolated static let magic = Array("KMGASSET".utf8)
+        nonisolated static let version: UInt8 = 1
+        nonisolated static let algorithmAESGCM256: UInt8 = 1
+        nonisolated static let headerLength = 23
     }
 
     enum LoadError: Error, CustomStringConvertible {
@@ -50,23 +51,23 @@ final class EncryptedArtAssetLoader: @unchecked Sendable {
     }
 
     private final class CGImageBox: NSObject {
-        let image: CGImage
+        nonisolated let image: CGImage
 
-        init(_ image: CGImage) {
+        nonisolated init(_ image: CGImage) {
             self.image = image
         }
     }
 
-    private let imageCache: NSCache<NSString, CGImageBox> = {
+    private nonisolated(unsafe) let imageCache: NSCache<NSString, CGImageBox> = {
         let cache = NSCache<NSString, CGImageBox>()
         cache.countLimit = 96
         cache.totalCostLimit = 80 * 1024 * 1024
         return cache
     }()
 
-    private init() {}
+    private nonisolated init() {}
 
-    func cgImage(logicalName: String, in bundle: Bundle?, maxPixel: Int) -> CGImage? {
+    nonisolated func cgImage(logicalName: String, in bundle: Bundle?, maxPixel: Int) -> CGImage? {
         guard maxPixel > 0 else { return nil }
         let cacheKey = "\(logicalName)|px:\(maxPixel)" as NSString
         if let cached = imageCache.object(forKey: cacheKey) {
@@ -83,8 +84,19 @@ final class EncryptedArtAssetLoader: @unchecked Sendable {
         }
     }
 
-    func assetURL(logicalName: String, in bundle: Bundle?) -> URL? {
-        for source in uniqueBundles([bundle, Bundle.main, Bundle(for: EncryptedArtAssetLoader.self)]) {
+    nonisolated func nsImage(logicalName: String, in bundle: Bundle? = nil, maxPixel: Int) -> NSImage? {
+        guard let cgImage = cgImage(logicalName: logicalName, in: bundle, maxPixel: maxPixel) else {
+            return nil
+        }
+        return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+    }
+
+    nonisolated func xcAssetImage(named name: String, in bundle: Bundle? = nil, maxPixel: Int) -> NSImage? {
+        nsImage(logicalName: "XCAssets/\(name)", in: bundle, maxPixel: maxPixel)
+    }
+
+    nonisolated func assetURL(logicalName: String, in bundle: Bundle?) -> URL? {
+        for source in candidateBundles(preferred: bundle) {
             if let url = encryptedURL(logicalName: logicalName, in: source) {
                 return url
             }
@@ -92,11 +104,11 @@ final class EncryptedArtAssetLoader: @unchecked Sendable {
         return nil
     }
 
-    func purgeCache() {
+    nonisolated func purgeCache() {
         imageCache.removeAllObjects()
     }
 
-    private func loadCGImage(logicalName: String, in bundle: Bundle?, maxPixel: Int) throws -> CGImage {
+    private nonisolated func loadCGImage(logicalName: String, in bundle: Bundle?, maxPixel: Int) throws -> CGImage {
         guard let url = assetURL(logicalName: logicalName, in: bundle) else {
             throw LoadError.missingFile(logicalName)
         }
@@ -117,7 +129,7 @@ final class EncryptedArtAssetLoader: @unchecked Sendable {
         return image
     }
 
-    private func encryptedURL(logicalName: String, in bundle: Bundle) -> URL? {
+    private nonisolated func encryptedURL(logicalName: String, in bundle: Bundle) -> URL? {
         let normalized = logicalName.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let directory = (normalized as NSString).deletingLastPathComponent
         let fileName = ((normalized as NSString).lastPathComponent as NSString).deletingPathExtension
@@ -125,7 +137,7 @@ final class EncryptedArtAssetLoader: @unchecked Sendable {
         return bundle.url(forResource: fileName, withExtension: "kmgasset", subdirectory: subdirectory)
     }
 
-    private func decrypt(_ data: Data, logicalName: String) throws -> Data {
+    private nonisolated func decrypt(_ data: Data, logicalName: String) throws -> Data {
         guard data.count >= Constants.headerLength else {
             throw LoadError.malformedHeader(logicalName)
         }
@@ -173,7 +185,7 @@ final class EncryptedArtAssetLoader: @unchecked Sendable {
         }
     }
 
-    private static func assetKey() -> SymmetricKey {
+    private nonisolated static func assetKey() -> SymmetricKey {
         #if DEBUG
         if let key = keyFromEnvironment() {
             return key
@@ -182,7 +194,7 @@ final class EncryptedArtAssetLoader: @unchecked Sendable {
         return publicKeyMaterial()
     }
 
-    private static func keyFromEnvironment() -> SymmetricKey? {
+    private nonisolated static func keyFromEnvironment() -> SymmetricKey? {
         guard let hex = ProcessInfo.processInfo.environment["KMG_ART_ASSET_KEY_HEX"],
               hex.count == 64
         else {
@@ -202,7 +214,7 @@ final class EncryptedArtAssetLoader: @unchecked Sendable {
         return SymmetricKey(data: Data(bytes))
     }
 
-    private static func publicKeyMaterial() -> SymmetricKey {
+    private nonisolated static func publicKeyMaterial() -> SymmetricKey {
         let : [UInt8] = []
         let : [UInt8] = []
         let : [UInt8] = []
@@ -215,27 +227,73 @@ final class EncryptedArtAssetLoader: @unchecked Sendable {
         return SymmetricKey(data: Data(digest))
     }
 
-    private func uniqueBundles(_ bundles: [Bundle?]) -> [Bundle] {
-        bundles
-            .compactMap { $0 }
-            .reduce(into: [Bundle]()) { partial, item in
-                if !partial.contains(where: { $0.bundleURL == item.bundleURL }) {
-                    partial.append(item)
-                }
-            }
+    private nonisolated func candidateBundles(preferred: Bundle?) -> [Bundle] {
+        var bundles: [Bundle?] = [
+            preferred,
+            Bundle.main,
+            nestedBKArtBundle(in: Bundle.main),
+            Bundle(for: EncryptedArtAssetLoader.self),
+            nestedBKArtBundle(in: Bundle(for: EncryptedArtAssetLoader.self)),
+        ]
+        if let preferred {
+            bundles.append(nestedBKArtBundle(in: preferred))
+        }
+        return uniqueBundles(bundles)
     }
 
-    private func readUInt16(_ bytes: [UInt8], at offset: Int) -> UInt16 {
+    private nonisolated func nestedBKArtBundle(in bundle: Bundle) -> Bundle? {
+        let candidateNames = ["BKArt", "bkArt", "bkMask"]
+        for name in candidateNames {
+            if let url = bundle.url(forResource: name, withExtension: "bundle"),
+               let nested = Bundle(url: url) {
+                return nested
+            }
+        }
+        return nil
+    }
+
+    private nonisolated func uniqueBundles(_ bundles: [Bundle?]) -> [Bundle] {
+        bundles.compactMap { $0 }.reduce(into: [Bundle]()) { partial, item in
+            if !partial.contains(where: { $0.bundleURL == item.bundleURL }) {
+                partial.append(item)
+            }
+        }
+    }
+
+    private nonisolated func readUInt16(_ bytes: [UInt8], at offset: Int) -> UInt16 {
         (UInt16(bytes[offset]) << 8) | UInt16(bytes[offset + 1])
     }
 
-    private func readUInt64(_ bytes: [UInt8], at offset: Int) -> UInt64 {
+    private nonisolated func readUInt64(_ bytes: [UInt8], at offset: Int) -> UInt64 {
         bytes[offset..<(offset + 8)].reduce(UInt64(0)) { partial, byte in
             (partial << 8) | UInt64(byte)
         }
     }
 
-    private func byteCost(for image: CGImage) -> Int {
+    private nonisolated func byteCost(for image: CGImage) -> Int {
         max(1, image.bytesPerRow * image.height)
+    }
+}
+
+struct EncryptedAssetImage: View {
+    let name: String
+    var maxPixel: Int = 1_600
+    var fallbackSystemName: String = "photo"
+
+    var body: some View {
+        if let image = EncryptedArtAssetLoader.shared.xcAssetImage(named: name, maxPixel: maxPixel) {
+            Image(nsImage: image)
+        } else {
+            Image(systemName: fallbackSystemName)
+        }
+    }
+}
+
+enum EncryptedAssetImages {
+    static func image(named name: String, maxPixel: Int = 1_600, fallbackSystemName: String = "photo") -> Image {
+        if let image = EncryptedArtAssetLoader.shared.xcAssetImage(named: name, maxPixel: maxPixel) {
+            return Image(nsImage: image)
+        }
+        return Image(systemName: fallbackSystemName)
     }
 }

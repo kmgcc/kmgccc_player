@@ -39,17 +39,31 @@
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
 		9351197F2F33130A00766A5F /* Exceptions for "myPlayer2" folder in "kmgccc_player" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				Info.plist,
-				"Resources/mediaremote-adapter/bin/mediaremote-adapter.pl",
-				"Resources/mediaremote-adapter/build/MediaRemoteAdapter.framework",
-				"Resources/mediaremote-adapter/build/MediaRemoteAdapterTestClient",
-				"Resources/mediaremote-adapter/LICENSE",
-				"Resources/mediaremote-adapter/README.md",
-				"Resources/Tools/qqmusic-helper/build-universal.sh",
-				"Resources/Tools/qqmusic-helper/main.py",
-				"Resources/Tools/qqmusic-helper/requirements.txt",
-				Resources/Tools/sacad/sacad,
+				membershipExceptions = (
+					Info.plist,
+					Resources/.DS_Store,
+					Resources/AMLL,
+					Resources/AMLL/amll-background.js,
+					Resources/AMLL/amll-core.js,
+					Resources/AMLL/amll-lyric.js,
+					Resources/AMLL/background.html,
+					Resources/AMLL/bridge.js,
+					Resources/AMLL/index.html,
+					Resources/AMLL/index.html.bak2,
+					Resources/AMLL/lyrics-renderer.js,
+					Resources/AMLL/sample.ttml,
+					Resources/AMLL/style.css,
+					"Resources/mediaremote-adapter/bin/mediaremote-adapter.pl",
+					"Resources/mediaremote-adapter/build/MediaRemoteAdapter.framework",
+					"Resources/mediaremote-adapter/build/MediaRemoteAdapterTestClient",
+					"Resources/mediaremote-adapter/LICENSE",
+					"Resources/mediaremote-adapter/README.md",
+					"Resources/Tools/qqmusic-helper/__pycache__",
+					"Resources/Tools/qqmusic-helper/_internal 2.bundle",
+					"Resources/Tools/qqmusic-helper/build-universal.sh",
+					"Resources/Tools/qqmusic-helper/main.py",
+					"Resources/Tools/qqmusic-helper/requirements.txt",
+					Resources/Tools/sacad/sacad,
 				scan_ui.py,
 			);
 			target = 935118912F3231C500766A5F /* kmgccc_player */;
@@ -131,8 +145,6 @@
 			buildRules = (
 			);
 			dependencies = (
-			);
-			fileSystemSynchronizedGroups = (
 			);
 			name = BKArt;
 			packageProductDependencies = (
@@ -494,10 +506,14 @@
 					.venv,
 					".qqmusic-helper-venv",
 					".build-universal",
+					"_internal 2.bundle",
 					_internal,
 					_internal.bundle,
+					".DS_Store",
 					"qqmusic-helper",
 					__pycache__,
+					"*.bak*",
+					"*.pyc",
 					build,
 					dist,
 					"*.spec",
@@ -562,10 +578,14 @@
 					.venv,
 					".qqmusic-helper-venv",
 					".build-universal",
+					"_internal 2.bundle",
 					_internal,
 					_internal.bundle,
+					".DS_Store",
 					"qqmusic-helper",
 					__pycache__,
+					"*.bak*",
+					"*.pyc",
 					build,
 					dist,
 					"*.spec",

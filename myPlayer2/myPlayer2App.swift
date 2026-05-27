@@ -89,7 +89,9 @@ struct KmgcccPlayerApp: App {
         // Phase 2 colour-system self-check. No-op unless invoked via
         // `COLOR_SYSTEM_SELF_CHECK=1`, in which case the process exits
         // here after printing the report.
+        #if DEBUG
         ColorSystemSelfCheck.runIfRequested()
+        #endif
 
         let sharedModelContainer: ModelContainer = {
             let schema = Schema([

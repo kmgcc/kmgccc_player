@@ -129,12 +129,12 @@ private final class CassetteThemeAssetCache {
     static let shared = CassetteThemeAssetCache()
 
     private enum Resource: String {
-        case light = "cassette_tape_light"
-        case dark = "cassette_tape_dark"
-        case gray = "cassette_tape_gray"
-        case paper = "cassette_tape_paper"
-        case outline = "cassette_tape_outline"
-        case mask = "cassette_tape_mask"
+        case light = "tape"
+        case dark = "tapedark"
+        case gray = "tapegray"
+        case paper = "tapepaper"
+        case outline = "tapeoutline"
+        case mask = "tapemask"
     }
 
     private let cache = NSCache<NSString, CassetteThemeImageSetBox>()
@@ -193,15 +193,8 @@ private final class CassetteThemeAssetCache {
         lock.unlock()
 
         let ratio: CGFloat
-        if
-            let url = resourceURL(for: .light),
-            let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-            let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-            let width = properties[kCGImagePropertyPixelWidth] as? CGFloat,
-            let height = properties[kCGImagePropertyPixelHeight] as? CGFloat,
-            height > 0
-        {
-            ratio = width / height
+        if let image = loadImage(resource: .light, maxPixel: 4096), image.size.height > 0 {
+            ratio = image.size.width / image.size.height
         } else {
             ratio = 3149.0 / 2006.0
         }
@@ -213,63 +206,7 @@ private final class CassetteThemeAssetCache {
     }
 
     private func loadImage(resource: Resource, maxPixel: Int) -> NSImage? {
-        guard let url = resourceURL(for: resource) else { return nil }
-        guard
-            let source = CGImageSourceCreateWithURL(
-                url as CFURL,
-                [kCGImageSourceShouldCache: false] as CFDictionary
-            )
-        else { return nil }
-
-        let options: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceShouldCache: false,
-            kCGImageSourceShouldCacheImmediately: false,
-            kCGImageSourceThumbnailMaxPixelSize: max(1, maxPixel),
-        ]
-
-        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
-            return nil
-        }
-
-        return NSImage(
-            cgImage: image,
-            size: NSSize(width: image.width, height: image.height)
-        )
-    }
-
-    private func resourceURL(for resource: Resource) -> URL? {
-        let bundles = [Bundle.main, Bundle(for: CassetteThemeImageSetBox.self)]
-        let relativePaths = [
-            "CassetteSkin/\(resource.rawValue).png",
-            "Resources/CassetteSkin/\(resource.rawValue).png",
-            "\(resource.rawValue).png",
-        ]
-
-        for bundle in bundles {
-            if
-                let direct = bundle.url(
-                    forResource: resource.rawValue,
-                    withExtension: "png",
-                    subdirectory: "CassetteSkin"
-                )
-            {
-                return direct
-            }
-            if let direct = bundle.url(forResource: resource.rawValue, withExtension: "png") {
-                return direct
-            }
-            guard let resourceURL = bundle.resourceURL else { continue }
-            for relativePath in relativePaths {
-                let candidate = resourceURL.appendingPathComponent(relativePath)
-                if FileManager.default.fileExists(atPath: candidate.path) {
-                    return candidate
-                }
-            }
-        }
-
-        return nil
+        EncryptedArtAssetLoader.shared.xcAssetImage(named: resource.rawValue, maxPixel: max(1, maxPixel))
     }
 
     private func estimatedCost(for imageSet: CassetteThemeImageSet) -> Int {
@@ -359,7 +296,10 @@ private struct CassetteArtwork: View, Equatable {
         }
         .overlay(alignment: .bottomTrailing) {
             if showKmgLook {
-                Image("kmglook")
+                EncryptedAssetImages.image(
+                    named: "kmglook",
+                    maxPixel: Int(ceil(kmgLookWidth(for: size) * displayScale * 2))
+                )
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .frame(width: kmgLookWidth(for: size))
@@ -432,7 +372,10 @@ private struct CassetteArtwork: View, Equatable {
         if let image = context.track?.artworkImage {
             return Image(nsImage: image)
         }
-        return Image("seasons")
+        if let image = EncryptedArtAssetLoader.shared.xcAssetImage(named: "seasons", maxPixel: 1_600) {
+            return Image(nsImage: image)
+        }
+        return Image(systemName: "music.note")
     }
 
     private var tapeAssetName: String {
@@ -596,7 +539,10 @@ private struct CassetteArtwork: View, Equatable {
         if let image {
             return Image(nsImage: image)
         }
-        return Image(name)
+        if let image = EncryptedArtAssetLoader.shared.xcAssetImage(named: name, maxPixel: 1_600) {
+            return Image(nsImage: image)
+        }
+        return Image(systemName: "photo")
     }
 
     private func clearAdjustedArtworkState(resetRenderKey: Bool) {
@@ -1408,7 +1354,7 @@ private struct HolesOverlay: View {
                     }
                 } symbols: {
                     // Symbol definition (drawn once, rasterized if grouped)
-                    Image(imgName)
+                    EncryptedAssetImages.image(named: imgName, maxPixel: Int(ceil(holeSize * 2)))
                         .resizable()
                         .frame(width: holeSize, height: holeSize)
                         .tag("hole")

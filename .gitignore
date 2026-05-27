@@ -2,6 +2,9 @@
 # BKThemes PNGs are local development master art assets. Ship encrypted
 # EncryptedArtAssets/*.kmgasset instead.
 /BKThemes/
+# Migrated xcassets and cassette skin source images are local master art assets.
+# Ship encrypted EncryptedArtAssets/*.kmgasset instead.
+/PrivateArtSources/
 apple-audio-visualization-main/
 # AMLL source worktrees live in ../amll-sources/.
 applemusic-like-lyrics-full-refractor/
