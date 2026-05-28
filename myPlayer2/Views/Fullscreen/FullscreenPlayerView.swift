@@ -649,11 +649,30 @@ struct FullscreenPlayerView: View {
         )
         let hasRenderableGeometry = isRenderableFullscreenGeometry(proxy.size, scale: scale)
 
+        // The lyrics layer hosts AMLLWebView, which itself owns a persistent
+        // WKWebView via LyricsWebViewStore. The previous structure put a
+        // skin-keyed `.id()` on the outer ZStack, which forced SwiftUI to tear
+        // down the entire subtree on every skin switch — including the lyrics
+        // layer. That triggered dismantleNSView/makeNSView storms, made two
+        // Coordinator instances briefly contend for the same store's WKWebView
+        // (ping-pong reparenting), and produced an addSubview/requestLayoutResync
+        // feedback loop under embedded fullscreen.
+        //
+        // Fix: only the skin-specific visual layers (background, scaled artwork
+        // container, bottom bar) carry the skin-keyed `.id()`. The lyrics layer
+        // stays outside that scope so the AMLLWebView/WKWebView identity is
+        // preserved across skin switches and is updated in place rather than
+        // recreated.
+        let skinIdentity = "fullscreen_\(settings.fullscreen.skinID)_\(skinRevision)"
+
         ZStack {
             if hasRenderableGeometry {
                 fullscreenBackgroundLayer(selectedSkin: selectedSkin, scale: scale)
+                    .id("\(skinIdentity)_bg")
 
-                // Layer 1: AMLL lyrics at actual resolution
+                // Layer 1: AMLL lyrics at actual resolution.
+                // NOT under the skin-keyed `.id()` — stays mounted across
+                // skin switches so WKWebView is not reparented.
                 fullscreenLyricsLayer(scale: scale, screenWidth: proxy.size.width)
                     .frame(width: proxy.size.width, height: proxy.size.height)
 
@@ -661,6 +680,7 @@ struct FullscreenPlayerView: View {
                 fullscreenScaledContainer(selectedSkin: selectedSkin, scale: scale)
                     .frame(width: Self.baseCanvasWidth, height: Self.baseCanvasHeight)
                     .scaleEffect(scale, anchor: .center)
+                    .id("\(skinIdentity)_scaled")
 
                 // Layer 3: Bottom bar at actual resolution - on top
                 fullscreenBottomBarLayer(
@@ -669,11 +689,11 @@ struct FullscreenPlayerView: View {
                     screenHeight: proxy.size.height
                 )
                     .frame(width: proxy.size.width, height: proxy.size.height)
+                    .id("\(skinIdentity)_bottom")
             } else {
                 Color.clear
             }
         }
-        .id("fullscreen_\(settings.fullscreen.skinID)_\(skinRevision)")
         .frame(width: proxy.size.width, height: proxy.size.height)
         .onAppear {
             currentFullscreenScale = scale
