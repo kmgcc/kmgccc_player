@@ -287,6 +287,10 @@ private final class RotatingCoverCDMotionBlurCache: ObservableObject {
     private var currentKey: CacheKey?
     private var renderTask: Task<Void, Never>?
 
+    deinit {
+        renderTask?.cancel()
+    }
+
     func update(
         artworkImage: NSImage?,
         artworkSignature: String?,
@@ -421,7 +425,7 @@ private enum RotatingCoverCDMotionBlurRenderer {
         context.clip()
 
         for (index, pair) in zip(sampleOffsets, sampleWeights).enumerated() {
-            if index.isMultiple(of: 16), Task.isCancelled {
+            if index.isMultiple(of: 8), Task.isCancelled {
                 return nil
             }
             let (angle, weight) = pair
@@ -446,6 +450,7 @@ private enum RotatingCoverCDMotionBlurRenderer {
         guard let lightlyBlurred = lightlyBlurredImage(from: compositedImage, pixelSize: pixelSize) else {
             return compositedImage
         }
+        guard !Task.isCancelled else { return nil }
         return densifiedOpaqueBlurImage(from: lightlyBlurred, pixelSize: pixelSize, colorSpace: colorSpace)
     }
 
@@ -464,6 +469,9 @@ private enum RotatingCoverCDMotionBlurRenderer {
         colorSpace: CGColorSpace
     ) -> CGImage? {
         let bounds = CGRect(x: 0, y: 0, width: pixelSize, height: pixelSize)
+        guard let fillColor = averageFillColor(from: image, colorSpace: colorSpace) else {
+            return image
+        }
         guard let context = CGContext(
             data: nil,
             width: pixelSize,
@@ -479,18 +487,51 @@ private enum RotatingCoverCDMotionBlurRenderer {
         context.interpolationQuality = .high
         context.addEllipse(in: bounds)
         context.clip()
+        context.setFillColor(fillColor)
+        context.fill(bounds)
 
-        // Re-composite the finished blur image multiple times to make the blur layer read solid,
-        // not like a translucent fog sitting on top of the artwork.
+        // Re-composite the finished blur image over an opaque disc fill so
+        // the motion layer covers the artwork/background instead of carrying
+        // low-alpha holes from the angular samples.
         context.setBlendMode(.normal)
         context.setAlpha(1.0)
         context.draw(image, in: bounds)
-        context.setAlpha(0.78)
+        context.setAlpha(0.90)
         context.draw(image, in: bounds)
-        context.setAlpha(0.52)
+        context.setAlpha(0.72)
         context.draw(image, in: bounds)
 
         return context.makeImage()
+    }
+
+    nonisolated private static func averageFillColor(
+        from image: CGImage,
+        colorSpace: CGColorSpace
+    ) -> CGColor? {
+        var pixel = [UInt8](repeating: 0, count: 4)
+        let didDraw = pixel.withUnsafeMutableBytes { bytes -> Bool in
+            guard let context = CGContext(
+                data: bytes.baseAddress,
+                width: 1,
+                height: 1,
+                bitsPerComponent: 8,
+                bytesPerRow: 4,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else {
+                return false
+            }
+
+            context.interpolationQuality = .medium
+            context.draw(image, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+            return true
+        }
+        guard didDraw else { return nil }
+        let alpha = max(CGFloat(pixel[3]) / 255, 0.001)
+        let red = min(1, CGFloat(pixel[0]) / 255 / alpha)
+        let green = min(1, CGFloat(pixel[1]) / 255 / alpha)
+        let blue = min(1, CGFloat(pixel[2]) / 255 / alpha)
+        return CGColor(colorSpace: colorSpace, components: [red, green, blue, 1])
     }
 }
 
@@ -721,6 +762,11 @@ private struct RotatingCDDiscLayerView: NSViewRepresentable {
         context.coordinator.attach(to: nsView)
     }
 
+    static func dismantleNSView(_ nsView: RotatingCDDiscHostView, coordinator: Coordinator) {
+        coordinator.detach()
+        nsView.dismantle()
+    }
+
     final class Coordinator {
         private let rotation: RotatingCoverRotation
         private var angleCancellable: AnyCancellable?
@@ -746,6 +792,14 @@ private struct RotatingCDDiscLayerView: NSViewRepresentable {
                 .sink { [weak view] ratio in
                     view?.setBlurStrength(ratio)
                 }
+        }
+
+        func detach() {
+            angleCancellable?.cancel()
+            angleCancellable = nil
+            speedCancellable?.cancel()
+            speedCancellable = nil
+            hostView = nil
         }
     }
 }
@@ -831,6 +885,19 @@ private final class RotatingCDDiscHostView: NSView {
         }
     }
 
+    func dismantle() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        discRootLayer.removeAllAnimations()
+        blurLayer.removeAllAnimations()
+        artworkLayer.removeAllAnimations()
+        borderLayer.removeAllAnimations()
+        blurLayer.contents = nil
+        artworkLayer.contents = nil
+        blurLayer.opacity = 0
+        CATransaction.commit()
+    }
+
     func setRotationAngle(_ angle: Double) {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -844,7 +911,15 @@ private final class RotatingCDDiscHostView: NSView {
         // CD starts moving so the motion-blur layer covers the opaque artwork.
         let clamped = max(0, min(ratio, 1))
         let smoothed = clamped * clamped * (3 - 2 * clamped)
-        let coverage = smoothed > 0 ? pow(smoothed, 0.22) : 0
+        let baseCoverage = smoothed > 0 ? pow(smoothed, 0.16) : 0
+        let coverage: Double
+        if smoothed > 0.20 {
+            coverage = max(baseCoverage, 0.98)
+        } else if smoothed > 0.04 {
+            coverage = max(baseCoverage, 0.90)
+        } else {
+            coverage = baseCoverage
+        }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         blurLayer.opacity = Float(coverage)

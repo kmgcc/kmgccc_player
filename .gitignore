@@ -3,7 +3,8 @@
 # EncryptedArtAssets/*.kmgasset instead.
 /BKThemes/
 # Migrated xcassets and cassette skin source images are local master art assets.
-# Ship encrypted EncryptedArtAssets/*.kmgasset instead.
+# Ship encrypted EncryptedArtAssets/*.kmgasset instead. Runtime audio assets
+# belong under myPlayer2/Resources/Audio/ and must remain tracked.
 /PrivateArtSources/
 apple-audio-visualization-main/
 # AMLL source worktrees live in ../amll-sources/.
@@ -19,6 +20,8 @@ scan_ui.py
 ui_candidates.txt
 myPlayer2/scan_ui.py
 myPlayer2/ui_candidates.txt
+# Local asset catalog masters are ignored after the image-art encryption
+# migration. Do not store runtime audio resources here.
 myPlayer2/Assets.xcassets/
 
 # Tool working directories

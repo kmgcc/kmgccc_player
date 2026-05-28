@@ -161,11 +161,16 @@ final class HomeAmbientRootView: NSView {
     private var layersByID: [Int: ShapeLayerPair] = [:]
 
     private var hasLoadedShapes = false
+    private let randomLayoutSeed: UInt64
+    private let randomizedShapeCount: Int
 
     private static let shapeMaxPixel = 768
 
     init(motion: HomeAmbientMotionState) {
         self.motion = motion
+        let seed = Self.makeRandomLayoutSeed()
+        randomLayoutSeed = seed
+        randomizedShapeCount = Self.shapeCount(seed: seed)
         super.init(frame: .zero)
         wantsLayer = true
         layerContentsRedrawPolicy = .duringViewResize
@@ -390,7 +395,7 @@ final class HomeAmbientRootView: NSView {
             analysis: sourceAnalysis,
             colorScheme: colorScheme
         )
-        let count = Self.shapeCount
+        let count = randomizedShapeCount
         let viewportH = geometry.windowHeight
         let virtualH = max(viewportH * 2.6, viewportH + 1400)
         let centerW = geometry.centerWidth
@@ -403,6 +408,7 @@ final class HomeAmbientRootView: NSView {
             viewportHeight: viewportH,
             virtualHeight: virtualH,
             mode: mode,
+            layoutSeed: randomLayoutSeed,
             shapeFileNames: shapeLoadResult.fileNames
         )
 
@@ -500,8 +506,14 @@ final class HomeAmbientRootView: NSView {
         return CGPoint(x: x, y: presentation.baseY)
     }
 
-    private static var shapeCount: Int {
-        ProcessInfo.processInfo.isLowPowerModeEnabled ? 12 : 18
+    private static func makeRandomLayoutSeed() -> UInt64 {
+        UInt64.random(in: UInt64.min...UInt64.max)
+    }
+
+    private static func shapeCount(seed: UInt64) -> Int {
+        var rng = HomeAmbientRandom(seed: seed ^ 0x5368_6170_6543_6F75)
+        let range = ProcessInfo.processInfo.isLowPowerModeEnabled ? 10...14 : 16...24
+        return rng.nextInt(in: range)
     }
 
     private func layoutMode(for centerWidth: CGFloat) -> HomeLayoutMode {
@@ -1137,7 +1149,7 @@ private func lerp(_ a: CGFloat, _ b: CGFloat, _ t: CGFloat) -> CGFloat {
     a + (b - a) * clamp(t, min: 0, max: 1)
 }
 
-// MARK: - Spec generation (unchanged geometry / RNG behavior)
+// MARK: - Spec generation
 
 private final class HomeAmbientShapeSpecCache {
     static let shared = HomeAmbientShapeSpecCache()
@@ -1150,6 +1162,7 @@ private final class HomeAmbientShapeSpecCache {
         viewportHeight: CGFloat,
         virtualHeight: CGFloat,
         mode: HomeLayoutMode,
+        layoutSeed: UInt64,
         shapeFileNames: [String]
     ) -> [HomeAmbientShapeSpec] {
         let key = Key(
@@ -1157,6 +1170,7 @@ private final class HomeAmbientShapeSpecCache {
             viewportHeightBucket: Int((viewportHeight / 160).rounded()),
             virtualHeightBucket: Int((virtualHeight / 240).rounded()),
             mode: mode,
+            layoutSeed: layoutSeed,
             shapeFileNames: shapeFileNames
         )
 
@@ -1172,6 +1186,7 @@ private final class HomeAmbientShapeSpecCache {
             viewportHeight: CGFloat(key.viewportHeightBucket) * 160,
             virtualHeight: CGFloat(key.virtualHeightBucket) * 240,
             mode: mode,
+            layoutSeed: layoutSeed,
             shapeFileNames: shapeFileNames
         )
 
@@ -1189,6 +1204,7 @@ private final class HomeAmbientShapeSpecCache {
         let viewportHeightBucket: Int
         let virtualHeightBucket: Int
         let mode: HomeLayoutMode
+        let layoutSeed: UInt64
         let shapeFileNames: [String]
     }
 }
@@ -1225,20 +1241,23 @@ struct HomeAmbientShapeSpec: Identifiable {
         viewportHeight: CGFloat,
         virtualHeight: CGFloat,
         mode: HomeLayoutMode,
+        layoutSeed: UInt64,
         shapeFileNames: [String]
     ) -> [HomeAmbientShapeSpec] {
-        var rng = HomeAmbientRandom(seed: 0x486F_6D65_5368_6170)
+        var rng = HomeAmbientRandom(seed: layoutSeed ^ 0x486F_6D65_5368_6170)
         let catalog = HomeAmbientShapeAssetCatalog(fileNames: shapeFileNames)
         var assetPicker = HomeAmbientShapeAssetPicker(catalog: catalog)
-        let visibleCount = min(count, initialVisibleCount(for: count))
-        let visibleLeftCount = (visibleCount + 1) / 2
-        let visibleRightCount = visibleCount / 2
+        let visibleCount = min(count, initialVisibleCount(for: count, rng: &rng))
+        let visibleSplit = splitCount(visibleCount, rng: &rng)
+        let visibleLeftCount = visibleSplit.left
+        let visibleRightCount = visibleSplit.right
         let remainingCount = count - visibleCount
-        let remainingLeftCount = (remainingCount + 1) / 2
-        let remainingRightCount = remainingCount / 2
-        let visibleYLower = -viewportHeight * 0.25
-        let visibleYUpper = viewportHeight * 1.05
-        let laterYLower = viewportHeight * 1.12
+        let remainingSplit = splitCount(remainingCount, rng: &rng)
+        let remainingLeftCount = remainingSplit.left
+        let remainingRightCount = remainingSplit.right
+        let visibleYLower = -viewportHeight * CGFloat(rng.next(in: 0.14...0.34))
+        let visibleYUpper = viewportHeight * CGFloat(rng.next(in: 0.96...1.16))
+        let laterYLower = viewportHeight * CGFloat(rng.next(in: 1.04...1.24))
         let laterYUpper = virtualHeight
 
         var nextID = 0
@@ -1458,14 +1477,39 @@ struct HomeAmbientShapeSpec: Identifiable {
         }
     }
 
-    private static func initialVisibleCount(for count: Int) -> Int {
+    private static func initialVisibleCount(for count: Int, rng: inout HomeAmbientRandom) -> Int {
+        if count >= 20 {
+            return rng.nextInt(in: 8...11)
+        }
         if count >= 16 {
-            return 8
+            return rng.nextInt(in: 7...9)
         }
         if count >= 12 {
-            return 7
+            return rng.nextInt(in: 6...8)
         }
-        return min(count, 6)
+        return min(count, rng.nextInt(in: 5...6))
+    }
+
+    private static func splitCount(_ count: Int, rng: inout HomeAmbientRandom) -> (left: Int, right: Int) {
+        guard count > 1 else {
+            return (count, 0)
+        }
+
+        let jitterLimit: Int
+        if count >= 8 {
+            jitterLimit = 2
+        } else if count >= 4 {
+            jitterLimit = 1
+        } else {
+            jitterLimit = 0
+        }
+
+        let baseLeftCount = (count + 1) / 2
+        let leftCount = Swift.min(
+            Swift.max(baseLeftCount + rng.nextInt(in: -jitterLimit...jitterLimit), 1),
+            count - 1
+        )
+        return (leftCount, count - leftCount)
     }
 
     private static func randomBaseY(
@@ -1479,10 +1523,16 @@ struct HomeAmbientShapeSpec: Identifiable {
     ) -> CGFloat {
         let bandStart = yLower + CGFloat(sideIndex) * bandHeight
         let bandEnd = min(yUpper, bandStart + bandHeight)
-        let minimumGap = previous.map { min($0.nominalSide, size) * 0.45 + 80 } ?? 0
+        let spill = bandHeight * CGFloat(rng.next(in: 0.16...0.42))
+        let candidateLower = sideIndex == 0 ? yLower : max(yLower, bandStart - spill)
+        let candidateUpper = min(yUpper, bandEnd + spill)
+        let minimumGap = previous.map {
+            min($0.nominalSide, size) * CGFloat(rng.next(in: 0.32...0.52))
+                + CGFloat(rng.next(in: 54...112))
+        } ?? 0
 
-        for _ in 0..<8 {
-            let candidate = CGFloat(rng.next(in: Double(bandStart)...Double(max(bandStart, bandEnd))))
+        for _ in 0..<10 {
+            let candidate = CGFloat(rng.next(in: Double(candidateLower)...Double(max(candidateLower, candidateUpper))))
             guard let previous else { return candidate }
             if candidate - previous.baseY >= minimumGap {
                 return candidate
@@ -1490,9 +1540,9 @@ struct HomeAmbientShapeSpec: Identifiable {
         }
 
         if let previous {
-            return min(yUpper, max(bandStart, previous.baseY + minimumGap))
+            return min(yUpper, max(candidateLower, previous.baseY + minimumGap))
         }
-        return (bandStart + bandEnd) * 0.5
+        return CGFloat(rng.next(in: Double(candidateLower)...Double(max(candidateLower, candidateUpper))))
     }
 
     private static func randomSize(
@@ -1512,15 +1562,15 @@ struct HomeAmbientShapeSpec: Identifiable {
             tier = .large
             raw = CGFloat(rng.next(in: featuredLargeRawRange(for: mode)))
         case .normal:
-            if roll < 0.54 {
+            if roll < 0.46 {
                 tier = .small
-                raw = CGFloat(rng.next(in: 120...210))
-            } else if roll < 0.88 {
+                raw = CGFloat(rng.next(in: 86...240))
+            } else if roll < 0.84 {
                 tier = .medium
-                raw = CGFloat(rng.next(in: 220...360))
+                raw = CGFloat(rng.next(in: 190...410))
             } else {
                 tier = .large
-                raw = CGFloat(rng.next(in: 380...500))
+                raw = CGFloat(rng.next(in: 340...590))
             }
         }
 
@@ -1537,22 +1587,22 @@ struct HomeAmbientShapeSpec: Identifiable {
     private static func ultraRawRange(for mode: HomeLayoutMode) -> ClosedRange<Double> {
         switch mode {
         case .wide:
-            return 620...920
+            return 560...1040
         case .medium:
-            return 620...860
+            return 540...940
         case .compact, .narrow:
-            return 520...680
+            return 440...760
         }
     }
 
     private static func featuredLargeRawRange(for mode: HomeLayoutMode) -> ClosedRange<Double> {
         switch mode {
         case .wide:
-            return 380...680
+            return 320...760
         case .medium:
-            return 380...620
+            return 300...700
         case .compact, .narrow:
-            return 320...520
+            return 260...580
         }
     }
 
@@ -1591,13 +1641,13 @@ struct HomeAmbientShapeSpec: Identifiable {
         let range: ClosedRange<Double>
         switch (side, isUltra) {
         case (.left, true):
-            range = Double(-500 * scale)...Double(-130 * scale)
+            range = Double(-680 * scale)...Double(-80 * scale)
         case (.left, false):
-            range = Double(-210 * scale)...Double(135 * scale)
+            range = Double(-300 * scale)...Double(185 * scale)
         case (.right, true):
-            range = Double(130 * scale)...Double(500 * scale)
+            range = Double(80 * scale)...Double(680 * scale)
         case (.right, false):
-            range = Double(-135 * scale)...Double(210 * scale)
+            range = Double(-185 * scale)...Double(300 * scale)
         }
         return CGFloat(rng.next(in: range))
     }

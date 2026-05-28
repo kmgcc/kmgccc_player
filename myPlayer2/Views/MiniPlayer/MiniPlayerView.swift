@@ -334,12 +334,11 @@ struct MiniPlayerView: View {
     
     private var currentArtworkTaskKey: String {
         let presentation = playbackCoordinator.presentation
-        let checksum = ArtworkAssetStore.checksum(for: presentation.artworkData)
         let identity = presentation.artworkIdentity
             ?? presentation.lyricsIdentity
             ?? presentation.localTrack?.id.uuidString
             ?? "none"
-        return "\(identity)-\(checksum)"
+        return "\(identity)-\(ArtworkDataFingerprint.sampledString(for: presentation.artworkData))"
     }
     
     private func loadArtworkThumbnail() async {

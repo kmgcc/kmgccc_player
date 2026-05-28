@@ -184,6 +184,19 @@ struct AppKitMainContentPaneRoot: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .transition(.opacity)
                 .zIndex(1)
+                .environment(AppSettings.shared)
+                .environment(appSession.uiState)
+                .environment(libraryVM)
+                .environment(playerVM)
+                .environment(playbackCoordinator)
+                .environment(lyricsVM)
+                .environment(ledMeterProvider)
+                .environment(importEnrichmentService)
+                .environment(skinManager)
+                .environment(coverDownloadService)
+                .environment(netEaseCoverService)
+                .environmentObject(themeStore)
+                .modelContainer(appSession.sharedModelContainer)
             }
         }
 
@@ -405,8 +418,7 @@ private struct PlaybackThemeArtworkWatcher: View {
             ?? presentation.lyricsIdentity
             ?? presentation.localTrack?.id.uuidString
             ?? "none"
-        let checksum = ArtworkAssetStore.checksum(for: presentation.artworkData)
-        return "\(presentation.source.rawValue)|track:\(presentation.hasTrack)|art:\(identity)|loading:\(presentation.isArtworkLoading)|checksum:\(checksum)"
+        return "\(presentation.source.rawValue)|track:\(presentation.hasTrack)|art:\(identity)|loading:\(presentation.isArtworkLoading)|sig:\(ArtworkDataFingerprint.sampledString(for: presentation.artworkData))"
     }
 }
 
@@ -571,7 +583,7 @@ struct AppKitMainWindowArtBackgroundLayer: View {
         playbackCoordinator: PlaybackCoordinator
     ) -> SkinContext {
         let presentation = playbackCoordinator.presentation
-        let artworkChecksum = ArtworkAssetStore.checksum(for: presentation.artworkData)
+        let artworkChecksum = ArtworkDataFingerprint.sampledHash(for: presentation.artworkData)
 
         let trackMeta: SkinContext.TrackMetadata? = presentation.hasTrack
             ? SkinContext.TrackMetadata(
