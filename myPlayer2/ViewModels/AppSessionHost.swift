@@ -32,6 +32,7 @@ final class AppSessionHost: ObservableObject {
     private var hasSetupDependencies = false
     private var playbackModeObserver: NSObjectProtocol?
     private var libraryLocationObserver: NSObjectProtocol?
+    private var aboutEasterEggObserver: NSObjectProtocol?
     private var libraryService: LocalLibraryService?
     private var repository: LibraryRepositoryProtocol?
     private var playbackMemoryTimer: Timer?
@@ -216,6 +217,19 @@ final class AppSessionHost: ObservableObject {
             }
         }
 
+        if aboutEasterEggObserver == nil {
+            aboutEasterEggObserver = NotificationCenter.default.addObserver(
+                forName: .aboutEasterEggTriggered,
+                object: nil,
+                queue: .main
+            ) { [weak easterEggSFX] _ in
+                let service = easterEggSFX
+                Task { @MainActor in
+                    service?.playRandomIfAllowed()
+                }
+            }
+        }
+
         libraryService.startMonitoring(repository: repository)
         startPlaybackMemoryAutosave()
         scheduleFirstUsePrewarm(
@@ -261,6 +275,9 @@ final class AppSessionHost: ObservableObject {
             }
             if let libraryLocationObserver {
                 NotificationCenter.default.removeObserver(libraryLocationObserver)
+            }
+            if let aboutEasterEggObserver {
+                NotificationCenter.default.removeObserver(aboutEasterEggObserver)
             }
             playbackMemoryTimer?.invalidate()
             firstUsePrewarmTask?.cancel()

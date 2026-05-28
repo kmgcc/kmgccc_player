@@ -58,6 +58,7 @@
 - `scripts/encrypted_asset_allowlist.json`：允许迁移的 xcassets allowlist。
 - `EncryptedArtAssets/manifest.json`：加密产物清单。
 - `myPlayer2/Services/Theme/EncryptedArtAssetLoader.swift`：运行时 loader 和 SwiftUI 包装。
+- `myPlayer2/Resources/Audio/`：普通 bundle 音频资源目录，不属于艺术图片加密流程。
 - `myPlayer2/Views/NowPlaying/BKThemeAssets.swift`：BKThemes 统一入口。
 - `myPlayer2/Skins/NowPlaying/KmgcccCassetteSkin.swift`：磁带皮肤和相关视觉素材调用端。
 - `myPlayer2/Services/Library/PlaylistArtworkGenerator.swift`：播放列表默认封面底图调用端。
@@ -116,12 +117,28 @@
 | `tapemask` | imageset | 是 | `KmgcccCassetteSkin` | 是，磁带 mask | migrate |
 | `tapeoutline` | imageset | 是 | `KmgcccCassetteSkin` | 是，磁带描边 | migrate |
 | `tapepaper` | imageset | 是 | `KmgcccCassetteSkin` | 是，磁带纸面层 | migrate |
-| `youdowhat` | dataset | 是 | `EasterEggSFXService` | 非图片，音频数据 | keep-xcassets |
-| `youdowhatr` | dataset | 是 | `EasterEggSFXService` | 非图片，音频数据 | keep-xcassets |
+| `youdowhat` | wav | 是 | `EasterEggSFXService` | 非图片，彩蛋音频 | keep-bundle-audio |
+| `youdowhatreversed` | wav | 是 | `EasterEggSFXService` | 非图片，彩蛋音频 | keep-bundle-audio |
 
-迁移后，`myPlayer2/Assets.xcassets` 中保留 `AccentColor`、`EmptyLyric`、`snowflake1` 到 `snowflake5`、`youdowhat.dataset`、`youdowhatr.dataset`。`snowflake` 系列仅标记为 unused candidate，不在本轮删除。
+迁移后，彩蛋音频不再依赖 `Assets.xcassets` dataset；源文件位于 `myPlayer2/Resources/Audio/youdowhat.wav` 和 `myPlayer2/Resources/Audio/youdowhatreversed.wav`。当前 Xcode file-system synchronized resources 会将它们作为普通 bundle 文件复制到 `.app/Contents/Resources/` 根目录；调用端优先通过 `Bundle.main.url(forResource:withExtension:)` 加载，并保留 `Audio` 子目录 fallback。`myPlayer2/Assets.xcassets` 中如仍有本地旧 dataset，只能视为未追踪的历史来源，不作为运行时资源管理；Xcode target 已显式排除 `youdowhat.dataset` 和 `youdowhatr.dataset`。`snowflake` 系列仅标记为 unused candidate，不在本轮删除。
 
-## 6. 加密生成流程
+## 6. 非图片资源不属于本加密流程
+
+当前艺术素材加密只覆盖图片资源：`png`、`jpg` / `jpeg`、`webp`，以及项目未来如需使用的 `heic`。加密脚本只会递归处理这些图片扩展名；xcassets 迁移也只接受 allowlist 中 `.imageset` 内的图片文件。
+
+以下资源明确不进入 `EncryptedArtAssetLoader`，也不应出现在 `EncryptedArtAssets/manifest.json` 中：`wav`、`mp3`、`m4a`、`aiff`、`caf`、`json`、`ttml`、`js`、`css`、`html`。
+
+彩蛋音效 `youdowhat.wav` 和 `youdowhatreversed.wav` 应作为普通 bundle 音频资源管理，当前源路径为 `myPlayer2/Resources/Audio/`。调用端是 `EasterEggSFXService`，加载方式优先为：
+
+```swift
+Bundle.main.url(forResource: "youdowhatreversed", withExtension: "wav")
+```
+
+`.gitignore` 可以忽略原始图片艺术素材目录，例如 `BKThemes/`、`PrivateArtSources/` 和迁移后的本地 asset catalog 母版，但不能误伤运行时必须提交的音频资源。运行时音频应位于可追踪目录，提交前用 `git status --short myPlayer2/Resources/Audio` 或 `git ls-files myPlayer2/Resources/Audio` 确认。
+
+如果未来要加密音频，应单独设计 `EncryptedAudioAssetLoader`，明确音频格式、流式播放、缓存、授权和 fallback 策略；不要复用图片 loader 强行处理音频。
+
+## 7. 加密生成流程
 
 ### A. 修改或新增母版素材
 
@@ -155,7 +172,7 @@ scripts/encrypt_art_assets.swift \
 
 脚本行为：
 
-- `BKThemes`：按目录递归处理支持的图片文件。
+- `BKThemes`：按目录递归处理支持的图片文件，当前为 `png`、`jpg` / `jpeg`、`webp`、`heic`。
 - `XCAssets`：只处理 allowlist 中列出的 `.imageset`。
 - `sourceKind` 写入 `bkThemes` 或 `xcassets`。
 - `xcassets` 条目写入 `originalAssetName`、`originalPath`、`appearance`、`scale`。
@@ -180,7 +197,7 @@ Release bundle 应只包含 `.kmgasset` 和 manifest。`BKThemes`、`PrivateArtS
 7. 调用端得到 `NSImage` 或 SwiftUI `Image`。
 8. 失败时记录主题日志并返回 fallback，不崩溃。
 
-## 7. App 运行时加载流程
+## 8. App 运行时加载流程
 
 职责边界：
 
@@ -195,7 +212,7 @@ EncryptedArtAssetLoader.shared.xcAssetImage(named: "kmglook", maxPixel: 800)
 EncryptedAssetImages.image(named: "seasons", maxPixel: 1600)
 ```
 
-## 8. Git 与本地素材管理
+## 9. Git 与本地素材管理
 
 `.gitignore` 规则：
 
@@ -204,7 +221,7 @@ EncryptedAssetImages.image(named: "seasons", maxPixel: 1600)
 /PrivateArtSources/
 ```
 
-原始明文素材保留在本地，不提交 Git。加密后的 `.kmgasset`、`manifest.json`、allowlist、脚本、loader 和调用端代码需要提交。
+原始明文图片素材保留在本地，不提交 Git。加密后的 `.kmgasset`、`manifest.json`、allowlist、脚本、loader 和调用端代码需要提交。运行时音频不属于原始图片素材，必须提交普通 bundle 文件，例如 `myPlayer2/Resources/Audio/youdowhatreversed.wav`。
 
 如果发现原始明文素材已被 Git 追踪，只从索引移除，不删除本地文件：
 
@@ -218,16 +235,19 @@ git rm --cached <path>
 
 不要提交真实密钥、临时解密产物、DerivedData 或构建中间目录。
 
-## 9. 发布前验证清单
+## 10. 发布前验证清单
 
 - `.app` / `BKArt.bundle` 内没有 `BKThemes/**/*.png`。
 - `.app` / `BKArt.bundle` 内没有 `PrivateArtSources`。
 - `.app` / `BKArt.bundle` 内没有已迁移 xcassets 原图，例如 `cov1.png`、`jntm.png`、`seasons.jpg`、`tapeskin*.png`、`lighthole.png`。
 - `.app` / `BKArt.bundle` 内有 46 个 `.kmgasset` 和 `EncryptedArtAssets/manifest.json`。
 - `Assets.car` 中不包含已迁移 asset 名称，只允许保留 `EmptyLyric`、`snowflake*`、颜色和 dataset。
+- `.app/Contents/Resources/` 中包含 `youdowhat.wav` 和 `youdowhatreversed.wav`。
+- `Bundle.main.url(forResource: "youdowhatreversed", withExtension: "wav")` 在 Debug 和 Release 中都返回非 nil。
 - `.kmgasset` 不能被 Preview/Finder 直接作为图片打开。
 - BKArt 背景、mask、shape 正常显示。
 - 磁带皮肤、孔洞、`kmglook`、`seasons` 默认图、播放列表默认封面正常显示。
+- 关于页彩蛋触发后图片正常显示，彩蛋音效正常播放；找不到音频时只记录日志，不崩溃。
 - 缺失 `.kmgasset` 时 App 不崩溃，有主题日志和 fallback。
 - 篡改 `.kmgasset` 后 AES-GCM 认证失败，并 fallback。
 - 重复显示同一素材命中缓存，不反复解密。
@@ -253,12 +273,13 @@ find "$app" -type f \( \
 \)
 
 find "$app" -path '*/EncryptedArtAssets/*' -name '*.kmgasset' | wc -l
+find "$app" -maxdepth 1 -type f -name 'youdowhat*.wav' -print
 xcrun assetutil --info "$app/Assets.car" | rg 'cov1|cov2|cov3|cov4|darkhole|jntm|kmglook|lighthole|seasons|tape|tapedark|tapegray|tapemask|tapeoutline|tapepaper'
 ```
 
 最后一个 `assetutil` 命令不应输出已迁移 asset 名称。
 
-## 10. 后续维护规范
+## 11. 后续维护规范
 
 ### 新增 BKThemes 素材
 
@@ -297,13 +318,13 @@ xcrun assetutil --info "$app/Assets.car" | rg 'cov1|cov2|cov3|cov4|darkhole|jntm
 ### 特殊资源
 
 - `AccentColor`、colorset：skip-color。
-- dataset / 音频：不属于图片加密范围。
+- dataset / 音频：不属于图片加密范围；运行时音频放在普通 bundle 资源目录。
 - PDF/vector/template image：迁移前必须确认不会破坏矢量缩放或 template tint；不确定时标记 `needs-manual-check`。
 - dark/light appearance：必须输出不同 logicalName，如 `XCAssets/name/light`、`XCAssets/name/dark`。
 - 1x/2x/3x：不得降低 Retina 清晰度；必要时保留多份或选择最高质量源图。
 - unused candidate：只记录，不和加密迁移同轮删除。
 
-## 11. 常见问题排查
+## 12. 常见问题排查
 
 ### 图片显示为空白
 
@@ -329,7 +350,7 @@ xcrun assetutil --info "$app/Assets.car" | rg 'cov1|cov2|cov3|cov4|darkhole|jntm
 
 检查是否不断改变 `maxPixel` 导致 cache key 变化。`EncryptedArtAssetLoader` 和 `BKThemeAssets` 都有缓存；mask 动画帧应预热或复用，不应逐帧重新解密。
 
-## 12. 后续改进建议
+## 13. 后续改进建议
 
 - 增加 manifest 校验脚本，扫描缺失、过期、篡改和 bundle 明文泄漏。
 - 增加 Release 构建检查，发现已迁移素材出现在 `Assets.car` 或 bundle 明文路径时失败。

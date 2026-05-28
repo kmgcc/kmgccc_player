@@ -461,8 +461,8 @@ final class PlaybackCoordinator {
             return empty
         }
 
-        let lyricsText = preferredLyricsTextSnapshot(for: track)
         let artworkData = track.artworkData
+        let lyricsText = preferredLyricsTextSnapshot(for: track)
         let isArtworkLoading = track.artworkData?.isEmpty != false && track.resolvedArtworkURL() != nil
         scheduleSidecarHydrationIfNeeded(for: track)
         return NowPlayingPresentation(
@@ -472,7 +472,7 @@ final class PlaybackCoordinator {
             artist: track.artist,
             album: track.album.isEmpty ? nil : track.album,
             artworkData: artworkData,
-            artworkIdentity: "\(track.id.uuidString):\(ArtworkAssetStore.checksum(for: artworkData))",
+            artworkIdentity: artworkIdentity(for: track, artworkData: artworkData),
             artworkDisplayTrackID: track.id,
             isArtworkLoading: isArtworkLoading,
             duration: playerVM.duration,
@@ -527,11 +527,26 @@ final class PlaybackCoordinator {
 
     private func lyricsCacheSignature(for track: Track) -> String {
         [
-            track.lyricsText ?? "",
-            track.ttmlLyricText ?? "",
+            textSignature(track.lyricsText),
+            textSignature(track.ttmlLyricText),
             track.lyricsFileName ?? "",
             track.ttmlLyricsFileName ?? "",
         ].joined(separator: "|lyrics-cache|")
+    }
+
+    private func artworkIdentity(for track: Track, artworkData: Data?) -> String {
+        [
+            track.id.uuidString,
+            track.artworkFileName ?? "no-file",
+            ArtworkDataFingerprint.sampledString(for: artworkData),
+        ].joined(separator: ":")
+    }
+
+    private func textSignature(_ text: String?) -> String {
+        guard let text, !text.isEmpty else { return "empty" }
+        let head = String(text.prefix(16))
+        let tail = String(text.suffix(16))
+        return "\(text.count):\(head):\(tail)"
     }
 
     private func scheduleSidecarHydrationIfNeeded(for track: Track) {

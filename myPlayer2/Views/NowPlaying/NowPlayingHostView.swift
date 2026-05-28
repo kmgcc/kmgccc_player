@@ -110,7 +110,8 @@ struct NowPlayingHostView: View {
                 artist: presentation.artist,
                 album: presentation.album ?? "",
                 duration: presentation.duration,
-                artworkChecksum: artworkSnapshot?.artworkChecksum ?? 0,
+                artworkChecksum: artworkSnapshot?.artworkChecksum
+                    ?? ArtworkDataFingerprint.sampledHash(for: presentation.artworkData),
                 artworkData: presentation.artworkData,
                 artworkImage: artworkSnapshot?.fullImage
             )
@@ -185,12 +186,11 @@ struct NowPlayingHostView: View {
     private var currentArtworkTaskKey: String {
         let presentation = playbackCoordinator.presentation
         guard presentation.hasTrack else { return "none" }
-        let checksum = ArtworkAssetStore.checksum(for: presentation.artworkData)
         let identity = presentation.artworkIdentity
             ?? presentation.externalStableKey
             ?? presentation.localTrack?.id.uuidString
             ?? "unknown"
-        return "\(identity)-\(checksum)-px:\(preferredArtworkFullImageMaxPixel)"
+        return "\(identity)-\(ArtworkDataFingerprint.sampledString(for: presentation.artworkData))-px:\(preferredArtworkFullImageMaxPixel)"
     }
     
     private func loadArtworkSnapshot() async {

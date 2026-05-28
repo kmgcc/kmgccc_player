@@ -5,14 +5,21 @@
 //  Lightweight one-shot SFX player for hidden interactions.
 //
 
-import AppKit
 import AVFoundation
 import Foundation
 
 @MainActor
 final class EasterEggSFXService {
 
-    private let assetNames = ["youdowhat", "youdowhatr"]
+    private struct SoundAsset {
+        let resourceName: String
+        let fileExtension: String
+    }
+
+    private let assets = [
+        SoundAsset(resourceName: "youdowhat", fileExtension: "wav"),
+        SoundAsset(resourceName: "youdowhatreversed", fileExtension: "wav")
+    ]
     private let cooldown: TimeInterval = 1.8
     private var lastPlayTimestamp: TimeInterval = 0
     private var player: AVAudioPlayer?
@@ -21,21 +28,48 @@ final class EasterEggSFXService {
         let now = Date.timeIntervalSinceReferenceDate
         guard now - lastPlayTimestamp >= cooldown else { return }
         guard player?.isPlaying != true else { return }
-        guard let assetName = assetNames.randomElement() else { return }
-        guard let dataAsset = NSDataAsset(name: assetName) else {
-            print("[EasterEggSFX] Missing data asset: \(assetName)")
+        guard let asset = assets.randomElement() else { return }
+        guard let url = url(for: asset) else {
+            Log.warning(
+                "[EasterEggSFX] missing resource name=\(asset.resourceName) ext=\(asset.fileExtension)",
+                category: .audio
+            )
             return
         }
 
         do {
-            let soundPlayer = try AVAudioPlayer(data: dataAsset.data)
+            let soundPlayer = try AVAudioPlayer(contentsOf: url)
             soundPlayer.volume = 1.0
             soundPlayer.prepareToPlay()
-            soundPlayer.play()
+            guard soundPlayer.play() else {
+                Log.warning(
+                    "[EasterEggSFX] AVAudioPlayer refused playback for \(asset.resourceName).\(asset.fileExtension)",
+                    category: .audio
+                )
+                return
+            }
             player = soundPlayer
             lastPlayTimestamp = now
+            Log.debug(
+                "[EasterEggSFX] played \(asset.resourceName).\(asset.fileExtension)",
+                category: .audio
+            )
         } catch {
-            print("[EasterEggSFX] Failed to play \(assetName): \(error)")
+            Log.error(
+                "[EasterEggSFX] failed to initialize player for \(asset.resourceName).\(asset.fileExtension): \(error)",
+                category: .audio
+            )
         }
+    }
+
+    private func url(for asset: SoundAsset) -> URL? {
+        Bundle.main.url(
+            forResource: asset.resourceName,
+            withExtension: asset.fileExtension
+        ) ?? Bundle.main.url(
+            forResource: asset.resourceName,
+            withExtension: asset.fileExtension,
+            subdirectory: "Audio"
+        )
     }
 }

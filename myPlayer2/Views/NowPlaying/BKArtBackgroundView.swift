@@ -917,9 +917,6 @@ private final class BKArtBackgroundLayerView: NSView {
         ensureBaseContainer(seed: seed)
         guard let current = fromContainer else { return }
         guard toContainer == nil else { return }
-        cancelInitialResourceUpgradeTask()
-        promoteBackgroundAssetsToFullSet()
-        syncLoadedAssetsIfNeeded(allowMaskWarmup: true)
         startMaskWarmupIfNeeded(maskBudget: loadedBudget.mask)
         guard !loadedMaskFrames.isEmpty else {
             pendingTransitionSeed = seed
@@ -934,7 +931,7 @@ private final class BKArtBackgroundLayerView: NSView {
         let next = buildContainer(seed: mixed)
         toContainer = next
         layer?.insertSublayer(next.layer, above: current.layer)
-        applyBackgroundPhase(to: next)
+        applyBackgroundPhase(to: next, allowSynchronousRender: false)
 
         let maskFrames = resolvedMaskFrames()
         guard !maskFrames.isEmpty else {
@@ -1875,7 +1872,7 @@ private final class BKArtBackgroundLayerView: NSView {
         publishCurrentSurfaceBackgroundColor()
     }
 
-    private func applyBackgroundPhase(to container: Container?) {
+    private func applyBackgroundPhase(to container: Container?, allowSynchronousRender: Bool = true) {
         guard let container else { return }
         syncLoadedAssetsIfNeeded()
 
@@ -1902,7 +1899,8 @@ private final class BKArtBackgroundLayerView: NSView {
         guard
             let image = resolvedBackgroundImage(
                 sourceIndex: sourceIndex,
-                variantIndex: container.bgVariantIndex
+                variantIndex: container.bgVariantIndex,
+                allowSynchronousRender: allowSynchronousRender
             )
         else {
             return
@@ -2117,7 +2115,11 @@ private final class BKArtBackgroundLayerView: NSView {
         let composedSaturationBoost: CGFloat
     }
 
-    private func resolvedBackgroundImage(sourceIndex: Int, variantIndex: Int) -> CGImage? {
+    private func resolvedBackgroundImage(
+        sourceIndex: Int,
+        variantIndex: Int,
+        allowSynchronousRender: Bool = true
+    ) -> CGImage? {
         let sourceLookupIndex: Int
         if let matchedIndex = loadedBackgroundSourceIndices.firstIndex(of: sourceIndex) {
             sourceLookupIndex = matchedIndex
@@ -2137,6 +2139,14 @@ private final class BKArtBackgroundLayerView: NSView {
 
         let sourceImage = loadedBackgrounds[sourceLookupIndex]
         let toneStops = toneVariants.isEmpty ? BKArtBackgroundView.fallbackPalette : toneVariants[safeVariantIndex]
+        guard allowSynchronousRender else {
+            scheduleTintedBackgroundRenderIfNeeded(
+                cacheKey: cacheKey,
+                sourceImage: sourceImage,
+                toneStops: toneStops
+            )
+            return nil
+        }
         if let rendered = renderTintedBackgroundNow(
             cacheKey: cacheKey,
             sourceImage: sourceImage,
@@ -2571,9 +2581,8 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     private func resolvedMaskFrames() -> [CGImage] {
-        syncLoadedAssetsIfNeeded()
         if loadedMaskFrames.isEmpty {
-            loadedMaskFrames = assets.maskFrames(maxPixel: loadedBudget.mask)
+            loadedMaskFrames = assets.cachedMaskFrames(maxPixel: loadedBudget.mask) ?? []
         }
         return loadedMaskFrames
     }

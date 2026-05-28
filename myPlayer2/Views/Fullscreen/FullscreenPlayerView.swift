@@ -323,11 +323,10 @@ struct FullscreenPlayerView: View {
 
     private var currentFullscreenLyricsThemeIdentity: FullscreenLyricsThemeIdentity {
         let display = currentDisplayContext
-        let artworkChecksum = ArtworkAssetStore.checksum(for: display.artworkData)
         let artworkSignature = [
             display.artworkIdentity ?? "nil",
             display.lyricsIdentity ?? "nil",
-            "\(artworkChecksum)",
+            ArtworkDataFingerprint.sampledString(for: display.artworkData),
             "\(display.isArtworkLoading ? 1 : 0)",
         ].joined(separator: "|")
         return FullscreenLyricsThemeIdentity(
@@ -3364,7 +3363,8 @@ struct FullscreenPlayerView: View {
                 artist: display.artist,
                 album: display.album ?? "",
                 duration: display.duration,
-                artworkChecksum: artworkSnapshot?.artworkChecksum ?? 0,
+                artworkChecksum: artworkSnapshot?.artworkChecksum
+                    ?? ArtworkDataFingerprint.sampledHash(for: display.artworkData),
                 artworkData: display.artworkData,
                 artworkImage: artworkSnapshot?.fullImage
             )
@@ -3557,7 +3557,7 @@ struct FullscreenPlayerView: View {
         guard settings.fullscreenArtBackgroundEnabled,
               activeCoverBlurTheme == nil,
               currentDisplayContext.hasTrack,
-              ArtworkAssetStore.checksum(for: currentDisplayContext.artworkData) != 0
+              currentDisplayContext.artworkData?.isEmpty == false
         else {
             return false
         }
@@ -3725,7 +3725,11 @@ struct FullscreenPlayerView: View {
 
     private func themeStoreArtworkThemePending(forTrackID trackID: UUID?) -> Bool {
         let display = currentDisplayContext
-        let checksum = ArtworkAssetStore.checksum(for: display.artworkData)
+        guard let checksum = (
+            currentArtworkSnapshot(forTrackID: trackID) ?? currentArtworkSnapshotForDisplay()
+        )?.artworkChecksum else {
+            return false
+        }
         let identity = display.artworkIdentity ?? display.lyricsIdentity
         let expectedTrackID = trackID ?? display.artworkTrackID ?? display.trackID
         return themeStore.artworkThemePending(
@@ -3737,7 +3741,11 @@ struct FullscreenPlayerView: View {
 
     private func themeStorePaletteMatchesCurrentArtwork(forTrackID trackID: UUID?) -> Bool {
         let display = currentDisplayContext
-        let checksum = ArtworkAssetStore.checksum(for: display.artworkData)
+        guard let checksum = (
+            currentArtworkSnapshot(forTrackID: trackID) ?? currentArtworkSnapshotForDisplay()
+        )?.artworkChecksum else {
+            return false
+        }
         let identity = display.artworkIdentity ?? display.lyricsIdentity
         let expectedTrackID = trackID ?? display.artworkTrackID ?? display.trackID
         return themeStore.paletteMatches(
@@ -3750,9 +3758,8 @@ struct FullscreenPlayerView: View {
     private var currentArtworkTaskKey: String {
         let display = currentDisplayContext
         guard display.hasTrack, let trackID = display.artworkTrackID else { return "none" }
-        let checksum = ArtworkAssetStore.checksum(for: display.artworkData)
         let identity = display.artworkIdentity ?? display.lyricsIdentity ?? trackID.uuidString
-        return "\(trackID.uuidString)-\(identity)-\(checksum)-px:\(preferredArtworkFullImageMaxPixel)"
+        return "\(trackID.uuidString)-\(identity)-\(ArtworkDataFingerprint.sampledString(for: display.artworkData))-px:\(preferredArtworkFullImageMaxPixel)"
     }
     
     private func loadArtworkSnapshot() async {
