@@ -220,6 +220,16 @@ struct AMLLWebView: NSViewRepresentable {
 
         func attachWebView(to hostView: WebViewHostView) {
             LyricsRuntimeProfile.increment("AMLLWebView.attachWebView")
+
+            // Defensive rebuild: if WebKit reported WebContent termination but
+            // the deferred rebuild hasn't fired yet, force it now. Calling
+            // hostView.addSubview(webView) on a WKWebView whose WebContent
+            // surface is gone has been observed to crash the process with
+            // SIGTERM inside AppKit's view-insertion path. The rebuild is
+            // synchronous and produces a healthy WebView whose addSubview is
+            // safe.
+            store.rebuildIfWebContentTerminated(reason: "attachWebView")
+
             let shouldAnimateAttachment = animatesAttachment
                 && store.preparedWebView?.superview !== hostView
             if attachmentID == nil || store.activeAttachmentID != attachmentID {
@@ -232,8 +242,21 @@ struct AMLLWebView: NSViewRepresentable {
                 webView.navigationDelegate = self
             }
 
+            // Idempotent fast path: WebView is already parented to this host.
+            // Just refresh layout/state without touching the view hierarchy,
+            // so repeated updateNSView calls (and skin-switch reentry) never
+            // detach+reattach the WebView in the same runloop tick.
+            if webView.superview === hostView {
+                store.layoutPreparedWebView(
+                    in: hostView.bounds,
+                    reason: "attachWebView:alreadyHost"
+                )
+                self.hostView = hostView
+                return
+            }
+
             // Remove from old superview if different
-            if let superview = webView.superview, superview !== hostView {
+            if webView.superview != nil {
                 LyricsRuntimeProfile.increment("AMLLWebView.reparentFromOldSuperview")
                 Log.debug("Removing WebView from old superview", category: .webview)
                 webView.removeFromSuperview()

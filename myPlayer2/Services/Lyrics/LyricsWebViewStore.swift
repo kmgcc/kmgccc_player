@@ -128,6 +128,13 @@ final class LyricsWebViewStore: NSObject {
     private var lastContentLoadStartedAtUptime: TimeInterval?
     private var trackSwitchesSinceLastWebViewRecycle: Int = 0
 
+    /// Set when WebKit reports WebContent process termination. While true the
+    /// `retainedWebView` is a zombie: its WebContent surface is gone and any
+    /// AppKit operation that synchronously touches it (notably
+    /// `addSubview(_:)`) can crash the host process. AMLLWebView consults this
+    /// flag immediately before any reparent and forces a fresh WebView.
+    private(set) var isWebContentTerminated: Bool = false
+
     /// Track change debounce (prevents transient nil clearing).
     private var pendingApplyTrack: DispatchWorkItem?
     private var pendingVisibleLayerProbe: DispatchWorkItem?
@@ -141,6 +148,7 @@ final class LyricsWebViewStore: NSObject {
     private var renderQualityScale: CGFloat = 1
     private var lastAppliedBackingScale: CGFloat?
     private var lastLoggedRenderQualityLayoutSignature: String?
+    private var lastAppliedLayoutSignature: String?
     private var pendingLayoutResyncWorkItem: DispatchWorkItem?
     private var pendingLayoutResyncReason: String?
     private var layoutResyncGeneration: Int = 0
@@ -202,6 +210,7 @@ final class LyricsWebViewStore: NSObject {
 
         renderQualityScale = clampedScale
         lastAppliedBackingScale = nil
+        lastAppliedLayoutSignature = nil
         lastLoggedRenderQualityLayoutSignature = nil
         Log.info(
             "AMLL render quality scale=\(String(format: "%.2f", clampedScale)), role=\(role), reason=\(reason), objectID=\(webViewObjectID)",
@@ -233,6 +242,26 @@ final class LyricsWebViewStore: NSObject {
             width: max(1, bounds.width * viewScale),
             height: max(1, bounds.height * viewScale)
         )
+
+        // Signature-based no-op: bounds + viewScale + superview identity.
+        // tryAttach/attachWebView call this on every updateNSView tick. When
+        // the host is steady, repeated calls would still write pageZoom, layer
+        // transforms and autoresizingMask — each of those is an XPC round-trip
+        // into WebContent (pageZoom especially), enough to spike CPU under a
+        // SwiftUI rebuild storm.
+        let superviewObjectID = (webView.superview as? WebViewHostView)
+            .map { ObjectIdentifier($0).hashValue } ?? 0
+        let signature = String(
+            format: "%.3fx%.3f|%.4f|%d",
+            targetFrame.width,
+            targetFrame.height,
+            viewScale,
+            superviewObjectID
+        )
+        if lastAppliedLayoutSignature == signature && webView.frame == targetFrame {
+            return
+        }
+        lastAppliedLayoutSignature = signature
 
         if webView.frame != targetFrame {
             LyricsRuntimeProfile.recordFrameWrite(
@@ -269,11 +298,17 @@ final class LyricsWebViewStore: NSObject {
     func requestLayoutResync(reason: String) {
         guard !isShutDown else { return }
 
+        // Coalesce within a single runloop tick: many call sites
+        // (attachWebView:postAdd, renderQualityScale, host layout) can request a
+        // resync in the same tick. Without coalescing each one allocates a new
+        // DispatchWorkItem and a new dispatch_async, which dominates the main
+        // thread under a SwiftUI rebuild storm. The pending workItem will read
+        // `pendingLayoutResyncReason` when it runs, so the latest reason wins.
+        pendingLayoutResyncReason = reason
+        if pendingLayoutResyncWorkItem != nil { return }
+
         layoutResyncGeneration &+= 1
         let generation = layoutResyncGeneration
-        pendingLayoutResyncReason = reason
-        pendingLayoutResyncWorkItem?.cancel()
-
         let workItem = DispatchWorkItem { [weak self] in
             self?.performLayoutResync(generation: generation)
         }
@@ -554,6 +589,7 @@ final class LyricsWebViewStore: NSObject {
         isAttached = false
         isReady = false
         isRecoveryInProgress = false
+        isWebContentTerminated = false
         lastTTML = nil
         lastTrackID = nil
         lastTime = nil
@@ -570,6 +606,7 @@ final class LyricsWebViewStore: NSObject {
         trackSwitchesSinceLastWebViewRecycle = 0
         didRegisterMessageHandlers = false
         lastAppliedBackingScale = nil
+        lastAppliedLayoutSignature = nil
         awaitingValidLayoutBounds = false
 
         // Clean up WebView
@@ -665,8 +702,10 @@ final class LyricsWebViewStore: NSObject {
         lastDeliveredTime = nil
         isReady = false
         isRecoveryInProgress = false
+        isWebContentTerminated = false
         didRegisterMessageHandlers = false
         lastAppliedBackingScale = nil
+        lastAppliedLayoutSignature = nil
         awaitingValidLayoutBounds = false
 
         guard let webView = retainedWebView else {
@@ -1120,6 +1159,7 @@ final class LyricsWebViewStore: NSObject {
         lastRecoveryAttempt = now
         isReady = false
         isRecoveryInProgress = true
+        isWebContentTerminated = true
 
         // Clear pending queue but PRESERVE snapshot (lastTTML/lastTime/lastPlaying/lastConfig)
         pendingCalls.removeAll()
@@ -1129,9 +1169,86 @@ final class LyricsWebViewStore: NSObject {
 
         Log.warning("Terminated: objectID=\(webViewObjectID), snapshot preserved (ttml=\(lastTTML != nil), time=\(lastTime ?? -1), playing=\(lastIsPlaying ?? false))", category: .webview)
 
-        // Reload AMLL content - state will be replayed when onReady fires
-        Log.debug("Reload: objectID=\(webViewObjectID)", category: .webview)
-        loadAMLLContent(cacheBust: role == LyricsSurfaceRole.fullscreen.rawValue)
+        // Defer the rebuild to the next runloop tick:
+        //   * This delegate fires inside WebKit's own termination teardown;
+        //     mutating the view hierarchy synchronously here re-enters that
+        //     teardown and has been observed to crash.
+        //   * AMLLWebView.attachWebView calls rebuildIfWebContentTerminated()
+        //     synchronously before any reparent, so a same-runloop skin switch
+        //     racing this delegate still ends up adding a fresh WebView (not
+        //     the dead one) to the new host.
+        DispatchQueue.main.async { [weak self] in
+            self?.rebuildIfWebContentTerminated(reason: "deferred-after-terminate")
+        }
+    }
+
+    /// Replace `retainedWebView` with a fresh instance when the previous
+    /// WebContent process died. Re-attaches the new WebView to the same
+    /// hostView (if any) so a passive surface (no skin switch happening)
+    /// keeps rendering. Returns whether a rebuild was performed.
+    @discardableResult
+    func rebuildIfWebContentTerminated(reason: String) -> Bool {
+        guard isWebContentTerminated else { return false }
+        guard !isShutDown else {
+            isWebContentTerminated = false
+            return false
+        }
+
+        contentLoadRevision &+= 1
+        let oldWebView = retainedWebView
+        let hostView = oldWebView?.superview as? WebViewHostView
+        let appearance = oldWebView?.appearance
+        let isHidden = oldWebView?.isHidden ?? false
+        let frame = oldWebView?.frame ?? .zero
+        let previousObjectID = oldWebView.map { ObjectIdentifier($0).hashValue } ?? fallbackObjectID
+
+        if let oldWebView {
+            if didRegisterMessageHandlers {
+                let contentController = oldWebView.configuration.userContentController
+                contentController.removeScriptMessageHandler(forName: "onReady")
+                contentController.removeScriptMessageHandler(forName: "onUserSeek")
+                contentController.removeScriptMessageHandler(forName: "log")
+                didRegisterMessageHandlers = false
+            }
+            oldWebView.stopLoading()
+            oldWebView.navigationDelegate = nil
+            oldWebView.uiDelegate = nil
+            // Best-effort detach. removeFromSuperview only mutates AppKit
+            // state and is safe even when the underlying WebContent surface
+            // is gone.
+            oldWebView.removeFromSuperview()
+        }
+
+        retainedWebView = nil
+        isWebContentTerminated = false
+        isRecoveryInProgress = false
+        lastAppliedBackingScale = nil
+        lastAppliedLayoutSignature = nil
+        awaitingValidLayoutBounds = false
+        pendingCalls.removeAll()
+        queuedTimeSync = nil
+        isTimeSyncInFlight = false
+        lastDeliveredTime = nil
+
+        Log.warning(
+            "Rebuilding WebView after termination: role=\(role), reason=\(reason), prevObjectID=\(previousObjectID), hadHost=\(hostView != nil)",
+            category: .webview
+        )
+
+        let newWebView = ensureWebView()
+        newWebView.frame = frame
+        newWebView.autoresizingMask = [.width, .height]
+        newWebView.appearance = appearance
+        newWebView.isHidden = isHidden
+
+        if let hostView, hostView.window != nil {
+            hostView.addSubview(newWebView)
+            layoutPreparedWebView(in: hostView.bounds, reason: "rebuildAfterTerminate")
+            requestLayoutResync(reason: "rebuildAfterTerminate:postAdd")
+        }
+        applyMouseInteractionSuppression(reason: "rebuildAfterTerminate")
+
+        return true
     }
 
     /// Force reload (for manual recovery).
@@ -1408,6 +1525,7 @@ final class LyricsWebViewStore: NSObject {
         contentLoadRevision = 0
         trackSwitchesSinceLastWebViewRecycle = 0
         lastAppliedBackingScale = nil
+        lastAppliedLayoutSignature = nil
         awaitingValidLayoutBounds = false
         onUserSeek = nil
 
@@ -1415,6 +1533,7 @@ final class LyricsWebViewStore: NSObject {
         activeAttachmentID = nil
         isAttached = false
         isReady = false
+        isWebContentTerminated = false
 
         // Notify JS to clean up with more thorough cleanup
         if let webView = retainedWebView {
@@ -1838,6 +1957,7 @@ final class LyricsWebViewStore: NSObject {
 
     private func rebuildWebViewForFreshContent() {
         contentLoadRevision &+= 1
+        isWebContentTerminated = false
 
         guard let oldWebView = retainedWebView else {
             loadAMLLContent()
@@ -1864,6 +1984,7 @@ final class LyricsWebViewStore: NSObject {
         oldWebView.removeFromSuperview()
         retainedWebView = nil
         lastAppliedBackingScale = nil
+        lastAppliedLayoutSignature = nil
 
         let newWebView = ensureWebView()
         newWebView.frame = frame

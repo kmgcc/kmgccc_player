@@ -41,9 +41,9 @@ struct ExternalPlaybackSettingsView: View {
 
             SettingsSection {
                 VStack(alignment: .leading, spacing: 12) {
-                    SettingsSwitchRow(title: "启用\"其他\"播放模式", isOn: $enableSystemNowPlaying)
+                    SettingsSwitchRow(title: "启用\"其他\"播放模式（beta）", isOn: $enableSystemNowPlaying)
 
-                    Text("\"其他\" 模式通过 macOS MediaRemote 读取系统当前播放的第三方 App 的元数据，可能出现部分控制不可用、不稳定等问题。如果您只使用本地播放或 Apple Music，可以关闭此选项以保持界面简洁")
+                    Text("\"其他\" 模式通过 macOS MediaRemote 读取系统当前播放的第三方 App 的元数据，且处在测试阶段，可能出现部分控制不可用、不稳定、崩溃等问题。如果您只使用本地播放或 Apple Music，可以关闭此选项以保持界面简洁")
                         .settingsDescriptionStyle()
                 }
             }
