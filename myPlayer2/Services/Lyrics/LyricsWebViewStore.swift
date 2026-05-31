@@ -787,6 +787,20 @@ final class LyricsWebViewStore: NSObject {
         callJS("window.AMLL.setPlaying(\(boolStr))", debugDescription: "window.AMLL.setPlaying")
     }
 
+    func revealExistingLyrics(reason: String, currentTime: Double? = nil) {
+        guard !isShutDown else { return }
+        let sanitizedReason = reason.replacingOccurrences(of: "\n", with: " ")
+        var options: [String: Any] = ["reason": sanitizedReason]
+        if let seconds = currentTime ?? lastTime, seconds.isFinite {
+            options["currentTime"] = seconds
+        }
+        callJSFunction(
+            body: "window.AMLL.revealExistingLyrics(options)",
+            arguments: ["options": options],
+            debugDescription: "window.AMLL.revealExistingLyrics(\(sanitizedReason))"
+        )
+    }
+
     func setConfigJSON(_ json: String) {
         guard !isShutDown else { return }
 

@@ -2,6 +2,36 @@
 
 本文记录新版 AMLL 接入过程中实际发生的问题、判断、修复和验证。迁移前审计与路线见 `docs/amll-upgrade-migration-audit.md`；长期自定义行为与 patch 维护清单见 `docs/amll-custom-behavior-and-patch-registry.md`。
 
+## 2026-05-31 Existing line position-spring reveal
+
+现象：
+
+- 窗口歌词从隐藏切回显示、fullscreen 从关闭歌词切回显示时，旧版本的“上方行从上方、下方行从下方向当前行聚拢”的 AMLL 入场不再出现。
+- 上一轮曾误用 `forceLyricsReload=true` 恢复动画；实际得到的是 `setLyrics` / `setLyricLines` 重建 line objects 后的“新歌词首次布局”动画，表现为整首歌词从底部整体上涌，不是同一首歌关闭/打开时的 re-show 动画。
+
+源码机制名称：
+
+- AMLL 官方源码没有正式 class / CSS animation 名称叫“聚拢动画”。
+- 对应机制应准确称为 `Existing line position-spring reveal`：基于 DOM renderer 的 `LyricLineEl.lineTransforms.posY` spring、`LyricLineEl.setTransform(...)` 和 `LyricPlayerBase.calcLayout(...)`。它不是 `setLyricLines()` initial layout；后者会构造新的 `LyricLineEl`，并从构造函数里的 `posY = window.innerHeight * 2` 进入。
+
+根因：
+
+- 迁移后的 App surface 切换保留同一个 WKWebView 与已经布局完成的 line objects，只改变 Swift host 的 mount/opacity 或右侧面板状态。
+- 重新显示时没有通知 AMLL adapter 让现有 line 的 position spring 重新 reveal；line 的 `posY` 已在目标位置，因此只剩外层淡入。
+
+修复：
+
+- 撤销窗口、AppKit flat driver、fullscreen hidden/queue -> lyrics 的 `forceLyricsReload=true`。
+- `bridge.js` 增加 `window.AMLL.revealExistingLyrics(options)`，`index.html` 实现 `LyricsRenderer.revealExistingLyrics()`。
+- reveal 实现只作用于现有 `currentLyricLineObjects`：先同步当前时间与布局，再把当前行附近 line 的 `lineTransforms.posY` current position 按相对当前行分到上方/下方，最后调用 `calcLayout(false, false)` 让 AMLL 原 position spring 收敛回目标位置。
+- 未修改 generated `amll-core.js` / `amll-lyric.js` / `style.css`，未改 fork core。
+
+验证：
+
+- `node --check myPlayer2/Resources/AMLL/bridge.js` 通过；`index.html` module script 语法抽取检查通过。
+- `xcodebuild -project kmgccc_player.xcodeproj -scheme kmgccc_player -configuration Debug -destination 'platform=macOS' build`：PASS。
+- Build 期间仍有既有非致命警告：多 macOS destination 选择提示、QQMusic helper Python package search path linker warnings、AppIntents metadata skipped，以及 DTDKRemoteDeviceConnection 设备连接提示；无 SourceKit fatal error，构建成功。
+
 ## 2026-05-21 App color contract extension — Artistic fullscreen lyrics Tone Ladder
 
 背景：

@@ -145,7 +145,7 @@
     // AMLL namespace
     window.AMLL = {
         version: '1.0.0',
-        capabilities: ['ttml', 'lrc', 'seek', 'clearState', 'destroy', 'diagnostics', 'trackProfile'],
+        capabilities: ['ttml', 'lrc', 'seek', 'clearState', 'destroy', 'diagnostics', 'trackProfile', 'existingLyricsReveal'],
 
         /**
          * Set TTML lyrics text
@@ -202,6 +202,25 @@
                 }
             } catch (e) {
                  console.error("[Bridge-Crash] setPlaying:", e);
+            }
+        },
+
+        revealExistingLyrics: function(options) {
+            try {
+                if (!isReady) {
+                    pendingCalls.push({ method: 'revealExistingLyrics', args: [options || {}] });
+                    return;
+                }
+                if (
+                    window.LyricsRenderer
+                    && typeof window.LyricsRenderer.revealExistingLyrics === 'function'
+                ) {
+                    return window.LyricsRenderer.revealExistingLyrics(options || {});
+                }
+                return { status: "renderer-reveal-missing" };
+            } catch (e) {
+                 console.error("[Bridge-Crash] revealExistingLyrics:", e);
+                 return { status: "error", message: e?.message || String(e) };
             }
         },
 

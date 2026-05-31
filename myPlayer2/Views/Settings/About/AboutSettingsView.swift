@@ -290,7 +290,7 @@ struct AboutSettingsView: View {
     private func handleAboutTap(on side: AboutTapSide) {
         if aboutEasterEggTracker.registerTap(on: side) {
             showEasterEggImage = true
-            NotificationCenter.default.post(name: .aboutEasterEggTriggered, object: nil)
+            EasterEggSFXService.shared.playRandomIfAllowed()
         }
     }
 

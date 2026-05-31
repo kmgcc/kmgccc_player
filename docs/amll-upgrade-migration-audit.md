@@ -221,3 +221,35 @@ fullscreen surface 不是单纯的 AMLL core 渲染模式，而是 App 侧既定
 - 验证 `timeOffsetMs` / `seekTimeOffsetMs` 与新版 parser shape 的兼容性。
 - 优先使用 adapter / lyric preprocessing；只有明确无法外置时，才做小而独立的 core patch。
 - 时间相关改动必须实际接入 App，并通过构建、parser diff、配置 downgrade/恢复日志做基本验证。
+
+## 9. 2026-05-31 迁移后清理审计
+
+### 已删除
+
+| 路径 | 删除原因 | 引用审计 |
+|---|---|---|
+| `myPlayer2/Resources/AMLL/index.html.bak2` | 迁移前 HTML 备份；当前运行入口是 `index.html`，历史状态已由 Git 与迁移文档保存。 | 仅出现在 Xcode synchronized group exception；运行代码、脚本和文档无消费者。 |
+| `myPlayer2/Resources/AMLL/lyrics-renderer.js` | 迁移前简易自写 lyrics renderer，已被 AMLL `index.html` + `amll-core.js` / `amll-lyric.js` 替代。 | 仅出现在 Xcode synchronized group exception 与旧 OKLCH 审计文字；当前 `index.html`、`bridge.js`、Swift 代码均不加载。 |
+
+### 必须保留
+
+| 路径 | 保留原因 |
+|---|---|
+| `myPlayer2/Resources/AMLL/amll-core.js`, `amll-lyric.js`, `style.css`, `amll-background.js` | App 运行 bundle，由 `scripts/sync-amll-from-fork.sh` 从 fork 构建同步；不要手改。 |
+| `myPlayer2/Resources/AMLL/index.html`, `bridge.js`, `background.html` | 当前 WebView adapter / bridge / Mesh Gradient host。 |
+| `myPlayer2/Resources/AMLL/sample.ttml` | `LyricsViewModel.loadSampleLyrics()` 与 `scripts/verify-amll-parser-shape.mjs` 使用。 |
+| `scripts/sync-amll-from-fork.sh` | AMLL bundle 唯一同步入口。 |
+| `scripts/verify-amll-parser-shape.mjs` | 新旧 parser shape 回归验证入口，仍依赖旧 bundle backup。 |
+| `docs/amll-custom-behavior-and-patch-registry.md` | 长期维护入口，登记当前 App adapter 与 fork patch。 |
+| `docs/amll-lyric-advance-algorithm.md` | timing preprocessing / seek offset 语义参考。 |
+| `docs/amll-upgrade-migration-audit.md` | 当前基线、目录归属与清理审计入口。 |
+
+### 建议人工确认
+
+| 路径 | 当前判断 |
+|---|---|
+| `/Users/kmg/Documents/vscode/player/amll-sources/_superseded/applemusic-like-lyrics-main-temp-20260513` | 文档已标记为临时最新版副本且不作为 base；若确认新版 fork 工作流稳定、无需本地对照，可删除或外部归档。 |
+| `/Users/kmg/Documents/vscode/player/amll-sources/_backups/current-app-amll-bundle-20260513` | 仍被 `scripts/verify-amll-parser-shape.mjs` 默认旧 parser 路径使用；删除前需给脚本改用 Git tag / 显式环境变量。 |
+| `/Users/kmg/Documents/vscode/player/amll-sources/*/node_modules`, `.nx`, `target` | 构建缓存与依赖目录体积大，但属于各自 AMLL 工作树；可由维护者按需清理并重新 `pnpm install` / build。 |
+| `applemusic-like-lyrics-full-refractor` | App 仓库内的旧 AMLL 源码副本未被 Git 跟踪，且运行路径不引用；建议确认是否还有本地实验价值后删除。 |
+| `.worktrees/home-view` | 本地工作树有未提交改动，且不属于本次 AMLL 迁移清理；不要自动删除。 |

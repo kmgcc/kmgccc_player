@@ -10,6 +10,7 @@ import Foundation
 
 @MainActor
 final class EasterEggSFXService {
+    static let shared = EasterEggSFXService()
 
     private struct SoundAsset {
         let resourceName: String
@@ -27,6 +28,8 @@ final class EasterEggSFXService {
     private let cooldown: TimeInterval = 1.8
     private var lastPlayTimestamp: TimeInterval = 0
     private var player: AVAudioPlayer?
+
+    private init() {}
 
     func playRandomIfAllowed() {
         let now = Date.timeIntervalSinceReferenceDate

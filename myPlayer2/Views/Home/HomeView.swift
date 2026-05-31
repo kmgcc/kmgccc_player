@@ -24,6 +24,8 @@ struct HomeView: View {
     @Environment(HomeViewModel.self) private var homeVM
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hasAppeared = false
+    @State private var didPassStartupGate = false
+    @State private var startupFallbackExpired = false
     @State private var layout = HomeWindowLayoutState.shared
     /// Stored as a plain `let` to a singleton — NEVER `@StateObject` or
     /// `@ObservedObject`. The motion state's `scrollOffsetY` publishes on
@@ -35,14 +37,8 @@ struct HomeView: View {
 
     var body: some View {
         Group {
-            if libraryVM.state == .loading {
-                if let snapshot = homeVM.cachedStartupSnapshot {
-                    cachedStartupContent(snapshot)
-                } else {
-                    ProgressView()
-                        .controlSize(.large)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
+            if shouldShowStartupLoading {
+                startupLoadingView
             } else if libraryVM.allTracks.isEmpty {
                 emptyLibraryView
             } else {
@@ -57,22 +53,20 @@ struct HomeView: View {
             )
             FirstUseHitchDiagnostics.end(token)
         }
-        .task {
+        .task(id: startupPreparationToken) {
             let token = FirstUseHitchDiagnostics.begin(
                 "HomeView.task",
                 detail: "tracks=\(libraryVM.allTracks.count), state=\(libraryVM.state)"
             )
             defer { FirstUseHitchDiagnostics.end(token) }
 
-            await homeVM.loadCachedStartupSnapshot()
-            if !libraryVM.allTracks.isEmpty {
-                homeVM.refresh(from: libraryVM)
-            }
-            try? await Task.sleep(for: .milliseconds(50))
-            hasAppeared = true
+            await prepareStartupGate()
         }
         .onChange(of: libraryVM.refreshTrigger) { _, _ in
             homeVM.refreshChangedSections(from: libraryVM)
+            if !didPassStartupGate {
+                Task { await prepareStartupGate() }
+            }
         }
         .onChange(of: libraryVM.trackUpdateEvent) { _, event in
             guard let event else { return }
@@ -89,186 +83,111 @@ struct HomeView: View {
         }
         .onChange(of: libraryVM.state) { old, new in
             if new == .loaded {
-                homeVM.refresh(from: libraryVM)
-                if old == .loading {
-                    hasAppeared = false
-                    Task {
-                        try? await Task.sleep(for: .milliseconds(80))
-                        hasAppeared = true
-                    }
-                }
+                Task { await prepareStartupGate(resetEntranceAnimation: old == .loading) }
             }
         }
     }
 
-    private func cachedStartupContent(_ snapshot: HomeStartupSnapshot) -> some View {
-        let snap = layout.discreteSnapshot
-        let mode: HomeLayoutMode = snap.hasValidLayout
-            ? HomeLayoutMode.from(snap.mode)
-            : .wide
-        let hPad = mode.horizontalPadding
-        let leftPad = (snap.hasValidLayout ? CGFloat(snap.leftInset) : 0) + hPad
-        let rightPad = (snap.hasValidLayout ? CGFloat(snap.rightInset) : 0) + hPad
+    private var shouldShowStartupLoading: Bool {
+        guard !startupFallbackExpired else { return false }
+        guard !didPassStartupGate else { return false }
+        guard !libraryVM.loadingPhase.isFailed else { return false }
 
-        return ZStack(alignment: .topLeading) {
+        if libraryVM.state == .loading || libraryVM.loadingPhase.isLoading {
+            return true
+        }
+        return !libraryVM.allTracks.isEmpty && !homeVM.hasPreparedContent
+    }
+
+    private var startupPreparationToken: String {
+        let stateToken = libraryVM.state == .loading ? "loading" : "loaded"
+        let phaseToken: String
+        if libraryVM.loadingPhase.isLoading {
+            phaseToken = "loading"
+        } else if libraryVM.loadingPhase.isFailed {
+            phaseToken = "failed"
+        } else {
+            phaseToken = "settled"
+        }
+        return "\(stateToken)|\(phaseToken)|tracks:\(libraryVM.allTracks.count)|refresh:\(libraryVM.refreshTrigger)"
+    }
+
+    private func prepareStartupGate(resetEntranceAnimation: Bool = false) async {
+        if libraryVM.state == .loading, !didPassStartupGate {
+            homeVM.invalidatePreparedContentForStartupGate()
+        }
+
+        if libraryVM.state == .loaded || libraryVM.loadingPhase.isFailed {
+            if !libraryVM.allTracks.isEmpty {
+                homeVM.refresh(from: libraryVM)
+            }
+
+            if libraryVM.allTracks.isEmpty || homeVM.hasPreparedContent || libraryVM.loadingPhase.isFailed {
+                revealStartupContent(resetEntranceAnimation: resetEntranceAnimation)
+                return
+            }
+        }
+
+        guard shouldShowStartupLoading else { return }
+
+        try? await Task.sleep(for: .seconds(4))
+        guard !Task.isCancelled, shouldShowStartupLoading else { return }
+
+        if libraryVM.state == .loaded, !libraryVM.allTracks.isEmpty, !homeVM.hasPreparedContent {
+            homeVM.refresh(from: libraryVM)
+        }
+
+        startupFallbackExpired = true
+        revealStartupContent(resetEntranceAnimation: true)
+    }
+
+    private func revealStartupContent(resetEntranceAnimation: Bool) {
+        if resetEntranceAnimation {
+            hasAppeared = false
+        }
+        didPassStartupGate = true
+
+        guard !hasAppeared else { return }
+        if reduceMotion {
+            hasAppeared = true
+            return
+        }
+
+        Task {
+            try? await Task.sleep(for: .milliseconds(80))
+            guard !Task.isCancelled else { return }
+            hasAppeared = true
+        }
+    }
+
+    private var startupLoadingView: some View {
+        ZStack {
             Color(nsColor: HomeAmbientShapesBackground.ambientBaseColorForStaticCache(colorScheme: colorScheme))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .allowsHitTesting(false)
 
-            ScrollView(.vertical, showsIndicators: true) {
-                VStack(alignment: .leading, spacing: mode.sectionSpacing) {
-                    cachedHero(snapshot.hero, snapshot: snapshot, mode: mode)
-                    cachedSummary(snapshot)
-                    cachedStrip(title: "艺人", items: snapshot.artists.map { "\($0.name) · \($0.albumCount) 张专辑" })
-                    cachedStrip(title: "专辑", items: snapshot.albums.map { "\($0.title) · \($0.artist)" })
-                    cachedStrip(title: "播放列表", items: snapshot.playlists.map { "\($0.name) · \($0.trackCount) 首" })
-                    cachedRanking(snapshot.preferenceRanking)
-                    Color.clear.frame(height: 120)
-                }
-                .padding(.top, 56)
-                .padding(.bottom, 24)
-                .padding(.leading, leftPad)
-                .padding(.trailing, rightPad)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-            }
-        }
-        .opacity(hasAppeared ? 1 : 0)
-        .animation(.easeOut(duration: 0.25), value: hasAppeared)
-    }
+            VStack(spacing: 12) {
+                ProgressView()
+                    .controlSize(.large)
 
-    private func cachedHero(
-        _ hero: HomeStartupSnapshot.TrackSummary?,
-        snapshot: HomeStartupSnapshot,
-        mode: HomeLayoutMode
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Home")
-                .font(.system(size: mode == .wide ? 34 : 28, weight: .semibold))
-                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.primary))
-            if let hero {
-                Text(hero.title)
-                    .font(.title3.weight(.semibold))
+                Text(startupLoadingTitle)
+                    .font(.headline)
                     .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.primary))
-                    .lineLimit(1)
-                Text([hero.artist, hero.album].filter { !$0.isEmpty }.joined(separator: " · "))
-                    .font(.callout)
-                    .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
-                    .lineLimit(1)
-            }
-            Text("正在载入音乐库，先显示上次主页快照 · \(snapshot.generatedAt.formatted(date: .abbreviated, time: .shortened))")
-                .font(.caption)
-                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.tertiary))
-        }
-        .padding(20)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .homeUnifiedGlassCard(cornerRadius: 18, colorScheme: colorScheme, isFloating: true)
-    }
 
-    private func cachedSummary(_ snapshot: HomeStartupSnapshot) -> some View {
-        HStack(spacing: 14) {
-            cachedStat(label: "总歌曲", value: "\(snapshot.totalTrackCount)", unit: "首")
-            cachedStat(label: "本周播放", value: cachedFormattedNumber(snapshot.weeklyPlayCount), unit: "次")
-            let duration = cachedFormattedDurationParts(snapshot.weeklyListeningSeconds)
-            cachedStat(label: "本周时长", value: duration.value, unit: duration.unit)
-            cachedStat(
-                label: "本周常听",
-                value: snapshot.weeklyFavoriteArtistName ?? "—",
-                unit: snapshot.weeklyFavoriteArtistPlayCount > 0 ? "\(snapshot.weeklyFavoriteArtistPlayCount) 次" : ""
-            )
-        }
-    }
-
-    private func cachedStat(label: String, value: String, unit: String) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(label)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
-            Spacer(minLength: 0)
-            Text(value)
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.primary))
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
-            if !unit.isEmpty {
-                Text(unit)
+                Text("正在准备音乐库、统计和主页布局")
                     .font(.caption)
-                    .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.tertiary))
-                    .lineLimit(1)
+                    .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
             }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 22)
+            .homeUnifiedGlassCard(cornerRadius: 22, colorScheme: colorScheme, isFloating: true)
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, minHeight: 104, alignment: .topLeading)
-        .homeUnifiedGlassCard(cornerRadius: 16, colorScheme: colorScheme, isFloating: true)
+        .transition(.opacity)
     }
 
-    private func cachedStrip(title: String, items: [String]) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(title)
-                .font(.headline)
-                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.primary))
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 12) {
-                    ForEach(Array(items.prefix(10).enumerated()), id: \.offset) { _, item in
-                        Text(item)
-                            .font(.callout.weight(.medium))
-                            .lineLimit(2)
-                            .frame(width: 154, height: 76, alignment: .topLeading)
-                            .padding(14)
-                            .homeUnifiedGlassCard(cornerRadius: 16, colorScheme: colorScheme, isFloating: true)
-                    }
-                }
-                .padding(.vertical, 2)
-            }
-        }
-    }
-
-    private func cachedRanking(_ items: [HomeStartupSnapshot.RankSummary]) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("爱听排行")
-                .font(.headline)
-                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.primary))
-            VStack(spacing: 0) {
-                ForEach(Array(items.prefix(8).enumerated()), id: \.element.id) { index, item in
-                    HStack {
-                        Text("\(index + 1)")
-                            .font(.callout.weight(.semibold))
-                            .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
-                            .frame(width: 28)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(item.title)
-                                .font(.callout.weight(.semibold))
-                                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.primary))
-                                .lineLimit(1)
-                            Text(item.artist)
-                                .font(.caption)
-                                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
-                                .lineLimit(1)
-                        }
-                        Spacer()
-                        Text("\(item.playCount)")
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
-                    }
-                    .padding(.vertical, 8)
-                    if index < min(items.count, 8) - 1 {
-                        Divider()
-                    }
-                }
-            }
-            .padding(14)
-            .homeUnifiedGlassCard(cornerRadius: 18, colorScheme: colorScheme, isFloating: true)
-        }
-    }
-
-    private func cachedFormattedNumber(_ n: Int) -> String {
-        n.formatted(.number)
-    }
-
-    private func cachedFormattedDurationParts(_ seconds: Double) -> (value: String, unit: String) {
-        if seconds < 3600 {
-            return (String(max(0, Int((seconds / 60).rounded()))), "分钟")
-        }
-        return (String(Int((seconds / 3600).rounded())), "小时")
+    private var startupLoadingTitle: String {
+        let phaseText = libraryVM.loadingPhase.displayText
+        return phaseText.isEmpty ? "正在载入主页" : phaseText
     }
 
     private var scrollContent: some View {
