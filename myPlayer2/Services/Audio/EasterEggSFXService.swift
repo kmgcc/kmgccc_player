@@ -14,6 +14,10 @@ final class EasterEggSFXService {
     private struct SoundAsset {
         let resourceName: String
         let fileExtension: String
+
+        var fileName: String {
+            "\(resourceName).\(fileExtension)"
+        }
     }
 
     private let assets = [
@@ -31,7 +35,7 @@ final class EasterEggSFXService {
         guard let asset = assets.randomElement() else { return }
         guard let url = url(for: asset) else {
             Log.warning(
-                "[EasterEggSFX] missing resource name=\(asset.resourceName) ext=\(asset.fileExtension)",
+                missingResourceMessage(for: asset),
                 category: .audio
             )
             return
@@ -43,20 +47,16 @@ final class EasterEggSFXService {
             soundPlayer.prepareToPlay()
             guard soundPlayer.play() else {
                 Log.warning(
-                    "[EasterEggSFX] AVAudioPlayer refused playback for \(asset.resourceName).\(asset.fileExtension)",
+                    "[EasterEggSFX] AVAudioPlayer refused playback for \(asset.fileName) url=\(url.path)",
                     category: .audio
                 )
                 return
             }
             player = soundPlayer
             lastPlayTimestamp = now
-            Log.debug(
-                "[EasterEggSFX] played \(asset.resourceName).\(asset.fileExtension)",
-                category: .audio
-            )
         } catch {
             Log.error(
-                "[EasterEggSFX] failed to initialize player for \(asset.resourceName).\(asset.fileExtension): \(error)",
+                "[EasterEggSFX] failed to initialize player for \(asset.fileName) url=\(url.path) error=\(error)",
                 category: .audio
             )
         }
@@ -71,5 +71,19 @@ final class EasterEggSFXService {
             withExtension: asset.fileExtension,
             subdirectory: "Audio"
         )
+    }
+
+    private func candidateURLs(for asset: SoundAsset) -> [URL] {
+        guard let resourceURL = Bundle.main.resourceURL else { return [] }
+        return [
+            resourceURL.appendingPathComponent(asset.fileName),
+            resourceURL.appendingPathComponent("Audio").appendingPathComponent(asset.fileName)
+        ]
+    }
+
+    private func missingResourceMessage(for asset: SoundAsset) -> String {
+        let resourceURL = Bundle.main.resourceURL?.path ?? "nil"
+        let candidates = candidateURLs(for: asset).map(\.path)
+        return "[EasterEggSFX] missing resource name=\(asset.fileName) bundle=\(Bundle.main.bundleURL.path) resourceURL=\(resourceURL) candidates=\(candidates)"
     }
 }

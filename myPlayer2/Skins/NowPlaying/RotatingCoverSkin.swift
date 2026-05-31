@@ -274,7 +274,7 @@ private final class RotatingCoverRotation: ObservableObject {
 private final class RotatingCoverCDMotionBlurCache: ObservableObject {
     @Published private(set) var blurredImage: NSImage?
 
-    private static let blurVersion = 5
+    private static let blurVersion = 6
     private static let maxRenderPixelSize = 640
     private static let minRenderableDiscSize: CGFloat = 24
 
@@ -375,7 +375,7 @@ private enum RotatingCoverCDMotionBlurRenderer {
     nonisolated static let ciContext = CIContext(options: nil)
     nonisolated private static let angularBlurRadiusDegrees: CGFloat = 180
     nonisolated private static let angularSampleStepDegrees: CGFloat = 0.75
-    nonisolated private static let angularBlurAccumulationAlpha: CGFloat = 18.0
+    nonisolated private static let angularBlurAccumulationAlpha: CGFloat = 24.0
 
     nonisolated static func render(sourceImage: CGImage, pixelSize: Int) -> CGImage? {
         guard
@@ -410,7 +410,7 @@ private enum RotatingCoverCDMotionBlurRenderer {
         let maxOffset = angularBlurRadiusDegrees
         let sampleWeights = sampleOffsets.map { angle in
             let normalizedDistance = abs(angle) / maxOffset
-            return 0.20 + pow(1 - normalizedDistance, 0.42) * 1.35
+            return 0.62 + pow(1 - normalizedDistance, 0.55) * 0.86
         }
         let weightSum = sampleWeights.reduce(0, +)
         let drawRect = aspectFillRect(
@@ -458,7 +458,7 @@ private enum RotatingCoverCDMotionBlurRenderer {
         let bounds = CGRect(x: 0, y: 0, width: pixelSize, height: pixelSize)
         let blurred = CIImage(cgImage: image)
             .clampedToExtent()
-            .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: 2.2])
+            .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: 4.0])
             .cropped(to: bounds)
         return ciContext.createCGImage(blurred, from: bounds)
     }
@@ -491,14 +491,14 @@ private enum RotatingCoverCDMotionBlurRenderer {
         context.fill(bounds)
 
         // Re-composite the finished blur image over an opaque disc fill so
-        // the motion layer covers the artwork/background instead of carrying
-        // low-alpha holes from the angular samples.
+        // the motion layer itself covers the artwork/background instead of
+        // relying on reducing the base artwork layer.
         context.setBlendMode(.normal)
         context.setAlpha(1.0)
         context.draw(image, in: bounds)
-        context.setAlpha(0.90)
+        context.setAlpha(1.0)
         context.draw(image, in: bounds)
-        context.setAlpha(0.72)
+        context.setAlpha(0.86)
         context.draw(image, in: bounds)
 
         return context.makeImage()
@@ -907,16 +907,16 @@ private final class RotatingCDDiscHostView: NSView {
     }
 
     func setBlurStrength(_ ratio: Double) {
-        // Smooth fade with no cutoff, biased toward dense coverage once the
-        // CD starts moving so the motion-blur layer covers the opaque artwork.
+        // Smooth fade with no cutoff. At playback speed the CD blur layer is
+        // fully opaque; the base artwork layer must remain opaque too.
         let clamped = max(0, min(ratio, 1))
         let smoothed = clamped * clamped * (3 - 2 * clamped)
         let baseCoverage = smoothed > 0 ? pow(smoothed, 0.16) : 0
         let coverage: Double
         if smoothed > 0.20 {
-            coverage = max(baseCoverage, 0.98)
+            coverage = 1.0
         } else if smoothed > 0.04 {
-            coverage = max(baseCoverage, 0.90)
+            coverage = max(baseCoverage, 0.96)
         } else {
             coverage = baseCoverage
         }
