@@ -5384,6 +5384,127 @@
             window.AMLL.debugDumpVisibleLayers = debugDumpVisibleLayers;
         }
 
+        const triggerExistingLinePositionSpringReveal = async (options = {}) => {
+            const reason = typeof options.reason === "string"
+                ? options.reason
+                : "surface-attached";
+            const lineObjects = Array.isArray(lyricPlayer.currentLyricLineObjects)
+                ? lyricPlayer.currentLyricLineObjects
+                : [];
+            const playerElement = lyricPlayer.getElement?.();
+            if (!(playerElement instanceof HTMLElement) || lineObjects.length === 0 || !lastTTML) {
+                return {
+                    status: "skipped",
+                    reason,
+                    cause: "no-existing-lyrics",
+                    lineObjects: lineObjects.length,
+                };
+            }
+            const springIsEnabled =
+                typeof lyricPlayer.getEnableSpring === "function"
+                    ? lyricPlayer.getEnableSpring() !== false
+                    : springEnabled !== false;
+            if (!springIsEnabled) {
+                return {
+                    status: "skipped",
+                    reason,
+                    cause: "spring-disabled",
+                    lineObjects: lineObjects.length,
+                };
+            }
+
+            const optionSeconds = Number(options.currentTime);
+            const revealTimeMs = Number.isFinite(optionSeconds)
+                ? Math.max(0, Math.floor(optionSeconds * 1000))
+                : (Number.isFinite(lastKnownTimeMs) ? lastKnownTimeMs : 0);
+            originalSetCurrentTime(revealTimeMs, true);
+            if (typeof lyricPlayer.calcLayout === "function") {
+                await lyricPlayer.calcLayout(false, false);
+            }
+
+            const timelineState = lyricPlayer.timelineState ?? {};
+            const focusIndex = Number.isFinite(timelineState.scrollToIndex)
+                ? timelineState.scrollToIndex
+                : (Number.isFinite(lyricPlayer.scrollToIndex) ? lyricPlayer.scrollToIndex : 0);
+            const viewportHeight = Math.max(
+                1,
+                Number(lyricPlayer.size?.[1]) || playerElement.clientHeight || window.innerHeight || 1
+            );
+            const overscan = Math.max(
+                0,
+                Number(lyricPlayer.getOverscanPx?.()) || Number(overscanPx) || 0
+            );
+            const centerY = viewportHeight * 0.5;
+            const baseDistance = Math.max(72, Math.min(viewportHeight * 0.18, 180));
+            const extraDistance = Math.min(viewportHeight * 0.16, 160);
+            let touched = 0;
+
+            for (let lineIndex = 0; lineIndex < lineObjects.length; lineIndex++) {
+                const lineObj = lineObjects[lineIndex];
+                const lineTransforms = lineObj?.lineTransforms;
+                const posY = lineTransforms?.posY;
+                if (
+                    !posY
+                    || typeof posY.setPosition !== "function"
+                    || typeof posY.getCurrentPosition !== "function"
+                ) {
+                    continue;
+                }
+                const targetTop = Number.isFinite(lineObj?.top)
+                    ? lineObj.top
+                    : Number(posY.getCurrentPosition());
+                if (!Number.isFinite(targetTop)) continue;
+                const lineHeight = Number(lyricPlayer.lyricLinesSize?.get?.(lineObj)?.[1]) || viewportHeight / 5;
+                const targetBottom = targetTop + lineHeight;
+                const nearViewport = !(targetTop > viewportHeight + overscan || targetBottom < -overscan);
+                const nearFocus = Math.abs(lineIndex - focusIndex) <= 8;
+                if (!nearViewport && !nearFocus) continue;
+
+                const focusDistance = Math.min(1, Math.abs(lineIndex - focusIndex) / 8);
+                const revealDistance = baseDistance + focusDistance * extraDistance;
+                let direction;
+                if (lineIndex < focusIndex) {
+                    direction = -1;
+                } else if (lineIndex > focusIndex) {
+                    direction = 1;
+                } else {
+                    direction = targetTop + lineHeight * 0.5 < centerY ? -1 : 1;
+                }
+                posY.setPosition(targetTop + direction * revealDistance);
+                touched += 1;
+            }
+
+            if (touched > 0 && typeof lyricPlayer.calcLayout === "function") {
+                await lyricPlayer.calcLayout(false, false);
+            }
+            requestAnimationFrame(() => {
+                if (fullscreenOpaqueLyricsMode) {
+                    patchFullscreenLineOpacityBehavior({
+                        reason: `existing-line-reveal:${reason}`,
+                        forceActiveSync: true,
+                    });
+                } else if (fullscreenCoverBlurMode) {
+                    patchCoverBlurLineBehavior({
+                        reason: `existing-line-reveal:${reason}`,
+                        forceActiveSync: true,
+                    });
+                }
+                logActiveHighlightState(`existing-line-reveal:${reason}`, { important: true });
+            });
+
+            const summary = {
+                status: touched > 0 ? "revealed" : "skipped",
+                reason,
+                cause: touched > 0 ? "line-position-spring" : "no-nearby-lines",
+                focusIndex,
+                touched,
+                lineObjects: lineObjects.length,
+                currentTimeMs: revealTimeMs,
+            };
+            console.log("[AMLLLineReveal]", summary);
+            return summary;
+        };
+
         // Define the Renderer Implementation for Bridge
         window.LyricsRenderer = {
             setLyrics: (ttml) => {
@@ -5501,6 +5622,10 @@
                         );
                     }
 	            },
+
+                revealExistingLyrics: (options = {}) => (
+                    triggerExistingLinePositionSpringReveal(options)
+                ),
 	            
 	            setPlaying: (isPlaying) => {
                     externalIsPlaying = !!isPlaying;

@@ -285,7 +285,6 @@ struct KmgcccPlayerApp: App {
 extension Notification.Name {
     static let playbackTrackDidChange = Notification.Name("kmgccc_player.playbackTrackDidChange")
     static let libraryTrackDidUpdate = Notification.Name("kmgccc_player.libraryTrackDidUpdate")
-    static let aboutEasterEggTriggered = Notification.Name("kmgccc_player.aboutEasterEggTriggered")
     static let toggleQueuePanel = Notification.Name("kmgccc_player.toggleQueuePanel")
     static let playbackModeChanged = Notification.Name("kmgccc_player.playbackModeChanged")
     static let dockProgressVisibilityChanged = Notification.Name("kmgccc_player.dockProgressVisibilityChanged")

@@ -286,6 +286,14 @@ final class LyricsViewModel {
         store.setCurrentTime(seconds)
     }
 
+    func revealExistingLyrics(reason: String) {
+        rebindSeekCallback()
+        let targetStore = store
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
+            targetStore.revealExistingLyrics(reason: reason)
+        }
+    }
+
     /// Set playback state.
     func setPlaying(_ isPlaying: Bool) {
         rebindSeekCallback()

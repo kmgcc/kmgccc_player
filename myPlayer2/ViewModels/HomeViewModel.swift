@@ -42,6 +42,10 @@ final class HomeViewModel {
     private(set) var preferenceRanking: [PreferenceRankItem] = []
     private(set) var dailyListeningMap: [Date: Int] = [:]
     private(set) var cachedStartupSnapshot: HomeStartupSnapshot?
+    /// True after Home has built a complete in-memory snapshot from the
+    /// currently loaded library. The view uses this as a startup gate so the
+    /// first full Home paint does not race `LibraryViewModel.state == .loaded`.
+    private(set) var hasPreparedContent = false
 
     private var trackIdentitySignature = 0
     private var trackMetadataSignature = 0
@@ -78,7 +82,10 @@ final class HomeViewModel {
         defer { FirstUseHitchDiagnostics.end(token) }
 
         let incomingSignature = HomeRefreshSignature(libraryVM: libraryVM, tracks: allTracks)
-        guard incomingSignature != lastAppliedRefreshSignature else { return }
+        guard incomingSignature != lastAppliedRefreshSignature else {
+            hasPreparedContent = true
+            return
+        }
 
         heroTrack = resolveHeroTrack(in: allTracks)
 
@@ -170,6 +177,7 @@ final class HomeViewModel {
         dailyListeningMap = dayMap
         updateCachedSignatures(from: libraryVM, allTracks: allTracks)
         lastAppliedRefreshSignature = incomingSignature
+        hasPreparedContent = true
         writeStartupSnapshotIfNeeded(
             signature: incomingSignature.stableCacheSignature,
             libraryVM: libraryVM
@@ -192,7 +200,10 @@ final class HomeViewModel {
         defer { FirstUseHitchDiagnostics.end(token) }
 
         let incomingSignature = HomeRefreshSignature(libraryVM: libraryVM, tracks: allTracks)
-        guard incomingSignature != lastAppliedRefreshSignature else { return }
+        guard incomingSignature != lastAppliedRefreshSignature else {
+            hasPreparedContent = true
+            return
+        }
 
         let newTrackIdentitySignature = makeTrackIdentitySignature(allTracks)
         guard newTrackIdentitySignature == trackIdentitySignature else {
@@ -226,6 +237,7 @@ final class HomeViewModel {
             trackMetadataSignature = newTrackMetadataSignature
         }
         lastAppliedRefreshSignature = incomingSignature
+        hasPreparedContent = true
         writeStartupSnapshotIfNeeded(
             signature: incomingSignature.stableCacheSignature,
             libraryVM: libraryVM
@@ -272,6 +284,7 @@ final class HomeViewModel {
 
         trackMetadataSignature = newTrackMetadataSignature
         lastAppliedRefreshSignature = HomeRefreshSignature(libraryVM: libraryVM, tracks: allTracks)
+        hasPreparedContent = true
         if let signature = lastAppliedRefreshSignature?.stableCacheSignature {
             writeStartupSnapshotIfNeeded(signature: signature, libraryVM: libraryVM)
         }
@@ -309,11 +322,16 @@ final class HomeViewModel {
         if let signature = lastAppliedRefreshSignature?.stableCacheSignature {
             writeStartupSnapshotIfNeeded(signature: signature, libraryVM: libraryVM)
         }
+        hasPreparedContent = true
     }
 
     func loadCachedStartupSnapshot() async {
         guard cachedStartupSnapshot == nil else { return }
         cachedStartupSnapshot = await HomeStartupSnapshotStore.shared.load()
+    }
+
+    func invalidatePreparedContentForStartupGate() {
+        hasPreparedContent = false
     }
 
     private func clearAll() {
@@ -334,6 +352,7 @@ final class HomeViewModel {
         weeklyFavoriteArtistPlayCount = 0
         preferenceRanking = []
         dailyListeningMap = [:]
+        hasPreparedContent = false
         trackIdentitySignature = 0
         trackMetadataSignature = 0
         playlistSignature = 0

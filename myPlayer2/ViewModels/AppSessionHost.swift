@@ -21,8 +21,6 @@ final class AppSessionHost: ObservableObject {
     @Published private(set) var importEnrichmentService: ImportEnrichmentService?
     @Published private(set) var skinManager: SkinManager?
 
-    private(set) var easterEggSFX: EasterEggSFXService?
-
     let uiState = UIStateViewModel()
     /// Stable across HomeView lifetime so the random Hero pick survives navigation.
     let homeVM = HomeViewModel()
@@ -32,7 +30,6 @@ final class AppSessionHost: ObservableObject {
     private var hasSetupDependencies = false
     private var playbackModeObserver: NSObjectProtocol?
     private var libraryLocationObserver: NSObjectProtocol?
-    private var aboutEasterEggObserver: NSObjectProtocol?
     private var libraryService: LocalLibraryService?
     private var repository: LibraryRepositoryProtocol?
     private var playbackMemoryTimer: Timer?
@@ -158,8 +155,6 @@ final class AppSessionHost: ObservableObject {
         }
 
         let skinManager = SkinManager()
-        let easterEggSFX = EasterEggSFXService()
-
         self.libraryVM = libraryVM
         self.playerVM = playerVM
         self.playbackCoordinator = playbackCoordinator
@@ -167,7 +162,6 @@ final class AppSessionHost: ObservableObject {
         self.ledMeterProvider = ledMeterProvider
         self.importEnrichmentService = importEnrichmentService
         self.skinManager = skinManager
-        self.easterEggSFX = easterEggSFX
         self.libraryService = libraryService
         self.repository = repository
 
@@ -217,19 +211,6 @@ final class AppSessionHost: ObservableObject {
             }
         }
 
-        if aboutEasterEggObserver == nil {
-            aboutEasterEggObserver = NotificationCenter.default.addObserver(
-                forName: .aboutEasterEggTriggered,
-                object: nil,
-                queue: .main
-            ) { [weak easterEggSFX] _ in
-                let service = easterEggSFX
-                Task { @MainActor in
-                    service?.playRandomIfAllowed()
-                }
-            }
-        }
-
         libraryService.startMonitoring(repository: repository)
         startPlaybackMemoryAutosave()
         scheduleFirstUsePrewarm(
@@ -275,9 +256,6 @@ final class AppSessionHost: ObservableObject {
             }
             if let libraryLocationObserver {
                 NotificationCenter.default.removeObserver(libraryLocationObserver)
-            }
-            if let aboutEasterEggObserver {
-                NotificationCenter.default.removeObserver(aboutEasterEggObserver)
             }
             playbackMemoryTimer?.invalidate()
             firstUsePrewarmTask?.cancel()

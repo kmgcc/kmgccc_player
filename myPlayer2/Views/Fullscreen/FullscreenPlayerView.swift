@@ -456,8 +456,8 @@ struct FullscreenPlayerView: View {
         .onReceive(NotificationCenter.default.publisher(for: .libraryTrackDidUpdate)) { notification in
             handleLibraryTrackDidUpdate(notification)
         }
-        .onChange(of: rightPanelDisplayState) { _, newValue in
-            handleRightPanelDisplayStateChange(newValue)
+        .onChange(of: rightPanelDisplayState) { oldValue, newValue in
+            handleRightPanelDisplayStateChange(oldValue, newValue)
         }
         .onChange(of: fullscreenLyricsConfigSignature) { _, _ in
             applyFullscreenLyricsTheme()
@@ -1407,8 +1407,16 @@ struct FullscreenPlayerView: View {
         }
     }
 
-    private func handleRightPanelDisplayStateChange(_ newState: RightPanelDisplayState) {
+    private func handleRightPanelDisplayStateChange(
+        _ oldState: RightPanelDisplayState,
+        _ newState: RightPanelDisplayState
+    ) {
         syncFullscreenLyricsHostMount()
+
+        if newState == .lyrics, oldState != .lyrics {
+            reloadLyricsSurface(reason: "fullscreen lyrics shown", forceLyricsReload: false)
+            revealFullscreenExistingLyrics(reason: "fullscreen lyrics shown")
+        }
 
         if newState == .queue {
             cancelFullscreenBottomControlsAutoHide()
@@ -2223,6 +2231,14 @@ struct FullscreenPlayerView: View {
         // geometry gate opens; system fullscreen calls it on appear.
         LyricsSurfaceManager.shared.reportFullscreenVisible(true)
         reloadLyricsSurface(reason: reason, forceLyricsReload: true)
+    }
+
+    private func revealFullscreenExistingLyrics(reason: String) {
+        let targetStore = fullscreenStore
+        let currentTime = playbackCoordinator.presentation.currentTime
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
+            targetStore.revealExistingLyrics(reason: reason, currentTime: currentTime)
+        }
     }
 
     private func isLedEnabledForFullscreenSkin() -> Bool {

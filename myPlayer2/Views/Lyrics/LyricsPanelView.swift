@@ -61,6 +61,7 @@ struct LyricsPanelView: View {
                     forceWebReload: false,
                     forceLyricsReload: false
                 )
+                lyricsVM.revealExistingLyrics(reason: "lyrics panel appear")
                 FirstUseHitchDiagnostics.end(token)
             }
             .onDisappear {
@@ -83,6 +84,7 @@ struct LyricsPanelView: View {
                     forceWebReload: false,
                     forceLyricsReload: false
                 )
+                lyricsVM.revealExistingLyrics(reason: "lyrics inspector expanded")
             }
             .onChange(of: playbackCoordinator.presentation.lyricsText) { _, _ in
                 guard playbackCoordinator.presentation.source.isExternal else { return }

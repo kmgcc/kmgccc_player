@@ -727,7 +727,8 @@ struct LyricsFlatDriverView: View {
             .onChange(of: uiState.lyricsVisible) { _, isVisible in
                 guard isVisible else { return }
                 LyricsSurfaceManager.shared.reportMainVisible(true)
-                reloadLyrics(reason: "lyrics expanded")
+                reloadLyrics(reason: "lyrics expanded", forceLyricsReload: false)
+                lyricsVM.revealExistingLyrics(reason: "flat lyrics expanded")
             }
             .onChange(of: playbackCoordinator.presentation.lyricsText) { _, _ in
                 guard playbackCoordinator.presentation.source.isExternal else { return }

@@ -50,8 +50,6 @@
 				Resources/AMLL/background.html,
 				Resources/AMLL/bridge.js,
 				Resources/AMLL/index.html,
-				Resources/AMLL/index.html.bak2,
-				"Resources/AMLL/lyrics-renderer.js",
 				Resources/AMLL/sample.ttml,
 				Resources/AMLL/style.css,
 				"Resources/mediaremote-adapter/bin/mediaremote-adapter.pl",

@@ -120,7 +120,7 @@
 | `youdowhat` | wav | 是 | `EasterEggSFXService` | 非图片，彩蛋音频 | keep-bundle-audio |
 | `youdowhatreversed` | wav | 是 | `EasterEggSFXService` | 非图片，彩蛋音频 | keep-bundle-audio |
 
-迁移后，彩蛋音频不再依赖 `Assets.xcassets` dataset；源文件位于 `myPlayer2/Resources/Audio/youdowhat.wav` 和 `myPlayer2/Resources/Audio/youdowhatreversed.wav`。当前 Xcode file-system synchronized resources 会将它们作为普通 bundle 文件复制到 `.app/Contents/Resources/` 根目录；调用端优先通过 `Bundle.main.url(forResource:withExtension:)` 加载，并保留 `Audio` 子目录 fallback。`myPlayer2/Assets.xcassets` 中如仍有本地旧 dataset，只能视为未追踪的历史来源，不作为运行时资源管理；Xcode target 已显式排除 `youdowhat.dataset` 和 `youdowhatr.dataset`。`snowflake` 系列仅标记为 unused candidate，不在本轮删除。
+迁移后，彩蛋音频不再依赖 `Assets.xcassets` dataset；源文件位于 `myPlayer2/Resources/Audio/youdowhat.wav` 和 `myPlayer2/Resources/Audio/youdowhatreversed.wav`。当前 Xcode file-system synchronized resources 会将它们作为普通 bundle 文件复制到 `.app/Contents/Resources/` 根目录；调用端是 `AboutSettingsView` 直接调用 `EasterEggSFXService.shared.playRandomIfAllowed()`，服务内部优先通过 `Bundle.main.url(forResource:withExtension:)` 加载，并保留 `Audio` 子目录 fallback。彩蛋音频不通过 `NotificationCenter` 间接转发，不通过 `EncryptedAssetImages`，不通过 `EncryptedArtAssetLoader`。`myPlayer2/Assets.xcassets` 中如仍有本地旧 dataset，只能视为未追踪的历史来源，不作为运行时资源管理；Xcode target 已显式排除 `youdowhat.dataset` 和 `youdowhatr.dataset`。`snowflake` 系列仅标记为 unused candidate，不在本轮删除。
 
 ## 6. 非图片资源不属于本加密流程
 
@@ -128,7 +128,7 @@
 
 以下资源明确不进入 `EncryptedArtAssetLoader`，也不应出现在 `EncryptedArtAssets/manifest.json` 中：`wav`、`mp3`、`m4a`、`aiff`、`caf`、`json`、`ttml`、`js`、`css`、`html`。
 
-彩蛋音效 `youdowhat.wav` 和 `youdowhatreversed.wav` 应作为普通 bundle 音频资源管理，当前源路径为 `myPlayer2/Resources/Audio/`。调用端是 `EasterEggSFXService`，加载方式优先为：
+彩蛋音效 `youdowhat.wav` 和 `youdowhatreversed.wav` 应作为普通 bundle 音频资源管理，当前源路径为 `myPlayer2/Resources/Audio/`。关于页触发彩蛋时直接调用 `EasterEggSFXService.shared.playRandomIfAllowed()`；音频服务内部加载方式优先为：
 
 ```swift
 Bundle.main.url(forResource: "youdowhatreversed", withExtension: "wav")
