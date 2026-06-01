@@ -8,6 +8,18 @@
 import Foundation
 import Combine
 
+enum UpdateCheckPreferences {
+    static let checkForUpdatesOnLaunchKey = "checkForUpdatesOnLaunch"
+
+    static var checkForUpdatesOnLaunch: Bool {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: checkForUpdatesOnLaunchKey) != nil else {
+            return true
+        }
+        return defaults.bool(forKey: checkForUpdatesOnLaunchKey)
+    }
+}
+
 /// Service for checking remote version updates
 @MainActor
 final class UpdateChecker: ObservableObject {

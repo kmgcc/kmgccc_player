@@ -134,6 +134,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
             suspendMainLyricsIfNeeded()
             previousKeyWindow = NSApp.keyWindow === window ? previousKeyWindow : NSApp.keyWindow
             presentationMode = .systemFullscreenSpace
+            TelemetryService.shared.updateSkinState()
             installEscapeMonitorIfNeeded()
             window.makeKeyAndOrderFront(nil)
             window.orderFrontRegardless()
@@ -148,6 +149,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
 
         isTransitioning = true
         presentationMode = .systemFullscreenSpace
+        TelemetryService.shared.updateSkinState()
 
         let targetScreen = NSScreen.main ?? NSScreen.screens.first
         let fullscreenLyricsVM = makeFullscreenLyricsViewModel()
@@ -273,6 +275,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
             )
         }
         presentationMode = .embeddedInWindow
+        TelemetryService.shared.updateSkinState()
         suspendMainSidebarForEmbeddedFullscreenIfNeeded()
         suspendMainLyricsIfNeeded()
         installEscapeMonitorIfNeeded()
@@ -289,6 +292,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         PaneLayoutTrace.log("fullscreen.closeEmbedded begin")
         LyricsSurfaceManager.shared.requestMode(.main)
         presentationMode = .none
+        TelemetryService.shared.updateSkinState()
         removeEscapeMonitor()
         restoreEmbeddedHostWindowFrameIfNeeded()
         restoreSuspendedMainSidebarForEmbeddedFullscreenIfNeeded()
@@ -305,6 +309,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         )
         LyricsSurfaceManager.shared.requestMode(.main)
         presentationMode = .none
+        TelemetryService.shared.updateSkinState()
         removeEscapeMonitor()
 
         if embeddedHostWindow === window {
@@ -371,6 +376,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         fullscreenWindow = nil
         isTransitioning = false
         presentationMode = .none
+        TelemetryService.shared.updateSkinState()
         cursorAutoHideCoordinator.stop()
         removeEscapeMonitor()
         teardownFullscreenLyricsIfNeeded()

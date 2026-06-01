@@ -49,8 +49,14 @@ public enum FullscreenSkinID: String, CaseIterable, Identifiable {
 
     public var supportsMiniPlayerSpectrum: Bool {
         switch self {
-        case .coverLed, .appleStyle, .rotatingCover, .coverGradientBlur: return true
-        case .kmgcccCassette: return false
+        case .coverLed, .appleStyle, .rotatingCover, .coverGradientBlur, .kmgcccCassette: return true
+        }
+    }
+
+    public var defaultsMiniPlayerSpectrumOn: Bool {
+        switch self {
+        case .coverGradientBlur, .kmgcccCassette: return true
+        case .coverLed, .appleStyle, .rotatingCover: return false
         }
     }
 
@@ -174,6 +180,7 @@ public final class FullscreenPresentationCoordinator {
             saveConfiguration(newValue)
             syncLegacySettings(newValue)
         }
+        TelemetryService.shared.updateSkinState()
     }
 
     public var skinID: String { configuration.skinID }
@@ -188,35 +195,11 @@ public final class FullscreenPresentationCoordinator {
     public func setSkinID(_ skinID: String) {
         let currentConfig = configuration
         let previousID = currentConfig.skinID
-        let currentSkin = FullscreenSkinID(rawValue: previousID)
-        let newSkin = FullscreenSkinID(rawValue: skinID)
-        if skinID == "kmgccc.cassette" && currentConfig.isMiniPlayerSpectrumEnabled {
-            updateConfiguration(FullscreenPresentationConfiguration(
-                skinID: skinID,
-                visualizerMode: .off
-            ))
-            applyFullscreenSkinEntryDefaults(previous: previousID, new: skinID)
-            return
-        }
-
-        let currentSupportsMiniPlayer = currentSkin?.supportsMiniPlayerSpectrum ?? false
-        let newSupportsMiniPlayer = newSkin?.supportsMiniPlayerSpectrum ?? false
-        if !currentSupportsMiniPlayer && newSupportsMiniPlayer && currentConfig.visualizerMode == .off {
-            let explicitlyDisabled = UserDefaults.standard.bool(forKey: Keys.userExplicitlyDisabledMiniPlayerSpectrum)
-            if !explicitlyDisabled {
-                updateConfiguration(FullscreenPresentationConfiguration(
-                    skinID: skinID,
-                    visualizerMode: .miniPlayerSpectrum
-                ))
-                applyFullscreenSkinEntryDefaults(previous: previousID, new: skinID)
-                return
-            }
-        }
-
-        updateConfiguration(FullscreenPresentationConfiguration(
+        let proposed = FullscreenPresentationConfiguration(
             skinID: skinID,
             visualizerMode: currentConfig.visualizerMode
-        ))
+        )
+        updateConfiguration(applyingMiniPlayerSpectrumDefaultIfNeeded(to: proposed))
         applyFullscreenSkinEntryDefaults(previous: previousID, new: skinID)
     }
 
@@ -272,25 +255,20 @@ public final class FullscreenPresentationCoordinator {
             UserDefaults.standard.set(false, forKey: Keys.userExplicitlyDisabledMiniPlayerSpectrum)
             // Mutual exclusion: enabling MiniPlayer spectrum must clear the
             // current skin's embedded visualizer so both don't display.
-            if let skin = FullscreenSkinID(rawValue: currentConfig.skinID) {
-                switch skin {
-                case .coverLed:
-                    UserDefaults.standard.set("off", forKey: Keys.classicLEDVisualizer)
-                case .appleStyle:
-                    UserDefaults.standard.set("off", forKey: Keys.appleStyleVisualizer)
-                case .rotatingCover:
-                    UserDefaults.standard.set("off", forKey: Keys.rotatingCoverVisualizer)
-                case .kmgcccCassette:
-                    UserDefaults.standard.set("off", forKey: Keys.kmgcccCassetteVisualizer)
-                case .coverGradientBlur:
-                    break
-                }
-            }
+            clearSkinVisualizer(for: currentConfig.skinID)
             updateConfiguration(FullscreenPresentationConfiguration(
                 skinID: currentConfig.skinID,
                 visualizerMode: .miniPlayerSpectrum
             ))
         }
+    }
+
+    public func disableMiniPlayerSpectrumForExplicitUserChoice() {
+        UserDefaults.standard.set(true, forKey: Keys.userExplicitlyDisabledMiniPlayerSpectrum)
+        updateConfiguration(FullscreenPresentationConfiguration(
+            skinID: configuration.skinID,
+            visualizerMode: .off
+        ))
     }
 
     public func toggleSkinVisualizer() {
@@ -312,12 +290,17 @@ public final class FullscreenPresentationCoordinator {
     @discardableResult
     public func normalizeConfiguration() -> FullscreenPresentationConfiguration {
         let current = configuration
-        let normalized = FullscreenPresentationConfiguration(
-            skinID: current.skinID,
-            visualizerMode: current.visualizerMode
+        let normalized = applyingMiniPlayerSpectrumDefaultIfNeeded(
+            to: FullscreenPresentationConfiguration(
+                skinID: current.skinID,
+                visualizerMode: current.visualizerMode
+            )
         )
         if normalized != current {
             updateConfiguration(normalized)
+        } else {
+            saveConfiguration(normalized)
+            syncLegacySettings(normalized)
         }
         return normalized
     }
@@ -325,7 +308,11 @@ public final class FullscreenPresentationCoordinator {
     private func loadConfiguration() -> FullscreenPresentationConfiguration {
         if let data = UserDefaults.standard.data(forKey: Keys.configuration),
            let config = try? JSONDecoder().decode(FullscreenPresentationConfiguration.self, from: data) {
-            return config
+            let normalized = FullscreenPresentationConfiguration(
+                skinID: config.skinID,
+                visualizerMode: config.visualizerMode
+            )
+            return applyingMiniPlayerSpectrumDefaultIfNeeded(to: normalized)
         }
         return loadLegacyConfiguration()
     }
@@ -334,8 +321,8 @@ public final class FullscreenPresentationCoordinator {
         let skinID = UserDefaults.standard.string(forKey: Keys.skinID) ?? "fullscreen.coverGradientBlur"
         let hasExplicitMiniPlayerSpectrum = UserDefaults.standard.object(forKey: Keys.miniPlayerSpectrumEnabled) != nil
         let miniPlayerSpectrum = hasExplicitMiniPlayerSpectrum
-            ? UserDefaults.standard.bool(forKey: Keys.miniPlayerSpectrumEnabled)
-            : true
+            ? shouldUseLegacyMiniPlayerSpectrumValue(for: skinID)
+            : shouldDefaultMiniPlayerSpectrumOn(for: skinID)
         let classicMode = UserDefaults.standard.string(forKey: Keys.classicLEDVisualizer) ?? "off"
         let appleStyleMode = UserDefaults.standard.string(forKey: Keys.appleStyleVisualizer) ?? "off"
         let cassetteMode = UserDefaults.standard.string(forKey: Keys.kmgcccCassetteVisualizer) ?? "off"
@@ -352,6 +339,51 @@ public final class FullscreenPresentationCoordinator {
         )
     }
 
+    private func applyingMiniPlayerSpectrumDefaultIfNeeded(
+        to config: FullscreenPresentationConfiguration
+    ) -> FullscreenPresentationConfiguration {
+        guard config.visualizerMode == .off,
+              shouldDefaultMiniPlayerSpectrumOn(for: config.skinID) else {
+            return config
+        }
+        return FullscreenPresentationConfiguration(
+            skinID: config.skinID,
+            visualizerMode: .miniPlayerSpectrum
+        )
+    }
+
+    private func shouldDefaultMiniPlayerSpectrumOn(for skinID: String) -> Bool {
+        guard let skin = FullscreenSkinID(rawValue: skinID),
+              skin.supportsMiniPlayerSpectrum,
+              skin.defaultsMiniPlayerSpectrumOn else {
+            return false
+        }
+        return !UserDefaults.standard.bool(forKey: Keys.userExplicitlyDisabledMiniPlayerSpectrum)
+    }
+
+    private func shouldUseLegacyMiniPlayerSpectrumValue(for skinID: String) -> Bool {
+        if shouldDefaultMiniPlayerSpectrumOn(for: skinID) {
+            return true
+        }
+        return UserDefaults.standard.bool(forKey: Keys.miniPlayerSpectrumEnabled)
+    }
+
+    private func clearSkinVisualizer(for skinID: String) {
+        guard let skin = FullscreenSkinID(rawValue: skinID) else { return }
+        switch skin {
+        case .coverLed:
+            UserDefaults.standard.set("off", forKey: Keys.classicLEDVisualizer)
+        case .appleStyle:
+            UserDefaults.standard.set("off", forKey: Keys.appleStyleVisualizer)
+        case .rotatingCover:
+            UserDefaults.standard.set("off", forKey: Keys.rotatingCoverVisualizer)
+        case .kmgcccCassette:
+            UserDefaults.standard.set("off", forKey: Keys.kmgcccCassetteVisualizer)
+        case .coverGradientBlur:
+            break
+        }
+    }
+
     private func saveConfiguration(_ config: FullscreenPresentationConfiguration) {
         if let data = try? JSONEncoder().encode(config) {
             UserDefaults.standard.set(data, forKey: Keys.configuration)
@@ -361,6 +393,10 @@ public final class FullscreenPresentationCoordinator {
     private func syncLegacySettings(_ config: FullscreenPresentationConfiguration) {
         UserDefaults.standard.set(config.skinID, forKey: Keys.skinID)
         UserDefaults.standard.set(config.isMiniPlayerSpectrumEnabled, forKey: Keys.miniPlayerSpectrumEnabled)
+
+        if config.isMiniPlayerSpectrumEnabled {
+            clearSkinVisualizer(for: config.skinID)
+        }
 
         if let skin = FullscreenSkinID(rawValue: config.skinID) {
             switch skin {
@@ -392,9 +428,10 @@ public final class FullscreenPresentationCoordinator {
     }
 
     public func resetToDefaults() {
+        UserDefaults.standard.removeObject(forKey: Keys.userExplicitlyDisabledMiniPlayerSpectrum)
         updateConfiguration(FullscreenPresentationConfiguration(
             skinID: "fullscreen.coverGradientBlur",
-            visualizerMode: .off
+            visualizerMode: .miniPlayerSpectrum
         ))
     }
 }

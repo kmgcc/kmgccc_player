@@ -18,6 +18,7 @@ struct HomeView: View {
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+    @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
 
@@ -161,33 +162,29 @@ struct HomeView: View {
     }
 
     private var startupLoadingView: some View {
-        ZStack {
-            Color(nsColor: HomeAmbientShapesBackground.ambientBaseColorForStaticCache(colorScheme: colorScheme))
+        let snap = layout.discreteSnapshot
+        let leftInset = snap.hasValidLayout ? CGFloat(snap.leftInset) : 0
+        let rightInset = snap.hasValidLayout ? CGFloat(snap.rightInset) : 0
+
+        return HStack(spacing: 0) {
+            Color.clear
+                .frame(width: leftInset)
+
+            ProgressView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .allowsHitTesting(false)
+                .padding(.top, 56)
+                .padding(.bottom, startupLoadingBottomInset)
 
-            VStack(spacing: 12) {
-                ProgressView()
-                    .controlSize(.large)
-
-                Text(startupLoadingTitle)
-                    .font(.headline)
-                    .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.primary))
-
-                Text("正在准备音乐库、统计和主页布局")
-                    .font(.caption)
-                    .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
-            }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 22)
-            .homeUnifiedGlassCard(cornerRadius: 22, colorScheme: colorScheme, isFloating: true)
+            Color.clear
+                .frame(width: rightInset)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .transition(.opacity)
     }
 
-    private var startupLoadingTitle: String {
-        let phaseText = libraryVM.loadingPhase.displayText
-        return phaseText.isEmpty ? "正在载入主页" : phaseText
+    private var startupLoadingBottomInset: CGFloat {
+        let miniPlayerHeight = layout.miniPlayerFrameInWindow.height
+        return miniPlayerHeight > 1 ? miniPlayerHeight + 36 : 120
     }
 
     private var scrollContent: some View {
@@ -263,63 +260,11 @@ struct HomeView: View {
             // use `.frame(maxWidth: .infinity)` internally, so under-glass
             // full-window extension and rail widths are preserved.
             LazyVStack(spacing: mode.sectionSpacing) {
-                if !HomeDebugFlags.disableHero, let heroTrack = homeVM.heroTrack {
-                    VStack(alignment: .leading, spacing: 14) {
-                        Text("精选")
-                            .font(.system(size: mode.sectionTitleFontSize, weight: .semibold))
-                            .foregroundStyle(appFgPrimary)
-
-                        HomeHeroView(
-                            track: heroTrack,
-                            containerWidth: contentWidth,
-                            mode: mode,
-                            onSwitchTrack: {
-                                homeVM.switchHeroTrack(from: libraryVM)
-                            }
-                        )
-                    }
-                    .padding(.leading, centerLeftPad)
-                    .padding(.trailing, centerRightPad)
-                }
-
-                if !HomeDebugFlags.disableArtists, !homeVM.artists.isEmpty {
-                    HomeArtistsSection(
-                        artists: homeVM.artists,
+                ForEach(settings.homeSectionOrder) { section in
+                    homeSection(
+                        section,
                         mode: mode,
-                        centerLeftPad: centerLeftPad,
-                        centerRightPad: centerRightPad,
-                        titleColor: appFgPrimary,
-                        subtitleColor: appFgSecondary
-                    )
-                }
-
-                if !HomeDebugFlags.disableAlbums, !homeVM.albums.isEmpty {
-                    HomeAlbumsSection(
-                        albums: homeVM.albums,
-                        mode: mode,
-                        centerLeftPad: centerLeftPad,
-                        centerRightPad: centerRightPad,
-                        titleColor: appFgPrimary,
-                        subtitleColor: appFgSecondary
-                    )
-                }
-
-                if !HomeDebugFlags.disablePlaylists, !homeVM.playlists.isEmpty {
-                    HomePlaylistsSection(
-                        playlists: homeVM.playlists,
-                        mode: mode,
-                        titleColor: appFgPrimary,
-                        subtitleColor: appFgSecondary
-                    )
-                    .padding(.leading, centerLeftPad)
-                    .padding(.trailing, centerRightPad)
-                }
-
-                if !HomeDebugFlags.disableInsights {
-                    HomeInsightsSection(
-                        homeVM: homeVM,
-                        mode: mode,
-                        containerWidth: contentWidth,
+                        contentWidth: contentWidth,
                         centerLeftPad: centerLeftPad,
                         centerRightPad: centerRightPad,
                         accentColor: accentColor,
@@ -358,6 +303,92 @@ struct HomeView: View {
         }
         .transaction { transaction in
             transaction.animation = nil
+        }
+    }
+
+    @ViewBuilder
+    private func homeSection(
+        _ section: HomeSection,
+        mode: HomeLayoutMode,
+        contentWidth: CGFloat,
+        centerLeftPad: CGFloat,
+        centerRightPad: CGFloat,
+        accentColor: Color,
+        titleColor: Color,
+        subtitleColor: Color,
+        tertiaryColor: Color
+    ) -> some View {
+        switch section {
+        case .featured:
+            if !HomeDebugFlags.disableHero, let heroTrack = homeVM.heroTrack {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text(section.title)
+                        .font(.system(size: mode.sectionTitleFontSize, weight: .semibold))
+                        .foregroundStyle(titleColor)
+
+                    HomeHeroView(
+                        track: heroTrack,
+                        containerWidth: contentWidth,
+                        mode: mode,
+                        onSwitchTrack: {
+                            homeVM.switchHeroTrack(from: libraryVM)
+                        }
+                    )
+                }
+                .padding(.leading, centerLeftPad)
+                .padding(.trailing, centerRightPad)
+            }
+
+        case .artists:
+            if !HomeDebugFlags.disableArtists, !homeVM.artists.isEmpty {
+                HomeArtistsSection(
+                    artists: homeVM.artists,
+                    mode: mode,
+                    centerLeftPad: centerLeftPad,
+                    centerRightPad: centerRightPad,
+                    titleColor: titleColor,
+                    subtitleColor: subtitleColor
+                )
+            }
+
+        case .albums:
+            if !HomeDebugFlags.disableAlbums, !homeVM.albums.isEmpty {
+                HomeAlbumsSection(
+                    albums: homeVM.albums,
+                    mode: mode,
+                    centerLeftPad: centerLeftPad,
+                    centerRightPad: centerRightPad,
+                    titleColor: titleColor,
+                    subtitleColor: subtitleColor
+                )
+            }
+
+        case .playlists:
+            if !HomeDebugFlags.disablePlaylists, !homeVM.playlists.isEmpty {
+                HomePlaylistsSection(
+                    playlists: homeVM.playlists,
+                    mode: mode,
+                    titleColor: titleColor,
+                    subtitleColor: subtitleColor
+                )
+                .padding(.leading, centerLeftPad)
+                .padding(.trailing, centerRightPad)
+            }
+
+        case .listeningFootprint:
+            if !HomeDebugFlags.disableInsights {
+                HomeInsightsSection(
+                    homeVM: homeVM,
+                    mode: mode,
+                    containerWidth: contentWidth,
+                    centerLeftPad: centerLeftPad,
+                    centerRightPad: centerRightPad,
+                    accentColor: accentColor,
+                    titleColor: titleColor,
+                    subtitleColor: subtitleColor,
+                    tertiaryColor: tertiaryColor
+                )
+            }
         }
     }
 

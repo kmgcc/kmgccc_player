@@ -613,12 +613,23 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
             attachmentID = store.attach()
         }
         let webView = store.webView
-        guard webView.superview !== webViewHostView else { return }
-        webView.removeFromSuperview()
         webViewHostView.webViewLayoutScale = CGFloat(AppSettings.shared.amllLyricsRenderQualityScale)
         webViewHostView.onLayout = { [weak store] bounds in
             store?.layoutPreparedWebView(in: bounds, reason: "hostLayout")
         }
+        webViewHostView.onWindowStateChange = { [weak store] reason in
+            store?.requestLayoutResync(reason: "flatHost.\(reason)")
+        }
+        guard webView.superview !== webViewHostView else {
+            store.layoutPreparedWebView(in: webViewHostView.bounds, reason: "flatHost.alreadyAttached")
+            return
+        }
+        if let oldHostView = webView.superview as? WebViewHostView {
+            oldHostView.onLayout = nil
+            oldHostView.onWindowStateChange = nil
+            oldHostView.webViewLayoutScale = 1
+        }
+        webView.removeFromSuperview()
         store.layoutPreparedWebView(in: webViewHostView.bounds, reason: "flatHost.attach")
         webViewHostView.addSubview(webView)
         store.refreshMouseInteractionSuppression(reason: "flatHost.attach")
@@ -632,6 +643,8 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
             webView.removeFromSuperview()
         }
         webViewHostView.onLayout = nil
+        webViewHostView.onWindowStateChange = nil
+        webViewHostView.webViewLayoutScale = 1
         store.detach(requestingID: id)
     }
 }

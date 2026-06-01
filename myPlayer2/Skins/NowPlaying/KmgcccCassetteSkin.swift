@@ -1442,6 +1442,9 @@ private struct KmgcccCassetteFullscreenSettingsView: View {
             SettingsSwitchRow(title: "LED 电平表", isOn: Binding(
                 get: { visualizerMode == "led" },
                 set: { isOn in
+                    if isOn {
+                        FullscreenPresentationCoordinator.shared.disableMiniPlayerSpectrumForExplicitUserChoice()
+                    }
                     visualizerMode = isOn ? "led" : "off"
                 }
             ), titleFont: presentationStyle.rowLabelFont, titleColor: presentationStyle.primaryTextColor)

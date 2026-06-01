@@ -201,6 +201,7 @@ struct AMLLWebView: NSViewRepresentable {
             // If already attached to this host, just ensure frame is correct
             if isAttached {
                 if let webView = store.preparedWebView {
+                    installHostCallbacks(on: hostView)
                     store.layoutPreparedWebView(in: hostView.bounds, reason: "tryAttach:\(context)")
                     LyricsRuntimeProfile.recordFrameWrite(
                         key: "WKWebView.frame",
@@ -247,6 +248,7 @@ struct AMLLWebView: NSViewRepresentable {
             // so repeated updateNSView calls (and skin-switch reentry) never
             // detach+reattach the WebView in the same runloop tick.
             if webView.superview === hostView {
+                installHostCallbacks(on: hostView)
                 store.layoutPreparedWebView(
                     in: hostView.bounds,
                     reason: "attachWebView:alreadyHost"
@@ -259,15 +261,19 @@ struct AMLLWebView: NSViewRepresentable {
             if webView.superview != nil {
                 LyricsRuntimeProfile.increment("AMLLWebView.reparentFromOldSuperview")
                 Log.debug("Removing WebView from old superview", category: .webview)
+                if let oldHostView = webView.superview as? WebViewHostView,
+                   oldHostView !== hostView
+                {
+                    oldHostView.onLayout = nil
+                    oldHostView.onWindowStateChange = nil
+                    oldHostView.webViewLayoutScale = 1
+                }
                 webView.removeFromSuperview()
             }
 
             // Add to new host
-            hostView.webViewLayoutScale = renderQualityScale
+            installHostCallbacks(on: hostView)
             store.layoutPreparedWebView(in: hostView.bounds, reason: "attachWebView")
-            hostView.onLayout = { [weak store] bounds in
-                store?.layoutPreparedWebView(in: bounds, reason: "hostLayout")
-            }
             hostView.addSubview(webView)
             if shouldAnimateAttachment {
                 webView.alphaValue = 0
@@ -291,6 +297,16 @@ struct AMLLWebView: NSViewRepresentable {
             )
         }
 
+        private func installHostCallbacks(on hostView: WebViewHostView) {
+            hostView.webViewLayoutScale = renderQualityScale
+            hostView.onLayout = { [weak store] bounds in
+                store?.layoutPreparedWebView(in: bounds, reason: "hostLayout")
+            }
+            hostView.onWindowStateChange = { [weak store] reason in
+                store?.requestLayoutResync(reason: reason)
+            }
+        }
+
         func detachWebView(from hostView: WebViewHostView) {
             LyricsRuntimeProfile.increment("AMLLWebView.detachWebView")
             guard let webView = store.preparedWebView else { return }
@@ -300,6 +316,7 @@ struct AMLLWebView: NSViewRepresentable {
                 self.hostView = nil
             }
             hostView.onLayout = nil
+            hostView.onWindowStateChange = nil
             hostView.webViewLayoutScale = 1
         }
 
@@ -346,6 +363,7 @@ struct AMLLWebView: NSViewRepresentable {
 
 final class WebViewHostView: NSView {
     var onLayout: ((CGRect) -> Void)?
+    var onWindowStateChange: ((String) -> Void)?
     var webViewLayoutScale: CGFloat = 1
 
     var isMouseInteractionSuppressed = false {
@@ -466,6 +484,13 @@ final class WebViewHostView: NSView {
             "WebViewHostView.windowAttached",
             value: window != nil ? "true" : "false"
         )
+        onWindowStateChange?(window != nil ? "hostWindowAttached" : "hostWindowDetached")
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        LyricsRuntimeProfile.increment("WebViewHostView.viewDidChangeBackingProperties")
+        onWindowStateChange?("hostBackingPropertiesChanged")
     }
 }
 

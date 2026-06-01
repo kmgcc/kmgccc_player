@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Appearance settings: global tint, system appearance, lyrics background mode.
 struct AppearanceSettingsView: View {
@@ -17,6 +18,8 @@ struct AppearanceSettingsView: View {
     @State private var followSystemAppearance: Bool = AppSettings.shared.followSystemAppearance
     @State private var lyricsBackgroundMode: AppSettings.LyricsBackgroundMode = AppSettings.shared.lyricsBackgroundMode
     @State private var homeCardMaterialMode: AppSettings.HomeCardMaterialMode = AppSettings.shared.homeCardMaterialMode
+    @State private var homeSectionOrder: [HomeSection] = AppSettings.shared.homeSectionOrder
+    @State private var draggedHomeSection: HomeSection?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -49,6 +52,10 @@ struct AppearanceSettingsView: View {
                     homeCardMaterialModePicker
                 }
             }
+
+            SettingsSection("主页板块顺序") {
+                homeSectionOrderEditor
+            }
         }
         .onAppear {
             globalArtworkTintEnabled = settings.globalArtworkTintEnabled
@@ -56,6 +63,7 @@ struct AppearanceSettingsView: View {
             followSystemAppearance = settings.followSystemAppearance
             lyricsBackgroundMode = settings.lyricsBackgroundMode
             homeCardMaterialMode = settings.homeCardMaterialMode
+            homeSectionOrder = settings.homeSectionOrder
         }
         .onChange(of: globalArtworkTintEnabled) { _, newValue in
             settings.globalArtworkTintEnabled = newValue
@@ -74,6 +82,10 @@ struct AppearanceSettingsView: View {
         }
         .onChange(of: homeCardMaterialMode) { _, newValue in
             settings.homeCardMaterialMode = newValue
+        }
+        .onChange(of: settings.homeSectionOrder) { _, newValue in
+            guard newValue != homeSectionOrder else { return }
+            homeSectionOrder = newValue
         }
     }
 
@@ -149,5 +161,122 @@ struct AppearanceSettingsView: View {
             )
             .fixedSize(horizontal: true, vertical: false)
         }
+    }
+
+    private var homeSectionOrderEditor: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("拖动调整主页中各个板块的显示顺序。")
+                .settingsDescriptionStyle()
+
+            VStack(spacing: 6) {
+                ForEach(homeSectionOrder) { section in
+                    homeSectionOrderRow(section)
+                        .onDrag {
+                            draggedHomeSection = section
+                            return NSItemProvider(object: section.rawValue as NSString)
+                        }
+                        .onDrop(
+                            of: [UTType.plainText],
+                            delegate: HomeSectionOrderDropDelegate(
+                                targetSection: section,
+                                sectionOrder: $homeSectionOrder,
+                                draggedSection: $draggedHomeSection,
+                                onCommit: saveHomeSectionOrder
+                            )
+                        )
+                }
+            }
+            .padding(6)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.secondary.opacity(0.06))
+            )
+
+            Button("恢复默认顺序") {
+                withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                    homeSectionOrder = HomeSection.defaultOrder
+                }
+                saveHomeSectionOrder(homeSectionOrder)
+            }
+            .buttonStyle(.bordered)
+            .clipShape(Capsule())
+        }
+    }
+
+    private func homeSectionOrderRow(_ section: HomeSection) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: section.systemImage)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(themeStore.accentColor)
+                .frame(width: 18)
+
+            Text(section.title)
+                .settingsRowLabelStyle()
+
+            Spacer(minLength: 12)
+
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.tertiary)
+                .padding(.horizontal, 4)
+                .help("拖动调整顺序")
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(rowBackground(for: section))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color.secondary.opacity(0.10), lineWidth: 1)
+        )
+        .contentShape(Rectangle())
+    }
+
+    private func rowBackground(for section: HomeSection) -> Color {
+        draggedHomeSection == section
+            ? themeStore.accentColor.opacity(0.10)
+            : Color.primary.opacity(0.035)
+    }
+
+    private func saveHomeSectionOrder(_ order: [HomeSection]) {
+        settings.homeSectionOrder = order
+    }
+}
+
+private struct HomeSectionOrderDropDelegate: DropDelegate {
+    let targetSection: HomeSection
+    @Binding var sectionOrder: [HomeSection]
+    @Binding var draggedSection: HomeSection?
+    let onCommit: ([HomeSection]) -> Void
+
+    func dropEntered(info: DropInfo) {
+        guard
+            let draggedSection,
+            draggedSection != targetSection,
+            let fromIndex = sectionOrder.firstIndex(of: draggedSection),
+            let toIndex = sectionOrder.firstIndex(of: targetSection)
+        else {
+            return
+        }
+
+        withAnimation(.spring(response: 0.25, dampingFraction: 0.86)) {
+            sectionOrder.move(
+                fromOffsets: IndexSet(integer: fromIndex),
+                toOffset: toIndex > fromIndex ? toIndex + 1 : toIndex
+            )
+        }
+        onCommit(sectionOrder)
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        onCommit(sectionOrder)
+        draggedSection = nil
+        return true
     }
 }

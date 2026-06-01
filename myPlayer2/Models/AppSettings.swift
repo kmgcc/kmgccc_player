@@ -172,6 +172,7 @@ public final class AppSettings {
         static let manualAppearance = "manualAppearance"
         static let lyricsBackgroundMode = "lyricsBackgroundMode"
         static let homeCardMaterialMode = "homeCardMaterialMode"
+        static let homeSectionOrder = "homeSectionOrder"
     }
 
     private enum ImportKeys {
@@ -314,6 +315,27 @@ public final class AppSettings {
                     newValue.rawValue, forKey: AppearanceKeys.homeCardMaterialMode)
             }
         }
+    }
+
+    /// Custom order for Home page content sections, stored as stable section ids.
+    var homeSectionOrder: [HomeSection] {
+        get {
+            access(keyPath: \.homeSectionOrder)
+            let rawIDs = UserDefaults.standard.stringArray(forKey: AppearanceKeys.homeSectionOrder)
+                ?? HomeSection.defaultOrder.map(\.rawValue)
+            return HomeSection.normalizedOrder(from: rawIDs)
+        }
+        set {
+            withMutation(keyPath: \.homeSectionOrder) {
+                let normalizedIDs = HomeSection.normalizedOrder(from: newValue.map(\.rawValue))
+                    .map(\.rawValue)
+                UserDefaults.standard.set(normalizedIDs, forKey: AppearanceKeys.homeSectionOrder)
+            }
+        }
+    }
+
+    func resetHomeSectionOrder() {
+        homeSectionOrder = HomeSection.defaultOrder
     }
 
     /// Whether imported tracks should appear immediately and fetch lyrics/artwork afterward.
@@ -511,6 +533,9 @@ public final class AppSettings {
             withMutation(keyPath: \.selectedNowPlayingSkinID) {
                 nowPlayingSkin = newValue
                 applySkinEntryDefaults(previous: previous, new: newValue)
+            }
+            Task { @MainActor in
+                TelemetryService.shared.updateSkinState()
             }
         }
     }

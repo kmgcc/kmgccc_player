@@ -243,12 +243,10 @@ final class LyricsWebViewStore: NSObject {
             height: max(1, bounds.height * viewScale)
         )
 
-        // Signature-based no-op: bounds + viewScale + superview identity.
-        // tryAttach/attachWebView call this on every updateNSView tick. When
-        // the host is steady, repeated calls would still write pageZoom, layer
-        // transforms and autoresizingMask — each of those is an XPC round-trip
-        // into WebContent (pageZoom especially), enough to spike CPU under a
-        // SwiftUI rebuild storm.
+        // Signature-based no-op: bounds + viewScale + superview identity, plus
+        // the actual low-resolution WebView state. WebKit can recreate layer
+        // state across window/fullscreen transitions without changing bounds,
+        // so the q < 1 transform/pageZoom must be verified before skipping.
         let superviewObjectID = (webView.superview as? WebViewHostView)
             .map { ObjectIdentifier($0).hashValue } ?? 0
         let signature = String(
@@ -258,7 +256,20 @@ final class LyricsWebViewStore: NSObject {
             viewScale,
             superviewObjectID
         )
-        if lastAppliedLayoutSignature == signature && webView.frame == targetFrame {
+        let usesScaledLayout = viewScale < 0.999
+        let expectedAutoresizingMask: NSView.AutoresizingMask = usesScaledLayout ? [] : [.width, .height]
+        let expectedLayerTransform = usesScaledLayout
+            ? CGAffineTransform(scaleX: 1 / viewScale, y: 1 / viewScale)
+            : .identity
+        if lastAppliedLayoutSignature == signature,
+           isCurrentRenderQualityLayoutState(
+                webView,
+                targetFrame: targetFrame,
+                viewScale: viewScale,
+                expectedAutoresizingMask: expectedAutoresizingMask,
+                expectedLayerTransform: expectedLayerTransform
+           )
+        {
             return
         }
         lastAppliedLayoutSignature = signature
@@ -272,19 +283,14 @@ final class LyricsWebViewStore: NSObject {
             webView.frame = targetFrame
         }
 
-        let usesScaledLayout = viewScale < 0.999
-        webView.autoresizingMask = usesScaledLayout ? [] : [.width, .height]
+        webView.autoresizingMask = expectedAutoresizingMask
         webView.pageZoom = viewScale
         (webView as? LyricsMouseGatedWebView)?.eventCoordinateScale = viewScale
         (webView.superview as? WebViewHostView)?.webViewLayoutScale = viewScale
         webView.wantsLayer = true
         webView.layer?.anchorPoint = CGPoint(x: 0, y: 0)
         webView.layer?.position = CGPoint(x: 0, y: 0)
-        webView.layer?.setAffineTransform(
-            usesScaledLayout
-                ? CGAffineTransform(scaleX: 1 / viewScale, y: 1 / viewScale)
-                : .identity
-        )
+        webView.layer?.setAffineTransform(expectedLayerTransform)
         applyBackingScaleForRenderQuality(reason: reason)
         logRenderQualityLayout(
             webView: webView,
@@ -293,6 +299,46 @@ final class LyricsWebViewStore: NSObject {
             viewScale: viewScale,
             reason: reason
         )
+    }
+
+    private func isCurrentRenderQualityLayoutState(
+        _ webView: WKWebView,
+        targetFrame: CGRect,
+        viewScale: CGFloat,
+        expectedAutoresizingMask: NSView.AutoresizingMask,
+        expectedLayerTransform: CGAffineTransform
+    ) -> Bool {
+        guard webView.frame == targetFrame else { return false }
+        guard webView.autoresizingMask == expectedAutoresizingMask else { return false }
+        guard abs(webView.pageZoom - viewScale) < 0.001 else { return false }
+
+        if let gatedWebView = webView as? LyricsMouseGatedWebView,
+           abs(gatedWebView.eventCoordinateScale - viewScale) >= 0.001
+        {
+            return false
+        }
+
+        if let hostView = webView.superview as? WebViewHostView,
+           abs(hostView.webViewLayoutScale - viewScale) >= 0.001
+        {
+            return false
+        }
+
+        guard webView.wantsLayer, let layer = webView.layer else { return false }
+        return affineTransform(layer.affineTransform(), isApproximately: expectedLayerTransform)
+    }
+
+    private func affineTransform(
+        _ lhs: CGAffineTransform,
+        isApproximately rhs: CGAffineTransform
+    ) -> Bool {
+        let tolerance: CGFloat = 0.001
+        return abs(lhs.a - rhs.a) < tolerance
+            && abs(lhs.b - rhs.b) < tolerance
+            && abs(lhs.c - rhs.c) < tolerance
+            && abs(lhs.d - rhs.d) < tolerance
+            && abs(lhs.tx - rhs.tx) < tolerance
+            && abs(lhs.ty - rhs.ty) < tolerance
     }
 
     func requestLayoutResync(reason: String) {
