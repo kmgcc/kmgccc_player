@@ -9,6 +9,7 @@ import SwiftUI
 
 /// About page with app info, licenses, and social links.
 struct AboutSettingsView: View {
+    @AppStorage(UpdateCheckPreferences.checkForUpdatesOnLaunchKey) private var checkForUpdatesOnLaunch: Bool = true
     @State private var aboutEasterEggTracker = AboutEasterEggTapTracker()
     @State private var showEasterEggImage: Bool = false
     @State private var page: AboutSettingsPage = .main
@@ -100,11 +101,16 @@ struct AboutSettingsView: View {
                     destination: "https://xhslink.com/m/7o53GE3YNQy"
                 )
 
-                capsuleLinkButton(
-                    title: "查看更新",
-                    destination: "https://github.com/kmgcc/kmgccc_player/releases",
-                    tint: .accentColor
-                )
+                Button("查看更新") {
+                    Task {
+                        await UpdateWindowManager.shared.checkManuallyAndShowResult()
+                    }
+                }
+                .font(.subheadline.weight(.semibold))
+                .buttonStyle(.bordered)
+                .tint(.accentColor)
+                .clipShape(Capsule())
+
                 capsuleLinkButton(
                     title: "赞助",
                     destination: "https://kmgcc.github.io/kmgccc_player/donate.html",
@@ -113,9 +119,22 @@ struct AboutSettingsView: View {
             }
             .padding(.bottom, 34)
 
+            updateCheckPreferenceSection
+                .padding(.bottom, 6)
+
             complianceSection
 
             Spacer()
+        }
+    }
+
+    private var updateCheckPreferenceSection: some View {
+        SettingsSection {
+            SettingsSwitchRow(
+                title: "启动时检查更新",
+                isOn: $checkForUpdatesOnLaunch,
+                detail: "关闭后，App 启动时不会自动检查新版本，你仍可手动检查更新。"
+            )
         }
     }
 

@@ -114,18 +114,34 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
         controller.ensureToolbarController().toggleMultiselectFromCommand()
     }
 
-    static func setLyricsVisible(_ visible: Bool) {
+    static func setLyricsVisible(
+        _ visible: Bool,
+        animated: Bool = true,
+        preserveMirroredState: Bool = false
+    ) {
         PaneLayoutTrace.log("windowController.setLyricsVisible \(visible)")
-        sharedController?.splitViewController.setLyricsVisible(visible)
+        sharedController?.splitViewController.setLyricsVisible(
+            visible,
+            animated: animated,
+            preserveMirroredState: preserveMirroredState
+        )
     }
 
     static func isLyricsVisible() -> Bool {
         sharedController?.splitViewController.isLyricsVisible ?? false
     }
 
-    static func setSidebarVisible(_ visible: Bool) {
+    static func setSidebarVisible(
+        _ visible: Bool,
+        animated: Bool = true,
+        preserveMirroredState: Bool = false
+    ) {
         PaneLayoutTrace.log("windowController.setSidebarVisible \(visible)")
-        sharedController?.splitViewController.setSidebarVisible(visible)
+        sharedController?.splitViewController.setSidebarVisible(
+            visible,
+            animated: animated,
+            preserveMirroredState: preserveMirroredState
+        )
     }
 
     static func isSidebarVisible() -> Bool {
@@ -134,8 +150,25 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
 
     static func setEmbeddedFullscreenActive(_ active: Bool) {
         PaneLayoutTrace.log("windowController.setEmbeddedFullscreenActive \(active)")
-        HomeWindowLayoutState.shared.setEmbeddedFullscreenActive(active)
-        sharedController?.splitViewController.setEmbeddedFullscreenActive(active)
+        if active {
+            HomeWindowLayoutState.shared.setEmbeddedFullscreenActive(true)
+            sharedController?.splitViewController.setEmbeddedFullscreenActive(true)
+        } else {
+            sharedController?.splitViewController.setEmbeddedFullscreenActive(false)
+            HomeWindowLayoutState.shared.setEmbeddedFullscreenActive(false)
+        }
+    }
+
+    static func restoreFullscreenSuspendedPaneLayout(
+        sidebarVisible: Bool?,
+        lyricsVisible: Bool?,
+        reason: String
+    ) {
+        sharedController?.splitViewController.restoreFullscreenSuspendedPaneLayout(
+            sidebarVisible: sidebarVisible,
+            lyricsVisible: lyricsVisible,
+            reason: reason
+        )
     }
 
     static func currentSidebarWidth() -> CGFloat {
@@ -230,6 +263,16 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
 
     func windowDidEndLiveResize(_ notification: Notification) {
         saveMainWindowFrame(from: notification)
+    }
+
+    func windowDidExitFullScreen(_ notification: Notification) {
+        guard let exitedWindow = notification.object as? NSWindow, exitedWindow === window else {
+            return
+        }
+        splitViewController.publishHomeLayoutGeometry(
+            windowSize: rootViewController.view.bounds.size,
+            commitDiscreteImmediately: true
+        )
     }
 
     func windowDidMove(_ notification: Notification) {

@@ -8,6 +8,12 @@
 import Foundation
 import Combine
 
+enum UpdateLinks {
+    static let backendLatestEndpoint = URL(string: "https://player.kmgccc.cn/api/v1/updates/latest")!
+    static let githubPagesVersionEndpoint = URL(string: "https://kmgcc.github.io/kmgccc_player/version.json")!
+    static let githubReleaseURL = URL(string: "https://github.com/kmgcc/kmgccc_player/releases")!
+}
+
 enum UpdateCheckPreferences {
     static let checkForUpdatesOnLaunchKey = "checkForUpdatesOnLaunch"
 
@@ -28,11 +34,11 @@ final class UpdateChecker: ObservableObject {
     /// Remote version JSON URL
     private let primaryVersionURL = UpdateChecker.url(
         fromEnvironment: "KMGCCC_UPDATE_PRIMARY_URL",
-        fallback: "https://player.kmgccc.cn/api/v1/updates/latest"
+        fallback: UpdateLinks.backendLatestEndpoint
     )
     private let fallbackVersionURL = UpdateChecker.url(
         fromEnvironment: "KMGCCC_UPDATE_FALLBACK_URL",
-        fallback: "https://kmgcc.github.io/kmgccc_player/version.json"
+        fallback: UpdateLinks.githubPagesVersionEndpoint
     )
     
     /// Current app version (from bundle)
@@ -58,12 +64,12 @@ final class UpdateChecker: ObservableObject {
     
     private init() {}
 
-    private static func url(fromEnvironment key: String, fallback: String) -> URL {
+    private static func url(fromEnvironment key: String, fallback: URL) -> URL {
         if let rawValue = ProcessInfo.processInfo.environment[key],
            let url = URL(string: rawValue) {
             return url
         }
-        return URL(string: fallback)!
+        return fallback
     }
     
     /// Check for updates from remote
@@ -147,7 +153,12 @@ final class UpdateChecker: ObservableObject {
             throw UpdateError.invalidResponse
         }
 
-        return try RemoteVersionInfo.decodeResult(from: data)
+        let decodeResult = try RemoteVersionInfo.decodeResult(from: data)
+        let baseURL = httpResponse.url ?? requestURL
+        return RemoteVersionInfoDecodeResult(
+            info: decodeResult.info.resolvingRelativeURLs(baseURL: baseURL),
+            usedSanitizedJSON: decodeResult.usedSanitizedJSON
+        )
     }
     
     /// Check if update should be shown based on version comparison

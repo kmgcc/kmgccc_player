@@ -221,6 +221,20 @@ final class HomeWindowLayoutState {
         )
     }
 
+    /// Fullscreen exit restores AppKit pane frames synchronously, then lets
+    /// Home render again. In that narrow handoff the normal debounce would
+    /// keep the old "panes hidden" width alive for one more beat, so commit
+    /// the snapshot from the just-published geometry immediately.
+    func commitDiscreteSnapshotImmediately() {
+        discreteSnapshotCommitWorkItem?.cancel()
+        discreteSnapshotCommitWorkItem = nil
+        pendingDiscreteSnapshot = nil
+
+        let next = Self.makeDiscreteSnapshot(from: geometry)
+        guard next != discreteSnapshot else { return }
+        discreteSnapshot = next
+    }
+
     /// True when the active library selection is `.home` and content mode is
     /// `.library`. This records navigation state only; AppKit hit-test
     /// routing must also check `allowsHomeInteraction` so modal/fullscreen
@@ -274,7 +288,11 @@ final class HomeWindowLayoutState {
         geometry = next
     }
 
-    func setGeometry(windowSize: CGSize, centerRect: CGRect) {
+    func setGeometry(
+        windowSize: CGSize,
+        centerRect: CGRect,
+        commitDiscreteImmediately: Bool = false
+    ) {
         let quantizedSize = CGSize(
             width: quantize(windowSize.width, step: layoutEpsilon),
             height: quantize(windowSize.height, step: layoutEpsilon)
@@ -283,14 +301,19 @@ final class HomeWindowLayoutState {
         let maxX = quantize(centerRect.maxX, step: layoutEpsilon)
         let minY = quantize(centerRect.minY, step: layoutEpsilon)
         let maxY = quantize(centerRect.maxY, step: layoutEpsilon)
-        guard
+        let hasChanged =
             abs(geometry.windowWidth - quantizedSize.width) >= layoutEpsilon
                 || abs(geometry.windowHeight - quantizedSize.height) >= layoutEpsilon
                 || abs(geometry.centerMinXInWindow - minX) >= layoutEpsilon
                 || abs(geometry.centerMaxXInWindow - maxX) >= layoutEpsilon
                 || abs(geometry.centerMinYInWindow - minY) >= layoutEpsilon
                 || abs(geometry.centerMaxYInWindow - maxY) >= layoutEpsilon
-        else { return }
+        guard hasChanged else {
+            if commitDiscreteImmediately {
+                commitDiscreteSnapshotImmediately()
+            }
+            return
+        }
 
         geometry = Geometry(
             windowWidth: quantizedSize.width,
@@ -300,6 +323,9 @@ final class HomeWindowLayoutState {
             centerMinYInWindow: minY,
             centerMaxYInWindow: maxY
         )
+        if commitDiscreteImmediately {
+            commitDiscreteSnapshotImmediately()
+        }
     }
 
     func setCenterRect(_ rect: CGRect) {

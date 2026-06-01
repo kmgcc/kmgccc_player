@@ -11,6 +11,7 @@ import Foundation
 struct RemoteVersionInfo: Decodable {
     let latestVersion: String
     let releaseURL: String
+    let downloadURL: String?
     let notes: String
 
     enum CodingKeys: String, CodingKey {
@@ -23,9 +24,10 @@ struct RemoteVersionInfo: Decodable {
         case summary
     }
 
-    init(latestVersion: String, releaseURL: String, notes: String) {
+    init(latestVersion: String, releaseURL: String, downloadURL: String? = nil, notes: String) {
         self.latestVersion = latestVersion
         self.releaseURL = releaseURL
+        self.downloadURL = downloadURL
         self.notes = notes
     }
 
@@ -34,12 +36,30 @@ struct RemoteVersionInfo: Decodable {
         latestVersion = try container.decodeIfPresent(String.self, forKey: .latestVersion)
             ?? container.decode(String.self, forKey: .latestVersionSnake)
         releaseURL = try container.decodeIfPresent(String.self, forKey: .releaseURL)
-            ?? container.decodeIfPresent(String.self, forKey: .downloadURL)
             ?? container.decodeIfPresent(String.self, forKey: .releaseNotesURL)
             ?? "https://github.com/kmgcc/kmgccc_player/releases/latest"
+        downloadURL = try container.decodeIfPresent(String.self, forKey: .downloadURL)
         notes = try container.decodeIfPresent(String.self, forKey: .notes)
             ?? container.decodeIfPresent(String.self, forKey: .summary)
             ?? ""
+    }
+
+    func resolvingRelativeURLs(baseURL: URL) -> RemoteVersionInfo {
+        RemoteVersionInfo(
+            latestVersion: latestVersion,
+            releaseURL: Self.absoluteURLString(from: releaseURL, baseURL: baseURL) ?? releaseURL,
+            downloadURL: downloadURL.flatMap { Self.absoluteURLString(from: $0, baseURL: baseURL) },
+            notes: notes
+        )
+    }
+
+    private static func absoluteURLString(from rawValue: String, baseURL: URL) -> String? {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if let url = URL(string: trimmed), url.scheme != nil {
+            return url.absoluteString
+        }
+        return URL(string: trimmed, relativeTo: baseURL)?.absoluteURL.absoluteString
     }
 }
 

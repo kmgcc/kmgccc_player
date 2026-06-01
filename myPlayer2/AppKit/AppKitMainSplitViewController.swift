@@ -167,26 +167,86 @@ final class AppKitMainSplitViewController: NSSplitViewController {
         !lyricsItem.isCollapsed
     }
 
-    func setSidebarVisible(_ visible: Bool) {
+    func setSidebarVisible(
+        _ visible: Bool,
+        animated: Bool = true,
+        preserveMirroredState: Bool = false
+    ) {
         PaneLayoutTrace.log(
             "splitView.setSidebarVisible requested=\(visible) current=\(isSidebarVisible) suppression=\(isEmbeddedFullscreenPaneSuppressionActive) embedded=\(FullscreenWindowManager.shared.presentationMode) caller=\(PaneLayoutTrace.callerSummary(skip: 3))"
         )
-        guard visible != isSidebarVisible else { return }
-        sidebarItem.animator().isCollapsed = !visible
-        splitView.adjustSubviews()
+        let wasSuppressed = isEmbeddedFullscreenPaneSuppressionActive
+        if preserveMirroredState {
+            isEmbeddedFullscreenPaneSuppressionActive = true
+        }
+        defer {
+            if preserveMirroredState {
+                isEmbeddedFullscreenPaneSuppressionActive = wasSuppressed
+            }
+        }
+
+        guard visible != isSidebarVisible else {
+            if !animated, visible {
+                restoreSidebarWidthFromMirroredState()
+                forceSynchronousSplitLayout()
+            }
+            publishHomeLayoutGeometry(windowSize: view.bounds.size)
+            if !preserveMirroredState {
+                mirrorSplitStateToUIState(reason: "setSidebarVisible")
+            }
+            return
+        }
+
+        applySidebarVisibility(visible, animated: animated)
+        if !animated, visible {
+            restoreSidebarWidthFromMirroredState()
+        }
+        forceSynchronousSplitLayout()
         publishHomeLayoutGeometry(windowSize: view.bounds.size)
-        mirrorSplitStateToUIState(reason: "setSidebarVisible")
+        if !preserveMirroredState {
+            mirrorSplitStateToUIState(reason: "setSidebarVisible")
+        }
     }
 
-    func setLyricsVisible(_ visible: Bool) {
+    func setLyricsVisible(
+        _ visible: Bool,
+        animated: Bool = true,
+        preserveMirroredState: Bool = false
+    ) {
         PaneLayoutTrace.log(
             "splitView.setLyricsVisible requested=\(visible) current=\(isLyricsVisible) suppression=\(isEmbeddedFullscreenPaneSuppressionActive) embedded=\(FullscreenWindowManager.shared.presentationMode) caller=\(PaneLayoutTrace.callerSummary(skip: 3))"
         )
-        guard visible != isLyricsVisible else { return }
-        lyricsItem.animator().isCollapsed = !visible
-        splitView.adjustSubviews()
+        let wasSuppressed = isEmbeddedFullscreenPaneSuppressionActive
+        if preserveMirroredState {
+            isEmbeddedFullscreenPaneSuppressionActive = true
+        }
+        defer {
+            if preserveMirroredState {
+                isEmbeddedFullscreenPaneSuppressionActive = wasSuppressed
+            }
+        }
+
+        guard visible != isLyricsVisible else {
+            if !animated, visible {
+                restoreLyricsWidthFromMirroredState()
+                forceSynchronousSplitLayout()
+            }
+            publishHomeLayoutGeometry(windowSize: view.bounds.size)
+            if !preserveMirroredState {
+                mirrorSplitStateToUIState(reason: "setLyricsVisible")
+            }
+            return
+        }
+
+        applyLyricsVisibility(visible, animated: animated)
+        if !animated, visible {
+            restoreLyricsWidthFromMirroredState()
+        }
+        forceSynchronousSplitLayout()
         publishHomeLayoutGeometry(windowSize: view.bounds.size)
-        mirrorSplitStateToUIState(reason: "setLyricsVisible")
+        if !preserveMirroredState {
+            mirrorSplitStateToUIState(reason: "setLyricsVisible")
+        }
     }
 
     func setEmbeddedFullscreenActive(_ active: Bool) {
@@ -198,7 +258,7 @@ final class AppKitMainSplitViewController: NSSplitViewController {
             suspendedSidebarVisibilityForEmbeddedFullscreen = isSidebarVisible
             isEmbeddedFullscreenPaneSuppressionActive = true
             if isSidebarVisible {
-                setSidebarVisible(false)
+                setSidebarVisible(false, preserveMirroredState: true)
             }
             return
         }
@@ -206,9 +266,44 @@ final class AppKitMainSplitViewController: NSSplitViewController {
         let shouldRestoreSidebar = suspendedSidebarVisibilityForEmbeddedFullscreen == true
         suspendedSidebarVisibilityForEmbeddedFullscreen = nil
         if shouldRestoreSidebar {
-            setSidebarVisible(true)
+            setSidebarVisible(true, animated: false, preserveMirroredState: true)
         }
         isEmbeddedFullscreenPaneSuppressionActive = false
+    }
+
+    func restoreFullscreenSuspendedPaneLayout(
+        sidebarVisible: Bool?,
+        lyricsVisible: Bool?,
+        reason: String
+    ) {
+        PaneLayoutTrace.log(
+            "splitView.restoreFullscreenPanes reason=\(reason) sidebarTarget=\(String(describing: sidebarVisible)) lyricsTarget=\(String(describing: lyricsVisible)) current sidebar=\(isSidebarVisible) lyrics=\(isLyricsVisible)"
+        )
+
+        isEmbeddedFullscreenPaneSuppressionActive = true
+        suspendedSidebarVisibilityForEmbeddedFullscreen = nil
+
+        if let sidebarVisible {
+            applySidebarVisibility(sidebarVisible, animated: false)
+        }
+        if let lyricsVisible {
+            applyLyricsVisibility(lyricsVisible, animated: false)
+        }
+
+        forceSynchronousSplitLayout()
+
+        if sidebarVisible == true {
+            restoreSidebarWidthFromMirroredState()
+            forceSynchronousSplitLayout()
+        }
+        if lyricsVisible == true {
+            restoreLyricsWidthFromMirroredState()
+            forceSynchronousSplitLayout()
+        }
+
+        isEmbeddedFullscreenPaneSuppressionActive = false
+        publishHomeLayoutGeometry(windowSize: view.bounds.size, commitDiscreteImmediately: true)
+        mirrorSplitStateToUIState(reason: "restoreFullscreenPanes.\(reason)")
     }
 
     private func applyInitialLayoutFromMirroredState() {
@@ -263,7 +358,10 @@ final class AppKitMainSplitViewController: NSSplitViewController {
         publishHomeLayoutGeometry(windowSize: view.bounds.size)
     }
 
-    func publishHomeLayoutGeometry(windowSize: CGSize? = nil) {
+    func publishHomeLayoutGeometry(
+        windowSize: CGSize? = nil,
+        commitDiscreteImmediately: Bool = false
+    ) {
         let mainView = mainItem.viewController.view
         let mainFrame = mainView.convert(mainView.bounds, to: splitView)
         let splitBounds = splitView.bounds
@@ -281,9 +379,16 @@ final class AppKitMainSplitViewController: NSSplitViewController {
         )
 
         if let windowSize {
-            HomeWindowLayoutState.shared.setGeometry(windowSize: windowSize, centerRect: centerRect)
+            HomeWindowLayoutState.shared.setGeometry(
+                windowSize: windowSize,
+                centerRect: centerRect,
+                commitDiscreteImmediately: commitDiscreteImmediately
+            )
         } else {
             HomeWindowLayoutState.shared.setCenterRect(centerRect)
+            if commitDiscreteImmediately {
+                HomeWindowLayoutState.shared.commitDiscreteSnapshotImmediately()
+            }
         }
     }
 
@@ -338,6 +443,66 @@ final class AppKitMainSplitViewController: NSSplitViewController {
                 uiState.lyricsWidth = width
             }
         }
+    }
+
+    private func applySidebarVisibility(_ visible: Bool, animated: Bool) {
+        if animated {
+            sidebarItem.animator().isCollapsed = !visible
+        } else {
+            sidebarItem.isCollapsed = !visible
+        }
+    }
+
+    private func applyLyricsVisibility(_ visible: Bool, animated: Bool) {
+        if animated {
+            lyricsItem.animator().isCollapsed = !visible
+        } else {
+            lyricsItem.isCollapsed = !visible
+        }
+    }
+
+    private func restoreSidebarWidthFromMirroredState() {
+        guard !sidebarItem.isCollapsed else { return }
+        let sidebarWidth = clampOrDefault(
+            appSession.uiState.sidebarLastWidth,
+            defaultValue: Constants.Layout.sidebarDefaultWidth,
+            min: Constants.Layout.sidebarMinWidth,
+            max: Constants.Layout.sidebarMaxWidth
+        )
+        splitView.setPosition(sidebarWidth, ofDividerAt: 0)
+    }
+
+    private func restoreLyricsWidthFromMirroredState() {
+        guard !lyricsItem.isCollapsed else { return }
+
+        let sidebarWidth: CGFloat = sidebarItem.isCollapsed
+            ? 0
+            : sidebarItem.viewController.view.frame.width
+        let maxLyricsGivenWindow = splitView.bounds.width
+            - sidebarWidth
+            - mainItem.minimumThickness
+        let clampedMaxLyrics = Swift.max(
+            Constants.Layout.lyricsPanelMinWidth,
+            Swift.min(Constants.Layout.lyricsPanelMaxWidth, maxLyricsGivenWindow)
+        )
+        let lyricsWidth = clampOrDefault(
+            appSession.uiState.lyricsWidth,
+            defaultValue: Constants.Layout.lyricsPanelDefaultWidth,
+            min: Constants.Layout.lyricsPanelMinWidth,
+            max: clampedMaxLyrics
+        )
+        splitView.setPosition(
+            splitView.bounds.width - lyricsWidth,
+            ofDividerAt: Self.mainLyricsDividerIndex
+        )
+    }
+
+    private func forceSynchronousSplitLayout() {
+        splitView.adjustSubviews()
+        splitView.needsLayout = true
+        splitView.layoutSubtreeIfNeeded()
+        view.needsLayout = true
+        view.layoutSubtreeIfNeeded()
     }
 
     private func clamp(_ value: CGFloat, min: CGFloat, max: CGFloat) -> CGFloat {
