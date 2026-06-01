@@ -86,6 +86,23 @@ private struct TelemetryOpenTimelineSegment: Codable {
     let startOffsetSeconds: Int
 }
 
+private enum TelemetrySkinUsageContext: String, Codable {
+    case window
+    case fullscreen
+}
+
+private struct TelemetrySkinUsageRecord: Codable {
+    let skinID: String
+    let context: TelemetrySkinUsageContext
+    let durationSeconds: Int
+
+    enum CodingKeys: String, CodingKey {
+        case skinID = "skin_id"
+        case context
+        case durationSeconds = "duration_seconds"
+    }
+}
+
 @MainActor
 final class TelemetryService: NSObject {
     static let shared = TelemetryService()
@@ -134,9 +151,13 @@ final class TelemetryService: NSObject {
         )
 
         recoverPreviousSessionIfNeeded()
+        enqueueInstallSeenIfNeeded()
         if consentStore.isEnabled {
             startSessionIfNeeded()
             flushQueue()
+        } else {
+            queue.keepOnlyInstallSeenEvents()
+            flushInstallSeenQueue()
         }
     }
 
@@ -151,11 +172,15 @@ final class TelemetryService: NSObject {
             flushQueue()
         } else {
             Log.info("[Telemetry] anonymous telemetry disabled", category: .telemetry)
+            uploadTask?.cancel()
+            uploadTask = nil
             accumulator = nil
             checkpointTimer?.invalidate()
             checkpointTimer = nil
-            queue.clear()
+            queue.keepOnlyInstallSeenEvents()
             recoveryStore.clear()
+            enqueueInstallSeenIfNeeded()
+            flushInstallSeenQueue()
         }
     }
 
@@ -186,7 +211,10 @@ final class TelemetryService: NSObject {
             startedAt: now,
             foregroundActive: NSApp.isActive,
             mode: TelemetryPlaybackMode(source: source),
-            isPlaying: isPlaying
+            isPlaying: isPlaying,
+            windowSkinID: currentWindowSkinID(),
+            fullscreenSkinID: currentFullscreenSkinID(),
+            skinContext: currentSkinUsageContext()
         )
         queue.enqueue(baseEvent(
             eventID: UUID().uuidString,
@@ -239,6 +267,18 @@ final class TelemetryService: NSObject {
         guard consentStore.isEnabled else { return }
         accumulator?.updateForeground(isActive: false)
         checkpoint()
+        flushQueue()
+    }
+
+    func updateSkinState() {
+        guard consentStore.isEnabled else { return }
+        startSessionIfNeeded()
+        accumulator?.updateSkins(
+            windowSkinID: currentWindowSkinID(),
+            fullscreenSkinID: currentFullscreenSkinID(),
+            context: currentSkinUsageContext()
+        )
+        checkpoint()
     }
 
     private func startCheckpointTimer() {
@@ -268,8 +308,9 @@ final class TelemetryService: NSObject {
             guard let self else { return }
             do {
                 let response = try await uploader.upload(events: events)
+                try Task.checkCancellation()
                 await MainActor.run {
-                    self.applyUploadResponse(response)
+                    self.applyUploadResponse(response, uploadedEvents: events)
                     self.uploadTask = nil
                     if !self.queue.pendingEvents().isEmpty {
                         self.flushQueue()
@@ -291,17 +332,41 @@ final class TelemetryService: NSObject {
 
         do {
             let response = try uploader.uploadSynchronously(events: events, timeout: 3)
-            applyUploadResponse(response)
+            applyUploadResponse(response, uploadedEvents: events)
         } catch {
             Log.warning("[Telemetry] termination upload failed: \(error)", category: .telemetry)
         }
     }
 
-    private func applyUploadResponse(_ response: TelemetryUploadResponse) {
+    private func flushInstallSeenQueue() {
+        guard uploadTask == nil else { return }
+        let events = queue.pendingEvents().filter { $0.eventType == "app_install_seen" }
+        guard !events.isEmpty else { return }
+
+        uploadTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let response = try await uploader.upload(events: events)
+                try Task.checkCancellation()
+                await MainActor.run {
+                    self.applyUploadResponse(response, uploadedEvents: events)
+                    self.uploadTask = nil
+                }
+            } catch {
+                await MainActor.run {
+                    Log.warning("[Telemetry] install seen upload failed: \(error)", category: .telemetry)
+                    self.uploadTask = nil
+                }
+            }
+        }
+    }
+
+    private func applyUploadResponse(_ response: TelemetryUploadResponse, uploadedEvents: [TelemetryQueuedEvent]) {
         let completedIDs = response.acceptedEvents.map(\.eventID)
         queue.remove(eventIDs: completedIDs)
         for rejected in response.rejectedEvents {
-            if let event = queue.pendingEvents().dropFirst(rejected.index).first {
+            if uploadedEvents.indices.contains(rejected.index) {
+                let event = uploadedEvents[rejected.index]
                 queue.remove(eventIDs: [event.eventID])
             }
         }
@@ -360,9 +425,30 @@ final class TelemetryService: NSObject {
                         "start_offset_seconds": .int(segment.startOffsetSeconds),
                         "end_offset_seconds": .int(segment.endOffsetSeconds)
                     ])
+                }),
+                "skin_usage": .array(summary.skinUsage.map { usage in
+                    .object([
+                        "skin_id": .string(usage.skinID),
+                        "context": .string(usage.context.rawValue),
+                        "duration_seconds": .int(usage.durationSeconds)
+                    ])
                 })
             ]
         )
+    }
+
+    private func currentWindowSkinID() -> String {
+        SkinRegistry.skin(for: AppSettings.shared.selectedNowPlayingSkinID).id
+    }
+
+    private func currentFullscreenSkinID() -> String {
+        SkinRegistry.fullscreenSkin(for: AppSettings.shared.fullscreen.skinID).id
+    }
+
+    private func currentSkinUsageContext() -> TelemetrySkinUsageContext {
+        // Embedded fullscreen uses the fullscreen player UI and fullscreen skin,
+        // so it is intentionally counted as fullscreen skin usage.
+        FullscreenWindowManager.shared.usesFullscreenPlayerUI ? .fullscreen : .window
     }
 }
 
@@ -412,13 +498,20 @@ private struct SessionMetricsAccumulator {
     private var timelineSegments: [TelemetryTimelineSegment] = []
     private var openTimelineSegments: [TelemetryOpenTimelineSegment] = []
     private var timelineLimitReached = false
+    private var windowSkinID: String
+    private var fullscreenSkinID: String
+    private var skinContext: TelemetrySkinUsageContext
+    private var skinUsageDurations: [String: TimeInterval] = [:]
 
     init(
         sessionID: String,
         startedAt: Date,
         foregroundActive: Bool,
         mode: TelemetryPlaybackMode,
-        isPlaying: Bool
+        isPlaying: Bool,
+        windowSkinID: String,
+        fullscreenSkinID: String,
+        skinContext: TelemetrySkinUsageContext
     ) {
         self.sessionID = sessionID
         self.startedAt = startedAt
@@ -426,6 +519,9 @@ private struct SessionMetricsAccumulator {
         self.foregroundActive = foregroundActive
         self.mode = mode
         self.isPlaying = isPlaying
+        self.windowSkinID = windowSkinID
+        self.fullscreenSkinID = fullscreenSkinID
+        self.skinContext = skinContext
         self.openTimelineSegments = [
             TelemetryOpenTimelineSegment(
                 kind: .foreground,
@@ -465,6 +561,18 @@ private struct SessionMetricsAccumulator {
         self.isPlaying = isPlaying
     }
 
+    mutating func updateSkins(
+        windowSkinID: String,
+        fullscreenSkinID: String,
+        context: TelemetrySkinUsageContext
+    ) {
+        let now = Date()
+        settle(now: now)
+        self.windowSkinID = windowSkinID
+        self.fullscreenSkinID = fullscreenSkinID
+        self.skinContext = context
+    }
+
     mutating func finish(reason: TelemetrySessionEndReason) -> TelemetrySessionSummary {
         let now = Date()
         settle(now: now)
@@ -490,7 +598,11 @@ private struct SessionMetricsAccumulator {
             playbackExternalDurationSeconds: Int(playbackExternalDuration.rounded()),
             timelineSegments: timelineSegments,
             openTimelineSegments: openTimelineSegments,
-            timelineLimitReached: timelineLimitReached
+            timelineLimitReached: timelineLimitReached,
+            windowSkinID: windowSkinID,
+            fullscreenSkinID: fullscreenSkinID,
+            skinContext: skinContext,
+            skinUsageDurations: skinUsageDurations
         )
     }
 
@@ -510,6 +622,7 @@ private struct SessionMetricsAccumulator {
             externalModeDuration += delta
             if isPlaying { playbackExternalDuration += delta }
         }
+        skinUsageDurations[skinUsageKey(context: skinContext, skinID: currentSkinIDForContext()), default: 0] += delta
         lastCheckpointAt = now
     }
 
@@ -608,8 +721,45 @@ private struct SessionMetricsAccumulator {
             playbackAppleMusicDurationSeconds: Int(playbackAppleMusicDuration.rounded()),
             playbackExternalDurationSeconds: Int(playbackExternalDuration.rounded()),
             endReason: reason,
-            timelineSegments: timelineSegments
+            timelineSegments: timelineSegments,
+            skinUsage: skinUsageSummary()
         )
+    }
+
+    private func currentSkinIDForContext() -> String {
+        switch skinContext {
+        case .window:
+            return windowSkinID
+        case .fullscreen:
+            return fullscreenSkinID
+        }
+    }
+
+    private func skinUsageKey(context: TelemetrySkinUsageContext, skinID: String) -> String {
+        "\(context.rawValue)|\(skinID)"
+    }
+
+    private func skinUsageSummary() -> [TelemetrySkinUsageRecord] {
+        skinUsageDurations.compactMap { key, duration in
+            let parts = key.split(separator: "|", maxSplits: 1).map(String.init)
+            guard parts.count == 2,
+                  let context = TelemetrySkinUsageContext(rawValue: parts[0]) else {
+                return nil
+            }
+            let seconds = Int(duration.rounded())
+            guard seconds > 0 else { return nil }
+            return TelemetrySkinUsageRecord(
+                skinID: parts[1],
+                context: context,
+                durationSeconds: seconds
+            )
+        }
+        .sorted {
+            if $0.context.rawValue == $1.context.rawValue {
+                return $0.skinID < $1.skinID
+            }
+            return $0.context.rawValue < $1.context.rawValue
+        }
     }
 }
 
@@ -626,6 +776,7 @@ private struct TelemetrySessionSummary {
     let playbackExternalDurationSeconds: Int
     let endReason: TelemetrySessionEndReason
     let timelineSegments: [TelemetryTimelineSegment]
+    let skinUsage: [TelemetrySkinUsageRecord]
 }
 
 private struct TelemetrySessionCheckpoint: Codable {
@@ -645,6 +796,10 @@ private struct TelemetrySessionCheckpoint: Codable {
     let timelineSegments: [TelemetryTimelineSegment]
     let openTimelineSegments: [TelemetryOpenTimelineSegment]
     let timelineLimitReached: Bool
+    let windowSkinID: String
+    let fullscreenSkinID: String
+    let skinContext: TelemetrySkinUsageContext
+    let skinUsageDurations: [String: TimeInterval]
 
     func recoveredSummary() -> TelemetrySessionSummary {
         let sessionDuration = Int(max(0, lastCheckpointAt.timeIntervalSince(startedAt)).rounded())
@@ -669,7 +824,8 @@ private struct TelemetrySessionCheckpoint: Codable {
             playbackAppleMusicDurationSeconds: playbackAppleMusicDurationSeconds,
             playbackExternalDurationSeconds: playbackExternalDurationSeconds,
             endReason: .recoveredAfterUngracefulExit,
-            timelineSegments: recoveredTimelineSegments
+            timelineSegments: recoveredTimelineSegments,
+            skinUsage: recoveredSkinUsageSummary()
         )
     }
 
@@ -693,6 +849,23 @@ private struct TelemetrySessionCheckpoint: Codable {
             ))
         }
         return segments
+    }
+
+    private func recoveredSkinUsageSummary() -> [TelemetrySkinUsageRecord] {
+        skinUsageDurations.compactMap { key, duration in
+            let parts = key.split(separator: "|", maxSplits: 1).map(String.init)
+            guard parts.count == 2,
+                  let context = TelemetrySkinUsageContext(rawValue: parts[0]) else {
+                return nil
+            }
+            let seconds = Int(duration.rounded())
+            guard seconds > 0 else { return nil }
+            return TelemetrySkinUsageRecord(
+                skinID: parts[1],
+                context: context,
+                durationSeconds: seconds
+            )
+        }
     }
 }
 
@@ -788,6 +961,10 @@ private final class TelemetryLocalQueue {
 
     func clear() {
         try? FileManager.default.removeItem(at: fileURL)
+    }
+
+    func keepOnlyInstallSeenEvents() {
+        save(pendingEvents().filter { $0.eventType == "app_install_seen" })
     }
 
     private func save(_ events: [TelemetryQueuedEvent]) {

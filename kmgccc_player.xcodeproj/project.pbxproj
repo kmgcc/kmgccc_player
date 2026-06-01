@@ -40,8 +40,6 @@
 		9351197F2F33130A00766A5F /* Exceptions for "myPlayer2" folder in "kmgccc_player" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
-				Assets.xcassets/youdowhat.dataset,
-				Assets.xcassets/youdowhatr.dataset,
 				Info.plist,
 				Resources/.DS_Store,
 				"Resources/AMLL/amll-background.js",

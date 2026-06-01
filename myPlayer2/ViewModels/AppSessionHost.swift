@@ -62,8 +62,12 @@ final class AppSessionHost: ObservableObject {
         WhatsNewWindowManager.shared.showIfNeeded()
         print("[Lifecycle] WhatsNew window check completed")
 
-        Task {
-            await UpdateWindowManager.shared.checkAndShowIfNeeded()
+        if UpdateCheckPreferences.checkForUpdatesOnLaunch {
+            Task {
+                await UpdateWindowManager.shared.checkAndShowIfNeeded()
+            }
+        } else {
+            print("[UpdateWindowManager] Skipping launch update check by user preference")
         }
     }
 
