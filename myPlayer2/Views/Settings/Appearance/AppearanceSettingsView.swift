@@ -12,6 +12,7 @@ import UniformTypeIdentifiers
 struct AppearanceSettingsView: View {
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
 
     @State private var globalArtworkTintEnabled: Bool = AppSettings.shared.globalArtworkTintEnabled
     @State private var dockProgressVisible: Bool = AppSettings.shared.dockProgressVisible
@@ -19,13 +20,21 @@ struct AppearanceSettingsView: View {
     @State private var lyricsBackgroundMode: AppSettings.LyricsBackgroundMode = AppSettings.shared.lyricsBackgroundMode
     @State private var homeCardMaterialMode: AppSettings.HomeCardMaterialMode = AppSettings.shared.homeCardMaterialMode
     @State private var homeSectionOrder: [HomeSection] = AppSettings.shared.homeSectionOrder
-    @State private var draggedHomeSection: HomeSection?
+
+    // Custom drag-reorder state (no system drag preview).
+    @State private var draggingSection: HomeSection?
+    @State private var dragFloatingY: CGFloat = 0
+    @State private var dragContainerWidth: CGFloat = 0
+
+    private let homeRowHeight: CGFloat = 40
+    private let homeRowSpacing: CGFloat = 6
+    private let homeReorderSpace = "homeSectionReorderSpace"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             SettingsHeaderLabel("外观", systemImage: "paintpalette")
 
-            SettingsSection {
+            SettingsSection("常规") {
                 VStack(alignment: .leading, spacing: 14) {
                     SettingsSwitchRow(
                         title: "全局取色",
@@ -168,115 +177,168 @@ struct AppearanceSettingsView: View {
             Text("拖动调整主页中各个板块的显示顺序。")
                 .settingsDescriptionStyle()
 
-            VStack(spacing: 6) {
+            // No inner list-level background container: each row carries its
+            // own pill, the surrounding SettingsSection already provides chrome.
+            VStack(spacing: homeRowSpacing) {
                 ForEach(homeSectionOrder) { section in
                     homeSectionOrderRow(section)
-                        .onDrag {
-                            draggedHomeSection = section
-                            return NSItemProvider(object: section.rawValue as NSString)
-                        }
-                        .onDrop(
-                            of: [UTType.plainText],
-                            delegate: HomeSectionOrderDropDelegate(
-                                targetSection: section,
-                                sectionOrder: $homeSectionOrder,
-                                draggedSection: $draggedHomeSection,
-                                onCommit: saveHomeSectionOrder
-                            )
-                        )
                 }
             }
-            .padding(6)
             .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color.secondary.opacity(0.06))
-            )
-
-            Button("恢复默认顺序") {
-                withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
-                    homeSectionOrder = HomeSection.defaultOrder
+                GeometryReader { proxy in
+                    Color.clear
+                        .onAppear { dragContainerWidth = proxy.size.width }
+                        .onChange(of: proxy.size.width) { _, newValue in
+                            dragContainerWidth = newValue
+                        }
                 }
-                saveHomeSectionOrder(homeSectionOrder)
+            )
+            .coordinateSpace(name: homeReorderSpace)
+            // Custom floating overlay drawn by us — never the system drag image.
+            .overlay(alignment: .top) {
+                if let dragging = draggingSection {
+                    homeSectionOrderFloatingRow(dragging)
+                        .frame(width: dragContainerWidth, height: homeRowHeight)
+                        .offset(y: dragFloatingY)
+                        .allowsHitTesting(false)
+                }
             }
-            .buttonStyle(.bordered)
-            .clipShape(Capsule())
+
+            HStack {
+                Spacer(minLength: 0)
+
+                Button("恢复默认顺序") {
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                        homeSectionOrder = HomeSection.defaultOrder
+                        draggingSection = nil
+                    }
+                    saveHomeSectionOrder(homeSectionOrder)
+                }
+                .buttonStyle(.bordered)
+                .clipShape(Capsule())
+            }
         }
     }
 
+    // Each row keeps the SAME footprint in every state (normal / placeholder /
+    // floating), so nothing jumps on grab or release. The dragged row is
+    // branched purely by `draggingSection` identity, never by opacity alone.
+    @ViewBuilder
     private func homeSectionOrderRow(_ section: HomeSection) -> some View {
+        Group {
+            if draggingSection == section {
+                homeSectionOrderPlaceholder()
+            } else {
+                homeSectionOrderRowContent(section)
+            }
+        }
+        .frame(height: homeRowHeight)
+        .gesture(reorderGesture(for: section))
+    }
+
+    private func reorderGesture(for section: HomeSection) -> some Gesture {
+        DragGesture(minimumDistance: 4, coordinateSpace: .named(homeReorderSpace))
+            .onChanged { value in
+                if draggingSection != section {
+                    draggingSection = section
+                }
+                // Floating row follows the finger directly (no animation), and
+                // stays full row width — no system preview shrinking.
+                dragFloatingY = value.location.y - homeRowHeight / 2
+
+                let stride = homeRowHeight + homeRowSpacing
+                let proposed = Int((value.location.y / stride).rounded(.down))
+                let target = max(0, min(homeSectionOrder.count - 1, proposed))
+
+                guard let current = homeSectionOrder.firstIndex(of: section),
+                      current != target else { return }
+
+                // Reorder live as the row crosses neighbour mid-lines, so the
+                // list reflows under the finger instead of waiting for drop.
+                withAnimation(.spring(response: 0.26, dampingFraction: 0.86)) {
+                    homeSectionOrder.move(
+                        fromOffsets: IndexSet(integer: current),
+                        toOffset: target > current ? target + 1 : target
+                    )
+                }
+            }
+            .onEnded { _ in
+                saveHomeSectionOrder(homeSectionOrder)
+                withAnimation(.spring(response: 0.24, dampingFraction: 0.88)) {
+                    draggingSection = nil
+                }
+            }
+    }
+
+    private func homeSectionOrderRowContent(_ section: HomeSection) -> some View {
+        homeSectionRowLayout(section, handleColor: .tertiary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                Capsule()
+                    .fill(Color.primary.opacity(0.035))
+            )
+            .overlay(
+                Capsule()
+                    .stroke(Color.secondary.opacity(0.10), lineWidth: 1)
+            )
+            .clipShape(Capsule())
+            .contentShape(Capsule())
+    }
+
+    private func homeSectionOrderPlaceholder() -> some View {
+        Capsule()
+            .fill(Color.secondary.opacity(0.035))
+            .overlay(
+                Capsule()
+                    .strokeBorder(
+                        Color.secondary.opacity(0.12),
+                        style: StrokeStyle(lineWidth: 1, dash: [5, 6])
+                    )
+            )
+            .frame(maxWidth: .infinity)
+            .contentShape(Capsule())
+    }
+
+    // Custom clear-glass floating pill. Full width, stable size, readable text.
+    private func homeSectionOrderFloatingRow(_ section: HomeSection) -> some View {
+        homeSectionRowLayout(section, handleColor: .secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .liquidGlassPill(
+                colorScheme: colorScheme,
+                accentColor: themeStore.accentColor,
+                prominence: .prominent,
+                materialStyle: .clear,
+                isFloating: true
+            )
+    }
+
+    // Shared row layout so normal / floating rows are pixel-identical.
+    private func homeSectionRowLayout(
+        _ section: HomeSection,
+        handleColor: HierarchicalShapeStyle
+    ) -> some View {
         HStack(spacing: 10) {
             Image(systemName: section.systemImage)
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(themeStore.accentColor)
-                .frame(width: 18)
+                .frame(width: 20)
 
             Text(section.title)
                 .settingsRowLabelStyle()
 
-            Spacer(minLength: 12)
+            Spacer(minLength: 16)
 
             Image(systemName: "line.3.horizontal")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.tertiary)
-                .padding(.horizontal, 4)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(handleColor)
+                .frame(width: 28)
                 .help("拖动调整顺序")
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(rowBackground(for: section))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(Color.secondary.opacity(0.10), lineWidth: 1)
-        )
-        .contentShape(Rectangle())
-    }
-
-    private func rowBackground(for section: HomeSection) -> Color {
-        draggedHomeSection == section
-            ? themeStore.accentColor.opacity(0.10)
-            : Color.primary.opacity(0.035)
+        .padding(.horizontal, 16)
+        .frame(height: homeRowHeight)
     }
 
     private func saveHomeSectionOrder(_ order: [HomeSection]) {
         settings.homeSectionOrder = order
-    }
-}
-
-private struct HomeSectionOrderDropDelegate: DropDelegate {
-    let targetSection: HomeSection
-    @Binding var sectionOrder: [HomeSection]
-    @Binding var draggedSection: HomeSection?
-    let onCommit: ([HomeSection]) -> Void
-
-    func dropEntered(info: DropInfo) {
-        guard
-            let draggedSection,
-            draggedSection != targetSection,
-            let fromIndex = sectionOrder.firstIndex(of: draggedSection),
-            let toIndex = sectionOrder.firstIndex(of: targetSection)
-        else {
-            return
-        }
-
-        withAnimation(.spring(response: 0.25, dampingFraction: 0.86)) {
-            sectionOrder.move(
-                fromOffsets: IndexSet(integer: fromIndex),
-                toOffset: toIndex > fromIndex ? toIndex + 1 : toIndex
-            )
-        }
-        onCommit(sectionOrder)
-    }
-
-    func dropUpdated(info: DropInfo) -> DropProposal? {
-        DropProposal(operation: .move)
-    }
-
-    func performDrop(info: DropInfo) -> Bool {
-        onCommit(sectionOrder)
-        draggedSection = nil
-        return true
     }
 }

@@ -14,7 +14,6 @@ struct DataManagementSettingsView: View {
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @AppStorage("telemetry.anonymousUsageEnabled") private var telemetryEnabled: Bool = false
-    @AppStorage(UpdateCheckPreferences.checkForUpdatesOnLaunchKey) private var checkForUpdatesOnLaunch: Bool = true
 
     @State private var showResetDataAlert: Bool = false
     @State private var showClearIndexCacheAlert: Bool = false
@@ -95,12 +94,6 @@ struct DataManagementSettingsView: View {
 
             SettingsSection("数据共享") {
                 VStack(alignment: .leading, spacing: 16) {
-                    SettingsSwitchRow(
-                        title: "启动时检查更新",
-                        isOn: $checkForUpdatesOnLaunch,
-                        detail: "关闭后，App 启动时不会自动检查新版本，你仍可手动检查更新。"
-                    )
-
                     SettingsSwitchRow(
                         title: "帮助改进 kmgccc_player",
                         isOn: telemetryEnabledBinding,

@@ -17,6 +17,7 @@ final class UpdateWindowManager: NSObject, NSWindowDelegate, ObservableObject {
     private var updateWindow: NSPanel?
     private var versionInfo: RemoteVersionInfo?
     private var error: Error?
+    private var alertKind: UpdateAlertKind = .updateAvailable
     
     var forceShowForTesting: Bool = false
     
@@ -41,7 +42,7 @@ final class UpdateWindowManager: NSObject, NSWindowDelegate, ObservableObject {
         
         if shouldShow {
             print("[UpdateWindowManager] Showing update alert (remote > local)")
-            showUpdateWindow()
+            showUpdateWindow(kind: .updateAvailable)
         } else {
             if UpdateChecker.shared.error != nil {
                 print("[UpdateWindowManager] Not showing update: request or parse failed")
@@ -52,12 +53,30 @@ final class UpdateWindowManager: NSObject, NSWindowDelegate, ObservableObject {
             }
         }
     }
+
+    func checkManuallyAndShowResult() async {
+        print("[UpdateWindowManager] Starting manual update check...")
+
+        await UpdateChecker.shared.checkForUpdates()
+
+        if UpdateChecker.shared.error != nil || UpdateChecker.shared.remoteInfo == nil {
+            print("[UpdateWindowManager] Manual check failed; showing failure alert")
+            showUpdateWindow(kind: .failed)
+        } else if UpdateChecker.shared.shouldShowUpdate(forceShow: forceShowForTesting) {
+            print("[UpdateWindowManager] Manual check found update")
+            showUpdateWindow(kind: .updateAvailable)
+        } else {
+            print("[UpdateWindowManager] Manual check found app is up to date")
+            showUpdateWindow(kind: .upToDate)
+        }
+    }
     
-    private func showUpdateWindow() {
+    private func showUpdateWindow(kind: UpdateAlertKind) {
         guard !isPresented else { return }
         
         self.versionInfo = UpdateChecker.shared.remoteInfo
         self.error = UpdateChecker.shared.error
+        self.alertKind = kind
         
         let windowSize = NSSize(width: 440, height: 500)
         
@@ -93,13 +112,18 @@ final class UpdateWindowManager: NSObject, NSWindowDelegate, ObservableObject {
         panel.contentView = visualEffect
         
         let alertView = UpdateAlertView(
+            kind: alertKind,
             versionInfo: versionInfo,
             error: error,
             onDismiss: { [weak self] in
                 self?.dismiss()
             },
-            onGoToRelease: { [weak self] in
-                self?.openReleasePage()
+            onDownload: { [weak self] in
+                self?.openDownloadURL()
+                self?.dismiss()
+            },
+            onOpenGitHubRelease: { [weak self] in
+                self?.openGitHubReleasePage()
                 self?.dismiss()
             }
         )
@@ -135,21 +159,26 @@ final class UpdateWindowManager: NSObject, NSWindowDelegate, ObservableObject {
         print("[UpdateWindowManager] Update alert window shown")
     }
     
-    private func openReleasePage() {
-        let fallbackURLString = "https://github.com/kmgcc/kmgccc_player/releases/latest"
-        let urlString = versionInfo?.releaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        let remoteURL = urlString.flatMap { rawValue -> URL? in
-            guard !rawValue.isEmpty,
-                  let url = URL(string: rawValue),
-                  url.scheme != nil else {
-                return nil
-            }
-            return url
-        }
+    private func openDownloadURL() {
+        let urlString = versionInfo?.downloadURL ?? versionInfo?.releaseURL
+        let url = resolveURL(urlString)
+            ?? resolveURL(versionInfo?.releaseURL)
+            ?? UpdateLinks.githubReleaseURL
+        NSWorkspace.shared.open(url)
+    }
 
-        if let url = remoteURL ?? URL(string: fallbackURLString) {
-            NSWorkspace.shared.open(url)
+    private func openGitHubReleasePage() {
+        NSWorkspace.shared.open(UpdateLinks.githubReleaseURL)
+    }
+
+    private func resolveURL(_ rawValue: String?) -> URL? {
+        guard let trimmed = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty,
+              let url = URL(string: trimmed),
+              url.scheme != nil else {
+            return nil
         }
+        return url
     }
     
     private func applyCurrentAppearance(to window: NSWindow) {
