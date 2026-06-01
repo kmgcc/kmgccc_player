@@ -22,13 +22,34 @@ struct AppearanceSettingsView: View {
     @State private var homeSectionOrder: [HomeSection] = AppSettings.shared.homeSectionOrder
 
     // Custom drag-reorder state (no system drag preview).
+    //
+    // Two invariants make the drag stable:
+    //  1. Floating position is anchored to `dragStartIndex` (captured once) plus
+    //     the live gesture translation — it never reads the live array index, so
+    //     reordering the array cannot feed back into the pill's position.
+    //  2. The gesture is measured in a container-fixed *named* coordinate space,
+    //     so when a reorder slides the dragged row to a new slot the translation
+    //     stays continuous (a `.local` space would jump by one slot and jitter).
     @State private var draggingSection: HomeSection?
+    @State private var dragStartIndex: Int = 0
+    @State private var dragLastTargetIndex: Int = 0
+    @State private var dragFloatingX: CGFloat = 0
     @State private var dragFloatingY: CGFloat = 0
     @State private var dragContainerWidth: CGFloat = 0
+    @State private var isFinishingDrag = false
 
     private let homeRowHeight: CGFloat = 40
     private let homeRowSpacing: CGFloat = 6
+    // Center-to-center distance between adjacent rows; the unit of vertical
+    // travel for both floating position and reorder stepping.
+    private var homeRowStride: CGFloat { homeRowHeight + homeRowSpacing }
+    // Fixed reference frame for the drag gesture — does not move when rows reorder.
     private let homeReorderSpace = "homeSectionReorderSpace"
+
+    // Horizontal follow is damped and capped so the pill leans toward the
+    // cursor without flying off; it is purely cosmetic and never feeds reorder.
+    private let dragHorizontalDamping: CGFloat = 0.45
+    private let dragHorizontalLimit: CGFloat = 28
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -179,6 +200,12 @@ struct AppearanceSettingsView: View {
 
             // No inner list-level background container: each row carries its
             // own pill, the surrounding SettingsSection already provides chrome.
+            //
+            // The reorder `move` is wrapped in its own withAnimation, so only the
+            // neighbour rows / placeholder reflow with a spring. We deliberately
+            // do NOT put a container-wide `.animation(value: homeSectionOrder)`
+            // here: that would also try to animate the floating overlay's offset
+            // every frame and fight the gesture, causing the up/down jitter.
             VStack(spacing: homeRowSpacing) {
                 ForEach(homeSectionOrder) { section in
                     homeSectionOrderRow(section)
@@ -193,13 +220,17 @@ struct AppearanceSettingsView: View {
                         }
                 }
             )
+            // Fixed coordinate space so the gesture translation stays continuous
+            // even as rows reorder underneath the finger.
             .coordinateSpace(name: homeReorderSpace)
             // Custom floating overlay drawn by us — never the system drag image.
+            // Its offset is driven straight from gesture translation (no implicit
+            // animation), so it tracks the cursor 1:1.
             .overlay(alignment: .top) {
                 if let dragging = draggingSection {
                     homeSectionOrderFloatingRow(dragging)
                         .frame(width: dragContainerWidth, height: homeRowHeight)
-                        .offset(y: dragFloatingY)
+                        .offset(x: dragFloatingX, y: dragFloatingY)
                         .allowsHitTesting(false)
                 }
             }
@@ -211,6 +242,8 @@ struct AppearanceSettingsView: View {
                     withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
                         homeSectionOrder = HomeSection.defaultOrder
                         draggingSection = nil
+                        isFinishingDrag = false
+                        dragFloatingX = 0
                     }
                     saveHomeSectionOrder(homeSectionOrder)
                 }
@@ -220,42 +253,77 @@ struct AppearanceSettingsView: View {
         }
     }
 
-    // Each row keeps the SAME footprint in every state (normal / placeholder /
-    // floating), so nothing jumps on grab or release. The dragged row is
-    // branched purely by `draggingSection` identity, never by opacity alone.
-    @ViewBuilder
+    // The row is a STABLE ZStack whose view identity never changes during a
+    // drag. We only cross-fade the inner content vs. placeholder via opacity —
+    // we never swap one view subtree for a different one. Swapping subtrees
+    // (the old `if/else`) re-created the view the gesture was attached to on the
+    // first frame, which made macOS drop the in-flight drag (the "grab twice"
+    // bug). Keeping identity stable lets the very first grab track immediately.
     private func homeSectionOrderRow(_ section: HomeSection) -> some View {
-        Group {
-            if draggingSection == section {
-                homeSectionOrderPlaceholder()
-            } else {
-                homeSectionOrderRowContent(section)
-            }
+        let isDragging = draggingSection == section
+        return ZStack {
+            homeSectionOrderPlaceholder()
+                .opacity(isDragging ? 1 : 0)
+            homeSectionOrderRowContent(section)
+                .opacity(isDragging ? 0 : 1)
         }
         .frame(height: homeRowHeight)
-        .gesture(reorderGesture(for: section))
+        .contentShape(Capsule())
+        // The opacity flip is intentionally NOT animated: `draggingSection` is
+        // assigned outside `withAnimation`, so the content↔placeholder swap is
+        // instant (no first-frame fade that would delay the grab). Row position
+        // reflow still animates, because that comes from the `move` wrapped in
+        // withAnimation below.
+        // High priority so a row drag reliably starts the reorder instead of
+        // losing the gesture race to the enclosing settings ScrollView.
+        .highPriorityGesture(reorderGesture(for: section))
     }
 
     private func reorderGesture(for section: HomeSection) -> some Gesture {
-        DragGesture(minimumDistance: 4, coordinateSpace: .named(homeReorderSpace))
+        // minimumDistance 2 distinguishes a drag from a click. The gesture is
+        // measured in the container-fixed named space so translation never jumps
+        // when rows reorder beneath the finger.
+        DragGesture(minimumDistance: 2, coordinateSpace: .named(homeReorderSpace))
             .onChanged { value in
                 if draggingSection != section {
+                    // Capture the launch slot ONCE. Everything below is derived
+                    // from this fixed anchor + live translation; we never refresh
+                    // it from the (now-moving) live array index.
+                    let start = homeSectionOrder.firstIndex(of: section) ?? 0
                     draggingSection = section
+                    dragStartIndex = start
+                    dragLastTargetIndex = start
+                    isFinishingDrag = false
                 }
-                // Floating row follows the finger directly (no animation), and
-                // stays full row width — no system preview shrinking.
-                dragFloatingY = value.location.y - homeRowHeight / 2
 
-                let stride = homeRowHeight + homeRowSpacing
-                let proposed = Int((value.location.y / stride).rounded(.down))
-                let target = max(0, min(homeSectionOrder.count - 1, proposed))
+                // Floating pill: y is anchored to the launch slot + finger
+                // travel (decoupled from the array). x leans toward the cursor
+                // with damping + a cap. Both assigned outside any animation so
+                // the pill is exactly 1:1 with the cursor.
+                dragFloatingY = CGFloat(dragStartIndex) * homeRowStride + value.translation.height
+                dragFloatingX = max(
+                    -dragHorizontalLimit,
+                    min(dragHorizontalLimit, value.translation.width * dragHorizontalDamping)
+                )
+
+                // Reorder target from the pill's CENTER y (vertical only — the
+                // horizontal lean can never affect ordering).
+                let centerY = dragFloatingY + homeRowHeight / 2
+                let target = max(0, min(homeSectionOrder.count - 1,
+                                        Int((centerY / homeRowStride).rounded(.down))))
+
+                // Hysteresis: only react when the target slot actually changes.
+                // This stops the order from oscillating when the pill hovers near
+                // a row mid-line (the up/down twitch).
+                guard target != dragLastTargetIndex else { return }
+                dragLastTargetIndex = target
 
                 guard let current = homeSectionOrder.firstIndex(of: section),
                       current != target else { return }
 
-                // Reorder live as the row crosses neighbour mid-lines, so the
-                // list reflows under the finger instead of waiting for drop.
-                withAnimation(.spring(response: 0.26, dampingFraction: 0.86)) {
+                // Animate ONLY the reorder, so neighbours slide while the pill
+                // keeps tracking the cursor without any animation interference.
+                withAnimation(.snappy(duration: 0.16)) {
                     homeSectionOrder.move(
                         fromOffsets: IndexSet(integer: current),
                         toOffset: target > current ? target + 1 : target
@@ -263,9 +331,26 @@ struct AppearanceSettingsView: View {
                 }
             }
             .onEnded { _ in
+                // Persist once at the end (not per onChanged) to avoid hammering
+                // UserDefaults.
                 saveHomeSectionOrder(homeSectionOrder)
-                withAnimation(.spring(response: 0.24, dampingFraction: 0.88)) {
+
+                // Settle the floating pill onto its final slot (x → 0, y → final
+                // row origin) before the real row reappears, so there is no pop.
+                let finalIndex = homeSectionOrder.firstIndex(of: section) ?? dragStartIndex
+                isFinishingDrag = true
+                withAnimation(.snappy(duration: 0.16)) {
+                    dragFloatingX = 0
+                    dragFloatingY = CGFloat(finalIndex) * homeRowStride
+                }
+
+                // Clear only after the settle animation, and only if a new drag
+                // has not taken over in the meantime (token guards against the
+                // stale async callback wiping a fresh drag).
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+                    guard isFinishingDrag, draggingSection == section else { return }
                     draggingSection = nil
+                    isFinishingDrag = false
                 }
             }
     }
