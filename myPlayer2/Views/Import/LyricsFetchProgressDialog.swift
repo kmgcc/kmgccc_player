@@ -255,9 +255,8 @@ final class LyricsFetchProgressDialogPresenter: NSObject, NSWindowDelegate {
         hostingView.autoresizingMask = [.width, .height]
         
         visualEffect.addSubview(hostingView)
-        panel.center()
-        panel.makeKeyAndOrderFront(nil)
-        
+        AppDialogTokens.presentWithFade(panel)
+
         presenter.startFetchAsync(tracks: tracks, viewModel: viewModel)
     }
     
@@ -502,11 +501,16 @@ struct LyricsFetchProgressDialogView: View {
                 }
             }
             .keyboardShortcut(viewModel.isAllCompleted ? .defaultAction : .cancelAction)
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
+            .buttonStyle(
+                AppDialogGlassButtonStyle(
+                    kind: viewModel.isAllCompleted ? .primary : .secondary,
+                    tint: ThemeStore.shared.accentColor
+                )
+            )
         }
         .padding(.horizontal, AppDialogTokens.footerHorizontalPadding)
-        .padding(.vertical, AppDialogTokens.footerVerticalPadding)
+        .padding(.top, AppDialogTokens.footerVerticalPadding)
+        .padding(.bottom, AppDialogTokens.footerBottomPadding)
         .background(.thinMaterial)
     }
 }

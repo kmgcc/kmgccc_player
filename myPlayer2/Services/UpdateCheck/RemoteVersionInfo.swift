@@ -13,6 +13,8 @@ struct RemoteVersionInfo: Decodable {
     let releaseURL: String
     let downloadURL: String?
     let notes: String
+    let packageSizeBytes: Int64?
+    let packageSHA256: String?
 
     enum CodingKeys: String, CodingKey {
         case latestVersion
@@ -22,13 +24,24 @@ struct RemoteVersionInfo: Decodable {
         case downloadURL = "download_url"
         case releaseNotesURL = "release_notes_url"
         case summary
+        case packageSizeBytes = "package_size_bytes"
+        case packageSHA256 = "package_sha256"
     }
 
-    init(latestVersion: String, releaseURL: String, downloadURL: String? = nil, notes: String) {
+    init(
+        latestVersion: String,
+        releaseURL: String,
+        downloadURL: String? = nil,
+        notes: String,
+        packageSizeBytes: Int64? = nil,
+        packageSHA256: String? = nil
+    ) {
         self.latestVersion = latestVersion
         self.releaseURL = releaseURL
         self.downloadURL = downloadURL
         self.notes = notes
+        self.packageSizeBytes = packageSizeBytes
+        self.packageSHA256 = packageSHA256
     }
 
     init(from decoder: Decoder) throws {
@@ -42,6 +55,8 @@ struct RemoteVersionInfo: Decodable {
         notes = try container.decodeIfPresent(String.self, forKey: .notes)
             ?? container.decodeIfPresent(String.self, forKey: .summary)
             ?? ""
+        packageSizeBytes = try container.decodeIfPresent(Int64.self, forKey: .packageSizeBytes)
+        packageSHA256 = try container.decodeIfPresent(String.self, forKey: .packageSHA256)
     }
 
     func resolvingRelativeURLs(baseURL: URL) -> RemoteVersionInfo {
@@ -49,7 +64,9 @@ struct RemoteVersionInfo: Decodable {
             latestVersion: latestVersion,
             releaseURL: Self.absoluteURLString(from: releaseURL, baseURL: baseURL) ?? releaseURL,
             downloadURL: downloadURL.flatMap { Self.absoluteURLString(from: $0, baseURL: baseURL) },
-            notes: notes
+            notes: notes,
+            packageSizeBytes: packageSizeBytes,
+            packageSHA256: packageSHA256
         )
     }
 

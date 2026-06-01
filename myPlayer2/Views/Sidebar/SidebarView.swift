@@ -26,6 +26,7 @@ struct SidebarView: View {
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var currentColorScheme
+    @ObservedObject private var updateDownloadManager = UpdatePackageDownloadManager.shared
 
     @State private var showSettings = false
     @State private var showingPlaylistSheet = false
@@ -355,10 +356,20 @@ struct SidebarView: View {
                 isHoveringPlaylists = hovering
             }
 
-            if importEnrichmentService.hasOutstandingWork {
-                sidebarEnrichmentStatus
-                    .transition(.opacity)
+            VStack(spacing: 6) {
+                if let updateProgress = updateDownloadManager.sidebarProgress {
+                    SidebarTaskProgressView(progress: updateProgress)
+                        .transition(.opacity)
+                }
+
+                if importEnrichmentService.hasOutstandingWork {
+                    SidebarTaskProgressView(progress: importEnrichmentSidebarProgress)
+                        .transition(.opacity)
+                }
             }
+            .padding(.horizontal, 14)
+            .padding(.top, 4)
+            .padding(.bottom, updateDownloadManager.sidebarProgress != nil || importEnrichmentService.hasOutstandingWork ? 8 : 0)
 
             Divider()
 
@@ -652,22 +663,17 @@ struct SidebarView: View {
             .fill(isSelected ? themeStore.selectionFill : Color.clear)
     }
 
-    private var sidebarEnrichmentStatus: some View {
-        HStack(spacing: 8) {
-            ProgressView()
-                .controlSize(.small)
-                .scaleEffect(0.72)
-
-            Text(importEnrichmentService.progress.sidebarText)
-                .font(.caption2)
-                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
-                .lineLimit(1)
-
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 4)
-        .padding(.bottom, 8)
+    private var importEnrichmentSidebarProgress: SidebarTaskProgress {
+        let progress = importEnrichmentService.progress
+        let fraction = progress.totalEnqueued > 0
+            ? Double(progress.completedCount) / Double(progress.totalEnqueued)
+            : nil
+        return SidebarTaskProgress(
+            title: "正在补全导入内容",
+            detail: progress.sidebarText,
+            fractionCompleted: fraction,
+            state: .running
+        )
     }
 
     private func confirmDeletion(_ request: SidebarDeletionRequest) {
@@ -781,6 +787,79 @@ private struct SidebarPlaylistThumbnail: View {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return try? decoder.decode(PlaylistSidecar.self, from: data)
+    }
+}
+
+private struct SidebarTaskProgressView: View {
+    let progress: SidebarTaskProgress
+
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                statusIcon
+
+                Text(progress.title)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.primary))
+                    .lineLimit(1)
+
+                Spacer(minLength: 0)
+
+                if let percentageText = progress.percentageText {
+                    Text(percentageText)
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
+                }
+            }
+
+            if let fraction = progress.fractionCompleted {
+                ProgressView(value: fraction)
+                    .progressViewStyle(.linear)
+                    .controlSize(.small)
+                    .tint(themeStore.accentColor)
+            }
+
+            Text(progress.detail)
+                .font(.caption2)
+                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
+                .lineLimit(2)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color(nsColor: themeStore.appForegroundPalette.primary).opacity(0.055))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(Color(nsColor: themeStore.appForegroundPalette.secondary).opacity(0.12), lineWidth: 0.5)
+        )
+    }
+
+    @ViewBuilder
+    private var statusIcon: some View {
+        switch progress.state {
+        case .running:
+            if progress.fractionCompleted == nil {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.7)
+            } else {
+                Image(systemName: "arrow.down.circle")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(themeStore.accentColor)
+            }
+        case .completed:
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.green)
+        case .failed:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.orange)
+        }
     }
 }
 

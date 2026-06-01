@@ -215,9 +215,8 @@ final class NCMImportProgressDialogPresenter: NSObject, NSWindowDelegate {
         hostingView.autoresizingMask = [.width, .height]
         
         visualEffect.addSubview(hostingView)
-        panel.center()
-        panel.makeKeyAndOrderFront(nil)
-        
+        AppDialogTokens.presentWithFade(panel)
+
         // Start conversion asynchronously - use DispatchQueue to ensure it doesn't block
         presenter.startConversionAsync(ncmFiles: ncmFiles, viewModel: viewModel)
     }
@@ -445,11 +444,16 @@ struct NCMImportProgressDialogView: View {
                 }
             }
             .keyboardShortcut(viewModel.isAllCompleted ? .defaultAction : .cancelAction)
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
+            .buttonStyle(
+                AppDialogGlassButtonStyle(
+                    kind: viewModel.isAllCompleted ? .primary : .secondary,
+                    tint: ThemeStore.shared.accentColor
+                )
+            )
         }
         .padding(.horizontal, AppDialogTokens.footerHorizontalPadding)
-        .padding(.vertical, AppDialogTokens.footerVerticalPadding)
+        .padding(.top, AppDialogTokens.footerVerticalPadding)
+        .padding(.bottom, AppDialogTokens.footerBottomPadding)
         .background(.thinMaterial)
     }
 }

@@ -4794,13 +4794,24 @@ private final class BatchImportProgressDialogController: NSObject, NSWindowDeleg
         panel.level = .floating
         panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         panel.delegate = self
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+
+        // No `.closable` style mask, so the close button is absent; the import
+        // can only be dismissed through the in-dialog cancel/finish flow.
+        panel.standardWindowButton(.closeButton)?.isHidden = true
+        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        panel.standardWindowButton(.zoomButton)?.isHidden = true
 
         let visualEffect = NSVisualEffectView()
-        visualEffect.material = .hudWindow
+        visualEffect.material = .popover
         visualEffect.blendingMode = .behindWindow
         visualEffect.state = .active
         visualEffect.frame = NSRect(origin: .zero, size: windowSize)
         visualEffect.autoresizingMask = [.width, .height]
+        visualEffect.wantsLayer = true
+        visualEffect.layer?.cornerRadius = AppDialogTokens.windowCornerRadius
+        visualEffect.layer?.masksToBounds = true
         panel.contentView = visualEffect
 
         let rootView = BatchImportProgressDialogView(
@@ -4814,8 +4825,13 @@ private final class BatchImportProgressDialogController: NSObject, NSWindowDeleg
         visualEffect.addSubview(hostingView)
 
         panel.center()
+        panel.alphaValue = 0
         panel.makeKeyAndOrderFront(nil)
         panel.orderFrontRegardless()
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.25
+            panel.animator().alphaValue = 1
+        }
         self.panel = panel
     }
 
@@ -5012,10 +5028,12 @@ private struct BatchImportProgressDialogView: View {
                 onCancel()
             }
             .keyboardShortcut(.cancelAction)
+            .buttonStyle(AppDialogGlassButtonStyle(kind: .secondary))
             .disabled(!viewModel.canCancel)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
+        .padding(.horizontal, AppDialogTokens.footerHorizontalPadding)
+        .padding(.top, AppDialogTokens.footerVerticalPadding)
+        .padding(.bottom, AppDialogTokens.footerBottomPadding)
         .background(.thinMaterial)
     }
 }
@@ -5342,7 +5360,7 @@ struct DuplicateImportDialogView: View {
                 onFinish(false)
             }
             .keyboardShortcut(.cancelAction)
-            .controlSize(.large)
+            .buttonStyle(AppDialogGlassButtonStyle(kind: .secondary))
 
             Spacer()
 
@@ -5350,11 +5368,12 @@ struct DuplicateImportDialogView: View {
                 onFinish(true)
             }
             .keyboardShortcut(.defaultAction)
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .tint(themeStore.accentColor)
+            .buttonStyle(
+                AppDialogGlassButtonStyle(kind: .primary, tint: themeStore.accentColor)
+            )
         }
-        .padding(.vertical, AppDialogTokens.footerVerticalPadding)
+        .padding(.top, AppDialogTokens.footerVerticalPadding)
+        .padding(.bottom, AppDialogTokens.footerBottomPadding)
         .padding(.horizontal, horizontalPadding)
         .background(.thinMaterial)
         .overlay(alignment: .top) {

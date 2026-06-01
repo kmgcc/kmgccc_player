@@ -14,11 +14,15 @@ import SwiftUI
 
 enum AppDialogTokens {
 
+    // MARK: Card chrome
+    /// Large corner radius for the floating glass card. Matches UpdateWindowManager.
+    static let windowCornerRadius: CGFloat = 28
+
     // MARK: Panel layout helpers
     static let progressDialogWidth: CGFloat = 580
     static let rowHeight: CGFloat = 52
     static let headerHeight: CGFloat = 80
-    static let footerHeight: CGFloat = 60
+    static let footerHeight: CGFloat = 74
     static let maxVisibleRows: Int = 9
     static let listVerticalPadding: CGFloat = 8
 
@@ -34,6 +38,9 @@ enum AppDialogTokens {
 
     static let footerHorizontalPadding: CGFloat = 20
     static let footerVerticalPadding: CGFloat = 14
+    /// Extra bottom padding so footer buttons clear the rounded bottom corners
+    /// and the glass capsule edge. Matches the update window's generous bottom inset.
+    static let footerBottomPadding: CGFloat = 30
 
     static let contentHorizontalPadding: CGFloat = 16
     static let contentRowVerticalPadding: CGFloat = 4
@@ -61,8 +68,10 @@ enum AppDialogTokens {
 // MARK: - NSPanel Factory
 
 extension AppDialogTokens {
-    /// Creates a standard floating NSPanel with a popover-material NSVisualEffectView as
-    /// its content view. The caller must add its hosting view to the returned effectView.
+    /// Creates a standard floating NSPanel styled as a large-radius glass card, matching
+    /// the update window (`UpdateWindowManager`): popover material, clear background,
+    /// hidden traffic-light buttons, and a rounded, clipped visual-effect content view.
+    /// The caller must add its hosting view to the returned effectView.
     @MainActor
     static func makePanel(width: CGFloat, height: CGFloat) -> (panel: NSPanel, effectView: NSVisualEffectView) {
         let size = NSSize(width: width, height: height)
@@ -78,6 +87,12 @@ extension AppDialogTokens {
         panel.titleVisibility = .hidden
         panel.isMovableByWindowBackground = true
         panel.isReleasedWhenClosed = false
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+
+        panel.standardWindowButton(.closeButton)?.isHidden = true
+        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        panel.standardWindowButton(.zoomButton)?.isHidden = true
 
         let ve = NSVisualEffectView()
         ve.material = .popover
@@ -85,9 +100,24 @@ extension AppDialogTokens {
         ve.state = .active
         ve.frame = NSRect(origin: .zero, size: size)
         ve.autoresizingMask = [.width, .height]
+        ve.wantsLayer = true
+        ve.layer?.cornerRadius = windowCornerRadius
+        ve.layer?.masksToBounds = true
         panel.contentView = ve
 
         return (panel, ve)
+    }
+
+    /// Centers and presents a panel with the same gentle fade-in used by the update window.
+    @MainActor
+    static func presentWithFade(_ panel: NSPanel) {
+        panel.center()
+        panel.alphaValue = 0
+        panel.makeKeyAndOrderFront(nil)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.25
+            panel.animator().alphaValue = 1
+        }
     }
 }
 
@@ -197,5 +227,67 @@ struct AppDialogDivider: View {
     var body: some View {
         Divider()
             .opacity(AppDialogTokens.dividerOpacity)
+    }
+}
+
+// MARK: - Glass Capsule Button Style
+// Shared button style for app dialog footers. Mirrors the update window
+// (`UpdateAlertView`) so import, confirmation, and update dialogs share one
+// button language.
+//   - `.primary`  : accent-filled, white label, subtle floating shadow.
+//   - `.secondary`: subtle neutral fill, primary label (cancel / close).
+
+struct AppDialogGlassButtonStyle: ButtonStyle {
+    enum Kind {
+        case primary
+        case secondary
+    }
+
+    var kind: Kind = .secondary
+    /// Accent tint for the `.primary` kind. Pass `ThemeStore.shared.accentColor`
+    /// to match the rest of the app; ignored for `.secondary`.
+    var tint: Color = .accentColor
+
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        let isPrimary = kind == .primary
+
+        return configuration.label
+            .font(.system(size: 13, weight: isPrimary ? .semibold : .medium))
+            .foregroundStyle(isPrimary ? Color.white : Color.primary)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 7)
+            .glassEffect(.clear, in: Capsule())
+            .background(Capsule().fill(fillColor(isPrimary: isPrimary)))
+            .overlay(
+                Capsule()
+                    .strokeBorder(GlassStyleTokens.glassBorderColor, lineWidth: 0.5)
+            )
+            .shadow(
+                color: isPrimary ? GlassStyleTokens.subtleShadowColor : .clear,
+                radius: isPrimary ? GlassStyleTokens.subtleShadowRadius : 0,
+                x: 0,
+                y: isPrimary ? 2 : 0
+            )
+            .opacity(opacity(isPressed: configuration.isPressed))
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            .contentShape(Capsule())
+    }
+
+    private func fillColor(isPrimary: Bool) -> Color {
+        if isPrimary {
+            return tint.opacity(colorScheme == .dark ? 0.96 : 0.88)
+        }
+        return colorScheme == .dark
+            ? Color.white.opacity(0.08)
+            : Color.black.opacity(0.08)
+    }
+
+    private func opacity(isPressed: Bool) -> Double {
+        guard isEnabled else { return 0.4 }
+        return isPressed ? 0.75 : 1
     }
 }
