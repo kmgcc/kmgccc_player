@@ -60,7 +60,6 @@
 				"Resources/Tools/qqmusic-helper/main.py",
 				"Resources/Tools/qqmusic-helper/requirements.txt",
 				Resources/Tools/sacad/sacad,
-				scan_ui.py,
 			);
 			target = 935118912F3231C500766A5F /* kmgccc_player */;
 		};

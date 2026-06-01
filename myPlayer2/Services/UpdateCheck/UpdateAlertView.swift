@@ -70,7 +70,7 @@ struct UpdateAlertView: View {
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }
-            
+
             Spacer()
         }
     }
@@ -126,6 +126,8 @@ struct UpdateAlertView: View {
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(.green)
                 }
+                .lineLimit(1)
+                .layoutPriority(1)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 7)
                 .glassEffect(.clear, in: Capsule())
@@ -141,14 +143,15 @@ struct UpdateAlertView: View {
                 )
             }
 
+            Spacer()
+
             if kind == .updateAvailable {
                 Button("GitHub Release", action: onOpenGitHubRelease)
                     .font(.system(size: 12, weight: .medium))
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
-            
-            Spacer()
             
             Button(action: onDismiss) {
                 Text("关闭")
@@ -172,7 +175,7 @@ struct UpdateAlertView: View {
             
             if kind == .updateAvailable {
                 Button(action: onDownload) {
-                    Text("下载更新")
+                    Text("下载")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 16)

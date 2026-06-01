@@ -119,7 +119,7 @@ final class UpdateWindowManager: NSObject, NSWindowDelegate, ObservableObject {
                 self?.dismiss()
             },
             onDownload: { [weak self] in
-                self?.openDownloadURL()
+                self?.downloadUpdatePackage()
                 self?.dismiss()
             },
             onOpenGitHubRelease: { [weak self] in
@@ -159,12 +159,11 @@ final class UpdateWindowManager: NSObject, NSWindowDelegate, ObservableObject {
         print("[UpdateWindowManager] Update alert window shown")
     }
     
-    private func openDownloadURL() {
-        let urlString = versionInfo?.downloadURL ?? versionInfo?.releaseURL
-        let url = resolveURL(urlString)
-            ?? resolveURL(versionInfo?.releaseURL)
-            ?? UpdateLinks.githubReleaseURL
-        NSWorkspace.shared.open(url)
+    private func downloadUpdatePackage() {
+        guard let versionInfo else {
+            return
+        }
+        UpdatePackageDownloadManager.shared.startDownload(versionInfo: versionInfo)
     }
 
     private func openGitHubReleasePage() {
