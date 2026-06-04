@@ -1,7 +1,7 @@
 # 用户服务协议
 
-更新日期：2026 年 5 月 31 日
-生效日期：2026 年 5 月 31 日
+更新日期：2026 年 6 月 1 日
+生效日期：2026 年 6 月 1 日
 
 欢迎使用 **kmgccc_player**。
 
@@ -67,6 +67,7 @@ kmgccc_player 是一款本地音乐播放与管理工具，提供本地音乐播
 
 如对本协议有任何疑问、建议或投诉，请通过以下方式联系我们：
 
-开发者：kmgccc
+开发者：kmg
+网页表单：https://player.kmgccc.cn/help/submit
 联系邮箱：kmgccc@outlook.com
-项目地址：https://github.com/kmgccc/kmgccc_player
+项目地址：https://github.com/kmgcc/kmgccc_player

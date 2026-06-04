@@ -41,9 +41,17 @@ final class UpdateChecker: ObservableObject {
         fallback: UpdateLinks.githubPagesVersionEndpoint
     )
     
-    /// Current app version (from bundle)
+    /// Current app version (from bundle) — used for user-facing display only.
     var localVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
+    }
+
+    /// Current app build number (`CFBundleVersion`) — the primary update signal.
+    /// Returns nil if the bundle value is missing or non-numeric, in which case the
+    /// update decision safely falls back to semantic version comparison.
+    var localBuildNumber: Int? {
+        guard let raw = Bundle.main.infoDictionary?["CFBundleVersion"] as? String else { return nil }
+        return Int(raw.trimmingCharacters(in: .whitespacesAndNewlines))
     }
     
     /// Fetched remote version info
@@ -90,21 +98,25 @@ final class UpdateChecker: ObservableObject {
             // Log for debugging
             print("[UpdateChecker] ✅ Remote version fetched:")
             print("  - latestVersion: \(info.latestVersion)")
+            print("  - buildNumber: \(info.buildNumber.map(String.init) ?? "nil")")
             print("  - releaseURL: \(info.releaseURL)")
             print("  - notes: \(info.notes)")
-            print("  - localVersion: \(localVersion)")
-            
-            // Perform version comparison and log result
-            let comparison = VersionComparison.check(localVersion: localVersion, remoteVersion: info.latestVersion)
-            switch comparison {
-            case .newerAvailable(let current, let remote):
-                print("[UpdateChecker] ⬆️ New version available: \(current) → \(remote)")
-            case .upToDate(let current):
-                print("[UpdateChecker] ✓ Already up to date: \(current)")
-            case .failedToParse:
-                print("[UpdateChecker] ⚠️ Failed to parse version strings")
+            print("  - localVersion: \(localVersion) (build \(localBuildNumber.map(String.init) ?? "nil"))")
+
+            // Perform update decision and log result
+            let decision = UpdateAvailability.decide(
+                localBuild: localBuildNumber,
+                remoteBuild: info.buildNumber,
+                localVersion: localVersion,
+                remoteVersion: info.latestVersion
+            )
+            switch decision.reason {
+            case .buildNumber(let local, let remote):
+                print("[UpdateChecker] \(decision.isUpdateAvailable ? "⬆️ New build available" : "✓ Up to date") by build: \(local) → \(remote)")
+            case .semanticVersion:
+                print("[UpdateChecker] \(decision.isUpdateAvailable ? "⬆️ New version available" : "✓ Up to date") by semantic version (no build_number)")
             }
-            
+
         } catch {
             self.error = error
             print("[UpdateChecker] ❌ Failed to fetch version: \(error)")
@@ -171,12 +183,15 @@ final class UpdateChecker: ObservableObject {
         guard let remoteInfo = remoteInfo else {
             return false
         }
-        
-        let comparison = VersionComparison.check(localVersion: localVersion, remoteVersion: remoteInfo.latestVersion)
-        if case .newerAvailable = comparison {
-            return true
-        }
-        return false
+
+        // Primary: build-number comparison; falls back to semantic version when
+        // build numbers are unavailable (older fallback JSON).
+        return UpdateAvailability.decide(
+            localBuild: localBuildNumber,
+            remoteBuild: remoteInfo.buildNumber,
+            localVersion: localVersion,
+            remoteVersion: remoteInfo.latestVersion
+        ).isUpdateAvailable
     }
 }
 

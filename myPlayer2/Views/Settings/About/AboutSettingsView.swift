@@ -25,23 +25,11 @@ struct AboutSettingsView: View {
                     }
             case .userAgreement:
                 legalDocumentPage(
-                    title: "用户协议",
-                    paragraphs: [
-                        "本应用用于个人音乐管理与播放，帮助用户整理本地音乐内容并获得更舒适的播放体验。",
-                        "用户在使用本应用时，应遵守适用的法律法规，并确保所管理与播放的内容来源合法。",
-                        "应用功能可能会根据产品规划、系统能力和用户反馈持续更新，具体能力以实际版本为准。",
-                        "完整用户协议将在正式发布前补充，本页面当前为占位说明。"
-                    ]
+                    fileName: "policy"
                 )
             case .privacyPolicy:
                 legalDocumentPage(
-                    title: "隐私政策",
-                    paragraphs: [
-                        "本应用不收集歌曲、文件路径、歌词、账号或其他可识别个人身份的信息。",
-                        "若用户开启匿名使用统计，应用仅上传匿名安装标识、会话时长、播放模式使用时长、应用版本等基础统计信息。",
-                        "用户可随时在“数据”设置中关闭匿名使用统计。关闭后，应用将停止上传匿名统计数据。",
-                        "完整隐私政策将在正式发布前补充，本页面当前为占位说明。"
-                    ]
+                    fileName: "privacy"
                 )
             }
         }
@@ -113,7 +101,7 @@ struct AboutSettingsView: View {
 
                 capsuleLinkButton(
                     title: "赞助",
-                    destination: "https://kmgcc.github.io/kmgccc_player/donate.html",
+                    destination: "https://player.kmgccc.cn/sponsor",
                     tint: Color(red: 0.67, green: 0.55, blue: 0.92)
                 )
             }
@@ -244,8 +232,10 @@ struct AboutSettingsView: View {
         .padding(.top, 2)
     }
 
-    private func legalDocumentPage(title: String, paragraphs: [String]) -> some View {
-        VStack(alignment: .leading, spacing: 18) {
+    private func legalDocumentPage(fileName: String) -> some View {
+        let content = loadDocumentContent(fileName: fileName)
+
+        return VStack(alignment: .leading, spacing: 18) {
             Button {
                 showPage(.main)
             } label: {
@@ -255,21 +245,25 @@ struct AboutSettingsView: View {
             .clipShape(Capsule())
             .controlSize(.small)
 
-            Text(title)
-                .font(.title.bold())
-                .settingsRowLabelStyle()
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            VStack(alignment: .leading, spacing: 12) {
-                ForEach(paragraphs, id: \.self) { paragraph in
-                    Text(paragraph)
-                        .settingsDescriptionStyle()
-                }
-            }
+            MarkdownRendererView(text: content)
+                .textSelection(.enabled)
 
             Spacer(minLength: 40)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func loadDocumentContent(fileName: String) -> String {
+        guard let url = Bundle.main.url(forResource: fileName, withExtension: "md") else {
+            return "文档加载失败"
+        }
+
+        do {
+            let content = try String(contentsOf: url, encoding: .utf8)
+            return content
+        } catch {
+            return "文档读取失败"
+        }
     }
 
     private func showPage(_ nextPage: AboutSettingsPage) {
@@ -432,5 +426,135 @@ private struct AboutEasterEggTapTracker {
         lastSide = nil
         lastTapTime = nil
         tapCount = 0
+    }
+}
+
+// MARK: - Markdown Renderer View
+
+struct MarkdownRendererView: View {
+    let text: String
+
+    var body: some View {
+        let lines = text.components(separatedBy: .newlines)
+        
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(0..<lines.count, id: \.self) { index in
+                let line = lines[index].trimmingCharacters(in: .whitespaces)
+                if !line.isEmpty {
+                    renderLine(line)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func renderLine(_ line: String) -> some View {
+        if line.hasPrefix("# ") {
+            let cleanText = String(line.dropFirst(2))
+            Text(attributedString(for: cleanText))
+                .font(.title.bold())
+                .foregroundColor(.primary)
+                .padding(.top, 20)
+                .padding(.bottom, 6)
+        } else if line.hasPrefix("## ") {
+            let cleanText = String(line.dropFirst(3))
+            Text(attributedString(for: cleanText))
+                .font(.title3.bold())
+                .foregroundColor(.primary)
+                .padding(.top, 16)
+                .padding(.bottom, 4)
+        } else if line.hasPrefix("### ") {
+            let cleanText = String(line.dropFirst(4))
+            Text(attributedString(for: cleanText))
+                .font(.headline.bold())
+                .foregroundColor(.primary)
+                .padding(.top, 12)
+                .padding(.bottom, 2)
+        } else if let match = line.range(of: "^\\d+\\.\\s+", options: .regularExpression) {
+            let cleanText = String(line[match.upperBound...])
+            let prefix = String(line[..<match.upperBound])
+            HStack(alignment: .top, spacing: 4) {
+                Text(prefix)
+                    .font(.body)
+                    .foregroundColor(.secondary)
+                Text(attributedString(for: cleanText))
+                    .font(.body)
+                    .foregroundColor(.primary)
+            }
+            .padding(.leading, 12)
+        } else if line.hasPrefix("- ") {
+            let cleanText = String(line.dropFirst(2))
+            HStack(alignment: .top, spacing: 6) {
+                Text("•")
+                    .font(.body)
+                    .foregroundColor(.secondary)
+                Text(attributedString(for: cleanText))
+                    .font(.body)
+                    .foregroundColor(.primary)
+            }
+            .padding(.leading, 12)
+        } else if line.hasPrefix("* ") {
+            let cleanText = String(line.dropFirst(2))
+            HStack(alignment: .top, spacing: 6) {
+                Text("•")
+                    .font(.body)
+                    .foregroundColor(.secondary)
+                Text(attributedString(for: cleanText))
+                    .font(.body)
+                    .foregroundColor(.primary)
+            }
+            .padding(.leading, 12)
+        } else {
+            Text(attributedString(for: line))
+                .font(.body)
+                .foregroundColor(.primary)
+                .lineSpacing(4)
+        }
+    }
+
+    private func attributedString(for string: String) -> AttributedString {
+        let processedString = replaceBareURLsWithMarkdownLinks(in: string)
+        do {
+            var options = AttributedString.MarkdownParsingOptions()
+            options.interpretedSyntax = .inlineOnlyPreservingWhitespace
+            return try AttributedString(markdown: processedString, options: options)
+        } catch {
+            return AttributedString(string)
+        }
+    }
+
+    private func replaceBareURLsWithMarkdownLinks(in string: String) -> String {
+        // Find URLs starting with http:// or https://
+        let pattern = "(https?://[a-zA-Z0-9\\.\\-_~/\\?&;=\\+%#\\(\\)]+)"
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return string }
+        let nsString = string as NSString
+        let matches = regex.matches(in: string, range: NSRange(location: 0, length: nsString.length))
+        
+        var result = string
+        for match in matches.reversed() {
+            let urlRange = match.range
+            let url = nsString.substring(with: urlRange)
+            let markdownLink = "[\(url)](\(url))"
+            if let range = Range(urlRange, in: result) {
+                result.replaceSubrange(range, with: markdownLink)
+            }
+        }
+        
+        // Handle email: kmgccc@outlook.com -> [kmgccc@outlook.com](mailto:kmgccc@outlook.com)
+        let emailPattern = "([a-zA-Z0-9\\.\\-_]+@[a-zA-Z0-9\\.\\-_]+\\.[a-zA-Z]{2,})"
+        if let emailRegex = try? NSRegularExpression(pattern: emailPattern) {
+            let emailNsString = result as NSString
+            let emailMatches = emailRegex.matches(in: result, range: NSRange(location: 0, length: emailNsString.length))
+            for match in emailMatches.reversed() {
+                let emailRange = match.range
+                let email = emailNsString.substring(with: emailRange)
+                let markdownEmail = "[\(email)](mailto:\(email))"
+                if let range = Range(emailRange, in: result) {
+                    result.replaceSubrange(range, with: markdownEmail)
+                }
+            }
+        }
+        
+        return result
     }
 }

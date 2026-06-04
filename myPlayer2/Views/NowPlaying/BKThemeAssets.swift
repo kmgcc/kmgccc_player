@@ -70,11 +70,13 @@ final class BKThemeAssets: @unchecked Sendable {
     private let backgroundEntries: [AssetEntry]
     private let shapeEntries: [ShapeEntry]
     private let maskFrameEntries: [AssetEntry]
+    private let artworkFrameEntries: [AssetEntry]
     private let usePlainArtAssetsInDebug: Bool
 
     private let backgroundCache = NSCache<NSString, ImageArrayBox>()
     private let shapeCache = NSCache<NSString, ShapeLoadResultBox>()
     private let maskCache = NSCache<NSString, ImageArrayBox>()
+    private let artworkFrameCache = NSCache<NSString, ImageArrayBox>()
     private let encryptedLoader = EncryptedArtAssetLoader.shared
 
     private static let maskProcessingContext = CIContext(options: [.cacheIntermediates: false])
@@ -96,6 +98,10 @@ final class BKThemeAssets: @unchecked Sendable {
             from: resolvedBundle,
             preferPlain: usePlainArtAssetsInDebug
         )
+        self.artworkFrameEntries = Self.resolveArtworkFrameEntries(
+            from: resolvedBundle,
+            preferPlain: usePlainArtAssetsInDebug
+        )
 
         backgroundCache.countLimit = 4
         backgroundCache.totalCostLimit = 32 * 1024 * 1024
@@ -103,6 +109,8 @@ final class BKThemeAssets: @unchecked Sendable {
         shapeCache.totalCostLimit = 16 * 1024 * 1024
         maskCache.countLimit = 2
         maskCache.totalCostLimit = 48 * 1024 * 1024
+        artworkFrameCache.countLimit = 12
+        artworkFrameCache.totalCostLimit = 24 * 1024 * 1024
     }
 
     func backgrounds(maxPixel: Int) -> [CGImage] {
@@ -203,10 +211,32 @@ final class BKThemeAssets: @unchecked Sendable {
         return maskCache.object(forKey: key)?.images
     }
 
+    var artworkFrameCount: Int {
+        artworkFrameEntries.count
+    }
+
+    func artworkFrame(at index: Int, maxPixel: Int) -> CGImage? {
+        guard index >= 0, index < artworkFrameEntries.count else { return nil }
+
+        let key = "artwork-frame-\(index)-\(maxPixel)" as NSString
+        if let cached = artworkFrameCache.object(forKey: key) {
+            return cached.images.first
+        }
+
+        guard let image = downsampledImage(from: artworkFrameEntries[index], maxPixel: maxPixel) else {
+            return nil
+        }
+
+        let box = ImageArrayBox(images: [image])
+        artworkFrameCache.setObject(box, forKey: key, cost: Self.byteCost(for: image))
+        return image
+    }
+
     func purgeTransientCaches() {
         backgroundCache.removeAllObjects()
         shapeCache.removeAllObjects()
         maskCache.removeAllObjects()
+        artworkFrameCache.removeAllObjects()
         Self.maskProcessingContext.clearCaches()
         encryptedLoader.purgeCache()
     }
@@ -391,6 +421,29 @@ final class BKThemeAssets: @unchecked Sendable {
             index += 1
         }
         return entries
+    }
+
+    private static func resolveArtworkFrameEntries(from bundle: Bundle?, preferPlain: Bool) -> [AssetEntry] {
+        let searchBundles = uniqueBundles([bundle, Bundle.main])
+        return (1...32).compactMap { index in
+            let name = "artworkframe\(index)"
+            let logicalName = "BKThemes/ArtworkFrame/\(name)"
+            let encryptedExists = searchBundles.contains {
+                EncryptedArtAssetLoader.shared.assetURL(logicalName: logicalName, in: $0) != nil
+            }
+            let plainURL = preferPlain
+                ? debugPlainAssetURL(relativePath: "ArtworkFrame/\(name).png")
+                    ?? searchBundles.compactMap {
+                        $0.url(
+                            forResource: name,
+                            withExtension: "png",
+                            subdirectory: "BKThemes/ArtworkFrame"
+                        )
+                    }.first
+                : nil
+            guard encryptedExists || plainURL != nil else { return nil }
+            return AssetEntry(logicalName: logicalName, plainURL: plainURL, fileName: "\(name).png")
+        }
     }
 
     private func downsampledImage(from entry: AssetEntry, maxPixel: Int) -> CGImage? {

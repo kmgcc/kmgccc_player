@@ -98,7 +98,8 @@ private struct AppleStyleArtwork: View {
         ClassicCoverArtworkView(
             context: context,
             visualizerMode: visualizerMode,
-            forceBrightLEDColors: true
+            forceBrightLEDColors: true,
+            presentation: .appleStyle
         )
     }
 }

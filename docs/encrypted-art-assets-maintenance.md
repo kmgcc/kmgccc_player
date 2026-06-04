@@ -41,6 +41,7 @@
 本地母版素材目录：
 
 - `BKThemes/Backgrounds/`
+- `BKThemes/ArtworkFrame/`
 - `BKThemes/Mask/`
 - `BKThemes/Shapes/`
 - `PrivateArtSources/XCAssetsOriginals/`
@@ -48,6 +49,7 @@
 加密输出目录：
 
 - `EncryptedArtAssets/BKThemes/Backgrounds/`
+- `EncryptedArtAssets/BKThemes/ArtworkFrame/`
 - `EncryptedArtAssets/BKThemes/Mask/`
 - `EncryptedArtAssets/BKThemes/Shapes/`
 - `EncryptedArtAssets/XCAssets/`
@@ -60,6 +62,8 @@
 - `myPlayer2/Services/Theme/EncryptedArtAssetLoader.swift`：运行时 loader 和 SwiftUI 包装。
 - `myPlayer2/Resources/Audio/`：普通 bundle 音频资源目录，不属于艺术图片加密流程。
 - `myPlayer2/Views/NowPlaying/BKThemeAssets.swift`：BKThemes 统一入口。
+- `myPlayer2/Skins/NowPlaying/ClassicLEDSkin.swift`：经典皮肤封面渲染端。
+- `myPlayer2/Skins/NowPlaying/ClassicArtworkFrameMaskSelection.swift`：经典皮肤 ArtworkFrame 随机选择状态。
 - `myPlayer2/Skins/NowPlaying/KmgcccCassetteSkin.swift`：磁带皮肤和相关视觉素材调用端。
 - `myPlayer2/Services/Library/PlaylistArtworkGenerator.swift`：播放列表默认封面底图调用端。
 - `myPlayer2/Views/Settings/About/AboutSettingsView.swift`：关于页彩蛋图调用端。
@@ -69,11 +73,12 @@
 
 ## 4. 已加密素材清单
 
-当前 `EncryptedArtAssets/manifest.json` 记录 46 个条目：31 个 `bkThemes`，15 个 `xcassets`。算法为 `AES.GCM.256`，formatVersion 为 `1`。
+当前 `EncryptedArtAssets/manifest.json` 记录 50 个条目：35 个 `bkThemes`，15 个 `xcassets`。算法为 `AES.GCM.256`，formatVersion 为 `1`。
 
 | 分类 | 原始路径 | 加密后路径 | 数量 | 当前用途 | 调用端 | 状态 |
 | --- | --- | --- | ---: | --- | --- | --- |
 | BKThemes Backgrounds | `BKThemes/Backgrounds/bk1.png`, `bk2.png` | `EncryptedArtAssets/BKThemes/Backgrounds/*.kmgasset` | 2 | BKArt 背景图轮换 | `BKThemeAssets`, `BKArtBackgroundView` | 已加密 |
+| BKThemes ArtworkFrame | `BKThemes/ArtworkFrame/artworkframe1.png` 到 `artworkframe4.png` | `EncryptedArtAssets/BKThemes/ArtworkFrame/*.kmgasset` | 4 | 经典皮肤封面 Alpha 遮罩，按播放曲目随机选一张 | `BKThemeAssets`, `ClassicLEDSkin`, `ClassicArtworkFrameMaskSelection` | 已加密 |
 | BKThemes Mask | `BKThemes/Mask/frame_00.png` 到 `frame_17.png` | `EncryptedArtAssets/BKThemes/Mask/*.kmgasset` | 18 | BKArt 转场 mask 动画帧 | `BKThemeAssets`, `BKArtBackgroundView` | 已加密 |
 | BKThemes Shapes | `BKThemes/Shapes/shape1.png` 到 `shape11.png` | `EncryptedArtAssets/BKThemes/Shapes/*.kmgasset` | 11 | BKArt 和 Home ambient shapes | `BKThemeAssets`, `BKArtBackgroundView`, `HomeAmbientShapesBackground` | 已加密 |
 | XCAssets Playlist Covers | `PrivateArtSources/XCAssetsOriginals/cov1.imageset` 到 `cov4.imageset` | `EncryptedArtAssets/XCAssets/cov1.kmgasset` 到 `cov4.kmgasset` | 4 | 播放列表默认封面底图 | `PlaylistArtworkGenerator` | 已加密 |
@@ -202,7 +207,9 @@ Release bundle 应只包含 `.kmgasset` 和 manifest。`BKThemes`、`PrivateArtS
 职责边界：
 
 - `EncryptedArtAssetLoader`：加密文件读取、格式校验、解密、图片解码、底层缓存、SwiftUI 包装。
-- `BKThemeAssets`：BKThemes 的业务枚举、Debug 明文 fallback、下采样、mask alpha 处理。
+- `BKThemeAssets`：BKThemes 的业务枚举、Debug 明文 fallback、下采样、BKArt mask alpha 处理、经典皮肤 ArtworkFrame 加载缓存。
+- `ClassicArtworkFrameMaskSelection`：按当前播放曲目的 `track.id` 与标题/艺人/专辑生成稳定选择键；切换曲目时随机一次，同一首歌期间视图刷新、窗口缩放、进入/退出全屏不会重新抽取。
+- `ClassicLEDSkin`：只在经典皮肤封面上使用 `BKThemes/ArtworkFrame` 作为 SwiftUI alpha mask；遮罩缺失、解密失败或解码失败时回退到原始圆角方形封面。
 - `KmgcccCassetteSkin`：只负责磁带皮肤布局和渲染，不再直接读取明文皮肤 PNG。
 
 示例：
@@ -240,7 +247,7 @@ git rm --cached <path>
 - `.app` / `BKArt.bundle` 内没有 `BKThemes/**/*.png`。
 - `.app` / `BKArt.bundle` 内没有 `PrivateArtSources`。
 - `.app` / `BKArt.bundle` 内没有已迁移 xcassets 原图，例如 `cov1.png`、`jntm.png`、`seasons.jpg`、`tapeskin*.png`、`lighthole.png`。
-- `.app` / `BKArt.bundle` 内有 46 个 `.kmgasset` 和 `EncryptedArtAssets/manifest.json`。
+- `.app` / `BKArt.bundle` 内有 50 个 `.kmgasset` 和 `EncryptedArtAssets/manifest.json`。
 - `Assets.car` 中不包含已迁移 asset 名称，只允许保留 `EmptyLyric`、`snowflake*`、颜色和 dataset。
 - `.app/Contents/Resources/` 中包含 `youdowhat.wav` 和 `youdowhatreversed.wav`。
 - `Bundle.main.url(forResource: "youdowhatreversed", withExtension: "wav")` 在 Debug 和 Release 中都返回非 nil。

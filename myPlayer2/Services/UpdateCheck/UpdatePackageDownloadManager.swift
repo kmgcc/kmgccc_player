@@ -7,6 +7,7 @@
 
 import AppKit
 import Combine
+import CryptoKit
 import Foundation
 
 @MainActor
@@ -68,6 +69,27 @@ final class UpdatePackageDownloadManager: ObservableObject {
         clearDownloadState()
     }
 
+    func dismissSidebarProgress() {
+        guard let progress = sidebarProgress else { return }
+        clearTask?.cancel()
+        clearTask = nil
+
+        switch progress.state {
+        case .completed:
+            sidebarProgress = SidebarTaskProgress(
+                title: "不要忘记去安装哦",
+                detail: "已保存到 Downloads：\(progress.detail)",
+                fractionCompleted: nil,
+                state: .reminder
+            )
+            scheduleClear(after: 12)
+        case .failed, .reminder:
+            sidebarProgress = nil
+        case .running:
+            break
+        }
+    }
+
     private func resolvedDownloadURL(for versionInfo: RemoteVersionInfo) -> URL? {
         resolveURL(versionInfo.downloadURL)
             ?? resolveURL(versionInfo.releaseURL)
@@ -119,9 +141,10 @@ final class UpdatePackageDownloadManager: ObservableObject {
         progressTask = Task { [weak self, weak task] in
             while !Task.isCancelled {
                 guard let task else { return }
-                let progress = task.progress
-                let completed = progress.completedUnitCount
-                let total = progress.totalUnitCount
+                let completed = max(0, task.countOfBytesReceived)
+                let expected = task.countOfBytesExpectedToReceive
+                let configuredTotal = versionInfo.packageSizeBytes ?? -1
+                let total = expected > 0 ? expected : configuredTotal
                 let fraction = total > 0 ? min(1, max(0, Double(completed) / Double(total))) : nil
                 await MainActor.run {
                     self?.sidebarProgress = SidebarTaskProgress(
@@ -135,7 +158,7 @@ final class UpdatePackageDownloadManager: ObservableObject {
                         state: .running
                     )
                 }
-                if progress.isFinished { return }
+                if total > 0, completed >= total { return }
                 try? await Task.sleep(nanoseconds: 180_000_000)
             }
         }
@@ -160,7 +183,6 @@ final class UpdatePackageDownloadManager: ObservableObject {
             state: .completed
         )
         NSWorkspace.shared.activateFileViewerSelecting([url])
-        scheduleClear(after: 4)
     }
 
     private func showFailure(_ message: String) {
@@ -221,6 +243,10 @@ final class UpdatePackageDownloadManager: ObservableObject {
 
         try validateInstallerResponse(httpResponse)
 
+        // Verify the downloaded bytes against the remote checksum BEFORE moving the
+        // file into Downloads, so a corrupt/tampered package never lands on disk.
+        try verifyChecksumIfNeeded(fileURL: temporaryURL, expected: versionInfo.packageSHA256)
+
         let fileName = resolvedFileName(response: httpResponse, versionInfo: versionInfo)
         let destination = try uniqueDownloadsURL(fileName: fileName)
         if FileManager.default.fileExists(atPath: destination.path) {
@@ -228,6 +254,55 @@ final class UpdatePackageDownloadManager: ObservableObject {
         }
         try FileManager.default.moveItem(at: temporaryURL, to: destination)
         return destination
+    }
+
+    /// Compute the SHA256 of the downloaded file and compare it to the remote value.
+    /// - If the remote provided no checksum, skip verification (logged).
+    /// - If the file cannot be read, or the digest does not match, throw
+    ///   `.checksumMismatch` so the caller deletes the file and blocks the install.
+    /// Runs on the URLSession completion queue (off the main thread); streams the
+    /// file in 1MB chunks so large packages do not spike memory.
+    private nonisolated static func verifyChecksumIfNeeded(fileURL: URL, expected: String?) throws {
+        let trimmedExpected = expected?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+
+        guard !trimmedExpected.isEmpty else {
+            print("[UpdatePackageDownloadManager] ⚠️ Remote did not provide package_sha256; skipping integrity check")
+            return
+        }
+
+        let actual: String
+        do {
+            actual = try sha256Hex(of: fileURL)
+        } catch {
+            // Could not read/hash the downloaded file — treat as a verification
+            // failure rather than silently installing an unverified package.
+            print("[UpdatePackageDownloadManager] ❌ Failed to compute SHA256: \(error)")
+            try? FileManager.default.removeItem(at: fileURL)
+            throw UpdatePackageDownloadError.checksumMismatch
+        }
+
+        guard actual == trimmedExpected else {
+            print("[UpdatePackageDownloadManager] ❌ SHA256 mismatch — expected \(trimmedExpected), got \(actual)")
+            try? FileManager.default.removeItem(at: fileURL)
+            throw UpdatePackageDownloadError.checksumMismatch
+        }
+
+        print("[UpdatePackageDownloadManager] ✅ SHA256 verified")
+    }
+
+    private nonisolated static func sha256Hex(of fileURL: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: fileURL)
+        defer { try? handle.close() }
+
+        var hasher = SHA256()
+        while true {
+            let chunk = try handle.read(upToCount: 1024 * 1024) ?? Data()
+            if chunk.isEmpty { break }
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     private nonisolated static func validateInstallerResponse(_ response: HTTPURLResponse) throws {
@@ -333,6 +408,7 @@ enum UpdatePackageDownloadError: LocalizedError {
     case githubReleasePage
     case notInstaller
     case cannotCreateDestination
+    case checksumMismatch
 
     var errorDescription: String? {
         switch self {
@@ -344,6 +420,8 @@ enum UpdatePackageDownloadError: LocalizedError {
             return "下载结果不是 .dmg 或 .zip 安装包，请使用 GitHub Release 备用下载。"
         case .cannotCreateDestination:
             return "无法在 Downloads 文件夹创建保存文件。"
+        case .checksumMismatch:
+            return "安装包校验失败，请重新下载。"
         }
     }
 }

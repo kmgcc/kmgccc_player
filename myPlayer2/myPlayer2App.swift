@@ -259,7 +259,7 @@ struct KmgcccPlayerApp: App {
             // 4. 帮助菜单
             CommandGroup(replacing: .help) {
                 Button(NSLocalizedString("menu.help_center", comment: "Help Center")) {
-                    if let url = URL(string: "https://github.com/kmgcc/kmgccc_player/blob/main/README.md") {
+                    if let url = URL(string: "https://player.kmgccc.cn/help") {
                         NSWorkspace.shared.open(url)
                     }
                 }
