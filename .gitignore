@@ -10,6 +10,10 @@ docs/
 # Ship encrypted EncryptedArtAssets/*.kmgasset instead. Runtime audio assets
 # belong under myPlayer2/Resources/Audio/ and must remain tracked.
 /PrivateArtSources/
+# Encryption tools, allowlist, and manifest live in PrivateArtSources/ sub-repo.
+scripts/encrypt_art_assets.swift
+scripts/encrypted_asset_allowlist.json
+EncryptedArtAssets/manifest.json
 apple-audio-visualization-main/
 # AMLL source worktrees live in ../amll-sources/.
 applemusic-like-lyrics-full-refractor/
@@ -33,6 +37,11 @@ myPlayer2/Assets.xcassets/
 .sisyphus/
 .codegraph/
 .codex/
+
+# Nx monorepo internal cache (AMLL fork)
+applemusic-like-lyrics-kmgcccplayer-integration/.nx/cache/
+applemusic-like-lyrics-kmgcccplayer-integration/.nx/workspace-data/
+applemusic-like-lyrics-kmgcccplayer-integration/.nx/scripts/
 
 # macOS
 .DS_Store

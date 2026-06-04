@@ -140,6 +140,17 @@ struct LyricsSearchHelper {
             Self.logger.info("[LyricsSearchHelper] Top candidate selected: '\(top.title)' source=\(top.source) normalizedScore=\(top.normalizedScore())")
         } else {
             Self.logger.warning("[LyricsSearchHelper] No candidates found for query")
+            recordLyricsDiagnostic(
+                level: .warning,
+                category: .noResults,
+                stage: .lyricsSearch,
+                provider: .unknown,
+                messageCode: "lyrics_search_no_results",
+                operation: "search",
+                lyricsSource: "unknown",
+                lyricsFormat: "unknown",
+                resultCount: 0
+            )
         }
 
         return SearchResult(
@@ -170,6 +181,17 @@ struct LyricsSearchHelper {
 
         guard ready else {
             Self.logger.warning("[LyricsSearchHelper] AMLLDB index not ready, skipping AMLLDB search")
+            recordLyricsDiagnostic(
+                level: .warning,
+                category: .providerFailure,
+                stage: .lyricsSearch,
+                provider: .amll,
+                messageCode: "amlldb_index_not_ready",
+                operation: "search",
+                lyricsSource: "amll",
+                lyricsFormat: "ttml",
+                resultCount: 0
+            )
             return []
         }
 
@@ -222,11 +244,35 @@ struct LyricsSearchHelper {
 
             if let errors = response.errors, !errors.isEmpty {
                 Self.logger.warning("[LyricsSearchHelper] LDDC partial errors: \(errors.joined(separator: ", "))")
+                recordLyricsDiagnostic(
+                    level: .warning,
+                    category: .providerFailure,
+                    stage: .lyricsSearch,
+                    provider: .unknown,
+                    messageCode: "lddc_partial_provider_errors",
+                    operation: "search",
+                    lyricsSource: "unknown",
+                    lyricsFormat: mode == .verbatim ? "lrc" : "plain",
+                    resultCount: response.results.count,
+                    errorCode: "lddc_partial_provider_errors"
+                )
             }
 
             return response.results
         } catch {
             Self.logger.error("[LyricsSearchHelper] LDDC search failed: \(error.localizedDescription)")
+            recordLyricsDiagnostic(
+                level: .error,
+                category: .providerFailure,
+                stage: .lyricsSearch,
+                provider: .unknown,
+                messageCode: DiagnosticsErrorMapper.code(for: error),
+                operation: "search",
+                lyricsSource: "unknown",
+                lyricsFormat: mode == .verbatim ? "lrc" : "plain",
+                resultCount: 0,
+                errorCode: DiagnosticsErrorMapper.code(for: error)
+            )
             return []
         }
     }
@@ -273,7 +319,24 @@ struct LyricsSearchHelper {
             // AMLLDB candidates are already TTML
             if candidate.source == "AMLLDB" {
                 let rawLyricFile = candidate.songId
-                let ttml = try await AMLLDBService.shared.downloadLyricsByRawFile(rawLyricFile)
+                let ttml: String
+                do {
+                    ttml = try await AMLLDBService.shared.downloadLyricsByRawFile(rawLyricFile)
+                } catch {
+                    recordLyricsDiagnostic(
+                        level: .error,
+                        category: .providerFailure,
+                        stage: .lyricsDownload,
+                        provider: .amll,
+                        messageCode: DiagnosticsErrorMapper.code(for: error),
+                        operation: "download",
+                        lyricsSource: "amll",
+                        lyricsFormat: "ttml",
+                        resultCount: 0,
+                        errorCode: DiagnosticsErrorMapper.code(for: error)
+                    )
+                    throw error
+                }
                 Self.logger.info("[LyricsSearchHelper] AMLLDB TTML fetched: \(rawLyricFile), \(ttml.count) bytes")
                 return ttml
             }
@@ -282,37 +345,105 @@ struct LyricsSearchHelper {
             let client = LDDCClient()
 
             if translation {
-                let (origLyrics, transLyrics) = try await client.fetchByIdSeparate(
-                    candidate: candidate,
-                    mode: mode
-                )
+                let (origLyrics, transLyrics): (String, String?)
+                do {
+                    (origLyrics, transLyrics) = try await client.fetchByIdSeparate(
+                        candidate: candidate,
+                        mode: mode
+                    )
+                } catch {
+                    recordLyricsDiagnostic(
+                        level: .error,
+                        category: .providerFailure,
+                        stage: .lyricsDownload,
+                        provider: diagnosticsProvider(for: candidate.source),
+                        messageCode: DiagnosticsErrorMapper.code(for: error),
+                        operation: "download",
+                        lyricsSource: diagnosticsLyricsSource(for: candidate.source),
+                        lyricsFormat: mode == .verbatim ? "lrc" : "plain",
+                        resultCount: 0,
+                        errorCode: DiagnosticsErrorMapper.code(for: error)
+                    )
+                    throw error
+                }
 
                 let ttml: String
                 if let trans = transLyrics, !trans.isEmpty {
-                    ttml = try await TTMLConverter.shared.convertToTTMLWithTranslation(
-                        origLyrics: origLyrics,
-                        transLyrics: trans,
-                        stripMetadata: stripMetadata
-                    )
+                    do {
+                        ttml = try await TTMLConverter.shared.convertToTTMLWithTranslation(
+                            origLyrics: origLyrics,
+                            transLyrics: trans,
+                            stripMetadata: stripMetadata
+                        )
+                    } catch {
+                        recordLyricsConversionFailure(
+                            error: error,
+                            candidate: candidate,
+                            mode: mode,
+                            lineCount: lineCount(origLyrics) + lineCount(trans),
+                            hasTranslation: true
+                        )
+                        throw error
+                    }
                     Self.logger.info("[LyricsSearchHelper] LDDC converted with translation: \(ttml.count) bytes")
                 } else {
-                    ttml = try await TTMLConverter.shared.convertToTTML(
-                        rawLyrics: origLyrics,
-                        stripMetadata: stripMetadata
-                    )
+                    do {
+                        ttml = try await TTMLConverter.shared.convertToTTML(
+                            rawLyrics: origLyrics,
+                            stripMetadata: stripMetadata
+                        )
+                    } catch {
+                        recordLyricsConversionFailure(
+                            error: error,
+                            candidate: candidate,
+                            mode: mode,
+                            lineCount: lineCount(origLyrics),
+                            hasTranslation: false
+                        )
+                        throw error
+                    }
                     Self.logger.info("[LyricsSearchHelper] LDDC converted (no translation): \(ttml.count) bytes")
                 }
                 return ttml
             } else {
-                let lyrics = try await client.fetchById(
-                    candidate: candidate,
-                    mode: mode,
-                    translation: false
-                )
-                let ttml = try await TTMLConverter.shared.convertToTTML(
-                    rawLyrics: lyrics,
-                    stripMetadata: stripMetadata
-                )
+                let lyrics: String
+                do {
+                    lyrics = try await client.fetchById(
+                        candidate: candidate,
+                        mode: mode,
+                        translation: false
+                    )
+                } catch {
+                    recordLyricsDiagnostic(
+                        level: .error,
+                        category: .providerFailure,
+                        stage: .lyricsDownload,
+                        provider: diagnosticsProvider(for: candidate.source),
+                        messageCode: DiagnosticsErrorMapper.code(for: error),
+                        operation: "download",
+                        lyricsSource: diagnosticsLyricsSource(for: candidate.source),
+                        lyricsFormat: mode == .verbatim ? "lrc" : "plain",
+                        resultCount: 0,
+                        errorCode: DiagnosticsErrorMapper.code(for: error)
+                    )
+                    throw error
+                }
+                let ttml: String
+                do {
+                    ttml = try await TTMLConverter.shared.convertToTTML(
+                        rawLyrics: lyrics,
+                        stripMetadata: stripMetadata
+                    )
+                } catch {
+                    recordLyricsConversionFailure(
+                        error: error,
+                        candidate: candidate,
+                        mode: mode,
+                        lineCount: lineCount(lyrics),
+                        hasTranslation: false
+                    )
+                    throw error
+                }
                 Self.logger.info("[LyricsSearchHelper] LDDC converted: \(ttml.count) bytes")
                 return ttml
             }
@@ -385,6 +516,17 @@ struct LyricsSearchHelper {
         let candidates = searchResult.candidates
         guard !candidates.isEmpty else {
             Self.logger.warning("[LyricsSearchHelper] No candidates found at all")
+            recordLyricsDiagnostic(
+                level: .warning,
+                category: .noResults,
+                stage: .lyricsSearch,
+                provider: .unknown,
+                messageCode: "lyrics_auto_no_candidates",
+                operation: "search",
+                lyricsSource: "unknown",
+                lyricsFormat: "unknown",
+                resultCount: 0
+            )
             return AutomaticFetchResult(
                 status: .noCandidates,
                 ttml: nil,
@@ -428,6 +570,17 @@ struct LyricsSearchHelper {
         }
 
         Self.logger.warning("[LyricsSearchHelper] All \(candidates.count) candidates failed for '\(title)'")
+        recordLyricsDiagnostic(
+            level: .error,
+            category: .providerFailure,
+            stage: .lyricsDownload,
+            provider: .unknown,
+            messageCode: "lyrics_auto_all_candidates_failed",
+            operation: "download",
+            lyricsSource: "unknown",
+            lyricsFormat: "unknown",
+            resultCount: candidates.count
+        )
         return AutomaticFetchResult(
             status: .allCandidatesFailed,
             ttml: nil,
@@ -444,5 +597,102 @@ struct LyricsSearchHelper {
             source: candidate.source,
             normalizedScore: candidate.normalizedScore()
         )
+    }
+
+    private static func recordLyricsConversionFailure(
+        error: Error,
+        candidate: LDDCCandidate,
+        mode: LDDCMode,
+        lineCount: Int,
+        hasTranslation: Bool
+    ) {
+        recordLyricsDiagnostic(
+            level: .error,
+            category: .parse,
+            stage: .lyricsConvert,
+            provider: diagnosticsProvider(for: candidate.source),
+            messageCode: DiagnosticsErrorMapper.code(for: error),
+            operation: "convert",
+            lyricsSource: diagnosticsLyricsSource(for: candidate.source),
+            lyricsFormat: mode == .verbatim ? "lrc" : "plain",
+            resultCount: 0,
+            lineCount: lineCount,
+            hasTranslation: hasTranslation,
+            errorCode: DiagnosticsErrorMapper.code(for: error),
+            conversionPath: "lrc_to_ttml"
+        )
+    }
+
+    private static func recordLyricsDiagnostic(
+        level: DiagnosticsLevel,
+        category: DiagnosticsCategory,
+        stage: DiagnosticsStage,
+        provider: DiagnosticsProvider,
+        messageCode: String,
+        operation: String,
+        lyricsSource: String,
+        lyricsFormat: String,
+        resultCount: Int,
+        lineCount: Int? = nil,
+        hasTranslation: Bool? = nil,
+        errorCode: String? = nil,
+        conversionPath: String? = nil
+    ) {
+        var context: DiagnosticsContext = [
+            "lyrics_source": .string(lyricsSource),
+            "lyrics_format": .string(lyricsFormat),
+            "operation": .string(operation),
+            "result_count_bucket": .string(DiagnosticsBuckets.resultCount(resultCount)),
+            "retry_count": .int(0),
+            "has_romanization": .string("unknown")
+        ]
+        if let lineCount {
+            context["line_count_bucket"] = .string(DiagnosticsBuckets.lineCount(lineCount))
+        }
+        context["has_translation"] = hasTranslation.map { .bool($0) } ?? .string("unknown")
+        if let errorCode {
+            if case .parse = category {
+                context["parse_error_code"] = .string(errorCode)
+            } else {
+                context["network_error_code"] = .string(errorCode)
+            }
+            context["error_code"] = .string(errorCode)
+        }
+        if let conversionPath {
+            context["conversion_path"] = .string(conversionPath)
+        }
+        DiagnosticsService.shared.record(
+            level: level,
+            subsystem: .lyrics,
+            category: category,
+            stage: stage,
+            provider: provider,
+            messageCode: messageCode,
+            context: context
+        )
+    }
+
+    private static func diagnosticsProvider(for source: String) -> DiagnosticsProvider {
+        switch source.uppercased() {
+        case "AMLLDB": return .amll
+        case "QM": return .qqmusic
+        case "KG": return .kugou
+        case "NE": return .netease
+        default: return .unknown
+        }
+    }
+
+    private static func diagnosticsLyricsSource(for source: String) -> String {
+        switch source.uppercased() {
+        case "AMLLDB": return "amll"
+        case "QM": return "qqmusic"
+        case "KG": return "kugou"
+        case "NE": return "netease"
+        default: return "unknown"
+        }
+    }
+
+    private static func lineCount(_ lyrics: String) -> Int {
+        lyrics.split(whereSeparator: \.isNewline).count
     }
 }

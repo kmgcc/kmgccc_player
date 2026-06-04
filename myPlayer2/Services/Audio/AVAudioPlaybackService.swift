@@ -182,6 +182,15 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             }
         } catch {
             Log.error("Failed to restart engine after device change: \(error)", category: .audio)
+            recordPlaybackDiagnostic(
+                level: .error,
+                category: .playback,
+                stage: .playbackRoute,
+                messageCode: DiagnosticsErrorMapper.code(for: error),
+                errorCode: DiagnosticsErrorMapper.code(for: error),
+                track: savedTrack,
+                assetLoadStage: "playback_route"
+            )
             isPlaying = false
             return
         }
@@ -333,6 +342,15 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
         guard let fileURL = result.url else {
             print("❌ Cannot play track: file not accessible - \(track.title)")
+            recordPlaybackDiagnostic(
+                level: .error,
+                category: .fileIO,
+                stage: .assetLoad,
+                messageCode: "asset_url_unavailable",
+                errorCode: "file_unavailable",
+                track: track,
+                assetLoadStage: "resolve_file_url"
+            )
             return
         }
 
@@ -342,6 +360,9 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             track.fileBookmarkData = refreshedData
         }
 
+        var failureStage: DiagnosticsStage = .decoderPrepare
+        var failureCategory: DiagnosticsCategory = .decode
+        var assetLoadStage = "open_audio_file"
         do {
             audioFile = try AVAudioFile(forReading: fileURL)
 
@@ -358,6 +379,9 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             engine.disconnectNodeOutput(playerNode)
             engine.connect(playerNode, to: engine.mainMixerNode, format: audioFile.processingFormat)
 
+            failureStage = .playbackStart
+            failureCategory = .playback
+            assetLoadStage = "engine_start"
             if !engine.isRunning {
                 try engine.start()
             }
@@ -375,6 +399,16 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
         } catch {
             print("❌ Failed to load audio file: \(error)")
+            recordPlaybackDiagnostic(
+                level: .error,
+                category: failureCategory,
+                stage: failureStage,
+                messageCode: DiagnosticsErrorMapper.code(for: error),
+                errorCode: DiagnosticsErrorMapper.code(for: error),
+                track: track,
+                fileURL: fileURL,
+                assetLoadStage: assetLoadStage
+            )
             stopAccessingCurrentFile()
         }
     }
@@ -440,7 +474,19 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     }
 
     func seek(to seconds: Double) {
-        guard let audioFile = audioFile else { return }
+        guard let audioFile = audioFile else {
+            recordPlaybackDiagnostic(
+                level: .warning,
+                category: .validation,
+                stage: .playbackSeek,
+                messageCode: "seek_without_audio_file",
+                errorCode: "seek_without_audio_file",
+                track: currentTrack,
+                seekPosition: seconds,
+                assetLoadStage: "seek_prepare"
+            )
+            return
+        }
 
         let wasPlaying = isPlaying
         Log.info(
@@ -461,6 +507,16 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
         guard targetFrame >= 0, targetFrame < totalFrames else {
             print("⚠️ Seek position out of range")
+            recordPlaybackDiagnostic(
+                level: .warning,
+                category: .validation,
+                stage: .playbackSeek,
+                messageCode: "seek_out_of_range",
+                errorCode: "seek_out_of_range",
+                track: currentTrack,
+                seekPosition: seconds,
+                assetLoadStage: "seek_range_check"
+            )
             smartController.endSeek()
             return
         }
@@ -688,6 +744,60 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     func discardCurrentPlaybackSessionStatsOnce() {
         smartController.discardCurrentSessionStatsOnFinalizeOnce()
+    }
+
+    // MARK: - Diagnostics
+
+    private func recordPlaybackDiagnostic(
+        level: DiagnosticsLevel,
+        category: DiagnosticsCategory,
+        stage: DiagnosticsStage,
+        messageCode: String,
+        errorCode: String,
+        track: Track?,
+        fileURL: URL? = nil,
+        seekPosition: Double? = nil,
+        assetLoadStage: String
+    ) {
+        let fileExtension = diagnosticsFileExtension(for: track, fileURL: fileURL)
+        var context: DiagnosticsContext = [
+            "playback_engine": .string("avfoundation"),
+            "playback_mode": .string("local"),
+            "file_extension": .string(fileExtension),
+            "codec_hint": .string(DiagnosticsSafeContext.codecHint(for: fileExtension)),
+            "duration_bucket": .string(DiagnosticsBuckets.duration(track?.duration ?? duration)),
+            "error_code": .string(errorCode),
+            "is_stream": .bool(false),
+            "route_type": .string("local"),
+            "asset_load_stage": .string(assetLoadStage)
+        ]
+        if let seekPosition {
+            context["seek_position_bucket"] = .string(
+                DiagnosticsBuckets.seekPosition(
+                    position: seekPosition,
+                    duration: track?.duration ?? duration
+                )
+            )
+        }
+        DiagnosticsService.shared.record(
+            level: level,
+            subsystem: .playback,
+            category: category,
+            stage: stage,
+            provider: .localFile,
+            messageCode: messageCode,
+            context: context
+        )
+    }
+
+    private func diagnosticsFileExtension(for track: Track?, fileURL: URL?) -> String {
+        if let fileURL {
+            return DiagnosticsSafeContext.fileExtension(from: fileURL)
+        }
+        if let audioFileName = track?.audioFileName, !audioFileName.isEmpty {
+            return DiagnosticsSafeContext.fileExtension(from: audioFileName)
+        }
+        return DiagnosticsSafeContext.fileExtension(from: track?.originalFilePath)
     }
 
     // MARK: - Repeat Mode
