@@ -8,3 +8,6 @@ myPlayer2/Resources/AMLL/** linguist-vendored
 applemusic-like-lyrics-kmgcccplayer-integration/** linguist-vendored
 
 LDDC_Fetch_Core/** linguist-vendored
+
+# External Python helper tools
+myPlayer2/Resources/Tools/qqmusic-helper/** linguist-vendored
