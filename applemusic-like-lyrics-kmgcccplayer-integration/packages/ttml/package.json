@@ -1,0 +1,57 @@
+{
+	"name": "@applemusic-like-lyrics/ttml",
+	"version": "1.0.0",
+	"description": "AMLL 的 TTML 歌词文件序列化和反序列化模块",
+	"repository": {
+		"url": "https://github.com/amll-dev/applemusic-like-lyrics.git",
+		"directory": "packages/ttml",
+		"type": "git"
+	},
+	"license": "GPL-3.0",
+	"nx": {
+		"tags": [
+			"library"
+		],
+		"targets": {
+			"nx-release-publish": {
+				"executor": "@nx/js:release-publish",
+				"dependsOn": []
+			}
+		}
+	},
+	"type": "module",
+	"files": [
+		"dist"
+	],
+	"main": "./dist/amll-ttml.cjs",
+	"module": "./dist/amll-ttml.mjs",
+	"types": "./dist/amll-ttml.d.mts",
+	"exports": {
+		"import": {
+			"types": "./dist/amll-ttml.d.mts",
+			"default": "./dist/amll-ttml.mjs"
+		},
+		"require": {
+			"types": "./dist/amll-ttml.d.cts",
+			"default": "./dist/amll-ttml.cjs"
+		}
+	},
+	"scripts": {
+		"build:docs": "typedoc --plugin typedoc-plugin-markdown --out docs src/index.ts",
+		"typecheck": "tsgo -b",
+		"build-only": "tsdown",
+		"build": "run-p typecheck \"build-only {@}\" --",
+		"build:dev": "tsdown",
+		"fmt": "biome format --write ./src",
+		"test": "vitest test",
+		"test:watch": "vitest test --watch",
+		"test:coverage": "vitest test --coverage"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "catalog:",
+		"@xmldom/xmldom": "^0.9.10",
+		"tsdown": "catalog:",
+		"typedoc": "catalog:",
+		"vitest": "catalog:"
+	}
+}

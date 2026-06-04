@@ -1,0 +1,98 @@
+name: Validate PR
+run-name: "Validate PR #${{ github.event.pull_request.number }} - ${{ github.event.pull_request.title }}"
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - labeled
+      - unlabeled
+      - ready_for_review
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: pr-release-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  release-metadata:
+    name: Release metadata
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Decide whether a release plan is required
+        id: release-requirements
+        run: node .github/scripts/check-release-requirements.mjs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+
+      - name: Setup pnpm
+        if: steps.release-requirements.outputs.requires_release_plan == 'true'
+        uses: pnpm/action-setup@v6
+        with:
+          cache: true
+
+      - name: Install dependencies
+        if: steps.release-requirements.outputs.requires_release_plan == 'true'
+        run: pnpm install --frozen-lockfile
+
+      - name: Set Nx SHAs
+        if: steps.release-requirements.outputs.requires_release_plan == 'true'
+        uses: nrwl/nx-set-shas@v5
+
+      - name: Keep only release plans from this PR
+        if: steps.release-requirements.outputs.requires_release_plan == 'true'
+        run: bash .github/scripts/keep-pr-release-plans.sh "${{ env.NX_BASE }}" "${{ env.NX_HEAD }}"
+
+      - name: Check release plans
+        if: steps.release-requirements.outputs.requires_release_plan == 'true'
+        run: pnpm run release:plan:check --base="${{ env.NX_BASE }}" --head="${{ env.NX_HEAD }}"
+
+  build-libraries:
+    name: Build libs
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          cache: true
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build publishable libraries
+        run: pnpm run ci:build:libs
+        env:
+          AMLL_GITHUB_IS_ACTION: true

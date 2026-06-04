@@ -1,0 +1,104 @@
+{
+	"tasksRunnerOptions": {
+		"default": {
+			"runner": "nx/tasks-runners/default",
+			"options": {
+				"cacheableOperations": ["build:dev", "build"]
+			}
+		}
+	},
+	"targetDefaults": {
+		"fmt": {
+			"cache": true,
+			"outputs": ["{projectRoot}/src"]
+		},
+		"build": {
+			"cache": true,
+			"dependsOn": ["^build"],
+			"maxParallel": 1,
+			"outputs": ["{projectRoot}/dist", "{projectRoot}/pkg"]
+		},
+		"build:dev": {
+			"cache": true,
+			"dependsOn": ["^build:dev"],
+			"maxParallel": 1,
+			"outputs": ["{projectRoot}/dist", "{projectRoot}/pkg"]
+		}
+	},
+	"analytics": false,
+	"release": {
+		"versionPlans": {
+			"ignorePatternsForPlanCheck": [
+				"**/*.md",
+				"**/*.mdx",
+				".github/**",
+				".nx/**",
+				".editorconfig",
+				".gitignore",
+				".gitattributes",
+				"biome.json",
+				"Cargo.lock",
+				"Cargo.toml",
+				"lerna.json",
+				"LICENSE",
+				"nx.json",
+				"package.json",
+				"pnpm-lock.yaml",
+				"bun.lock",
+				"pnpm-workspace.yaml",
+				"tsconfig.json",
+				"tsconfig.base.json",
+				"packages/docs/**",
+				"packages/*/docs/**",
+				"packages/playground/**",
+				"packages/fft",
+				"packages/ws-protocol",
+				"patches/**",
+				"**/test/**",
+				"**/tests/**",
+				"**/tsconfig*",
+				"**/tsdown*"
+			]
+		},
+		"version": {
+			"conventionalCommits": false,
+			"preVersionCommand": "pnpm run build:libs"
+		},
+		"changelog": {
+			"workspaceChangelog": false,
+			"projectChangelogs": {
+				"renderer": "{workspaceRoot}/.nx/scripts/changelog-render.ts"
+			}
+		},
+		"git": {
+			"commit": true,
+			"tag": true
+		},
+		"releaseTag": {
+			"pattern": "{projectName}@{version}",
+			"requireSemver": true
+		},
+		"groups": {
+			"core-bundle": {
+				"projects": [
+					"@applemusic-like-lyrics/core",
+					"@applemusic-like-lyrics/react",
+					"@applemusic-like-lyrics/vue"
+				],
+				"projectsRelationship": "fixed",
+				"releaseTag": {
+					"pattern": "core-bundle@{version}",
+					"requireSemver": true
+				}
+			},
+			"libraries": {
+				"projects": [
+					"@applemusic-like-lyrics/lyric",
+					"@applemusic-like-lyrics/react-full",
+					"@applemusic-like-lyrics/ttml"
+				],
+				"projectsRelationship": "independent"
+			}
+		}
+	}
+}

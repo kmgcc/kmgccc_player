@@ -2,7 +2,7 @@
 set -euo pipefail
 
 APP_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DEFAULT_AMLL_SOURCE="/Users/kmg/Documents/vscode/player/amll-sources/applemusic-like-lyrics-kmgcccplayer-integration"
+DEFAULT_AMLL_SOURCE="/Users/kmg/Documents/vscode/player/myPlayer2/applemusic-like-lyrics-kmgcccplayer-integration"
 AMLL_SOURCE="${AMLL_SOURCE:-$DEFAULT_AMLL_SOURCE}"
 APP_AMLL_DIR="$APP_REPO_ROOT/myPlayer2/Resources/AMLL"
 
