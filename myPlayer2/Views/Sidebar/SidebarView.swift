@@ -356,20 +356,10 @@ struct SidebarView: View {
                 isHoveringPlaylists = hovering
             }
 
-            VStack(spacing: 6) {
-                if let updateProgress = updateDownloadManager.sidebarProgress {
-                    SidebarTaskProgressView(progress: updateProgress)
-                        .transition(.opacity)
-                }
-
-                if importEnrichmentService.hasOutstandingWork {
-                    SidebarTaskProgressView(progress: importEnrichmentSidebarProgress)
-                        .transition(.opacity)
-                }
-            }
+            sidebarTaskProgressStack
             .padding(.horizontal, 14)
             .padding(.top, 4)
-            .padding(.bottom, updateDownloadManager.sidebarProgress != nil || importEnrichmentService.hasOutstandingWork ? 8 : 0)
+            .padding(.bottom, hasSidebarTaskProgress ? 8 : 0)
 
             Divider()
 
@@ -451,6 +441,34 @@ struct SidebarView: View {
                 .foregroundStyle(.primary, themeStore.accentColor)
         }
         .buttonStyle(.plain)
+    }
+
+    private var hasSidebarTaskProgress: Bool {
+        updateDownloadManager.sidebarProgress != nil || importEnrichmentService.hasOutstandingWork
+    }
+
+    private var sidebarTaskProgressStack: some View {
+        VStack(spacing: 6) {
+            if let updateProgress = updateDownloadManager.sidebarProgress {
+                SidebarTaskProgressView(
+                    progress: updateProgress,
+                    onDismiss: updateProgressDismissAction(for: updateProgress)
+                )
+                .transition(.opacity)
+            }
+
+            if importEnrichmentService.hasOutstandingWork {
+                SidebarTaskProgressView(progress: importEnrichmentSidebarProgress)
+                    .transition(.opacity)
+            }
+        }
+    }
+
+    private func updateProgressDismissAction(for progress: SidebarTaskProgress) -> (() -> Void)? {
+        guard progress.state != .running else { return nil }
+        return {
+            updateDownloadManager.dismissSidebarProgress()
+        }
     }
 
     private var playbackSourceSwitcher: some View {
@@ -792,8 +810,14 @@ private struct SidebarPlaylistThumbnail: View {
 
 private struct SidebarTaskProgressView: View {
     let progress: SidebarTaskProgress
+    let onDismiss: (() -> Void)?
 
     @EnvironmentObject private var themeStore: ThemeStore
+
+    init(progress: SidebarTaskProgress, onDismiss: (() -> Void)? = nil) {
+        self.progress = progress
+        self.onDismiss = onDismiss
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -801,7 +825,7 @@ private struct SidebarTaskProgressView: View {
                 statusIcon
 
                 Text(progress.title)
-                    .font(.caption2.weight(.semibold))
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.primary))
                     .lineLimit(1)
 
@@ -809,8 +833,20 @@ private struct SidebarTaskProgressView: View {
 
                 if let percentageText = progress.percentageText {
                     Text(percentageText)
-                        .font(.caption2.monospacedDigit())
+                        .font(.caption.monospacedDigit())
                         .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
+                }
+
+                if let onDismiss {
+                    Button(action: onDismiss) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 10, weight: .bold))
+                            .frame(width: 18, height: 18)
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
+                    .help("关闭")
                 }
             }
 
@@ -822,7 +858,7 @@ private struct SidebarTaskProgressView: View {
             }
 
             Text(progress.detail)
-                .font(.caption2)
+                .font(.caption)
                 .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
                 .lineLimit(2)
         }
@@ -848,17 +884,21 @@ private struct SidebarTaskProgressView: View {
                     .scaleEffect(0.7)
             } else {
                 Image(systemName: "arrow.down.circle")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(themeStore.accentColor)
             }
         case .completed:
             Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 12, weight: .semibold))
+                .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(.green)
         case .failed:
             Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 12, weight: .semibold))
+                .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(.orange)
+        case .reminder:
+            Image(systemName: "bell.badge")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(themeStore.accentColor)
         }
     }
 }

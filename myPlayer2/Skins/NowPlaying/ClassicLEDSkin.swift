@@ -44,14 +44,30 @@ private struct ClassicLEDArtwork: View {
         let visualizerMode = context.usesFullscreenPlayerLayout
             ? fullscreenVisualizerMode
             : normalVisualizerMode
-        ClassicCoverArtworkView(context: context, visualizerMode: visualizerMode)
+        ClassicCoverArtworkView(
+            context: context,
+            visualizerMode: visualizerMode,
+            presentation: .classic
+        )
     }
 }
 
 struct ClassicCoverArtworkView: View {
+    enum Presentation {
+        case classic
+        case appleStyle
+    }
+
     let context: SkinContext
     let visualizerMode: String
     var forceBrightLEDColors: Bool = false
+    var presentation: Presentation = .classic
+    @Environment(\.displayScale) private var displayScale
+    @AppStorage("skin.classicLED.artworkFrameMaskEnabled") private var artworkFrameMaskEnabled: Bool = true
+
+    private var localArtworkScale: CGFloat {
+        presentation == .classic && artworkFrameMaskEnabled ? 1.08 : 1.0
+    }
 
     // MARK: - Fullscreen Fine-tuning Constants
     /// Slight boost to artwork size in fullscreen (1.0 = no change)
@@ -73,7 +89,7 @@ struct ClassicCoverArtworkView: View {
         // Calculate base canvas size with boost, parent container handles the fullscreenScale
         let maxSize = maxSizeBase * artworkBoost
         let maxArtwork = min(contentSize.width * scaleFactor, contentSize.height * scaleFactor, maxSize)
-        let artworkSize = max(180 * artworkBoost, maxArtwork)
+        let artworkSize = max(180 * artworkBoost, maxArtwork) * localArtworkScale
         let effectSpacing: CGFloat = usesFullscreenLayout ? 32 : 24
         // yOffset should be fixed in base canvas coordinates, not scaled
         // Embedded fullscreen sits slightly lower than the dedicated fullscreen space,
@@ -85,13 +101,8 @@ struct ClassicCoverArtworkView: View {
         let dotSize: CGFloat = usesFullscreenLayout ? 14 : 12
         let spacing: CGFloat = usesFullscreenLayout ? 9 : 7
 
-        let shadowOpacity: Double = context.theme.colorScheme == .dark ? 0.35 : 0.18
-
         VStack(spacing: effectSpacing) {
-            artworkView
-                .frame(width: artworkSize, height: artworkSize)
-                // Shadow in base canvas coordinates - parent scaleEffect handles scaling
-                .shadow(color: .black.opacity(shadowOpacity), radius: 20, x: 0, y: 10)
+            artworkContainer(size: artworkSize)
 
             if visualizerMode == "led" {
                 LedMeterView(
@@ -119,14 +130,56 @@ struct ClassicCoverArtworkView: View {
     }
 
     @ViewBuilder
-    private var artworkView: some View {
-        // Corner radius in base canvas coordinates
-        let cornerRadius: CGFloat = 12
+    private func artworkContainer(size: CGFloat) -> some View {
+        switch presentation {
+        case .classic:
+            ClassicArtworkCoverContainer(
+                context: context,
+                size: size,
+                displayScale: displayScale
+            )
+        case .appleStyle:
+            AppleStyleArtworkCoverContainer(
+                context: context,
+                size: size
+            )
+        }
+    }
+}
+
+private struct ClassicArtworkCoverContainer: View {
+    let context: SkinContext
+    let size: CGFloat
+    let displayScale: CGFloat
+
+    @AppStorage("skin.classicLED.artworkFrameMaskEnabled") private var artworkFrameMaskEnabled: Bool = true
+    @State private var maskRefreshToken = 0
+
+    private let cornerRadius: CGFloat = 12
+
+    var body: some View {
+        classicCoverContent
+            .id(maskRefreshToken)
+            .frame(width: size, height: size)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                advanceArtworkFrameMask()
+            }
+    }
+
+    @ViewBuilder
+    private var classicCoverContent: some View {
         if let image = context.track?.artworkImage {
-            Image(nsImage: image)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            if let mask = artworkFrameMask {
+                ArtworkFrameMaskedImageView(
+                    image: image,
+                    mask: mask,
+                    size: size,
+                    displayScale: displayScale
+                )
+            } else {
+                RoundedCoverArtworkImage(image: image, size: size, cornerRadius: cornerRadius)
+            }
         } else {
             ArtworkPlaceholderView.nowPlaying(
                 size: min(context.contentSize.width, context.contentSize.height) * 0.5,
@@ -134,14 +187,120 @@ struct ClassicCoverArtworkView: View {
             )
         }
     }
+
+    private var artworkFrameMask: CGImage? {
+        guard artworkFrameMaskEnabled else {
+            return nil
+        }
+
+        let assets = BKThemeAssets.shared
+        let frameCount = assets.artworkFrameCount
+        let key = ClassicArtworkFrameMaskKey(track: context.track)
+        guard let index = ClassicArtworkFrameMaskSelection.shared.maskIndex(
+            for: key,
+            frameCount: frameCount
+        ) else {
+            return nil
+        }
+        let targetPixel = max(1, Int(ceil(size * max(1, displayScale))))
+        let maxPixel = ((targetPixel + 127) / 128) * 128
+        return assets.artworkFrame(at: index, maxPixel: maxPixel)
+    }
+
+    private func advanceArtworkFrameMask() {
+        guard artworkFrameMaskEnabled, context.track?.artworkImage != nil else {
+            return
+        }
+
+        let assets = BKThemeAssets.shared
+        let frameCount = assets.artworkFrameCount
+        let key = ClassicArtworkFrameMaskKey(track: context.track)
+        guard ClassicArtworkFrameMaskSelection.shared.advanceMask(
+            for: key,
+            frameCount: frameCount
+        ) != nil else {
+            return
+        }
+
+        maskRefreshToken &+= 1
+    }
+}
+
+private struct AppleStyleArtworkCoverContainer: View {
+    let context: SkinContext
+    let size: CGFloat
+
+    private let cornerRadius: CGFloat = 12
+
+    var body: some View {
+        ZStack {
+            if let image = context.track?.artworkImage {
+                RoundedCoverArtworkImage(image: image, size: size, cornerRadius: cornerRadius)
+                    .blur(radius: 26)
+                    .opacity(context.theme.colorScheme == .dark ? 0.34 : 0.26)
+                    .allowsHitTesting(false)
+
+                RoundedCoverArtworkImage(image: image, size: size, cornerRadius: cornerRadius)
+            } else {
+                ArtworkPlaceholderView.nowPlaying(
+                    size: min(context.contentSize.width, context.contentSize.height) * 0.5,
+                    cornerRadius: cornerRadius
+                )
+            }
+        }
+        .frame(width: size, height: size)
+    }
+}
+
+private struct RoundedCoverArtworkImage: View {
+    let image: NSImage
+    let size: CGFloat
+    let cornerRadius: CGFloat
+
+    var body: some View {
+        Image(nsImage: image)
+            .resizable()
+            .interpolation(.high)
+            .aspectRatio(contentMode: .fill)
+            .frame(width: size, height: size)
+            .clipped()
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+    }
+}
+
+private struct ArtworkFrameMaskedImageView: View {
+    let image: NSImage
+    let mask: CGImage
+    let size: CGFloat
+    let displayScale: CGFloat
+
+    var body: some View {
+        Image(nsImage: image)
+            .resizable()
+            .interpolation(.high)
+            .aspectRatio(contentMode: .fill)
+            .frame(width: size, height: size)
+            .clipped()
+            .mask {
+                Image(decorative: mask, scale: max(1, displayScale), orientation: .up)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: size, height: size)
+                    .clipped()
+            }
+    }
 }
 
 private struct ClassicLEDSkinNormalSettingsView: View {
     @AppStorage("skin.classicLED.visualizerMode") private var visualizerMode: String = "off"
+    @AppStorage("skin.classicLED.artworkFrameMaskEnabled") private var artworkFrameMaskEnabled: Bool = true
     @Environment(LEDMeterServiceProvider.self) private var ledMeterProvider
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            SettingsSwitchRow(title: "艺术化封面边缘", isOn: $artworkFrameMaskEnabled)
+
             SettingsSwitchRow(title: "LED 电平表", isOn: Binding(
                 get: { visualizerMode == "led" },
                 set: { isOn in
@@ -173,9 +332,17 @@ private struct ClassicLEDSkinNormalSettingsView: View {
 private struct ClassicLEDSkinFullscreenSettingsView: View {
     @Environment(LEDMeterServiceProvider.self) private var ledMeterProvider
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
+    @AppStorage("skin.classicLED.artworkFrameMaskEnabled") private var artworkFrameMaskEnabled: Bool = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
+            SettingsSwitchRow(
+                title: "艺术化封面边缘",
+                isOn: $artworkFrameMaskEnabled,
+                titleFont: presentationStyle.rowLabelFont,
+                titleColor: presentationStyle.primaryTextColor
+            )
+
             SettingsSwitchRow(title: "LED 电平表", isOn: Binding(
                 get: {
                     FullscreenPresentationCoordinator.shared.isSkinVisualizerEnabled

@@ -8,7 +8,7 @@
 
 | 机制 | 触发方式 | 判断依据 | 载体 |
 |---|---|---|---|
-| 远程更新弹窗 | 异步 HTTP 请求 | 远程 version.json 的 `latestVersion` > 本地版本 | NSPanel (440×500) |
+| 远程更新弹窗 | 异步 HTTP 请求 | 远程 `build_number` > 本地 `CFBundleVersion`（缺失时回退 `latest_version` 语义比较）| NSPanel (440×500) |
 | What's New 公告 | 同步，启动即判断 | `lastSeenWhatsNewVersion < targetVersion` | NSPanel (520×620) + WhatsNewKit |
 | Feature Tips | 用户触发时判断 | 开发者启用清单 + 跨过 introducedVersion 门槛 + 未 dismiss + 未超次数上限 | NSPopover / SwiftUI overlay |
 
@@ -33,46 +33,85 @@
 
 | 文件 | 职责 |
 |---|---|
-| `myPlayer2/Services/UpdateCheck/UpdateChecker.swift` | 网络请求 + 版本读取 |
-| `myPlayer2/Services/UpdateCheck/UpdateWindowManager.swift` | 弹窗生命周期 |
+| `myPlayer2/Services/UpdateCheck/UpdateChecker.swift` | 网络请求 + 更新判断（`localBuildNumber` / `shouldShowUpdate`）|
+| `myPlayer2/Services/UpdateCheck/UpdateWindowManager.swift` | 弹窗生命周期 + 触发下载 |
 | `myPlayer2/Services/UpdateCheck/UpdateAlertView.swift` | SwiftUI 弹窗视图 |
-| `myPlayer2/Services/UpdateCheck/RemoteVersionInfo.swift` | 数据模型 + 版本比较 + JSON 修复 |
-| `myPlayer2/Utilities/AppVersion.swift` | SemVer 结构体 |
+| `myPlayer2/Services/UpdateCheck/RemoteVersionInfo.swift` | 数据模型 + `UpdateAvailability` 决策 + 版本比较 + JSON 修复 |
+| `myPlayer2/Services/UpdateCheck/UpdatePackageDownloadManager.swift` | App 内后台下载 + SHA256 校验 + Sidebar 进度 |
+| `myPlayer2/Utilities/AppVersion.swift` | SemVer 结构体（仅回退路径使用）|
 
-### 本地版本号来源
+### 本地版本号来源（区分两个值）
 
-`Bundle.main.infoDictionary?["CFBundleShortVersionString"]`，即 Xcode target 的 `MARKETING_VERSION`（在 `project.pbxproj` 中设置，当前为 `2.0.0`）。
+| 用途 | 来源 | Xcode 设置 |
+|---|---|---|
+| **更新判断**（主信号）| `Bundle.main.infoDictionary?["CFBundleVersion"]`（整数）| `CURRENT_PROJECT_VERSION` |
+| **界面展示**（仅显示）| `Bundle.main.infoDictionary?["CFBundleShortVersionString"]` | `MARKETING_VERSION`（当前 `2.0.0`）|
 
-### 远程 version.json
+> 更新判断改用 build number，避免“忘记改展示版本号 `MARKETING_VERSION`”导致漏判。每次发布必须递增 `CURRENT_PROJECT_VERSION`。
 
-**地址**：`https://kmgcc.github.io/kmgccc_player/version.json`
+### 远程更新源（主 + 备）
 
-**格式**：
+App 先请求**后端**，失败再回退 GitHub Pages（见 `UpdateChecker.fetchVersionInfo`）：
+
+1. 主：`https://player.kmgccc.cn/api/v1/updates/latest`（由后台“版本发布”页面 `/admin/updates` 维护，见服务端 `docs/UPDATE_RELEASE_MANAGEMENT.md`）。
+2. 备：`https://kmgcc.github.io/kmgccc_player/version.json`（静态文件，手动维护）。
+
+**后端返回（snake_case，App 实际消费的字段）**：
 ```json
 {
-    "latestVersion": "2.0.1",
-    "releaseURL": "https://github.com/kmgcc/kmgccc_player/releases/latest",
-    "notes": "本次更新内容：\n- 修复了某某问题\n- 新增了某某功能"
+    "latest_version": "2.0.1",
+    "build_number": "201",
+    "summary": "本次更新内容：修复了某某问题，新增了某某功能",
+    "download_url": "https://player.kmgccc.cn/api/v1/updates/download/latest",
+    "release_notes_url": "https://player.kmgccc.cn/api/v1/updates/latest/notes",
+    "package_sha256": "…",
+    "package_size_bytes": 123456
 }
 ```
 
-**字段说明**：
+**GitHub Pages 备用（旧格式，仍兼容）**：
+```json
+{
+    "latestVersion": "2.0.1",
+    "build_number": 201,
+    "releaseURL": "https://github.com/kmgcc/kmgccc_player/releases/latest",
+    "notes": "本次更新内容：\\n- 修复了某某问题"
+}
+```
 
-- `latestVersion`：字符串，语义化版本号（`major.minor.patch`），必须与 `AppVersion(from:)` 的解析兼容。
-- `releaseURL`：用户点击"前往下载"时优先打开的地址。为空、缺失或无法构造 URL 时，代码 fallback 到 `https://github.com/kmgcc/kmgccc_player/releases/latest`。
-- `notes`：字符串，显示在弹窗正文区域。**注意 JSON 转义**——见下文。
+**字段说明（以 `RemoteVersionInfo` 解码为准）**：
 
-### 版本比较规则
+- `build_number`：整数（JSON 数字或字符串都可解析），更新判断的主信号。
+- `latest_version` / `latestVersion`：语义化版本号，**仅用于 UI 展示**。
+- `summary`（后端）或 `notes`（GitHub Pages）：弹窗正文。注意：App 显示的是 `summary`，**不是**后台的长文 `release_notes`。
+- `download_url`：弹窗“下载”按钮在 App 内后台下载的地址。
+- `release_notes_url` / `releaseURL`：仅作下载兜底，不在弹窗里当链接打开。
+- `package_sha256`：安装包校验值，下载完成后用于完整性校验（见下）。
+- `package_size_bytes`：下载进度总量兜底。
 
-`AppVersion` 实现 `Comparable`，按 `major → minor → patch` 逐级比较。解析只接受 1 到 3 段非负数字点分版本（如 `2`、`2.0`、`2.0.0`），不会把非法分段静默吞掉。只有 **`remote > local`** 才弹更新窗口。
+### 更新判断规则（build number 优先）
 
-例如：
-- local `2.0.0`, remote `2.0.1` → **弹**
-- local `2.0.0`, remote `2.0.0` → 不弹
-- local `2.0.0`, remote `1.3.1` → 不弹
-- 任意一边解析失败 → 不弹（返回 `.failedToParse`）
+逻辑在 `UpdateAvailability.decide(...)`（`RemoteVersionInfo.swift`）：
 
-### notes 字段的 JSON 转义问题
+1. **主路径**：本地 `CFBundleVersion`(Int) 与远端 `build_number`(Int) 都可用时，`remote > local` 即有更新。
+2. **回退路径**：任一侧 build number 缺失或非整数（如旧 fallback JSON、CFBundleVersion 异常）时，回退到 `AppVersion` 语义化比较 `latest_version`，只有 `remote > local` 才弹。
+
+例如（build 主路径）：
+- local build `200`, remote build `201` → **弹**
+- local build `201`, remote build `201` → 不弹
+- 远端无 `build_number` → 回退按 `latest_version` 比较
+
+### SHA256 安装包校验
+
+`UpdatePackageDownloadManager` 在下载完成、**移动到 Downloads 之前**，对临时文件做流式 SHA256（后台线程，1MB 分块）：
+
+- 远端 `package_sha256` 为空 → 跳过校验（日志记录“远端未提供校验值”）。
+- 计算结果与 `package_sha256` 一致 → 进入完成流程（Finder 选中文件）。
+- 不匹配或读取失败 → 删除文件、不打开，Sidebar/弹窗显示「安装包校验失败，请重新下载。」
+
+后端上传安装包时会自动生成 `package_sha256` 并随 latest 接口返回，开发者无需手动填。
+
+### notes / summary 字段的 JSON 转义问题
 
 `version.json` 是手动维护的静态 JSON 文件。如果 `notes` 字段包含换行、制表符等控制字符，**必须在 JSON 中正确转义**：
 
@@ -86,12 +125,12 @@
 
 ### 每次发布新版本时的操作步骤
 
-1. 修改或确认 Xcode 项目中 `kmgccc_player` target 的 `MARKETING_VERSION` 为新版本号。
-2. 更新本地 docs/version.json：
-   - `latestVersion` 改为新版本号；
-   - 更新 `notes` 为本次 release 说明；
-   - `releaseURL` 通常无需改（始终指向 `/releases/latest`），也可以指向某个具体 release 页面。
-   - 线上 `https://kmgcc.github.io/kmgccc_player/version.json` 何时更新属于发布流程；本地文件不会被运行中的 App 自动同步到远端。2.0.0 尚未发布时，线上文件仍停留在旧版本是正常状态。
+1. 修改 Xcode 项目中 `kmgccc_player` target：
+   - `MARKETING_VERSION` → 新展示版本号（如 `2.0.1`）；
+   - **`CURRENT_PROJECT_VERSION` → 必须递增**（如 `200` → `201`），这是更新判断的主信号。
+2. **主发布面**：在后台 `https://player.kmgccc.cn/admin/updates` 填写 `latest_version`、`build_number`（与 `CURRENT_PROJECT_VERSION` 一致）、`summary`，并上传 `.dmg`/`.zip` 安装包（自动生成 `package_sha256`）。详见服务端 `docs/UPDATE_RELEASE_MANAGEMENT.md`。
+3. **备用源（可选）**：如需让 GitHub Pages 回退也指向新版本，更新 `docs/version.json` 的 `latestVersion`、`build_number`、`notes`。线上 `https://kmgcc.github.io/kmgccc_player/version.json` 何时更新属于发布流程；本地文件不会被运行中的 App 自动同步到远端。
+   - `build_number` 缺失时该源会回退到 `latestVersion` 语义比较，建议补上以与后端口径一致。
 
 ### 强制调试
 
@@ -355,16 +394,19 @@ defaults delete kmgccc.player kmgccc_player.featureTipDisplayCount.playlist.shif
 
 按顺序操作：
 
-- [ ] **1. 改 App 版本号**
-  Xcode → `kmgccc_player` target → General → Version（或直接改 `project.pbxproj` 中的 `MARKETING_VERSION`）。
+- [ ] **1. 改 App 版本号（两个值都要改）**
+  Xcode → `kmgccc_player` target（或直接改 `project.pbxproj`）：
+  - `MARKETING_VERSION` → 新展示版本号
+  - **`CURRENT_PROJECT_VERSION` → 必须递增**（更新判断主信号；忘了它即使发了新包也不会提示更新）
 
-- [ ] **2. 更新 version.json**
-  修改本地 docs/version.json：
+- [ ] **2. 后台版本发布（主链路）**
+  在 `https://player.kmgccc.cn/admin/updates`：
   
-  - `latestVersion` → 新版本号
-  - `notes` → 更新为本次 release 说明（注意 JSON 转义）
-  - `releaseURL` 通常不变；如果写具体 release 页面，更新弹窗会优先打开它，缺失或无效时 fallback 到 `/releases/latest`
-  - 按发布流程确认线上 GitHub Pages 的 `version.json` 已在需要公开更新提示时同步
+  - `latest_version` → 新展示版本号
+  - `build_number` → 与 `CURRENT_PROJECT_VERSION` 一致，必须递增
+  - `summary` → 本次 release 说明（这就是 App 弹窗显示的正文）
+  - 上传 `.dmg`/`.zip` 安装包（后端自动算 `package_sha256`，App 下载后会校验）
+  - 备用源（可选）：同步更新本地 `docs/version.json`（`latestVersion`/`build_number`/`notes`，注意 JSON 转义），按发布流程推送到 GitHub Pages
   
 - [ ] **3. 更新 What's New**
   - `myPlayer2/Services/WhatsNew/WhatsNewConfig.swift`：将 `targetVersion` 和 `whatsNewVersion` 改为新版本号。

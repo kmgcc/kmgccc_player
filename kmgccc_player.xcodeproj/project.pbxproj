@@ -506,6 +506,7 @@
 					".qqmusic-helper-venv",
 					".build-arm64",
 					".build-universal",
+					"venv-arm64",
 					"_internal*.bundle",
 					_internal,
 					2.bundle,
@@ -541,10 +542,6 @@
 				);
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
-					"$(PROJECT_DIR)/myPlayer2/Resources/Tools/qqmusic-helper/.build-arm64/venv-arm64/lib/python3.12/site-packages/orjson",
-					"$(PROJECT_DIR)/myPlayer2/Resources/Tools/qqmusic-helper/.build-arm64/venv-arm64/lib/python3.12/site-packages/tarsio",
-					"$(PROJECT_DIR)/myPlayer2/Resources/Tools/qqmusic-helper/.build-arm64/venv-arm64/lib/python3.12/site-packages/cryptography/hazmat/bindings",
-					"$(PROJECT_DIR)/myPlayer2/Resources/Tools/qqmusic-helper/.build-arm64/venv-arm64/lib/python3.12/site-packages/pydantic_core",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 2.0.0;
@@ -591,6 +588,7 @@
 					".qqmusic-helper-venv",
 					".build-arm64",
 					".build-universal",
+					"venv-arm64",
 					"_internal*.bundle",
 					_internal,
 					2.bundle,
@@ -626,10 +624,6 @@
 				);
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
-					"$(PROJECT_DIR)/myPlayer2/Resources/Tools/qqmusic-helper/.build-arm64/venv-arm64/lib/python3.12/site-packages/orjson",
-					"$(PROJECT_DIR)/myPlayer2/Resources/Tools/qqmusic-helper/.build-arm64/venv-arm64/lib/python3.12/site-packages/tarsio",
-					"$(PROJECT_DIR)/myPlayer2/Resources/Tools/qqmusic-helper/.build-arm64/venv-arm64/lib/python3.12/site-packages/cryptography/hazmat/bindings",
-					"$(PROJECT_DIR)/myPlayer2/Resources/Tools/qqmusic-helper/.build-arm64/venv-arm64/lib/python3.12/site-packages/pydantic_core",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 2.0.0;

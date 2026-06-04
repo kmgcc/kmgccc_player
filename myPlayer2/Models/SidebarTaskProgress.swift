@@ -12,6 +12,7 @@ struct SidebarTaskProgress: Equatable, Sendable {
         case running
         case completed
         case failed
+        case reminder
     }
 
     let title: String
