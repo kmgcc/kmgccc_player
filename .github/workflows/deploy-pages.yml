@@ -5,7 +5,7 @@ on:
     branches:
       - main
     paths:
-      - "docs/**"
+      - "pages/**"
       - ".github/workflows/deploy-pages.yml"
   workflow_dispatch:
 
@@ -34,7 +34,7 @@ jobs:
       - name: Upload static site
         uses: actions/upload-pages-artifact@v3
         with:
-          path: docs
+          path: pages
 
       - name: Deploy to GitHub Pages
         id: deployment
