@@ -5,7 +5,6 @@
 myPlayer2/Resources/AMLL/** linguist-vendored
 
 # AMLL full source project
-applemusic-like-lyrics-full-refractor/** linguist-vendored
-applemusic-like-lyrics-full-custom-core/** linguist-vendored
+applemusic-like-lyrics-kmgcccplayer-integration/** linguist-vendored
 
 LDDC_Fetch_Core/** linguist-vendored

@@ -169,6 +169,18 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             }
         }
 
+        var diagnosticCode: String {
+            switch self {
+            case .playPause: return "play_pause"
+            case .play: return "play"
+            case .pause: return "pause"
+            case .next: return "next"
+            case .previous: return "previous"
+            case .seek: return "seek"
+            case .playbackMode: return "playback_mode"
+            }
+        }
+
         var throttleInterval: TimeInterval {
             switch self {
             case .seek:
@@ -344,6 +356,15 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         invalidateAdapterPathCache()
         guard let paths = resolveAdapterPaths() else {
             Log.warning("[SystemNowPlaying] adapter paths missing; stream not started", category: .playback)
+            recordExternalPlaybackDiagnostic(
+                level: .error,
+                category: .validation,
+                stage: .start,
+                messageCode: "adapter_resources_missing",
+                operation: "connect",
+                errorCode: "adapter_resources_missing",
+                connectionStateCode: "disconnected"
+            )
             updateUnavailablePresentation(titleKey: "system_now_playing.adapter_unavailable", connectionState: .unavailable)
             return
         }
@@ -385,6 +406,15 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
                 } else {
                     self.healthState = .warning(status: status)
                     Log.warning("[SystemNowPlaying] adapter health check returned status=\(status); continuing with soft-gated stream", category: .playback)
+                    self.recordExternalPlaybackDiagnostic(
+                        level: .warning,
+                        category: .validation,
+                        stage: .permission,
+                        messageCode: "adapter_health_warning",
+                        operation: "auth_check",
+                        errorCode: "health_status_\(status)",
+                        connectionStateCode: self.diagnosticsConnectionStateCode()
+                    )
                 }
             }
         }
@@ -400,6 +430,15 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         let launched = launchStreamProcess(arguments: arguments, stdout: stdout, stderr: stderr, generation: generation)
         guard launched else {
             isStarting = false
+            recordExternalPlaybackDiagnostic(
+                level: .error,
+                category: .providerFailure,
+                stage: .start,
+                messageCode: "adapter_stream_launch_failed",
+                operation: "connect",
+                errorCode: "launch_failed",
+                connectionStateCode: "disconnected"
+            )
             updateUnavailablePresentation(titleKey: "system_now_playing.adapter_unavailable", connectionState: .unavailable)
             return
         }
@@ -539,6 +578,15 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
                 self.closePipes()
                 let key = self.hasReceivedValidPayload ? self.source.disconnectedTitleKey : "system_now_playing.adapter_unavailable"
                 let state: ExternalPlaybackConnectionState = self.hasReceivedValidPayload ? .disconnected : .unavailable
+                self.recordExternalPlaybackDiagnostic(
+                    level: status == 0 ? .warning : .error,
+                    category: .providerFailure,
+                    stage: .response,
+                    messageCode: "adapter_stream_exited",
+                    operation: "poll",
+                    errorCode: "stream_exit_\(status)",
+                    connectionStateCode: state == .disconnected ? "disconnected" : "unknown"
+                )
                 self.updateUnavailablePresentation(titleKey: key, connectionState: state)
             }
         }
@@ -550,6 +598,15 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             return true
         } catch {
             Log.warning("[SystemNowPlaying] failed to launch adapter stream: \(error.localizedDescription)", category: .playback)
+            recordExternalPlaybackDiagnostic(
+                level: .error,
+                category: .providerFailure,
+                stage: .start,
+                messageCode: "adapter_stream_process_run_failed",
+                operation: "connect",
+                errorCode: DiagnosticsErrorMapper.code(for: error),
+                connectionStateCode: "disconnected"
+            )
             return false
         }
     }
@@ -616,6 +673,15 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             handlePayload(envelope.payload, source: .stream)
         } catch {
             Log.warning("[SystemNowPlaying] ignored malformed stream line: \(error.localizedDescription)", category: .playback)
+            recordExternalPlaybackDiagnostic(
+                level: .warning,
+                category: .parse,
+                stage: .parse,
+                messageCode: "stream_line_decode_failed",
+                operation: "parse_state",
+                errorCode: DiagnosticsErrorMapper.code(for: error),
+                connectionStateCode: diagnosticsConnectionStateCode()
+            )
         }
     }
 
@@ -629,12 +695,30 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
                 guard !self.hasReceivedValidPayload else { return }
                 if self.process?.isRunning == true {
                     Log.warning("[SystemNowPlaying] stream observation window elapsed with no valid payload; keeping provider connected-empty", category: .playback)
+                    self.recordExternalPlaybackDiagnostic(
+                        level: .warning,
+                        category: .timeout,
+                        stage: .response,
+                        messageCode: "stream_no_valid_payload",
+                        operation: "poll",
+                        errorCode: "no_valid_payload",
+                        connectionStateCode: "connected"
+                    )
                     self.updateUnavailablePresentation(
                         titleKey: "system_now_playing.connected_empty",
                         connectionState: .connectedNoMetadata
                     )
                 } else {
                     Log.warning("[SystemNowPlaying] stream observation window elapsed after process exit; marking adapter unavailable", category: .playback)
+                    self.recordExternalPlaybackDiagnostic(
+                        level: .error,
+                        category: .timeout,
+                        stage: .response,
+                        messageCode: "stream_no_payload_after_exit",
+                        operation: "poll",
+                        errorCode: "no_payload_after_exit",
+                        connectionStateCode: "disconnected"
+                    )
                     self.updateUnavailablePresentation(
                         titleKey: "system_now_playing.adapter_unavailable",
                         connectionState: .unavailable
@@ -2182,6 +2266,15 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         lastControlSentAt[throttleKey] = now
         guard let paths = resolveAdapterPaths() else {
             Log.warning("[SystemNowPlaying] control skipped because adapter paths are missing: \(String(describing: action))", category: .playback)
+            recordExternalPlaybackDiagnostic(
+                level: .warning,
+                category: .control,
+                stage: .response,
+                messageCode: "control_adapter_paths_missing",
+                operation: "playback_control",
+                errorCode: "adapter_resources_missing",
+                connectionStateCode: diagnosticsConnectionStateCode()
+            )
             return
         }
         let rollbackState = ControlRollbackState(
@@ -2470,6 +2563,16 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         let key = action.throttleKey
         let failures = (controlFailureCounts[key] ?? 0) + 1
         controlFailureCounts[key] = failures
+        recordExternalPlaybackDiagnostic(
+            level: .warning,
+            category: .control,
+            stage: .response,
+            messageCode: "control_\(action.diagnosticCode)_verification_failed",
+            operation: "playback_control",
+            errorCode: reason,
+            connectionStateCode: diagnosticsConnectionStateCode(),
+            retryCount: failures
+        )
         if case .seek = action {
             Log.warning("[SystemNowPlaying] seek failed count=\(failures)", category: .playback)
             if failures >= 3 {
@@ -3199,6 +3302,44 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         guard now.timeIntervalSince(lastControlFailureLogAt) > 5 else { return }
         lastControlFailureLogAt = now
         Log.warning("[SystemNowPlaying] control failed: \(String(describing: action))", category: .playback)
+    }
+
+    private func recordExternalPlaybackDiagnostic(
+        level: DiagnosticsLevel,
+        category: DiagnosticsCategory,
+        stage: DiagnosticsStage,
+        messageCode: String,
+        operation: String,
+        errorCode: String,
+        connectionStateCode: String,
+        retryCount: Int = 0
+    ) {
+        DiagnosticsService.shared.record(
+            level: level,
+            subsystem: .externalPlayer,
+            category: category,
+            stage: stage,
+            provider: .systemNowPlaying,
+            messageCode: messageCode,
+            context: [
+                "operation": .string(operation),
+                "permission_state": .string("unknown"),
+                "connection_state": .string(connectionStateCode),
+                "response_parse_error_code": .string(errorCode),
+                "retry_count": .int(retryCount)
+            ]
+        )
+    }
+
+    private func diagnosticsConnectionStateCode() -> String {
+        switch connectionState {
+        case .runningHasData, .connectedNoMetadata, .waitingForData:
+            return "connected"
+        case .runningTemporarilyUnavailable:
+            return "timeout"
+        case .unavailable, .disconnected:
+            return "disconnected"
+        }
     }
 
     private func preferredLyricsText(for track: Track?) -> String? {

@@ -134,6 +134,7 @@ final class AppSessionHost: ObservableObject {
             lyricsVM?.refreshConfigFromSettings()
         }
         TelemetryService.shared.configure(playbackCoordinator: playbackCoordinator)
+        DiagnosticsService.shared.configure(playbackCoordinator: playbackCoordinator)
         ledMeterProvider.playbackSource = playbackCoordinator.activeSource
         AudioVisualizationService.shared.setExternalMode(playbackCoordinator.activeSource.isExternal)
         libraryVM.setImportService(fileImportService)
@@ -181,6 +182,7 @@ final class AppSessionHost: ObservableObject {
         AppDelegate.shared?.configureDockPlayback(playbackCoordinator: playbackCoordinator)
         AppDelegate.applicationWillTerminateHandler = { [weak self] in
             TelemetryService.shared.endSession(reason: .appTerminated)
+            DiagnosticsService.shared.flushSynchronouslyForTermination()
             self?.savePlaybackMemory()
             if let libraryVM = self?.libraryVM {
                 PreferenceStatsService.shared.saveAllPendingNow(

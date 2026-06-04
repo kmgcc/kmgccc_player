@@ -93,6 +93,52 @@ final class UpdateChecker: ObservableObject {
             
             if decodeResult.usedSanitizedJSON {
                 print("[UpdateChecker] ⚠️ Remote version.json was malformed; recovered by escaping raw control characters in strings")
+                recordUpdateDiagnostic(
+                    level: .warning,
+                    category: .parse,
+                    stage: .parse,
+                    endpointType: "unknown",
+                    messageCode: "json_repaired_control_chars",
+                    context: [
+                        "operation": .string("parse"),
+                        "response_parse_error_code": .string("json_repaired_control_chars"),
+                        "current_build_number": localBuildNumber.map { .int($0) } ?? .string("unknown"),
+                        "latest_build_number_present": .bool(info.buildNumber != nil),
+                        "download_url_present": .bool(info.downloadURL != nil)
+                    ]
+                )
+            }
+
+            if info.buildNumber == nil {
+                recordUpdateDiagnostic(
+                    level: .warning,
+                    category: .validation,
+                    stage: .response,
+                    endpointType: "unknown",
+                    messageCode: "build_number_missing",
+                    context: [
+                        "operation": .string("compare"),
+                        "current_build_number": localBuildNumber.map { .int($0) } ?? .string("unknown"),
+                        "latest_build_number_present": .bool(false),
+                        "download_url_present": .bool(info.downloadURL != nil)
+                    ]
+                )
+            }
+
+            if info.downloadURL == nil {
+                recordUpdateDiagnostic(
+                    level: .warning,
+                    category: .validation,
+                    stage: .response,
+                    endpointType: "unknown",
+                    messageCode: "download_url_missing",
+                    context: [
+                        "operation": .string("download_metadata"),
+                        "current_build_number": localBuildNumber.map { .int($0) } ?? .string("unknown"),
+                        "latest_build_number_present": .bool(info.buildNumber != nil),
+                        "download_url_present": .bool(false)
+                    ]
+                )
             }
             
             // Log for debugging
@@ -144,6 +190,8 @@ final class UpdateChecker: ObservableObject {
     }
 
     private func fetchVersionInfo(from url: URL, cacheBust: Bool) async throws -> RemoteVersionInfoDecodeResult {
+        let started = ContinuousClock.now
+        let endpointType = Self.endpointType(for: url)
         let requestURL: URL
         if cacheBust {
             let timestamp = Int(Date().timeIntervalSince1970)
@@ -158,14 +206,84 @@ final class UpdateChecker: ObservableObject {
         request.timeoutInterval = cacheBust ? 6 : 4
         request.cachePolicy = .reloadIgnoringLocalCacheData
 
-        let (data, response) = try await session.data(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse,
-              httpResponse.statusCode == 200 else {
-            throw UpdateError.invalidResponse
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            recordUpdateDiagnostic(
+                level: .error,
+                category: .network,
+                stage: .request,
+                endpointType: endpointType,
+                messageCode: DiagnosticsErrorMapper.code(for: error),
+                context: [
+                    "operation": .string("check"),
+                    "endpoint_type": .string(endpointType),
+                    "network_error_code": .string(DiagnosticsErrorMapper.code(for: error)),
+                    "duration_ms_bucket": .string(DiagnosticsBuckets.durationMs(Self.durationMilliseconds(since: started))),
+                    "current_build_number": localBuildNumber.map { .int($0) } ?? .string("unknown")
+                ]
+            )
+            throw error
         }
 
-        let decodeResult = try RemoteVersionInfo.decodeResult(from: data)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            recordUpdateDiagnostic(
+                level: .error,
+                category: .network,
+                stage: .response,
+                endpointType: endpointType,
+                messageCode: "missing_http_response",
+                context: [
+                    "operation": .string("check"),
+                    "endpoint_type": .string(endpointType),
+                    "network_error_code": .string("missing_http_response"),
+                    "duration_ms_bucket": .string(DiagnosticsBuckets.durationMs(Self.durationMilliseconds(since: started))),
+                    "current_build_number": localBuildNumber.map { .int($0) } ?? .string("unknown")
+                ]
+            )
+            throw UpdateError.invalidResponse(statusCode: nil)
+        }
+
+        guard httpResponse.statusCode == 200 else {
+            recordUpdateDiagnostic(
+                level: .error,
+                category: .network,
+                stage: .response,
+                endpointType: endpointType,
+                messageCode: "http_status_error",
+                context: [
+                    "operation": .string("check"),
+                    "endpoint_type": .string(endpointType),
+                    "http_status": .int(httpResponse.statusCode),
+                    "duration_ms_bucket": .string(DiagnosticsBuckets.durationMs(Self.durationMilliseconds(since: started))),
+                    "current_build_number": localBuildNumber.map { .int($0) } ?? .string("unknown")
+                ]
+            )
+            throw UpdateError.invalidResponse(statusCode: httpResponse.statusCode)
+        }
+
+        let decodeResult: RemoteVersionInfoDecodeResult
+        do {
+            decodeResult = try RemoteVersionInfo.decodeResult(from: data)
+        } catch {
+            recordUpdateDiagnostic(
+                level: .error,
+                category: .parse,
+                stage: .parse,
+                endpointType: endpointType,
+                messageCode: DiagnosticsErrorMapper.code(for: error),
+                context: [
+                    "operation": .string("parse"),
+                    "endpoint_type": .string(endpointType),
+                    "response_parse_error_code": .string(DiagnosticsErrorMapper.code(for: error)),
+                    "duration_ms_bucket": .string(DiagnosticsBuckets.durationMs(Self.durationMilliseconds(since: started))),
+                    "current_build_number": localBuildNumber.map { .int($0) } ?? .string("unknown")
+                ]
+            )
+            throw error
+        }
         let baseURL = httpResponse.url ?? requestURL
         return RemoteVersionInfoDecodeResult(
             info: decodeResult.info.resolvingRelativeURLs(baseURL: baseURL),
@@ -193,9 +311,44 @@ final class UpdateChecker: ObservableObject {
             remoteVersion: remoteInfo.latestVersion
         ).isUpdateAvailable
     }
+
+    private func recordUpdateDiagnostic(
+        level: DiagnosticsLevel,
+        category: DiagnosticsCategory,
+        stage: DiagnosticsStage,
+        endpointType: String,
+        messageCode: String,
+        context: DiagnosticsContext
+    ) {
+        var safeContext = context
+        safeContext["update_channel"] = .string("stable")
+        safeContext["endpoint_type"] = .string(endpointType)
+        DiagnosticsService.shared.record(
+            level: level,
+            subsystem: .update,
+            category: category,
+            stage: stage,
+            provider: endpointType == "backend" ? .backend : .unknown,
+            messageCode: messageCode,
+            context: safeContext
+        )
+    }
+
+    private static func endpointType(for url: URL) -> String {
+        guard let host = url.host?.lowercased() else { return "unknown" }
+        if host.contains("player.kmgccc.cn") { return "backend" }
+        if host.contains("github.io") { return "github_pages" }
+        return "unknown"
+    }
+
+    private static func durationMilliseconds(since start: ContinuousClock.Instant) -> Double {
+        let duration = start.duration(to: ContinuousClock.now)
+        return Double(duration.components.seconds) * 1000
+            + Double(duration.components.attoseconds) / 1_000_000_000_000_000
+    }
 }
 
 enum UpdateError: Error {
-    case invalidResponse
+    case invalidResponse(statusCode: Int?)
     case decodeError
 }

@@ -589,6 +589,18 @@ final class LyricsWebViewStore: NSObject {
             )
         else {
             Log.error("AMLL/index.html not found in bundle, objectID=\(webViewObjectID)", category: .webview)
+            recordAMLLDiagnostic(
+                level: .error,
+                subsystem: .amll,
+                category: .fileIO,
+                stage: .amllBundleLoad,
+                messageCode: "amll_index_missing",
+                context: [
+                    "amll_stage": .string("bundle_load"),
+                    "webview_state": .string(webViewStateCode()),
+                    "error_code": .string("amll_index_missing")
+                ]
+            )
             FirstUseHitchDiagnostics.end(token, detail: "missing-index")
             return
         }
@@ -955,6 +967,10 @@ final class LyricsWebViewStore: NSObject {
                     "JS error: \(error.localizedDescription), call: \(pendingCall.debugDescription)",
                     category: .webview
                 )
+                self.recordJavaScriptBridgeFailure(
+                    bridgeCategory: bridgeCategory,
+                    errorCode: DiagnosticsErrorMapper.code(for: error)
+                )
             } else if self.isLayoutSensitiveJavaScriptCall(pendingCall.debugDescription) {
                 self.requestLayoutResync(reason: "js:\(bridgeCategory)")
             }
@@ -1228,6 +1244,22 @@ final class LyricsWebViewStore: NSObject {
         lastDeliveredTime = nil
 
         Log.warning("Terminated: objectID=\(webViewObjectID), snapshot preserved (ttml=\(lastTTML != nil), time=\(lastTime ?? -1), playing=\(lastIsPlaying ?? false))", category: .webview)
+        recordAMLLDiagnostic(
+            level: .error,
+            subsystem: .webview,
+            category: .lifecycle,
+            stage: .webcontentTerminated,
+            messageCode: "webcontent_terminated",
+            context: [
+                "amll_stage": .string("webcontent_terminated"),
+                "webview_state": .string("terminated"),
+                "webcontent_terminated_reason": .string("process_crash"),
+                "reload_count": .int(contentLoadRevision),
+                "ui_context": .string(FullscreenWindowManager.shared.usesFullscreenPlayerUI ? "fullscreen" : "window"),
+                "is_fullscreen": .bool(FullscreenWindowManager.shared.usesFullscreenPlayerUI),
+                "skin_id": .string(currentDiagnosticsSkinID())
+            ]
+        )
 
         // Defer the rebuild to the next runloop tick:
         //   * This delegate fires inside WebKit's own termination teardown;
@@ -1941,6 +1973,7 @@ final class LyricsWebViewStore: NSObject {
             || text.contains("[AMLL-BOOT][unhandledrejection]")
         {
             Log.error(message, category: .webview)
+            recordAMLLWebMessageDiagnostic(text)
         } else if text.contains("[WARN]") || text.contains("[AMLL-UPGRADE-DOWNGRADE]") {
             Log.warning(message, category: .webview)
         } else if text.contains("[AMLL-BOOT]")
@@ -1961,6 +1994,96 @@ final class LyricsWebViewStore: NSObject {
                 Log.trace(message, category: .webview)
             }
         }
+    }
+
+    private func recordJavaScriptBridgeFailure(bridgeCategory: String, errorCode: String) {
+        let stage: DiagnosticsStage
+        let amllStage: String
+        switch bridgeCategory {
+        case "setLyricsTTML":
+            stage = .lyricsSet
+            amllStage = "set_lyrics"
+        case "clearState", "setPlaying", "setConfig":
+            stage = .jsBridge
+            amllStage = "js_bridge"
+        default:
+            stage = .jsBridge
+            amllStage = "js_bridge"
+        }
+        recordAMLLDiagnostic(
+            level: .error,
+            subsystem: .amll,
+            category: .jsBridge,
+            stage: stage,
+            messageCode: "\(bridgeCategory)_failed",
+            context: [
+                "amll_stage": .string(amllStage),
+                "webview_state": .string(webViewStateCode()),
+                "js_error_type": .string("bridge_timeout"),
+                "line_number_bucket": .string("none"),
+                "lyrics_format": .string(bridgeCategory == "setLyricsTTML" ? "ttml" : "unknown"),
+                "error_code": .string(errorCode)
+            ]
+        )
+    }
+
+    private func recordAMLLWebMessageDiagnostic(_ text: String) {
+        let jsErrorType: String
+        if text.contains("unhandledrejection") {
+            jsErrorType = "promise_rejection"
+        } else if text.contains("SyntaxError") {
+            jsErrorType = "syntax"
+        } else {
+            jsErrorType = "runtime"
+        }
+        recordAMLLDiagnostic(
+            level: .error,
+            subsystem: .amll,
+            category: .jsBridge,
+            stage: .renderUpdate,
+            messageCode: "amll_web_error",
+            context: [
+                "amll_stage": .string("render"),
+                "webview_state": .string(webViewStateCode()),
+                "js_error_type": .string(jsErrorType),
+                "line_number_bucket": .string("none"),
+                "lyrics_format": .string("unknown")
+            ]
+        )
+    }
+
+    private func recordAMLLDiagnostic(
+        level: DiagnosticsLevel,
+        subsystem: DiagnosticsSubsystem,
+        category: DiagnosticsCategory,
+        stage: DiagnosticsStage,
+        messageCode: String,
+        context: DiagnosticsContext
+    ) {
+        DiagnosticsService.shared.record(
+            level: level,
+            subsystem: subsystem,
+            category: category,
+            stage: stage,
+            provider: .amll,
+            messageCode: messageCode,
+            context: context
+        )
+    }
+
+    private func webViewStateCode() -> String {
+        if isWebContentTerminated { return "terminated" }
+        if isRecoveryInProgress { return "reloading" }
+        if isAttached { return "attached" }
+        if retainedWebView != nil { return "created" }
+        return "detached"
+    }
+
+    private func currentDiagnosticsSkinID() -> String {
+        if FullscreenWindowManager.shared.usesFullscreenPlayerUI {
+            return SkinRegistry.fullscreenSkin(for: AppSettings.shared.fullscreen.skinID).id
+        }
+        return SkinRegistry.skin(for: AppSettings.shared.selectedNowPlayingSkinID).id
     }
 
     private func ensureWebView() -> WKWebView {

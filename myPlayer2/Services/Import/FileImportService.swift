@@ -200,6 +200,37 @@ nonisolated private enum ImportEnrichmentPart: String, Sendable, Hashable, CaseI
         case .albumArtwork: return "专辑封面"
         }
     }
+
+    var diagnosticsSubsystem: DiagnosticsSubsystem {
+        switch self {
+        case .lyrics:
+            return .lyrics
+        case .cover, .artistArtwork, .albumArtwork:
+            return .artwork
+        case .trackMetadata, .artistMetadata, .albumMetadata:
+            return .metadata
+        }
+    }
+
+    var diagnosticsStage: DiagnosticsStage {
+        switch self {
+        case .lyrics:
+            return .lyricsSearch
+        case .cover, .artistArtwork, .albumArtwork:
+            return .artworkSearch
+        case .trackMetadata, .artistMetadata, .albumMetadata:
+            return .search
+        }
+    }
+
+    var diagnosticsOperation: String {
+        switch self {
+        case .lyrics, .cover, .artistArtwork, .albumArtwork:
+            return "search"
+        case .trackMetadata, .artistMetadata, .albumMetadata:
+            return "lookup"
+        }
+    }
 }
 
 nonisolated private enum ImportEnrichmentPartState: String, Sendable {
@@ -1686,6 +1717,13 @@ final class ImportEnrichmentService {
                 "[ImportEnrichment] lyrics no-results \(state.title) - \(state.artist)",
                 category: .lyrics
             )
+            recordEnrichmentDiagnostic(
+                part: .lyrics,
+                category: .noResults,
+                messageCode: "import_enrichment_no_results",
+                resultCount: 0,
+                attempts: state.attempts(for: .lyrics)
+            )
         case .failed(let message):
             shouldRequeue = shouldRetry(part: .lyrics, state: state)
             if shouldRequeue {
@@ -1699,6 +1737,13 @@ final class ImportEnrichmentService {
                 Log.warning(
                     "[ImportEnrichment] lyrics failed \(state.title) - \(state.artist): \(message)",
                     category: .lyrics
+                )
+                recordEnrichmentDiagnostic(
+                    part: .lyrics,
+                    category: .providerFailure,
+                    messageCode: "import_enrichment_provider_failure",
+                    resultCount: 0,
+                    attempts: state.attempts(for: .lyrics)
                 )
             }
         }
@@ -1747,6 +1792,13 @@ final class ImportEnrichmentService {
                 "[ImportEnrichment] cover no-results \(state.title) - \(state.artist)",
                 category: .import
             )
+            recordEnrichmentDiagnostic(
+                part: .cover,
+                category: .noResults,
+                messageCode: "import_enrichment_no_results",
+                resultCount: 0,
+                attempts: state.attempts(for: .cover)
+            )
         case .failed(let message):
             shouldRequeue = shouldRetry(part: .cover, state: state)
             if shouldRequeue {
@@ -1760,6 +1812,13 @@ final class ImportEnrichmentService {
                 Log.warning(
                     "[ImportEnrichment] cover failed \(state.title) - \(state.artist): \(message)",
                     category: .import
+                )
+                recordEnrichmentDiagnostic(
+                    part: .cover,
+                    category: .providerFailure,
+                    messageCode: "import_enrichment_provider_failure",
+                    resultCount: 0,
+                    attempts: state.attempts(for: .cover)
                 )
             }
         }
@@ -1850,6 +1909,13 @@ final class ImportEnrichmentService {
                 "[ImportEnrichment] trackMetadata no-results \(state.title) - \(state.artist)",
                 category: .import
             )
+            recordEnrichmentDiagnostic(
+                part: .trackMetadata,
+                category: .noResults,
+                messageCode: "import_enrichment_no_results",
+                resultCount: 0,
+                attempts: state.attempts(for: .trackMetadata)
+            )
         case .failed(let message):
             shouldRequeue = shouldRetry(part: .trackMetadata, state: state)
             if shouldRequeue {
@@ -1863,6 +1929,13 @@ final class ImportEnrichmentService {
                 Log.warning(
                     "[ImportEnrichment] trackMetadata failed \(state.title) - \(state.artist): \(message)",
                     category: .import
+                )
+                recordEnrichmentDiagnostic(
+                    part: .trackMetadata,
+                    category: .providerFailure,
+                    messageCode: "import_enrichment_provider_failure",
+                    resultCount: 0,
+                    attempts: state.attempts(for: .trackMetadata)
                 )
             }
         }
@@ -1908,6 +1981,13 @@ final class ImportEnrichmentService {
                 "[ImportEnrichment] artistMetadata no-results \(state.artist)",
                 category: .import
             )
+            recordEnrichmentDiagnostic(
+                part: .artistMetadata,
+                category: .noResults,
+                messageCode: "import_enrichment_no_results",
+                resultCount: 0,
+                attempts: state.attempts(for: .artistMetadata)
+            )
         case .failed(let message):
             shouldRequeue = shouldRetry(part: .artistMetadata, state: state)
             if shouldRequeue {
@@ -1921,6 +2001,13 @@ final class ImportEnrichmentService {
                 Log.warning(
                     "[ImportEnrichment] artistMetadata failed \(state.artist): \(message)",
                     category: .import
+                )
+                recordEnrichmentDiagnostic(
+                    part: .artistMetadata,
+                    category: .providerFailure,
+                    messageCode: "import_enrichment_provider_failure",
+                    resultCount: 0,
+                    attempts: state.attempts(for: .artistMetadata)
                 )
             }
         }
@@ -1959,6 +2046,13 @@ final class ImportEnrichmentService {
                 "[ImportEnrichment] albumMetadata no-results \(state.album)",
                 category: .import
             )
+            recordEnrichmentDiagnostic(
+                part: .albumMetadata,
+                category: .noResults,
+                messageCode: "import_enrichment_no_results",
+                resultCount: 0,
+                attempts: state.attempts(for: .albumMetadata)
+            )
         case .failed(let message):
             shouldRequeue = shouldRetry(part: .albumMetadata, state: state)
             if shouldRequeue {
@@ -1972,6 +2066,13 @@ final class ImportEnrichmentService {
                 Log.warning(
                     "[ImportEnrichment] albumMetadata failed \(state.album): \(message)",
                     category: .import
+                )
+                recordEnrichmentDiagnostic(
+                    part: .albumMetadata,
+                    category: .providerFailure,
+                    messageCode: "import_enrichment_provider_failure",
+                    resultCount: 0,
+                    attempts: state.attempts(for: .albumMetadata)
                 )
             }
         }
@@ -2010,6 +2111,13 @@ final class ImportEnrichmentService {
                 "[ImportEnrichment] artistArtwork no-results \(state.artist)",
                 category: .import
             )
+            recordEnrichmentDiagnostic(
+                part: .artistArtwork,
+                category: .noResults,
+                messageCode: "import_enrichment_no_results",
+                resultCount: 0,
+                attempts: state.attempts(for: .artistArtwork)
+            )
         case .failed(let message):
             shouldRequeue = shouldRetry(part: .artistArtwork, state: state)
             if shouldRequeue {
@@ -2023,6 +2131,13 @@ final class ImportEnrichmentService {
                 Log.warning(
                     "[ImportEnrichment] artistArtwork failed \(state.artist): \(message)",
                     category: .import
+                )
+                recordEnrichmentDiagnostic(
+                    part: .artistArtwork,
+                    category: .providerFailure,
+                    messageCode: "import_enrichment_provider_failure",
+                    resultCount: 0,
+                    attempts: state.attempts(for: .artistArtwork)
                 )
             }
         }
@@ -2061,6 +2176,13 @@ final class ImportEnrichmentService {
                 "[ImportEnrichment] albumArtwork no-results \(state.album)",
                 category: .import
             )
+            recordEnrichmentDiagnostic(
+                part: .albumArtwork,
+                category: .noResults,
+                messageCode: "import_enrichment_no_results",
+                resultCount: 0,
+                attempts: state.attempts(for: .albumArtwork)
+            )
         case .failed(let message):
             shouldRequeue = shouldRetry(part: .albumArtwork, state: state)
             if shouldRequeue {
@@ -2075,6 +2197,13 @@ final class ImportEnrichmentService {
                     "[ImportEnrichment] albumArtwork failed \(state.album): \(message)",
                     category: .import
                 )
+                recordEnrichmentDiagnostic(
+                    part: .albumArtwork,
+                    category: .providerFailure,
+                    messageCode: "import_enrichment_provider_failure",
+                    resultCount: 0,
+                    attempts: state.attempts(for: .albumArtwork)
+                )
             }
         }
 
@@ -2084,6 +2213,38 @@ final class ImportEnrichmentService {
 
     private func shouldRetry(part: ImportEnrichmentPart, state: ImportEnrichmentItemState) -> Bool {
         state.attempts(for: part) < maxAttemptsPerPart
+    }
+
+    private func recordEnrichmentDiagnostic(
+        part: ImportEnrichmentPart,
+        category: DiagnosticsCategory,
+        messageCode: String,
+        resultCount: Int,
+        attempts: Int
+    ) {
+        var context: DiagnosticsContext = [
+            "operation": .string(part.diagnosticsOperation),
+            "result_count_bucket": .string(DiagnosticsBuckets.resultCount(resultCount)),
+            "retry_count": .int(attempts)
+        ]
+        switch part.diagnosticsSubsystem {
+        case .lyrics:
+            context["lyrics_source"] = .string("unknown")
+            context["lyrics_format"] = .string("unknown")
+        case .artwork:
+            context["artwork_source"] = .string("provider")
+        default:
+            break
+        }
+        DiagnosticsService.shared.record(
+            level: category == .noResults ? .warning : .error,
+            subsystem: part.diagnosticsSubsystem,
+            category: category,
+            stage: part.diagnosticsStage,
+            provider: .unknown,
+            messageCode: "\(part.rawValue)_\(messageCode)",
+            context: context
+        )
     }
 
     private func bufferFlushPatch(
@@ -2425,6 +2586,20 @@ final class ImportEnrichmentService {
             Log.warning(
                 "[ImportEnrichment] persistence flush failed for \(failedTrackIDs.count) tracks",
                 category: .import
+            )
+            DiagnosticsService.shared.record(
+                level: .error,
+                subsystem: .database,
+                category: .persistence,
+                stage: .flush,
+                provider: .localLibrary,
+                messageCode: "import_enrichment_flush_failed",
+                context: [
+                    "operation": .string("save"),
+                    "result_count_bucket": .string(DiagnosticsBuckets.resultCount(failedTrackIDs.count)),
+                    "retry_count": .int(0),
+                    "error_code": .string("repository_persist_failed")
+                ]
             )
         }
 
@@ -3360,7 +3535,7 @@ final class FileImportService: FileImportServiceProtocol {
     private func cleanupFailedImportResidue(reason: String) async -> TrackDirectoryCleanupReport {
         let tracks = await repository.fetchTracks(in: nil)
         let referencedTrackIDs = Set(tracks.map(\.id))
-        return await Task.detached(priority: .utility) { @Sendable in
+        let report = await Task.detached(priority: .utility) { @Sendable in
             LibraryMaintenanceService().cleanupFailedImportTrackDirectories(
                 referencedTrackIDs: referencedTrackIDs,
                 importActivity: LibraryImportActivitySnapshot(
@@ -3370,6 +3545,23 @@ final class FileImportService: FileImportServiceProtocol {
                 reason: reason
             )
         }.value
+        if report.failedDeleteCount > 0 {
+            DiagnosticsService.shared.record(
+                level: .warning,
+                subsystem: .fileIO,
+                category: .fileIO,
+                stage: .rollbackCleanup,
+                provider: .localLibrary,
+                messageCode: "import_cleanup_delete_failed",
+                context: [
+                    "operation": .string("cleanup"),
+                    "result_count_bucket": .string(DiagnosticsBuckets.resultCount(report.failedDeleteCount)),
+                    "rollback_performed": .bool(true),
+                    "error_code": .string("cleanup_delete_failed")
+                ]
+            )
+        }
+        return report
     }
 
     private func makeTrack(from payload: ImportedTrackPayload) -> Track {
@@ -4234,13 +4426,32 @@ final class FileImportService: FileImportServiceProtocol {
             duration = CMTimeGetSeconds(durationTime)
         } catch {
             print("⚠️ Failed to load duration: \(error)")
+            recordMetadataExtractionDiagnostic(
+                url: url,
+                messageCode: "duration_load_failed",
+                error: error
+            )
         }
 
-        if let common = try? await asset.load(.commonMetadata) {
+        do {
+            let common = try await asset.load(.commonMetadata)
             fields = await metadataFields(byApplying: common, to: fields)
+        } catch {
+            recordMetadataExtractionDiagnostic(
+                url: url,
+                messageCode: "common_metadata_load_failed",
+                error: error
+            )
         }
-        if let full = try? await asset.load(.metadata) {
+        do {
+            let full = try await asset.load(.metadata)
             fields = await metadataFields(byApplying: full, to: fields)
+        } catch {
+            recordMetadataExtractionDiagnostic(
+                url: url,
+                messageCode: "full_metadata_load_failed",
+                error: error
+            )
         }
 
         // 4. Fallback: Try Spotlight Metadata (MDItem) if AVAsset failed
@@ -4292,15 +4503,33 @@ final class FileImportService: FileImportServiceProtocol {
     nonisolated static func extractArtwork(from url: URL) async -> Data? {
         let asset = AVURLAsset(url: url)
 
-        if let common = try? await asset.load(.commonMetadata) {
+        do {
+            let common = try await asset.load(.commonMetadata)
             if let data = await normalizedArtworkData(in: common) {
                 return data
             }
+        } catch {
+            recordArtworkExtractionDiagnostic(
+                url: url,
+                messageCode: "common_artwork_metadata_load_failed",
+                errorCode: DiagnosticsErrorMapper.code(for: error),
+                imageFormat: "unknown",
+                imageSizeBucket: "unknown"
+            )
         }
-        if let full = try? await asset.load(.metadata) {
+        do {
+            let full = try await asset.load(.metadata)
             if let data = await normalizedArtworkData(in: full) {
                 return data
             }
+        } catch {
+            recordArtworkExtractionDiagnostic(
+                url: url,
+                messageCode: "full_artwork_metadata_load_failed",
+                errorCode: DiagnosticsErrorMapper.code(for: error),
+                imageFormat: "unknown",
+                imageSizeBucket: "unknown"
+            )
         }
 
         return nil
@@ -4376,9 +4605,18 @@ final class FileImportService: FileImportServiceProtocol {
         for item in items {
             guard let key = item.commonKey?.rawValue, key == "artwork" else { continue }
             guard let data = try? await item.load(.dataValue) else { continue }
-            return ArtworkDataNormalizer.normalizedJPEGData(
+            if let normalizedData = ArtworkDataNormalizer.normalizedJPEGData(
                 from: data,
                 maxPixelSize: ArtworkDataNormalizer.importMaxPixelSize
+            ) {
+                return normalizedData
+            }
+            recordArtworkExtractionDiagnostic(
+                url: nil,
+                messageCode: "embedded_artwork_decode_failed",
+                errorCode: "artwork_normalize_failed",
+                imageFormat: DiagnosticsSafeContext.imageFormat(from: data),
+                imageSizeBucket: DiagnosticsSafeContext.imageSizeBucket(from: data)
             )
         }
 
@@ -4532,6 +4770,7 @@ final class FileImportService: FileImportServiceProtocol {
             )
         } catch {
             Log.warning("NCM conversion failed for \(sourceURL.lastPathComponent): \(error)", category: .import)
+            recordNCMConversionFailure(sourceURL: sourceURL, error: error)
             return NCMConversionTaskOutput(
                 sourceURL: sourceURL,
                 displayName: sourceURL.lastPathComponent,
@@ -4556,6 +4795,112 @@ final class FileImportService: FileImportServiceProtocol {
         let duration = start.duration(to: ContinuousClock.now)
         return Double(duration.components.seconds) * 1000
             + Double(duration.components.attoseconds) / 1_000_000_000_000_000
+    }
+
+    nonisolated private static func recordMetadataExtractionDiagnostic(
+        url: URL,
+        messageCode: String,
+        error: Error
+    ) {
+        let fileExtension = DiagnosticsSafeContext.fileExtension(from: url)
+        DiagnosticsService.recordAsync(
+            level: .warning,
+            subsystem: .metadata,
+            category: .parse,
+            stage: .metadataExtract,
+            provider: .localFile,
+            messageCode: messageCode,
+            context: [
+                "operation": .string("parse"),
+                "file_extension": .string(fileExtension),
+                "file_size_bucket": .string(DiagnosticsBuckets.fileSize(for: url)),
+                "audio_container": .string(DiagnosticsSafeContext.audioContainer(for: fileExtension)),
+                "codec_hint": .string(DiagnosticsSafeContext.codecHint(for: fileExtension)),
+                "error_code": .string(DiagnosticsErrorMapper.code(for: error)),
+                "has_title": .string("unknown"),
+                "has_artist": .string("unknown"),
+                "has_album": .string("unknown"),
+                "has_embedded_artwork": .string("unknown")
+            ]
+        )
+    }
+
+    nonisolated private static func recordArtworkExtractionDiagnostic(
+        url: URL?,
+        messageCode: String,
+        errorCode: String,
+        imageFormat: String,
+        imageSizeBucket: String
+    ) {
+        var context: DiagnosticsContext = [
+            "artwork_source": .string("embedded"),
+            "operation": .string("decode"),
+            "image_format": .string(imageFormat),
+            "image_size_bucket": .string(imageSizeBucket),
+            "decode_error_code": .string(errorCode),
+            "fallback_used": .bool(false)
+        ]
+        if let url {
+            context["file_extension"] = .string(DiagnosticsSafeContext.fileExtension(from: url))
+            context["file_size_bucket"] = .string(DiagnosticsBuckets.fileSize(for: url))
+        }
+        DiagnosticsService.recordAsync(
+            level: .warning,
+            subsystem: .artwork,
+            category: .decode,
+            stage: .artworkExtract,
+            provider: .localFile,
+            messageCode: messageCode,
+            context: context
+        )
+    }
+
+    nonisolated private static func recordNCMConversionFailure(sourceURL: URL, error: Error) {
+        DiagnosticsService.recordAsync(
+            level: .error,
+            subsystem: .ncm,
+            category: .decode,
+            stage: .ncmDecode,
+            provider: .netease,
+            messageCode: DiagnosticsErrorMapper.code(for: error),
+            context: [
+                "file_extension": .string("ncm"),
+                "file_size_bucket": .string(DiagnosticsBuckets.fileSize(for: sourceURL)),
+                "is_ncm": .bool(true),
+                "ncm_stage": .string(DiagnosticsErrorMapper.ncmStage(for: error)),
+                "error_code": .string(DiagnosticsErrorMapper.code(for: error)),
+                "output_extension": .string("unknown"),
+                "fallback_used": .bool(false)
+            ]
+        )
+    }
+
+    nonisolated private static func recordImportTaskFailure(candidate: ImportCandidate, error: Error) {
+        let fileExtension = DiagnosticsSafeContext.fileExtension(from: candidate.fileURL)
+        DiagnosticsService.recordAsync(
+            level: .error,
+            subsystem: .import,
+            category: .fileIO,
+            stage: .fileCopy,
+            provider: .localFile,
+            messageCode: DiagnosticsErrorMapper.code(for: error),
+            context: [
+                "source_type": .string("unknown"),
+                "file_extension": .string(fileExtension),
+                "file_size_bucket": .string(DiagnosticsBuckets.fileSize(for: candidate.fileURL)),
+                "is_ncm": .bool(fileExtension == "ncm"),
+                "audio_container": .string(DiagnosticsSafeContext.audioContainer(for: fileExtension)),
+                "codec_hint": .string(DiagnosticsSafeContext.codecHint(for: fileExtension)),
+                "import_stage": .string("file_copy"),
+                "error_code": .string(DiagnosticsErrorMapper.code(for: error)),
+                "has_title": .bool(candidate.metadata.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false),
+                "has_artist": .bool(candidate.metadata.artist.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false),
+                "has_album": .bool(candidate.metadata.album.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false),
+                "has_embedded_artwork": .bool(candidate.metadata.artworkData != nil),
+                "copy_target": .string("library"),
+                "rollback_performed": .bool(false)
+            ]
+        )
     }
 
     nonisolated private static func performImportTask(
@@ -4623,6 +4968,7 @@ final class FileImportService: FileImportServiceProtocol {
         } catch {
             let _ = await extractedArtworkTask
             let _ = await embeddedLyricsTask
+            recordImportTaskFailure(candidate: candidate, error: error)
             return ImportTaskOutput(
                 index: index,
                 trackID: trackId,
@@ -4647,10 +4993,34 @@ final class FileImportService: FileImportServiceProtocol {
         if embeddedLyrics.lowercased().contains("<tt") {
             return embeddedLyrics
         }
-        return try? await TTMLConverter.shared.convertToTTML(
-            rawLyrics: embeddedLyrics,
-            stripMetadata: true
-        )
+        do {
+            return try await TTMLConverter.shared.convertToTTML(
+                rawLyrics: embeddedLyrics,
+                stripMetadata: true
+            )
+        } catch {
+            let lineCount = embeddedLyrics.split(whereSeparator: \.isNewline).count
+            DiagnosticsService.recordAsync(
+                level: .error,
+                subsystem: .lyrics,
+                category: .parse,
+                stage: .lyricsConvert,
+                provider: .localFile,
+                messageCode: "embedded_lyrics_convert_failed",
+                context: [
+                    "lyrics_source": .string("embedded"),
+                    "lyrics_format": .string("lrc"),
+                    "operation": .string("convert"),
+                    "parse_error_code": .string(DiagnosticsErrorMapper.code(for: error)),
+                    "error_code": .string(DiagnosticsErrorMapper.code(for: error)),
+                    "line_count_bucket": .string(DiagnosticsBuckets.lineCount(lineCount)),
+                    "has_translation": .string("unknown"),
+                    "has_romanization": .string("unknown"),
+                    "conversion_path": .string("lrc_to_ttml")
+                ]
+            )
+            return nil
+        }
     }
 
     nonisolated private static func importAudioFileToLibrary(
