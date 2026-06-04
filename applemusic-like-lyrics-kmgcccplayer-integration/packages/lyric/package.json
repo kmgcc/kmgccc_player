@@ -1,0 +1,69 @@
+{
+	"name": "@applemusic-like-lyrics/lyric",
+	"version": "1.0.0",
+	"description": "一个歌词解析/生成模块，着重于歌词内容解析，支持多种格式",
+	"repository": {
+		"url": "https://github.com/amll-dev/applemusic-like-lyrics.git",
+		"directory": "packages/lyric",
+		"type": "git"
+	},
+	"license": "GPL-3.0",
+	"nx": {
+		"tags": [
+			"library"
+		],
+		"targets": {
+			"test": {
+				"executor": "nx:run-commands",
+				"options": {
+					"command": "vitest test",
+					"cwd": "packages/lyric"
+				}
+			},
+			"nx-release-publish": {
+				"executor": "@nx/js:release-publish",
+				"dependsOn": []
+			}
+		}
+	},
+	"type": "module",
+	"files": [
+		"dist"
+	],
+	"main": "./dist/amll-lyric.cjs",
+	"module": "./dist/amll-lyric.mjs",
+	"types": "./dist/amll-lyric.d.mts",
+	"exports": {
+		"import": {
+			"types": "./dist/amll-lyric.d.mts",
+			"default": "./dist/amll-lyric.mjs"
+		},
+		"require": {
+			"types": "./dist/amll-lyric.d.cts",
+			"default": "./dist/amll-lyric.cjs"
+		}
+	},
+	"scripts": {
+		"build:docs": "typedoc --plugin typedoc-plugin-markdown --out docs src/index.ts",
+		"typecheck": "tsgo -b",
+		"build-only": "tsdown",
+		"build": "run-p typecheck \"build-only {@}\" --",
+		"build:dev": "tsdown",
+		"fmt": "biome format --write ./src",
+		"dev": "vite dev",
+		"test": "vitest test",
+		"test:watch": "vitest test --watch",
+		"test:coverage": "vitest test --coverage"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "catalog:",
+		"@types/node": "^25.5.2",
+		"@types/pako": "^2.0.4",
+		"tsdown": "catalog:",
+		"vitest": "catalog:"
+	},
+	"dependencies": {
+		"@applemusic-like-lyrics/ttml": "workspace:^",
+		"pako": "^2.1.0"
+	}
+}

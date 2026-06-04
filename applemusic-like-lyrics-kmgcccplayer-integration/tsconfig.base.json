@@ -1,0 +1,51 @@
+{
+	"compilerOptions": {
+		// Environment setup & latest features
+		"lib": ["ESNext", "DOM", "DOM.Iterable"],
+		"target": "ESNext",
+		"module": "Preserve",
+		"moduleDetection": "force",
+		"jsx": "react-jsx",
+		"allowJs": false,
+
+		// Bundler mode
+		"moduleResolution": "bundler",
+		"allowImportingTsExtensions": true,
+		"verbatimModuleSyntax": true,
+		"noEmit": true,
+		"isolatedModules": true,
+		"incremental": true,
+		"declaration": true,
+		"isolatedDeclarations": true,
+
+		// Best practices
+		"strict": true,
+		"skipLibCheck": true,
+		"noFallthroughCasesInSwitch": true,
+		"noImplicitOverride": true,
+		"forceConsistentCasingInFileNames": true,
+
+		// Some stricter flags
+		"noUnusedLocals": true,
+		"noUnusedParameters": true,
+		"noPropertyAccessFromIndexSignature": false,
+		"noUncheckedIndexedAccess": false,
+		"exactOptionalPropertyTypes": false,
+		"noImplicitReturns": true,
+
+		// 映射各个子包的路径以便让 IDE 可以跳转到实际的源码而不是 dist 目录
+		"paths": {
+			"@applemusic-like-lyrics/core": ["./packages/core/src/index.ts"],
+			"@applemusic-like-lyrics/core/style.css": [
+				"./packages/core/src/styles/index.css"
+			],
+			"@applemusic-like-lyrics/react": ["./packages/react/src/index.ts"],
+			"@applemusic-like-lyrics/vue": ["./packages/vue/src/index.ts"],
+			"@applemusic-like-lyrics/react-full": [
+				"./packages/react-full/src/index.ts"
+			],
+			"@applemusic-like-lyrics/lyric": ["./packages/lyric/src/index.ts"],
+			"@applemusic-like-lyrics/ttml": ["./packages/ttml/src/index.ts"]
+		}
+	}
+}

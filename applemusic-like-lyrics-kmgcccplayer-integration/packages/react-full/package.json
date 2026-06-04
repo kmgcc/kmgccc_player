@@ -1,0 +1,88 @@
+{
+	"name": "@applemusic-like-lyrics/react-full",
+	"version": "0.4.0",
+	"description": "AMLL 组件库的 React 绑定，但是更加完备且高度灵活",
+	"repository": {
+		"url": "https://github.com/amll-dev/applemusic-like-lyrics.git",
+		"directory": "packages/react-full",
+		"type": "git"
+	},
+	"license": "GPL-3.0",
+	"nx": {
+		"tags": [
+			"library"
+		],
+		"targets": {
+			"nx-release-publish": {
+				"executor": "@nx/js:release-publish",
+				"dependsOn": []
+			}
+		}
+	},
+	"type": "module",
+	"main": "./dist/amll-react-framework.cjs",
+	"module": "./dist/amll-react-framework.mjs",
+	"typings": "./dist/amll-react-framework.d.mts",
+	"style": "./dist/style.css",
+	"exports": {
+		".": {
+			"import": {
+				"types": "./dist/amll-react-framework.d.mts",
+				"default": "./dist/amll-react-framework.mjs"
+			},
+			"require": {
+				"types": "./dist/amll-react-framework.d.cts",
+				"default": "./dist/amll-react-framework.cjs"
+			}
+		},
+		"./style.css": {
+			"import": "./dist/style.css",
+			"require": "./dist/style.css"
+		}
+	},
+	"sideEffects": [
+		"*.css"
+	],
+	"files": [
+		"dist"
+	],
+	"scripts": {
+		"build:docs": "typedoc --plugin typedoc-plugin-markdown --out docs src/index.ts",
+		"typecheck": "tsgo -b",
+		"build-only": "tsdown",
+		"build": "run-p typecheck \"build-only {@}\" --",
+		"build:dev": "tsdown",
+		"fmt": "biome format --write ./src",
+		"dev": "nx run @applemusic-like-lyrics/playground-react-full:dev"
+	},
+	"dependencies": {
+		"@applemusic-like-lyrics/core": "workspace:^",
+		"@applemusic-like-lyrics/react": "workspace:^",
+		"@ungap/structured-clone": "catalog:",
+		"classnames": "catalog:",
+		"corner-smoothing": "^0.1.5",
+		"framer-motion": "catalog:",
+		"react-toastify": "^11.0.5"
+	},
+	"peerDependencies": {
+		"jotai": "^2",
+		"react": "^19",
+		"react-dom": "^19"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "catalog:",
+		"@rolldown/plugin-babel": "catalog:",
+		"@svgr/core": "^8.1.0",
+		"@svgr/plugin-jsx": "^8.1.0",
+		"@tsdown/css": "catalog:",
+		"@types/react": "catalog:",
+		"@types/react-dom": "catalog:",
+		"@types/ungap__structured-clone": "^1.2.0",
+		"babel-plugin-react-compiler": "^1.0.0",
+		"jotai-babel": "catalog:",
+		"react-compiler-runtime": "^1.0.0",
+		"tsdown": "catalog:",
+		"typedoc": "catalog:",
+		"typedoc-plugin-markdown": "catalog:"
+	}
+}
