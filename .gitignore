@@ -1,3 +1,7 @@
+# docs/ contains private working notes, AI-generated docs, and local web assets.
+# Tracked by its own Git repo inside docs/ for local version control.
+docs/
+
 # Manual exclusions
 # BKThemes PNGs are local development master art assets. Ship encrypted
 # EncryptedArtAssets/*.kmgasset instead.
@@ -27,7 +31,8 @@ myPlayer2/Assets.xcassets/
 # Tool working directories
 .opencode/
 .sisyphus/
-
+.codegraph/
+.codex/
 
 # macOS
 .DS_Store
@@ -44,6 +49,8 @@ build/
 *.moved-aside
 DerivedData
 .derivedData/
+.derivedDataAudioAudit/
+.derivedDataCodex/
 .derivedDataLocal/
 .derivedDataLocal2/
 *.hmap
@@ -75,3 +82,5 @@ Tools/lddc-server/
 .claude/worktrees/
 .worktrees/
 superteam/
+
+
