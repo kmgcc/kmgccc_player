@@ -363,16 +363,24 @@ final class LyricsFetchProgressDialogPresenter: NSObject, NSWindowDelegate {
 
                                 let ttml: String
                                 if let transLyrics = transLyrics, !transLyrics.isEmpty {
-                                    ttml = try await TTMLConverter.shared.convertToTTMLWithTranslation(
+                                    let converted = try await TTMLConverter.shared.convertToTTMLWithTranslation(
                                         origLyrics: origLyrics,
                                         transLyrics: transLyrics,
                                         stripMetadata: false
                                     )
+                                    guard let normalized = LyricsFormatSupport.normalizedTTMLText(converted) else {
+                                        throw TTMLConversionError.conversionFailed("LDDC 转换结果 TTML 结构无效")
+                                    }
+                                    ttml = normalized
                                 } else {
-                                    ttml = try await TTMLConverter.shared.convertToTTML(
+                                    let converted = try await TTMLConverter.shared.convertToTTML(
                                         rawLyrics: origLyrics,
                                         stripMetadata: false
                                     )
+                                    guard let normalized = LyricsFormatSupport.normalizedTTMLText(converted) else {
+                                        throw TTMLConversionError.conversionFailed("LDDC 转换结果 TTML 结构无效")
+                                    }
+                                    ttml = normalized
                                 }
 
                                 await MainActor.run {

@@ -4661,14 +4661,23 @@ final class FileImportService: FileImportServiceProtocol {
 
     nonisolated private static func prepareEmbeddedTTMLLyrics(_ embeddedLyrics: String?) async -> String? {
         guard let embeddedLyrics, !embeddedLyrics.isEmpty else { return nil }
-        if embeddedLyrics.lowercased().contains("<tt") {
-            return embeddedLyrics
+        if let ttml = LyricsFormatSupport.normalizedTTMLText(embeddedLyrics) {
+            return ttml
+        }
+        guard LyricsFormatSupport.looksLikeLRC(embeddedLyrics) else {
+            Log.warning("[Import] embedded lyrics skipped: unsupported non-TTML/non-LRC format", category: .lyrics)
+            return nil
         }
         do {
-            return try await TTMLConverter.shared.convertToTTML(
+            let converted = try await TTMLConverter.shared.convertToTTML(
                 rawLyrics: embeddedLyrics,
                 stripMetadata: true
             )
+            guard let ttml = LyricsFormatSupport.normalizedTTMLText(converted) else {
+                Log.warning("[Import] embedded lyrics conversion produced invalid TTML", category: .lyrics)
+                return nil
+            }
+            return ttml
         } catch {
             Log.warning("[Import] embedded lyrics conversion failed: \(error.localizedDescription)", category: .lyrics)
             return nil

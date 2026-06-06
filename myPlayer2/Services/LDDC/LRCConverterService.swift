@@ -11,12 +11,19 @@ import Foundation
 private struct LyricSegment {
     var time: Double
     var text: String
+    var leadingSpace: String = ""
+    var trailingSpace: String = ""
     var endTime: Double?
     var nextLineStart: Double?
 }
 
 private struct LyricLine {
     var segments: [LyricSegment]
+}
+
+private struct TranslationLine {
+    var time: Double
+    var text: String
 }
 
 private enum LyricType {
@@ -80,9 +87,7 @@ actor LRCConverterService {
             }
             
             if !isMetadataLine {
-                if let segments = parseLRCLineWithCharTiming(trimmedLine) {
-                    lyricsData.append(LyricLine(segments: segments))
-                }
+                lyricsData.append(contentsOf: parseLRCLine(trimmedLine))
             }
         }
         
@@ -105,8 +110,11 @@ actor LRCConverterService {
         case .line:
             processedLyricsData = calculateLineEndTimes(processedLyricsData)
         case .char:
-            processedLyricsData = processedLyricsData.map { line in
-                LyricLine(segments: calculateSegmentEndTimes(line.segments))
+            processedLyricsData = processedLyricsData.enumerated().map { index, line in
+                let nextLineStart = index + 1 < processedLyricsData.count
+                    ? processedLyricsData[index + 1].segments.first?.time
+                    : nil
+                return LyricLine(segments: calculateSegmentEndTimes(line.segments, nextLineStart: nextLineStart))
             }
         }
         
@@ -137,9 +145,7 @@ actor LRCConverterService {
             }
             
             if !isMetadataLine {
-                if let segments = parseLRCLineWithCharTiming(trimmedLine) {
-                    lyricsData.append(LyricLine(segments: segments))
-                }
+                lyricsData.append(contentsOf: parseLRCLine(trimmedLine))
             }
         }
         
@@ -165,8 +171,11 @@ actor LRCConverterService {
         case .line:
             lyricsData = calculateLineEndTimes(lyricsData)
         case .char:
-            lyricsData = lyricsData.map { line in
-                LyricLine(segments: calculateSegmentEndTimes(line.segments))
+            lyricsData = lyricsData.enumerated().map { index, line in
+                let nextLineStart = index + 1 < lyricsData.count
+                    ? lyricsData[index + 1].segments.first?.time
+                    : nil
+                return LyricLine(segments: calculateSegmentEndTimes(line.segments, nextLineStart: nextLineStart))
             }
         }
         
@@ -190,20 +199,29 @@ actor LRCConverterService {
         return metadata
     }
     
-    private func parseTimeToSeconds(_ timeStr: String) -> Double {
-        let pattern = "^(\\d+):(\\d+)\\.(\\d+)$"
+    private func parseTimeToSeconds(_ timeStr: String) -> Double? {
+        let pattern = "^(\\d+):(\\d{1,2})(?:[\\.,](\\d{1,3}))?$"
         guard let regex = try? NSRegularExpression(pattern: pattern, options: []),
               let match = regex.firstMatch(in: timeStr, options: [], range: NSRange(timeStr.startIndex..., in: timeStr)) else {
-            return 0
+            return nil
         }
         
         let minutesRange = Range(match.range(at: 1), in: timeStr)!
         let secondsRange = Range(match.range(at: 2), in: timeStr)!
-        let millisecondsRange = Range(match.range(at: 3), in: timeStr)!
         
         let minutes = Int(timeStr[minutesRange]) ?? 0
         let seconds = Int(timeStr[secondsRange]) ?? 0
-        let milliseconds = Int(timeStr[millisecondsRange]) ?? 0
+        guard (0..<60).contains(seconds) else { return nil }
+
+        let milliseconds: Int
+        if match.range(at: 3).location != NSNotFound,
+           let millisecondsRange = Range(match.range(at: 3), in: timeStr) {
+            let raw = String(timeStr[millisecondsRange])
+            let padded = raw.padding(toLength: 3, withPad: "0", startingAt: 0)
+            milliseconds = Int(String(padded.prefix(3))) ?? 0
+        } else {
+            milliseconds = 0
+        }
         
         return Double(minutes * 60 + seconds) + Double(milliseconds) / 1000.0
     }
@@ -255,58 +273,62 @@ actor LRCConverterService {
     }
     
     private func filterSongInfoLines(_ lyricsData: [LyricLine]) -> [LyricLine] {
-        var lastInfoIndex = -1
-        
-        for (i, lineData) in lyricsData.enumerated() {
-            for segment in lineData.segments {
-                if isSongInfoLine(segment.text) {
-                    lastInfoIndex = i
-                    break
-                }
-            }
+        lyricsData.filter { lineData in
+            !lineData.segments.contains { isSongInfoLine($0.text) }
         }
-        
-        if lastInfoIndex >= 0 {
-            return Array(lyricsData[(lastInfoIndex + 1)...])
-        }
-        
-        return lyricsData
     }
     
-    private func parseLRCLineWithCharTiming(_ line: String) -> [LyricSegment]? {
-        let pattern = "\\[(\\d+:\\d+\\.\\d+)\\]([^\\[]*)"
+    private func parseLRCLine(_ line: String) -> [LyricLine] {
+        let pattern = "\\[(\\d+:\\d{1,2}(?:[\\.,]\\d{1,3})?)\\]([^\\[]*)"
         guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
-            return nil
+            return []
         }
         
         let matches = regex.matches(in: line, options: [], range: NSRange(line.startIndex..., in: line))
-        if matches.isEmpty { return nil }
-        
+        if matches.isEmpty { return [] }
+
+        let parsed = matches.compactMap { match -> (time: Double, rawText: String)? in
+            guard let timeRange = Range(match.range(at: 1), in: line),
+                  let textRange = Range(match.range(at: 2), in: line),
+                  let time = parseTimeToSeconds(String(line[timeRange])) else {
+                return nil
+            }
+            return (time, String(line[textRange]))
+        }
+        guard !parsed.isEmpty else { return [] }
+
+        let nonEmptyTexts = parsed
+            .map { $0.rawText.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        if parsed.count > 1,
+           nonEmptyTexts.count == 1,
+           parsed.last?.rawText.trimmingCharacters(in: .whitespaces).isEmpty == false {
+            let text = parsed.last?.rawText.trimmingCharacters(in: .whitespaces) ?? ""
+            return parsed.map { item in
+                LyricLine(segments: [
+                    LyricSegment(time: item.time, text: text)
+                ])
+            }
+        }
+
         var segments: [LyricSegment] = []
-        let matchCount = matches.count
         
-        for (i, match) in matches.enumerated() {
-            let timeRange = Range(match.range(at: 1), in: line)!
-            let textRange = Range(match.range(at: 2), in: line)!
-            
-            let timeStr = String(line[timeRange])
-            let text = String(line[textRange])
-            
-            let trimmedText = text.trimmingCharacters(in: .whitespaces)
+        for (i, item) in parsed.enumerated() {
+            let trimmedText = item.rawText.trimmingCharacters(in: .whitespaces)
             if !trimmedText.isEmpty {
                 var segment = LyricSegment(
-                    time: parseTimeToSeconds(timeStr),
+                    time: item.time,
                     text: trimmedText,
+                    leadingSpace: leadingWhitespace(in: item.rawText),
+                    trailingSpace: trailingWhitespace(in: item.rawText),
                     endTime: nil,
                     nextLineStart: nil
                 )
                 
-                if i + 1 < matchCount {
-                    let nextTextRange = Range(matches[i + 1].range(at: 2), in: line)!
-                    let nextText = String(line[nextTextRange]).trimmingCharacters(in: .whitespaces)
+                if i + 1 < parsed.count {
+                    let nextText = parsed[i + 1].rawText.trimmingCharacters(in: .whitespaces)
                     if nextText.isEmpty {
-                        let nextTimeRange = Range(matches[i + 1].range(at: 1), in: line)!
-                        segment.nextLineStart = parseTimeToSeconds(String(line[nextTimeRange]))
+                        segment.nextLineStart = parsed[i + 1].time
                     }
                 }
                 
@@ -314,11 +336,11 @@ actor LRCConverterService {
             }
         }
         
-        return segments.isEmpty ? nil : segments
+        return segments.isEmpty ? [] : [LyricLine(segments: segments)]
     }
     
-    private func parseTranslationLRC(_ content: String, stripMetadata: Bool) throws -> [Double: String] {
-        var translations: [Double: String] = [:]
+    private func parseTranslationLRC(_ content: String, stripMetadata: Bool) throws -> [TranslationLine] {
+        var translations: [TranslationLine] = []
         let lines = content.components(separatedBy: .newlines)
         
         for line in lines {
@@ -330,7 +352,7 @@ actor LRCConverterService {
             }
             if isMetadataLine { continue }
             
-            let pattern = "^\\[(\\d+:\\d+\\.\\d+)\\](.+)$"
+            let pattern = "^\\[(\\d+:\\d{1,2}(?:[\\.,]\\d{1,3})?)\\](.+)$"
             guard let regex = try? NSRegularExpression(pattern: pattern, options: []),
                   let match = regex.firstMatch(in: trimmedLine, options: [], range: NSRange(trimmedLine.startIndex..., in: trimmedLine)) else {
                 continue
@@ -346,25 +368,20 @@ actor LRCConverterService {
                 continue
             }
             
-            let startTime = parseTimeToSeconds(timeStr)
-            translations[startTime] = text
+            guard let startTime = parseTimeToSeconds(timeStr) else { continue }
+            translations.append(TranslationLine(time: startTime, text: text))
         }
         
         return translations
     }
     
-    private func findTranslationForLine(_ lineStartTime: Double, _ translations: [Double: String], tolerance: Double = 0.5) -> String? {
-        if let translation = translations[lineStartTime] {
-            return translation
-        }
-        
-        for (transTime, transText) in translations {
-            if abs(transTime - lineStartTime) <= tolerance {
-                return transText
-            }
-        }
-        
-        return nil
+    private func findTranslationForLine(_ lineStartTime: Double, _ translations: [TranslationLine], tolerance: Double = 1.2) -> String? {
+        translations
+            .map { (line: $0, distance: abs($0.time - lineStartTime)) }
+            .filter { $0.distance <= tolerance }
+            .min { $0.distance < $1.distance }?
+            .line
+            .text
     }
     
     private func detectLyricType(_ lyricsData: [LyricLine]) -> LyricType {
@@ -397,9 +414,9 @@ actor LRCConverterService {
             var segment = lineData.segments[0]
             
             if let nextLineStart = segment.nextLineStart {
-                segment.endTime = nextLineStart
+                segment.endTime = max(segment.time, nextLineStart)
             } else if i + 1 < count && !lyricsData[i + 1].segments.isEmpty {
-                segment.endTime = lyricsData[i + 1].segments[0].time
+                segment.endTime = max(segment.time, lyricsData[i + 1].segments[0].time)
             } else {
                 let textLen = segment.text.count
                 let duration = max(2.0, Double(textLen) * 0.3)
@@ -412,14 +429,20 @@ actor LRCConverterService {
         return result
     }
     
-    private func calculateSegmentEndTimes(_ segments: [LyricSegment], defaultDuration: Double = 0.5) -> [LyricSegment] {
+    private func calculateSegmentEndTimes(
+        _ segments: [LyricSegment],
+        nextLineStart: Double? = nil,
+        defaultDuration: Double = 0.5
+    ) -> [LyricSegment] {
         var result: [LyricSegment] = []
         let count = segments.count
         
         for i in 0..<count {
             var segment = segments[i]
             if i + 1 < count {
-                segment.endTime = segments[i + 1].time
+                segment.endTime = max(segment.time, segments[i + 1].time)
+            } else if let nextLineStart {
+                segment.endTime = max(segment.time, nextLineStart)
             } else {
                 let textLen = segment.text.count
                 let duration = max(defaultDuration, Double(textLen) * 0.2)
@@ -470,20 +493,18 @@ actor LRCConverterService {
             xmlParts.append("<p ttm:agent=\"v1\" itunes:key=\"L\(i + 1)\" begin=\"" + formatTimeForTTML(lineStart) + "\" end=\"" + formatTimeForTTML(lineEnd) + "\">")
             
             let segments = lineData.segments
-            for (j, segment) in segments.enumerated() {
+            for segment in segments {
                 let begin = formatTimeForTTML(segment.time)
                 let end = formatTimeForTTML(segment.endTime ?? segment.time + 0.5)
                 let text = escapeXML(segment.text)
                 
-                var span = "<span begin=\"\(begin)\" end=\"\(end)\">\(text)</span>"
-                
-                if j < segments.count - 1 {
-                    if isEnglishWord(segment.text) {
-                        let nextSegment = segments[j + 1]
-                        if isEnglishWord(nextSegment.text) {
-                            span += " "
-                        }
-                    }
+                var span = ""
+                if !segment.leadingSpace.isEmpty {
+                    span += escapeXML(segment.leadingSpace)
+                }
+                span += "<span begin=\"\(begin)\" end=\"\(end)\">\(text)</span>"
+                if !segment.trailingSpace.isEmpty {
+                    span += escapeXML(segment.trailingSpace)
                 }
                 
                 xmlParts.append(span)
@@ -502,7 +523,7 @@ actor LRCConverterService {
     private func createTTMLStructureWithTranslation(
         metadata: [String: String],
         lyricsData: [LyricLine],
-        translations: [Double: String]
+        translations: [TranslationLine]
     ) -> String {
         var xmlParts: [String] = []
         
@@ -541,20 +562,18 @@ actor LRCConverterService {
             xmlParts.append("<p begin=\"" + formatTimeForTTML(lineStart) + "\" end=\"" + formatTimeForTTML(lineEnd) + "\" ttm:agent=\"v1\" itunes:key=\"L\(i + 1)\">")
             
             let segments = lineData.segments
-            for (j, segment) in segments.enumerated() {
+            for segment in segments {
                 let begin = formatTimeForTTML(segment.time)
                 let end = formatTimeForTTML(segment.endTime ?? segment.time + 0.5)
                 let text = escapeXML(segment.text)
                 
-                var span = "<span begin=\"\(begin)\" end=\"\(end)\">\(text)</span>"
-                
-                if j < segments.count - 1 {
-                    if isEnglishWord(segment.text) {
-                        let nextSegment = segments[j + 1]
-                        if isEnglishWord(nextSegment.text) {
-                            span += " "
-                        }
-                    }
+                var span = ""
+                if !segment.leadingSpace.isEmpty {
+                    span += escapeXML(segment.leadingSpace)
+                }
+                span += "<span begin=\"\(begin)\" end=\"\(end)\">\(text)</span>"
+                if !segment.trailingSpace.isEmpty {
+                    span += escapeXML(segment.trailingSpace)
                 }
                 
                 xmlParts.append(span)
@@ -575,13 +594,6 @@ actor LRCConverterService {
         return xmlParts.joined()
     }
     
-    private func isEnglishWord(_ text: String) -> Bool {
-        let trimmed = text.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return false }
-        let hasAsciiLetter = trimmed.contains { $0.isASCII && $0.isLetter }
-        return trimmed.allSatisfy { $0.isASCII } && hasAsciiLetter
-    }
-    
     private func escapeXML(_ text: String) -> String {
         var result = text
         result = result.replacingOccurrences(of: "&", with: "&amp;")
@@ -590,5 +602,15 @@ actor LRCConverterService {
         result = result.replacingOccurrences(of: "\"", with: "&quot;")
         result = result.replacingOccurrences(of: "'", with: "&apos;")
         return result
+    }
+
+    private func leadingWhitespace(in text: String) -> String {
+        let prefix = text.prefix { $0 == " " || $0 == "\t" }
+        return prefix.isEmpty ? "" : " "
+    }
+
+    private func trailingWhitespace(in text: String) -> String {
+        let suffix = text.reversed().prefix { $0 == " " || $0 == "\t" }
+        return suffix.isEmpty ? "" : " "
     }
 }

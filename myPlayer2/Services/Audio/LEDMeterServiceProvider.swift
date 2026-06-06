@@ -21,6 +21,8 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
     private let mixerProvider: () -> AVAudioMixerNode
     private var externalPollTimer: Timer?
     private var externalPulse: UInt64 = 0
+    private var externalIsPlaying: Bool = true
+    private var externalPollSuspendWork: DispatchWorkItem?
 
     /// Active sampling sessions. The provider keeps the underlying meter alive
     /// while at least one session is held (Now Playing scene, fullscreen,
@@ -112,6 +114,17 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
 
     func updatePlaybackState(isPlaying: Bool) {
         _service?.updatePlaybackState(isPlaying: isPlaying)
+        externalIsPlaying = isPlaying
+        // Idle-CPU (external mode): the 30Hz pulse only exists to re-read the
+        // simulator's changing frames. While paused, the simulator idle-suspends
+        // to a frozen frame, so stop the pulse after a short settle (lets the LED
+        // show the fade-out first) and restart it on resume.
+        guard playbackSource.isExternal else { return }
+        if isPlaying {
+            startExternalPolling()
+        } else {
+            scheduleExternalPollingSuspend()
+        }
     }
 
     /// Force-drop nowPlaying-only heavy state without changing provider lifetime.
@@ -159,7 +172,13 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
     // MARK: - External Polling
 
     private func startExternalPolling() {
+        externalPollSuspendWork?.cancel()
+        externalPollSuspendWork = nil
         guard externalPollTimer == nil else { return }
+        // While externally paused the simulator output is frozen, so there is
+        // nothing new to re-read — skip the 30Hz pulse. The static frame is
+        // still read once on the next SwiftUI evaluation.
+        guard externalIsPlaying else { return }
         let timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, self.playbackSource.isExternal else { return }
@@ -170,7 +189,22 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
         externalPollTimer = timer
     }
 
+    /// Stop the pulse a short while after pause so the LED can show the
+    /// simulator's fade-out before the re-read loop goes idle.
+    private func scheduleExternalPollingSuspend() {
+        externalPollSuspendWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            guard self.playbackSource.isExternal, !self.externalIsPlaying else { return }
+            self.stopExternalPolling()
+        }
+        externalPollSuspendWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2, execute: work)
+    }
+
     private func stopExternalPolling() {
+        externalPollSuspendWork?.cancel()
+        externalPollSuspendWork = nil
         externalPollTimer?.invalidate()
         externalPollTimer = nil
     }

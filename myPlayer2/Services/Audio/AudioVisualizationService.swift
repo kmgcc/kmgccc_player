@@ -260,9 +260,12 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
         lastTickTime = now
 
         // Idle-CPU: once paused and the idle pose has settled, stop ticking
-        // (freeze the last published frame) until playback resumes. External
-        // mode keeps its own cadence via the simulator, so it is exempt here.
-        if !isPlaying, !isExternalMode, let ps = pauseStartTime,
+        // (freeze the last published frame) until playback resumes. This applies
+        // to external mode too — the simulator idle-suspends in parallel, so a
+        // paused Apple Music / system source no longer drives a 30Hz spectrum
+        // tick (nor the mesh background's 30Hz JS bridge calls). Resume is
+        // driven by skins/mesh/fullscreen via updatePlaybackState(true).
+        if !isPlaying, let ps = pauseStartTime,
            now - ps >= Constants.idleSuspendSeconds {
             isIdleSuspended = true
             stopTimerLocked()
@@ -334,8 +337,11 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
 
         guard callbacks.isEmpty == false else { return }
 
-        for callback in callbacks {
-            Task { @MainActor in
+        // Coalesce into a single main-actor hop instead of one Task per
+        // consumer (skin spectrum + mesh background + fullscreen can be active
+        // together). Same wave delivered to each callback, order preserved.
+        Task { @MainActor in
+            for callback in callbacks {
                 callback(wave)
             }
         }
@@ -400,6 +406,9 @@ nonisolated final class SpectrumProcessor: @unchecked Sendable {
 
     private let bandCount: Int = 9
     private var smoothedBands: [Float]
+    /// Reused per-bin scratch buffer (see `processBins`). Avoids a ~1024-float
+    /// allocation + zero-fill on every 30Hz tick. Not published, so reuse is safe.
+    private var scaledBinsBuffer: [Float] = []
 
     init() {
         self.smoothedBands = [Float](repeating: 0, count: bandCount)
@@ -466,7 +475,12 @@ nonisolated final class SpectrumProcessor: @unchecked Sendable {
     private func processBins(magnitudes: [Float]) -> [Float] {
         guard !magnitudes.isEmpty else { return [] }
         let count = magnitudes.count
-        var scaledBins = [Float](repeating: 0, count: count)
+        // Reuse the scratch buffer across ticks; every element is overwritten in
+        // the loop below, so no zero-fill is needed. The buffer is only read by
+        // `computeBandsFromScaledBins` within the same tick and never escapes.
+        if scaledBinsBuffer.count != count {
+            scaledBinsBuffer = [Float](repeating: 0, count: count)
+        }
 
         for i in 0..<count {
             // amp = sqrt(mag) if mag is |z|^2
@@ -483,9 +497,9 @@ nonisolated final class SpectrumProcessor: @unchecked Sendable {
             let tilt = (0.4 + progress * 0.6) * Constants.tiltAmount
             scaled -= tilt
 
-            scaledBins[i] = max(0.0, scaled)
+            scaledBinsBuffer[i] = max(0.0, scaled)
         }
-        return scaledBins
+        return scaledBinsBuffer
     }
 
     private func computeBandsFromScaledBins(scaledBins: [Float], fftSize: Int, sampleRate: Float)

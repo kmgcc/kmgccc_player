@@ -181,12 +181,12 @@
 "edit.track.description" = "歌曲描述";
 "edit.track.description_placeholder" = "可选，用于主页歌曲卡片横幅展示";
 "edit.track.duration" = "时长";
-"edit.track.lyrics" = "歌词 (TTML/LRC)";
+"edit.track.lyrics" = "歌词 (TTML)";
 "edit.track.import_lyrics" = "导入...";
 "edit.track.offset" = "歌词时间偏移";
 "edit.track.reset" = "重置";
 "edit.track.offset_desc" = "将所有歌词时间轴提前或延后。";
-"edit.track.paste_desc" = "粘贴 TTML 或 LRC 歌词，或从文件导入";
+"edit.track.paste_desc" = "仅支持 TTML 歌词。LRC / TXT / 普通文本请通过歌词搜索或导入流程自动转换。";
 "edit.track.cancel" = "取消";
 "edit.track.save" = "保存更改";
 

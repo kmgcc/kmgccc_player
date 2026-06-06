@@ -155,6 +155,11 @@ nonisolated final class LEDMeterProcessor: @unchecked Sendable {
     private var fftImag: [Float]
     private var fftMagnitudes: [Float]
 
+    /// Cached center-out LED index order. Only depends on `ledCount`, so it is
+    /// recomputed when the count changes rather than on every 30Hz frame.
+    private var cachedCenterOutOrder: [Int] = []
+    private var cachedCenterOutCount: Int = -1
+
     private let configLock = NSLock()
 
     init(config: LEDMeterConfig) {
@@ -307,7 +312,7 @@ nonisolated final class LEDMeterProcessor: @unchecked Sendable {
         // LED levels (continuous values; rendering layer handles quantization)
         let ledCount = max(1, currentConfig.ledCount)
         var leds = [Float](repeating: 0, count: ledCount)
-        let order = centerOutOrder(count: ledCount)
+        let order = centerOutOrderCached(count: ledCount)
 
         let x = env * Float(ledCount)
         for i in 0..<ledCount {
@@ -490,6 +495,14 @@ nonisolated final class LEDMeterProcessor: @unchecked Sendable {
             index += stride
         }
         return result
+    }
+
+    private func centerOutOrderCached(count: Int) -> [Int] {
+        if cachedCenterOutCount != count {
+            cachedCenterOutOrder = centerOutOrder(count: count)
+            cachedCenterOutCount = count
+        }
+        return cachedCenterOutOrder
     }
 
     private func centerOutOrder(count: Int) -> [Int] {

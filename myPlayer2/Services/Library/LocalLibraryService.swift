@@ -1002,9 +1002,9 @@ final class LocalLibraryService {
         let ttmlText = track.ttmlLyricText?.trimmingCharacters(in: .whitespacesAndNewlines)
         let legacyText = track.lyricsText?.trimmingCharacters(in: .whitespacesAndNewlines)
         let ttmlURL = folder.appendingPathComponent("lyrics.ttml")
-        let plainLyricsURL = folder.appendingPathComponent("lyrics.txt")
 
-        if let ttml = ttmlText, !ttml.isEmpty {
+        if let rawTTML = ttmlText, !rawTTML.isEmpty,
+           let ttml = LyricsFormatSupport.normalizedTTMLText(rawTTML) {
             try ttml.write(to: ttmlURL, atomically: true, encoding: .utf8)
             Self.removeLyricAssetFiles(
                 named: [existing.lyricsFileName, "lyrics.txt"],
@@ -1019,34 +1019,20 @@ final class LocalLibraryService {
             )
         }
 
-        if let legacy = legacyText, !legacy.isEmpty {
-            let isTTML = legacy.lowercased().contains("<tt") && legacy.contains("</")
-            if isTTML {
-                try legacy.write(to: ttmlURL, atomically: true, encoding: .utf8)
-                Self.removeLyricAssetFiles(
-                    named: [existing.lyricsFileName, "lyrics.txt"],
-                    in: folder,
-                    fileManager: fileManager
-                )
-                return TrackPersistenceReferences(
-                    artworkFileName: existing.artworkFileName,
-                    lyricsFileName: nil,
-                    lyricsType: nil,
-                    ttmlLyricsFileName: "lyrics.ttml"
-                )
-            }
-
-            try legacy.write(to: plainLyricsURL, atomically: true, encoding: .utf8)
+        if let legacy = legacyText,
+           !legacy.isEmpty,
+           let ttml = LyricsFormatSupport.normalizedTTMLText(legacy) {
+            try ttml.write(to: ttmlURL, atomically: true, encoding: .utf8)
             Self.removeLyricAssetFiles(
-                named: [existing.ttmlLyricsFileName, "lyrics.ttml"],
+                named: [existing.lyricsFileName, "lyrics.txt"],
                 in: folder,
                 fileManager: fileManager
             )
             return TrackPersistenceReferences(
                 artworkFileName: existing.artworkFileName,
-                lyricsFileName: "lyrics.txt",
-                lyricsType: "plain",
-                ttmlLyricsFileName: nil
+                lyricsFileName: nil,
+                lyricsType: nil,
+                ttmlLyricsFileName: "lyrics.ttml"
             )
         }
 
@@ -1073,9 +1059,9 @@ final class LocalLibraryService {
         let ttmlText = snapshot.ttmlLyricText?.trimmingCharacters(in: .whitespacesAndNewlines)
         let legacyText = snapshot.lyricsText?.trimmingCharacters(in: .whitespacesAndNewlines)
         let ttmlURL = folder.appendingPathComponent("lyrics.ttml")
-        let plainLyricsURL = folder.appendingPathComponent("lyrics.txt")
 
-        if let ttml = ttmlText, !ttml.isEmpty {
+        if let rawTTML = ttmlText, !rawTTML.isEmpty,
+           let ttml = LyricsFormatSupport.normalizedTTMLText(rawTTML) {
             try ttml.write(to: ttmlURL, atomically: true, encoding: .utf8)
             removeLyricAssetFiles(
                 named: [existing.lyricsFileName, "lyrics.txt"],
@@ -1090,34 +1076,20 @@ final class LocalLibraryService {
             )
         }
 
-        if let legacy = legacyText, !legacy.isEmpty {
-            let isTTML = legacy.lowercased().contains("<tt") && legacy.contains("</")
-            if isTTML {
-                try legacy.write(to: ttmlURL, atomically: true, encoding: .utf8)
-                removeLyricAssetFiles(
-                    named: [existing.lyricsFileName, "lyrics.txt"],
-                    in: folder,
-                    fileManager: fileManager
-                )
-                return TrackPersistenceReferences(
-                    artworkFileName: existing.artworkFileName,
-                    lyricsFileName: nil,
-                    lyricsType: nil,
-                    ttmlLyricsFileName: "lyrics.ttml"
-                )
-            }
-
-            try legacy.write(to: plainLyricsURL, atomically: true, encoding: .utf8)
+        if let legacy = legacyText,
+           !legacy.isEmpty,
+           let ttml = LyricsFormatSupport.normalizedTTMLText(legacy) {
+            try ttml.write(to: ttmlURL, atomically: true, encoding: .utf8)
             removeLyricAssetFiles(
-                named: [existing.ttmlLyricsFileName, "lyrics.ttml"],
+                named: [existing.lyricsFileName, "lyrics.txt"],
                 in: folder,
                 fileManager: fileManager
             )
             return TrackPersistenceReferences(
                 artworkFileName: existing.artworkFileName,
-                lyricsFileName: "lyrics.txt",
-                lyricsType: "plain",
-                ttmlLyricsFileName: nil
+                lyricsFileName: nil,
+                lyricsType: nil,
+                ttmlLyricsFileName: "lyrics.ttml"
             )
         }
 

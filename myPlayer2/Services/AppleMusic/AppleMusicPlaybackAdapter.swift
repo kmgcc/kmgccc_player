@@ -1365,16 +1365,8 @@ final class AppleMusicPlaybackAdapter {
 
     private func preferredLocalLyrics(for track: Track?) -> (text: String?, source: String?) {
         guard let track else { return (nil, nil) }
-        let candidates: [(String, String?)] = [
-            ("lyricsFile", track.loadLyricsIfNeeded()),
-            ("ttmlLyricsFile", track.loadTTMLLyricsIfNeeded())
-        ]
-        for (source, candidate) in candidates {
-            guard let candidate else { continue }
-            let trimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                return (candidate, source)
-            }
+        if let ttml = LyricsFormatSupport.normalizedTTMLText(track.loadTTMLLyricsIfNeeded()) {
+            return (ttml, "ttmlLyricsFile")
         }
         return (nil, nil)
     }
