@@ -53,19 +53,6 @@ final class AppleMusicPlaybackAdapter {
             }
         }
 
-        var diagnosticsCategory: DiagnosticsCategory {
-            switch self {
-            case .timeout:
-                return .timeout
-            case .emptyResponse:
-                return .parse
-            case .noNowPlayingData:
-                return .noResults
-            case .processNotRunning, .scriptExecutionFailed, .busy:
-                return .providerFailure
-            }
-        }
-
         var temporaryTitleKey: String {
             switch self {
             case .noNowPlayingData:
@@ -458,12 +445,6 @@ final class AppleMusicPlaybackAdapter {
 
         if shouldTransitionToTemporaryUnavailable() {
             transitionConnectionState(to: .runningTemporarilyUnavailable, reason: reason.logDescription)
-            if consecutiveFailureCount == temporaryUnavailableThreshold {
-                recordAppleMusicPollDiagnostic(
-                    reason: reason,
-                    connectionStateCode: "timeout"
-                )
-            }
         }
         preserveLastKnownPresentationDuringFailure(reason: reason, snapshot: snapshot)
     }
@@ -522,10 +503,6 @@ final class AppleMusicPlaybackAdapter {
         empty.emptyTitleKey = reason.disconnectedTitleKey
         empty.isControlEnabled = true
         transitionConnectionState(to: .disconnected, reason: reason.logDescription)
-        recordAppleMusicPollDiagnostic(
-            reason: reason,
-            connectionStateCode: "disconnected"
-        )
         updatePresentationIfNeeded(empty)
     }
 
@@ -1365,53 +1342,6 @@ final class AppleMusicPlaybackAdapter {
         guard now.timeIntervalSince(lastControlFailureLogAt) > 5 else { return }
         lastControlFailureLogAt = now
         Log.warning("[AppleMusic] control failed: \(String(describing: action))", category: .playback)
-        DiagnosticsService.shared.record(
-            level: .warning,
-            subsystem: .appleMusic,
-            category: .control,
-            stage: .response,
-            provider: .appleMusic,
-            messageCode: "apple_music_control_\(action.diagnosticCode)_failed",
-            context: [
-                "operation": .string("playback_control"),
-                "permission_state": .string("unknown"),
-                "connection_state": .string(diagnosticsConnectionStateCode()),
-                "retry_count": .int(0),
-                "response_parse_error_code": .string("control_failed")
-            ]
-        )
-    }
-
-    private func recordAppleMusicPollDiagnostic(
-        reason: PollFailureReason,
-        connectionStateCode: String
-    ) {
-        DiagnosticsService.shared.record(
-            level: connectionStateCode == "disconnected" ? .error : .warning,
-            subsystem: .appleMusic,
-            category: reason.diagnosticsCategory,
-            stage: .response,
-            provider: .appleMusic,
-            messageCode: "apple_music_poll_\(reason.diagnosticCode)",
-            context: [
-                "operation": .string("poll"),
-                "permission_state": .string("unknown"),
-                "connection_state": .string(connectionStateCode),
-                "response_parse_error_code": .string(reason.diagnosticCode),
-                "retry_count": .int(consecutiveFailureCount)
-            ]
-        )
-    }
-
-    private func diagnosticsConnectionStateCode() -> String {
-        switch connectionState {
-        case .runningHasData, .connectedNoMetadata, .waitingForData:
-            return "connected"
-        case .runningTemporarilyUnavailable:
-            return "timeout"
-        case .unavailable, .disconnected:
-            return "disconnected"
-        }
     }
 
     private func transitionConnectionState(

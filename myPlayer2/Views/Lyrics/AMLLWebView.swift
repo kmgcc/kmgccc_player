@@ -362,20 +362,7 @@ struct AMLLWebView: NSViewRepresentable {
         }
 
         private func recordNavigationFailure(error: Error, messageCode: String) {
-            DiagnosticsService.shared.record(
-                level: .error,
-                subsystem: .webview,
-                category: .navigation,
-                stage: .webviewNavigation,
-                provider: .amll,
-                messageCode: messageCode,
-                context: [
-                    "amll_stage": .string("webview_navigation"),
-                    "webview_state": .string("attached"),
-                    "webcontent_terminated_reason": .string("navigation_failed"),
-                    "error_code": .string(DiagnosticsErrorMapper.code(for: error))
-                ]
-            )
+            Log.warning("[AMLLWebView] navigation failed: \(messageCode) \(error.localizedDescription)", category: .webview)
         }
     }
 }
