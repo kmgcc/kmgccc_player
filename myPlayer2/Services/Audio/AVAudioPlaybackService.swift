@@ -54,7 +54,6 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     private var engineAccessed = false
 
     private let playerNode = AVAudioPlayerNode()
-    private let delayNode = AVAudioUnitDelay()
     private var audioFile: AVAudioFile?
 
     // MARK: - Playback State
@@ -63,8 +62,6 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     private var startingFramePosition: AVAudioFramePosition = 0
     private var activeScheduleToken = UUID()
     private var completionWorkItem: DispatchWorkItem?
-    private var drainStartUptime: TimeInterval?
-    private var drainStartTime: Double = 0
     private var lastProgressUpdateUptime: TimeInterval?
     private var lastProgressAudibleTime: Double = 0
     private var lastKnownShuffleEnabled = AppSettings.shared.shuffleEnabled
@@ -116,16 +113,11 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     /// Called once when engine is first accessed via lazy initialization.
     private func setupEngine(_ engine: AVAudioEngine) {
         engine.attach(playerNode)
-        engine.attach(delayNode)
 
         let mainMixer = engine.mainMixerNode
         engine.connect(playerNode, to: mainMixer, format: nil)
+        engine.connect(mainMixer, to: engine.outputNode, format: nil)
 
-        engine.disconnectNodeOutput(mainMixer)
-        engine.connect(mainMixer, to: delayNode, format: nil)
-        engine.connect(delayNode, to: engine.outputNode, format: nil)
-
-        configureDelay()
         playerNode.volume = Float(volume)
         engine.prepare()
 
@@ -218,42 +210,20 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
         engine.disconnectNodeOutput(playerNode)
         engine.disconnectNodeOutput(mainMixer)
-        engine.disconnectNodeOutput(delayNode)
 
         if let file = audioFile {
             engine.connect(playerNode, to: mainMixer, format: file.processingFormat)
         } else {
             engine.connect(playerNode, to: mainMixer, format: nil)
         }
-        engine.connect(mainMixer, to: delayNode, format: nil)
-        engine.connect(delayNode, to: engine.outputNode, format: nil)
-        configureDelay()
+        engine.connect(mainMixer, to: engine.outputNode, format: nil)
     }
 
     // MARK: - Lookahead (Audio Delay)
 
-    private var lookaheadSeconds: Double {
-        let ms = max(0, min(200, AppSettings.shared.lookaheadMs))
-        return ms / 1000.0
-    }
-
-    private func configureDelay() {
-        let seconds = lookaheadSeconds
-        delayNode.delayTime = seconds
-        delayNode.feedback = 0
-        delayNode.wetDryMix = seconds > 0 ? 100 : 0
-        delayNode.lowPassCutoff = 20_000
-        delayNode.reset()
-    }
-
-    private func resetDelayBuffer() {
-        delayNode.reset()
-    }
-
     private func cancelPendingCompletion() {
         completionWorkItem?.cancel()
         completionWorkItem = nil
-        drainStartUptime = nil
     }
 
     // MARK: - Scheduling Helpers
@@ -325,8 +295,6 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             category: .audio
         )
         stopPlayback(clearQueue: false)
-        configureDelay()
-        resetDelayBuffer()
 
         let result = track.resolveFileURL()
         track.availability = result.newAvailability
@@ -388,7 +356,6 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         )
         cancelPendingCompletion()
         playerNode.pause()
-        resetDelayBuffer()
         isPlaying = false
         stopProgressTimer()
 
@@ -402,8 +369,6 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             "[AudioDiagnostics] resume currentTime=\(String(format: "%.3f", currentTime)) operation=\(FirstUseHitchDiagnostics.currentMainOperationDescription() ?? "none")",
             category: .audio
         )
-        configureDelay()
-        resetDelayBuffer()
         playerNode.play()
         isPlaying = true
         startProgressTimer()
@@ -423,7 +388,6 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         cancelPendingCompletion()
         invalidateScheduleToken()
         playerNode.stop()
-        resetDelayBuffer()
         stopProgressTimer()
         stopAccessingCurrentFile()
 
@@ -455,7 +419,6 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         cancelPendingCompletion()
         invalidateScheduleToken()
         playerNode.stop()
-        resetDelayBuffer()
         isPlaying = false
 
         let targetFrame = AVAudioFramePosition(seconds * sampleRate)
@@ -470,7 +433,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         let frameCount = AVAudioFrameCount(totalFrames - targetFrame)
 
         startingFramePosition = targetFrame
-        currentTime = max(0, min(seconds - lookaheadSeconds, duration))
+        currentTime = max(0, min(seconds, duration))
         smartController.recordSeek(to: currentTime)
 
         scheduleSegment(audioFile, startingFrame: targetFrame, frameCount: frameCount)
@@ -558,16 +521,6 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         let previousAudibleTime = lastProgressAudibleTime
         lastProgressUpdateUptime = nowUptime
 
-        if let drainStartUptime {
-            let elapsed = max(0, nowUptime - drainStartUptime)
-            currentTime = min(duration, drainStartTime + elapsed)
-            lastProgressAudibleTime = currentTime
-            if duration > 0 {
-                smartController.updateProgress(currentTime: currentTime, duration: duration)
-            }
-            return
-        }
-
         guard isPlaying else { return }
         guard playerNode.isPlaying else { return }
 
@@ -581,8 +534,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         let currentFrame = startingFramePosition + playerTime.sampleTime
         let newTime = Double(currentFrame) / sampleRate
 
-        let audibleTime = newTime - lookaheadSeconds
-        currentTime = max(0, min(audibleTime, duration))
+        currentTime = max(0, min(newTime, duration))
         lastProgressAudibleTime = currentTime
 
         if let previousUptime {
@@ -608,26 +560,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         guard token == activeScheduleToken else { return }
         guard isPlaying else { return }
 
-        let delaySeconds = lookaheadSeconds
-        if delaySeconds > 0 {
-            beginDrain(lookaheadSeconds: delaySeconds, token: token)
-            return
-        }
-
         finalizePlaybackCompletion(token: token)
-    }
-
-    private func beginDrain(lookaheadSeconds: Double, token: UUID) {
-        cancelPendingCompletion()
-        drainStartUptime = ProcessInfo.processInfo.systemUptime
-        drainStartTime = max(0, duration - lookaheadSeconds)
-        currentTime = drainStartTime
-
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            try? await Task.sleep(nanoseconds: UInt64(lookaheadSeconds * 1_000_000_000))
-            self.finalizePlaybackCompletion(token: token)
-        }
     }
 
     private func finalizePlaybackCompletion(token: UUID) {
