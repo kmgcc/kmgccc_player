@@ -81,6 +81,7 @@ nonisolated private enum BatchImportItemStatus: Sendable {
     case success
     case warning
     case skipped
+    case cancelled
     case failed
 
     var title: String {
@@ -95,6 +96,8 @@ nonisolated private enum BatchImportItemStatus: Sendable {
             return "有提示"
         case .skipped:
             return "已跳过"
+        case .cancelled:
+            return "已取消"
         case .failed:
             return "失败"
         }
@@ -109,6 +112,7 @@ nonisolated private enum BatchImportStage {
     case importingFiles
     case enrichingMetadata
     case savingLibrary
+    case cancelling
     case cancelled
     case completed
 
@@ -128,6 +132,8 @@ nonisolated private enum BatchImportStage {
             return "正在补全导入信息"
         case .savingLibrary:
             return "正在保存到资料库"
+        case .cancelling:
+            return "正在取消导入"
         case .cancelled:
             return "导入已取消"
         case .completed:
@@ -151,6 +157,8 @@ nonisolated private enum BatchImportStage {
             return 0.82...0.96
         case .savingLibrary:
             return 0.96...0.995
+        case .cancelling:
+            return 0.995...1.0
         case .cancelled:
             return 1.0...1.0
         case .completed:
@@ -428,6 +436,7 @@ nonisolated enum ImportEnrichmentWorker {
         album: String? = nil,
         duration: Double? = nil
     ) async -> ImportLyricsLookupOutcome {
+        guard !Task.isCancelled else { return .failed("已取消") }
         // Use shared helper that matches manual "Find Lyrics" ranking logic
         // This ensures import flow uses the same AMLLDB + LDDC search with proper merging
         let ttml = await LyricsSearchHelper.searchAndFetchBestLyrics(
@@ -438,6 +447,7 @@ nonisolated enum ImportEnrichmentWorker {
         )
 
         if let ttml {
+            guard !Task.isCancelled else { return .failed("已取消") }
             return .completed(ttml)
         } else {
             return .noResults
@@ -450,6 +460,7 @@ nonisolated enum ImportEnrichmentWorker {
         album: String,
         duration: Double? = nil
     ) async -> ImportCoverLookupOutcome {
+        guard !Task.isCancelled else { return .failed("已取消") }
         let normalizedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedArtist = artist.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedAlbum = album.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -462,13 +473,15 @@ nonisolated enum ImportEnrichmentWorker {
             let candidates = try await withCoverLookupTimeout(
                 CoverLookupConfiguration.importPerTrackTimeout
             ) {
-                await fetchImportCoverCandidates(
+                try Task.checkCancellation()
+                return await fetchImportCoverCandidates(
                     title: normalizedTitle,
                     artist: normalizedArtist,
                     album: normalizedAlbum,
                     duration: duration
                 )
             }
+            try Task.checkCancellation()
 
             guard let selected = CoverCandidateSorter.bestAutomaticCandidate(from: candidates) else {
                 return .noResults
@@ -485,6 +498,8 @@ nonisolated enum ImportEnrichmentWorker {
                 category: .import
             )
             return .failed("封面查找超时")
+        } catch is CancellationError {
+            return .failed("已取消")
         } catch {
             Log.warning(
                 "Import cover fetch failed for \(normalizedArtist) - \(normalizedAlbum): \(error)",
@@ -500,11 +515,13 @@ nonisolated enum ImportEnrichmentWorker {
         album: String,
         duration: Double?
     ) async -> [CoverCandidate] {
+        guard !Task.isCancelled else { return [] }
         var candidates: [CoverCandidate] = []
 
         await withTaskGroup(of: [CoverCandidate].self) { group in
             group.addTask {
                 do {
+                    try Task.checkCancellation()
                     return try await withCoverLookupTimeout(
                         CoverLookupConfiguration.netEaseCandidatesTimeout
                     ) {
@@ -542,6 +559,7 @@ nonisolated enum ImportEnrichmentWorker {
 
             group.addTask {
                 do {
+                    try Task.checkCancellation()
                     return try await withCoverLookupTimeout(CoverLookupConfiguration.sacadTimeout) {
                         let data = try await downloadCoverViaSacad(
                             artist: artist,
@@ -569,6 +587,7 @@ nonisolated enum ImportEnrichmentWorker {
 
             group.addTask {
                 do {
+                    try Task.checkCancellation()
                     return try await withCoverLookupTimeout(
                         CoverLookupConfiguration.qqMusicCandidatesTimeout
                     ) {
@@ -590,6 +609,10 @@ nonisolated enum ImportEnrichmentWorker {
             }
 
             for await partial in group {
+                if Task.isCancelled {
+                    group.cancelAll()
+                    break
+                }
                 candidates.append(contentsOf: partial)
             }
         }
@@ -602,6 +625,7 @@ nonisolated enum ImportEnrichmentWorker {
         album: String,
         size: Int
     ) async throws -> Data {
+        try Task.checkCancellation()
         guard
             let normalizedData = ArtworkDataNormalizer.normalizedJPEGData(
                 from: try await CoverDownloadService.downloadCoverData(
@@ -621,6 +645,7 @@ nonisolated enum ImportEnrichmentWorker {
         artist: String,
         album: String
     ) async throws -> Data {
+        try Task.checkCancellation()
         let session = makeNetEaseSession()
         let query = "\(artist) \(album)".trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else {
@@ -641,6 +666,7 @@ nonisolated enum ImportEnrichmentWorker {
         let searchData: Data
         do {
             let (data, response) = try await session.data(from: searchURL)
+            try Task.checkCancellation()
             try validateNetEaseHTTP(response: response)
             searchData = data
         } catch let error as NetEaseCoverError {
@@ -667,6 +693,7 @@ nonisolated enum ImportEnrichmentWorker {
 
         do {
             let (imageData, response) = try await session.data(from: coverURL)
+            try Task.checkCancellation()
             try validateNetEaseHTTP(response: response)
             guard
                 let normalizedData = ArtworkDataNormalizer.normalizedJPEGData(
@@ -783,16 +810,19 @@ nonisolated enum MetadataEnrichmentWorker {
         album: String,
         duration: Double?
     ) async -> ImportTrackMetadataOutcome {
+        guard !Task.isCancelled else { return .failed("已取消") }
         let coordinator = await MetadataDetailCoordinator.shared
         do {
             let detail = try await withCoverLookupTimeout(metadataTimeout) {
-                try await coordinator.fetchTrackDetail(
+                try Task.checkCancellation()
+                return try await coordinator.fetchTrackDetail(
                     title: title,
                     artist: artist,
                     album: album,
                     duration: duration.map { Int($0.rounded()) }
                 )
             }
+            try Task.checkCancellation()
             return .completed(detail)
         } catch let error as CoverLookupTimeoutError {
             Log.warning(
@@ -800,6 +830,8 @@ nonisolated enum MetadataEnrichmentWorker {
                 category: .import
             )
             return .failed("歌曲信息查找超时")
+        } catch is CancellationError {
+            return .failed("已取消")
         } catch {
             Log.warning(
                 "Import track metadata failed for \(artist) - \(title): \(error)",
@@ -814,14 +846,17 @@ nonisolated enum MetadataEnrichmentWorker {
     static func fetchArtistMetadata(
         name: String
     ) async -> ImportArtistMetadataOutcome {
+        guard !Task.isCancelled else { return .failed("已取消") }
         guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return .noResults
         }
         let coordinator = await MetadataDetailCoordinator.shared
         do {
             let detail = try await withCoverLookupTimeout(metadataTimeout) {
-                try await coordinator.fetchArtistDetail(name: name)
+                try Task.checkCancellation()
+                return try await coordinator.fetchArtistDetail(name: name)
             }
+            try Task.checkCancellation()
             return .completed(detail)
         } catch let error as CoverLookupTimeoutError {
             Log.warning(
@@ -829,6 +864,8 @@ nonisolated enum MetadataEnrichmentWorker {
                 category: .import
             )
             return .failed("歌手信息查找超时")
+        } catch is CancellationError {
+            return .failed("已取消")
         } catch {
             Log.warning(
                 "Import artist metadata failed for \(name): \(error)",
@@ -844,14 +881,17 @@ nonisolated enum MetadataEnrichmentWorker {
         album: String,
         artist: String
     ) async -> ImportAlbumMetadataOutcome {
+        guard !Task.isCancelled else { return .failed("已取消") }
         guard !album.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return .noResults
         }
         let coordinator = await MetadataDetailCoordinator.shared
         do {
             let detail = try await withCoverLookupTimeout(metadataTimeout) {
-                try await coordinator.fetchAlbumDetail(album: album, artist: artist)
+                try Task.checkCancellation()
+                return try await coordinator.fetchAlbumDetail(album: album, artist: artist)
             }
+            try Task.checkCancellation()
             return .completed(detail)
         } catch let error as CoverLookupTimeoutError {
             Log.warning(
@@ -859,6 +899,8 @@ nonisolated enum MetadataEnrichmentWorker {
                 category: .import
             )
             return .failed("专辑信息查找超时")
+        } catch is CancellationError {
+            return .failed("已取消")
         } catch {
             Log.warning(
                 "Import album metadata failed for \(artist) - \(album): \(error)",
@@ -873,13 +915,16 @@ nonisolated enum MetadataEnrichmentWorker {
     static func fetchArtistArtwork(
         artist: String
     ) async -> ImportArtistArtworkOutcome {
+        guard !Task.isCancelled else { return .failed("已取消") }
         guard !artist.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return .noResults
         }
         do {
             let candidates = try await withCoverLookupTimeout(metadataTimeout) {
-                try await ArtistArtworkProviderCoordinator.shared.searchCandidates(artist: artist)
+                try Task.checkCancellation()
+                return try await ArtistArtworkProviderCoordinator.shared.searchCandidates(artist: artist)
             }
+            try Task.checkCancellation()
             guard let best = CoverCandidateSorter.bestAutomaticCandidate(from: candidates) else {
                 return .noResults
             }
@@ -894,6 +939,8 @@ nonisolated enum MetadataEnrichmentWorker {
                 category: .import
             )
             return .failed("歌手封面查找超时")
+        } catch is CancellationError {
+            return .failed("已取消")
         } catch {
             Log.warning(
                 "Import artist artwork failed for \(artist): \(error)",
@@ -909,6 +956,7 @@ nonisolated enum MetadataEnrichmentWorker {
         album: String,
         artist: String
     ) async -> ImportAlbumArtworkOutcome {
+        guard !Task.isCancelled else { return .failed("已取消") }
         guard !album.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return .noResults
         }
@@ -952,6 +1000,7 @@ final class ImportEnrichmentService {
     private var queue: [ImportEnrichmentPartRequest] = []
     private var queuedRequests: Set<ImportEnrichmentPartRequest> = []
     private var runningRequests: Set<ImportEnrichmentPartRequest> = []
+    private var activeTasks: [ImportEnrichmentPartRequest: Task<Void, Never>] = [:]
     private var trackByID: [UUID: Track] = [:]
     private var itemStates: [UUID: ImportEnrichmentItemState] = [:]
     private var pendingFlushPatches: [UUID: PendingTrackEnrichmentPatch] = [:]
@@ -998,6 +1047,10 @@ final class ImportEnrichmentService {
         queue.removeAll { trackIDs.contains($0.trackID) }
         queuedRequests = queuedRequests.filter { !trackIDs.contains($0.trackID) }
         runningRequests = runningRequests.filter { !trackIDs.contains($0.trackID) }
+        for (request, task) in activeTasks where trackIDs.contains(request.trackID) {
+            task.cancel()
+            activeTasks[request] = nil
+        }
 
         for trackID in trackIDs {
             trackByID[trackID] = nil
@@ -1499,6 +1552,8 @@ final class ImportEnrichmentService {
         queue.removeAll()
         queuedRequests.removeAll()
         runningRequests.removeAll()
+        activeTasks.values.forEach { $0.cancel() }
+        activeTasks.removeAll()
         trackByID.removeAll()
         itemStates.removeAll()
         pendingFlushPatches.removeAll()
@@ -1596,8 +1651,12 @@ final class ImportEnrichmentService {
             category: request.part == .lyrics ? .lyrics : .import
         )
 
-        Task(priority: .utility) {
+        let task = Task(priority: .utility) {
             let taskStart = ContinuousClock.now
+            guard !Task.isCancelled else {
+                self.finish(request)
+                return
+            }
 
             switch request.part {
             case .lyrics:
@@ -1646,6 +1705,7 @@ final class ImportEnrichmentService {
                 category: request.part == .lyrics ? .lyrics : .import
             )
         }
+        activeTasks[request] = task
     }
 
     private func completeLyrics(
@@ -2476,6 +2536,7 @@ final class ImportEnrichmentService {
 
     private func finish(_ request: ImportEnrichmentPartRequest, requeue: Bool = false) {
         runningRequests.remove(request)
+        activeTasks[request] = nil
 
         if requeue {
             queue.append(request)
@@ -2554,6 +2615,7 @@ final class FileImportService: FileImportServiceProtocol {
         let importedAt: Date
         let originalFilePath: String
         let libraryRelativePath: String
+        let stagedAudioURL: URL
         let artworkData: Data?
         let ttmlLyricText: String?
         let lyricsText: String?
@@ -2727,7 +2789,25 @@ final class FileImportService: FileImportServiceProtocol {
             }
         }
 
-        let progressController = BatchImportProgressDialogController()
+        let cancellationToken = ImportCancellationToken()
+        let importSession: ImportSession
+        do {
+            importSession = try ImportSession()
+        } catch {
+            Log.error(
+                "[Import] failed to create import session: \(error.localizedDescription)",
+                category: .import
+            )
+            return 0
+        }
+
+        let progressController = BatchImportProgressDialogController(
+            onCancelRequested: {
+                Task {
+                    await cancellationToken.requestCancel()
+                }
+            }
+        )
         defer { progressController.closeNow() }
         progressController.update(
             stage: .scanning,
@@ -2766,7 +2846,7 @@ final class FileImportService: FileImportServiceProtocol {
         }
 
         // Collect all audio files (including from directories) - OFF MAIN THREAD
-        let (filesToImport, ncmFiles) = await Task.detached(priority: .userInitiated) { 
+        let (filesToImport, ncmFiles) = await Task.detached(priority: .userInitiated) {
             var filesToImport: [URL] = []
             var ncmFiles: [URL] = []
 
@@ -2801,11 +2881,13 @@ final class FileImportService: FileImportServiceProtocol {
 
         guard discoveredFileCount > 0 else {
             Log.info("No supported audio files found in selection", category: .import)
+            importSession.cleanupStaging()
             return 0
         }
 
-        if progressController.isCancellationRequested {
+        if await isImportCancellationRequested(progressController, cancellationToken) {
             return await finishCancelledImport(
+                session: importSession,
                 importedRecords: [],
                 createdTrackIDs: [],
                 to: playlist,
@@ -2846,9 +2928,15 @@ final class FileImportService: FileImportServiceProtocol {
 
         if !ncmFiles.isEmpty {
             Log.debug("Found \(ncmFiles.count) NCM files to convert", category: .import)
-            let results = await convertNCMFiles(ncmFiles, progressController: progressController)
-            if progressController.isCancellationRequested {
+            let results = await convertNCMFiles(
+                ncmFiles,
+                progressController: progressController,
+                session: importSession,
+                cancellationToken: cancellationToken
+            )
+            if await isImportCancellationRequested(progressController, cancellationToken) {
                 return await finishCancelledImport(
+                    session: importSession,
                     importedRecords: [],
                     createdTrackIDs: [],
                     to: playlist,
@@ -2899,13 +2987,15 @@ final class FileImportService: FileImportServiceProtocol {
         let preparedCandidates = await prepareImportCandidates(
             files: resolvedFiles,
             existingMatches: existingSnapshots,
-            progressController: progressController
+            progressController: progressController,
+            cancellationToken: cancellationToken
         )
         let uniqueCandidates = preparedCandidates.unique
         let duplicateRows = preparedCandidates.duplicates
 
-        if progressController.isCancellationRequested {
+        if await isImportCancellationRequested(progressController, cancellationToken) {
             return await finishCancelledImport(
+                session: importSession,
                 importedRecords: [],
                 createdTrackIDs: [],
                 to: playlist,
@@ -2987,12 +3077,16 @@ final class FileImportService: FileImportServiceProtocol {
         let importBatch = await importCandidatesWithProgress(
             finalCandidates,
             progressController: progressController,
-            enrichmentMode: enrichmentMode
+            enrichmentMode: enrichmentMode,
+            session: importSession,
+            cancellationToken: cancellationToken
         )
         let importedRecords = importBatch.records
 
-        if importBatch.cancelled || progressController.isCancellationRequested {
+        let importCancellationRequested = await isImportCancellationRequested(progressController, cancellationToken)
+        if importBatch.cancelled || importCancellationRequested {
             return await finishCancelledImport(
+                session: importSession,
                 importedRecords: importedRecords,
                 createdTrackIDs: importBatch.createdTrackIDs,
                 to: playlist,
@@ -3003,6 +3097,7 @@ final class FileImportService: FileImportServiceProtocol {
 
         guard !importedRecords.isEmpty else {
             print("⚠️ No tracks to import")
+            importSession.cleanupStaging()
             _ = await cleanupFailedImportResidue(reason: "importNoSuccessfulTracks")
             return 0
         }
@@ -3013,12 +3108,15 @@ final class FileImportService: FileImportServiceProtocol {
         case .immediate:
             let recordsNeedingEnrichment = importedRecords.filter(\.needsAnyEnrichment)
             if !recordsNeedingEnrichment.isEmpty {
-                await enrichImportedRecordsWithProgress(
+                let enrichmentCancelled = await enrichImportedRecordsWithProgress(
                     importedRecords: recordsNeedingEnrichment,
-                    progressController: progressController
+                    progressController: progressController,
+                    cancellationToken: cancellationToken
                 )
-                if progressController.isCancellationRequested {
+                let enrichmentCancellationRequested = await isImportCancellationRequested(progressController, cancellationToken)
+                if enrichmentCancelled || enrichmentCancellationRequested {
                     return await finishCancelledImport(
+                        session: importSession,
                         importedRecords: importedRecords,
                         createdTrackIDs: importBatch.createdTrackIDs,
                         to: playlist,
@@ -3036,11 +3134,23 @@ final class FileImportService: FileImportServiceProtocol {
                 )
             }
 
-            await saveImportedTracks(
+            let didSave = await saveImportedTracks(
                 importedTracks,
                 to: playlist,
-                progressController: progressController
+                progressController: progressController,
+                session: importSession,
+                cancellationToken: cancellationToken
             )
+            guard didSave else {
+                return await finishCancelledImport(
+                    session: importSession,
+                    importedRecords: importedRecords,
+                    createdTrackIDs: importBatch.createdTrackIDs,
+                    to: playlist,
+                    progressController: progressController,
+                    totalCount: finalCandidates.count
+                )
+            }
         case .deferred:
             let recordsNeedingEnrichment = importedRecords.filter(\.needsAnyEnrichment)
             if !recordsNeedingEnrichment.isEmpty {
@@ -3065,11 +3175,23 @@ final class FileImportService: FileImportServiceProtocol {
                 )
             }
 
-            await saveImportedTracks(
+            let didSave = await saveImportedTracks(
                 importedTracks,
                 to: playlist,
-                progressController: progressController
+                progressController: progressController,
+                session: importSession,
+                cancellationToken: cancellationToken
             )
+            guard didSave else {
+                return await finishCancelledImport(
+                    session: importSession,
+                    importedRecords: importedRecords,
+                    createdTrackIDs: importBatch.createdTrackIDs,
+                    to: playlist,
+                    progressController: progressController,
+                    totalCount: finalCandidates.count
+                )
+            }
 
             if !recordsNeedingEnrichment.isEmpty {
                 await importEnrichmentService.enqueueTracks(recordsNeedingEnrichment.map(\.track))
@@ -3077,6 +3199,7 @@ final class FileImportService: FileImportServiceProtocol {
         }
 
         _ = await cleanupFailedImportResidue(reason: "importCompleted")
+        importSession.cleanupStaging()
 
         for record in importedRecords {
             progressController.completeImportedItem(id: record.progressID)
@@ -3130,11 +3253,29 @@ final class FileImportService: FileImportServiceProtocol {
             )
         )
 
-        let output = await Self.performImportTask(index: 0, candidate: candidate)
+        let cancellationToken = ImportCancellationToken()
+        guard let importSession = try? ImportSession() else { return nil }
+        defer { importSession.cleanupStaging() }
+        let output = await Self.performImportTask(
+            index: 0,
+            candidate: candidate,
+            stagingDirectoryURL: importSession.stagingDirectoryURL,
+            cancellationToken: cancellationToken
+        )
         guard let payload = output.payload else {
             if let errorDescription = output.errorDescription {
                 print("❌ Failed to import \(url.lastPathComponent): \(errorDescription)")
             }
+            return nil
+        }
+        importSession.registerStagedTrack(ImportStagedTrackFile(
+            trackID: payload.id,
+            stagedAudioURL: payload.stagedAudioURL,
+            libraryRelativePath: payload.libraryRelativePath
+        ))
+        do {
+            try await commitStagedAudioFiles(for: Set([payload.id]), session: importSession, cancellationToken: cancellationToken)
+        } catch {
             return nil
         }
         return makeTrack(from: payload)
@@ -3143,7 +3284,9 @@ final class FileImportService: FileImportServiceProtocol {
     private func importCandidatesWithProgress(
         _ candidates: [ImportCandidate],
         progressController: BatchImportProgressDialogController,
-        enrichmentMode: ImportEnrichmentMode
+        enrichmentMode: ImportEnrichmentMode,
+        session: ImportSession,
+        cancellationToken: ImportCancellationToken
     ) async -> ImportBatchResult {
         guard !candidates.isEmpty else {
             return ImportBatchResult(records: [], createdTrackIDs: [], cancelled: false)
@@ -3157,6 +3300,7 @@ final class FileImportService: FileImportServiceProtocol {
         var failedCount = 0
         var createdTrackIDs: Set<UUID> = []
         var cancelled = false
+        let stagingDirectoryURL = session.stagingDirectoryURL
 
         await withTaskGroup(of: ImportTaskOutput.self) { group in
             for _ in 0..<min(maxConcurrent, candidates.count) {
@@ -3170,7 +3314,12 @@ final class FileImportService: FileImportServiceProtocol {
                     detail: "正在导入歌曲文件与内嵌信息"
                 )
                 group.addTask {
-                    await Self.performImportTask(index: index, candidate: candidate)
+                    await Self.performImportTask(
+                        index: index,
+                        candidate: candidate,
+                        stagingDirectoryURL: stagingDirectoryURL,
+                        cancellationToken: cancellationToken
+                    )
                 }
             }
 
@@ -3179,6 +3328,11 @@ final class FileImportService: FileImportServiceProtocol {
                 createdTrackIDs.insert(output.trackID)
 
                 if let payload = output.payload {
+                    session.registerStagedTrack(ImportStagedTrackFile(
+                        trackID: payload.id,
+                        stagedAudioURL: payload.stagedAudioURL,
+                        libraryRelativePath: payload.libraryRelativePath
+                    ))
                     importedCount += 1
                     let track = makeTrack(from: payload)
                     orderedRecords[output.index] = ImportedTrackRecord(
@@ -3250,15 +3404,16 @@ final class FileImportService: FileImportServiceProtocol {
                     totalCount: candidates.count
                 )
 
-                if progressController.isCancellationRequested {
+                if await isImportCancellationRequested(progressController, cancellationToken) {
                     cancelled = true
+                    group.cancelAll()
                     while let (_, skippedCandidate) = iterator.next() {
                         progressController.updateItem(
                             id: skippedCandidate.progressID,
                             title: skippedCandidate.metadata.title,
                             artist: skippedCandidate.metadata.artist,
                             stage: .importing,
-                            status: .skipped,
+                            status: .cancelled,
                             detail: "用户已取消，未开始导入"
                         )
                     }
@@ -3275,7 +3430,12 @@ final class FileImportService: FileImportServiceProtocol {
                         detail: "正在导入歌曲文件与内嵌信息"
                     )
                     group.addTask {
-                        await Self.performImportTask(index: index, candidate: candidate)
+                        await Self.performImportTask(
+                            index: index,
+                            candidate: candidate,
+                            stagingDirectoryURL: stagingDirectoryURL,
+                            cancellationToken: cancellationToken
+                        )
                     }
                 }
             }
@@ -3288,20 +3448,58 @@ final class FileImportService: FileImportServiceProtocol {
         )
     }
 
+    private func isImportCancellationRequested(
+        _ progressController: BatchImportProgressDialogController,
+        _ cancellationToken: ImportCancellationToken
+    ) async -> Bool {
+        if progressController.isCancellationRequested {
+            await cancellationToken.requestCancel()
+            return true
+        }
+        return await cancellationToken.isCancelled || Task.isCancelled
+    }
+
     private func saveImportedTracks(
         _ importedTracks: [Track],
         to playlist: Playlist,
-        progressController: BatchImportProgressDialogController
-    ) async {
+        progressController: BatchImportProgressDialogController,
+        session: ImportSession,
+        cancellationToken: ImportCancellationToken
+    ) async -> Bool {
         progressController.update(
             stage: .savingLibrary,
             progress: Self.progress(for: .savingLibrary, completed: 0, total: 2),
-            detail: "正在写入资料库和播放列表",
+            detail: "正在提交导入文件",
             completedCount: 0,
             totalCount: 2
         )
 
+        guard !(await isImportCancellationRequested(progressController, cancellationToken)) else {
+            return false
+        }
+
+        do {
+            try await commitStagedAudioFiles(
+                for: Set(importedTracks.map(\.id)),
+                session: session,
+                cancellationToken: cancellationToken
+            )
+        } catch is CancellationError {
+            return false
+        } catch {
+            Log.error(
+                "[Import] failed to commit staged audio files: \(error.localizedDescription)",
+                category: .import
+            )
+            return false
+        }
+
+        guard !(await isImportCancellationRequested(progressController, cancellationToken)) else {
+            return false
+        }
+
         await repository.addTracks(importedTracks)
+        session.markCommitted(trackIDs: importedTracks.map(\.id))
         progressController.update(
             stage: .savingLibrary,
             progress: Self.progress(for: .savingLibrary, completed: 1, total: 2),
@@ -3322,9 +3520,68 @@ final class FileImportService: FileImportServiceProtocol {
             completedCount: 2,
             totalCount: 2
         )
+        return true
+    }
+
+    private func commitStagedAudioFiles(
+        for trackIDs: Set<UUID>,
+        session: ImportSession,
+        cancellationToken: ImportCancellationToken
+    ) async throws {
+        guard !trackIDs.isEmpty else { return }
+        let stagedFiles = session.stagedFiles(for: trackIDs)
+        guard stagedFiles.count == trackIDs.count else {
+            let missingCount = trackIDs.count - stagedFiles.count
+            throw NSError(
+                domain: "FileImportService.ImportSession",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Missing \(missingCount) staged import files"]
+            )
+        }
+
+        try await Task.detached(priority: .userInitiated) { @Sendable in
+            let fileManager = FileManager.default
+            try fileManager.createDirectory(
+                at: LocalLibraryPaths.libraryRootURL,
+                withIntermediateDirectories: true
+            )
+            try fileManager.createDirectory(
+                at: LocalLibraryPaths.tracksRootURL,
+                withIntermediateDirectories: true
+            )
+            try fileManager.createDirectory(
+                at: LocalLibraryPaths.playlistsRootURL,
+                withIntermediateDirectories: true
+            )
+
+            for file in stagedFiles {
+                try await cancellationToken.checkCancellation()
+                let destinationURL = LocalLibraryPaths.libraryURL(from: file.libraryRelativePath)
+                let destinationFolder = destinationURL.deletingLastPathComponent()
+                try fileManager.createDirectory(
+                    at: destinationFolder,
+                    withIntermediateDirectories: true
+                )
+                if fileManager.fileExists(atPath: destinationURL.path) {
+                    try fileManager.removeItem(at: destinationURL)
+                }
+                if fileManager.fileExists(atPath: destinationFolder.path),
+                   !fileManager.fileExists(atPath: file.stagedAudioURL.path) {
+                    throw NSError(
+                        domain: "FileImportService.ImportSession",
+                        code: 2,
+                        userInfo: [NSLocalizedDescriptionKey: "Staged audio file is missing"]
+                    )
+                }
+                try fileManager.moveItem(at: file.stagedAudioURL, to: destinationURL)
+            }
+        }.value
+
+        session.markFinalized(trackIDs: stagedFiles.map(\.trackID))
     }
 
     private func finishCancelledImport(
+        session: ImportSession,
         importedRecords: [ImportedTrackRecord],
         createdTrackIDs: Set<UUID>,
         to playlist: Playlist,
@@ -3332,25 +3589,40 @@ final class FileImportService: FileImportServiceProtocol {
         totalCount: Int
     ) async -> Int {
         let importedTracks = importedRecords.map(\.track)
-        if !importedTracks.isEmpty {
-            await saveImportedTracks(importedTracks, to: playlist, progressController: progressController)
-        }
+        progressController.update(
+            stage: .cancelling,
+            progress: 0.995,
+            detail: "正在回滚本次导入并清理临时文件",
+            completedCount: 0,
+            totalCount: max(totalCount, importedTracks.count)
+        )
+
+        await importEnrichmentService.cancelEnrichment(for: createdTrackIDs.union(Set(importedTracks.map(\.id))))
+        let rollbackReport = await ImportRollbackService(
+            repository: repository,
+            libraryService: libraryService
+        ).rollback(
+            session: session,
+            importedTracks: importedTracks,
+            createdTrackIDs: createdTrackIDs,
+            reason: "importCancelled"
+        )
 
         let cleanupReport = await cleanupFailedImportResidue(reason: "importCancelled")
-        let retainedCount = importedTracks.count
+        let retainedCount = 0
         let cleanedCount = cleanupReport.deletedCount
-        let incompleteCount = max(0, createdTrackIDs.count - Set(importedTracks.map(\.id)).count)
+        let incompleteCount = createdTrackIDs.count
 
         progressController.update(
             stage: .cancelled,
             progress: 1.0,
-            detail: "已取消，已保留 \(retainedCount) 首完整导入歌曲，清理 \(cleanedCount) 个未完成项目",
+            detail: "已取消，已回滚本次导入并清理临时文件",
             completedCount: retainedCount,
             totalCount: max(totalCount, retainedCount)
         )
 
         Log.info(
-            "[Import] cancelled retained=\(retainedCount) createdTrackDirs=\(createdTrackIDs.count) incomplete=\(incompleteCount) cleaned=\(cleanedCount) cleanupFailures=\(cleanupReport.failedDeleteCount)",
+            "[Import] cancelled retained=\(retainedCount) createdTrackDirs=\(createdTrackIDs.count) incomplete=\(incompleteCount) rollbackDb=\(rollbackReport.deletedDatabaseTrackCount) rollbackFolders=\(rollbackReport.deletedTrackFolderCount) rollbackFolderFailures=\(rollbackReport.failedTrackFolderDeleteCount) cleaned=\(cleanedCount) cleanupFailures=\(cleanupReport.failedDeleteCount)",
             category: .import
         )
         try? await Task.sleep(nanoseconds: 700_000_000)
@@ -3395,7 +3667,8 @@ final class FileImportService: FileImportServiceProtocol {
     private func prepareImportCandidates(
         files: [ResolvedImportFile],
         existingMatches: [String: ExistingTrackMatchSnapshot],
-        progressController: BatchImportProgressDialogController
+        progressController: BatchImportProgressDialogController,
+        cancellationToken: ImportCancellationToken
     ) async -> (unique: [ImportCandidate], duplicates: [DuplicatePairRow]) {
         guard !files.isEmpty else { return ([], []) }
 
@@ -3425,7 +3698,8 @@ final class FileImportService: FileImportServiceProtocol {
                     await Self.buildCandidatePreparationResult(
                         index: index,
                         file: file,
-                        existingMatches: existingMatches
+                        existingMatches: existingMatches,
+                        cancellationToken: cancellationToken
                     )
                 }
             }
@@ -3453,9 +3727,14 @@ final class FileImportService: FileImportServiceProtocol {
                     title: output.candidate.metadata.title,
                     artist: output.candidate.metadata.artist,
                     stage: .duplicateCheck,
-                    status: itemStatus,
-                    detail: itemDetail
+                    status: await isImportCancellationRequested(progressController, cancellationToken) ? .cancelled : itemStatus,
+                    detail: await isImportCancellationRequested(progressController, cancellationToken) ? "用户已取消" : itemDetail
                 )
+
+                if await isImportCancellationRequested(progressController, cancellationToken) {
+                    group.cancelAll()
+                    continue
+                }
 
                 if let (index, file) = iterator.next() {
                     progressController.updateItem(
@@ -3468,7 +3747,8 @@ final class FileImportService: FileImportServiceProtocol {
                         await Self.buildCandidatePreparationResult(
                             index: index,
                             file: file,
-                            existingMatches: existingMatches
+                            existingMatches: existingMatches,
+                            cancellationToken: cancellationToken
                         )
                     }
                 }
@@ -3492,8 +3772,30 @@ final class FileImportService: FileImportServiceProtocol {
     nonisolated private static func buildCandidatePreparationResult(
         index: Int,
         file: ResolvedImportFile,
-        existingMatches: [String: ExistingTrackMatchSnapshot]
+        existingMatches: [String: ExistingTrackMatchSnapshot],
+        cancellationToken: ImportCancellationToken
     ) async -> CandidatePreparationResult {
+        if (try? await cancellationToken.checkCancellation()) == nil {
+            let preview = ImportPreview(
+                title: file.displayName,
+                artist: "",
+                album: "",
+                albumArtist: nil,
+                duration: 0,
+                lyrics: nil,
+                artworkData: nil
+            )
+            return CandidatePreparationResult(
+                index: index,
+                candidate: ImportCandidate(
+                    progressID: file.progressID,
+                    displayName: file.displayName,
+                    fileURL: file.fileURL,
+                    metadata: preview
+                ),
+                duplicateRow: nil
+            )
+        }
         let preview: ImportPreview
         if let ncmResult = file.ncmResult {
             let normalizedCoverData = ncmResult.coverData.flatMap {
@@ -3513,6 +3815,27 @@ final class FileImportService: FileImportServiceProtocol {
             )
         } else {
             let raw = await Self.extractMetadata(from: file.fileURL)
+            if (try? await cancellationToken.checkCancellation()) == nil {
+                let preview = ImportPreview(
+                    title: file.displayName,
+                    artist: "",
+                    album: "",
+                    albumArtist: nil,
+                    duration: 0,
+                    lyrics: nil,
+                    artworkData: nil
+                )
+                return CandidatePreparationResult(
+                    index: index,
+                    candidate: ImportCandidate(
+                        progressID: file.progressID,
+                        displayName: file.displayName,
+                        fileURL: file.fileURL,
+                        metadata: preview
+                    ),
+                    duplicateRow: nil
+                )
+            }
             preview = ImportPreview(
                 title: raw.title,
                 artist: raw.artist,
@@ -3558,9 +3881,10 @@ final class FileImportService: FileImportServiceProtocol {
 
     private func enrichImportedRecordsWithProgress(
         importedRecords: [ImportedTrackRecord],
-        progressController: BatchImportProgressDialogController
-    ) async {
-        guard !importedRecords.isEmpty else { return }
+        progressController: BatchImportProgressDialogController,
+        cancellationToken: ImportCancellationToken
+    ) async -> Bool {
+        guard !importedRecords.isEmpty else { return false }
 
         progressController.update(
             stage: .enrichingMetadata,
@@ -3640,6 +3964,7 @@ final class FileImportService: FileImportServiceProtocol {
         var completedCount = 0
         var stats = ImmediateEnrichmentStats()
         var outputs: [ImportEnrichmentTaskOutput] = []
+        var cancelled = false
 
         await withTaskGroup(of: ImportEnrichmentTaskOutput.self) { group in
             for _ in 0..<min(maxConcurrent, snapshots.count) {
@@ -3661,11 +3986,27 @@ final class FileImportService: FileImportServiceProtocol {
                     )
                 )
                 group.addTask {
-                    await Self.performImmediateEnrichmentTask(snapshot: snapshot)
+                    await Self.performImmediateEnrichmentTask(
+                        snapshot: snapshot,
+                        cancellationToken: cancellationToken
+                    )
                 }
             }
 
             while let output = await group.next() {
+                if await isImportCancellationRequested(progressController, cancellationToken) {
+                    cancelled = true
+                    group.cancelAll()
+                    progressController.updateItem(
+                        id: output.progressID,
+                        title: output.title,
+                        artist: output.artist,
+                        stage: .enrichingMetadata,
+                        status: .cancelled,
+                        detail: "用户已取消"
+                    )
+                    continue
+                }
                 completedCount += 1
                 outputs.append(output)
 
@@ -3734,13 +4075,26 @@ final class FileImportService: FileImportServiceProtocol {
                         )
                     )
                     group.addTask {
-                        await Self.performImmediateEnrichmentTask(snapshot: snapshot)
+                        await Self.performImmediateEnrichmentTask(
+                            snapshot: snapshot,
+                            cancellationToken: cancellationToken
+                        )
                     }
                 }
             }
         }
 
-        await persistImmediateArtistAlbumResults(outputs, recordsByTrackID: recordsByTrackID)
+        let finalCancellationRequested = await isImportCancellationRequested(progressController, cancellationToken)
+        if cancelled || finalCancellationRequested {
+            return true
+        }
+
+        await persistImmediateArtistAlbumResults(
+            outputs,
+            recordsByTrackID: recordsByTrackID,
+            cancellationToken: cancellationToken
+        )
+        return await isImportCancellationRequested(progressController, cancellationToken)
     }
 
     private func applyArtistMetadataDetail(
@@ -3836,10 +4190,12 @@ final class FileImportService: FileImportServiceProtocol {
 
     private func persistImmediateArtistAlbumResults(
         _ outputs: [ImportEnrichmentTaskOutput],
-        recordsByTrackID: [UUID: ImportedTrackRecord]
+        recordsByTrackID: [UUID: ImportedTrackRecord],
+        cancellationToken: ImportCancellationToken
     ) async {
         var discoveredAlbumKeys: Set<String> = []
         for output in outputs {
+            if (try? await cancellationToken.checkCancellation()) == nil { return }
             let effectiveAlbum = recordsByTrackID[output.trackID]?.track.album ?? output.album
 
             if case .completed(let detail) = output.artistMetadataOutcome {
@@ -3880,6 +4236,7 @@ final class FileImportService: FileImportServiceProtocol {
 
             if LibraryNormalization.isUnknownAlbum(output.album),
                !LibraryNormalization.isUnknownAlbum(effectiveAlbum) {
+                if (try? await cancellationToken.checkCancellation()) == nil { return }
                 let albumDedupKey = "\(LibraryNormalization.normalizeArtist(output.artist))•\(LibraryNormalization.normalizedAlbumKey(album: effectiveAlbum))"
                 guard discoveredAlbumKeys.insert(albumDedupKey).inserted else { continue }
 
@@ -3903,8 +4260,25 @@ final class FileImportService: FileImportServiceProtocol {
     }
 
     nonisolated private static func performImmediateEnrichmentTask(
-        snapshot: ImportEnrichmentSnapshot
+        snapshot: ImportEnrichmentSnapshot,
+        cancellationToken: ImportCancellationToken
     ) async -> ImportEnrichmentTaskOutput {
+        if (try? await cancellationToken.checkCancellation()) == nil {
+            return ImportEnrichmentTaskOutput(
+                progressID: snapshot.progressID,
+                trackID: snapshot.id,
+                title: snapshot.title,
+                artist: snapshot.artist,
+                album: snapshot.album,
+                lyricOutcome: nil,
+                coverOutcome: nil,
+                trackMetadataOutcome: nil,
+                artistMetadataOutcome: nil,
+                albumMetadataOutcome: nil,
+                artistArtworkOutcome: nil,
+                albumArtworkOutcome: nil
+            )
+        }
         async let lyricOutcome: ImportLyricsLookupOutcome? = snapshot.needsLyrics
             ? ImportEnrichmentWorker.fetchLyrics(
                 title: snapshot.title,
@@ -3922,35 +4296,40 @@ final class FileImportService: FileImportServiceProtocol {
             )
             : nil
 
-        let resolvedLyricOutcome = await lyricOutcome
-        let resolvedCoverOutcome = await coverOutcome
-
-        let trackMetadataOutcome = snapshot.needsTrackMetadata
-            ? await MetadataEnrichmentWorker.fetchTrackMetadata(
+        async let trackMetadataOutcome: ImportTrackMetadataOutcome? = snapshot.needsTrackMetadata
+            ? MetadataEnrichmentWorker.fetchTrackMetadata(
                 title: snapshot.title,
                 artist: snapshot.artist,
                 album: snapshot.album,
                 duration: snapshot.duration
             )
             : nil
-        let artistMetadataOutcome = snapshot.needsArtistMetadata
-            ? await MetadataEnrichmentWorker.fetchArtistMetadata(name: snapshot.artist)
+        async let artistMetadataOutcome: ImportArtistMetadataOutcome? = snapshot.needsArtistMetadata
+            ? MetadataEnrichmentWorker.fetchArtistMetadata(name: snapshot.artist)
             : nil
-        let albumMetadataOutcome = snapshot.needsAlbumMetadata
-            ? await MetadataEnrichmentWorker.fetchAlbumMetadata(
+        async let albumMetadataOutcome: ImportAlbumMetadataOutcome? = snapshot.needsAlbumMetadata
+            ? MetadataEnrichmentWorker.fetchAlbumMetadata(
                 album: snapshot.album,
                 artist: snapshot.artist
             )
             : nil
-        let artistArtworkOutcome = snapshot.needsArtistArtwork
-            ? await MetadataEnrichmentWorker.fetchArtistArtwork(artist: snapshot.artist)
+        async let artistArtworkOutcome: ImportArtistArtworkOutcome? = snapshot.needsArtistArtwork
+            ? MetadataEnrichmentWorker.fetchArtistArtwork(artist: snapshot.artist)
             : nil
-        let albumArtworkOutcome = snapshot.needsAlbumArtwork
-            ? await MetadataEnrichmentWorker.fetchAlbumArtwork(
+        async let albumArtworkOutcome: ImportAlbumArtworkOutcome? = snapshot.needsAlbumArtwork
+            ? MetadataEnrichmentWorker.fetchAlbumArtwork(
                 album: snapshot.album,
                 artist: snapshot.artist
             )
             : nil
+
+        let resolvedLyricOutcome = await lyricOutcome
+        let resolvedCoverOutcome = await coverOutcome
+        let resolvedTrackMetadataOutcome = await trackMetadataOutcome
+        let resolvedArtistMetadataOutcome = await artistMetadataOutcome
+        let resolvedAlbumMetadataOutcome = await albumMetadataOutcome
+        let resolvedArtistArtworkOutcome = await artistArtworkOutcome
+        let resolvedAlbumArtworkOutcome = await albumArtworkOutcome
 
         return ImportEnrichmentTaskOutput(
             progressID: snapshot.progressID,
@@ -3960,11 +4339,11 @@ final class FileImportService: FileImportServiceProtocol {
             album: snapshot.album,
             lyricOutcome: resolvedLyricOutcome,
             coverOutcome: resolvedCoverOutcome,
-            trackMetadataOutcome: trackMetadataOutcome,
-            artistMetadataOutcome: artistMetadataOutcome,
-            albumMetadataOutcome: albumMetadataOutcome,
-            artistArtworkOutcome: artistArtworkOutcome,
-            albumArtworkOutcome: albumArtworkOutcome
+            trackMetadataOutcome: resolvedTrackMetadataOutcome,
+            artistMetadataOutcome: resolvedArtistMetadataOutcome,
+            albumMetadataOutcome: resolvedAlbumMetadataOutcome,
+            artistArtworkOutcome: resolvedArtistArtworkOutcome,
+            albumArtworkOutcome: resolvedAlbumArtworkOutcome
         )
     }
 
@@ -4445,7 +4824,9 @@ final class FileImportService: FileImportServiceProtocol {
     /// Convert NCM files and return conversion results with metadata.
     private func convertNCMFiles(
         _ ncmFiles: [URL],
-        progressController: BatchImportProgressDialogController
+        progressController: BatchImportProgressDialogController,
+        session: ImportSession,
+        cancellationToken: ImportCancellationToken
     ) async -> [NCMConversionTaskOutput] {
         guard !ncmFiles.isEmpty else { return [] }
 
@@ -4462,6 +4843,8 @@ final class FileImportService: FileImportServiceProtocol {
         let maxConcurrent = Self.ncmConcurrency(for: ncmFiles.count)
         var completedCount = 0
         var failureCount = 0
+        let outputDirectoryURL = session.stagingDirectoryURL
+            .appendingPathComponent("NCM", isDirectory: true)
 
         await withTaskGroup(of: NCMConversionTaskOutput.self) { group in
             for _ in 0..<min(maxConcurrent, ncmFiles.count) {
@@ -4473,29 +4856,34 @@ final class FileImportService: FileImportServiceProtocol {
                     detail: "正在解密并转换 NCM 文件"
                 )
                 group.addTask {
-                    await Self.runNCMConversionTask(sourceURL: sourceURL)
+                    await Self.runNCMConversionTask(
+                        sourceURL: sourceURL,
+                        outputDirectoryURL: outputDirectoryURL,
+                        cancellationToken: cancellationToken
+                    )
                 }
             }
 
             while let output = await group.next() {
                 completedCount += 1
                 results.append(output)
+                let cancelled = await isImportCancellationRequested(progressController, cancellationToken)
                 if output.result != nil {
                     progressController.updateItem(
                         id: output.sourceURL.path,
                         title: output.result?.metadata.title,
                         artist: output.result?.metadata.artistName,
                         stage: .ncmConversion,
-                        status: .success,
-                        detail: "NCM 转换完成，等待导入"
+                        status: cancelled ? .cancelled : .success,
+                        detail: cancelled ? "用户已取消" : "NCM 转换完成，等待导入"
                     )
                 } else {
                     failureCount += 1
                     progressController.updateItem(
                         id: output.sourceURL.path,
                         stage: .ncmConversion,
-                        status: .failed,
-                        detail: "NCM 转换失败",
+                        status: cancelled ? .cancelled : .failed,
+                        detail: cancelled ? "用户已取消" : "NCM 转换失败",
                         issueMessage: output.errorDescription
                     )
                 }
@@ -4516,6 +4904,11 @@ final class FileImportService: FileImportServiceProtocol {
                     totalCount: ncmFiles.count
                 )
 
+                if cancelled {
+                    group.cancelAll()
+                    continue
+                }
+
                 if let sourceURL = iterator.next() {
                     progressController.updateItem(
                         id: sourceURL.path,
@@ -4524,7 +4917,11 @@ final class FileImportService: FileImportServiceProtocol {
                         detail: "正在解密并转换 NCM 文件"
                     )
                     group.addTask {
-                        await Self.runNCMConversionTask(sourceURL: sourceURL)
+                        await Self.runNCMConversionTask(
+                            sourceURL: sourceURL,
+                            outputDirectoryURL: outputDirectoryURL,
+                            cancellationToken: cancellationToken
+                        )
                     }
                 }
             }
@@ -4533,19 +4930,37 @@ final class FileImportService: FileImportServiceProtocol {
         return results
     }
 
-    nonisolated private static func runNCMConversionTask(sourceURL: URL) async -> NCMConversionTaskOutput {
+    nonisolated private static func runNCMConversionTask(
+        sourceURL: URL,
+        outputDirectoryURL: URL,
+        cancellationToken: ImportCancellationToken
+    ) async -> NCMConversionTaskOutput {
         do {
+            try await cancellationToken.checkCancellation()
+            try FileManager.default.createDirectory(
+                at: outputDirectoryURL,
+                withIntermediateDirectories: true
+            )
             let converter = NCMConverter()
             let result = try await converter.convert(
                 from: sourceURL,
+                outputDir: outputDirectoryURL,
                 fetchCover: true,
                 progressHandler: nil
             )
+            try await cancellationToken.checkCancellation()
             return NCMConversionTaskOutput(
                 sourceURL: sourceURL,
                 displayName: sourceURL.lastPathComponent,
                 result: result,
                 errorDescription: nil
+            )
+        } catch is CancellationError {
+            return NCMConversionTaskOutput(
+                sourceURL: sourceURL,
+                displayName: sourceURL.lastPathComponent,
+                result: nil,
+                errorDescription: "已取消"
             )
         } catch {
             Log.warning("NCM conversion failed for \(sourceURL.lastPathComponent): \(error)", category: .import)
@@ -4577,7 +4992,9 @@ final class FileImportService: FileImportServiceProtocol {
 
     nonisolated private static func performImportTask(
         index: Int,
-        candidate: ImportCandidate
+        candidate: ImportCandidate,
+        stagingDirectoryURL: URL,
+        cancellationToken: ImportCancellationToken
     ) async -> ImportTaskOutput {
         let trackId = UUID()
         let importedAt = Date()
@@ -4600,13 +5017,18 @@ final class FileImportService: FileImportServiceProtocol {
         async let embeddedLyricsTask = Self.prepareEmbeddedTTMLLyrics(candidate.metadata.lyrics)
 
         do {
-            let libraryRelativePath = try Self.importAudioFileToLibrary(
+            try await cancellationToken.checkCancellation()
+            let stagedFile = try await Self.importAudioFileToStaging(
                 from: candidate.fileURL,
-                trackId: trackId
+                trackId: trackId,
+                stagingDirectoryURL: stagingDirectoryURL,
+                cancellationToken: cancellationToken
             )
+            try await cancellationToken.checkCancellation()
 
             let artworkData = await extractedArtworkTask
             let ttmlLyricText = await embeddedLyricsTask
+            try await cancellationToken.checkCancellation()
 
             return ImportTaskOutput(
                 index: index,
@@ -4623,7 +5045,8 @@ final class FileImportService: FileImportServiceProtocol {
                     duration: candidate.metadata.duration,
                     importedAt: importedAt,
                     originalFilePath: candidate.fileURL.path,
-                    libraryRelativePath: libraryRelativePath,
+                    libraryRelativePath: stagedFile.libraryRelativePath,
+                    stagedAudioURL: stagedFile.stagedAudioURL,
                     artworkData: artworkData,
                     ttmlLyricText: ttmlLyricText,
                     lyricsText: nil
@@ -4636,6 +5059,25 @@ final class FileImportService: FileImportServiceProtocol {
                 needsArtistArtworkEnrichment: true,
                 needsAlbumArtworkEnrichment: true,
                 errorDescription: nil
+            )
+        } catch is CancellationError {
+            let _ = await extractedArtworkTask
+            let _ = await embeddedLyricsTask
+            return ImportTaskOutput(
+                index: index,
+                trackID: trackId,
+                progressID: candidate.progressID,
+                displayName: candidate.displayName,
+                metadata: candidate.metadata,
+                payload: nil,
+                needsLyricsEnrichment: false,
+                needsCoverEnrichment: false,
+                needsTrackMetadataEnrichment: false,
+                needsArtistMetadataEnrichment: false,
+                needsAlbumMetadataEnrichment: false,
+                needsArtistArtworkEnrichment: false,
+                needsAlbumArtworkEnrichment: false,
+                errorDescription: "已取消"
             )
         } catch {
             let _ = await extractedArtworkTask
@@ -4661,6 +5103,7 @@ final class FileImportService: FileImportServiceProtocol {
 
     nonisolated private static func prepareEmbeddedTTMLLyrics(_ embeddedLyrics: String?) async -> String? {
         guard let embeddedLyrics, !embeddedLyrics.isEmpty else { return nil }
+        guard !Task.isCancelled else { return nil }
         if let ttml = LyricsFormatSupport.normalizedTTMLText(embeddedLyrics) {
             return ttml
         }
@@ -4719,27 +5162,57 @@ final class FileImportService: FileImportServiceProtocol {
         return "Tracks/\(trackId.uuidString)/\(audioFileName)"
     }
 
+    nonisolated private static func importAudioFileToStaging(
+        from sourceURL: URL,
+        trackId: UUID,
+        stagingDirectoryURL: URL,
+        cancellationToken: ImportCancellationToken
+    ) async throws -> ImportStagedTrackFile {
+        try await cancellationToken.checkCancellation()
+        let fileManager = FileManager.default
+
+        try fileManager.createDirectory(
+            at: stagingDirectoryURL,
+            withIntermediateDirectories: true
+        )
+
+        let trackFolder = stagingDirectoryURL
+            .appendingPathComponent(trackId.uuidString, isDirectory: true)
+        try fileManager.createDirectory(at: trackFolder, withIntermediateDirectories: true)
+
+        let ext = sourceURL.pathExtension.trimmingCharacters(in: .whitespacesAndNewlines)
+        let safeExt = ext.isEmpty ? "audio" : ext
+        let audioFileName = "audio.\(safeExt)"
+        let stagedAudioURL = trackFolder.appendingPathComponent(audioFileName)
+
+        if fileManager.fileExists(atPath: stagedAudioURL.path) {
+            try fileManager.removeItem(at: stagedAudioURL)
+        }
+        try await cancellationToken.checkCancellation()
+        try fileManager.copyItem(at: sourceURL, to: stagedAudioURL)
+        try await cancellationToken.checkCancellation()
+
+        return ImportStagedTrackFile(
+            trackID: trackId,
+            stagedAudioURL: stagedAudioURL,
+            libraryRelativePath: "Tracks/\(trackId.uuidString)/\(audioFileName)"
+        )
+    }
+
     nonisolated private static func metadataConcurrency(for count: Int) -> Int {
-        guard count > 0 else { return 1 }
-        let cpuCount = max(1, ProcessInfo.processInfo.processorCount)
-        return min(count, min(12, max(4, cpuCount * 2)))
+        ImportConcurrencyLimiter.metadataReadConcurrency(for: count)
     }
 
     nonisolated private static func ncmConcurrency(for count: Int) -> Int {
-        guard count > 0 else { return 1 }
-        let cpuCount = max(1, ProcessInfo.processInfo.processorCount)
-        return min(count, min(6, max(2, cpuCount)))
+        ImportConcurrencyLimiter.ncmConversionConcurrency(for: count)
     }
 
     nonisolated private static func importConcurrency(for count: Int) -> Int {
-        guard count > 0 else { return 1 }
-        let cpuCount = max(1, ProcessInfo.processInfo.processorCount)
-        return min(count, min(6, max(3, cpuCount)))
+        ImportConcurrencyLimiter.audioPreparationConcurrency(for: count)
     }
 
     nonisolated private static func enrichmentConcurrency(for count: Int) -> Int {
-        guard count > 0 else { return 1 }
-        return min(count, 2)
+        ImportConcurrencyLimiter.networkEnrichmentConcurrency(for: count)
     }
 
     @MainActor
@@ -4801,10 +5274,12 @@ private final class BatchImportProgressViewModel {
 private final class BatchImportProgressDialogController: NSObject, NSWindowDelegate {
     private var panel: NSPanel?
     private let viewModel = BatchImportProgressViewModel()
+    private let onCancelRequested: () -> Void
     private var isClosed = false
     private var allowsClose = false
 
-    override init() {
+    init(onCancelRequested: @escaping () -> Void = {}) {
+        self.onCancelRequested = onCancelRequested
         super.init()
 
         let windowSize = NSSize(width: 600, height: 560)
@@ -4933,6 +5408,9 @@ private final class BatchImportProgressDialogController: NSObject, NSWindowDeleg
         case .skipped:
             status = .skipped
             detail = item.detail.isEmpty ? "已跳过导入" : item.detail
+        case .cancelled:
+            status = .cancelled
+            detail = item.detail.isEmpty ? "已取消" : item.detail
         default:
             status = .success
             if item.detail.isEmpty {
@@ -4961,7 +5439,10 @@ private final class BatchImportProgressDialogController: NSObject, NSWindowDeleg
     func requestCancel() {
         guard viewModel.canCancel else { return }
         viewModel.isCancellationRequested = true
-        viewModel.detail = "正在取消导入，等待当前文件写入安全结束"
+        viewModel.stage = .cancelling
+        viewModel.progress = max(viewModel.progress, 0.995)
+        viewModel.detail = "正在取消导入并清理临时文件"
+        onCancelRequested()
         Log.info("[Import] user requested cancellation", category: .import)
     }
 
@@ -5136,6 +5617,8 @@ private struct BatchImportProgressRowView: View {
             return .orange
         case .skipped:
             return .secondary
+        case .cancelled:
+            return .secondary
         case .failed:
             return .red
         }
@@ -5158,6 +5641,9 @@ private struct BatchImportProgressRowView: View {
                     .foregroundStyle(.orange)
             case .skipped:
                 Image(systemName: "minus.circle.fill")
+                    .foregroundStyle(.secondary)
+            case .cancelled:
+                Image(systemName: "xmark.circle")
                     .foregroundStyle(.secondary)
             case .failed:
                 Image(systemName: "xmark.circle.fill")

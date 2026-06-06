@@ -37,6 +37,7 @@ final class NCMConverter: @unchecked Sendable {
         fetchCover: Bool = true,
         progressHandler: ((NCMConversionStep, Double) -> Void)? = nil
     ) async throws -> NCMConversionResult {
+        try Task.checkCancellation()
         
         self.filePath = sourceURL.path
         
@@ -45,6 +46,7 @@ final class NCMConverter: @unchecked Sendable {
         }
         
         progressHandler?(.waiting, 0.0)
+        try Task.checkCancellation()
         
         let fileHandle = try FileHandle(forReadingFrom: sourceURL)
         self.fileHandle = fileHandle
@@ -57,6 +59,7 @@ final class NCMConverter: @unchecked Sendable {
         
         try validateMagicHeader()
         progressHandler?(.decrypting, 0.1)
+        try Task.checkCancellation()
         
         let currentOffset = fileHandle.offsetInFile
         try fileHandle.seek(toOffset: currentOffset + 2)
@@ -68,6 +71,7 @@ final class NCMConverter: @unchecked Sendable {
         
         try decryptMetadata()
         progressHandler?(.decrypting, 0.25)
+        try Task.checkCancellation()
         
         try readCoverData()
         progressHandler?(.decrypting, 0.3)
@@ -80,6 +84,7 @@ final class NCMConverter: @unchecked Sendable {
             }
             imageData = try? await downloadCover(from: coverUrl)
             progressHandler?(.downloadingCover, 0.95)
+            try Task.checkCancellation()
         }
         
         let outputURL = try await decryptAudio(
@@ -97,6 +102,7 @@ final class NCMConverter: @unchecked Sendable {
         }
         
         progressHandler?(.completed, 1.0)
+        try Task.checkCancellation()
         
         return NCMConversionResult(
             audioFileURL: outputURL,
@@ -255,6 +261,7 @@ final class NCMConverter: @unchecked Sendable {
         outputDir: URL?,
         progressHandler: ((Double) -> Void)?
     ) async throws -> URL {
+        try Task.checkCancellation()
         guard let fileHandle = self.fileHandle else {
             throw NCMConverterError.fileReadError
         }
@@ -293,6 +300,7 @@ final class NCMConverter: @unchecked Sendable {
         defer { outputHandle.closeFile() }
         
         outputHandle.write(firstChunk)
+        try Task.checkCancellation()
         
         let fileSize = try FileManager.default.attributesOfItem(atPath: filePath)[.size] as? UInt64 ?? 0
         var processedSize: UInt64 = UInt64(firstChunk.count)
@@ -308,6 +316,7 @@ final class NCMConverter: @unchecked Sendable {
             let totalProgress = Double(processedSize) / Double(fileSize)
             progressHandler?(min(totalProgress, 1.0))
             
+            try Task.checkCancellation()
             await Task.yield()
         }
         
@@ -402,11 +411,13 @@ final class NCMConverter: @unchecked Sendable {
     }
     
     private func downloadCover(from urlString: String) async throws -> Data {
+        try Task.checkCancellation()
         guard let url = URL(string: urlString) else {
             throw NCMConverterError.networkError
         }
         
         let (data, response) = try await URLSession.shared.data(from: url)
+        try Task.checkCancellation()
         
         guard let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200 else {
